@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 test.describe('Landing page', () => {
   test('loads and shows "Your name" input', async ({ page }) => {
     await page.goto('/');
-    await expect(page.getByText('Your name')).toBeVisible();
+    await expect(page.getByPlaceholder('Your name')).toBeVisible();
   });
 
   test('page title is set', async ({ page }) => {

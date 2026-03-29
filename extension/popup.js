@@ -3,6 +3,7 @@
 const statusEl = document.getElementById('status');
 const botNameInput = document.getElementById('botName');
 const joinBtn = document.getElementById('joinBtn');
+const presentBtn = document.getElementById('presentBtn');
 const speechBtn = document.getElementById('speechBtn');
 const toneBtn = document.getElementById('toneBtn');
 const speakBtn = document.getElementById('speakBtn');
@@ -25,6 +26,7 @@ async function checkStatus() {
     statusEl.textContent = 'Meet tab detected';
     statusEl.className = 'status active';
     joinBtn.disabled = false;
+    presentBtn.disabled = false;
     speechBtn.disabled = false;
     toneBtn.disabled = false;
     speakBtn.disabled = false;
@@ -32,6 +34,7 @@ async function checkStatus() {
     statusEl.textContent = 'No Meet tab found — open a Google Meet link first';
     statusEl.className = 'status';
     joinBtn.disabled = true;
+    presentBtn.disabled = true;
     speechBtn.disabled = true;
     toneBtn.disabled = true;
     speakBtn.disabled = true;
@@ -60,6 +63,12 @@ joinBtn.addEventListener('click', async () => {
 
   joinBtn.textContent = 'Joining…';
   setTimeout(() => { joinBtn.textContent = 'Join Meeting'; }, 3000);
+});
+
+presentBtn.addEventListener('click', () => {
+  sendToContent({ action: 'start-presenting' });
+  presentBtn.textContent = 'Presenting…';
+  setTimeout(() => { presentBtn.textContent = 'Start Presenting Whiteboard'; }, 3000);
 });
 
 speechBtn.addEventListener('click', () => {

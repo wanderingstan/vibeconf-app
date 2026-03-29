@@ -78,10 +78,50 @@ Canvas `captureStream()` pauses when the tab is in the background (Chrome thrott
 ### Why guest profile?
 Meet's media acquisition path differs between guest and authenticated users. Guest profiles reliably hit our `getUserMedia` override. For production deployment (Puppeteer/headless), a guest profile is also simpler — no Google account management needed.
 
+## Audio Capture & Speech Recognition
+
+The extension hooks `RTCPeerConnection` to intercept individual participant audio streams as Meet creates them. This enables:
+
+### Per-participant audio capture
+Each remote participant's audio arrives as a separate `MediaStreamTrack` via the `track` event on `RTCPeerConnection`. We wrap each in a `ParticipantAudio` object that:
+- Connects to an `AnalyserNode` for real-time audio level monitoring
+- Detects speech vs. silence using RMS level thresholds
+- Records audio via `MediaRecorder` during speech segments (ready for external STT)
+
+### Speaker-attributed transcription (timing heuristic)
+Since the Web Speech API only listens to the default microphone (can't be pointed at arbitrary streams), we use a timing-based heuristic:
+
+1. **Per-participant level tracking** — samples which participants are speaking every 200ms
+2. **Web Speech API** — runs on the mixed audio to produce transcripts
+3. **Timestamp correlation** — when a transcript arrives, we look at who was speaking during that time window and attribute the text to the loudest participant
+
+This won't be perfect with overlapping speech, but it's a solid POC without needing external STT APIs.
+
+### Production STT path
+Each `ParticipantAudio` already records speech segments as `audio/webm;codecs=opus` blobs via `MediaRecorder`. These are ready to be sent to:
+- **Whisper API** — POST blob as a file
+- **Deepgram** — WebSocket streaming
+- **Google Cloud STT** — gRPC streaming
+
+### Debugging
+From the Chrome console on the Meet tab:
+```js
+// See all captured participants
+window.__botsInCallsAudioCapture.participants
+
+// See recent transcripts
+window.__botsInCallsTranscription.getRecentTranscripts()
+
+// Start/stop speech recognition manually
+window.__botsInCallsTranscription.startListening()
+window.__botsInCallsTranscription.stopListening()
+```
+
 ## Next Steps
 
-1. **Audio capture** — Tap into Meet's audio output so the bot can hear what participants say. Needed for the STT → LLM → TTS loop.
-2. **Backend AI integration** — Wire up: capture audio → STT (Whisper/Deepgram) → LLM (Claude) → TTS (ElevenLabs) → `VirtualMic.playAudio()`.
-3. **Hosted whiteboard** — Add a `/whiteboard` route to vibeconferencing.vercel.app that the extension can open and control via content script messages.
-4. **Electron wrapper investigation** — Would solve the screen share picker issue (`desktopCapturer`) and the signed-in profile issue.
-5. **Puppeteer/headless deployment** — Run the bot server-side with `--load-extension` for production use.
+1. **Test audio capture** — Verify RTCPeerConnection hook captures individual participant streams in a live call. Check popup's Audio Capture section for level meters.
+2. **Test speaker-attributed STT** — Click "Start Listening" in popup, speak from the main profile, verify transcripts appear with correct speaker attribution.
+3. **Backend AI integration** — Wire up: capture audio → STT (Whisper/Deepgram) → LLM (Claude) → TTS (ElevenLabs) → `VirtualMic.playAudio()`.
+4. **Hosted whiteboard** — Add a `/whiteboard` route to vibeconferencing.vercel.app (chrome-extension:// URLs break Meet's screen sharing).
+5. **Electron wrapper investigation** — Would solve the screen share picker issue (`desktopCapturer`) and the signed-in profile issue.
+6. **Puppeteer/headless deployment** — Run the bot server-side with `--load-extension` for production use.

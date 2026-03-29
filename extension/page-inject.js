@@ -612,6 +612,48 @@
         break;
       }
 
+      case 'start-listening':
+        transcription.startListening();
+        break;
+
+      case 'stop-listening':
+        transcription.stopListening();
+        break;
+
+      case 'get-transcripts': {
+        const recent = transcription.getRecentTranscripts(payload?.ms || 60000);
+        window.postMessage({
+          __botsInCalls: true,
+          action: 'transcripts-response',
+          payload: { transcripts: recent },
+        }, '*');
+        break;
+      }
+
+      case 'get-audio-status': {
+        const participants = [];
+        for (const [id, pa] of audioCaptureManager.participants) {
+          const level = pa.getLevel();
+          participants.push({
+            id,
+            speaking: pa.speaking,
+            level,
+            db: 20 * Math.log10(Math.max(level, 1e-10)),
+            recording: pa.isRecording,
+          });
+        }
+        window.postMessage({
+          __botsInCalls: true,
+          action: 'audio-status-response',
+          payload: {
+            participantCount: participants.length,
+            connectionCount: audioCaptureManager.connectionCount,
+            participants,
+          },
+        }, '*');
+        break;
+      }
+
       case 'play-test-tone': {
         if (!mic) mic = new VirtualMic();
         if (mic.audioCtx.state === 'suspended') mic.audioCtx.resume();
@@ -695,7 +737,481 @@
     }
   });
 
+  // ---------------------------------------------------------------------------
+  // Audio Capture — hooks RTCPeerConnection to capture individual participant
+  // audio streams for speech recognition.
+  //
+  // How it works:
+  //   Meet creates one RTCPeerConnection per participant. Each connection fires
+  //   'track' events when remote media arrives. We intercept these to capture
+  //   individual audio tracks, analyze their levels, and extract audio data
+  //   for speech-to-text processing.
+  // ---------------------------------------------------------------------------
+
+  class ParticipantAudio {
+    constructor(id, track, stream) {
+      this.id = id;
+      this.track = track;
+      this.stream = stream;
+      this.speaking = false;
+      this.lastSpeakingTime = 0;
+      this.audioCtx = new AudioContext();
+      this.analyser = this.audioCtx.createAnalyser();
+      this.analyser.fftSize = 512;
+      this.analyser.smoothingTimeConstant = 0.3;
+      this.levelData = new Float32Array(this.analyser.frequencyBinCount);
+
+      // Connect the track to our analyser
+      const source = this.audioCtx.createMediaStreamSource(new MediaStream([track]));
+      source.connect(this.analyser);
+
+      // Audio recording for STT
+      this.recorder = null;
+      this.audioChunks = [];
+      this.isRecording = false;
+
+      // Start level monitoring
+      this._monitorLevel();
+
+      console.log('[bots-in-calls] ParticipantAudio created:', id);
+    }
+
+    _monitorLevel() {
+      if (this.track.readyState === 'ended') return;
+
+      this.analyser.getFloatTimeDomainData(this.levelData);
+
+      // Calculate RMS level
+      let sum = 0;
+      for (let i = 0; i < this.levelData.length; i++) {
+        sum += this.levelData[i] * this.levelData[i];
+      }
+      const rms = Math.sqrt(sum / this.levelData.length);
+      const db = 20 * Math.log10(Math.max(rms, 1e-10));
+
+      // Speech detection threshold (adjust as needed)
+      const wasSpeaking = this.speaking;
+      this.speaking = db > -45; // roughly: anything above background noise
+
+      if (this.speaking) {
+        this.lastSpeakingTime = Date.now();
+      }
+
+      if (this.speaking && !wasSpeaking) {
+        console.log(`[bots-in-calls] Participant ${this.id} started speaking (${db.toFixed(1)} dB)`);
+        this._startRecording();
+      } else if (!this.speaking && wasSpeaking && (Date.now() - this.lastSpeakingTime > 1500)) {
+        console.log(`[bots-in-calls] Participant ${this.id} stopped speaking`);
+        this._stopRecording();
+      }
+
+      // Continue monitoring
+      requestAnimationFrame(() => this._monitorLevel());
+    }
+
+    _startRecording() {
+      if (this.isRecording) return;
+
+      try {
+        this.audioChunks = [];
+        this.recorder = new MediaRecorder(new MediaStream([this.track]), {
+          mimeType: 'audio/webm;codecs=opus',
+        });
+
+        this.recorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            this.audioChunks.push(event.data);
+          }
+        };
+
+        this.recorder.onstop = () => {
+          if (this.audioChunks.length > 0) {
+            const blob = new Blob(this.audioChunks, { type: 'audio/webm;codecs=opus' });
+            this._processAudioBlob(blob);
+          }
+          this.isRecording = false;
+        };
+
+        this.recorder.start(500); // collect in 500ms chunks
+        this.isRecording = true;
+      } catch (err) {
+        console.warn('[bots-in-calls] MediaRecorder error for', this.id, err.message);
+      }
+    }
+
+    _stopRecording() {
+      if (!this.isRecording || !this.recorder) return;
+      try {
+        this.recorder.stop();
+      } catch (err) {
+        // recorder may already be inactive
+      }
+    }
+
+    _processAudioBlob(blob) {
+      const sizeMB = (blob.size / (1024 * 1024)).toFixed(2);
+      console.log(`[bots-in-calls] Audio captured from ${this.id}: ${sizeMB} MB`);
+
+      // Notify the extension about captured audio
+      window.postMessage({
+        __botsInCalls: true,
+        action: 'audio-captured',
+        payload: {
+          participantId: this.id,
+          size: blob.size,
+          duration: this.audioChunks.length * 0.5, // rough estimate (500ms chunks)
+        },
+      }, '*');
+
+      // TODO: In production, send blob to STT service:
+      // - Whisper API: POST the blob as a file
+      // - Deepgram: WebSocket streaming
+      // - Google Cloud STT: gRPC streaming
+      //
+      // For now, the blob is ready to be sent. Example:
+      // const formData = new FormData();
+      // formData.append('file', blob, 'audio.webm');
+      // formData.append('model', 'whisper-1');
+      // fetch('https://api.openai.com/v1/audio/transcriptions', {
+      //   method: 'POST',
+      //   headers: { 'Authorization': 'Bearer YOUR_KEY' },
+      //   body: formData,
+      // }).then(r => r.json()).then(result => {
+      //   console.log('Transcript:', result.text);
+      // });
+    }
+
+    getLevel() {
+      this.analyser.getFloatTimeDomainData(this.levelData);
+      let sum = 0;
+      for (let i = 0; i < this.levelData.length; i++) {
+        sum += this.levelData[i] * this.levelData[i];
+      }
+      return Math.sqrt(sum / this.levelData.length);
+    }
+
+    destroy() {
+      this._stopRecording();
+      this.audioCtx.close();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // AudioCaptureManager — tracks all participant audio streams
+  // ---------------------------------------------------------------------------
+
+  class AudioCaptureManager {
+    constructor() {
+      this.participants = new Map(); // id → ParticipantAudio
+      this.connectionCount = 0;
+      this._hookRTCPeerConnection();
+      this._startStatusReporting();
+    }
+
+    _hookRTCPeerConnection() {
+      const self = this;
+      const _RTCPeerConnection = window.RTCPeerConnection;
+
+      // We need to create a proper subclass to preserve instanceof checks
+      // that Meet's code may rely on
+      window.RTCPeerConnection = function (...args) {
+        const pc = new _RTCPeerConnection(...args);
+        self.connectionCount++;
+        const connId = `conn-${self.connectionCount}`;
+
+        console.log(`[bots-in-calls] RTCPeerConnection created: ${connId}`);
+
+        // Intercept remote tracks (audio from other participants)
+        pc.addEventListener('track', (event) => {
+          const { track, streams } = event;
+
+          if (track.kind === 'audio') {
+            const participantId = `participant-${self.participants.size + 1}`;
+            console.log(`[bots-in-calls] Remote audio track received:`,
+              `${participantId} via ${connId}`,
+              `(readyState=${track.readyState}, label=${track.label})`);
+
+            // Create a ParticipantAudio for this track
+            const pa = new ParticipantAudio(
+              participantId,
+              track,
+              streams[0] || new MediaStream([track])
+            );
+            self.participants.set(participantId, pa);
+
+            // Clean up when track ends
+            track.addEventListener('ended', () => {
+              console.log(`[bots-in-calls] Audio track ended for ${participantId}`);
+              pa.destroy();
+              self.participants.delete(participantId);
+            });
+          }
+
+          if (track.kind === 'video') {
+            console.log(`[bots-in-calls] Remote video track received via ${connId}`);
+          }
+        });
+
+        // Log connection state changes
+        pc.addEventListener('connectionstatechange', () => {
+          console.log(`[bots-in-calls] ${connId} state: ${pc.connectionState}`);
+        });
+
+        return pc;
+      };
+
+      // Preserve prototype chain so instanceof checks work
+      window.RTCPeerConnection.prototype = _RTCPeerConnection.prototype;
+      window.RTCPeerConnection.prototype.constructor = window.RTCPeerConnection;
+
+      // Copy static properties
+      Object.keys(_RTCPeerConnection).forEach((key) => {
+        try {
+          window.RTCPeerConnection[key] = _RTCPeerConnection[key];
+        } catch (e) {
+          // Some properties may not be writable
+        }
+      });
+
+      // Also handle webkitRTCPeerConnection if present
+      if (window.webkitRTCPeerConnection) {
+        window.webkitRTCPeerConnection = window.RTCPeerConnection;
+      }
+
+      console.log('[bots-in-calls] RTCPeerConnection hooked for audio capture');
+    }
+
+    _startStatusReporting() {
+      // Periodically report audio capture status
+      setInterval(() => {
+        if (this.participants.size === 0) return;
+
+        const status = [];
+        for (const [id, pa] of this.participants) {
+          const level = pa.getLevel();
+          const db = 20 * Math.log10(Math.max(level, 1e-10));
+          status.push(`${id}: ${db.toFixed(0)}dB ${pa.speaking ? '🔊' : '🔇'}`);
+        }
+
+        if (status.length > 0) {
+          console.log('[bots-in-calls] Audio levels:', status.join(' | '));
+        }
+
+        // Report to extension
+        const participantStatus = [];
+        for (const [id, pa] of this.participants) {
+          participantStatus.push({
+            id,
+            speaking: pa.speaking,
+            level: pa.getLevel(),
+          });
+        }
+
+        window.postMessage({
+          __botsInCalls: true,
+          action: 'audio-status',
+          payload: { participants: participantStatus },
+        }, '*');
+      }, 3000);
+    }
+
+    getParticipants() {
+      return Array.from(this.participants.values());
+    }
+
+    getSpeakingParticipants() {
+      return this.getParticipants().filter((p) => p.speaking);
+    }
+  }
+
+  // Initialize the audio capture manager
+  const audioCaptureManager = new AudioCaptureManager();
+
+  // Expose for debugging from console
+  window.__botsInCallsAudioCapture = audioCaptureManager;
+
+  // ---------------------------------------------------------------------------
+  // SpeakerAttributedTranscription — combines Web Speech API (global STT)
+  // with per-participant audio levels to attribute who said what.
+  //
+  // The Web Speech API only listens to the default microphone, so we can't
+  // do per-participant STT with it. But we CAN:
+  //   1. Track which participants are speaking at each moment (via audio levels)
+  //   2. Run the Web Speech API on the mixed audio (what the bot "hears")
+  //   3. Correlate transcripts with speaking timestamps to attribute speakers
+  //
+  // This is a heuristic — it won't be perfect, especially with overlapping
+  // speech. But it's a solid POC without needing external STT APIs.
+  //
+  // For production, each participant's audio would be sent individually to
+  // an STT API (Whisper, Deepgram, etc.) using the MediaRecorder blobs from
+  // ParticipantAudio above.
+  // ---------------------------------------------------------------------------
+
+  class SpeakerAttributedTranscription {
+    constructor(captureManager) {
+      this.captureManager = captureManager;
+      this.speakingLog = []; // [{timestamp, participantId, level}]
+      this.transcripts = []; // [{timestamp, text, speaker}]
+      this.recognition = null;
+      this.isListening = false;
+      this._maxLogEntries = 1000;
+
+      // Continuously log who is speaking
+      this._startSpeakerTracking();
+    }
+
+    _startSpeakerTracking() {
+      setInterval(() => {
+        const now = Date.now();
+        for (const [id, pa] of this.captureManager.participants) {
+          if (pa.speaking) {
+            this.speakingLog.push({
+              timestamp: now,
+              participantId: id,
+              level: pa.getLevel(),
+            });
+          }
+        }
+
+        // Trim log to prevent memory growth
+        if (this.speakingLog.length > this._maxLogEntries) {
+          this.speakingLog = this.speakingLog.slice(-this._maxLogEntries);
+        }
+      }, 200); // sample every 200ms
+    }
+
+    // Look up who was most likely speaking during a time window
+    _attributeSpeaker(startTime, endTime) {
+      const relevantEntries = this.speakingLog.filter(
+        (e) => e.timestamp >= startTime && e.timestamp <= endTime
+      );
+
+      if (relevantEntries.length === 0) return 'unknown';
+
+      // Count speaking samples per participant
+      const counts = {};
+      for (const entry of relevantEntries) {
+        counts[entry.participantId] = (counts[entry.participantId] || 0) + 1;
+      }
+
+      // Return the participant with the most speaking samples
+      let maxCount = 0;
+      let speaker = 'unknown';
+      for (const [id, count] of Object.entries(counts)) {
+        if (count > maxCount) {
+          maxCount = count;
+          speaker = id;
+        }
+      }
+
+      return speaker;
+    }
+
+    // Start listening for speech via Web Speech API
+    // NOTE: This listens to whatever audio the browser tab is playing,
+    // which in a Meet call is the mixed audio of all participants.
+    // It won't work if the bot's tab doesn't have audio playing through
+    // the speakers. For testing, it may need to be run from the main
+    // profile's tab where participants' audio is audible.
+    startListening() {
+      if (this.isListening) return;
+
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        console.warn('[bots-in-calls] SpeechRecognition API not available');
+        return;
+      }
+
+      this.recognition = new SpeechRecognition();
+      this.recognition.continuous = true;
+      this.recognition.interimResults = true;
+      this.recognition.lang = 'en-US';
+
+      let currentSegmentStart = Date.now();
+
+      this.recognition.onresult = (event) => {
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const result = event.results[i];
+          const text = result[0].transcript.trim();
+
+          if (result.isFinal && text) {
+            const now = Date.now();
+            const speaker = this._attributeSpeaker(currentSegmentStart, now);
+
+            const transcript = {
+              timestamp: now,
+              text,
+              speaker,
+              confidence: result[0].confidence,
+            };
+
+            this.transcripts.push(transcript);
+            console.log(`[bots-in-calls] TRANSCRIPT [${speaker}]: "${text}" (confidence: ${(result[0].confidence * 100).toFixed(0)}%)`);
+
+            // Notify extension
+            window.postMessage({
+              __botsInCalls: true,
+              action: 'transcript',
+              payload: transcript,
+            }, '*');
+
+            currentSegmentStart = now;
+          }
+        }
+      };
+
+      this.recognition.onerror = (event) => {
+        console.warn('[bots-in-calls] Speech recognition error:', event.error);
+        if (event.error === 'not-allowed') {
+          console.warn('[bots-in-calls] Microphone access denied for speech recognition');
+        }
+      };
+
+      this.recognition.onend = () => {
+        // Auto-restart if we're still supposed to be listening
+        if (this.isListening) {
+          console.log('[bots-in-calls] Speech recognition restarting...');
+          setTimeout(() => {
+            try { this.recognition.start(); } catch (e) { /* already started */ }
+          }, 500);
+        }
+      };
+
+      try {
+        this.recognition.start();
+        this.isListening = true;
+        console.log('[bots-in-calls] Speech recognition started (speaker-attributed mode)');
+      } catch (err) {
+        console.error('[bots-in-calls] Failed to start speech recognition:', err);
+      }
+    }
+
+    stopListening() {
+      this.isListening = false;
+      if (this.recognition) {
+        this.recognition.stop();
+      }
+      console.log('[bots-in-calls] Speech recognition stopped');
+    }
+
+    getTranscripts() {
+      return this.transcripts;
+    }
+
+    getRecentTranscripts(ms = 60000) {
+      const cutoff = Date.now() - ms;
+      return this.transcripts.filter((t) => t.timestamp > cutoff);
+    }
+  }
+
+  // Initialize transcription (but don't start listening until requested)
+  const transcription = new SpeakerAttributedTranscription(audioCaptureManager);
+  window.__botsInCallsTranscription = transcription;
+
+  // ---------------------------------------------------------------------------
+
   // Signal readiness back through the bridge
   window.postMessage({ __botsInCalls: true, action: 'ready' }, '*');
-  console.log('[bots-in-calls] Page script loaded — getUserMedia patched');
+  console.log('[bots-in-calls] Page script loaded — getUserMedia patched, RTCPeerConnection hooked');
 })();

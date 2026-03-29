@@ -13,6 +13,12 @@
   "background": {
     "service_worker": "background.js"
   },
+  "web_accessible_resources": [
+    {
+      "resources": ["test-speech.mp3"],
+      "matches": ["https://meet.google.com/*"]
+    }
+  ],
   "content_scripts": [
     {
       "matches": ["https://meet.google.com/*"],

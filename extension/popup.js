@@ -3,6 +3,8 @@
 const statusEl = document.getElementById('status');
 const botNameInput = document.getElementById('botName');
 const joinBtn = document.getElementById('joinBtn');
+const speechBtn = document.getElementById('speechBtn');
+const toneBtn = document.getElementById('toneBtn');
 const speakBtn = document.getElementById('speakBtn');
 
 let isSpeaking = false;
@@ -23,11 +25,15 @@ async function checkStatus() {
     statusEl.textContent = 'Meet tab detected';
     statusEl.className = 'status active';
     joinBtn.disabled = false;
+    speechBtn.disabled = false;
+    toneBtn.disabled = false;
     speakBtn.disabled = false;
   } else {
     statusEl.textContent = 'No Meet tab found — open a Google Meet link first';
     statusEl.className = 'status';
     joinBtn.disabled = true;
+    speechBtn.disabled = true;
+    toneBtn.disabled = true;
     speakBtn.disabled = true;
   }
 }
@@ -54,6 +60,25 @@ joinBtn.addEventListener('click', async () => {
 
   joinBtn.textContent = 'Joining…';
   setTimeout(() => { joinBtn.textContent = 'Join Meeting'; }, 3000);
+});
+
+speechBtn.addEventListener('click', () => {
+  sendToContent({
+    target: 'page',
+    action: 'play-speech-test',
+  });
+  speechBtn.textContent = 'Speaking…';
+  setTimeout(() => { speechBtn.textContent = 'Play Speech Test'; }, 5000);
+});
+
+toneBtn.addEventListener('click', () => {
+  sendToContent({
+    target: 'page',
+    action: 'play-test-tone',
+    payload: { duration: 2, frequency: 440 },
+  });
+  toneBtn.textContent = 'Playing…';
+  setTimeout(() => { toneBtn.textContent = 'Play Test Tone'; }, 2500);
 });
 
 speakBtn.addEventListener('click', () => {

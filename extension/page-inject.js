@@ -314,6 +314,63 @@
     return _getUserMedia.call(navigator.mediaDevices, constraints);
   };
 
+  // ---------------------------------------------------------------------------
+  // Permissions API override — Make Meet think mic/camera permissions are granted
+  // ---------------------------------------------------------------------------
+
+  const _permissionsQuery = Permissions.prototype.query;
+
+  Permissions.prototype.query = async function (descriptor) {
+    if (active && (descriptor.name === 'microphone' || descriptor.name === 'camera')) {
+      console.log('[bots-in-calls] permissions.query intercepted:', descriptor.name, '→ granted');
+      // Return a PermissionStatus-like object with EventTarget methods
+      // so Meet's code doesn't throw when calling addEventListener
+      const status = new EventTarget();
+      status.state = 'granted';
+      status.onchange = null;
+      return status;
+    }
+    return _permissionsQuery.call(this, descriptor);
+  };
+
+  // Also override enumerateDevices to always include virtual mic/camera entries
+  const _enumerateDevices = MediaDevices.prototype.enumerateDevices;
+
+  MediaDevices.prototype.enumerateDevices = async function () {
+    const devices = await _enumerateDevices.call(navigator.mediaDevices);
+
+    if (!active) return devices;
+
+    // Ensure at least one audioinput and videoinput appear
+    const hasAudio = devices.some((d) => d.kind === 'audioinput');
+    const hasVideo = devices.some((d) => d.kind === 'videoinput');
+
+    const extras = [];
+    if (!hasAudio) {
+      extras.push({
+        deviceId: 'virtual-mic',
+        kind: 'audioinput',
+        label: 'Bots in Calls Virtual Microphone',
+        groupId: 'bots-in-calls',
+        toJSON() { return this; },
+      });
+    }
+    if (!hasVideo) {
+      extras.push({
+        deviceId: 'virtual-camera',
+        kind: 'videoinput',
+        label: 'Bots in Calls Virtual Camera',
+        groupId: 'bots-in-calls',
+        toJSON() { return this; },
+      });
+    }
+
+    if (extras.length > 0) {
+      console.log('[bots-in-calls] enumerateDevices: added', extras.length, 'virtual device(s)');
+    }
+    return [...devices, ...extras];
+  };
+
   // Placeholder for whiteboard screen-share override (not yet implemented)
   const _getDisplayMedia = MediaDevices.prototype.getDisplayMedia;
 
@@ -360,6 +417,142 @@
           });
         }
         break;
+
+      case 'play-speech-test': {
+        if (!mic) mic = new VirtualMic();
+
+        const ctx = mic.audioCtx;
+
+        // Ensure AudioContext is running
+        if (ctx.state !== 'running') {
+          console.log('[bots-in-calls] AudioContext state:', ctx.state, '— resuming');
+          ctx.resume();
+        }
+
+        const url = payload?.url;
+        if (!url) {
+          console.error('[bots-in-calls] play-speech-test: no URL provided');
+          break;
+        }
+
+        console.log('[bots-in-calls] Fetching speech audio:', url);
+        (async () => {
+          try {
+            const resp = await fetch(url);
+            if (!resp.ok) {
+              console.error('[bots-in-calls] Fetch failed:', resp.status, resp.statusText);
+              return;
+            }
+            const arrayBuf = await resp.arrayBuffer();
+            console.log('[bots-in-calls] Fetched', arrayBuf.byteLength, 'bytes, decoding...');
+
+            const audioBuf = await ctx.decodeAudioData(arrayBuf.slice(0));
+            console.log('[bots-in-calls] Decoded: duration=' + audioBuf.duration.toFixed(2) + 's',
+              'channels=' + audioBuf.numberOfChannels,
+              'sampleRate=' + audioBuf.sampleRate);
+
+            // Create source and connect to BOTH virtual mic AND local speakers
+            const src = ctx.createBufferSource();
+            src.buffer = audioBuf;
+
+            // Route to virtual mic (what Meet hears)
+            src.connect(mic.destination);
+
+            for (const cam of cameras.values()) cam.speaking = true;
+            src.onended = () => {
+              for (const cam of cameras.values()) cam.speaking = false;
+              console.log('[bots-in-calls] Speech audio finished');
+            };
+            src.start();
+            console.log('[bots-in-calls] Speech audio playing...');
+          } catch (err) {
+            console.error('[bots-in-calls] Speech audio error:', err);
+            for (const cam of cameras.values()) cam.speaking = false;
+          }
+        })();
+        break;
+      }
+
+      case 'play-test-tone': {
+        if (!mic) mic = new VirtualMic();
+        if (mic.audioCtx.state === 'suspended') mic.audioCtx.resume();
+
+        const ctx = mic.audioCtx;
+        const duration = (payload?.duration || 3);
+        const now = ctx.currentTime;
+
+        // Generate speech-like audio that won't be filtered by Meet's noise
+        // suppression. Pure tones get cancelled; we need harmonics, frequency
+        // variation, and amplitude modulation — characteristics of human voice.
+
+        // Fundamental with vibrato (mimics vocal cord vibration)
+        const fundamental = ctx.createOscillator();
+        fundamental.type = 'sawtooth'; // rich harmonics like a voice
+        fundamental.frequency.setValueAtTime(150, now); // ~male voice range
+        // Add pitch variation (like natural speech intonation)
+        fundamental.frequency.linearRampToValueAtTime(180, now + duration * 0.3);
+        fundamental.frequency.linearRampToValueAtTime(140, now + duration * 0.6);
+        fundamental.frequency.linearRampToValueAtTime(160, now + duration * 0.8);
+        fundamental.frequency.linearRampToValueAtTime(120, now + duration);
+
+        // Formant-like bandpass filters (simulate vocal tract resonances)
+        const formant1 = ctx.createBiquadFilter();
+        formant1.type = 'bandpass';
+        formant1.frequency.value = 600;  // ~first formant
+        formant1.Q.value = 5;
+
+        const formant2 = ctx.createBiquadFilter();
+        formant2.type = 'bandpass';
+        formant2.frequency.value = 1200; // ~second formant
+        formant2.Q.value = 5;
+
+        // Amplitude envelope (speech-like: attack, sustain with variation, decay)
+        const envelope = ctx.createGain();
+        envelope.gain.setValueAtTime(0, now);
+        envelope.gain.linearRampToValueAtTime(0.5, now + 0.05);
+        // Simulate syllable-like amplitude variation
+        for (let t = 0.1; t < duration - 0.2; t += 0.15) {
+          const peak = 0.3 + Math.random() * 0.3;
+          const dip = 0.1 + Math.random() * 0.1;
+          envelope.gain.linearRampToValueAtTime(peak, now + t);
+          envelope.gain.linearRampToValueAtTime(dip, now + t + 0.08);
+        }
+        envelope.gain.linearRampToValueAtTime(0, now + duration);
+
+        // Low-frequency amplitude modulation (adds natural tremor)
+        const lfo = ctx.createOscillator();
+        lfo.frequency.value = 5; // ~5 Hz tremor
+        const lfoGain = ctx.createGain();
+        lfoGain.gain.value = 0.15;
+        lfo.connect(lfoGain);
+        lfoGain.connect(envelope.gain);
+        lfo.start(now);
+        lfo.stop(now + duration);
+
+        // Connect: fundamental → formants → envelope → destination
+        // Split into two formant paths and merge
+        const merge = ctx.createGain();
+        merge.gain.value = 0.5;
+
+        fundamental.connect(formant1);
+        fundamental.connect(formant2);
+        formant1.connect(merge);
+        formant2.connect(merge);
+        merge.connect(envelope);
+        envelope.connect(mic.destination);
+
+        fundamental.start(now);
+        fundamental.stop(now + duration);
+
+        // Animate avatar while playing
+        for (const cam of cameras.values()) cam.speaking = true;
+        setTimeout(() => {
+          for (const cam of cameras.values()) cam.speaking = false;
+        }, duration * 1000);
+
+        console.log('[bots-in-calls] Playing speech-like test tone for', duration, 'seconds');
+        break;
+      }
     }
   });
 

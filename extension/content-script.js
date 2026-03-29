@@ -29,10 +29,17 @@ try {
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  console.log('[bots-in-calls] Content script received message:', message);
+  console.log('[bots-in-calls] Content script received:', message.action);
 
   if (message.target === 'page') {
-    window.postMessage({ __botsInCalls: true, ...message }, '*');
+    const outgoing = { __botsInCalls: true, __fromExtension: true, ...message };
+
+    // For speech test, resolve the extension URL (page script can't access chrome.runtime)
+    if (message.action === 'play-speech-test') {
+      outgoing.payload = { url: chrome.runtime.getURL('test-speech.mp3') };
+    }
+
+    window.postMessage(outgoing, '*');
     sendResponse({ ok: true });
     return;
   }
@@ -56,10 +63,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 });
 
-// Page → extension
+// Page → extension (only forward messages originating from the page, not our own)
 window.addEventListener('message', (event) => {
   if (event.source !== window) return;
   if (!event.data?.__botsInCalls) return;
+  if (event.data.__fromExtension) return; // don't echo back our own messages
   chrome.runtime.sendMessage(event.data).catch(() => {});
 });
 
@@ -174,29 +182,18 @@ async function autoJoin(botName) {
       }
     }
 
-    // 3. Find and fill the name input
-    console.log('[bots-in-calls] Looking for name input...');
-    let nameInput = null;
-    for (let i = 0; i < 10 && !nameInput; i++) {
-      nameInput =
-        document.querySelector('input[placeholder="Your name"]') ||
-        document.querySelector('input[aria-label="Your name"]') ||
-        document.querySelector('input[autocomplete="name"]');
-      if (!nameInput) {
-        console.log('[bots-in-calls] Name input not found yet, attempt', i + 1);
-        await delay(1000);
-      }
-    }
+    // 3. Fill the name input if present (Meet may skip it if name is remembered)
+    const nameInput =
+      document.querySelector('input[placeholder="Your name"]') ||
+      document.querySelector('input[aria-label="Your name"]') ||
+      document.querySelector('input[autocomplete="name"]');
 
     if (nameInput) {
-      console.log('[bots-in-calls] Found name input:', nameInput.id, nameInput.placeholder);
+      console.log('[bots-in-calls] Found name input, typing bot name');
       await typeIntoInput(nameInput, botName);
       await delay(1000);
     } else {
-      console.warn('[bots-in-calls] ✗ Could not find name input. All inputs on page:');
-      document.querySelectorAll('input').forEach((inp, i) => {
-        console.log(`  [${i}] type=${inp.type} placeholder="${inp.placeholder}" aria-label="${inp.ariaLabel}" id=${inp.id}`);
-      });
+      console.log('[bots-in-calls] No name input — Meet likely remembered the name');
     }
 
     // 4. Click the join button
@@ -248,15 +245,22 @@ async function watchForPreJoinScreen() {
     await new Promise((r) => document.addEventListener('DOMContentLoaded', r));
   }
 
-  // Poll for the name input (indicates we're on the pre-join screen)
+  // Poll for name input OR join button (Meet may skip the name if it remembers it)
   for (let i = 0; i < 30; i++) { // up to 30 seconds
     const nameInput =
       document.querySelector('input[placeholder="Your name"]') ||
       document.querySelector('input[aria-label="Your name"]') ||
       document.querySelector('input[autocomplete="name"]');
 
-    if (nameInput) {
-      console.log('[bots-in-calls] Pre-join screen detected, starting auto-join');
+    const joinBtn =
+      findByText('Ask to join') ||
+      findByText('Join now') ||
+      findByAriaLabel('Ask to join') ||
+      findByAriaLabel('Join');
+
+    if (nameInput || joinBtn) {
+      console.log('[bots-in-calls] Pre-join screen detected',
+        nameInput ? '(name input found)' : '(join button found, name remembered)');
       await autoJoin(BOT_NAME);
       return;
     }

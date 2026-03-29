@@ -7,8 +7,10 @@ let whiteboardTabId = null;
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Open the whiteboard tab
   if (message.action === 'open-whiteboard') {
-    // Use a real web URL — Meet may block chrome-extension:// scheme
-    const url = message.url || 'https://wanderingstan.com';
+    // IMPORTANT: chrome-extension:// URLs break Meet's screen sharing for the
+    // entire session. Whiteboard must be hosted on a real domain.
+    // TODO: Host on vibeconferencing.vercel.app/whiteboard
+    const url = message.url || 'https://vibeconferencing.vercel.app';
 
     // Reuse existing whiteboard tab if it's still open
     if (whiteboardTabId !== null) {

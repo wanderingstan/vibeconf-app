@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>AI Assistant — Whiteboard</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Google Sans', Roboto, Arial, sans-serif;
+      background: #ffffff;
+      color: #202124;
+      min-height: 100vh;
+    }
+    .header {
+      background: #1a73e8;
+      color: #ffffff;
+      padding: 16px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .header h1 {
+      font-size: 24px;
+      font-weight: 500;
+    }
+    .header .time {
+      font-size: 16px;
+      opacity: 0.85;
+    }
+    .content {
+      padding: 32px;
+      max-width: 1200px;
+      font-size: 20px;
+      line-height: 1.6;
+    }
+    .content h1 { font-size: 36px; color: #1a73e8; margin: 24px 0 16px; }
+    .content h2 { font-size: 28px; color: #1565c0; margin: 20px 0 12px; }
+    .content h3 { font-size: 22px; color: #1976d2; margin: 16px 0 8px; }
+    .content p { margin: 8px 0; }
+    .content ul, .content ol { margin: 8px 0 8px 32px; }
+    .content li { margin: 4px 0; }
+    .content code {
+      background: #f1f3f4;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.9em;
+    }
+    .content pre {
+      background: #f1f3f4;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+      margin: 12px 0;
+    }
+    .content blockquote {
+      border-left: 4px solid #1a73e8;
+      padding-left: 16px;
+      margin: 12px 0;
+      color: #5f6368;
+    }
+    .status {
+      position: fixed;
+      bottom: 16px;
+      right: 16px;
+      background: #1b3626;
+      color: #81c995;
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1 id="title">AI Assistant — Whiteboard</h1>
+    <span class="time" id="clock"></span>
+  </div>
+  <div class="content" id="content">
+    <h1>Meeting Notes</h1>
+    <h2>Agenda</h2>
+    <ul>
+      <li>Review project status</li>
+      <li>Discuss next milestones</li>
+      <li>Q&amp;A</li>
+    </ul>
+    <h2>Key Points</h2>
+    <p>This whiteboard is being shared by the AI Assistant.</p>
+    <p>Content can be updated in real-time during the meeting.</p>
+    <h2>Action Items</h2>
+    <ul>
+      <li>Item 1: TBD</li>
+      <li>Item 2: TBD</li>
+    </ul>
+  </div>
+  <div class="status" id="status">Whiteboard active</div>
+
+  <script>
+    // Update clock
+    function updateClock() {
+      document.getElementById('clock').textContent = new Date().toLocaleTimeString();
+    }
+    updateClock();
+    setInterval(updateClock, 1000);
+
+    // Listen for content updates from the extension
+    chrome.runtime?.onMessage?.addListener((message, sender, sendResponse) => {
+      if (message.action === 'update-whiteboard') {
+        if (message.html) {
+          document.getElementById('content').innerHTML = message.html;
+        }
+        if (message.title) {
+          document.getElementById('title').textContent = message.title;
+        }
+        sendResponse({ ok: true });
+      }
+    });
+
+    // Also listen via window.postMessage for direct updates
+    window.addEventListener('message', (event) => {
+      if (event.data?.type === 'whiteboard-update') {
+        if (event.data.html) {
+          document.getElementById('content').innerHTML = event.data.html;
+        }
+      }
+    });
+  </script>
+</body>
+</html>

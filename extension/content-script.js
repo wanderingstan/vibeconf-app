@@ -177,66 +177,20 @@ async function startPresenting() {
   console.log('[bots-in-calls] Starting presentation...');
 
   try {
-    // First update the whiteboard with some test content
-    window.postMessage({
-      __botsInCalls: true,
-      __fromExtension: true,
-      action: 'set-whiteboard',
-      payload: {
-        content: '# Meeting Notes\n\n## Agenda\n- Review project status\n- Discuss next milestones\n- Q&A\n\n## Key Points\nThis whiteboard is being shared by the AI Assistant.\nContent can be updated in real-time during the meeting.\n\n## Action Items\n- Item 1: TBD\n- Item 2: TBD',
-      },
-    }, '*');
+    // Step 1: Ask the background script to open the whiteboard tab
+    chrome.runtime.sendMessage({ action: 'open-whiteboard' });
+    console.log('[bots-in-calls] Requested whiteboard tab');
+    await delay(1000);
 
-    // Look for Meet's "Present now" button
-    // It's in the bottom bar, usually has a "Present now" tooltip or aria-label
-    await delay(500);
-
+    // Step 2: Click Meet's "Share screen" button
     const presentBtn =
       findByAriaLabel('Share screen') ||
-      findByAriaLabel('Present now') ||
-      findByText('Present now') ||
-      findByText('Share screen');
+      findByAriaLabel('Present now');
 
     if (presentBtn) {
       presentBtn.click();
-      console.log('[bots-in-calls] Clicked "Share screen" button');
-
-      // Meet shows a submenu/popover — poll for it
-      for (let i = 0; i < 10; i++) {
-        await delay(500);
-
-        // Log everything visible for debugging
-        const allInteractive = document.querySelectorAll(
-          'button, [role="button"], [role="menuitem"], [role="menuitemradio"], li[data-value], div[data-value]'
-        );
-        const visible = Array.from(allInteractive).filter(el => el.offsetParent !== null);
-
-        if (i === 0 || i === 2) {
-          console.log('[bots-in-calls] Visible elements (poll ' + i + '):');
-          visible.forEach((b, j) => {
-            console.log(`  [${j}] <${b.tagName.toLowerCase()}> "${b.textContent.trim().slice(0, 60)}" aria="${b.getAttribute('aria-label') || ''}" role="${b.getAttribute('role') || ''}" data-value="${b.getAttribute('data-value') || ''}"`);
-          });
-        }
-
-        // Try various text patterns Meet might use for screen share options
-        const option =
-          findByText('Your entire screen') ||
-          findByText('Entire screen') ||
-          findByText('A tab') ||
-          findByText('Tab') ||
-          findByText('A window') ||
-          findByText('Window') ||
-          findByAriaLabel('Your entire screen') ||
-          findByAriaLabel('A tab') ||
-          findByAriaLabel('A window');
-
-        if (option) {
-          console.log('[bots-in-calls] Found option:', option.textContent.trim());
-          option.click();
-          console.log('[bots-in-calls] Clicked screen share option');
-          break;
-        }
-      }
+      console.log('[bots-in-calls] Clicked "Share screen" — Chrome picker should appear');
+      console.log('[bots-in-calls] Please select the "AI Assistant — Whiteboard" tab from the picker');
     } else {
       console.warn('[bots-in-calls] Could not find "Present now" button');
       // Debug

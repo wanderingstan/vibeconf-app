@@ -505,23 +505,10 @@
   const _getDisplayMedia = MediaDevices.prototype.getDisplayMedia;
 
   MediaDevices.prototype.getDisplayMedia = async function (constraints) {
-    console.log('[bots-in-calls] *** getDisplayMedia CALLED ***', JSON.stringify(constraints));
-
-    if (!active) {
-      return _getDisplayMedia.call(navigator.mediaDevices, constraints);
-    }
-
-    const wb = getWhiteboard();
-    const stream = wb.getStream();
-    const track = stream.getVideoTracks()[0];
-
-    console.log('[bots-in-calls] Returning whiteboard stream:',
-      'tracks=' + stream.getTracks().length,
-      'videoTrack.readyState=' + track.readyState,
-      'videoTrack.enabled=' + track.enabled,
-      'settings=' + JSON.stringify(track.getSettings()));
-
-    return stream;
+    console.log('[bots-in-calls] *** getDisplayMedia CALLED ***');
+    // Pass through to real getDisplayMedia — user selects the whiteboard tab
+    // from Chrome's picker. Canvas override doesn't work (Meet rejects at WebRTC layer).
+    return _getDisplayMedia.call(navigator.mediaDevices, constraints);
   };
 
   // ---------------------------------------------------------------------------

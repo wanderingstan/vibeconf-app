@@ -15,7 +15,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["test-speech.mp3"],
+      "resources": ["test-speech.mp3", "whiteboard.html"],
       "matches": ["https://meet.google.com/*"]
     }
   ],

@@ -7,6 +7,9 @@
     "activeTab",
     "storage"
   ],
+  "host_permissions": [
+    "https://api.elevenlabs.io/*"
+  ],
   "action": {
     "default_popup": "popup.html"
   },

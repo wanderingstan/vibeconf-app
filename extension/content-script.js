@@ -352,8 +352,14 @@ class DOMSpeakerTracker {
     // Ensure the People pane is open so we can observe it
     this._ensurePeoplePaneOpen();
 
-    // Poll for participant elements (the pane may load asynchronously)
-    this.checkInterval = setInterval(() => this._scanParticipants(), 1000);
+    // Poll for participant elements; retry opening the pane if needed
+    this.checkInterval = setInterval(() => {
+      this._scanParticipants();
+      // If no participants found, pane may not be open
+      if (this.participants.size === 0) {
+        this._ensurePeoplePaneOpen();
+      }
+    }, 2000);
 
     // Also set up a MutationObserver on the entire document for class changes
     this._startObserving();
@@ -382,14 +388,31 @@ class DOMSpeakerTracker {
 
     // The People button is a div[role="button"] whose aria-labelledby points
     // to a hidden span containing "People". Find it by looking for that span.
-    const allButtons = document.querySelectorAll('div[role="button"][aria-labelledby]');
+    const allButtons = document.querySelectorAll('[role="button"][aria-labelledby]');
     for (const btn of allButtons) {
       const labelId = btn.getAttribute('aria-labelledby');
       if (labelId) {
         const label = document.getElementById(labelId);
         if (label && label.textContent.trim() === 'People') {
+          console.log('[bots-in-calls] Found People button, clicking...');
           btn.click();
           console.log('[bots-in-calls] Opened People pane for speaker tracking');
+          return;
+        }
+      }
+    }
+
+    // Fallback: look for the element by its hidden span directly
+    const allSpans = document.querySelectorAll('span[id]');
+    for (const span of allSpans) {
+      if (span.textContent.trim() === 'People' && span.style.display === 'none') {
+        // Find the closest clickable ancestor
+        const btn = span.closest('[role="button"]') ||
+          span.closest('[tabindex="0"]') ||
+          span.parentElement?.closest('[role="button"]');
+        if (btn) {
+          console.log('[bots-in-calls] Found People button via hidden span, clicking...');
+          btn.click();
           return;
         }
       }

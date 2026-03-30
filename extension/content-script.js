@@ -532,10 +532,10 @@ class DOMSpeakerTracker {
 
 const domSpeakerTracker = new DOMSpeakerTracker();
 
-// Start tracking once the bot is in the call (delay to let the call UI load)
+// Start tracking once the bot is in the call (short delay for call UI to load)
 setTimeout(() => {
   domSpeakerTracker.start();
-}, 10000);
+}, 3000);
 
 // Also handle explicit start request
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {

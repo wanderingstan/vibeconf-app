@@ -209,9 +209,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
 });
 
-// Open side panel when clicking the extension icon (instead of popup)
-chrome.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true })
-  .then(() => console.log('[bots-in-calls] Side panel enabled'))
-  .catch(() => console.debug('[bots-in-calls] Side panel not available, using popup'));
+// Side panel is available but toolbar click opens settings popup.
+// Users access the side panel via Chrome's side panel button.
 
 console.log('[bots-in-calls] Service worker started');

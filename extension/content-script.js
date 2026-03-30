@@ -592,10 +592,16 @@ const domSpeakerTracker = new DOMSpeakerTracker();
 setTimeout(() => {
   domSpeakerTracker.start();
 
-  // Note: Web Speech API is no longer used for STT. ElevenLabs STT
-  // processes audio from RTCPeerConnection tracks directly.
-  // The DOM speaker tracker provides attribution.
-  console.log('[bots-in-calls] Using ElevenLabs STT (per-participant RTC tracks)');
+  // Web Speech API is still needed as the primary STT source because
+  // RTCPeerConnection audio tracks show -200dB (no audio data).
+  // The RTC tracks may be encrypted/opaque at the JS level.
+  // Web Speech API listens to the system mic/speakers which works.
+  window.postMessage({
+    __botsInCalls: true,
+    __fromExtension: true,
+    action: 'start-listening',
+  }, '*');
+  console.log('[bots-in-calls] Auto-started Web Speech API for transcription');
 
   // Start syncing with vibeconferencing.com
   const meetCode = location.pathname.replace('/', ''); // e.g., "abc-defg-hij"

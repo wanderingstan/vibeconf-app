@@ -2,10 +2,11 @@
 // Routes messages between the popup and Meet tab content scripts.
 // Manages the whiteboard tab and TTS.
 
-importScripts('tts.js', 'sync-client.js');
+importScripts('tts.js', 'stt.js', 'sync-client.js');
 
 let whiteboardTabId = null;
 const tts = new TTSProvider();
+const stt = new STTProvider();
 const sync = new SyncClient({
   onBotSpeech: (text) => {
     // When the backend posts a transcript for the bot, speak it via TTS
@@ -43,7 +44,10 @@ function speakText(text) {
 
 // Load config from storage on startup
 chrome.storage.local.get(['ttsApiKey', 'ttsVoiceId', 'botName', 'syncBaseUrl'], (result) => {
-  if (result.ttsApiKey) tts.updateConfig({ apiKey: result.ttsApiKey });
+  if (result.ttsApiKey) {
+    tts.updateConfig({ apiKey: result.ttsApiKey });
+    stt.updateConfig({ apiKey: result.ttsApiKey }); // same key for STT
+  }
   if (result.ttsVoiceId) tts.updateConfig({ voiceId: result.ttsVoiceId });
   if (result.botName) sync.updateConfig({ botName: result.botName });
   if (result.syncBaseUrl) sync.updateConfig({ baseUrl: result.syncBaseUrl });
@@ -62,6 +66,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     speakText(text);
     sendResponse({ ok: true });
     return;
+  }
+
+  // --- STT: transcribe audio blob ---
+  if (message.action === 'transcribe') {
+    const { audioBase64 } = message;
+    if (!audioBase64) {
+      sendResponse({ error: 'No audio data' });
+      return;
+    }
+    // Decode base64 to blob
+    const binary = atob(audioBase64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const blob = new Blob([bytes], { type: 'audio/webm;codecs=opus' });
+
+    console.log('[bots-in-calls] STT request:', (blob.size / 1024).toFixed(1), 'KB');
+
+    stt.transcribe(blob)
+      .then((result) => {
+        console.log('[bots-in-calls] STT result:', result.text?.slice(0, 80));
+        sendResponse({ ok: true, ...result });
+      })
+      .catch((err) => {
+        console.error('[bots-in-calls] STT error:', err.message);
+        sendResponse({ error: err.message });
+      });
+    return true; // async
   }
 
   // --- Sync: post transcripts to vibeconferencing backend ---
@@ -102,8 +133,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // --- TTS config update ---
   if (message.action === 'update-tts-config') {
     tts.updateConfig(message.config);
-    // Persist to storage
     if (message.config.apiKey) {
+      stt.updateConfig({ apiKey: message.config.apiKey }); // share key with STT
       chrome.storage.local.set({ ttsApiKey: message.config.apiKey });
     }
     if (message.config.voiceId) {

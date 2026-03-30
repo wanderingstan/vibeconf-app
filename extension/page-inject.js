@@ -869,33 +869,36 @@
       const sizeMB = (blob.size / (1024 * 1024)).toFixed(2);
       console.debug(`[bots-in-calls] Audio captured from ${this.id}: ${sizeMB} MB`);
 
-      // Notify the extension about captured audio
-      window.postMessage({
-        __botsInCalls: true,
-        action: 'audio-captured',
-        payload: {
-          participantId: this.id,
-          size: blob.size,
-          duration: this.audioChunks.length * 0.5, // rough estimate (500ms chunks)
-        },
-      }, '*');
+      // Send to STT via content script → service worker
+      this._sendToSTT(blob);
+    }
 
-      // TODO: In production, send blob to STT service:
-      // - Whisper API: POST the blob as a file
-      // - Deepgram: WebSocket streaming
-      // - Google Cloud STT: gRPC streaming
-      //
-      // For now, the blob is ready to be sent. Example:
-      // const formData = new FormData();
-      // formData.append('file', blob, 'audio.webm');
-      // formData.append('model', 'whisper-1');
-      // fetch('https://api.openai.com/v1/audio/transcriptions', {
-      //   method: 'POST',
-      //   headers: { 'Authorization': 'Bearer YOUR_KEY' },
-      //   body: formData,
-      // }).then(r => r.json()).then(result => {
-      //   console.log('Transcript:', result.text);
-      // });
+    async _sendToSTT(blob) {
+      try {
+        // Convert blob to base64 for message passing
+        const reader = new FileReader();
+        const base64 = await new Promise((resolve, reject) => {
+          reader.onload = () => {
+            const dataUrl = reader.result;
+            resolve(dataUrl.split(',')[1]); // strip "data:audio/webm;base64,"
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+
+        // Post to content script which forwards to service worker
+        window.postMessage({
+          __botsInCalls: true,
+          action: 'transcribe-audio',
+          payload: {
+            audioBase64: base64,
+            participantId: this.id,
+            size: blob.size,
+          },
+        }, '*');
+      } catch (err) {
+        console.error('[bots-in-calls] Failed to encode audio for STT:', err);
+      }
     }
 
     getLevel() {

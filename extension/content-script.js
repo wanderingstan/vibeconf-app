@@ -592,13 +592,10 @@ const domSpeakerTracker = new DOMSpeakerTracker();
 setTimeout(() => {
   domSpeakerTracker.start();
 
-  // Auto-start speech recognition
-  window.postMessage({
-    __botsInCalls: true,
-    __fromExtension: true,
-    action: 'start-listening',
-  }, '*');
-  console.log('[bots-in-calls] Auto-started speech recognition');
+  // Note: Web Speech API is no longer used for STT. ElevenLabs STT
+  // processes audio from RTCPeerConnection tracks directly.
+  // The DOM speaker tracker provides attribution.
+  console.log('[bots-in-calls] Using ElevenLabs STT (per-participant RTC tracks)');
 
   // Start syncing with vibeconferencing.com
   const meetCode = location.pathname.replace('/', ''); // e.g., "abc-defg-hij"
@@ -621,17 +618,51 @@ setTimeout(() => {
   }
 }, 3000);
 
-// Forward transcripts to the backend when they arrive
+// Forward transcripts and STT requests to the backend
 window.addEventListener('message', (event) => {
   if (event.source !== window) return;
   if (!event.data?.__botsInCalls) return;
-  if (event.data.action !== 'transcript') return;
 
-  const t = event.data.payload;
-  if (t && t.text && t.speaker) {
+  // Forward transcripts to sync
+  if (event.data.action === 'transcript') {
+    const t = event.data.payload;
+    if (t && t.text && t.speaker) {
+      chrome.runtime.sendMessage({
+        action: 'post-transcripts',
+        transcripts: [t],
+      });
+    }
+  }
+
+  // Forward audio for STT
+  if (event.data.action === 'transcribe-audio') {
+    const { audioBase64, participantId } = event.data.payload;
     chrome.runtime.sendMessage({
-      action: 'post-transcripts',
-      transcripts: [t],
+      action: 'transcribe',
+      audioBase64,
+    }, (resp) => {
+      if (resp?.ok && resp.text?.trim()) {
+        // Get the current DOM speaker for attribution
+        const speakingNames = domSpeakerTracker.getSpeakingNames();
+        const speaker = speakingNames[0] || participantId;
+
+        console.log(`[bots-in-calls] STT [${speaker}]: ${resp.text.slice(0, 60)}`);
+
+        // Emit as a transcript
+        window.postMessage({
+          __botsInCalls: true,
+          action: 'transcript',
+          payload: {
+            timestamp: Date.now(),
+            text: resp.text.trim(),
+            speaker,
+            confidence: 1.0,
+            source: 'elevenlabs-stt',
+          },
+        }, '*');
+      } else if (resp?.error) {
+        console.debug('[bots-in-calls] STT error:', resp.error);
+      }
     });
   }
 });

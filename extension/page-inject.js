@@ -294,9 +294,14 @@
     return cameras.get(key);
   }
 
-  const _getUserMedia = MediaDevices.prototype.getUserMedia;
+  // Use the original getUserMedia saved by early-patch.js (if available),
+  // otherwise save our own reference. The early patch runs before any page
+  // scripts, so its saved reference is the true original.
+  const _getUserMedia = window.__botsInCallsOriginalGUM || MediaDevices.prototype.getUserMedia;
 
-  MediaDevices.prototype.getUserMedia = async function (constraints) {
+  // Our full getUserMedia handler
+  async function handleGetUserMedia(constraints) {
+    const self = navigator.mediaDevices;
     if (!active) {
       return _getUserMedia.call(navigator.mediaDevices, constraints);
     }
@@ -324,7 +329,24 @@
     }
 
     return _getUserMedia.call(navigator.mediaDevices, constraints);
-  };
+  }
+
+  // Register our handler with the early patch (so queued requests get resolved)
+  window.__botsInCallsGetUserMedia = handleGetUserMedia;
+
+  // Also set it directly on the prototype (for non-early-patch scenarios)
+  MediaDevices.prototype.getUserMedia = handleGetUserMedia;
+
+  // Resolve any getUserMedia calls that were queued before we loaded
+  if (window.__botsInCallsPendingGUM && window.__botsInCallsPendingGUM.length > 0) {
+    console.log('[bots-in-calls] Resolving', window.__botsInCallsPendingGUM.length, 'queued getUserMedia call(s)');
+    for (const pending of window.__botsInCallsPendingGUM) {
+      handleGetUserMedia.apply(pending.context, pending.args)
+        .then(pending.resolve)
+        .catch(pending.reject);
+    }
+    window.__botsInCallsPendingGUM = [];
+  }
 
   // ---------------------------------------------------------------------------
   // Permissions API override — Make Meet think mic/camera permissions are granted
@@ -514,14 +536,15 @@
   // getDisplayMedia override — returns whiteboard stream instead of showing picker
   // ---------------------------------------------------------------------------
 
-  const _getDisplayMedia = MediaDevices.prototype.getDisplayMedia;
+  const _getDisplayMedia = window.__botsInCallsOriginalGDM || MediaDevices.prototype.getDisplayMedia;
 
-  MediaDevices.prototype.getDisplayMedia = async function (constraints) {
+  function handleGetDisplayMedia(constraints) {
     console.log('[bots-in-calls] *** getDisplayMedia CALLED ***');
-    // Pass through to real getDisplayMedia — user selects the whiteboard tab
-    // from Chrome's picker. Canvas override doesn't work (Meet rejects at WebRTC layer).
     return _getDisplayMedia.call(navigator.mediaDevices, constraints);
-  };
+  }
+
+  window.__botsInCallsGetDisplayMedia = handleGetDisplayMedia;
+  MediaDevices.prototype.getDisplayMedia = handleGetDisplayMedia;
 
   // ---------------------------------------------------------------------------
   // Message bridge — receives commands from the content script

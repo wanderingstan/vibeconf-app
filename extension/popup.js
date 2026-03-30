@@ -31,6 +31,7 @@ async function checkStatus() {
     statusEl.className = 'status active';
     presentBtn.disabled = false;
     listenBtn.disabled = false;
+    speakTextBtn.disabled = false;
     speechBtn.disabled = false;
     toneBtn.disabled = false;
     speakBtn.disabled = false;
@@ -42,6 +43,7 @@ async function checkStatus() {
     statusEl.className = 'status';
     presentBtn.disabled = true;
     listenBtn.disabled = true;
+    speakTextBtn.disabled = true;
     speechBtn.disabled = true;
     toneBtn.disabled = true;
     speakBtn.disabled = true;
@@ -58,6 +60,53 @@ function pushBotName() {
     payload: { botName: name },
   });
 }
+
+// --- TTS controls ---
+const ttsApiKeyInput = document.getElementById('ttsApiKey');
+const ttsVoiceIdInput = document.getElementById('ttsVoiceId');
+const speakTextInput = document.getElementById('speakText');
+const speakTextBtn = document.getElementById('speakTextBtn');
+
+// Load saved TTS config
+chrome.storage.local.get(['ttsApiKey', 'ttsVoiceId'], (result) => {
+  if (result.ttsApiKey) ttsApiKeyInput.value = result.ttsApiKey;
+  if (result.ttsVoiceId) ttsVoiceIdInput.value = result.ttsVoiceId;
+});
+
+ttsApiKeyInput.addEventListener('change', () => {
+  chrome.runtime.sendMessage({
+    action: 'update-tts-config',
+    config: { apiKey: ttsApiKeyInput.value.trim() },
+  });
+});
+
+ttsVoiceIdInput.addEventListener('change', () => {
+  chrome.runtime.sendMessage({
+    action: 'update-tts-config',
+    config: { voiceId: ttsVoiceIdInput.value.trim() },
+  });
+});
+
+speakTextBtn.addEventListener('click', () => {
+  const text = speakTextInput.value.trim();
+  if (!text) return;
+  speakTextBtn.textContent = 'Speaking…';
+  speakTextBtn.disabled = true;
+  chrome.runtime.sendMessage({ action: 'speak', text }, (resp) => {
+    speakTextBtn.textContent = 'Speak';
+    speakTextBtn.disabled = false;
+    if (resp?.error) {
+      console.error('[popup] TTS error:', resp.error);
+      speakTextBtn.textContent = 'Error — check key';
+      setTimeout(() => { speakTextBtn.textContent = 'Speak'; }, 3000);
+    }
+  });
+});
+
+// Also allow Enter key to trigger speak
+speakTextInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') speakTextBtn.click();
+});
 
 presentBtn.addEventListener('click', () => {
   sendToContent({ action: 'start-presenting' });

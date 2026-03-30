@@ -17,6 +17,23 @@
     <button id="presentBtn" disabled>Start Presenting Whiteboard</button>
 
     <div class="section">
+      <h2>Text-to-Speech</h2>
+      <div class="field">
+        <label for="ttsApiKey">ElevenLabs API Key</label>
+        <input type="password" id="ttsApiKey" placeholder="xi-..." />
+      </div>
+      <div class="field">
+        <label for="ttsVoiceId">Voice ID</label>
+        <input type="text" id="ttsVoiceId" placeholder="pNInz6obpgDQGcFmaJgB" />
+      </div>
+      <div class="field">
+        <label for="speakText">Say something</label>
+        <input type="text" id="speakText" placeholder="Hello everyone!" />
+      </div>
+      <button id="speakTextBtn" disabled>Speak</button>
+    </div>
+
+    <div class="section">
       <h2>Transcript</h2>
       <div id="audioStatus" class="audio-status">No participants detected</div>
       <div id="audioParticipants"></div>

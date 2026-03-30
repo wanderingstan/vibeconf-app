@@ -7,7 +7,7 @@
     "activeTab",
     "tabs",
     "storage",
-    "sidePanel",
+    "sidePanel"
   ],
   "host_permissions": [
     "https://meet.google.com/*",

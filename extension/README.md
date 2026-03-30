@@ -16,11 +16,19 @@ The approach was inspired by [GIF-Cam](../), a 2020 Chrome extension that create
 
 ## Setup
 
-1. Open `chrome://extensions` in a **guest Chrome profile** (not signed into Google — see Known Issues)
+Works in both **guest** and **signed-in** Chrome profiles.
+
+1. Open `chrome://extensions` in your chosen Chrome profile
 2. Enable **Developer mode** (top-right toggle)
 3. Click **Load unpacked** → select this `extension/` directory
-4. Open a Google Meet link in the same profile
-5. The bot auto-joins as a guest. Use the extension popup for controls.
+4. **First time only (signed-in profiles):** Before the extension can provide a virtual camera, Chrome needs to have granted camera/mic permission to `meet.google.com`. If the profile has never used Meet before:
+   - Temporarily disable the extension
+   - Open a Google Meet link — Chrome will prompt for camera/mic permission
+   - Grant the permission, then leave the call
+   - Re-enable the extension
+   - This only needs to be done once per profile
+5. Open a Google Meet link — the bot auto-joins
+6. Click the extension icon to open the side panel for controls
 
 ## Extension Files
 
@@ -55,8 +63,8 @@ We tried returning a `canvas.captureStream()` from the `getDisplayMedia` overrid
 ### `chrome-extension://` URLs for screen sharing
 Sharing a tab with a `chrome-extension://` URL **poisons Meet's screen sharing for the entire session**. Not just that attempt — ALL subsequent share attempts fail until the page is reloaded. The whiteboard must be hosted on a real HTTPS domain.
 
-### Signed-in Google account profiles
-When the Chrome profile is signed into a Google Account, the virtual camera and microphone **do not work**. Meet bypasses our `getUserMedia` override — likely because it caches a reference to the original `getUserMedia` during its own early initialization (before `document_start` scripts run), or it uses a different media acquisition path for authenticated users. The override IS patched (verified by calling `getUserMedia` manually in console), but Meet doesn't call it.
+### Signed-in Google account profiles — first-time setup
+In a fresh signed-in profile, Chrome has never granted camera/mic permission to `meet.google.com`. Our extension intercepts `getUserMedia` before Chrome can show the permission prompt, so the prompt never appears and Chrome blocks video. **Fix:** disable the extension, visit Meet once to grant the permission, re-enable. This is a one-time step per profile.
 
 ### Pure tone audio
 Meet's noise suppression filters out pure sine waves. The virtual mic needs speech-like audio (e.g., from ElevenLabs TTS) to get through. Sawtooth waves with formant filters also get suppressed.

@@ -67,7 +67,26 @@ Meet has a heuristic that detects dark/low-variance video frames and shows "Came
 ## Architecture Decisions
 
 ### Why Chrome Extension (not Electron)?
-Both approaches ultimately involve Chrome/Chromium. The extension is faster to iterate on, cross-platform by default, and easier to side-load with Puppeteer for server-side bots. An Electron wrapper can be added later for an "app" feel and to access `desktopCapturer.getSources()` (bypasses Chrome's tab picker dialog entirely).
+Both approaches ultimately involve Chrome/Chromium. The extension is faster to iterate on, cross-platform by default, and easier to side-load with Puppeteer for server-side bots. An Electron wrapper can be added later for an "app" feel.
+
+### The case for Electron (future)
+An Electron app would unlock capabilities the Chrome extension can't access:
+
+**Screen sharing:**
+- `desktopCapturer.getSources()` bypasses Chrome's tab picker dialog entirely — fully automated screen share with no user interaction
+
+**Local STT (no API needed):**
+- Bundle **Whisper.cpp** (C++ native, runs locally on CPU/GPU) for offline speech-to-text
+- Or **Vosk** (lightweight, supports real-time streaming)
+- Access macOS native `NSSpeechRecognizer` via Node native modules
+- Cleaner audio capture via `desktopCapturer` instead of our RTCPeerConnection hook
+
+**Local TTS (no API needed):**
+- macOS `NSSpeechSynthesizer` (same engine as the `say` command, but programmatic and instant)
+- Or bundle **Piper** (fast local TTS, runs on CPU)
+- Zero-latency local fallback, with ElevenLabs/OpenAI as premium voice upgrades
+
+**The key insight:** An Electron app with local STT + TTS could run a fully functional bot with **zero API dependencies** — everything on the user's machine. Cloud APIs (Claude for LLM, ElevenLabs for premium voice) become optional upgrades rather than requirements. This also eliminates latency for basic interactions and works offline.
 
 ### Why `world: "MAIN"` (not script injection)?
 Manifest V3 supports `"world": "MAIN"` for content scripts, which runs them directly in the page's JavaScript context. This is cleaner than the MV2 approach of injecting a `<script>` tag (which the original GIF-Cam used). It ensures the `getUserMedia` patch is in place before Meet's code runs.

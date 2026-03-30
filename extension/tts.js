@@ -13,6 +13,8 @@ class TTSProvider {
     this.apiKey = config.apiKey || '';
     this.voiceId = config.voiceId || 'CwhRBWXzGAHq8TQ4Fs17'; // "Roger" (premade, free tier)
     this.modelId = config.modelId || 'eleven_v2_flash'; // fast model
+    this._queue = [];
+    this._active = false;
   }
 
   updateConfig(config) {
@@ -25,6 +27,28 @@ class TTSProvider {
   async synthesize(text) {
     if (!text?.trim()) return null;
 
+    // Serialize TTS requests to avoid concurrent API limit
+    return new Promise((resolve, reject) => {
+      this._queue.push({ text, resolve, reject });
+      this._processQueue();
+    });
+  }
+
+  _processQueue() {
+    if (this._active || this._queue.length === 0) return;
+    this._active = true;
+    const { text, resolve, reject } = this._queue.shift();
+
+    this._doSynthesize(text)
+      .then(resolve)
+      .catch(reject)
+      .finally(() => {
+        this._active = false;
+        this._processQueue();
+      });
+  }
+
+  async _doSynthesize(text) {
     switch (this.provider) {
       case 'elevenlabs':
         return this._elevenlabs(text);

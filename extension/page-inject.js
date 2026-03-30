@@ -765,10 +765,11 @@
   // ---------------------------------------------------------------------------
 
   class ParticipantAudio {
-    constructor(id, track, stream) {
+    constructor(id, track, stream, enableSTT = true) {
       this.id = id;
       this.track = track;
       this.stream = stream;
+      this.enableSTT = enableSTT;
       this.speaking = false;
       this.lastSpeakingTime = 0;
       this.audioCtx = new AudioContext();
@@ -827,7 +828,7 @@
     }
 
     _startRecording() {
-      if (this.isRecording) return;
+      if (this.isRecording || !this.enableSTT) return;
 
       try {
         this.audioChunks = [];
@@ -951,11 +952,15 @@
               `${participantId} via ${connId}`,
               `(readyState=${track.readyState}, label=${track.label})`);
 
-            // Create a ParticipantAudio for this track
+            // Only create ParticipantAudio for the first audio track.
+            // In 2-person calls, all tracks carry the same mixed audio.
+            // Transcribing multiple tracks wastes STT API calls.
+            const enableSTT = self.participants.size === 0;
             const pa = new ParticipantAudio(
               participantId,
               track,
-              streams[0] || new MediaStream([track])
+              streams[0] || new MediaStream([track]),
+              enableSTT
             );
             self.participants.set(participantId, pa);
 

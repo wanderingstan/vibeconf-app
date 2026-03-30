@@ -12,6 +12,9 @@ class STTProvider {
     this.provider = config.provider || 'elevenlabs';
     this.apiKey = config.apiKey || '';
     this.modelId = config.modelId || 'scribe_v2';
+    this._queue = [];
+    this._activeRequests = 0;
+    this._maxConcurrent = 2; // stay well under ElevenLabs' 4-request limit
   }
 
   updateConfig(config) {
@@ -23,6 +26,29 @@ class STTProvider {
   async transcribe(audioBlob) {
     if (!audioBlob || audioBlob.size === 0) return null;
 
+    // Queue to avoid overwhelming the API
+    return new Promise((resolve, reject) => {
+      this._queue.push({ audioBlob, resolve, reject });
+      this._processQueue();
+    });
+  }
+
+  _processQueue() {
+    while (this._queue.length > 0 && this._activeRequests < this._maxConcurrent) {
+      const { audioBlob, resolve, reject } = this._queue.shift();
+      this._activeRequests++;
+
+      this._doTranscribe(audioBlob)
+        .then(resolve)
+        .catch(reject)
+        .finally(() => {
+          this._activeRequests--;
+          this._processQueue();
+        });
+    }
+  }
+
+  async _doTranscribe(audioBlob) {
     switch (this.provider) {
       case 'elevenlabs':
         return this._elevenlabs(audioBlob);

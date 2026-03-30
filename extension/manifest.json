@@ -33,7 +33,7 @@
   "content_scripts": [
     {
       "matches": ["https://meet.google.com/*"],
-      "js": ["early-patch.js"],
+      "js": ["content-script.js"],
       "run_at": "document_start"
     },
     {
@@ -41,11 +41,6 @@
       "js": ["page-inject.js"],
       "run_at": "document_start",
       "world": "MAIN"
-    },
-    {
-      "matches": ["https://meet.google.com/*"],
-      "js": ["content-script.js"],
-      "run_at": "document_start"
     }
   ]
 }

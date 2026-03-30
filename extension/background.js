@@ -2,15 +2,48 @@
 // Routes messages between the popup and Meet tab content scripts.
 // Manages the whiteboard tab and TTS.
 
-importScripts('tts.js');
+importScripts('tts.js', 'sync-client.js');
 
 let whiteboardTabId = null;
 const tts = new TTSProvider();
+const sync = new SyncClient({
+  onBotSpeech: (text) => {
+    // When the backend posts a transcript for the bot, speak it via TTS
+    console.log('[bots-in-calls] Bot speech from backend:', text.slice(0, 60));
+    speakText(text);
+  },
+});
 
-// Load TTS config from storage on startup
-chrome.storage.local.get(['ttsApiKey', 'ttsVoiceId'], (result) => {
+// Helper: synthesize and play text through the Meet tab
+function speakText(text) {
+  tts.synthesize(text)
+    .then((audioBuffer) => {
+      const bytes = new Uint8Array(audioBuffer);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      const base64Audio = btoa(binary);
+
+      chrome.tabs.query({ url: 'https://meet.google.com/*' }, (tabs) => {
+        if (tabs.length > 0) {
+          chrome.tabs.sendMessage(tabs[0].id, {
+            target: 'page',
+            action: 'play-tts',
+            payload: { audioData: base64Audio },
+          });
+        }
+      });
+    })
+    .catch((err) => {
+      console.error('[bots-in-calls] TTS error:', err.message);
+    });
+}
+
+// Load config from storage on startup
+chrome.storage.local.get(['ttsApiKey', 'ttsVoiceId', 'botName', 'syncBaseUrl'], (result) => {
   if (result.ttsApiKey) tts.updateConfig({ apiKey: result.ttsApiKey });
   if (result.ttsVoiceId) tts.updateConfig({ voiceId: result.ttsVoiceId });
+  if (result.botName) sync.updateConfig({ botName: result.botName });
+  if (result.syncBaseUrl) sync.updateConfig({ baseUrl: result.syncBaseUrl });
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -22,40 +55,45 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ error: 'No text provided' });
       return;
     }
-
     console.log('[bots-in-calls] TTS request:', text.slice(0, 80));
+    speakText(text);
+    sendResponse({ ok: true });
+    return;
+  }
 
-    tts.synthesize(text)
-      .then((audioBuffer) => {
-        console.log('[bots-in-calls] TTS audio received:', audioBuffer.byteLength, 'bytes');
-        // Convert ArrayBuffer to base64 for Chrome message passing
-        // (ArrayBuffer doesn't survive serialization through chrome.tabs.sendMessage)
-        const bytes = new Uint8Array(audioBuffer);
-        let binary = '';
-        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-        const base64Audio = btoa(binary);
-        console.log('[bots-in-calls] Encoded to base64:', base64Audio.length, 'chars');
+  // --- Sync: post transcripts to vibeconferencing backend ---
+  if (message.action === 'post-transcripts') {
+    sync.postTranscripts(message.transcripts || []);
+    sendResponse({ ok: true });
+    return;
+  }
 
-        // Forward to the Meet tab's page-inject.js for playback
-        chrome.tabs.query({ url: 'https://meet.google.com/*' }, (tabs) => {
-          if (tabs.length > 0) {
-            chrome.tabs.sendMessage(tabs[0].id, {
-              target: 'page',
-              action: 'play-tts',
-              payload: { audioData: base64Audio },
-            }, (response) => {
-              sendResponse({ ok: true, bytes: audioBuffer.byteLength });
-            });
-          } else {
-            sendResponse({ error: 'No Meet tab found' });
-          }
-        });
-      })
-      .catch((err) => {
-        console.error('[bots-in-calls] TTS error:', err.message);
-        sendResponse({ error: err.message });
-      });
+  // --- Sync: start syncing with a Meet room ---
+  if (message.action === 'start-sync') {
+    const meetCode = message.meetCode;
+    if (!meetCode) {
+      sendResponse({ error: 'No Meet code provided' });
+      return;
+    }
+    sync.updateConfig({ roomId: meetCode });
+    if (message.botName) sync.updateConfig({ botName: message.botName });
+
+    sync.ensureRoom().then((ok) => {
+      if (ok) {
+        sync.startPolling();
+        sendResponse({ ok: true, roomId: meetCode });
+      } else {
+        sendResponse({ error: 'Failed to create/find room. User may need to log in.' });
+      }
+    });
     return true; // async response
+  }
+
+  // --- Sync: stop syncing ---
+  if (message.action === 'stop-sync') {
+    sync.stopPolling();
+    sendResponse({ ok: true });
+    return;
   }
 
   // --- TTS config update ---

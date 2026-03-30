@@ -587,9 +587,10 @@ class DOMSpeakerTracker {
 
 const domSpeakerTracker = new DOMSpeakerTracker();
 
-// Start tracking and listening once the bot is in the call
+// Start tracking, listening, and syncing once the bot is in the call
 setTimeout(() => {
   domSpeakerTracker.start();
+
   // Auto-start speech recognition
   window.postMessage({
     __botsInCalls: true,
@@ -597,7 +598,38 @@ setTimeout(() => {
     action: 'start-listening',
   }, '*');
   console.log('[bots-in-calls] Auto-started speech recognition');
+
+  // Start syncing with vibeconferencing.com
+  const meetCode = location.pathname.replace('/', ''); // e.g., "abc-defg-hij"
+  if (meetCode) {
+    chrome.runtime.sendMessage({
+      action: 'start-sync',
+      meetCode,
+      botName: BOT_NAME,
+    }, (resp) => {
+      if (resp?.ok) {
+        console.log('[bots-in-calls] Sync started for room:', meetCode);
+      } else {
+        console.warn('[bots-in-calls] Sync failed:', resp?.error);
+      }
+    });
+  }
 }, 3000);
+
+// Forward transcripts to the backend when they arrive
+window.addEventListener('message', (event) => {
+  if (event.source !== window) return;
+  if (!event.data?.__botsInCalls) return;
+  if (event.data.action !== 'transcript') return;
+
+  const t = event.data.payload;
+  if (t && t.text && t.speaker) {
+    chrome.runtime.sendMessage({
+      action: 'post-transcripts',
+      transcripts: [t],
+    });
+  }
+});
 
 // Also handle explicit start request
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {

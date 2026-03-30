@@ -8,8 +8,6 @@
     "tabs",
     "storage",
     "sidePanel",
-    "scripting",
-    "webNavigation"
   ],
   "host_permissions": [
     "https://meet.google.com/*",

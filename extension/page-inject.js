@@ -294,14 +294,9 @@
     return cameras.get(key);
   }
 
-  // Use the original getUserMedia saved by early-patch.js (if available),
-  // otherwise save our own reference. The early patch runs before any page
-  // scripts, so its saved reference is the true original.
-  const _getUserMedia = window.__botsInCallsOriginalGUM || MediaDevices.prototype.getUserMedia;
+  const _getUserMedia = MediaDevices.prototype.getUserMedia;
 
-  // Our full getUserMedia handler
-  async function handleGetUserMedia(constraints) {
-    const self = navigator.mediaDevices;
+  MediaDevices.prototype.getUserMedia = async function (constraints) {
     if (!active) {
       return _getUserMedia.call(navigator.mediaDevices, constraints);
     }
@@ -329,24 +324,7 @@
     }
 
     return _getUserMedia.call(navigator.mediaDevices, constraints);
-  }
-
-  // Register our handler with the early patch (so queued requests get resolved)
-  window.__botsInCallsGetUserMedia = handleGetUserMedia;
-
-  // Also set it directly on the prototype (for non-early-patch scenarios)
-  MediaDevices.prototype.getUserMedia = handleGetUserMedia;
-
-  // Resolve any getUserMedia calls that were queued before we loaded
-  if (window.__botsInCallsPendingGUM && window.__botsInCallsPendingGUM.length > 0) {
-    console.log('[bots-in-calls] Resolving', window.__botsInCallsPendingGUM.length, 'queued getUserMedia call(s)');
-    for (const pending of window.__botsInCallsPendingGUM) {
-      handleGetUserMedia.apply(pending.context, pending.args)
-        .then(pending.resolve)
-        .catch(pending.reject);
-    }
-    window.__botsInCallsPendingGUM = [];
-  }
+  };
 
   // ---------------------------------------------------------------------------
   // Permissions API override — Make Meet think mic/camera permissions are granted
@@ -536,15 +514,12 @@
   // getDisplayMedia override — returns whiteboard stream instead of showing picker
   // ---------------------------------------------------------------------------
 
-  const _getDisplayMedia = window.__botsInCallsOriginalGDM || MediaDevices.prototype.getDisplayMedia;
+  const _getDisplayMedia = MediaDevices.prototype.getDisplayMedia;
 
-  function handleGetDisplayMedia(constraints) {
+  MediaDevices.prototype.getDisplayMedia = async function (constraints) {
     console.log('[bots-in-calls] *** getDisplayMedia CALLED ***');
     return _getDisplayMedia.call(navigator.mediaDevices, constraints);
-  }
-
-  window.__botsInCallsGetDisplayMedia = handleGetDisplayMedia;
-  MediaDevices.prototype.getDisplayMedia = handleGetDisplayMedia;
+  };
 
   // ---------------------------------------------------------------------------
   // Message bridge — receives commands from the content script
@@ -1288,11 +1263,4 @@
   window.postMessage({ __botsInCalls: true, action: 'ready' }, '*');
   console.log('[bots-in-calls] Page script loaded — getUserMedia patched, RTCPeerConnection hooked');
 
-  // Trigger devicechange event — if Meet already enumerated devices before our
-  // patches were in place (signed-in profile), this makes it re-check and
-  // discover our virtual camera/mic.
-  setTimeout(() => {
-    navigator.mediaDevices.dispatchEvent(new Event('devicechange'));
-    console.log('[bots-in-calls] Fired devicechange event to trigger re-enumeration');
-  }, 500);
 })();

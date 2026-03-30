@@ -1175,9 +1175,7 @@
           if (result.isFinal && text) {
             const now = Date.now();
 
-            const speaker = this.botSpeaking
-              ? config.botName
-              : this._attributeSpeaker(currentSegmentStart, now);
+            const speaker = this._attributeSpeaker(currentSegmentStart, now);
 
             const transcript = {
               timestamp: now,

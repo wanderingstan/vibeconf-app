@@ -427,12 +427,14 @@ class DOMSpeakerTracker {
     const items = document.querySelectorAll('div[role="listitem"][aria-label]');
 
     for (const item of items) {
-      const name = item.getAttribute('aria-label');
+      let name = item.getAttribute('aria-label');
       if (!name) continue;
 
-      // Skip "You" (the bot itself)
+      // Tag the bot's own entry with its name (the "(You)" suffix helps identify it)
       const youTag = item.querySelector('.NnTWjc');
-      if (youTag && youTag.textContent.includes('You')) continue;
+      if (youTag && youTag.textContent.includes('You')) {
+        name = name + ' (bot)';
+      }
 
       // Find the speaking indicator: div[jsname="QgSmzd"] with the animated bars
       const indicator = item.querySelector('[jsname="QgSmzd"]');

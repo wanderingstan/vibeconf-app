@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "permissions": [
     "activeTab",
+    "tabs",
     "storage",
     "sidePanel"
   ],

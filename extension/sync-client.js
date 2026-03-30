@@ -13,6 +13,7 @@ class SyncClient {
     this.botName = config.botName || 'AI Assistant';
     this.roomId = config.roomId || null;
     this.lastPollTime = null; // ISO timestamp for incremental polling
+    this.isFirstPoll = true; // skip speaking on first poll (catches up history)
     this.pollInterval = null;
     this.pollIntervalMs = config.pollIntervalMs || 3000;
     this.isPolling = false;
@@ -143,6 +144,14 @@ class SyncClient {
 
       const data = await resp.json();
       this.lastPollTime = data.asOf;
+
+      // First poll: just capture the timestamp, don't speak old entries
+      if (this.isFirstPoll) {
+        this.isFirstPoll = false;
+        const count = (data.transcript?.entries || []).length;
+        console.log('[sync] First poll: skipping', count, 'existing entries, synced to', data.asOf);
+        return;
+      }
 
       const allEntries = data.transcript?.entries || [];
       if (allEntries.length > 0) {

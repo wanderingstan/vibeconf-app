@@ -28,13 +28,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     tts.synthesize(text)
       .then((audioBuffer) => {
         console.log('[bots-in-calls] TTS audio received:', audioBuffer.byteLength, 'bytes');
-        // Forward audio to the Meet tab's page-inject.js for playback
+        // Convert ArrayBuffer to base64 for Chrome message passing
+        // (ArrayBuffer doesn't survive serialization through chrome.tabs.sendMessage)
+        const bytes = new Uint8Array(audioBuffer);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+        const base64Audio = btoa(binary);
+        console.log('[bots-in-calls] Encoded to base64:', base64Audio.length, 'chars');
+
+        // Forward to the Meet tab's page-inject.js for playback
         chrome.tabs.query({ url: 'https://meet.google.com/*' }, (tabs) => {
           if (tabs.length > 0) {
             chrome.tabs.sendMessage(tabs[0].id, {
               target: 'page',
               action: 'play-tts',
-              payload: { audioData: audioBuffer },
+              payload: { audioData: base64Audio },
             }, (response) => {
               sendResponse({ ok: true, bytes: audioBuffer.byteLength });
             });

@@ -231,6 +231,18 @@
     // Play a TTS response (or any audio) through the virtual mic.
     // Returns a promise that resolves when playback ends.
     async playAudio(arrayBuffer) {
+      // Data may arrive as base64 string after Chrome message passing
+      // (ArrayBuffer can't survive chrome.tabs.sendMessage serialization).
+      if (typeof arrayBuffer === 'string') {
+        const binary = atob(arrayBuffer);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        arrayBuffer = bytes.buffer;
+      } else if (!(arrayBuffer instanceof ArrayBuffer)) {
+        // Fallback: reconstruct from serialized object
+        const bytes = new Uint8Array(Object.values(arrayBuffer));
+        arrayBuffer = bytes.buffer;
+      }
       const buf = await this.audioCtx.decodeAudioData(arrayBuffer.slice(0));
       const src = this.audioCtx.createBufferSource();
       src.buffer = buf;

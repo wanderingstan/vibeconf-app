@@ -7,24 +7,11 @@
 <body>
   <div class="container">
     <h1>Vibeconferencing Agent</h1>
-    <div class="status" id="status">Looking for Meet tab…</div>
     <div class="error-bar" id="errorBar" style="display:none"></div>
+    <div class="status" id="status" style="display:none">Open a Google Meet link to get started</div>
 
-    <div class="section">
-      <h2>Agent Connection</h2>
-      <div id="syncStatus" class="audio-status">Not connected</div>
-      <div class="field">
-        <label>Room ID (Meet code)</label>
-        <input type="text" id="meetCode" readonly />
-      </div>
-      <div class="field">
-        <label>API Endpoint</label>
-        <input type="text" id="apiEndpoint" readonly />
-      </div>
-      <a id="roomLink" href="#" target="_blank" class="room-link">Open room on vibeconferencing.com</a>
-      <button id="copyPromptBtn" disabled>Copy Agent Prompt</button>
-    </div>
-
+    <a id="roomLink" href="#" target="_blank" class="room-link" style="display:none">Open room on vibeconferencing.com</a>
+    <button id="copyPromptBtn" disabled>Copy Agent Prompt</button>
     <button id="presentBtn" disabled>Start Presenting Whiteboard</button>
 
     <div class="section">
@@ -35,6 +22,15 @@
     <div class="section">
       <details>
         <summary class="debug-toggle">Troubleshooting</summary>
+        <div id="syncStatus" class="audio-status">Not connected</div>
+        <div class="field">
+          <label>Room ID (Meet code)</label>
+          <input type="text" id="meetCode" readonly />
+        </div>
+        <div class="field">
+          <label>API Endpoint</label>
+          <input type="text" id="apiEndpoint" readonly />
+        </div>
         <div id="audioStatus" class="audio-status">No participants detected</div>
         <div id="audioParticipants"></div>
       </details>

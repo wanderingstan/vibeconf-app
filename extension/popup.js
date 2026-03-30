@@ -17,14 +17,15 @@ async function checkStatus() {
   try {
     const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
     if (tabs.length > 0) {
-      statusEl.textContent = 'Meet tab detected';
-      statusEl.className = 'status active';
+      statusEl.style.display = 'none';
       presentBtn.disabled = false;
+      copyPromptBtn.disabled = false;
       updateAgentInfo();
     } else {
-      statusEl.textContent = 'No Meet tab found — open a Google Meet link first';
-      statusEl.className = 'status';
+      statusEl.style.display = 'block';
       presentBtn.disabled = true;
+      copyPromptBtn.disabled = true;
+      document.getElementById('roomLink').style.display = 'none';
     }
   } catch (err) {
     console.error('[panel] checkStatus error:', err);
@@ -46,8 +47,9 @@ async function updateAgentInfo() {
       meetCodeInput.value = meetCode;
       const baseUrl = 'https://vibeconferencing.com';
       apiEndpointInput.value = `${baseUrl}/api/sync/${meetCode}`;
-      document.getElementById('roomLink').href = `${baseUrl}/room/${meetCode}`;
-      copyPromptBtn.disabled = false;
+      const roomLink = document.getElementById('roomLink');
+      roomLink.href = `${baseUrl}/room/${meetCode}`;
+      roomLink.style.display = 'block';
       syncStatusEl.textContent = 'Syncing: ' + meetCode;
       syncStatusEl.className = 'audio-status active';
     }

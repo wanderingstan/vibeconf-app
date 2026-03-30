@@ -357,12 +357,17 @@ class DOMSpeakerTracker {
 
     // Also set up a MutationObserver on the entire document for class changes
     this._startObserving();
+
+    // Periodically post who is currently speaking (not just transitions)
+    // so the speakingLog in the transcription system gets continuous entries
+    this.speakingPollInterval = setInterval(() => this._pollSpeakingState(), 200);
   }
 
   stop() {
     this.isTracking = false;
     if (this.observer) this.observer.disconnect();
     if (this.checkInterval) clearInterval(this.checkInterval);
+    if (this.speakingPollInterval) clearInterval(this.speakingPollInterval);
     console.log('[bots-in-calls] DOM speaker tracker stopped');
   }
 
@@ -375,18 +380,22 @@ class DOMSpeakerTracker {
       return;
     }
 
-    // Look for the People button — it may have a count badge like "People2"
-    const peopleBtn =
-      findByAriaLabel('People') ||
-      findByAriaLabel('Show everyone') ||
-      findByText('People');
-
-    if (peopleBtn) {
-      peopleBtn.click();
-      console.log('[bots-in-calls] Opened People pane for speaker tracking');
-    } else {
-      console.log('[bots-in-calls] People button not found — will retry');
+    // The People button is a div[role="button"] whose aria-labelledby points
+    // to a hidden span containing "People". Find it by looking for that span.
+    const allButtons = document.querySelectorAll('div[role="button"][aria-labelledby]');
+    for (const btn of allButtons) {
+      const labelId = btn.getAttribute('aria-labelledby');
+      if (labelId) {
+        const label = document.getElementById(labelId);
+        if (label && label.textContent.trim() === 'People') {
+          btn.click();
+          console.log('[bots-in-calls] Opened People pane for speaker tracking');
+          return;
+        }
+      }
     }
+
+    console.log('[bots-in-calls] People button not found — will retry');
   }
 
   _scanParticipants() {
@@ -509,6 +518,35 @@ class DOMSpeakerTracker {
     }
 
     return false;
+  }
+
+  // Periodically check and broadcast who is speaking right now
+  _pollSpeakingState() {
+    for (const [name, info] of this.participants) {
+      if (!info.element) continue;
+      const isSpeaking = this._isSpeakingIndicatorActive(info.element, name);
+
+      // Update state
+      if (isSpeaking !== info.speaking) {
+        info.speaking = isSpeaking;
+        info.lastChange = Date.now();
+        console.log(`[bots-in-calls] DOM: ${name} ${isSpeaking ? 'started' : 'stopped'} speaking`);
+      }
+
+      // Always post if speaking (so the speakingLog gets continuous entries)
+      if (info.speaking) {
+        window.postMessage({
+          __botsInCalls: true,
+          __fromExtension: true,
+          action: 'dom-speaker-change',
+          payload: {
+            name,
+            speaking: true,
+            timestamp: Date.now(),
+          },
+        }, '*');
+      }
+    }
   }
 
   // Get current speaking state for all participants

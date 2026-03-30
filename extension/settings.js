@@ -1,6 +1,5 @@
-// settings.js — Settings popup controller
+// settings.js — Settings page (loads inside the side panel)
 
-const statusEl = document.getElementById('status');
 const botNameInput = document.getElementById('botName');
 const ttsApiKeyInput = document.getElementById('ttsApiKey');
 const ttsVoiceIdInput = document.getElementById('ttsVoiceId');
@@ -21,24 +20,13 @@ chrome.storage.local.get(['botName', 'ttsApiKey', 'ttsVoiceId'], (result) => {
   if (result.ttsVoiceId) ttsVoiceIdInput.value = result.ttsVoiceId;
 });
 
-// --- Check for Meet tab ---
+// Enable test buttons if Meet tab exists
 async function checkStatus() {
   try {
     const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
-    if (tabs.length > 0) {
-      statusEl.textContent = 'Meet tab detected';
-      statusEl.className = 'status active';
-      speakTextBtn.disabled = false;
-      speechBtn.disabled = false;
-    } else {
-      statusEl.textContent = 'No Meet tab — test buttons require an active call';
-      statusEl.className = 'status';
-      speakTextBtn.disabled = true;
-      speechBtn.disabled = true;
-    }
-  } catch (err) {
-    console.error('[settings] checkStatus error:', err);
-  }
+    speakTextBtn.disabled = tabs.length === 0;
+    speechBtn.disabled = tabs.length === 0;
+  } catch (e) {}
 }
 
 // --- Save handlers ---

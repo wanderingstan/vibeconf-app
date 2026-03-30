@@ -6,10 +6,10 @@ const transcriptArea = document.getElementById('transcriptArea');
 const audioStatusEl = document.getElementById('audioStatus');
 const audioParticipantsEl = document.getElementById('audioParticipants');
 
-// Open settings in a new tab
+// Navigate to settings within the side panel
 document.getElementById('settingsLink').addEventListener('click', (e) => {
   e.preventDefault();
-  chrome.tabs.create({ url: chrome.runtime.getURL('settings.html') });
+  window.location.href = 'settings.html';
 });
 
 function sendToContent(message) {

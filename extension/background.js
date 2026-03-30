@@ -15,7 +15,7 @@ const sync = new SyncClient({
 });
 
 // Log sync client config for debugging
-console.log('[bots-in-calls] SyncClient created, botName:', sync.botName);
+console.debug('[bots-in-calls] SyncClient created, botName:', sync.botName);
 
 // Helper: synthesize and play text through the Meet tab
 function speakText(text) {
@@ -83,7 +83,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     sync.ensureRoom().then((ok) => {
       if (!ok) {
-        console.log('[bots-in-calls] Room creation failed, polling anyway (room may already exist)');
+        console.debug('[bots-in-calls] Room creation failed, polling anyway (room may already exist)');
       }
       // Always start polling — room might already exist even if create failed
       sync.startPolling();
@@ -109,7 +109,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.config.voiceId) {
       chrome.storage.local.set({ ttsVoiceId: message.config.voiceId });
     }
-    console.log('[bots-in-calls] TTS config updated');
+    console.debug('[bots-in-calls] TTS config updated');
     sendResponse({ ok: true });
     return;
   }
@@ -174,6 +174,6 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 // Open side panel when clicking the extension icon (instead of popup)
 chrome.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true })
   .then(() => console.log('[bots-in-calls] Side panel enabled'))
-  .catch(() => console.log('[bots-in-calls] Side panel not available, using popup'));
+  .catch(() => console.debug('[bots-in-calls] Side panel not available, using popup'));
 
 console.log('[bots-in-calls] Service worker started');

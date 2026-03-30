@@ -19,7 +19,7 @@ let BOT_NAME = 'AI Assistant';
 try {
   chrome.storage?.local?.get('botName', (result) => {
     if (result?.botName) BOT_NAME = result.botName;
-    console.log('[bots-in-calls] Bot name:', BOT_NAME);
+    console.debug('[bots-in-calls] Bot name:', BOT_NAME);
   });
 } catch (e) {
   // storage not available, use default
@@ -30,7 +30,7 @@ try {
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  console.log('[bots-in-calls] Content script received:', message.action);
+  console.debug('[bots-in-calls] Content script received:', message.action);
 
   if (message.target === 'page') {
     const outgoing = { __botsInCalls: true, __fromExtension: true, ...message };
@@ -121,7 +121,7 @@ function findByAriaLabel(label) {
 
 // Simulate typing — multiple strategies for Google's JSAction framework
 async function typeIntoInput(input, value) {
-  console.log('[bots-in-calls] Attempting to type into input:', input.placeholder || input.ariaLabel);
+  console.debug('[bots-in-calls] Attempting to type into input:', input.placeholder || input.ariaLabel);
 
   input.focus();
   input.click();
@@ -131,10 +131,10 @@ async function typeIntoInput(input, value) {
   input.select();
   const ok = document.execCommand('insertText', false, value);
   if (ok && input.value === value) {
-    console.log('[bots-in-calls] Typed via execCommand ✓');
+    console.debug('[bots-in-calls] Typed via execCommand');
     return true;
   }
-  console.log('[bots-in-calls] execCommand result:', ok, 'value:', input.value);
+  console.debug('[bots-in-calls] execCommand result:', ok, 'value:', input.value);
 
   // Strategy 2: Native setter + synthetic InputEvent
   const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
@@ -162,7 +162,7 @@ async function typeIntoInput(input, value) {
   input.dispatchEvent(new Event('blur', { bubbles: true }));
   input.focus();
 
-  console.log('[bots-in-calls] Typed via key simulation:', input.value);
+  console.debug('[bots-in-calls] Typed via key simulation:', input.value);
   return input.value === value;
 }
 
@@ -175,12 +175,12 @@ async function typeIntoInput(input, value) {
 // ---------------------------------------------------------------------------
 
 async function startPresenting() {
-  console.log('[bots-in-calls] Starting presentation...');
+  console.debug('[bots-in-calls] Starting presentation...');
 
   try {
     // Step 1: Ask the background script to open the whiteboard tab
     chrome.runtime.sendMessage({ action: 'open-whiteboard' });
-    console.log('[bots-in-calls] Requested whiteboard tab');
+    console.debug('[bots-in-calls] Requested whiteboard tab');
     await delay(1000);
 
     // Step 2: Click Meet's "Share screen" button
@@ -190,16 +190,16 @@ async function startPresenting() {
 
     if (presentBtn) {
       presentBtn.click();
-      console.log('[bots-in-calls] Clicked "Share screen" — Chrome picker should appear');
-      console.log('[bots-in-calls] Please select the "AI Assistant — Whiteboard" tab from the picker');
+      console.debug('[bots-in-calls] Clicked "Share screen" — Chrome picker should appear');
+      console.debug('[bots-in-calls] Please select the "AI Assistant — Whiteboard" tab from the picker');
     } else {
       console.warn('[bots-in-calls] Could not find "Present now" button');
       // Debug
       const allBtns = document.querySelectorAll('button, [role="button"]');
-      console.log('[bots-in-calls] All buttons:');
+      console.debug('[bots-in-calls] All buttons:');
       allBtns.forEach((b, i) => {
         if (b.offsetParent !== null) {
-          console.log(`  [${i}] "${b.textContent.trim().slice(0, 50)}" aria="${b.getAttribute('aria-label') || ''}"  tag=${b.tagName}`);
+          console.debug(`  [${i}] "${b.textContent.trim().slice(0, 50)}" aria="${b.getAttribute('aria-label') || ''}"  tag=${b.tagName}`);
         }
       });
     }
@@ -214,11 +214,11 @@ async function startPresenting() {
 
 async function autoJoin(botName) {
   console.log('[bots-in-calls] ===== AUTO-JOIN STARTING =====');
-  console.log('[bots-in-calls] Bot name:', botName);
+  console.debug('[bots-in-calls] Bot name:', botName);
 
   try {
     // 1. Wait for Meet's pre-join UI to render
-    console.log('[bots-in-calls] Waiting for pre-join UI...');
+    console.debug('[bots-in-calls] Waiting for pre-join UI...');
     await delay(3000);
 
     // 2. Dismiss any dialogs first
@@ -226,7 +226,7 @@ async function autoJoin(botName) {
       const btn = findByText(label);
       if (btn) {
         btn.click();
-        console.log('[bots-in-calls] Dismissed:', label);
+        console.debug('[bots-in-calls] Dismissed:', label);
         await delay(300);
       }
     }
@@ -238,15 +238,15 @@ async function autoJoin(botName) {
       document.querySelector('input[autocomplete="name"]');
 
     if (nameInput) {
-      console.log('[bots-in-calls] Found name input, typing bot name');
+      console.debug('[bots-in-calls] Found name input, typing bot name');
       await typeIntoInput(nameInput, botName);
       await delay(1000);
     } else {
-      console.log('[bots-in-calls] No name input — Meet likely remembered the name');
+      console.debug('[bots-in-calls] No name input — Meet likely remembered the name');
     }
 
     // 4. Click the join button
-    console.log('[bots-in-calls] Looking for join button...');
+    console.debug('[bots-in-calls] Looking for join button...');
     let joined = false;
     for (let attempt = 0; attempt < 5 && !joined; attempt++) {
       await delay(1000);
@@ -267,9 +267,9 @@ async function autoJoin(botName) {
       // Debug: log visible buttons on attempt 2
       if (attempt === 1) {
         const allBtns = document.querySelectorAll('button, [role="button"]');
-        console.log('[bots-in-calls] Visible buttons (' + allBtns.length + '):');
+        console.debug('[bots-in-calls] Visible buttons (' + allBtns.length + '):');
         allBtns.forEach((b, i) => {
-          console.log(`  [${i}] "${b.textContent.trim().slice(0, 50)}" aria="${b.getAttribute('aria-label') || ''}" disabled=${b.disabled}`);
+          console.debug(`  [${i}] "${b.textContent.trim().slice(0, 50)}" aria="${b.getAttribute('aria-label') || ''}" disabled=${b.disabled}`);
         });
       }
     }
@@ -287,7 +287,7 @@ async function autoJoin(botName) {
 // ---------------------------------------------------------------------------
 
 async function watchForPreJoinScreen() {
-  console.log('[bots-in-calls] Watching for pre-join screen...');
+  console.debug('[bots-in-calls] Watching for pre-join screen...');
 
   // Wait for DOM to be ready
   if (document.readyState === 'loading') {
@@ -316,7 +316,7 @@ async function watchForPreJoinScreen() {
     await delay(1000);
   }
 
-  console.log('[bots-in-calls] No pre-join screen detected (might already be signed in)');
+  console.debug('[bots-in-calls] No pre-join screen detected (might already be signed in)');
 }
 
 // Kick off the auto-join watcher
@@ -348,7 +348,7 @@ class DOMSpeakerTracker {
   start() {
     if (this.isTracking) return;
     this.isTracking = true;
-    console.log('[bots-in-calls] DOM speaker tracker starting...');
+    console.debug('[bots-in-calls] DOM speaker tracker starting...');
 
     // Ensure the People pane is open so we can observe it
     this._ensurePeoplePaneOpen();
@@ -375,7 +375,7 @@ class DOMSpeakerTracker {
     if (this.observer) this.observer.disconnect();
     if (this.checkInterval) clearInterval(this.checkInterval);
     if (this.speakingPollInterval) clearInterval(this.speakingPollInterval);
-    console.log('[bots-in-calls] DOM speaker tracker stopped');
+    console.debug('[bots-in-calls] DOM speaker tracker stopped');
   }
 
   _ensurePeoplePaneOpen() {
@@ -383,7 +383,7 @@ class DOMSpeakerTracker {
     const participantList = document.querySelector('[jsname="jrQDbd"]') ||
       document.querySelector('[role="list"][aria-label="Participants"]');
     if (participantList) {
-      console.log('[bots-in-calls] People pane already open');
+      console.debug('[bots-in-calls] People pane already open');
       return;
     }
 
@@ -395,9 +395,9 @@ class DOMSpeakerTracker {
       if (labelId) {
         const label = document.getElementById(labelId);
         if (label && label.textContent.trim() === 'People') {
-          console.log('[bots-in-calls] Found People button, clicking...');
+          console.debug('[bots-in-calls] Found People button, clicking...');
           btn.click();
-          console.log('[bots-in-calls] Opened People pane for speaker tracking');
+          console.log('[bots-in-calls] People pane opened for speaker tracking');
           return;
         }
       }
@@ -412,14 +412,14 @@ class DOMSpeakerTracker {
           span.closest('[tabindex="0"]') ||
           span.parentElement?.closest('[role="button"]');
         if (btn) {
-          console.log('[bots-in-calls] Found People button via hidden span, clicking...');
+          console.debug('[bots-in-calls] Found People button via hidden span, clicking...');
           btn.click();
           return;
         }
       }
     }
 
-    console.log('[bots-in-calls] People button not found — will retry');
+    console.debug('[bots-in-calls] People button not found — will retry');
   }
 
   _scanParticipants() {

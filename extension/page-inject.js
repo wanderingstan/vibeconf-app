@@ -61,7 +61,7 @@
             clearInterval(this._intervalId);
             this._intervalId = null;
           }
-          console.log('[bots-in-calls] Upgraded to AudioContext render loop');
+          console.debug('[bots-in-calls] Upgraded to AudioContext render loop');
 
           const tick = () => {
             if (this.stopped) return;
@@ -301,7 +301,7 @@
       return _getUserMedia.call(navigator.mediaDevices, constraints);
     }
 
-    console.log('[bots-in-calls] getUserMedia intercepted:', JSON.stringify(constraints));
+    console.debug('[bots-in-calls] getUserMedia intercepted:', JSON.stringify(constraints));
 
     const tracks = [];
 
@@ -318,7 +318,7 @@
 
     if (tracks.length > 0) {
       const stream = new MediaStream(tracks);
-      console.log('[bots-in-calls] Returning virtual stream:', tracks.length, 'track(s)',
+      console.debug('[bots-in-calls] Returning virtual stream:', tracks.length, 'track(s)',
         constraints?.video ? `(${parseVideoDimensions(constraints.video).width}x${parseVideoDimensions(constraints.video).height})` : '');
       return stream;
     }
@@ -334,7 +334,7 @@
 
   Permissions.prototype.query = async function (descriptor) {
     if (active && (descriptor.name === 'microphone' || descriptor.name === 'camera')) {
-      console.log('[bots-in-calls] permissions.query intercepted:', descriptor.name, '→ granted');
+      console.debug('[bots-in-calls] permissions.query intercepted:', descriptor.name, '→ granted');
       // Return a PermissionStatus-like object with EventTarget methods
       // so Meet's code doesn't throw when calling addEventListener
       const status = new EventTarget();
@@ -378,7 +378,7 @@
     }
 
     if (extras.length > 0) {
-      console.log('[bots-in-calls] enumerateDevices: added', extras.length, 'virtual device(s)');
+      console.debug('[bots-in-calls] enumerateDevices: added', extras.length, 'virtual device(s)');
     }
     return [...devices, ...extras];
   };
@@ -505,7 +505,7 @@
   function getWhiteboard() {
     if (!whiteboard) {
       whiteboard = new Whiteboard();
-      console.log('[bots-in-calls] Whiteboard created');
+      console.debug('[bots-in-calls] Whiteboard created');
     }
     return whiteboard;
   }
@@ -517,7 +517,7 @@
   const _getDisplayMedia = MediaDevices.prototype.getDisplayMedia;
 
   MediaDevices.prototype.getDisplayMedia = async function (constraints) {
-    console.log('[bots-in-calls] *** getDisplayMedia CALLED ***');
+    console.debug('[bots-in-calls] *** getDisplayMedia CALLED ***');
     return _getDisplayMedia.call(navigator.mediaDevices, constraints);
   };
 
@@ -551,7 +551,7 @@
       case 'set-whiteboard':
         if (payload?.content != null) {
           getWhiteboard().setContent(payload.content);
-          console.log('[bots-in-calls] Whiteboard content updated');
+          console.debug('[bots-in-calls] Whiteboard content updated');
         }
         if (payload?.title != null) {
           getWhiteboard().setTitle(payload.title);
@@ -578,7 +578,7 @@
 
         // Ensure AudioContext is running
         if (ctx.state !== 'running') {
-          console.log('[bots-in-calls] AudioContext state:', ctx.state, '— resuming');
+          console.debug('[bots-in-calls] AudioContext state:', ctx.state, '— resuming');
           ctx.resume();
         }
 
@@ -597,10 +597,10 @@
               return;
             }
             const arrayBuf = await resp.arrayBuffer();
-            console.log('[bots-in-calls] Fetched', arrayBuf.byteLength, 'bytes, decoding...');
+            console.debug('[bots-in-calls] Fetched', arrayBuf.byteLength, 'bytes, decoding...');
 
             const audioBuf = await ctx.decodeAudioData(arrayBuf.slice(0));
-            console.log('[bots-in-calls] Decoded: duration=' + audioBuf.duration.toFixed(2) + 's',
+            console.debug('[bots-in-calls] Decoded: duration=' + audioBuf.duration.toFixed(2) + 's',
               'channels=' + audioBuf.numberOfChannels,
               'sampleRate=' + audioBuf.sampleRate);
 
@@ -747,7 +747,7 @@
           for (const cam of cameras.values()) cam.speaking = false;
         }, duration * 1000);
 
-        console.log('[bots-in-calls] Playing speech-like test tone for', duration, 'seconds');
+        console.debug('[bots-in-calls] Playing speech-like test tone for', duration, 'seconds');
         break;
       }
     }
@@ -789,7 +789,7 @@
       // Start level monitoring
       this._monitorLevel();
 
-      console.log('[bots-in-calls] ParticipantAudio created:', id);
+      console.debug('[bots-in-calls] ParticipantAudio created:', id);
     }
 
     _monitorLevel() {
@@ -815,10 +815,10 @@
       }
 
       if (this.speaking && !wasSpeaking) {
-        console.log(`[bots-in-calls] Participant ${this.id} started speaking (${db.toFixed(1)} dB)`);
+        console.debug(`[bots-in-calls] Participant ${this.id} started speaking (${db.toFixed(1)} dB)`);
         this._startRecording();
       } else if (!this.speaking && wasSpeaking && (Date.now() - this.lastSpeakingTime > 1500)) {
-        console.log(`[bots-in-calls] Participant ${this.id} stopped speaking`);
+        console.debug(`[bots-in-calls] Participant ${this.id} stopped speaking`);
         this._stopRecording();
       }
 
@@ -867,7 +867,7 @@
 
     _processAudioBlob(blob) {
       const sizeMB = (blob.size / (1024 * 1024)).toFixed(2);
-      console.log(`[bots-in-calls] Audio captured from ${this.id}: ${sizeMB} MB`);
+      console.debug(`[bots-in-calls] Audio captured from ${this.id}: ${sizeMB} MB`);
 
       // Notify the extension about captured audio
       window.postMessage({
@@ -936,7 +936,7 @@
         self.connectionCount++;
         const connId = `conn-${self.connectionCount}`;
 
-        console.log(`[bots-in-calls] RTCPeerConnection created: ${connId}`);
+        console.debug(`[bots-in-calls] RTCPeerConnection created: ${connId}`);
 
         // Intercept remote tracks (audio from other participants)
         pc.addEventListener('track', (event) => {
@@ -944,7 +944,7 @@
 
           if (track.kind === 'audio') {
             const participantId = `participant-${self.participants.size + 1}`;
-            console.log(`[bots-in-calls] Remote audio track received:`,
+            console.debug(`[bots-in-calls] Remote audio track received:`,
               `${participantId} via ${connId}`,
               `(readyState=${track.readyState}, label=${track.label})`);
 
@@ -958,20 +958,20 @@
 
             // Clean up when track ends
             track.addEventListener('ended', () => {
-              console.log(`[bots-in-calls] Audio track ended for ${participantId}`);
+              console.debug(`[bots-in-calls] Audio track ended for ${participantId}`);
               pa.destroy();
               self.participants.delete(participantId);
             });
           }
 
           if (track.kind === 'video') {
-            console.log(`[bots-in-calls] Remote video track received via ${connId}`);
+            console.debug(`[bots-in-calls] Remote video track received via ${connId}`);
           }
         });
 
         // Log connection state changes
         pc.addEventListener('connectionstatechange', () => {
-          console.log(`[bots-in-calls] ${connId} state: ${pc.connectionState}`);
+          console.debug(`[bots-in-calls] ${connId} state: ${pc.connectionState}`);
         });
 
         return pc;
@@ -995,7 +995,7 @@
         window.webkitRTCPeerConnection = window.RTCPeerConnection;
       }
 
-      console.log('[bots-in-calls] RTCPeerConnection hooked for audio capture');
+      console.debug('[bots-in-calls] RTCPeerConnection hooked for audio capture');
     }
 
     _startStatusReporting() {
@@ -1011,7 +1011,7 @@
         }
 
         if (status.length > 0) {
-          console.log('[bots-in-calls] Audio levels:', status.join(' | '));
+          console.debug('[bots-in-calls] Audio levels:', status.join(' | '));
         }
 
         // Report to extension
@@ -1118,7 +1118,7 @@
             name, // real name like "Stan James"
             source: 'dom',
           });
-          console.log(`[bots-in-calls] DOM speaker event: ${name} speaking`);
+          console.debug(`[bots-in-calls] DOM speaker event: ${name} speaking`);
         }
       });
     }
@@ -1219,7 +1219,7 @@
       this.recognition.onend = () => {
         // Auto-restart if we're still supposed to be listening
         if (this.isListening) {
-          console.log('[bots-in-calls] Speech recognition restarting...');
+          console.debug('[bots-in-calls] Speech recognition restarting...');
           setTimeout(() => {
             try { this.recognition.start(); } catch (e) { /* already started */ }
           }, 500);
@@ -1240,7 +1240,7 @@
       if (this.recognition) {
         this.recognition.stop();
       }
-      console.log('[bots-in-calls] Speech recognition stopped');
+      console.debug('[bots-in-calls] Speech recognition stopped');
     }
 
     getTranscripts() {
@@ -1261,6 +1261,6 @@
 
   // Signal readiness back through the bridge
   window.postMessage({ __botsInCalls: true, action: 'ready' }, '*');
-  console.log('[bots-in-calls] Page script loaded — getUserMedia patched, RTCPeerConnection hooked');
+  console.debug('[bots-in-calls] Page script loaded — getUserMedia patched, RTCPeerConnection hooked');
 
 })();

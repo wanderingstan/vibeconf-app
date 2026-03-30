@@ -587,9 +587,16 @@ class DOMSpeakerTracker {
 
 const domSpeakerTracker = new DOMSpeakerTracker();
 
-// Start tracking once the bot is in the call (short delay for call UI to load)
+// Start tracking and listening once the bot is in the call
 setTimeout(() => {
   domSpeakerTracker.start();
+  // Auto-start speech recognition
+  window.postMessage({
+    __botsInCalls: true,
+    __fromExtension: true,
+    action: 'start-listening',
+  }, '*');
+  console.log('[bots-in-calls] Auto-started speech recognition');
 }, 3000);
 
 // Also handle explicit start request

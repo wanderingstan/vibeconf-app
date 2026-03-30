@@ -2,13 +2,17 @@
 
 const statusEl = document.getElementById('status');
 const botNameInput = document.getElementById('botName');
-const joinBtn = document.getElementById('joinBtn');
 const presentBtn = document.getElementById('presentBtn');
 const speechBtn = document.getElementById('speechBtn');
 const toneBtn = document.getElementById('toneBtn');
 const speakBtn = document.getElementById('speakBtn');
+const listenBtn = document.getElementById('listenBtn');
+const transcriptArea = document.getElementById('transcriptArea');
+const audioStatusEl = document.getElementById('audioStatus');
+const audioParticipantsEl = document.getElementById('audioParticipants');
 
 let isSpeaking = false;
+let isListening = true; // auto-start
 
 // Send a message to the content script (and optionally through to the page)
 function sendToContent(message) {
@@ -25,16 +29,17 @@ async function checkStatus() {
   if (tabs.length > 0) {
     statusEl.textContent = 'Meet tab detected';
     statusEl.className = 'status active';
-    joinBtn.disabled = false;
     presentBtn.disabled = false;
     listenBtn.disabled = false;
     speechBtn.disabled = false;
     toneBtn.disabled = false;
     speakBtn.disabled = false;
+
+    // Auto-start listening
+    sendToContent({ target: 'page', action: 'start-listening' });
   } else {
     statusEl.textContent = 'No Meet tab found — open a Google Meet link first';
     statusEl.className = 'status';
-    joinBtn.disabled = true;
     presentBtn.disabled = true;
     listenBtn.disabled = true;
     speechBtn.disabled = true;
@@ -46,7 +51,6 @@ async function checkStatus() {
 // Push the current bot name to the page-inject script and persist it
 function pushBotName() {
   const name = botNameInput.value.trim() || 'AI Assistant';
-  // Save to storage so content scripts on new tabs pick it up
   chrome.storage.local.set({ botName: name });
   sendToContent({
     target: 'page',
@@ -55,18 +59,6 @@ function pushBotName() {
   });
 }
 
-joinBtn.addEventListener('click', async () => {
-  const name = botNameInput.value.trim() || 'AI Assistant';
-
-  pushBotName();
-
-  // Trigger the content-script auto-join sequence
-  await sendToContent({ action: 'join-meet', botName: name });
-
-  joinBtn.textContent = 'Joining…';
-  setTimeout(() => { joinBtn.textContent = 'Join Meeting'; }, 3000);
-});
-
 presentBtn.addEventListener('click', () => {
   sendToContent({ action: 'start-presenting' });
   presentBtn.textContent = 'Presenting…';
@@ -74,10 +66,7 @@ presentBtn.addEventListener('click', () => {
 });
 
 speechBtn.addEventListener('click', () => {
-  sendToContent({
-    target: 'page',
-    action: 'play-speech-test',
-  });
+  sendToContent({ target: 'page', action: 'play-speech-test' });
   speechBtn.textContent = 'Speaking…';
   setTimeout(() => { speechBtn.textContent = 'Play Speech Test'; }, 5000);
 });
@@ -94,21 +83,9 @@ toneBtn.addEventListener('click', () => {
 
 speakBtn.addEventListener('click', () => {
   isSpeaking = !isSpeaking;
-  sendToContent({
-    target: 'page',
-    action: 'set-speaking',
-    payload: isSpeaking,
-  });
+  sendToContent({ target: 'page', action: 'set-speaking', payload: isSpeaking });
   speakBtn.textContent = isSpeaking ? 'Stop Speaking Animation' : 'Toggle Speaking Animation';
 });
-
-botNameInput.addEventListener('change', pushBotName);
-
-// --- Listen (STT) button ---
-
-const listenBtn = document.getElementById('listenBtn');
-const transcriptArea = document.getElementById('transcriptArea');
-let isListening = false;
 
 listenBtn.addEventListener('click', () => {
   isListening = !isListening;
@@ -119,12 +96,10 @@ listenBtn.addEventListener('click', () => {
   listenBtn.textContent = isListening ? 'Stop Listening' : 'Start Listening (STT)';
 });
 
-// --- Audio capture status ---
+botNameInput.addEventListener('change', pushBotName);
 
-const audioStatusEl = document.getElementById('audioStatus');
-const audioParticipantsEl = document.getElementById('audioParticipants');
+// --- Audio capture status & transcripts ---
 
-// Listen for audio status updates and transcripts relayed from the page
 chrome.runtime.onMessage.addListener((message) => {
   if (message.action === 'audio-status' || message.action === 'audio-status-response') {
     updateAudioDisplay(message.payload);
@@ -144,8 +119,6 @@ function addTranscriptEntry(t) {
     <span class="transcript-text">${t.text}</span>
   `;
   transcriptArea.prepend(div);
-
-  // Keep max 50 entries
   while (transcriptArea.children.length > 50) {
     transcriptArea.removeChild(transcriptArea.lastChild);
   }
@@ -162,7 +135,7 @@ function updateAudioDisplay(payload) {
     `${payload.participants.length} participant(s) | ${payload.connectionCount || '?'} connection(s)`;
 
   audioParticipantsEl.innerHTML = payload.participants.map((p) => {
-    const levelPct = Math.min(100, Math.max(0, (p.db + 60) * 2)); // -60dB → 0%, -10dB → 100%
+    const levelPct = Math.min(100, Math.max(0, (p.db + 60) * 2));
     return `
       <div class="participant-row">
         <span class="participant-id">${p.id}</span>

@@ -119,6 +119,10 @@ button:disabled {
   margin-bottom: 8px;
 }
 
+.audio-status.active {
+  color: #81c995;
+}
+
 .participant-row {
   display: flex;
   align-items: center;

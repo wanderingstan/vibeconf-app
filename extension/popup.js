@@ -38,6 +38,7 @@ async function checkStatus() {
 
     // Auto-start listening
     sendToContent({ target: 'page', action: 'start-listening' });
+    updateAgentInfo();
   } else {
     statusEl.textContent = 'No Meet tab found — open a Google Meet link first';
     statusEl.className = 'status';
@@ -106,6 +107,75 @@ speakTextBtn.addEventListener('click', () => {
 // Also allow Enter key to trigger speak
 speakTextInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') speakTextBtn.click();
+});
+
+// --- Agent connection info ---
+const meetCodeInput = document.getElementById('meetCode');
+const apiEndpointInput = document.getElementById('apiEndpoint');
+const syncStatusEl = document.getElementById('syncStatus');
+const copyPromptBtn = document.getElementById('copyPromptBtn');
+
+// Populate Meet code from the active Meet tab
+async function updateAgentInfo() {
+  const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
+  if (tabs.length > 0) {
+    const url = new URL(tabs[0].url);
+    const meetCode = url.pathname.replace('/', '');
+    if (meetCode) {
+      meetCodeInput.value = meetCode;
+      const baseUrl = 'https://vibeconferencing.vercel.app';
+      apiEndpointInput.value = `${baseUrl}/api/sync/${meetCode}`;
+      copyPromptBtn.disabled = false;
+      syncStatusEl.textContent = 'Syncing: ' + meetCode;
+      syncStatusEl.className = 'audio-status active';
+    }
+  }
+}
+
+copyPromptBtn.addEventListener('click', () => {
+  const meetCode = meetCodeInput.value;
+  const botName = botNameInput.value.trim() || 'AI Assistant';
+  const endpoint = apiEndpointInput.value;
+
+  const prompt = `You are "${botName}", an AI assistant participating in a Google Meet call.
+
+## How to interact
+
+**Read what people are saying:**
+\`\`\`bash
+curl -s "${endpoint}?since=TIMESTAMP" | python3 -m json.tool
+\`\`\`
+(First call: omit ?since= to get recent history. Then use the \`asOf\` value from the response as the next \`since\` parameter.)
+
+Transcript entries from other participants look like: "[Speaker Name]: what they said"
+
+**Say something in the call:**
+\`\`\`bash
+curl -X POST "${endpoint}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"sender":"${botName}","role":"bot","transcript":[{"text":"Your message here"}]}'
+\`\`\`
+Your transcript text will be spoken aloud in the Meet call via text-to-speech.
+
+**Update the whiteboard (shared screen):**
+\`\`\`bash
+curl -X POST "${endpoint}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"sender":"${botName}","role":"bot","whiteboard":{"content":"# Your markdown here"}}'
+\`\`\`
+
+## Guidelines
+- Poll for new transcripts every few seconds
+- Respond naturally to what participants say
+- Keep responses concise — they'll be spoken aloud
+- Use the whiteboard for structured content (notes, diagrams, action items)
+- Your sender name must be exactly "${botName}" for the extension to pick up your responses
+`;
+
+  navigator.clipboard.writeText(prompt).then(() => {
+    copyPromptBtn.textContent = 'Copied!';
+    setTimeout(() => { copyPromptBtn.textContent = 'Copy Agent Prompt'; }, 2000);
+  });
 });
 
 presentBtn.addEventListener('click', () => {

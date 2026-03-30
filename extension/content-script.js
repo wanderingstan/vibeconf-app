@@ -320,3 +320,243 @@ async function watchForPreJoinScreen() {
 
 // Kick off the auto-join watcher
 watchForPreJoinScreen();
+
+// ---------------------------------------------------------------------------
+// DOM-based Speaker Tracker
+//
+// Meet's People pane shows speaking indicators for each participant.
+// We observe DOM mutations on these elements to know exactly who is
+// speaking and when — using Meet's own voice activity detection.
+//
+// This gives us:
+//   - Real participant names (from aria-label)
+//   - Reliable speaking detection (Meet's own VAD)
+//   - No audio analysis needed
+// ---------------------------------------------------------------------------
+
+class DOMSpeakerTracker {
+  constructor() {
+    this.participants = new Map(); // name → {speaking, element, lastChange}
+    this.observer = null;
+    this.peoplePane = null;
+    this.isTracking = false;
+    this.checkInterval = null;
+  }
+
+  // Start tracking — call after joining the call
+  start() {
+    if (this.isTracking) return;
+    this.isTracking = true;
+    console.log('[bots-in-calls] DOM speaker tracker starting...');
+
+    // Ensure the People pane is open so we can observe it
+    this._ensurePeoplePaneOpen();
+
+    // Poll for participant elements (the pane may load asynchronously)
+    this.checkInterval = setInterval(() => this._scanParticipants(), 1000);
+
+    // Also set up a MutationObserver on the entire document for class changes
+    this._startObserving();
+  }
+
+  stop() {
+    this.isTracking = false;
+    if (this.observer) this.observer.disconnect();
+    if (this.checkInterval) clearInterval(this.checkInterval);
+    console.log('[bots-in-calls] DOM speaker tracker stopped');
+  }
+
+  _ensurePeoplePaneOpen() {
+    // Look for the People button and click it if the pane isn't open
+    const peopleBtn =
+      findByAriaLabel('People') ||
+      findByAriaLabel('Show everyone');
+
+    if (peopleBtn) {
+      // Check if the pane is already open by looking for participant list
+      const existingPane = document.querySelector('[aria-label="Participants"]') ||
+        document.querySelector('[jsname="jrQDbd"]');
+      if (!existingPane) {
+        peopleBtn.click();
+        console.log('[bots-in-calls] Opened People pane for speaker tracking');
+      } else {
+        console.log('[bots-in-calls] People pane already open');
+      }
+    } else {
+      console.log('[bots-in-calls] People button not found — will retry');
+    }
+  }
+
+  _scanParticipants() {
+    // Find all mute buttons — each one represents a participant
+    // The aria-label contains the participant name:
+    // "You can't remotely mute Stan James's microphone"
+    // "Mute Stan James" (for host)
+    const muteButtons = document.querySelectorAll(
+      'button[aria-label*="mute" i], button[aria-label*="microphone" i]'
+    );
+
+    for (const btn of muteButtons) {
+      const label = btn.getAttribute('aria-label') || '';
+      const name = this._extractName(label);
+      if (!name) continue;
+
+      // Find the speaking indicator element inside the button
+      // It's the div with jsname="QgSmzd" that changes classes when speaking
+      const indicator = btn.querySelector('[jsname="QgSmzd"]') ||
+        btn.querySelector('.IisKdb');
+
+      if (!indicator) continue;
+
+      if (!this.participants.has(name)) {
+        this.participants.set(name, {
+          speaking: false,
+          element: indicator,
+          button: btn,
+          lastChange: Date.now(),
+        });
+        console.log('[bots-in-calls] Tracking participant:', name);
+      } else {
+        // Update element reference in case DOM changed
+        this.participants.get(name).element = indicator;
+        this.participants.get(name).button = btn;
+      }
+    }
+  }
+
+  _extractName(ariaLabel) {
+    // "You can't remotely mute Stan James's microphone"
+    let match = ariaLabel.match(/mute (.+?)['']s microphone/i);
+    if (match) return match[1];
+
+    // "Mute Stan James"
+    match = ariaLabel.match(/^Mute (.+)$/i);
+    if (match) return match[1];
+
+    // "Unmute Stan James"
+    match = ariaLabel.match(/^Unmute (.+)$/i);
+    if (match) return match[1];
+
+    return null;
+  }
+
+  _startObserving() {
+    this.observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
+          this._checkSpeakingChange(mutation.target);
+        }
+        // Also check child elements for class changes
+        if (mutation.type === 'childList') {
+          for (const node of mutation.addedNodes) {
+            if (node.nodeType === 1) this._checkSpeakingChange(node);
+          }
+        }
+      }
+    });
+
+    this.observer.observe(document.body, {
+      attributes: true,
+      attributeFilter: ['class'],
+      childList: true,
+      subtree: true,
+    });
+  }
+
+  _checkSpeakingChange(element) {
+    // Check if this element or its parent is a tracked speaking indicator
+    for (const [name, info] of this.participants) {
+      if (info.element === element || info.element?.contains(element) ||
+          element.contains?.(info.element)) {
+        const isSpeaking = this._isSpeakingIndicatorActive(info.element);
+        if (isSpeaking !== info.speaking) {
+          info.speaking = isSpeaking;
+          info.lastChange = Date.now();
+
+          // Report to page context
+          window.postMessage({
+            __botsInCalls: true,
+            __fromExtension: true,
+            action: 'dom-speaker-change',
+            payload: {
+              name,
+              speaking: isSpeaking,
+              timestamp: Date.now(),
+            },
+          }, '*');
+
+          if (isSpeaking) {
+            console.log(`[bots-in-calls] DOM: ${name} started speaking`);
+          }
+        }
+      }
+    }
+  }
+
+  _isSpeakingIndicatorActive(element) {
+    if (!element) return false;
+
+    // Meet adds/removes classes on the speaking indicator when active.
+    // The indicator has animated bars (UBNDXc, HPxjXe, DwvCqe) that
+    // become visible/animated when speaking. We check for classes that
+    // indicate the active state.
+    const classes = element.className || '';
+
+    // Look for active/speaking-related classes. Meet uses various class
+    // names — we check multiple heuristics:
+
+    // 1. Check if the animated bars inside have non-zero height/opacity
+    const bars = element.querySelectorAll('.UBNDXc, .HPxjXe, .DwvCqe');
+    for (const bar of bars) {
+      const style = window.getComputedStyle(bar);
+      const height = parseFloat(style.height);
+      const opacity = parseFloat(style.opacity);
+      // If any bar has visible height and opacity, participant is speaking
+      if (height > 2 && opacity > 0.1) return true;
+    }
+
+    // 2. Check for animation-related classes or styles
+    const style = window.getComputedStyle(element);
+    if (style.animationName && style.animationName !== 'none') return true;
+
+    return false;
+  }
+
+  // Get current speaking state for all participants
+  getStatus() {
+    const result = {};
+    for (const [name, info] of this.participants) {
+      result[name] = {
+        speaking: info.speaking,
+        lastChange: info.lastChange,
+      };
+    }
+    return result;
+  }
+
+  getSpeakingNames() {
+    return Array.from(this.participants.entries())
+      .filter(([_, info]) => info.speaking)
+      .map(([name]) => name);
+  }
+}
+
+const domSpeakerTracker = new DOMSpeakerTracker();
+
+// Start tracking once the bot is in the call (delay to let the call UI load)
+setTimeout(() => {
+  domSpeakerTracker.start();
+}, 10000);
+
+// Also handle explicit start request
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message.action === 'start-speaker-tracking') {
+    domSpeakerTracker.start();
+    sendResponse({ ok: true });
+    return;
+  }
+  if (message.action === 'get-speakers') {
+    sendResponse({ speakers: domSpeakerTracker.getStatus() });
+    return;
+  }
+});

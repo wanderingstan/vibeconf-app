@@ -1052,37 +1052,62 @@
   class SpeakerAttributedTranscription {
     constructor(captureManager) {
       this.captureManager = captureManager;
-      this.speakingLog = []; // [{timestamp, participantId, level}]
+      this.speakingLog = []; // [{timestamp, name, source}]
       this.transcripts = []; // [{timestamp, text, speaker}]
       this.recognition = null;
       this.isListening = false;
       this._maxLogEntries = 1000;
 
-      // Continuously log who is speaking
+      // Track speakers from two sources:
+      // 1. Audio level analysis (from RTCPeerConnection hook)
+      // 2. DOM observation (from Meet's People pane — preferred, has real names)
       this._startSpeakerTracking();
+      this._listenForDOMSpeakerEvents();
     }
 
     _startSpeakerTracking() {
+      // Audio-level based tracking (fallback)
       setInterval(() => {
         const now = Date.now();
         for (const [id, pa] of this.captureManager.participants) {
           if (pa.speaking) {
             this.speakingLog.push({
               timestamp: now,
-              participantId: id,
-              level: pa.getLevel(),
+              name: id, // e.g. "participant-1"
+              source: 'audio',
             });
           }
         }
 
-        // Trim log to prevent memory growth
+        // Trim log
         if (this.speakingLog.length > this._maxLogEntries) {
           this.speakingLog = this.speakingLog.slice(-this._maxLogEntries);
         }
-      }, 200); // sample every 200ms
+      }, 200);
     }
 
-    // Look up who was most likely speaking during a time window
+    _listenForDOMSpeakerEvents() {
+      // Listen for DOM-based speaker events from the content script
+      window.addEventListener('message', (event) => {
+        if (event.source !== window) return;
+        if (!event.data?.__botsInCalls) return;
+        if (event.data.action !== 'dom-speaker-change') return;
+
+        const { name, speaking, timestamp } = event.data.payload;
+        if (speaking) {
+          // Log with the real participant name
+          this.speakingLog.push({
+            timestamp,
+            name, // real name like "Stan James"
+            source: 'dom',
+          });
+          console.log(`[bots-in-calls] DOM speaker event: ${name} speaking`);
+        }
+      });
+    }
+
+    // Look up who was most likely speaking during a time window.
+    // Prefers DOM-sourced entries (real names) over audio-level entries.
     _attributeSpeaker(startTime, endTime) {
       const relevantEntries = this.speakingLog.filter(
         (e) => e.timestamp >= startTime && e.timestamp <= endTime
@@ -1090,19 +1115,23 @@
 
       if (relevantEntries.length === 0) return 'unknown';
 
-      // Count speaking samples per participant
+      // Prefer DOM-sourced entries (they have real names)
+      const domEntries = relevantEntries.filter((e) => e.source === 'dom');
+      const entriesToUse = domEntries.length > 0 ? domEntries : relevantEntries;
+
+      // Count speaking samples per participant name
       const counts = {};
-      for (const entry of relevantEntries) {
-        counts[entry.participantId] = (counts[entry.participantId] || 0) + 1;
+      for (const entry of entriesToUse) {
+        counts[entry.name] = (counts[entry.name] || 0) + 1;
       }
 
       // Return the participant with the most speaking samples
       let maxCount = 0;
       let speaker = 'unknown';
-      for (const [id, count] of Object.entries(counts)) {
+      for (const [name, count] of Object.entries(counts)) {
         if (count > maxCount) {
           maxCount = count;
-          speaker = id;
+          speaker = name;
         }
       }
 

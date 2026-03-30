@@ -789,9 +789,10 @@
       const rms = Math.sqrt(sum / this.levelData.length);
       const db = 20 * Math.log10(Math.max(rms, 1e-10));
 
-      // Speech detection threshold (adjust as needed)
+      // Speech detection threshold — set low for now to ensure speakingLog gets populated.
+      // Tune upward once we see real per-participant levels in a multi-person call.
       const wasSpeaking = this.speaking;
-      this.speaking = db > -45; // roughly: anything above background noise
+      this.speaking = db > -55;
 
       if (this.speaking) {
         this.lastSpeakingTime = Date.now();

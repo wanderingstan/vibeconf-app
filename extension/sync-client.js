@@ -138,17 +138,32 @@ class SyncClient {
       const data = await resp.json();
       this.lastPollTime = data.asOf;
 
+      const allEntries = data.transcript?.entries || [];
+      if (allEntries.length > 0) {
+        console.log('[sync] Poll received', allEntries.length, 'transcript(s):',
+          allEntries.map(e => `[${e.participantName}] "${e.text?.slice(0, 40)}"`).join(' | '));
+      }
+
       // Look for transcript entries from the bot that we should speak
-      const botEntries = (data.transcript?.entries || []).filter(entry => {
-        // Entries where the bot is the speaker (posted by the agent/backend)
-        return entry.participantName === this.botName &&
-          !entry.text.startsWith('['); // Skip entries WE posted (they start with [Speaker]:)
+      const botEntries = allEntries.filter(entry => {
+        const isBot = entry.participantName === this.botName;
+        const isOurPost = entry.text?.startsWith('['); // We posted these (format: [Speaker]: text)
+        if (isBot && !isOurPost) return true;
+        if (isBot && isOurPost) {
+          console.log('[sync] Skipping our own posted entry:', entry.text?.slice(0, 40));
+        }
+        return false;
       });
 
-      if (botEntries.length > 0 && this.onBotSpeech) {
-        for (const entry of botEntries) {
-          console.log('[sync] Bot should speak:', entry.text.slice(0, 60));
-          this.onBotSpeech(entry.text);
+      if (botEntries.length > 0) {
+        console.log('[sync] Found', botEntries.length, 'bot speech entry(ies) to speak');
+        if (this.onBotSpeech) {
+          for (const entry of botEntries) {
+            console.log('[sync] >>> Speaking:', entry.text?.slice(0, 80));
+            this.onBotSpeech(entry.text);
+          }
+        } else {
+          console.warn('[sync] onBotSpeech callback not set!');
         }
       }
     } catch (err) {

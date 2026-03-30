@@ -9,10 +9,13 @@ const tts = new TTSProvider();
 const sync = new SyncClient({
   onBotSpeech: (text) => {
     // When the backend posts a transcript for the bot, speak it via TTS
-    console.log('[bots-in-calls] Bot speech from backend:', text.slice(0, 60));
+    console.log('[bots-in-calls] >>> onBotSpeech triggered, speaking:', text.slice(0, 80));
     speakText(text);
   },
 });
+
+// Log sync client config for debugging
+console.log('[bots-in-calls] SyncClient created, botName:', sync.botName);
 
 // Helper: synthesize and play text through the Meet tab
 function speakText(text) {
@@ -167,5 +170,10 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     whiteboardTabId = null;
   }
 });
+
+// Open side panel when clicking the extension icon (instead of popup)
+chrome.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true })
+  .then(() => console.log('[bots-in-calls] Side panel enabled'))
+  .catch(() => console.log('[bots-in-calls] Side panel not available, using popup'));
 
 console.log('[bots-in-calls] Service worker started');

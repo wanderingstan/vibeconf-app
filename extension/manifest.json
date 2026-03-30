@@ -1,7 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "Bots in Calls",
-  "description": "AI bots that join Google Meet calls as virtual participants",
+  "name": "Vibeconferencing Agent",
+  "description": "AI agent that joins Google Meet calls as a virtual participant",
+  "icons": {
+    "16": "icon-16.png",
+    "48": "icon-48.png",
+    "128": "icon-128.png"
+  },
   "version": "0.1.0",
   "permissions": [
     "activeTab",

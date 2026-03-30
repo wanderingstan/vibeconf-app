@@ -123,6 +123,18 @@ button:disabled {
   color: #81c995;
 }
 
+.room-link {
+  display: block;
+  color: #8ab4f8;
+  font-size: 13px;
+  margin-bottom: 8px;
+  text-decoration: none;
+}
+
+.room-link:hover {
+  text-decoration: underline;
+}
+
 .participant-row {
   display: flex;
   align-items: center;

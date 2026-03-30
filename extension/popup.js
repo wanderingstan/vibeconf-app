@@ -132,6 +132,8 @@ async function updateAgentInfo() {
       meetCodeInput.value = meetCode;
       const baseUrl = 'https://vibeconferencing.com';
       apiEndpointInput.value = `${baseUrl}/api/sync/${meetCode}`;
+      const roomLink = document.getElementById('roomLink');
+      roomLink.href = `${baseUrl}/room/${meetCode}`;
       copyPromptBtn.disabled = false;
       syncStatusEl.textContent = 'Syncing: ' + meetCode;
       syncStatusEl.className = 'audio-status active';

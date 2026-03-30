@@ -551,8 +551,12 @@
       case 'play-tts':
         if (mic && payload?.audioData) {
           for (const cam of cameras.values()) cam.speaking = true;
+          transcription.botSpeaking = true;
           mic.playAudio(payload.audioData).then(() => {
             for (const cam of cameras.values()) cam.speaking = false;
+            // Small delay before clearing — speech recognition may still
+            // be processing the tail end of the bot's audio
+            setTimeout(() => { transcription.botSpeaking = false; }, 1500);
           });
         }
         break;
@@ -598,8 +602,10 @@
             src.connect(mic.destination);
 
             for (const cam of cameras.values()) cam.speaking = true;
+            transcription.botSpeaking = true;
             src.onended = () => {
               for (const cam of cameras.values()) cam.speaking = false;
+              setTimeout(() => { transcription.botSpeaking = false; }, 1500);
               console.log('[bots-in-calls] Speech audio finished');
             };
             src.start();
@@ -1056,6 +1062,7 @@
       this.transcripts = []; // [{timestamp, text, speaker}]
       this.recognition = null;
       this.isListening = false;
+      this.botSpeaking = false; // true while bot TTS is playing
       this._maxLogEntries = 1000;
 
       // Track speakers from two sources:
@@ -1167,6 +1174,15 @@
 
           if (result.isFinal && text) {
             const now = Date.now();
+
+            // If the bot is currently speaking TTS, this transcript is
+            // the bot's own speech being picked up. Skip it.
+            if (this.botSpeaking) {
+              console.log(`[bots-in-calls] TRANSCRIPT [bot echo, suppressed]: "${text}"`);
+              currentSegmentStart = now;
+              continue;
+            }
+
             const speaker = this._attributeSpeaker(currentSegmentStart, now);
 
             const transcript = {

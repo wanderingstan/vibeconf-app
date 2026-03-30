@@ -88,20 +88,51 @@ Each remote participant's audio arrives as a separate `MediaStreamTrack` via the
 - Detects speech vs. silence using RMS level thresholds
 - Records audio via `MediaRecorder` during speech segments (ready for external STT)
 
-### Speaker-attributed transcription (timing heuristic)
-Since the Web Speech API only listens to the default microphone (can't be pointed at arbitrary streams), we use a timing-based heuristic:
+### Speaker-attributed transcription (DOM + Web Speech API)
+Two-layer approach for knowing who said what:
 
-1. **Per-participant level tracking** — samples which participants are speaking every 200ms
-2. **Web Speech API** — runs on the mixed audio to produce transcripts
-3. **Timestamp correlation** — when a transcript arrives, we look at who was speaking during that time window and attribute the text to the loudest participant
+1. **DOM-based speaker tracking** — Observes Meet's People pane for speaking indicator animations. Each participant's indicator element (`jsname="QgSmzd"`) rotates CSS classes when speaking. We detect the animation rate (2+ class changes in 2 seconds = speaking). This gives us **real participant names** and **reliable voice activity detection** — using Meet's own VAD.
 
-This won't be perfect with overlapping speech, but it's a solid POC without needing external STT APIs.
+2. **Web Speech API** — Runs on the mixed tab audio to produce transcripts. When a transcript arrives, we correlate its timestamp against the DOM speaking log to attribute it to whoever was speaking during that window.
 
-### Production STT path
-Each `ParticipantAudio` already records speech segments as `audio/webm;codecs=opus` blobs via `MediaRecorder`. These are ready to be sent to:
-- **Whisper API** — POST blob as a file
-- **Deepgram** — WebSocket streaming
+This approach works well for single-speaker segments. Overlapping speech may be attributed to the dominant speaker. The bot's own speech is correctly attributed when its indicator animates.
+
+### Current STT limitations
+- Web Speech API listens to the default microphone, not arbitrary streams — so we can't do per-participant STT in the browser
+- Recognition quality depends on Meet's audio processing (noise suppression, echo cancellation)
+- Bot's own TTS gets partially recognized (lossy after round-tripping through WebRTC), but this doesn't matter since we already know what the bot said
+
+### Production STT upgrade path
+Each `ParticipantAudio` already records speech segments as `audio/webm;codecs=opus` blobs via `MediaRecorder`. These are ready to be sent individually to external STT APIs for per-participant transcription:
+- **Whisper API** — POST blob as a file upload
+- **Deepgram** — WebSocket streaming (real-time)
+- **ElevenLabs STT** — REST API
 - **Google Cloud STT** — gRPC streaming
+
+This would replace the Web Speech API with accurate per-participant transcription. The `RTCPeerConnection` hook and `MediaRecorder` plumbing are already in place — the upgrade is a backend integration, not a browser-side change.
+
+## Text-to-Speech (TTS)
+
+### Current state
+The bot can play audio through Meet's microphone via `VirtualMic.playAudio(arrayBuffer)`. For testing, we use a pre-generated MP3 file created with macOS `say` command. There is **no dynamic TTS in the browser**.
+
+### Why not browser `speechSynthesis`?
+The Web Speech API's `speechSynthesis` outputs directly to the system speakers. There is no way to get a `MediaStream` or `ArrayBuffer` from it — it cannot be routed into our virtual microphone pipeline.
+
+### Production TTS path
+Call an external TTS API from a backend service, receive audio bytes, and pipe them through the existing `playAudio()` method:
+
+```
+LLM response text → TTS API → audio ArrayBuffer → VirtualMic.playAudio() → Meet hears bot speak
+```
+
+Compatible TTS services:
+- **ElevenLabs** — high-quality voices, streaming support
+- **OpenAI TTS** — `tts-1` / `tts-1-hd` models
+- **Google Cloud TTS** — WaveNet/Neural2 voices
+- **Amazon Polly** — Neural voices
+
+The browser-side audio pipeline is complete. The upgrade is purely a backend integration: fetch audio bytes from a TTS API and pass them to `playAudio()` as an `ArrayBuffer`.
 
 ### Debugging
 From the Chrome console on the Meet tab:

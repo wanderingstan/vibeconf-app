@@ -82,12 +82,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.botName) sync.updateConfig({ botName: message.botName });
 
     sync.ensureRoom().then((ok) => {
-      if (ok) {
-        sync.startPolling();
-        sendResponse({ ok: true, roomId: meetCode });
-      } else {
-        sendResponse({ error: 'Failed to create/find room. User may need to log in.' });
+      if (!ok) {
+        console.log('[bots-in-calls] Room creation failed, polling anyway (room may already exist)');
       }
+      // Always start polling — room might already exist even if create failed
+      sync.startPolling();
+      sendResponse({ ok: true, roomId: meetCode });
     });
     return true; // async response
   }

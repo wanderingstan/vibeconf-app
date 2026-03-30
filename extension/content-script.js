@@ -607,10 +607,14 @@ setTimeout(() => {
       meetCode,
       botName: BOT_NAME,
     }, (resp) => {
+      if (chrome.runtime.lastError) {
+        console.warn('[bots-in-calls] Sync message error:', chrome.runtime.lastError.message);
+        return;
+      }
       if (resp?.ok) {
         console.log('[bots-in-calls] Sync started for room:', meetCode);
       } else {
-        console.warn('[bots-in-calls] Sync failed:', resp?.error);
+        console.warn('[bots-in-calls] Sync room creation failed, trying to poll anyway:', resp?.error);
       }
     });
   }

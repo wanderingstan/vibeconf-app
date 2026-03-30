@@ -9,7 +9,8 @@
     "sidePanel"
   ],
   "host_permissions": [
-    "https://api.elevenlabs.io/*"
+    "https://api.elevenlabs.io/*",
+    "https://vibeconferencing.vercel.app/*"
   ],
   "action": {
     "default_popup": "popup.html"

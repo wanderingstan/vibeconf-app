@@ -41,11 +41,12 @@ class SyncClient {
     }
 
     try {
+      // Note: credentials: 'include' doesn't work from extensions (CORS).
+      // Room must be pre-created by a logged-in user, or we skip this step.
       const resp = await fetch(`${this.baseUrl}/api/rooms/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ roomId: this.roomId }),
-        credentials: 'include',
       });
 
       if (resp.ok) {

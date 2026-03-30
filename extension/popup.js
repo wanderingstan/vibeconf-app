@@ -23,9 +23,13 @@ function sendToContent(message) {
   });
 }
 
+console.log('[popup] Script loaded');
+
 // Check whether a Google Meet tab is open
 async function checkStatus() {
-  const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
+  try {
+    const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
+    console.log('[popup] checkStatus: found', tabs.length, 'Meet tab(s)');
   if (tabs.length > 0) {
     statusEl.textContent = 'Meet tab detected';
     statusEl.className = 'status active';
@@ -48,6 +52,9 @@ async function checkStatus() {
     speechBtn.disabled = true;
     toneBtn.disabled = true;
     speakBtn.disabled = true;
+  }
+  } catch (err) {
+    console.error('[popup] checkStatus error:', err);
   }
 }
 

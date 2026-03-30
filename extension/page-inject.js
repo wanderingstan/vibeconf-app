@@ -134,69 +134,28 @@
       ctx.restore();
 
       const cx = w / 2;
-      const cy = h / 2 - 20;
-      const r = Math.min(w, h) * 0.14; // scale with resolution
+      const cy = h / 2;
 
-      // Pulse effect when the bot is "speaking"
-      const displayR = this.speaking
-        ? r + Math.sin(this.frameCount * 0.15) * (r * 0.1)
-        : r;
+      // Giant robot emoji with subtle bobbing animation
+      const emojiSize = Math.min(w, h) * 0.45;
+      const bob = Math.sin(t * 0.8) * (emojiSize * 0.02);
+      const speakScale = this.speaking
+        ? 1 + Math.sin(this.frameCount * 0.15) * 0.05
+        : 1;
 
-      // Outer glow ring
       ctx.save();
-      ctx.shadowColor = '#ffffff';
-      ctx.shadowBlur = this.speaking ? 40 : 15;
-      ctx.beginPath();
-      ctx.arc(cx, cy, displayR + 4, 0, Math.PI * 2);
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
-      ctx.lineWidth = 3;
-      ctx.stroke();
-      ctx.restore();
-
-      // Avatar circle
-      ctx.save();
-      ctx.shadowColor = config.botColor;
-      ctx.shadowBlur = this.speaking ? 30 : 10;
-      ctx.beginPath();
-      ctx.arc(cx, cy, displayR, 0, Math.PI * 2);
-      ctx.fillStyle = config.botColor;
-      ctx.fill();
-      ctx.restore();
-
-      // Initials inside the circle
-      const initials = config.botName
-        .split(' ')
-        .map((word) => word[0])
-        .join('')
-        .toUpperCase()
-        .slice(0, 2);
-
-      const fontSize = Math.round(r * 0.75);
-      ctx.fillStyle = '#ffffff';
-      ctx.font = `bold ${fontSize}px "Google Sans", Roboto, Arial, sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(initials, cx, cy);
+      ctx.font = `${Math.round(emojiSize * speakScale)}px serif`;
 
-      // Name label below avatar
-      const labelSize = Math.round(r * 0.3);
-      ctx.fillStyle = '#e8eaed';
-      ctx.font = `${labelSize}px "Google Sans", Roboto, Arial, sans-serif`;
-      ctx.fillText(config.botName, cx, cy + displayR + labelSize * 2);
+      // Glow when speaking
+      if (this.speaking) {
+        ctx.shadowColor = '#8ab4f8';
+        ctx.shadowBlur = 30;
+      }
 
-      // Small green "AI" badge
-      const badgeR = Math.round(r * 0.2);
-      const bx = cx + displayR - badgeR * 0.5;
-      const by = cy + displayR - badgeR * 0.5;
-      ctx.beginPath();
-      ctx.arc(bx, by, badgeR, 0, Math.PI * 2);
-      ctx.fillStyle = '#34a853';
-      ctx.fill();
-      ctx.fillStyle = '#ffffff';
-      ctx.font = `bold ${Math.round(badgeR * 0.8)}px "Google Sans", Roboto, Arial, sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('AI', bx, by);
+      ctx.fillText('\u{1F916}', cx, cy + bob);
+      ctx.restore();
     }
 
     getTrack() {

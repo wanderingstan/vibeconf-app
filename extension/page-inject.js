@@ -1287,4 +1287,12 @@
   // Signal readiness back through the bridge
   window.postMessage({ __botsInCalls: true, action: 'ready' }, '*');
   console.log('[bots-in-calls] Page script loaded — getUserMedia patched, RTCPeerConnection hooked');
+
+  // Trigger devicechange event — if Meet already enumerated devices before our
+  // patches were in place (signed-in profile), this makes it re-check and
+  // discover our virtual camera/mic.
+  setTimeout(() => {
+    navigator.mediaDevices.dispatchEvent(new Event('devicechange'));
+    console.log('[bots-in-calls] Fired devicechange event to trigger re-enumeration');
+  }, 500);
 })();

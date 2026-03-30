@@ -430,27 +430,21 @@ class DOMSpeakerTracker {
       const name = item.getAttribute('aria-label');
       if (!name) continue;
 
-      // Skip the bot itself — its virtual mic is always "on" so Meet's
-      // indicator shows it as perpetually speaking, flooding the log.
-      const youTag = item.querySelector('.NnTWjc');
-      if (youTag && youTag.textContent.includes('You')) continue;
-
       // Find the speaking indicator: div[jsname="QgSmzd"] with the animated bars
       const indicator = item.querySelector('[jsname="QgSmzd"]');
       if (!indicator) continue;
 
       if (!this.participants.has(name)) {
-        // Record the baseline classes so we can detect changes
-        const baselineClasses = indicator.className;
         this.participants.set(name, {
           speaking: false,
           element: indicator,
           item,
-          baselineClasses,
+          lastClasses: indicator.className,
+          classChangeCount: 0,
+          lastPollTime: Date.now(),
           lastChange: Date.now(),
         });
-        console.log('[bots-in-calls] Tracking participant:', name,
-          '(baseline classes:', baselineClasses + ')');
+        console.log('[bots-in-calls] Tracking participant:', name);
       } else {
         // Update element references in case DOM rebuilt
         const info = this.participants.get(name);
@@ -512,36 +506,35 @@ class DOMSpeakerTracker {
     }
   }
 
+  // Detect speaking by checking if classes are actively changing (animating).
+  // Meet rotates classes on the indicator element during speech animation.
+  // A static class (even if different from others) means NOT speaking.
   _isSpeakingIndicatorActive(element, name) {
     if (!element) return false;
-
     const info = name ? this.participants.get(name) : null;
+    if (!info) return false;
+
     const currentClasses = element.className || '';
+    const now = Date.now();
 
-    // Primary detection: check if classes changed from baseline.
-    // When speaking starts, Meet changes classes on this element.
-    if (info?.baselineClasses && currentClasses !== info.baselineClasses) {
-      // Log class changes for discovery (helps tune detection)
-      if (!info._lastLoggedClasses || info._lastLoggedClasses !== currentClasses) {
-        info._lastLoggedClasses = currentClasses;
-        console.log(`[bots-in-calls] DOM classes changed for ${name}:`,
-          `baseline="${info.baselineClasses}"`,
-          `current="${currentClasses}"`);
-      }
-      // Classes differ from baseline → likely speaking
-      return true;
+    // Check if classes changed since last poll
+    if (currentClasses !== info.lastClasses) {
+      info.classChangeCount++;
+      info.lastClasses = currentClasses;
+      info.lastClassChangeTime = now;
     }
 
-    // Fallback: check animated bars' computed styles
-    const bars = element.querySelectorAll('.UBNDXc, .HPxjXe, .DwvCqe');
-    for (const bar of bars) {
-      const style = window.getComputedStyle(bar);
-      const height = parseFloat(style.height);
-      const opacity = parseFloat(style.opacity);
-      if (height > 2 && opacity > 0.1) return true;
+    // Reset change count periodically (every 2 seconds)
+    if (now - info.lastPollTime > 2000) {
+      // If classes changed multiple times in the last 2 seconds, it's animating
+      info.wasAnimating = info.classChangeCount >= 2;
+      info.classChangeCount = 0;
+      info.lastPollTime = now;
     }
 
-    return false;
+    // Speaking = classes changed recently AND changed multiple times (animation)
+    const recentChange = info.lastClassChangeTime && (now - info.lastClassChangeTime < 1000);
+    return recentChange && (info.classChangeCount >= 2 || info.wasAnimating);
   }
 
   // Periodically check and broadcast who is speaking right now

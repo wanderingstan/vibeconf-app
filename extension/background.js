@@ -18,6 +18,11 @@ const sync = new SyncClient({
 // Log sync client config for debugging
 console.debug('[bots-in-calls] SyncClient created, botName:', sync.botName);
 
+// Broadcast errors to the side panel / popup
+function broadcastError(message) {
+  chrome.runtime.sendMessage({ action: 'error', message }).catch(() => {});
+}
+
 // Helper: synthesize and play text through the Meet tab
 function speakText(text) {
   tts.synthesize(text)
@@ -39,6 +44,7 @@ function speakText(text) {
     })
     .catch((err) => {
       console.error('[bots-in-calls] TTS error:', err.message);
+      broadcastError('TTS: ' + err.message.slice(0, 120));
     });
 }
 
@@ -90,6 +96,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       })
       .catch((err) => {
         console.error('[bots-in-calls] STT error:', err.message);
+        broadcastError('STT: ' + err.message.slice(0, 120));
         sendResponse({ error: err.message });
       });
     return true; // async

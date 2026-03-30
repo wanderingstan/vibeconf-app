@@ -135,6 +135,16 @@ button:disabled {
   text-decoration: underline;
 }
 
+.error-bar {
+  font-size: 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #3b1818;
+  color: #f28b82;
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+
 .participant-row {
   display: flex;
   align-items: center;

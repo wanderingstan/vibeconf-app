@@ -228,7 +228,18 @@ listenBtn.addEventListener('click', () => {
 
 botNameInput.addEventListener('change', pushBotName);
 
-// --- Audio capture status & transcripts ---
+// --- Errors, audio status & transcripts ---
+
+const errorBar = document.getElementById('errorBar');
+let errorTimeout = null;
+
+function showError(msg) {
+  errorBar.textContent = msg;
+  errorBar.style.display = 'block';
+  if (errorTimeout) clearTimeout(errorTimeout);
+  errorTimeout = setTimeout(() => { errorBar.style.display = 'none'; }, 10000);
+}
+errorBar.addEventListener('click', () => { errorBar.style.display = 'none'; });
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message.action === 'audio-status' || message.action === 'audio-status-response') {
@@ -236,6 +247,9 @@ chrome.runtime.onMessage.addListener((message) => {
   }
   if (message.action === 'transcript') {
     addTranscriptEntry(message.payload);
+  }
+  if (message.action === 'error') {
+    showError(message.message);
   }
 });
 

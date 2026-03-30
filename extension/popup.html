@@ -10,11 +10,6 @@
     <div class="status" id="status">Looking for Meet tab…</div>
     <div class="error-bar" id="errorBar" style="display:none"></div>
 
-    <div class="field">
-      <label for="botName">Bot Name</label>
-      <input type="text" id="botName" value="AI Assistant" />
-    </div>
-
     <div class="section">
       <h2>Agent Connection</h2>
       <div id="syncStatus" class="audio-status">Not connected</div>
@@ -33,35 +28,16 @@
     <button id="presentBtn" disabled>Start Presenting Whiteboard</button>
 
     <div class="section">
-      <h2>Text-to-Speech</h2>
-      <div class="field">
-        <label for="ttsApiKey">ElevenLabs API Key</label>
-        <input type="password" id="ttsApiKey" placeholder="sk_..." />
-      </div>
-      <div class="field">
-        <label for="ttsVoiceId">Voice ID</label>
-        <input type="text" id="ttsVoiceId" placeholder="pNInz6obpgDQGcFmaJgB" />
-      </div>
-      <div class="field">
-        <label for="speakText">Say something</label>
-        <input type="text" id="speakText" placeholder="Hello everyone!" />
-      </div>
-      <button id="speakTextBtn" disabled>Speak</button>
-    </div>
-
-    <div class="section">
       <h2>Transcript</h2>
-      <div id="audioStatus" class="audio-status">No participants detected</div>
-      <div id="audioParticipants"></div>
-      <button id="listenBtn" disabled>Stop Listening</button>
       <div id="transcriptArea" class="transcript-area"></div>
     </div>
 
     <div class="section">
-      <h2>Test</h2>
-      <button id="speechBtn" class="primary" disabled>Play Speech Test</button>
-      <button id="toneBtn" disabled>Play Test Tone</button>
-      <button id="speakBtn" disabled>Toggle Speaking Animation</button>
+      <details>
+        <summary class="debug-toggle">Troubleshooting</summary>
+        <div id="audioStatus" class="audio-status">No participants detected</div>
+        <div id="audioParticipants"></div>
+      </details>
     </div>
   </div>
   <script src="popup.js"></script>

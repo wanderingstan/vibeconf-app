@@ -22,7 +22,7 @@
     "https://vibeconferencing.vercel.app/*"
   ],
   "action": {
-    "default_popup": "popup.html"
+    "default_popup": "settings.html"
   },
   "side_panel": {
     "default_path": "popup.html"

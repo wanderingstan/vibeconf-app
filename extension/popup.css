@@ -135,6 +135,17 @@ button:disabled {
   text-decoration: underline;
 }
 
+.debug-toggle {
+  font-size: 13px;
+  color: #9aa0a6;
+  cursor: pointer;
+  user-select: none;
+}
+
+.debug-toggle:hover {
+  color: #e8eaed;
+}
+
 .error-bar {
   font-size: 12px;
   padding: 8px 12px;

@@ -11,7 +11,7 @@ class TTSProvider {
   constructor(config = {}) {
     this.provider = config.provider || 'elevenlabs';
     this.apiKey = config.apiKey || '';
-    this.voiceId = config.voiceId || 'Hx2IZeF1DlQHZLk8ntFj'; // Coltrane voice
+    this.voiceId = config.voiceId || '21m00Tcm4TlvDq8ikWAM'; // "Rachel" (free tier default)
     this.modelId = config.modelId || 'eleven_monolingual_v1';
   }
 

@@ -7,7 +7,9 @@
     "activeTab",
     "tabs",
     "storage",
-    "sidePanel"
+    "sidePanel",
+    "scripting",
+    "webNavigation"
   ],
   "host_permissions": [
     "https://api.elevenlabs.io/*",

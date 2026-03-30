@@ -171,6 +171,80 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Early media API injection — runs via chrome.scripting.executeScript which
+// bypasses CSP (inline <script> injection gets blocked in signed-in profiles).
+// Triggered on navigation to meet.google.com, before page scripts run.
+// ---------------------------------------------------------------------------
+
+function earlyMediaPatch() {
+  if (window.__botsInCallsEarlyPatched) return;
+  window.__botsInCallsEarlyPatched = true;
+
+  var _getUserMedia = MediaDevices.prototype.getUserMedia;
+  var _getDisplayMedia = MediaDevices.prototype.getDisplayMedia;
+  var _enumerateDevices = MediaDevices.prototype.enumerateDevices;
+  var _permissionsQuery = Permissions.prototype.query;
+
+  window.__botsInCallsOriginalGUM = _getUserMedia;
+  window.__botsInCallsOriginalGDM = _getDisplayMedia;
+  window.__botsInCallsPendingGUM = [];
+
+  MediaDevices.prototype.getUserMedia = function() {
+    if (window.__botsInCallsGetUserMedia) {
+      return window.__botsInCallsGetUserMedia.apply(this, arguments);
+    }
+    var args = arguments, ctx = this;
+    return new Promise(function(resolve, reject) {
+      window.__botsInCallsPendingGUM.push({ args: args, context: ctx, resolve: resolve, reject: reject });
+      console.log('[bots-in-calls] Early: getUserMedia queued');
+    });
+  };
+
+  MediaDevices.prototype.getDisplayMedia = function() {
+    if (window.__botsInCallsGetDisplayMedia) {
+      return window.__botsInCallsGetDisplayMedia.apply(this, arguments);
+    }
+    return _getDisplayMedia.call(this, arguments[0]);
+  };
+
+  MediaDevices.prototype.enumerateDevices = async function() {
+    var devices = await _enumerateDevices.call(navigator.mediaDevices);
+    var hasAudio = devices.some(function(d) { return d.kind === 'audioinput'; });
+    var hasVideo = devices.some(function(d) { return d.kind === 'videoinput'; });
+    var extras = [];
+    if (!hasAudio) extras.push({ deviceId: 'virtual-mic', kind: 'audioinput', label: 'Virtual Microphone', groupId: 'bots-in-calls', toJSON: function() { return this; } });
+    if (!hasVideo) extras.push({ deviceId: 'virtual-camera', kind: 'videoinput', label: 'Virtual Camera', groupId: 'bots-in-calls', toJSON: function() { return this; } });
+    if (extras.length > 0) console.log('[bots-in-calls] Early: added', extras.length, 'virtual device(s)');
+    return devices.concat(extras);
+  };
+
+  Permissions.prototype.query = async function(desc) {
+    if (desc.name === 'microphone' || desc.name === 'camera') {
+      var s = new EventTarget(); s.state = 'granted'; s.onchange = null;
+      return s;
+    }
+    return _permissionsQuery.call(this, desc);
+  };
+
+  console.log('[bots-in-calls] Early: all media APIs patched via scripting.executeScript');
+}
+
+// Inject early patches when navigating to Meet
+chrome.webNavigation.onCommitted.addListener(
+  (details) => {
+    if (details.frameId !== 0) return; // main frame only
+    console.log('[bots-in-calls] Meet navigation detected, injecting early patches');
+    chrome.scripting.executeScript({
+      target: { tabId: details.tabId },
+      func: earlyMediaPatch,
+      world: 'MAIN',
+      injectImmediately: true,
+    }).catch(err => console.error('[bots-in-calls] Early inject failed:', err));
+  },
+  { url: [{ hostEquals: 'meet.google.com' }] }
+);
+
 // Open side panel when clicking the extension icon (instead of popup)
 chrome.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true })
   .then(() => console.log('[bots-in-calls] Side panel enabled'))

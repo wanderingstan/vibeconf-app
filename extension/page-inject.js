@@ -1175,15 +1175,9 @@
           if (result.isFinal && text) {
             const now = Date.now();
 
-            // If the bot is currently speaking TTS, this transcript is
-            // the bot's own speech being picked up. Skip it.
-            if (this.botSpeaking) {
-              console.log(`[bots-in-calls] TRANSCRIPT [bot echo, suppressed]: "${text}"`);
-              currentSegmentStart = now;
-              continue;
-            }
-
-            const speaker = this._attributeSpeaker(currentSegmentStart, now);
+            const speaker = this.botSpeaking
+              ? config.botName
+              : this._attributeSpeaker(currentSegmentStart, now);
 
             const transcript = {
               timestamp: now,

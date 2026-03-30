@@ -6,6 +6,12 @@ const transcriptArea = document.getElementById('transcriptArea');
 const audioStatusEl = document.getElementById('audioStatus');
 const audioParticipantsEl = document.getElementById('audioParticipants');
 
+// Open settings in a new tab
+document.getElementById('settingsLink').addEventListener('click', (e) => {
+  e.preventDefault();
+  chrome.tabs.create({ url: chrome.runtime.getURL('settings.html') });
+});
+
 function sendToContent(message) {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage({ target: 'content', ...message }, (resp) => resolve(resp));

@@ -209,7 +209,8 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
 });
 
-// Side panel is available but toolbar click opens settings popup.
-// Users access the side panel via Chrome's side panel button.
+// Toolbar icon click opens side panel
+chrome.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true })
+  .catch(() => {});
 
 console.log('[bots-in-calls] Service worker started');

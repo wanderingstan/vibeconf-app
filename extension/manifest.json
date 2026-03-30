@@ -10,6 +10,8 @@
   ],
   "host_permissions": [
     "https://api.elevenlabs.io/*",
+    "https://vibeconferencing.com/*",
+    "https://*.vibeconferencing.com/*",
     "https://vibeconferencing.vercel.app/*"
   ],
   "action": {

@@ -123,7 +123,7 @@ async function updateAgentInfo() {
     const meetCode = url.pathname.replace('/', '');
     if (meetCode) {
       meetCodeInput.value = meetCode;
-      const baseUrl = 'https://vibeconferencing.vercel.app';
+      const baseUrl = 'https://vibeconferencing.com';
       apiEndpointInput.value = `${baseUrl}/api/sync/${meetCode}`;
       copyPromptBtn.disabled = false;
       syncStatusEl.textContent = 'Syncing: ' + meetCode;

@@ -9,7 +9,7 @@
 
 class SyncClient {
   constructor(config = {}) {
-    this.baseUrl = config.baseUrl || 'https://vibeconferencing.vercel.app';
+    this.baseUrl = config.baseUrl || 'https://vibeconferencing.com';
     this.botName = config.botName || 'AI Assistant';
     this.roomId = config.roomId || null;
     this.lastPollTime = null; // ISO timestamp for incremental polling

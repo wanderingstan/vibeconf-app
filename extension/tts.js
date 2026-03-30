@@ -12,7 +12,7 @@ class TTSProvider {
     this.provider = config.provider || 'elevenlabs';
     this.apiKey = config.apiKey || '';
     this.voiceId = config.voiceId || '21m00Tcm4TlvDq8ikWAM'; // "Rachel" (free tier default)
-    this.modelId = config.modelId || 'eleven_monolingual_v1';
+    this.modelId = config.modelId || 'eleven_multilingual_v2';
   }
 
   updateConfig(config) {

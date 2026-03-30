@@ -273,4 +273,7 @@ setInterval(() => {
   sendToContent({ target: 'page', action: 'get-audio-status' });
 }, 2000);
 
+// Check immediately and re-check every 3 seconds
+// (side panel persists, so we need to keep polling for the Meet tab)
 checkStatus();
+setInterval(checkStatus, 3000);

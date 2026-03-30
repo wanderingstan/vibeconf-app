@@ -18,6 +18,7 @@ class SyncClient {
     this.isPolling = false;
     this.onBotSpeech = config.onBotSpeech || null; // callback(text)
     this.postedTranscripts = new Set(); // dedup by text+timestamp
+    this.spokenEntryIds = new Set(); // track entries we've already spoken
   }
 
   updateConfig(config) {
@@ -91,29 +92,33 @@ class SyncClient {
 
     if (newTranscripts.length === 0) return;
 
-    // Format for the sync API: each transcript includes the speaker name in the text
-    const entries = newTranscripts.map(t => ({
-      text: `[${t.speaker}]: ${t.text}`,
-    }));
+    // Group transcripts by speaker and POST each with the speaker as sender
+    const bySpeaker = {};
+    for (const t of newTranscripts) {
+      if (!bySpeaker[t.speaker]) bySpeaker[t.speaker] = [];
+      bySpeaker[t.speaker].push({ text: t.text });
+    }
 
-    try {
-      const resp = await fetch(`${this.baseUrl}/api/sync/${this.roomId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sender: this.botName,
-          role: 'bot',
-          transcript: entries,
-        }),
-      });
+    for (const [speaker, entries] of Object.entries(bySpeaker)) {
+      try {
+        const resp = await fetch(`${this.baseUrl}/api/sync/${this.roomId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sender: speaker,
+            role: 'member',
+            transcript: entries,
+          }),
+        });
 
-      if (resp.ok) {
-        console.log('[sync] Posted', entries.length, 'transcript(s)');
-      } else {
-        console.error('[sync] Failed to post transcripts:', resp.status);
+        if (resp.ok) {
+          console.log('[sync] Posted', entries.length, 'transcript(s) from', speaker);
+        } else {
+          console.error('[sync] Failed to post transcripts:', resp.status);
+        }
+      } catch (err) {
+        console.error('[sync] Network error posting transcripts:', err.message);
       }
-    } catch (err) {
-      console.error('[sync] Network error posting transcripts:', err.message);
     }
 
     // Trim dedup set to prevent memory growth
@@ -145,15 +150,15 @@ class SyncClient {
           allEntries.map(e => `[${e.participantName}] "${e.text?.slice(0, 40)}"`).join(' | '));
       }
 
-      // Look for transcript entries from the bot that we should speak
+      // Look for bot transcript entries we haven't spoken yet.
+      // The bot's agent posts entries with participantName === botName.
+      // We skip entries we've already spoken (tracked by ID).
       const botEntries = allEntries.filter(entry => {
-        const isBot = entry.participantName === this.botName;
-        const isOurPost = entry.text?.startsWith('['); // We posted these (format: [Speaker]: text)
-        if (isBot && !isOurPost) return true;
-        if (isBot && isOurPost) {
-          console.log('[sync] Skipping our own posted entry:', entry.text?.slice(0, 40));
-        }
-        return false;
+        if (entry.participantName !== this.botName) return false;
+        if (entry.role !== 'bot') return false; // only speak bot-role entries
+        if (this.spokenEntryIds.has(entry.id)) return false;
+        this.spokenEntryIds.add(entry.id);
+        return true;
       });
 
       if (botEntries.length > 0) {

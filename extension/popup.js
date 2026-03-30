@@ -154,15 +154,15 @@ copyPromptBtn.addEventListener('click', () => {
 \`\`\`bash
 curl -s "${endpoint}?since=TIMESTAMP" | python3 -m json.tool
 \`\`\`
-(First call: omit ?since= to get recent history. Then use the \`asOf\` value from the response as the next \`since\` parameter.)
+First call: omit \`?since=\` to get recent history. Then use the \`asOf\` value from each response as the next \`since\` parameter.
 
-Transcript entries from other participants look like: "[Speaker Name]: what they said"
+Transcript entries include \`participantName\` (who said it) and \`text\` (what they said).
 
 **Say something in the call:**
 \`\`\`bash
 curl -X POST "${endpoint}" \\
   -H "Content-Type: application/json" \\
-  -d '{"sender":"${botName}","role":"bot","transcript":[{"text":"Your message here"}]}'
+  -d '{"sender":"${botName}","role":"bot","ownerName":"${botName}","transcript":[{"text":"Your message here"}]}'
 \`\`\`
 Your transcript text will be spoken aloud in the Meet call via text-to-speech.
 
@@ -170,15 +170,17 @@ Your transcript text will be spoken aloud in the Meet call via text-to-speech.
 \`\`\`bash
 curl -X POST "${endpoint}" \\
   -H "Content-Type: application/json" \\
-  -d '{"sender":"${botName}","role":"bot","whiteboard":{"content":"# Your markdown here"}}'
+  -d '{"sender":"${botName}","role":"bot","ownerName":"${botName}","whiteboard":{"content":"# Your markdown here"}}'
 \`\`\`
 
-## Guidelines
+## Important notes
+- \`ownerName\` is REQUIRED in every POST request
+- \`sender\` must be exactly "${botName}" for the extension to speak your responses
+- Avoid exclamation marks and special characters in text — they can cause shell escaping issues with curl. Use periods instead.
+- When using curl with single quotes, apostrophes in text will break the command. Use double quotes with escaped inner quotes, or avoid contractions.
 - Poll for new transcripts every few seconds
-- Respond naturally to what participants say
-- Keep responses concise — they'll be spoken aloud
+- Keep responses concise — they will be spoken aloud via TTS
 - Use the whiteboard for structured content (notes, diagrams, action items)
-- Your sender name must be exactly "${botName}" for the extension to pick up your responses
 `;
 
   navigator.clipboard.writeText(prompt).then(() => {

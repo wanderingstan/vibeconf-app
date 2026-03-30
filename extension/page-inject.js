@@ -1185,6 +1185,14 @@
           if (result.isFinal && text) {
             const now = Date.now();
 
+            // Suppress transcription while bot is speaking — Web Speech API
+            // picks up the bot's TTS output from system audio
+            if (this.botSpeaking) {
+              console.debug('[bots-in-calls] Suppressing transcript during bot speech:', text.slice(0, 30));
+              currentSegmentStart = now;
+              continue;
+            }
+
             const speaker = this._attributeSpeaker(currentSegmentStart, now);
 
             const transcript = {

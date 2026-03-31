@@ -653,16 +653,9 @@ const domSpeakerTracker = new DOMSpeakerTracker();
 setTimeout(() => {
   domSpeakerTracker.start();
 
-  // Start tab audio capture for ElevenLabs STT.
-  // Uses chrome.tabCapture via offscreen document — captures the tab's
-  // decoded audio output (all participants), no physical mic needed.
-  chrome.runtime.sendMessage({ action: 'start-tab-capture' }, (resp) => {
-    if (resp?.ok) {
-      console.log('[bots-in-calls] Tab audio capture started');
-    } else {
-      console.warn('[bots-in-calls] Tab capture failed:', resp?.error);
-    }
-  });
+  // Tab audio capture is started from the side panel (requires user click
+  // to grant activeTab permission for chrome.tabCapture).
+  console.log('[bots-in-calls] Waiting for side panel to start audio capture');
 
   // Auto-mute the bot's mic — only unmute when speaking via TTS
   setTimeout(() => setMicMuted(true), 5000);

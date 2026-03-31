@@ -718,54 +718,32 @@ class CaptionScraper {
       return;
     }
 
-    // Read the raw text content of the caption container.
-    const rawText = container.textContent || '';
-    const visibleText = rawText.replace(/Jump to bottom\s*$/i, '').trim();
+    // Read text from the first child div (the caption block, not buttons)
+    const firstChild = container.firstElementChild;
+    if (!firstChild) return;
 
-    // Extract speaker name from first span in the container
-    const speakerSpan = container.querySelector('span');
+    const rawText = firstChild.textContent || '';
+    if (!rawText.trim()) return;
+
+    // Speaker name is the first text, then caption follows
+    // Split by finding the speaker name element
+    const speakerSpan = firstChild.querySelector('span');
     const speaker = speakerSpan?.textContent?.trim() || 'unknown';
 
-    // Strip the speaker name from the start of the visible text
-    let captionText = visibleText;
+    // Remove speaker name from the beginning
+    let captionText = rawText.trim();
     if (captionText.startsWith(speaker)) {
       captionText = captionText.slice(speaker.length).trim();
     }
 
-    if (!captionText) return;
+    if (!captionText || captionText === this.lastText) return;
 
-    // Debug: log raw lengths every 3rd poll
-    if (!this._dc) this._dc = 0;
-    if (++this._dc % 3 === 0) {
-      console.log(`[captions] raw=${rawText.length} visible=${visibleText.length} caption=${captionText.length} lastVis=${(this._lastVisibleText||'').length} same=${captionText === this._lastVisibleText}`);
-    }
+    // Text changed — update and post periodically
+    this.lastText = captionText;
 
-    if (captionText === this._lastVisibleText) return;
-
-    // Meet only keeps the last few lines in the DOM. We need to
-    // capture incrementally: find new text that wasn't in the
-    // previous reading and append it to our accumulator.
-    if (this._lastVisibleText && captionText.startsWith(this._lastVisibleText)) {
-      // Text grew (Meet appended) — capture the new portion
-      const newPart = captionText.slice(this._lastVisibleText.length).trim();
-      if (newPart) {
-        this._accumulated += ' ' + newPart;
-      }
-    } else if (this._lastVisibleText && captionText.length < this._lastVisibleText.length) {
-      // Text got shorter — Meet scrolled away old text.
-      // The visible text is now a fresh window. Just update.
-      this._accumulated += ' ' + captionText;
-    } else {
-      // First reading or completely new text
-      this._accumulated = captionText;
-    }
-
-    this._lastVisibleText = captionText;
-
-    // Speaker changed — post and reset
-    if (speaker !== this.lastSpeaker && this.lastSpeaker && this._accumulated) {
-      this._postCaption(this.lastSpeaker, this._accumulated.trim());
-      this._accumulated = '';
+    // Speaker changed — post previous speaker's text
+    if (speaker !== this.lastSpeaker && this.lastSpeaker) {
+      this._postCaption(this.lastSpeaker, this.lastPostedText || captionText);
       this.lastPostedText = '';
     }
     this.lastSpeaker = speaker;
@@ -773,8 +751,8 @@ class CaptionScraper {
     // Post every 5 seconds
     const now = Date.now();
     if (!this._lastPostTime) this._lastPostTime = now;
-    if (now - this._lastPostTime > 5000 && this._accumulated.trim() !== this.lastPostedText) {
-      this._postCaption(speaker, this._accumulated.trim());
+    if (now - this._lastPostTime > 5000) {
+      this._postCaption(speaker, captionText);
       this._lastPostTime = now;
     }
     } catch (err) {

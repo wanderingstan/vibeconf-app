@@ -18,6 +18,38 @@ function sendToContent(message) {
   });
 }
 
+// --- Load transcript from server on panel open ---
+let seenEntryIds = new Set();
+
+async function loadTranscriptFromServer() {
+  try {
+    const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
+    if (tabs.length === 0) return;
+    const meetCode = new URL(tabs[0].url).pathname.replace('/', '');
+    if (!meetCode) return;
+
+    const resp = await fetch(`https://vibeconferencing.com/api/sync/${meetCode}`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const entries = data.transcript?.entries || [];
+
+    // Add entries oldest-first
+    for (const entry of entries) {
+      if (seenEntryIds.has(entry.id)) continue;
+      seenEntryIds.add(entry.id);
+      addTranscriptEntry({
+        timestamp: new Date(entry.timestamp).getTime(),
+        speaker: entry.participantName,
+        text: entry.text,
+      });
+    }
+  } catch (err) {
+    console.debug('[panel] Failed to load transcript from server:', err.message);
+  }
+}
+
+loadTranscriptFromServer();
+
 // --- Check for Meet tab ---
 async function checkStatus() {
   try {
@@ -145,16 +177,34 @@ chrome.runtime.onMessage.addListener((message) => {
 });
 
 function addTranscriptEntry(t) {
+  // Dedup by content+timestamp
+  const key = `${t.speaker}:${t.text}:${t.timestamp}`;
+  if (seenEntryIds.has(key)) return;
+  seenEntryIds.add(key);
+
   const time = new Date(t.timestamp).toLocaleTimeString();
   const div = document.createElement('div');
   div.className = 'transcript-entry';
+  div.dataset.timestamp = t.timestamp;
   div.innerHTML = `
     <span class="transcript-time">${time}</span>
     <span class="transcript-speaker">[${t.speaker}]</span>
     <span class="transcript-text">${t.text}</span>
   `;
-  transcriptArea.prepend(div);
-  while (transcriptArea.children.length > 50) {
+
+  // Insert in chronological order (newest on top)
+  const existing = transcriptArea.children;
+  let inserted = false;
+  for (let i = 0; i < existing.length; i++) {
+    if (Number(existing[i].dataset.timestamp) < t.timestamp) {
+      transcriptArea.insertBefore(div, existing[i]);
+      inserted = true;
+      break;
+    }
+  }
+  if (!inserted) transcriptArea.appendChild(div);
+
+  while (transcriptArea.children.length > 100) {
     transcriptArea.removeChild(transcriptArea.lastChild);
   }
 }

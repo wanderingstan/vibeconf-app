@@ -33,10 +33,26 @@ async function loadTranscriptFromServer() {
     const data = await resp.json();
     const entries = data.transcript?.entries || [];
 
-    // Add entries oldest-first
+    // Deduplicate: consecutive entries from the same speaker where one
+    // is a prefix of another → keep only the longest (latest version).
+    const deduped = [];
     for (const entry of entries) {
       if (seenEntryIds.has(entry.id)) continue;
       seenEntryIds.add(entry.id);
+
+      const last = deduped[deduped.length - 1];
+      if (last && last.participantName === entry.participantName) {
+        // Same speaker — keep whichever is longer (supersedes)
+        if (entry.text.length >= last.text.length) {
+          deduped[deduped.length - 1] = entry; // replace
+        }
+        // If shorter, skip (it's an earlier partial)
+      } else {
+        deduped.push(entry);
+      }
+    }
+
+    for (const entry of deduped) {
       addTranscriptEntry({
         timestamp: new Date(entry.timestamp).getTime(),
         speaker: entry.participantName,

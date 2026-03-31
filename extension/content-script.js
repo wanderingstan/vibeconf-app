@@ -704,16 +704,17 @@ class CaptionScraper {
   }
 
   _observe(container) {
-    console.log('[bots-in-calls] Caption container found, observing');
+    console.log('[bots-in-calls] Caption container found, polling every 1s');
     this.isRunning = true;
-    this.observer = new MutationObserver(() => this._onMutation(container));
-    this.observer.observe(container, {
-      childList: true, subtree: true, characterData: true,
-    });
+    this.container = container;
+    // Poll instead of MutationObserver — more reliable across Meet's DOM update styles
+    this._pollInterval = setInterval(() => this._checkCaptions(), 1000);
   }
 
-  _onMutation(container) {
-    const blocks = container.querySelectorAll('.nMcdL');
+  _checkCaptions() {
+    if (!this.container) return;
+
+    const blocks = this.container.querySelectorAll('.nMcdL');
     if (blocks.length === 0) return;
 
     const lastBlock = blocks[blocks.length - 1];
@@ -773,7 +774,7 @@ class CaptionScraper {
   }
 
   stop() {
-    if (this.observer) this.observer.disconnect();
+    if (this._pollInterval) clearInterval(this._pollInterval);
     this.isRunning = false;
   }
 }

@@ -730,8 +730,8 @@ class CaptionScraper {
     const speakerSpan = firstChild.querySelector('span');
     const speaker = speakerSpan?.textContent?.trim() || 'unknown';
 
-    // Remove speaker name from the beginning
-    let captionText = rawText.trim();
+    // Remove speaker name from the beginning, normalize whitespace
+    let captionText = rawText.replace(/\s+/g, ' ').trim();
     if (captionText.startsWith(speaker)) {
       captionText = captionText.slice(speaker.length).trim();
     }

@@ -718,52 +718,25 @@ class CaptionScraper {
       return;
     }
 
+    // Get the last caption block for the speaker name
     const blocks = container.querySelectorAll('.nMcdL');
     if (blocks.length === 0) return;
+    const lastBlock = blocks[blocks.length - 1];
+    const speakerEl = lastBlock.querySelector('.KcIKyf span') ||
+                      lastBlock.querySelector('.KcIKyf');
+    const speaker = speakerEl?.textContent?.trim() || 'unknown';
 
-    // Read ALL caption blocks and build full text per speaker
-    // Meet may split long speech into multiple blocks
-    let currentSpeaker = '';
-    let fullText = '';
-
-    for (const block of blocks) {
-      const speakerEl = block.querySelector('.KcIKyf span') ||
-                        block.querySelector('.KcIKyf');
-      const textEl = block.querySelector('.ygicle') ||
-                     block.querySelector('div[jsname="tgaKEf"]');
-      if (!speakerEl || !textEl) continue;
-
-      const speaker = speakerEl.textContent.trim();
-      const text = textEl.textContent.trim();
-      if (!text) continue;
-
-      if (speaker !== currentSpeaker && currentSpeaker && fullText) {
-        // Speaker changed mid-container — post previous speaker
-        if (fullText !== this.lastPostedText) {
-          this._postCaption(currentSpeaker, fullText);
-        }
-        fullText = '';
-      }
-
-      currentSpeaker = speaker;
-      fullText += (fullText ? ' ' : '') + text;
-    }
-
+    // Get ALL visible caption text at once
+    const fullText = container.innerText.trim();
     if (!fullText || fullText === this.lastText) return;
 
-    // Debug: log what we see every 5 polls
-    if (!this._pollCount) this._pollCount = 0;
-    if (++this._pollCount % 5 === 0) {
-      console.debug(`[captions] poll: blocks=${blocks.length} speaker="${currentSpeaker}" len=${fullText.length} changed=${fullText !== this.lastText}`);
-    }
-
-    // Speaker changed from last poll cycle
-    if (currentSpeaker !== this.lastSpeaker && this.lastSpeaker && this.lastText) {
+    // Speaker changed — post previous speaker's text
+    if (speaker !== this.lastSpeaker && this.lastSpeaker && this.lastText) {
       this._postCaption(this.lastSpeaker, this.lastText);
       this.lastPostedText = '';
     }
 
-    this.lastSpeaker = currentSpeaker;
+    this.lastSpeaker = speaker;
     this.lastText = fullText;
 
     // Debounce: post after 3s of no changes (final version of the caption)

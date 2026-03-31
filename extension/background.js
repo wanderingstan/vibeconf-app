@@ -269,11 +269,14 @@ async function ensureOffscreenAndCapture(streamId) {
 // Toolbar icon click: open side panel AND start tab capture.
 // Using action.onClicked (not openPanelOnActionClick) because it
 // properly grants activeTab permission needed for chrome.tabCapture.
+// Set side panel path (must be done before opening)
+chrome.sidePanel.setOptions({ path: 'popup.html' }).catch(() => {});
+
 chrome.action.onClicked.addListener((tab) => {
+  console.log('[bots-in-calls] Action clicked, tab:', tab.id, tab.url?.slice(0, 40));
+
   // Start tab capture FIRST (synchronously in user gesture context)
   if (tab.url?.startsWith('https://meet.google.com/')) {
-    console.log('[bots-in-calls] Action clicked on Meet tab', tab.id, '- starting capture');
-    // Omit targetTabId — defaults to active tab (the one user clicked on)
     chrome.tabCapture.getMediaStreamId({}, (streamId) => {
       if (chrome.runtime.lastError) {
         console.error('[bots-in-calls] tabCapture error:', chrome.runtime.lastError.message);
@@ -285,8 +288,10 @@ chrome.action.onClicked.addListener((tab) => {
     });
   }
 
-  // Open side panel (can be async, no gesture needed)
-  chrome.sidePanel.open({ tabId: tab.id }).catch(() => {});
+  // Open side panel
+  chrome.sidePanel.open({ tabId: tab.id }).catch((e) => {
+    console.debug('[bots-in-calls] Side panel open error:', e.message);
+  });
 });
 
 console.log('[bots-in-calls] Service worker started');

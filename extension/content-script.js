@@ -562,7 +562,7 @@ class DOMSpeakerTracker {
             },
           }, '*');
 
-          console.log(`[bots-in-calls] DOM: ${name} ${isSpeaking ? 'started' : 'stopped'} speaking`);
+          console.debug(`[bots-in-calls] DOM: ${name} ${isSpeaking ? 'started' : 'stopped'} speaking`);
         }
       }
     }
@@ -609,7 +609,7 @@ class DOMSpeakerTracker {
       if (isSpeaking !== info.speaking) {
         info.speaking = isSpeaking;
         info.lastChange = Date.now();
-        console.log(`[bots-in-calls] DOM: ${name} ${isSpeaking ? 'started' : 'stopped'} speaking`);
+        console.debug(`[bots-in-calls] DOM: ${name} ${isSpeaking ? 'started' : 'stopped'} speaking`);
       }
 
       // Always post if speaking (so the speakingLog gets continuous entries)

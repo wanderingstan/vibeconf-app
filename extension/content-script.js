@@ -772,18 +772,15 @@ class CaptionScraper {
 
     console.log(`[bots-in-calls] Caption [${speaker}]${isFinal ? ' (final)' : ''}: ${text.slice(0, 80)}`);
 
-    // Only post to the sync API when final (speaker changed).
-    // Intermediate updates go to the sidebar only.
-    if (isFinal) {
-      chrome.runtime.sendMessage({
-        action: 'post-transcripts',
-        transcripts: [{ speaker, text, timestamp: Date.now() }],
-      });
-    }
+    // Always post to sync API — the agent needs near-real-time text.
+    // Each post from the same speaker supersedes the previous one
+    // (the server appends, but the agent should read the latest).
+    chrome.runtime.sendMessage({
+      action: 'post-transcripts',
+      transcripts: [{ speaker, text, timestamp: Date.now() }],
+    });
 
-    // Always update the sidebar with the latest evolving text.
-    // The 'caption-update' action tells the sidebar to REPLACE
-    // the current entry for this speaker turn, not add a new one.
+    // Update the sidebar — replace in-progress or add final
     chrome.runtime.sendMessage({
       action: isFinal ? 'transcript' : 'caption-update',
       payload: { speaker, text, timestamp: Date.now(), source: 'captions' },

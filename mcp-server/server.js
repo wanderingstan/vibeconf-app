@@ -9,6 +9,7 @@
  *
  * Tools:
  *   - read_transcripts: Read what people are saying in the call
+ *   - wait_for_speech: Long-poll — blocks until someone finishes speaking
  *   - speak: Say something in the call (spoken via TTS)
  *   - update_whiteboard: Update the shared whiteboard/screen
  *   - get_room_info: Get current room state
@@ -90,6 +91,91 @@ server.tool(
     ].join("\n");
 
     return { content: [{ type: "text", text: result }] };
+  }
+);
+
+// --- wait_for_speech ---
+server.tool(
+  "wait_for_speech",
+  "Long-poll: blocks until someone in the call finishes speaking (a pause in conversation). Returns the complete transcript of what was said. Much more efficient than polling read_transcripts repeatedly. The tool waits for new speech, then waits for a conversation break (silence) before returning, so you get complete thoughts rather than fragments.",
+  {
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+    silence_seconds: z.number().optional().describe("How many seconds of silence to wait before considering speech 'done'. Default: 3"),
+    timeout_seconds: z.number().optional().describe("Maximum seconds to wait before returning even if nobody speaks. Default: 60"),
+  },
+  async ({ room_id, silence_seconds, timeout_seconds }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) {
+      return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    }
+
+    const silenceMs = (silence_seconds || 3) * 1000;
+    const timeoutMs = (timeout_seconds || 60) * 1000;
+    const startTime = Date.now();
+
+    // Get current state as baseline
+    let since = lastPollTime || null;
+    if (!since) {
+      const baseline = await fetch(`${BASE_URL}/api/sync/${roomId}`);
+      const baseData = await baseline.json();
+      since = baseData.asOf;
+      lastPollTime = since;
+    }
+
+    let accumulatedEntries = [];
+    let lastNewEntryTime = null;
+
+    while (Date.now() - startTime < timeoutMs) {
+      // Poll for new entries
+      const resp = await fetch(`${BASE_URL}/api/sync/${roomId}?since=${since}`);
+      const data = await resp.json();
+      since = data.asOf;
+      lastPollTime = since;
+
+      const entries = (data.transcript?.entries || []).filter(
+        (e) => e.participantName !== BOT_NAME
+      );
+
+      if (entries.length > 0) {
+        // New speech arrived
+        for (const entry of entries) {
+          // Deduplicate: same speaker, keep longest
+          const last = accumulatedEntries[accumulatedEntries.length - 1];
+          if (last && last.participantName === entry.participantName) {
+            if (entry.text.length >= last.text.length) {
+              accumulatedEntries[accumulatedEntries.length - 1] = entry;
+            }
+          } else {
+            accumulatedEntries.push(entry);
+          }
+        }
+        lastNewEntryTime = Date.now();
+      }
+
+      // Check if we've had silence long enough after receiving speech
+      if (lastNewEntryTime && (Date.now() - lastNewEntryTime > silenceMs)) {
+        // Conversation break detected — return what we have
+        break;
+      }
+
+      // Wait 1 second before next poll
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+
+    if (accumulatedEntries.length === 0) {
+      return { content: [{ type: "text", text: "(No one spoke. Timed out after " + Math.round((Date.now() - startTime) / 1000) + " seconds.)" }] };
+    }
+
+    const transcriptText = accumulatedEntries
+      .map((e) => `[${e.participantName}]: ${e.text}`)
+      .join("\n");
+
+    return {
+      content: [{
+        type: "text",
+        text: `Speech detected (${accumulatedEntries.length} speaker turn(s), ${Math.round((Date.now() - startTime) / 1000)}s elapsed):\n\n${transcriptText}`,
+      }],
+    };
   }
 );
 

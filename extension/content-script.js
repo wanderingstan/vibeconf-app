@@ -718,29 +718,19 @@ class CaptionScraper {
       return;
     }
 
-    // Try multiple selectors for caption text
-    const textEls = container.querySelectorAll('.ygicle, .VbkSUe, div[jsname="tgaKEf"]');
+    // Read the raw text content of the entire caption container.
+    // No class selectors — they change between Meet releases.
+    const rawText = container.textContent || '';
 
-    // Concatenate all caption text
-    let fullText = '';
-    for (const el of textEls) {
-      const t = el.innerText?.trim();
-      if (t) fullText += (fullText ? ' ' : '') + t;
-    }
+    // The container includes: speaker name + caption text + "Jump to bottom"
+    // Strip "Jump to bottom" suffix if present
+    const fullText = rawText.replace(/Jump to bottom\s*$/, '').trim();
 
-    // Debug: compare with container's own text
-    const containerText = container.innerText?.trim() || '';
-    if (!this._debugCount) this._debugCount = 0;
-    if (++this._debugCount % 3 === 0) {
-      console.debug(`[captions] els=${textEls.length} elText=${fullText.length} containerText=${containerText.length} match=${fullText === this.lastText}`);
-    }
-
-    // Get the last speaker name
-    const blocks = container.querySelectorAll('.nMcdL');
-    const lastBlock = blocks.length > 0 ? blocks[blocks.length - 1] : null;
-    const speakerEl = lastBlock?.querySelector('.KcIKyf span') ||
-                      lastBlock?.querySelector('.KcIKyf');
-    const speaker = speakerEl?.textContent?.trim() || 'unknown';
+    // Extract speaker name: it's the first line/word before the caption text.
+    // In the DOM, speaker name appears as a text node before the caption text.
+    // We'll grab it from the first img's sibling text node.
+    const speakerSpan = container.querySelector('span[class]');
+    const speaker = speakerSpan?.textContent?.trim() || 'unknown';
 
     if (!fullText) {
       // Captions empty — post whatever we had accumulated

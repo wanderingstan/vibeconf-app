@@ -271,22 +271,18 @@ async function ensureOffscreenAndCapture(streamId) {
 // properly grants activeTab permission needed for chrome.tabCapture.
 chrome.action.onClicked.addListener((tab) => {
   // Start tab capture FIRST (synchronously in user gesture context)
-  // before any async calls that might lose the gesture context
   if (tab.url?.startsWith('https://meet.google.com/')) {
-    // Call getMediaStreamId synchronously in the gesture context
-    chrome.tabCapture.getMediaStreamId(
-      { targetTabId: tab.id },
-      (streamId) => {
-        if (chrome.runtime.lastError) {
-          console.error('[bots-in-calls] tabCapture error:', chrome.runtime.lastError.message);
-          broadcastError('Audio capture: ' + chrome.runtime.lastError.message);
-        } else {
-          console.log('[bots-in-calls] Got tab capture stream ID');
-          // Create offscreen doc and start capture
-          ensureOffscreenAndCapture(streamId);
-        }
+    console.log('[bots-in-calls] Action clicked on Meet tab', tab.id, '- starting capture');
+    // Omit targetTabId — defaults to active tab (the one user clicked on)
+    chrome.tabCapture.getMediaStreamId({}, (streamId) => {
+      if (chrome.runtime.lastError) {
+        console.error('[bots-in-calls] tabCapture error:', chrome.runtime.lastError.message);
+        broadcastError('Audio capture: ' + chrome.runtime.lastError.message);
+      } else {
+        console.log('[bots-in-calls] Got tab capture stream ID:', streamId?.slice(0, 20));
+        ensureOffscreenAndCapture(streamId);
       }
-    );
+    });
   }
 
   // Open side panel (can be async, no gesture needed)

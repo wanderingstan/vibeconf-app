@@ -50,21 +50,6 @@ async function loadTranscriptFromServer() {
 
 loadTranscriptFromServer();
 
-// --- Tab audio capture ---
-let tabCaptureStarted = false;
-
-function startTabCaptureOnce() {
-  if (tabCaptureStarted) return;
-  tabCaptureStarted = true;
-  chrome.runtime.sendMessage({ action: 'start-tab-capture' }, (resp) => {
-    if (resp?.ok) {
-      console.log('[panel] Tab audio capture started');
-    } else {
-      console.warn('[panel] Tab capture failed:', resp?.error);
-      tabCaptureStarted = false; // allow retry
-    }
-  });
-}
 
 // --- Check for Meet tab ---
 async function checkStatus() {
@@ -75,8 +60,8 @@ async function checkStatus() {
       presentBtn.disabled = false;
       copyPromptBtn.disabled = false;
       updateAgentInfo();
-      // Start tab audio capture (requires activeTab, granted by opening side panel)
-      startTabCaptureOnce();
+      // Tab audio capture is started by the action.onClicked handler
+      // when the user clicks the extension icon
     } else {
       statusEl.style.display = 'block';
       presentBtn.disabled = true;

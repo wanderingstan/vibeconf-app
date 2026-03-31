@@ -690,31 +690,31 @@ class CaptionScraper {
       const container = document.querySelector('div[role="region"][aria-label="Captions"]');
       if (container) {
         clearInterval(poll);
-        this._observe(container);
+        this._observe();
       } else if (++attempts > 30) {
         clearInterval(poll);
         this._enableCaptions();
         setTimeout(() => {
           const c = document.querySelector('div[role="region"][aria-label="Captions"]');
-          if (c) this._observe(c);
+          if (c) this._observe();
           else console.warn('[bots-in-calls] Caption container not found');
         }, 5000);
       }
     }, 1000);
   }
 
-  _observe(container) {
-    console.log('[bots-in-calls] Caption container found, polling every 1s');
+  _observe() {
+    console.log('[bots-in-calls] Caption scraping active, polling every 1s');
     this.isRunning = true;
-    this.container = container;
-    // Poll instead of MutationObserver — more reliable across Meet's DOM update styles
     this._pollInterval = setInterval(() => this._checkCaptions(), 1000);
   }
 
   _checkCaptions() {
-    if (!this.container) return;
+    // Re-query every time — Meet may rebuild the container
+    const container = document.querySelector('div[role="region"][aria-label="Captions"]');
+    if (!container) return;
 
-    const blocks = this.container.querySelectorAll('.nMcdL');
+    const blocks = container.querySelectorAll('.nMcdL');
     if (blocks.length === 0) return;
 
     const lastBlock = blocks[blocks.length - 1];

@@ -177,9 +177,9 @@ window.__botsInCallsTranscription.stopListening()
 
 ## Next Steps
 
-1. **Test audio capture** — Verify RTCPeerConnection hook captures individual participant streams in a live call. Check popup's Audio Capture section for level meters.
-2. **Test speaker-attributed STT** — Click "Start Listening" in popup, speak from the main profile, verify transcripts appear with correct speaker attribution.
-3. **Backend AI integration** — Wire up: capture audio → STT (Whisper/Deepgram) → LLM (Claude) → TTS (ElevenLabs) → `VirtualMic.playAudio()`.
-4. **Hosted whiteboard** — Add a `/whiteboard` route to vibeconferencing.vercel.app (chrome-extension:// URLs break Meet's screen sharing).
-5. **Electron wrapper investigation** — Would solve the screen share picker issue (`desktopCapturer`) and the signed-in profile issue.
+1. **Server-side transcript deduplication** — Currently the extension posts incremental caption updates as separate entries (same speaker, growing text). Client-side dedup collapses these on display. Better approach: modify the sync API so that consecutive posts from the same speaker *replace* the previous entry (same Redis sorted set score/timestamp) rather than appending. This mirrors how Google Meet handles captions — one evolving block per speaker turn. Would eliminate redundant entries in the database and simplify client logic.
+2. **WebSocket/SSE for real-time sync** — Replace the 1-second polling loop with a persistent connection for sub-second caption delivery to the agent. The existing SSE infrastructure in vibeconferencing.com (`/api/room/[roomId]/stream`) could be adapted.
+3. **Backend AI integration** — Wire up: caption transcript → LLM (Claude) → TTS (ElevenLabs) → `VirtualMic.playAudio()`.
+4. **Hosted whiteboard** — Add a `/whiteboard` route to vibeconferencing.com (chrome-extension:// URLs break Meet's screen sharing).
+5. **Electron wrapper investigation** — Would solve the screen share picker issue (`desktopCapturer`), enable local STT/TTS, and allow `system audio capture` for headless setups.
 6. **Puppeteer/headless deployment** — Run the bot server-side with `--load-extension` for production use.

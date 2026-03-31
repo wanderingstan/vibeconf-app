@@ -747,7 +747,16 @@ class CaptionScraper {
       speaker,
     }).catch(() => {});
 
-    if (!captionText || captionText === this.lastText) return;
+    if (!captionText) return;
+
+    // Text unchanged — but check if we have unposted text
+    if (captionText === this.lastText) {
+      // If text is stable but differs from last post, send it
+      if (captionText !== this.lastPostedText && this.lastSpeaker) {
+        this._postCaption(this.lastSpeaker, captionText, false);
+      }
+      return;
+    }
 
     this.lastText = captionText;
 

@@ -736,9 +736,18 @@ class CaptionScraper {
                       lastBlock?.querySelector('.KcIKyf');
     const speaker = speakerEl?.textContent?.trim() || 'unknown';
 
-    if (!fullText || fullText === this.lastText) return;
+    if (!fullText) {
+      // Captions empty — post whatever we had accumulated
+      if (this.lastText && this.lastText !== this.lastPostedText) {
+        this._postCaption(this.lastSpeaker, this.lastText);
+      }
+      this.lastText = '';
+      return;
+    }
 
-    // Speaker changed — post previous speaker's text
+    if (fullText === this.lastText) return;
+
+    // Speaker changed — post previous speaker's completed text
     if (speaker !== this.lastSpeaker && this.lastSpeaker && this.lastText) {
       this._postCaption(this.lastSpeaker, this.lastText);
       this.lastPostedText = '';
@@ -747,13 +756,13 @@ class CaptionScraper {
     this.lastSpeaker = speaker;
     this.lastText = fullText;
 
-    // Debounce: post after 3s of no changes (final version of the caption)
-    clearTimeout(this._debounceTimer);
-    this._debounceTimer = setTimeout(() => {
-      if (this.lastText && this.lastText !== this.lastPostedText) {
-        this._postCaption(this.lastSpeaker, this.lastText);
-      }
-    }, 3000);
+    // Post every 5 seconds of accumulated text (don't wait for silence)
+    const now = Date.now();
+    if (!this._lastPostTime) this._lastPostTime = now;
+    if (now - this._lastPostTime > 5000 && fullText !== this.lastPostedText) {
+      this._postCaption(speaker, fullText);
+      this._lastPostTime = now;
+    }
     } catch (err) {
       console.error('[captions] poll error:', err);
     }
@@ -798,9 +807,10 @@ const captionScraper = new CaptionScraper();
 setTimeout(() => {
   domSpeakerTracker.start();
 
-  // Start caption scraping — reads Meet's own captions from the DOM.
-  // No audio capture needed; Meet does the STT for us.
-  setTimeout(() => captionScraper.start(), 5000);
+  // Start caption polling — post when speaker changes or after silence
+  setTimeout(() => {
+    captionScraper.start();
+  }, 5000);
 
   // Auto-mute the bot's mic — only unmute when speaking via TTS
   setTimeout(() => setMicMuted(true), 5000);

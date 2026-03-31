@@ -523,9 +523,9 @@
           transcription.botSpeaking = true;
           mic.playAudio(payload.audioData).then(() => {
             for (const cam of cameras.values()) cam.speaking = false;
-            // Small delay before clearing — speech recognition may still
-            // be processing the tail end of the bot's audio
             setTimeout(() => { transcription.botSpeaking = false; }, 1500);
+            // Notify extension that TTS playback ended (for mic mute)
+            window.postMessage({ __botsInCalls: true, action: 'tts-ended' }, '*');
           });
         }
         break;

@@ -24,6 +24,7 @@ function broadcastError(message) {
 }
 
 // Helper: synthesize and play text through the Meet tab
+// Unmutes mic before speaking, mutes after.
 function speakText(text) {
   tts.synthesize(text)
     .then((audioBuffer) => {
@@ -34,11 +35,16 @@ function speakText(text) {
 
       chrome.tabs.query({ url: 'https://meet.google.com/*' }, (tabs) => {
         if (tabs.length > 0) {
-          chrome.tabs.sendMessage(tabs[0].id, {
+          const tabId = tabs[0].id;
+          // Unmute before speaking
+          chrome.tabs.sendMessage(tabId, { action: 'unmute-mic' });
+
+          chrome.tabs.sendMessage(tabId, {
             target: 'page',
             action: 'play-tts',
             payload: { audioData: base64Audio },
           });
+          // Mic will be muted by content script when tts-ended event fires
         }
       });
     })

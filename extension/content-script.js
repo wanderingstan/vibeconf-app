@@ -63,6 +63,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return;
   }
 
+  if (message.action === 'unmute-mic') {
+    setMicMuted(false);
+    sendResponse({ ok: true });
+    return;
+  }
+
+  if (message.action === 'mute-mic') {
+    setMicMuted(true);
+    sendResponse({ ok: true });
+    return;
+  }
+
   if (message.action === 'set-bot-name') {
     BOT_NAME = message.botName || BOT_NAME;
     sendResponse({ ok: true });
@@ -169,6 +181,32 @@ async function typeIntoInput(input, value) {
 // ---------------------------------------------------------------------------
 // Google Meet auto-join flow
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Mic mute/unmute — bot mutes itself except when speaking
+// ---------------------------------------------------------------------------
+
+function getMicButton() {
+  return document.querySelector('button[data-is-muted][aria-label*="microphone" i]');
+}
+
+function isMicMuted() {
+  const btn = getMicButton();
+  return btn?.getAttribute('data-is-muted') === 'true';
+}
+
+function setMicMuted(mute) {
+  const btn = getMicButton();
+  if (!btn) {
+    console.debug('[bots-in-calls] Mic button not found');
+    return;
+  }
+  const currentlyMuted = btn.getAttribute('data-is-muted') === 'true';
+  if (mute !== currentlyMuted) {
+    btn.click();
+    console.debug('[bots-in-calls] Mic', mute ? 'muted' : 'unmuted');
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Screen share automation — click "Present now" in Meet's UI
@@ -603,6 +641,9 @@ setTimeout(() => {
   }, '*');
   console.log('[bots-in-calls] Auto-started Web Speech API for transcription');
 
+  // Auto-mute the bot's mic — only unmute when speaking via TTS
+  setTimeout(() => setMicMuted(true), 5000);
+
   // Start syncing with vibeconferencing.com
   const meetCode = location.pathname.replace('/', ''); // e.g., "abc-defg-hij"
   if (meetCode) {
@@ -638,6 +679,11 @@ window.addEventListener('message', (event) => {
         transcripts: [t],
       });
     }
+  }
+
+  // Mute mic after TTS playback ends
+  if (event.data.action === 'tts-ended') {
+    setTimeout(() => setMicMuted(true), 500); // small delay for audio to flush
   }
 
   // Forward audio for STT

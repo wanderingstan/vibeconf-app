@@ -1,0 +1,13 @@
+{
+  "name": "vibeconferencing-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for Vibeconferencing Agent - lets AI agents join Google Meet calls",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "latest"
+  }
+}

@@ -24,6 +24,9 @@
     "https://vibeconferencing.vercel.app/*"
   ],
   "action": {},
+  "side_panel": {
+    "default_path": "popup.html"
+  },
   "background": {
     "service_worker": "background.js"
   },

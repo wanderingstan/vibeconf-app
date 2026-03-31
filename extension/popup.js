@@ -60,8 +60,7 @@ async function checkStatus() {
       presentBtn.disabled = false;
       copyPromptBtn.disabled = false;
       updateAgentInfo();
-      // Tab audio capture is started by the action.onClicked handler
-      // when the user clicks the extension icon
+      document.getElementById('listenBtn').disabled = false;
     } else {
       statusEl.style.display = 'block';
       presentBtn.disabled = true;
@@ -146,6 +145,56 @@ curl -X POST "${endpoint}" \\
       setTimeout(() => { copyPromptBtn.textContent = 'Copy Agent Prompt'; }, 2000);
     });
   });
+});
+
+// --- Tab audio capture for STT ---
+const listenBtn = document.getElementById('listenBtn');
+let isListening = false;
+
+listenBtn.addEventListener('click', async () => {
+  if (isListening) return;
+
+  listenBtn.textContent = 'Starting…';
+  listenBtn.disabled = true;
+
+  try {
+    const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
+    if (tabs.length === 0) {
+      listenBtn.textContent = 'No Meet tab';
+      setTimeout(() => { listenBtn.textContent = 'Start Listening'; listenBtn.disabled = false; }, 2000);
+      return;
+    }
+
+    // Call tabCapture from the side panel (extension page context with user gesture)
+    chrome.tabCapture.getMediaStreamId(
+      { targetTabId: tabs[0].id },
+      (streamId) => {
+        if (chrome.runtime.lastError) {
+          console.error('[panel] tabCapture error:', chrome.runtime.lastError.message);
+          listenBtn.textContent = 'Capture failed';
+          setTimeout(() => { listenBtn.textContent = 'Start Listening'; listenBtn.disabled = false; }, 3000);
+          return;
+        }
+
+        console.log('[panel] Got tab capture stream ID');
+        // Forward to background to create offscreen doc and start recording
+        chrome.runtime.sendMessage({
+          action: 'start-offscreen-capture',
+          streamId,
+        }, (resp) => {
+          if (resp?.ok) {
+            isListening = true;
+            listenBtn.textContent = 'Listening…';
+            console.log('[panel] Tab audio capture active');
+          }
+        });
+      }
+    );
+  } catch (err) {
+    console.error('[panel] Capture error:', err);
+    listenBtn.textContent = 'Start Listening';
+    listenBtn.disabled = false;
+  }
 });
 
 presentBtn.addEventListener('click', () => {

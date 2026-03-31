@@ -80,6 +80,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return;
   }
 
+  // --- Start offscreen capture with a stream ID from the side panel ---
+  if (message.action === 'start-offscreen-capture') {
+    ensureOffscreenAndCapture(message.streamId);
+    sendResponse({ ok: true });
+    return true;
+  }
+
   // --- STT: transcribe audio blob ---
   if (message.action === 'transcribe') {
     const { audioBase64 } = message;
@@ -269,29 +276,7 @@ async function ensureOffscreenAndCapture(streamId) {
 // Toolbar icon click: open side panel AND start tab capture.
 // Using action.onClicked (not openPanelOnActionClick) because it
 // properly grants activeTab permission needed for chrome.tabCapture.
-// Set side panel path (must be done before opening)
-chrome.sidePanel.setOptions({ path: 'popup.html' }).catch(() => {});
-
-chrome.action.onClicked.addListener((tab) => {
-  console.log('[bots-in-calls] Action clicked, tab:', tab.id, tab.url?.slice(0, 40));
-
-  // Start tab capture FIRST (synchronously in user gesture context)
-  if (tab.url?.startsWith('https://meet.google.com/')) {
-    chrome.tabCapture.getMediaStreamId({}, (streamId) => {
-      if (chrome.runtime.lastError) {
-        console.error('[bots-in-calls] tabCapture error:', chrome.runtime.lastError.message);
-        broadcastError('Audio capture: ' + chrome.runtime.lastError.message);
-      } else {
-        console.log('[bots-in-calls] Got tab capture stream ID:', streamId?.slice(0, 20));
-        ensureOffscreenAndCapture(streamId);
-      }
-    });
-  }
-
-  // Open side panel
-  chrome.sidePanel.open({ tabId: tab.id }).catch((e) => {
-    console.debug('[bots-in-calls] Side panel open error:', e.message);
-  });
-});
+// Toolbar icon toggles side panel
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 
 console.log('[bots-in-calls] Service worker started');

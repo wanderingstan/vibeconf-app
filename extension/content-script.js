@@ -748,10 +748,10 @@ class CaptionScraper {
     }
     this.lastSpeaker = speaker;
 
-    // Post every 5 seconds
+    // Post every 2 seconds while text is growing
     const now = Date.now();
     if (!this._lastPostTime) this._lastPostTime = now;
-    if (now - this._lastPostTime > 5000) {
+    if (now - this._lastPostTime > 2000) {
       this._postCaption(speaker, captionText);
       this._lastPostTime = now;
     }

@@ -718,21 +718,25 @@ class CaptionScraper {
       return;
     }
 
-    // Read text from the first child div (the caption block, not buttons)
-    const firstChild = container.firstElementChild;
-    if (!firstChild) return;
+    // Read ALL text from the container, then strip non-caption content.
+    // Meet adds new child divs for continued speech from the same speaker.
+    // We can't just read firstElementChild — we need all of them.
+    const rawText = container.textContent || '';
 
-    const rawText = firstChild.textContent || '';
-    if (!rawText.trim()) return;
+    // Strip known non-caption text at the end (button text)
+    let captionText = rawText
+      .replace(/arrow_downward\s*/g, '')
+      .replace(/Jump to bottom\s*/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
 
-    // Speaker name is the first text, then caption follows
-    // Split by finding the speaker name element
-    const speakerSpan = firstChild.querySelector('span');
+    // Get speaker name from the first span in the container
+    const speakerSpan = container.querySelector('span');
     const speaker = speakerSpan?.textContent?.trim() || 'unknown';
 
-    // Remove speaker name from the beginning, normalize whitespace
-    let captionText = rawText.replace(/\s+/g, ' ').trim();
-    if (captionText.startsWith(speaker)) {
+    // Strip speaker name from the start (may appear multiple times if
+    // Meet shows speaker label on each caption block)
+    while (captionText.startsWith(speaker)) {
       captionText = captionText.slice(speaker.length).trim();
     }
 

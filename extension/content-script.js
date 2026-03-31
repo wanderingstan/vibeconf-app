@@ -649,13 +649,139 @@ class DOMSpeakerTracker {
 
 const domSpeakerTracker = new DOMSpeakerTracker();
 
+// ---------------------------------------------------------------------------
+// Caption Scraper — reads Google Meet's built-in captions from the DOM.
+// Meet does the speech-to-text; we just read the results. Includes speaker
+// names. No audio capture, no external STT API, no feedback loops.
+// ---------------------------------------------------------------------------
+
+class CaptionScraper {
+  constructor() {
+    this.observer = null;
+    this.lastText = '';
+    this.lastSpeaker = '';
+    this.isRunning = false;
+    this._debounceTimer = null;
+  }
+
+  start() {
+    if (this.isRunning) return;
+    console.log('[bots-in-calls] Caption scraper starting...');
+    this._enableCaptions();
+    this._waitForCaptions();
+  }
+
+  _enableCaptions() {
+    const ccButton =
+      findByAriaLabel('Turn on captions') ||
+      findByAriaLabel('Activar subtítulos');
+    if (ccButton) {
+      ccButton.click();
+      console.log('[bots-in-calls] Enabled captions');
+    } else {
+      console.debug('[bots-in-calls] Captions may already be on');
+    }
+  }
+
+  _waitForCaptions() {
+    let attempts = 0;
+    const poll = setInterval(() => {
+      const container = document.querySelector('div[role="region"][aria-label="Captions"]');
+      if (container) {
+        clearInterval(poll);
+        this._observe(container);
+      } else if (++attempts > 30) {
+        clearInterval(poll);
+        this._enableCaptions();
+        setTimeout(() => {
+          const c = document.querySelector('div[role="region"][aria-label="Captions"]');
+          if (c) this._observe(c);
+          else console.warn('[bots-in-calls] Caption container not found');
+        }, 5000);
+      }
+    }, 1000);
+  }
+
+  _observe(container) {
+    console.log('[bots-in-calls] Caption container found, observing');
+    this.isRunning = true;
+    this.observer = new MutationObserver(() => this._onMutation(container));
+    this.observer.observe(container, {
+      childList: true, subtree: true, characterData: true,
+    });
+  }
+
+  _onMutation(container) {
+    const blocks = container.querySelectorAll('.nMcdL');
+    if (blocks.length === 0) return;
+
+    const lastBlock = blocks[blocks.length - 1];
+    const speakerEl = lastBlock.querySelector('.KcIKyf span') ||
+                      lastBlock.querySelector('.KcIKyf');
+    const textEl = lastBlock.querySelector('.ygicle') ||
+                   lastBlock.querySelector('div[jsname="tgaKEf"]');
+    if (!speakerEl || !textEl) return;
+
+    const speaker = speakerEl.textContent.trim();
+    const text = textEl.textContent.trim();
+    if (!text || text === this.lastText) return;
+
+    // Speaker changed — post the previous speaker's completed caption
+    if (speaker !== this.lastSpeaker && this.lastSpeaker && this.lastText) {
+      this._postCaption(this.lastSpeaker, this.lastText);
+    }
+
+    this.lastSpeaker = speaker;
+    this.lastText = text;
+
+    // Debounce: post after 2s of no changes
+    clearTimeout(this._debounceTimer);
+    this._debounceTimer = setTimeout(() => {
+      if (this.lastText) {
+        this._postCaption(this.lastSpeaker, this.lastText);
+        this.lastText = '';
+      }
+    }, 2000);
+  }
+
+  _postCaption(speaker, text) {
+    // Skip bot's own speech (shows as "You" in captions)
+    if (speaker === 'You') {
+      console.debug('[bots-in-calls] Skipping self caption');
+      return;
+    }
+
+    console.log(`[bots-in-calls] Caption [${speaker}]: ${text.slice(0, 60)}`);
+
+    // Post to sync API
+    chrome.runtime.sendMessage({
+      action: 'post-transcripts',
+      transcripts: [{ speaker, text, timestamp: Date.now() }],
+    });
+
+    // Show in side panel
+    window.postMessage({
+      __botsInCalls: true,
+      action: 'transcript',
+      payload: { timestamp: Date.now(), speaker, text, source: 'captions' },
+    }, '*');
+  }
+
+  stop() {
+    if (this.observer) this.observer.disconnect();
+    this.isRunning = false;
+  }
+}
+
+const captionScraper = new CaptionScraper();
+
 // Start tracking, listening, and syncing once the bot is in the call
 setTimeout(() => {
   domSpeakerTracker.start();
 
-  // Tab audio capture is started from the side panel (requires user click
-  // to grant activeTab permission for chrome.tabCapture).
-  console.log('[bots-in-calls] Waiting for side panel to start audio capture');
+  // Start caption scraping — reads Meet's own captions from the DOM.
+  // No audio capture needed; Meet does the STT for us.
+  setTimeout(() => captionScraper.start(), 5000);
 
   // Auto-mute the bot's mic — only unmute when speaking via TTS
   setTimeout(() => setMicMuted(true), 5000);

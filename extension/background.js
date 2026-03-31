@@ -80,13 +80,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return;
   }
 
-  // --- Start offscreen capture with a stream ID from the side panel ---
-  if (message.action === 'start-offscreen-capture') {
-    ensureOffscreenAndCapture(message.streamId);
-    sendResponse({ ok: true });
-    return true;
-  }
-
   // --- STT: transcribe audio blob ---
   if (message.action === 'transcribe') {
     const { audioBase64 } = message;
@@ -236,46 +229,6 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// Tab audio capture via offscreen document for ElevenLabs STT
-// ---------------------------------------------------------------------------
-
-let captureActive = false;
-
-async function ensureOffscreenAndCapture(streamId) {
-  if (captureActive) return;
-
-  try {
-    // Create offscreen document if it doesn't exist
-    const contexts = await chrome.runtime.getContexts({
-      contextTypes: ['OFFSCREEN_DOCUMENT'],
-    });
-    if (contexts.length === 0) {
-      await chrome.offscreen.createDocument({
-        url: 'offscreen.html',
-        reasons: ['USER_MEDIA'],
-        justification: 'Capture tab audio for speech-to-text transcription',
-      });
-      console.log('[bots-in-calls] Offscreen document created');
-    }
-
-    // Tell the offscreen document to start capturing
-    chrome.runtime.sendMessage({
-      action: 'start-capture',
-      streamId,
-    });
-
-    captureActive = true;
-    console.log('[bots-in-calls] Tab audio capture started');
-  } catch (err) {
-    console.error('[bots-in-calls] Offscreen/capture setup failed:', err.message);
-    broadcastError('Audio capture: ' + err.message.slice(0, 100));
-  }
-}
-
-// Toolbar icon click: open side panel AND start tab capture.
-// Using action.onClicked (not openPanelOnActionClick) because it
-// properly grants activeTab permission needed for chrome.tabCapture.
 // Toolbar icon toggles side panel
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 

@@ -771,7 +771,7 @@ class CaptionScraper {
     if (text === this.lastPostedText) return;
     this.lastPostedText = text;
 
-    console.log(`[bots-in-calls] Caption [${speaker}]: ${text.slice(0, 60)}`);
+    console.log(`[bots-in-calls] Caption [${speaker}] (${text.length} chars): ${text.slice(0, 120)}...`);
 
     const transcript = { speaker, text, timestamp: Date.now(), source: 'captions' };
 

@@ -179,6 +179,10 @@ chrome.runtime.onMessage.addListener((message) => {
   if (message.action === 'error') {
     showError(message.message);
   }
+  if (message.action === 'raw-caption') {
+    const el = document.getElementById('rawCaptionText');
+    if (el) el.textContent = `[${message.speaker}] ${message.text}`;
+  }
 });
 
 // Update the live caption entry (replaces the top entry if same speaker)

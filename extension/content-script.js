@@ -740,6 +740,13 @@ class CaptionScraper {
       captionText = captionText.slice(speaker.length).trim();
     }
 
+    // Broadcast raw caption to sidebar for debugging
+    chrome.runtime.sendMessage({
+      action: 'raw-caption',
+      text: captionText,
+      speaker,
+    }).catch(() => {});
+
     if (!captionText || captionText === this.lastText) return;
 
     this.lastText = captionText;

@@ -173,12 +173,39 @@ chrome.runtime.onMessage.addListener((message) => {
   if (message.action === 'transcript') {
     addTranscriptEntry(message.payload);
   }
+  if (message.action === 'caption-update') {
+    updateCurrentCaption(message.payload);
+  }
   if (message.action === 'error') {
     showError(message.message);
   }
 });
 
+// Update the live caption entry (replaces the top entry if same speaker)
+function updateCurrentCaption(t) {
+  const time = new Date(t.timestamp).toLocaleTimeString();
+  let liveEntry = document.getElementById('live-caption');
+
+  if (!liveEntry) {
+    liveEntry = document.createElement('div');
+    liveEntry.id = 'live-caption';
+    liveEntry.className = 'transcript-entry';
+    liveEntry.style.opacity = '0.7';
+    transcriptArea.prepend(liveEntry);
+  }
+
+  liveEntry.innerHTML = `
+    <span class="transcript-time">${time}</span>
+    <span class="transcript-speaker">[${t.speaker}]</span>
+    <span class="transcript-text">${t.text}</span>
+  `;
+}
+
 function addTranscriptEntry(t) {
+  // Remove live caption — it's now finalized
+  const liveEntry = document.getElementById('live-caption');
+  if (liveEntry) liveEntry.remove();
+
   // Dedup by content+timestamp
   const key = `${t.speaker}:${t.text}:${t.timestamp}`;
   if (seenEntryIds.has(key)) return;

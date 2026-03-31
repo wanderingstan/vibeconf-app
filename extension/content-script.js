@@ -738,21 +738,23 @@ class CaptionScraper {
 
     if (!captionText || captionText === this.lastText) return;
 
-    // Text changed — update and post periodically
     this.lastText = captionText;
 
-    // Speaker changed — post previous speaker's text
-    if (speaker !== this.lastSpeaker && this.lastSpeaker) {
-      this._postCaption(this.lastSpeaker, this.lastPostedText || captionText);
-      this.lastPostedText = '';
+    // Same speaker = one evolving block. Only post when:
+    // 1. Speaker changes (previous speaker's text is final)
+    // 2. Periodically (so the sidebar/server has the latest)
+    if (speaker !== this.lastSpeaker && this.lastSpeaker && this.lastPostedText) {
+      // Speaker changed — the previous text is final, post it
+      this._postCaption(this.lastSpeaker, this.lastPostedText, true);
     }
     this.lastSpeaker = speaker;
 
-    // Post every 2 seconds while text is growing
+    // Update the server/sidebar every 3 seconds with the latest text.
+    // This REPLACES the previous entry for the same speaker turn.
     const now = Date.now();
     if (!this._lastPostTime) this._lastPostTime = now;
-    if (now - this._lastPostTime > 1000) {
-      this._postCaption(speaker, captionText);
+    if (now - this._lastPostTime > 3000) {
+      this._postCaption(speaker, captionText, false);
       this._lastPostTime = now;
     }
     } catch (err) {
@@ -760,31 +762,31 @@ class CaptionScraper {
     }
   }
 
-  _postCaption(speaker, text) {
+  _postCaption(speaker, text, isFinal = false) {
     // Skip bot's own speech (shows as "You" in captions)
-    if (speaker === 'You') {
-      console.debug('[bots-in-calls] Skipping self caption');
-      return;
-    }
+    if (speaker === 'You') return;
 
     // Skip if we already posted this exact text
     if (text === this.lastPostedText) return;
     this.lastPostedText = text;
 
-    console.log(`[bots-in-calls] Caption [${speaker}] (${text.length} chars): ${text.slice(0, 120)}...`);
+    console.log(`[bots-in-calls] Caption [${speaker}]${isFinal ? ' (final)' : ''}: ${text.slice(0, 80)}`);
 
-    const transcript = { speaker, text, timestamp: Date.now(), source: 'captions' };
+    // Only post to the sync API when final (speaker changed).
+    // Intermediate updates go to the sidebar only.
+    if (isFinal) {
+      chrome.runtime.sendMessage({
+        action: 'post-transcripts',
+        transcripts: [{ speaker, text, timestamp: Date.now() }],
+      });
+    }
 
-    // Post to sync API
+    // Always update the sidebar with the latest evolving text.
+    // The 'caption-update' action tells the sidebar to REPLACE
+    // the current entry for this speaker turn, not add a new one.
     chrome.runtime.sendMessage({
-      action: 'post-transcripts',
-      transcripts: [transcript],
-    });
-
-    // Broadcast to side panel (chrome.runtime messages reach all extension pages)
-    chrome.runtime.sendMessage({
-      action: 'transcript',
-      payload: transcript,
+      action: isFinal ? 'transcript' : 'caption-update',
+      payload: { speaker, text, timestamp: Date.now(), source: 'captions' },
     }).catch(() => {});
   }
 

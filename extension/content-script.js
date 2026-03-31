@@ -718,63 +718,55 @@ class CaptionScraper {
       return;
     }
 
-    // Read ALL text from the container, then strip non-caption content.
-    // Meet adds new child divs for continued speech from the same speaker.
-    // We can't just read firstElementChild — we need all of them.
-    const rawText = container.textContent || '';
-
-    // Strip known non-caption text at the end (button text)
-    let captionText = rawText
-      .replace(/arrow_downward\s*/g, '')
-      .replace(/Jump to bottom\s*/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    // Get speaker name from the first span in the container
-    const speakerSpan = container.querySelector('span');
-    const speaker = speakerSpan?.textContent?.trim() || 'unknown';
-
-    // Strip speaker name from the start (may appear multiple times if
-    // Meet shows speaker label on each caption block)
-    while (captionText.startsWith(speaker)) {
-      captionText = captionText.slice(speaker.length).trim();
+    // Parse each caption block separately. Each child div with an <img>
+    // is a caption block containing a speaker name + text.
+    // No class selectors used — structural detection only.
+    const captionBlocks = [];
+    for (const child of container.children) {
+      if (!child.querySelector('img')) continue;
+      const span = child.querySelector('span');
+      const speaker = span?.textContent?.trim() || 'unknown';
+      let text = child.textContent.replace(/\s+/g, ' ').trim();
+      if (text.startsWith(speaker)) text = text.slice(speaker.length).trim();
+      if (text) captionBlocks.push({ speaker, text });
     }
 
-    // Broadcast raw caption to sidebar for debugging
+    if (captionBlocks.length === 0) return;
+
+    // Build snapshot for change detection
+    const snapshot = captionBlocks.map(b => `${b.speaker}:${b.text}`).join('|');
+    const lastBlock = captionBlocks[captionBlocks.length - 1];
+
+    // Debug: show latest speaker's text in sidebar
     chrome.runtime.sendMessage({
       action: 'raw-caption',
-      text: captionText,
-      speaker,
+      text: lastBlock.text,
+      speaker: lastBlock.speaker,
     }).catch(() => {});
 
-    if (!captionText) return;
-
-    // Text unchanged — but check if we have unposted text
-    if (captionText === this.lastText) {
-      // If text is stable but differs from last post, send it
-      if (captionText !== this.lastPostedText && this.lastSpeaker) {
-        this._postCaption(this.lastSpeaker, captionText, false);
+    // No change since last poll
+    if (snapshot === this._lastSnapshot) {
+      // Post final version if we haven't yet
+      if (lastBlock.text !== this.lastPostedText && lastBlock.speaker !== 'You') {
+        this._postCaption(lastBlock.speaker, lastBlock.text, false);
       }
       return;
     }
 
-    this.lastText = captionText;
-
-    // Same speaker = one evolving block. Only post when:
-    // 1. Speaker changes (previous speaker's text is final)
-    // 2. Periodically (so the sidebar/server has the latest)
-    if (speaker !== this.lastSpeaker && this.lastSpeaker && this.lastPostedText) {
-      // Speaker changed — the previous text is final, post it
+    // Speaker changed — post previous speaker's final text
+    if (lastBlock.speaker !== this.lastSpeaker && this.lastSpeaker && this.lastPostedText) {
       this._postCaption(this.lastSpeaker, this.lastPostedText, true);
     }
-    this.lastSpeaker = speaker;
 
-    // Update the server/sidebar every 3 seconds with the latest text.
-    // This REPLACES the previous entry for the same speaker turn.
+    this._lastSnapshot = snapshot;
+    this.lastSpeaker = lastBlock.speaker;
+    this.lastText = lastBlock.text;
+
+    // Post every 3 seconds while text evolves
     const now = Date.now();
     if (!this._lastPostTime) this._lastPostTime = now;
     if (now - this._lastPostTime > 3000) {
-      this._postCaption(speaker, captionText, false);
+      this._postCaption(lastBlock.speaker, lastBlock.text, false);
       this._lastPostTime = now;
     }
     } catch (err) {

@@ -80,6 +80,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return;
   }
 
+  // --- Tab capture: start capturing a Meet tab's audio ---
+  if (message.action === 'start-tab-capture') {
+    chrome.tabs.query({ url: 'https://meet.google.com/*' }, (tabs) => {
+      if (tabs.length > 0) {
+        startTabCapture(tabs[0].id);
+        sendResponse({ ok: true });
+      } else {
+        sendResponse({ error: 'No Meet tab found' });
+      }
+    });
+    return true;
+  }
+
   // --- STT: transcribe audio blob ---
   if (message.action === 'transcribe') {
     const { audioBase64 } = message;
@@ -97,7 +110,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     stt.transcribe(blob)
       .then((result) => {
-        console.log('[bots-in-calls] STT result:', result.text?.slice(0, 80));
+        if (result?.text?.trim()) {
+          console.log('[bots-in-calls] STT result:', result.text.slice(0, 80));
+
+          // If from tabCapture, forward the transcript to the Meet tab
+          if (message.source === 'tabCapture') {
+            chrome.tabs.query({ url: 'https://meet.google.com/*' }, (tabs) => {
+              if (tabs.length > 0) {
+                chrome.tabs.sendMessage(tabs[0].id, {
+                  action: 'stt-result',
+                  text: result.text.trim(),
+                });
+              }
+            });
+          }
+        }
         sendResponse({ ok: true, ...result });
       })
       .catch((err) => {
@@ -214,6 +241,48 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     whiteboardTabId = null;
   }
 });
+
+// ---------------------------------------------------------------------------
+// Tab audio capture via offscreen document for ElevenLabs STT
+// ---------------------------------------------------------------------------
+
+let capturingTabId = null;
+
+async function startTabCapture(tabId) {
+  if (capturingTabId === tabId) return; // already capturing this tab
+
+  try {
+    // Create offscreen document if it doesn't exist
+    const contexts = await chrome.runtime.getContexts({
+      contextTypes: ['OFFSCREEN_DOCUMENT'],
+    });
+    if (contexts.length === 0) {
+      await chrome.offscreen.createDocument({
+        url: 'offscreen.html',
+        reasons: ['USER_MEDIA'],
+        justification: 'Capture tab audio for speech-to-text transcription',
+      });
+      console.log('[bots-in-calls] Offscreen document created');
+    }
+
+    // Get a stream ID for the tab's audio
+    const streamId = await chrome.tabCapture.getMediaStreamId({
+      targetTabId: tabId,
+    });
+
+    // Tell the offscreen document to start capturing
+    chrome.runtime.sendMessage({
+      action: 'start-capture',
+      streamId,
+    });
+
+    capturingTabId = tabId;
+    console.log('[bots-in-calls] Tab audio capture started for tab', tabId);
+  } catch (err) {
+    console.error('[bots-in-calls] Tab capture failed:', err.message);
+    broadcastError('Audio capture: ' + err.message.slice(0, 100));
+  }
+}
 
 // Toolbar icon click opens side panel
 chrome.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true })

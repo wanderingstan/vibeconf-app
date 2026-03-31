@@ -63,6 +63,29 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return;
   }
 
+  // STT result from tab audio capture
+  if (message.action === 'stt-result') {
+    const speakingNames = domSpeakerTracker.getSpeakingNames();
+    const speaker = speakingNames[0] || 'unknown';
+
+    console.log(`[bots-in-calls] STT [${speaker}]: ${message.text.slice(0, 60)}`);
+
+    // Emit as transcript (for sync and side panel display)
+    window.postMessage({
+      __botsInCalls: true,
+      action: 'transcript',
+      payload: {
+        timestamp: Date.now(),
+        text: message.text,
+        speaker,
+        confidence: 1.0,
+        source: 'tabCapture-stt',
+      },
+    }, '*');
+    sendResponse({ ok: true });
+    return;
+  }
+
   if (message.action === 'unmute-mic') {
     setMicMuted(false);
     sendResponse({ ok: true });
@@ -630,16 +653,16 @@ const domSpeakerTracker = new DOMSpeakerTracker();
 setTimeout(() => {
   domSpeakerTracker.start();
 
-  // Web Speech API is still needed as the primary STT source because
-  // RTCPeerConnection audio tracks show -200dB (no audio data).
-  // The RTC tracks may be encrypted/opaque at the JS level.
-  // Web Speech API listens to the system mic/speakers which works.
-  window.postMessage({
-    __botsInCalls: true,
-    __fromExtension: true,
-    action: 'start-listening',
-  }, '*');
-  console.log('[bots-in-calls] Auto-started Web Speech API for transcription');
+  // Start tab audio capture for ElevenLabs STT.
+  // Uses chrome.tabCapture via offscreen document — captures the tab's
+  // decoded audio output (all participants), no physical mic needed.
+  chrome.runtime.sendMessage({ action: 'start-tab-capture' }, (resp) => {
+    if (resp?.ok) {
+      console.log('[bots-in-calls] Tab audio capture started');
+    } else {
+      console.warn('[bots-in-calls] Tab capture failed:', resp?.error);
+    }
+  });
 
   // Auto-mute the bot's mic — only unmute when speaking via TTS
   setTimeout(() => setMicMuted(true), 5000);

@@ -12,7 +12,9 @@
     "activeTab",
     "tabs",
     "storage",
-    "sidePanel"
+    "sidePanel",
+    "tabCapture",
+    "offscreen"
   ],
   "host_permissions": [
     "https://meet.google.com/*",

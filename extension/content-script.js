@@ -658,8 +658,9 @@ const domSpeakerTracker = new DOMSpeakerTracker();
 class CaptionScraper {
   constructor() {
     this.observer = null;
-    this.lastText = '';
+    this.lastText = '';        // current caption text (grows as Meet appends)
     this.lastSpeaker = '';
+    this.lastPostedText = '';  // what we last posted to the server
     this.isRunning = false;
     this._debounceTimer = null;
   }
@@ -729,19 +730,19 @@ class CaptionScraper {
     // Speaker changed — post the previous speaker's completed caption
     if (speaker !== this.lastSpeaker && this.lastSpeaker && this.lastText) {
       this._postCaption(this.lastSpeaker, this.lastText);
+      this.lastPostedText = '';
     }
 
     this.lastSpeaker = speaker;
     this.lastText = text;
 
-    // Debounce: post after 2s of no changes
+    // Debounce: post after 3s of no changes (final version of the caption)
     clearTimeout(this._debounceTimer);
     this._debounceTimer = setTimeout(() => {
-      if (this.lastText) {
+      if (this.lastText && this.lastText !== this.lastPostedText) {
         this._postCaption(this.lastSpeaker, this.lastText);
-        this.lastText = '';
       }
-    }, 2000);
+    }, 3000);
   }
 
   _postCaption(speaker, text) {
@@ -750,6 +751,10 @@ class CaptionScraper {
       console.debug('[bots-in-calls] Skipping self caption');
       return;
     }
+
+    // Skip if we already posted this exact text
+    if (text === this.lastPostedText) return;
+    this.lastPostedText = text;
 
     console.log(`[bots-in-calls] Caption [${speaker}]: ${text.slice(0, 60)}`);
 

@@ -15,7 +15,7 @@ class SyncClient {
     this.lastPollTime = null; // ISO timestamp for incremental polling
     this.isFirstPoll = true; // skip speaking on first poll (catches up history)
     this.pollInterval = null;
-    this.pollIntervalMs = config.pollIntervalMs || 3000;
+    this.pollIntervalMs = config.pollIntervalMs || 1000;
     this.isPolling = false;
     this.onBotSpeech = config.onBotSpeech || null; // callback(text)
     this.postedTranscripts = new Set(); // dedup by text+timestamp

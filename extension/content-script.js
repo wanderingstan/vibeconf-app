@@ -718,45 +718,63 @@ class CaptionScraper {
       return;
     }
 
-    // Read the raw text content of the entire caption container.
-    // No class selectors — they change between Meet releases.
+    // Read the raw text content of the caption container.
     const rawText = container.textContent || '';
+    const visibleText = rawText.replace(/Jump to bottom\s*$/i, '').trim();
 
-    // The container includes: speaker name + caption text + "Jump to bottom"
-    // Strip "Jump to bottom" suffix if present
-    const fullText = rawText.replace(/Jump to bottom\s*$/, '').trim();
-
-    // Extract speaker name: it's the first line/word before the caption text.
-    // In the DOM, speaker name appears as a text node before the caption text.
-    // We'll grab it from the first img's sibling text node.
-    const speakerSpan = container.querySelector('span[class]');
+    // Extract speaker name from first span in the container
+    const speakerSpan = container.querySelector('span');
     const speaker = speakerSpan?.textContent?.trim() || 'unknown';
 
-    if (!fullText) {
-      // Captions empty — post whatever we had accumulated
-      if (this.lastText && this.lastText !== this.lastPostedText) {
-        this._postCaption(this.lastSpeaker, this.lastText);
-      }
-      this.lastText = '';
-      return;
+    // Strip the speaker name from the start of the visible text
+    let captionText = visibleText;
+    if (captionText.startsWith(speaker)) {
+      captionText = captionText.slice(speaker.length).trim();
     }
 
-    if (fullText === this.lastText) return;
+    if (!captionText) return;
 
-    // Speaker changed — post previous speaker's completed text
-    if (speaker !== this.lastSpeaker && this.lastSpeaker && this.lastText) {
-      this._postCaption(this.lastSpeaker, this.lastText);
+    // Debug: log raw lengths every 3rd poll
+    if (!this._dc) this._dc = 0;
+    if (++this._dc % 3 === 0) {
+      console.log(`[captions] raw=${rawText.length} visible=${visibleText.length} caption=${captionText.length} lastVis=${(this._lastVisibleText||'').length} same=${captionText === this._lastVisibleText}`);
+    }
+
+    if (captionText === this._lastVisibleText) return;
+
+    // Meet only keeps the last few lines in the DOM. We need to
+    // capture incrementally: find new text that wasn't in the
+    // previous reading and append it to our accumulator.
+    if (this._lastVisibleText && captionText.startsWith(this._lastVisibleText)) {
+      // Text grew (Meet appended) — capture the new portion
+      const newPart = captionText.slice(this._lastVisibleText.length).trim();
+      if (newPart) {
+        this._accumulated += ' ' + newPart;
+      }
+    } else if (this._lastVisibleText && captionText.length < this._lastVisibleText.length) {
+      // Text got shorter — Meet scrolled away old text.
+      // The visible text is now a fresh window. Just update.
+      this._accumulated += ' ' + captionText;
+    } else {
+      // First reading or completely new text
+      this._accumulated = captionText;
+    }
+
+    this._lastVisibleText = captionText;
+
+    // Speaker changed — post and reset
+    if (speaker !== this.lastSpeaker && this.lastSpeaker && this._accumulated) {
+      this._postCaption(this.lastSpeaker, this._accumulated.trim());
+      this._accumulated = '';
       this.lastPostedText = '';
     }
-
     this.lastSpeaker = speaker;
-    this.lastText = fullText;
 
-    // Post every 5 seconds of accumulated text (don't wait for silence)
+    // Post every 5 seconds
     const now = Date.now();
     if (!this._lastPostTime) this._lastPostTime = now;
-    if (now - this._lastPostTime > 5000 && fullText !== this.lastPostedText) {
-      this._postCaption(speaker, fullText);
+    if (now - this._lastPostTime > 5000 && this._accumulated.trim() !== this.lastPostedText) {
+      this._postCaption(speaker, this._accumulated.trim());
       this._lastPostTime = now;
     }
     } catch (err) {
@@ -777,18 +795,19 @@ class CaptionScraper {
 
     console.log(`[bots-in-calls] Caption [${speaker}]: ${text.slice(0, 60)}`);
 
+    const transcript = { speaker, text, timestamp: Date.now(), source: 'captions' };
+
     // Post to sync API
     chrome.runtime.sendMessage({
       action: 'post-transcripts',
-      transcripts: [{ speaker, text, timestamp: Date.now() }],
+      transcripts: [transcript],
     });
 
-    // Show in side panel
-    window.postMessage({
-      __botsInCalls: true,
+    // Broadcast to side panel (chrome.runtime messages reach all extension pages)
+    chrome.runtime.sendMessage({
       action: 'transcript',
-      payload: { timestamp: Date.now(), speaker, text, source: 'captions' },
-    }, '*');
+      payload: transcript,
+    }).catch(() => {});
   }
 
   stop() {

@@ -718,15 +718,21 @@ class CaptionScraper {
       return;
     }
 
-    // Get all caption text elements (excludes speaker names, buttons, etc.)
-    const textEls = container.querySelectorAll('.ygicle, div[jsname="tgaKEf"]');
-    if (textEls.length === 0) return;
+    // Try multiple selectors for caption text
+    const textEls = container.querySelectorAll('.ygicle, .VbkSUe, div[jsname="tgaKEf"]');
 
     // Concatenate all caption text
     let fullText = '';
     for (const el of textEls) {
-      const t = el.innerText.trim();
+      const t = el.innerText?.trim();
       if (t) fullText += (fullText ? ' ' : '') + t;
+    }
+
+    // Debug: compare with container's own text
+    const containerText = container.innerText?.trim() || '';
+    if (!this._debugCount) this._debugCount = 0;
+    if (++this._debugCount % 3 === 0) {
+      console.debug(`[captions] els=${textEls.length} elText=${fullText.length} containerText=${containerText.length} match=${fullText === this.lastText}`);
     }
 
     // Get the last speaker name

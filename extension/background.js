@@ -284,8 +284,21 @@ async function startTabCapture(tabId) {
   }
 }
 
-// Toolbar icon click opens side panel
-chrome.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true })
-  .catch(() => {});
+// Toolbar icon click: open side panel AND start tab capture.
+// Using action.onClicked (not openPanelOnActionClick) because it
+// properly grants activeTab permission needed for chrome.tabCapture.
+chrome.action.onClicked.addListener(async (tab) => {
+  // Open side panel
+  try {
+    await chrome.sidePanel.open({ tabId: tab.id });
+  } catch (e) {
+    console.debug('[bots-in-calls] Side panel open failed:', e.message);
+  }
+
+  // Start tab audio capture if this is a Meet tab
+  if (tab.url?.startsWith('https://meet.google.com/')) {
+    startTabCapture(tab.id);
+  }
+});
 
 console.log('[bots-in-calls] Service worker started');

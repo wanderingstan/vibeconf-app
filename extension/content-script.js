@@ -726,6 +726,13 @@ class CaptionScraper {
 
     const speaker = speakerEl.textContent.trim();
     const text = textEl.textContent.trim();
+
+    // Debug: log what we see every 5 polls
+    if (!this._pollCount) this._pollCount = 0;
+    if (++this._pollCount % 5 === 0) {
+      console.debug(`[captions] poll: blocks=${blocks.length} speaker="${speaker}" text="${text.slice(0,40)}" lastText="${this.lastText.slice(0,40)}" same=${text === this.lastText}`);
+    }
+
     if (!text || text === this.lastText) return;
 
     // Speaker changed — post the previous speaker's completed caption

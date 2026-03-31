@@ -710,9 +710,13 @@ class CaptionScraper {
   }
 
   _checkCaptions() {
+    try {
     // Re-query every time — Meet may rebuild the container
     const container = document.querySelector('div[role="region"][aria-label="Captions"]');
-    if (!container) return;
+    if (!container) {
+      console.debug('[captions] no container');
+      return;
+    }
 
     const blocks = container.querySelectorAll('.nMcdL');
     if (blocks.length === 0) return;
@@ -751,6 +755,9 @@ class CaptionScraper {
         this._postCaption(this.lastSpeaker, this.lastText);
       }
     }, 3000);
+    } catch (err) {
+      console.error('[captions] poll error:', err);
+    }
   }
 
   _postCaption(speaker, text) {

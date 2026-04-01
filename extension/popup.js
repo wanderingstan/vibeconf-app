@@ -106,6 +106,15 @@ async function updateAgentInfo() {
       const roomLink = document.getElementById('roomLink');
       roomLink.href = `${baseUrl}/room/${meetCode}`;
       roomLink.style.display = 'block';
+
+      // Generate curl command
+      chrome.storage.local.get('botName', (result) => {
+        const botName = result.botName || 'AI Assistant';
+        curlCommand.textContent = `curl -X POST "${baseUrl}/api/sync/${meetCode}" -H "Content-Type: application/json" -d '{"sender":"${botName}","role":"bot","ownerName":"${botName}","transcript":[{"text":"Hello from curl test."}]}'`;
+        copyCurlBtn.disabled = false;
+        speakTextBtn.disabled = false;
+        speechBtn.disabled = false;
+      });
       syncStatusEl.textContent = 'Syncing: ' + meetCode;
       syncStatusEl.className = 'audio-status active';
     }
@@ -160,6 +169,47 @@ curl -X POST "${endpoint}" \\
       copyPromptBtn.textContent = 'Copied!';
       setTimeout(() => { copyPromptBtn.textContent = 'Copy Agent Prompt'; }, 2000);
     });
+  });
+});
+
+// --- TTS test buttons ---
+const speakTextInput = document.getElementById('speakText');
+const speakTextBtn = document.getElementById('speakTextBtn');
+const speechBtn = document.getElementById('speechBtn');
+
+speakTextBtn.addEventListener('click', () => {
+  const text = speakTextInput.value.trim();
+  if (!text) return;
+  speakTextBtn.textContent = 'Speaking...';
+  speakTextBtn.disabled = true;
+  chrome.runtime.sendMessage({ action: 'speak', text }, (resp) => {
+    speakTextBtn.textContent = 'Speak';
+    speakTextBtn.disabled = false;
+    if (resp?.error) {
+      speakTextBtn.textContent = 'Error';
+      setTimeout(() => { speakTextBtn.textContent = 'Speak'; }, 3000);
+    }
+  });
+});
+
+speakTextInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') speakTextBtn.click();
+});
+
+speechBtn.addEventListener('click', () => {
+  sendToContent({ target: 'page', action: 'play-speech-test' });
+  speechBtn.textContent = 'Playing...';
+  setTimeout(() => { speechBtn.textContent = 'Play Sample Audio'; }, 5000);
+});
+
+// --- Curl command ---
+const curlCommand = document.getElementById('curlCommand');
+const copyCurlBtn = document.getElementById('copyCurlBtn');
+
+copyCurlBtn.addEventListener('click', () => {
+  navigator.clipboard.writeText(curlCommand.textContent).then(() => {
+    copyCurlBtn.textContent = 'Copied!';
+    setTimeout(() => { copyCurlBtn.textContent = 'Copy Curl Command'; }, 2000);
   });
 });
 

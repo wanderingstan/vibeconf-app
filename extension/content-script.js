@@ -894,6 +894,54 @@ window.addEventListener('message', (event) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Mic permission problem detection
+// ---------------------------------------------------------------------------
+
+let lastMicStatus = 'unknown'; // 'healthy' | 'problem' | 'unknown'
+
+function checkMicPermission() {
+  // Find any button with data-is-muted that relates to microphone
+  const btn = document.querySelector('button[data-is-muted]');
+  if (!btn) return;
+
+  const label = btn.getAttribute('aria-label') || '';
+  const isMuted = btn.getAttribute('data-is-muted');
+
+  // Healthy states:
+  //   aria-label="Turn off microphone" data-is-muted="false"  (mic on)
+  //   aria-label="Turn on microphone"  data-is-muted="true"   (mic muted)
+  const isHealthy =
+    (label === 'Turn off microphone' && isMuted === 'false') ||
+    (label === 'Turn on microphone' && isMuted === 'true');
+
+  const newStatus = isHealthy ? 'healthy' : 'problem';
+
+  if (newStatus === 'problem') {
+    // Re-send every check cycle so the error bar stays visible
+    if (newStatus !== lastMicStatus) {
+      console.warn('[bots-in-calls] Mic issue detected — aria-label:', label, 'data-is-muted:', isMuted);
+    }
+    chrome.runtime.sendMessage({
+      action: 'error',
+      message: `Microphone issue: "${label}". Try reloading the Meet tab, or disable the extension, grant mic permission, then re-enable.`,
+    }).catch(() => {});
+  } else if (newStatus !== lastMicStatus) {
+    console.debug('[bots-in-calls] Mic status healthy');
+    chrome.runtime.sendMessage({
+      action: 'mic-status',
+      status: 'healthy',
+    }).catch(() => {});
+  }
+  lastMicStatus = newStatus;
+}
+
+// Check every 5 seconds once in the call
+setTimeout(() => {
+  setInterval(checkMicPermission, 5000);
+  checkMicPermission(); // initial check
+}, 10000); // wait for join to complete
+
 // Also handle explicit start request
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.action === 'start-speaker-tracking') {

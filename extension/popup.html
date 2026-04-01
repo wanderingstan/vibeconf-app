@@ -25,6 +25,7 @@
     <div class="section">
       <details>
         <summary class="debug-toggle">Troubleshooting</summary>
+        <div id="micPermissionWarning" class="error-bar" style="display:none;margin-bottom:8px">Microphone permission problem detected</div>
         <div class="field">
           <label>Live Caption Text</label>
           <div id="rawCaptionText" class="audio-status" style="max-height:100px;overflow-y:auto;font-family:monospace;font-size:11px;white-space:pre-wrap"></div>
@@ -42,10 +43,10 @@
         <div id="audioParticipants"></div>
         <h2 style="margin-top:12px">Test TTS</h2>
         <div class="field">
-          <input type="text" id="speakText" placeholder="Type something to speak..." />
+          <input type="text" id="speakText" value="Hello from TTS" />
         </div>
-        <button id="speakTextBtn" disabled>Speak</button>
-        <button id="speechBtn" disabled>Play Sample Audio</button>
+        <button id="speakTextBtn" disabled>Speak using TTS</button>
+        <button id="speechBtn" disabled>Play Test Audio File</button>
         <h2 style="margin-top:12px">Test Curl</h2>
         <div class="field">
           <div id="curlCommand" class="audio-status" style="font-family:monospace;font-size:10px;white-space:pre-wrap;word-break:break-all"></div>

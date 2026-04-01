@@ -183,11 +183,11 @@ speakTextBtn.addEventListener('click', () => {
   speakTextBtn.textContent = 'Speaking...';
   speakTextBtn.disabled = true;
   chrome.runtime.sendMessage({ action: 'speak', text }, (resp) => {
-    speakTextBtn.textContent = 'Speak';
+    speakTextBtn.textContent = 'Speak using TTS';
     speakTextBtn.disabled = false;
     if (resp?.error) {
       speakTextBtn.textContent = 'Error';
-      setTimeout(() => { speakTextBtn.textContent = 'Speak'; }, 3000);
+      setTimeout(() => { speakTextBtn.textContent = 'Speak using TTS'; }, 3000);
     }
   });
 });
@@ -197,9 +197,12 @@ speakTextInput.addEventListener('keydown', (e) => {
 });
 
 speechBtn.addEventListener('click', () => {
-  sendToContent({ target: 'page', action: 'play-speech-test' });
+  sendToContent({ action: 'unmute-mic' });
+  setTimeout(() => {
+    sendToContent({ target: 'page', action: 'play-speech-test' });
+  }, 300);
   speechBtn.textContent = 'Playing...';
-  setTimeout(() => { speechBtn.textContent = 'Play Sample Audio'; }, 5000);
+  setTimeout(() => { speechBtn.textContent = 'Play Test Audio File'; }, 2000);
 });
 
 // --- Curl command ---
@@ -244,6 +247,18 @@ chrome.runtime.onMessage.addListener((message) => {
   }
   if (message.action === 'error') {
     showError(message.message);
+    // Show persistent mic warning in troubleshooting section
+    if (/microphone|mic/i.test(message.message)) {
+      const micWarn = document.getElementById('micPermissionWarning');
+      if (micWarn) {
+        micWarn.textContent = message.message;
+        micWarn.style.display = 'block';
+      }
+    }
+  }
+  if (message.action === 'mic-status' && message.status === 'healthy') {
+    const micWarn = document.getElementById('micPermissionWarning');
+    if (micWarn) micWarn.style.display = 'none';
   }
   if (message.action === 'raw-caption') {
     const el = document.getElementById('rawCaptionText');

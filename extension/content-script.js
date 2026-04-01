@@ -306,7 +306,27 @@ async function autoJoin(botName) {
       console.debug('[bots-in-calls] No name input — Meet likely remembered the name');
     }
 
-    // 4. Click the join button
+    // 4. Check mic health before joining
+    const micBtn = document.querySelector('button[data-is-muted]');
+    if (micBtn) {
+      const micLabel = micBtn.getAttribute('aria-label') || '';
+      const micMuted = micBtn.getAttribute('data-is-muted');
+      const micHealthy =
+        (micLabel === 'Turn off microphone' && micMuted === 'false') ||
+        (micLabel === 'Turn on microphone' && micMuted === 'true');
+
+      if (!micHealthy) {
+        console.warn('[bots-in-calls] Mic problem on pre-join screen — aria-label:', micLabel, 'data-is-muted:', micMuted);
+        chrome.runtime.sendMessage({
+          action: 'error',
+          message: `Cannot join: mic issue detected ("${micLabel}"). Disable the extension, grant mic permission on Meet, then re-enable.`,
+        }).catch(() => {});
+        return; // do NOT join
+      }
+      console.debug('[bots-in-calls] Mic health OK on pre-join screen');
+    }
+
+    // 5. Click the join button
     console.debug('[bots-in-calls] Looking for join button...');
     let joined = false;
     for (let attempt = 0; attempt < 5 && !joined; attempt++) {

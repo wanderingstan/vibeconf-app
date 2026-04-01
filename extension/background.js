@@ -232,4 +232,18 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 // Toolbar icon toggles side panel
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 
+// Auto-open side panel when a Google Meet tab is detected
+const openedForTabs = new Set();
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === 'complete' &&
+      tab.url?.startsWith('https://meet.google.com/') &&
+      !openedForTabs.has(tabId)) {
+    openedForTabs.add(tabId);
+    chrome.sidePanel.open({ tabId }).catch((err) => {
+      console.debug('[bots-in-calls] Could not auto-open side panel:', err.message);
+    });
+  }
+});
+chrome.tabs.onRemoved.addListener((tabId) => openedForTabs.delete(tabId));
+
 console.log('[bots-in-calls] Service worker started');

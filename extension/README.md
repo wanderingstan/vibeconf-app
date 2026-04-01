@@ -178,7 +178,7 @@ window.__botsInCallsTranscription.stopListening()
 ## Next Steps
 
 1. **Server-side transcript deduplication** — Currently the extension posts incremental caption updates as separate entries (same speaker, growing text). Client-side dedup collapses these on display. Better approach: modify the sync API so that consecutive posts from the same speaker *replace* the previous entry (same Redis sorted set score/timestamp) rather than appending. This mirrors how Google Meet handles captions — one evolving block per speaker turn. Would eliminate redundant entries in the database and simplify client logic.
-2. **WebSocket/SSE for real-time sync** — Replace the 1-second polling loop with a persistent connection for sub-second caption delivery to the agent. The existing SSE infrastructure in vibeconferencing.com (`/api/room/[roomId]/stream`) could be adapted.
+2. **Server-side long-poll for agent responses** — Instead of agents polling every few seconds, the sync API's GET endpoint could hold the connection open and only return when the bot should respond (silence detected, bot name mentioned, etc.). The server applies turn-taking logic internally. Any HTTP client (curl, MCP, Python) becomes a simple `while true; do request; respond; done` loop with no wasted round trips. Could build on the existing SSE infrastructure.
 3. **Backend AI integration** — Wire up: caption transcript → LLM (Claude) → TTS (ElevenLabs) → `VirtualMic.playAudio()`.
 4. **Hosted whiteboard** — Add a `/whiteboard` route to vibeconferencing.com (chrome-extension:// URLs break Meet's screen sharing).
 5. **Electron wrapper investigation** — Would solve the screen share picker issue (`desktopCapturer`), enable local STT/TTS, and allow `system audio capture` for headless setups.

@@ -1,6 +1,7 @@
 // settings.js — Settings page (loads inside the side panel)
 
 const botNameInput = document.getElementById('botName');
+const syncBaseUrlInput = document.getElementById('syncBaseUrl');
 const ttsApiKeyInput = document.getElementById('ttsApiKey');
 const ttsVoiceIdInput = document.getElementById('ttsVoiceId');
 const speakTextInput = document.getElementById('speakText');
@@ -14,8 +15,9 @@ function sendToContent(message) {
 }
 
 // --- Load saved config ---
-chrome.storage.local.get(['botName', 'ttsApiKey', 'ttsVoiceId'], (result) => {
+chrome.storage.local.get(['botName', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId'], (result) => {
   if (result.botName) botNameInput.value = result.botName;
+  if (result.syncBaseUrl) syncBaseUrlInput.value = result.syncBaseUrl;
   if (result.ttsApiKey) ttsApiKeyInput.value = result.ttsApiKey;
   if (result.ttsVoiceId) ttsVoiceIdInput.value = result.ttsVoiceId;
 });
@@ -34,6 +36,15 @@ botNameInput.addEventListener('change', () => {
   const name = botNameInput.value.trim() || 'AI Assistant';
   chrome.storage.local.set({ botName: name });
   sendToContent({ target: 'page', action: 'set-config', payload: { botName: name } });
+});
+
+syncBaseUrlInput.addEventListener('change', () => {
+  const url = syncBaseUrlInput.value.trim().replace(/\/+$/, ''); // strip trailing slashes
+  chrome.storage.local.set({ syncBaseUrl: url });
+  chrome.runtime.sendMessage({
+    action: 'update-sync-config',
+    config: { baseUrl: url || 'https://vibeconferencing.com' },
+  });
 });
 
 ttsApiKeyInput.addEventListener('change', () => {

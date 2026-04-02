@@ -1,5 +1,10 @@
 // popup.js — Side panel controller (live call info)
 
+let syncBaseUrl = 'https://vibeconferencing.com';
+chrome.storage.local.get('syncBaseUrl', (result) => {
+  if (result.syncBaseUrl) syncBaseUrl = result.syncBaseUrl;
+});
+
 const statusEl = document.getElementById('status');
 const presentBtn = document.getElementById('presentBtn');
 const transcriptArea = document.getElementById('transcriptArea');
@@ -28,7 +33,7 @@ async function loadTranscriptFromServer() {
     const meetCode = new URL(tabs[0].url).pathname.replace('/', '');
     if (!meetCode) return;
 
-    const resp = await fetch(`https://vibeconferencing.com/api/sync/${meetCode}`);
+    const resp = await fetch(`${syncBaseUrl}/api/sync/${meetCode}`);
     if (!resp.ok) return;
     const data = await resp.json();
     const entries = data.transcript?.entries || [];
@@ -101,16 +106,15 @@ async function updateAgentInfo() {
     const meetCode = url.pathname.replace('/', '');
     if (meetCode) {
       meetCodeInput.value = meetCode;
-      const baseUrl = 'https://vibeconferencing.com';
-      apiEndpointInput.value = `${baseUrl}/api/sync/${meetCode}`;
+      apiEndpointInput.value = `${syncBaseUrl}/api/sync/${meetCode}`;
       const roomLink = document.getElementById('roomLink');
-      roomLink.href = `${baseUrl}/room/${meetCode}`;
+      roomLink.href = `${syncBaseUrl}/room/${meetCode}`;
       roomLink.style.display = 'block';
 
       // Generate curl command
       chrome.storage.local.get('botName', (result) => {
         const botName = result.botName || 'AI Assistant';
-        curlCommand.textContent = `curl -X POST "${baseUrl}/api/sync/${meetCode}" -H "Content-Type: application/json" -d '{"sender":"${botName}","role":"bot","ownerName":"${botName}","transcript":[{"text":"Hello from curl test."}]}'`;
+        curlCommand.textContent = `curl -X POST "${syncBaseUrl}/api/sync/${meetCode}" -H "Content-Type: application/json" -d '{"sender":"${botName}","role":"bot","ownerName":"${botName}","transcript":[{"text":"Hello from curl test."}]}'`;
         copyCurlBtn.disabled = false;
         speakTextBtn.disabled = false;
         speechBtn.disabled = false;

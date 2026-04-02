@@ -18,6 +18,38 @@ const sync = new SyncClient({
 // Log sync client config for debugging
 console.debug('[bots-in-calls] SyncClient created, botName:', sync.botName);
 
+// --- Speaking state debounce ---
+// The DOM speaker tracker fires every 200ms. We batch updates and POST
+// to the presence API at most once per second per participant.
+const speakingState = new Map(); // name → { speaking, timer }
+
+function updateSpeakingState(name, speaking) {
+  const existing = speakingState.get(name);
+
+  // If state hasn't changed, skip
+  if (existing && existing.speaking === speaking && existing.sent) return;
+
+  // Update local state
+  speakingState.set(name, { speaking, sent: false, timer: existing?.timer });
+
+  // Debounce: wait 1s before sending (coalesces rapid changes)
+  if (existing?.timer) clearTimeout(existing.timer);
+  const timer = setTimeout(() => {
+    const state = speakingState.get(name);
+    if (!state || state.sent) return;
+    state.sent = true;
+
+    fetch(`${sync.baseUrl}/api/room/${sync.roomId}/presence`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, speaking }),
+    }).catch(err => {
+      console.debug('[bots-in-calls] Speaking state update failed:', err.message);
+    });
+  }, 1000);
+  speakingState.get(name).timer = timer;
+}
+
 // Broadcast errors to the side panel / popup
 function broadcastError(message) {
   chrome.runtime.sendMessage({ action: 'error', message }).catch(() => {});
@@ -122,6 +154,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // async
   }
 
+  // --- Speaking state: forward to presence API ---
+  if (message.action === 'update-speaking') {
+    const { name, speaking } = message;
+    if (name && sync.roomId) {
+      updateSpeakingState(name, speaking);
+    }
+    sendResponse({ ok: true });
+    return;
+  }
+
   // --- Sync: post transcripts to vibeconferencing backend ---
   if (message.action === 'post-transcripts') {
     sync.postTranscripts(message.transcripts || []);
@@ -153,6 +195,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // --- Sync: stop syncing ---
   if (message.action === 'stop-sync') {
     sync.stopPolling();
+    sendResponse({ ok: true });
+    return;
+  }
+
+  // --- Sync config update ---
+  if (message.action === 'update-sync-config') {
+    sync.updateConfig(message.config);
+    console.debug('[bots-in-calls] Sync config updated:', message.config);
     sendResponse({ ok: true });
     return;
   }

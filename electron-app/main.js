@@ -4,18 +4,25 @@
 const { app, BrowserWindow, ipcMain, session, protocol } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const vm = require('vm');
 const Store = require('./store.js');
 
 // ---------------------------------------------------------------------------
 // Load extension modules (they export on globalThis)
+// The extension files live under the root package.json which has "type": "module",
+// so require() fails. We load them as text and run in the current context.
 // ---------------------------------------------------------------------------
 
 const EXT_DIR = path.join(__dirname, '..', 'extension');
 
-// Load sync-client.js, tts.js, stt.js — they attach to globalThis
-require(path.join(EXT_DIR, 'tts.js'));
-require(path.join(EXT_DIR, 'stt.js'));
-require(path.join(EXT_DIR, 'sync-client.js'));
+function loadExtensionScript(filename) {
+  const code = fs.readFileSync(path.join(EXT_DIR, filename), 'utf-8');
+  vm.runInThisContext(code, { filename });
+}
+
+loadExtensionScript('tts.js');
+loadExtensionScript('stt.js');
+loadExtensionScript('sync-client.js');
 
 const tts = new globalThis.TTSProvider();
 const stt = new globalThis.STTProvider();

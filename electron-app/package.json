@@ -1,0 +1,16 @@
+{
+  "name": "vibeconferencing-agent",
+  "version": "0.1.0",
+  "description": "AI bot that joins Google Meet calls — Electron wrapper",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev"
+  },
+  "dependencies": {
+    "electron-store": "^8.1.0"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  }
+}

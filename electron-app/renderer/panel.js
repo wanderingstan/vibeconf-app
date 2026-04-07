@@ -27,7 +27,6 @@ const ttsVoiceIdInput = document.getElementById('ttsVoiceId');
 
 let syncBaseUrl = 'https://vibeconferencing.com';
 let currentBotName = 'AI Assistant';
-let errorTimeout = null;
 
 // ---------------------------------------------------------------------------
 // Load saved config
@@ -45,11 +44,13 @@ api.invoke('get-config', ['botName', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId']).
 // ---------------------------------------------------------------------------
 
 function showError(message) {
-  errorBar.textContent = message;
-  errorBar.style.display = 'block';
-  if (errorTimeout) clearTimeout(errorTimeout);
-  errorTimeout = setTimeout(() => { errorBar.style.display = 'none'; }, 10000);
+  document.getElementById('errorText').textContent = message;
+  errorBar.style.display = 'flex';
 }
+
+document.getElementById('errorClose').addEventListener('click', () => {
+  errorBar.style.display = 'none';
+});
 
 // ---------------------------------------------------------------------------
 // Join Meet

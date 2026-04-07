@@ -23,6 +23,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { execSync } from "child_process";
+import { readFileSync, writeFileSync } from "fs";
+import { join } from "path";
+import { homedir } from "os";
 
 const ROOM_ID = process.env.VIBECONF_ROOM_ID || "";
 const BOT_NAME = process.env.VIBECONF_BOT_NAME || "AI Assistant";
@@ -170,9 +174,10 @@ server.tool(
   "Say something in the Google Meet call. Your text will be spoken aloud via text-to-speech. Keep messages concise since they are spoken aloud.",
   {
     text: z.string().describe("What to say in the call. Will be spoken via TTS."),
+    voice: z.string().optional().describe("Override TTS voice for this message (e.g. 'Daniel', 'Karen'). Uses default voice if not specified."),
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
-  async ({ text, room_id }) => {
+  async ({ text, voice, room_id }) => {
     const roomId = room_id || ROOM_ID;
     if (!roomId) {
       return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
@@ -185,7 +190,7 @@ server.tool(
         sender: BOT_NAME,
         role: "bot",
         ownerName: BOT_NAME,
-        transcript: [{ text }],
+        transcript: [{ text, ...(voice ? { voice } : {}) }],
       }),
     });
 
@@ -194,6 +199,133 @@ server.tool(
       return { content: [{ type: "text", text: `Spoken: "${text}"` }] };
     } else {
       return { content: [{ type: "text", text: `Error: ${data.error || "Failed to post"}` }] };
+    }
+  }
+);
+
+// --- Helper: read app config ---
+function getConfigPath() {
+  return join(homedir(), 'Library', 'Application Support', 'Vibeconferencing', 'config.json');
+}
+
+function readConfig() {
+  try { return JSON.parse(readFileSync(getConfigPath(), 'utf-8')); } catch { return {}; }
+}
+
+function writeConfig(config) {
+  writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
+}
+
+function isElevenLabsActive() {
+  const config = readConfig();
+  return !!config.ttsApiKey;
+}
+
+// --- list_voices ---
+server.tool(
+  "list_voices",
+  "List available text-to-speech voices. If ElevenLabs API key is configured, shows ElevenLabs voices. Otherwise shows macOS system voices.",
+  {},
+  async () => {
+    const config = readConfig();
+
+    if (isElevenLabsActive()) {
+      // Fetch ElevenLabs voices
+      try {
+        const resp = await fetch('https://api.elevenlabs.io/v1/voices', {
+          headers: { 'xi-api-key': config.ttsApiKey },
+        });
+        if (!resp.ok) throw new Error(`API error ${resp.status}`);
+        const data = await resp.json();
+
+        const voices = data.voices.map(v =>
+          `${v.name} — ${v.labels?.accent || ''} ${v.labels?.gender || ''} ${v.labels?.age || ''}`.trim() + ` [id: ${v.voice_id}]`
+        );
+
+        const currentVoice = config.ttsVoiceId || 'CwhRBWXzGAHq8TQ4Fs17';
+        const currentName = data.voices.find(v => v.voice_id === currentVoice)?.name || currentVoice;
+
+        return {
+          content: [{
+            type: "text",
+            text: `Provider: ElevenLabs\nCurrent voice: ${currentName}\n\nAvailable voices:\n${voices.join('\n')}`,
+          }],
+        };
+      } catch (err) {
+        return { content: [{ type: "text", text: `Error fetching ElevenLabs voices: ${err.message}` }] };
+      }
+    } else {
+      // macOS say voices
+      try {
+        const output = execSync('say -v "?"', { encoding: 'utf-8', timeout: 5000 });
+        const voices = output
+          .split('\n')
+          .filter(line => line.includes('en_'))
+          .map(line => {
+            const match = line.match(/^(.+?)\s{2,}(\w{2}_\w{2})/);
+            if (match) return `${match[1].trim()} (${match[2]})`;
+            return line.trim();
+          })
+          .filter(Boolean);
+
+        const currentVoice = config.macosVoice || 'Samantha';
+
+        return {
+          content: [{
+            type: "text",
+            text: `Provider: macOS say\nCurrent voice: ${currentVoice}\n\nAvailable English voices:\n${voices.join('\n')}`,
+          }],
+        };
+      } catch (err) {
+        return { content: [{ type: "text", text: `Error listing voices: ${err.message}` }] };
+      }
+    }
+  }
+);
+
+// --- set_voice ---
+server.tool(
+  "set_voice",
+  "Change the bot's text-to-speech voice. Use list_voices to see available options. The choice is saved and persists across sessions.",
+  {
+    voice: z.string().describe("Voice name (e.g. 'Samantha', 'Daniel') for macOS, or voice name/ID for ElevenLabs"),
+  },
+  async ({ voice }) => {
+    try {
+      const config = readConfig();
+
+      if (isElevenLabsActive()) {
+        // Look up ElevenLabs voice by name or ID
+        const resp = await fetch('https://api.elevenlabs.io/v1/voices', {
+          headers: { 'xi-api-key': config.ttsApiKey },
+        });
+        if (!resp.ok) throw new Error(`API error ${resp.status}`);
+        const data = await resp.json();
+
+        const match = data.voices.find(v =>
+          v.name.toLowerCase() === voice.toLowerCase() || v.voice_id === voice
+        );
+        if (!match) {
+          return { content: [{ type: "text", text: `Voice "${voice}" not found. Use list_voices to see available options.` }] };
+        }
+
+        config.ttsVoiceId = match.voice_id;
+        writeConfig(config);
+        return { content: [{ type: "text", text: `Voice changed to "${match.name}". Use the voice parameter in speak for immediate effect, or restart the app for the saved default to take effect.` }] };
+      } else {
+        // macOS say voice
+        const output = execSync('say -v "?"', { encoding: 'utf-8', timeout: 5000 });
+        const voiceExists = output.split('\n').some(line => line.trim().startsWith(voice));
+        if (!voiceExists) {
+          return { content: [{ type: "text", text: `Voice "${voice}" not found. Use list_voices to see available options.` }] };
+        }
+
+        config.macosVoice = voice;
+        writeConfig(config);
+        return { content: [{ type: "text", text: `Voice changed to "${voice}". Use the voice parameter in speak for immediate effect, or restart the app for the saved default to take effect.` }] };
+      }
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error setting voice: ${err.message}` }] };
     }
   }
 );

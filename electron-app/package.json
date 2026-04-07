@@ -1,16 +1,54 @@
 {
   "name": "vibeconferencing-agent",
+  "productName": "Vibeconferencing",
   "version": "0.1.0",
   "description": "AI bot that joins Google Meet calls — Electron wrapper",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dev": "electron . --dev"
+    "dev": "electron . --devtools=true",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "build": {
+    "appId": "com.vibeconferencing.agent",
+    "productName": "Vibeconferencing",
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "icon.png"
+    },
+    "files": [
+      "main.js",
+      "store.js",
+      "preload-meet.js",
+      "preload-panel.js",
+      "renderer/**/*",
+      "icon.png"
+    ],
+    "extraResources": [
+      {
+        "from": "../extension",
+        "to": "extension",
+        "filter": [
+          "*.js",
+          "*.mp3"
+        ]
+      },
+      {
+        "from": "../mcp-server",
+        "to": "mcp-server",
+        "filter": [
+          "*.js",
+          "package.json"
+        ]
+      }
+    ]
   },
   "dependencies": {
     "electron-store": "^8.1.0"
   },
   "devDependencies": {
-    "electron": "^33.0.0"
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
   }
 }

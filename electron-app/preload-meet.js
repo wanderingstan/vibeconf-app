@@ -195,8 +195,51 @@ ipcRenderer.invoke('get-config', ['botName']).then((result) => {
   if (result?.botName) BOT_NAME = result.botName;
 });
 
+function ensureStatusBar() {
+  if (document.getElementById('vibeconf-status-bar')) return;
+  const bar = document.createElement('div');
+  bar.id = 'vibeconf-status-bar';
+  bar.innerHTML = '<span class="icon">🤖</span><span class="label">Bot View —</span><span class="status" id="vibeconf-status">Initializing...</span>';
+
+  const style = document.createElement('style');
+  style.textContent = `
+    #vibeconf-status-bar {
+      position: fixed; top: 0; left: 0; right: 0; height: 56px;
+      background: #cc2222; color: #ffffff;
+      font-family: 'Google Sans', 'Roboto', sans-serif; font-size: 26px;
+      font-weight: 500;
+      display: flex; align-items: center; padding: 0 24px;
+      z-index: 999999; user-select: none;
+      letter-spacing: 0.5px;
+    }
+    #vibeconf-status-bar .icon { margin-right: 14px; font-size: 28px; }
+    #vibeconf-status-bar .label { color: #ffcccc; margin-right: 12px; }
+    #vibeconf-status-bar .status { color: #ffffff; }
+    #vibeconf-status-bar .status.error { color: #ffaaaa; font-weight: 700; }
+    #vibeconf-status-bar .status.active { color: #ffffff; }
+    body { padding-top: 56px !important; }
+  `;
+  document.head.appendChild(style);
+  document.body.prepend(bar);
+}
+
+function sendStatus(status) {
+  console.log('[electron-meet] Status:', status);
+  ensureStatusBar();
+  const el = document.getElementById('vibeconf-status');
+  if (el) {
+    el.textContent = status;
+    el.className = 'status';
+    if (status.startsWith('Error')) el.classList.add('error');
+    else if (status === 'Participating in Meet') el.classList.add('active');
+  }
+  // Also notify main process for logging
+  ipcRenderer.send('meet-status-update', status);
+}
+
 async function autoJoin(botName) {
   console.log('[electron-meet] ===== AUTO-JOIN STARTING =====');
+  sendStatus('Joining Meet...');
 
   try {
     await delay(3000);
@@ -232,6 +275,7 @@ async function autoJoin(botName) {
 
       if (!micHealthy) {
         console.warn('[electron-meet] Mic problem on pre-join screen');
+        sendStatus('Error: mic issue detected');
         ipcRenderer.send('to-panel', {
           action: 'error',
           message: `Cannot join: mic issue detected ("${micLabel}").`,
@@ -241,8 +285,8 @@ async function autoJoin(botName) {
     }
 
     // Click join
-    let joined = false;
-    for (let attempt = 0; attempt < 5 && !joined; attempt++) {
+    let clicked = false;
+    for (let attempt = 0; attempt < 5 && !clicked; attempt++) {
       await delay(1000);
       const joinBtn =
         findByText('Ask to join') ||
@@ -251,16 +295,55 @@ async function autoJoin(botName) {
         findByAriaLabel('Join');
 
       if (joinBtn) {
-        console.log('[electron-meet] Clicking join:', joinBtn.textContent.trim().slice(0, 30));
+        const btnText = joinBtn.textContent.trim();
+        console.log('[electron-meet] Clicking join:', btnText.slice(0, 30));
         joinBtn.click();
-        joined = true;
+        clicked = true;
+
+        if (btnText.includes('Ask to join')) {
+          sendStatus('Waiting to be admitted...');
+        } else {
+          sendStatus('Joining...');
+        }
       }
     }
 
-    if (!joined) {
+    if (!clicked) {
+      sendStatus('Error: join button not found');
       console.warn('[electron-meet] Could not find join button');
+      return;
+    }
+
+    // Wait for actual admission — waiting screen text must disappear
+    let admitted = false;
+    for (let i = 0; i < 120 && !admitted; i++) {
+      await delay(1000);
+      const waitingText = document.body.innerText.includes('wait until') ||
+        document.body.innerText.includes('asking to be let in') ||
+        document.body.innerText.includes('Please wait');
+      const hasJoinUI = !!findByText('Ask to join') || !!findByText('Join now');
+
+      // Admitted when: no waiting text, no pre-join UI, and page has meeting UI
+      if (!waitingText && !hasJoinUI) {
+        // Double-check: look for in-call UI elements (caption button, people button, etc.)
+        const inCallUI =
+          findByAriaLabel('Leave call') ||
+          findByAriaLabel('Turn on captions') ||
+          findByAriaLabel('Turn off captions') ||
+          document.querySelector('[data-tooltip="Leave call"]');
+        if (inCallUI) {
+          admitted = true;
+          sendStatus('Participating in Meet');
+        }
+      }
+    }
+
+    if (!admitted) {
+      sendStatus('Error: not admitted after 2 minutes');
+      return;
     }
   } catch (err) {
+    sendStatus('Error: ' + err.message);
     console.error('[electron-meet] Auto-join error:', err);
   }
 }
@@ -568,6 +651,8 @@ window.addEventListener('message', (event) => {
 window.addEventListener('DOMContentLoaded', () => {
   // Watch for pre-join screen
   (async () => {
+    sendStatus('Loading Meet...');
+
     for (let i = 0; i < 30; i++) {
       const nameInput =
         document.querySelector('input[placeholder="Your name"]') ||
@@ -582,20 +667,29 @@ window.addEventListener('DOMContentLoaded', () => {
       await delay(1000);
     }
 
-    // Start trackers after join
-    await delay(3000);
+    // Only start trackers if we're actually in the call
+    const leaveBtn = findByAriaLabel('Leave call') ||
+      document.querySelector('[data-tooltip="Leave call"]');
+    if (!leaveBtn) {
+      console.warn('[electron-meet] Not in call, skipping tracker setup');
+      return;
+    }
+
+    // Start trackers
+    await delay(2000);
     domSpeakerTracker.start();
-    await delay(5000);
+    await delay(3000);
     captionScraper.start();
     setMicMuted(true);
 
     // Start mic health checks
     setInterval(checkMicPermission, 5000);
 
-    // Start sync
+    // Start sync and announce arrival
     const meetCode = window.location.pathname.replace('/', '');
     if (meetCode) {
       ipcRenderer.send('start-sync', { meetCode, botName: BOT_NAME });
+      ipcRenderer.send('bot-joined-call', { meetCode, botName: BOT_NAME });
     }
   })();
 });

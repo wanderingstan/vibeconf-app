@@ -1,7 +1,8 @@
 // main.js — Electron main process
-// Manages Meet BrowserWindow, control panel, IPC routing, TTS, and sync.
+// Manages Meet BrowserView + panel sidebar in a single window,
+// IPC routing, TTS, and sync.
 
-const { app, BrowserWindow, ipcMain, session, protocol } = require('electron');
+const { app, BrowserWindow, BrowserView, ipcMain, session, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const vm = require('vm');
@@ -13,7 +14,13 @@ const Store = require('./store.js');
 // so require() fails. We load them as text and run in the current context.
 // ---------------------------------------------------------------------------
 
-const EXT_DIR = path.join(__dirname, '..', 'extension');
+// In packaged app, extension files are in Resources/extension; in dev, they're in ../extension
+const EXT_DIR = app.isPackaged
+  ? path.join(process.resourcesPath, 'extension')
+  : path.join(__dirname, '..', 'extension');
+
+// Expose Node modules on globalThis so vm-loaded scripts can use them
+globalThis.require = require;
 
 function loadExtensionScript(filename) {
   const code = fs.readFileSync(path.join(EXT_DIR, filename), 'utf-8');
@@ -27,20 +34,23 @@ loadExtensionScript('sync-client.js');
 const tts = new globalThis.TTSProvider();
 const stt = new globalThis.STTProvider();
 const sync = new globalThis.SyncClient({
-  onBotSpeech: (text) => {
-    console.log('[electron] Bot speech from sync:', text.slice(0, 80));
-    speakText(text);
+  onBotSpeech: (text, voice) => {
+    console.log('[electron] Bot speech from sync:', text.slice(0, 80), voice ? `(voice: ${voice})` : '');
+    speakText(text, voice);
   },
 });
 
 // ---------------------------------------------------------------------------
-// Config store
+// Config store & window refs
 // ---------------------------------------------------------------------------
 
 let store;
-let meetWindow = null;
-let panelWindow = null;
+let mainWindow = null;   // single window that holds both views
+let panelView = null;     // left sidebar BrowserView
+let meetView = null;      // right Meet BrowserView
 let whiteboardWindow = null;
+
+const PANEL_WIDTH = 380;
 
 // Read page-inject.js source once at startup
 const pageInjectCode = fs.readFileSync(path.join(EXT_DIR, 'page-inject.js'), 'utf-8');
@@ -50,18 +60,43 @@ const testSpeechPath = path.join(EXT_DIR, 'test-speech.mp3');
 const CHROME_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
 // ---------------------------------------------------------------------------
-// Helper: speak text via TTS → send audio to Meet window
+// CLI argument parsing — supports --meet-url, --bot-name, --sync-url, --devtools
 // ---------------------------------------------------------------------------
 
-function speakText(text) {
+function parseCLIArgs() {
+  const args = process.argv.slice(1); // skip electron binary
+  const result = {};
+  for (const arg of args) {
+    const match = arg.match(/^--(\w[\w-]*)=(.+)$/);
+    if (match) result[match[1]] = match[2];
+  }
+  return result;
+}
+
+const cliArgs = parseCLIArgs();
+
+// ---------------------------------------------------------------------------
+// Helper: speak text via TTS → send audio to Meet view
+// ---------------------------------------------------------------------------
+
+function speakText(text, voice) {
+  // Temporarily override voice if specified (works for both macOS and ElevenLabs)
+  const originalMacVoice = tts.macosVoice;
+  const originalELVoice = tts.voiceId;
+  if (voice) {
+    tts.updateConfig({ macosVoice: voice });
+    // If it looks like an ElevenLabs voice ID, also set voiceId
+    if (voice.length > 15) tts.updateConfig({ voiceId: voice });
+  }
+
   tts.synthesize(text)
     .then((audioBuffer) => {
       const base64Audio = Buffer.from(audioBuffer).toString('base64');
       // Unmute mic before speaking
-      if (meetWindow && !meetWindow.isDestroyed()) {
-        meetWindow.webContents.send('extension-message', { action: 'unmute-mic' });
+      if (meetView && !meetView.webContents.isDestroyed()) {
+        meetView.webContents.send('extension-message', { action: 'unmute-mic' });
         setTimeout(() => {
-          meetWindow.webContents.send('extension-message', {
+          meetView.webContents.send('extension-message', {
             action: 'play-tts',
             payload: { audioData: base64Audio },
           });
@@ -71,12 +106,19 @@ function speakText(text) {
     .catch((err) => {
       console.error('[electron] TTS error:', err.message);
       broadcastError('TTS: ' + err.message.slice(0, 120));
+    })
+    .finally(() => {
+      // Restore original voices after one-off override
+      if (voice) {
+        tts.updateConfig({ macosVoice: originalMacVoice });
+        tts.voiceId = originalELVoice;
+      }
     });
 }
 
 function broadcastError(message) {
-  if (panelWindow && !panelWindow.isDestroyed()) {
-    panelWindow.webContents.send('extension-message', { action: 'error', message });
+  if (panelView && !panelView.webContents.isDestroyed()) {
+    panelView.webContents.send('extension-message', { action: 'error', message });
   }
 }
 
@@ -121,23 +163,149 @@ if (!gotTheLock) {
   app.quit();
 }
 app.on('second-instance', () => {
-  // Focus existing windows when a second instance tries to launch
-  if (panelWindow && !panelWindow.isDestroyed()) {
-    if (panelWindow.isMinimized()) panelWindow.restore();
-    panelWindow.focus();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Auto-install MCP config + Claude skill on first launch
+// ---------------------------------------------------------------------------
+
+function ensureClaudeIntegration() {
+  const home = process.env.HOME || process.env.USERPROFILE;
+  const claudeDir = path.join(home, '.claude');
+  const claudeJsonPath = path.join(home, '.claude.json');
+  const skillDir = path.join(claudeDir, 'skills', 'join-call');
+  const skillPath = path.join(skillDir, 'SKILL.md');
+
+  // Determine paths based on whether we're packaged or in dev
+  const isPackaged = app.isPackaged;
+  const mcpServerPath = isPackaged
+    ? path.join(process.resourcesPath, 'mcp-server', 'server.js')
+    : path.join(__dirname, '..', 'mcp-server', 'server.js');
+  const appLaunchCmd = isPackaged
+    ? 'open -a Vibeconferencing'
+    : `cd ${__dirname} && npx electron .`;
+
+  let changed = false;
+
+  // --- Ensure global MCP config in ~/.claude.json ---
+  let claudeJson = {};
+  try {
+    claudeJson = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf-8'));
+  } catch {}
+
+  if (!claudeJson.mcpServers) claudeJson.mcpServers = {};
+
+  const currentMcp = claudeJson.mcpServers.vibeconferencing;
+  if (!currentMcp) {
+    claudeJson.mcpServers.vibeconferencing = {
+      command: 'node',
+      args: [mcpServerPath],
+      env: {
+        VIBECONF_ROOM_ID: '',
+        VIBECONF_BOT_NAME: 'AI Assistant',
+        VIBECONF_BASE_URL: 'https://vibeconferencing-git-staging-lets-vibe.vercel.app',
+      },
+    };
+    fs.writeFileSync(claudeJsonPath, JSON.stringify(claudeJson, null, 2) + '\n');
+    console.log('[electron] Installed global MCP config at', claudeJsonPath);
+    changed = true;
+  } else {
+    console.log('[electron] Global MCP config already present');
+  }
+
+  // --- Ensure global skill in ~/.claude/skills/join-call/ ---
+  if (!fs.existsSync(skillPath)) {
+    fs.mkdirSync(skillDir, { recursive: true });
+    const skillContent = `---
+name: join-call
+description: Join the user's current Google Meet call as an AI bot participant
+disable-model-invocation: true
+allowed-tools: Bash mcp__vibeconferencing__get_room_info mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__read_transcripts
+---
+
+Join the user's current Google Meet call as an AI bot participant.
+
+## Step 1: Find the Meet URL and launch
+
+Run this AppleScript to find a Google Meet URL in Chrome:
+
+\`\`\`
+osascript -e '
+tell application "Google Chrome"
+  repeat with w in windows
+    repeat with t in tabs of w
+      if URL of t starts with "https://meet.google.com/" then
+        return URL of t
+      end if
+    end repeat
+  end repeat
+end tell
+'
+\`\`\`
+
+If no Meet URL is found, ask the user for the Meet URL.
+
+Extract the meet code from the URL (the \`xxx-xxxx-xxx\` part after \`meet.google.com/\`).
+
+Kill any existing instance and launch the Electron app:
+
+\`\`\`
+pkill -f "Vibeconferencing" 2>/dev/null; sleep 1
+${appLaunchCmd} \\
+  --meet-url=<MEET_URL> \\
+  --bot-name="AI Assistant" \\
+  --sync-url=https://vibeconferencing-git-staging-lets-vibe.vercel.app &
+disown
+\`\`\`
+
+Use "AI Assistant" as the default bot name, or $ARGUMENTS if provided.
+
+## Step 2: Start the conversation loop immediately
+
+Don't wait for admission — the long-poll will block until speech arrives. Use the meet code as \`room_id\` for all MCP tool calls.
+
+1. Call \`wait_for_speech\` to listen (blocks until someone speaks and pauses)
+2. Respond naturally using \`speak\` — keep it to 1-2 sentences since it's spoken aloud
+3. If the conversation involves visual content (code, diagrams, lists), also call \`update_whiteboard\` with markdown or Mermaid
+4. Go back to step 1
+
+Guidelines:
+- Be a helpful, natural conversational participant
+- Keep spoken responses short — people can ask you to elaborate
+- Use the whiteboard for anything visual (code, diagrams, structured info)
+- If someone says goodbye or asks you to leave, stop the loop
+- If \`wait_for_speech\` times out with no speech, call it again — people may just be quiet
+`;
+    fs.writeFileSync(skillPath, skillContent);
+    console.log('[electron] Installed global skill at', skillPath);
+    changed = true;
+  } else {
+    console.log('[electron] Global skill already present');
+  }
+
+  if (changed) {
+    console.log('[electron] Claude integration installed. Restart Claude Code to pick up MCP changes.');
+  }
+}
 
 app.whenReady().then(() => {
   store = new Store(app.getPath('userData'));
 
+  // Check/install Claude integration
+  ensureClaudeIntegration();
+
   // Load saved config
-  const savedConfig = store.getMultiple(['ttsApiKey', 'ttsVoiceId', 'botName', 'syncBaseUrl']);
+  const savedConfig = store.getMultiple(['ttsApiKey', 'ttsVoiceId', 'botName', 'syncBaseUrl', 'macosVoice']);
   if (savedConfig.ttsApiKey) {
     tts.updateConfig({ apiKey: savedConfig.ttsApiKey });
     stt.updateConfig({ apiKey: savedConfig.ttsApiKey });
   }
   if (savedConfig.ttsVoiceId) tts.updateConfig({ voiceId: savedConfig.ttsVoiceId });
+  if (savedConfig.macosVoice) tts.updateConfig({ macosVoice: savedConfig.macosVoice });
   if (savedConfig.botName) sync.updateConfig({ botName: savedConfig.botName });
   if (savedConfig.syncBaseUrl) sync.updateConfig({ baseUrl: savedConfig.syncBaseUrl });
 
@@ -171,8 +339,41 @@ app.whenReady().then(() => {
   // Set Chrome-like user agent
   session.defaultSession.setUserAgent(CHROME_UA);
 
-  createPanelWindow();
+  // Set dock icon on macOS
+  if (process.platform === 'darwin' && app.dock) {
+    const icon = nativeImage.createFromPath(path.join(__dirname, 'icon.png'));
+    app.dock.setIcon(icon);
+  }
+
+  createMainWindow();
   setupIPC();
+
+  // Auto-join if launched with --meet-url
+  if (cliArgs['meet-url']) {
+    const meetUrl = cliArgs['meet-url'];
+    const botName = cliArgs['bot-name'];
+    const syncUrl = cliArgs['sync-url'];
+    if (botName) {
+      sync.updateConfig({ botName });
+      store.set('botName', botName);
+    }
+    if (syncUrl) {
+      sync.updateConfig({ baseUrl: syncUrl });
+      store.set('syncBaseUrl', syncUrl);
+    }
+    console.log('[electron] Auto-joining:', meetUrl);
+    loadMeetURL(meetUrl);
+
+    // Extract meet code and start sync
+    const meetCode = meetUrl.replace(/.*meet\.google\.com\//, '').replace(/\?.*/, '');
+    if (meetCode) {
+      sync.updateConfig({ roomId: meetCode });
+      sync.ensureRoom().then(() => {
+        sync.startPolling();
+        console.log('[electron] Sync started for room:', meetCode);
+      });
+    }
+  }
 });
 
 app.on('window-all-closed', () => {
@@ -180,63 +381,89 @@ app.on('window-all-closed', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Window creation
+// Window creation — single window with panel sidebar + Meet view
 // ---------------------------------------------------------------------------
 
-function createMeetWindow(meetUrl) {
-  if (meetWindow && !meetWindow.isDestroyed()) {
-    meetWindow.loadURL(meetUrl);
-    meetWindow.focus();
-    return;
-  }
-
-  meetWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
-    title: 'Vibeconferencing Agent — Meet',
+function createMainWindow() {
+  mainWindow = new BrowserWindow({
+    width: 960 + PANEL_WIDTH,
+    height: 600,
+    title: 'Vibeconferencing',
+    icon: path.join(__dirname, 'icon.png'),
     webPreferences: {
-      preload: path.join(__dirname, 'preload-meet.js'),
-      contextIsolation: false, // allows preload to run in page's world (needed to patch getUserMedia before Meet's scripts)
-      sandbox: false,
+      // Main window itself doesn't load content — views do
+      nodeIntegration: false,
+      contextIsolation: true,
     },
   });
 
-  // Open DevTools for debugging (remove once stable)
-  meetWindow.webContents.openDevTools({ mode: 'detach' });
-
-  meetWindow.webContents.on('did-finish-load', () => {
-    const url = meetWindow.webContents.getURL();
-    if (url.includes('meet.google.com')) {
-      // Notify panel that Meet is loaded
-      if (panelWindow && !panelWindow.isDestroyed()) {
-        panelWindow.webContents.send('meet-status', { url, ready: true });
-      }
-    }
-  });
-
-  meetWindow.on('closed', () => {
-    meetWindow = null;
-    sync.stopPolling();
-  });
-
-  meetWindow.loadURL(meetUrl);
-}
-
-function createPanelWindow() {
-  panelWindow = new BrowserWindow({
-    width: 380,
-    height: 700,
-    title: 'Vibeconferencing Agent',
+  // --- Panel sidebar (left) ---
+  panelView = new BrowserView({
     webPreferences: {
       preload: path.join(__dirname, 'preload-panel.js'),
       contextIsolation: true,
     },
   });
+  mainWindow.addBrowserView(panelView);
+  panelView.webContents.loadFile(path.join(__dirname, 'renderer', 'panel.html'));
 
-  panelWindow.loadFile(path.join(__dirname, 'renderer', 'panel.html'));
+  // --- Meet view (right) ---
+  meetView = new BrowserView({
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-meet.js'),
+      contextIsolation: false,
+      sandbox: false,
+    },
+  });
+  mainWindow.addBrowserView(meetView);
 
-  panelWindow.on('closed', () => {
-    panelWindow = null;
+  // Mute audio output so the user doesn't hear themselves echoed back
+  meetView.webContents.setAudioMuted(true);
+
+  // Zoom out the Meet view
+  meetView.webContents.on('dom-ready', () => {
+    meetView.webContents.setZoomFactor(0.75);
+  });
+
+  // Open DevTools only if --devtools flag is passed
+  if (cliArgs['devtools']) {
+    meetView.webContents.openDevTools({ mode: 'detach' });
+  }
+
+  // Layout views on resize
+  function layoutViews() {
+    if (mainWindow.isDestroyed()) return;
+    const [width, height] = mainWindow.getContentSize();
+    panelView.setBounds({ x: 0, y: 0, width: PANEL_WIDTH, height });
+    meetView.setBounds({ x: PANEL_WIDTH, y: 0, width: width - PANEL_WIDTH, height });
+  }
+  layoutViews();
+  mainWindow.on('resize', layoutViews);
+
+  // Load a placeholder in the Meet view
+  meetView.webContents.loadURL('about:blank');
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+    panelView = null;
+    meetView = null;
+    sync.stopPolling();
+  });
+}
+
+function loadMeetURL(meetUrl) {
+  if (!meetView || meetView.webContents.isDestroyed()) return;
+
+  meetView.webContents.loadURL(meetUrl);
+
+  meetView.webContents.on('did-finish-load', () => {
+    const url = meetView.webContents.getURL();
+    if (url.includes('meet.google.com')) {
+      // Notify panel that Meet is loaded
+      if (panelView && !panelView.webContents.isDestroyed()) {
+        panelView.webContents.send('meet-status', { url, ready: true });
+      }
+    }
   });
 }
 
@@ -256,12 +483,12 @@ function setupIPC() {
 
   // --- Meet window management ---
   ipcMain.on('join-meet', (_event, meetUrl) => {
-    createMeetWindow(meetUrl);
+    loadMeetURL(meetUrl);
   });
 
   ipcMain.on('get-meet-status', (event) => {
-    if (meetWindow && !meetWindow.isDestroyed()) {
-      event.returnValue = { url: meetWindow.webContents.getURL(), ready: true };
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      event.returnValue = { url: meetView.webContents.getURL(), ready: true };
     } else {
       event.returnValue = { url: null, ready: false };
     }
@@ -275,12 +502,12 @@ function setupIPC() {
   });
 
   ipcMain.on('play-speech-test', () => {
-    if (!meetWindow || meetWindow.isDestroyed()) return;
+    if (!meetView || meetView.webContents.isDestroyed()) return;
     const audioBuffer = fs.readFileSync(testSpeechPath);
     const base64Audio = Buffer.from(audioBuffer).toString('base64');
-    meetWindow.webContents.send('extension-message', { action: 'unmute-mic' });
+    meetView.webContents.send('extension-message', { action: 'unmute-mic' });
     setTimeout(() => {
-      meetWindow.webContents.send('extension-message', {
+      meetView.webContents.send('extension-message', {
         action: 'play-tts',
         payload: { audioData: base64Audio },
       });
@@ -295,6 +522,17 @@ function setupIPC() {
       sync.startPolling();
       console.log('[electron] Sync started for room:', meetCode);
     });
+  });
+
+  // --- Bot joined call: speak introduction via TTS ---
+  ipcMain.on('bot-joined-call', (_event, { meetCode, botName }) => {
+    console.log('[electron] Bot joined call, speaking introduction');
+    speakText(`Hello. I am ${botName}, an AI agent.`);
+  });
+
+  // --- Meet status updates (logged, DOM updated by preload) ---
+  ipcMain.on('meet-status-update', (_event, status) => {
+    console.log('[electron] Meet status:', status);
   });
 
   ipcMain.on('stop-sync', () => {
@@ -315,9 +553,13 @@ function setupIPC() {
   // --- TTS config ---
   ipcMain.on('update-tts-config', (_event, config) => {
     tts.updateConfig(config);
-    if (config.apiKey) {
+    if ('apiKey' in config) {
       stt.updateConfig({ apiKey: config.apiKey });
-      store.set('ttsApiKey', config.apiKey);
+      if (config.apiKey) {
+        store.set('ttsApiKey', config.apiKey);
+      } else {
+        store.delete('ttsApiKey');
+      }
     }
     if (config.voiceId) {
       store.set('ttsVoiceId', config.voiceId);
@@ -332,15 +574,15 @@ function setupIPC() {
 
   // --- Forward messages from Meet content script to panel ---
   ipcMain.on('to-panel', (_event, message) => {
-    if (panelWindow && !panelWindow.isDestroyed()) {
-      panelWindow.webContents.send('extension-message', message);
+    if (panelView && !panelView.webContents.isDestroyed()) {
+      panelView.webContents.send('extension-message', message);
     }
   });
 
   // --- Forward messages from panel to Meet content script ---
   ipcMain.on('to-meet', (_event, message) => {
-    if (meetWindow && !meetWindow.isDestroyed()) {
-      meetWindow.webContents.send('extension-message', message);
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('extension-message', message);
     }
   });
 

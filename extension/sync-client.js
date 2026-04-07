@@ -174,8 +174,8 @@ class SyncClient {
         console.log('[sync] Found', botEntries.length, 'bot speech entry(ies) to speak');
         if (this.onBotSpeech) {
           for (const entry of botEntries) {
-            console.log('[sync] >>> Speaking:', entry.text?.slice(0, 80));
-            this.onBotSpeech(entry.text);
+            console.log('[sync] >>> Speaking:', entry.text?.slice(0, 80), entry.voice ? `(voice: ${entry.voice})` : '');
+            this.onBotSpeech(entry.text, entry.voice);
           }
         } else {
           console.warn('[sync] onBotSpeech callback not set!');

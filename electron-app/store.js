@@ -40,6 +40,11 @@ class Store {
     this._save();
   }
 
+  delete(key) {
+    delete this.data[key];
+    this._save();
+  }
+
   getMultiple(keys) {
     const result = {};
     for (const key of keys) {

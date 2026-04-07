@@ -62,8 +62,8 @@ function speakText(text) {
         meetWindow.webContents.send('extension-message', { action: 'unmute-mic' });
         setTimeout(() => {
           meetWindow.webContents.send('extension-message', {
-            action: 'play-tts-audio',
-            payload: { audioBase64: base64Audio, mimeType: 'audio/mpeg' },
+            action: 'play-tts',
+            payload: { audioData: base64Audio },
           });
         }, 300);
       }
@@ -281,8 +281,8 @@ function setupIPC() {
     meetWindow.webContents.send('extension-message', { action: 'unmute-mic' });
     setTimeout(() => {
       meetWindow.webContents.send('extension-message', {
-        action: 'play-tts-audio',
-        payload: { audioBase64: base64Audio, mimeType: 'audio/mpeg' },
+        action: 'play-tts',
+        payload: { audioData: base64Audio },
       });
     }, 300);
   });

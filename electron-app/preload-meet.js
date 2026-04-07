@@ -30,11 +30,11 @@ try {
 ipcRenderer.on('extension-message', (_event, message) => {
   // Forward to page context via window.postMessage
   // page-inject.js listens for __botsInCalls messages
-  if (message.action === 'play-tts-audio') {
+  if (message.action === 'play-tts') {
     window.postMessage({
       __botsInCalls: true,
       __fromExtension: true,
-      action: 'play-tts-audio',
+      action: 'play-tts',
       payload: message.payload,
     }, '*');
   } else if (message.action === 'unmute-mic') {

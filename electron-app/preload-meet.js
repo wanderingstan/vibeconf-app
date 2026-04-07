@@ -1,22 +1,27 @@
 // preload-meet.js — Preload script for the Meet BrowserWindow.
-// Replaces content-script.js: exposes IPC bridge, runs DOM automation.
-// page-inject.js is injected separately via webContents.executeJavaScript (MAIN world).
+// Runs with contextIsolation: false so it shares the page's world.
+// This lets us patch getUserMedia BEFORE Meet's scripts run.
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { ipcRenderer } = require('electron');
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
 
 // ---------------------------------------------------------------------------
-// Expose API to the renderer (page context can access via window.electronAPI)
+// Inject page-inject.js IMMEDIATELY — before any page scripts execute.
+// With contextIsolation: false, this runs in the page's JS context,
+// so our getUserMedia override is in place when Meet's code loads.
 // ---------------------------------------------------------------------------
 
-contextBridge.exposeInMainWorld('electronAPI', {
-  send: (channel, data) => ipcRenderer.send(channel, data),
-  on: (channel, callback) => {
-    const listener = (_event, ...args) => callback(...args);
-    ipcRenderer.on(channel, listener);
-    return () => ipcRenderer.removeListener(channel, listener);
-  },
-  invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
-});
+try {
+  const pageInjectPath = path.join(__dirname, '..', 'extension', 'page-inject.js');
+  const pageInjectCode = fs.readFileSync(pageInjectPath, 'utf-8');
+  // Use indirect eval to run in the global scope (same as page context)
+  (0, eval)(pageInjectCode);
+  console.log('[electron-meet] page-inject.js loaded successfully');
+} catch (err) {
+  console.error('[electron-meet] Failed to load page-inject.js:', err.message);
+}
 
 // ---------------------------------------------------------------------------
 // Listen for messages from main process and forward to page context

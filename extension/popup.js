@@ -132,21 +132,24 @@ copyPromptBtn.addEventListener('click', () => {
     const botName = result.botName || 'AI Assistant';
     const endpoint = apiEndpointInput.value;
 
+    const botParam = encodeURIComponent(botName);
     const prompt = `You are "${botName}", an AI assistant participating in a Google Meet call.
 
 ## How to interact
 
-**Read what people are saying:**
+**Wait for people to speak (long-poll, recommended):**
 \`\`\`bash
-curl -s "${endpoint}?since=TIMESTAMP" | python3 -m json.tool
+curl -s "${endpoint}?since=TIMESTAMP&wait=55&silence=5&bot=${botParam}" | python3 -m json.tool
 \`\`\`
-First call: omit \`?since=\` to get recent history. Then use the \`asOf\` value from each response as the next \`since\` parameter.
+This holds the connection open for up to 55 seconds and returns only when someone finishes speaking (5 seconds of silence detected). The \`bot\` parameter excludes your own entries. Use the \`asOf\` value from each response as the next \`since\` parameter.
 
-Transcript entries include \`participantName\` (who said it) and \`text\` (what they said).
+First call: omit \`?since=\` and \`?wait=\` to get recent history and the initial \`asOf\` timestamp.
+
+Transcript entries are in \`transcript.entries[]\`, each with \`participantName\` (who said it) and \`text\` (what they said).
 
 **Say something in the call:**
 \`\`\`bash
-curl -X POST "${endpoint}" \\
+curl -s -X POST "${endpoint}" \\
   -H "Content-Type: application/json" \\
   -d '{"sender":"${botName}","role":"bot","ownerName":"${botName}","transcript":[{"text":"Your message here"}]}'
 \`\`\`
@@ -154,17 +157,27 @@ Your transcript text will be spoken aloud in the Meet call via text-to-speech.
 
 **Update the whiteboard (shared screen):**
 \`\`\`bash
-curl -X POST "${endpoint}" \\
+curl -s -X POST "${endpoint}" \\
   -H "Content-Type: application/json" \\
   -d '{"sender":"${botName}","role":"bot","ownerName":"${botName}","whiteboard":{"content":"# Your markdown here"}}'
 \`\`\`
+
+## Interaction loop
+
+Your main loop should be:
+1. GET with \`?wait=55&silence=5\` to block until someone speaks
+2. Read the transcript entries in the response
+3. Decide if you should respond
+4. POST your response (spoken via TTS) and/or whiteboard update
+5. Use \`asOf\` from the response as the next \`since\` value
+6. Repeat from step 1
 
 ## Important notes
 - \`ownerName\` is REQUIRED in every POST request
 - \`sender\` must be exactly "${botName}" for the extension to speak your responses
 - Avoid exclamation marks and special characters in text — they can cause shell escaping issues with curl. Use periods instead.
 - When using curl with single quotes, apostrophes in text will break the command. Use double quotes with escaped inner quotes, or avoid contractions.
-- Poll for new transcripts every few seconds
+- Do NOT use \`sleep\` between polls — the \`wait\` parameter handles blocking server-side
 - Keep responses concise — they will be spoken aloud via TTS
 - Use the whiteboard for structured content (notes, diagrams, action items)
 `;

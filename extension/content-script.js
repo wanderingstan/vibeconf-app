@@ -876,6 +876,18 @@ window.addEventListener('message', (event) => {
     }
   }
 
+  // Forward speaking state changes to the server presence API
+  if (event.data.action === 'dom-speaker-change') {
+    const { name, speaking } = event.data.payload;
+    if (name) {
+      chrome.runtime.sendMessage({
+        action: 'update-speaking',
+        name,
+        speaking,
+      });
+    }
+  }
+
   // Mute mic after TTS playback ends
   if (event.data.action === 'tts-ended') {
     setTimeout(() => setMicMuted(true), 500); // small delay for audio to flush

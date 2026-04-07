@@ -114,6 +114,20 @@ function updateSpeakingState(name, speaking) {
 // App lifecycle
 // ---------------------------------------------------------------------------
 
+// Single instance — quit if another instance is already running
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  console.log('[electron] Another instance is running, quitting.');
+  app.quit();
+}
+app.on('second-instance', () => {
+  // Focus existing windows when a second instance tries to launch
+  if (panelWindow && !panelWindow.isDestroyed()) {
+    if (panelWindow.isMinimized()) panelWindow.restore();
+    panelWindow.focus();
+  }
+});
+
 app.whenReady().then(() => {
   store = new Store(app.getPath('userData'));
 
@@ -126,6 +140,17 @@ app.whenReady().then(() => {
   if (savedConfig.ttsVoiceId) tts.updateConfig({ voiceId: savedConfig.ttsVoiceId });
   if (savedConfig.botName) sync.updateConfig({ botName: savedConfig.botName });
   if (savedConfig.syncBaseUrl) sync.updateConfig({ baseUrl: savedConfig.syncBaseUrl });
+
+  // Strip Content-Security-Policy headers from Meet responses.
+  // Meet's Trusted Types CSP blocks our page-inject.js eval() in the preload.
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    const headers = { ...details.responseHeaders };
+    delete headers['content-security-policy'];
+    delete headers['Content-Security-Policy'];
+    delete headers['content-security-policy-report-only'];
+    delete headers['Content-Security-Policy-Report-Only'];
+    callback({ responseHeaders: headers });
+  });
 
   // Auto-grant media permissions
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
@@ -171,20 +196,13 @@ function createMeetWindow(meetUrl) {
     title: 'Vibeconferencing Agent — Meet',
     webPreferences: {
       preload: path.join(__dirname, 'preload-meet.js'),
-      contextIsolation: true,
-      sandbox: false, // needed for preload to inject into page context
+      contextIsolation: false, // allows preload to run in page's world (needed to patch getUserMedia before Meet's scripts)
+      sandbox: false,
     },
   });
 
-  // Inject page-inject.js into the MAIN world before Meet's scripts run
-  meetWindow.webContents.on('did-start-navigation', (event, url) => {
-    if (url.includes('meet.google.com')) {
-      // executeJavaScript runs in the page's main world
-      meetWindow.webContents.executeJavaScript(pageInjectCode).catch((err) => {
-        console.error('[electron] Failed to inject page-inject.js:', err.message);
-      });
-    }
-  });
+  // Open DevTools for debugging (remove once stable)
+  meetWindow.webContents.openDevTools({ mode: 'detach' });
 
   meetWindow.webContents.on('did-finish-load', () => {
     const url = meetWindow.webContents.getURL();

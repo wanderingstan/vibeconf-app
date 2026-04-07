@@ -37,7 +37,28 @@ api.invoke('get-config', ['botName', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId']).
   if (result?.syncBaseUrl) { syncBaseUrlInput.value = result.syncBaseUrl; syncBaseUrl = result.syncBaseUrl; }
   if (result?.ttsApiKey) ttsApiKeyInput.value = result.ttsApiKey;
   if (result?.ttsVoiceId) ttsVoiceIdInput.value = result.ttsVoiceId;
+
+  // Check auth status after config is loaded (so we know the server URL)
+  checkAuthStatus();
 });
+
+const authStatus = document.getElementById('authStatus');
+
+async function checkAuthStatus() {
+  try {
+    const data = await api.invoke('check-auth');
+    if (data?.authenticated) {
+      authStatus.textContent = `Logged in as ${data.user.name}`;
+      authStatus.style.color = '#4caf50';
+    } else {
+      authStatus.textContent = 'Not logged in';
+      authStatus.style.color = '#f44336';
+    }
+  } catch {
+    authStatus.textContent = 'Auth check failed';
+    authStatus.style.color = '#f44336';
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Error display

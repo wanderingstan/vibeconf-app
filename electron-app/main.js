@@ -410,6 +410,32 @@ app.whenReady().then(() => {
   createMainWindow();
   setupIPC();
 
+  // Auto-login to vibeconferencing server (ensures we can create rooms)
+  {
+    const baseUrl = store.get('syncBaseUrl') || 'https://vibeconferencing.com';
+    const botName = cliArgs['bot-name'] || store.get('botName') || 'AI Assistant';
+    const loginUrl = `${baseUrl}/api/auth/dev-login?name=${encodeURIComponent(botName)}`;
+    // Use Electron's net module so cookies are stored in the default session
+    const { net } = require('electron');
+    const request = net.request({ url: loginUrl, redirect: 'manual' });
+    request.setHeader('Accept', 'application/json');
+    request.on('response', (response) => {
+      const status = response.statusCode;
+      if (status === 200) {
+        console.log('[electron] Auto-login successful as', botName);
+      } else if (status === 302) {
+        // Redirect means cookie was set (older server without JSON response)
+        console.log('[electron] Auto-login successful (redirect) as', botName);
+      } else {
+        console.warn('[electron] Auto-login failed:', status);
+      }
+    });
+    request.on('error', (err) => {
+      console.warn('[electron] Auto-login error:', err.message);
+    });
+    request.end();
+  }
+
   // Auto-join if launched with --meet-url
   if (cliArgs['meet-url']) {
     const meetUrl = cliArgs['meet-url'];
@@ -548,6 +574,25 @@ function setupIPC() {
 
   ipcMain.handle('set-config', (_event, key, value) => {
     store.set(key, value);
+  });
+
+  // --- Auth check (uses net.request so session cookies are included) ---
+  ipcMain.handle('check-auth', () => {
+    const baseUrl = store.get('syncBaseUrl') || 'https://vibeconferencing.com';
+    const { net } = require('electron');
+    return new Promise((resolve) => {
+      const request = net.request(`${baseUrl}/api/auth/me`);
+      let body = '';
+      request.on('response', (response) => {
+        response.on('data', (chunk) => { body += chunk.toString(); });
+        response.on('end', () => {
+          try { resolve(JSON.parse(body)); }
+          catch { resolve({ authenticated: false }); }
+        });
+      });
+      request.on('error', () => resolve({ authenticated: false }));
+      request.end();
+    });
   });
 
   // --- Meet window management ---

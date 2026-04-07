@@ -52,6 +52,89 @@ let whiteboardWindow = null;
 
 const PANEL_WIDTH = 380;
 
+// Check if already logged in
+function checkAuth() {
+  const baseUrl = store.get('syncBaseUrl') || 'https://vibeconferencing.com';
+  const { net } = require('electron');
+  return new Promise((resolve) => {
+    const request = net.request(`${baseUrl}/api/auth/me`);
+    let body = '';
+    request.on('response', (response) => {
+      response.on('data', (chunk) => { body += chunk.toString(); });
+      response.on('end', () => {
+        try { resolve(JSON.parse(body)); }
+        catch { resolve({ authenticated: false }); }
+      });
+    });
+    request.on('error', () => resolve({ authenticated: false }));
+    request.end();
+  });
+}
+
+// Open Google OAuth in the system browser
+// Google blocks embedded webviews, so we must use the real browser.
+// We start a local HTTP server to catch the session cookie after login.
+function openGoogleLogin() {
+  const baseUrl = store.get('syncBaseUrl') || 'https://vibeconferencing.com';
+  const http = require('http');
+  const { shell } = require('electron');
+  const { net } = require('electron');
+
+  // Create a temporary local server to receive the auth callback
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+
+    if (url.pathname === '/auth-complete') {
+      // Extract session token from query param
+      const token = url.searchParams.get('token');
+      if (token) {
+        // Set the cookie in Electron's session
+        const cookieUrl = baseUrl;
+        const isSecure = baseUrl.startsWith('https');
+        session.defaultSession.cookies.set({
+          url: cookieUrl,
+          name: 'vc_session',
+          value: token,
+          path: '/',
+          httpOnly: true,
+          secure: isSecure,
+          sameSite: 'lax',
+          expirationDate: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60, // 30 days
+        }).then(() => {
+          console.log('[electron] Session cookie set from Google login');
+          if (panelView && !panelView.webContents.isDestroyed()) {
+            panelView.webContents.send('auth-changed');
+          }
+        }).catch(err => {
+          console.error('[electron] Failed to set cookie:', err);
+        });
+      }
+
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end('<html><body><h2>Signed in! You can close this tab.</h2><script>window.close()</script></body></html>');
+      server.close();
+      return;
+    }
+
+    res.writeHead(404);
+    res.end();
+  });
+
+  // Find a free port and start
+  server.listen(0, '127.0.0.1', () => {
+    const port = server.address().port;
+    const callbackUrl = `http://127.0.0.1:${port}/auth-complete`;
+    const loginUrl = `${baseUrl}/api/auth/google?electron_callback=${encodeURIComponent(callbackUrl)}`;
+    console.log('[electron] Opening Google login in system browser:', loginUrl);
+    shell.openExternal(loginUrl);
+
+    // Auto-close server after 5 minutes if no callback
+    setTimeout(() => {
+      server.close();
+    }, 5 * 60 * 1000);
+  });
+}
+
 // Read page-inject.js source once at startup
 const pageInjectCode = fs.readFileSync(path.join(EXT_DIR, 'page-inject.js'), 'utf-8');
 const testSpeechPath = path.join(EXT_DIR, 'test-speech.mp3');
@@ -410,45 +493,28 @@ app.whenReady().then(() => {
   createMainWindow();
   setupIPC();
 
-  // Auto-login to vibeconferencing server (ensures we can create rooms)
-  {
-    const baseUrl = store.get('syncBaseUrl') || 'https://vibeconferencing.com';
-    const botName = cliArgs['bot-name'] || store.get('botName') || 'AI Assistant';
-    const loginUrl = `${baseUrl}/api/auth/dev-login?name=${encodeURIComponent(botName)}`;
-    // Use Electron's net module so cookies are stored in the default session
-    const { net } = require('electron');
-    const request = net.request({ url: loginUrl, redirect: 'manual' });
-    request.setHeader('Accept', 'application/json');
-    request.on('response', (response) => {
-      const status = response.statusCode;
-      if (status === 200) {
-        console.log('[electron] Auto-login successful as', botName);
-      } else if (status === 302) {
-        // Redirect means cookie was set (older server without JSON response)
-        console.log('[electron] Auto-login successful (redirect) as', botName);
-      } else {
-        console.warn('[electron] Auto-login failed:', status);
-      }
-    });
-    request.on('error', (err) => {
-      console.warn('[electron] Auto-login error:', err.message);
-    });
-    request.end();
+  // Process CLI args FIRST so syncBaseUrl/botName are set before auto-login
+  if (cliArgs['bot-name']) {
+    sync.updateConfig({ botName: cliArgs['bot-name'] });
+    store.set('botName', cliArgs['bot-name']);
   }
+  if (cliArgs['sync-url']) {
+    sync.updateConfig({ baseUrl: cliArgs['sync-url'] });
+    store.set('syncBaseUrl', cliArgs['sync-url']);
+  }
+
+  // Check auth status on startup
+  checkAuth().then(data => {
+    if (data.authenticated) {
+      console.log('[electron] Already logged in as', data.user.name);
+    } else {
+      console.log('[electron] Not logged in — user can click Log in button');
+    }
+  });
 
   // Auto-join if launched with --meet-url
   if (cliArgs['meet-url']) {
     const meetUrl = cliArgs['meet-url'];
-    const botName = cliArgs['bot-name'];
-    const syncUrl = cliArgs['sync-url'];
-    if (botName) {
-      sync.updateConfig({ botName });
-      store.set('botName', botName);
-    }
-    if (syncUrl) {
-      sync.updateConfig({ baseUrl: syncUrl });
-      store.set('syncBaseUrl', syncUrl);
-    }
     console.log('[electron] Auto-joining:', meetUrl);
     loadMeetURL(meetUrl);
 
@@ -576,23 +642,9 @@ function setupIPC() {
     store.set(key, value);
   });
 
-  // --- Auth check (uses net.request so session cookies are included) ---
+  // --- Auth check ---
   ipcMain.handle('check-auth', () => {
-    const baseUrl = store.get('syncBaseUrl') || 'https://vibeconferencing.com';
-    const { net } = require('electron');
-    return new Promise((resolve) => {
-      const request = net.request(`${baseUrl}/api/auth/me`);
-      let body = '';
-      request.on('response', (response) => {
-        response.on('data', (chunk) => { body += chunk.toString(); });
-        response.on('end', () => {
-          try { resolve(JSON.parse(body)); }
-          catch { resolve({ authenticated: false }); }
-        });
-      });
-      request.on('error', () => resolve({ authenticated: false }));
-      request.end();
-    });
+    return checkAuth();
   });
 
   // --- Meet window management ---
@@ -606,6 +658,12 @@ function setupIPC() {
     } else {
       event.returnValue = { url: null, ready: false };
     }
+  });
+
+  // --- Login ---
+  ipcMain.handle('login', () => {
+    openGoogleLogin();
+    return { opening: true };
   });
 
   // --- TTS ---

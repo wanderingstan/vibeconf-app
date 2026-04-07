@@ -53,11 +53,19 @@ let whiteboardWindow = null;
 const PANEL_WIDTH = 380;
 
 // Check if already logged in
-function checkAuth() {
+async function checkAuth() {
   const baseUrl = store.get('syncBaseUrl') || 'https://vibeconferencing.com';
   const { net } = require('electron');
+
+  // Get the session cookie manually to include it
+  const cookies = await session.defaultSession.cookies.get({ url: baseUrl, name: 'vc_session' });
+  const cookieHeader = cookies.length > 0 ? `vc_session=${cookies[0].value}` : '';
+
   return new Promise((resolve) => {
     const request = net.request(`${baseUrl}/api/auth/me`);
+    if (cookieHeader) {
+      request.setHeader('Cookie', cookieHeader);
+    }
     let body = '';
     request.on('response', (response) => {
       response.on('data', (chunk) => { body += chunk.toString(); });
@@ -88,26 +96,35 @@ function openGoogleLogin() {
       // Extract session token from query param
       const token = url.searchParams.get('token');
       if (token) {
-        // Set the cookie in Electron's session
-        const cookieUrl = baseUrl;
-        const isSecure = baseUrl.startsWith('https');
+        console.log('[electron] Received auth token, length:', token.length);
+        // Set the cookie in Electron's session for the server URL
         session.defaultSession.cookies.set({
-          url: cookieUrl,
+          url: baseUrl,
           name: 'vc_session',
           value: token,
           path: '/',
           httpOnly: true,
-          secure: isSecure,
+          secure: baseUrl.startsWith('https'),
           sameSite: 'lax',
-          expirationDate: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60, // 30 days
+          expirationDate: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60,
         }).then(() => {
-          console.log('[electron] Session cookie set from Google login');
+          console.log('[electron] Session cookie set successfully for', baseUrl);
+          // Verify the cookie was set
+          return session.defaultSession.cookies.get({ url: baseUrl, name: 'vc_session' });
+        }).then(cookies => {
+          console.log('[electron] Cookie verification:', cookies.length > 0 ? 'found' : 'NOT FOUND');
+          // Now verify with the server
+          return checkAuth();
+        }).then(data => {
+          console.log('[electron] Auth check after login:', data?.authenticated ? `logged in as ${data.user.name}` : 'NOT authenticated');
           if (panelView && !panelView.webContents.isDestroyed()) {
             panelView.webContents.send('auth-changed');
           }
         }).catch(err => {
-          console.error('[electron] Failed to set cookie:', err);
+          console.error('[electron] Login cookie error:', err);
         });
+      } else {
+        console.warn('[electron] No token in auth callback');
       }
 
       res.writeHead(200, { 'Content-Type': 'text/html' });

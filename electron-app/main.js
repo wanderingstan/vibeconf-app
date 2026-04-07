@@ -658,7 +658,7 @@ function setupIPC() {
   // --- Whiteboard + screen share ---
   ipcMain.on('start-whiteboard-share', (_event, { meetCode }) => {
     const baseUrl = store.get('syncBaseUrl') || 'https://vibeconferencing.com';
-    const roomUrl = `${baseUrl}/room/${meetCode}`;
+    const roomUrl = `${baseUrl}/room/${meetCode}?mode=whiteboard`;
 
     if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
       whiteboardWindow.focus();
@@ -679,7 +679,7 @@ function setupIPC() {
   // Combined: open whiteboard + trigger screen share in Meet
   ipcMain.handle('share-whiteboard', async (_event, { meetCode }) => {
     const baseUrl = store.get('syncBaseUrl') || 'https://vibeconferencing.com';
-    const roomUrl = `${baseUrl}/room/${meetCode}`;
+    const roomUrl = `${baseUrl}/room/${meetCode}?mode=whiteboard`;
 
     // Open whiteboard window if not already open
     if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {

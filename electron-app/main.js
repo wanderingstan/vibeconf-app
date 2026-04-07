@@ -2,7 +2,7 @@
 // Manages Meet BrowserView + panel sidebar in a single window,
 // IPC routing, TTS, and sync.
 
-const { app, BrowserWindow, BrowserView, ipcMain, session, nativeImage } = require('electron');
+const { app, BrowserWindow, BrowserView, ipcMain, session, nativeImage, desktopCapturer, systemPreferences, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const vm = require('vm');
@@ -298,6 +298,28 @@ app.whenReady().then(() => {
   // Check/install Claude integration
   ensureClaudeIntegration();
 
+  // Check screen recording permission (needed for whiteboard share)
+  if (process.platform === 'darwin') {
+    const screenAccess = systemPreferences.getMediaAccessStatus('screen');
+    if (screenAccess !== 'granted') {
+      console.warn('[electron] Screen recording permission not granted:', screenAccess);
+      // Trigger a desktopCapturer call to prompt the OS permission dialog
+      desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1, height: 1 } })
+        .then(() => {
+          const newStatus = systemPreferences.getMediaAccessStatus('screen');
+          if (newStatus !== 'granted') {
+            dialog.showMessageBoxSync({
+              type: 'warning',
+              title: 'Screen Recording Permission',
+              message: 'Vibeconferencing needs screen recording permission to share the whiteboard.\n\nPlease grant access in System Settings > Privacy & Security > Screen Recording, then restart the app.',
+              buttons: ['OK'],
+            });
+          }
+        })
+        .catch(() => {});
+    }
+  }
+
   // Load saved config
   const savedConfig = store.getMultiple(['ttsApiKey', 'ttsVoiceId', 'botName', 'syncBaseUrl', 'macosVoice']);
   if (savedConfig.ttsApiKey) {
@@ -334,6 +356,46 @@ app.whenReady().then(() => {
       return true;
     }
     return false;
+  });
+
+  // Handle getDisplayMedia — share the whiteboard window if open, otherwise deny
+  session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
+    if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
+      try {
+        const sources = await desktopCapturer.getSources({
+          types: ['window'],
+          thumbnailSize: { width: 0, height: 0 },
+        });
+        const mediaSourceId = whiteboardWindow.getMediaSourceId();
+        console.log('[electron] Display media request — looking for source:', mediaSourceId);
+        console.log('[electron] Available sources:', sources.map(s => `${s.id} "${s.name}"`));
+
+        const source = sources.find(s => s.id === mediaSourceId);
+        if (source) {
+          console.log('[electron] Matched whiteboard source:', source.id, source.name);
+          callback({ video: source });
+          return;
+        }
+
+        // Fallback: match by title
+        const wbTitle = whiteboardWindow.getTitle();
+        const fallback = sources.find(s => s.name.includes(wbTitle) || s.name.includes('Vibeconferencing'));
+        if (fallback) {
+          console.log('[electron] Matched whiteboard by title:', fallback.id, fallback.name);
+          callback({ video: fallback });
+          return;
+        }
+
+        console.warn('[electron] Could not find whiteboard in sources, trying webContents');
+        callback({ video: whiteboardWindow.webContents });
+      } catch (err) {
+        console.error('[electron] Display media error:', err);
+        callback({});
+      }
+    } else {
+      console.log('[electron] Display media request → no whiteboard window, denying');
+      callback({});
+    }
   });
 
   // Set Chrome-like user agent
@@ -429,6 +491,13 @@ function createMainWindow() {
   if (cliArgs['devtools']) {
     meetView.webContents.openDevTools({ mode: 'detach' });
   }
+
+  // Open DevTools on demand from panel
+  ipcMain.on('open-devtools', () => {
+    if (meetView && meetView.webContents) {
+      meetView.webContents.openDevTools({ mode: 'detach' });
+    }
+  });
 
   // Layout views on resize
   function layoutViews() {
@@ -586,15 +655,92 @@ function setupIPC() {
     }
   });
 
-  // --- Whiteboard ---
-  ipcMain.on('open-whiteboard', () => {
+  // --- Whiteboard + screen share ---
+  ipcMain.on('start-whiteboard-share', (_event, { meetCode }) => {
+    const baseUrl = store.get('syncBaseUrl') || 'https://vibeconferencing.com';
+    const roomUrl = `${baseUrl}/room/${meetCode}`;
+
     if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
       whiteboardWindow.focus();
-      return;
+    } else {
+      whiteboardWindow = new BrowserWindow({
+        width: 1280,
+        height: 720,
+        title: 'Vibeconferencing Whiteboard',
+        webPreferences: { contextIsolation: true, nodeIntegration: false },
+      });
+      whiteboardWindow.loadURL(roomUrl);
+      whiteboardWindow.on('closed', () => { whiteboardWindow = null; });
     }
+
+    console.log('[electron] Whiteboard window opened:', roomUrl);
+  });
+
+  // Combined: open whiteboard + trigger screen share in Meet
+  ipcMain.handle('share-whiteboard', async (_event, { meetCode }) => {
     const baseUrl = store.get('syncBaseUrl') || 'https://vibeconferencing.com';
-    whiteboardWindow = new BrowserWindow({ width: 1024, height: 768, title: 'Whiteboard' });
-    whiteboardWindow.loadURL(baseUrl);
-    whiteboardWindow.on('closed', () => { whiteboardWindow = null; });
+    const roomUrl = `${baseUrl}/room/${meetCode}`;
+
+    // Open whiteboard window if not already open
+    if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
+      whiteboardWindow = new BrowserWindow({
+        width: 1280,
+        height: 720,
+        title: 'Vibeconferencing Whiteboard',
+        webPreferences: { contextIsolation: true, nodeIntegration: false },
+      });
+      whiteboardWindow.loadURL(roomUrl);
+      whiteboardWindow.on('closed', () => { whiteboardWindow = null; });
+    }
+
+    // Wait for the whiteboard to load, then trigger screen share
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    // Trigger screen share in Meet
+    if (meetView && meetView.webContents) {
+      meetView.webContents.send('trigger-screen-share');
+    }
+
+    return { success: true, url: roomUrl };
+  });
+
+  // Provide desktopCapturer source for screen share
+  ipcMain.handle('get-screen-share-source', async () => {
+    if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
+      return { error: 'No whiteboard window open' };
+    }
+
+    try {
+      // Use the window's native media source ID for reliable matching
+      const mediaSourceId = whiteboardWindow.getMediaSourceId();
+      console.log('[electron] Whiteboard media source ID:', mediaSourceId);
+
+      const sources = await desktopCapturer.getSources({
+        types: ['window'],
+        thumbnailSize: { width: 0, height: 0 },
+      });
+
+      console.log('[electron] Available sources:', sources.map(s => `${s.id} "${s.name}"`).join(', '));
+
+      // Match by media source ID (most reliable)
+      const wbSource = sources.find(s => s.id === mediaSourceId);
+      if (wbSource) {
+        console.log('[electron] Matched whiteboard by media source ID:', wbSource.id);
+        return { sourceId: wbSource.id };
+      }
+
+      // Fallback: match by window title
+      const wbTitle = whiteboardWindow.getTitle();
+      console.log('[electron] Whiteboard title:', wbTitle);
+      const fallback = sources.find(s => s.name.includes(wbTitle) || s.name.includes('Vibeconferencing'));
+      if (fallback) {
+        console.log('[electron] Matched whiteboard by title:', fallback.id, fallback.name);
+        return { sourceId: fallback.id };
+      }
+
+      return { error: `Could not find whiteboard window. Title: "${wbTitle}", sources: ${sources.length}` };
+    } catch (err) {
+      return { error: err.message };
+    }
   });
 }

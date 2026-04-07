@@ -87,6 +87,32 @@ meetUrlInput.addEventListener('keydown', (e) => {
 });
 
 // ---------------------------------------------------------------------------
+// Share Whiteboard
+// ---------------------------------------------------------------------------
+
+const shareWhiteboardBtn = document.getElementById('shareWhiteboardBtn');
+
+shareWhiteboardBtn.addEventListener('click', async () => {
+  const meetCode = meetCodeInput.value;
+  if (!meetCode) { showError('Join a call first'); return; }
+
+  shareWhiteboardBtn.textContent = 'Starting share...';
+  shareWhiteboardBtn.disabled = true;
+
+  try {
+    const result = await api.invoke('share-whiteboard', { meetCode });
+    if (result?.error) showError(result.error);
+  } catch (err) {
+    showError('Failed to share: ' + err.message);
+  }
+
+  setTimeout(() => {
+    shareWhiteboardBtn.textContent = 'Share Whiteboard';
+    shareWhiteboardBtn.disabled = false;
+  }, 3000);
+});
+
+// ---------------------------------------------------------------------------
 // Agent prompt
 // ---------------------------------------------------------------------------
 
@@ -164,6 +190,14 @@ copyCurlBtn.addEventListener('click', () => {
   api.copyToClipboard(curlCommand.textContent);
   copyCurlBtn.textContent = 'Copied!';
   setTimeout(() => { copyCurlBtn.textContent = 'Copy Curl Command'; }, 2000);
+});
+
+// ---------------------------------------------------------------------------
+// DevTools
+// ---------------------------------------------------------------------------
+
+document.getElementById('devtoolsBtn').addEventListener('click', () => {
+  api.send('open-devtools');
 });
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Top-left: circle (Claude orange) -->
+  <circle cx="8" cy="8" r="7.5" fill="#D97757"/>
+  <!-- Top-right: square (violet) -->
+  <rect x="17" y="2" width="13" height="13" fill="#7765E3"/>
+  <!-- Bottom-left: square (rose) -->
+  <rect x="2" y="17" width="13" height="13" fill="#E8547A"/>
+  <!-- Bottom-right: circle (teal) -->
+  <circle cx="24" cy="24" r="7.5" fill="#3ECFCF"/>
+</svg>

@@ -477,6 +477,8 @@
 
   MediaDevices.prototype.getDisplayMedia = async function (constraints) {
     console.debug('[bots-in-calls] *** getDisplayMedia CALLED ***');
+    // In Electron, session.setDisplayMediaRequestHandler handles source selection.
+    // In Chrome extension, fall through to native picker.
     return _getDisplayMedia.call(navigator.mediaDevices, constraints);
   };
 

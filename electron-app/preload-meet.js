@@ -24,6 +24,18 @@ try {
 }
 
 // ---------------------------------------------------------------------------
+// Expose screen share helper to page context (for getDisplayMedia override)
+// ---------------------------------------------------------------------------
+
+window.__vibeconf_getScreenShareSource = async function () {
+  return ipcRenderer.invoke('get-screen-share-source');
+};
+
+window.__vibeconf_startWhiteboardShare = function (meetCode) {
+  ipcRenderer.send('start-whiteboard-share', { meetCode });
+};
+
+// ---------------------------------------------------------------------------
 // Listen for messages from main process and forward to page context
 // ---------------------------------------------------------------------------
 
@@ -641,6 +653,53 @@ window.addEventListener('message', (event) => {
     if (t?.text && t?.speaker) {
       ipcRenderer.send('post-transcripts', [t]);
     }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Screen share — click "Present now" in Meet UI
+// ---------------------------------------------------------------------------
+
+async function clickPresentNow() {
+  // Meet's "Present now" button — try multiple selectors
+  const presentBtn =
+    findByAriaLabel('Share screen') ||
+    findByAriaLabel('Present now') ||
+    findByText('Present now') ||
+    document.querySelector('[data-tooltip="Share screen"]') ||
+    document.querySelector('[data-tooltip="Present now"]');
+
+  if (presentBtn) {
+    presentBtn.click();
+    console.log('[electron-meet] Clicked "Present now"');
+
+    // Wait for the share picker to appear, then select "A tab" or "Entire Screen"
+    await delay(500);
+
+    // Meet shows a dropdown — look for "Your entire screen" option
+    const entireScreen =
+      findByText('Your entire screen') ||
+      findByText('Entire screen') ||
+      findByText('A window');
+
+    if (entireScreen) {
+      entireScreen.click();
+      console.log('[electron-meet] Selected screen share type');
+    } else {
+      console.log('[electron-meet] Share picker will trigger getDisplayMedia directly');
+    }
+    return true;
+  }
+
+  console.warn('[electron-meet] Could not find "Present now" button');
+  return false;
+}
+
+ipcRenderer.on('trigger-screen-share', async () => {
+  console.log('[electron-meet] Screen share triggered');
+  const success = await clickPresentNow();
+  if (!success) {
+    sendStatus('Could not find Present button', 'error');
   }
 });
 

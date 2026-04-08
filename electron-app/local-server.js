@@ -8,11 +8,13 @@ const { URL } = require('url');
 const DEFAULT_PORT = 7865;
 
 class LocalServer {
-  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall } = {}) {
+  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing } = {}) {
     this.port = port || DEFAULT_PORT;
     this.onBotSpeech = onBotSpeech || (() => {});
     this.onWhiteboardUpdate = onWhiteboardUpdate || (() => {});
     this.onLeaveCall = onLeaveCall || (() => {});
+    this.onShareWhiteboard = onShareWhiteboard || (() => {});
+    this.onStopSharing = onStopSharing || (() => {});
 
     // Room state (single room — the active call)
     this.roomId = null;
@@ -369,6 +371,16 @@ class LocalServer {
     if (data.meta?.action === 'leave') {
       this.onLeaveCall();
       results.leave = { ok: true };
+    }
+
+    // Handle share/stop whiteboard commands
+    if (data.meta?.action === 'share-whiteboard') {
+      this.onShareWhiteboard();
+      results.shareWhiteboard = { ok: true };
+    }
+    if (data.meta?.action === 'stop-sharing') {
+      this.onStopSharing();
+      results.stopSharing = { ok: true };
     }
 
     // Update presence

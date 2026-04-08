@@ -398,6 +398,72 @@ server.tool(
   }
 );
 
+// --- share_whiteboard ---
+server.tool(
+  "share_whiteboard",
+  "Start screen sharing the whiteboard in the Google Meet call. Opens the whiteboard window and presents it to all participants. Use update_whiteboard to set content before or after sharing.",
+  {
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) {
+      return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    }
+
+    const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sender: BOT_NAME,
+        role: "bot",
+        ownerName: BOT_NAME,
+        meta: { action: "share-whiteboard" },
+      }),
+    });
+
+    const data = await resp.json();
+    if (data.success) {
+      return { content: [{ type: "text", text: "Whiteboard is now being shared in the call. Use update_whiteboard to change its content." }] };
+    } else {
+      return { content: [{ type: "text", text: `Error: ${data.error || "Failed to share"}` }] };
+    }
+  }
+);
+
+// --- stop_sharing ---
+server.tool(
+  "stop_sharing",
+  "Stop screen sharing the whiteboard in the Google Meet call.",
+  {
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) {
+      return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    }
+
+    const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sender: BOT_NAME,
+        role: "bot",
+        ownerName: BOT_NAME,
+        meta: { action: "stop-sharing" },
+      }),
+    });
+
+    const data = await resp.json();
+    if (data.success) {
+      return { content: [{ type: "text", text: "Stopped sharing the whiteboard." }] };
+    } else {
+      return { content: [{ type: "text", text: `Error: ${data.error || "Failed to stop sharing"}` }] };
+    }
+  }
+);
+
 // --- get_room_info ---
 server.tool(
   "get_room_info",

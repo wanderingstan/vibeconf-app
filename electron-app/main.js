@@ -67,6 +67,32 @@ const localServer = new globalThis.LocalServer({
       panelView.webContents.send('leave-requested');
     }
   },
+  onShareWhiteboard: () => {
+    console.log('[local-server] Share whiteboard requested by agent');
+    const meetCode = localServer.roomId;
+    if (meetCode) {
+      // Reuse the existing share-whiteboard IPC logic
+      ipcMain.emit('start-whiteboard-share', {}, { meetCode });
+      // Wait for whiteboard to load, then trigger screen share in Meet
+      setTimeout(() => {
+        if (meetView && !meetView.webContents.isDestroyed()) {
+          meetView.webContents.send('trigger-screen-share');
+        }
+      }, 2000);
+    }
+  },
+  onStopSharing: () => {
+    console.log('[local-server] Stop sharing requested by agent');
+    // Close the whiteboard window — this ends the display media stream
+    if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
+      whiteboardWindow.close();
+      whiteboardWindow = null;
+    }
+    // Also click Meet's stop-presenting button if visible
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('trigger-stop-sharing');
+    }
+  },
 });
 
 // ---------------------------------------------------------------------------

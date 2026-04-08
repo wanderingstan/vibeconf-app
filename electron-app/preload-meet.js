@@ -708,6 +708,18 @@ ipcRenderer.on('trigger-screen-share', async () => {
   }
 });
 
+ipcRenderer.on('trigger-stop-sharing', () => {
+  console.log('[electron-meet] Stop sharing triggered');
+  // Look for Meet's "Stop presenting" / "Stop sharing" button
+  const stopBtn = document.querySelector('[aria-label*="Stop presenting"], [aria-label*="Stop sharing"], [data-tooltip*="Stop presenting"], [data-tooltip*="Stop sharing"]');
+  if (stopBtn) {
+    stopBtn.click();
+    console.log('[electron-meet] Clicked stop sharing button');
+  } else {
+    console.log('[electron-meet] Stop sharing button not found (may have already stopped)');
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Auto-start after DOM loads
 // ---------------------------------------------------------------------------

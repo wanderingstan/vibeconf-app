@@ -7,8 +7,10 @@ const joinBtn = document.getElementById('joinBtn');
 const meetUrlInput = document.getElementById('meetUrl');
 const connectedSection = document.getElementById('connectedSection');
 const meetCodeInput = document.getElementById('meetCode');
+const roomIdField = document.getElementById('roomIdField');
 const roomLink = document.getElementById('roomLink');
 const copyPromptBtn = document.getElementById('copyPromptBtn');
+const agentPromptText = document.getElementById('agentPromptText');
 const transcriptArea = document.getElementById('transcriptArea');
 const errorBar = document.getElementById('errorBar');
 const rawCaptionText = document.getElementById('rawCaptionText');
@@ -18,47 +20,134 @@ const speechBtn = document.getElementById('speechBtn');
 const curlCommand = document.getElementById('curlCommand');
 const copyCurlBtn = document.getElementById('copyCurlBtn');
 const micWarn = document.getElementById('micPermissionWarning');
+const shareWhiteboardBtn = document.getElementById('shareWhiteboardBtn');
 
 // Settings
 const botNameInput = document.getElementById('botName');
 const syncBaseUrlInput = document.getElementById('syncBaseUrl');
 const ttsApiKeyInput = document.getElementById('ttsApiKey');
 const ttsVoiceIdInput = document.getElementById('ttsVoiceId');
+const claudeWorkDirInput = document.getElementById('claudeWorkDir');
 
 let syncBaseUrl = 'https://vibeconferencing.com';
 let currentBotName = 'AI Assistant';
+let inCall = false;
+
+// ---------------------------------------------------------------------------
+// Screen navigation
+// ---------------------------------------------------------------------------
+
+const mainScreen = document.getElementById('mainScreen');
+const settingsScreen = document.getElementById('settingsScreen');
+const troubleshootingScreen = document.getElementById('troubleshootingScreen');
+
+function showScreen(screen) {
+  mainScreen.style.display = 'none';
+  settingsScreen.style.display = 'none';
+  troubleshootingScreen.style.display = 'none';
+  screen.style.display = 'block';
+}
+
+document.getElementById('openSettingsBtn').addEventListener('click', () => showScreen(settingsScreen));
+document.getElementById('backFromSettingsBtn').addEventListener('click', () => showScreen(mainScreen));
+document.getElementById('openTroubleshootingBtn').addEventListener('click', () => showScreen(troubleshootingScreen));
+document.getElementById('backFromTroubleshootingBtn').addEventListener('click', () => showScreen(mainScreen));
+
+// Listen for menu bar "Settings" command
+api.on('show-settings', () => showScreen(settingsScreen));
+
+// Listen for agent-triggered leave
+api.on('leave-requested', () => {
+  api.send('leave-meet');
+  exitCallState();
+});
+
+// ---------------------------------------------------------------------------
+// Meet URL validation
+// ---------------------------------------------------------------------------
+
+function isValidMeetUrl(url) {
+  return /meet\.google\.com\/[a-z]+-[a-z]+-[a-z]+/.test(url);
+}
+
+function updateJoinBtnState() {
+  const url = meetUrlInput.value.trim();
+  joinBtn.disabled = !url || !isValidMeetUrl(url.startsWith('http') ? url : 'https://meet.google.com/' + url);
+}
+
+meetUrlInput.addEventListener('input', updateJoinBtnState);
 
 // ---------------------------------------------------------------------------
 // Load saved config
 // ---------------------------------------------------------------------------
 
-api.invoke('get-config', ['botName', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId']).then((result) => {
+api.invoke('get-config', ['botName', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'claudeWorkDir']).then((result) => {
   if (result?.botName) { botNameInput.value = result.botName; currentBotName = result.botName; }
   if (result?.syncBaseUrl) { syncBaseUrlInput.value = result.syncBaseUrl; syncBaseUrl = result.syncBaseUrl; }
   if (result?.ttsApiKey) ttsApiKeyInput.value = result.ttsApiKey;
   if (result?.ttsVoiceId) ttsVoiceIdInput.value = result.ttsVoiceId;
+  if (result?.claudeWorkDir) claudeWorkDirInput.value = result.claudeWorkDir;
 
   // Check auth status after config is loaded (so we know the server URL)
   checkAuthStatus();
 });
 
 const authStatus = document.getElementById('authStatus');
+const loginBtn = document.getElementById('loginBtn');
+const logoutBtn = document.getElementById('logoutBtn');
 
 async function checkAuthStatus() {
   try {
     const data = await api.invoke('check-auth');
     if (data?.authenticated) {
       authStatus.textContent = `Logged in as ${data.user.name}`;
-      authStatus.style.color = '#4caf50';
+      authStatus.style.color = '#81c995';
+      loginBtn.style.display = 'none';
+      logoutBtn.style.display = 'inline-block';
     } else {
       authStatus.textContent = 'Not logged in';
-      authStatus.style.color = '#f44336';
+      authStatus.style.color = '#f28b82';
+      loginBtn.style.display = 'block';
+      logoutBtn.style.display = 'none';
     }
   } catch {
     authStatus.textContent = 'Auth check failed';
-    authStatus.style.color = '#f44336';
+    authStatus.style.color = '#f28b82';
+    loginBtn.style.display = 'block';
+    logoutBtn.style.display = 'none';
   }
 }
+
+loginBtn.addEventListener('click', async () => {
+  loginBtn.textContent = 'Opening Google sign-in...';
+  loginBtn.disabled = true;
+  await api.invoke('login');
+  setTimeout(() => {
+    loginBtn.textContent = 'Sign in with Google';
+    loginBtn.disabled = false;
+  }, 3000);
+});
+
+logoutBtn.addEventListener('click', async () => {
+  await api.invoke('logout');
+  checkAuthStatus();
+});
+
+// Listen for auth changes (e.g. after Google login popup closes)
+api.on('auth-changed', () => {
+  checkAuthStatus();
+});
+
+// ---------------------------------------------------------------------------
+// Meet detection — pre-fill the URL field
+// ---------------------------------------------------------------------------
+
+api.on('meet-detected', (data) => {
+  if (data && data.url && !inCall) {
+    meetUrlInput.value = data.url;
+    updateJoinBtnState();
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Error display
@@ -74,8 +163,34 @@ document.getElementById('errorClose').addEventListener('click', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Join Meet
+// Join / Leave Meet
 // ---------------------------------------------------------------------------
+
+function enterCallState(meetCode) {
+  inCall = true;
+  connectedSection.style.display = 'block';
+  joinBtn.style.display = 'none';
+
+  // Update troubleshooting section
+  meetCodeInput.value = meetCode;
+  roomIdField.style.display = 'block';
+  const base = syncBaseUrl || 'https://vibeconferencing.com';
+  roomLink.href = `${base}/room/${meetCode}`;
+  roomLink.style.display = 'block';
+  updateCurlCommand(meetCode);
+  updateAgentPrompt(meetCode);
+}
+
+function exitCallState() {
+  inCall = false;
+  connectedSection.style.display = 'none';
+  joinBtn.style.display = '';
+  joinBtn.textContent = 'Join Meet';
+  updateJoinBtnState();
+
+  roomIdField.style.display = 'none';
+  roomLink.style.display = 'none';
+}
 
 joinBtn.addEventListener('click', () => {
   let url = meetUrlInput.value.trim();
@@ -85,33 +200,32 @@ joinBtn.addEventListener('click', () => {
   joinBtn.textContent = 'Joining...';
   joinBtn.disabled = true;
 
-  // Extract meet code
   const match = url.match(/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/);
   if (match) {
-    const meetCode = match[1];
-    meetCodeInput.value = meetCode;
-    const base = syncBaseUrl || 'https://vibeconferencing.com';
-    roomLink.href = `${base}/room/${meetCode}`;
-    roomLink.style.display = 'block';
-    connectedSection.style.display = 'block';
-    updateCurlCommand(meetCode);
+    enterCallState(match[1]);
   }
 
   setTimeout(() => {
-    joinBtn.textContent = 'Join Meet';
-    joinBtn.disabled = false;
+    if (!inCall) {
+      joinBtn.style.display = '';
+      joinBtn.textContent = 'Join Meet';
+      updateJoinBtnState();
+    }
   }, 3000);
 });
 
 meetUrlInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') joinBtn.click();
+  if (e.key === 'Enter' && !joinBtn.disabled) joinBtn.click();
+});
+
+document.getElementById('leaveCallBtn').addEventListener('click', () => {
+  api.send('leave-meet');
+  exitCallState();
 });
 
 // ---------------------------------------------------------------------------
 // Share Whiteboard
 // ---------------------------------------------------------------------------
-
-const shareWhiteboardBtn = document.getElementById('shareWhiteboardBtn');
 
 shareWhiteboardBtn.addEventListener('click', async () => {
   const meetCode = meetCodeInput.value;
@@ -129,7 +243,6 @@ shareWhiteboardBtn.addEventListener('click', async () => {
 
   setTimeout(() => {
     shareWhiteboardBtn.textContent = 'Share Whiteboard';
-    shareWhiteboardBtn.disabled = false;
   }, 3000);
 });
 
@@ -137,21 +250,20 @@ shareWhiteboardBtn.addEventListener('click', async () => {
 // Agent prompt
 // ---------------------------------------------------------------------------
 
-copyPromptBtn.addEventListener('click', () => {
-  const meetCode = meetCodeInput.value;
+function generateAgentPrompt(meetCode) {
   const base = syncBaseUrl || 'https://vibeconferencing.com';
   const endpoint = `${base}/api/sync/${meetCode}`;
   const botParam = encodeURIComponent(currentBotName);
 
-  const prompt = `You are "${currentBotName}", an AI assistant participating in a Google Meet call.
+  return `You are "${currentBotName}", an AI assistant participating in a Google Meet call.
 
 ## How to interact
 
 **Wait for people to speak (long-poll, recommended):**
 \`\`\`bash
-curl -s "${endpoint}?since=TIMESTAMP&wait=55&silence=5&bot=${botParam}" | python3 -m json.tool
+curl -s "${endpoint}?since=TIMESTAMP&wait=55&silence=2&bot=${botParam}" | python3 -m json.tool
 \`\`\`
-This holds the connection open for up to 55 seconds and returns only when someone finishes speaking (5 seconds of silence detected). The \`bot\` parameter excludes your own entries. Use the \`asOf\` value from each response as the next \`since\` parameter.
+This holds the connection open for up to 55 seconds and returns only when someone finishes speaking (2 seconds of silence detected). The \`bot\` parameter excludes your own entries. Use the \`asOf\` value from each response as the next \`since\` parameter.
 
 First call: omit \`?since=\` and \`?wait=\` to get recent history and the initial \`asOf\` timestamp.
 
@@ -175,7 +287,7 @@ curl -s -X POST "${endpoint}" \\
 ## Interaction loop
 
 Your main loop should be:
-1. GET with \`?wait=55&silence=5\` to block until someone speaks
+1. GET with \`?wait=55&silence=2\` to block until someone speaks
 2. Read the transcript entries in the response
 3. Decide if you should respond
 4. POST your response (spoken via TTS) and/or whiteboard update
@@ -191,8 +303,14 @@ Your main loop should be:
 - Keep responses concise — they will be spoken aloud via TTS
 - Use the whiteboard for structured content (notes, diagrams, action items)
 `;
+}
 
-  api.copyToClipboard(prompt);
+function updateAgentPrompt(meetCode) {
+  agentPromptText.value = generateAgentPrompt(meetCode);
+}
+
+copyPromptBtn.addEventListener('click', () => {
+  api.copyToClipboard(agentPromptText.value);
   copyPromptBtn.textContent = 'Copied!';
   setTimeout(() => { copyPromptBtn.textContent = 'Copy Agent Prompt'; }, 2000);
 });
@@ -269,6 +387,10 @@ ttsVoiceIdInput.addEventListener('change', () => {
   api.send('update-tts-config', { voiceId: ttsVoiceIdInput.value.trim() });
 });
 
+claudeWorkDirInput.addEventListener('change', () => {
+  api.invoke('set-config', 'claudeWorkDir', claudeWorkDirInput.value.trim());
+});
+
 // ---------------------------------------------------------------------------
 // Incoming messages from main process
 // ---------------------------------------------------------------------------
@@ -320,10 +442,7 @@ api.on('meet-status', (status) => {
   if (status.ready) {
     const match = status.url?.match(/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/);
     if (match) {
-      const meetCode = match[1];
-      meetCodeInput.value = meetCode;
-      connectedSection.style.display = 'block';
-      updateCurlCommand(meetCode);
+      enterCallState(match[1]);
     }
   }
 });

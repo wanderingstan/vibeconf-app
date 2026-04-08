@@ -104,7 +104,7 @@ server.tool(
   "Long-poll: blocks until someone in the call finishes speaking (a pause in conversation). Returns the complete transcript of what was said. Much more efficient than polling read_transcripts repeatedly. The server waits for new speech, then waits for a conversation break (silence) before returning, so you get complete thoughts rather than fragments.",
   {
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
-    silence_seconds: z.number().optional().describe("How many seconds of silence to wait before considering speech 'done'. Default: 5"),
+    silence_seconds: z.number().optional().describe("How many seconds of silence to wait before considering speech 'done'. Default: 2"),
     timeout_seconds: z.number().optional().describe("Maximum seconds to wait before returning even if nobody speaks. Default: 55"),
   },
   async ({ room_id, silence_seconds, timeout_seconds }) => {
@@ -113,7 +113,7 @@ server.tool(
       return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
     }
 
-    const silenceSec = silence_seconds || 5;
+    const silenceSec = silence_seconds || 2;
     const waitSec = Math.min(55, timeout_seconds || 55);
 
     // Get baseline timestamp if we don't have one
@@ -361,6 +361,39 @@ server.tool(
       return { content: [{ type: "text", text: `Whiteboard updated (version ${version}).` }] };
     } else {
       return { content: [{ type: "text", text: `Error: ${data.error || "Failed to update"}` }] };
+    }
+  }
+);
+
+// --- leave_call ---
+server.tool(
+  "leave_call",
+  "Leave the Google Meet call. Signals the Electron app to hang up and closes the bot's session.",
+  {
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) {
+      return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    }
+
+    const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sender: BOT_NAME,
+        role: "bot",
+        ownerName: BOT_NAME,
+        meta: { action: "leave" },
+      }),
+    });
+
+    const data = await resp.json();
+    if (data.success) {
+      return { content: [{ type: "text", text: "Left the call successfully." }] };
+    } else {
+      return { content: [{ type: "text", text: `Error: ${data.error || "Failed to leave"}` }] };
     }
   }
 );

@@ -271,8 +271,13 @@
     }
 
     if (constraints?.audio) {
-      if (!mic) mic = new VirtualMic();
-      tracks.push(mic.getTrack());
+      if (!mic) {
+        mic = new VirtualMic();
+        console.log('[bots-in-calls] Created VirtualMic for getUserMedia, AudioContext state:', mic.audioCtx.state);
+      }
+      const audioTrack = mic.getTrack();
+      console.log('[bots-in-calls] Providing audio track:', audioTrack.id, 'enabled:', audioTrack.enabled, 'readyState:', audioTrack.readyState);
+      tracks.push(audioTrack);
     }
 
     if (tracks.length > 0) {
@@ -520,7 +525,21 @@
         break;
 
       case 'play-tts':
-        if (mic && payload?.audioData) {
+        if (!mic) {
+          console.log('[bots-in-calls] VirtualMic not yet created, creating now for TTS');
+          mic = new VirtualMic();
+        }
+        if (payload?.audioData) {
+          // Ensure AudioContext is running (may be suspended without user gesture)
+          if (mic.audioCtx.state === 'suspended') {
+            console.log('[bots-in-calls] AudioContext suspended, resuming for TTS');
+            mic.audioCtx.resume();
+          }
+          const track = mic.getTrack();
+          console.log('[bots-in-calls] Playing TTS audio, data length:', payload.audioData.length,
+            'AudioContext state:', mic.audioCtx.state,
+            'track enabled:', track?.enabled, 'readyState:', track?.readyState, 'muted:', track?.muted,
+            'destination tracks:', mic.destination.stream.getAudioTracks().length);
           for (const cam of cameras.values()) cam.speaking = true;
           transcription.botSpeaking = true;
           mic.playAudio(payload.audioData).then(() => {

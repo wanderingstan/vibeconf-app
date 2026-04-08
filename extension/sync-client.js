@@ -20,6 +20,7 @@ class SyncClient {
     this.onBotSpeech = config.onBotSpeech || null; // callback(text)
     this.postedTranscripts = new Set(); // dedup by text+timestamp
     this.spokenEntryIds = new Set(); // track entries we've already spoken
+    this.getAuthCookie = config.getAuthCookie || null; // async () => "cookie_value" or null
   }
 
   updateConfig(config) {
@@ -43,11 +44,15 @@ class SyncClient {
     }
 
     try {
-      // Note: credentials: 'include' doesn't work from extensions (CORS).
-      // Room must be pre-created by a logged-in user, or we skip this step.
+      const headers = { 'Content-Type': 'application/json' };
+      // In Electron, pass the auth cookie for room creation
+      if (this.getAuthCookie) {
+        const cookie = await this.getAuthCookie();
+        if (cookie) headers['Cookie'] = `vc_session=${cookie}`;
+      }
       const resp = await fetch(`${this.baseUrl}/api/rooms/create`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ roomId: this.roomId }),
       });
 

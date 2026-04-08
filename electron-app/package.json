@@ -8,18 +8,23 @@
     "start": "electron .",
     "dev": "electron . --devtools=true",
     "pack": "electron-builder --dir",
-    "dist": "electron-builder"
+    "dist": "electron-builder && tccutil reset Microphone com.vibeconferencing.agent"
   },
   "build": {
     "appId": "com.vibeconferencing.agent",
     "productName": "Vibeconferencing",
     "mac": {
       "category": "public.app-category.productivity",
-      "icon": "icon.png"
+      "icon": "icon.png",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Vibeconferencing needs microphone access to enable bot audio in Google Meet calls.",
+        "NSCameraUsageDescription": "Vibeconferencing needs camera access to display the bot's virtual camera in Google Meet calls."
+      }
     },
     "files": [
       "main.js",
       "store.js",
+      "local-server.js",
       "preload-meet.js",
       "preload-panel.js",
       "renderer/**/*",
@@ -38,8 +43,7 @@
         "from": "../mcp-server",
         "to": "mcp-server",
         "filter": [
-          "*.js",
-          "package.json"
+          "**/*"
         ]
       }
     ]

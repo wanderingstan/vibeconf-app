@@ -5,67 +5,70 @@
   <link rel="stylesheet" href="panel.css" />
 </head>
 <body>
-  <div class="container">
-    <h1>Vibeconferencing Agent</h1>
-    <div id="authStatus" style="font-size:11px;color:#888;margin-bottom:8px">Checking login...</div>
-    <div class="error-bar" id="errorBar" style="display:none"><span id="errorText"></span><button class="error-close" id="errorClose">&times;</button></div>
-
-    <div class="field">
-      <label for="meetUrl">Meet URL</label>
-      <input type="text" id="meetUrl" value="https://meet.google.com/paz-sqoa-npe" />
-    </div>
-    <button id="joinBtn" class="primary">Join Meet</button>
-
-    <div class="section" id="connectedSection" style="display:none">
-      <div class="field">
-        <label>Room ID</label>
-        <input type="text" id="meetCode" readonly />
+  <!-- Main Screen -->
+  <div class="screen" id="mainScreen">
+    <div class="container">
+      <div class="header-row">
+        <div class="header-title">
+          <svg class="header-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+            <circle cx="8" cy="8" r="7.5" fill="#D97757"/>
+            <rect x="17" y="2" width="13" height="13" fill="#7765E3"/>
+            <rect x="2" y="17" width="13" height="13" fill="#E8547A"/>
+            <circle cx="24" cy="24" r="7.5" fill="#3ECFCF"/>
+          </svg>
+          <h1>Vibeconferencing Agent</h1>
+        </div>
+        <button id="openSettingsBtn" class="icon-btn" title="Settings">&#9881;</button>
       </div>
-      <a id="roomLink" href="#" class="room-link" style="display:none">Open room on vibeconferencing.com</a>
-      <button id="shareWhiteboardBtn" class="primary" style="margin-top:8px">Share Whiteboard</button>
-      <button id="copyPromptBtn">Copy Agent Prompt</button>
-    </div>
+      <div class="error-bar" id="errorBar" style="display:none"><span id="errorText"></span><button class="error-close" id="errorClose">&times;</button></div>
 
-    <div class="section">
-      <h2>Transcript</h2>
-      <div id="transcriptArea" class="transcript-area"></div>
-    </div>
+      <p class="helper-text">Google Meet calls in Chrome or Safari will be automatically detected.</p>
+      <div class="field">
+        <label for="meetUrl">Meet URL</label>
+        <input type="text" id="meetUrl" placeholder="https://meet.google.com/xxx-xxxx-xxx" />
+      </div>
+      <button id="joinBtn" class="primary" disabled>Join Meet</button>
 
-    <div class="section">
-      <details>
-        <summary class="debug-toggle">Troubleshooting</summary>
-        <div id="micPermissionWarning" class="error-bar" style="display:none;margin-bottom:8px">Microphone permission problem detected</div>
-        <div class="field">
-          <label>Live Caption Text</label>
-          <div id="rawCaptionText" class="audio-status" style="max-height:100px;overflow-y:auto;font-family:monospace;font-size:11px;white-space:pre-wrap"></div>
+      <div id="connectedSection" style="display:none">
+        <button id="shareWhiteboardBtn" class="primary" style="margin-top:8px">Share Whiteboard</button>
+        <button id="leaveCallBtn" style="margin-top:8px;background:#d93025;color:#fff;border:none;padding:8px 16px;border-radius:20px;cursor:pointer">Leave Call</button>
+        <div class="nav-buttons">
+          <button id="openTroubleshootingBtn">Troubleshooting</button>
         </div>
-        <button id="devtoolsBtn" style="margin-top:8px">Open DevTools</button>
-        <h2 style="margin-top:12px">Test TTS</h2>
-        <div class="field">
-          <input type="text" id="speakText" value="Hello from TTS" />
-        </div>
-        <button id="speakTextBtn">Speak using TTS</button>
-        <button id="speechBtn">Play Test Audio File</button>
-        <h2 style="margin-top:12px">Test Curl</h2>
-        <div class="field">
-          <div id="curlCommand" class="audio-status" style="font-family:monospace;font-size:10px;white-space:pre-wrap;word-break:break-all"></div>
-        </div>
-        <button id="copyCurlBtn" disabled>Copy Curl Command</button>
-      </details>
+      </div>
     </div>
+  </div>
 
-    <div class="section">
-      <details>
-        <summary class="debug-toggle">Settings</summary>
-        <div class="field">
-          <label for="botName">Bot Name</label>
-          <input type="text" id="botName" value="AI Assistant" />
+  <!-- Settings Screen -->
+  <div class="screen" id="settingsScreen" style="display:none">
+    <div class="container">
+      <button id="backFromSettingsBtn" class="back-btn">&larr; Back</button>
+      <h1>Settings</h1>
+
+      <div class="auth-section">
+        <div class="auth-row">
+          <span id="authStatus" class="auth-status">Checking login...</span>
+          <button id="logoutBtn" class="auth-action-btn" style="display:none">Log out</button>
         </div>
-        <div class="field">
-          <label for="syncBaseUrl">Server URL</label>
-          <input type="text" id="syncBaseUrl" placeholder="https://vibeconferencing.com" />
-          <div style="font-size:11px;color:#666;margin-top:2px">Leave blank for production.</div>
-        </div>
+        <button id="loginBtn" class="primary" style="display:none">Sign in with Google</button>
+      </div>
+
+      <div class="field">
+        <label for="botName">Bot Name</label>
+        <input type="text" id="botName" value="AI Assistant" />
+      </div>
+      <div class="field">
+        <label for="syncBaseUrl">Server URL</label>
+        <input type="text" id="syncBaseUrl" placeholder="https://vibeconferencing.com" />
+        <div style="font-size:11px;color:#666;margin-top:2px">Leave blank for production.</div>
+      </div>
+      <div class="field">
+        <label for="claudeWorkDir">Claude Working Directory</label>
+        <input type="text" id="claudeWorkDir" placeholder="/tmp" />
+        <div style="font-size:11px;color:#666;margin-top:2px">Directory where Claude sessions start. Default: /tmp</div>
+      </div>
+      <div class="section">
+        <h2>Text-to-Speech</h2>
         <div class="field">
           <label for="ttsApiKey">ElevenLabs API Key</label>
           <input type="password" id="ttsApiKey" placeholder="sk_..." />
@@ -74,7 +77,61 @@
           <label for="ttsVoiceId">ElevenLabs Voice ID</label>
           <input type="text" id="ttsVoiceId" placeholder="CwhRBWXzGAHq8TQ4Fs17" />
         </div>
-      </details>
+      </div>
+    </div>
+  </div>
+
+  <!-- Troubleshooting Screen -->
+  <div class="screen" id="troubleshootingScreen" style="display:none">
+    <div class="container">
+      <button id="backFromTroubleshootingBtn" class="back-btn">&larr; Back</button>
+      <h1>Troubleshooting</h1>
+
+      <div id="micPermissionWarning" class="error-bar" style="display:none;margin-bottom:8px">Microphone permission problem detected</div>
+
+      <div class="field" id="roomIdField" style="display:none">
+        <label>Room ID</label>
+        <input type="text" id="meetCode" readonly />
+      </div>
+      <a id="roomLink" href="#" class="room-link" style="display:none">Open room on vibeconferencing.com</a>
+
+      <div class="section">
+        <h2>Transcript</h2>
+        <div id="transcriptArea" class="transcript-area"></div>
+      </div>
+
+      <div class="section">
+        <h2>Agent Prompt</h2>
+        <div class="field">
+          <textarea id="agentPromptText" readonly rows="8" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:11px;font-family:monospace;resize:vertical"></textarea>
+        </div>
+        <button id="copyPromptBtn">Copy Agent Prompt</button>
+      </div>
+
+      <div class="section">
+        <h2>Live Caption Text</h2>
+        <div class="field">
+          <div id="rawCaptionText" class="audio-status" style="max-height:100px;overflow-y:auto;font-family:monospace;font-size:11px;white-space:pre-wrap"></div>
+        </div>
+      </div>
+
+      <button id="devtoolsBtn" style="margin-top:8px">Open DevTools</button>
+
+      <div class="section">
+        <h2>Test TTS</h2>
+        <div class="field">
+          <input type="text" id="speakText" value="Hello from TTS" />
+        </div>
+        <button id="speakTextBtn">Speak using TTS</button>
+        <button id="speechBtn">Play Test Audio File</button>
+      </div>
+      <div class="section">
+        <h2>Test Curl</h2>
+        <div class="field">
+          <div id="curlCommand" class="audio-status" style="font-family:monospace;font-size:10px;white-space:pre-wrap;word-break:break-all"></div>
+        </div>
+        <button id="copyCurlBtn" disabled>Copy Curl Command</button>
+      </div>
     </div>
   </div>
   <script src="panel.js"></script>

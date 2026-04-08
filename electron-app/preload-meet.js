@@ -13,15 +13,20 @@ const vm = require('vm');
 // so our getUserMedia override is in place when Meet's code loads.
 // ---------------------------------------------------------------------------
 
-try {
-  const pageInjectPath = path.join(__dirname, '..', 'extension', 'page-inject.js');
-  const pageInjectCode = fs.readFileSync(pageInjectPath, 'utf-8');
-  // Use indirect eval to run in the global scope (same as page context)
-  (0, eval)(pageInjectCode);
-  console.log('[electron-meet] page-inject.js loaded successfully');
-} catch (err) {
-  console.error('[electron-meet] Failed to load page-inject.js:', err.message);
-}
+// Inject page-inject.js early (before page scripts) but ONLY on Meet pages.
+// We defer to DOMContentLoaded to ensure the URL is known (at preload time
+// the URL may still be 'about:blank').
+window.addEventListener('DOMContentLoaded', () => {
+  if (!window.location.href.includes('meet.google.com')) return;
+  try {
+    const pageInjectPath = path.join(__dirname, '..', 'extension', 'page-inject.js');
+    const pageInjectCode = fs.readFileSync(pageInjectPath, 'utf-8');
+    (0, eval)(pageInjectCode);
+    console.log('[electron-meet] page-inject.js loaded on Meet page');
+  } catch (err) {
+    console.error('[electron-meet] Failed to load page-inject.js:', err.message);
+  }
+}, { once: true });
 
 // ---------------------------------------------------------------------------
 // Expose screen share helper to page context (for getDisplayMedia override)
@@ -708,6 +713,12 @@ ipcRenderer.on('trigger-screen-share', async () => {
 // ---------------------------------------------------------------------------
 
 window.addEventListener('DOMContentLoaded', () => {
+  // Only run Meet automation on actual Meet pages
+  if (!window.location.href.includes('meet.google.com')) {
+    console.log('[electron-meet] Not a Meet page, skipping automation');
+    return;
+  }
+
   // Watch for pre-join screen
   (async () => {
     sendStatus('Loading Meet...');

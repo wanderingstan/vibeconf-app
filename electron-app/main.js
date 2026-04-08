@@ -58,7 +58,23 @@ const localServer = new globalThis.LocalServer({
   },
   onWhiteboardUpdate: (content, sender) => {
     console.log('[local-server] Whiteboard update from', sender, ':', content.slice(0, 80));
-    // Forward to remote server if needed
+    // Forward to remote sync server so the whiteboard window picks it up
+    const roomId = localServer.roomId;
+    if (roomId) {
+      const baseUrl = (store && store.get('syncBaseUrl')) || 'https://vibeconferencing.com';
+      fetch(`${baseUrl}/api/sync/${roomId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sender,
+          role: 'bot',
+          ownerName: sender,
+          whiteboard: { content },
+        }),
+      }).catch(err => {
+        console.error('[local-server] Failed to forward whiteboard update:', err.message);
+      });
+    }
   },
   onLeaveCall: () => {
     console.log('[local-server] Leave call requested by agent');
@@ -297,20 +313,13 @@ function launchClaudeTerminal(meetCode) {
   const claudeDir = store.get('claudeWorkDir') || '/tmp';
   const botName = store.get('botName') || 'AI Assistant';
 
-  // Split screen: Terminal on left half, Electron on right half
+  // Position terminal below the Electron window, matching its width
   let termBounds = null;
   if (mainWindow && !mainWindow.isDestroyed()) {
-    const { screen } = require('electron');
-    const display = screen.getDisplayMatching(mainWindow.getBounds());
-    const { x: sx, y: sy, width: sw, height: sh } = display.workArea;
-    const half = Math.floor(sw / 2);
-
-    // Terminal takes left half
-    termBounds = `${sx}, ${sy}, ${sx + half - 5}, ${sy + sh}`;
-
-    // Move Electron window to right half
-    mainWindow.setBounds({ x: sx + half + 5, y: sy, width: half - 5, height: sh });
-    console.log('[electron] Split screen: terminal left, electron right (screen: %dx%d)', sw, sh);
+    const bounds = mainWindow.getBounds();
+    const termHeight = 220;
+    const termY = bounds.y + bounds.height + 10;
+    termBounds = `${bounds.x}, ${termY}, ${bounds.x + bounds.width}, ${termY + termHeight}`;
   }
 
   // Build the claude command with optional --dangerously-skip-permissions
@@ -793,6 +802,22 @@ allURLs`;
           if (panelView && !panelView.webContents.isDestroyed()) {
             panelView.webContents.send('meet-detected', { url: meetUrl, meetCode });
           }
+          // Show macOS notification
+          const { Notification } = require('electron');
+          if (Notification.isSupported()) {
+            const notification = new Notification({
+              title: 'Google Meet Detected',
+              body: `Found call: ${meetCode}. Click Join in Vibeconferencing to connect your bot.`,
+              silent: false,
+            });
+            notification.on('click', () => {
+              if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.show();
+                mainWindow.focus();
+              }
+            });
+            notification.show();
+          }
         } else if (!meetUrl && detectedMeetUrl) {
           detectedMeetUrl = null;
           if (panelView && !panelView.webContents.isDestroyed()) {
@@ -859,8 +884,8 @@ app.on('window-all-closed', () => {
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
-    width: 960 + PANEL_WIDTH,
-    height: 600,
+    width: 800 + PANEL_WIDTH,
+    height: 550,
     title: 'Vibeconferencing',
     icon: path.join(__dirname, 'icon.png'),
     webPreferences: {
@@ -1197,21 +1222,27 @@ function setupIPC() {
   });
 
   // --- Whiteboard + screen share ---
+  function createWhiteboardWindow(roomUrl) {
+    const win = new BrowserWindow({
+      width: 1280,
+      height: 720,
+      x: -2000,  // Offscreen — still capturable by desktopCapturer
+      y: 0,
+      title: 'Vibeconferencing Whiteboard',
+      skipTaskbar: true,
+      webPreferences: { contextIsolation: true, nodeIntegration: false },
+    });
+    win.loadURL(roomUrl);
+    win.on('closed', () => { whiteboardWindow = null; });
+    return win;
+  }
+
   ipcMain.on('start-whiteboard-share', (_event, { meetCode }) => {
     const baseUrl = store.get('syncBaseUrl') || 'https://vibeconferencing.com';
     const roomUrl = `${baseUrl}/room/${meetCode}?mode=whiteboard`;
 
-    if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
-      whiteboardWindow.focus();
-    } else {
-      whiteboardWindow = new BrowserWindow({
-        width: 1280,
-        height: 720,
-        title: 'Vibeconferencing Whiteboard',
-        webPreferences: { contextIsolation: true, nodeIntegration: false },
-      });
-      whiteboardWindow.loadURL(roomUrl);
-      whiteboardWindow.on('closed', () => { whiteboardWindow = null; });
+    if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
+      whiteboardWindow = createWhiteboardWindow(roomUrl);
     }
 
     console.log('[electron] Whiteboard window opened:', roomUrl);
@@ -1224,14 +1255,7 @@ function setupIPC() {
 
     // Open whiteboard window if not already open
     if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
-      whiteboardWindow = new BrowserWindow({
-        width: 1280,
-        height: 720,
-        title: 'Vibeconferencing Whiteboard',
-        webPreferences: { contextIsolation: true, nodeIntegration: false },
-      });
-      whiteboardWindow.loadURL(roomUrl);
-      whiteboardWindow.on('closed', () => { whiteboardWindow = null; });
+      whiteboardWindow = createWhiteboardWindow(roomUrl);
     }
 
     // Wait for the whiteboard to load, then trigger screen share

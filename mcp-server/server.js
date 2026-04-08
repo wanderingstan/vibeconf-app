@@ -430,6 +430,21 @@ server.tool(
 
     const data = await resp.json();
     if (data.success) {
+      // Wait for screen share to complete (or fail) before responding
+      // Timeline: 2s whiteboard load + 3s error detection + margin
+      await new Promise(resolve => setTimeout(resolve, 7000));
+
+      // Check for errors that occurred during the share attempt
+      const statusResp = await fetch(`${BASE_URL}/api/sync/${roomId}`);
+      const statusData = await statusResp.json();
+      const errors = statusData.status?.errors || [];
+      const shareErrors = errors.filter(e => e.message.includes('Screen share'));
+
+      if (shareErrors.length > 0) {
+        const latestError = shareErrors[shareErrors.length - 1];
+        return { content: [{ type: "text", text: `Screen sharing failed: ${latestError.message}. The app may need screen recording permission in macOS System Settings > Privacy & Security > Screen Recording.` }] };
+      }
+
       return { content: [{ type: "text", text: "Whiteboard is now being shared in the call. Use update_whiteboard to change its content." }] };
     } else {
       return { content: [{ type: "text", text: `Error: ${data.error || "Failed to share"}` }] };

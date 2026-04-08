@@ -508,32 +508,48 @@ function ensureClaudeIntegration(localPort) {
   }
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
-  // The skill is managed at ~/.claude/skills/join-call/SKILL.md
-  // Only install a default if it doesn't exist yet
-  if (!fs.existsSync(skillPath)) {
+  // Version-tracked: updates when app version changes
+  const SKILL_VERSION = '2';  // Bump this when updating the skill content below
+  const versionFile = path.join(skillDir, '.version');
+  let installedVersion = '';
+  try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
+
+  if (installedVersion !== SKILL_VERSION) {
     fs.mkdirSync(skillDir, { recursive: true });
     const skillContent = `---
 name: join-call
 description: Join the user's current Google Meet call as an AI bot participant
 argument-hint: "[room_code] [BotName]  — or just [BotName] to auto-detect"
 disable-model-invocation: true
-allowed-tools: Bash mcp__vibeconferencing__get_room_info mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__read_transcripts mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__leave_call
+allowed-tools: Bash mcp__vibeconferencing__get_room_info mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__read_transcripts mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__leave_call mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__stop_sharing
 ---
 
 Join the user's current Google Meet call as an AI bot participant.
 
 ## Step 1: Determine the room code
 
-Parse \`$ARGUMENTS\` for a meet code (pattern: \`xxx-xxxx-xxx\`). If found, use it directly. Any non-code argument is the bot name.
+Parse \`$ARGUMENTS\` for a meet code (pattern: \`xxx-xxxx-xxx\`). If found, use it directly and skip detection. Any non-code argument is the bot name.
+
+Examples:
+- \`/join-call abc-defg-hij\` -> room code \`abc-defg-hij\`, bot name "AI Assistant"
+- \`/join-call abc-defg-hij Stanbot\` -> room code \`abc-defg-hij\`, bot name "Stanbot"
+- \`/join-call Stanbot\` -> auto-detect room, bot name "Stanbot"
+- \`/join-call\` -> auto-detect room, bot name "AI Assistant"
 
 **If no room code in arguments**, detect from Chrome:
 \`\`\`
-osascript -e 'tell application "Google Chrome" to repeat with w in windows
-  repeat with t in tabs of w
-    if URL of t starts with "https://meet.google.com/" then return URL of t
+osascript -e 'tell application "Google Chrome"
+  repeat with w in windows
+    repeat with t in tabs of w
+      if URL of t starts with "https://meet.google.com/" then
+        return URL of t
+      end if
+    end repeat
   end repeat
-end repeat'
+end tell'
 \`\`\`
+
+Extract the meet code (the \`xxx-xxxx-xxx\` part). If no valid Meet URL found, ask the user to paste one.
 
 ## Step 2: Launch the Electron app (if needed)
 
@@ -541,17 +557,23 @@ end repeat'
 pgrep -f "Vibeconferencing" >/dev/null 2>&1 && echo "RUNNING" || echo "NOT_RUNNING"
 \`\`\`
 
-If **NOT_RUNNING**, launch it:
+- If **RUNNING**: Skip launch — go straight to Step 3.
+- If **NOT_RUNNING**: Launch it:
+
 \`\`\`
-open -a Vibeconferencing --meet-url=https://meet.google.com/<ROOM_CODE> --bot-name="<BOT_NAME>" &
+open -a Vibeconferencing \\
+  --meet-url=https://meet.google.com/<ROOM_CODE> \\
+  --bot-name="<BOT_NAME>" &
 disown
 \`\`\`
 
 ## Step 3: Start the conversation loop immediately
 
+Don't wait for admission — the long-poll will block until speech arrives. Use the meet code as \`room_id\` for all MCP tool calls.
+
 1. Call \`wait_for_speech\` to listen (blocks until someone speaks and pauses)
-2. Respond naturally using \`speak\` — keep it to 1-2 sentences
-3. If visual content is relevant, call \`update_whiteboard\` with markdown or Mermaid
+2. Respond naturally using \`speak\` — keep it to 1-2 sentences since it's spoken aloud
+3. If the conversation involves visual content (code, diagrams, lists), also call \`update_whiteboard\` with markdown or Mermaid
 4. Go back to step 1
 
 Guidelines:
@@ -559,20 +581,51 @@ Guidelines:
 - Keep spoken responses short — people can ask you to elaborate
 - Use the whiteboard for anything visual (code, diagrams, structured info)
 - If someone says goodbye or asks you to leave, say goodbye via \`speak\`, then call \`leave_call\` to hang up. Then stop the loop.
-- If \`wait_for_speech\` times out with no speech, call it again — people may just be quiet
-- If someone asks you to change your voice, use \`list_voices\` then \`set_voice\`
-- NEVER kill or relaunch the Vibeconferencing app during the conversation loop
+- If \`wait_for_speech\` times out with no speech, call it again — people may just be quiet. The bot may still be joining the Meet call or waiting to be admitted. Do NOT relaunch the app or check \`get_room_info\` — just keep calling \`wait_for_speech\`.
+- If someone asks you to change your voice, use \`list_voices\` to see options, then \`set_voice\` to change it. You can also use the \`voice\` parameter in \`speak\` for a one-off voice change. Have fun with it!
+- NEVER kill or relaunch the Vibeconferencing app during the conversation loop. If speech isn't coming through, keep polling — the app handles joining automatically.
 `;
     fs.writeFileSync(skillPath, skillContent);
-    console.log('[electron] Installed global skill at', skillPath);
+    fs.writeFileSync(versionFile, SKILL_VERSION);
+    console.log('[electron] Installed/updated skill v%s at %s', SKILL_VERSION, skillPath);
     changed = true;
   } else {
-    console.log('[electron] Global skill already present');
+    console.log('[electron] Skill v%s already installed', SKILL_VERSION);
   }
 
   if (changed) {
     console.log('[electron] Claude integration installed. Restart Claude Code to pick up MCP changes.');
   }
+
+  return changed;
+}
+
+// ---------------------------------------------------------------------------
+// Uninstall Claude integration (MCP config + skill)
+// ---------------------------------------------------------------------------
+
+function uninstallClaudeIntegration() {
+  const home = process.env.HOME || process.env.USERPROFILE;
+  const claudeJsonPath = path.join(home, '.claude.json');
+  const skillDir = path.join(home, '.claude', 'skills', 'join-call');
+
+  // Remove MCP server from ~/.claude.json
+  try {
+    const claudeJson = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf-8'));
+    if (claudeJson.mcpServers?.vibeconferencing) {
+      delete claudeJson.mcpServers.vibeconferencing;
+      fs.writeFileSync(claudeJsonPath, JSON.stringify(claudeJson, null, 2) + '\n');
+      console.log('[electron] Removed MCP config from ~/.claude.json');
+    }
+  } catch {}
+
+  // Remove skill directory
+  try {
+    fs.rmSync(skillDir, { recursive: true, force: true });
+    console.log('[electron] Removed skill at', skillDir);
+  } catch {}
+
+  console.log('[electron] Claude integration uninstalled.');
 }
 
 app.whenReady().then(async () => {
@@ -922,6 +975,29 @@ function createMainWindow() {
           },
         },
         { type: 'separator' },
+        {
+          label: 'Uninstall Claude Integration...',
+          click: () => {
+            const { dialog } = require('electron');
+            dialog.showMessageBox(mainWindow, {
+              type: 'question',
+              buttons: ['Cancel', 'Uninstall'],
+              defaultId: 0,
+              title: 'Uninstall Claude Integration',
+              message: 'Remove the /join-call skill and MCP server config from Claude Code?',
+              detail: 'This removes the vibeconferencing MCP server from ~/.claude.json and the join-call skill from ~/.claude/skills/. The app itself is not affected.',
+            }).then(({ response }) => {
+              if (response === 1) {
+                uninstallClaudeIntegration();
+                dialog.showMessageBox(mainWindow, {
+                  type: 'info',
+                  message: 'Claude integration removed. Restart Claude Code to apply.',
+                });
+              }
+            });
+          },
+        },
+        { type: 'separator' },
         { role: 'hide' },
         { role: 'hideOthers' },
         { role: 'unhide' },
@@ -1223,11 +1299,16 @@ function setupIPC() {
 
   // --- Whiteboard + screen share ---
   function createWhiteboardWindow(roomUrl) {
+    // Position off the bottom-right of the screen so macOS doesn't clamp to (0,0)
+    const { screen } = require('electron');
+    const display = screen.getPrimaryDisplay();
+    const { width: sw, height: sh } = display.workArea;
+
     const win = new BrowserWindow({
-      width: 1280,
-      height: 720,
-      x: -2000,  // Offscreen — still capturable by desktopCapturer
-      y: 0,
+      width: 800,
+      height: 450,
+      x: sw + 100,
+      y: sh + 100,
       title: 'Vibeconferencing Whiteboard',
       skipTaskbar: true,
       webPreferences: { contextIsolation: true, nodeIntegration: false },

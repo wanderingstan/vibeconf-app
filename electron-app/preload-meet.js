@@ -704,19 +704,36 @@ ipcRenderer.on('trigger-screen-share', async () => {
   console.log('[electron-meet] Screen share triggered');
   const success = await clickPresentNow();
   if (!success) {
-    sendStatus('Could not find Present button', 'error');
+    ipcRenderer.send('screen-share-error', 'Could not find Present button');
   }
+
+  // Watch for screen share error dialogs
+  setTimeout(() => {
+    const errorTexts = ["Can't share your screen", "Something went wrong when screen sharing"];
+    const allText = document.body?.innerText || '';
+    for (const errText of errorTexts) {
+      if (allText.includes(errText)) {
+        console.error('[electron-meet] Screen share error detected:', errText);
+        ipcRenderer.send('screen-share-error', errText);
+        // Try to dismiss the dialog
+        const dismissBtn = document.querySelector('[aria-label="Close"], [aria-label="Dismiss"], [aria-label="Got it"]');
+        if (dismissBtn) dismissBtn.click();
+        break;
+      }
+    }
+  }, 3000);
 });
 
 ipcRenderer.on('trigger-stop-sharing', () => {
   console.log('[electron-meet] Stop sharing triggered');
-  // Look for Meet's "Stop presenting" / "Stop sharing" button
   const stopBtn = document.querySelector('[aria-label*="Stop presenting"], [aria-label*="Stop sharing"], [data-tooltip*="Stop presenting"], [data-tooltip*="Stop sharing"]');
   if (stopBtn) {
     stopBtn.click();
     console.log('[electron-meet] Clicked stop sharing button');
+    ipcRenderer.send('screen-share-stopped');
   } else {
     console.log('[electron-meet] Stop sharing button not found (may have already stopped)');
+    ipcRenderer.send('screen-share-stopped');
   }
 });
 

@@ -67,6 +67,13 @@
         <input type="text" id="claudeWorkDir" placeholder="/tmp" />
         <div style="font-size:11px;color:#666;margin-top:2px">Directory where Claude sessions start. Default: /tmp</div>
       </div>
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="dangerousMode" />
+          Dangerously bypass permissions
+        </label>
+        <div style="font-size:11px;color:#c00;margin-top:2px">Launches Claude with --dangerously-skip-permissions. Use with caution.</div>
+      </div>
       <div class="section">
         <h2>Text-to-Speech</h2>
         <div class="field">

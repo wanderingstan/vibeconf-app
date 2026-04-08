@@ -23,6 +23,11 @@ class LocalServer {
     this.members = [];
     this.maxTranscripts = 500;
 
+    // Call status tracking
+    this.callStatus = 'idle';    // idle, joining, waiting-to-be-admitted, in-call, left
+    this.sharing = false;
+    this.errors = [];            // recent errors (max 10)
+
     // Long-poll waiters
     this.waiters = [];           // { resolve, since, bot, silence, timer }
 
@@ -38,6 +43,9 @@ class LocalServer {
     this.transcripts = [];
     this.whiteboard = { content: '', version: 0, lastModified: null, lastEditor: null };
     this.members = [];
+    this.callStatus = 'joining';
+    this.sharing = false;
+    this.errors = [];
     this.resolveAllWaiters();
   }
 
@@ -45,7 +53,23 @@ class LocalServer {
     this.roomId = null;
     this.transcripts = [];
     this.members = [];
+    this.callStatus = 'idle';
+    this.sharing = false;
     this.resolveAllWaiters();
+  }
+
+  setCallStatus(status) {
+    this.callStatus = status;
+    console.log('[local-server] Call status:', status);
+  }
+
+  setSharing(sharing) {
+    this.sharing = sharing;
+  }
+
+  addError(message) {
+    this.errors.push({ message, timestamp: new Date().toISOString() });
+    if (this.errors.length > 10) this.errors.shift();
   }
 
   // -------------------------------------------------------------------------
@@ -161,6 +185,11 @@ class LocalServer {
       },
       chat: { messages: [], count: 0 },
       members: this.members,
+      status: {
+        callStatus: this.callStatus,
+        sharing: this.sharing,
+        errors: this.errors,
+      },
     };
   }
 

@@ -71,6 +71,7 @@ const localServer = new globalThis.LocalServer({
     console.log('[local-server] Share whiteboard requested by agent');
     const meetCode = localServer.roomId;
     if (meetCode) {
+      localServer.setSharing(true);
       // Reuse the existing share-whiteboard IPC logic
       ipcMain.emit('start-whiteboard-share', {}, { meetCode });
       // Wait for whiteboard to load, then trigger screen share in Meet
@@ -312,9 +313,14 @@ function launchClaudeTerminal(meetCode) {
     console.log('[electron] Split screen: terminal left, electron right (screen: %dx%d)', sw, sh);
   }
 
+  // Build the claude command with optional --dangerously-skip-permissions
+  const dangerousMode = store.get('dangerousMode');
+  const dangerousFlag = dangerousMode ? ' --dangerously-skip-permissions' : '';
+  const claudeCmd = `claude${dangerousFlag} \\"/join-call ${meetCode} ${botName.replace(/"/g, '')}\\"`;
+
   // AppleScript that opens a new Terminal window and returns its ID
   const script = `tell application "Terminal"
-  do script "cd ${claudeDir.replace(/"/g, '\\"')} && claude \\"/join-call ${meetCode} ${botName.replace(/"/g, '')}\\""
+  do script "cd ${claudeDir.replace(/"/g, '\\"')} && ${claudeCmd}"
   activate
   return id of window 1
 end tell`;
@@ -1110,10 +1116,33 @@ function setupIPC() {
   // --- Meet status updates (logged, DOM updated by preload) ---
   ipcMain.on('meet-status-update', (_event, status) => {
     console.log('[electron] Meet status:', status);
+    // Map Meet status to call status for the local server
+    if (typeof status === 'string') {
+      if (status.includes('Waiting') || status.includes('Ask to join')) {
+        localServer.setCallStatus('waiting-to-be-admitted');
+      } else if (status.includes('Participating') || status.includes('In call')) {
+        localServer.setCallStatus('in-call');
+      } else if (status.includes('Joining')) {
+        localServer.setCallStatus('joining');
+      }
+    }
   });
 
   ipcMain.on('stop-sync', () => {
     sync.stopPolling();
+  });
+
+  // --- Screen share status ---
+  ipcMain.on('screen-share-error', (_event, errorMessage) => {
+    console.error('[electron] Screen share error:', errorMessage);
+    localServer.setSharing(false);
+    localServer.addError('Screen share: ' + errorMessage);
+    broadcastError('Screen share: ' + errorMessage);
+  });
+
+  ipcMain.on('screen-share-stopped', () => {
+    console.log('[electron] Screen share stopped');
+    localServer.setSharing(false);
   });
 
   ipcMain.on('post-transcripts', (_event, transcripts) => {

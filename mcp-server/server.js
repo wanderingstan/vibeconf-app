@@ -135,9 +135,15 @@ server.tool(
       (e) => e.participantName !== BOT_NAME
     );
 
+    const status = data.status || {};
+    const statusLine = status.callStatus && status.callStatus !== 'in-call'
+      ? `\n[Call status: ${status.callStatus}]` : '';
+    const errorLines = (status.errors || []).length > 0
+      ? '\n[Errors: ' + status.errors.map(e => e.message).join('; ') + ']' : '';
+
     if (entries.length === 0) {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
-      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)` }] };
+      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${statusLine}${errorLines}` }] };
     }
 
     // Deduplicate: consecutive entries from same speaker → keep longest
@@ -486,15 +492,20 @@ server.tool(
 
     const members = (data.members || []).map((m) => `  - ${m.name} (${m.role})`).join("\n");
     const wb = data.whiteboard?.content || "(empty)";
+    const status = data.status || {};
+    const errors = (status.errors || []).map(e => `  - ${e.message} (${e.timestamp})`).join("\n");
 
     const result = [
       `Room: ${roomId}`,
+      `Call status: ${status.callStatus || 'unknown'}`,
+      `Screen sharing: ${status.sharing ? 'yes' : 'no'}`,
       ``,
       `## Members`,
       members || "  (none)",
       ``,
       `## Whiteboard`,
       wb.slice(0, 500),
+      ...(errors ? [``, `## Recent Errors`, errors] : []),
     ].join("\n");
 
     return { content: [{ type: "text", text: result }] };

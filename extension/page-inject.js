@@ -22,12 +22,18 @@
   // ---------------------------------------------------------------------------
 
   class VirtualCamera {
-    // Avatar states: 'idle' | 'listening' | 'thinking' | 'speaking'
-    static EMOJIS = {
-      idle: '\u{1F642}',      // 🙂 slight smile
-      listening: '\u{1F642}', // 🙂 same as idle
-      thinking: '\u{1F914}',  // 🤔 thinking face
-      speaking: '\u{1F60A}',  // 😊 happy face
+    // Two-layer emoji system:
+    //   MODE_EMOJIS — persistent user-controlled behavior (shown at rest)
+    //   ACTIVITY_EMOJIS — transient activity (overrides mode when thinking/speaking)
+    static MODE_EMOJIS = {
+      active: '\u{1F642}',   // 🙂 engaged, responds freely
+      passive: '\u{1F442}',  // 👂 listening for name
+      silent: '\u{1F910}',   // 🤐 will act but not speak
+    };
+
+    static ACTIVITY_EMOJIS = {
+      thinking: '\u{1F914}', // 🤔 thinking face
+      speaking: '\u{1F60A}', // 😊 happy face
     };
 
     constructor(width, height) {
@@ -37,7 +43,8 @@
       this.ctx = this.canvas.getContext('2d');
       this.frameCount = 0;
       this.speaking = false;
-      this.state = 'idle'; // current avatar state
+      this.state = 'idle'; // 'idle' | 'listening' | 'thinking' | 'speaking'
+      this.mode = 'active'; // 'active' | 'passive' | 'silent'
       this.stopped = false;
 
       // Draw the first frame synchronously so the track has content immediately
@@ -145,8 +152,10 @@
       const cx = w / 2;
       const cy = h / 2;
 
-      // Emoji avatar with state-dependent appearance
-      const emoji = VirtualCamera.EMOJIS[this.state] || VirtualCamera.EMOJIS.idle;
+      // Emoji avatar: thinking/speaking activity overrides mode; otherwise show mode.
+      const emoji = VirtualCamera.ACTIVITY_EMOJIS[this.state]
+        || VirtualCamera.MODE_EMOJIS[this.mode]
+        || VirtualCamera.MODE_EMOJIS.active;
       const emojiSize = Math.min(w, h) * 0.45;
       const bob = Math.sin(t * 0.8) * (emojiSize * 0.02);
       const speakScale = this.speaking
@@ -568,6 +577,14 @@
         if (payload?.state) {
           for (const cam of cameras.values()) cam.state = payload.state;
           console.debug('[bots-in-calls] Bot state:', payload.state);
+        }
+        break;
+
+      case 'set-mode':
+        // Update persistent mode: 'active' | 'passive' | 'silent'
+        if (payload?.mode) {
+          for (const cam of cameras.values()) cam.mode = payload.mode;
+          console.debug('[bots-in-calls] Bot mode:', payload.mode);
         }
         break;
 

@@ -17,7 +17,7 @@
  * Configuration via environment variables:
  *   VIBECONF_ROOM_ID   - The Meet code / room ID (required)
  *   VIBECONF_BOT_NAME  - Bot's display name (default: "Samantha")
- *   VIBECONF_BASE_URL  - API base URL (default: https://vibeconferencing.com)
+ *   VIBECONF_BASE_URL  - API base URL (default: http://127.0.0.1:7865 — the Electron app's local server)
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -28,9 +28,9 @@ import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 
-const ROOM_ID = process.env.VIBECONF_ROOM_ID || "";
+let ROOM_ID = process.env.VIBECONF_ROOM_ID || "";
 const BOT_NAME = process.env.VIBECONF_BOT_NAME || "Samantha";
-const BASE_URL = process.env.VIBECONF_BASE_URL || "https://vibeconferencing.com";
+const BASE_URL = process.env.VIBECONF_BASE_URL || "http://127.0.0.1:7865";
 
 let lastPollTime = null;
 
@@ -513,6 +513,40 @@ server.tool(
   }
 );
 
+// --- set_mode ---
+server.tool(
+  "set_mode",
+  "Set the bot's persistent behavior mode. 'active' = responds freely on every pause (default). 'passive' = silent until its name is mentioned — use when the user wants the bot to stay out of the way. 'silent' = listens and can act (update whiteboard, run tools) but never speaks. Call this when the user explicitly asks you to switch modes (e.g. 'be quiet', 'speak when spoken to', 'go silent', 'be active again').",
+  {
+    mode: z.enum(["active", "passive", "silent"]).describe("Behavior mode: active, passive, or silent"),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ mode, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) {
+      return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    }
+
+    const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sender: BOT_NAME,
+        role: "bot",
+        ownerName: BOT_NAME,
+        meta: { action: "set-mode", mode },
+      }),
+    });
+
+    const data = await resp.json();
+    const result = data.results?.setMode;
+    if (result?.ok) {
+      return { content: [{ type: "text", text: `Mode set to '${result.mode}'.` }] };
+    }
+    return { content: [{ type: "text", text: `Error: ${result?.error || data.error || "Failed to set mode"}` }] };
+  }
+);
+
 // --- get_room_info ---
 server.tool(
   "get_room_info",
@@ -521,17 +555,35 @@ server.tool(
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
   async ({ room_id }) => {
-    const roomId = room_id || ROOM_ID;
-    if (!roomId) {
-      // No room ID — try to get detected URLs from the local server
-      try {
-        const resp = await fetch(`${BASE_URL}/api/sync/no-room`);
-        const data = await resp.json();
+    // Always consult the local server first. Its active roomId is authoritative:
+    // if the app is in a call, use that room regardless of what ROOM_ID env or
+    // the caller's room_id arg says — those can be stale from a previous session.
+    let roomId = room_id || ROOM_ID;
+    let noteMismatch = null;
+    try {
+      const resp = await fetch(`${BASE_URL}/api/sync/no-room`);
+      const data = await resp.json();
+      const activeStatuses = ['in-call', 'joining', 'waiting-to-be-admitted'];
+      if (data.roomId && activeStatuses.includes(data.status?.callStatus)) {
+        // App is in a call — that's authoritative
+        if (roomId && roomId !== data.roomId) {
+          noteMismatch = `Note: ignoring stale room_id '${roomId}' — app is actually in '${data.roomId}'.`;
+        }
+        roomId = data.roomId;
+        ROOM_ID = data.roomId;
+      } else if (!roomId) {
+        // Not in a call and no room_id given — return detected URLs or nothing
         const urls = data.detectedMeetUrls || [];
         if (urls.length > 0) {
           return { content: [{ type: "text", text: `Not in a call. Detected Google Meet URLs:\n${urls.map(u => `  - ${u}`).join('\n')}\n\nUse the meet code from one of these URLs as room_id to join.` }] };
         }
-      } catch {}
+        return { content: [{ type: "text", text: "Not in a call. No Google Meet URLs detected in browser tabs." }] };
+      }
+    } catch {
+      // Local server unreachable — fall through with whatever roomId we have
+    }
+
+    if (!roomId) {
       return { content: [{ type: "text", text: "Not in a call. No Google Meet URLs detected in browser tabs." }] };
     }
 
@@ -557,11 +609,14 @@ server.tool(
     const wb = data.whiteboard?.content || "(empty)";
     const errors = (status.errors || []).map(e => `  - ${e.message} (${e.timestamp})`).join("\n");
 
-    const sections = [
+    const sections = [];
+    if (noteMismatch) sections.push(noteMismatch, '');
+    sections.push(
       `Room: ${roomId}`,
       `Call status: ${status.callStatus || 'unknown'}`,
+      `Mode: ${status.mode || 'active'} (active=responds freely, passive=only when named, silent=listens but never speaks)`,
       `Screen sharing: ${status.sharing ? 'yes (by bot)' : 'no'}`,
-    ];
+    );
 
     if (status.someoneElsePresenting) {
       sections.push(`Someone else presenting: ${status.presenterName || 'yes'}`);

@@ -3,7 +3,7 @@ name: join-call
 description: Join the user's current Google Meet call as an AI bot participant
 argument-hint: "[room_code] [BotName]  — or just [BotName] to auto-detect"
 disable-model-invocation: true
-allowed-tools: Bash mcp__vibeconferencing__get_room_info mcp__vibeconferencing__join_call mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__read_transcripts mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__leave_call mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__stop_sharing
+allowed-tools: Bash mcp__vibeconferencing__get_room_info mcp__vibeconferencing__join_call mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__read_transcripts mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__set_mode mcp__vibeconferencing__leave_call mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__stop_sharing
 ---
 
 Join the user's current Google Meet call as an AI bot participant.
@@ -20,9 +20,15 @@ Examples:
 
 **If no room code in arguments**, first check if the Vibeconferencing app has already detected a call:
 
-Call `get_room_info` (no room_id needed). If it returns detected Meet URLs, extract the meet code from the first one and use it.
+Call `get_room_info` (no room_id needed). Its response tells you one of three things:
 
-If `get_room_info` returns no detected URLs, fall back to AppleScript:
+1. **The app is already in a call** — the reply will be a full room info block that starts with `Room: xxx-xxxx-xxx` and includes a `Call status:` line (e.g. `in-call`, `joining`, `waiting-to-be-admitted`). This is authoritative — use that room code and skip detection entirely.
+2. **Detected Meet URLs** — the reply starts with `Not in a call. Detected Google Meet URLs:`. Extract the meet code from the first URL.
+3. **Nothing detected** — fall back to AppleScript below.
+
+Authoritative active-call info wins over detected URLs: detected URLs come from a separate periodic scan of Chrome/Brave tabs and can go stale once the app has joined. If `get_room_info` reports an active room, use it and do NOT second-guess with AppleScript.
+
+AppleScript fallback (only when `get_room_info` returns no active call and no detected URLs):
 ```
 osascript -e 'tell application "System Events"
   set chromeRunning to exists process "Google Chrome"
@@ -59,8 +65,10 @@ Extract the meet code (the `xxx-xxxx-xxx` part). If no valid Meet URL found, ask
 ## Step 2: Ensure the app is running and in the call
 
 ```
-pgrep -f "Vibeconferencing" >/dev/null 2>&1 && echo "RUNNING" || echo "NOT_RUNNING"
+lsof -iTCP:7865 -sTCP:LISTEN >/dev/null 2>&1 && echo "RUNNING" || echo "NOT_RUNNING"
 ```
+
+(Checks if the app's local server is listening on port 7865. A bare `pgrep Vibeconferencing` is unreliable — it matches orphaned MCP server processes from past sessions, giving false positives.)
 
 - If **NOT_RUNNING**: Launch it:
 
@@ -93,3 +101,22 @@ Guidelines:
 - If `wait_for_speech` times out with no speech, call it again — people may just be quiet. The bot may still be joining the Meet call or waiting to be admitted. Do NOT relaunch the app or check `get_room_info` — just keep calling `wait_for_speech`.
 - If someone asks you to change your voice, use `list_voices` to see options, then `set_voice` to change it. You can also use the `voice` parameter in `speak` for a one-off voice change. Have fun with it!
 - NEVER kill or relaunch the Vibeconferencing app during the conversation loop. If speech isn't coming through, keep polling — the app handles joining automatically.
+
+### Behavior modes
+
+The bot has three persistent modes — use `set_mode` when the user asks you to change how you participate:
+
+- **`active`** (default): respond on every pause. Best when the user wants a full participant.
+- **`passive`**: stay silent until your name is mentioned. Use when the user says things like "be quiet", "only speak when spoken to", "stop interrupting", "just listen".
+- **`silent`**: listen and still act on requests (update the whiteboard, run tools, edit files) but never speak aloud. Use when the user says "go silent", "no more talking", "stop speaking but keep listening".
+
+`wait_for_speech` still returns when your name is mentioned in any mode, so you can hear requests to switch back. When the user asks you to resume normal participation ("you can talk again", "be active"), call `set_mode` with `active`.
+
+Key behaviors by mode:
+| Mode | Resolves on silence | Resolves on name | Speaks | Acts (whiteboard/tools) |
+|---|---|---|---|---|
+| active | yes | yes | yes | yes |
+| passive | no | yes | yes (when resolved) | yes |
+| silent | no | yes | no (suppressed) | yes |
+
+If you call `speak` while in silent mode, the server returns `{ ok: false, reason: 'mode-silent' }` — don't retry; the user asked for silence.

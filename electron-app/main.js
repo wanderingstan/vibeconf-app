@@ -41,7 +41,7 @@ const sync = new globalThis.SyncClient({
   },
   getAuthCookie: async () => {
     try {
-      const baseUrl = (store && store.get('syncBaseUrl')) || 'https://vibeconferencing.com';
+      const baseUrl = (store && store.get('syncBaseUrl')) || 'http://127.0.0.1:7865';
       const cookies = await session.defaultSession.cookies.get({ url: baseUrl, name: 'vc_session' });
       return cookies.length > 0 ? cookies[0].value : null;
     } catch {
@@ -60,7 +60,7 @@ const localServer = new globalThis.LocalServer({
     console.log('[local-server] Whiteboard update from', sender, ':', content.slice(0, 80));
     const roomId = localServer.roomId;
     if (roomId) {
-      const baseUrl = (store && store.get('syncBaseUrl')) || 'https://vibeconferencing.com';
+      const baseUrl = (store && store.get('syncBaseUrl')) || 'http://127.0.0.1:7865';
       const roomUrl = `${baseUrl}/room/${roomId}`;
 
       // If the whiteboard window was navigated to an external URL (via load-url),
@@ -158,8 +158,9 @@ const localServer = new globalThis.LocalServer({
       });
     }
 
-    // Play acknowledgment sounds when entering 'thinking' state
-    if (state === 'thinking') {
+    // Play acknowledgment sounds when entering 'thinking' state.
+    // Only in active mode — passive/silent shouldn't blurt "mm-hmm" unprompted.
+    if (state === 'thinking' && localServer.mode === 'active') {
       const wordCount = extra?.wordCount || 0;
 
       // Pick acknowledgment based on how much was said in this exchange
@@ -172,6 +173,15 @@ const localServer = new globalThis.LocalServer({
 
       // Speak the acknowledgment immediately (before the agent responds)
       speakText(ack);
+    }
+  },
+  onModeChange: (mode) => {
+    console.log('[local-server] Mode:', mode);
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('extension-message', {
+        action: 'set-mode',
+        payload: { mode },
+      });
     }
   },
 });
@@ -211,7 +221,7 @@ const PANEL_WIDTH = 380;
 
 // Check if already logged in
 async function checkAuth() {
-  const baseUrl = store.get('syncBaseUrl') || 'https://vibeconferencing.com';
+  const baseUrl = store.get('syncBaseUrl') || 'http://127.0.0.1:7865';
   const { net } = require('electron');
 
   // Get the session cookie manually to include it
@@ -240,7 +250,7 @@ async function checkAuth() {
 // Google blocks embedded webviews, so we must use the real browser.
 // We start a local HTTP server to catch the session cookie after login.
 function openGoogleLogin() {
-  const baseUrl = store.get('syncBaseUrl') || 'https://vibeconferencing.com';
+  const baseUrl = store.get('syncBaseUrl') || 'http://127.0.0.1:7865';
   const http = require('http');
   const { shell } = require('electron');
   const { net } = require('electron');
@@ -510,7 +520,7 @@ function updateSpeakingState(name, speaking) {
     if (!state || state.sent) return;
     state.sent = true;
 
-    const baseUrl = sync.baseUrl || 'https://vibeconferencing.com';
+    const baseUrl = sync.baseUrl || 'http://127.0.0.1:7865';
     fetch(`${baseUrl}/api/room/${sync.roomId}/presence`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -955,7 +965,7 @@ allURLs`;
     localServer.setRoom(meetCode);
 
     // Start sync
-    const baseUrl = store.get('syncBaseUrl') || 'https://vibeconferencing.com';
+    const baseUrl = store.get('syncBaseUrl') || 'http://127.0.0.1:7865';
     sync.updateConfig({ roomId: meetCode, baseUrl });
     sync.ensureRoom().then(() => {
       sync.startPolling();
@@ -1196,7 +1206,7 @@ function setupIPC() {
     if (match) {
       const meetCode = match[1];
       localServer.setRoom(meetCode);
-      const baseUrl = store.get('syncBaseUrl') || 'https://vibeconferencing.com';
+      const baseUrl = store.get('syncBaseUrl') || 'http://127.0.0.1:7865';
       sync.updateConfig({ roomId: meetCode, baseUrl });
       sync.ensureRoom().then(() => {
         sync.startPolling();
@@ -1231,7 +1241,7 @@ function setupIPC() {
   });
 
   ipcMain.handle('logout', async () => {
-    const baseUrl = store.get('syncBaseUrl') || 'https://vibeconferencing.com';
+    const baseUrl = store.get('syncBaseUrl') || 'http://127.0.0.1:7865';
     await session.defaultSession.cookies.remove(baseUrl, 'vc_session');
     if (panelView && !panelView.webContents.isDestroyed()) {
       panelView.webContents.send('auth-changed');
@@ -1382,7 +1392,7 @@ function setupIPC() {
 
   // --- Whiteboard + screen share ---
   ipcMain.on('start-whiteboard-share', (_event, { meetCode }) => {
-    const baseUrl = store.get('syncBaseUrl') || 'https://vibeconferencing.com';
+    const baseUrl = store.get('syncBaseUrl') || 'http://127.0.0.1:7865';
     const roomUrl = `${baseUrl}/room/${meetCode}?mode=whiteboard`;
 
     if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
@@ -1394,7 +1404,7 @@ function setupIPC() {
 
   // Combined: open whiteboard + trigger screen share in Meet
   ipcMain.handle('share-whiteboard', async (_event, { meetCode }) => {
-    const baseUrl = store.get('syncBaseUrl') || 'https://vibeconferencing.com';
+    const baseUrl = store.get('syncBaseUrl') || 'http://127.0.0.1:7865';
     const roomUrl = `${baseUrl}/room/${meetCode}?mode=whiteboard`;
 
     // Open whiteboard window if not already open

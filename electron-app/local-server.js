@@ -1,6 +1,6 @@
 // local-server.js — Local HTTP server for agent communication.
-// Implements the same API shape as vibeconferencing.com/api/sync/:roomId
-// so the MCP server can point to localhost with zero code changes.
+// Owns all room/transcript/whiteboard/call state for the Electron app flow;
+// the MCP server talks to 127.0.0.1:7865 and never hits the public website.
 
 const http = require('http');
 const { URL } = require('url');
@@ -8,7 +8,7 @@ const { URL } = require('url');
 const DEFAULT_PORT = 7865;
 
 class LocalServer {
-  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange } = {}) {
+  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange } = {}) {
     this.port = port || DEFAULT_PORT;
     this.onBotSpeech = onBotSpeech || (() => {});
     this.onWhiteboardUpdate = onWhiteboardUpdate || (() => {});
@@ -18,7 +18,14 @@ class LocalServer {
     this.onJoinCall = onJoinCall || (() => {});
     this.onLoadUrl = onLoadUrl || (() => {});
     this.onBotStateChange = onBotStateChange || (() => {}); // 'idle' | 'listening' | 'thinking' | 'speaking'
+    this.onModeChange = onModeChange || (() => {});        // 'active' | 'passive' | 'silent'
     this.botState = 'idle';
+
+    // Mode is persistent user-controlled behavior; distinct from transient botState.
+    //   active  — responds freely (ack on every pause, speaks its thoughts)
+    //   passive — silent until its name is mentioned
+    //   silent  — listens for its name but never speaks; can still act (whiteboard, tools)
+    this.mode = 'active';
 
     // Room state (single room — the active call)
     this.roomId = null;
@@ -85,6 +92,19 @@ class LocalServer {
   setCallStatus(status) {
     this.callStatus = status;
     console.log('[local-server] Call status:', status);
+  }
+
+  setMode(mode) {
+    const allowed = ['active', 'passive', 'silent'];
+    if (!allowed.includes(mode)) {
+      throw new Error(`Invalid mode: ${mode}. Must be one of ${allowed.join(', ')}`);
+    }
+    if (this.mode === mode) return;
+    this.mode = mode;
+    console.log('[local-server] Mode:', mode);
+    this.onModeChange(mode);
+    // Re-evaluate any pending waiters under the new mode
+    this._checkWaiters();
   }
 
   setSharing(sharing) {
@@ -176,6 +196,16 @@ class LocalServer {
           this._resolveWaiter(waiter);
           continue;
         }
+      }
+
+      // In passive/silent modes, only resolve on name-mention (handled above).
+      // Skip silence-based resolution so the bot doesn't chime in unprompted.
+      if (this.mode === 'passive' || this.mode === 'silent') {
+        if (waiter.silenceTimer) {
+          clearTimeout(waiter.silenceTimer);
+          waiter.silenceTimer = null;
+        }
+        continue;
       }
 
       // Use real-time speaking state from DOMSpeakerTracker (not caption timestamps)
@@ -280,6 +310,7 @@ class LocalServer {
         sharing: this.sharing,
         someoneElsePresenting: this.someoneElsePresenting,
         presenterName: this.presenterName,
+        mode: this.mode,
         errors: this.errors,
       },
     };
@@ -351,8 +382,9 @@ class LocalServer {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         success: true,
+        roomId: this.roomId,
         detectedMeetUrls: this.detectedMeetUrls,
-        status: { callStatus: this.callStatus },
+        status: { callStatus: this.callStatus, mode: this.mode },
       }));
       return;
     }
@@ -460,30 +492,36 @@ class LocalServer {
 
     // Handle transcript entries (bot speech)
     if (data.transcript && Array.isArray(data.transcript)) {
-      const entries = [];
-      for (const t of data.transcript) {
-        if (!t.text) continue;
-        const id = `${roomId}-tx-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-        const entry = {
-          id,
-          roomId,
-          participantName: data.sender,
-          role: data.role || 'member',
-          text: t.text,
-          isFinal: true,
-          timestamp: now,
-        };
-        if (t.voice) entry.voice = t.voice;
-        this.transcripts.push(entry);
-        entries.push(entry);
+      // In silent mode, suppress bot speech entirely — don't record or speak.
+      // Agent learns its speech was suppressed via results.transcript.reason.
+      if (data.role === 'bot' && this.mode === 'silent') {
+        results.transcript = { ok: false, reason: 'mode-silent', sent: 0, entries: [] };
+      } else {
+        const entries = [];
+        for (const t of data.transcript) {
+          if (!t.text) continue;
+          const id = `${roomId}-tx-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+          const entry = {
+            id,
+            roomId,
+            participantName: data.sender,
+            role: data.role || 'member',
+            text: t.text,
+            isFinal: true,
+            timestamp: now,
+          };
+          if (t.voice) entry.voice = t.voice;
+          this.transcripts.push(entry);
+          entries.push(entry);
 
-        // Trigger TTS for bot speech
-        if (data.role === 'bot') {
-          this._setBotState('speaking');
-          this.onBotSpeech(t.text, t.voice);
+          // Trigger TTS for bot speech
+          if (data.role === 'bot') {
+            this._setBotState('speaking');
+            this.onBotSpeech(t.text, t.voice);
+          }
         }
+        results.transcript = { ok: true, sent: entries.length, entries };
       }
-      results.transcript = { ok: true, sent: entries.length, entries };
     }
 
     // Handle whiteboard update
@@ -529,6 +567,16 @@ class LocalServer {
     if (data.meta?.action === 'load-url' && data.meta.url) {
       this.onLoadUrl(data.meta.url);
       results.loadUrl = { ok: true };
+    }
+
+    // Handle set-mode command — persistent bot behavior mode
+    if (data.meta?.action === 'set-mode' && data.meta.mode) {
+      try {
+        this.setMode(data.meta.mode);
+        results.setMode = { ok: true, mode: this.mode };
+      } catch (err) {
+        results.setMode = { ok: false, error: err.message };
+      }
     }
 
     // Update presence

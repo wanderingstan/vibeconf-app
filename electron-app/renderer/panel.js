@@ -30,7 +30,7 @@ const ttsVoiceIdInput = document.getElementById('ttsVoiceId');
 const claudeWorkDirInput = document.getElementById('claudeWorkDir');
 const dangerousModeInput = document.getElementById('dangerousMode');
 
-let syncBaseUrl = 'https://vibeconferencing.com';
+let syncBaseUrl = 'http://127.0.0.1:7865';
 let currentBotName = 'Samantha';
 let inCall = false;
 
@@ -176,7 +176,7 @@ function enterCallState(meetCode) {
   // Update troubleshooting section
   meetCodeInput.value = meetCode;
   roomIdField.style.display = 'block';
-  const base = syncBaseUrl || 'https://vibeconferencing.com';
+  const base = syncBaseUrl || 'http://127.0.0.1:7865';
   roomLink.href = `${base}/room/${meetCode}`;
   roomLink.style.display = 'block';
   updateCurlCommand(meetCode);
@@ -253,7 +253,7 @@ shareWhiteboardBtn.addEventListener('click', async () => {
 // ---------------------------------------------------------------------------
 
 function generateAgentPrompt(meetCode) {
-  const base = syncBaseUrl || 'https://vibeconferencing.com';
+  const base = syncBaseUrl || 'http://127.0.0.1:7865';
   const endpoint = `${base}/api/sync/${meetCode}`;
   const botParam = encodeURIComponent(currentBotName);
 
@@ -322,7 +322,7 @@ copyPromptBtn.addEventListener('click', () => {
 // ---------------------------------------------------------------------------
 
 function updateCurlCommand(meetCode) {
-  const base = syncBaseUrl || 'https://vibeconferencing.com';
+  const base = syncBaseUrl || 'http://127.0.0.1:7865';
   curlCommand.textContent = `curl -X POST "${base}/api/sync/${meetCode}" -H "Content-Type: application/json" -d '{"sender":"${currentBotName}","role":"bot","ownerName":"${currentBotName}","transcript":[{"text":"Hello from curl test."}]}'`;
   copyCurlBtn.disabled = false;
 }
@@ -376,7 +376,7 @@ botNameInput.addEventListener('change', () => {
 
 syncBaseUrlInput.addEventListener('change', () => {
   const url = syncBaseUrlInput.value.trim().replace(/\/+$/, '');
-  syncBaseUrl = url || 'https://vibeconferencing.com';
+  syncBaseUrl = url || 'http://127.0.0.1:7865';
   api.invoke('set-config', 'syncBaseUrl', url);
   api.send('update-sync-config', { baseUrl: syncBaseUrl });
 });

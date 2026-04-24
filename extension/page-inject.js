@@ -22,6 +22,14 @@
   // ---------------------------------------------------------------------------
 
   class VirtualCamera {
+    // Avatar states: 'idle' | 'listening' | 'thinking' | 'speaking'
+    static EMOJIS = {
+      idle: '\u{1F642}',      // 🙂 slight smile
+      listening: '\u{1F642}', // 🙂 same as idle
+      thinking: '\u{1F914}',  // 🤔 thinking face
+      speaking: '\u{1F60A}',  // 😊 happy face
+    };
+
     constructor(width, height) {
       this.canvas = document.createElement('canvas');
       this.canvas.width = width || config.canvasWidth;
@@ -29,6 +37,7 @@
       this.ctx = this.canvas.getContext('2d');
       this.frameCount = 0;
       this.speaking = false;
+      this.state = 'idle'; // current avatar state
       this.stopped = false;
 
       // Draw the first frame synchronously so the track has content immediately
@@ -136,12 +145,17 @@
       const cx = w / 2;
       const cy = h / 2;
 
-      // Giant robot emoji with subtle bobbing animation
+      // Emoji avatar with state-dependent appearance
+      const emoji = VirtualCamera.EMOJIS[this.state] || VirtualCamera.EMOJIS.idle;
       const emojiSize = Math.min(w, h) * 0.45;
       const bob = Math.sin(t * 0.8) * (emojiSize * 0.02);
       const speakScale = this.speaking
         ? 1 + Math.sin(this.frameCount * 0.15) * 0.05
         : 1;
+      // Thinking state: gentle side-to-side sway
+      const thinkSway = this.state === 'thinking'
+        ? Math.sin(t * 1.2) * 8
+        : 0;
 
       ctx.save();
       ctx.textAlign = 'center';
@@ -153,8 +167,13 @@
         ctx.shadowColor = '#8ab4f8';
         ctx.shadowBlur = 30;
       }
+      // Subtle glow when thinking
+      if (this.state === 'thinking') {
+        ctx.shadowColor = '#ffc107';
+        ctx.shadowBlur = 20;
+      }
 
-      ctx.fillText('\u{1F916}', cx, cy + bob);
+      ctx.fillText(emoji, cx + thinkSway, cy + bob);
       ctx.restore();
     }
 
@@ -227,6 +246,36 @@
 
   let mic = null;
   let active = true; // Auto-active for POC
+
+  // TTS audio queue — prevents overlapping playback
+  const ttsQueue = [];
+  let ttsPlaying = false;
+
+  async function playNextTTS() {
+    if (ttsPlaying || ttsQueue.length === 0) return;
+    ttsPlaying = true;
+    const { audioData } = ttsQueue.shift();
+    for (const cam of cameras.values()) cam.speaking = true;
+    transcription.botSpeaking = true;
+    try {
+      // Ensure AudioContext is running before playback
+      if (mic.audioCtx.state === 'suspended') {
+        console.log('[bots-in-calls] Resuming AudioContext before TTS playback');
+        await mic.audioCtx.resume();
+      }
+      await mic.playAudio(audioData);
+    } catch (err) {
+      console.error('[bots-in-calls] TTS playback error:', err);
+    }
+    ttsPlaying = false;
+    if (ttsQueue.length === 0) {
+      for (const cam of cameras.values()) cam.speaking = false;
+      setTimeout(() => { transcription.botSpeaking = false; }, 1500);
+      window.postMessage({ __botsInCalls: true, action: 'tts-ended' }, '*');
+    } else {
+      playNextTTS();
+    }
+  }
 
   // Parse width/height from Meet's video constraints
   function parseVideoDimensions(videoConstraints) {
@@ -514,6 +563,14 @@
         for (const cam of cameras.values()) cam.speaking = !!payload;
         break;
 
+      case 'set-bot-state':
+        // Update avatar state: 'idle' | 'listening' | 'thinking' | 'speaking'
+        if (payload?.state) {
+          for (const cam of cameras.values()) cam.state = payload.state;
+          console.debug('[bots-in-calls] Bot state:', payload.state);
+        }
+        break;
+
       case 'set-whiteboard':
         if (payload?.content != null) {
           getWhiteboard().setContent(payload.content);
@@ -536,18 +593,13 @@
             mic.audioCtx.resume();
           }
           const track = mic.getTrack();
-          console.log('[bots-in-calls] Playing TTS audio, data length:', payload.audioData.length,
+          console.log('[bots-in-calls] Queuing TTS audio, data length:', payload.audioData.length,
+            'queue size:', ttsQueue.length,
             'AudioContext state:', mic.audioCtx.state,
             'track enabled:', track?.enabled, 'readyState:', track?.readyState, 'muted:', track?.muted,
             'destination tracks:', mic.destination.stream.getAudioTracks().length);
-          for (const cam of cameras.values()) cam.speaking = true;
-          transcription.botSpeaking = true;
-          mic.playAudio(payload.audioData).then(() => {
-            for (const cam of cameras.values()) cam.speaking = false;
-            setTimeout(() => { transcription.botSpeaking = false; }, 1500);
-            // Notify extension that TTS playback ended (for mic mute)
-            window.postMessage({ __botsInCalls: true, action: 'tts-ended' }, '*');
-          });
+          ttsQueue.push({ audioData: payload.audioData });
+          playNextTTS();
         }
         break;
 

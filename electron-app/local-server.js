@@ -8,13 +8,17 @@ const { URL } = require('url');
 const DEFAULT_PORT = 7865;
 
 class LocalServer {
-  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing } = {}) {
+  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange } = {}) {
     this.port = port || DEFAULT_PORT;
     this.onBotSpeech = onBotSpeech || (() => {});
     this.onWhiteboardUpdate = onWhiteboardUpdate || (() => {});
     this.onLeaveCall = onLeaveCall || (() => {});
     this.onShareWhiteboard = onShareWhiteboard || (() => {});
     this.onStopSharing = onStopSharing || (() => {});
+    this.onJoinCall = onJoinCall || (() => {});
+    this.onLoadUrl = onLoadUrl || (() => {});
+    this.onBotStateChange = onBotStateChange || (() => {}); // 'idle' | 'listening' | 'thinking' | 'speaking'
+    this.botState = 'idle';
 
     // Room state (single room — the active call)
     this.roomId = null;
@@ -27,6 +31,16 @@ class LocalServer {
     this.callStatus = 'idle';    // idle, joining, waiting-to-be-admitted, in-call, left
     this.sharing = false;
     this.errors = [];            // recent errors (max 10)
+
+    // State exposed to agents
+    this.detectedMeetUrls = [];  // Meet URLs found in browser tabs (when not in a call)
+    this.participants = [];      // [{ name, speaking }] from DOM speaker tracker
+    this.someoneElsePresenting = false;  // another participant is screen sharing
+    this.presenterName = null;   // name of the person presenting (if any)
+
+    // Real-time speaking state (from DOMSpeakerTracker, not captions)
+    this.anyoneSpeaking = false;       // true if any participant is currently speaking
+    this.lastSpeechStoppedAt = null;   // timestamp (ms) when last person stopped speaking
 
     // Long-poll waiters
     this.waiters = [];           // { resolve, since, bot, silence, timer }
@@ -46,6 +60,11 @@ class LocalServer {
     this.callStatus = 'joining';
     this.sharing = false;
     this.errors = [];
+    this.participants = [];
+    this.someoneElsePresenting = false;
+    this.presenterName = null;
+    this.anyoneSpeaking = false;
+    this.lastSpeechStoppedAt = null;
     this.resolveAllWaiters();
   }
 
@@ -55,6 +74,11 @@ class LocalServer {
     this.members = [];
     this.callStatus = 'idle';
     this.sharing = false;
+    this.participants = [];
+    this.someoneElsePresenting = false;
+    this.presenterName = null;
+    this.anyoneSpeaking = false;
+    this.lastSpeechStoppedAt = null;
     this.resolveAllWaiters();
   }
 
@@ -65,6 +89,37 @@ class LocalServer {
 
   setSharing(sharing) {
     this.sharing = sharing;
+  }
+
+  setDetectedMeetUrls(urls) {
+    this.detectedMeetUrls = urls || [];
+  }
+
+  setParticipants(participants) {
+    this.participants = participants || [];
+
+    // Update real-time speaking state from DOM speaker tracker
+    const wasSpeaking = this.anyoneSpeaking;
+    this.anyoneSpeaking = this.participants.some(p => p.speaking);
+
+    if (wasSpeaking && !this.anyoneSpeaking) {
+      // Speech just stopped — record when and check waiters
+      this.lastSpeechStoppedAt = Date.now();
+      this._checkWaiters();
+    } else if (!wasSpeaking && this.anyoneSpeaking) {
+      // Speech just started — cancel any pending silence timers
+      for (const waiter of this.waiters) {
+        if (waiter.silenceTimer) {
+          clearTimeout(waiter.silenceTimer);
+          waiter.silenceTimer = null;
+        }
+      }
+    }
+  }
+
+  setSomeoneElsePresenting(presenting, presenterName) {
+    this.someoneElsePresenting = !!presenting;
+    this.presenterName = presenterName || null;
   }
 
   addError(message) {
@@ -113,26 +168,50 @@ class LocalServer {
       const entries = this._entriesSince(waiter.since, waiter.bot);
       if (entries.length === 0) continue;
 
-      // Check silence: time since last entry must exceed silence threshold
-      const lastEntry = entries[entries.length - 1];
-      const lastTime = new Date(lastEntry.timestamp).getTime();
+      // If the bot's name was mentioned, resolve immediately — someone is talking to/about the bot
+      if (waiter.bot) {
+        const botNameLower = waiter.bot.toLowerCase();
+        const mentioned = entries.some(e => e.text.toLowerCase().includes(botNameLower));
+        if (mentioned) {
+          this._resolveWaiter(waiter);
+          continue;
+        }
+      }
+
+      // Use real-time speaking state from DOMSpeakerTracker (not caption timestamps)
+      // If someone is actively speaking, don't resolve — cancel any silence timer
+      if (this.anyoneSpeaking) {
+        if (waiter.silenceTimer) {
+          clearTimeout(waiter.silenceTimer);
+          waiter.silenceTimer = null;
+        }
+        continue;
+      }
+
+      // Nobody is speaking — check if silence threshold has been met
       const silenceMs = waiter.silence * 1000;
-      const elapsed = Date.now() - lastTime;
+      const silenceStart = this.lastSpeechStoppedAt || Date.now();
+      const elapsed = Date.now() - silenceStart;
 
       if (elapsed >= silenceMs) {
         // Silence threshold already met — resolve immediately
         this._resolveWaiter(waiter);
-      } else {
-        // Clear any existing timer and set a new one based on latest speech
-        if (waiter.silenceTimer) clearTimeout(waiter.silenceTimer);
+      } else if (!waiter.silenceTimer) {
+        // Start a silence timer for the remaining time
         const remaining = silenceMs - elapsed;
         waiter.silenceTimer = setTimeout(() => {
           waiter.silenceTimer = null;
-          // Re-check: more speech may have arrived during the wait
+          // Re-check: someone may have started speaking during the wait
           this._checkWaiters();
         }, remaining + 50);
       }
     }
+  }
+
+  _setBotState(state, extra) {
+    if (this.botState === state) return;
+    this.botState = state;
+    this.onBotStateChange(state, extra);
   }
 
   _resolveWaiter(waiter) {
@@ -140,7 +219,16 @@ class LocalServer {
     waiter.resolved = true;
     clearTimeout(waiter.timer);
     clearTimeout(waiter.silenceTimer);
-    waiter.resolve(this._buildResponse(waiter.since, waiter.bot, waiter.startTime));
+    const response = this._buildResponse(waiter.since, waiter.bot, waiter.startTime);
+
+    // If there are actual transcript entries, the agent will now process them → thinking state
+    const entries = this._entriesSince(waiter.since, waiter.bot);
+    if (entries.length > 0) {
+      const wordCount = entries.map(e => e.text).join(' ').split(/\s+/).length;
+      this._setBotState('thinking', { wordCount });
+    }
+
+    waiter.resolve(response);
     this.waiters = this.waiters.filter(w => w !== waiter);
   }
 
@@ -185,9 +273,13 @@ class LocalServer {
       },
       chat: { messages: [], count: 0 },
       members: this.members,
+      participants: this.participants,
+      detectedMeetUrls: this.detectedMeetUrls,
       status: {
         callStatus: this.callStatus,
         sharing: this.sharing,
+        someoneElsePresenting: this.someoneElsePresenting,
+        presenterName: this.presenterName,
         errors: this.errors,
       },
     };
@@ -251,6 +343,17 @@ class LocalServer {
     if (url.pathname === '/api/rooms/create' && req.method === 'POST') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: true }));
+      return;
+    }
+
+    // Status endpoint — returns detected URLs and call state without a room ID
+    if (url.pathname === '/api/sync/no-room' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        detectedMeetUrls: this.detectedMeetUrls,
+        status: { callStatus: this.callStatus },
+      }));
       return;
     }
 
@@ -322,6 +425,7 @@ class LocalServer {
         }, clampedWait * 1000),
       };
       this.waiters.push(waiter);
+      this._setBotState('listening');
 
       // If entries already exist but silence hasn't elapsed, start checking
       if (existing.length > 0) {
@@ -375,6 +479,7 @@ class LocalServer {
 
         // Trigger TTS for bot speech
         if (data.role === 'bot') {
+          this._setBotState('speaking');
           this.onBotSpeech(t.text, t.voice);
         }
       }
@@ -396,6 +501,14 @@ class LocalServer {
       this.onWhiteboardUpdate(data.whiteboard.content, data.sender);
     }
 
+    // Handle join command — tell the app to join a Meet call
+    if (data.meta?.action === 'join') {
+      const meetCode = data.meta.meetCode || roomId;
+      const botName = data.meta.botName;
+      this.onJoinCall(meetCode, botName);
+      results.join = { ok: true };
+    }
+
     // Handle leave command
     if (data.meta?.action === 'leave') {
       this.onLeaveCall();
@@ -404,12 +517,18 @@ class LocalServer {
 
     // Handle share/stop whiteboard commands
     if (data.meta?.action === 'share-whiteboard') {
-      this.onShareWhiteboard();
+      this.onShareWhiteboard(data.meta.shareType || 'whiteboard');
       results.shareWhiteboard = { ok: true };
     }
     if (data.meta?.action === 'stop-sharing') {
       this.onStopSharing();
       results.stopSharing = { ok: true };
+    }
+
+    // Handle load-url command (load arbitrary URL in whiteboard window)
+    if (data.meta?.action === 'load-url' && data.meta.url) {
+      this.onLoadUrl(data.meta.url);
+      results.loadUrl = { ok: true };
     }
 
     // Update presence

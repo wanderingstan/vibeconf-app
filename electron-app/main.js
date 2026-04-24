@@ -58,10 +58,22 @@ const localServer = new globalThis.LocalServer({
   },
   onWhiteboardUpdate: (content, sender) => {
     console.log('[local-server] Whiteboard update from', sender, ':', content.slice(0, 80));
-    // Forward to remote sync server so the whiteboard window picks it up
     const roomId = localServer.roomId;
     if (roomId) {
       const baseUrl = (store && store.get('syncBaseUrl')) || 'https://vibeconferencing.com';
+      const roomUrl = `${baseUrl}/room/${roomId}`;
+
+      // If the whiteboard window was navigated to an external URL (via load-url),
+      // navigate it back to the room page so it can receive SSE updates
+      if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
+        const currentUrl = whiteboardWindow.webContents.getURL();
+        if (!currentUrl.includes('/room/')) {
+          console.log('[local-server] Whiteboard showing external URL, navigating back to room');
+          whiteboardWindow.loadURL(roomUrl);
+        }
+      }
+
+      // Forward to remote sync server so the whiteboard window picks it up
       fetch(`${baseUrl}/api/sync/${roomId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -76,6 +88,14 @@ const localServer = new globalThis.LocalServer({
       });
     }
   },
+  onJoinCall: (meetCode, botName) => {
+    console.log('[local-server] Join call requested by agent:', meetCode, botName);
+    if (botName && panelView && !panelView.webContents.isDestroyed()) {
+      panelView.webContents.send('set-bot-name', botName);
+    }
+    const meetUrl = `https://meet.google.com/${meetCode}`;
+    loadMeetURL(meetUrl);
+  },
   onLeaveCall: () => {
     console.log('[local-server] Leave call requested by agent');
     // Trigger leave via the panel
@@ -83,31 +103,75 @@ const localServer = new globalThis.LocalServer({
       panelView.webContents.send('leave-requested');
     }
   },
-  onShareWhiteboard: () => {
-    console.log('[local-server] Share whiteboard requested by agent');
+  onShareWhiteboard: (shareType) => {
+    console.log('[local-server] Share requested by agent, type:', shareType);
     const meetCode = localServer.roomId;
     if (meetCode) {
       localServer.setSharing(true);
-      // Reuse the existing share-whiteboard IPC logic
-      ipcMain.emit('start-whiteboard-share', {}, { meetCode });
-      // Wait for whiteboard to load, then trigger screen share in Meet
-      setTimeout(() => {
+      if (shareType === 'screen') {
+        // Full screen share — no whiteboard window needed
+        fullScreenShareRequested = true;
         if (meetView && !meetView.webContents.isDestroyed()) {
-          meetView.webContents.send('trigger-screen-share');
+          meetView.webContents.send('trigger-screen-share', { shareType: 'screen' });
         }
-      }, 2000);
+      } else {
+        // Whiteboard share — open whiteboard window first
+        fullScreenShareRequested = false;
+        ipcMain.emit('start-whiteboard-share', {}, { meetCode });
+        setTimeout(() => {
+          if (meetView && !meetView.webContents.isDestroyed()) {
+            meetView.webContents.send('trigger-screen-share', { shareType: 'window' });
+          }
+        }, 2000);
+      }
     }
   },
   onStopSharing: () => {
     console.log('[local-server] Stop sharing requested by agent');
-    // Close the whiteboard window — this ends the display media stream
+    fullScreenShareRequested = false;
+    localServer.setSharing(false);
+    // Close the whiteboard window — this ends the display media stream for whiteboard shares
     if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
       whiteboardWindow.close();
       whiteboardWindow = null;
     }
-    // Also click Meet's stop-presenting button if visible
+    // Click Meet's "Stop presenting" button — works for both whiteboard and full-screen shares
     if (meetView && !meetView.webContents.isDestroyed()) {
       meetView.webContents.send('trigger-stop-sharing');
+    }
+  },
+  onLoadUrl: (url) => {
+    console.log('[local-server] Load URL in whiteboard:', url);
+    if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
+      whiteboardWindow.loadURL(url);
+    } else {
+      whiteboardWindow = createWhiteboardWindow(url);
+    }
+  },
+  onBotStateChange: (state, extra) => {
+    console.log('[local-server] Bot state:', state, extra || '');
+    // Forward state to page-inject.js to update avatar emoji
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('extension-message', {
+        action: 'set-bot-state',
+        payload: { state },
+      });
+    }
+
+    // Play acknowledgment sounds when entering 'thinking' state
+    if (state === 'thinking') {
+      const wordCount = extra?.wordCount || 0;
+
+      // Pick acknowledgment based on how much was said in this exchange
+      let ack;
+      if (wordCount > 50) {
+        ack = ['Let me think about that.', 'Hmm, let me consider that.', 'Give me a moment.'][Math.floor(Math.random() * 3)];
+      } else {
+        ack = ['Mm-hmm.', 'Okay.', 'Got it.', 'Mm.'][Math.floor(Math.random() * 4)];
+      }
+
+      // Speak the acknowledgment immediately (before the agent responds)
+      speakText(ack);
     }
   },
 });
@@ -121,6 +185,27 @@ let mainWindow = null;   // single window that holds both views
 let panelView = null;     // left sidebar BrowserView
 let meetView = null;      // right Meet BrowserView
 let whiteboardWindow = null;
+let fullScreenShareRequested = false;
+
+function createWhiteboardWindow(roomUrl) {
+  // Position off the bottom-right of the screen so macOS doesn't clamp to (0,0)
+  const { screen } = require('electron');
+  const display = screen.getPrimaryDisplay();
+  const { width: sw, height: sh } = display.workArea;
+
+  const win = new BrowserWindow({
+    width: 800,
+    height: 450,
+    x: sw + 100,
+    y: sh + 100,
+    title: 'Vibeconferencing Whiteboard',
+    skipTaskbar: true,
+    webPreferences: { contextIsolation: true, nodeIntegration: false },
+  });
+  win.loadURL(roomUrl);
+  win.on('closed', () => { whiteboardWindow = null; });
+  return win;
+}
 
 const PANEL_WIDTH = 380;
 
@@ -311,7 +396,7 @@ let claudeTerminalWindowId = null;
 function launchClaudeTerminal(meetCode) {
   const { execFile } = require('child_process');
   const claudeDir = store.get('claudeWorkDir') || '/tmp';
-  const botName = store.get('botName') || 'AI Assistant';
+  const botName = store.get('botName') || 'Samantha';
 
   // Position terminal below the Electron window, matching its width
   let termBounds = null;
@@ -509,82 +594,19 @@ function ensureClaudeIntegration(localPort) {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '2';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '3';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
 
   if (installedVersion !== SKILL_VERSION) {
     fs.mkdirSync(skillDir, { recursive: true });
-    const skillContent = `---
-name: join-call
-description: Join the user's current Google Meet call as an AI bot participant
-argument-hint: "[room_code] [BotName]  — or just [BotName] to auto-detect"
-disable-model-invocation: true
-allowed-tools: Bash mcp__vibeconferencing__get_room_info mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__read_transcripts mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__leave_call mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__stop_sharing
----
-
-Join the user's current Google Meet call as an AI bot participant.
-
-## Step 1: Determine the room code
-
-Parse \`$ARGUMENTS\` for a meet code (pattern: \`xxx-xxxx-xxx\`). If found, use it directly and skip detection. Any non-code argument is the bot name.
-
-Examples:
-- \`/join-call abc-defg-hij\` -> room code \`abc-defg-hij\`, bot name "AI Assistant"
-- \`/join-call abc-defg-hij Stanbot\` -> room code \`abc-defg-hij\`, bot name "Stanbot"
-- \`/join-call Stanbot\` -> auto-detect room, bot name "Stanbot"
-- \`/join-call\` -> auto-detect room, bot name "AI Assistant"
-
-**If no room code in arguments**, detect from Chrome:
-\`\`\`
-osascript -e 'tell application "Google Chrome"
-  repeat with w in windows
-    repeat with t in tabs of w
-      if URL of t starts with "https://meet.google.com/" then
-        return URL of t
-      end if
-    end repeat
-  end repeat
-end tell'
-\`\`\`
-
-Extract the meet code (the \`xxx-xxxx-xxx\` part). If no valid Meet URL found, ask the user to paste one.
-
-## Step 2: Launch the Electron app (if needed)
-
-\`\`\`
-pgrep -f "Vibeconferencing" >/dev/null 2>&1 && echo "RUNNING" || echo "NOT_RUNNING"
-\`\`\`
-
-- If **RUNNING**: Skip launch — go straight to Step 3.
-- If **NOT_RUNNING**: Launch it:
-
-\`\`\`
-open -a Vibeconferencing \\
-  --meet-url=https://meet.google.com/<ROOM_CODE> \\
-  --bot-name="<BOT_NAME>" &
-disown
-\`\`\`
-
-## Step 3: Start the conversation loop immediately
-
-Don't wait for admission — the long-poll will block until speech arrives. Use the meet code as \`room_id\` for all MCP tool calls.
-
-1. Call \`wait_for_speech\` to listen (blocks until someone speaks and pauses)
-2. Respond naturally using \`speak\` — keep it to 1-2 sentences since it's spoken aloud
-3. If the conversation involves visual content (code, diagrams, lists), also call \`update_whiteboard\` with markdown or Mermaid
-4. Go back to step 1
-
-Guidelines:
-- Be a helpful, natural conversational participant
-- Keep spoken responses short — people can ask you to elaborate
-- Use the whiteboard for anything visual (code, diagrams, structured info)
-- If someone says goodbye or asks you to leave, say goodbye via \`speak\`, then call \`leave_call\` to hang up. Then stop the loop.
-- If \`wait_for_speech\` times out with no speech, call it again — people may just be quiet. The bot may still be joining the Meet call or waiting to be admitted. Do NOT relaunch the app or check \`get_room_info\` — just keep calling \`wait_for_speech\`.
-- If someone asks you to change your voice, use \`list_voices\` to see options, then \`set_voice\` to change it. You can also use the \`voice\` parameter in \`speak\` for a one-off voice change. Have fun with it!
-- NEVER kill or relaunch the Vibeconferencing app during the conversation loop. If speech isn't coming through, keep polling — the app handles joining automatically.
-`;
+    const skillContent = fs.readFileSync(
+      isPackaged
+        ? path.join(process.resourcesPath, 'mcp-server', 'join-call-skill.md')
+        : path.join(__dirname, '..', 'mcp-server', 'join-call-skill.md'),
+      'utf-8'
+    );
     fs.writeFileSync(skillPath, skillContent);
     fs.writeFileSync(versionFile, SKILL_VERSION);
     console.log('[electron] Installed/updated skill v%s at %s', SKILL_VERSION, skillPath);
@@ -714,8 +736,30 @@ app.whenReady().then(async () => {
     return false;
   });
 
-  // Handle getDisplayMedia — share the whiteboard window if open, otherwise deny
+  // Handle getDisplayMedia — provide the appropriate source based on share mode
   session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
+    // Full screen share mode
+    if (fullScreenShareRequested) {
+      try {
+        const sources = await desktopCapturer.getSources({
+          types: ['screen'],
+          thumbnailSize: { width: 0, height: 0 },
+        });
+        if (sources.length > 0) {
+          console.log('[electron] Full screen share source:', sources[0].id, sources[0].name);
+          callback({ video: sources[0] });
+        } else {
+          console.error('[electron] No screen sources found');
+          callback({});
+        }
+      } catch (err) {
+        console.error('[electron] Full screen share error:', err);
+        callback({});
+      }
+      return;
+    }
+
+    // Whiteboard window share mode
     if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
       try {
         const sources = await desktopCapturer.getSources({
@@ -795,11 +839,13 @@ app.whenReady().then(async () => {
     const { execFile } = require('child_process');
     let pollInFlight = false;
 
+    // Note: Firefox is not supported — it has no AppleScript tab API
     const appleScript = `
 set allURLs to ""
 tell application "System Events"
   set chromeRunning to exists process "Google Chrome"
   set safariRunning to exists process "Safari"
+  set braveRunning to exists process "Brave Browser"
 end tell
 if chromeRunning then
   tell application "Google Chrome"
@@ -815,6 +861,18 @@ if chromeRunning then
 end if
 if safariRunning then
   tell application "Safari"
+    repeat with w in windows
+      repeat with t in tabs of w
+        set tabURL to URL of t
+        if tabURL starts with "https://meet.google.com/" then
+          set allURLs to allURLs & tabURL & linefeed
+        end if
+      end repeat
+    end repeat
+  end tell
+end if
+if braveRunning then
+  tell application "Brave Browser"
     repeat with w in windows
       repeat with t in tabs of w
         set tabURL to URL of t
@@ -847,6 +905,9 @@ allURLs`;
         const result = (stdout || '').trim();
         const urls = result.split('\n').filter(u => /meet\.google\.com\/[a-z]+-[a-z]+-[a-z]+/.test(u));
         const meetUrl = urls[0] || null;
+
+        // Forward all detected Meet URLs to local server for MCP access
+        localServer.setDetectedMeetUrls(urls);
 
         if (meetUrl && meetUrl !== detectedMeetUrl) {
           detectedMeetUrl = meetUrl;
@@ -1246,6 +1307,11 @@ function setupIPC() {
     localServer.setSharing(false);
   });
 
+  ipcMain.on('tts-ended', () => {
+    // TTS playback finished — return to idle (or listening if a waiter is active)
+    localServer._setBotState(localServer.waiters.length > 0 ? 'listening' : 'idle');
+  });
+
   ipcMain.on('post-transcripts', (_event, transcripts) => {
     sync.postTranscripts(transcripts || []);
     // Also feed local server for agent communication
@@ -1258,6 +1324,23 @@ function setupIPC() {
   ipcMain.on('update-speaking', (_event, { name, speaking }) => {
     if (name && sync.roomId) {
       updateSpeakingState(name, speaking);
+    }
+  });
+
+  // --- Participant list + presenting state from preload-meet.js ---
+  ipcMain.on('participants-updated', (_event, participants) => {
+    localServer.setParticipants(participants || []);
+  });
+
+  ipcMain.on('someone-presenting', (_event, { presenting, presenterName }) => {
+    localServer.setSomeoneElsePresenting(presenting, presenterName);
+  });
+
+  // Track our own presenting state from Meet UI (Stop presenting button visible)
+  ipcMain.on('self-presenting', (_event, { presenting }) => {
+    localServer.setSharing(presenting);
+    if (!presenting) {
+      fullScreenShareRequested = false;
     }
   });
 
@@ -1298,26 +1381,6 @@ function setupIPC() {
   });
 
   // --- Whiteboard + screen share ---
-  function createWhiteboardWindow(roomUrl) {
-    // Position off the bottom-right of the screen so macOS doesn't clamp to (0,0)
-    const { screen } = require('electron');
-    const display = screen.getPrimaryDisplay();
-    const { width: sw, height: sh } = display.workArea;
-
-    const win = new BrowserWindow({
-      width: 800,
-      height: 450,
-      x: sw + 100,
-      y: sh + 100,
-      title: 'Vibeconferencing Whiteboard',
-      skipTaskbar: true,
-      webPreferences: { contextIsolation: true, nodeIntegration: false },
-    });
-    win.loadURL(roomUrl);
-    win.on('closed', () => { whiteboardWindow = null; });
-    return win;
-  }
-
   ipcMain.on('start-whiteboard-share', (_event, { meetCode }) => {
     const baseUrl = store.get('syncBaseUrl') || 'https://vibeconferencing.com';
     const roomUrl = `${baseUrl}/room/${meetCode}?mode=whiteboard`;
@@ -1352,6 +1415,24 @@ function setupIPC() {
 
   // Provide desktopCapturer source for screen share
   ipcMain.handle('get-screen-share-source', async () => {
+    // Full screen share mode — return the primary display
+    if (fullScreenShareRequested) {
+      try {
+        const sources = await desktopCapturer.getSources({
+          types: ['screen'],
+          thumbnailSize: { width: 0, height: 0 },
+        });
+        if (sources.length > 0) {
+          console.log('[electron] Full screen share source:', sources[0].id);
+          return { sourceId: sources[0].id };
+        }
+        return { error: 'No screen source found' };
+      } catch (err) {
+        return { error: err.message };
+      }
+    }
+
+    // Whiteboard window share mode
     if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
       return { error: 'No whiteboard window open' };
     }

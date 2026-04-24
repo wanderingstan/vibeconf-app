@@ -31,7 +31,7 @@ const claudeWorkDirInput = document.getElementById('claudeWorkDir');
 const dangerousModeInput = document.getElementById('dangerousMode');
 
 let syncBaseUrl = 'https://vibeconferencing.com';
-let currentBotName = 'AI Assistant';
+let currentBotName = 'Samantha';
 let inCall = false;
 
 // ---------------------------------------------------------------------------
@@ -368,7 +368,7 @@ speechBtn.addEventListener('click', () => {
 // ---------------------------------------------------------------------------
 
 botNameInput.addEventListener('change', () => {
-  const name = botNameInput.value.trim() || 'AI Assistant';
+  const name = botNameInput.value.trim() || 'Samantha';
   currentBotName = name;
   api.invoke('set-config', 'botName', name);
   api.send('to-meet', { action: 'set-config', payload: { botName: name } });

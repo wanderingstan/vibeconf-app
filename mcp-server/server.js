@@ -16,7 +16,7 @@
  *
  * Configuration via environment variables:
  *   VIBECONF_ROOM_ID   - The Meet code / room ID (required)
- *   VIBECONF_BOT_NAME  - Bot's display name (default: "AI Assistant")
+ *   VIBECONF_BOT_NAME  - Bot's display name (default: "Samantha")
  *   VIBECONF_BASE_URL  - API base URL (default: https://vibeconferencing.com)
  */
 
@@ -29,7 +29,7 @@ import { join } from "path";
 import { homedir } from "os";
 
 const ROOM_ID = process.env.VIBECONF_ROOM_ID || "";
-const BOT_NAME = process.env.VIBECONF_BOT_NAME || "AI Assistant";
+const BOT_NAME = process.env.VIBECONF_BOT_NAME || "Samantha";
 const BASE_URL = process.env.VIBECONF_BASE_URL || "https://vibeconferencing.com";
 
 let lastPollTime = null;
@@ -339,17 +339,43 @@ server.tool(
 // --- update_whiteboard ---
 server.tool(
   "update_whiteboard",
-  "Update the shared whiteboard/screen in the Google Meet call. Supports markdown and Mermaid diagrams. The whiteboard is visible to all participants via screen share.",
+  "Update the shared whiteboard/screen in the Google Meet call. Supports markdown and Mermaid diagrams. Can also load an arbitrary URL (e.g. a website, localhost app, dashboard) instead of markdown content.",
   {
-    content: z.string().describe("Markdown content for the whiteboard. Supports headings, lists, code blocks, and Mermaid diagrams."),
+    content: z.string().optional().describe("Markdown content for the whiteboard. Supports headings, lists, code blocks, and Mermaid diagrams."),
+    url: z.string().optional().describe("Load an arbitrary URL in the whiteboard window instead of markdown content. Useful for showing websites, localhost apps, or dashboards."),
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
-  async ({ content, room_id }) => {
+  async ({ content, url, room_id }) => {
     const roomId = room_id || ROOM_ID;
     if (!roomId) {
       return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
     }
 
+    if (!content && !url) {
+      return { content: [{ type: "text", text: "Error: Either 'content' or 'url' must be provided." }] };
+    }
+
+    // Load arbitrary URL mode
+    if (url) {
+      const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sender: BOT_NAME,
+          role: "bot",
+          ownerName: BOT_NAME,
+          meta: { action: "load-url", url },
+        }),
+      });
+      const data = await resp.json();
+      if (data.success) {
+        return { content: [{ type: "text", text: `Whiteboard window now showing: ${url}` }] };
+      } else {
+        return { content: [{ type: "text", text: `Error: ${data.error || "Failed to load URL"}` }] };
+      }
+    }
+
+    // Markdown content mode
     const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -407,16 +433,18 @@ server.tool(
 // --- share_whiteboard ---
 server.tool(
   "share_whiteboard",
-  "Start screen sharing the whiteboard in the Google Meet call. Opens the whiteboard window and presents it to all participants. Use update_whiteboard to set content before or after sharing.",
+  "Start screen sharing in the Google Meet call. By default shares the whiteboard window (use update_whiteboard to set content). Can also share the entire screen.",
   {
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+    share_type: z.enum(["whiteboard", "screen"]).optional().describe("What to share. 'whiteboard' (default) shares the whiteboard window. 'screen' shares the entire screen."),
   },
-  async ({ room_id }) => {
+  async ({ room_id, share_type }) => {
     const roomId = room_id || ROOM_ID;
     if (!roomId) {
       return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
     }
 
+    const shareType = share_type || "whiteboard";
     const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -424,7 +452,7 @@ server.tool(
         sender: BOT_NAME,
         role: "bot",
         ownerName: BOT_NAME,
-        meta: { action: "share-whiteboard" },
+        meta: { action: "share-whiteboard", shareType },
       }),
     });
 
@@ -488,14 +516,23 @@ server.tool(
 // --- get_room_info ---
 server.tool(
   "get_room_info",
-  "Get the current state of the room: whiteboard content, members, and metadata.",
+  "Get the current state of the Google Meet call: participants, who is speaking, screen sharing status, detected Meet URLs, errors. When not in a call, shows detected Meet URLs from browser tabs. This is your primary tool for understanding what's happening in the call.",
   {
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
   async ({ room_id }) => {
     const roomId = room_id || ROOM_ID;
     if (!roomId) {
-      return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+      // No room ID — try to get detected URLs from the local server
+      try {
+        const resp = await fetch(`${BASE_URL}/api/sync/no-room`);
+        const data = await resp.json();
+        const urls = data.detectedMeetUrls || [];
+        if (urls.length > 0) {
+          return { content: [{ type: "text", text: `Not in a call. Detected Google Meet URLs:\n${urls.map(u => `  - ${u}`).join('\n')}\n\nUse the meet code from one of these URLs as room_id to join.` }] };
+        }
+      } catch {}
+      return { content: [{ type: "text", text: "Not in a call. No Google Meet URLs detected in browser tabs." }] };
     }
 
     const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`);
@@ -505,25 +542,89 @@ server.tool(
       return { content: [{ type: "text", text: `Error: ${data.error || "Unknown error"}` }] };
     }
 
-    const members = (data.members || []).map((m) => `  - ${m.name} (${m.role})`).join("\n");
-    const wb = data.whiteboard?.content || "(empty)";
     const status = data.status || {};
+    const participants = data.participants || [];
+    const detectedUrls = data.detectedMeetUrls || [];
+
+    // Build participant list with speaking indicators
+    const participantLines = participants.length > 0
+      ? participants.map(p => `  - ${p.name}${p.speaking ? ' (speaking)' : ''}`).join('\n')
+      : '  (none detected)';
+
+    // Members from sync API (includes bots)
+    const members = (data.members || []).map((m) => `  - ${m.name} (${m.role})`).join("\n");
+
+    const wb = data.whiteboard?.content || "(empty)";
     const errors = (status.errors || []).map(e => `  - ${e.message} (${e.timestamp})`).join("\n");
 
-    const result = [
+    const sections = [
       `Room: ${roomId}`,
       `Call status: ${status.callStatus || 'unknown'}`,
-      `Screen sharing: ${status.sharing ? 'yes' : 'no'}`,
-      ``,
-      `## Members`,
-      members || "  (none)",
-      ``,
-      `## Whiteboard`,
-      wb.slice(0, 500),
-      ...(errors ? [``, `## Recent Errors`, errors] : []),
-    ].join("\n");
+      `Screen sharing: ${status.sharing ? 'yes (by bot)' : 'no'}`,
+    ];
 
-    return { content: [{ type: "text", text: result }] };
+    if (status.someoneElsePresenting) {
+      sections.push(`Someone else presenting: ${status.presenterName || 'yes'}`);
+    }
+
+    sections.push('');
+    sections.push('## Participants (in call)');
+    sections.push(participantLines);
+
+    if (members) {
+      sections.push('');
+      sections.push('## Bot Members');
+      sections.push(members || '  (none)');
+    }
+
+    sections.push('');
+    sections.push('## Whiteboard');
+    sections.push(wb.slice(0, 500));
+
+    if (detectedUrls.length > 0 && status.callStatus === 'idle') {
+      sections.push('');
+      sections.push('## Detected Meet URLs');
+      sections.push(detectedUrls.map(u => `  - ${u}`).join('\n'));
+    }
+
+    if (errors) {
+      sections.push('');
+      sections.push('## Recent Errors');
+      sections.push(errors);
+    }
+
+    return { content: [{ type: "text", text: sections.join('\n') }] };
+  }
+);
+
+// --- join_call ---
+server.tool(
+  "join_call",
+  "Tell the Vibeconferencing app to join a Google Meet call. Use this when the app is running but idle (not yet in a call). The app will navigate to the Meet URL and join.",
+  {
+    room_id: z.string().describe("Meet code (e.g. abc-defg-hij)"),
+    bot_name: z.string().optional().describe("Bot display name. Default: Samantha"),
+  },
+  async ({ room_id, bot_name }) => {
+    try {
+      const resp = await fetch(`${BASE_URL}/api/sync/${room_id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sender: bot_name || BOT_NAME,
+          role: "bot",
+          meta: { action: "join", meetCode: room_id, botName: bot_name || BOT_NAME },
+        }),
+      });
+      const data = await resp.json();
+      if (data.results?.join?.ok) {
+        ROOM_ID = room_id;
+        return { content: [{ type: "text", text: `Joining Meet call: ${room_id}. The app will navigate to the call and join. Use wait_for_speech to start listening.` }] };
+      }
+      return { content: [{ type: "text", text: `Error: ${data.error || "Failed to join"}` }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error: ${err.message}` }] };
+    }
   }
 );
 

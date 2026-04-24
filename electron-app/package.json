@@ -16,6 +16,8 @@
     "mac": {
       "category": "public.app-category.productivity",
       "icon": "icon.png",
+      "entitlements": "entitlements.mac.plist",
+      "entitlementsInherit": "entitlements.mac.plist",
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Vibeconferencing needs microphone access to enable bot audio in Google Meet calls.",
         "NSCameraUsageDescription": "Vibeconferencing needs camera access to display the bot's virtual camera in Google Meet calls."

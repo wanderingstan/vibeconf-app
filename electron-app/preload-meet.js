@@ -13,20 +13,20 @@ const vm = require('vm');
 // so our getUserMedia override is in place when Meet's code loads.
 // ---------------------------------------------------------------------------
 
-// Inject page-inject.js early (before page scripts) but ONLY on Meet pages.
-// We defer to DOMContentLoaded to ensure the URL is known (at preload time
-// the URL may still be 'about:blank').
-window.addEventListener('DOMContentLoaded', () => {
-  if (!window.location.href.includes('meet.google.com')) return;
-  try {
-    const pageInjectPath = path.join(__dirname, '..', 'extension', 'page-inject.js');
-    const pageInjectCode = fs.readFileSync(pageInjectPath, 'utf-8');
-    (0, eval)(pageInjectCode);
-    console.log('[electron-meet] page-inject.js loaded on Meet page');
-  } catch (err) {
-    console.error('[electron-meet] Failed to load page-inject.js:', err.message);
-  }
-}, { once: true });
+// Inject page-inject.js IMMEDIATELY in preload — before any page scripts run.
+// This ensures our getUserMedia override is in place when Meet requests media.
+// With contextIsolation: false, this preload only runs in the Meet BrowserView,
+// so no URL check is needed. Injecting at DOMContentLoaded was too late — Meet's
+// scripts could call getUserMedia before that, getting a real mic stream instead
+// of our VirtualMic, causing TTS audio to silently fail.
+try {
+  const pageInjectPath = path.join(__dirname, '..', 'extension', 'page-inject.js');
+  const pageInjectCode = fs.readFileSync(pageInjectPath, 'utf-8');
+  (0, eval)(pageInjectCode);
+  console.log('[electron-meet] page-inject.js loaded (preload, before page scripts)');
+} catch (err) {
+  console.error('[electron-meet] Failed to load page-inject.js:', err.message);
+}
 
 // ---------------------------------------------------------------------------
 // Expose screen share helper to page context (for getDisplayMedia override)
@@ -206,7 +206,7 @@ function checkMicPermission() {
 // Auto-join
 // ---------------------------------------------------------------------------
 
-let BOT_NAME = 'AI Assistant';
+let BOT_NAME = 'Samantha';
 
 ipcRenderer.invoke('get-config', ['botName']).then((result) => {
   if (result?.botName) BOT_NAME = result.botName;
@@ -511,6 +511,11 @@ class DOMSpeakerTracker {
       .filter(([_, info]) => info.speaking)
       .map(([name]) => name);
   }
+
+  getParticipantList() {
+    return Array.from(this.participants.entries())
+      .map(([name, info]) => ({ name, speaking: info.speaking }));
+  }
 }
 
 const domSpeakerTracker = new DOMSpeakerTracker();
@@ -651,6 +656,7 @@ window.addEventListener('message', (event) => {
 
   if (event.data.action === 'tts-ended') {
     setTimeout(() => setMicMuted(true), 500);
+    ipcRenderer.send('tts-ended');
   }
 
   if (event.data.action === 'transcript') {
@@ -665,33 +671,45 @@ window.addEventListener('message', (event) => {
 // Screen share — click "Present now" in Meet UI
 // ---------------------------------------------------------------------------
 
-async function clickPresentNow() {
+async function clickPresentNow(shareType) {
   // Meet's "Present now" button — try multiple selectors
+  // When someone else is presenting, the tooltip changes to "{Name} is presenting"
   const presentBtn =
     findByAriaLabel('Share screen') ||
     findByAriaLabel('Present now') ||
     findByText('Present now') ||
     document.querySelector('[data-tooltip="Share screen"]') ||
-    document.querySelector('[data-tooltip="Present now"]');
+    document.querySelector('[data-tooltip="Present now"]') ||
+    document.querySelector('[data-tooltip*="is presenting" i]');
 
   if (presentBtn) {
     presentBtn.click();
     console.log('[electron-meet] Clicked "Present now"');
 
-    // Wait for the share picker to appear, then select "A tab" or "Entire Screen"
+    // Wait for the share picker to appear, then select share type
     await delay(500);
 
-    // Meet shows a dropdown — look for "Your entire screen" option
-    const entireScreen =
-      findByText('Your entire screen') ||
-      findByText('Entire screen') ||
-      findByText('A window');
-
-    if (entireScreen) {
-      entireScreen.click();
-      console.log('[electron-meet] Selected screen share type');
+    if (shareType === 'screen') {
+      // Full screen share
+      const entireScreen =
+        findByText('Your entire screen') ||
+        findByText('Entire screen');
+      if (entireScreen) {
+        entireScreen.click();
+        console.log('[electron-meet] Selected "entire screen"');
+      }
     } else {
-      console.log('[electron-meet] Share picker will trigger getDisplayMedia directly');
+      // Window share (for whiteboard)
+      const windowOption =
+        findByText('A window') ||
+        findByText('Your entire screen') ||
+        findByText('Entire screen');
+      if (windowOption) {
+        windowOption.click();
+        console.log('[electron-meet] Selected window/screen share type');
+      } else {
+        console.log('[electron-meet] Share picker will trigger getDisplayMedia directly');
+      }
     }
     return true;
   }
@@ -700,9 +718,10 @@ async function clickPresentNow() {
   return false;
 }
 
-ipcRenderer.on('trigger-screen-share', async () => {
-  console.log('[electron-meet] Screen share triggered');
-  const success = await clickPresentNow();
+ipcRenderer.on('trigger-screen-share', async (_event, options) => {
+  const shareType = options?.shareType || 'window';
+  console.log('[electron-meet] Screen share triggered, type:', shareType);
+  const success = await clickPresentNow(shareType);
   if (!success) {
     ipcRenderer.send('screen-share-error', 'Could not find Present button');
   }
@@ -783,6 +802,53 @@ window.addEventListener('DOMContentLoaded', () => {
 
     // Start mic health checks
     setInterval(checkMicPermission, 5000);
+
+    // Periodically send participant list to main process
+    setInterval(() => {
+      const participants = domSpeakerTracker.getParticipantList();
+      if (participants.length > 0) {
+        ipcRenderer.send('participants-updated', participants);
+      }
+    }, 2000);
+
+    // Detect presenting state:
+    // - "Stop presenting" button/overlay OR toolbar share button with stop label → WE are presenting
+    // - Present button tooltip says "{Name} is presenting" → someone ELSE is presenting
+    // - Normal Present button → nobody is presenting
+    setInterval(() => {
+      // Check if we are currently presenting. Two locations depending on window size:
+      // 1. Large window: "Stop presenting" overlay button on the shared content
+      // 2. Small window: the toolbar share button itself shows "Stop presenting"
+      const stopPresentingBtn =
+        document.querySelector('[aria-label*="Stop presenting" i]') ||
+        document.querySelector('[data-tooltip*="Stop presenting" i]') ||
+        document.querySelector('button[aria-label*="stop" i][aria-label*="present" i]') ||
+        document.querySelector('[data-tooltip*="stop" i][data-tooltip*="present" i]');
+      if (stopPresentingBtn) {
+        ipcRenderer.send('self-presenting', { presenting: true });
+        ipcRenderer.send('someone-presenting', { presenting: false, presenterName: null });
+        return;
+      }
+      ipcRenderer.send('self-presenting', { presenting: false });
+
+      // Check if someone else is presenting
+      const presentBtn =
+        findByAriaLabel('Share screen') ||
+        findByAriaLabel('Present now') ||
+        document.querySelector('[data-tooltip*="presenting" i]') ||
+        document.querySelector('[data-tooltip*="Present" i]') ||
+        document.querySelector('[data-tooltip*="Share screen" i]');
+      if (presentBtn) {
+        const tooltip = presentBtn.getAttribute('data-tooltip') || presentBtn.getAttribute('aria-label') || '';
+        // When someone else is presenting, tooltip is like "John Doe is presenting"
+        const match = tooltip.match(/^(.+?)\s+is presenting/i);
+        if (match) {
+          ipcRenderer.send('someone-presenting', { presenting: true, presenterName: match[1] });
+        } else {
+          ipcRenderer.send('someone-presenting', { presenting: false, presenterName: null });
+        }
+      }
+    }, 3000);
 
     // Start sync and announce arrival
     const meetCode = window.location.pathname.replace('/', '');

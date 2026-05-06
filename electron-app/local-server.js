@@ -166,17 +166,15 @@ class LocalServer {
     this.participants = participants || [];
 
     // First time we see non-empty participants — DOMSpeakerTracker is up and
-    // reading the people pane successfully. That's the canonical "bot is
-    // fully integrated into the call" signal: more reliable than admission
-    // UI (which renders before transcript machinery is ready) or the join
-    // chime (which fires the same moment, before the bot is actually wired
-    // up). Fires once per call (reset by setRoom/clearRoom). Also the
-    // moment we flush any speak() calls queued during the join window —
-    // earlier flushes (at 'in-call') played audio before the bot's mic
-    // track was actually broadcast to other participants.
+    // reading the people pane successfully. Fires once per call. Used for
+    // avatar engagement (flips hasEngaged via the set-engaged IPC).
+    //
+    // NOT used to flush deferred bot speech — that's gated on the captions-
+    // ready signal, which fires later and is a stronger 'fully wired up'
+    // marker. Flushing here meant the welcome played 5s before the user
+    // could actually see/hear what the bot heard.
     if (wasEmpty && this.participants.length > 0) {
       this.onParticipantsFirstSeen();
-      this._flushPendingBotSpeech();
     }
 
     // Update real-time speaking state from DOM speaker tracker. Exclude the

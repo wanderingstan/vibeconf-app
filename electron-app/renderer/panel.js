@@ -31,6 +31,8 @@ const claudeWorkDirInput = document.getElementById('claudeWorkDir');
 const dangerousModeInput = document.getElementById('dangerousMode');
 const ackShortMinInput = document.getElementById('ackShortMin');
 const ackLongMinInput = document.getElementById('ackLongMin');
+const ackShortPhrasesInput = document.getElementById('ackShortPhrases');
+const ackLongPhrasesInput = document.getElementById('ackLongPhrases');
 
 let syncBaseUrl = 'http://127.0.0.1:7865';
 let currentBotName = 'Jimmy';
@@ -84,7 +86,7 @@ meetUrlInput.addEventListener('input', updateJoinBtnState);
 // Load saved config
 // ---------------------------------------------------------------------------
 
-api.invoke('get-config', ['botName', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'claudeWorkDir', 'dangerousMode', 'ackShortMin', 'ackLongMin']).then((result) => {
+api.invoke('get-config', ['botName', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'claudeWorkDir', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases']).then((result) => {
   if (result?.botName) { botNameInput.value = result.botName; currentBotName = result.botName; }
   if (result?.syncBaseUrl) { syncBaseUrlInput.value = result.syncBaseUrl; syncBaseUrl = result.syncBaseUrl; }
   if (result?.ttsApiKey) ttsApiKeyInput.value = result.ttsApiKey;
@@ -93,6 +95,8 @@ api.invoke('get-config', ['botName', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', '
   if (result?.dangerousMode) dangerousModeInput.checked = true;
   if (result?.ackShortMin != null) ackShortMinInput.value = result.ackShortMin;
   if (result?.ackLongMin != null) ackLongMinInput.value = result.ackLongMin;
+  if (Array.isArray(result?.ackShortPhrases)) ackShortPhrasesInput.value = result.ackShortPhrases.join('\n');
+  if (Array.isArray(result?.ackLongPhrases)) ackLongPhrasesInput.value = result.ackLongPhrases.join('\n');
 
   // Check auth status after config is loaded (so we know the server URL)
   checkAuthStatus();
@@ -409,6 +413,25 @@ ackShortMinInput.addEventListener('change', () => {
 ackLongMinInput.addEventListener('change', () => {
   const v = parseInt(ackLongMinInput.value, 10);
   if (Number.isFinite(v) && v >= 0) api.invoke('set-config', 'ackLongMin', v);
+});
+
+// Phrase textareas: split on newline, drop blanks. Won't save if the
+// list ends up empty — the schema requires at least 1 entry.
+function parsePhraseLines(textarea) {
+  return textarea.value
+    .split('\n')
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+ackShortPhrasesInput.addEventListener('change', () => {
+  const phrases = parsePhraseLines(ackShortPhrasesInput);
+  if (phrases.length > 0) api.invoke('set-config', 'ackShortPhrases', phrases);
+});
+
+ackLongPhrasesInput.addEventListener('change', () => {
+  const phrases = parsePhraseLines(ackLongPhrasesInput);
+  if (phrases.length > 0) api.invoke('set-config', 'ackLongPhrases', phrases);
 });
 
 // ---------------------------------------------------------------------------

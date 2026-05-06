@@ -104,6 +104,16 @@
           <input type="number" id="ackLongMin" min="0" step="1" placeholder="50" />
           <div style="font-size:11px;color:#666;margin-top:2px">At or above this, use the longer "let me think" ack. Default: 50.</div>
         </div>
+        <div class="field">
+          <label for="ackShortPhrases">Short ack phrases (one per line)</label>
+          <textarea id="ackShortPhrases" rows="4" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit;resize:vertical" placeholder="Mm-hmm.&#10;Okay.&#10;Got it.&#10;Mm."></textarea>
+          <div style="font-size:11px;color:#666;margin-top:2px">Bot picks one at random. The agent can also edit these mid-call via set_preference.</div>
+        </div>
+        <div class="field">
+          <label for="ackLongPhrases">Long ack phrases (one per line)</label>
+          <textarea id="ackLongPhrases" rows="4" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit;resize:vertical" placeholder="Let me think about that.&#10;Hmm, let me consider that.&#10;Give me a moment."></textarea>
+          <div style="font-size:11px;color:#666;margin-top:2px">Used when the user spoke a lot — gives the agent more time to respond.</div>
+        </div>
       </div>
     </div>
   </div>

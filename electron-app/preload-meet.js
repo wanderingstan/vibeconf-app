@@ -856,10 +856,13 @@ window.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    // Start trackers
-    await delay(2000);
+    // Start trackers in parallel — previous code had a 3s gap between
+    // domSpeakerTracker.start() and captionScraper.start() which left a
+    // window where the bot was visibly "in" but couldn't hear anything
+    // the user said. Both have their own internal retry/poll loops, so
+    // there's no value in serializing them.
+    await delay(1500);
     domSpeakerTracker.start();
-    await delay(3000);
     captionScraper.start();
     // Don't auto-mute on admission — the mic state IS the mode toggle now.
     // Default unmuted = active mode, which is the historical default.

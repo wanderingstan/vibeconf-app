@@ -392,11 +392,17 @@ async function autoJoin(botName) {
         sendStatus('Participating in Meet');
         // Click "Turn on captions" the moment we see the toolbar, so Meet
         // can start rendering the captions UI in parallel with our other
-        // tracker setup. Saves a couple seconds on the time-to-listen.
-        const ccBtn = findByAriaLabel('Turn on captions') || findByAriaLabel('Activar subtítulos');
-        if (ccBtn) {
-          ccBtn.click();
-          console.log('[electron-meet] Captions click on admission');
+        // tracker setup.
+        const ccBtnOn = findByAriaLabel('Turn on captions') || findByAriaLabel('Activar subtítulos');
+        const ccBtnOff = findByAriaLabel('Turn off captions') || findByAriaLabel('Desactivar subtítulos');
+        if (ccBtnOn) {
+          console.log('[electron-meet] [CC] Found "Turn on captions" button on admission — clicking');
+          ccBtnOn.click();
+          console.log('[electron-meet] [CC] click() returned at', Date.now());
+        } else if (ccBtnOff) {
+          console.log('[electron-meet] [CC] Already on at admission ("Turn off captions" found)');
+        } else {
+          console.warn('[electron-meet] [CC] No captions button found on admission');
         }
         break;
       }
@@ -601,9 +607,15 @@ class CaptionScraper {
 
   _enableCaptions() {
     const ccButton = findByAriaLabel('Turn on captions') || findByAriaLabel('Activar subtítulos');
+    const offBtn = findByAriaLabel('Turn off captions') || findByAriaLabel('Desactivar subtítulos');
     if (ccButton) {
+      console.log('[electron-meet] [CC] _enableCaptions: clicking "Turn on captions"');
       ccButton.click();
-      console.log('[electron-meet] Enabled captions');
+      console.log('[electron-meet] [CC] _enableCaptions: click() returned at', Date.now());
+    } else if (offBtn) {
+      console.log('[electron-meet] [CC] _enableCaptions: already on');
+    } else {
+      console.warn('[electron-meet] [CC] _enableCaptions: no captions button in DOM');
     }
   }
 
@@ -619,7 +631,8 @@ class CaptionScraper {
         || !!findByAriaLabel('Desactivar subtítulos');
       if (captionsAreOn) {
         clearInterval(poll);
-        console.log('[electron-meet] Captions confirmed on (toolbar button = "Turn off captions")');
+        console.log('[electron-meet] [CC] Captions confirmed on at', Date.now(),
+          'after', attempts * 250, 'ms of polling');
         this._observe();
         if (this.onReady) { try { this.onReady(); } catch {} }
       } else if (++attempts > 120) { // 30s of 250ms polls

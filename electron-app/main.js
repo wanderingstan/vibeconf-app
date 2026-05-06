@@ -1334,6 +1334,19 @@ function loadMeetURL(meetUrl) {
 
   meetView.webContents.loadURL(meetUrl);
 
+  // Forward preload-meet's console output to main stdout so [electron-meet]
+  // and [CC] log lines show up alongside [local-server] / [electron] in the
+  // terminal we tail with cmux read-screen. Errors → console.error.
+  meetView.webContents.on('console-message', (_e, level, message) => {
+    // Only forward our prefixed lines — Meet's own console is noisy.
+    if (typeof message === 'string' && (message.startsWith('[electron-meet]') ||
+        message.startsWith('[bots-in-calls]') || message.startsWith('[captions]'))) {
+      if (level === 2) console.warn(message);
+      else if (level === 3) console.error(message);
+      else console.log(message);
+    }
+  });
+
   meetView.webContents.on('did-finish-load', () => {
     const url = meetView.webContents.getURL();
     if (url.includes('meet.google.com')) {

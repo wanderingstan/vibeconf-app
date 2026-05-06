@@ -4,11 +4,12 @@
 
 const http = require('http');
 const { URL } = require('url');
+const prefsSchema = require('./preferences-schema.js');
 
 const DEFAULT_PORT = 7865;
 
 class LocalServer {
-  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange } = {}) {
+  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.onBotSpeech = onBotSpeech || (() => {});
     this.onWhiteboardUpdate = onWhiteboardUpdate || (() => {});
@@ -19,6 +20,13 @@ class LocalServer {
     this.onLoadUrl = onLoadUrl || (() => {});
     this.onBotStateChange = onBotStateChange || (() => {}); // 'idle' | 'listening' | 'thinking' | 'speaking'
     this.onModeChange = onModeChange || (() => {});        // 'active' | 'passive' | 'silent'
+
+    // Preference plumbing (whitelist defined in preferences-schema.js).
+    // getPref reads from the persistent store; setPref writes; applyPref runs
+    // any side-effect needed to make the change live (e.g. reload TTS config).
+    this.getPref = getPref || (() => undefined);
+    this.setPref = setPref || (() => {});
+    this.applyPref = applyPref || (() => {});
     this.botState = 'idle';
 
     // Mode is persistent user-controlled behavior; distinct from transient botState.
@@ -385,6 +393,51 @@ class LocalServer {
         roomId: this.roomId,
         detectedMeetUrls: this.detectedMeetUrls,
         status: { callStatus: this.callStatus, mode: this.mode },
+      }));
+      return;
+    }
+
+    // Preferences endpoint — agent-visible whitelist with current values.
+    // Excludes anything not in preferences-schema.js (API keys, auth, etc.).
+    if (url.pathname === '/api/preferences' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        preferences: prefsSchema.describe(this.getPref),
+      }));
+      return;
+    }
+
+    if (url.pathname === '/api/preferences' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      let parsed;
+      try { parsed = JSON.parse(body); } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'Invalid JSON' }));
+        return;
+      }
+      const { key, value } = parsed || {};
+      const result = prefsSchema.validate(key, value);
+      if (!result.ok) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: result.error, key }));
+        return;
+      }
+      try {
+        this.setPref(key, result.value);
+        this.applyPref(key, result.value);
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message, key }));
+        return;
+      }
+      const spec = prefsSchema.PREFERENCES[key];
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        key,
+        value: result.value,
+        requiresRestart: !!spec?.requiresRestart,
       }));
       return;
     }

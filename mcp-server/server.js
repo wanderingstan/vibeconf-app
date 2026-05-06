@@ -547,6 +547,63 @@ server.tool(
   }
 );
 
+// --- list_preferences ---
+server.tool(
+  "list_preferences",
+  "List the bot's user-modifiable preferences (ack thresholds, ack phrase pools, voice, etc.) with their current values, defaults, types, and descriptions. Call this when the user asks to change a setting and you want to see what's available, or when answering 'what can I tweak about how you behave?'. Note: secrets (API keys, auth) are not exposed.",
+  {},
+  async () => {
+    try {
+      const resp = await fetch(`${BASE_URL}/api/preferences`);
+      const data = await resp.json();
+      if (!data?.success) {
+        return { content: [{ type: "text", text: `Error: ${data?.error || 'Could not fetch preferences'}` }] };
+      }
+      const lines = data.preferences.map(p => {
+        const valueStr = JSON.stringify(p.value);
+        const defaultStr = p.isDefault ? ' (default)' : ` (default: ${JSON.stringify(p.default)})`;
+        const constraints = [];
+        if (p.min != null) constraints.push(`min ${p.min}`);
+        if (p.max != null) constraints.push(`max ${p.max}`);
+        if (p.minItems != null) constraints.push(`minItems ${p.minItems}`);
+        if (p.requiresRestart) constraints.push('requires restart');
+        const constraintStr = constraints.length ? ` [${constraints.join(', ')}]` : '';
+        return `- ${p.key} (${p.type}${constraintStr}): ${valueStr}${defaultStr}\n  ${p.description}`;
+      });
+      return { content: [{ type: "text", text: `Preferences:\n\n${lines.join('\n\n')}` }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
+// --- set_preference ---
+server.tool(
+  "set_preference",
+  "Modify a user preference. The 'value' must match the preference's type (number, string, boolean, or array of strings). Call list_preferences first if you need to see available keys, types, and constraints. Common use cases: tune ack thresholds (ackShortMin / ackLongMin), customize what the bot says when thinking (ackShortPhrases / ackLongPhrases), change bot name. The agent should confirm with the user before changing irreversible-feeling settings; obvious requests ('add \"sure thing\" to your short acks') don't need confirmation.",
+  {
+    key: z.string().describe("Preference key. Use list_preferences to see what's available."),
+    value: z.any().describe("New value. Must match the preference's type. For string arrays, pass a JSON array."),
+  },
+  async ({ key, value }) => {
+    try {
+      const resp = await fetch(`${BASE_URL}/api/preferences`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, value }),
+      });
+      const data = await resp.json();
+      if (!data?.success) {
+        return { content: [{ type: "text", text: `Error: ${data?.error || 'Failed to set preference'}` }] };
+      }
+      const restartNote = data.requiresRestart ? ' Takes effect on next app restart.' : ' Applied immediately.';
+      return { content: [{ type: "text", text: `Set '${data.key}' to ${JSON.stringify(data.value)}.${restartNote}` }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
 // --- get_room_info ---
 server.tool(
   "get_room_info",

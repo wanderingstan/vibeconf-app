@@ -213,14 +213,17 @@ const localServer = new globalThis.LocalServer({
       //   wordCount < ackShortMin    → no ack (short prompt — agent can answer fast)
       //   ackShortMin..ackLongMin    → short ack ("Mm-hmm.")
       //   ≥ ackLongMin               → long ack ("Let me think about that.")
-      const ackShortMin = Number(store?.get('ackShortMin')) || 20;
-      const ackLongMin = Number(store?.get('ackLongMin')) || 50;
+      const prefsSchema = require('./preferences-schema.js');
+      const ackShortMin = Number(store?.get('ackShortMin')) || prefsSchema.PREFERENCES.ackShortMin.default;
+      const ackLongMin = Number(store?.get('ackLongMin')) || prefsSchema.PREFERENCES.ackLongMin.default;
+      const shortPhrases = store?.get('ackShortPhrases') || prefsSchema.PREFERENCES.ackShortPhrases.default;
+      const longPhrases = store?.get('ackLongPhrases') || prefsSchema.PREFERENCES.ackLongPhrases.default;
 
       let ack = null;
       if (wordCount >= ackLongMin) {
-        ack = ['Let me think about that.', 'Hmm, let me consider that.', 'Give me a moment.'][Math.floor(Math.random() * 3)];
+        ack = longPhrases[Math.floor(Math.random() * longPhrases.length)];
       } else if (wordCount >= ackShortMin) {
-        ack = ['Mm-hmm.', 'Okay.', 'Got it.', 'Mm.'][Math.floor(Math.random() * 4)];
+        ack = shortPhrases[Math.floor(Math.random() * shortPhrases.length)];
       }
 
       if (!ack) {
@@ -247,6 +250,26 @@ const localServer = new globalThis.LocalServer({
       // canonical indicator. Active = unmuted, passive/silent = muted.
       meetView.webContents.send('extension-message', {
         action: mode === 'active' ? 'unmute-mic' : 'mute-mic',
+      });
+    }
+  },
+
+  // Preference plumbing for the agent-visible whitelist (preferences-schema.js).
+  // get/set go to the same Store the panel uses, so changes from the agent and
+  // changes from Settings → UI converge on one config.json.
+  getPref: (key) => store?.get(key),
+  setPref: (key, value) => store?.set(key, value),
+  applyPref: (key, value) => {
+    // Live-apply hooks per-key. Anything we leave out is read on next use
+    // (the ack thresholds, for example, are read every time a thinking state
+    // fires — no live-apply needed).
+    if (key === 'ttsVoiceId') {
+      tts.updateConfig?.({ voiceId: value });
+    } else if (key === 'botName' && panelView && !panelView.webContents.isDestroyed()) {
+      // Surface the change in the panel so the input reflects reality.
+      panelView.webContents.send('extension-message', {
+        action: 'config-updated',
+        payload: { key, value },
       });
     }
   },
@@ -719,7 +742,7 @@ function ensureClaudeIntegration(localPort) {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '3';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '4';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}

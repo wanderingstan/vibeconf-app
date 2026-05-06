@@ -693,10 +693,16 @@
       case 'play-join-chime':
         // Replaces the old canned "Hello I am X" welcome — short two-tone
         // ping when admission completes so the user knows the bot is in the
-        // room without filling silence with speech.
-        // Also flip hasEngaged here: the chime is the canonical "I'm in the
-        // room" moment, so the avatar should switch from 🫥 to its mode emoji.
+        // room without filling silence with speech. Engagement is gated
+        // separately on `set-engaged` (first participants seen) — the chime
+        // can fire before the bot is actually wired up.
         if (mic) mic.playJoinChime();
+        break;
+
+      case 'set-engaged':
+        // Sent when DOMSpeakerTracker first reports participants — the
+        // canonical "bot is fully integrated" moment. Flips the avatar
+        // off 🫥 and onto its mode emoji.
         for (const cam of cameras.values()) cam.hasEngaged = true;
         break;
 

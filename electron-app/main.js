@@ -275,6 +275,16 @@ const localServer = new globalThis.LocalServer({
     }
   },
 
+  onParticipantsFirstSeen: () => {
+    // Bot is fully integrated into the call — DOMSpeakerTracker has read
+    // the people pane. Tell the avatar to flip hasEngaged so it leaves
+    // the 🫥 'still booting' state and shows its mode emoji.
+    console.log('[local-server] First participants seen — engaging avatar');
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('extension-message', { action: 'set-engaged' });
+    }
+  },
+
   // Preference plumbing for the agent-visible whitelist (preferences-schema.js).
   // get/set go to the same Store the panel uses, so changes from the agent and
   // changes from Settings → UI converge on one config.json.

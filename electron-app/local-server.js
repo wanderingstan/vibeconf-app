@@ -9,7 +9,7 @@ const prefsSchema = require('./preferences-schema.js');
 const DEFAULT_PORT = 7865;
 
 class LocalServer {
-  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, getPref, setPref, applyPref } = {}) {
+  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onParticipantsFirstSeen, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.onBotSpeech = onBotSpeech || (() => {});
     this.onWhiteboardUpdate = onWhiteboardUpdate || (() => {});
@@ -22,6 +22,7 @@ class LocalServer {
     this.onModeChange = onModeChange || (() => {});        // 'active' | 'passive' | 'silent'
     this.onCallStatusChange = onCallStatusChange || (() => {}); // 'idle' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
     this.onAnyoneSpeakingChange = onAnyoneSpeakingChange || (() => {}); // boolean
+    this.onParticipantsFirstSeen = onParticipantsFirstSeen || (() => {}); // fires once per call when DOMSpeakerTracker first reports participants
 
     // Preference plumbing (whitelist defined in preferences-schema.js).
     // getPref reads from the persistent store; setPref writes; applyPref runs
@@ -130,7 +131,18 @@ class LocalServer {
   }
 
   setParticipants(participants) {
+    const wasEmpty = this.participants.length === 0;
     this.participants = participants || [];
+
+    // First time we see non-empty participants — DOMSpeakerTracker is up and
+    // reading the people pane successfully. That's the canonical "bot is
+    // fully integrated into the call" signal: more reliable than admission
+    // UI (which renders before transcript machinery is ready) or the join
+    // chime (which fires the same moment, before the bot is actually wired
+    // up). Fires once per call (reset by setRoom/clearRoom).
+    if (wasEmpty && this.participants.length > 0) {
+      this.onParticipantsFirstSeen();
+    }
 
     // Update real-time speaking state from DOM speaker tracker. Exclude the
     // bot itself ('You' in Meet's people pane) — when the bot speaks via TTS,

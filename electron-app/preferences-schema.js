@@ -26,7 +26,20 @@ const PREFERENCES = {
   },
   ackShortPhrases: {
     type: 'string[]',
-    default: ['Mm-hmm.', 'Okay.', 'Got it.', 'Mm.'],
+    default: [
+      'Mm-hmm.',
+      'Okay.',
+      'Got it.',
+      'Mm.',
+      'Right.',
+      'Yeah.',
+      'Sure.',
+      'Uh-huh.',
+      'Mhm.',
+      'Cool.',
+      'Gotcha.',
+      'Right, right.',
+    ],
     minItems: 1,
     description:
       'Phrases the bot picks from for short acks (when wordCount is between ' +
@@ -38,6 +51,13 @@ const PREFERENCES = {
       'Let me think about that.',
       'Hmm, let me consider that.',
       'Give me a moment.',
+      'One second, thinking.',
+      'Hmm, good question.',
+      'Let me chew on that.',
+      'Just a sec, processing.',
+      'Hmm, interesting.',
+      'Hold on, working through that.',
+      'Let me work that out.',
     ],
     minItems: 1,
     description:

@@ -714,6 +714,14 @@ window.addEventListener('message', (event) => {
     ipcRenderer.send('tts-ended');
   }
 
+  if (event.data.action === 'log') {
+    // Forward page-inject log lines to main so they land in the Electron
+    // stdout stream alongside [local-server]/[electron] lines.
+    if (event.data.payload?.line) {
+      ipcRenderer.send('page-inject-log', event.data.payload.line);
+    }
+  }
+
   if (event.data.action === 'transcript') {
     const t = event.data.payload;
     if (t?.text && t?.speaker) {

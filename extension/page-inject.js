@@ -196,6 +196,23 @@
         || (this.state === 'idle' ? VirtualCamera.IDLE_EMOJI : null)
         || VirtualCamera.MODE_EMOJIS[this.mode]
         || VirtualCamera.MODE_EMOJIS.active;
+      // Log every emoji change so the terminal output captures what the
+      // user actually sees, not just internal state. Forwarded to main via
+      // window.postMessage → preload-meet → ipcRenderer so it lands in the
+      // Electron stdout that we tail with `cmux read-screen`.
+      if (emoji !== this._lastLoggedEmoji) {
+        this._lastLoggedEmoji = emoji;
+        const reason = notOnLine ? `callStatus=${this.callStatus} hasEngaged=${this.hasEngaged}` :
+          VirtualCamera.ACTIVITY_EMOJIS[this.state] ? `state=${this.state}` :
+          hearing ? `hearing (anyoneSpeaking=true)` :
+          this.state === 'idle' ? `state=idle (between turns)` :
+          `mode=${this.mode} (listening)`;
+        window.postMessage({
+          __botsInCalls: true,
+          action: 'log',
+          payload: { line: `Avatar → ${emoji} · ${reason}` },
+        }, '*');
+      }
       const emojiSize = Math.min(w, h) * 0.65;
       const bob = Math.sin(t * 0.8) * (emojiSize * 0.02);
       const speakScale = this.speaking

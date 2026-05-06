@@ -1501,6 +1501,12 @@ function setupIPC() {
     localServer.setSharing(false);
   });
 
+  // Forwarded log lines from page-inject.js (via preload-meet). These are
+  // emoji-change announcements right now but the channel is generic.
+  ipcMain.on('page-inject-log', (_event, line) => {
+    console.log('[page-inject]', line);
+  });
+
   ipcMain.on('tts-ended', () => {
     // If only the ack just finished, stay in 'thinking' — the agent is still
     // generating the real response and will clear the flag when it speaks.

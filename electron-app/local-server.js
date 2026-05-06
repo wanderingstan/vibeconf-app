@@ -110,30 +110,33 @@ class LocalServer {
 
   setCallStatus(status) {
     if (this.callStatus === status) return;
-    const wasInCall = this.callStatus === 'in-call';
     this.callStatus = status;
     console.log('[local-server] Call status:', status);
     this.onCallStatusChange(status);
 
-    // Flush any speak() calls that arrived before admission. The audio path
-    // to other participants only opens once we're 'in-call'; before then the
-    // virtual mic stream isn't connected to Meet.
-    if (status === 'in-call' && !wasInCall && this.pendingBotSpeech.length > 0) {
-      console.log('[local-server] Flushing', this.pendingBotSpeech.length, 'queued bot speech entries');
-      const queue = this.pendingBotSpeech;
-      this.pendingBotSpeech = [];
-      for (const { text, voice } of queue) {
-        this._setBotState('speaking');
-        this.onBotSpeech(text, voice);
-      }
-    }
-
     // Drop pending speech if we never made it in (call failed / cleared).
+    // Pending flush itself is gated on first-participants-seen, not in-call —
+    // 'in-call' fires when Meet's UI is up, but the bot's mic track isn't
+    // reliably connected to other participants until the people pane is
+    // populated (a stronger 'fully wired up' signal). See _flushPendingBotSpeech.
     if (status === 'idle' || status === 'left') {
       if (this.pendingBotSpeech.length > 0) {
         console.log('[local-server] Dropping', this.pendingBotSpeech.length, 'unflushed bot speech entries (call ended)');
         this.pendingBotSpeech = [];
       }
+    }
+  }
+
+  _flushPendingBotSpeech() {
+    if (this.pendingBotSpeech.length === 0) return;
+    console.log('[local-server] Flushing', this.pendingBotSpeech.length,
+      'queued bot speech entries (now playing)');
+    const queue = this.pendingBotSpeech;
+    this.pendingBotSpeech = [];
+    for (const { text, voice } of queue) {
+      console.log('[local-server] Playing queued speech:', text.slice(0, 60));
+      this._setBotState('speaking');
+      this.onBotSpeech(text, voice);
     }
   }
 
@@ -167,9 +170,13 @@ class LocalServer {
     // fully integrated into the call" signal: more reliable than admission
     // UI (which renders before transcript machinery is ready) or the join
     // chime (which fires the same moment, before the bot is actually wired
-    // up). Fires once per call (reset by setRoom/clearRoom).
+    // up). Fires once per call (reset by setRoom/clearRoom). Also the
+    // moment we flush any speak() calls queued during the join window —
+    // earlier flushes (at 'in-call') played audio before the bot's mic
+    // track was actually broadcast to other participants.
     if (wasEmpty && this.participants.length > 0) {
       this.onParticipantsFirstSeen();
+      this._flushPendingBotSpeech();
     }
 
     // Update real-time speaking state from DOM speaker tracker. Exclude the

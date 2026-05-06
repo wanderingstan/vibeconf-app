@@ -646,9 +646,14 @@
         if (payload?.state) {
           for (const cam of cameras.values()) {
             cam.state = payload.state;
-            // First non-idle state means the agent is on the line. Stay 🫥
-            // until that moment so admission doesn't immediately flash 🙂.
-            if (payload.state !== 'idle') cam.hasEngaged = true;
+            // hasEngaged flips only on actual interaction — thinking or
+            // speaking. Pure 'listening' (agent in wait_for_speech with
+            // nothing happening) still counts as boot/idle from the user's
+            // perspective, so 🫥 should persist through the boot phase
+            // until the bot actually processes or responds to something.
+            if (payload.state === 'thinking' || payload.state === 'speaking') {
+              cam.hasEngaged = true;
+            }
           }
           console.debug('[bots-in-calls] Bot state:', payload.state);
         }

@@ -237,9 +237,16 @@
       }
       const emojiSize = Math.min(w, h) * 0.65;
       const bob = Math.sin(t * 0.8) * (emojiSize * 0.02);
-      const speakScale = this.speaking
-        ? 1 + Math.sin(this.frameCount * 0.15) * 0.05
-        : 1;
+      // Speaking animation: more pronounced — bigger pulse, vertical bounce,
+      // and a slight rotation. Was previously a 5% scale-only pulse, which
+      // was easy to miss. Pulse rate is faster than the resting bob so the
+      // motion reads as "active speech" not "idle drift".
+      const speakPulse = this.speaking
+        ? Math.sin(this.frameCount * 0.45)
+        : 0;
+      const speakScale = this.speaking ? 1 + speakPulse * 0.10 : 1;
+      const speakBounce = this.speaking ? speakPulse * (emojiSize * 0.04) : 0;
+      const speakTilt = this.speaking ? Math.sin(this.frameCount * 0.3) * 0.06 : 0;
       // Thinking state: gentle side-to-side sway
       const thinkSway = this.state === 'thinking'
         ? Math.sin(t * 1.2) * 8
@@ -261,7 +268,10 @@
         ctx.shadowBlur = 20;
       }
 
-      ctx.fillText(emoji, cx + thinkSway, cy + bob);
+      // Apply translation + rotation around the avatar center for speaking.
+      ctx.translate(cx + thinkSway, cy + bob - speakBounce);
+      if (speakTilt) ctx.rotate(speakTilt);
+      ctx.fillText(emoji, 0, 0);
       ctx.restore();
     }
 
@@ -1043,10 +1053,10 @@
       }
 
       if (this.speaking && !wasSpeaking) {
-        console.debug(`[bots-in-calls] Participant ${this.id} started speaking (${db.toFixed(1)} dB)`);
+        // Started/stopped speaking debug lines suppressed — too noisy in
+        // the terminal log. Re-enable locally if debugging speech detection.
         this._startRecording();
       } else if (!this.speaking && wasSpeaking && (Date.now() - this.lastSpeakingTime > 1500)) {
-        console.debug(`[bots-in-calls] Participant ${this.id} stopped speaking`);
         this._stopRecording();
       }
 

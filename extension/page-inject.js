@@ -36,11 +36,13 @@
       speaking: '\u{1F604}', // 😄 grinning face — open mouth fits TTS playback
     };
 
-    // Override emojis when the bot isn't actually on the line yet.
-    // Priority: callStatus pre-call wins → activity → idle → mode.
+    // Override emojis whenever the bot isn't in the call. Anything other than
+    // 'in-call' means the agent isn't actually on the line — show 🫥.
     static CALL_STATUS_EMOJIS = {
-      'joining':                '\u{1FAE5}',  // 🫥 dotted face — connecting to Meet
-      'waiting-to-be-admitted': '\u{1FAE5}',  // 🫥 dotted face — waiting on host
+      'idle':                   '\u{1FAE5}',  // 🫥 no call yet
+      'joining':                '\u{1FAE5}',  // 🫥 connecting to Meet
+      'waiting-to-be-admitted': '\u{1FAE5}',  // 🫥 waiting on host to admit
+      'left':                   '\u{1FAE5}',  // 🫥 call ended
     };
 
     // Shown when in-call but no agent is actively listening (no waiter).

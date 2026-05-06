@@ -73,7 +73,6 @@ class LocalServer {
     this.transcripts = [];
     this.whiteboard = { content: '', version: 0, lastModified: null, lastEditor: null };
     this.members = [];
-    this.callStatus = 'joining';
     this.sharing = false;
     this.errors = [];
     this.participants = [];
@@ -82,13 +81,15 @@ class LocalServer {
     this.anyoneSpeaking = false;
     this.lastSpeechStoppedAt = null;
     this.resolveAllWaiters();
+    // Use the setter so onCallStatusChange fires — the avatar uses this to
+    // switch to 🫥 while joining.
+    this.setCallStatus('joining');
   }
 
   clearRoom() {
     this.roomId = null;
     this.transcripts = [];
     this.members = [];
-    this.callStatus = 'idle';
     this.sharing = false;
     this.participants = [];
     this.someoneElsePresenting = false;
@@ -96,6 +97,7 @@ class LocalServer {
     this.anyoneSpeaking = false;
     this.lastSpeechStoppedAt = null;
     this.resolveAllWaiters();
+    this.setCallStatus('idle');
   }
 
   setCallStatus(status) {

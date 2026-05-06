@@ -1321,6 +1321,21 @@ function loadMeetURL(meetUrl) {
       if (panelView && !panelView.webContents.isDestroyed()) {
         panelView.webContents.send('meet-status', { url, ready: true });
       }
+      // Push current state to page-inject — first-call timing race fix.
+      // Without this, the initial 'joining' callStatus may have fired before
+      // the avatar was alive to receive it, leaving 🙂‍↕️ stuck on screen.
+      meetView.webContents.send('extension-message', {
+        action: 'set-call-status',
+        payload: { status: localServer.callStatus },
+      });
+      meetView.webContents.send('extension-message', {
+        action: 'set-mode',
+        payload: { mode: localServer.mode },
+      });
+      meetView.webContents.send('extension-message', {
+        action: 'set-bot-state',
+        payload: { state: localServer.botState },
+      });
     }
   });
 }

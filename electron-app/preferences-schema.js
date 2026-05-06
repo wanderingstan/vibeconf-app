@@ -45,7 +45,7 @@ const PREFERENCES = {
   },
   botName: {
     type: 'string',
-    default: 'Samantha',
+    default: 'Jimmy',
     description:
       "The bot's display name in Meet calls. Takes effect on the next call.",
     requiresRestart: true,

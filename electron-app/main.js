@@ -544,7 +544,7 @@ let claudeTerminalWindowId = null;
 function launchClaudeTerminal(meetCode) {
   const { execFile } = require('child_process');
   const claudeDir = store.get('claudeWorkDir') || '/tmp';
-  const botName = store.get('botName') || 'Samantha';
+  const botName = store.get('botName') || 'Jimmy';
 
   // Position terminal below the Electron window, matching its width
   let termBounds = null;
@@ -742,7 +742,7 @@ function ensureClaudeIntegration(localPort) {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '4';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '5';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}

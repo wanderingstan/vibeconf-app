@@ -232,7 +232,7 @@ function checkMicPermission() {
 // Auto-join
 // ---------------------------------------------------------------------------
 
-let BOT_NAME = 'Samantha';
+let BOT_NAME = 'Jimmy';
 
 ipcRenderer.invoke('get-config', ['botName']).then((result) => {
   if (result?.botName) BOT_NAME = result.botName;

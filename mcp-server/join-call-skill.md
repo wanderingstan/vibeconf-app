@@ -13,10 +13,10 @@ Join the user's current Google Meet call as an AI bot participant.
 Parse `$ARGUMENTS` for a meet code (pattern: `xxx-xxxx-xxx`). If found, use it directly and skip detection. Any non-code argument is the bot name.
 
 Examples:
-- `/join-call abc-defg-hij` -> room code `abc-defg-hij`, bot name "Samantha"
+- `/join-call abc-defg-hij` -> room code `abc-defg-hij`, bot name "Jimmy"
 - `/join-call abc-defg-hij Stanbot` -> room code `abc-defg-hij`, bot name "Stanbot"
 - `/join-call Stanbot` -> auto-detect room, bot name "Stanbot"
-- `/join-call` -> auto-detect room, bot name "Samantha"
+- `/join-call` -> auto-detect room, bot name "Jimmy"
 
 **If no room code in arguments**, first check if the Vibeconferencing app has already detected a call:
 

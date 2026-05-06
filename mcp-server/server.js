@@ -16,7 +16,7 @@
  *
  * Configuration via environment variables:
  *   VIBECONF_ROOM_ID   - The Meet code / room ID (required)
- *   VIBECONF_BOT_NAME  - Bot's display name (default: "Samantha")
+ *   VIBECONF_BOT_NAME  - Bot's display name (default: "Jimmy")
  *   VIBECONF_BASE_URL  - API base URL (default: http://127.0.0.1:7865 — the Electron app's local server)
  */
 
@@ -29,7 +29,7 @@ import { join } from "path";
 import { homedir } from "os";
 
 let ROOM_ID = process.env.VIBECONF_ROOM_ID || "";
-const BOT_NAME = process.env.VIBECONF_BOT_NAME || "Samantha";
+const BOT_NAME = process.env.VIBECONF_BOT_NAME || "Jimmy";
 const BASE_URL = process.env.VIBECONF_BASE_URL || "http://127.0.0.1:7865";
 
 let lastPollTime = null;
@@ -715,7 +715,7 @@ server.tool(
   "Tell the Vibeconferencing app to join a Google Meet call. Use this when the app is running but idle (not yet in a call). The app will navigate to the Meet URL and join.",
   {
     room_id: z.string().describe("Meet code (e.g. abc-defg-hij)"),
-    bot_name: z.string().optional().describe("Bot display name. Default: Samantha"),
+    bot_name: z.string().optional().describe("Bot display name. Default: Jimmy"),
   },
   async ({ room_id, bot_name }) => {
     try {

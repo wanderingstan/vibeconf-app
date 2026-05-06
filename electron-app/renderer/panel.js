@@ -33,7 +33,7 @@ const ackShortMinInput = document.getElementById('ackShortMin');
 const ackLongMinInput = document.getElementById('ackLongMin');
 
 let syncBaseUrl = 'http://127.0.0.1:7865';
-let currentBotName = 'Samantha';
+let currentBotName = 'Jimmy';
 let inCall = false;
 
 // ---------------------------------------------------------------------------
@@ -372,7 +372,7 @@ speechBtn.addEventListener('click', () => {
 // ---------------------------------------------------------------------------
 
 botNameInput.addEventListener('change', () => {
-  const name = botNameInput.value.trim() || 'Samantha';
+  const name = botNameInput.value.trim() || 'Jimmy';
   currentBotName = name;
   api.invoke('set-config', 'botName', name);
   api.send('to-meet', { action: 'set-config', payload: { botName: name } });

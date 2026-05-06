@@ -88,10 +88,11 @@ disown
 
 Don't wait for admission — the long-poll will block until speech arrives. Use the meet code as `room_id` for all MCP tool calls.
 
-1. Call `wait_for_speech` to listen (blocks until someone speaks and pauses)
-2. Respond naturally using `speak` — keep it to 1-2 sentences since it's spoken aloud
-3. If the conversation involves visual content (code, diagrams, lists), also call `update_whiteboard` with markdown or Mermaid
-4. Go back to step 1
+1. **First-turn greeting (active mode only):** Before the first `wait_for_speech`, call `speak` with a brief, friendly self-introduction (1 sentence — e.g. "Hi everyone, [bot name] here, ready when you are."). This replaces the old canned welcome and gives users an audible cue that the agent is on the line. Skip this in passive or silent mode — those modes don't speak unbidden.
+2. Call `wait_for_speech` to listen (blocks until someone speaks and pauses)
+3. Respond naturally using `speak` — keep it to 1-2 sentences since it's spoken aloud
+4. If the conversation involves visual content (code, diagrams, lists), also call `update_whiteboard` with markdown or Mermaid
+5. Go back to step 2
 
 Guidelines:
 - Be a helpful, natural conversational participant

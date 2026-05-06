@@ -181,16 +181,21 @@
       // Emoji priority:
       //   1. Not in call (any callStatus other than 'in-call') → 🫥
       //   2. In-call but agent has never engaged yet → 🫥 (still loading)
-      //   3. Activity (thinking / speaking) — agent is doing something
-      //   4. Someone is currently speaking → 😐 (acks "I heard you"). Skipped
-      //      in silent mode where the bot is meant to be a fly on the wall.
-      //   5. botState=idle between turns → 😔
-      //   6. botState=listening → mode emoji (🙂 / 🤐 / 😶)
+      //   3. Audio is playing (this.speaking) → 😄. This wins over 'thinking'
+      //      so the ack TTS ("Got it.", "Let me think about that.") shows the
+      //      speaking face — from the user's perspective audio = speaking.
+      //   4. Activity state thinking → 🤔 (agent processing, no audio yet)
+      //   5. Someone in the call is speaking → 😐 (acks "I heard you").
+      //      Skipped in silent mode and during own activity.
+      //   6. botState=idle between turns → 😔
+      //   7. botState=listening → mode emoji (🙂 / 🤐 / 😶)
       const notOnLine = VirtualCamera.CALL_STATUS_EMOJIS[this.callStatus] || (!this.hasEngaged ? '\u{1FAE5}' : null);
-      const hearing = (this.anyoneSpeaking && this.mode !== 'silent' && this.state !== 'thinking' && this.state !== 'speaking')
+      const audioPlaying = this.speaking ? VirtualCamera.ACTIVITY_EMOJIS.speaking : null;
+      const hearing = (this.anyoneSpeaking && this.mode !== 'silent' && !this.speaking && this.state !== 'thinking' && this.state !== 'speaking')
         ? VirtualCamera.HEARING_EMOJI : null;
       const emoji =
         notOnLine
+        || audioPlaying
         || VirtualCamera.ACTIVITY_EMOJIS[this.state]
         || hearing
         || (this.state === 'idle' ? VirtualCamera.IDLE_EMOJI : null)
@@ -203,6 +208,7 @@
       if (emoji !== this._lastLoggedEmoji) {
         this._lastLoggedEmoji = emoji;
         const reason = notOnLine ? `callStatus=${this.callStatus} hasEngaged=${this.hasEngaged}` :
+          audioPlaying ? `audio playing (state=${this.state})` :
           VirtualCamera.ACTIVITY_EMOJIS[this.state] ? `state=${this.state}` :
           hearing ? `hearing (anyoneSpeaking=true)` :
           this.state === 'idle' ? `state=idle (between turns)` :

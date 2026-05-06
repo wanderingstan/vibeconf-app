@@ -1208,9 +1208,8 @@
           status.push(`${id}: ${db.toFixed(0)}dB ${pa.speaking ? '🔊' : '🔇'}`);
         }
 
-        if (status.length > 0) {
-          console.debug('[bots-in-calls] Audio levels:', status.join(' | '));
-        }
+        // Audio level dB output left out — too noisy in the terminal log.
+        // Re-enable locally if debugging speech detection.
 
         // Report to extension
         const participantStatus = [];

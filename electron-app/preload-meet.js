@@ -280,6 +280,37 @@ function sendStatus(status) {
   ipcRenderer.send('meet-status-update', status);
 }
 
+// Poll for the captions button and click it as soon as it appears.
+// At admission time the "Leave call" button often renders before "Turn on
+// captions" does, so a single click attempt misses and we fall through to
+// captionScraper's eventual retry (~30s later). This polls every 250ms
+// for up to 30 seconds and clicks at the first opportunity.
+let captionsClickArmed = false;
+function clickCaptionsWhenReady() {
+  if (captionsClickArmed) return;
+  captionsClickArmed = true;
+  const startTime = Date.now();
+  const poll = setInterval(() => {
+    const onBtn = findByAriaLabel('Turn on captions') || findByAriaLabel('Activar subtítulos');
+    const offBtn = findByAriaLabel('Turn off captions') || findByAriaLabel('Desactivar subtítulos');
+    if (offBtn) {
+      clearInterval(poll);
+      console.log('[electron-meet] [CC] Already on, no click needed (', Date.now() - startTime, 'ms after admission)');
+      return;
+    }
+    if (onBtn) {
+      clearInterval(poll);
+      onBtn.click();
+      console.log('[electron-meet] [CC] Clicked "Turn on captions" at', Date.now() - startTime, 'ms after admission');
+      return;
+    }
+    if (Date.now() - startTime > 30_000) {
+      clearInterval(poll);
+      console.warn('[electron-meet] [CC] Captions button never appeared after 30s');
+    }
+  }, 250);
+}
+
 async function autoJoin(botName) {
   console.log('[electron-meet] ===== AUTO-JOIN STARTING =====');
   sendStatus('Joining Meet...');
@@ -390,20 +421,13 @@ async function autoJoin(botName) {
       if (inCallUI && !hasJoinUI) {
         admitted = true;
         sendStatus('Participating in Meet');
-        // Click "Turn on captions" the moment we see the toolbar, so Meet
-        // can start rendering the captions UI in parallel with our other
-        // tracker setup.
-        const ccBtnOn = findByAriaLabel('Turn on captions') || findByAriaLabel('Activar subtítulos');
-        const ccBtnOff = findByAriaLabel('Turn off captions') || findByAriaLabel('Desactivar subtítulos');
-        if (ccBtnOn) {
-          console.log('[electron-meet] [CC] Found "Turn on captions" button on admission — clicking');
-          ccBtnOn.click();
-          console.log('[electron-meet] [CC] click() returned at', Date.now());
-        } else if (ccBtnOff) {
-          console.log('[electron-meet] [CC] Already on at admission ("Turn off captions" found)');
-        } else {
-          console.warn('[electron-meet] [CC] No captions button found on admission');
-        }
+        // Don't try a one-shot captions click here — the toolbar's "Leave
+        // call" button often renders before "Turn on captions" does, so a
+        // single click attempt at admission misses. Instead kick off a
+        // separate waiter that retries every 250ms until the captions
+        // button is in the DOM, then clicks it. captionScraper.start()
+        // also retries via its own loop, so this is a fast-path overlap.
+        clickCaptionsWhenReady();
         break;
       }
 
@@ -601,7 +625,9 @@ class CaptionScraper {
 
   start() {
     if (this.isRunning) return;
-    this._enableCaptions();
+    // Don't click here — clickCaptionsWhenReady (armed in the admission
+    // loop) is already polling for the button. Clicking again risks a
+    // double-toggle (off → on → off). Just wait for confirmation.
     this._waitForCaptions();
   }
 

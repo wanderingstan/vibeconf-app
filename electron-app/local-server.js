@@ -259,10 +259,31 @@ class LocalServer {
     clearTimeout(waiter.silenceTimer);
     const response = this._buildResponse(waiter.since, waiter.bot, waiter.startTime);
 
-    // If there are actual transcript entries, the agent will now process them → thinking state
+    // If there are actual transcript entries, the agent will now process them → thinking state.
+    // Captions arrive as multiple progressively-growing entries for one utterance
+    // (e.g. "Hi" → "Hi Jimmy" → "Hi Jimmy. How's it going?"), so naively joining
+    // them inflates wordCount. Dedupe by keeping the longest text per consecutive
+    // run of the same speaker — same logic the MCP server applies for the agent.
     const entries = this._entriesSince(waiter.since, waiter.bot);
     if (entries.length > 0) {
-      const wordCount = entries.map(e => e.text).join(' ').split(/\s+/).length;
+      const deduped = [];
+      for (const entry of entries) {
+        const last = deduped[deduped.length - 1];
+        if (last && last.participantName === entry.participantName) {
+          if (entry.text.length >= last.text.length) {
+            deduped[deduped.length - 1] = entry;
+          }
+        } else {
+          deduped.push(entry);
+        }
+      }
+      const wordCount = deduped
+        .map(e => e.text.trim())
+        .filter(Boolean)
+        .join(' ')
+        .split(/\s+/)
+        .filter(Boolean)
+        .length;
       this._setBotState('thinking', { wordCount });
     }
 

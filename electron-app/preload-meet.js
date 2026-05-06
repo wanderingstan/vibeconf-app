@@ -361,10 +361,17 @@ async function autoJoin(botName) {
     // the "waiting to be admitted" UI. The host may take several minutes to
     // notice the request; we should not time out as long as Meet itself is
     // still asking us to wait. We only bail if waiting text disappears AND
-    // we never make it into the call (denied / kicked / page navigated).
+    // in-call UI never appears within a grace period (denied / kicked / etc).
+    //
+    // Why the grace period: at the moment of admission, the waiting text
+    // disappears a beat before the in-call toolbar (Leave call / captions
+    // buttons) renders. Without slack, the loop sees "no waiting UI, no
+    // in-call UI" and bails immediately even though admission succeeded.
     let admitted = false;
     let waitedSeconds = 0;
-    let logEvery = 30; // log progress periodically without spamming
+    let limboSeconds = 0; // consecutive seconds with neither waiting nor in-call UI
+    const LIMBO_GRACE_SECONDS = 15;
+    let logEvery = 30;
     while (!admitted) {
       await delay(1000);
       waitedSeconds++;
@@ -374,24 +381,29 @@ async function autoJoin(botName) {
         bodyText.includes('asking to be let in') ||
         bodyText.includes('Please wait');
       const hasJoinUI = !!findByText('Ask to join') || !!findByText('Join now');
+      const inCallUI =
+        findByAriaLabel('Leave call') ||
+        findByAriaLabel('Turn on captions') ||
+        findByAriaLabel('Turn off captions') ||
+        document.querySelector('[data-tooltip="Leave call"]');
 
-      // Admitted when: no waiting text, no pre-join UI, and page has meeting UI
-      if (!waitingText && !hasJoinUI) {
-        const inCallUI =
-          findByAriaLabel('Leave call') ||
-          findByAriaLabel('Turn on captions') ||
-          findByAriaLabel('Turn off captions') ||
-          document.querySelector('[data-tooltip="Leave call"]');
-        if (inCallUI) {
-          admitted = true;
-          sendStatus('Participating in Meet');
-          break;
+      if (inCallUI && !hasJoinUI) {
+        admitted = true;
+        sendStatus('Participating in Meet');
+        break;
+      }
+
+      if (!waitingText && !hasJoinUI && !inCallUI) {
+        limboSeconds++;
+        if (limboSeconds >= LIMBO_GRACE_SECONDS) {
+          // Genuine failure: waiting UI gone, never saw in-call UI.
+          sendStatus("Error: couldn't enter call (denied or removed?)");
+          console.warn('[electron-meet] Lost waiting UI without entering call after',
+            waitedSeconds, 's (', limboSeconds, 's in limbo)');
+          return;
         }
-        // No waiting UI, no in-call UI — likely denied, kicked, or page changed.
-        // Surface as an error so the user knows something went wrong.
-        sendStatus("Error: couldn't enter call (denied or removed?)");
-        console.warn('[electron-meet] Lost waiting UI without entering call after', waitedSeconds, 's');
-        return;
+      } else {
+        limboSeconds = 0; // reset whenever a known UI is visible
       }
 
       if (waitedSeconds % logEvery === 0) {

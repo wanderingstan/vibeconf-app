@@ -276,13 +276,12 @@ const localServer = new globalThis.LocalServer({
   },
 
   onParticipantsFirstSeen: () => {
-    // Bot is fully integrated into the call — DOMSpeakerTracker has read
-    // the people pane. Tell the avatar to flip hasEngaged so it leaves
-    // the 🫥 'still booting' state and shows its mode emoji.
-    console.log('[local-server] First participants seen — engaging avatar');
-    if (meetView && !meetView.webContents.isDestroyed()) {
-      meetView.webContents.send('extension-message', { action: 'set-engaged' });
-    }
+    // Used to be the avatar engagement trigger, but the captions-ready
+    // signal is more honest: people pane fills before captions are usable,
+    // so the avatar would flip to 🙂 several seconds before the bot could
+    // actually hear. Keep this hook for logging/observability only —
+    // engagement is fired from the captions-ready IPC handler.
+    console.log('[local-server] First participants seen (avatar engagement still pending captions-ready)');
   },
 
   // Preference plumbing for the agent-visible whitelist (preferences-schema.js).
@@ -1536,12 +1535,16 @@ function setupIPC() {
     console.log('[page-inject]', line);
   });
 
-  // Captions container observed in DOM — the bot can now actually hear
-  // what's said. Stronger 'fully in room' signal than first-participants:
-  // captions take the longest to wire up. Flush any deferred bot speech now.
+  // Captions confirmed on (toolbar shows "Turn off captions"). This is
+  // the canonical "the bot can actually hear what's said" signal. We use
+  // it to BOTH flush deferred bot speech AND engage the avatar — anything
+  // earlier means the avatar shows 🙂 before the bot is really listening.
   ipcMain.on('captions-ready', () => {
-    console.log('[electron] Captions ready — flushing pending bot speech');
+    console.log('[electron] Captions ready — flushing pending bot speech and engaging avatar');
     localServer._flushPendingBotSpeech();
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('extension-message', { action: 'set-engaged' });
+    }
   });
 
   ipcMain.on('tts-ended', () => {

@@ -132,9 +132,12 @@ class LocalServer {
   setParticipants(participants) {
     this.participants = participants || [];
 
-    // Update real-time speaking state from DOM speaker tracker
+    // Update real-time speaking state from DOM speaker tracker. Exclude the
+    // bot itself ('You' in Meet's people pane) — when the bot speaks via TTS,
+    // Meet flags 'You' as speaking, which would otherwise trigger the 😐
+    // hearing emoji and make the avatar look like it's reacting to itself.
     const wasSpeaking = this.anyoneSpeaking;
-    this.anyoneSpeaking = this.participants.some(p => p.speaking);
+    this.anyoneSpeaking = this.participants.some(p => p.speaking && p.name !== 'You');
 
     if (wasSpeaking && !this.anyoneSpeaking) {
       // Speech just stopped — record when and check waiters
@@ -524,6 +527,23 @@ class LocalServer {
     }
 
     const startTime = Date.now();
+
+    // Single-agent enforcement: if another agent is already long-polling, kick
+    // them out. Two agents on one room means double speak() calls per utterance
+    // and inflated wordCounts from overlapping `since` windows. The displaced
+    // agent's wait_for_speech returns with { displaced: true } so its skill
+    // can exit the conversation loop instead of fighting for the room.
+    if (this.waiters.length > 0) {
+      console.log('[local-server] New wait_for_speech displacing', this.waiters.length, 'existing waiter(s)');
+      for (const old of [...this.waiters]) {
+        if (old.resolved) continue;
+        old.resolved = true;
+        clearTimeout(old.timer);
+        clearTimeout(old.silenceTimer);
+        old.resolve({ success: true, displaced: true, asOf: new Date().toISOString(), transcript: { entries: [] } });
+      }
+      this.waiters = [];
+    }
 
     const responsePromise = new Promise((resolve) => {
       const waiter = {

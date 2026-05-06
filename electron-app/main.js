@@ -763,7 +763,7 @@ function ensureClaudeIntegration(localPort) {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '5';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '6';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
@@ -1453,10 +1453,17 @@ function setupIPC() {
     });
   });
 
-  // --- Bot joined call: speak introduction via TTS ---
+  // --- Bot joined call: play a soft join chime ---
+  // Previously this fired a canned "Hello I am X" speech. That pre-empted the
+  // user and was visually inconsistent (avatar still 🫥 during the welcome).
+  // The chime gives a clear "bot is in the room" signal and lets the human
+  // start the conversation. The first real speak() flips hasEngaged so the
+  // avatar transitions naturally.
   ipcMain.on('bot-joined-call', (_event, { meetCode, botName }) => {
-    console.log('[electron] Bot joined call, speaking introduction');
-    speakText(`Hello. I am ${botName}, an AI agent.`);
+    console.log('[electron] Bot joined call, playing join chime');
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('extension-message', { action: 'play-join-chime' });
+    }
   });
 
   // --- Meet status updates (logged, DOM updated by preload) ---

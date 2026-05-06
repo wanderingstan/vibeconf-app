@@ -131,6 +131,18 @@ server.tool(
 
     lastPollTime = data.asOf;
 
+    // Single-agent enforcement: server displaced us because another agent
+    // started a wait_for_speech against this room. Bail out cleanly so the
+    // skill ends its loop instead of fighting for the call.
+    if (data.displaced) {
+      return {
+        content: [{
+          type: "text",
+          text: "Session displaced: another agent started listening on this call. Exiting the conversation loop. Do not retry wait_for_speech.",
+        }],
+      };
+    }
+
     const entries = (data.transcript?.entries || []).filter(
       (e) => e.participantName !== BOT_NAME
     );

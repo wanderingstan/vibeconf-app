@@ -284,6 +284,35 @@
       return this.destination.stream.getAudioTracks()[0];
     }
 
+    // Soft two-tone "I'm in the room" chime — used when admission completes,
+    // replacing the canned "Hello I am X" welcome speech. Played through the
+    // virtual mic so other participants hear it, just like TTS speech.
+    async playJoinChime() {
+      try {
+        if (this.audioCtx.state === 'suspended') await this.audioCtx.resume();
+        const now = this.audioCtx.currentTime;
+        // Two ascending sine pings, soft attack and release
+        const tones = [
+          { freq: 660, start: 0,    dur: 0.18 },
+          { freq: 880, start: 0.16, dur: 0.22 },
+        ];
+        for (const t of tones) {
+          const osc = this.audioCtx.createOscillator();
+          const gain = this.audioCtx.createGain();
+          osc.type = 'sine';
+          osc.frequency.value = t.freq;
+          gain.gain.setValueAtTime(0, now + t.start);
+          gain.gain.linearRampToValueAtTime(0.18, now + t.start + 0.02);
+          gain.gain.linearRampToValueAtTime(0, now + t.start + t.dur);
+          osc.connect(gain).connect(this.destination);
+          osc.start(now + t.start);
+          osc.stop(now + t.start + t.dur + 0.02);
+        }
+      } catch (err) {
+        console.error('[bots-in-calls] Join chime failed:', err);
+      }
+    }
+
     destroy() {
       this.audioCtx.close();
     }
@@ -637,6 +666,13 @@
         if (typeof payload?.anyoneSpeaking === 'boolean') {
           for (const cam of cameras.values()) cam.anyoneSpeaking = payload.anyoneSpeaking;
         }
+        break;
+
+      case 'play-join-chime':
+        // Replaces the old canned "Hello I am X" welcome — short two-tone
+        // ping when admission completes so the user knows the bot is in the
+        // room without filling silence with speech.
+        if (mic) mic.playJoinChime();
         break;
 
       case 'set-call-status':

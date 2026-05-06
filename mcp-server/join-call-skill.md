@@ -99,6 +99,7 @@ Guidelines:
 - Use the whiteboard for anything visual (code, diagrams, structured info)
 - If someone says goodbye or asks you to leave, say goodbye via `speak`, then call `leave_call` to hang up. Then stop the loop.
 - If `wait_for_speech` times out with no speech, call it again — people may just be quiet. The bot may still be joining the Meet call or waiting to be admitted. Do NOT relaunch the app or check `get_room_info` — just keep calling `wait_for_speech`.
+- **If `wait_for_speech` returns "Session displaced: another agent started listening on this call.", STOP IMMEDIATELY.** Do not call `wait_for_speech` again, do not call `speak`, do not call `leave_call` — another Claude session has taken over the call. Tell the user the session was displaced and exit the loop. This prevents two agents fighting for the same call (which causes double responses).
 - If someone asks you to change your voice, use `list_voices` to see options, then `set_voice` to change it. You can also use the `voice` parameter in `speak` for a one-off voice change. Have fun with it!
 - NEVER kill or relaunch the Vibeconferencing app during the conversation loop. If speech isn't coming through, keep polling — the app handles joining automatically.
 

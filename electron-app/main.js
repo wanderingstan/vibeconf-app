@@ -72,10 +72,10 @@ let ackTtsPending = false;
 
 // Local HTTP server for agent communication (replaces remote sync for MCP)
 const localServer = new globalThis.LocalServer({
-  onBotSpeech: (text, voice) => {
-    console.log('[local-server] Bot speech:', text.slice(0, 80));
+  onBotSpeech: (text, voice, emoji) => {
+    console.log('[local-server] Bot speech:', text.slice(0, 80), emoji ? `(emoji: ${emoji})` : '');
     ackTtsPending = false;
-    speakText(text, voice);
+    speakText(text, voice, emoji);
   },
   onWhiteboardUpdate: (content, sender) => {
     console.log('[local-server] Whiteboard update from', sender, ':', content.slice(0, 80));
@@ -284,6 +284,16 @@ const localServer = new globalThis.LocalServer({
     console.log('[local-server] First participants seen (avatar engagement still pending captions-ready)');
   },
 
+  onAvatarEmojiOverride: (overrides) => {
+    console.log('[local-server] Avatar emoji override:', overrides);
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('extension-message', {
+        action: 'set-avatar-emoji-override',
+        payload: overrides,
+      });
+    }
+  },
+
   // Preference plumbing for the agent-visible whitelist (preferences-schema.js).
   // get/set go to the same Store the panel uses, so changes from the agent and
   // changes from Settings → UI converge on one config.json.
@@ -465,7 +475,7 @@ const cliArgs = parseCLIArgs();
 // Helper: speak text via TTS → send audio to Meet view
 // ---------------------------------------------------------------------------
 
-function speakText(text, voice) {
+function speakText(text, voice, emoji) {
   // Temporarily override voice if specified (works for both macOS and ElevenLabs)
   const originalMacVoice = tts.macosVoice;
   const originalELVoice = tts.voiceId;
@@ -489,9 +499,9 @@ function speakText(text, voice) {
         setTimeout(() => {
           meetView.webContents.send('extension-message', {
             action: 'play-tts',
-            payload: { audioData: base64Audio },
+            payload: { audioData: base64Audio, emoji },
           });
-          console.log('[electron] Sent play-tts to Meet view');
+          console.log('[electron] Sent play-tts to Meet view', emoji ? `(emoji: ${emoji})` : '');
         }, 300);
       } else {
         console.error('[electron] Meet view not available for TTS playback');
@@ -772,7 +782,7 @@ function ensureClaudeIntegration(localPort) {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '8';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '9';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}

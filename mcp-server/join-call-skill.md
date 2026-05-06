@@ -3,7 +3,7 @@ name: join-call
 description: Join the user's current Google Meet call as an AI bot participant
 argument-hint: "[room_code] [BotName]  — or just [BotName] to auto-detect"
 disable-model-invocation: true
-allowed-tools: Bash mcp__vibeconferencing__get_room_info mcp__vibeconferencing__join_call mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__read_transcripts mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__set_mode mcp__vibeconferencing__leave_call mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__stop_sharing mcp__vibeconferencing__list_preferences mcp__vibeconferencing__set_preference
+allowed-tools: Bash mcp__vibeconferencing__get_room_info mcp__vibeconferencing__join_call mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__read_transcripts mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__set_mode mcp__vibeconferencing__leave_call mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__stop_sharing mcp__vibeconferencing__list_preferences mcp__vibeconferencing__set_preference mcp__vibeconferencing__set_avatar_emoji
 ---
 
 Join the user's current Google Meet call as an AI bot participant.
@@ -90,7 +90,7 @@ Don't wait for admission — the long-poll will block until speech arrives. Use 
 
 1. **First-turn greeting (active mode only):** Before the first `wait_for_speech`, call `speak` with a brief, friendly self-introduction (1 sentence — e.g. "Hi everyone, [bot name] here, ready when you are."). This replaces the old canned welcome and gives users an audible cue that the agent is on the line. Skip this in passive or silent mode — those modes don't speak unbidden.
 2. Call `wait_for_speech` to listen (blocks until someone speaks and pauses)
-3. Respond naturally using `speak` — keep it to 1-2 sentences since it's spoken aloud
+3. Respond naturally using `speak` — keep it to 1-2 sentences since it's spoken aloud. You can also pass an `emoji` parameter to match the tone of your response: 😂 for funny, 😟 for sympathetic/concerned, 😎 confident, 🤓 technical, 🤔 uncertain. Skip for normal/neutral responses (default 😄). Use `set_avatar_emoji` to change your *resting* idle/listening emojis when the conversation tone shifts (e.g. 😔 idle for a somber topic).
 4. If the conversation involves visual content (code, diagrams, lists), also call `update_whiteboard` with markdown or Mermaid
 5. Go back to step 2
 

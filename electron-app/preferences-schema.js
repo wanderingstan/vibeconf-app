@@ -28,6 +28,8 @@ const PREFERENCES = {
     type: 'string[]',
     default: [
       'Mm-hmm.',
+      'Mmmm',
+      'Ahhh okay',
       'Okay.',
       'Got it.',
       'Mm.',
@@ -51,6 +53,7 @@ const PREFERENCES = {
       'Let me think about that.',
       'Hmm, let me consider that.',
       'Give me a moment.',
+      'One moment',
       'One second, thinking.',
       'Hmm, good question.',
       'Let me chew on that.',

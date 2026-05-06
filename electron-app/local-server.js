@@ -9,7 +9,7 @@ const prefsSchema = require('./preferences-schema.js');
 const DEFAULT_PORT = 7865;
 
 class LocalServer {
-  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onParticipantsFirstSeen, getPref, setPref, applyPref } = {}) {
+  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onParticipantsFirstSeen, onAvatarEmojiOverride, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.onBotSpeech = onBotSpeech || (() => {});
     this.onWhiteboardUpdate = onWhiteboardUpdate || (() => {});
@@ -23,6 +23,7 @@ class LocalServer {
     this.onCallStatusChange = onCallStatusChange || (() => {}); // 'idle' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
     this.onAnyoneSpeakingChange = onAnyoneSpeakingChange || (() => {}); // boolean
     this.onParticipantsFirstSeen = onParticipantsFirstSeen || (() => {}); // fires once per call when DOMSpeakerTracker first reports participants
+    this.onAvatarEmojiOverride = onAvatarEmojiOverride || (() => {}); // ({idle?, listening?}) — null/undefined for that key means reset
 
     // Pending bot speech — queued when speak() is called before the bot is
     // actually admitted to the call. Flushed in setCallStatus when status
@@ -133,10 +134,10 @@ class LocalServer {
       'queued bot speech entries (now playing)');
     const queue = this.pendingBotSpeech;
     this.pendingBotSpeech = [];
-    for (const { text, voice } of queue) {
+    for (const { text, voice, emoji } of queue) {
       console.log('[local-server] Playing queued speech:', text.slice(0, 60));
-      this._setBotState('speaking');
-      this.onBotSpeech(text, voice);
+      this._setBotState('speaking', { emoji });
+      this.onBotSpeech(text, voice, emoji);
     }
   }
 
@@ -685,10 +686,10 @@ class LocalServer {
           if (data.role === 'bot') {
             if (this.callStatus !== 'in-call') {
               console.log('[local-server] Queueing bot speech until in-call:', t.text.slice(0, 40));
-              this.pendingBotSpeech.push({ text: t.text, voice: t.voice });
+              this.pendingBotSpeech.push({ text: t.text, voice: t.voice, emoji: t.emoji });
             } else {
-              this._setBotState('speaking');
-              this.onBotSpeech(t.text, t.voice);
+              this._setBotState('speaking', { emoji: t.emoji });
+              this.onBotSpeech(t.text, t.voice, t.emoji);
             }
           }
         }
@@ -749,6 +750,17 @@ class LocalServer {
       } catch (err) {
         results.setMode = { ok: false, error: err.message };
       }
+    }
+
+    // Handle set-avatar-emoji command — agent overrides resting avatar
+    // emojis to match conversation tone. Either field is optional;
+    // empty-string clears the override (back to default).
+    if (data.meta?.action === 'set-avatar-emoji') {
+      const overrides = {};
+      if (data.meta.idle !== undefined) overrides.idle = data.meta.idle || null;
+      if (data.meta.listening !== undefined) overrides.listening = data.meta.listening || null;
+      this.onAvatarEmojiOverride(overrides);
+      results.setAvatarEmoji = { ok: true };
     }
 
     // Update presence

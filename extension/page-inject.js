@@ -71,6 +71,13 @@
       // True while at least one participant is currently speaking (from
       // DOMSpeakerTracker). Suppressed when mode='silent'.
       this.anyoneSpeaking = false;
+      // Per-response speaking emoji (set by speak's emoji param). Cleared
+      // when the TTS queue drains. Falls through to ACTIVITY_EMOJIS.speaking.
+      this.speakingEmojiOverride = null;
+      // Persistent overrides from agent's set_avatar_emoji calls. null = use
+      // default for that state.
+      this.idleEmojiOverride = null;
+      this.listeningEmojiOverride = null;
       this.stopped = false;
 
       // Draw the first frame synchronously so the track has content immediately
@@ -190,17 +197,26 @@
       //   6. botState=idle between turns → 😔
       //   7. botState=listening → mode emoji (🙂 / 🤐 / 😶)
       const notOnLine = VirtualCamera.CALL_STATUS_EMOJIS[this.callStatus] || (!this.hasEngaged ? '\u{1FAE5}' : null);
-      const audioPlaying = this.speaking ? VirtualCamera.ACTIVITY_EMOJIS.speaking : null;
+      // Audio playing: per-response override > default 😄. Cleared on tts-ended.
+      const audioPlaying = this.speaking
+        ? (this.speakingEmojiOverride || VirtualCamera.ACTIVITY_EMOJIS.speaking)
+        : null;
       const hearing = (this.anyoneSpeaking && this.mode !== 'silent' && !this.speaking && this.state !== 'thinking' && this.state !== 'speaking')
         ? VirtualCamera.HEARING_EMOJI : null;
+      // Resting emojis: agent overrides take priority over defaults when in
+      // the corresponding state. Listening override only applies in 'active'
+      // mode (passive/silent emojis encode a specific user-controlled state).
+      const idleEmoji = this.idleEmojiOverride || VirtualCamera.IDLE_EMOJI;
+      const listeningEmoji = (this.mode === 'active' && this.listeningEmojiOverride)
+        ? this.listeningEmojiOverride
+        : VirtualCamera.MODE_EMOJIS[this.mode] || VirtualCamera.MODE_EMOJIS.active;
       const emoji =
         notOnLine
         || audioPlaying
         || VirtualCamera.ACTIVITY_EMOJIS[this.state]
         || hearing
-        || (this.state === 'idle' ? VirtualCamera.IDLE_EMOJI : null)
-        || VirtualCamera.MODE_EMOJIS[this.mode]
-        || VirtualCamera.MODE_EMOJIS.active;
+        || (this.state === 'idle' ? idleEmoji : null)
+        || listeningEmoji;
       // Log every emoji change so the terminal output captures what the
       // user actually sees, not just internal state. Forwarded to main via
       // window.postMessage → preload-meet → ipcRenderer so it lands in the
@@ -208,11 +224,11 @@
       if (emoji !== this._lastLoggedEmoji) {
         this._lastLoggedEmoji = emoji;
         const reason = notOnLine ? `callStatus=${this.callStatus} hasEngaged=${this.hasEngaged}` :
-          audioPlaying ? `audio playing (state=${this.state})` :
+          audioPlaying ? `audio playing (state=${this.state}${this.speakingEmojiOverride ? ' override' : ''})` :
           VirtualCamera.ACTIVITY_EMOJIS[this.state] ? `state=${this.state}` :
           hearing ? `hearing (anyoneSpeaking=true)` :
-          this.state === 'idle' ? `state=idle (between turns)` :
-          `mode=${this.mode} (listening)`;
+          this.state === 'idle' ? `state=idle${this.idleEmojiOverride ? ' (idle override)' : ' (between turns)'}` :
+          `mode=${this.mode}${this.listeningEmojiOverride && this.mode === 'active' ? ' (listening override)' : ' (listening)'}`;
         window.postMessage({
           __botsInCalls: true,
           action: 'log',
@@ -355,8 +371,11 @@
   async function playNextTTS() {
     if (ttsPlaying || ttsQueue.length === 0) return;
     ttsPlaying = true;
-    const { audioData } = ttsQueue.shift();
-    for (const cam of cameras.values()) cam.speaking = true;
+    const { audioData, emoji } = ttsQueue.shift();
+    for (const cam of cameras.values()) {
+      cam.speaking = true;
+      cam.speakingEmojiOverride = emoji || null;
+    }
     transcription.botSpeaking = true;
     try {
       // Ensure AudioContext is running before playback
@@ -370,7 +389,10 @@
     }
     ttsPlaying = false;
     if (ttsQueue.length === 0) {
-      for (const cam of cameras.values()) cam.speaking = false;
+      for (const cam of cameras.values()) {
+        cam.speaking = false;
+        cam.speakingEmojiOverride = null;
+      }
       setTimeout(() => { transcription.botSpeaking = false; }, 1500);
       window.postMessage({ __botsInCalls: true, action: 'tts-ended' }, '*');
     } else {
@@ -756,8 +778,23 @@
             'AudioContext state:', mic.audioCtx.state,
             'track enabled:', track?.enabled, 'readyState:', track?.readyState, 'muted:', track?.muted,
             'destination tracks:', mic.destination.stream.getAudioTracks().length);
-          ttsQueue.push({ audioData: payload.audioData });
+          ttsQueue.push({ audioData: payload.audioData, emoji: payload.emoji });
           playNextTTS();
+        }
+        break;
+
+      case 'set-avatar-emoji-override':
+        // Persistent agent overrides for resting emojis. payload.idle and
+        // payload.listening are independently optional. null means reset
+        // to default for that key.
+        if (payload) {
+          for (const cam of cameras.values()) {
+            if ('idle' in payload) cam.idleEmojiOverride = payload.idle;
+            if ('listening' in payload) cam.listeningEmojiOverride = payload.listening;
+          }
+          console.log('[bots-in-calls] Avatar emoji overrides:',
+            'idle=' + (payload.idle ?? 'unchanged'),
+            'listening=' + (payload.listening ?? 'unchanged'));
         }
         break;
 

@@ -198,13 +198,14 @@ server.tool(
 // --- speak ---
 server.tool(
   "speak",
-  "Say something in the Google Meet call. Your text will be spoken aloud via text-to-speech. Keep messages concise since they are spoken aloud.",
+  "Say something in the Google Meet call. Your text will be spoken aloud via text-to-speech. Keep messages concise since they are spoken aloud. Optionally pass an emoji to set the avatar face for this response — match the tone (e.g. 😂 for a joke, 😟 for a concern, 😎 for confidence, 🤓 for a technical answer). Default is 😄.",
   {
     text: z.string().describe("What to say in the call. Will be spoken via TTS."),
     voice: z.string().optional().describe("Override TTS voice for this message (e.g. 'Daniel', 'Karen'). Uses default voice if not specified."),
+    emoji: z.string().optional().describe("Single emoji to display on the avatar while speaking this response. Match the tone of what you're saying — e.g. 😂 for funny, 😟 for sympathetic, 😎 confident, 🤓 technical. Falls back to 😄 if not specified."),
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
-  async ({ text, voice, room_id }) => {
+  async ({ text, voice, emoji, room_id }) => {
     const roomId = room_id || ROOM_ID;
     if (!roomId) {
       return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
@@ -217,7 +218,7 @@ server.tool(
         sender: BOT_NAME,
         role: "bot",
         ownerName: BOT_NAME,
-        transcript: [{ text, ...(voice ? { voice } : {}) }],
+        transcript: [{ text, ...(voice ? { voice } : {}), ...(emoji ? { emoji } : {}) }],
       }),
     });
 
@@ -565,6 +566,48 @@ server.tool(
       return { content: [{ type: "text", text: `Mode set to '${result.mode}'.` }] };
     }
     return { content: [{ type: "text", text: `Error: ${result?.error || data.error || "Failed to set mode"}` }] };
+  }
+);
+
+// --- set_avatar_emoji ---
+server.tool(
+  "set_avatar_emoji",
+  "Override the avatar's resting emojis to match the conversation's tone. 'idle' shows between turns; 'listening' shows while actively listening (in active mode). Pass either or both. Pass an empty string for either to revert to the default for that state. The agent should adjust these as the conversation tone shifts — e.g. 😔 idle for a somber topic, 🤔 listening for technical discussion, 😄 listening for friendly chat. Persists for the rest of the call.",
+  {
+    idle: z.string().optional().describe("Emoji to show between turns (replaces default 😔). Pass '' to reset."),
+    listening: z.string().optional().describe("Emoji to show while listening in active mode (replaces default 🙂). Pass '' to reset."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ idle, listening, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) {
+      return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    }
+    const payload = {};
+    if (idle !== undefined) payload.idle = idle;
+    if (listening !== undefined) payload.listening = listening;
+    if (Object.keys(payload).length === 0) {
+      return { content: [{ type: "text", text: "No emoji values provided. Pass 'idle' and/or 'listening'." }] };
+    }
+    const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sender: BOT_NAME,
+        role: "bot",
+        ownerName: BOT_NAME,
+        meta: { action: "set-avatar-emoji", ...payload },
+      }),
+    });
+    const data = await resp.json();
+    const result = data.results?.setAvatarEmoji;
+    if (result?.ok) {
+      const parts = [];
+      if (idle !== undefined) parts.push(`idle=${idle ? `'${idle}'` : 'default'}`);
+      if (listening !== undefined) parts.push(`listening=${listening ? `'${listening}'` : 'default'}`);
+      return { content: [{ type: "text", text: `Avatar emoji set: ${parts.join(', ')}.` }] };
+    }
+    return { content: [{ type: "text", text: `Error: ${result?.error || data.error || "Failed to set avatar emoji"}` }] };
   }
 );
 

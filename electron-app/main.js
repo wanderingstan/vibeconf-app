@@ -32,6 +32,19 @@ loadExtensionScript('stt.js');
 loadExtensionScript('sync-client.js');
 require('./local-server.js');
 
+// Catch-all error handlers — surface unexpected failures via broadcastError
+// (which routes to a push notification if the app isn't focused). Defined
+// near the top so they're active before any setup code runs.
+process.on('uncaughtException', (err) => {
+  console.error('[electron] uncaughtException:', err);
+  try { broadcastError('Unexpected error: ' + (err?.message || String(err)).slice(0, 200)); } catch {}
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[electron] unhandledRejection:', reason);
+  const msg = reason?.message || (typeof reason === 'string' ? reason : JSON.stringify(reason));
+  try { broadcastError('Unhandled promise rejection: ' + String(msg).slice(0, 200)); } catch {}
+});
+
 const tts = new globalThis.TTSProvider();
 const stt = new globalThis.STTProvider();
 const sync = new globalThis.SyncClient({
@@ -217,6 +230,11 @@ const localServer = new globalThis.LocalServer({
       meetView.webContents.send('extension-message', {
         action: 'set-mode',
         payload: { mode },
+      });
+      // Keep Meet's mute UI in sync with mode so the user always sees one
+      // canonical indicator. Active = unmuted, passive/silent = muted.
+      meetView.webContents.send('extension-message', {
+        action: mode === 'active' ? 'unmute-mic' : 'mute-mic',
       });
     }
   },
@@ -427,9 +445,58 @@ function speakText(text, voice) {
     });
 }
 
+// Track recent error notifications so a flapping condition doesn't spam the
+// notification center. Same message within this window is suppressed.
+const ERROR_NOTIFY_DEDUPE_MS = 30_000;
+const recentErrorNotifications = new Map(); // message -> timestamp
+
 function broadcastError(message) {
   if (panelView && !panelView.webContents.isDestroyed()) {
     panelView.webContents.send('extension-message', { action: 'error', message });
+  }
+
+  // If the app isn't in the foreground, surface the error as a system
+  // notification so the user finds out without checking the app. We treat
+  // "not in foreground" as: window doesn't exist, isn't visible, is minimized,
+  // or doesn't have focus. Visible-but-unfocused (e.g. user switched apps)
+  // still counts — that's the whole point of this feature.
+  const inForeground =
+    mainWindow &&
+    !mainWindow.isDestroyed() &&
+    mainWindow.isVisible() &&
+    !mainWindow.isMinimized() &&
+    mainWindow.isFocused();
+
+  if (inForeground) return;
+
+  const now = Date.now();
+  const lastShown = recentErrorNotifications.get(message);
+  if (lastShown && now - lastShown < ERROR_NOTIFY_DEDUPE_MS) return;
+  recentErrorNotifications.set(message, now);
+  // Best-effort cleanup so the map doesn't grow unbounded.
+  if (recentErrorNotifications.size > 50) {
+    for (const [k, t] of recentErrorNotifications) {
+      if (now - t > ERROR_NOTIFY_DEDUPE_MS) recentErrorNotifications.delete(k);
+    }
+  }
+
+  try {
+    const { Notification } = require('electron');
+    if (!Notification.isSupported()) return;
+    const notification = new Notification({
+      title: 'Vibeconferencing Error',
+      body: message.slice(0, 240),
+      silent: false,
+    });
+    notification.on('click', () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    });
+    notification.show();
+  } catch (err) {
+    console.error('[electron] Failed to show error notification:', err.message);
   }
 }
 
@@ -1326,7 +1393,10 @@ function setupIPC() {
     console.log('[electron] Meet status:', status);
     // Map Meet status to call status for the local server
     if (typeof status === 'string') {
-      if (status.includes('Waiting') || status.includes('Ask to join')) {
+      if (status.startsWith('Error')) {
+        // Surface join-flow errors as a push notification when backgrounded.
+        broadcastError(status);
+      } else if (status.includes('Waiting') || status.includes('Ask to join')) {
         localServer.setCallStatus('waiting-to-be-admitted');
       } else if (status.includes('Participating') || status.includes('In call')) {
         localServer.setCallStatus('in-call');
@@ -1360,8 +1430,29 @@ function setupIPC() {
       ackTtsPending = false;
       return;
     }
+    // After real bot speech: restore mic to mode-appropriate state. Passive/silent
+    // want the mic muted (matches user's mute toggle); active wants it open.
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      const shouldMute = localServer.mode === 'passive' || localServer.mode === 'silent';
+      meetView.webContents.send('extension-message', {
+        action: shouldMute ? 'mute-mic' : 'unmute-mic',
+      });
+    }
     // TTS playback finished — return to idle (or listening if a waiter is active)
     localServer._setBotState(localServer.waiters.length > 0 ? 'listening' : 'idle');
+  });
+
+  // User toggled the mic in Meet's UI — map to listening mode.
+  // Muted = passive (only respond when name mentioned).
+  // Unmuted = active (respond on every pause).
+  // The MCP set_mode tool can still set 'silent' separately.
+  ipcMain.on('mic-mute-changed', (_event, { muted }) => {
+    const newMode = muted ? 'passive' : 'active';
+    if (localServer.mode === newMode) return;
+    // Don't downgrade silent → passive on a mute click; user is already silenced.
+    if (muted && localServer.mode === 'silent') return;
+    console.log('[electron] Mic toggle → mode:', newMode);
+    localServer.setMode(newMode);
   });
 
   ipcMain.on('post-transcripts', (_event, transcripts) => {

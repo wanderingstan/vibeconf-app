@@ -159,14 +159,40 @@ function isMicMuted() {
   return btn?.getAttribute('data-is-muted') === 'true';
 }
 
+// Set when we toggle the mic ourselves (TTS unmute / re-mute) so the
+// MutationObserver below doesn't interpret our own click as a user gesture.
+let suppressMicMuteWatcher = false;
+
 function setMicMuted(mute) {
   const btn = getMicButton();
   if (!btn) return;
   const currentlyMuted = btn.getAttribute('data-is-muted') === 'true';
   if (mute !== currentlyMuted) {
+    suppressMicMuteWatcher = true;
     btn.click();
+    // Clear after a tick — the data-is-muted update is synchronous on click.
+    setTimeout(() => { suppressMicMuteWatcher = false; }, 50);
     console.debug('[electron-meet] Mic', mute ? 'muted' : 'unmuted');
   }
+}
+
+// Watch for user toggling the mic via Meet's UI. When that happens we map
+// it to a listening-mode change: muted = passive, unmuted = active. Calls
+// from our own setMicMuted() set suppressMicMuteWatcher and are ignored.
+function startMicMuteWatcher() {
+  const btn = getMicButton();
+  if (!btn) {
+    setTimeout(startMicMuteWatcher, 1000);
+    return;
+  }
+  const observer = new MutationObserver(() => {
+    if (suppressMicMuteWatcher) return;
+    const muted = btn.getAttribute('data-is-muted') === 'true';
+    console.log('[electron-meet] User toggled mic →', muted ? 'muted (passive)' : 'unmuted (active)');
+    ipcRenderer.send('mic-mute-changed', { muted });
+  });
+  observer.observe(btn, { attributes: true, attributeFilter: ['data-is-muted'] });
+  console.log('[electron-meet] Mic mute watcher started');
 }
 
 // ---------------------------------------------------------------------------
@@ -331,18 +357,26 @@ async function autoJoin(botName) {
       return;
     }
 
-    // Wait for actual admission — waiting screen text must disappear
+    // Wait for actual admission — keep waiting indefinitely while Meet shows
+    // the "waiting to be admitted" UI. The host may take several minutes to
+    // notice the request; we should not time out as long as Meet itself is
+    // still asking us to wait. We only bail if waiting text disappears AND
+    // we never make it into the call (denied / kicked / page navigated).
     let admitted = false;
-    for (let i = 0; i < 120 && !admitted; i++) {
+    let waitedSeconds = 0;
+    let logEvery = 30; // log progress periodically without spamming
+    while (!admitted) {
       await delay(1000);
-      const waitingText = document.body.innerText.includes('wait until') ||
-        document.body.innerText.includes('asking to be let in') ||
-        document.body.innerText.includes('Please wait');
+      waitedSeconds++;
+
+      const bodyText = document.body.innerText;
+      const waitingText = bodyText.includes('wait until') ||
+        bodyText.includes('asking to be let in') ||
+        bodyText.includes('Please wait');
       const hasJoinUI = !!findByText('Ask to join') || !!findByText('Join now');
 
       // Admitted when: no waiting text, no pre-join UI, and page has meeting UI
       if (!waitingText && !hasJoinUI) {
-        // Double-check: look for in-call UI elements (caption button, people button, etc.)
         const inCallUI =
           findByAriaLabel('Leave call') ||
           findByAriaLabel('Turn on captions') ||
@@ -351,13 +385,19 @@ async function autoJoin(botName) {
         if (inCallUI) {
           admitted = true;
           sendStatus('Participating in Meet');
+          break;
         }
+        // No waiting UI, no in-call UI — likely denied, kicked, or page changed.
+        // Surface as an error so the user knows something went wrong.
+        sendStatus("Error: couldn't enter call (denied or removed?)");
+        console.warn('[electron-meet] Lost waiting UI without entering call after', waitedSeconds, 's');
+        return;
       }
-    }
 
-    if (!admitted) {
-      sendStatus('Error: not admitted after 2 minutes');
-      return;
+      if (waitedSeconds % logEvery === 0) {
+        console.log('[electron-meet] Still waiting to be admitted (', waitedSeconds, 's )');
+        sendStatus(`Waiting to be admitted (${Math.floor(waitedSeconds / 60)}m ${waitedSeconds % 60}s)...`);
+      }
     }
   } catch (err) {
     sendStatus('Error: ' + err.message);
@@ -655,7 +695,10 @@ window.addEventListener('message', (event) => {
   }
 
   if (event.data.action === 'tts-ended') {
-    setTimeout(() => setMicMuted(true), 500);
+    // After speaking, restore mic to its mode-appropriate state. Active mode
+    // wants the mic open so the bot can be heard; passive/silent want it muted
+    // so the user's mute click maps cleanly to mode. The current mode lives in
+    // the main process, so we just ask main to decide.
     ipcRenderer.send('tts-ended');
   }
 
@@ -798,7 +841,9 @@ window.addEventListener('DOMContentLoaded', () => {
     domSpeakerTracker.start();
     await delay(3000);
     captionScraper.start();
-    setMicMuted(true);
+    // Don't auto-mute on admission — the mic state IS the mode toggle now.
+    // Default unmuted = active mode, which is the historical default.
+    startMicMuteWatcher();
 
     // Start mic health checks
     setInterval(checkMicPermission, 5000);

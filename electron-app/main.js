@@ -264,6 +264,17 @@ const localServer = new globalThis.LocalServer({
     }
   },
 
+  onAnyoneSpeakingChange: (anyoneSpeaking) => {
+    // Forward to page-inject so the avatar can flash 😐 while someone speaks
+    // (signals "I noticed you"). Page-inject suppresses this in silent mode.
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('extension-message', {
+        action: 'set-anyone-speaking',
+        payload: { anyoneSpeaking },
+      });
+    }
+  },
+
   // Preference plumbing for the agent-visible whitelist (preferences-schema.js).
   // get/set go to the same Store the panel uses, so changes from the agent and
   // changes from Settings → UI converge on one config.json.

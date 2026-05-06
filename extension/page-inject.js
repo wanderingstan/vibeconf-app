@@ -47,7 +47,12 @@
 
     // Shown when in-call but no agent is actively listening (no waiter).
     // The 'listening' state uses MODE_EMOJIS instead.
-    static IDLE_EMOJI = '\u{1F642}\u{200D}\u{2195}\u{FE0F}'; // 🙂‍↕️ vertical head shake
+    static IDLE_EMOJI = '\u{1F614}'; // 😔 pensive face
+
+    // Shown briefly while someone in the call is speaking — visual ack that
+    // the bot heard them. Suppressed in silent mode (the bot is meant to
+    // be a fly on the wall there).
+    static HEARING_EMOJI = '\u{1F610}'; // 😐 neutral face
 
     constructor(width, height) {
       this.canvas = document.createElement('canvas');
@@ -63,6 +68,9 @@
       // since "in-call but agent not yet engaged" still means not on the line.
       // Resets whenever a new call begins.
       this.hasEngaged = false;
+      // True while at least one participant is currently speaking (from
+      // DOMSpeakerTracker). Suppressed when mode='silent'.
+      this.anyoneSpeaking = false;
       this.stopped = false;
 
       // Draw the first frame synchronously so the track has content immediately
@@ -174,12 +182,17 @@
       //   1. Not in call (any callStatus other than 'in-call') → 🫥
       //   2. In-call but agent has never engaged yet → 🫥 (still loading)
       //   3. Activity (thinking / speaking) — agent is doing something
-      //   4. botState=idle between turns → 🙂‍↕️
-      //   5. botState=listening → mode emoji (🙂 / 🤐 / 😶)
+      //   4. Someone is currently speaking → 😐 (acks "I heard you"). Skipped
+      //      in silent mode where the bot is meant to be a fly on the wall.
+      //   5. botState=idle between turns → 😔
+      //   6. botState=listening → mode emoji (🙂 / 🤐 / 😶)
       const notOnLine = VirtualCamera.CALL_STATUS_EMOJIS[this.callStatus] || (!this.hasEngaged ? '\u{1FAE5}' : null);
+      const hearing = (this.anyoneSpeaking && this.mode !== 'silent' && this.state !== 'thinking' && this.state !== 'speaking')
+        ? VirtualCamera.HEARING_EMOJI : null;
       const emoji =
         notOnLine
         || VirtualCamera.ACTIVITY_EMOJIS[this.state]
+        || hearing
         || (this.state === 'idle' ? VirtualCamera.IDLE_EMOJI : null)
         || VirtualCamera.MODE_EMOJIS[this.mode]
         || VirtualCamera.MODE_EMOJIS.active;
@@ -617,6 +630,12 @@
         if (payload?.mode) {
           for (const cam of cameras.values()) cam.mode = payload.mode;
           console.debug('[bots-in-calls] Bot mode:', payload.mode);
+        }
+        break;
+
+      case 'set-anyone-speaking':
+        if (typeof payload?.anyoneSpeaking === 'boolean') {
+          for (const cam of cameras.values()) cam.anyoneSpeaking = payload.anyoneSpeaking;
         }
         break;
 

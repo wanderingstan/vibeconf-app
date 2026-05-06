@@ -9,7 +9,7 @@ const prefsSchema = require('./preferences-schema.js');
 const DEFAULT_PORT = 7865;
 
 class LocalServer {
-  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, getPref, setPref, applyPref } = {}) {
+  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.onBotSpeech = onBotSpeech || (() => {});
     this.onWhiteboardUpdate = onWhiteboardUpdate || (() => {});
@@ -21,6 +21,7 @@ class LocalServer {
     this.onBotStateChange = onBotStateChange || (() => {}); // 'idle' | 'listening' | 'thinking' | 'speaking'
     this.onModeChange = onModeChange || (() => {});        // 'active' | 'passive' | 'silent'
     this.onCallStatusChange = onCallStatusChange || (() => {}); // 'idle' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
+    this.onAnyoneSpeakingChange = onAnyoneSpeakingChange || (() => {}); // boolean
 
     // Preference plumbing (whitelist defined in preferences-schema.js).
     // getPref reads from the persistent store; setPref writes; applyPref runs
@@ -139,6 +140,7 @@ class LocalServer {
       // Speech just stopped — record when and check waiters
       this.lastSpeechStoppedAt = Date.now();
       this._checkWaiters();
+      this.onAnyoneSpeakingChange(false);
     } else if (!wasSpeaking && this.anyoneSpeaking) {
       // Speech just started — cancel any pending silence timers
       for (const waiter of this.waiters) {
@@ -147,6 +149,7 @@ class LocalServer {
           waiter.silenceTimer = null;
         }
       }
+      this.onAnyoneSpeakingChange(true);
     }
   }
 

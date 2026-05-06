@@ -390,6 +390,14 @@ async function autoJoin(botName) {
       if (inCallUI && !hasJoinUI) {
         admitted = true;
         sendStatus('Participating in Meet');
+        // Click "Turn on captions" the moment we see the toolbar, so Meet
+        // can start rendering the captions UI in parallel with our other
+        // tracker setup. Saves a couple seconds on the time-to-listen.
+        const ccBtn = findByAriaLabel('Turn on captions') || findByAriaLabel('Activar subtítulos');
+        if (ccBtn) {
+          ccBtn.click();
+          console.log('[electron-meet] Captions click on admission');
+        }
         break;
       }
 
@@ -869,16 +877,17 @@ window.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    // Start trackers in parallel. The captions container takes the longest
-    // to render after the click, so kick it off first and fire 'captions-ready'
-    // back to main once we observe it — that's the canonical "the bot can
-    // actually hear what's said" signal, used to gate flushing the welcome.
+    // Start trackers in parallel. Captions were already clicked during the
+    // admission loop (~seconds earlier), so by the time we get here Meet's
+    // toolbar is rendering the captions UI in parallel with our setup.
+    // captionScraper now just polls for the "Turn off captions" label to
+    // confirm captions are actually on, then fires 'captions-ready' to
+    // main, which flushes the deferred welcome speech.
     captionScraper.onReady = () => {
       console.log('[electron-meet] Captions ready');
       ipcRenderer.send('captions-ready');
     };
     captionScraper.start();
-    await delay(500); // tiny pause so people-pane click doesn't race captions click
     domSpeakerTracker.start();
     // Don't auto-mute on admission — the mic state IS the mode toggle now.
     // Default unmuted = active mode, which is the historical default.

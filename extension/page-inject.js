@@ -59,6 +59,10 @@
       this.state = 'idle'; // 'idle' | 'listening' | 'thinking' | 'speaking'
       this.mode = 'active'; // 'active' | 'passive' | 'silent'
       this.callStatus = 'idle'; // 'idle' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
+      // True once the agent has done anything besides idle. Stays 🫥 until then,
+      // since "in-call but agent not yet engaged" still means not on the line.
+      // Resets whenever a new call begins.
+      this.hasEngaged = false;
       this.stopped = false;
 
       // Draw the first frame synchronously so the track has content immediately
@@ -167,12 +171,14 @@
       const cy = h / 2;
 
       // Emoji priority:
-      //   1. Pre-call callStatus (joining / waiting-to-be-admitted) → 🫥
-      //   2. Activity (thinking / speaking) — agent is doing something
-      //   3. botState=idle (in-call but no agent listening) → 🙂‍↕️
-      //   4. botState=listening → mode emoji (🙂 / 🤐 / 😶)
+      //   1. Not in call (any callStatus other than 'in-call') → 🫥
+      //   2. In-call but agent has never engaged yet → 🫥 (still loading)
+      //   3. Activity (thinking / speaking) — agent is doing something
+      //   4. botState=idle between turns → 🙂‍↕️
+      //   5. botState=listening → mode emoji (🙂 / 🤐 / 😶)
+      const notOnLine = VirtualCamera.CALL_STATUS_EMOJIS[this.callStatus] || (!this.hasEngaged ? '\u{1FAE5}' : null);
       const emoji =
-        VirtualCamera.CALL_STATUS_EMOJIS[this.callStatus]
+        notOnLine
         || VirtualCamera.ACTIVITY_EMOJIS[this.state]
         || (this.state === 'idle' ? VirtualCamera.IDLE_EMOJI : null)
         || VirtualCamera.MODE_EMOJIS[this.mode]
@@ -596,7 +602,12 @@
       case 'set-bot-state':
         // Update avatar state: 'idle' | 'listening' | 'thinking' | 'speaking'
         if (payload?.state) {
-          for (const cam of cameras.values()) cam.state = payload.state;
+          for (const cam of cameras.values()) {
+            cam.state = payload.state;
+            // First non-idle state means the agent is on the line. Stay 🫥
+            // until that moment so admission doesn't immediately flash 🙂.
+            if (payload.state !== 'idle') cam.hasEngaged = true;
+          }
           console.debug('[bots-in-calls] Bot state:', payload.state);
         }
         break;
@@ -614,7 +625,14 @@
         // 'waiting-to-be-admitted' | 'in-call' | 'left'. Used to show 🫥
         // before the bot is actually in the call.
         if (payload?.status) {
-          for (const cam of cameras.values()) cam.callStatus = payload.status;
+          for (const cam of cameras.values()) {
+            cam.callStatus = payload.status;
+            // New-call markers reset the engagement gate — show 🫥 again
+            // until the agent re-engages.
+            if (payload.status === 'idle' || payload.status === 'joining' || payload.status === 'left') {
+              cam.hasEngaged = false;
+            }
+          }
           console.debug('[bots-in-calls] Call status:', payload.status);
         }
         break;

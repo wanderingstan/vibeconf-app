@@ -1516,8 +1516,15 @@ function setupIPC() {
         action: shouldMute ? 'mute-mic' : 'unmute-mic',
       });
     }
-    // TTS playback finished — return to idle (or listening if a waiter is active)
-    localServer._setBotState(localServer.waiters.length > 0 ? 'listening' : 'idle');
+    // TTS playback finished — return to idle (or listening if a waiter is
+    // active). force=true so the speaking-→-listening guard in _setBotState
+    // (which prevents premature transitions when speak/wait_for_speech are
+    // called back-to-back) doesn't block this legitimate end-of-speech.
+    localServer._setBotState(
+      localServer.waiters.length > 0 ? 'listening' : 'idle',
+      undefined,
+      { force: true }
+    );
   });
 
   // User toggled the mic in Meet's UI — map to listening mode.

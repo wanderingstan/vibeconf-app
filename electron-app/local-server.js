@@ -257,8 +257,14 @@ class LocalServer {
     }
   }
 
-  _setBotState(state, extra) {
+  _setBotState(state, extra, { force } = {}) {
     if (this.botState === state) return;
+    // Don't downgrade an in-progress speech to 'listening' when the agent
+    // calls wait_for_speech right after speak — the avatar should stay 😄
+    // until tts-ended naturally transitions it. tts-ended bypasses this with
+    // force=true. Real interruptions ('thinking' from new user speech) and
+    // explicit 'idle' still pass through normally.
+    if (!force && this.botState === 'speaking' && state === 'listening') return;
     this.botState = state;
     this.onBotStateChange(state, extra);
   }

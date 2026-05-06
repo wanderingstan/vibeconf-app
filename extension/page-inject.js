@@ -196,7 +196,7 @@
         || (this.state === 'idle' ? VirtualCamera.IDLE_EMOJI : null)
         || VirtualCamera.MODE_EMOJIS[this.mode]
         || VirtualCamera.MODE_EMOJIS.active;
-      const emojiSize = Math.min(w, h) * 0.45;
+      const emojiSize = Math.min(w, h) * 0.65;
       const bob = Math.sin(t * 0.8) * (emojiSize * 0.02);
       const speakScale = this.speaking
         ? 1 + Math.sin(this.frameCount * 0.15) * 0.05
@@ -677,7 +677,10 @@
         // Replaces the old canned "Hello I am X" welcome — short two-tone
         // ping when admission completes so the user knows the bot is in the
         // room without filling silence with speech.
+        // Also flip hasEngaged here: the chime is the canonical "I'm in the
+        // room" moment, so the avatar should switch from 🫥 to its mode emoji.
         if (mic) mic.playJoinChime();
+        for (const cam of cameras.values()) cam.hasEngaged = true;
         break;
 
       case 'set-call-status':

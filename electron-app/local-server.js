@@ -9,7 +9,7 @@ const prefsSchema = require('./preferences-schema.js');
 const DEFAULT_PORT = 7865;
 
 class LocalServer {
-  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, getPref, setPref, applyPref } = {}) {
+  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.onBotSpeech = onBotSpeech || (() => {});
     this.onWhiteboardUpdate = onWhiteboardUpdate || (() => {});
@@ -20,6 +20,7 @@ class LocalServer {
     this.onLoadUrl = onLoadUrl || (() => {});
     this.onBotStateChange = onBotStateChange || (() => {}); // 'idle' | 'listening' | 'thinking' | 'speaking'
     this.onModeChange = onModeChange || (() => {});        // 'active' | 'passive' | 'silent'
+    this.onCallStatusChange = onCallStatusChange || (() => {}); // 'idle' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
 
     // Preference plumbing (whitelist defined in preferences-schema.js).
     // getPref reads from the persistent store; setPref writes; applyPref runs
@@ -98,8 +99,10 @@ class LocalServer {
   }
 
   setCallStatus(status) {
+    if (this.callStatus === status) return;
     this.callStatus = status;
     console.log('[local-server] Call status:', status);
+    this.onCallStatusChange(status);
   }
 
   setMode(mode) {

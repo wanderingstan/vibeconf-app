@@ -33,8 +33,19 @@
 
     static ACTIVITY_EMOJIS = {
       thinking: '\u{1F914}', // 🤔 thinking face
-      speaking: '\u{1F60A}', // 😊 happy face
+      speaking: '\u{1F604}', // 😄 grinning face — open mouth fits TTS playback
     };
+
+    // Override emojis when the bot isn't actually on the line yet.
+    // Priority: callStatus pre-call wins → activity → idle → mode.
+    static CALL_STATUS_EMOJIS = {
+      'joining':                '\u{1FAE5}',  // 🫥 dotted face — connecting to Meet
+      'waiting-to-be-admitted': '\u{1FAE5}',  // 🫥 dotted face — waiting on host
+    };
+
+    // Shown when in-call but no agent is actively listening (no waiter).
+    // The 'listening' state uses MODE_EMOJIS instead.
+    static IDLE_EMOJI = '\u{1F642}\u{200D}\u{2195}\u{FE0F}'; // 🙂‍↕️ vertical head shake
 
     constructor(width, height) {
       this.canvas = document.createElement('canvas');
@@ -45,6 +56,7 @@
       this.speaking = false;
       this.state = 'idle'; // 'idle' | 'listening' | 'thinking' | 'speaking'
       this.mode = 'active'; // 'active' | 'passive' | 'silent'
+      this.callStatus = 'idle'; // 'idle' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
       this.stopped = false;
 
       // Draw the first frame synchronously so the track has content immediately
@@ -152,8 +164,15 @@
       const cx = w / 2;
       const cy = h / 2;
 
-      // Emoji avatar: thinking/speaking activity overrides mode; otherwise show mode.
-      const emoji = VirtualCamera.ACTIVITY_EMOJIS[this.state]
+      // Emoji priority:
+      //   1. Pre-call callStatus (joining / waiting-to-be-admitted) → 🫥
+      //   2. Activity (thinking / speaking) — agent is doing something
+      //   3. botState=idle (in-call but no agent listening) → 🙂‍↕️
+      //   4. botState=listening → mode emoji (🙂 / 🤐 / 😶)
+      const emoji =
+        VirtualCamera.CALL_STATUS_EMOJIS[this.callStatus]
+        || VirtualCamera.ACTIVITY_EMOJIS[this.state]
+        || (this.state === 'idle' ? VirtualCamera.IDLE_EMOJI : null)
         || VirtualCamera.MODE_EMOJIS[this.mode]
         || VirtualCamera.MODE_EMOJIS.active;
       const emojiSize = Math.min(w, h) * 0.45;
@@ -585,6 +604,16 @@
         if (payload?.mode) {
           for (const cam of cameras.values()) cam.mode = payload.mode;
           console.debug('[bots-in-calls] Bot mode:', payload.mode);
+        }
+        break;
+
+      case 'set-call-status':
+        // Forwarded from local-server: 'idle' | 'joining' |
+        // 'waiting-to-be-admitted' | 'in-call' | 'left'. Used to show 🫥
+        // before the bot is actually in the call.
+        if (payload?.status) {
+          for (const cam of cameras.values()) cam.callStatus = payload.status;
+          console.debug('[bots-in-calls] Call status:', payload.status);
         }
         break;
 

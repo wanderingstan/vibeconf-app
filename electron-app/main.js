@@ -254,6 +254,16 @@ const localServer = new globalThis.LocalServer({
     }
   },
 
+  onCallStatusChange: (status) => {
+    // Forward to page-inject so the avatar can show 🫥 while joining/waiting.
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('extension-message', {
+        action: 'set-call-status',
+        payload: { status },
+      });
+    }
+  },
+
   // Preference plumbing for the agent-visible whitelist (preferences-schema.js).
   // get/set go to the same Store the panel uses, so changes from the agent and
   // changes from Settings → UI converge on one config.json.

@@ -131,6 +131,15 @@ server.tool(
 
     lastPollTime = data.asOf;
 
+    // Terminal conditions — exit the conversation loop without retrying.
+    if (data.callFailed) {
+      return {
+        content: [{
+          type: "text",
+          text: "Call failed: the bot couldn't enter the Meet (denied or removed). Exiting the conversation loop. Do not retry — tell the user the join failed.",
+        }],
+      };
+    }
     // Single-agent enforcement: server displaced us because another agent
     // started a wait_for_speech against this room. Bail out cleanly so the
     // skill ends its loop instead of fighting for the call.

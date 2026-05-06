@@ -773,7 +773,7 @@ function ensureClaudeIntegration(localPort) {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '7';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '8';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
@@ -1484,6 +1484,25 @@ function setupIPC() {
       if (status.startsWith('Error')) {
         // Surface join-flow errors as a push notification when backgrounded.
         broadcastError(status);
+        // Decisively reset call state — without this, callStatus would stick at
+        // 'waiting-to-be-admitted' forever and the agent's wait_for_speech loop
+        // would never exit. Failing-to-admit means we're not in the call at all,
+        // so any active waiters should also be told the call is over.
+        for (const waiter of [...localServer.waiters]) {
+          if (waiter.resolved) continue;
+          waiter.resolved = true;
+          clearTimeout(waiter.timer);
+          clearTimeout(waiter.silenceTimer);
+          waiter.resolve({
+            success: true,
+            displaced: true,  // reuse the displaced flag so the skill exits cleanly
+            asOf: new Date().toISOString(),
+            transcript: { entries: [] },
+            callFailed: true,
+          });
+        }
+        localServer.waiters = [];
+        localServer.clearRoom();
       } else if (status.includes('Waiting') || status.includes('Ask to join')) {
         localServer.setCallStatus('waiting-to-be-admitted');
       } else if (status.includes('Participating') || status.includes('In call')) {

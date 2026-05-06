@@ -24,6 +24,12 @@ class LocalServer {
     this.onAnyoneSpeakingChange = onAnyoneSpeakingChange || (() => {}); // boolean
     this.onParticipantsFirstSeen = onParticipantsFirstSeen || (() => {}); // fires once per call when DOMSpeakerTracker first reports participants
 
+    // Pending bot speech — queued when speak() is called before the bot is
+    // actually admitted to the call. Flushed in setCallStatus when status
+    // becomes 'in-call'. Without this, audio plays through the virtual mic
+    // before Meet has connected our stream and goes into the void.
+    this.pendingBotSpeech = []; // [{ text, voice }]
+
     // Preference plumbing (whitelist defined in preferences-schema.js).
     // getPref reads from the persistent store; setPref writes; applyPref runs
     // any side-effect needed to make the change live (e.g. reload TTS config).
@@ -104,9 +110,31 @@ class LocalServer {
 
   setCallStatus(status) {
     if (this.callStatus === status) return;
+    const wasInCall = this.callStatus === 'in-call';
     this.callStatus = status;
     console.log('[local-server] Call status:', status);
     this.onCallStatusChange(status);
+
+    // Flush any speak() calls that arrived before admission. The audio path
+    // to other participants only opens once we're 'in-call'; before then the
+    // virtual mic stream isn't connected to Meet.
+    if (status === 'in-call' && !wasInCall && this.pendingBotSpeech.length > 0) {
+      console.log('[local-server] Flushing', this.pendingBotSpeech.length, 'queued bot speech entries');
+      const queue = this.pendingBotSpeech;
+      this.pendingBotSpeech = [];
+      for (const { text, voice } of queue) {
+        this._setBotState('speaking');
+        this.onBotSpeech(text, voice);
+      }
+    }
+
+    // Drop pending speech if we never made it in (call failed / cleared).
+    if (status === 'idle' || status === 'left') {
+      if (this.pendingBotSpeech.length > 0) {
+        console.log('[local-server] Dropping', this.pendingBotSpeech.length, 'unflushed bot speech entries (call ended)');
+        this.pendingBotSpeech = [];
+      }
+    }
   }
 
   setMode(mode) {
@@ -635,10 +663,19 @@ class LocalServer {
           this.transcripts.push(entry);
           entries.push(entry);
 
-          // Trigger TTS for bot speech
+          // Trigger TTS for bot speech — but defer if we're not in the call
+          // yet. The virtual mic stream isn't connected to Meet's other
+          // participants until callStatus is 'in-call'; speaking earlier means
+          // audio plays into the void. The transcript entry is recorded
+          // immediately either way so order is preserved on flush.
           if (data.role === 'bot') {
-            this._setBotState('speaking');
-            this.onBotSpeech(t.text, t.voice);
+            if (this.callStatus !== 'in-call') {
+              console.log('[local-server] Queueing bot speech until in-call:', t.text.slice(0, 40));
+              this.pendingBotSpeech.push({ text: t.text, voice: t.voice });
+            } else {
+              this._setBotState('speaking');
+              this.onBotSpeech(t.text, t.voice);
+            }
           }
         }
         results.transcript = { ok: true, sent: entries.length, entries };

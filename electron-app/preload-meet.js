@@ -601,20 +601,25 @@ class CaptionScraper {
 
   _waitForCaptions() {
     let attempts = 0;
-    // 250ms poll instead of 1s so we pick up the caption container
-    // ~4x faster — Stan's testing showed the bot was visibly "in" the
-    // call several seconds before captions were ready.
+    // The toolbar's caption button labels itself "Turn off captions" only
+    // when captions are actually ON — much more reliable than checking
+    // [aria-label="Captions"] container presence (which exists earlier).
+    // 250ms poll, retry the click after 30s if the button never flips.
     const poll = setInterval(() => {
-      const container = document.querySelector('div[role="region"][aria-label="Captions"]');
-      if (container) {
+      const captionsAreOn = !!document.querySelector('[aria-label="Turn off captions" i]')
+        || !!findByAriaLabel('Turn off captions')
+        || !!findByAriaLabel('Desactivar subtítulos');
+      if (captionsAreOn) {
         clearInterval(poll);
+        console.log('[electron-meet] Captions confirmed on (toolbar button = "Turn off captions")');
         this._observe();
         if (this.onReady) { try { this.onReady(); } catch {} }
       } else if (++attempts > 120) { // 30s of 250ms polls
         clearInterval(poll);
+        console.warn('[electron-meet] Captions never flipped on; retrying click');
         this._enableCaptions();
         setTimeout(() => {
-          if (document.querySelector('div[role="region"][aria-label="Captions"]')) {
+          if (findByAriaLabel('Turn off captions')) {
             this._observe();
             if (this.onReady) { try { this.onReady(); } catch {} }
           }

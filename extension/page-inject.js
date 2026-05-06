@@ -27,8 +27,8 @@
     //   ACTIVITY_EMOJIS — transient activity (overrides mode when thinking/speaking)
     static MODE_EMOJIS = {
       active: '\u{1F642}',   // 🙂 engaged, responds freely
-      passive: '\u{1F442}',  // 👂 listening for name
-      silent: '\u{1F910}',   // 🤐 will act but not speak
+      passive: '\u{1F910}',  // 🤐 zipper-mouth — listening, lips sealed unless name called
+      silent: '\u{1F636}',   // 😶 no mouth — will act but cannot speak
     };
 
     static ACTIVITY_EMOJIS = {

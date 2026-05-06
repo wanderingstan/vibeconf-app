@@ -209,12 +209,24 @@ const localServer = new globalThis.LocalServer({
     if (state === 'thinking' && localServer.mode === 'active') {
       const wordCount = extra?.wordCount || 0;
 
-      // Pick acknowledgment based on how much was said in this exchange
-      let ack;
-      if (wordCount > 50) {
+      // Three tiers driven by user prefs (defaults 20 / 50):
+      //   wordCount < ackShortMin    → no ack (short prompt — agent can answer fast)
+      //   ackShortMin..ackLongMin    → short ack ("Mm-hmm.")
+      //   ≥ ackLongMin               → long ack ("Let me think about that.")
+      const ackShortMin = Number(store?.get('ackShortMin')) || 20;
+      const ackLongMin = Number(store?.get('ackLongMin')) || 50;
+
+      let ack = null;
+      if (wordCount >= ackLongMin) {
         ack = ['Let me think about that.', 'Hmm, let me consider that.', 'Give me a moment.'][Math.floor(Math.random() * 3)];
-      } else {
+      } else if (wordCount >= ackShortMin) {
         ack = ['Mm-hmm.', 'Okay.', 'Got it.', 'Mm.'][Math.floor(Math.random() * 4)];
+      }
+
+      if (!ack) {
+        // Short prompt — skip the ack entirely. The thinking emoji is already
+        // showing, so the user has visual feedback while the agent responds.
+        return;
       }
 
       // Speak the acknowledgment immediately (before the agent responds).

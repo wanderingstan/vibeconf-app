@@ -29,6 +29,8 @@ const ttsApiKeyInput = document.getElementById('ttsApiKey');
 const ttsVoiceIdInput = document.getElementById('ttsVoiceId');
 const claudeWorkDirInput = document.getElementById('claudeWorkDir');
 const dangerousModeInput = document.getElementById('dangerousMode');
+const ackShortMinInput = document.getElementById('ackShortMin');
+const ackLongMinInput = document.getElementById('ackLongMin');
 
 let syncBaseUrl = 'http://127.0.0.1:7865';
 let currentBotName = 'Samantha';
@@ -82,13 +84,15 @@ meetUrlInput.addEventListener('input', updateJoinBtnState);
 // Load saved config
 // ---------------------------------------------------------------------------
 
-api.invoke('get-config', ['botName', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'claudeWorkDir', 'dangerousMode']).then((result) => {
+api.invoke('get-config', ['botName', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'claudeWorkDir', 'dangerousMode', 'ackShortMin', 'ackLongMin']).then((result) => {
   if (result?.botName) { botNameInput.value = result.botName; currentBotName = result.botName; }
   if (result?.syncBaseUrl) { syncBaseUrlInput.value = result.syncBaseUrl; syncBaseUrl = result.syncBaseUrl; }
   if (result?.ttsApiKey) ttsApiKeyInput.value = result.ttsApiKey;
   if (result?.ttsVoiceId) ttsVoiceIdInput.value = result.ttsVoiceId;
   if (result?.claudeWorkDir) claudeWorkDirInput.value = result.claudeWorkDir;
   if (result?.dangerousMode) dangerousModeInput.checked = true;
+  if (result?.ackShortMin != null) ackShortMinInput.value = result.ackShortMin;
+  if (result?.ackLongMin != null) ackLongMinInput.value = result.ackLongMin;
 
   // Check auth status after config is loaded (so we know the server URL)
   checkAuthStatus();
@@ -395,6 +399,16 @@ claudeWorkDirInput.addEventListener('change', () => {
 
 dangerousModeInput.addEventListener('change', () => {
   api.invoke('set-config', 'dangerousMode', dangerousModeInput.checked);
+});
+
+ackShortMinInput.addEventListener('change', () => {
+  const v = parseInt(ackShortMinInput.value, 10);
+  if (Number.isFinite(v) && v >= 0) api.invoke('set-config', 'ackShortMin', v);
+});
+
+ackLongMinInput.addEventListener('change', () => {
+  const v = parseInt(ackLongMinInput.value, 10);
+  if (Number.isFinite(v) && v >= 0) api.invoke('set-config', 'ackLongMin', v);
 });
 
 // ---------------------------------------------------------------------------

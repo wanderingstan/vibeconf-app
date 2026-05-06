@@ -582,6 +582,7 @@ class CaptionScraper {
     this.lastSpeaker = '';
     this.lastPostedText = '';
     this.isRunning = false;
+    this.onReady = null; // fires once when caption container is observed
   }
 
   start() {
@@ -600,19 +601,26 @@ class CaptionScraper {
 
   _waitForCaptions() {
     let attempts = 0;
+    // 250ms poll instead of 1s so we pick up the caption container
+    // ~4x faster — Stan's testing showed the bot was visibly "in" the
+    // call several seconds before captions were ready.
     const poll = setInterval(() => {
       const container = document.querySelector('div[role="region"][aria-label="Captions"]');
       if (container) {
         clearInterval(poll);
         this._observe();
-      } else if (++attempts > 30) {
+        if (this.onReady) { try { this.onReady(); } catch {} }
+      } else if (++attempts > 120) { // 30s of 250ms polls
         clearInterval(poll);
         this._enableCaptions();
         setTimeout(() => {
-          if (document.querySelector('div[role="region"][aria-label="Captions"]')) this._observe();
+          if (document.querySelector('div[role="region"][aria-label="Captions"]')) {
+            this._observe();
+            if (this.onReady) { try { this.onReady(); } catch {} }
+          }
         }, 5000);
       }
-    }, 1000);
+    }, 250);
   }
 
   _observe() {
@@ -856,14 +864,17 @@ window.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    // Start trackers in parallel — previous code had a 3s gap between
-    // domSpeakerTracker.start() and captionScraper.start() which left a
-    // window where the bot was visibly "in" but couldn't hear anything
-    // the user said. Both have their own internal retry/poll loops, so
-    // there's no value in serializing them.
-    await delay(1500);
-    domSpeakerTracker.start();
+    // Start trackers in parallel. The captions container takes the longest
+    // to render after the click, so kick it off first and fire 'captions-ready'
+    // back to main once we observe it — that's the canonical "the bot can
+    // actually hear what's said" signal, used to gate flushing the welcome.
+    captionScraper.onReady = () => {
+      console.log('[electron-meet] Captions ready');
+      ipcRenderer.send('captions-ready');
+    };
     captionScraper.start();
+    await delay(500); // tiny pause so people-pane click doesn't race captions click
+    domSpeakerTracker.start();
     // Don't auto-mute on admission — the mic state IS the mode toggle now.
     // Default unmuted = active mode, which is the historical default.
     startMicMuteWatcher();

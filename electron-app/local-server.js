@@ -329,6 +329,9 @@ class LocalServer {
     // (e.g. "Hi" → "Hi Jimmy" → "Hi Jimmy. How's it going?"), so naively joining
     // them inflates wordCount. Dedupe by keeping the longest text per consecutive
     // run of the same speaker — same logic the MCP server applies for the agent.
+    // Note: we may already be in 'thinking' state from a previous turn that the
+    // agent didn't speak to (it called wait_for_speech twice). Force the state
+    // change so the ack handler still runs with the new wordCount.
     const entries = this._entriesSince(waiter.since, waiter.bot);
     if (entries.length > 0) {
       const deduped = [];
@@ -349,7 +352,13 @@ class LocalServer {
         .split(/\s+/)
         .filter(Boolean)
         .length;
-      this._setBotState('thinking', { wordCount });
+      // Always fire the change callback with the new wordCount — even if state
+      // is already 'thinking' from a previous turn — so the ack handler runs.
+      // Without this, agent loops that call wait_for_speech twice in a row
+      // skip the ack on the second resolution because the equal-state guard
+      // in _setBotState short-circuits.
+      this.botState = 'thinking';
+      this.onBotStateChange('thinking', { wordCount });
     }
 
     waiter.resolve(response);

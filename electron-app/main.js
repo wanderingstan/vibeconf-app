@@ -1536,6 +1536,14 @@ function setupIPC() {
     console.log('[page-inject]', line);
   });
 
+  // Captions container observed in DOM — the bot can now actually hear
+  // what's said. Stronger 'fully in room' signal than first-participants:
+  // captions take the longest to wire up. Flush any deferred bot speech now.
+  ipcMain.on('captions-ready', () => {
+    console.log('[electron] Captions ready — flushing pending bot speech');
+    localServer._flushPendingBotSpeech();
+  });
+
   ipcMain.on('tts-ended', () => {
     // If only the ack just finished, stay in 'thinking' — the agent is still
     // generating the real response and will clear the flag when it speaks.

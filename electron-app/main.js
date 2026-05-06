@@ -37,6 +37,7 @@ const stt = new globalThis.STTProvider();
 const sync = new globalThis.SyncClient({
   onBotSpeech: (text, voice) => {
     console.log('[electron] Bot speech from sync:', text.slice(0, 80), voice ? `(voice: ${voice})` : '');
+    ackTtsPending = false;
     speakText(text, voice);
   },
   getAuthCookie: async () => {
@@ -50,10 +51,17 @@ const sync = new globalThis.SyncClient({
   },
 });
 
+// True when the TTS queue only contains the "Mm-hmm/Okay" acknowledgment that
+// fires as the bot enters 'thinking'. When its tts-ended fires we should stay
+// in 'thinking' (the agent is still processing) rather than drop to 'idle'.
+// Any real bot speech clears this flag so the next tts-ended transitions normally.
+let ackTtsPending = false;
+
 // Local HTTP server for agent communication (replaces remote sync for MCP)
 const localServer = new globalThis.LocalServer({
   onBotSpeech: (text, voice) => {
     console.log('[local-server] Bot speech:', text.slice(0, 80));
+    ackTtsPending = false;
     speakText(text, voice);
   },
   onWhiteboardUpdate: (content, sender) => {
@@ -98,10 +106,35 @@ const localServer = new globalThis.LocalServer({
   },
   onLeaveCall: () => {
     console.log('[local-server] Leave call requested by agent');
-    // Trigger leave via the panel
-    if (panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('leave-requested');
-    }
+
+    // Wait for any in-flight TTS to finish so goodbye speech actually plays.
+    // botState leaves 'speaking' when the `tts-ended` IPC fires (page-inject
+    // posts it when its playback queue drains). Cap the wait so a stuck
+    // synthesis can't block leave forever.
+    const MAX_WAIT_MS = 8000;
+    const POLL_MS = 150;
+    const TAIL_MS = 400; // let the last audio buffer flush into the mic stream
+    const deadline = Date.now() + MAX_WAIT_MS;
+
+    const performLeave = () => {
+      if (panelView && !panelView.webContents.isDestroyed()) {
+        panelView.webContents.send('leave-requested');
+      }
+    };
+
+    const checkAndLeave = () => {
+      const stillSpeaking = localServer.botState === 'speaking';
+      if (!stillSpeaking) {
+        console.log('[local-server] TTS idle — leaving call');
+        setTimeout(performLeave, TAIL_MS);
+      } else if (Date.now() >= deadline) {
+        console.log('[local-server] TTS still playing after', MAX_WAIT_MS, 'ms — leaving anyway');
+        performLeave();
+      } else {
+        setTimeout(checkAndLeave, POLL_MS);
+      }
+    };
+    checkAndLeave();
   },
   onShareWhiteboard: (shareType) => {
     console.log('[local-server] Share requested by agent, type:', shareType);
@@ -171,7 +204,10 @@ const localServer = new globalThis.LocalServer({
         ack = ['Mm-hmm.', 'Okay.', 'Got it.', 'Mm.'][Math.floor(Math.random() * 4)];
       }
 
-      // Speak the acknowledgment immediately (before the agent responds)
+      // Speak the acknowledgment immediately (before the agent responds).
+      // Mark the ack so its tts-ended doesn't drop us out of 'thinking' while
+      // the agent is still generating the real response.
+      ackTtsPending = true;
       speakText(ack);
     }
   },
@@ -1318,6 +1354,12 @@ function setupIPC() {
   });
 
   ipcMain.on('tts-ended', () => {
+    // If only the ack just finished, stay in 'thinking' — the agent is still
+    // generating the real response and will clear the flag when it speaks.
+    if (ackTtsPending) {
+      ackTtsPending = false;
+      return;
+    }
     // TTS playback finished — return to idle (or listening if a waiter is active)
     localServer._setBotState(localServer.waiters.length > 0 ? 'listening' : 'idle');
   });

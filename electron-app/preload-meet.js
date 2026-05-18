@@ -453,6 +453,20 @@ async function autoJoin(botName) {
         findByAriaLabel('Turn off captions') ||
         document.querySelector('[data-tooltip="Leave call"]');
 
+      // Explicit denial pages — Meet shows one of these when the host blocks
+      // entry or the call is otherwise inaccessible. Fail fast rather than
+      // burning the 15s limbo grace, and give the agent a specific reason.
+      if (bodyText.includes("You can't join this video call")) {
+        sendStatus("Error: can't join this video call (host blocked entry or call inaccessible)");
+        console.warn('[electron-meet] Denial page detected: "You can\'t join this video call"');
+        return;
+      }
+      if (bodyText.includes('You have been removed from the meeting')) {
+        sendStatus('Error: removed from the meeting');
+        console.warn('[electron-meet] Removal page detected');
+        return;
+      }
+
       if (inCallUI && !hasJoinUI) {
         admitted = true;
         sendStatus('Participating in Meet');

@@ -276,6 +276,16 @@
     }
 
     getTrack() {
+      // If Meet stopped the previous track (camera-off toggle calls
+      // track.stop()), the cached stream's track is now in readyState
+      // 'ended' and emits a black frame forever. Re-capture from the
+      // same canvas — the render loop is still running, so this gives
+      // us a fresh live track without rebuilding the whole camera.
+      const existing = this.stream.getVideoTracks()[0];
+      if (!existing || existing.readyState === 'ended') {
+        console.log('[bots-in-calls] Video track was stopped, re-capturing from canvas');
+        this.stream = this.canvas.captureStream(config.fps);
+      }
       return this.stream.getVideoTracks()[0];
     }
 

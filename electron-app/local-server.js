@@ -70,7 +70,20 @@ class LocalServer {
     // Long-poll waiters
     this.waiters = [];           // { resolve, since, bot, silence, timer }
 
+    // macOS permission status, updated by main.js. Possible values match
+    // systemPreferences.getMediaAccessStatus: 'not-determined', 'granted',
+    // 'denied', 'restricted', 'unknown'. 'unknown' is also used on non-darwin.
+    this.permissions = {
+      screenRecording: 'unknown',
+    };
+
     this.server = null;
+  }
+
+  setPermission(name, status) {
+    if (this.permissions[name] === status) return;
+    this.permissions[name] = status;
+    console.log('[local-server] Permission', name + ':', status);
   }
 
   // -------------------------------------------------------------------------
@@ -414,6 +427,7 @@ class LocalServer {
         presenterName: this.presenterName,
         mode: this.mode,
         errors: this.errors,
+        permissions: this.permissions,
       },
     };
   }

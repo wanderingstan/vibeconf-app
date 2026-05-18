@@ -867,12 +867,14 @@ app.whenReady().then(async () => {
   // Check screen recording permission (needed for whiteboard share)
   if (process.platform === 'darwin') {
     const screenAccess = systemPreferences.getMediaAccessStatus('screen');
+    localServer.setPermission('screenRecording', screenAccess);
     if (screenAccess !== 'granted') {
       console.warn('[electron] Screen recording permission not granted:', screenAccess);
       // Trigger a desktopCapturer call to prompt the OS permission dialog
       desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1, height: 1 } })
         .then(() => {
           const newStatus = systemPreferences.getMediaAccessStatus('screen');
+          localServer.setPermission('screenRecording', newStatus);
           if (newStatus !== 'granted') {
             dialog.showMessageBoxSync({
               type: 'warning',
@@ -884,6 +886,18 @@ app.whenReady().then(async () => {
         })
         .catch(() => {});
     }
+  } else {
+    localServer.setPermission('screenRecording', 'granted');
+  }
+
+  // Re-check screen recording perm whenever the app regains focus. Users
+  // typically grant it via System Settings, then return to the app — this
+  // picks up the change without requiring a restart.
+  if (process.platform === 'darwin') {
+    app.on('browser-window-focus', () => {
+      const current = systemPreferences.getMediaAccessStatus('screen');
+      localServer.setPermission('screenRecording', current);
+    });
   }
 
   // Load saved config

@@ -467,6 +467,22 @@ server.tool(
     }
 
     const shareType = share_type || "whiteboard";
+
+    // Pre-flight: confirm screen recording permission before attempting the
+    // share. Without it, getDisplayMedia silently fails and the user hears
+    // the bot claim it shared something that isn't actually visible.
+    try {
+      const preflight = await fetch(`${BASE_URL}/api/sync/${roomId}`);
+      const preflightData = await preflight.json();
+      const screenPerm = preflightData.status?.permissions?.screenRecording;
+      if (screenPerm && screenPerm !== 'granted' && screenPerm !== 'unknown') {
+        return { content: [{ type: "text", text: `Cannot share: screen recording permission is '${screenPerm}'. The user needs to grant Vibeconferencing access in System Settings > Privacy & Security > Screen Recording. Tell them this in the call (in 1 sentence) so they can fix it.` }] };
+      }
+    } catch (err) {
+      // Non-fatal — fall through to the share attempt; the existing 7s
+      // error-detection path will catch real failures.
+    }
+
     const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -741,6 +757,11 @@ server.tool(
 
     if (status.someoneElsePresenting) {
       sections.push(`Someone else presenting: ${status.presenterName || 'yes'}`);
+    }
+
+    const screenPerm = status.permissions?.screenRecording;
+    if (screenPerm && screenPerm !== 'granted' && screenPerm !== 'unknown') {
+      sections.push(`Screen recording permission: ${screenPerm} (whiteboard sharing will not work — tell user to grant access in System Settings > Privacy & Security > Screen Recording)`);
     }
 
     sections.push('');

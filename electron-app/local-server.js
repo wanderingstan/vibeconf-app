@@ -9,7 +9,7 @@ const prefsSchema = require('./preferences-schema.js');
 const DEFAULT_PORT = 7865;
 
 class LocalServer {
-  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onParticipantsFirstSeen, onAvatarEmojiOverride, getPref, setPref, applyPref } = {}) {
+  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.onBotSpeech = onBotSpeech || (() => {});
     this.onWhiteboardUpdate = onWhiteboardUpdate || (() => {});
@@ -24,6 +24,7 @@ class LocalServer {
     this.onAnyoneSpeakingChange = onAnyoneSpeakingChange || (() => {}); // boolean
     this.onParticipantsFirstSeen = onParticipantsFirstSeen || (() => {}); // fires once per call when DOMSpeakerTracker first reports participants
     this.onAvatarEmojiOverride = onAvatarEmojiOverride || (() => {}); // ({idle?, listening?}) — null/undefined for that key means reset
+    this.onSetCamera = onSetCamera || (() => {}); // (on: boolean)
 
     // Pending bot speech — queued when speak() is called before the bot is
     // actually admitted to the call. Flushed in setCallStatus when status
@@ -764,6 +765,12 @@ class LocalServer {
       } catch (err) {
         results.setMode = { ok: false, error: err.message };
       }
+    }
+
+    // Handle set-camera command — agent toggles its own camera on/off
+    if (data.meta?.action === 'set-camera' && typeof data.meta.on === 'boolean') {
+      this.onSetCamera(data.meta.on);
+      results.setCamera = { ok: true, on: data.meta.on };
     }
 
     // Handle set-avatar-emoji command — agent overrides resting avatar

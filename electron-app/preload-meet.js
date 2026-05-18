@@ -58,6 +58,10 @@ ipcRenderer.on('extension-message', (_event, message) => {
     setMicMuted(false);
   } else if (message.action === 'mute-mic') {
     setMicMuted(true);
+  } else if (message.action === 'camera-on') {
+    setCameraOff(false);
+  } else if (message.action === 'camera-off') {
+    setCameraOff(true);
   } else if (message.action === 'play-speech-test') {
     // Resolve test audio — main process sends the base64 directly
     window.postMessage({
@@ -193,6 +197,37 @@ function startMicMuteWatcher() {
   });
   observer.observe(btn, { attributes: true, attributeFilter: ['data-is-muted'] });
   console.log('[electron-meet] Mic mute watcher started');
+}
+
+// ---------------------------------------------------------------------------
+// Camera control
+// ---------------------------------------------------------------------------
+
+// Meet's camera toggle swaps its aria-label between "Turn off camera" (when
+// the camera is on) and "Turn on camera" (when it's off) — the label is the
+// action you'd take by clicking. So we read the current state from the label.
+function getCameraButton() {
+  return (
+    document.querySelector('button[aria-label="Turn off camera"]') ||
+    document.querySelector('button[aria-label="Turn on camera"]')
+  );
+}
+
+function isCameraOn() {
+  return !!document.querySelector('button[aria-label="Turn off camera"]');
+}
+
+function setCameraOff(off) {
+  const btn = getCameraButton();
+  if (!btn) {
+    console.warn('[electron-meet] Camera button not found');
+    return;
+  }
+  const currentlyOff = !isCameraOn();
+  if (off !== currentlyOff) {
+    btn.click();
+    console.log('[electron-meet] Camera', off ? 'off' : 'on');
+  }
 }
 
 // ---------------------------------------------------------------------------

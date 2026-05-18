@@ -585,6 +585,40 @@ server.tool(
   }
 );
 
+// --- set_camera ---
+server.tool(
+  "set_camera",
+  "Turn the bot's camera on or off in the Meet call. Use 'off' when the user wants you to listen passively without showing the avatar video (saves bandwidth and reduces visual noise). Use 'on' to bring the avatar back. The avatar overlay state (emoji, animation) is independent of this — turning the camera off just hides the video feed from other participants.",
+  {
+    on: z.boolean().describe("true to turn the camera on, false to turn it off"),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ on, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) {
+      return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    }
+
+    const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sender: BOT_NAME,
+        role: "bot",
+        ownerName: BOT_NAME,
+        meta: { action: "set-camera", on },
+      }),
+    });
+
+    const data = await resp.json();
+    const result = data.results?.setCamera;
+    if (result?.ok) {
+      return { content: [{ type: "text", text: `Camera ${result.on ? 'on' : 'off'}.` }] };
+    }
+    return { content: [{ type: "text", text: `Error: ${data.error || "Failed to set camera"}` }] };
+  }
+);
+
 // --- set_avatar_emoji ---
 server.tool(
   "set_avatar_emoji",

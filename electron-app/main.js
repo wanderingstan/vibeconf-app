@@ -294,6 +294,15 @@ const localServer = new globalThis.LocalServer({
     }
   },
 
+  onSetCamera: (on) => {
+    console.log('[local-server] Set camera:', on ? 'on' : 'off');
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('extension-message', {
+        action: on ? 'camera-on' : 'camera-off',
+      });
+    }
+  },
+
   // Preference plumbing for the agent-visible whitelist (preferences-schema.js).
   // get/set go to the same Store the panel uses, so changes from the agent and
   // changes from Settings → UI converge on one config.json.
@@ -782,7 +791,7 @@ function ensureClaudeIntegration(localPort) {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '10';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '11';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}

@@ -27,6 +27,7 @@
       "main.js",
       "store.js",
       "local-server.js",
+      "preferences-schema.js",
       "preload-meet.js",
       "preload-panel.js",
       "renderer/**/*",

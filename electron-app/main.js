@@ -2,7 +2,7 @@
 // Manages Meet BrowserView + panel sidebar in a single window,
 // IPC routing, TTS, and sync.
 
-const { app, BrowserWindow, BrowserView, ipcMain, session, nativeImage, desktopCapturer, systemPreferences, dialog, Menu } = require('electron');
+const { app, BrowserWindow, BrowserView, ipcMain, session, shell, nativeImage, desktopCapturer, systemPreferences, dialog, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const vm = require('vm');
@@ -867,24 +867,32 @@ app.whenReady().then(async () => {
   // Check screen recording permission (needed for whiteboard share)
   if (process.platform === 'darwin') {
     const screenAccess = systemPreferences.getMediaAccessStatus('screen');
+    console.log('[electron] Screen recording permission at launch:', screenAccess);
     localServer.setPermission('screenRecording', screenAccess);
-    if (screenAccess !== 'granted') {
-      console.warn('[electron] Screen recording permission not granted:', screenAccess);
-      // Trigger a desktopCapturer call to prompt the OS permission dialog
+
+    if (screenAccess === 'not-determined') {
+      // First-time request — getSources will trigger the OS prompt.
       desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1, height: 1 } })
         .then(() => {
           const newStatus = systemPreferences.getMediaAccessStatus('screen');
+          console.log('[electron] Screen recording permission after prompt:', newStatus);
           localServer.setPermission('screenRecording', newStatus);
-          if (newStatus !== 'granted') {
-            dialog.showMessageBoxSync({
-              type: 'warning',
-              title: 'Screen Recording Permission',
-              message: 'Vibeconferencing needs screen recording permission to share the whiteboard.\n\nPlease grant access in System Settings > Privacy & Security > Screen Recording, then restart the app.',
-              buttons: ['OK'],
-            });
-          }
         })
         .catch(() => {});
+    } else if (screenAccess === 'denied' || screenAccess === 'restricted') {
+      // macOS won't re-prompt once denied — guide the user to System Settings.
+      const choice = dialog.showMessageBoxSync({
+        type: 'warning',
+        title: 'Screen Recording Permission',
+        message: 'Whiteboard sharing is disabled',
+        detail: 'Vibeconferencing needs Screen Recording permission to share the whiteboard in your Meet calls. The app will still work without it — the bot just can\'t share visuals.\n\nGrant access in System Settings > Privacy & Security > Screen Recording, then restart the app.',
+        buttons: ['Open System Settings', 'Continue Without'],
+        defaultId: 0,
+        cancelId: 1,
+      });
+      if (choice === 0) {
+        shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+      }
     }
   } else {
     localServer.setPermission('screenRecording', 'granted');

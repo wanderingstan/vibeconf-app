@@ -320,6 +320,38 @@ const localServer = new globalThis.LocalServer({
     }
   },
 
+  onCaptureScreenshot: async ({ roomId }) => {
+    if (!meetView || meetView.webContents.isDestroyed()) {
+      return { error: 'No active Meet view to capture' };
+    }
+    try {
+      const image = await meetView.webContents.capturePage();
+      const buf = image.toPNG();
+      const dir = path.join(app.getPath('temp'), 'vibeconf-screenshots');
+      await fs.promises.mkdir(dir, { recursive: true });
+
+      // Keep the most recent N per room; older ones are noise on disk.
+      const KEEP_PER_ROOM = 10;
+      const prefix = (roomId || 'no-room') + '-';
+      try {
+        const existing = (await fs.promises.readdir(dir))
+          .filter(f => f.startsWith(prefix) && f.endsWith('.png'))
+          .sort();
+        const toDelete = existing.slice(0, Math.max(0, existing.length - (KEEP_PER_ROOM - 1)));
+        await Promise.all(toDelete.map(f => fs.promises.unlink(path.join(dir, f)).catch(() => {})));
+      } catch { /* dir was just created or unreadable — fine */ }
+
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const filePath = path.join(dir, `${prefix}${stamp}.png`);
+      await fs.promises.writeFile(filePath, buf);
+      console.log('[electron] Screenshot saved:', filePath, '(' + buf.length + ' bytes)');
+      return { path: filePath };
+    } catch (err) {
+      console.error('[electron] Screenshot capture failed:', err);
+      return { error: err.message };
+    }
+  },
+
   // Preference plumbing for the agent-visible whitelist (preferences-schema.js).
   // get/set go to the same Store the panel uses, so changes from the agent and
   // changes from Settings → UI converge on one config.json.

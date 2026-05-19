@@ -643,6 +643,27 @@ server.tool(
   }
 );
 
+// --- get_call_screenshot ---
+server.tool(
+  "get_call_screenshot",
+  "Capture a screenshot of the current Meet view as the bot sees it — participant tiles, names, mic icons, who's speaking, captions, shared screen content, the surrounding Google Meet chrome — and save it to a temporary file. Returns the absolute path to the PNG. Use this when you need visual context about what's happening in the call. After getting the path, read the file with your normal image-reading tool to actually look at the screenshot.",
+  {
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async () => {
+    const resp = await fetch(`${BASE_URL}/api/call-screenshot`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const data = await resp.json();
+    if (data?.success && data.path) {
+      return { content: [{ type: "text", text: `Saved screenshot to ${data.path}` }] };
+    }
+    return { content: [{ type: "text", text: `Error capturing screenshot: ${data?.error || "unknown"}` }] };
+  }
+);
+
 // --- set_avatar_emoji ---
 server.tool(
   "set_avatar_emoji",

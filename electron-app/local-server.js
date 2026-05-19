@@ -17,7 +17,7 @@ function ts() {
 }
 
 class LocalServer {
-  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, getPref, setPref, applyPref } = {}) {
+  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.onBotSpeech = onBotSpeech || (() => {});
     this.onWhiteboardUpdate = onWhiteboardUpdate || (() => {});
@@ -33,6 +33,7 @@ class LocalServer {
     this.onParticipantsFirstSeen = onParticipantsFirstSeen || (() => {}); // fires once per call when DOMSpeakerTracker first reports participants
     this.onAvatarEmojiOverride = onAvatarEmojiOverride || (() => {}); // ({idle?, listening?}) — null/undefined for that key means reset
     this.onSetCamera = onSetCamera || (() => {}); // (on: boolean)
+    this.onCaptureScreenshot = onCaptureScreenshot || (async () => ({ error: 'not implemented' }));
 
     // Pending bot speech — queued when speak() is called before the bot is
     // actually admitted to the call. Flushed in setCallStatus when status
@@ -559,6 +560,23 @@ class LocalServer {
         success: true,
         preferences: prefsSchema.describe(this.getPref),
       }));
+      return;
+    }
+
+    if (url.pathname === '/api/call-screenshot' && req.method === 'POST') {
+      try {
+        const result = await this.onCaptureScreenshot({ roomId: this.roomId });
+        if (result?.error) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: result.error }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, path: result.path }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
       return;
     }
 

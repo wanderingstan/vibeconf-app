@@ -7,6 +7,7 @@ const path = require('path');
 const fs = require('fs');
 const vm = require('vm');
 const Store = require('./store.js');
+const { resolveSvg } = require('./svg-resolver.js');
 
 // ---------------------------------------------------------------------------
 // Load extension modules (they export on globalThis)
@@ -320,9 +321,33 @@ const localServer = new globalThis.LocalServer({
         action: 'config-updated',
         payload: { key, value },
       });
+    } else if (key === 'avatarBackgroundSvg') {
+      pushAvatarBackground(value);
     }
   },
 });
+
+// Resolve external refs in the SVG and broadcast the result to the meet view.
+// Empty/missing value clears the background back to the default gradient.
+async function pushAvatarBackground(svgSource) {
+  if (!meetView || meetView.webContents.isDestroyed()) return;
+  try {
+    const resolved = (typeof svgSource === 'string' && svgSource.trim())
+      ? await resolveSvg(svgSource)
+      : '';
+    meetView.webContents.send('extension-message', {
+      action: 'set-avatar-background',
+      payload: { svg: resolved },
+    });
+  } catch (err) {
+    console.warn('[electron] Failed to resolve avatar background SVG:', err.message);
+    // Fall back to clearing — renderer goes back to default gradient.
+    meetView.webContents.send('extension-message', {
+      action: 'set-avatar-background',
+      payload: { svg: '' },
+    });
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Config store & window refs
@@ -1412,6 +1437,10 @@ function loadMeetURL(meetUrl) {
         action: 'set-bot-state',
         payload: { state: localServer.botState },
       });
+      // Push the stored avatar background (if any) so it persists across
+      // app restarts and survives a Meet reload.
+      const savedSvg = store?.get('avatarBackgroundSvg');
+      if (savedSvg) pushAvatarBackground(savedSvg);
     }
   });
 }

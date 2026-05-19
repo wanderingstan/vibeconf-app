@@ -34,6 +34,7 @@
       "store.js",
       "local-server.js",
       "preferences-schema.js",
+      "svg-resolver.js",
       "preload-meet.js",
       "preload-panel.js",
       "renderer/**/*",

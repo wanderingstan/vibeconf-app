@@ -78,6 +78,9 @@
       // default for that state.
       this.idleEmojiOverride = null;
       this.listeningEmojiOverride = null;
+      // Optional custom background. null = use default animated gradient.
+      // Set by the 'set-avatar-background' message after server-side resolve.
+      this.backgroundImage = null;
       this.stopped = false;
 
       // Draw the first frame synchronously so the track has content immediately
@@ -154,33 +157,40 @@
       const h = canvas.height;
       this.frameCount++;
 
-      // --- Animated gradient background (bright enough to avoid "camera blocked" detection) ---
+      // --- Background: custom SVG (if loaded) or animated gradient fallback ---
       const t = this.frameCount * 0.02;
-      const grad = ctx.createLinearGradient(
-        w * (0.3 + 0.2 * Math.sin(t)),
-        0,
-        w * (0.7 + 0.2 * Math.cos(t)),
-        h
-      );
-      grad.addColorStop(0, '#1a237e');   // deep indigo
-      grad.addColorStop(0.5, '#283593'); // indigo
-      grad.addColorStop(1, '#1565c0');   // blue
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, w, h);
+      if (this.backgroundImage && this.backgroundImage.complete && this.backgroundImage.naturalWidth > 0) {
+        // Cover-fit the SVG to the canvas. The rasterized image already has
+        // any external refs inlined (server-side resolver), so no taint risk.
+        ctx.drawImage(this.backgroundImage, 0, 0, w, h);
+      } else {
+        // Default animated gradient — bright enough to avoid Chrome's
+        // "camera blocked" heuristic, with subtle particle motion.
+        const grad = ctx.createLinearGradient(
+          w * (0.3 + 0.2 * Math.sin(t)),
+          0,
+          w * (0.7 + 0.2 * Math.cos(t)),
+          h
+        );
+        grad.addColorStop(0, '#1a237e');
+        grad.addColorStop(0.5, '#283593');
+        grad.addColorStop(1, '#1565c0');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
 
-      // Subtle animated particles for visual variance
-      ctx.save();
-      ctx.globalAlpha = 0.15;
-      for (let i = 0; i < 12; i++) {
-        const px = (w * 0.1) + (i * w * 0.08) + Math.sin(t + i * 1.5) * 30;
-        const py = (h * 0.2) + Math.cos(t * 0.7 + i * 2.1) * (h * 0.3);
-        const pr = 20 + Math.sin(t + i) * 10;
-        ctx.beginPath();
-        ctx.arc(px, py, pr, 0, Math.PI * 2);
-        ctx.fillStyle = '#ffffff';
-        ctx.fill();
+        ctx.save();
+        ctx.globalAlpha = 0.15;
+        for (let i = 0; i < 12; i++) {
+          const px = (w * 0.1) + (i * w * 0.08) + Math.sin(t + i * 1.5) * 30;
+          const py = (h * 0.2) + Math.cos(t * 0.7 + i * 2.1) * (h * 0.3);
+          const pr = 20 + Math.sin(t + i) * 10;
+          ctx.beginPath();
+          ctx.arc(px, py, pr, 0, Math.PI * 2);
+          ctx.fillStyle = '#ffffff';
+          ctx.fill();
+        }
+        ctx.restore();
       }
-      ctx.restore();
 
       const cx = w / 2;
       const cy = h / 2;
@@ -815,6 +825,35 @@
           console.log('[bots-in-calls] Avatar emoji overrides:',
             'idle=' + (payload.idle ?? 'unchanged'),
             'listening=' + (payload.listening ?? 'unchanged'));
+        }
+        break;
+
+      case 'set-avatar-background':
+        // Load the resolved SVG (or clear back to default gradient when
+        // payload.svg is empty). External refs are already inlined as data
+        // URIs server-side, so this is safe to draw without tainting the
+        // canvas. SMIL/CSS animations inside the SVG do not tick — the
+        // emoji's bounce is the only motion.
+        if (payload) {
+          const svg = (payload.svg || '').trim();
+          for (const cam of cameras.values()) {
+            if (!svg) {
+              cam.backgroundImage = null;
+              console.log('[bots-in-calls] Avatar background cleared (default gradient)');
+              continue;
+            }
+            const img = new Image();
+            img.onload = () => {
+              cam.backgroundImage = img;
+              console.log('[bots-in-calls] Avatar background loaded (',
+                svg.length, 'chars,', img.naturalWidth, 'x', img.naturalHeight, ')');
+            };
+            img.onerror = (err) => {
+              console.warn('[bots-in-calls] Avatar background failed to load — falling back to gradient', err);
+              cam.backgroundImage = null;
+            };
+            img.src = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+          }
         }
         break;
 

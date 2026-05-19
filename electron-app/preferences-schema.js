@@ -80,6 +80,18 @@ const PREFERENCES = {
       'ElevenLabs voice ID. Empty means use macOS built-in TTS. ' +
       'Use list_voices and set_voice for an in-call switch instead of editing this directly.',
   },
+  avatarBackgroundSvg: {
+    type: 'string',
+    default: '',
+    maxLength: 1_000_000,
+    description:
+      "SVG source for the avatar background. Empty = default animated gradient. " +
+      "The SVG can include <image href='file:///...' or 'https://...'> — the app " +
+      "auto-resolves external references into data URIs so you don't need to " +
+      "base64-encode anything. SVG/CSS animations don't tick (rasterized once); " +
+      "the emoji's bounce provides motion. Use to display backgrounds, name plates, " +
+      "debug info, or anything SVG can render.",
+  },
 };
 
 function validate(key, value) {
@@ -95,6 +107,9 @@ function validate(key, value) {
   }
   if (spec.type === 'string') {
     if (typeof value !== 'string') return { ok: false, error: `Expected string` };
+    if (spec.maxLength != null && value.length > spec.maxLength) {
+      return { ok: false, error: `String too long (max ${spec.maxLength} chars)` };
+    }
     return { ok: true, value };
   }
   if (spec.type === 'boolean') {

@@ -119,7 +119,7 @@ class SyncClient {
 
         if (resp.ok) {
           console.log('[sync] Posted', entries.length, 'transcript(s) from', speaker);
-        } else {
+        } else if (resp.status !== 404) {
           console.error('[sync] Failed to post transcripts:', resp.status);
         }
       } catch (err) {
@@ -143,7 +143,9 @@ class SyncClient {
       const resp = await fetch(`${this.baseUrl}/api/sync/${this.roomId}${sinceParam}`);
 
       if (!resp.ok) {
-        console.error('[sync] Poll failed:', resp.status);
+        if (resp.status !== 404) {
+          console.error('[sync] Poll failed:', resp.status);
+        }
         return;
       }
 

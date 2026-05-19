@@ -9,6 +9,12 @@ const vm = require('vm');
 const Store = require('./store.js');
 const { resolveSvg } = require('./svg-resolver.js');
 
+// Short HH:MM:SS.mmm prefix for emoji diagnostic logs.
+function ts() {
+  const d = new Date();
+  return d.toTimeString().slice(0, 8) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+}
+
 // ---------------------------------------------------------------------------
 // Load extension modules (they export on globalThis)
 // The extension files live under the root package.json which has "type": "module",
@@ -236,11 +242,13 @@ const localServer = new globalThis.LocalServer({
       }
 
       if (!ack) {
+        console.log(ts(), '🤐 [ack] Skipping (wordCount=' + wordCount + ' < ' + ackShortMin + ')');
         // Short prompt — skip the ack entirely. The thinking emoji is already
         // showing, so the user has visual feedback while the agent responds.
         return;
       }
 
+      console.log(ts(), '👂 [ack] Playing acknowledgement:', JSON.stringify(ack), '(wordCount=' + wordCount + ')');
       // Speak the acknowledgment immediately (before the agent responds).
       // Mark the ack so its tts-ended doesn't drop us out of 'thinking' while
       // the agent is still generating the real response.
@@ -1595,6 +1603,11 @@ function setupIPC() {
         }
         localServer.waiters = [];
         localServer.clearRoom();
+        // Reset the panel UI — without this it keeps showing "leave call"
+        // even though we never made it into the meeting.
+        if (panelView && !panelView.webContents.isDestroyed()) {
+          panelView.webContents.send('call-failed', { message: status });
+        }
       } else if (status.includes('Waiting') || status.includes('Ask to join')) {
         localServer.setCallStatus('waiting-to-be-admitted');
       } else if (status.includes('Participating') || status.includes('In call')) {

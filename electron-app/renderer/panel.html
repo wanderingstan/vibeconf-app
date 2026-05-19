@@ -31,7 +31,6 @@
       <div class="helper-text" style="margin-top:8px">You can also join by typing <code>/join-call</code> in any Claude Code session.</div>
 
       <div id="connectedSection" style="display:none">
-        <button id="shareWhiteboardBtn" class="primary" style="margin-top:8px">Share Whiteboard</button>
         <button id="leaveCallBtn" style="margin-top:8px;background:#d93025;color:#fff;border:none;padding:8px 16px;border-radius:20px;cursor:pointer">Leave Call</button>
         <div class="nav-buttons">
           <button id="openTroubleshootingBtn">Troubleshooting</button>
@@ -125,6 +124,12 @@
       <h1>Troubleshooting</h1>
 
       <div id="micPermissionWarning" class="error-bar" style="display:none;margin-bottom:8px">Microphone permission problem detected</div>
+
+      <div class="section">
+        <h2>Whiteboard</h2>
+        <p class="helper-text" style="margin:0 0 8px">Normally the agent shares the whiteboard automatically. Use this only if it didn't.</p>
+        <button id="shareWhiteboardBtn">Share Whiteboard</button>
+      </div>
 
       <div class="field" id="roomIdField" style="display:none">
         <label>Room ID</label>

@@ -8,6 +8,14 @@ const prefsSchema = require('./preferences-schema.js');
 
 const DEFAULT_PORT = 7865;
 
+// Short HH:MM:SS.mmm timestamp for emoji diagnostic logs — lets us cross-
+// reference log lines with actual conversation moments. Keep it local so
+// reading the log doesn't require mental clock-math.
+function ts() {
+  const d = new Date();
+  return d.toTimeString().slice(0, 8) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+}
+
 class LocalServer {
   constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
@@ -197,11 +205,16 @@ class LocalServer {
     // Meet flags 'You' as speaking, which would otherwise trigger the 😐
     // hearing emoji and make the avatar look like it's reacting to itself.
     const wasSpeaking = this.anyoneSpeaking;
-    this.anyoneSpeaking = this.participants.some(p => p.speaking && p.name !== 'You');
+    // Exclude self (the bot's own tile) — its audio meter pulses while TTS plays
+    // and would otherwise keep anyoneSpeaking flipping true, cancelling the
+    // silence timer. Fall back to the legacy 'You' name check for older payloads.
+    this.anyoneSpeaking = this.participants.some(p => p.speaking && !p.isSelf && p.name !== 'You');
 
     if (wasSpeaking && !this.anyoneSpeaking) {
       // Speech just stopped — record when and check waiters
       this.lastSpeechStoppedAt = Date.now();
+      const speakers = this.participants.filter(p => !p.isSelf && p.name !== 'You').map(p => p.name).join(', ') || '(unknown)';
+      console.log(ts(), '🛑 [silence] User(s) stopped speaking:', speakers);
       this._checkWaiters();
       this.onAnyoneSpeakingChange(false);
     } else if (!wasSpeaking && this.anyoneSpeaking) {
@@ -272,7 +285,8 @@ class LocalServer {
         const botNameLower = waiter.bot.toLowerCase();
         const mentioned = entries.some(e => e.text.toLowerCase().includes(botNameLower));
         if (mentioned) {
-          this._resolveWaiter(waiter);
+          console.log(ts(), '🏷️  [resolve] Bot name "' + waiter.bot + '" mentioned — instant resolve');
+          this._resolveWaiter(waiter, 'mention');
           continue;
         }
       }
@@ -287,24 +301,52 @@ class LocalServer {
         continue;
       }
 
-      // Use real-time speaking state from DOMSpeakerTracker (not caption timestamps)
-      // If someone is actively speaking, don't resolve — cancel any silence timer
-      if (this.anyoneSpeaking) {
-        if (waiter.silenceTimer) {
-          clearTimeout(waiter.silenceTimer);
-          waiter.silenceTimer = null;
+      // Use real-time speaking state from DOMSpeakerTracker (not caption timestamps).
+      // If someone is actively speaking, don't resolve — cancel any silence timer.
+      //
+      // Fallback: DOMSpeakerTracker occasionally gets stuck reporting speaking=true
+      // when Meet keeps animating the participant tile after the person has stopped
+      // talking. Captions are ground truth — if no new transcript entry has arrived
+      // for (silence + 3)s, override and treat it as silence so wait_for_speech
+      // doesn't ride out the full 55s timeout.
+      const lastEntry = entries[entries.length - 1];
+      const lastEntryAge = lastEntry ? Date.now() - new Date(lastEntry.timestamp).getTime() : Infinity;
+      const captionsGoneQuiet = lastEntryAge >= (waiter.silence + 3) * 1000;
+
+      if (this.anyoneSpeaking && !captionsGoneQuiet) {
+        // Speaker tracker says speaking — schedule a re-check at the point when
+        // the caption-quiet fallback would kick in, so we don't depend solely on
+        // the tracker flipping false (which sometimes never happens).
+        if (!waiter.silenceTimer && lastEntry) {
+          const timeUntilQuiet = (waiter.silence + 3) * 1000 - lastEntryAge;
+          if (timeUntilQuiet > 0) {
+            waiter.silenceTimer = setTimeout(() => {
+              waiter.silenceTimer = null;
+              this._checkWaiters();
+            }, timeUntilQuiet + 50);
+          }
         }
         continue;
       }
 
-      // Nobody is speaking — check if silence threshold has been met
+      // Nobody is speaking (or captions say they stopped) — check threshold.
+      // Use the MOST RECENT activity signal: either lastSpeechStoppedAt (DOM
+      // tracker stopped) or the most recent caption timestamp. If the speaker
+      // tracker missed a speech-start (audio meter ramp-up lag), a fresh
+      // caption arrives while lastSpeechStoppedAt is stale (minutes old). Using
+      // the stale value would treat a brand-new utterance as already-silent
+      // and resolve immediately on speech-onset — the user-visible "you flip to
+      // thinking the moment I start talking" bug.
       const silenceMs = waiter.silence * 1000;
-      const silenceStart = this.lastSpeechStoppedAt || Date.now();
+      const lastEntryTime = lastEntry ? new Date(lastEntry.timestamp).getTime() : 0;
+      const stopTime = this.lastSpeechStoppedAt || 0;
+      const silenceStart = Math.max(stopTime, lastEntryTime) || Date.now();
       const elapsed = Date.now() - silenceStart;
 
       if (elapsed >= silenceMs) {
         // Silence threshold already met — resolve immediately
-        this._resolveWaiter(waiter);
+        console.log(ts(), '⏱️  [resolve] Silence threshold met (' + Math.round(elapsed) + 'ms ≥ ' + silenceMs + 'ms) — resolving');
+        this._resolveWaiter(waiter, 'silence');
       } else if (!waiter.silenceTimer) {
         // Start a silence timer for the remaining time
         const remaining = silenceMs - elapsed;
@@ -330,11 +372,13 @@ class LocalServer {
     this.onBotStateChange(state, extra);
   }
 
-  _resolveWaiter(waiter) {
+  _resolveWaiter(waiter, reason = 'unknown') {
     if (waiter.resolved) return;
     waiter.resolved = true;
     clearTimeout(waiter.timer);
     clearTimeout(waiter.silenceTimer);
+    const waitedMs = waiter.startTime ? Date.now() - waiter.startTime : 0;
+    console.log(ts(), '✅ [resolve] wait_for_speech resolved — reason=' + reason + ', waited=' + waitedMs + 'ms');
     const response = this._buildResponse(waiter.since, waiter.bot, waiter.startTime);
 
     // If there are actual transcript entries, the agent will now process them → thinking state.
@@ -370,6 +414,7 @@ class LocalServer {
       // Without this, agent loops that call wait_for_speech twice in a row
       // skip the ack on the second resolution because the equal-state guard
       // in _setBotState short-circuits.
+      console.log(ts(), '🧠 [thinking] Processing transcript — ' + wordCount + ' words, ' + deduped.length + ' entry/ies');
       this.botState = 'thinking';
       this.onBotStateChange('thinking', { wordCount });
     }
@@ -632,7 +677,8 @@ class LocalServer {
         resolved: false,
         silenceTimer: null,
         timer: setTimeout(() => {
-          this._resolveWaiter(waiter);
+          console.log(ts(), '⌛ [resolve] wait_for_speech full timeout (' + clampedWait + 's) hit');
+          this._resolveWaiter(waiter, 'timeout');
         }, clampedWait * 1000),
       };
       this.waiters.push(waiter);

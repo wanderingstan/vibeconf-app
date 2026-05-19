@@ -489,3 +489,8 @@ api.on('meet-status', (status) => {
     }
   }
 });
+
+api.on('call-failed', (data) => {
+  exitCallState();
+  if (data?.message) showError(data.message);
+});

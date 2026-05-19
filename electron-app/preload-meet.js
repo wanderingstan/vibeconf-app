@@ -517,6 +517,23 @@ async function autoJoin(botName) {
 // DOM Speaker Tracker (from content-script.js)
 // ---------------------------------------------------------------------------
 
+// Locate the speaking indicator within a participant tile by structure rather
+// than jsname/class. Meet's speaking indicator is a div whose only children are
+// exactly three empty <div>s (the three animated bars/dots). Google rotates
+// jsname/class tokens regularly, but the three-bars shape is stable.
+function findSpeakingIndicator(item) {
+  const candidates = item.querySelectorAll('div');
+  for (const el of candidates) {
+    const kids = el.children;
+    if (kids.length !== 3) continue;
+    if (kids[0].tagName !== 'DIV' || kids[1].tagName !== 'DIV' || kids[2].tagName !== 'DIV') continue;
+    if (kids[0].children.length || kids[1].children.length || kids[2].children.length) continue;
+    if (kids[0].textContent || kids[1].textContent || kids[2].textContent) continue;
+    return el;
+  }
+  return null;
+}
+
 class DOMSpeakerTracker {
   constructor() {
     this.participants = new Map();
@@ -567,12 +584,33 @@ class DOMSpeakerTracker {
     for (const item of items) {
       const name = item.getAttribute('aria-label');
       if (!name) continue;
-      const indicator = item.querySelector('[jsname="QgSmzd"]');
-      if (!indicator) continue;
+      const indicator = findSpeakingIndicator(item);
+      if (!indicator) {
+        // Warn once per participant — likely a DOM-shape change in Meet
+        // (Google rotated tokens or restructured the tile). Without the
+        // indicator, anyoneSpeaking stays false and wait_for_speech falls back
+        // to caption-based silence detection, which is slower.
+        if (!this._missingWarned) this._missingWarned = new Set();
+        if (!this._missingWarned.has(name)) {
+          this._missingWarned.add(name);
+          console.warn('[speaker-tracker] No speaking indicator found for', name,
+            '— Meet DOM may have changed; fix findSpeakingIndicator() in preload-meet.js');
+        }
+        continue;
+      }
+
+      // Self-detection: Meet's own tile has a "(You)" text node next to the
+      // display name (the aria-label is just the name, so we can't infer from
+      // that alone). Without this flag the bot's TTS audio meter pulses get
+      // counted as someone-is-speaking and cancel the silence timer.
+      const isSelf = item.textContent.includes('(You)');
 
       if (!this.participants.has(name)) {
+        if (isSelf) {
+          console.log('[speaker-tracker] Identified self tile:', name);
+        }
         this.participants.set(name, {
-          speaking: false, element: indicator, item,
+          speaking: false, isSelf, element: indicator, item,
           lastClasses: indicator.className, classChangeCount: 0,
           lastPollTime: Date.now(), lastChange: Date.now(),
         });
@@ -580,6 +618,7 @@ class DOMSpeakerTracker {
         const info = this.participants.get(name);
         info.element = indicator;
         info.item = item;
+        info.isSelf = isSelf;
       }
     }
   }
@@ -610,6 +649,7 @@ class DOMSpeakerTracker {
         if (isSpeaking !== info.speaking) {
           info.speaking = isSpeaking;
           info.lastChange = Date.now();
+          console.log('[speaker-tracker] (observer)', name, '→', isSpeaking);
           ipcRenderer.send('update-speaking', { name, speaking: isSpeaking });
         }
       }
@@ -647,8 +687,12 @@ class DOMSpeakerTracker {
       if (isSpeaking !== info.speaking) {
         info.speaking = isSpeaking;
         info.lastChange = Date.now();
-      }
-      if (info.speaking) {
+        console.log('[speaker-tracker] (poll)', name, '→', isSpeaking);
+        // Also IPC the false transition — previously only true was sent, which
+        // meant the local-server never got the 'stopped speaking' edge from this
+        // path (it had to wait for the periodic participants-updated broadcast).
+        ipcRenderer.send('update-speaking', { name, speaking: isSpeaking });
+      } else if (info.speaking) {
         ipcRenderer.send('update-speaking', { name, speaking: true });
       }
     }
@@ -662,7 +706,7 @@ class DOMSpeakerTracker {
 
   getParticipantList() {
     return Array.from(this.participants.entries())
-      .map(([name, info]) => ({ name, speaking: info.speaking }));
+      .map(([name, info]) => ({ name, speaking: info.speaking, isSelf: !!info.isSelf }));
   }
 }
 

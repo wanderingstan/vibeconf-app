@@ -483,6 +483,11 @@ server.tool(
       // error-detection path will catch real failures.
     }
 
+    // Stamp the attempt start so we can filter out stale errors from earlier
+    // shares in the same call (e.g. an "ended unexpectedly" from a prior
+    // drop must not get mis-reported as the cause of THIS attempt failing).
+    const attemptStartedAt = new Date().toISOString();
+
     const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -500,15 +505,34 @@ server.tool(
       // Timeline: 2s whiteboard load + 3s error detection + margin
       await new Promise(resolve => setTimeout(resolve, 7000));
 
-      // Check for errors that occurred during the share attempt
+      // Check for errors that occurred during THIS share attempt (filter by
+      // timestamp — earlier-call errors like "ended unexpectedly" must not
+      // bleed into this attempt's diagnostic).
       const statusResp = await fetch(`${BASE_URL}/api/sync/${roomId}`);
       const statusData = await statusResp.json();
       const errors = statusData.status?.errors || [];
-      const shareErrors = errors.filter(e => e.message.includes('Screen share'));
+      const shareErrors = errors.filter(
+        e => e.message.includes('Screen share') && e.timestamp >= attemptStartedAt
+      );
 
       if (shareErrors.length > 0) {
         const latestError = shareErrors[shareErrors.length - 1];
-        return { content: [{ type: "text", text: `Screen sharing failed: ${latestError.message}. The app may need screen recording permission in macOS System Settings > Privacy & Security > Screen Recording.` }] };
+        // Re-check perm now so we don't blame perms when they're actually fine
+        // (Seth's #138: first share worked, retry blamed permission). Only
+        // mention perm if it's actually denied/restricted.
+        const screenPerm = statusData.status?.permissions?.screenRecording;
+        const permActuallyDenied = screenPerm && screenPerm !== 'granted' && screenPerm !== 'unknown';
+        const suffix = permActuallyDenied
+          ? ` Screen recording permission is '${screenPerm}' — fix in System Settings > Privacy & Security > Screen Recording.`
+          : ` Permission is OK — the Meet UI may not be in a presentable state. Tell the user the share dropped and offer to retry.`;
+        return { content: [{ type: "text", text: `Screen sharing failed: ${latestError.message}.${suffix}` }] };
+      }
+
+      // Re-check sharing state — if the local server says we're not sharing
+      // despite no error, the attempt silently no-op'd (e.g. Present button
+      // not findable). Better to surface that than claim success.
+      if (statusData.status?.sharing !== true) {
+        return { content: [{ type: "text", text: "Share request was sent but the app reports it isn't sharing. The Meet UI may need to be refreshed or focused. Tell the user." }] };
       }
 
       return { content: [{ type: "text", text: "Whiteboard is now being shared in the call. Use update_whiteboard to change its content." }] };

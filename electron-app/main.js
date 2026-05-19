@@ -1668,8 +1668,19 @@ function setupIPC() {
 
   // Track our own presenting state from Meet UI (Stop presenting button visible)
   ipcMain.on('self-presenting', (_event, { presenting }) => {
+    const wasSharing = localServer.sharing;
     localServer.setSharing(presenting);
     if (!presenting) {
+      // Distinguish an agent-initiated stop (onStopSharing already cleared
+      // fullScreenShareRequested and pushed a screen-share-stopped event)
+      // from an unexpected drop (browser killed the stream, user clicked
+      // Chrome's floating Stop pill, codec stall, perm flip mid-call).
+      // When the agent asked to share and we transition from sharing→not
+      // sharing without anyone having cleared the request, that's a drop.
+      if (wasSharing && fullScreenShareRequested) {
+        console.warn('[electron] Screen share ended unexpectedly');
+        localServer.addError('Screen share ended unexpectedly');
+      }
       fullScreenShareRequested = false;
     }
   });

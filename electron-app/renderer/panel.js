@@ -106,6 +106,9 @@ const authStatus = document.getElementById('authStatus');
 const loginBtn = document.getElementById('loginBtn');
 const logoutBtn = document.getElementById('logoutBtn');
 
+const loginPrompt = document.getElementById('loginPrompt');
+const mainLoginBtn = document.getElementById('mainLoginBtn');
+
 async function checkAuthStatus() {
   try {
     const data = await api.invoke('check-auth');
@@ -114,19 +117,32 @@ async function checkAuthStatus() {
       authStatus.style.color = '#81c995';
       loginBtn.style.display = 'none';
       logoutBtn.style.display = 'inline-block';
+      loginPrompt.style.display = 'none';
     } else {
       authStatus.textContent = 'Not logged in';
       authStatus.style.color = '#f28b82';
       loginBtn.style.display = 'block';
       logoutBtn.style.display = 'none';
+      loginPrompt.style.display = 'block';
     }
   } catch {
     authStatus.textContent = 'Auth check failed';
     authStatus.style.color = '#f28b82';
     loginBtn.style.display = 'block';
     logoutBtn.style.display = 'none';
+    loginPrompt.style.display = 'block';
   }
 }
+
+mainLoginBtn.addEventListener('click', async () => {
+  mainLoginBtn.textContent = 'Opening Google sign-in...';
+  mainLoginBtn.disabled = true;
+  await api.invoke('login');
+  setTimeout(() => {
+    mainLoginBtn.textContent = 'Sign in with Google';
+    mainLoginBtn.disabled = false;
+  }, 3000);
+});
 
 loginBtn.addEventListener('click', async () => {
   loginBtn.textContent = 'Opening Google sign-in...';

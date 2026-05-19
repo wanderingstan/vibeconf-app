@@ -269,8 +269,17 @@ function checkMicPermission() {
 
 let BOT_NAME = 'Jimmy';
 
-ipcRenderer.invoke('get-config', ['botName']).then((result) => {
-  if (result?.botName) BOT_NAME = result.botName;
+// Race-sensitive: if Meet's pre-join screen renders before this resolves,
+// autoJoin would type the default 'Jimmy' into the name input even when the
+// user has a different botName configured. Keep the promise around so the
+// DOMContentLoaded handler can await it before reading BOT_NAME.
+const botNameLoaded = ipcRenderer.invoke('get-config', ['botName']).then((result) => {
+  if (result?.botName) {
+    BOT_NAME = result.botName;
+    console.log('[electron-meet] Loaded botName from config:', BOT_NAME);
+  }
+}).catch((err) => {
+  console.warn('[electron-meet] Failed to load botName from config:', err.message);
 });
 
 function ensureStatusBar() {
@@ -942,6 +951,11 @@ window.addEventListener('DOMContentLoaded', () => {
   // Watch for pre-join screen
   (async () => {
     sendStatus('Loading Meet...');
+
+    // Make sure the config-loaded botName has had a chance to land before we
+    // type into Meet's name field. Without this await the IPC roundtrip can
+    // lose to Meet's pre-join render and we'd type the default 'Jimmy'.
+    await botNameLoaded;
 
     for (let i = 0; i < 30; i++) {
       const nameInput =

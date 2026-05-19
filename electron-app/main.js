@@ -767,9 +767,11 @@ function ensureClaudeIntegration(localPort) {
   if (!claudeJson.mcpServers) claudeJson.mcpServers = {};
 
   const localBaseUrl = `http://127.0.0.1:${localPort || 7865}`;
+  const configuredBotName = store.get('botName') || 'Jimmy';
   const currentMcp = claudeJson.mcpServers.vibeconferencing;
   const needsUpdate = !currentMcp ||
     currentMcp.env?.VIBECONF_BASE_URL !== localBaseUrl ||
+    currentMcp.env?.VIBECONF_BOT_NAME !== configuredBotName ||
     currentMcp.args?.[0] !== mcpServerPath;
 
   if (needsUpdate) {
@@ -778,12 +780,12 @@ function ensureClaudeIntegration(localPort) {
       args: [mcpServerPath],
       env: {
         VIBECONF_ROOM_ID: '',
-        VIBECONF_BOT_NAME: 'AI Assistant',
+        VIBECONF_BOT_NAME: configuredBotName,
         VIBECONF_BASE_URL: localBaseUrl,
       },
     };
     fs.writeFileSync(claudeJsonPath, JSON.stringify(claudeJson, null, 2) + '\n');
-    console.log('[electron] Updated MCP config → local server at', localBaseUrl);
+    console.log('[electron] Updated MCP config → local server at', localBaseUrl, 'botName:', configuredBotName);
     changed = true;
   } else {
     console.log('[electron] MCP config already pointing to local server');

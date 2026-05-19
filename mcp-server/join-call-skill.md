@@ -8,15 +8,19 @@ allowed-tools: Bash mcp__vibeconferencing__get_room_info mcp__vibeconferencing__
 
 Join the user's current Google Meet call as an AI bot participant.
 
-## Step 1: Determine the room code
+## Step 1: Determine the room code and bot name
 
 Parse `$ARGUMENTS` for a meet code (pattern: `xxx-xxxx-xxx`). If found, use it directly and skip detection. Any non-code argument is the bot name.
 
+**If no bot name is in `$ARGUMENTS`**, check your loaded `CLAUDE.md` context for a persona / character name. If the project's CLAUDE.md describes you as a specific character (e.g. "You are Coltrane, a jazz facilitator…"), use that name as your bot name. The persona name becomes your Meet display name AND your conversational identity. Pass it to `join_call` via the `bot_name` parameter — the app persists it before navigating to Meet, so it'll appear correctly in the participant list.
+
+If neither `$ARGUMENTS` nor CLAUDE.md supplies a name, fall back to the user's configured `botName` preference (default: "Jimmy").
+
 Examples:
-- `/join-call abc-defg-hij` -> room code `abc-defg-hij`, bot name "Jimmy"
-- `/join-call abc-defg-hij Stanbot` -> room code `abc-defg-hij`, bot name "Stanbot"
+- `/join-call abc-defg-hij` -> room code `abc-defg-hij`, name from CLAUDE.md persona or "Jimmy"
+- `/join-call abc-defg-hij Stanbot` -> room code `abc-defg-hij`, bot name "Stanbot" (arg wins over CLAUDE.md)
 - `/join-call Stanbot` -> auto-detect room, bot name "Stanbot"
-- `/join-call` -> auto-detect room, bot name "Jimmy"
+- `/join-call` -> auto-detect room, name from CLAUDE.md persona or "Jimmy"
 
 **If no room code in arguments**, first check if the Vibeconferencing app has already detected a call:
 

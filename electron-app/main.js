@@ -112,8 +112,16 @@ const localServer = new globalThis.LocalServer({
   },
   onJoinCall: (meetCode, botName) => {
     console.log('[local-server] Join call requested by agent:', meetCode, botName);
-    if (botName && panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('set-bot-name', botName);
+    if (botName) {
+      // Persist so preload-meet.js's get-config read picks up THIS name when
+      // typing into Meet's pre-join name input. Without this, the agent can
+      // pass bot_name='Coltrane' but preload would still type the previously
+      // stored botName into Meet.
+      if (store) store.set('botName', botName);
+      sync.updateConfig?.({ botName });
+      if (panelView && !panelView.webContents.isDestroyed()) {
+        panelView.webContents.send('set-bot-name', botName);
+      }
     }
     const meetUrl = `https://meet.google.com/${meetCode}`;
     loadMeetURL(meetUrl);
@@ -818,7 +826,7 @@ function ensureClaudeIntegration(localPort) {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '12';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '13';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}

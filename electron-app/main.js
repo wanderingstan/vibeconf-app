@@ -62,7 +62,9 @@ const sync = new globalThis.SyncClient({
   },
   getAuthCookie: async () => {
     try {
-      const baseUrl = (store && store.get('syncBaseUrl')) || 'http://127.0.0.1:7865';
+      // The vc_session cookie is stored against the website URL (where auth
+      // ran), not the local server — read it from the same place.
+      const baseUrl = getWebsiteUrl();
       const cookies = await session.defaultSession.cookies.get({ url: baseUrl, name: 'vc_session' });
       return cookies.length > 0 ? cookies[0].value : null;
     } catch {
@@ -438,8 +440,30 @@ function createWhiteboardWindow(roomUrl) {
 const PANEL_WIDTH = 380;
 
 // Check if already logged in
+// The public website hosts auth (/api/auth/*) and the whiteboard web-rooms.
+// The local MCP server (127.0.0.1:7865) does NOT — so auth must never target
+// it (fixes #147 where a fresh install sent the login button to the local
+// server). Resolution order, so testers can point auth at a Vercel preview:
+//   1. VIBECONF_WEBSITE_URL env var          (per-launch override)
+//   2. `websiteUrl` preference               (persisted override)
+//   3. `syncBaseUrl` if it's an https URL    (back-compat with existing setups)
+//   4. production default
+const DEFAULT_WEBSITE = 'https://vibeconferencing.com';
+function getWebsiteUrl() {
+  const envUrl = process.env.VIBECONF_WEBSITE_URL;
+  if (envUrl && /^https?:\/\//i.test(envUrl)) return envUrl;
+
+  const prefUrl = store.get('websiteUrl');
+  if (prefUrl && /^https?:\/\//i.test(prefUrl)) return prefUrl;
+
+  const syncUrl = store.get('syncBaseUrl');
+  if (syncUrl && /^https:\/\//i.test(syncUrl)) return syncUrl;
+
+  return DEFAULT_WEBSITE;
+}
+
 async function checkAuth() {
-  const baseUrl = store.get('syncBaseUrl') || 'http://127.0.0.1:7865';
+  const baseUrl = getWebsiteUrl();
   const { net } = require('electron');
 
   // Get the session cookie manually to include it
@@ -468,7 +492,7 @@ async function checkAuth() {
 // Google blocks embedded webviews, so we must use the real browser.
 // We start a local HTTP server to catch the session cookie after login.
 function openGoogleLogin() {
-  const baseUrl = store.get('syncBaseUrl') || 'http://127.0.0.1:7865';
+  const baseUrl = getWebsiteUrl();
   const http = require('http');
   const { shell } = require('electron');
   const { net } = require('electron');
@@ -1120,6 +1144,10 @@ app.whenReady().then(async () => {
     sync.updateConfig({ baseUrl: cliArgs['sync-url'] });
     store.set('syncBaseUrl', cliArgs['sync-url']);
   }
+  if (cliArgs['website-url']) {
+    // Override the auth/web-room host (e.g. a Vercel preview) for testing.
+    store.set('websiteUrl', cliArgs['website-url']);
+  }
 
   // Check auth status on startup
   checkAuth().then(data => {
@@ -1566,7 +1594,7 @@ function setupIPC() {
   });
 
   ipcMain.handle('logout', async () => {
-    const baseUrl = store.get('syncBaseUrl') || 'http://127.0.0.1:7865';
+    const baseUrl = getWebsiteUrl();
     await session.defaultSession.cookies.remove(baseUrl, 'vc_session');
     if (panelView && !panelView.webContents.isDestroyed()) {
       panelView.webContents.send('auth-changed');
@@ -1794,8 +1822,19 @@ function setupIPC() {
 
   // --- Sync config ---
   ipcMain.on('update-sync-config', (_event, config) => {
-    sync.updateConfig(config);
-    if (config.baseUrl) store.set('syncBaseUrl', config.baseUrl);
+    // A blank Server URL means "use the default" — delete the override rather
+    // than storing an empty string. Previously the falsy guard left the old
+    // value in place, so clearing the field did nothing.
+    if (Object.prototype.hasOwnProperty.call(config, 'baseUrl')) {
+      const trimmed = (config.baseUrl || '').trim();
+      if (trimmed) {
+        store.set('syncBaseUrl', trimmed);
+        sync.updateConfig({ baseUrl: trimmed });
+      } else {
+        store.delete('syncBaseUrl');
+        sync.updateConfig({ baseUrl: DEFAULT_WEBSITE });
+      }
+    }
   });
 
   // --- Forward messages from Meet content script to panel ---

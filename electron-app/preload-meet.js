@@ -909,6 +909,21 @@ window.addEventListener('message', (event) => {
 // ---------------------------------------------------------------------------
 
 async function clickPresentNow(shareType) {
+  // Already presenting? Meet swaps "Present now" → "Stop presenting"/"Show", so
+  // the present button vanishes. Without this check we'd report "Could not find
+  // Present button" — which looks like an auth/permission failure when in fact
+  // the share is already active (often with the infinity-mirror anti-loop
+  // dialog showing). Detect it and tell the caller it's a no-op success.
+  const alreadyPresenting =
+    document.querySelector('[aria-label*="Stop presenting" i]') ||
+    document.querySelector('[aria-label*="Stop sharing" i]') ||
+    document.querySelector('[data-tooltip*="Stop presenting" i]') ||
+    document.querySelector('[data-tooltip*="Stop sharing" i]');
+  if (alreadyPresenting) {
+    console.log('[electron-meet] Already presenting — skipping Present click');
+    return 'already-presenting';
+  }
+
   // Meet's "Present now" button — try multiple selectors
   // When someone else is presenting, the tooltip changes to "{Name} is presenting"
   const presentBtn =
@@ -948,18 +963,22 @@ async function clickPresentNow(shareType) {
         console.log('[electron-meet] Share picker will trigger getDisplayMedia directly');
       }
     }
-    return true;
+    return 'started';
   }
 
   console.warn('[electron-meet] Could not find "Present now" button');
-  return false;
+  return 'not-found';
 }
 
 ipcRenderer.on('trigger-screen-share', async (_event, options) => {
   const shareType = options?.shareType || 'window';
   console.log('[electron-meet] Screen share triggered, type:', shareType);
-  const success = await clickPresentNow(shareType);
-  if (!success) {
+  const result = await clickPresentNow(shareType);
+  if (result === 'already-presenting') {
+    // Not an error — the share is already active. Tell main so it can report a
+    // truthful "already sharing" instead of a misleading "couldn't find button".
+    ipcRenderer.send('self-presenting', { presenting: true });
+  } else if (result === 'not-found') {
     ipcRenderer.send('screen-share-error', 'Could not find Present button');
   }
 

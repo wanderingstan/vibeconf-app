@@ -83,6 +83,15 @@ function updateJoinBtnState() {
 meetUrlInput.addEventListener('input', updateJoinBtnState);
 
 // ---------------------------------------------------------------------------
+// App version
+// ---------------------------------------------------------------------------
+
+api.invoke('get-app-version').then((version) => {
+  const el = document.getElementById('appVersion');
+  if (el && version) el.textContent = `v${version}`;
+}).catch(() => {});
+
+// ---------------------------------------------------------------------------
 // Load saved config
 // ---------------------------------------------------------------------------
 
@@ -226,10 +235,9 @@ joinBtn.addEventListener('click', () => {
   joinBtn.textContent = 'Joining...';
   joinBtn.disabled = true;
 
-  const match = url.match(/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/);
-  if (match) {
-    enterCallState(match[1]);
-  }
+  // Don't eagerly call enterCallState here — wait for the 'call-status-changed'
+  // IPC to fire with 'in-call'. Otherwise the Leave Call button appears
+  // before we know whether admission succeeded.
 
   setTimeout(() => {
     if (!inCall) {
@@ -499,11 +507,32 @@ api.on('extension-message', (message) => {
 
 api.on('meet-status', (status) => {
   if (status.ready) {
+    // Page loaded — remember the room code (so troubleshooting fields populate),
+    // but don't yet show the "Leave Call" UI; we may still be denied or in the
+    // waiting-room. The 'call-status-changed' IPC drives the actual inCall flip
+    // once we're admitted.
     const match = status.url?.match(/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/);
     if (match) {
-      enterCallState(match[1]);
+      meetCodeInput.value = match[1];
+      const base = syncBaseUrl || 'http://127.0.0.1:7865';
+      roomLink.href = `${base}/room/${match[1]}`;
+      updateCurlCommand(match[1]);
+      updateAgentPrompt(match[1]);
     }
   }
+});
+
+api.on('call-status-changed', ({ status }) => {
+  // Authoritative call-state signal from the local server. Only show Leave Call
+  // once we're actually in the meeting; hide it on idle/left.
+  if (status === 'in-call') {
+    const code = meetCodeInput.value || '';
+    enterCallState(code);
+  } else if (status === 'idle' || status === 'left') {
+    exitCallState();
+  }
+  // 'joining' / 'waiting-to-be-admitted' stay in the pre-call UI — the join
+  // button hides itself once clicked, and the user sees the Meet view loading.
 });
 
 api.on('call-failed', (data) => {

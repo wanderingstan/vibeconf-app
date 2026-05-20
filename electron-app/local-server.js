@@ -739,6 +739,12 @@ class LocalServer {
       // Agent learns its speech was suppressed via results.transcript.reason.
       if (data.role === 'bot' && this.mode === 'silent') {
         results.transcript = { ok: false, reason: 'mode-silent', sent: 0, entries: [] };
+      } else if (data.role === 'bot' && this.anyoneSpeaking) {
+        // Barge-in guard: user started speaking after the agent decided to
+        // respond. Drop the response and tell the agent to wait_for_speech
+        // again — talking over them is the worst voice-UX failure mode.
+        console.log(ts(), '🛡️  [barge-in] Dropped bot speech — user is currently speaking:', data.transcript?.[0]?.text?.slice(0, 60));
+        results.transcript = { ok: false, reason: 'user-speaking', sent: 0, entries: [] };
       } else {
         const entries = [];
         for (const t of data.transcript) {

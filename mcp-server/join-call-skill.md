@@ -130,3 +130,5 @@ Key behaviors by mode:
 | silent | no | yes | no (suppressed) | yes |
 
 If you call `speak` while in silent mode, the server returns `{ ok: false, reason: 'mode-silent' }` — don't retry; the user asked for silence.
+
+If `speak` returns "Speech dropped — the user started speaking before your response could play", a user began talking after you decided to respond. Don't retry the same message — call `wait_for_speech` to hear what they said and respond to that instead.

@@ -223,10 +223,17 @@ server.tool(
     });
 
     const data = await resp.json();
-    if (data.success) {
+    const tx = data.results?.transcript;
+    if (tx?.reason === 'mode-silent') {
+      return { content: [{ type: "text", text: "Speech suppressed (silent mode)." }] };
+    }
+    if (tx?.reason === 'user-speaking') {
+      return { content: [{ type: "text", text: "Speech dropped — the user started speaking before your response could play. Call wait_for_speech to hear what they said and respond to their new message instead of repeating this one." }] };
+    }
+    if (data.success && tx?.ok !== false) {
       return { content: [{ type: "text", text: `Spoken: "${text}"` }] };
     } else {
-      return { content: [{ type: "text", text: `Error: ${data.error || "Failed to post"}` }] };
+      return { content: [{ type: "text", text: `Error: ${data.error || tx?.reason || "Failed to post"}` }] };
     }
   }
 );

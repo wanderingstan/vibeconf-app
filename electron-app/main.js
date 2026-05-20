@@ -279,6 +279,13 @@ const localServer = new globalThis.LocalServer({
         payload: { status },
       });
     }
+    // Also let the panel reflect real call state. Showing "Leave Call" between
+    // "URL navigated" and "actually admitted" is misleading — especially when
+    // entry is denied, since that 15s grace window leaves the button visible
+    // while we wait for the denial page to be detected.
+    if (panelView && !panelView.webContents.isDestroyed()) {
+      panelView.webContents.send('call-status-changed', { status });
+    }
   },
 
   onAnyoneSpeakingChange: (anyoneSpeaking) => {
@@ -1506,6 +1513,8 @@ function setupIPC() {
   ipcMain.handle('set-config', (_event, key, value) => {
     store.set(key, value);
   });
+
+  ipcMain.handle('get-app-version', () => app.getVersion());
 
   // --- Auth check ---
   ipcMain.handle('check-auth', () => {

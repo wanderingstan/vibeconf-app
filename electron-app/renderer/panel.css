@@ -259,6 +259,17 @@ button:disabled {
   flex-shrink: 0;
 }
 
+.header-title-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.1;
+}
+
+.app-version {
+  font-size: 11px;
+  color: #9aa0a6;
+}
+
 .header-row h1 {
   margin-bottom: 0;
 }

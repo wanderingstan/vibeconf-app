@@ -562,9 +562,19 @@ class DOMSpeakerTracker {
   }
 
   _ensurePeoplePaneOpen() {
-    const participantList = document.querySelector('[jsname="jrQDbd"]') ||
-      document.querySelector('[role="list"][aria-label="Participants"]');
-    if (participantList) return;
+    // Detect "pane is open" by the same structural marker _scanParticipants uses:
+    // tiles only exist when the people list is rendered. The previous check used
+    // jsname="jrQDbd" + a stale aria-label fallback; once Google rotated jsname
+    // the "open" check always returned false and the 2-second loop toggled the
+    // pane open→closed→open→closed forever (especially visible under throttling).
+    const tiles = document.querySelectorAll('div[role="listitem"][aria-label]');
+    if (tiles.length > 0) return;
+
+    // Throttle clicks so a slow Meet load doesn't fire repeated opens before
+    // the first click has finished animating. If we just clicked, give it a
+    // second to settle before trying again.
+    const now = Date.now();
+    if (this._lastPeopleClickAt && now - this._lastPeopleClickAt < 1500) return;
 
     const allButtons = document.querySelectorAll('[role="button"][aria-labelledby]');
     for (const btn of allButtons) {
@@ -572,6 +582,8 @@ class DOMSpeakerTracker {
       if (labelId) {
         const label = document.getElementById(labelId);
         if (label && label.textContent.trim() === 'People') {
+          this._lastPeopleClickAt = now;
+          console.log('[speaker-tracker] Opening People pane');
           btn.click();
           return;
         }

@@ -273,20 +273,22 @@ async function openChatPane() {
 }
 
 // Reopen the people pane so the DOMSpeakerTracker can resume reading speaking
-// indicators. Mirrors DOMSpeakerTracker._ensurePeoplePaneOpen's button lookup.
-function clickPeopleButton() {
-  const buttons = document.querySelectorAll('[role="button"][aria-labelledby]');
-  for (const btn of buttons) {
-    const labelId = btn.getAttribute('aria-labelledby');
-    if (!labelId) continue;
-    const label = document.getElementById(labelId);
-    if (label && label.textContent.trim() === 'People') {
-      btn.click();
-      return true;
+// indicators. Clicking People also closes the chat pane (Meet's side panel
+// shows one pane at a time). Verify the tiles actually appear and retry — a
+// single click can be dropped mid-animation. The tracker's 2s self-heal is a
+// backstop if all retries somehow fail.
+async function restorePeoplePane() {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const btn = findPeopleButton();
+    if (btn) btn.click();
+    for (let i = 0; i < 8; i++) {
+      await delay(150);
+      if (document.querySelectorAll('div[role="listitem"][aria-label]').length > 0) {
+        return true;
+      }
     }
   }
-  const byLabel = document.querySelector('button[aria-label*="people" i], [role="button"][aria-label*="people" i]');
-  if (byLabel) { byLabel.click(); return true; }
+  console.warn('[electron-meet] Failed to reopen People pane after chat op');
   return false;
 }
 
@@ -348,7 +350,7 @@ async function readChatFlow() {
   if (!opened) throw new Error('Could not open the chat pane');
   await delay(300); // let messages render
   const messages = scrapeChatMessages();
-  clickPeopleButton(); // restore speech tracking
+  await restorePeoplePane(); // close chat, restore speech tracking
   return messages;
 }
 
@@ -366,7 +368,7 @@ async function sendChatFlow(text) {
   input.dispatchEvent(new KeyboardEvent('keyup', enter));
   await delay(200);
   const sent = input.value.trim() === '';
-  clickPeopleButton(); // restore speech tracking
+  await restorePeoplePane(); // close chat, restore speech tracking
   return sent;
 }
 
@@ -690,6 +692,19 @@ function findSpeakingIndicator(item) {
   return null;
 }
 
+// Find the "People" toggle in the bottom bar. Match leniently — with
+// participants present the accessible name often carries a count (e.g.
+// "People3"), so an exact "People" check misses it. startsWith handles both.
+function findPeopleButton() {
+  for (const btn of document.querySelectorAll('[role="button"][aria-labelledby]')) {
+    const labelId = btn.getAttribute('aria-labelledby');
+    if (!labelId) continue;
+    const label = document.getElementById(labelId);
+    if (label && label.textContent.trim().startsWith('People')) return btn;
+  }
+  return document.querySelector('button[aria-label^="People" i], [role="button"][aria-label^="People" i]');
+}
+
 class DOMSpeakerTracker {
   constructor() {
     this.participants = new Map();
@@ -704,7 +719,12 @@ class DOMSpeakerTracker {
     this._ensurePeoplePaneOpen();
     this.checkInterval = setInterval(() => {
       this._scanParticipants();
-      if (this.participants.size === 0) this._ensurePeoplePaneOpen();
+      // Self-heal: reopen the people pane whenever it's closed (e.g. a chat
+      // read/send switched to the chat pane). _ensurePeoplePaneOpen no-ops when
+      // tiles are already present, so this is cheap. Gating on participants.size
+      // was wrong — the Map keeps stale entries after the pane closes, so it
+      // stayed non-zero and the pane never reopened.
+      this._ensurePeoplePaneOpen();
     }, 2000);
     this._startObserving();
     this.speakingPollInterval = setInterval(() => this._pollSpeakingState(), 200);
@@ -732,18 +752,11 @@ class DOMSpeakerTracker {
     const now = Date.now();
     if (this._lastPeopleClickAt && now - this._lastPeopleClickAt < 1500) return;
 
-    const allButtons = document.querySelectorAll('[role="button"][aria-labelledby]');
-    for (const btn of allButtons) {
-      const labelId = btn.getAttribute('aria-labelledby');
-      if (labelId) {
-        const label = document.getElementById(labelId);
-        if (label && label.textContent.trim() === 'People') {
-          this._lastPeopleClickAt = now;
-          console.log('[speaker-tracker] Opening People pane');
-          btn.click();
-          return;
-        }
-      }
+    const btn = findPeopleButton();
+    if (btn) {
+      this._lastPeopleClickAt = now;
+      console.log('[speaker-tracker] Opening People pane');
+      btn.click();
     }
   }
 

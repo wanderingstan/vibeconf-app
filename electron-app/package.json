@@ -8,8 +8,8 @@
     "start": "electron .",
     "dev": "electron . --devtools=true",
     "pack": "electron-builder --dir",
-    "dist": "electron-builder && tccutil reset Microphone com.vibeconferencing.agent",
-    "dist:fast": "electron-builder -c.mac.notarize=false && tccutil reset Microphone com.vibeconferencing.agent"
+    "dist": "electron-builder && tccutil reset All com.vibeconferencing.agent",
+    "dist:fast": "electron-builder -c.mac.notarize=false && tccutil reset All com.vibeconferencing.agent"
   },
   "build": {
     "appId": "com.vibeconferencing.agent",

@@ -1162,6 +1162,7 @@ app.whenReady().then(async () => {
   let detectedMeetUrl = null;
   let meetDetectionInterval = null;
   let currentMeetUrl = null; // Track what we've joined
+  let automationPromptShown = false; // only nag about Automation permission once
 
   function startMeetDetection() {
     if (meetDetectionInterval) return;
@@ -1225,8 +1226,30 @@ allURLs`;
         pollInFlight = false;
         const elapsed = ((Date.now() - pollStart) / 1000).toFixed(1);
         if (err) {
-          const stderrMsg = stderr?.trim();
-          console.log(`[electron] Meet poll failed (${elapsed}s):`, stderrMsg || err.killed ? 'timeout' : err.message?.slice(0, 80));
+          const stderrMsg = stderr?.trim() || '';
+          console.log(`[electron] Meet poll failed (${elapsed}s):`, stderrMsg || (err.killed ? 'timeout' : err.message?.slice(0, 80)));
+          // -1743 = errAEEventNotPermitted: the user hasn't granted Automation
+          // permission to control the browser. macOS won't re-prompt once it's
+          // been denied/dismissed, so the poll fails silently forever and Meet
+          // detection just never works (Seth's case). Surface it once with a
+          // path to fix it.
+          const notAuthorized = stderrMsg.includes('-1743') || /not authorized to send apple events/i.test(stderrMsg);
+          if (notAuthorized && !automationPromptShown) {
+            automationPromptShown = true;
+            dialog.showMessageBox({
+              type: 'warning',
+              title: 'Permission needed to detect Google Meet',
+              message: 'Vibeconferencing needs Automation permission to find your active Google Meet call.',
+              detail: 'Open System Settings → Privacy & Security → Automation, then enable the checkbox under Vibeconferencing for your browser (Google Chrome / Brave / Safari).\n\nYou can also just paste the Meet link into the app to join without this permission.',
+              buttons: ['Open System Settings', 'Later'],
+              defaultId: 0,
+              cancelId: 1,
+            }).then(({ response }) => {
+              if (response === 0) {
+                shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Automation');
+              }
+            }).catch(() => {});
+          }
           return;
         }
         console.log(`[electron] Meet poll ok (${elapsed}s)`);

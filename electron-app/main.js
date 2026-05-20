@@ -996,18 +996,27 @@ app.whenReady().then(async () => {
         .catch(() => {});
     } else if (screenAccess === 'denied' || screenAccess === 'restricted') {
       // macOS won't re-prompt once denied — guide the user to System Settings.
-      const choice = dialog.showMessageBoxSync({
-        type: 'warning',
-        title: 'Screen Recording Permission',
-        message: 'Whiteboard sharing is disabled',
-        detail: 'Vibeconferencing needs Screen Recording permission to share the whiteboard in your Meet calls. The app will still work without it — the bot just can\'t share visuals.\n\nGrant access in System Settings > Privacy & Security > Screen Recording, then restart the app.',
-        buttons: ['Open System Settings', 'Continue Without'],
-        defaultId: 0,
-        cancelId: 1,
-      });
-      if (choice === 0) {
-        shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
-      }
+      // BUT first attempt a capture: an app only appears in the Screen Recording
+      // list once it has tried to record. Without this, Vibeconferencing is
+      // absent from the System Settings pane (nothing to toggle) — common after
+      // `tccutil reset` wipes the prior TCC entry. The getSources call registers
+      // the app so it shows up with a toggle when we open Settings.
+      desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1, height: 1 } })
+        .catch(() => {})
+        .finally(() => {
+          const choice = dialog.showMessageBoxSync({
+            type: 'warning',
+            title: 'Screen Recording Permission',
+            message: 'Whiteboard sharing is disabled',
+            detail: 'Vibeconferencing needs Screen Recording permission to share the whiteboard in your Meet calls. The app will still work without it — the bot just can\'t share visuals.\n\nIn System Settings > Privacy & Security > Screen & System Audio Recording, enable the toggle next to Vibeconferencing, then restart the app.',
+            buttons: ['Open System Settings', 'Continue Without'],
+            defaultId: 0,
+            cancelId: 1,
+          });
+          if (choice === 0) {
+            shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+          }
+        });
     }
   } else {
     localServer.setPermission('screenRecording', 'granted');

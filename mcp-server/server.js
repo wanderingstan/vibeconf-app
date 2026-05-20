@@ -671,6 +671,54 @@ server.tool(
   }
 );
 
+// --- read_chat ---
+server.tool(
+  "read_chat",
+  "Read the messages in the Google Meet text chat. Returns sender (best-effort) and text for each visible message. Use this when get_room_info reports unread chat, or when someone says they posted something in the chat. Note: reading chat briefly opens the chat pane (which closes the people pane), so speaker detection pauses for ~1 second while it reads, then resumes automatically.",
+  {
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async () => {
+    const resp = await fetch(`${BASE_URL}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "read" }),
+    });
+    const data = await resp.json();
+    if (!data?.success) {
+      return { content: [{ type: "text", text: `Error reading chat: ${data?.error || "unknown"}` }] };
+    }
+    const messages = data.messages || [];
+    if (messages.length === 0) {
+      return { content: [{ type: "text", text: "Chat is empty." }] };
+    }
+    const text = messages.map(m => `${m.sender ? m.sender + ': ' : ''}${m.text}`).join('\n');
+    return { content: [{ type: "text", text }] };
+  }
+);
+
+// --- send_chat ---
+server.tool(
+  "send_chat",
+  "Post a message into the Google Meet text chat. Use this for things that are awkward to say aloud — links, code snippets, the room URL — or to respond in text when in silent mode. Note: sending briefly opens the chat pane (which closes the people pane), so speaker detection pauses for ~1 second, then resumes automatically.",
+  {
+    text: z.string().describe("The message to post in the Meet chat."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ text }) => {
+    const resp = await fetch(`${BASE_URL}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "send", text }),
+    });
+    const data = await resp.json();
+    if (data?.success) {
+      return { content: [{ type: "text", text: `Posted to chat: "${text}"` }] };
+    }
+    return { content: [{ type: "text", text: `Error sending chat: ${data?.error || "unknown"}` }] };
+  }
+);
+
 // --- set_avatar_emoji ---
 server.tool(
   "set_avatar_emoji",
@@ -843,6 +891,10 @@ server.tool(
 
     if (status.someoneElsePresenting) {
       sections.push(`Someone else presenting: ${status.presenterName || 'yes'}`);
+    }
+
+    if (status.chatUnread) {
+      sections.push('Chat: unread message(s) — use read_chat to see them');
     }
 
     const screenPerm = status.permissions?.screenRecording;

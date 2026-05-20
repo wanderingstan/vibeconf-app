@@ -231,6 +231,162 @@ function setCameraOff(off) {
 }
 
 // ---------------------------------------------------------------------------
+// Chat — read & send Meet chat messages
+//
+// Opening chat CLOSES the people pane, which is what the DOMSpeakerTracker
+// reads for speech detection. So every chat operation is discrete: open chat,
+// do the thing, then reopen the people pane. The chat button's aria-label
+// ("… - New message") is a passive unread signal we can read WITHOUT opening
+// the pane, so monitoring for unread messages doesn't disturb speech tracking.
+// ---------------------------------------------------------------------------
+
+function getChatToggle() {
+  // Label is "Chat with everyone" or "Chat with everyone - New message".
+  return document.querySelector(
+    'button[aria-label^="Chat with everyone" i], [role="button"][aria-label^="Chat with everyone" i]'
+  );
+}
+
+function hasUnreadChat() {
+  const btn = getChatToggle();
+  return !!btn && /new message/i.test(btn.getAttribute('aria-label') || '');
+}
+
+function getChatInput() {
+  return document.querySelector('textarea[aria-label="Send a message" i]');
+}
+
+function isChatPaneOpen() {
+  return !!getChatInput();
+}
+
+async function openChatPane() {
+  if (isChatPaneOpen()) return true;
+  const btn = getChatToggle();
+  if (!btn) return false;
+  btn.click();
+  for (let i = 0; i < 20; i++) {
+    await delay(150);
+    if (isChatPaneOpen()) return true;
+  }
+  return isChatPaneOpen();
+}
+
+// Reopen the people pane so the DOMSpeakerTracker can resume reading speaking
+// indicators. Mirrors DOMSpeakerTracker._ensurePeoplePaneOpen's button lookup.
+function clickPeopleButton() {
+  const buttons = document.querySelectorAll('[role="button"][aria-labelledby]');
+  for (const btn of buttons) {
+    const labelId = btn.getAttribute('aria-labelledby');
+    if (!labelId) continue;
+    const label = document.getElementById(labelId);
+    if (label && label.textContent.trim() === 'People') {
+      btn.click();
+      return true;
+    }
+  }
+  const byLabel = document.querySelector('button[aria-label*="people" i], [role="button"][aria-label*="people" i]');
+  if (byLabel) { byLabel.click(); return true; }
+  return false;
+}
+
+// A sender header is a div with exactly two div children where the second is a
+// timestamp (e.g. "2:32 PM") — the first is the participant name. Meet renders
+// one header per run of consecutive messages from the same person; messages
+// below it (until the next header) belong to that sender. Detect structurally
+// rather than by class/jsname, which rotate.
+function senderFromHeader(el) {
+  if (el.tagName !== 'DIV' || el.children.length !== 2) return null;
+  const [nameEl, timeEl] = el.children;
+  if (nameEl.tagName !== 'DIV' || timeEl.tagName !== 'DIV') return null;
+  const timeText = timeEl.textContent.trim();
+  if (!/^\d{1,2}:\d{2}\s*([AP]\.?M\.?)?$/i.test(timeText)) return null;
+  const name = nameEl.textContent.trim();
+  return name || null;
+}
+
+function scrapeChatMessages() {
+  // Collect sender headers and message bodies, order them by document position,
+  // and attribute each message to the most recent header above it.
+  //
+  // Message bodies are divs carrying data-message-id="spaces/.../messages/...".
+  // Pin BUTTONS share that attribute but have aria-label="Pin message" — skip
+  // those (and any button). Only the chat pane is open during a scrape (people
+  // pane is closed), so the header pattern doesn't collide with participant tiles.
+  const markers = [];
+  for (const el of document.querySelectorAll('div')) {
+    const sender = senderFromHeader(el);
+    if (sender) markers.push({ kind: 'header', el, sender });
+  }
+  for (const el of document.querySelectorAll('[data-message-id]')) {
+    if (el.tagName === 'BUTTON') continue;
+    if (/pin message/i.test(el.getAttribute('aria-label') || '')) continue;
+    markers.push({ kind: 'msg', el });
+  }
+  markers.sort((a, b) => {
+    if (a.el === b.el) return 0;
+    return (a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1;
+  });
+
+  const out = [];
+  const seen = new Set();
+  let currentSender = '';
+  for (const m of markers) {
+    if (m.kind === 'header') { currentSender = m.sender; continue; }
+    const id = m.el.getAttribute('data-message-id');
+    if (!id || seen.has(id)) continue;
+    const text = (m.el.innerText || '').trim();
+    if (!text) continue;
+    seen.add(id);
+    out.push(currentSender ? { id, sender: currentSender, text } : { id, text });
+  }
+  return out;
+}
+
+async function readChatFlow() {
+  const opened = await openChatPane();
+  if (!opened) throw new Error('Could not open the chat pane');
+  await delay(300); // let messages render
+  const messages = scrapeChatMessages();
+  clickPeopleButton(); // restore speech tracking
+  return messages;
+}
+
+async function sendChatFlow(text) {
+  const opened = await openChatPane();
+  if (!opened) throw new Error('Could not open the chat pane');
+  const input = getChatInput();
+  if (!input) throw new Error('Could not find the chat input');
+  await typeIntoInput(input, text);
+  await delay(100);
+  // Meet sends on Enter.
+  const enter = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
+  input.dispatchEvent(new KeyboardEvent('keydown', enter));
+  input.dispatchEvent(new KeyboardEvent('keypress', enter));
+  input.dispatchEvent(new KeyboardEvent('keyup', enter));
+  await delay(200);
+  const sent = input.value.trim() === '';
+  clickPeopleButton(); // restore speech tracking
+  return sent;
+}
+
+ipcRenderer.on('read-chat', async (_event, { requestId }) => {
+  let result;
+  try { result = { ok: true, messages: await readChatFlow() }; }
+  catch (err) { result = { ok: false, error: err.message }; }
+  ipcRenderer.send('chat-result', { requestId, ...result });
+});
+
+ipcRenderer.on('send-chat', async (_event, { requestId, text }) => {
+  let result;
+  try {
+    const sent = await sendChatFlow(text);
+    result = sent ? { ok: true } : { ok: false, error: 'Message may not have sent (input not cleared)' };
+  } catch (err) { result = { ok: false, error: err.message }; }
+  ipcRenderer.send('chat-result', { requestId, ...result });
+});
+
+// ---------------------------------------------------------------------------
 // Mic permission check
 // ---------------------------------------------------------------------------
 
@@ -1078,6 +1234,18 @@ window.addEventListener('DOMContentLoaded', () => {
       const participants = domSpeakerTracker.getParticipantList();
       if (participants.length > 0) {
         ipcRenderer.send('participants-updated', participants);
+      }
+    }, 2000);
+
+    // Passive unread-chat signal — read from the chat button's aria-label
+    // ("… - New message") WITHOUT opening the pane, so it doesn't disturb the
+    // speaker tracker. Only emit on change.
+    let lastChatUnread = null;
+    setInterval(() => {
+      const unread = hasUnreadChat();
+      if (unread !== lastChatUnread) {
+        lastChatUnread = unread;
+        ipcRenderer.send('chat-unread', { unread });
       }
     }, 2000);
 

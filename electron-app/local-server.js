@@ -17,7 +17,7 @@ function ts() {
 }
 
 class LocalServer {
-  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, getPref, setPref, applyPref } = {}) {
+  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.onBotSpeech = onBotSpeech || (() => {});
     this.onWhiteboardUpdate = onWhiteboardUpdate || (() => {});
@@ -34,6 +34,9 @@ class LocalServer {
     this.onAvatarEmojiOverride = onAvatarEmojiOverride || (() => {}); // ({idle?, listening?}) — null/undefined for that key means reset
     this.onSetCamera = onSetCamera || (() => {}); // (on: boolean)
     this.onCaptureScreenshot = onCaptureScreenshot || (async () => ({ error: 'not implemented' }));
+    this.onReadChat = onReadChat || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onSendChat = onSendChat || (async () => ({ ok: false, error: 'not implemented' }));
+    this.chatUnread = false; // passive "… - New message" signal from the chat button
 
     // Pending bot speech — queued when speak() is called before the bot is
     // actually admitted to the call. Flushed in setCallStatus when status
@@ -183,6 +186,12 @@ class LocalServer {
 
   setDetectedMeetUrls(urls) {
     this.detectedMeetUrls = urls || [];
+  }
+
+  setChatUnread(unread) {
+    if (this.chatUnread === unread) return;
+    this.chatUnread = unread;
+    console.log('[local-server] Chat unread:', unread);
   }
 
   setParticipants(participants) {
@@ -475,6 +484,7 @@ class LocalServer {
         mode: this.mode,
         errors: this.errors,
         permissions: this.permissions,
+        chatUnread: this.chatUnread,
       },
     };
   }
@@ -560,6 +570,37 @@ class LocalServer {
         success: true,
         preferences: prefsSchema.describe(this.getPref),
       }));
+      return;
+    }
+
+    if (url.pathname === '/api/chat' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      let parsed;
+      try { parsed = JSON.parse(body || '{}'); } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'Invalid JSON' }));
+        return;
+      }
+      try {
+        if (parsed.action === 'send') {
+          if (!parsed.text || !String(parsed.text).trim()) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: 'No text to send' }));
+            return;
+          }
+          const result = await this.onSendChat(String(parsed.text));
+          res.writeHead(result?.ok ? 200 : 500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: !!result?.ok, error: result?.error }));
+        } else {
+          // default: read
+          const result = await this.onReadChat();
+          res.writeHead(result?.ok ? 200 : 500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: !!result?.ok, messages: result?.messages || [], error: result?.error }));
+        }
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
       return;
     }
 

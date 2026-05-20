@@ -15,6 +15,31 @@ function ts() {
   return d.toTimeString().slice(0, 8) + '.' + String(d.getMilliseconds()).padStart(3, '0');
 }
 
+// Round-trip request to the Meet preload (read/send chat). Sends on `channel`
+// with a unique requestId and resolves with the matching 'chat-result' reply,
+// or a timeout error. preload-meet.js handles 'read-chat'/'send-chat'.
+function chatRequest(channel, payload) {
+  return new Promise((resolve) => {
+    if (!meetView || meetView.webContents.isDestroyed()) {
+      resolve({ ok: false, error: 'No active Meet view' });
+      return;
+    }
+    const requestId = `chat-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const timer = setTimeout(() => {
+      ipcMain.removeListener('chat-result', handler);
+      resolve({ ok: false, error: 'Chat operation timed out' });
+    }, 15000);
+    const handler = (_event, data) => {
+      if (data?.requestId !== requestId) return;
+      clearTimeout(timer);
+      ipcMain.removeListener('chat-result', handler);
+      resolve(data);
+    };
+    ipcMain.on('chat-result', handler);
+    meetView.webContents.send(channel, { requestId, ...payload });
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Load extension modules (they export on globalThis)
 // The extension files live under the root package.json which has "type": "module",
@@ -360,6 +385,9 @@ const localServer = new globalThis.LocalServer({
       return { error: err.message };
     }
   },
+
+  onReadChat: async () => chatRequest('read-chat', {}),
+  onSendChat: async (text) => chatRequest('send-chat', { text }),
 
   // Preference plumbing for the agent-visible whitelist (preferences-schema.js).
   // get/set go to the same Store the panel uses, so changes from the agent and
@@ -1811,6 +1839,10 @@ function setupIPC() {
   // --- Participant list + presenting state from preload-meet.js ---
   ipcMain.on('participants-updated', (_event, participants) => {
     localServer.setParticipants(participants || []);
+  });
+
+  ipcMain.on('chat-unread', (_event, { unread }) => {
+    localServer.setChatUnread(!!unread);
   });
 
   ipcMain.on('someone-presenting', (_event, { presenting, presenterName }) => {

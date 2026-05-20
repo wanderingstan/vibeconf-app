@@ -473,6 +473,7 @@ class LocalServer {
         changed: false,
       },
       chat: { messages: [], count: 0 },
+      chatUnread: this.chatUnread,
       members: this.members,
       participants: this.participants,
       detectedMeetUrls: this.detectedMeetUrls,

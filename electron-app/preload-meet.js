@@ -261,15 +261,26 @@ function isChatPaneOpen() {
 }
 
 async function openChatPane() {
-  if (isChatPaneOpen()) return true;
+  if (isChatPaneOpen()) {
+    console.log('[chat] Chat pane already open');
+    return true;
+  }
   const btn = getChatToggle();
-  if (!btn) return false;
+  if (!btn) {
+    console.warn('[chat] ❌ Chat toggle button not found');
+    return false;
+  }
+  console.log('[chat] → switching to Chat pane (clicking', JSON.stringify(btn.getAttribute('aria-label')), ')');
   btn.click();
   for (let i = 0; i < 20; i++) {
     await delay(150);
-    if (isChatPaneOpen()) return true;
+    if (isChatPaneOpen()) {
+      console.log('[chat] ✓ Chat pane open');
+      return true;
+    }
   }
-  return isChatPaneOpen();
+  console.warn('[chat] ❌ Chat pane did not open after click');
+  return false;
 }
 
 // Reopen the people pane so the DOMSpeakerTracker can resume reading speaking
@@ -280,15 +291,26 @@ async function openChatPane() {
 async function restorePeoplePane() {
   for (let attempt = 0; attempt < 3; attempt++) {
     const btn = findPeopleButton();
-    if (btn) btn.click();
+    if (!btn) {
+      console.warn('[chat] ❌ People button not found (attempt', attempt + 1, 'of 3)');
+    } else {
+      const labelledby = btn.getAttribute('aria-labelledby');
+      const labelText = labelledby ? document.getElementById(labelledby)?.textContent?.trim() : null;
+      console.log('[chat] → switching to People pane (clicking button, aria-label=' +
+        JSON.stringify(btn.getAttribute('aria-label')) + ', label=' + JSON.stringify(labelText) + ', attempt ' + (attempt + 1) + ')');
+      btn.click();
+    }
     for (let i = 0; i < 8; i++) {
       await delay(150);
-      if (document.querySelectorAll('div[role="listitem"][aria-label]').length > 0) {
+      const tiles = document.querySelectorAll('div[role="listitem"][aria-label]').length;
+      if (tiles > 0) {
+        console.log('[chat] ✓ People pane restored (' + tiles + ' tiles) after attempt', attempt + 1);
         return true;
       }
     }
+    console.warn('[chat] People pane not visible after attempt', attempt + 1, '— retrying');
   }
-  console.warn('[electron-meet] Failed to reopen People pane after chat op');
+  console.warn('[chat] ❌ Failed to reopen People pane after 3 attempts — speech tracking is blind');
   return false;
 }
 

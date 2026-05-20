@@ -161,10 +161,14 @@ server.tool(
       ? `\n[Call status: ${status.callStatus}]` : '';
     const errorLines = (status.errors || []).length > 0
       ? '\n[Errors: ' + status.errors.map(e => e.message).join('; ') + ']' : '';
+    // Surface unread chat on every lull — this is the natural moment to check
+    // chat without missing speech. The agent should call read_chat when it sees this.
+    const chatLine = data.chatUnread
+      ? '\n[Unread chat messages — call read_chat to see them, then respond.]' : '';
 
     if (entries.length === 0) {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
-      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${statusLine}${errorLines}` }] };
+      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${statusLine}${errorLines}${chatLine}` }] };
     }
 
     // Deduplicate: consecutive entries from same speaker → keep longest
@@ -189,7 +193,7 @@ server.tool(
     return {
       content: [{
         type: "text",
-        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):\n\n${transcriptText}`,
+        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):\n\n${transcriptText}${chatLine}`,
       }],
     };
   }

@@ -256,10 +256,6 @@
       let speakOpen = 0;
       if (this.speaking) {
         const amp = (typeof mic !== 'undefined' && mic && mic.getAmplitude) ? mic.getAmplitude() : 0;
-        // Throttled diagnostic: are we tracking real audio or on the fallback?
-        if (this.frameCount % 15 === 0) {
-          console.log('[bots-in-calls] lip-sync amp:', amp.toFixed(3), amp > 0.02 ? '(audio)' : '(fallback sine)');
-        }
         // Fallback sine is fairly pronounced so the avatar visibly "talks" even
         // when amplitude is unavailable (e.g. ack tones on a separate path).
         speakOpen = amp > 0.02 ? amp : (0.4 + 0.3 * (0.5 + 0.5 * Math.sin(this.frameCount * 0.5)));
@@ -360,8 +356,9 @@
       const rms = Math.sqrt(sumSq / this._ampBuf.length); // 0..~1
       // Scale up (speech RMS is small) and clamp, then smooth toward the target.
       const target = Math.min(1, rms * 6);
-      // Asymmetric smoothing: open fast, close a touch slower → reads natural.
-      const k = target > this._smoothedAmp ? 0.5 : 0.25;
+      // Asymmetric smoothing: open a bit faster than it closes → reads natural.
+      // Kept gentle so the emoji doesn't visibly snap between sizes frame to frame.
+      const k = target > this._smoothedAmp ? 0.28 : 0.14;
       this._smoothedAmp += (target - this._smoothedAmp) * k;
       return this._smoothedAmp;
     }

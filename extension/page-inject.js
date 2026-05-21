@@ -247,16 +247,21 @@
       }
       const emojiSize = Math.min(w, h) * 0.65;
       const bob = Math.sin(t * 0.8) * (emojiSize * 0.02);
-      // Speaking animation: more pronounced — bigger pulse, vertical bounce,
-      // and a slight rotation. Was previously a 5% scale-only pulse, which
-      // was easy to miss. Pulse rate is faster than the resting bob so the
-      // motion reads as "active speech" not "idle drift".
-      const speakPulse = this.speaking
-        ? Math.sin(this.frameCount * 0.45)
-        : 0;
-      const speakScale = this.speaking ? 1 + speakPulse * 0.10 : 1;
-      const speakBounce = this.speaking ? speakPulse * (emojiSize * 0.04) : 0;
-      const speakTilt = this.speaking ? Math.sin(this.frameCount * 0.3) * 0.06 : 0;
+      // Speaking animation, amplitude-driven (lip-sync). We read the bot's
+      // current TTS loudness from the VirtualMic analyser and use it to "open
+      // the jaw": a vertical stretch + bounce that tracks the actual audio, so
+      // the mouth moves with speech instead of a fixed pulse. Falls back to a
+      // gentle sine when speaking but amplitude is unavailable (e.g. ack tones
+      // played through a different path) so the avatar never looks frozen.
+      let speakOpen = 0;
+      if (this.speaking) {
+        const amp = (typeof mic !== 'undefined' && mic && mic.getAmplitude) ? mic.getAmplitude() : 0;
+        speakOpen = amp > 0.02 ? amp : (0.15 + 0.15 * (0.5 + 0.5 * Math.sin(this.frameCount * 0.45)));
+      }
+      const speakScaleY = 1 + speakOpen * 0.20;   // jaw opens (vertical stretch)
+      const speakScaleX = 1 - speakOpen * 0.05;   // slight horizontal squeeze
+      const speakBounce = speakOpen * (emojiSize * 0.05);
+      const speakTilt = this.speaking ? Math.sin(this.frameCount * 0.3) * 0.05 : 0;
       // Thinking state: gentle side-to-side sway
       const thinkSway = this.state === 'thinking'
         ? Math.sin(t * 1.2) * 8
@@ -265,7 +270,7 @@
       ctx.save();
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.font = `${Math.round(emojiSize * speakScale)}px serif`;
+      ctx.font = `${Math.round(emojiSize)}px serif`;
 
       // Glow when speaking
       if (this.speaking) {
@@ -278,9 +283,11 @@
         ctx.shadowBlur = 20;
       }
 
-      // Apply translation + rotation around the avatar center for speaking.
+      // Apply translation + rotation + non-uniform scale around the avatar
+      // center. The scaleX/scaleY give the "mouth open" jaw effect.
       ctx.translate(cx + thinkSway, cy + bob - speakBounce);
       if (speakTilt) ctx.rotate(speakTilt);
+      if (this.speaking) ctx.scale(speakScaleX, speakScaleY);
       ctx.fillText(emoji, 0, 0);
       ctx.restore();
     }
@@ -322,6 +329,31 @@
       const osc = this.audioCtx.createOscillator();
       osc.connect(silence);
       osc.start();
+
+      // Analyser for amplitude-driven lip-sync. TTS sources connect into it
+      // (in parallel with the destination) so the avatar can read how loud the
+      // bot is speaking right now and animate its mouth to match.
+      this.analyser = this.audioCtx.createAnalyser();
+      this.analyser.fftSize = 256;
+      this._ampBuf = new Uint8Array(this.analyser.fftSize);
+      this._smoothedAmp = 0;
+    }
+
+    // Current speech loudness, 0..1, lightly smoothed. ~0 when not speaking.
+    getAmplitude() {
+      this.analyser.getByteTimeDomainData(this._ampBuf);
+      let sumSq = 0;
+      for (let i = 0; i < this._ampBuf.length; i++) {
+        const v = (this._ampBuf[i] - 128) / 128; // -1..1
+        sumSq += v * v;
+      }
+      const rms = Math.sqrt(sumSq / this._ampBuf.length); // 0..~1
+      // Scale up (speech RMS is small) and clamp, then smooth toward the target.
+      const target = Math.min(1, rms * 3.5);
+      // Asymmetric smoothing: open fast, close a touch slower → reads natural.
+      const k = target > this._smoothedAmp ? 0.5 : 0.25;
+      this._smoothedAmp += (target - this._smoothedAmp) * k;
+      return this._smoothedAmp;
     }
 
     // Play a TTS response (or any audio) through the virtual mic.
@@ -343,6 +375,7 @@
       const src = this.audioCtx.createBufferSource();
       src.buffer = buf;
       src.connect(this.destination);
+      src.connect(this.analyser); // feed lip-sync amplitude (parallel tap)
       return new Promise((resolve) => {
         src.onended = resolve;
         src.start();

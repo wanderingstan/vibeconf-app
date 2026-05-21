@@ -893,8 +893,11 @@ server.tool(
       `Screen sharing: ${status.sharing ? 'yes (by bot)' : 'no'}`,
     );
 
+    if (status.whiteboardUrl) {
+      sections.push(`Whiteboard URL (just the board, no room UI): ${status.whiteboardUrl} (share this in chat so participants can view the whiteboard)`);
+    }
     if (status.roomUrl) {
-      sections.push(`Whiteboard / room URL: ${status.roomUrl} (shareable — post in chat so participants can view the whiteboard in a browser)`);
+      sections.push(`Full room URL (whole room UI): ${status.roomUrl}`);
     }
 
     if (status.someoneElsePresenting) {

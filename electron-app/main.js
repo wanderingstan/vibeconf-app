@@ -462,6 +462,13 @@ function createWhiteboardWindow(roomUrl) {
     webPreferences: { contextIsolation: true, nodeIntegration: false },
   });
   win.loadURL(roomUrl);
+  win.webContents.on('did-finish-load', () => {
+    console.log('[electron] Whiteboard window loaded OK:', win.webContents.getURL());
+  });
+  win.webContents.on('did-fail-load', (_e, code, desc, url) => {
+    console.warn('[electron] Whiteboard window FAILED to load:', code, desc, url,
+      '— the captured window will be blank, which Meet may reject as "Can\'t share your screen".');
+  });
   win.on('closed', () => { whiteboardWindow = null; });
   return win;
 }

@@ -1021,36 +1021,34 @@ app.whenReady().then(async () => {
     console.log('[electron] Screen recording permission at launch:', screenAccess);
     localServer.setPermission('screenRecording', screenAccess);
 
-    if (screenAccess === 'not-determined') {
-      // First-time request — getSources will trigger the OS prompt.
-      desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1, height: 1 } })
-        .then(() => {
-          const newStatus = systemPreferences.getMediaAccessStatus('screen');
-          console.log('[electron] Screen recording permission after prompt:', newStatus);
-          localServer.setPermission('screenRecording', newStatus);
-        })
-        .catch(() => {});
-    } else if (screenAccess === 'denied' || screenAccess === 'restricted') {
-      // macOS won't re-prompt once denied — guide the user to System Settings.
-      // BUT first attempt a capture: an app only appears in the Screen Recording
-      // list once it has tried to record. Without this, Vibeconferencing is
-      // absent from the System Settings pane (nothing to toggle) — common after
-      // `tccutil reset` wipes the prior TCC entry. The getSources call registers
-      // the app so it shows up with a toggle when we open Settings.
-      desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1, height: 1 } })
+    if (screenAccess !== 'granted') {
+      // Attempt a REAL screen capture so macOS registers Vibeconferencing in
+      // the "Screen & System Audio Recording" list (and prompts if the status
+      // is not-determined). The thumbnail size must be non-trivial — Electron
+      // short-circuits {width:1,height:1}/{0,0} without actually capturing, so
+      // TCC never sees a capture attempt and the app never appears in the list
+      // (the bug after `tccutil reset` wipes the entry on every build).
+      desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 192, height: 192 } })
         .catch(() => {})
         .finally(() => {
-          const choice = dialog.showMessageBoxSync({
-            type: 'warning',
-            title: 'Screen Recording Permission',
-            message: 'Whiteboard sharing is disabled',
-            detail: 'Vibeconferencing needs Screen Recording permission to share the whiteboard in your Meet calls. The app will still work without it — the bot just can\'t share visuals.\n\nIn System Settings > Privacy & Security > Screen & System Audio Recording, enable the toggle next to Vibeconferencing, then restart the app.',
-            buttons: ['Open System Settings', 'Continue Without'],
-            defaultId: 0,
-            cancelId: 1,
-          });
-          if (choice === 0) {
-            shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+          const newStatus = systemPreferences.getMediaAccessStatus('screen');
+          console.log('[electron] Screen recording permission after capture attempt:', newStatus);
+          localServer.setPermission('screenRecording', newStatus);
+          // Still not granted (and not mid-prompt) → guide the user. The app is
+          // now registered, so it'll be present with a toggle in Settings.
+          if (newStatus === 'denied' || newStatus === 'restricted') {
+            const choice = dialog.showMessageBoxSync({
+              type: 'warning',
+              title: 'Screen Recording Permission',
+              message: 'Whiteboard sharing is disabled',
+              detail: 'Vibeconferencing needs Screen Recording permission to share the whiteboard in your Meet calls. The app will still work without it — the bot just can\'t share visuals.\n\nIn System Settings > Privacy & Security > Screen & System Audio Recording, enable the toggle next to Vibeconferencing, then restart the app.',
+              buttons: ['Open System Settings', 'Continue Without'],
+              defaultId: 0,
+              cancelId: 1,
+            });
+            if (choice === 0) {
+              shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+            }
           }
         });
     }

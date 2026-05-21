@@ -388,6 +388,7 @@ const localServer = new globalThis.LocalServer({
 
   onReadChat: async () => chatRequest('read-chat', {}),
   onSendChat: async (text) => chatRequest('send-chat', { text }),
+  getWebsiteUrl: () => getWebsiteUrl(),
 
   // Preference plumbing for the agent-visible whitelist (preferences-schema.js).
   // get/set go to the same Store the panel uses, so changes from the agent and

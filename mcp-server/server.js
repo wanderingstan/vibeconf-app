@@ -893,6 +893,10 @@ server.tool(
       `Screen sharing: ${status.sharing ? 'yes (by bot)' : 'no'}`,
     );
 
+    if (status.roomUrl) {
+      sections.push(`Whiteboard / room URL: ${status.roomUrl} (shareable — post in chat so participants can view the whiteboard in a browser)`);
+    }
+
     if (status.someoneElsePresenting) {
       sections.push(`Someone else presenting: ${status.presenterName || 'yes'}`);
     }

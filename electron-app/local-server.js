@@ -17,7 +17,7 @@ function ts() {
 }
 
 class LocalServer {
-  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, getPref, setPref, applyPref } = {}) {
+  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, getWebsiteUrl, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.onBotSpeech = onBotSpeech || (() => {});
     this.onWhiteboardUpdate = onWhiteboardUpdate || (() => {});
@@ -36,6 +36,7 @@ class LocalServer {
     this.onCaptureScreenshot = onCaptureScreenshot || (async () => ({ error: 'not implemented' }));
     this.onReadChat = onReadChat || (async () => ({ ok: false, error: 'not implemented' }));
     this.onSendChat = onSendChat || (async () => ({ ok: false, error: 'not implemented' }));
+    this.getWebsiteUrl = getWebsiteUrl || (() => ''); // host where /room/:id renders
     this.chatUnread = false; // passive "… - New message" signal from the chat button
 
     // Pending bot speech — queued when speak() is called before the bot is
@@ -486,6 +487,7 @@ class LocalServer {
         errors: this.errors,
         permissions: this.permissions,
         chatUnread: this.chatUnread,
+        roomUrl: this.roomId ? `${(this.getWebsiteUrl() || '').replace(/\/$/, '')}/room/${this.roomId}` : null,
       },
     };
   }

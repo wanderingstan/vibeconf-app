@@ -1858,6 +1858,12 @@ function setupIPC() {
     localServer.setChatUnread(!!unread);
   });
 
+  ipcMain.on('pane-state', (_event, state) => {
+    localServer.setPaneState(state || {});
+  });
+
+  ipcMain.handle('get-call-state', () => localServer.getCallStateSnapshot());
+
   ipcMain.on('someone-presenting', (_event, { presenting, presenterName }) => {
     localServer.setSomeoneElsePresenting(presenting, presenterName);
   });

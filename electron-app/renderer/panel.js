@@ -58,6 +58,45 @@ document.getElementById('backFromSettingsBtn').addEventListener('click', () => s
 document.getElementById('openTroubleshootingBtn').addEventListener('click', () => showScreen(troubleshootingScreen));
 document.getElementById('backFromTroubleshootingBtn').addEventListener('click', () => showScreen(mainScreen));
 
+// ---------------------------------------------------------------------------
+// Call State debug view — live snapshot of the app's detectors
+// ---------------------------------------------------------------------------
+
+const callStateDebug = document.getElementById('callStateDebug');
+
+function yesNo(v) { return v ? '🟢 yes' : '⚪️ no'; }
+
+function renderCallState(s) {
+  if (!s || !s.roomId) {
+    callStateDebug.textContent = 'Not in a call.';
+    return;
+  }
+  const parts = (s.participants || []).map(p =>
+    `    • ${p.name}${p.isSelf ? ' (self)' : ''} ${p.speaking ? '🗣️ speaking' : '— quiet'}`
+  );
+  callStateDebug.textContent = [
+    `Call status:        ${s.callStatus || 'unknown'}`,
+    `Bot state:          ${s.botState || 'unknown'}`,
+    `Bot mode:           ${s.mode || 'unknown'}`,
+    `Anyone speaking:    ${yesNo(s.anyoneSpeaking)}`,
+    `Screen sharing:     ${yesNo(s.sharing)}${s.someoneElsePresenting ? ` (other: ${s.presenterName || 'someone'})` : ''}`,
+    `People pane open:   ${yesNo(s.peoplePaneOpen)}`,
+    `Chat pane open:     ${yesNo(s.chatPaneOpen)}`,
+    `Unread chat:        ${yesNo(s.chatUnread)}`,
+    `Screen rec perm:    ${s.screenRecording || 'unknown'}`,
+    `Participants (${(s.participants || []).length}):`,
+    ...(parts.length ? parts : ['    (none detected)']),
+  ].join('\n');
+}
+
+setInterval(async () => {
+  if (troubleshootingScreen.style.display === 'none') return; // only poll when visible
+  try {
+    const s = await api.invoke('get-call-state');
+    renderCallState(s);
+  } catch { /* ignore */ }
+}, 1000);
+
 // Listen for menu bar "Settings" command
 api.on('show-settings', () => showScreen(settingsScreen));
 

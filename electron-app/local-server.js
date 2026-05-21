@@ -195,6 +195,33 @@ class LocalServer {
     console.log('[local-server] Chat unread:', unread);
   }
 
+  setPaneState({ chatPaneOpen, peoplePaneOpen } = {}) {
+    this.chatPaneOpen = !!chatPaneOpen;
+    this.peoplePaneOpen = !!peoplePaneOpen;
+  }
+
+  // Snapshot of everything the app currently believes about the call — for the
+  // debug panel. Reflects the live detector state, not persisted config.
+  getCallStateSnapshot() {
+    return {
+      callStatus: this.callStatus,
+      mode: this.mode,
+      botState: this.botState,
+      anyoneSpeaking: this.anyoneSpeaking,
+      sharing: this.sharing,
+      someoneElsePresenting: this.someoneElsePresenting,
+      presenterName: this.presenterName,
+      chatUnread: this.chatUnread,
+      chatPaneOpen: !!this.chatPaneOpen,
+      peoplePaneOpen: !!this.peoplePaneOpen,
+      screenRecording: this.permissions?.screenRecording,
+      roomId: this.roomId,
+      participants: (this.participants || []).map(p => ({
+        name: p.name, speaking: !!p.speaking, isSelf: !!p.isSelf,
+      })),
+    };
+  }
+
   setParticipants(participants) {
     const wasEmpty = this.participants.length === 0;
     this.participants = participants || [];

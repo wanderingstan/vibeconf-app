@@ -1298,6 +1298,17 @@ window.addEventListener('DOMContentLoaded', () => {
       }
     }, 2000);
 
+    // Pane-visibility signal for the debug panel — which side pane is showing.
+    let lastPaneState = '';
+    setInterval(() => {
+      const state = { chatPaneOpen: isChatPaneOpen(), peoplePaneOpen: visiblePeopleTileCount() > 0 };
+      const key = `${state.chatPaneOpen}|${state.peoplePaneOpen}`;
+      if (key !== lastPaneState) {
+        lastPaneState = key;
+        ipcRenderer.send('pane-state', state);
+      }
+    }, 1000);
+
     // Detect presenting state:
     // - "Stop presenting" button/overlay OR toolbar share button with stop label → WE are presenting
     // - Present button tooltip says "{Name} is presenting" → someone ELSE is presenting

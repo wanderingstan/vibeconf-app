@@ -123,6 +123,18 @@ button:disabled {
   color: #81c995;
 }
 
+.call-state-debug {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #e8eaed;
+  background: #303134;
+  border: 1px solid #5f6368;
+  border-radius: 8px;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+}
+
 .room-link {
   display: block;
   color: #8ab4f8;

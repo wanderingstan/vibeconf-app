@@ -1551,7 +1551,8 @@ function loadMeetURL(meetUrl) {
   meetView.webContents.on('console-message', (_e, level, message) => {
     // Only forward our prefixed lines — Meet's own console is noisy.
     if (typeof message === 'string' && (message.startsWith('[electron-meet]') ||
-        message.startsWith('[bots-in-calls]') || message.startsWith('[captions]'))) {
+        message.startsWith('[bots-in-calls]') || message.startsWith('[captions]') ||
+        message.startsWith('[chat]') || message.startsWith('[speaker-tracker]'))) {
       if (level === 2) console.warn(message);
       else if (level === 3) console.error(message);
       else console.log(message);

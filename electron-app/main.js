@@ -753,7 +753,9 @@ function broadcastError(message) {
 // Terminal management — launch Claude and track the window for cleanup
 // ---------------------------------------------------------------------------
 
-let claudeTerminalWindowId = null;
+// Track every Terminal window we open so we can close them all on quit —
+// otherwise repeated testing leaves a pile of orphaned windows.
+let claudeTerminalWindowIds = [];
 
 function launchClaudeTerminal(meetCode) {
   const { execFile } = require('child_process');
@@ -774,9 +776,17 @@ function launchClaudeTerminal(meetCode) {
   const dangerousFlag = dangerousMode ? ' --dangerously-skip-permissions' : '';
   const claudeCmd = `claude${dangerousFlag} \\"/join-call ${meetCode} ${botName.replace(/"/g, '')}\\"`;
 
-  // AppleScript that opens a new Terminal window and returns its ID
+  // Open a Terminal window running the command. When Terminal isn't already
+  // running, `do script` would spawn TWO windows — the auto-created launch
+  // window plus the scripted one. Reuse the launch window (window 1) in that
+  // case; only spawn a fresh window when Terminal is already up.
+  const cmd = `cd ${claudeDir.replace(/"/g, '\\"')} && ${claudeCmd}`;
   const script = `tell application "Terminal"
-  do script "cd ${claudeDir.replace(/"/g, '\\"')} && ${claudeCmd}"
+  if not running then
+    do script "${cmd}" in window 1
+  else
+    do script "${cmd}"
+  end if
   activate
   return id of window 1
 end tell`;
@@ -785,7 +795,10 @@ end tell`;
     if (err) {
       console.error('[electron] Failed to launch Claude:', err.message, stderr);
     } else {
-      claudeTerminalWindowId = (stdout || '').trim();
+      const claudeTerminalWindowId = (stdout || '').trim();
+      if (claudeTerminalWindowId && !claudeTerminalWindowIds.includes(claudeTerminalWindowId)) {
+        claudeTerminalWindowIds.push(claudeTerminalWindowId);
+      }
       console.log('[electron] Launched Claude session, terminal window ID:', claudeTerminalWindowId);
 
       // Position the terminal window after a short delay to ensure it's fully created
@@ -811,47 +824,71 @@ end tell`;
 }
 
 function closeClaudeTerminal() {
-  if (!claudeTerminalWindowId) return;
+  if (claudeTerminalWindowIds.length === 0) return;
   const { execFile } = require('child_process');
-  const windowId = claudeTerminalWindowId;
-  claudeTerminalWindowId = null;
+  const windowIds = [...claudeTerminalWindowIds];
+  claudeTerminalWindowIds = [];
 
-  // First send Ctrl-C to interrupt Claude, wait for it to exit, then close
-  const script = `tell application "Terminal"
+  // Gracefully exit Claude in each window, then close it after a short wait.
+  for (const windowId of windowIds) {
+    const script = `tell application "Terminal"
   repeat with w in windows
     if id of w is ${windowId} then
-      -- Send Ctrl-C to interrupt Claude, then exit the shell
       do script "exit" in w
       return "closing"
     end if
   end repeat
   return "not found"
 end tell`;
-
-  execFile('osascript', ['-e', script], (err, stdout) => {
-    if (err) {
-      console.error('[electron] Failed to signal Claude terminal:', err.message);
-      return;
-    }
-    console.log('[electron] Claude terminal signal:', (stdout || '').trim());
-
-    // Wait for Claude to exit, then close the window
-    setTimeout(() => {
-      const closeScript = `tell application "Terminal"
+    execFile('osascript', ['-e', script], (err, stdout) => {
+      if (err) {
+        console.error('[electron] Failed to signal Claude terminal:', err.message);
+        return;
+      }
+      console.log('[electron] Claude terminal signal:', (stdout || '').trim());
+      setTimeout(() => {
+        const closeScript = `tell application "Terminal"
   repeat with w in windows
     if id of w is ${windowId} then
-      close w
+      close w saving no
       return "closed"
     end if
   end repeat
   return "already gone"
 end tell`;
-      execFile('osascript', ['-e', closeScript], (err2, stdout2) => {
-        if (err2) console.error('[electron] Failed to close Claude terminal:', err2.message);
-        else console.log('[electron] Claude terminal:', (stdout2 || '').trim());
-      });
-    }, 3000);
-  });
+        execFile('osascript', ['-e', closeScript], (err2, stdout2) => {
+          if (err2) console.error('[electron] Failed to close Claude terminal:', err2.message);
+          else console.log('[electron] Claude terminal:', (stdout2 || '').trim());
+        });
+      }, 3000);
+    });
+  }
+}
+
+// Synchronous close of all tracked terminal windows — used on app quit, where
+// the async graceful path wouldn't finish before the process exits. Closes
+// immediately (no graceful Claude exit) so we don't leave orphan windows.
+function closeAllClaudeTerminalsSync() {
+  if (claudeTerminalWindowIds.length === 0) return;
+  const { execFileSync } = require('child_process');
+  const windowIds = [...claudeTerminalWindowIds];
+  claudeTerminalWindowIds = [];
+  for (const windowId of windowIds) {
+    const script = `tell application "Terminal"
+  repeat with w in windows
+    if id of w is ${windowId} then
+      close w saving no
+      return "closed"
+    end if
+  end repeat
+  return "already gone"
+end tell`;
+    try {
+      execFileSync('osascript', ['-e', script], { timeout: 3000 });
+    } catch (err) {
+      console.error('[electron] Failed to close terminal on quit:', err.message);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1416,6 +1453,12 @@ app.on('window-all-closed', () => {
   closeClaudeTerminal();
   localServer.stop();
   app.quit();
+});
+
+// Close any terminal windows we opened, synchronously, before the process
+// exits — covers Cmd-Q and other quit paths the async close would miss.
+app.on('before-quit', () => {
+  closeAllClaudeTerminalsSync();
 });
 
 // ---------------------------------------------------------------------------

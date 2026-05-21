@@ -586,6 +586,39 @@ server.tool(
   }
 );
 
+// --- scroll_share ---
+server.tool(
+  "scroll_share",
+  "Scroll the content currently being shared in the whiteboard window — useful when you've loaded a website (via update_whiteboard with a url) and want to move down a long page. Scrolls smoothly. Direction: 'down'/'up' move ~one screenful, 'top'/'bottom' jump to the ends. Only affects a shared URL/website, not markdown whiteboard content.",
+  {
+    direction: z.enum(["down", "up", "top", "bottom"]).optional().describe("Scroll direction. Default: down."),
+    amount: z.number().optional().describe("Pixels to scroll for up/down (default: ~85% of the viewport). Ignored for top/bottom."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ direction, amount, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) {
+      return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    }
+    const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sender: BOT_NAME,
+        role: "bot",
+        ownerName: BOT_NAME,
+        meta: { action: "scroll-share", direction, amount },
+      }),
+    });
+    const data = await resp.json();
+    const r = data.results?.scrollShare;
+    if (r?.ok) {
+      return { content: [{ type: "text", text: `Scrolled ${direction || 'down'}.` }] };
+    }
+    return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "Failed to scroll"}` }] };
+  }
+);
+
 // --- set_mode ---
 server.tool(
   "set_mode",

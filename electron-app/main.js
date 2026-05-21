@@ -236,6 +236,31 @@ const localServer = new globalThis.LocalServer({
       whiteboardWindow = createWhiteboardWindow(url);
     }
   },
+  onScrollShare: async ({ direction, amount } = {}) => {
+    if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
+      return { ok: false, error: 'Nothing is being shared to scroll' };
+    }
+    // Default to ~85% of the viewport per scroll so content overlaps slightly.
+    const dir = (direction || 'down').toLowerCase();
+    const px = Number(amount) > 0 ? Number(amount) : null;
+    const js = `(() => {
+      const vh = window.innerHeight || 800;
+      const step = ${px === null ? 'Math.round(vh * 0.85)' : px};
+      let top;
+      if ('${dir}' === 'top') { window.scrollTo({ top: 0, behavior: 'smooth' }); return 'top'; }
+      if ('${dir}' === 'bottom') { window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }); return 'bottom'; }
+      top = '${dir}' === 'up' ? -step : step;
+      window.scrollBy({ top, left: 0, behavior: 'smooth' });
+      return '${dir}';
+    })()`;
+    try {
+      await whiteboardWindow.webContents.executeJavaScript(js, true);
+      console.log('[local-server] Scrolled shared window:', dir, px || '(page)');
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  },
   onBotStateChange: (state, extra) => {
     console.log('[local-server] Bot state:', state, extra || '');
     // Forward state to page-inject.js to update avatar emoji

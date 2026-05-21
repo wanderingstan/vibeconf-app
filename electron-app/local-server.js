@@ -17,7 +17,7 @@ function ts() {
 }
 
 class LocalServer {
-  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, getWebsiteUrl, getPref, setPref, applyPref } = {}) {
+  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, getWebsiteUrl, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.onBotSpeech = onBotSpeech || (() => {});
     this.onWhiteboardUpdate = onWhiteboardUpdate || (() => {});
@@ -26,6 +26,7 @@ class LocalServer {
     this.onStopSharing = onStopSharing || (() => {});
     this.onJoinCall = onJoinCall || (() => {});
     this.onLoadUrl = onLoadUrl || (() => {});
+    this.onScrollShare = onScrollShare || (async () => ({ ok: false, error: 'not implemented' }));
     this.onBotStateChange = onBotStateChange || (() => {}); // 'idle' | 'listening' | 'thinking' | 'speaking'
     this.onModeChange = onModeChange || (() => {});        // 'active' | 'passive' | 'silent'
     this.onCallStatusChange = onCallStatusChange || (() => {}); // 'idle' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
@@ -897,6 +898,12 @@ class LocalServer {
     if (data.meta?.action === 'load-url' && data.meta.url) {
       this.onLoadUrl(data.meta.url);
       results.loadUrl = { ok: true };
+    }
+
+    // Handle scroll-share command (scroll the shared whiteboard window)
+    if (data.meta?.action === 'scroll-share') {
+      const r = await this.onScrollShare({ direction: data.meta.direction, amount: data.meta.amount });
+      results.scrollShare = r || { ok: true };
     }
 
     // Handle set-mode command — persistent bot behavior mode

@@ -240,6 +240,19 @@ function setCameraOff(off) {
 // the pane, so monitoring for unread messages doesn't disturb speech tracking.
 // ---------------------------------------------------------------------------
 
+// Count participant tiles that are actually VISIBLE. Switching to the chat
+// pane hides the people pane (display:none) but leaves the tile elements in the
+// DOM, so a plain querySelectorAll count stays > 0 and falsely reads as "people
+// pane open". getClientRects() is empty for display:none elements, so it's a
+// reliable visibility test.
+function visiblePeopleTileCount() {
+  let n = 0;
+  for (const el of document.querySelectorAll('div[role="listitem"][aria-label]')) {
+    if (el.getClientRects().length > 0) n++;
+  }
+  return n;
+}
+
 function getChatToggle() {
   // Label is "Chat with everyone" or "Chat with everyone - New message".
   return document.querySelector(
@@ -302,9 +315,9 @@ async function restorePeoplePane() {
     }
     for (let i = 0; i < 8; i++) {
       await delay(150);
-      const tiles = document.querySelectorAll('div[role="listitem"][aria-label]').length;
+      const tiles = visiblePeopleTileCount();
       if (tiles > 0) {
-        console.log('[chat] ✓ People pane restored (' + tiles + ' tiles) after attempt', attempt + 1);
+        console.log('[chat] ✓ People pane restored (' + tiles + ' visible tiles) after attempt', attempt + 1);
         return true;
       }
     }
@@ -765,8 +778,9 @@ class DOMSpeakerTracker {
     // jsname="jrQDbd" + a stale aria-label fallback; once Google rotated jsname
     // the "open" check always returned false and the 2-second loop toggled the
     // pane open→closed→open→closed forever (especially visible under throttling).
-    const tiles = document.querySelectorAll('div[role="listitem"][aria-label]');
-    if (tiles.length > 0) return;
+    // Only treat the pane as open if tiles are actually visible — switching to
+    // chat hides them (display:none) but leaves them in the DOM.
+    if (visiblePeopleTileCount() > 0) return;
 
     // Throttle clicks so a slow Meet load doesn't fire repeated opens before
     // the first click has finished animating. If we just clicked, give it a

@@ -1029,7 +1029,13 @@ app.whenReady().then(async () => {
       // TCC never sees a capture attempt and the app never appears in the list
       // (the bug after `tccutil reset` wipes the entry on every build).
       desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 192, height: 192 } })
-        .catch(() => {})
+        .then((sources) => {
+          console.log('[electron] Screen capture probe returned', sources.length, 'source(s); first thumb empty?',
+            sources[0] ? sources[0].thumbnail.isEmpty() : 'n/a');
+        })
+        .catch((err) => {
+          console.error('[electron] Screen capture probe failed:', err && err.message);
+        })
         .finally(() => {
           const newStatus = systemPreferences.getMediaAccessStatus('screen');
           console.log('[electron] Screen recording permission after capture attempt:', newStatus);

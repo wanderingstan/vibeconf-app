@@ -1345,7 +1345,7 @@ allURLs`;
     localServer.setRoom(meetCode);
 
     // Start sync
-    const baseUrl = store.get('syncBaseUrl') || 'http://127.0.0.1:7865';
+    const baseUrl = getWebsiteUrl();
     sync.updateConfig({ roomId: meetCode, baseUrl });
     sync.ensureRoom().then(() => {
       sync.startPolling();
@@ -1621,7 +1621,7 @@ function setupIPC() {
     if (match) {
       const meetCode = match[1];
       localServer.setRoom(meetCode);
-      const baseUrl = store.get('syncBaseUrl') || 'http://127.0.0.1:7865';
+      const baseUrl = getWebsiteUrl();
       sync.updateConfig({ roomId: meetCode, baseUrl });
       sync.ensureRoom().then(() => {
         sync.startPolling();
@@ -1919,7 +1919,7 @@ function setupIPC() {
 
   // --- Whiteboard + screen share ---
   ipcMain.on('start-whiteboard-share', (_event, { meetCode }) => {
-    const baseUrl = store.get('syncBaseUrl') || 'http://127.0.0.1:7865';
+    const baseUrl = getWebsiteUrl();
     const roomUrl = `${baseUrl}/room/${meetCode}?mode=whiteboard`;
 
     if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
@@ -1931,7 +1931,7 @@ function setupIPC() {
 
   // Combined: open whiteboard + trigger screen share in Meet
   ipcMain.handle('share-whiteboard', async (_event, { meetCode }) => {
-    const baseUrl = store.get('syncBaseUrl') || 'http://127.0.0.1:7865';
+    const baseUrl = getWebsiteUrl();
     const roomUrl = `${baseUrl}/room/${meetCode}?mode=whiteboard`;
 
     // Open whiteboard window if not already open

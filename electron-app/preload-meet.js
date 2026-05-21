@@ -1306,12 +1306,16 @@ window.addEventListener('DOMContentLoaded', () => {
       // Check if we are currently presenting. Two locations depending on window size:
       // 1. Large window: "Stop presenting" overlay button on the shared content
       // 2. Small window: the toolbar share button itself shows "Stop presenting"
-      const stopPresentingBtn =
+      // Ground truth: the share button's aria-label reads "You are presenting"
+      // while we're actively sharing. Check that first, then fall back to the
+      // "Stop presenting" button/overlay variants for older/other layouts.
+      const presentingNow =
+        document.querySelector('[aria-label*="You are presenting" i]') ||
         document.querySelector('[aria-label*="Stop presenting" i]') ||
         document.querySelector('[data-tooltip*="Stop presenting" i]') ||
         document.querySelector('button[aria-label*="stop" i][aria-label*="present" i]') ||
         document.querySelector('[data-tooltip*="stop" i][data-tooltip*="present" i]');
-      if (stopPresentingBtn) {
+      if (presentingNow) {
         ipcRenderer.send('self-presenting', { presenting: true });
         ipcRenderer.send('someone-presenting', { presenting: false, presenterName: null });
         return;

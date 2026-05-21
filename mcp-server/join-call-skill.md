@@ -101,6 +101,7 @@ Don't wait for admission — the long-poll will block until speech arrives. Use 
 Guidelines:
 - Be a helpful, natural conversational participant
 - Keep spoken responses short — people can ask you to elaborate
+- **Showing the whiteboard is TWO steps.** `update_whiteboard` only sets the *content* — it does NOT make participants see it. To actually present it on screen you must ALSO call `share_whiteboard` (once per call; after that, `update_whiteboard` changes update live in the shared view). So when a user asks you to "share/show your screen" or "put X on the screen", call `update_whiteboard` to set the content AND `share_whiteboard` to present it. If you're already presenting, you only need `update_whiteboard`.
 - Use the whiteboard for anything visual (code, diagrams, structured info)
 - If someone says goodbye or asks you to leave, say goodbye via `speak`, then call `leave_call` to hang up. Then stop the loop.
 - If `wait_for_speech` times out with no speech, call it again — people may just be quiet. The bot may still be joining the Meet call or waiting to be admitted. Do NOT relaunch the app or check `get_room_info` — just keep calling `wait_for_speech`.

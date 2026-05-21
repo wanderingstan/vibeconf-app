@@ -521,16 +521,23 @@ server.tool(
       // bleed into this attempt's diagnostic).
       const statusResp = await fetch(`${BASE_URL}/api/sync/${roomId}`);
       const statusData = await statusResp.json();
+
+      // Ground truth wins: status.sharing reflects Meet's own "You are
+      // presenting" label. If we ARE presenting, it succeeded — even if a
+      // transient "Can't share your screen" fired on a first attempt that then
+      // recovered. Don't report failure over stale/transient errors when the
+      // share is actually live.
+      if (statusData.status?.sharing === true) {
+        return { content: [{ type: "text", text: "Whiteboard is now being shared in the call. Use update_whiteboard to change its content." }] };
+      }
+
+      // Not presenting — explain why, using errors from THIS attempt.
       const errors = statusData.status?.errors || [];
       const shareErrors = errors.filter(
         e => e.message.includes('Screen share') && e.timestamp >= attemptStartedAt
       );
-
       if (shareErrors.length > 0) {
         const latestError = shareErrors[shareErrors.length - 1];
-        // Re-check perm now so we don't blame perms when they're actually fine
-        // (Seth's #138: first share worked, retry blamed permission). Only
-        // mention perm if it's actually denied/restricted.
         const screenPerm = statusData.status?.permissions?.screenRecording;
         const permActuallyDenied = screenPerm && screenPerm !== 'granted' && screenPerm !== 'unknown';
         const suffix = permActuallyDenied
@@ -539,14 +546,7 @@ server.tool(
         return { content: [{ type: "text", text: `Screen sharing failed: ${latestError.message}.${suffix}` }] };
       }
 
-      // Re-check sharing state — if the local server says we're not sharing
-      // despite no error, the attempt silently no-op'd (e.g. Present button
-      // not findable). Better to surface that than claim success.
-      if (statusData.status?.sharing !== true) {
-        return { content: [{ type: "text", text: "Share request was sent but the app reports it isn't sharing. The Meet UI may need to be refreshed or focused. Tell the user." }] };
-      }
-
-      return { content: [{ type: "text", text: "Whiteboard is now being shared in the call. Use update_whiteboard to change its content." }] };
+      return { content: [{ type: "text", text: "Share request was sent but the app reports it isn't presenting yet. The Meet UI may need to be refreshed or focused. Tell the user." }] };
     } else {
       return { content: [{ type: "text", text: `Error: ${data.error || "Failed to share"}` }] };
     }

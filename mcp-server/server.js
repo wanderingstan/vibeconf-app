@@ -1010,3 +1010,20 @@ server.tool(
 // Start the server
 const transport = new StdioServerTransport();
 await server.connect(transport);
+
+// Exit when the parent (Claude Code) goes away — otherwise these node
+// processes pile up as orphans across sessions. The host talks to us over
+// stdio, so a closed/ended stdin pipe (parent exited) is our signal to quit.
+// Also handle the transport closing and the usual termination signals.
+let shuttingDown = false;
+function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  process.exit(0);
+}
+transport.onclose = shutdown;
+process.stdin.on('end', shutdown);
+process.stdin.on('close', shutdown);
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+process.on('SIGHUP', shutdown);

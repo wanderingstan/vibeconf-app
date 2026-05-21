@@ -256,11 +256,21 @@
       let speakOpen = 0;
       if (this.speaking) {
         const amp = (typeof mic !== 'undefined' && mic && mic.getAmplitude) ? mic.getAmplitude() : 0;
-        speakOpen = amp > 0.02 ? amp : (0.15 + 0.15 * (0.5 + 0.5 * Math.sin(this.frameCount * 0.45)));
+        // Throttled diagnostic: are we tracking real audio or on the fallback?
+        if (this.frameCount % 15 === 0) {
+          console.log('[bots-in-calls] lip-sync amp:', amp.toFixed(3), amp > 0.02 ? '(audio)' : '(fallback sine)');
+        }
+        // Fallback sine is fairly pronounced so the avatar visibly "talks" even
+        // when amplitude is unavailable (e.g. ack tones on a separate path).
+        speakOpen = amp > 0.02 ? amp : (0.4 + 0.3 * (0.5 + 0.5 * Math.sin(this.frameCount * 0.5)));
       }
-      const speakScaleY = 1 + speakOpen * 0.20;   // jaw opens (vertical stretch)
-      const speakScaleX = 1 - speakOpen * 0.05;   // slight horizontal squeeze
-      const speakBounce = speakOpen * (emojiSize * 0.05);
+      // Exaggerated, two-part motion: the whole emoji pulses larger with volume,
+      // AND stretches vertically (jaw open). Both are deliberately big — on a
+      // flat glyph subtle scaling is invisible.
+      const baseScale = 1 + speakOpen * 0.22;            // whole-emoji volume pulse
+      const speakScaleY = baseScale * (1 + speakOpen * 0.35); // extra vertical = jaw
+      const speakScaleX = baseScale * (1 - speakOpen * 0.10); // slight squeeze
+      const speakBounce = speakOpen * (emojiSize * 0.06);
       const speakTilt = this.speaking ? Math.sin(this.frameCount * 0.3) * 0.05 : 0;
       // Thinking state: gentle side-to-side sway
       const thinkSway = this.state === 'thinking'
@@ -349,7 +359,7 @@
       }
       const rms = Math.sqrt(sumSq / this._ampBuf.length); // 0..~1
       // Scale up (speech RMS is small) and clamp, then smooth toward the target.
-      const target = Math.min(1, rms * 3.5);
+      const target = Math.min(1, rms * 6);
       // Asymmetric smoothing: open fast, close a touch slower → reads natural.
       const k = target > this._smoothedAmp ? 0.5 : 0.25;
       this._smoothedAmp += (target - this._smoothedAmp) * k;

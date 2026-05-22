@@ -40,6 +40,13 @@ class LocalServer {
     this.getWebsiteUrl = getWebsiteUrl || (() => ''); // host where /room/:id renders
     this.chatUnread = false; // passive "… - New message" signal from the chat button
 
+    // Response-state tracking — what the bot last responded to. Used to detect
+    // when a new wait window is just a continuation of an utterance the bot
+    // already answered (captions grow progressively across windows), so the
+    // agent can avoid double-responding to the same thought.
+    this.lastRespondedSpeaker = null;
+    this.lastRespondedText = null;
+
     // Pending bot speech — queued when speak() is called before the bot is
     // actually admitted to the call. Flushed in setCallStatus when status
     // becomes 'in-call'. Without this, audio plays through the virtual mic
@@ -117,6 +124,8 @@ class LocalServer {
     this.presenterName = null;
     this.anyoneSpeaking = false;
     this.lastSpeechStoppedAt = null;
+    this.lastRespondedSpeaker = null;
+    this.lastRespondedText = null;
     this.resolveAllWaiters();
     // Use the setter so onCallStatusChange fires — the avatar uses this to
     // switch to 🫥 while joining.
@@ -133,6 +142,8 @@ class LocalServer {
     this.presenterName = null;
     this.anyoneSpeaking = false;
     this.lastSpeechStoppedAt = null;
+    this.lastRespondedSpeaker = null;
+    this.lastRespondedText = null;
     this.resolveAllWaiters();
     this.setCallStatus('idle');
   }
@@ -477,12 +488,47 @@ class LocalServer {
     if (botName) {
       entries = entries.filter(e => e.participantName !== botName);
     }
-    return entries;
+    return this._collapseUtterances(entries);
+  }
+
+  // Captions arrive as progressively-growing entries for one utterance
+  // ("Hi" -> "Hi Jimmy" -> "Hi Jimmy, how are you"). Collapse a consecutive
+  // run from the same speaker where each text is a prefix-extension of the
+  // previous into a single (longest) entry, so callers see whole utterances
+  // rather than every fragment. Genuinely separate utterances (no prefix
+  // relationship, or a different speaker in between) are preserved.
+  _collapseUtterances(entries) {
+    const out = [];
+    for (const e of entries) {
+      const last = out[out.length - 1];
+      if (
+        last &&
+        last.participantName === e.participantName &&
+        (e.text.startsWith(last.text) || last.text.startsWith(e.text))
+      ) {
+        out[out.length - 1] = e.text.length >= last.text.length ? e : last;
+      } else {
+        out.push(e);
+      }
+    }
+    return out;
   }
 
   _buildResponse(since, botName, startTime) {
     const entries = this._entriesSince(since, botName);
     const elapsed = startTime ? Math.round((Date.now() - startTime) / 1000) : 0;
+
+    // Continuation detection: is this window just the same speaker extending the
+    // utterance the bot already responded to? (captions kept growing after we
+    // answered). If so, flag it so the agent can avoid double-responding.
+    let continuationOfPriorResponse = false;
+    if (entries.length > 0 && this.lastRespondedSpeaker && this.lastRespondedText) {
+      const allSameSpeaker = entries.every(e => e.participantName === this.lastRespondedSpeaker);
+      const latestText = entries[entries.length - 1].text;
+      if (allSameSpeaker && latestText.startsWith(this.lastRespondedText)) {
+        continuationOfPriorResponse = true;
+      }
+    }
 
     return {
       success: true,
@@ -490,6 +536,7 @@ class LocalServer {
       asOf: new Date().toISOString(),
       waited: !!startTime,
       elapsed,
+      continuationOfPriorResponse,
       transcript: {
         entries,
         count: entries.length,
@@ -842,6 +889,14 @@ class LocalServer {
           // audio plays into the void. The transcript entry is recorded
           // immediately either way so order is preserved on flush.
           if (data.role === 'bot') {
+            // Record the member utterance this response is answering — the most
+            // recent non-bot entry. Lets us flag the next window as a
+            // continuation if that speaker just keeps extending the same thought.
+            const lastMember = [...this.transcripts].reverse().find(e => e.role !== 'bot');
+            if (lastMember) {
+              this.lastRespondedSpeaker = lastMember.participantName;
+              this.lastRespondedText = lastMember.text;
+            }
             if (this.callStatus !== 'in-call') {
               console.log('[local-server] Queueing bot speech until in-call:', t.text.slice(0, 40));
               this.pendingBotSpeech.push({ text: t.text, voice: t.voice, emoji: t.emoji });

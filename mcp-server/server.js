@@ -165,6 +165,11 @@ server.tool(
     // chat without missing speech. The agent should call read_chat when it sees this.
     const chatLine = data.chatUnread
       ? '\n[Unread chat messages — call read_chat to see them, then respond.]' : '';
+    // Continuation: this window is the same speaker extending the utterance you
+    // already answered. Stay quiet unless there's genuinely new content, to
+    // avoid responding twice to one thought.
+    const continuationLine = data.continuationOfPriorResponse
+      ? '\n[Note: this continues what you already responded to — only reply if it adds genuinely new information; otherwise stay silent and wait again.]' : '';
 
     if (entries.length === 0) {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
@@ -193,7 +198,7 @@ server.tool(
     return {
       content: [{
         type: "text",
-        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):\n\n${transcriptText}${chatLine}`,
+        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):\n\n${transcriptText}${chatLine}${continuationLine}`,
       }],
     };
   }

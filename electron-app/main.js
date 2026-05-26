@@ -634,6 +634,104 @@ const testSpeechPath = path.join(EXT_DIR, 'test-speech.mp3');
 // Chrome-like user agent to avoid Google blocking
 const CHROME_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
+// Persistent session partition for the Meet BrowserView (#168). Routing
+// meetView through its own partition isolates its cookies/cache/storage
+// from the default session (which the panelView uses for
+// vibeconferencing.com auth) and sets up the multi-mode identity story:
+//   - persist:meet-guest          — no cookies, always guest pre-join
+//   - persist:meet-account-<...>  — future account-bound personas (#170)
+// Today only the guest partition exists; account-mode partitions get added
+// when the persona binding lands (#144 + #170).
+const MEET_GUEST_PARTITION = 'persist:meet-guest';
+
+// Apply Meet-specific session config to a given session. Called per
+// partition so each identity mode shares the exact same handler setup.
+//   - Strip CSP so the preload's page-inject eval() isn't blocked by
+//     Meet's Trusted Types policy.
+//   - Auto-grant the media permissions Meet always asks for.
+//   - Hand getDisplayMedia the right desktopCapturer source (#158).
+//   - Set a Chrome-like UA so Meet doesn't show the "unsupported browser"
+//     gate.
+function configureMeetSession(sess) {
+  sess.webRequest.onHeadersReceived((details, callback) => {
+    const headers = { ...details.responseHeaders };
+    delete headers['content-security-policy'];
+    delete headers['Content-Security-Policy'];
+    delete headers['content-security-policy-report-only'];
+    delete headers['Content-Security-Policy-Report-Only'];
+    callback({ responseHeaders: headers });
+  });
+
+  sess.setPermissionRequestHandler((webContents, permission, callback) => {
+    callback(['media', 'microphone', 'camera', 'display-capture'].includes(permission));
+  });
+
+  sess.setPermissionCheckHandler((webContents, permission) => {
+    return ['media', 'microphone', 'camera', 'display-capture'].includes(permission);
+  });
+
+  // Screen-share source selection — full screen, or the whiteboard window
+  // with main-window exclusion to avoid the infinity-mirror trap (#158).
+  sess.setDisplayMediaRequestHandler(async (request, callback) => {
+    if (fullScreenShareRequested) {
+      try {
+        const sources = await desktopCapturer.getSources({
+          types: ['screen'],
+          thumbnailSize: { width: 0, height: 0 },
+        });
+        if (sources.length > 0) {
+          console.log('[electron] Full screen share source:', sources[0].id, sources[0].name);
+          callback({ video: sources[0] });
+        } else {
+          console.error('[electron] No screen sources found');
+          callback({});
+        }
+      } catch (err) {
+        console.error('[electron] Full screen share error:', err);
+        callback({});
+      }
+      return;
+    }
+
+    if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
+      try {
+        const sources = await desktopCapturer.getSources({
+          types: ['window'],
+          thumbnailSize: { width: 0, height: 0 },
+        });
+        const wbSourceId = whiteboardWindow.getMediaSourceId();
+        const mainSourceId =
+          mainWindow && !mainWindow.isDestroyed() ? mainWindow.getMediaSourceId() : null;
+        const wbTitle = whiteboardWindow.getTitle();
+        console.log('[electron] Display media request — wb source:', wbSourceId, 'main:', mainSourceId, 'title:', wbTitle);
+        console.log('[electron] Available sources:', sources.map(s => `${s.id} "${s.name}"`));
+
+        const candidates = sources.filter(s => s.id !== mainSourceId);
+        let source = candidates.find(s => s.id === wbSourceId);
+        if (!source) source = candidates.find(s => s.name === wbTitle);
+        if (!source) source = candidates.find(s => s.name.startsWith(wbTitle));
+
+        if (source) {
+          console.log('[electron] Matched whiteboard source:', source.id, source.name);
+          callback({ video: source });
+          return;
+        }
+
+        console.warn('[electron] No matching whiteboard source — using webContents fallback (avoiding main window).');
+        callback({ video: whiteboardWindow.webContents });
+      } catch (err) {
+        console.error('[electron] Display media error:', err);
+        callback({});
+      }
+    } else {
+      console.log('[electron] Display media request → no whiteboard window, denying');
+      callback({});
+    }
+  });
+
+  sess.setUserAgent(CHROME_UA);
+}
+
 // ---------------------------------------------------------------------------
 // CLI argument parsing — supports --meet-url, --bot-name, --sync-url, --devtools
 // ---------------------------------------------------------------------------
@@ -1186,109 +1284,12 @@ app.whenReady().then(async () => {
   if (savedConfig.botName) sync.updateConfig({ botName: savedConfig.botName });
   if (savedConfig.syncBaseUrl) sync.updateConfig({ baseUrl: savedConfig.syncBaseUrl });
 
-  // Strip Content-Security-Policy headers from Meet responses.
-  // Meet's Trusted Types CSP blocks our page-inject.js eval() in the preload.
-  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-    const headers = { ...details.responseHeaders };
-    delete headers['content-security-policy'];
-    delete headers['Content-Security-Policy'];
-    delete headers['content-security-policy-report-only'];
-    delete headers['Content-Security-Policy-Report-Only'];
-    callback({ responseHeaders: headers });
-  });
-
-  // Auto-grant media permissions
-  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
-    if (['media', 'microphone', 'camera', 'display-capture'].includes(permission)) {
-      callback(true);
-    } else {
-      callback(false);
-    }
-  });
-
-  session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
-    if (['media', 'microphone', 'camera', 'display-capture'].includes(permission)) {
-      return true;
-    }
-    return false;
-  });
-
-  // Handle getDisplayMedia — provide the appropriate source based on share mode
-  session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
-    // Full screen share mode
-    if (fullScreenShareRequested) {
-      try {
-        const sources = await desktopCapturer.getSources({
-          types: ['screen'],
-          thumbnailSize: { width: 0, height: 0 },
-        });
-        if (sources.length > 0) {
-          console.log('[electron] Full screen share source:', sources[0].id, sources[0].name);
-          callback({ video: sources[0] });
-        } else {
-          console.error('[electron] No screen sources found');
-          callback({});
-        }
-      } catch (err) {
-        console.error('[electron] Full screen share error:', err);
-        callback({});
-      }
-      return;
-    }
-
-    // Whiteboard window share mode
-    if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
-      try {
-        const sources = await desktopCapturer.getSources({
-          types: ['window'],
-          thumbnailSize: { width: 0, height: 0 },
-        });
-        const wbSourceId = whiteboardWindow.getMediaSourceId();
-        // Compute the main app window's source id so we can EXCLUDE it from
-        // candidates — picking it shares the embedded Meet view back into
-        // Meet and triggers the infinity-mirror warning (#158/#137).
-        const mainSourceId =
-          mainWindow && !mainWindow.isDestroyed() ? mainWindow.getMediaSourceId() : null;
-        const wbTitle = whiteboardWindow.getTitle(); // pinned: 'Vibeconferencing Whiteboard'
-        console.log('[electron] Display media request — wb source:', wbSourceId, 'main:', mainSourceId, 'title:', wbTitle);
-        console.log('[electron] Available sources:', sources.map(s => `${s.id} "${s.name}"`));
-
-        // Filter out the main window before matching so even a misfire can't
-        // grab it.
-        const candidates = sources.filter(s => s.id !== mainSourceId);
-
-        // Preferred: exact id match.
-        let source = candidates.find(s => s.id === wbSourceId);
-        // Next: exact pinned-title match. This is reliable because we
-        // preventDefault page-title-updated on the whiteboard window.
-        if (!source) source = candidates.find(s => s.name === wbTitle);
-        // Last resort within candidates: startsWith match on the pinned title
-        // (in case macOS appends a window count, e.g. "Vibeconferencing Whiteboard (2)").
-        if (!source) source = candidates.find(s => s.name.startsWith(wbTitle));
-
-        if (source) {
-          console.log('[electron] Matched whiteboard source:', source.id, source.name);
-          callback({ video: source });
-          return;
-        }
-
-        // No safe source — DO NOT fall back to substring 'Vibeconferencing'
-        // (matches the main app window). Capture the whiteboard webContents
-        // directly instead; if that fails, deny rather than show the wrong window.
-        console.warn('[electron] No matching whiteboard source — using webContents fallback (avoiding main window).');
-        callback({ video: whiteboardWindow.webContents });
-      } catch (err) {
-        console.error('[electron] Display media error:', err);
-        callback({});
-      }
-    } else {
-      console.log('[electron] Display media request → no whiteboard window, denying');
-      callback({});
-    }
-  });
-
-  // Set Chrome-like user agent
-  session.defaultSession.setUserAgent(CHROME_UA);
+  // Configure the Meet session partition (#168). All Meet-specific handlers
+  // — CSP stripping, media-permission auto-grant, screen-share source
+  // selection, Chrome UA — live on this partition rather than defaultSession.
+  // Keeps meetView's cookies/cache isolated from the panel + auth flows and
+  // sets up the multi-mode identity work that lands in #170.
+  configureMeetSession(session.fromPartition(MEET_GUEST_PARTITION));
 
   // Set dock icon on macOS
   if (process.platform === 'darwin' && app.dock) {
@@ -1617,6 +1618,10 @@ function createMainWindow() {
       preload: path.join(__dirname, 'preload-meet.js'),
       contextIsolation: false,
       sandbox: false,
+      // Route Meet through its own session partition (#168) so cookies,
+      // cache, and storage are isolated from the panel/auth session.
+      // The matching configureMeetSession() runs in app.whenReady.
+      partition: MEET_GUEST_PARTITION,
     },
   });
   mainWindow.addBrowserView(meetView);

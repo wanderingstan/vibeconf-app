@@ -89,6 +89,14 @@ class LocalServer {
     this.anyoneSpeaking = false;       // true if any participant is currently speaking
     this.lastSpeechStoppedAt = null;   // timestamp (ms) when last person stopped speaking
 
+    // Auto-leave when alone (#145). Only fires once at least one other
+    // participant has appeared in the call — guards against auto-leaving
+    // immediately after admission when the people pane is still populating.
+    this._sawOtherParticipant = false;
+    this._autoLeaveTimer = null;
+    this._autoLeaveTriggered = false;
+    this.autoLeaveGraceMs = 10_000;
+
     // Long-poll waiters
     this.waiters = [];           // { resolve, since, bot, silence, timer }
 
@@ -126,6 +134,7 @@ class LocalServer {
     this.lastSpeechStoppedAt = null;
     this.lastRespondedSpeaker = null;
     this.lastRespondedText = null;
+    this._resetAutoLeave();
     this.resolveAllWaiters();
     // Use the setter so onCallStatusChange fires — the avatar uses this to
     // switch to 🫥 while joining.
@@ -144,6 +153,7 @@ class LocalServer {
     this.lastSpeechStoppedAt = null;
     this.lastRespondedSpeaker = null;
     this.lastRespondedText = null;
+    this._resetAutoLeave();
     this.resolveAllWaiters();
     this.setCallStatus('idle');
   }
@@ -164,7 +174,17 @@ class LocalServer {
         console.log('[local-server] Dropping', this.pendingBotSpeech.length, 'unflushed bot speech entries (call ended)');
         this.pendingBotSpeech = [];
       }
+      this._resetAutoLeave();
     }
+  }
+
+  _resetAutoLeave() {
+    if (this._autoLeaveTimer) {
+      clearTimeout(this._autoLeaveTimer);
+      this._autoLeaveTimer = null;
+    }
+    this._sawOtherParticipant = false;
+    this._autoLeaveTriggered = false;
   }
 
   _flushPendingBotSpeech() {
@@ -277,6 +297,73 @@ class LocalServer {
       }
       this.onAnyoneSpeakingChange(true);
     }
+
+    this._evaluateAutoLeave();
+  }
+
+  // Auto-leave when the bot is the only one left in the call (#145). Only
+  // fires while in-call, only after at least one other participant has been
+  // seen, and only after a grace period (to ride out brief Meet re-renders
+  // during participant transitions).
+  _evaluateAutoLeave() {
+    if (this.callStatus !== 'in-call' || this._autoLeaveTriggered) {
+      return;
+    }
+    const others = this.participants.filter(p => !p.isSelf && p.name !== 'You');
+    if (others.length > 0) {
+      this._sawOtherParticipant = true;
+      if (this._autoLeaveTimer) {
+        clearTimeout(this._autoLeaveTimer);
+        this._autoLeaveTimer = null;
+        console.log(ts(), '🤝 [auto-leave] cancelled — others present again');
+      }
+      return;
+    }
+    // Alone. Only arm the timer once we've ever seen company in this call.
+    if (!this._sawOtherParticipant || this._autoLeaveTimer) return;
+    console.log(ts(), '⏳ [auto-leave] alone in call — leaving in', this.autoLeaveGraceMs, 'ms');
+    this._autoLeaveTimer = setTimeout(() => {
+      this._autoLeaveTimer = null;
+      this._triggerAutoLeave();
+    }, this.autoLeaveGraceMs);
+  }
+
+  _triggerAutoLeave() {
+    if (this._autoLeaveTriggered || this.callStatus !== 'in-call') return;
+    this._autoLeaveTriggered = true;
+    console.log(ts(), '👋 [auto-leave] firing — bot is alone, signing off');
+
+    // Speak a brief sign-off line in active mode only. Passive/silent leave
+    // quietly.
+    if (this.mode === 'active') {
+      try {
+        this.onBotSpeech("Looks like I'm the only one here, signing off.", undefined, '👋');
+      } catch (err) {
+        console.warn(ts(), '[auto-leave] speak failed:', err.message);
+      }
+    }
+
+    // Resolve any pending waiters with a terminal autoLeft reason so the
+    // agent's wait_for_speech exits its loop instead of hanging.
+    for (const w of [...this.waiters]) {
+      if (w.resolved) continue;
+      w.resolved = true;
+      clearTimeout(w.timer);
+      clearTimeout(w.silenceTimer);
+      w.resolve({ success: true, autoLeft: true, asOf: new Date().toISOString(), transcript: { entries: [] } });
+    }
+    this.waiters = [];
+
+    // Give the goodbye line time to play before tearing the call down (rough
+    // estimate; not awaiting TTS-end yet).
+    const playDelayMs = this.mode === 'active' ? 3000 : 0;
+    setTimeout(() => {
+      try {
+        this.onLeaveCall();
+      } catch (err) {
+        console.warn(ts(), '[auto-leave] onLeaveCall failed:', err.message);
+      }
+    }, playDelayMs);
   }
 
   setSomeoneElsePresenting(presenting, presenterName) {

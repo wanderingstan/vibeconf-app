@@ -151,6 +151,16 @@ server.tool(
         }],
       };
     }
+    // Auto-leave: the bot was alone in the call (everyone else left) and
+    // signed off on its own (#145). Exit the loop — leave_call already fired.
+    if (data.autoLeft) {
+      return {
+        content: [{
+          type: "text",
+          text: "Auto-left the call: everyone else left and the bot was alone. The app has already hung up. Exiting the conversation loop. Do not retry wait_for_speech and do not call leave_call.",
+        }],
+      };
+    }
 
     const entries = (data.transcript?.entries || []).filter(
       (e) => e.participantName !== BOT_NAME

@@ -986,6 +986,9 @@ server.tool(
     if (status.roomUrl) {
       sections.push(`Full room URL (whole room UI): ${status.roomUrl}`);
     }
+    if (status.whiteboardLoadedUrl) {
+      sections.push(`Whiteboard window currently loaded: ${status.whiteboardLoadedUrl} (what's actually rendering in the share, post-update_whiteboard / scroll_share)`);
+    }
 
     if (status.someoneElsePresenting) {
       sections.push(`Someone else presenting: ${status.presenterName || 'yes'}`);

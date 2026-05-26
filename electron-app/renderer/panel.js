@@ -87,6 +87,7 @@ function renderCallState(s) {
     `Bot mode:           ${s.mode || 'unknown'}`,
     `Anyone speaking:    ${yesNo(s.anyoneSpeaking)}`,
     `Screen sharing:     ${yesNo(s.sharing)}${s.someoneElsePresenting ? ` (other: ${s.presenterName || 'someone'})` : ''}`,
+    `WB window URL:      ${s.whiteboardLoadedUrl || '(none)'}`,
     `People pane open:   ${yesNo(s.peoplePaneOpen)}`,
     `Chat pane open:     ${yesNo(s.chatPaneOpen)}`,
     `Unread chat:        ${yesNo(s.chatUnread)}`,

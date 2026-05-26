@@ -34,7 +34,7 @@ function ts() {
 }
 
 class LocalServer {
-  constructor({ port, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, getWebsiteUrl, getPref, setPref, applyPref } = {}) {
+  constructor({ port, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, getWebsiteUrl, getWhiteboardLoadedUrl, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.onBotSpeech = onBotSpeech || (() => {});
     this.onStopTts = onStopTts || (() => {});
@@ -56,6 +56,10 @@ class LocalServer {
     this.onReadChat = onReadChat || (async () => ({ ok: false, error: 'not implemented' }));
     this.onSendChat = onSendChat || (async () => ({ ok: false, error: 'not implemented' }));
     this.getWebsiteUrl = getWebsiteUrl || (() => ''); // host where /room/:id renders
+    // What URL is currently loaded in the whiteboard window? Surfaced so an
+    // agent (or the panel) can confirm what's actually being shared — useful
+    // after update_whiteboard({url}) and scroll_share (#169).
+    this.getWhiteboardLoadedUrl = getWhiteboardLoadedUrl || (() => null);
     this.chatUnread = false; // passive "… - New message" signal from the chat button
 
     // Response-state tracking — what the bot last responded to. Used to detect
@@ -328,6 +332,7 @@ class LocalServer {
       peoplePaneOpen: !!this.peoplePaneOpen,
       screenRecording: this.permissions?.screenRecording,
       roomId: this.roomId,
+      whiteboardLoadedUrl: this.getWhiteboardLoadedUrl(),
       participants: (this.participants || []).map(p => ({
         name: p.name,
         speaking: !!p.speaking,
@@ -839,6 +844,7 @@ class LocalServer {
         chatUnread: this.chatUnread,
         roomUrl: this.roomId ? `${(this.getWebsiteUrl() || '').replace(/\/$/, '')}/room/${this.roomId}` : null,
         whiteboardUrl: this.roomId ? `${(this.getWebsiteUrl() || '').replace(/\/$/, '')}/room/${this.roomId}?mode=whiteboard` : null,
+        whiteboardLoadedUrl: this.getWhiteboardLoadedUrl(),
       },
     };
   }

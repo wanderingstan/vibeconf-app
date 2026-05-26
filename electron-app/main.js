@@ -106,6 +106,14 @@ let ackTtsPending = false;
 
 // Local HTTP server for agent communication (replaces remote sync for MCP)
 const localServer = new globalThis.LocalServer({
+  getWhiteboardLoadedUrl: () => {
+    try {
+      if (whiteboardWindow && !whiteboardWindow.isDestroyed() && !whiteboardWindow.webContents.isDestroyed()) {
+        return whiteboardWindow.webContents.getURL() || null;
+      }
+    } catch { /* ignore */ }
+    return null;
+  },
   onBotSpeech: (text, voice, emoji) => {
     console.log('[local-server] Bot speech:', text.slice(0, 80), emoji ? `(emoji: ${emoji})` : '');
     ackTtsPending = false;

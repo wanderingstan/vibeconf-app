@@ -911,13 +911,30 @@ server.tool(
     const participants = data.participants || [];
     const detectedUrls = data.detectedMeetUrls || [];
 
-    // Build participant list with speaking indicators
+    // Members from sync API (includes bots). Build a set of registered bot
+    // names (case-insensitive) so we can annotate the Meet participant list
+    // with (bot) for cross-instance bots like Coltrane (#162).
+    const allMembers = data.members || [];
+    const botNames = new Set(
+      allMembers
+        .filter((m) => m.role === 'bot' && m.name)
+        .map((m) => m.name.toLowerCase())
+    );
+
+    // Build participant list with speaking + bot indicators
     const participantLines = participants.length > 0
-      ? participants.map(p => `  - ${p.name}${p.speaking ? ' (speaking)' : ''}`).join('\n')
+      ? participants.map(p => {
+          const tags = [];
+          if (botNames.has((p.name || '').toLowerCase())) tags.push('bot');
+          if (p.speaking) tags.push('speaking');
+          const suffix = tags.length ? ` (${tags.join(', ')})` : '';
+          return `  - ${p.name}${suffix}`;
+        }).join('\n')
       : '  (none detected)';
 
-    // Members from sync API (includes bots)
-    const members = (data.members || []).map((m) => `  - ${m.name} (${m.role})`).join("\n");
+    // Registered bot members (full list, includes bots not currently visible
+    // in the Meet participant tiles — e.g. still joining)
+    const members = allMembers.map((m) => `  - ${m.name} (${m.role})`).join("\n");
 
     const wb = data.whiteboard?.content || "(empty)";
     const errors = (status.errors || []).map(e => `  - ${e.message} (${e.timestamp})`).join("\n");

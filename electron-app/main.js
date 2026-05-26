@@ -649,7 +649,43 @@ const cliArgs = parseCLIArgs();
 // Helper: speak text via TTS → send audio to Meet view
 // ---------------------------------------------------------------------------
 
+// Strip common markdown so TTS doesn't read "star ... star", backticks,
+// heading hashes, list dashes, or link/image syntax aloud (#160). Only used on
+// the spoken path — transcript/whiteboard/chat keep their markdown.
+function stripMarkdownForTts(text) {
+  if (!text) return text;
+  let out = String(text);
+  // Images first (would otherwise survive as ![alt](url) -> [alt])
+  out = out.replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1');
+  // Links: [text](url) -> text
+  out = out.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');
+  // Fenced and inline code: keep the contents, drop the fences/ticks
+  out = out.replace(/```[\w-]*\n?([\s\S]*?)```/g, '$1');
+  out = out.replace(/`([^`]+)`/g, '$1');
+  // Bold/italic/strikethrough. Underscore variants are word-bounded so things
+  // like my_var_name and __dunder__ identifiers aren't eaten.
+  out = out.replace(/\*\*(.+?)\*\*/g, '$1');
+  out = out.replace(/(?<![A-Za-z0-9_])__(.+?)__(?![A-Za-z0-9_])/g, '$1');
+  out = out.replace(/\*(?=\S)([^*\n]+?)(?<=\S)\*/g, '$1');
+  out = out.replace(/(?<![A-Za-z0-9_])_(?=\S)([^_\n]+?)(?<=\S)_(?![A-Za-z0-9_])/g, '$1');
+  out = out.replace(/~~(.+?)~~/g, '$1');
+  // Line-leading markers: heading #, blockquote >, list -/*/+, ordered "1."
+  out = out.replace(/^[ \t]*#{1,6}[ \t]+/gm, '');
+  out = out.replace(/^[ \t]*>[ \t]?/gm, '');
+  out = out.replace(/^[ \t]*[-*+][ \t]+/gm, '');
+  out = out.replace(/^[ \t]*\d+\.[ \t]+/gm, '');
+  // Horizontal rules on their own line
+  out = out.replace(/^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$/gm, '');
+  // Collapse the whitespace we may have introduced
+  out = out.replace(/[ \t]{2,}/g, ' ');
+  out = out.replace(/\n{3,}/g, '\n\n');
+  return out.trim();
+}
+
 function speakText(text, voice, emoji) {
+  // Sanitize markdown out of the spoken string only (#160).
+  const spokenText = stripMarkdownForTts(text);
+
   // Temporarily override voice if specified (works for both macOS and ElevenLabs)
   const originalMacVoice = tts.macosVoice;
   const originalELVoice = tts.voiceId;
@@ -659,7 +695,7 @@ function speakText(text, voice, emoji) {
     if (voice.length > 15) tts.updateConfig({ voiceId: voice });
   }
 
-  tts.synthesize(text)
+  tts.synthesize(spokenText)
     .then((audioBuffer) => {
       if (!audioBuffer) {
         console.error('[electron] TTS returned null/empty buffer');

@@ -486,6 +486,11 @@ function createWhiteboardWindow(roomUrl) {
     skipTaskbar: true,
     webPreferences: { contextIsolation: true, nodeIntegration: false },
   });
+  // Pin the BrowserWindow title so the loaded page can't overwrite it. The
+  // share-handler matches the desktopCapturer source by this exact title to
+  // avoid accidentally picking the main app window (which holds the Meet
+  // view) and triggering Meet's infinity-mirror warning (#158/#137).
+  win.on('page-title-updated', (e) => { e.preventDefault(); });
   win.loadURL(roomUrl);
   win.webContents.on('did-finish-load', () => {
     console.log('[electron] Whiteboard window loaded OK:', win.webContents.getURL());
@@ -1238,27 +1243,39 @@ app.whenReady().then(async () => {
           types: ['window'],
           thumbnailSize: { width: 0, height: 0 },
         });
-        const mediaSourceId = whiteboardWindow.getMediaSourceId();
-        console.log('[electron] Display media request — looking for source:', mediaSourceId);
+        const wbSourceId = whiteboardWindow.getMediaSourceId();
+        // Compute the main app window's source id so we can EXCLUDE it from
+        // candidates — picking it shares the embedded Meet view back into
+        // Meet and triggers the infinity-mirror warning (#158/#137).
+        const mainSourceId =
+          mainWindow && !mainWindow.isDestroyed() ? mainWindow.getMediaSourceId() : null;
+        const wbTitle = whiteboardWindow.getTitle(); // pinned: 'Vibeconferencing Whiteboard'
+        console.log('[electron] Display media request — wb source:', wbSourceId, 'main:', mainSourceId, 'title:', wbTitle);
         console.log('[electron] Available sources:', sources.map(s => `${s.id} "${s.name}"`));
 
-        const source = sources.find(s => s.id === mediaSourceId);
+        // Filter out the main window before matching so even a misfire can't
+        // grab it.
+        const candidates = sources.filter(s => s.id !== mainSourceId);
+
+        // Preferred: exact id match.
+        let source = candidates.find(s => s.id === wbSourceId);
+        // Next: exact pinned-title match. This is reliable because we
+        // preventDefault page-title-updated on the whiteboard window.
+        if (!source) source = candidates.find(s => s.name === wbTitle);
+        // Last resort within candidates: startsWith match on the pinned title
+        // (in case macOS appends a window count, e.g. "Vibeconferencing Whiteboard (2)").
+        if (!source) source = candidates.find(s => s.name.startsWith(wbTitle));
+
         if (source) {
           console.log('[electron] Matched whiteboard source:', source.id, source.name);
           callback({ video: source });
           return;
         }
 
-        // Fallback: match by title
-        const wbTitle = whiteboardWindow.getTitle();
-        const fallback = sources.find(s => s.name.includes(wbTitle) || s.name.includes('Vibeconferencing'));
-        if (fallback) {
-          console.log('[electron] Matched whiteboard by title:', fallback.id, fallback.name);
-          callback({ video: fallback });
-          return;
-        }
-
-        console.warn('[electron] Could not find whiteboard in sources, trying webContents');
+        // No safe source — DO NOT fall back to substring 'Vibeconferencing'
+        // (matches the main app window). Capture the whiteboard webContents
+        // directly instead; if that fails, deny rather than show the wrong window.
+        console.warn('[electron] No matching whiteboard source — using webContents fallback (avoiding main window).');
         callback({ video: whiteboardWindow.webContents });
       } catch (err) {
         console.error('[electron] Display media error:', err);

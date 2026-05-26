@@ -727,13 +727,11 @@ class LocalServer {
           deduped.push(entry);
         }
       }
-      const wordCount = deduped
+      const joinedText = deduped
         .map(e => e.text.trim())
         .filter(Boolean)
-        .join(' ')
-        .split(/\s+/)
-        .filter(Boolean)
-        .length;
+        .join(' ');
+      const wordCount = joinedText.split(/\s+/).filter(Boolean).length;
       // Always fire the change callback with the new wordCount — even if state
       // is already 'thinking' from a previous turn — so the ack handler runs.
       // Without this, agent loops that call wait_for_speech twice in a row
@@ -741,7 +739,9 @@ class LocalServer {
       // in _setBotState short-circuits.
       console.log(ts(), '🧠 [thinking] Processing transcript — ' + wordCount + ' words, ' + deduped.length + ' entry/ies');
       this.botState = 'thinking';
-      this.onBotStateChange('thinking', { wordCount });
+      // Pass joinedText so the ack handler can do addressivity matching
+      // (#155). wordCount stays the primary threshold; text is supplemental.
+      this.onBotStateChange('thinking', { wordCount, text: joinedText });
     }
 
     waiter.resolve(response);

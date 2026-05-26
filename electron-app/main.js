@@ -287,6 +287,48 @@ const localServer = new globalThis.LocalServer({
     // Only in active mode — passive/silent shouldn't blurt "mm-hmm" unprompted.
     if (state === 'thinking' && localServer.mode === 'active') {
       const wordCount = extra?.wordCount || 0;
+      const text = (extra?.text || '').toLowerCase();
+
+      // Addressivity (#155). Three regimes:
+      //   - 1:1 (one human + this bot)  → always ack, no ambiguity
+      //   - multi-participant, my name  → always ack (forced)
+      //   - multi-participant, OTHER's name → never ack (suppress)
+      //   - multi-participant, no name  → default by wordCount
+      // Names are matched as whole words, case-insensitive.
+      const snap = localServer.getCallStateSnapshot();
+      const myName = (store?.get('botName') || '').toLowerCase();
+      const otherNames = new Set(
+        (snap.participants || [])
+          .filter((p) => !p.isSelf && p.name && p.name !== 'You')
+          .map((p) => p.name.toLowerCase())
+          .filter((n) => n && n !== myName)
+      );
+      // Members may include bots that haven't shown up in the DOM yet.
+      for (const m of (localServer.members || [])) {
+        const n = (m.name || '').toLowerCase();
+        if (n && n !== myName) otherNames.add(n);
+      }
+      const nameRe = (n) => new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+      const addressedToMe = myName ? nameRe(myName).test(text) : false;
+      const addressedToOther = [...otherNames].some((n) => nameRe(n).test(text));
+      // 1:1 = exactly one non-self, non-bot participant in the call. Use the
+      // already-tagged isBot from the snapshot so the count is correct even
+      // when the bot list is populating slowly.
+      const humansInCall = (snap.participants || []).filter(
+        (p) => !p.isSelf && !p.isBot && p.name && p.name !== 'You'
+      );
+      const isOneOnOne = humansInCall.length === 1;
+
+      let addressivity;
+      if (isOneOnOne) addressivity = 'me-1on1';
+      else if (addressedToMe) addressivity = 'me';
+      else if (addressedToOther) addressivity = 'other';
+      else addressivity = 'unspecified';
+
+      if (addressivity === 'other') {
+        console.log(ts(), '🤐 [ack] Suppressing — addressed to someone else');
+        return;
+      }
 
       // Three tiers driven by user prefs (defaults 20 / 50):
       //   wordCount < ackShortMin    → no ack (short prompt — agent can answer fast)
@@ -305,14 +347,22 @@ const localServer = new globalThis.LocalServer({
         ack = shortPhrases[Math.floor(Math.random() * shortPhrases.length)];
       }
 
+      // Addressivity overrides the wordCount threshold for "ack me": if the
+      // bot is named (or it's 1:1), always ack even on short utterances. We
+      // pick from the short phrases since the speaker has clearly addressed
+      // us.
+      if (!ack && (addressivity === 'me' || addressivity === 'me-1on1')) {
+        ack = shortPhrases[Math.floor(Math.random() * shortPhrases.length)];
+      }
+
       if (!ack) {
-        console.log(ts(), '🤐 [ack] Skipping (wordCount=' + wordCount + ' < ' + ackShortMin + ')');
+        console.log(ts(), '🤐 [ack] Skipping (wordCount=' + wordCount + ' < ' + ackShortMin + ', addressivity=' + addressivity + ')');
         // Short prompt — skip the ack entirely. The thinking emoji is already
         // showing, so the user has visual feedback while the agent responds.
         return;
       }
 
-      console.log(ts(), '👂 [ack] Playing acknowledgement:', JSON.stringify(ack), '(wordCount=' + wordCount + ')');
+      console.log(ts(), '👂 [ack] Playing acknowledgement:', JSON.stringify(ack), '(wordCount=' + wordCount + ', addressivity=' + addressivity + ')');
       // Speak the acknowledgment immediately (before the agent responds).
       // Mark the ack so its tts-ended doesn't drop us out of 'thinking' while
       // the agent is still generating the real response.

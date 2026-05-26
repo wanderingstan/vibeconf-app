@@ -387,20 +387,42 @@ server.tool(
 // --- update_whiteboard ---
 server.tool(
   "update_whiteboard",
-  "Update the shared whiteboard/screen in the Google Meet call. Supports markdown and Mermaid diagrams. Can also load an arbitrary URL (e.g. a website, localhost app, dashboard) instead of markdown content.",
+  "Update the shared whiteboard/screen in the Google Meet call. Supports markdown and Mermaid diagrams. Can also load an arbitrary URL (e.g. a website, localhost app, dashboard) instead of markdown content. Pass image_path (absolute local file path) to show a local image — it gets registered with the app's local server and embedded as markdown.",
   {
     content: z.string().optional().describe("Markdown content for the whiteboard. Supports headings, lists, code blocks, and Mermaid diagrams."),
     url: z.string().optional().describe("Load an arbitrary URL in the whiteboard window instead of markdown content. Useful for showing websites, localhost apps, or dashboards."),
+    image_path: z.string().optional().describe("Absolute local file path to an image (png/jpg/gif/webp/svg/bmp/pdf). The local server registers it and embeds it in the markdown. If 'content' is also provided, the image is appended after it."),
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
-  async ({ content, url, room_id }) => {
+  async ({ content, url, image_path, room_id }) => {
     const roomId = room_id || ROOM_ID;
     if (!roomId) {
       return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
     }
 
-    if (!content && !url) {
-      return { content: [{ type: "text", text: "Error: Either 'content' or 'url' must be provided." }] };
+    if (!content && !url && !image_path) {
+      return { content: [{ type: "text", text: "Error: One of 'content', 'url', or 'image_path' must be provided." }] };
+    }
+
+    // image_path: register with the local server and fold the resulting URL
+    // into the markdown content (#157). url mode is unaffected — image_path
+    // composes with content, not with url.
+    if (image_path) {
+      try {
+        const regResp = await fetch(`${BASE_URL}/api/whiteboard-asset`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: image_path }),
+        });
+        const regData = await regResp.json();
+        if (!regData.success) {
+          return { content: [{ type: "text", text: `Error registering image_path: ${regData.error || "unknown"}` }] };
+        }
+        const imgMd = `![image](${regData.url})`;
+        content = content ? `${content}\n\n${imgMd}` : imgMd;
+      } catch (err) {
+        return { content: [{ type: "text", text: `Error contacting local server to register image: ${err.message}` }] };
+      }
     }
 
     // Load arbitrary URL mode

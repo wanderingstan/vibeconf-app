@@ -564,7 +564,10 @@ async function autoJoin(botName) {
       }
     }
 
-    // Fill name
+    // Fill name. The persona name should win — if the input is missing, the
+    // Electron session is signed in to a Google account and Meet will show
+    // the bot under that account's display name instead (see #167). Warn so
+    // the mismatch isn't silent.
     const nameInput =
       document.querySelector('input[placeholder="Your name"]') ||
       document.querySelector('input[aria-label="Your name"]') ||
@@ -573,6 +576,17 @@ async function autoJoin(botName) {
     if (nameInput) {
       await typeIntoInput(nameInput, botName);
       await delay(1000);
+      if (nameInput.value !== botName) {
+        const msg = `Persona name "${botName}" didn't stick on the pre-join input (got "${nameInput.value}"). Meet may overwrite it.`;
+        console.warn('[electron-meet] ⚠️  ' + msg);
+        ipcRenderer.send('to-panel', { action: 'error', message: msg });
+      } else {
+        console.log('[electron-meet] Persona name set on pre-join input:', botName);
+      }
+    } else {
+      const msg = `No "Your name" input on pre-join — likely signed in to a Google account in the Meet view. Bot will appear under that account's display name, not the persona "${botName}". See #167.`;
+      console.warn('[electron-meet] ⚠️  ' + msg);
+      ipcRenderer.send('to-panel', { action: 'error', message: msg });
     }
 
     // Check mic health before joining

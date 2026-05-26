@@ -82,6 +82,19 @@
         </label>
         <div style="font-size:11px;color:#c00;margin-top:2px">Launches Claude with --dangerously-skip-permissions. Use with caution.</div>
       </div>
+
+      <div class="section">
+        <h2>Bot Google Identity</h2>
+        <p class="helper-text" style="margin:0 0 8px">
+          Currently: <strong><span id="meetModeIndicator">guest</span></strong>.
+          In <strong>guest</strong> mode the bot's persona name (above) is typed into Meet's pre-join.
+          In <strong>account</strong> mode the bot is signed into Google and inherits that account's name.
+          The choice persists across launches.
+        </p>
+        <button id="meetSignInBtn">Sign in to Google as bot</button>
+        <button id="meetSignOutBtn" style="display:none">Sign out (use as guest)</button>
+      </div>
+
       <div class="section">
         <h2>Text-to-Speech</h2>
         <div class="field">
@@ -143,17 +156,6 @@
         <h2>Whiteboard</h2>
         <p class="helper-text" style="margin:0 0 8px">Normally the agent shares the whiteboard automatically. Use this only if it didn't.</p>
         <button id="shareWhiteboardBtn">Share Whiteboard</button>
-      </div>
-
-      <div class="section">
-        <h2>Bot Google Identity</h2>
-        <p class="helper-text" style="margin:0 0 8px">
-          Currently: <strong><span id="meetModeIndicator">guest</span></strong>.
-          In guest mode the bot's persona name is typed into Meet's pre-join.
-          In account mode the bot is signed into Google and inherits that account's name.
-        </p>
-        <button id="meetSignInBtn">Sign in to Google as bot</button>
-        <button id="meetSignOutBtn" style="display:none">Sign out (use as guest)</button>
       </div>
 
       <div class="field" id="roomIdField" style="display:none">

@@ -71,9 +71,13 @@ function renderCallState(s) {
     callStateDebug.textContent = 'Not in a call.';
     return;
   }
-  const parts = (s.participants || []).map(p =>
-    `    • ${p.name}${p.isSelf ? ' (self)' : ''} ${p.speaking ? '🗣️ speaking' : '— quiet'}`
-  );
+  const parts = (s.participants || []).map(p => {
+    const tags = [];
+    if (p.isSelf) tags.push('self');
+    if (p.isBot) tags.push('bot');
+    const tagStr = tags.length ? ` (${tags.join(', ')})` : '';
+    return `    • ${p.name}${tagStr} ${p.speaking ? '🗣️ speaking' : '— quiet'}`;
+  });
   callStateDebug.textContent = [
     `Call status:        ${s.callStatus || 'unknown'}`,
     `Bot state:          ${s.botState || 'unknown'}`,

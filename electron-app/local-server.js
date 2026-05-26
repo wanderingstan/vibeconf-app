@@ -291,6 +291,15 @@ class LocalServer {
   // Snapshot of everything the app currently believes about the call — for the
   // debug panel. Reflects the live detector state, not persisted config.
   getCallStateSnapshot() {
+    // Cross-reference Meet participants against registered bot members so
+    // the panel can show (bot) alongside (self) (#162). Same logic the MCP
+    // get_room_info tool uses; centralizing the snapshot keeps the two
+    // surfaces consistent.
+    const botNames = new Set(
+      (this.members || [])
+        .filter((m) => m.role === 'bot' && m.name)
+        .map((m) => m.name.toLowerCase())
+    );
     return {
       callStatus: this.callStatus,
       mode: this.mode,
@@ -305,7 +314,10 @@ class LocalServer {
       screenRecording: this.permissions?.screenRecording,
       roomId: this.roomId,
       participants: (this.participants || []).map(p => ({
-        name: p.name, speaking: !!p.speaking, isSelf: !!p.isSelf,
+        name: p.name,
+        speaking: !!p.speaking,
+        isSelf: !!p.isSelf,
+        isBot: botNames.has((p.name || '').toLowerCase()),
       })),
     };
   }

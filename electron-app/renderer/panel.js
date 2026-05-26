@@ -21,6 +21,9 @@ const curlCommand = document.getElementById('curlCommand');
 const copyCurlBtn = document.getElementById('copyCurlBtn');
 const micWarn = document.getElementById('micPermissionWarning');
 const shareWhiteboardBtn = document.getElementById('shareWhiteboardBtn');
+const meetSignInBtn = document.getElementById('meetSignInBtn');
+const meetSignOutBtn = document.getElementById('meetSignOutBtn');
+const meetModeIndicator = document.getElementById('meetModeIndicator');
 
 // Settings
 const botNameInput = document.getElementById('botName');
@@ -321,6 +324,58 @@ shareWhiteboardBtn.addEventListener('click', async () => {
   setTimeout(() => {
     shareWhiteboardBtn.textContent = 'Share Whiteboard';
   }, 3000);
+});
+
+// ---------------------------------------------------------------------------
+// Bot Google identity — guest vs account mode (#170)
+// ---------------------------------------------------------------------------
+
+function applyMeetMode(mode) {
+  if (!meetModeIndicator) return;
+  meetModeIndicator.textContent = mode;
+  if (mode === 'account') {
+    meetSignInBtn.style.display = 'none';
+    meetSignOutBtn.style.display = '';
+  } else {
+    meetSignInBtn.style.display = '';
+    meetSignOutBtn.style.display = 'none';
+  }
+}
+
+// Initial state on panel load.
+api.invoke('get-meet-mode').then((info) => {
+  if (info?.mode) applyMeetMode(info.mode);
+}).catch(() => {});
+
+// Stay in sync when main swaps partitions.
+api.on('meet-mode-changed', ({ mode }) => applyMeetMode(mode));
+
+meetSignInBtn?.addEventListener('click', async () => {
+  meetSignInBtn.disabled = true;
+  meetSignInBtn.textContent = 'Switching to Google sign-in...';
+  try {
+    await api.invoke('meet-sign-in-as-bot');
+  } catch (err) {
+    showError('Sign-in swap failed: ' + err.message);
+  }
+  setTimeout(() => {
+    meetSignInBtn.disabled = false;
+    meetSignInBtn.textContent = 'Sign in to Google as bot';
+  }, 1500);
+});
+
+meetSignOutBtn?.addEventListener('click', async () => {
+  meetSignOutBtn.disabled = true;
+  meetSignOutBtn.textContent = 'Clearing account session...';
+  try {
+    await api.invoke('meet-sign-out-bot');
+  } catch (err) {
+    showError('Sign-out failed: ' + err.message);
+  }
+  setTimeout(() => {
+    meetSignOutBtn.disabled = false;
+    meetSignOutBtn.textContent = 'Sign out (use as guest)';
+  }, 1500);
 });
 
 // ---------------------------------------------------------------------------

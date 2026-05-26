@@ -643,6 +643,24 @@ const CHROME_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/5
 // Today only the guest partition exists; account-mode partitions get added
 // when the persona binding lands (#144 + #170).
 const MEET_GUEST_PARTITION = 'persist:meet-guest';
+// Default account partition (#170). Future per-persona partitions land via
+// #144's googleAccount: <email> binding — slugify email → unique partition
+// name. For now a single default account partition lets us prove the swap.
+const MEET_ACCOUNT_PARTITION = 'persist:meet-account-default';
+
+// Track which Meet partitions have already had configureMeetSession applied
+// so swap-on-the-fly doesn't double-register handlers (which would call
+// callback() twice and crash getDisplayMedia / permission flows).
+const _configuredMeetPartitions = new Set();
+function ensureMeetSessionConfigured(partition) {
+  if (_configuredMeetPartitions.has(partition)) return;
+  configureMeetSession(session.fromPartition(partition));
+  _configuredMeetPartitions.add(partition);
+}
+
+// Currently active partition for the meetView. Persisted to the prefs store
+// so the chosen mode survives app restarts.
+let currentMeetPartition = MEET_GUEST_PARTITION;
 
 // Apply Meet-specific session config to a given session. Called per
 // partition so each identity mode shares the exact same handler setup.
@@ -1519,6 +1537,94 @@ app.on('before-quit', () => {
 // Window creation — single window with panel sidebar + Meet view
 // ---------------------------------------------------------------------------
 
+// Build a meetView BrowserView bound to the given session partition (#168
+// / #170). Handles all per-view setup that the previous inline block did:
+// audio muting, zoom on dom-ready, and optional DevTools open at launch.
+// Returns the view; caller is responsible for addBrowserView + load.
+function createMeetView(partition) {
+  const view = new BrowserView({
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-meet.js'),
+      contextIsolation: false,
+      sandbox: false,
+      partition,
+    },
+  });
+  view.webContents.setAudioMuted(true);
+  view.webContents.on('dom-ready', () => {
+    if (!view.webContents.isDestroyed()) view.webContents.setZoomFactor(0.75);
+  });
+  if (cliArgs && cliArgs['devtools']) {
+    view.webContents.openDevTools({ mode: 'detach' });
+  }
+  return view;
+}
+
+// Position panelView (fixed width on the left) and meetView (rest of the
+// window). Module-level so both createMainWindow and swap-time relayouts
+// share the same logic.
+function layoutViews() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const [width, height] = mainWindow.getContentSize();
+  if (panelView && !panelView.webContents.isDestroyed()) {
+    panelView.setBounds({ x: 0, y: 0, width: PANEL_WIDTH, height });
+  }
+  if (meetView && !meetView.webContents.isDestroyed()) {
+    meetView.setBounds({ x: PANEL_WIDTH, y: 0, width: width - PANEL_WIDTH, height });
+  }
+}
+
+// Swap the meetView to a different session partition (#170). Tears down
+// the existing view (which loses any in-flight Meet page — fine, this is
+// only invoked outside of a live call), creates a fresh one bound to the
+// new partition, re-layouts, and reloads the idle placeholder. Persists
+// the choice so it sticks across launches. Notifies the panel so UI can
+// reflect the new mode and update the sign-in/out button.
+function swapMeetViewPartition(newPartition, { navigateTo } = {}) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    console.warn('[electron] swapMeetViewPartition: no mainWindow');
+    return;
+  }
+  if (currentMeetPartition === newPartition && meetView && !meetView.webContents.isDestroyed()) {
+    if (navigateTo) meetView.webContents.loadURL(navigateTo);
+    return;
+  }
+  console.log('[electron] Swapping meet partition:', currentMeetPartition, '→', newPartition);
+
+  // Tear down old view. removeBrowserView detaches it from mainWindow;
+  // dropping the reference lets GC reap the webContents shortly after.
+  if (meetView) {
+    try { mainWindow.removeBrowserView(meetView); } catch (err) {
+      console.warn('[electron] removeBrowserView failed:', err.message);
+    }
+    meetView = null;
+  }
+
+  // Make sure the new partition has handlers (CSP strip, perm grant,
+  // getDisplayMedia, Chrome UA). Idempotent per partition.
+  ensureMeetSessionConfigured(newPartition);
+
+  meetView = createMeetView(newPartition);
+  mainWindow.addBrowserView(meetView);
+  layoutViews();
+
+  if (navigateTo) {
+    meetView.webContents.loadURL(navigateTo);
+  } else {
+    meetView.webContents.loadFile(path.join(__dirname, 'renderer', 'idle.html'));
+  }
+
+  currentMeetPartition = newPartition;
+  if (store) store.set('meetPartition', newPartition);
+
+  if (panelView && !panelView.webContents.isDestroyed()) {
+    panelView.webContents.send('meet-mode-changed', {
+      partition: newPartition,
+      mode: newPartition === MEET_GUEST_PARTITION ? 'guest' : 'account',
+    });
+  }
+}
+
 function createMainWindow() {
   mainWindow = new BrowserWindow({
     width: 800 + PANEL_WIDTH,
@@ -1613,46 +1719,22 @@ function createMainWindow() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 
   // --- Meet view (right) ---
-  meetView = new BrowserView({
-    webPreferences: {
-      preload: path.join(__dirname, 'preload-meet.js'),
-      contextIsolation: false,
-      sandbox: false,
-      // Route Meet through its own session partition (#168) so cookies,
-      // cache, and storage are isolated from the panel/auth session.
-      // The matching configureMeetSession() runs in app.whenReady.
-      partition: MEET_GUEST_PARTITION,
-    },
-  });
+  // Restore the previously-chosen partition (guest by default). The choice
+  // persists across launches so signing in as the bot stays sticky (#170).
+  currentMeetPartition = store.get('meetPartition') || MEET_GUEST_PARTITION;
+  ensureMeetSessionConfigured(currentMeetPartition);
+  meetView = createMeetView(currentMeetPartition);
   mainWindow.addBrowserView(meetView);
 
-  // Mute audio output so the user doesn't hear themselves echoed back
-  meetView.webContents.setAudioMuted(true);
-
-  // Zoom out the Meet view
-  meetView.webContents.on('dom-ready', () => {
-    meetView.webContents.setZoomFactor(0.75);
-  });
-
-  // Open DevTools only if --devtools flag is passed
-  if (cliArgs['devtools']) {
-    meetView.webContents.openDevTools({ mode: 'detach' });
-  }
-
-  // Open DevTools on demand from panel
+  // Open DevTools on demand from panel — registered once, references the
+  // current module-level meetView so it always targets the live one after
+  // a partition swap.
   ipcMain.on('open-devtools', () => {
     if (meetView && meetView.webContents) {
       meetView.webContents.openDevTools({ mode: 'detach' });
     }
   });
 
-  // Layout views on resize
-  function layoutViews() {
-    if (mainWindow.isDestroyed()) return;
-    const [width, height] = mainWindow.getContentSize();
-    panelView.setBounds({ x: 0, y: 0, width: PANEL_WIDTH, height });
-    meetView.setBounds({ x: PANEL_WIDTH, y: 0, width: width - PANEL_WIDTH, height });
-  }
   layoutViews();
   mainWindow.on('resize', layoutViews);
 
@@ -1799,6 +1881,46 @@ function setupIPC() {
       panelView.webContents.send('auth-changed');
     }
     return { loggedOut: true };
+  });
+
+  // --- Meet identity mode (#170) ---
+  // Three IPCs let the panel sign the *bot* in to Google. Distinct from the
+  // user's vibeconferencing.com login above — this is the Meet display
+  // identity, persisted in the meet-account partition (#168). When in
+  // account mode, the Google account's display name wins as the bot name.
+
+  ipcMain.handle('get-meet-mode', () => ({
+    partition: currentMeetPartition,
+    mode: currentMeetPartition === MEET_GUEST_PARTITION ? 'guest' : 'account',
+  }));
+
+  // Swap meetView to the account partition and navigate to Google's
+  // ServiceLogin flow with a Meet landing page. First time: user signs in,
+  // cookies land in the account partition, persist across launches. Later
+  // calls: already signed in, ServiceLogin bounces straight through to
+  // Meet's homepage.
+  ipcMain.handle('meet-sign-in-as-bot', () => {
+    const url = 'https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fmeet.google.com%2F';
+    swapMeetViewPartition(MEET_ACCOUNT_PARTITION, { navigateTo: url });
+    return { ok: true, mode: 'account' };
+  });
+
+  // Sign the bot out: clear all storage on the account partition (cookies,
+  // localStorage, IndexedDB, service workers, cache) then swap back to the
+  // guest partition. Next sign-in will start fresh.
+  ipcMain.handle('meet-sign-out-bot', async () => {
+    try {
+      const accountSess = session.fromPartition(MEET_ACCOUNT_PARTITION);
+      await accountSess.clearStorageData({
+        storages: ['cookies', 'localstorage', 'indexdb', 'serviceworkers', 'cachestorage', 'shadercache', 'websql'],
+      });
+      await accountSess.clearCache();
+      console.log('[electron] Cleared account partition storage');
+    } catch (err) {
+      console.warn('[electron] meet-sign-out-bot clear failed:', err.message);
+    }
+    swapMeetViewPartition(MEET_GUEST_PARTITION);
+    return { ok: true, mode: 'guest' };
   });
 
   // --- TTS ---

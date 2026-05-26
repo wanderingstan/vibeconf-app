@@ -145,6 +145,17 @@
         <button id="shareWhiteboardBtn">Share Whiteboard</button>
       </div>
 
+      <div class="section">
+        <h2>Bot Google Identity</h2>
+        <p class="helper-text" style="margin:0 0 8px">
+          Currently: <strong><span id="meetModeIndicator">guest</span></strong>.
+          In guest mode the bot's persona name is typed into Meet's pre-join.
+          In account mode the bot is signed into Google and inherits that account's name.
+        </p>
+        <button id="meetSignInBtn">Sign in to Google as bot</button>
+        <button id="meetSignOutBtn" style="display:none">Sign out (use as guest)</button>
+      </div>
+
       <div class="field" id="roomIdField" style="display:none">
         <label>Room ID</label>
         <input type="text" id="meetCode" readonly />

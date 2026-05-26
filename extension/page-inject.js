@@ -879,7 +879,7 @@
         ttsQueue.length = 0;
         const wasPlaying = mic ? mic.stopAudio() : false;
         const reason = payload?.reason || 'unspecified';
-        console.log('[bots-in-calls] stop-tts:', { wasPlaying, droppedQueue, reason });
+        console.log('[bots-in-calls] stop-tts reason=' + reason + ' wasPlaying=' + wasPlaying + ' droppedQueue=' + droppedQueue);
         break;
       }
 

@@ -34,9 +34,10 @@ function ts() {
 }
 
 class LocalServer {
-  constructor({ port, onBotSpeech, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, getWebsiteUrl, getPref, setPref, applyPref } = {}) {
+  constructor({ port, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, getWebsiteUrl, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.onBotSpeech = onBotSpeech || (() => {});
+    this.onStopTts = onStopTts || (() => {});
     this.onWhiteboardUpdate = onWhiteboardUpdate || (() => {});
     this.onLeaveCall = onLeaveCall || (() => {});
     this.onShareWhiteboard = onShareWhiteboard || (() => {});
@@ -112,6 +113,20 @@ class LocalServer {
     // external tool). The token, not the path, is what appears in the URL,
     // so file locations don't leak into the rendered markdown.
     this._whiteboardAssets = new Map(); // token -> { path, mime }
+
+    // Barge-in / back-off (#154). When the bot is speaking and someone else
+    // starts talking, wait a grace period (we want to ride out brief noise/
+    // cross-talk and not cut off mid-utterance). Then decide:
+    //   - human interrupter → back off (stop TTS, drop the queue).
+    //   - another bot      → wait an additional random delay; if still being
+    //                        interrupted, back off. With random per-bot
+    //                        delays, whichever bot's timer fires first
+    //                        yields, the other detects silence and continues
+    //                        — emergent resolution, no deadlock.
+    this.bargeInGraceMs = 2000;
+    this.bargeInBotRandomMinMs = 1000;
+    this.bargeInBotRandomMaxMs = 4000;
+    this._bargeInTimer = null;
 
     // Auto-leave when alone (#145). Only fires once at least one other
     // participant has appeared in the call — guards against auto-leaving
@@ -355,6 +370,9 @@ class LocalServer {
       console.log(ts(), '🛑 [silence] User(s) stopped speaking:', speakers);
       this._checkWaiters();
       this.onAnyoneSpeakingChange(false);
+      // The interrupter went silent before our grace timer fired — drop
+      // the back-off monitor (#154).
+      this._clearBargeIn('interrupter went silent');
     } else if (!wasSpeaking && this.anyoneSpeaking) {
       // Speech just started — cancel any pending silence timers
       for (const waiter of this.waiters) {
@@ -364,8 +382,11 @@ class LocalServer {
         }
       }
       this.onAnyoneSpeakingChange(true);
+      // If the bot is mid-utterance when someone else starts speaking, arm
+      // the back-off monitor (#154). _armBargeIn is a no-op if not in the
+      // 'speaking' state, so we don't have to gate here.
+      this._armBargeIn();
     }
-
     this._evaluateAutoLeave();
   }
 
@@ -573,8 +594,107 @@ class LocalServer {
     // ack visibly flickered to 🙂 mid-acknowledgment whenever the agent
     // called wait_for_speech twice in a row.
     if (!force && (this.botState === 'speaking' || this.botState === 'thinking') && state === 'listening') return;
+    const prev = this.botState;
     this.botState = state;
+    // Leaving 'speaking' — TTS ended naturally or got cut off. Cancel any
+    // armed barge-in timer so we don't fire stop-tts against a silent bot.
+    if (prev === 'speaking' && state !== 'speaking') {
+      this._clearBargeIn('bot stopped speaking');
+    }
+    // Entering 'speaking' — if someone is already mid-utterance, arm
+    // immediately. Otherwise arming happens lazily when anyoneSpeaking
+    // flips true (in setParticipants).
+    if (state === 'speaking' && this.anyoneSpeaking) {
+      this._armBargeIn();
+    }
     this.onBotStateChange(state, extra);
+  }
+
+  // Barge-in / back-off helpers (#154) -----------------------------------------
+
+  _clearBargeIn(reason) {
+    if (this._bargeInTimer) {
+      clearTimeout(this._bargeInTimer);
+      this._bargeInTimer = null;
+      console.log(ts(), '🛡️  [barge-in] cleared:', reason);
+    }
+  }
+
+  _armBargeIn() {
+    if (this._bargeInTimer || this.botState !== 'speaking') return;
+    console.log(ts(), '🛡️  [barge-in] armed — grace ' + this.bargeInGraceMs + 'ms');
+    this._bargeInTimer = setTimeout(() => {
+      this._bargeInTimer = null;
+      this._evaluateBargeIn();
+    }, this.bargeInGraceMs);
+  }
+
+  // Grace period elapsed. Decide whether to back off based on who's
+  // interrupting. Caller guarantees the timer slot is clear so we can
+  // re-arm with the random bot-vs-bot delay if needed.
+  _evaluateBargeIn() {
+    if (this.botState !== 'speaking' || !this.anyoneSpeaking) {
+      // Bot already stopped, or interrupter shut up during the grace
+      // period — nothing to do.
+      return;
+    }
+    const interrupters = this.participants.filter(
+      (p) => p.speaking && !p.isSelf && p.name !== 'You'
+    );
+    if (interrupters.length === 0) return;
+
+    // Cross-reference against registered bot members (same logic the
+    // get_room_info / panel tag uses). When the binding is unknown, default
+    // to "human" — better to yield than to talk over a real person.
+    const botNames = new Set(
+      (this.members || [])
+        .filter((m) => m.role === 'bot' && m.name)
+        .map((m) => m.name.toLowerCase())
+    );
+    const humanInterrupter = interrupters.find(
+      (p) => !botNames.has((p.name || '').toLowerCase())
+    );
+
+    if (humanInterrupter) {
+      console.log(ts(), '🛡️  [barge-in] human interrupted — backing off:', humanInterrupter.name);
+      this._performBackOff('human-interrupt');
+      return;
+    }
+
+    // All interrupters are bots. Wait an additional random delay; if still
+    // being interrupted at the end of it, back off. Whichever bot's random
+    // timer fires first will yield first, breaking the tie.
+    const min = this.bargeInBotRandomMinMs;
+    const max = this.bargeInBotRandomMaxMs;
+    const delay = Math.floor(min + Math.random() * (max - min));
+    console.log(ts(), '🛡️  [barge-in] bot-vs-bot — random additional delay ' + delay + 'ms before deciding');
+    this._bargeInTimer = setTimeout(() => {
+      this._bargeInTimer = null;
+      if (this.botState !== 'speaking' || !this.anyoneSpeaking) {
+        console.log(ts(), '🛡️  [barge-in] bot-vs-bot resolved during random delay — continuing');
+        return;
+      }
+      console.log(ts(), '🛡️  [barge-in] bot-vs-bot still colliding after random delay — backing off');
+      this._performBackOff('bot-interrupt-random');
+    }, delay);
+  }
+
+  _performBackOff(reason) {
+    try {
+      this.onStopTts(reason);
+    } catch (err) {
+      console.warn(ts(), '[barge-in] onStopTts failed:', err.message);
+    }
+    // Drop any queued bot speech — the agent should re-decide what to say
+    // after hearing what interrupted it.
+    if (this.pendingBotSpeech.length > 0) {
+      console.log(ts(), '🛡️  [barge-in] dropping', this.pendingBotSpeech.length, 'queued bot speech entries');
+      this.pendingBotSpeech = [];
+    }
+    // Move out of 'speaking'. tts-ended will fire shortly when the audio
+    // source's onended trips, which will re-assert state — but moving now
+    // means the next wait_for_speech sees a listening bot immediately.
+    this._setBotState('listening', undefined, { force: true });
   }
 
   _resolveWaiter(waiter, reason = 'unknown') {

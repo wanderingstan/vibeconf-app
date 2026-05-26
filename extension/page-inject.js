@@ -383,10 +383,28 @@
       src.buffer = buf;
       src.connect(this.destination);
       src.connect(this.analyser); // feed lip-sync amplitude (parallel tap)
+      // Expose the live source so stopAudio() can interrupt it for back-off
+      // (#154). onended fires whether playback finished or was stop()'d.
+      this._currentSource = src;
       return new Promise((resolve) => {
-        src.onended = resolve;
+        src.onended = () => {
+          if (this._currentSource === src) this._currentSource = null;
+          resolve();
+        };
         src.start();
       });
+    }
+
+    // Stop the currently-playing TTS source immediately. No-op if nothing is
+    // playing. Used by the barge-in / back-off path (#154). The src.stop()
+    // call triggers onended → the playAudio promise resolves naturally, so
+    // the playNextTTS state machine cleans up on its own.
+    stopAudio() {
+      const src = this._currentSource;
+      if (!src) return false;
+      try { src.stop(); } catch { /* already stopped */ }
+      this._currentSource = null;
+      return true;
     }
 
     getTrack() {
@@ -852,6 +870,18 @@
           playNextTTS();
         }
         break;
+
+      case 'stop-tts': {
+        // Back-off (#154): interrupt the bot mid-utterance and drop anything
+        // queued behind it. The current source's onended will fire and the
+        // playNextTTS state machine cleans up normally, posting tts-ended.
+        const droppedQueue = ttsQueue.length;
+        ttsQueue.length = 0;
+        const wasPlaying = mic ? mic.stopAudio() : false;
+        const reason = payload?.reason || 'unspecified';
+        console.log('[bots-in-calls] stop-tts:', { wasPlaying, droppedQueue, reason });
+        break;
+      }
 
       case 'set-avatar-emoji-override':
         // Persistent agent overrides for resting emojis. payload.idle and

@@ -111,6 +111,18 @@ const localServer = new globalThis.LocalServer({
     ackTtsPending = false;
     speakText(text, voice, emoji);
   },
+  // Stop any in-flight TTS playback in the Meet view (back-off, #154). The
+  // page-inject side clears its queue too. Best-effort: silent no-op if the
+  // meet view is gone.
+  onStopTts: (reason) => {
+    console.log('[local-server] stop-tts:', reason || 'unspecified');
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('extension-message', {
+        action: 'stop-tts',
+        payload: { reason: reason || 'back-off' },
+      });
+    }
+  },
   onWhiteboardUpdate: (content, sender) => {
     console.log('[local-server] Whiteboard update from', sender, ':', content.slice(0, 80));
     const roomId = localServer.roomId;

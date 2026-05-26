@@ -584,9 +584,24 @@ async function autoJoin(botName) {
         console.log('[electron-meet] Persona name set on pre-join input:', botName);
       }
     } else {
-      const msg = `No "Your name" input on pre-join — likely signed in to a Google account in the Meet view. Bot will appear under that account's display name, not the persona "${botName}". See #167.`;
-      console.warn('[electron-meet] ⚠️  ' + msg);
-      ipcRenderer.send('to-panel', { action: 'error', message: msg });
+      // No "Your name" input is **expected** in account mode (#170) — the bot
+      // is signed in to Google, so Meet skips the guest pre-join and uses the
+      // account's display name. Only warn when we're actually in guest mode
+      // and the input genuinely wasn't found (something's off).
+      let mode = 'guest';
+      try {
+        const info = await ipcRenderer.invoke('get-meet-mode');
+        if (info?.mode) mode = info.mode;
+      } catch (err) {
+        console.warn('[electron-meet] get-meet-mode failed, assuming guest:', err.message);
+      }
+      if (mode === 'guest') {
+        const msg = `Guest mode but no "Your name" input on pre-join — the bot will appear under whatever Meet picks. Persona was "${botName}".`;
+        console.warn('[electron-meet] ⚠️  ' + msg);
+        ipcRenderer.send('to-panel', { action: 'error', message: msg });
+      } else {
+        console.log('[electron-meet] Account mode — using Google account display name (persona "' + botName + '" is informational).');
+      }
     }
 
     // Check mic health before joining

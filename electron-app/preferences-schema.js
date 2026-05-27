@@ -92,6 +92,28 @@ const PREFERENCES = {
       "the emoji's bounce provides motion. Use to display backgrounds, name plates, " +
       "debug info, or anything SVG can render.",
   },
+  websiteUrl: {
+    type: 'string',
+    default: '',
+    pattern: /^(|https?:\/\/.+)$/,
+    description:
+      'Override the website host the app talks to (auth, sync, room URLs). ' +
+      'Empty = use the production default (https://vibeconferencing.com). ' +
+      'Set to a Vercel preview like https://vibeconferencing-git-BRANCH-lets-vibe.vercel.app ' +
+      'to test against a feature branch. Takes precedence over syncBaseUrl. ' +
+      'Must be a full http:// or https:// URL with no trailing slash.',
+    requiresRestart: true,
+  },
+  syncBaseUrl: {
+    type: 'string',
+    default: '',
+    pattern: /^(|https?:\/\/.+)$/,
+    description:
+      'Legacy override for the sync/website host. Prefer websiteUrl for new setups. ' +
+      'Empty = no override. Acts as a fallback websiteUrl when websiteUrl is unset. ' +
+      'Must be a full http:// or https:// URL with no trailing slash.',
+    requiresRestart: true,
+  },
 };
 
 function validate(key, value) {
@@ -109,6 +131,9 @@ function validate(key, value) {
     if (typeof value !== 'string') return { ok: false, error: `Expected string` };
     if (spec.maxLength != null && value.length > spec.maxLength) {
       return { ok: false, error: `String too long (max ${spec.maxLength} chars)` };
+    }
+    if (spec.pattern instanceof RegExp && !spec.pattern.test(value)) {
+      return { ok: false, error: `Value doesn't match required format` };
     }
     return { ok: true, value };
   }

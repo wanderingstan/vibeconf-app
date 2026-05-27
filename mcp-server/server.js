@@ -66,18 +66,11 @@ server.tool(
     const entries = data.transcript?.entries || [];
     const members = data.members || [];
 
-    // Deduplicate: consecutive entries from same speaker → keep longest
-    const deduped = [];
-    for (const entry of entries) {
-      const last = deduped[deduped.length - 1];
-      if (last && last.participantName === entry.participantName) {
-        if (entry.text.length >= last.text.length) {
-          deduped[deduped.length - 1] = entry;
-        }
-      } else {
-        deduped.push(entry);
-      }
-    }
+    // Each entry is now one logical speaker turn (#178 snapshot model); no
+    // dedup needed. The old dedup-by-keep-longest was a workaround for the
+    // accumulating-text bug and would now drop legitimate consecutive turns
+    // from the same speaker.
+    const deduped = entries;
 
     const transcriptText = deduped
       .filter((e) => e.participantName !== BOT_NAME || e.role === "bot")
@@ -186,18 +179,11 @@ server.tool(
       return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${statusLine}${errorLines}${chatLine}` }] };
     }
 
-    // Deduplicate: consecutive entries from same speaker → keep longest
-    const deduped = [];
-    for (const entry of entries) {
-      const last = deduped[deduped.length - 1];
-      if (last && last.participantName === entry.participantName) {
-        if (entry.text.length >= last.text.length) {
-          deduped[deduped.length - 1] = entry;
-        }
-      } else {
-        deduped.push(entry);
-      }
-    }
+    // Each entry is now one logical speaker turn (#178 snapshot model); no
+    // dedup needed. The old dedup-by-keep-longest was a workaround for the
+    // accumulating-text bug and would now drop legitimate consecutive turns
+    // from the same speaker.
+    const deduped = entries;
 
     const transcriptText = deduped
       .map((e) => `[${e.participantName}]: ${e.text}`)

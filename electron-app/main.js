@@ -2160,6 +2160,19 @@ function setupIPC() {
     }
   });
 
+  // Snapshot-style caption turns from the Meet caption scraper (#178). The
+  // scraper sends the full current state of visible caption children each
+  // tick (deduped if unchanged). updateTurns upserts and marks settled any
+  // turn that's no longer bottommost.
+  ipcMain.on('caption-turns', (_event, payload) => {
+    const turns = payload?.turns;
+    if (!Array.isArray(turns)) return;
+    localServer.updateTurns(turns);
+    // TODO(#178 phase 2): forward settled turns to the remote sync for the
+    // webapp room view, replacing the old per-entry sync.postTranscripts feed
+    // for captions.
+  });
+
   // --- Speaking state ---
   ipcMain.on('update-speaking', (_event, { name, speaking }) => {
     if (name && sync.roomId) {

@@ -92,6 +92,13 @@ class LocalServer {
     // Room state (single room — the active call)
     this.roomId = null;
     this.transcripts = [];       // { id, participantName, role, text, isFinal, timestamp, voice? }
+                                 // Holds bot speech + page-inject Web Speech entries. Meet
+                                 // captions live in `turns` (snapshot model, #178) and are
+                                 // merged in on read via _entriesSince.
+    this.turns = new Map();      // turnId(number) -> { id, speaker, text, firstSeen, lastUpdated, settled, source }
+                                 // Snapshot of Meet caption children. Upserted by updateTurns.
+                                 // settled=true once the child is no longer bottommost.
+    this.maxTurns = 200;         // Bound the map to recent turns
     this.whiteboard = { content: '', version: 0, lastModified: null, lastEditor: null };
     this.members = [];
     this.maxTranscripts = 500;
@@ -166,6 +173,7 @@ class LocalServer {
   setRoom(roomId) {
     this.roomId = roomId;
     this.transcripts = [];
+    this.turns = new Map();
     this.whiteboard = { content: '', version: 0, lastModified: null, lastEditor: null };
     this.members = [];
     this.sharing = false;
@@ -187,6 +195,7 @@ class LocalServer {
   clearRoom() {
     this.roomId = null;
     this.transcripts = [];
+    this.turns = new Map();
     this.members = [];
     this.sharing = false;
     this.participants = [];
@@ -501,6 +510,108 @@ class LocalServer {
     this._checkWaiters();
   }
 
+  // Snapshot update from the Meet caption scraper (#178). Each tick the
+  // scraper sends the current state of every visible caption child in DOM
+  // order. We upsert in place: turns we've never seen get created; turns
+  // whose text changed get updated. Any turn that's no longer bottommost is
+  // marked settled — Meet doesn't revise non-current speakers.
+  //
+  // Replaces the event-log model where each caption tick produced a new
+  // appended transcript entry, which forced consumers to do delta-tracking
+  // to reconstruct the actual utterance.
+  updateTurns(incoming) {
+    if (!this.roomId || !Array.isArray(incoming) || incoming.length === 0) return;
+    const now = Date.now();
+    const incomingIds = new Set();
+    let changed = false;
+
+    for (let i = 0; i < incoming.length; i++) {
+      const inc = incoming[i];
+      if (!inc || typeof inc.turnId !== 'number') continue;
+      incomingIds.add(inc.turnId);
+      // Trust the scraper's explicit isBottommost flag — it's computed BEFORE
+      // 'You' turns are filtered out (the bot's own TTS), so a non-final turn
+      // by another speaker that has a "You" caption below it will correctly
+      // be marked not-bottommost (i.e., settled) here. Fall back to
+      // last-in-list for older scrapers that don't send the flag.
+      const isBottommost = typeof inc.isBottommost === 'boolean'
+        ? inc.isBottommost
+        : (i === incoming.length - 1);
+      const existing = this.turns.get(inc.turnId);
+      if (!existing) {
+        this.turns.set(inc.turnId, {
+          id: `${this.roomId}-turn-${inc.turnId}`,
+          speaker: inc.speaker,
+          text: inc.text,
+          firstSeen: now,
+          lastUpdated: now,
+          settled: !isBottommost,
+          source: 'caption',
+        });
+        changed = true;
+      } else {
+        let entryChanged = false;
+        if (existing.text !== inc.text) {
+          existing.text = inc.text;
+          entryChanged = true;
+        }
+        if (!existing.settled && !isBottommost) {
+          existing.settled = true;
+          entryChanged = true;
+        }
+        if (entryChanged) {
+          existing.lastUpdated = now;
+          changed = true;
+        }
+      }
+    }
+
+    // Turns that disappeared from the DOM entirely are also settled.
+    for (const [turnId, turn] of this.turns) {
+      if (!incomingIds.has(turnId) && !turn.settled) {
+        turn.settled = true;
+        turn.lastUpdated = now;
+        changed = true;
+      }
+    }
+
+    // Bound the map size — keep the most recently-active turns.
+    if (this.turns.size > this.maxTurns) {
+      const sorted = [...this.turns.entries()].sort((a, b) => b[1].lastUpdated - a[1].lastUpdated);
+      this.turns = new Map(sorted.slice(0, this.maxTurns));
+    }
+
+    if (changed) this._checkWaiters();
+  }
+
+  // Project caption turns as transcript-shaped entries so the existing
+  // _entriesSince / _buildResponse code can consume them uniformly with bot
+  // speech entries (which still live in this.transcripts).
+  //
+  // `timestamp` reflects firstSeen (when the speaker started this turn), so
+  // chronological sort places turns in the order the speakers actually
+  // started talking — not when a turn happened to get settled later. The
+  // separate `lastUpdated` field is used by _entriesSince to filter by
+  // "changed since" (so a turn whose text is still growing keeps surfacing
+  // to long-poll waiters).
+  _turnsAsEntries() {
+    const arr = [];
+    for (const turn of this.turns.values()) {
+      arr.push({
+        id: turn.id,
+        roomId: this.roomId,
+        participantName: turn.speaker,
+        role: 'member',
+        text: turn.text,
+        isFinal: turn.settled,
+        timestamp: new Date(turn.firstSeen).toISOString(),
+        lastUpdated: new Date(turn.lastUpdated).toISOString(),
+        source: 'caption',
+      });
+    }
+    return arr;
+  }
+
   // -------------------------------------------------------------------------
   // Long-poll support
   // -------------------------------------------------------------------------
@@ -541,7 +652,11 @@ class LocalServer {
       // for (silence + 3)s, override and treat it as silence so wait_for_speech
       // doesn't ride out the full 55s timeout.
       const lastEntry = entries[entries.length - 1];
-      const lastEntryAge = lastEntry ? Date.now() - new Date(lastEntry.timestamp).getTime() : Infinity;
+      // Use lastUpdated when present (caption turns track their own last-changed
+      // separately from when the speaker started). Falls back to timestamp for
+      // legacy/bot entries which have no separate lastUpdated.
+      const lastEntryActivityTime = lastEntry ? new Date(lastEntry.lastUpdated || lastEntry.timestamp).getTime() : 0;
+      const lastEntryAge = lastEntry ? Date.now() - lastEntryActivityTime : Infinity;
       const captionsGoneQuiet = lastEntryAge >= (waiter.silence + 3) * 1000;
 
       if (this.anyoneSpeaking && !captionsGoneQuiet) {
@@ -569,7 +684,7 @@ class LocalServer {
       // and resolve immediately on speech-onset — the user-visible "you flip to
       // thinking the moment I start talking" bug.
       const silenceMs = waiter.silence * 1000;
-      const lastEntryTime = lastEntry ? new Date(lastEntry.timestamp).getTime() : 0;
+      const lastEntryTime = lastEntryActivityTime;
       const stopTime = this.lastSpeechStoppedAt || 0;
       const silenceStart = Math.max(stopTime, lastEntryTime) || Date.now();
       const elapsed = Date.now() - silenceStart;
@@ -760,15 +875,30 @@ class LocalServer {
   }
 
   _entriesSince(since, botName) {
-    let entries = this.transcripts;
+    // Merge Meet caption turns (snapshot model, #178) with bot speech and
+    // legacy Web-Speech entries (event-log model). Sort by `timestamp`
+    // (firstSeen for turns / event time for legacy) so entries appear in the
+    // order they actually started, not in the order they happened to settle.
+    //
+    // Filter `since` against `lastUpdated || timestamp`: a caption turn whose
+    // text is still growing should keep surfacing to long-poll waiters even
+    // though its firstSeen is in the past.
+    let entries = [...this._turnsAsEntries(), ...this.transcripts];
+    entries.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
     if (since) {
       const sinceTime = new Date(since).getTime();
-      entries = entries.filter(e => new Date(e.timestamp).getTime() > sinceTime);
+      entries = entries.filter(e => {
+        const t = e.lastUpdated || e.timestamp;
+        return new Date(t).getTime() > sinceTime;
+      });
     }
     if (botName) {
       entries = entries.filter(e => e.participantName !== botName);
     }
-    return this._collapseUtterances(entries);
+    // Skip the legacy _collapseUtterances pass — turn entries are already
+    // one-per-utterance. Legacy transcripts (bot speech, web speech) are
+    // discrete events that don't need collapsing either.
+    return entries;
   }
 
   // Captions arrive as progressively-growing entries for one utterance
@@ -1220,7 +1350,10 @@ class LocalServer {
             // Record the member utterance this response is answering — the most
             // recent non-bot entry. Lets us flag the next window as a
             // continuation if that speaker just keeps extending the same thought.
-            const lastMember = [...this.transcripts].reverse().find(e => e.role !== 'bot');
+            // Use the merged view so caption turns (#178) are considered, not
+            // just legacy this.transcripts entries.
+            const allEntries = this._entriesSince(null, null);
+            const lastMember = [...allEntries].reverse().find(e => e.role !== 'bot');
             if (lastMember) {
               this.lastRespondedSpeaker = lastMember.participantName;
               this.lastRespondedText = lastMember.text;

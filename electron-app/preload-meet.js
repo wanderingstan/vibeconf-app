@@ -964,11 +964,21 @@ const domSpeakerTracker = new DOMSpeakerTracker();
 
 class CaptionScraper {
   constructor() {
-    this.lastText = '';
-    this.lastSpeaker = '';
-    this.lastPostedText = '';
     this.isRunning = false;
     this.onReady = null; // fires once when caption container is observed
+    // Stable per-DOM-child turn IDs. Each caption-container child = one
+    // speaker turn (which Meet may continue editing — appending text or
+    // rewriting the tail — while it's the bottommost child). WeakMap keyed
+    // by DOM node so dead nodes drop out.
+    //
+    // Snapshot model (#178): each tick we send the full current state of
+    // visible turns to local-server, which upserts them and marks settled
+    // anything that's no longer bottommost. The transcript stops being an
+    // event log and becomes a map of {turnId → current best-guess text},
+    // matching how Meet's caption UI actually behaves.
+    this._turnIdByChild = new WeakMap();
+    this._nextTurnId = 1;
+    this._lastSentSnapshot = ''; // for IPC dedup — skip sending if nothing changed
   }
 
   start() {
@@ -1033,64 +1043,63 @@ class CaptionScraper {
       const container = document.querySelector('div[role="region"][aria-label="Captions"]');
       if (!container) return;
 
-      const captionBlocks = [];
-      for (const child of container.children) {
-        if (!child.querySelector('img')) continue;
+      // Snapshot every caption block currently in the DOM, in order. Each
+      // child is one speaker turn. The bottommost may still be edited by
+      // Meet; everything above it is settled (Meet doesn't revise non-current
+      // speakers — confirmed empirically).
+      //
+      // Critical: determine bottommost based on the *DOM* state, then filter
+      // out 'You' (the bot's own TTS, which we record separately via
+      // addTranscript with the authoritative text). If we filtered before
+      // checking bottommost, a Stan turn just above a "You" turn would look
+      // bottommost to the server and stay unsettled forever.
+      const allChildren = [...container.children].filter(c => c.querySelector('img'));
+      const lastChild = allChildren[allChildren.length - 1] || null;
+      const turns = [];
+      for (const child of allChildren) {
         const span = child.querySelector('span');
         const speaker = span?.textContent?.trim() || 'unknown';
         let text = child.textContent.replace(/\s+/g, ' ').trim();
         if (text.startsWith(speaker)) text = text.slice(speaker.length).trim();
-        if (text) captionBlocks.push({ speaker, text });
+        if (!text || speaker === 'You') continue;
+
+        // Assign a stable turn id the first time we see this DOM node.
+        let turnId = this._turnIdByChild.get(child);
+        if (!turnId) {
+          turnId = this._nextTurnId++;
+          this._turnIdByChild.set(child, turnId);
+        }
+        turns.push({ turnId, speaker, text, isBottommost: child === lastChild });
       }
 
-      if (captionBlocks.length === 0) return;
+      if (turns.length === 0) return;
 
-      const snapshot = captionBlocks.map(b => `${b.speaker}:${b.text}`).join('|');
-      const lastBlock = captionBlocks[captionBlocks.length - 1];
+      // Dedup at the IPC boundary — no point firing on every poll if nothing
+      // changed (the server-side updateTurns is idempotent, but skip the
+      // serialization cost).
+      const snapshot = turns.map(t => `${t.turnId}:${t.speaker}:${t.text}`).join('|');
+      if (snapshot !== this._lastSentSnapshot) {
+        this._lastSentSnapshot = snapshot;
+        ipcRenderer.send('caption-turns', { turns });
+      }
 
-      // Forward raw caption to panel
+      // Live-growing caption display on the panel uses the bottommost turn's
+      // full accumulated text, which is what users expect to see (matches
+      // Meet's own caption UI). Always send — the panel does its own dedup
+      // on identical text.
+      const last = turns[turns.length - 1];
       ipcRenderer.send('to-panel', {
         action: 'raw-caption',
-        text: lastBlock.text,
-        speaker: lastBlock.speaker,
+        text: last.text,
+        speaker: last.speaker,
       });
-
-      if (snapshot === this._lastSnapshot) {
-        if (lastBlock.text !== this.lastPostedText && lastBlock.speaker !== 'You') {
-          this._postCaption(lastBlock.speaker, lastBlock.text, false);
-        }
-        return;
-      }
-
-      if (lastBlock.speaker !== this.lastSpeaker && this.lastSpeaker && this.lastPostedText) {
-        this._postCaption(this.lastSpeaker, this.lastPostedText, true);
-      }
-
-      this._lastSnapshot = snapshot;
-      this.lastSpeaker = lastBlock.speaker;
-      this.lastText = lastBlock.text;
-
-      const now = Date.now();
-      if (!this._lastPostTime) this._lastPostTime = now;
-      if (now - this._lastPostTime > 3000) {
-        this._postCaption(lastBlock.speaker, lastBlock.text, false);
-        this._lastPostTime = now;
-      }
+      ipcRenderer.send('to-panel', {
+        action: 'caption-update',
+        payload: { speaker: last.speaker, text: last.text, timestamp: Date.now(), source: 'captions' },
+      });
     } catch (err) {
       console.error('[captions] poll error:', err);
     }
-  }
-
-  _postCaption(speaker, text, isFinal) {
-    if (speaker === 'You') return;
-    if (text === this.lastPostedText) return;
-    this.lastPostedText = text;
-
-    ipcRenderer.send('post-transcripts', [{ speaker, text, timestamp: Date.now() }]);
-    ipcRenderer.send('to-panel', {
-      action: isFinal ? 'transcript' : 'caption-update',
-      payload: { speaker, text, timestamp: Date.now(), source: 'captions' },
-    });
   }
 
   stop() {

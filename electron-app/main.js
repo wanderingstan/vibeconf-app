@@ -8,6 +8,7 @@ const fs = require('fs');
 const vm = require('vm');
 const Store = require('./store.js');
 const { resolveSvg } = require('./svg-resolver.js');
+const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath } = require('./session-log.js');
 
 // Short HH:MM:SS.mmm prefix for emoji diagnostic logs.
 function ts() {
@@ -165,6 +166,7 @@ const localServer = new globalThis.LocalServer({
   },
   onJoinCall: (meetCode, botName) => {
     console.log('[local-server] Join call requested by agent:', meetCode, botName);
+    logSessionHeaderUpdate('roomId', meetCode);
     if (botName) {
       // Persist so preload-meet.js's get-config read picks up THIS name when
       // typing into Meet's pre-join name input. Without this, the agent can
@@ -175,6 +177,7 @@ const localServer = new globalThis.LocalServer({
       if (panelView && !panelView.webContents.isDestroyed()) {
         panelView.webContents.send('set-bot-name', botName);
       }
+      logSessionHeaderUpdate('botName', botName);
     }
     const meetUrl = `https://meet.google.com/${meetCode}`;
     loadMeetURL(meetUrl);
@@ -1281,6 +1284,23 @@ function uninstallClaudeIntegration() {
 app.whenReady().then(async () => {
   store = new Store(app.getPath('userData'));
 
+  // Persistent rotating session log (#173). Tees stdout/stderr to a per-
+  // session file under userData/logs/ so we can post-mortem mid-call
+  // weirdness. The get_session_log MCP tool reads from the same file.
+  try {
+    const logPath = initSessionLog({
+      userDataDir: app.getPath('userData'),
+      header: {
+        version: app.getVersion(),
+        platform: process.platform,
+        electron: process.versions.electron,
+      },
+    });
+    console.log('[electron] Session log:', logPath);
+  } catch (err) {
+    console.warn('[electron] Failed to init session log:', err.message);
+  }
+
   // Start local HTTP server for agent communication
   const localPort = await localServer.start();
 
@@ -1558,6 +1578,7 @@ allURLs`;
     currentMeetUrl = url;
     loadMeetURL(url);
     localServer.setRoom(meetCode);
+    logSessionHeaderUpdate('roomId', meetCode);
 
     // Start sync
     const baseUrl = getWebsiteUrl();

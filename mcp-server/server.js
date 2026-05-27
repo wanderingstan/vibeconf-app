@@ -39,6 +39,37 @@ const server = new McpServer({
   version: "0.1.0",
 });
 
+// --- get_session_log ---
+// Returns recent lines from the Electron app's session log (#173). Useful for
+// post-mortem debugging when something went weird mid-call — e.g. a share
+// dropped, a whiteboard rendered blank, or two bots in the same room
+// diverged in behavior. The log file lives at status.sessionLogPath (also
+// returned in get_room_info), and persists across MCP polls.
+server.tool(
+  "get_session_log",
+  "Read recent lines from the Electron app's session log. Use this to post-mortem mid-call weirdness — failed shares, blank whiteboards, unexpected state. Each session writes to its own file under userData/logs/; the file path is also returned in get_room_info as status.sessionLogPath so you can cite it if comparing two bots' logs. Optional 'grep' filters by case-insensitive regex (e.g. 'screen|share|present' to focus on screen-share lines).",
+  {
+    lines: z.number().optional().describe("How many recent log lines to return. Default 200. Max 5000."),
+    grep: z.string().optional().describe("Case-insensitive regex filter applied before truncation. E.g. 'screen|share' to focus on screen-share activity."),
+  },
+  async ({ lines, grep }) => {
+    const params = new URLSearchParams();
+    if (lines) params.set('lines', String(lines));
+    if (grep) params.set('grep', grep);
+    const url = `${BASE_URL}/api/session-log${params.toString() ? '?' + params.toString() : ''}`;
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if (!data.success) {
+      return { content: [{ type: "text", text: `Error: ${data.error || "Unknown error"}` }] };
+    }
+    if (data.error) {
+      return { content: [{ type: "text", text: `Error: ${data.error}` }] };
+    }
+    const header = data.filePath ? `Session log: ${data.filePath} (${data.returnedLines}/${data.totalLines} lines${data.truncated ? ', truncated' : ''})\n---\n` : '';
+    return { content: [{ type: "text", text: header + (data.content || '(empty)') }] };
+  }
+);
+
 // --- read_transcripts ---
 server.tool(
   "read_transcripts",
@@ -987,6 +1018,10 @@ server.tool(
     const screenPerm = status.permissions?.screenRecording;
     if (screenPerm && screenPerm !== 'granted' && screenPerm !== 'unknown') {
       sections.push(`Screen recording permission: ${screenPerm} (whiteboard sharing will not work — tell user to grant access in System Settings > Privacy & Security > Screen Recording)`);
+    }
+
+    if (status.sessionLogPath) {
+      sections.push(`Session log: ${status.sessionLogPath} (call get_session_log to read recent lines for post-mortem debugging)`);
     }
 
     sections.push('');

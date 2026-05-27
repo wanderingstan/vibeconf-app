@@ -8,6 +8,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { URL } = require('url');
 const prefsSchema = require('./preferences-schema.js');
+const { getRecentSessionLog, getSessionLogPath } = require('./session-log.js');
 
 // Mime types for the whiteboard asset server (#157). Conservative list —
 // images and PDFs, the formats the whiteboard markdown / window can actually
@@ -342,6 +343,7 @@ class LocalServer {
       screenRecording: this.permissions?.screenRecording,
       roomId: this.roomId,
       whiteboardLoadedUrl: this.getWhiteboardLoadedUrl(),
+      sessionLogPath: getSessionLogPath(),
       participants: (this.participants || []).map(p => ({
         name: p.name,
         speaking: !!p.speaking,
@@ -975,6 +977,7 @@ class LocalServer {
         roomUrl: this.roomId ? `${(this.getWebsiteUrl() || '').replace(/\/$/, '')}/room/${this.roomId}` : null,
         whiteboardUrl: this.roomId ? `${(this.getWebsiteUrl() || '').replace(/\/$/, '')}/room/${this.roomId}?mode=whiteboard` : null,
         whiteboardLoadedUrl: this.getWhiteboardLoadedUrl(),
+        sessionLogPath: getSessionLogPath(),
       },
     };
   }
@@ -1049,6 +1052,19 @@ class LocalServer {
         detectedMeetUrls: this.detectedMeetUrls,
         status: { callStatus: this.callStatus, mode: this.mode },
       }));
+      return;
+    }
+
+    // Session log endpoint (#173). Returns recent stdout/stderr from the
+    // current session so agents can post-mortem mid-call weirdness via the
+    // get_session_log MCP tool. Optional query params: lines=N (default 200),
+    // grep=PATTERN (case-insensitive regex filter).
+    if (url.pathname === '/api/session-log' && req.method === 'GET') {
+      const lines = Math.max(1, Math.min(5000, parseInt(url.searchParams.get('lines') || '200', 10)));
+      const grep = url.searchParams.get('grep');
+      const result = getRecentSessionLog({ lines, grep });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, ...result }));
       return;
     }
 

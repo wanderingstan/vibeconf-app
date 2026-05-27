@@ -580,6 +580,13 @@ class LocalServer {
   // Project caption turns as transcript-shaped entries so the existing
   // _entriesSince / _buildResponse code can consume them uniformly with bot
   // speech entries (which still live in this.transcripts).
+  //
+  // `timestamp` reflects firstSeen (when the speaker started this turn), so
+  // chronological sort places turns in the order the speakers actually
+  // started talking — not when a turn happened to get settled later. The
+  // separate `lastUpdated` field is used by _entriesSince to filter by
+  // "changed since" (so a turn whose text is still growing keeps surfacing
+  // to long-poll waiters).
   _turnsAsEntries() {
     const arr = [];
     for (const turn of this.turns.values()) {
@@ -590,7 +597,8 @@ class LocalServer {
         role: 'member',
         text: turn.text,
         isFinal: turn.settled,
-        timestamp: new Date(turn.lastUpdated).toISOString(),
+        timestamp: new Date(turn.firstSeen).toISOString(),
+        lastUpdated: new Date(turn.lastUpdated).toISOString(),
         source: 'caption',
       });
     }
@@ -637,7 +645,11 @@ class LocalServer {
       // for (silence + 3)s, override and treat it as silence so wait_for_speech
       // doesn't ride out the full 55s timeout.
       const lastEntry = entries[entries.length - 1];
-      const lastEntryAge = lastEntry ? Date.now() - new Date(lastEntry.timestamp).getTime() : Infinity;
+      // Use lastUpdated when present (caption turns track their own last-changed
+      // separately from when the speaker started). Falls back to timestamp for
+      // legacy/bot entries which have no separate lastUpdated.
+      const lastEntryActivityTime = lastEntry ? new Date(lastEntry.lastUpdated || lastEntry.timestamp).getTime() : 0;
+      const lastEntryAge = lastEntry ? Date.now() - lastEntryActivityTime : Infinity;
       const captionsGoneQuiet = lastEntryAge >= (waiter.silence + 3) * 1000;
 
       if (this.anyoneSpeaking && !captionsGoneQuiet) {
@@ -665,7 +677,7 @@ class LocalServer {
       // and resolve immediately on speech-onset — the user-visible "you flip to
       // thinking the moment I start talking" bug.
       const silenceMs = waiter.silence * 1000;
-      const lastEntryTime = lastEntry ? new Date(lastEntry.timestamp).getTime() : 0;
+      const lastEntryTime = lastEntryActivityTime;
       const stopTime = this.lastSpeechStoppedAt || 0;
       const silenceStart = Math.max(stopTime, lastEntryTime) || Date.now();
       const elapsed = Date.now() - silenceStart;
@@ -857,12 +869,21 @@ class LocalServer {
 
   _entriesSince(since, botName) {
     // Merge Meet caption turns (snapshot model, #178) with bot speech and
-    // legacy Web-Speech entries (event-log model). Sorted by timestamp.
+    // legacy Web-Speech entries (event-log model). Sort by `timestamp`
+    // (firstSeen for turns / event time for legacy) so entries appear in the
+    // order they actually started, not in the order they happened to settle.
+    //
+    // Filter `since` against `lastUpdated || timestamp`: a caption turn whose
+    // text is still growing should keep surfacing to long-poll waiters even
+    // though its firstSeen is in the past.
     let entries = [...this._turnsAsEntries(), ...this.transcripts];
     entries.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
     if (since) {
       const sinceTime = new Date(since).getTime();
-      entries = entries.filter(e => new Date(e.timestamp).getTime() > sinceTime);
+      entries = entries.filter(e => {
+        const t = e.lastUpdated || e.timestamp;
+        return new Date(t).getTime() > sinceTime;
+      });
     }
     if (botName) {
       entries = entries.filter(e => e.participantName !== botName);

@@ -27,7 +27,7 @@ const meetModeIndicator = document.getElementById('meetModeIndicator');
 
 // Settings
 const botNameInput = document.getElementById('botName');
-const syncBaseUrlInput = document.getElementById('syncBaseUrl');
+const websiteUrlInput = document.getElementById('websiteUrl');
 const ttsApiKeyInput = document.getElementById('ttsApiKey');
 const ttsVoiceIdInput = document.getElementById('ttsVoiceId');
 const claudeWorkDirInput = document.getElementById('claudeWorkDir');
@@ -142,9 +142,12 @@ api.invoke('get-app-version').then((version) => {
 // Load saved config
 // ---------------------------------------------------------------------------
 
-api.invoke('get-config', ['botName', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'claudeWorkDir', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases']).then((result) => {
+api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'claudeWorkDir', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases']).then((result) => {
   if (result?.botName) { botNameInput.value = result.botName; currentBotName = result.botName; }
-  if (result?.syncBaseUrl) { syncBaseUrlInput.value = result.syncBaseUrl; syncBaseUrl = result.syncBaseUrl; }
+  // Prefer the new websiteUrl key; fall back to legacy syncBaseUrl so users with
+  // older configs still see their existing override populated in the field.
+  const effectiveUrl = result?.websiteUrl || result?.syncBaseUrl || '';
+  if (effectiveUrl) { websiteUrlInput.value = effectiveUrl; syncBaseUrl = effectiveUrl; }
   if (result?.ttsApiKey) ttsApiKeyInput.value = result.ttsApiKey;
   if (result?.ttsVoiceId) ttsVoiceIdInput.value = result.ttsVoiceId;
   if (result?.claudeWorkDir) claudeWorkDirInput.value = result.claudeWorkDir;
@@ -505,10 +508,16 @@ botNameInput.addEventListener('change', () => {
   api.send('to-meet', { action: 'set-config', payload: { botName: name } });
 });
 
-syncBaseUrlInput.addEventListener('change', () => {
-  const url = syncBaseUrlInput.value.trim().replace(/\/+$/, '');
+websiteUrlInput.addEventListener('change', () => {
+  const url = websiteUrlInput.value.trim().replace(/\/+$/, '');
   syncBaseUrl = url || 'http://127.0.0.1:7865';
-  api.invoke('set-config', 'syncBaseUrl', url);
+  // Write to the new key. Also clear the legacy syncBaseUrl so we don't end up
+  // with two values diverging — getWebsiteUrl()'s resolution chain prefers
+  // websiteUrl anyway, but cleaning legacy makes the precedence visible in
+  // config.json. Restart required for the change to take effect (the URL is
+  // captured at startup by sync/auth init paths).
+  api.invoke('set-config', 'websiteUrl', url);
+  api.invoke('set-config', 'syncBaseUrl', '');
   api.send('update-sync-config', { baseUrl: syncBaseUrl });
 });
 

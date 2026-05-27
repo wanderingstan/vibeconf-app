@@ -1047,9 +1047,16 @@ class CaptionScraper {
       // child is one speaker turn. The bottommost may still be edited by
       // Meet; everything above it is settled (Meet doesn't revise non-current
       // speakers — confirmed empirically).
+      //
+      // Critical: determine bottommost based on the *DOM* state, then filter
+      // out 'You' (the bot's own TTS, which we record separately via
+      // addTranscript with the authoritative text). If we filtered before
+      // checking bottommost, a Stan turn just above a "You" turn would look
+      // bottommost to the server and stay unsettled forever.
+      const allChildren = [...container.children].filter(c => c.querySelector('img'));
+      const lastChild = allChildren[allChildren.length - 1] || null;
       const turns = [];
-      for (const child of container.children) {
-        if (!child.querySelector('img')) continue;
+      for (const child of allChildren) {
         const span = child.querySelector('span');
         const speaker = span?.textContent?.trim() || 'unknown';
         let text = child.textContent.replace(/\s+/g, ' ').trim();
@@ -1062,7 +1069,7 @@ class CaptionScraper {
           turnId = this._nextTurnId++;
           this._turnIdByChild.set(child, turnId);
         }
-        turns.push({ turnId, speaker, text });
+        turns.push({ turnId, speaker, text, isBottommost: child === lastChild });
       }
 
       if (turns.length === 0) return;

@@ -529,7 +529,14 @@ class LocalServer {
       const inc = incoming[i];
       if (!inc || typeof inc.turnId !== 'number') continue;
       incomingIds.add(inc.turnId);
-      const isBottommost = i === incoming.length - 1;
+      // Trust the scraper's explicit isBottommost flag — it's computed BEFORE
+      // 'You' turns are filtered out (the bot's own TTS), so a non-final turn
+      // by another speaker that has a "You" caption below it will correctly
+      // be marked not-bottommost (i.e., settled) here. Fall back to
+      // last-in-list for older scrapers that don't send the flag.
+      const isBottommost = typeof inc.isBottommost === 'boolean'
+        ? inc.isBottommost
+        : (i === incoming.length - 1);
       const existing = this.turns.get(inc.turnId);
       if (!existing) {
         this.turns.set(inc.turnId, {

@@ -135,13 +135,16 @@ function findByText(text, { exact = false } = {}) {
 }
 
 function findByAriaLabel(label) {
-  const candidates = document.querySelectorAll(
+  // No visibility filter here — Meet's toolbar buttons can be transiently 0×0
+  // during initial layout (e.g. the captions button before the bot view has
+  // its final dimensions), which made isVisible() reject them and broke the
+  // auto-CC enable path. Unlike findByText (where invisible-duplicate text
+  // nodes are real and motivated isVisible()), aria-labeled elements in
+  // Meet's DOM don't have hidden-duplicate buttons. Add a visible-only
+  // variant if a future caller needs one.
+  return document.querySelector(
     `button[aria-label*="${label}" i], [role="button"][aria-label*="${label}" i]`
   );
-  for (const el of candidates) {
-    if (isVisible(el)) return el;
-  }
-  return null;
 }
 
 async function typeIntoInput(input, value) {

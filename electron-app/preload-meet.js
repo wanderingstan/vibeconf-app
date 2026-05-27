@@ -88,6 +88,23 @@ function delay(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// Visibility check: skip elements that are display:none, visibility:hidden,
+// or zero-size. Meet renders accessibility live regions and stale UI shells
+// off-screen, so text-walk matches frequently hit invisible nodes that look
+// clickable but aren't (#175 — autoJoin matched a hidden "Ask to join" before
+// the visible "Join now" and silently no-op-clicked into "waiting" forever).
+function isVisible(el) {
+  if (!el) return false;
+  if (el.offsetParent === null && el !== document.documentElement) return false;
+  const rect = el.getBoundingClientRect();
+  if (rect.width === 0 || rect.height === 0) return false;
+  // computed-style visibility check is the last defense — display:none is
+  // already caught by offsetParent, but visibility:hidden is not.
+  const style = window.getComputedStyle(el);
+  if (style.visibility === 'hidden') return false;
+  return true;
+}
+
 function findByText(text, { exact = false } = {}) {
   if (!document.body) return null;
   const lower = text.toLowerCase();
@@ -95,29 +112,36 @@ function findByText(text, { exact = false } = {}) {
   while (walk.nextNode()) {
     const nodeText = walk.currentNode.textContent.trim().toLowerCase();
     const match = exact ? nodeText === lower : nodeText.includes(lower);
-    if (match) {
-      let el = walk.currentNode.parentElement;
-      while (el && el !== document.body) {
-        if (
-          el.tagName === 'BUTTON' ||
-          el.getAttribute('role') === 'button' ||
-          el.hasAttribute('jsaction') ||
-          el.tabIndex >= 0
-        ) {
-          return el;
-        }
-        el = el.parentElement;
+    if (!match) continue;
+    let el = walk.currentNode.parentElement;
+    let candidate = null;
+    while (el && el !== document.body) {
+      if (
+        el.tagName === 'BUTTON' ||
+        el.getAttribute('role') === 'button' ||
+        el.hasAttribute('jsaction') ||
+        el.tabIndex >= 0
+      ) {
+        candidate = el;
+        break;
       }
-      return walk.currentNode.parentElement;
+      el = el.parentElement;
     }
+    const result = candidate || walk.currentNode.parentElement;
+    if (isVisible(result)) return result;
+    // Keep walking — there may be a visible match later in the document.
   }
   return null;
 }
 
 function findByAriaLabel(label) {
-  return document.querySelector(
+  const candidates = document.querySelectorAll(
     `button[aria-label*="${label}" i], [role="button"][aria-label*="${label}" i]`
   );
+  for (const el of candidates) {
+    if (isVisible(el)) return el;
+  }
+  return null;
 }
 
 async function typeIntoInput(input, value) {

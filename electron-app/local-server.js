@@ -268,6 +268,25 @@ class LocalServer {
     return { token, url, mime };
   }
 
+  applyRemoteWhiteboard(whiteboard) {
+    if (!whiteboard || typeof whiteboard.content !== 'string') return false;
+
+    const incomingVersion = Number(whiteboard.version) || 0;
+    const currentVersion = Number(this.whiteboard.version) || 0;
+    if (incomingVersion <= currentVersion) return false;
+
+    this.whiteboard = {
+      content: whiteboard.content,
+      version: incomingVersion,
+      lastModified: whiteboard.lastModified || null,
+      lastEditor: whiteboard.lastEditor || null,
+    };
+
+    console.log(ts(), '📝 [whiteboard] synced remote version', incomingVersion,
+      'from', this.whiteboard.lastEditor || '(unknown)');
+    return true;
+  }
+
   _resetAutoLeave() {
     if (this._autoLeaveTimer) {
       clearTimeout(this._autoLeaveTimer);

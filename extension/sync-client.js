@@ -18,6 +18,8 @@ class SyncClient {
     this.pollIntervalMs = config.pollIntervalMs || 1000;
     this.isPolling = false;
     this.onBotSpeech = config.onBotSpeech || null; // callback(text)
+    this.onWhiteboardUpdate = config.onWhiteboardUpdate || null; // callback(whiteboard)
+    this.lastWhiteboardVersion = null;
     this.postedTranscripts = new Set(); // dedup by text+timestamp
     this.spokenEntryIds = new Set(); // track entries we've already spoken
     this.getAuthCookie = config.getAuthCookie || null; // async () => "cookie_value" or null
@@ -26,8 +28,12 @@ class SyncClient {
   updateConfig(config) {
     if (config.baseUrl) this.baseUrl = config.baseUrl;
     if (config.botName) this.botName = config.botName;
-    if (config.roomId) this.roomId = config.roomId;
+    if (config.roomId && config.roomId !== this.roomId) {
+      this.roomId = config.roomId;
+      this.lastWhiteboardVersion = null;
+    }
     if (config.onBotSpeech) this.onBotSpeech = config.onBotSpeech;
+    if (config.onWhiteboardUpdate) this.onWhiteboardUpdate = config.onWhiteboardUpdate;
   }
 
   // Extract Meet code from a Google Meet URL
@@ -151,6 +157,16 @@ class SyncClient {
 
       const data = await resp.json();
       this.lastPollTime = data.asOf;
+
+      const whiteboard = data.whiteboard;
+      if (whiteboard && typeof whiteboard.version === 'number') {
+        const versionChanged = this.lastWhiteboardVersion === null ||
+          whiteboard.version > this.lastWhiteboardVersion;
+        this.lastWhiteboardVersion = whiteboard.version;
+        if (versionChanged && this.onWhiteboardUpdate) {
+          this.onWhiteboardUpdate(whiteboard);
+        }
+      }
 
       // First poll: just capture the timestamp, don't speak old entries
       if (this.isFirstPoll) {

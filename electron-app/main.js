@@ -136,8 +136,8 @@ const localServer = new globalThis.LocalServer({
     console.log('[local-server] Whiteboard update from', sender, ':', content.slice(0, 80));
     const roomId = localServer.roomId;
     if (roomId) {
-      const baseUrl = (store && store.get('syncBaseUrl')) || 'http://127.0.0.1:7865';
-      const roomUrl = `${baseUrl}/room/${roomId}`;
+      const baseUrl = getWebsiteUrl();
+      const roomUrl = `${baseUrl}/room/${roomId}?mode=whiteboard`;
 
       // If the whiteboard window was navigated to an external URL (via load-url),
       // navigate it back to the room page so it can receive SSE updates
@@ -514,6 +514,12 @@ function pushAvatarEmojiOverrides(overrides = {}) {
     });
   }
 }
+
+sync.updateConfig({
+  onWhiteboardUpdate: (whiteboard) => {
+    localServer.applyRemoteWhiteboard(whiteboard);
+  },
+});
 
 // Resolve external refs in the SVG and broadcast the result to the meet view.
 // Empty/missing value clears the background back to the default gradient.
@@ -2091,7 +2097,7 @@ function setupIPC() {
 
   // --- Sync ---
   ipcMain.on('start-sync', (_event, { meetCode, botName }) => {
-    sync.updateConfig({ roomId: meetCode });
+    sync.updateConfig({ roomId: meetCode, baseUrl: getWebsiteUrl() });
     if (botName) sync.updateConfig({ botName });
     sync.ensureRoom().then(() => {
       sync.startPolling();

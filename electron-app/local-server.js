@@ -1,6 +1,6 @@
 // local-server.js — Local HTTP server for agent communication.
 // Owns all room/transcript/whiteboard/call state for the Electron app flow;
-// the MCP server talks to 127.0.0.1:7865 and never hits the public website.
+// the MCP server talks to the local app server and never hits the public website.
 
 const http = require('http');
 const fs = require('fs');
@@ -110,6 +110,7 @@ class LocalServer {
     this.errors = [];            // recent errors (max 10)
 
     // State exposed to agents
+    this.localProfile = null;   // optional app profile name for multi-agent local runs
     this.detectedMeetUrls = [];  // Meet URLs found in browser tabs (when not in a call)
     this.participants = [];      // [{ name, speaking }] from DOM speaker tracker
     this.someoneElsePresenting = false;  // another participant is screen sharing
@@ -159,6 +160,10 @@ class LocalServer {
     };
 
     this.server = null;
+  }
+
+  getLocalServerUrl() {
+    return `http://127.0.0.1:${this.port}`;
   }
 
   setPermission(name, status) {
@@ -332,6 +337,9 @@ class LocalServer {
     return {
       callStatus: this.callStatus,
       mode: this.mode,
+      localServerUrl: this.getLocalServerUrl(),
+      localServerPort: this.port,
+      localProfile: this.localProfile,
       botState: this.botState,
       anyoneSpeaking: this.anyoneSpeaking,
       sharing: this.sharing,
@@ -977,6 +985,9 @@ class LocalServer {
         someoneElsePresenting: this.someoneElsePresenting,
         presenterName: this.presenterName,
         mode: this.mode,
+        localServerUrl: this.getLocalServerUrl(),
+        localServerPort: this.port,
+        localProfile: this.localProfile,
         errors: this.errors,
         permissions: this.permissions,
         chatUnread: this.chatUnread,
@@ -1056,7 +1067,13 @@ class LocalServer {
         success: true,
         roomId: this.roomId,
         detectedMeetUrls: this.detectedMeetUrls,
-        status: { callStatus: this.callStatus, mode: this.mode },
+        status: {
+          callStatus: this.callStatus,
+          mode: this.mode,
+          localServerUrl: this.getLocalServerUrl(),
+          localServerPort: this.port,
+          localProfile: this.localProfile,
+        },
       }));
       return;
     }

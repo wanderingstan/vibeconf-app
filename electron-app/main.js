@@ -828,7 +828,8 @@ function configureMeetSession(sess) {
 }
 
 // ---------------------------------------------------------------------------
-// CLI argument parsing — supports --meet-url, --bot-name, --sync-url, --devtools
+// CLI argument parsing — supports --meet-url, --bot-name, --sync-url,
+// --website-url, --local-port, --profile, --devtools
 // ---------------------------------------------------------------------------
 
 function parseCLIArgs() {
@@ -842,6 +843,37 @@ function parseCLIArgs() {
 }
 
 const cliArgs = parseCLIArgs();
+
+function requestedProfileName() {
+  const raw = cliArgs.profile || process.env.VIBECONF_PROFILE;
+  if (!raw) return null;
+  if (!/^[A-Za-z0-9_.-]+$/.test(String(raw))) {
+    console.warn('[electron] Ignoring invalid profile name:', raw);
+    return null;
+  }
+  return String(raw);
+}
+
+function requestedLocalPort() {
+  const raw = cliArgs['local-port'] || process.env.VIBECONF_LOCAL_PORT;
+  if (!raw) return null;
+  if (!/^\d+$/.test(String(raw))) {
+    console.warn('[electron] Ignoring invalid local port:', raw);
+    return null;
+  }
+  const port = parseInt(raw, 10);
+  if (Number.isInteger(port) && port > 0 && port < 65536) return port;
+  console.warn('[electron] Ignoring invalid local port:', raw);
+  return null;
+}
+
+const appProfile = requestedProfileName();
+if (appProfile) {
+  const profileUserData = path.join(app.getPath('userData'), 'profiles', appProfile);
+  app.setPath('userData', profileUserData);
+  localServer.localProfile = appProfile;
+  console.log('[electron] Using app profile:', appProfile, 'userData:', profileUserData);
+}
 
 // ---------------------------------------------------------------------------
 // Helper: speak text via TTS → send audio to Meet view
@@ -1159,18 +1191,24 @@ function updateSpeakingState(name, speaking) {
 // App lifecycle
 // ---------------------------------------------------------------------------
 
-// Single instance — quit if another instance is already running
-const gotTheLock = app.requestSingleInstanceLock();
-if (!gotTheLock) {
-  console.log('[electron] Another instance is running, quitting.');
-  app.quit();
-}
-app.on('second-instance', () => {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.focus();
+// Single instance for the default profile. Named profiles are intentional
+// separate bot seats, so they bypass the global lock and rely on profile +
+// local-port separation instead.
+if (!appProfile) {
+  const gotTheLock = app.requestSingleInstanceLock();
+  if (!gotTheLock) {
+    console.log('[electron] Another instance is running, quitting.');
+    app.quit();
   }
-});
+  app.on('second-instance', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+} else {
+  console.log('[electron] Allowing separate app instance for profile:', appProfile);
+}
 
 // ---------------------------------------------------------------------------
 // Auto-install MCP config + Claude skill on first launch
@@ -1229,7 +1267,7 @@ function ensureClaudeIntegration(localPort) {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '13';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '14';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
@@ -1305,11 +1343,24 @@ app.whenReady().then(async () => {
     console.warn('[electron] Failed to init session log:', err.message);
   }
 
-  // Start local HTTP server for agent communication
+  // Start local HTTP server for agent communication. Multiple local app
+  // instances can be aimed at distinct MCP clients by pinning different
+  // starting ports; LocalServer still auto-increments if that port is busy.
+  const explicitLocalPort = requestedLocalPort();
+  if (explicitLocalPort) {
+    localServer.port = explicitLocalPort;
+    console.log('[electron] Requested local server port:', explicitLocalPort);
+  }
   const localPort = await localServer.start();
 
-  // Check/install Claude integration
-  ensureClaudeIntegration(localPort);
+  // Check/install Claude integration. Profiled instances are intended for
+  // non-default agents (for example Codex) and must not steal Claude's global
+  // MCP config from the primary app instance.
+  if (appProfile) {
+    console.log('[electron] Skipping Claude integration for app profile:', appProfile);
+  } else {
+    ensureClaudeIntegration(localPort);
+  }
 
   // Request microphone permission (needed for audio pipeline even with virtual mic)
   if (process.platform === 'darwin') {

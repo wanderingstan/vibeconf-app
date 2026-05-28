@@ -69,10 +69,10 @@ Extract the meet code (the `xxx-xxxx-xxx` part). If no valid Meet URL found, ask
 ## Step 2: Ensure the app is running and in the call
 
 ```
-lsof -iTCP:7865 -sTCP:LISTEN >/dev/null 2>&1 && echo "RUNNING" || echo "NOT_RUNNING"
+curl -sf "${VIBECONF_BASE_URL:-http://127.0.0.1:7865}/api/sync/no-room" >/dev/null && echo "RUNNING" || echo "NOT_RUNNING"
 ```
 
-(Checks if the app's local server is listening on port 7865. A bare `pgrep Vibeconferencing` is unreliable — it matches orphaned MCP server processes from past sessions, giving false positives.)
+(Checks whether the app instance configured for this MCP client is reachable. `VIBECONF_BASE_URL` may point at a non-default port when multiple local app instances are running. A bare `pgrep Vibeconferencing` is unreliable — it matches orphaned MCP server processes from past sessions, giving false positives.)
 
 - If **NOT_RUNNING**: Launch it:
 

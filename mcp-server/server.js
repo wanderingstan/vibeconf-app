@@ -939,10 +939,13 @@ server.tool(
       } else if (!roomId) {
         // Not in a call and no room_id given — return detected URLs or nothing
         const urls = data.detectedMeetUrls || [];
+        const localServerHint = data.status?.localServerUrl
+          ? `\n\nLocal server: ${data.status.localServerUrl} (MCP base URL for this app instance)${data.status.localProfile ? `\nProfile: ${data.status.localProfile}` : ''}`
+          : '';
         if (urls.length > 0) {
-          return { content: [{ type: "text", text: `Not in a call. Detected Google Meet URLs:\n${urls.map(u => `  - ${u}`).join('\n')}\n\nUse the meet code from one of these URLs as room_id to join.` }] };
+          return { content: [{ type: "text", text: `Not in a call. Detected Google Meet URLs:\n${urls.map(u => `  - ${u}`).join('\n')}\n\nUse the meet code from one of these URLs as room_id to join.${localServerHint}` }] };
         }
-        return { content: [{ type: "text", text: "Not in a call. No Google Meet URLs detected in browser tabs." }] };
+        return { content: [{ type: "text", text: `Not in a call. No Google Meet URLs detected in browser tabs.${localServerHint}` }] };
       }
     } catch {
       // Local server unreachable — fall through with whatever roomId we have
@@ -993,12 +996,14 @@ server.tool(
 
     const sections = [];
     if (noteMismatch) sections.push(noteMismatch, '');
-    sections.push(
+    sections.push(...[
       `Room: ${roomId}`,
       `Call status: ${status.callStatus || 'unknown'}`,
       `Mode: ${status.mode || 'active'} (active=responds freely, passive=only when named, silent=listens but never speaks)`,
+      status.localServerUrl ? `Local server: ${status.localServerUrl} (MCP base URL for this app instance)` : null,
+      status.localProfile ? `Profile: ${status.localProfile}` : null,
       `Screen sharing: ${status.sharing ? 'yes (by bot)' : 'no'}`,
-    );
+    ].filter(Boolean));
 
     if (status.whiteboardUrl) {
       sections.push(`Whiteboard URL (just the board, no room UI): ${status.whiteboardUrl} (share this in chat so participants can view the whiteboard)`);

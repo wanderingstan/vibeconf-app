@@ -34,6 +34,7 @@
     static ACTIVITY_EMOJIS = {
       thinking: '\u{1F914}', // 🤔 thinking face
       speaking: '\u{1F604}', // 😄 grinning face — open mouth fits TTS playback
+      yielding: '\u{1F64B}', // 🙋 wants to speak, yielding to the room
     };
 
     // Override emojis whenever the bot isn't in the call. Anything other than
@@ -61,7 +62,7 @@
       this.ctx = this.canvas.getContext('2d');
       this.frameCount = 0;
       this.speaking = false;
-      this.state = 'idle'; // 'idle' | 'listening' | 'thinking' | 'speaking'
+      this.state = 'idle'; // 'idle' | 'listening' | 'thinking' | 'speaking' | 'yielding'
       this.mode = 'active'; // 'active' | 'passive' | 'silent'
       this.callStatus = 'idle'; // 'idle' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
       // True once the agent has done anything besides idle. Stays 🫥 until then,
@@ -78,6 +79,7 @@
       // default for that state.
       this.idleEmojiOverride = null;
       this.listeningEmojiOverride = null;
+      this.yieldingEmojiOverride = null;
       // Optional custom background. null = use default animated gradient.
       // Set by the 'set-avatar-background' message after server-side resolve.
       this.backgroundImage = null;
@@ -201,18 +203,22 @@
       //   3. Audio is playing (this.speaking) → 😄. This wins over 'thinking'
       //      so the ack TTS ("Got it.", "Let me think about that.") shows the
       //      speaking face — from the user's perspective audio = speaking.
-      //   4. Activity state thinking → 🤔 (agent processing, no audio yet)
-      //   5. Someone in the call is speaking → 😐 (acks "I heard you").
+      //   4. Activity state yielding → 🙋 (has something to say, deferring)
+      //   5. Activity state thinking → 🤔 (agent processing, no audio yet)
+      //   6. Someone in the call is speaking → 😐 (acks "I heard you").
       //      Skipped in silent mode and during own activity.
-      //   6. botState=idle between turns → 😔
-      //   7. botState=listening → mode emoji (🙂 / 🤐 / 😶)
+      //   7. botState=idle between turns → 😔
+      //   8. botState=listening → mode emoji (🙂 / 🤐 / 😶)
       const notOnLine = VirtualCamera.CALL_STATUS_EMOJIS[this.callStatus] || (!this.hasEngaged ? '\u{1FAE5}' : null);
       // Audio playing: per-response override > default 😄. Cleared on tts-ended.
       const audioPlaying = this.speaking
         ? (this.speakingEmojiOverride || VirtualCamera.ACTIVITY_EMOJIS.speaking)
         : null;
-      const hearing = (this.anyoneSpeaking && this.mode !== 'silent' && !this.speaking && this.state !== 'thinking' && this.state !== 'speaking')
+      const hearing = (this.anyoneSpeaking && this.mode !== 'silent' && !this.speaking && this.state !== 'thinking' && this.state !== 'speaking' && this.state !== 'yielding')
         ? VirtualCamera.HEARING_EMOJI : null;
+      const activityEmoji = this.state === 'yielding'
+        ? (this.yieldingEmojiOverride || VirtualCamera.ACTIVITY_EMOJIS.yielding)
+        : VirtualCamera.ACTIVITY_EMOJIS[this.state];
       // Resting emojis: agent overrides take priority over defaults when in
       // the corresponding state. Listening override only applies in 'active'
       // mode (passive/silent emojis encode a specific user-controlled state).
@@ -223,7 +229,7 @@
       const emoji =
         notOnLine
         || audioPlaying
-        || VirtualCamera.ACTIVITY_EMOJIS[this.state]
+        || activityEmoji
         || hearing
         || (this.state === 'idle' ? idleEmoji : null)
         || listeningEmoji;
@@ -235,7 +241,7 @@
         this._lastLoggedEmoji = emoji;
         const reason = notOnLine ? `callStatus=${this.callStatus} hasEngaged=${this.hasEngaged}` :
           audioPlaying ? `audio playing (state=${this.state}${this.speakingEmojiOverride ? ' override' : ''})` :
-          VirtualCamera.ACTIVITY_EMOJIS[this.state] ? `state=${this.state}` :
+          activityEmoji ? `state=${this.state}${this.state === 'yielding' && this.yieldingEmojiOverride ? ' (yielding override)' : ''}` :
           hearing ? `hearing (anyoneSpeaking=true)` :
           this.state === 'idle' ? `state=idle${this.idleEmojiOverride ? ' (idle override)' : ' (between turns)'}` :
           `mode=${this.mode}${this.listeningEmojiOverride && this.mode === 'active' ? ' (listening override)' : ' (listening)'}`;
@@ -775,16 +781,16 @@
         break;
 
       case 'set-bot-state':
-        // Update avatar state: 'idle' | 'listening' | 'thinking' | 'speaking'
+        // Update avatar state: 'idle' | 'listening' | 'thinking' | 'speaking' | 'yielding'
         if (payload?.state) {
           for (const cam of cameras.values()) {
             cam.state = payload.state;
-            // hasEngaged flips only on actual interaction — thinking or
-            // speaking. Pure 'listening' (agent in wait_for_speech with
+            // hasEngaged flips only on actual interaction — thinking,
+            // speaking, or yielding. Pure 'listening' (agent in wait_for_speech with
             // nothing happening) still counts as boot/idle from the user's
             // perspective, so 🫥 should persist through the boot phase
             // until the bot actually processes or responds to something.
-            if (payload.state === 'thinking' || payload.state === 'speaking') {
+            if (payload.state === 'thinking' || payload.state === 'speaking' || payload.state === 'yielding') {
               cam.hasEngaged = true;
             }
           }
@@ -884,17 +890,19 @@
       }
 
       case 'set-avatar-emoji-override':
-        // Persistent agent overrides for resting emojis. payload.idle and
-        // payload.listening are independently optional. null means reset
-        // to default for that key.
+        // Persistent agent overrides for resting/yielding emojis. payload.idle,
+        // payload.listening, and payload.yielding are independently optional.
+        // null means reset to default for that key.
         if (payload) {
           for (const cam of cameras.values()) {
             if ('idle' in payload) cam.idleEmojiOverride = payload.idle;
             if ('listening' in payload) cam.listeningEmojiOverride = payload.listening;
+            if ('yielding' in payload) cam.yieldingEmojiOverride = payload.yielding;
           }
           console.log('[bots-in-calls] Avatar emoji overrides:',
             'idle=' + (payload.idle ?? 'unchanged'),
-            'listening=' + (payload.listening ?? 'unchanged'));
+            'listening=' + (payload.listening ?? 'unchanged'),
+            'yielding=' + (payload.yielding ?? 'unchanged'));
         }
         break;
 

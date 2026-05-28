@@ -434,13 +434,7 @@ const localServer = new globalThis.LocalServer({
   },
 
   onAvatarEmojiOverride: (overrides) => {
-    console.log('[local-server] Avatar emoji override:', overrides);
-    if (meetView && !meetView.webContents.isDestroyed()) {
-      meetView.webContents.send('extension-message', {
-        action: 'set-avatar-emoji-override',
-        payload: overrides,
-      });
-    }
+    pushAvatarEmojiOverrides(overrides);
   },
 
   onSetCamera: (on) => {
@@ -510,6 +504,16 @@ const localServer = new globalThis.LocalServer({
     }
   },
 });
+
+function pushAvatarEmojiOverrides(overrides = {}) {
+  console.log('[local-server] Avatar emoji override:', overrides);
+  if (meetView && !meetView.webContents.isDestroyed()) {
+    meetView.webContents.send('extension-message', {
+      action: 'set-avatar-emoji-override',
+      payload: overrides,
+    });
+  }
+}
 
 // Resolve external refs in the SVG and broadcast the result to the meet view.
 // Empty/missing value clears the background back to the default gradient.
@@ -2139,6 +2143,12 @@ function setupIPC() {
     // generating the real response and will clear the flag when it speaks.
     if (ackTtsPending) {
       ackTtsPending = false;
+      return;
+    }
+    // Back-off can stop TTS and move the bot to 'yielding'. The audio-ended
+    // callback may still arrive afterward; do not let it erase the visible
+    // "holding back" state while someone is still speaking.
+    if (localServer.botState === 'yielding' && localServer.anyoneSpeaking) {
       return;
     }
     // After real bot speech: restore mic to mode-appropriate state. Passive/silent

@@ -46,7 +46,7 @@ class LocalServer {
     this.onJoinCall = onJoinCall || (() => {});
     this.onLoadUrl = onLoadUrl || (() => {});
     this.onScrollShare = onScrollShare || (async () => ({ ok: false, error: 'not implemented' }));
-    this.onBotStateChange = onBotStateChange || (() => {}); // 'idle' | 'listening' | 'thinking' | 'speaking'
+    this.onBotStateChange = onBotStateChange || (() => {}); // 'idle' | 'listening' | 'thinking' | 'speaking' | 'yielding'
     this.onModeChange = onModeChange || (() => {});        // 'active' | 'passive' | 'silent'
     this.onCallStatusChange = onCallStatusChange || (() => {}); // 'idle' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
     this.onAnyoneSpeakingChange = onAnyoneSpeakingChange || (() => {}); // boolean
@@ -384,6 +384,9 @@ class LocalServer {
       this.lastSpeechStoppedAt = Date.now();
       const speakers = this.participants.filter(p => !p.isSelf && p.name !== 'You').map(p => p.name).join(', ') || '(unknown)';
       console.log(ts(), '🛑 [silence] User(s) stopped speaking:', speakers);
+      if (this.botState === 'yielding') {
+        this._setBotState(this.waiters.length > 0 ? 'listening' : 'idle', undefined, { force: true });
+      }
       this._checkWaiters();
       this.onAnyoneSpeakingChange(false);
       // The interrupter went silent before our grace timer fired — drop
@@ -709,6 +712,10 @@ class LocalServer {
 
   _setBotState(state, extra, { force } = {}) {
     if (this.botState === state) return;
+    // Keep the visible "I want to speak but I'm yielding" signal while the
+    // interrupter is still talking. A follow-up wait_for_speech call should
+    // not make the avatar look merely idle/listening again.
+    if (!force && this.botState === 'yielding' && state === 'listening' && this.anyoneSpeaking) return;
     // Don't downgrade thinking/speaking to listening just because a new
     // wait_for_speech showed up — the avatar should stay 🤔/😄 until that
     // turn naturally completes (tts-ended fires with force=true, or a fresh
@@ -813,10 +820,9 @@ class LocalServer {
       console.log(ts(), '🛡️  [barge-in] dropping', this.pendingBotSpeech.length, 'queued bot speech entries');
       this.pendingBotSpeech = [];
     }
-    // Move out of 'speaking'. tts-ended will fire shortly when the audio
-    // source's onended trips, which will re-assert state — but moving now
-    // means the next wait_for_speech sees a listening bot immediately.
-    this._setBotState('listening', undefined, { force: true });
+    // Move out of 'speaking' into an explicit yielding state so humans can see
+    // the bot has something queued conceptually but is not talking over them.
+    this._setBotState('yielding', { reason }, { force: true });
   }
 
   _resolveWaiter(waiter, reason = 'unknown') {
@@ -1338,6 +1344,7 @@ class LocalServer {
         // respond. Drop the response and tell the agent to wait_for_speech
         // again — talking over them is the worst voice-UX failure mode.
         console.log(ts(), '🛡️  [barge-in] Dropped bot speech — user is currently speaking:', data.transcript?.[0]?.text?.slice(0, 60));
+        this._setBotState('yielding', { reason: 'user-speaking' }, { force: true });
         results.transcript = { ok: false, reason: 'user-speaking', sent: 0, entries: [] };
       } else {
         const entries = [];
@@ -1454,13 +1461,14 @@ class LocalServer {
       results.setCamera = { ok: true, on: data.meta.on };
     }
 
-    // Handle set-avatar-emoji command — agent overrides resting avatar
-    // emojis to match conversation tone. Either field is optional;
+    // Handle set-avatar-emoji command — agent overrides resting/yielding avatar
+    // emojis to match conversation tone. Each field is optional;
     // empty-string clears the override (back to default).
     if (data.meta?.action === 'set-avatar-emoji') {
       const overrides = {};
       if (data.meta.idle !== undefined) overrides.idle = data.meta.idle || null;
       if (data.meta.listening !== undefined) overrides.listening = data.meta.listening || null;
+      if (data.meta.yielding !== undefined) overrides.yielding = data.meta.yielding || null;
       this.onAvatarEmojiOverride(overrides);
       results.setAvatarEmoji = { ok: true };
     }

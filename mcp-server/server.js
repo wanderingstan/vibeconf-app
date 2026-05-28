@@ -813,13 +813,14 @@ server.tool(
 // --- set_avatar_emoji ---
 server.tool(
   "set_avatar_emoji",
-  "Override the avatar's resting emojis to match the conversation's tone. 'idle' shows between turns; 'listening' shows while actively listening (in active mode). Pass either or both. Pass an empty string for either to revert to the default for that state. The agent should adjust these as the conversation tone shifts — e.g. 😔 idle for a somber topic, 🤔 listening for technical discussion, 😄 listening for friendly chat. Persists for the rest of the call.",
+  "Override the avatar's resting/yielding emojis to match the conversation's tone. 'idle' shows between turns; 'listening' shows while actively listening (in active mode); 'yielding' shows when the bot wants to speak but is deferring because someone else is talking. Pass any combination. Pass an empty string for a field to revert to the default for that state. Persists for the rest of the call.",
   {
     idle: z.string().optional().describe("Emoji to show between turns (replaces default 😔). Pass '' to reset."),
     listening: z.string().optional().describe("Emoji to show while listening in active mode (replaces default 🙂). Pass '' to reset."),
+    yielding: z.string().optional().describe("Emoji to show when the bot wants to speak but is yielding (replaces default 🙋). Pass '' to reset."),
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
-  async ({ idle, listening, room_id }) => {
+  async ({ idle, listening, yielding, room_id }) => {
     const roomId = room_id || ROOM_ID;
     if (!roomId) {
       return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
@@ -827,8 +828,9 @@ server.tool(
     const payload = {};
     if (idle !== undefined) payload.idle = idle;
     if (listening !== undefined) payload.listening = listening;
+    if (yielding !== undefined) payload.yielding = yielding;
     if (Object.keys(payload).length === 0) {
-      return { content: [{ type: "text", text: "No emoji values provided. Pass 'idle' and/or 'listening'." }] };
+      return { content: [{ type: "text", text: "No emoji values provided. Pass 'idle', 'listening', and/or 'yielding'." }] };
     }
     const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
@@ -846,6 +848,7 @@ server.tool(
       const parts = [];
       if (idle !== undefined) parts.push(`idle=${idle ? `'${idle}'` : 'default'}`);
       if (listening !== undefined) parts.push(`listening=${listening ? `'${listening}'` : 'default'}`);
+      if (yielding !== undefined) parts.push(`yielding=${yielding ? `'${yielding}'` : 'default'}`);
       return { content: [{ type: "text", text: `Avatar emoji set: ${parts.join(', ')}.` }] };
     }
     return { content: [{ type: "text", text: `Error: ${result?.error || data.error || "Failed to set avatar emoji"}` }] };

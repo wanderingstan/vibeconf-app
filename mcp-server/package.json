@@ -8,6 +8,7 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "latest"
+    "@modelcontextprotocol/sdk": "latest",
+    "zod": "^4.4.3"
   }
 }

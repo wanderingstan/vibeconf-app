@@ -371,6 +371,11 @@ class LocalServer {
       roomId: this.roomId,
       whiteboardLoadedUrl: this.getWhiteboardLoadedUrl(),
       sessionLogPath: getSessionLogPath(),
+      pendingBotSpeech: (this.pendingBotSpeech || []).map(e => ({
+        text: e.text || '',
+        voice: e.voice || null,
+        emoji: e.emoji || null,
+      })),
       participants: (this.participants || []).map(p => ({
         name: p.name,
         speaking: !!p.speaking,

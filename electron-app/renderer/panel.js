@@ -81,6 +81,15 @@ function renderCallState(s) {
     const tagStr = tags.length ? ` (${tags.join(', ')})` : '';
     return `    • ${p.name}${tagStr} ${p.speaking ? '🗣️ speaking' : '— quiet'}`;
   });
+  const queued = s.pendingBotSpeech || [];
+  const queuedLines = queued.length === 0
+    ? ['    (empty)']
+    : queued.map((e, i) => {
+        const snippet = (e.text || '').replace(/\s+/g, ' ').slice(0, 80);
+        const more = (e.text || '').length > 80 ? '…' : '';
+        const tag = e.emoji ? ` ${e.emoji}` : '';
+        return `    ${i + 1}.${tag} "${snippet}${more}"`;
+      });
   callStateDebug.textContent = [
     `Call status:        ${s.callStatus || 'unknown'}`,
     `Bot state:          ${s.botState || 'unknown'}`,
@@ -92,6 +101,8 @@ function renderCallState(s) {
     `Chat pane open:     ${yesNo(s.chatPaneOpen)}`,
     `Unread chat:        ${yesNo(s.chatUnread)}`,
     `Screen rec perm:    ${s.screenRecording || 'unknown'}`,
+    `Queued speech (${queued.length}):`,
+    ...queuedLines,
     `Participants (${(s.participants || []).length}):`,
     ...(parts.length ? parts : ['    (none detected)']),
   ].join('\n');

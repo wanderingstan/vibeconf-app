@@ -1140,7 +1140,11 @@ server.tool(
             text: [
               `Joining Meet call ${room_id} as "${joinedBotName}". The app is navigating to the call and will admit itself shortly.`,
               ``,
-              `**Joining is not complete until you have started the conversation loop.** Immediately call \`wait_for_speech\` and continue looping (\`wait_for_speech\` → optionally \`speak\` / \`update_whiteboard\` / \`read_chat\` / \`send_chat\` → \`wait_for_speech\`) until the user asks you to leave or the tool reports the call has ended.`,
+              `**Joining is not complete until you have started the conversation loop.**`,
+              ``,
+              `1. Once admitted (the bot can speak), call \`speak\` with a brief greeting so participants hear that you're on the line — e.g. "Hi, I'm ${joinedBotName}. I've joined the call and I'm listening." Keep it to one sentence.`,
+              `2. Then start the loop: \`wait_for_speech\` → optionally \`speak\` / \`update_whiteboard\` / \`read_chat\` / \`send_chat\` → \`wait_for_speech\` — repeat until the user asks you to leave or the tool reports the call has ended.`,
+              `3. If speech starts before the greeting plays, yield to the speaker — respond to the new turn instead of repeating the greeting.`,
               ``,
               `**Do not send a final response to the user while the call is active.** If you stop here, the bot sits silently in the call — the local server only responds to your calls, it cannot drive you. The troubleshooting panel surfaces "time since last wait_for_speech" so the user can see whether the loop is active.`,
               ``,

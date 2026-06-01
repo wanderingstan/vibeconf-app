@@ -663,30 +663,21 @@ class LocalServer {
       const entries = this._entriesSince(waiter.since, waiter.bot);
       if (entries.length === 0) continue;
 
-      // If the bot's name was mentioned AND the speaker has gone quiet,
-      // resolve immediately. Gating on !anyoneSpeaking is the fix for the
-      // "bot interrupts mid-sentence" bug: previously this fired the moment
-      // the name appeared in the caption stream, even while the user was
-      // still speaking. Now: speaker finishes (or pauses long enough that
-      // the tile dropped) → name mention → fast resolve, no 2s wait.
-      if (waiter.bot && !this.anyoneSpeaking) {
+      // Passive/silent modes only respond when directly addressed. Apply
+      // a name-mention filter, then fall through to the same silence-based
+      // resolution active mode uses (the bot still has to wait for the
+      // speaker to finish their thought — see #208 for why the old
+      // instant-resolve path was removed).
+      if ((this.mode === 'passive' || this.mode === 'silent') && waiter.bot) {
         const botNameLower = waiter.bot.toLowerCase();
         const mentioned = entries.some(e => e.text.toLowerCase().includes(botNameLower));
-        if (mentioned) {
-          console.log(ts(), '🏷️  [resolve] Bot name "' + waiter.bot + '" mentioned — instant resolve');
-          this._resolveWaiter(waiter, 'mention');
+        if (!mentioned) {
+          if (waiter.silenceTimer) {
+            clearTimeout(waiter.silenceTimer);
+            waiter.silenceTimer = null;
+          }
           continue;
         }
-      }
-
-      // In passive/silent modes, only resolve on name-mention (handled above).
-      // Skip silence-based resolution so the bot doesn't chime in unprompted.
-      if (this.mode === 'passive' || this.mode === 'silent') {
-        if (waiter.silenceTimer) {
-          clearTimeout(waiter.silenceTimer);
-          waiter.silenceTimer = null;
-        }
-        continue;
       }
 
       // Use real-time speaking state from DOMSpeakerTracker (not caption timestamps).

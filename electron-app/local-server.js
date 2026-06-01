@@ -663,8 +663,13 @@ class LocalServer {
       const entries = this._entriesSince(waiter.since, waiter.bot);
       if (entries.length === 0) continue;
 
-      // If the bot's name was mentioned, resolve immediately — someone is talking to/about the bot
-      if (waiter.bot) {
+      // If the bot's name was mentioned AND the speaker has gone quiet,
+      // resolve immediately. Gating on !anyoneSpeaking is the fix for the
+      // "bot interrupts mid-sentence" bug: previously this fired the moment
+      // the name appeared in the caption stream, even while the user was
+      // still speaking. Now: speaker finishes (or pauses long enough that
+      // the tile dropped) → name mention → fast resolve, no 2s wait.
+      if (waiter.bot && !this.anyoneSpeaking) {
         const botNameLower = waiter.bot.toLowerCase();
         const mentioned = entries.some(e => e.text.toLowerCase().includes(botNameLower));
         if (mentioned) {

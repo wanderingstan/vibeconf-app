@@ -1958,8 +1958,41 @@ function loadMeetURL(meetUrl) {
       // app restarts and survives a Meet reload.
       const savedSvg = store?.get('avatarBackgroundSvg');
       if (savedSvg) pushAvatarBackground(savedSvg);
+      // Restore debug overlay state across Meet reloads.
+      if (store?.get('debugOverlay')) {
+        meetView.webContents.send('extension-message', {
+          action: 'set-debug-overlay',
+          payload: { enabled: true },
+        });
+        updateDebugOverlayPushInterval(true);
+      }
     }
   });
+}
+
+// Periodic call-state snapshot push to the meet view while the debug overlay
+// is enabled. Re-uses LocalServer.getCallStateSnapshot — same data as the
+// troubleshooting panel — so the on-camera view stays in sync with what the
+// panel shows.
+let debugOverlayPushTimer = null;
+function updateDebugOverlayPushInterval(enabled) {
+  if (debugOverlayPushTimer) {
+    clearInterval(debugOverlayPushTimer);
+    debugOverlayPushTimer = null;
+  }
+  if (!enabled) return;
+  const push = () => {
+    if (!meetView || meetView.webContents.isDestroyed()) return;
+    try {
+      const snap = localServer.getCallStateSnapshot();
+      meetView.webContents.send('extension-message', {
+        action: 'debug-info-update',
+        payload: snap,
+      });
+    } catch { /* ignore */ }
+  };
+  push();
+  debugOverlayPushTimer = setInterval(push, 1000);
 }
 
 // ---------------------------------------------------------------------------
@@ -1979,6 +2012,26 @@ function setupIPC() {
   ipcMain.handle('get-app-version', () => app.getVersion());
 
   ipcMain.handle('get-app-profile', () => appProfile || null);
+
+  // Debug overlay — renders the troubleshooting snapshot onto the bot's
+  // virtual camera so non-technical users can diagnose state by looking at
+  // the Meet tile. Stored under a non-schema key so it stays invisible to
+  // the agent (no MCP set_preference access — would be a prompt-injection
+  // vector for leaking state on demand).
+  ipcMain.handle('get-debug-overlay', () => !!(store && store.get('debugOverlay')));
+  ipcMain.handle('set-debug-overlay', (_event, enabled) => {
+    const on = !!enabled;
+    if (store) store.set('debugOverlay', on);
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('extension-message', {
+        action: 'set-debug-overlay',
+        payload: { enabled: on },
+      });
+    }
+    updateDebugOverlayPushInterval(on);
+    return on;
+  });
+
 
   // --- Auth check ---
   ipcMain.handle('check-auth', () => {

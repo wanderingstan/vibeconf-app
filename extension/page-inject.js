@@ -75,6 +75,12 @@
       // Per-response speaking emoji (set by speak's emoji param). Cleared
       // when the TTS queue drains. Falls through to ACTIVITY_EMOJIS.speaking.
       this.speakingEmojiOverride = null;
+      // Debug overlay — when enabled (panel checkbox only, never agent-set),
+      // renders a corner panel showing the same internal state visible in
+      // the troubleshooting screen. Lets a non-technical user diagnose
+      // problems just by looking at the bot's tile in Meet.
+      this.debugOverlayEnabled = false;
+      this.debugInfo = null;
       // Persistent overrides from agent's set_avatar_emoji calls. null = use
       // default for that state.
       this.idleEmojiOverride = null;
@@ -301,6 +307,75 @@
       if (speakTilt) ctx.rotate(speakTilt);
       if (this.speaking) ctx.scale(speakScaleX, speakScaleY);
       ctx.fillText(emoji, 0, 0);
+      ctx.restore();
+
+      if (this.debugOverlayEnabled) this._renderDebugOverlay();
+    }
+
+    _renderDebugOverlay() {
+      const { ctx, canvas } = this;
+      const d = this.debugInfo || {};
+      const now = Date.now();
+      const ago = (ms) => {
+        if (!ms) return 'never';
+        const s = Math.round((now - ms) / 1000);
+        if (s < 60) return `${s}s ago`;
+        if (s < 3600) return `${Math.round(s / 60)}m ago`;
+        return `${Math.round(s / 3600)}h ago`;
+      };
+      const loopHealth = (() => {
+        if (d.activeWaiters > 0) return `listening (${d.activeWaiters})`;
+        if (!d.lastWaitForSpeechAt) return 'no wait_for_speech yet';
+        const idleSecs = Math.round((now - d.lastWaitForSpeechAt) / 1000);
+        if (idleSecs < 5) return `between waits (${idleSecs}s)`;
+        if (idleSecs < 60) return `idle ${idleSecs}s`;
+        return `STALE ${ago(d.lastWaitForSpeechAt)}`;
+      })();
+      const lines = [
+        'DEBUG',
+        `call:     ${d.callStatus || 'unknown'}`,
+        `state:    ${d.botState || 'unknown'}`,
+        `mode:     ${d.mode || 'unknown'}`,
+        `speaking: ${d.anyoneSpeaking ? 'yes' : 'no'}`,
+        `sharing:  ${d.sharing ? 'yes' : 'no'}`,
+        `loop:     ${loopHealth}`,
+        `last WfS: ${ago(d.lastWaitForSpeechAt)}`,
+        `queued:   ${(d.pendingBotSpeech || []).length}`,
+        `members:  ${(d.participants || []).length}`,
+      ];
+
+      const pad = 14;
+      const lineH = 22;
+      const font = '600 16px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.save();
+      ctx.font = font;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      // Measure widest line
+      let maxW = 0;
+      for (const ln of lines) {
+        const w = ctx.measureText(ln).width;
+        if (w > maxW) maxW = w;
+      }
+      const boxW = Math.ceil(maxW) + pad * 2;
+      const boxH = lineH * lines.length + pad * 2;
+      const boxX = canvas.width - boxW - 24;
+      const boxY = 24;
+      // Background panel
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.72)';
+      ctx.fillRect(boxX, boxY, boxW, boxH);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(boxX + 0.5, boxY + 0.5, boxW - 1, boxH - 1);
+      // Text
+      for (let i = 0; i < lines.length; i++) {
+        const ln = lines[i];
+        // Color the STALE line red; the DEBUG header bright; rest white
+        if (i === 0) ctx.fillStyle = '#fdd663';
+        else if (ln.startsWith('loop:') && ln.includes('STALE')) ctx.fillStyle = '#ea4335';
+        else ctx.fillStyle = '#e8eaed';
+        ctx.fillText(ln, boxX + pad, boxY + pad + i * lineH);
+      }
       ctx.restore();
     }
 
@@ -903,6 +978,29 @@
             'idle=' + (payload.idle ?? 'unchanged'),
             'listening=' + (payload.listening ?? 'unchanged'),
             'yielding=' + (payload.yielding ?? 'unchanged'));
+        }
+        break;
+
+      case 'set-debug-overlay':
+        // Toggle the debug info overlay on the virtual camera. Controlled
+        // only from the panel — never from the agent — to avoid prompt-
+        // injection scenarios where a bot reveals internal state on demand.
+        if (payload) {
+          for (const cam of cameras.values()) {
+            cam.debugOverlayEnabled = !!payload.enabled;
+          }
+          console.log('[bots-in-calls] Debug overlay:', payload.enabled ? 'on' : 'off');
+        }
+        break;
+
+      case 'debug-info-update':
+        // Periodic call-state snapshot push from main.js while the debug
+        // overlay is enabled. Stored on the camera so the next render tick
+        // picks it up.
+        if (payload) {
+          for (const cam of cameras.values()) {
+            cam.debugInfo = payload;
+          }
         }
         break;
 

@@ -176,6 +176,16 @@ api.invoke('get-app-profile').then((profile) => {
   }
 }).catch(() => {});
 
+const debugOverlayToggle = document.getElementById('debugOverlayToggle');
+if (debugOverlayToggle) {
+  api.invoke('get-debug-overlay').then((enabled) => {
+    debugOverlayToggle.checked = !!enabled;
+  }).catch(() => {});
+  debugOverlayToggle.addEventListener('change', () => {
+    api.invoke('set-debug-overlay', debugOverlayToggle.checked).catch(() => {});
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Load saved config
 // ---------------------------------------------------------------------------

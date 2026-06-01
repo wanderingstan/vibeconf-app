@@ -29,10 +29,15 @@ import { join } from "path";
 import { homedir } from "os";
 
 let ROOM_ID = process.env.VIBECONF_ROOM_ID || "";
-const BOT_NAME = process.env.VIBECONF_BOT_NAME || "Jimmy";
+let BOT_NAME = process.env.VIBECONF_BOT_NAME || "Jimmy";
 const BASE_URL = process.env.VIBECONF_BASE_URL || "http://127.0.0.1:7865";
 
 let lastPollTime = null;
+
+function resolveBotName(name) {
+  const resolved = String(name || '').trim();
+  return resolved || BOT_NAME;
+}
 
 const server = new McpServer({
   name: "vibeconferencing",
@@ -1072,18 +1077,22 @@ server.tool(
   },
   async ({ room_id, bot_name }) => {
     try {
+      const joinedBotName = resolveBotName(bot_name);
       const resp = await fetch(`${BASE_URL}/api/sync/${room_id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          sender: bot_name || BOT_NAME,
+          sender: joinedBotName,
           role: "bot",
-          meta: { action: "join", meetCode: room_id, botName: bot_name || BOT_NAME },
+          ownerName: joinedBotName,
+          meta: { action: "join", meetCode: room_id, botName: joinedBotName },
         }),
       });
       const data = await resp.json();
       if (data.results?.join?.ok) {
         ROOM_ID = room_id;
+        BOT_NAME = joinedBotName;
+        lastPollTime = null;
         return { content: [{ type: "text", text: `Joining Meet call: ${room_id}. The app will navigate to the call and join. Use wait_for_speech to start listening.` }] };
       }
       return { content: [{ type: "text", text: `Error: ${data.error || "Failed to join"}` }] };

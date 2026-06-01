@@ -33,6 +33,16 @@ let BOT_NAME = process.env.VIBECONF_BOT_NAME || "Jimmy";
 const BASE_URL = process.env.VIBECONF_BASE_URL || "http://127.0.0.1:7865";
 
 let lastPollTime = null;
+// Locks BOT_NAME for the duration of the current call. Once a join_call
+// succeeds, the bot's identity is fixed until the call ends — a mid-call
+// rename would leave the Meet display name, the already-registered
+// local-server member, and post-rename POST senders mismatched.
+//
+// The lock auto-clears on leave_call and on the next join_call when the
+// local-server reports callStatus is no longer 'in-call' (handles
+// host-ended, network drop, user-clicked-Leave, app-restart cases without
+// a push channel from the app to the MCP server).
+let botNameLocked = false;
 
 function resolveBotName(name) {
   const resolved = String(name || '').trim();
@@ -515,6 +525,7 @@ server.tool(
 
     const data = await resp.json();
     if (data.success) {
+      botNameLocked = false;
       return { content: [{ type: "text", text: "Left the call successfully." }] };
     } else {
       return { content: [{ type: "text", text: `Error: ${data.error || "Failed to leave"}` }] };
@@ -1078,6 +1089,27 @@ server.tool(
   async ({ room_id, bot_name }) => {
     try {
       const joinedBotName = resolveBotName(bot_name);
+      // If the lock is set but the bot name changed, check whether the
+      // previous call is actually still in progress. The local-server is
+      // the source of truth — handles every call-end path (explicit
+      // leave_call, host-ended, network drop, app restart) without
+      // requiring a push channel.
+      if (botNameLocked && joinedBotName !== BOT_NAME) {
+        try {
+          const statusResp = await fetch(`${BASE_URL}/api/sync/${ROOM_ID || 'no-room'}`);
+          const statusData = await statusResp.json();
+          const cs = statusData?.status?.callStatus;
+          if (cs && cs !== 'in-call') botNameLocked = false;
+        } catch { /* if we can't reach the local-server, fall through to lock-enforcement */ }
+      }
+      if (botNameLocked && joinedBotName !== BOT_NAME) {
+        return {
+          content: [{
+            type: "text",
+            text: `Bot identity is locked to "${BOT_NAME}" while the current call is active. Leave the call first (the lock clears automatically once the call ends) or restart the agent.`,
+          }],
+        };
+      }
       const resp = await fetch(`${BASE_URL}/api/sync/${room_id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1092,8 +1124,28 @@ server.tool(
       if (data.results?.join?.ok) {
         ROOM_ID = room_id;
         BOT_NAME = joinedBotName;
+        botNameLocked = true;
         lastPollTime = null;
-        return { content: [{ type: "text", text: `Joining Meet call: ${room_id}. The app will navigate to the call and join. Use wait_for_speech to start listening.` }] };
+        return {
+          content: [{
+            type: "text",
+            text: [
+              `Joining Meet call ${room_id} as "${joinedBotName}". The app is navigating to the call and will admit itself shortly.`,
+              ``,
+              `## Now enter the conversation loop:`,
+              `1. Call \`wait_for_speech\` — long-polls until someone in the call finishes a thought (returns the transcript).`,
+              `2. Decide whether to respond. If yes, call \`speak\` with a short reply (it's spoken aloud via TTS).`,
+              `3. Optionally update visual context via \`update_whiteboard\` (markdown + Mermaid), or \`read_chat\` / \`send_chat\` for text.`,
+              `4. Go back to step 1.`,
+              ``,
+              `Stop the loop only when: the user explicitly asks you to leave, or \`wait_for_speech\` returns the auto-left message (everyone else left). Then call \`leave_call\` to disconnect.`,
+              ``,
+              `If you don't enter this loop, the bot will sit silently in the call doing nothing — the local server has no way to drive you, it only responds to your calls. The troubleshooting panel surfaces "time since last wait_for_speech" so the user can see whether the loop is active.`,
+              ``,
+              `Bot name "${joinedBotName}" is now locked for this call.`,
+            ].join('\n'),
+          }],
+        };
       }
       return { content: [{ type: "text", text: `Error: ${data.error || "Failed to join"}` }] };
     } catch (err) {

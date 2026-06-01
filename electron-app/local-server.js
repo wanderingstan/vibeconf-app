@@ -151,6 +151,7 @@ class LocalServer {
 
     // Long-poll waiters
     this.waiters = [];           // { resolve, since, bot, silence, timer }
+    this.lastWaitForSpeechAt = null; // ms timestamp of the most recent wait_for_speech call
 
     // macOS permission status, updated by main.js. Possible values match
     // systemPreferences.getMediaAccessStatus: 'not-determined', 'granted',
@@ -371,6 +372,8 @@ class LocalServer {
       roomId: this.roomId,
       whiteboardLoadedUrl: this.getWhiteboardLoadedUrl(),
       sessionLogPath: getSessionLogPath(),
+      activeWaiters: this.waiters.length,
+      lastWaitForSpeechAt: this.lastWaitForSpeechAt,
       pendingBotSpeech: (this.pendingBotSpeech || []).map(e => ({
         text: e.text || '',
         voice: e.voice || null,
@@ -1341,6 +1344,7 @@ class LocalServer {
         }, clampedWait * 1000),
       };
       this.waiters.push(waiter);
+      this.lastWaitForSpeechAt = Date.now();
       this._setBotState('listening');
 
       // If entries already exist but silence hasn't elapsed, start checking

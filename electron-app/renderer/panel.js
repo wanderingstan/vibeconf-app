@@ -69,6 +69,23 @@ const callStateDebug = document.getElementById('callStateDebug');
 
 function yesNo(v) { return v ? '🟢 yes' : '⚪️ no'; }
 
+function agoLabel(ts) {
+  if (!ts) return 'never';
+  const secs = Math.round((Date.now() - ts) / 1000);
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.round(secs / 60)}m ago`;
+  return `${Math.round(secs / 3600)}h ago`;
+}
+
+function agentLoopHealth(s) {
+  if (s.activeWaiters > 0) return `🟢 listening (${s.activeWaiters} waiter${s.activeWaiters > 1 ? 's' : ''})`;
+  if (!s.lastWaitForSpeechAt) return '⚪️ no wait_for_speech yet — agent may not have started the loop';
+  const idleSecs = Math.round((Date.now() - s.lastWaitForSpeechAt) / 1000);
+  if (idleSecs < 5) return `🟡 between waits (${idleSecs}s)`;
+  if (idleSecs < 60) return `🟡 idle ${idleSecs}s — agent may be processing or speaking`;
+  return `🔴 stale ${agoLabel(s.lastWaitForSpeechAt)} — agent likely stopped the wait_for_speech loop`;
+}
+
 function renderCallState(s) {
   if (!s || !s.roomId) {
     callStateDebug.textContent = 'Not in a call.';
@@ -101,6 +118,8 @@ function renderCallState(s) {
     `Chat pane open:     ${yesNo(s.chatPaneOpen)}`,
     `Unread chat:        ${yesNo(s.chatUnread)}`,
     `Screen rec perm:    ${s.screenRecording || 'unknown'}`,
+    `Agent loop:         ${agentLoopHealth(s)}`,
+    `Last wait_for_speech: ${agoLabel(s.lastWaitForSpeechAt)}`,
     `Queued speech (${queued.length}):`,
     ...queuedLines,
     `Participants (${(s.participants || []).length}):`,

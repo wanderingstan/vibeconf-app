@@ -172,6 +172,7 @@ api.invoke('get-app-profile').then((profile) => {
   const el = document.getElementById('appProfile');
   if (el && profile) {
     el.textContent = profile;
+    el.title = `App profile: "${profile}" — this Electron instance runs in an isolated userData dir with its own preferences and Google login. Launched with --profile=${profile}.`;
     el.style.display = '';
   }
 }).catch(() => {});

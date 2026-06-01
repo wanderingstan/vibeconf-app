@@ -361,14 +361,6 @@ const localServer = new globalThis.LocalServer({
         ack = shortPhrases[Math.floor(Math.random() * shortPhrases.length)];
       }
 
-      // Addressivity overrides the wordCount threshold for "ack me": if the
-      // bot is named (or it's 1:1), always ack even on short utterances. We
-      // pick from the short phrases since the speaker has clearly addressed
-      // us.
-      if (!ack && (addressivity === 'me' || addressivity === 'me-1on1')) {
-        ack = shortPhrases[Math.floor(Math.random() * shortPhrases.length)];
-      }
-
       if (!ack) {
         console.log(ts(), '🤐 [ack] Skipping (wordCount=' + wordCount + ' < ' + ackShortMin + ', addressivity=' + addressivity + ')');
         // Short prompt — skip the ack entirely. The thinking emoji is already

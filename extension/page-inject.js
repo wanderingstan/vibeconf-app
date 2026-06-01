@@ -79,8 +79,8 @@
       // renders a corner panel showing the same internal state visible in
       // the troubleshooting screen. Lets a non-technical user diagnose
       // problems just by looking at the bot's tile in Meet.
-      this.debugOverlayEnabled = false;
-      this.debugInfo = null;
+      this.debugOverlayEnabled = debugOverlayEnabledGlobal;
+      this.debugInfo = debugInfoLatest;
       // Persistent overrides from agent's set_avatar_emoji calls. null = use
       // default for that state.
       this.idleEmojiOverride = null;
@@ -585,6 +585,13 @@
   // Keep one camera per resolution to avoid re-creating on every getUserMedia call
   const cameras = new Map();
 
+  // Module-scope debug overlay state. Persisted here so that a `set-debug-
+  // overlay` message arriving BEFORE any VirtualCamera exists (which happens
+  // on Meet reload — preload runs at document_start, Meet calls getUserMedia
+  // later) still takes effect on the camera the moment it's created.
+  let debugOverlayEnabledGlobal = false;
+  let debugInfoLatest = null;
+
   function getCamera(width, height) {
     const key = `${width}x${height}`;
     if (!cameras.has(key)) {
@@ -985,9 +992,13 @@
         // Toggle the debug info overlay on the virtual camera. Controlled
         // only from the panel — never from the agent — to avoid prompt-
         // injection scenarios where a bot reveals internal state on demand.
+        // Update the module-scope flag too so cameras created after this
+        // message arrives still pick it up (Meet creates the camera on
+        // first getUserMedia, which is later than preload init).
         if (payload) {
+          debugOverlayEnabledGlobal = !!payload.enabled;
           for (const cam of cameras.values()) {
-            cam.debugOverlayEnabled = !!payload.enabled;
+            cam.debugOverlayEnabled = debugOverlayEnabledGlobal;
           }
           console.log('[bots-in-calls] Debug overlay:', payload.enabled ? 'on' : 'off');
         }
@@ -998,6 +1009,7 @@
         // overlay is enabled. Stored on the camera so the next render tick
         // picks it up.
         if (payload) {
+          debugInfoLatest = payload;
           for (const cam of cameras.values()) {
             cam.debugInfo = payload;
           }

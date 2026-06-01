@@ -287,7 +287,7 @@ const localServer = new globalThis.LocalServer({
       return { ok: false, error: err.message };
     }
   },
-  onBotStateChange: (state, extra) => {
+  onBotStateChange: async (state, extra) => {
     console.log('[local-server] Bot state:', state, extra || '');
     // Forward state to page-inject.js to update avatar emoji
     if (meetView && !meetView.webContents.isDestroyed()) {
@@ -344,27 +344,24 @@ const localServer = new globalThis.LocalServer({
         return;
       }
 
-      // Three tiers driven by user prefs (defaults 20 / 50):
-      //   wordCount < ackShortMin    → no ack (short prompt — agent can answer fast)
-      //   ackShortMin..ackLongMin    → short ack ("Mm-hmm.")
-      //   ≥ ackLongMin               → long ack ("Let me think about that.")
-      const prefsSchema = require('./preferences-schema.js');
-      const ackShortMin = Number(store?.get('ackShortMin')) || prefsSchema.PREFERENCES.ackShortMin.default;
-      const ackLongMin = Number(store?.get('ackLongMin')) || prefsSchema.PREFERENCES.ackLongMin.default;
-      const shortPhrases = store?.get('ackShortPhrases') || prefsSchema.PREFERENCES.ackShortPhrases.default;
-      const longPhrases = store?.get('ackLongPhrases') || prefsSchema.PREFERENCES.ackLongPhrases.default;
-
-      let ack = null;
-      if (wordCount >= ackLongMin) {
-        ack = longPhrases[Math.floor(Math.random() * longPhrases.length)];
-      } else if (wordCount >= ackShortMin) {
-        ack = shortPhrases[Math.floor(Math.random() * shortPhrases.length)];
-      }
+      // Ack decider — dispatched through ack/index.js. Defaults to the same
+      // wordcount-and-pick logic as before; setting ackProvider='openai-compat'
+      // swaps in an HTTP call to any OpenAI-Chat-Completions endpoint
+      // (LM Studio, Ollama, OpenAI, OpenRouter, etc.). Endpoint failures fall
+      // back to builtin so the bot is never worse than baseline.
+      const ackModule = require('./ack');
+      const ack = await ackModule.decide({
+        text,
+        wordCount,
+        addressivity,
+        mode: localServer.mode,
+        recentTranscript: localServer.transcripts.slice(-5),
+        store,
+        log: (msg) => console.log(ts(), '[ack]', msg),
+      });
 
       if (!ack) {
-        console.log(ts(), '🤐 [ack] Skipping (wordCount=' + wordCount + ' < ' + ackShortMin + ', addressivity=' + addressivity + ')');
-        // Short prompt — skip the ack entirely. The thinking emoji is already
-        // showing, so the user has visual feedback while the agent responds.
+        console.log(ts(), '🤐 [ack] Skipping (wordCount=' + wordCount + ', addressivity=' + addressivity + ')');
         return;
       }
 

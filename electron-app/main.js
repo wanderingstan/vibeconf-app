@@ -107,6 +107,7 @@ let ackTtsPending = false;
 
 // Local HTTP server for agent communication (replaces remote sync for MCP)
 const localServer = new globalThis.LocalServer({
+  appVersion: app.getVersion(),
   getWhiteboardLoadedUrl: () => {
     try {
       if (whiteboardWindow && !whiteboardWindow.isDestroyed() && !whiteboardWindow.webContents.isDestroyed()) {

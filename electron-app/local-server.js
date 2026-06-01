@@ -35,8 +35,9 @@ function ts() {
 }
 
 class LocalServer {
-  constructor({ port, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, getWebsiteUrl, getWhiteboardLoadedUrl, getPref, setPref, applyPref } = {}) {
+  constructor({ port, appVersion, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, getWebsiteUrl, getWhiteboardLoadedUrl, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
+    this.appVersion = appVersion || null;
     this.onBotSpeech = onBotSpeech || (() => {});
     this.onStopTts = onStopTts || (() => {});
     this.onWhiteboardUpdate = onWhiteboardUpdate || (() => {});
@@ -1519,7 +1520,7 @@ class LocalServer {
     }
 
     // Update presence
-    this._upsertMember(data.sender, data.role || 'member', data.ownerName, data.displayName);
+    this._upsertMember(data.sender, data.role || 'member', data.ownerName, data.displayName, data.versions);
 
     // Trim transcripts
     if (this.transcripts.length > this.maxTranscripts) {
@@ -1535,11 +1536,23 @@ class LocalServer {
     }));
   }
 
-  _upsertMember(name, role, ownerName, displayName) {
+  _memberVersions(versions) {
+    const clean = versions && typeof versions === 'object' && !Array.isArray(versions)
+      ? { ...versions }
+      : {};
+    if (this.appVersion) clean.app = this.appVersion;
+    return Object.keys(clean).length > 0 ? clean : undefined;
+  }
+
+  _upsertMember(name, role, ownerName, displayName, versions) {
     const existing = this.members.find(m => m.name === name);
+    const memberVersions = this._memberVersions(versions);
     if (existing) {
       existing.lastSeen = Date.now();
       if (role) existing.role = role;
+      if (displayName) existing.displayName = displayName;
+      if (ownerName) existing.ownerName = ownerName;
+      if (memberVersions) existing.versions = memberVersions;
     } else {
       this.members.push({
         name,
@@ -1547,6 +1560,7 @@ class LocalServer {
         role: role || 'member',
         lastSeen: Date.now(),
         ownerName: ownerName || undefined,
+        versions: memberVersions,
       });
     }
   }

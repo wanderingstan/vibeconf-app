@@ -31,6 +31,27 @@ import { homedir } from "os";
 let ROOM_ID = process.env.VIBECONF_ROOM_ID || "";
 let BOT_NAME = process.env.VIBECONF_BOT_NAME || "Jimmy";
 const BASE_URL = process.env.VIBECONF_BASE_URL || "http://127.0.0.1:7865";
+const MCP_VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf-8')).version;
+  } catch {
+    return "unknown";
+  }
+})();
+const MCP_VERSIONS = {
+  mcp: MCP_VERSION,
+  node: process.version,
+};
+
+function botSyncPayload(name = BOT_NAME, payload = {}) {
+  return {
+    sender: name,
+    role: "bot",
+    ownerName: name,
+    versions: MCP_VERSIONS,
+    ...payload,
+  };
+}
 
 let lastPollTime = null;
 // Locks BOT_NAME for the duration of the current call. Once a join_call
@@ -265,12 +286,9 @@ server.tool(
     const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sender: BOT_NAME,
-        role: "bot",
-        ownerName: BOT_NAME,
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
         transcript: [{ text, ...(voice ? { voice } : {}), ...(emoji ? { emoji } : {}) }],
-      }),
+      })),
     });
 
     const data = await resp.json();
@@ -462,12 +480,9 @@ server.tool(
       const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sender: BOT_NAME,
-          role: "bot",
-          ownerName: BOT_NAME,
+        body: JSON.stringify(botSyncPayload(BOT_NAME, {
           meta: { action: "load-url", url },
-        }),
+        })),
       });
       const data = await resp.json();
       if (data.success) {
@@ -481,12 +496,9 @@ server.tool(
     const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sender: BOT_NAME,
-        role: "bot",
-        ownerName: BOT_NAME,
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
         whiteboard: { content },
-      }),
+      })),
     });
 
     const data = await resp.json();
@@ -515,12 +527,9 @@ server.tool(
     const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sender: BOT_NAME,
-        role: "bot",
-        ownerName: BOT_NAME,
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
         meta: { action: "leave" },
-      }),
+      })),
     });
 
     const data = await resp.json();
@@ -572,12 +581,9 @@ server.tool(
     const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sender: BOT_NAME,
-        role: "bot",
-        ownerName: BOT_NAME,
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
         meta: { action: "share-whiteboard", shareType },
-      }),
+      })),
     });
 
     const data = await resp.json();
@@ -639,12 +645,9 @@ server.tool(
     const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sender: BOT_NAME,
-        role: "bot",
-        ownerName: BOT_NAME,
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
         meta: { action: "stop-sharing" },
-      }),
+      })),
     });
 
     const data = await resp.json();
@@ -673,12 +676,9 @@ server.tool(
     const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sender: BOT_NAME,
-        role: "bot",
-        ownerName: BOT_NAME,
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
         meta: { action: "scroll-share", direction, amount },
-      }),
+      })),
     });
     const data = await resp.json();
     const r = data.results?.scrollShare;
@@ -706,12 +706,9 @@ server.tool(
     const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sender: BOT_NAME,
-        role: "bot",
-        ownerName: BOT_NAME,
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
         meta: { action: "set-mode", mode },
-      }),
+      })),
     });
 
     const data = await resp.json();
@@ -740,12 +737,9 @@ server.tool(
     const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sender: BOT_NAME,
-        role: "bot",
-        ownerName: BOT_NAME,
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
         meta: { action: "set-camera", on },
-      }),
+      })),
     });
 
     const data = await resp.json();
@@ -851,12 +845,9 @@ server.tool(
     const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sender: BOT_NAME,
-        role: "bot",
-        ownerName: BOT_NAME,
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
         meta: { action: "set-avatar-emoji", ...payload },
-      }),
+      })),
     });
     const data = await resp.json();
     const result = data.results?.setAvatarEmoji;
@@ -1003,9 +994,25 @@ server.tool(
         }).join('\n')
       : '  (none detected)';
 
+    const formatVersions = (versions = {}) => {
+      const parts = [];
+      if (versions.app) parts.push(`app ${versions.app}`);
+      if (versions.mcp) parts.push(`mcp ${versions.mcp}`);
+      if (versions.node) parts.push(`node ${versions.node}`);
+      return parts.length ? ` — ${parts.join(', ')}` : '';
+    };
+
     // Registered bot members (full list, includes bots not currently visible
     // in the Meet participant tiles — e.g. still joining)
-    const members = allMembers.map((m) => `  - ${m.name} (${m.role})`).join("\n");
+    const members = allMembers
+      .map((m) => `  - ${m.name} (${m.role})${formatVersions(m.versions)}`)
+      .join("\n");
+
+    const botAppVersions = new Map();
+    for (const m of allMembers) {
+      if (m.role === 'bot' && m.versions?.app) botAppVersions.set(m.name, m.versions.app);
+    }
+    const uniqueAppVersions = new Set(botAppVersions.values());
 
     const wb = data.whiteboard?.content || "(empty)";
     const errors = (status.errors || []).map(e => `  - ${e.message} (${e.timestamp})`).join("\n");
@@ -1056,6 +1063,10 @@ server.tool(
       sections.push('');
       sections.push('## Bot Members');
       sections.push(members || '  (none)');
+      if (uniqueAppVersions.size > 1) {
+        sections.push('');
+        sections.push(`Version mismatch: ${[...botAppVersions.entries()].map(([name, version]) => `${name} app ${version}`).join(', ')}`);
+      }
     }
 
     sections.push('');
@@ -1113,12 +1124,9 @@ server.tool(
       const resp = await fetch(`${BASE_URL}/api/sync/${room_id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sender: joinedBotName,
-          role: "bot",
-          ownerName: joinedBotName,
+        body: JSON.stringify(botSyncPayload(joinedBotName, {
           meta: { action: "join", meetCode: room_id, botName: joinedBotName },
-        }),
+        })),
       });
       const data = await resp.json();
       if (data.results?.join?.ok) {

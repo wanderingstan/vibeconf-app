@@ -1095,7 +1095,7 @@ server.tool(
   "Tell the Vibeconferencing app to join a Google Meet call. Use this when the app is running but idle (not yet in a call). The app will navigate to the Meet URL and join.",
   {
     room_id: z.string().describe("Meet code (e.g. abc-defg-hij)"),
-    bot_name: z.string().optional().describe("Bot display name. Default: Jimmy"),
+    bot_name: z.string().optional().describe("Bot display name in Meet. Omit to use the bot name configured for this MCP instance (set via the app's panel or VIBECONF_BOT_NAME env). Only pass this to explicitly override — don't pass a literal default like 'Jimmy', that overrides the user's preference."),
   },
   async ({ room_id, bot_name }) => {
     try {

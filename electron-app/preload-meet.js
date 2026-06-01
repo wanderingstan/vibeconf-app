@@ -156,7 +156,11 @@ async function typeIntoInput(input, value) {
   const ok = document.execCommand('insertText', false, value);
   if (ok && input.value === value) return true;
 
-  const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+  // Meet's chat input is a <textarea>; calling HTMLInputElement's value setter
+  // on it throws "Illegal invocation" because `this` is the wrong type. Pick
+  // the setter from the element's own prototype.
+  const proto = input.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value').set;
   nativeSetter.call(input, '');
 
   for (const char of value) {

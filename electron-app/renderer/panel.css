@@ -277,9 +277,23 @@ button:disabled {
   line-height: 1.1;
 }
 
+.app-meta {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
 .app-version {
   font-size: 11px;
   color: #9aa0a6;
+}
+
+.app-profile {
+  font-size: 11px;
+  color: #fdd663;
+  background: #3c4043;
+  padding: 1px 6px;
+  border-radius: 3px;
 }
 
 .header-row h1 {

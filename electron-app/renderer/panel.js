@@ -149,6 +149,14 @@ api.invoke('get-app-version').then((version) => {
   if (el && version) el.textContent = `v${version}`;
 }).catch(() => {});
 
+api.invoke('get-app-profile').then((profile) => {
+  const el = document.getElementById('appProfile');
+  if (el && profile) {
+    el.textContent = profile;
+    el.style.display = '';
+  }
+}).catch(() => {});
+
 // ---------------------------------------------------------------------------
 // Load saved config
 // ---------------------------------------------------------------------------

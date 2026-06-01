@@ -1977,6 +1977,8 @@ function setupIPC() {
 
   ipcMain.handle('get-app-version', () => app.getVersion());
 
+  ipcMain.handle('get-app-profile', () => appProfile || null);
+
   // --- Auth check ---
   ipcMain.handle('check-auth', () => {
     return checkAuth();

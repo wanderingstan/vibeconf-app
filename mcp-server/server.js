@@ -75,6 +75,32 @@ const server = new McpServer({
   version: "0.1.0",
 });
 
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function getRoomStatus(roomId) {
+  const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`);
+  return resp.json();
+}
+
+async function waitForSharingState(roomId, expected, { timeoutMs = 7000, intervalMs = 300, stablePolls = 1 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let lastStatus = null;
+  let matches = 0;
+
+  while (Date.now() < deadline) {
+    await sleep(intervalMs);
+    lastStatus = await getRoomStatus(roomId);
+    if (lastStatus.status?.sharing === expected) {
+      matches++;
+      if (matches >= stablePolls) return lastStatus;
+    } else {
+      matches = 0;
+    }
+  }
+
+  return lastStatus || await getRoomStatus(roomId);
+}
+
 // --- get_session_log ---
 // Returns recent lines from the Electron app's session log (#173). Useful for
 // post-mortem debugging when something went weird mid-call — e.g. a share
@@ -588,16 +614,13 @@ server.tool(
 
     const data = await resp.json();
     if (data.success) {
-      // Wait for screen share to complete (or fail) before responding
-      // Timeline: 2s whiteboard load + 3s error detection + margin
-      await new Promise(resolve => setTimeout(resolve, 7000));
+      // Wait for screen share to complete (or fail) before responding. Polling
+      // lets successful shares return quickly and avoids hard-coding a UI delay.
+      const statusData = await waitForSharingState(roomId, true, { timeoutMs: 9000, intervalMs: 300, stablePolls: 2 });
 
       // Check for errors that occurred during THIS share attempt (filter by
       // timestamp — earlier-call errors like "ended unexpectedly" must not
       // bleed into this attempt's diagnostic).
-      const statusResp = await fetch(`${BASE_URL}/api/sync/${roomId}`);
-      const statusData = await statusResp.json();
-
       // Ground truth wins: status.sharing reflects Meet's own "You are
       // presenting" label. If we ARE presenting, it succeeded — even if a
       // transient "Can't share your screen" fired on a first attempt that then
@@ -652,7 +675,11 @@ server.tool(
 
     const data = await resp.json();
     if (data.success) {
-      return { content: [{ type: "text", text: "Stopped sharing the whiteboard." }] };
+      const statusData = await waitForSharingState(roomId, false, { timeoutMs: 7000, intervalMs: 300, stablePolls: 2 });
+      if (statusData.status?.sharing === false) {
+        return { content: [{ type: "text", text: "Stopped sharing the whiteboard." }] };
+      }
+      return { content: [{ type: "text", text: "Stop sharing request was sent, but the app still reports it is presenting. Tell the user it may need a manual Stop presenting click." }] };
     } else {
       return { content: [{ type: "text", text: `Error: ${data.error || "Failed to stop sharing"}` }] };
     }

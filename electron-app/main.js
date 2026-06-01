@@ -227,7 +227,10 @@ const localServer = new globalThis.LocalServer({
           meetView.webContents.send('trigger-screen-share', { shareType: 'screen' });
         }
       } else {
-        // Whiteboard share — open whiteboard window first
+        // Whiteboard share — open whiteboard window first. Keep the flag
+        // false so setDisplayMediaRequestHandler routes through the
+        // whiteboard-window picker (with main-window exclusion to avoid
+        // #158's infinity-mirror), not the full-screen-grab branch.
         fullScreenShareRequested = false;
         ipcMain.emit('start-whiteboard-share', {}, { meetCode });
         setTimeout(() => {
@@ -241,7 +244,6 @@ const localServer = new globalThis.LocalServer({
   onStopSharing: () => {
     console.log('[local-server] Stop sharing requested by agent');
     fullScreenShareRequested = false;
-    localServer.setSharing(false);
     // Close the whiteboard window — this ends the display media stream for whiteboard shares
     if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
       whiteboardWindow.close();

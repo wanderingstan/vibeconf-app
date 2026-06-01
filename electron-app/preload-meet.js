@@ -157,10 +157,15 @@ async function typeIntoInput(input, value) {
   if (ok && input.value === value) return true;
 
   // Meet's chat input is a <textarea>; calling HTMLInputElement's value setter
-  // on it throws "Illegal invocation" because `this` is the wrong type. Pick
-  // the setter from the element's own prototype.
-  const proto = input.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-  const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+  // on it throws "Illegal invocation" because `this` is the wrong type. Pull
+  // the setter from the element's own prototype chain, with fallbacks for
+  // either built-in type if the immediate prototype's descriptor is missing.
+  const valueDescriptor =
+    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value') ||
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value') ||
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+  const nativeSetter = valueDescriptor?.set;
+  if (!nativeSetter) throw new Error('Could not find native value setter');
   nativeSetter.call(input, '');
 
   for (const char of value) {

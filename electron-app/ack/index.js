@@ -32,6 +32,10 @@ function getProviderConfig(store) {
     apiKey: store?.get('ackApiKey') || '',
     model: store?.get('ackModel') || 'gpt-4o-mini',
     timeoutMs: Number(store?.get('ackTimeoutMs')) || 500,
+    // Override path for the system prompt. Empty = use bundled default at
+    // electron-app/ack/prompts/ack-system.md (which is also editable in
+    // place — hot-reloads on mtime change, no restart needed).
+    promptPath: store?.get('ackPromptPath') || '',
   };
 }
 

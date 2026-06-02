@@ -72,7 +72,31 @@ console.log('chose:', phrase);
 
 ## Prompt design
 
-`openai-compat.js` ships a single system prompt instructing the model to either return a 1–5 word phrase or the literal token `SKIP`. The model also receives the last 3 transcript entries as context. Iterate on the prompt by editing `SYSTEM_PROMPT` in `openai-compat.js` — that's where the actual quality lives.
+The system prompt is **not in code** — it lives at `prompts/ack-system.md` as plain markdown, and the runner hot-reloads it on file change (one `stat()` per ack call, re-read only when mtime changes). Edit the file, the next ack uses the new prompt. **No app restart required.**
+
+```bash
+# while the app is running, just edit:
+$EDITOR electron-app/ack/prompts/ack-system.md
+# save, talk to the bot, the next ack uses your new prompt
+```
+
+That's where the actual quality lives — iterate freely.
+
+### Pointing at a custom prompt file
+
+Three ways, in priority order:
+
+1. **`ackPromptPath` store key** in the profile's `config.json` — full path to any text file.
+2. **`VIBECONF_ACK_PROMPT_PATH` env var** at app launch.
+3. **Default** — the bundled `electron-app/ack/prompts/ack-system.md`.
+
+If your custom file is missing or unreadable, the runner silently falls back to the last successfully-loaded prompt, or to a tiny hardcoded fallback baked into `openai-compat.js`. The ack call never throws because of a prompt-file issue.
+
+### Iteration tips
+
+- The model sees the system prompt + a user message of the form `User said: "..."\n(addressivity hint)\nRecent context:\n  ...`. Test phrases against your local model with whatever chat UI LM Studio gives you to refine wording without round-tripping through Meet.
+- Few-shot examples in the prompt matter more than rule descriptions for small models. Most failures are fixable by adding a concrete "user said X → answer Y" example covering the failure case.
+- Keep the prompt under ~1200 tokens — every prefill cost is paid per ack call. LM Studio caches prefix sometimes but don't count on it.
 
 ## Why this isn't in the MCP server
 

@@ -7,40 +7,46 @@
 // Throws: on network/timeout/parse errors; caller decides whether to fall
 //         back to builtin or just skip.
 
-const SYSTEM_PROMPT = [
-  "You are a fast acknowledgement decider for an AI bot in a live voice call. The bot's full response comes a moment after yours — your only job is to pick a 1-5 word discourse filler that signals the bot heard the user, OR output SKIP when no filler is warranted.",
-  "",
-  "OUTPUT FORMAT:",
-  "- Return ONE short conversational phrase (1-5 words, no quotes, no explanation, no markdown).",
-  "- Or return the literal token SKIP.",
-  "- At most one trailing period or question mark.",
-  "",
-  "WHEN TO SKIP — return SKIP if ANY of these apply:",
-  "- The user is talking to someone NOT in the call (\"Hey Susan, ...\", \"sorry honey, hold on\", muttering, addressing a pet, side-conversation, asides).",
-  "- The user is addressing a named person who is not the bot.",
-  "- The utterance is a very short direct question the bot can answer faster than acking (\"Are you there?\", \"What time is it?\").",
-  "- The utterance is a sentence fragment that's clearly mid-thought (\"...and then what?\", \"Now when you...\").",
-  "- A 1:1-call hint does NOT override these — even in a 1:1 the user can be talking to someone off-camera or themselves.",
-  "",
-  "WHEN TO ACK:",
-  "- A substantive thought, question, or instruction (5+ words) clearly addressed to the bot or the room.",
-  "- Pick a natural discourse filler. Examples: \"Got it.\", \"Mm-hmm.\", \"Hmm, let me think.\", \"Right, right.\", \"Sure.\", \"Oh.\", \"Yeah.\", \"One moment.\"",
-  "- Match the tone: thinking-cue for hard questions; warm \"Mm-hmm\" for personal disclosures; \"Got it\" for instructions.",
-  "",
-  "NEVER:",
-  "- Echo back words from the user's sentence. Example: user says \"Can you hear me?\" → \"Hear me.\" is WRONG. Use \"Yeah.\" or \"Mm-hmm.\" or SKIP.",
-  "- Use meta-vocabulary like \"acknowledge\", \"ack\", \"noted\", \"confirmed\" — these are robotic. Pick natural conversational fillers.",
-  "- Pre-answer the user's question — the bot's real response handles that. Your filler just signals \"heard you\".",
-  "- Explain, use markdown, or use multiple sentences.",
-  "",
-  "EXAMPLES:",
-  "- User: \"Can you write a hello-world example in Python?\" → SKIP (short enough to answer immediately, or \"Sure thing.\")",
-  "- User: \"I've been thinking about how we should structure the database for this feature, and I'm torn between three approaches.\" → \"Hmm, let me think.\"",
-  "- User: \"Hey Susan, keep the noise down. I'm testing in here.\" → SKIP (talking to Susan, not the bot)",
-  "- User: \"...and then what?\" → SKIP (mid-thought fragment)",
-  "- User: \"I don't know, it just feels wrong somehow.\" → \"Mm-hmm.\"",
-  "- User: \"Hello, can you hear me?\" → SKIP (short, bot can answer immediately) or \"Yeah.\" — NEVER \"Hear me.\"",
-].join('\n');
+const fs = require('fs');
+const path = require('path');
+
+// Hardcoded fallback used only if the prompt file can't be read at all.
+// Tiny on purpose — the real prompt lives in prompts/ack-system.md so it
+// can be iterated on without touching code.
+const FALLBACK_PROMPT =
+  "You are an ack decider. Return a short 1-5 word filler phrase, or the literal token SKIP if no ack is warranted. Never echo the user's words.";
+
+// Prompt resolution + hot-reload. The prompt path is resolved in this order:
+//   1. config.promptPath (from store) — usually unset
+//   2. VIBECONF_ACK_PROMPT_PATH env var
+//   3. bundled default at electron-app/ack/prompts/ack-system.md
+//
+// The file is re-read on every call only if its mtime changed since last
+// load (one stat() per ack call — negligible). Edit the file, the next
+// ack uses the new prompt — no app restart required.
+const DEFAULT_PROMPT_PATH = path.join(__dirname, 'prompts', 'ack-system.md');
+
+let _cached = { path: null, mtimeMs: 0, content: null };
+
+function loadSystemPrompt(configuredPath) {
+  const resolved =
+    (configuredPath && configuredPath.trim()) ||
+    process.env.VIBECONF_ACK_PROMPT_PATH ||
+    DEFAULT_PROMPT_PATH;
+  try {
+    const stat = fs.statSync(resolved);
+    if (_cached.path === resolved && _cached.mtimeMs === stat.mtimeMs) {
+      return _cached.content;
+    }
+    const content = fs.readFileSync(resolved, 'utf8');
+    _cached = { path: resolved, mtimeMs: stat.mtimeMs, content };
+    return content;
+  } catch (err) {
+    // File missing or unreadable — return the last good cached prompt if we
+    // have one, otherwise the hardcoded fallback. Never throws.
+    return _cached.content || FALLBACK_PROMPT;
+  }
+}
 
 function buildUserMessage({ text, addressivity, mode, recentTranscript }) {
   const ctx = [];
@@ -70,14 +76,15 @@ function stripThink(raw) {
 }
 
 async function decide({ text, addressivity, mode, recentTranscript, config, log }) {
-  const { endpoint, apiKey, model, timeoutMs } = config;
+  const { endpoint, apiKey, model, timeoutMs, promptPath } = config;
   if (!endpoint) throw new Error('ack endpoint not configured');
 
+  const systemPrompt = loadSystemPrompt(promptPath);
   const url = endpoint.replace(/\/+$/, '') + '/chat/completions';
   const body = {
     model: model || 'gpt-4o-mini',
     messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: systemPrompt },
       { role: 'user', content: buildUserMessage({ text, addressivity, mode, recentTranscript }) },
     ],
     temperature: 0.6,

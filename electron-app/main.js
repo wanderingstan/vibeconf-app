@@ -344,6 +344,13 @@ const localServer = new globalThis.LocalServer({
         return;
       }
 
+      // The exact transcript text the bot received — same string passed to
+      // the agent's wait_for_speech return and to the ack decider below.
+      // Surfaces "did Meet's captions catch what I actually said" without
+      // needing to dig elsewhere in the log.
+      console.log(ts(), '[ack] trigger:', JSON.stringify(text.slice(0, 300)),
+        '(wordCount=' + wordCount + ', addressivity=' + addressivity + ')');
+
       // Ack decider — dispatched through ack/index.js. Defaults to the same
       // wordcount-and-pick logic as before; setting ackProvider='openai-compat'
       // swaps in an HTTP call to any OpenAI-Chat-Completions endpoint

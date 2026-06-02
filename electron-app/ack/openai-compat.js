@@ -59,6 +59,11 @@ async function decide({ text, addressivity, mode, recentTranscript, config, log 
     max_tokens: 24,
   };
 
+  // Surface the exact user message we're sending — makes it obvious when
+  // the model's odd response is downstream of an odd input. System prompt
+  // is fixed, so we don't log it on every call.
+  log?.(`ack-llm → ${model || 'gpt-4o-mini'} sending: ${JSON.stringify(body.messages[1].content.slice(0, 300))}`);
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs || 500);
   const started = Date.now();

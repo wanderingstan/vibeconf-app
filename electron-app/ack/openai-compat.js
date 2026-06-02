@@ -30,7 +30,18 @@ function buildUserMessage({ text, addressivity, mode, recentTranscript }) {
       .join('\n');
     if (prior) ctx.push(`Recent context:\n${prior}`);
   }
+  // /no_think disables Qwen3's chain-of-thought traces — without this the
+  // model emits <think>...</think> before the answer, blowing the latency
+  // budget and dumping reasoning into the ack phrase. Harmless to other
+  // models, which treat it as literal text and ignore it.
+  ctx.push('/no_think');
   return ctx.join('\n');
+}
+
+// Strip any leftover <think>...</think> wrapper in case the model ignored
+// /no_think (some Qwen3 quants still emit a brief trace before the answer).
+function stripThink(raw) {
+  return raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 }
 
 async function decide({ text, addressivity, mode, recentTranscript, config, log }) {
@@ -45,7 +56,7 @@ async function decide({ text, addressivity, mode, recentTranscript, config, log 
       { role: 'user', content: buildUserMessage({ text, addressivity, mode, recentTranscript }) },
     ],
     temperature: 0.6,
-    max_tokens: 12,
+    max_tokens: 24,
   };
 
   const controller = new AbortController();
@@ -65,7 +76,8 @@ async function decide({ text, addressivity, mode, recentTranscript, config, log 
       throw new Error(`HTTP ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
     }
     const data = await resp.json();
-    const raw = data?.choices?.[0]?.message?.content?.trim() || '';
+    const rawWithThink = data?.choices?.[0]?.message?.content?.trim() || '';
+    const raw = stripThink(rawWithThink).trim();
     const latencyMs = Date.now() - started;
     log?.(`ack-llm latency=${latencyMs}ms raw=${JSON.stringify(raw.slice(0, 80))}`);
     if (!raw) return null;

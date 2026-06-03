@@ -98,6 +98,14 @@ If your custom file is missing or unreadable, the runner silently falls back to 
 - Few-shot examples in the prompt matter more than rule descriptions for small models. Most failures are fixable by adding a concrete "user said X → answer Y" example covering the failure case.
 - Keep the prompt under ~1200 tokens — every prefill cost is paid per ack call. LM Studio caches prefix sometimes but don't count on it.
 
+## Fast-ack feedback to the slow model
+
+The phrase the fast model just played is surfaced back to the slow model exactly once, via the *next* `wait_for_speech` response — appears as a single line `[Previous fast-ack played: "Mm-hmm."  If it didn't fit your real response, you may briefly clarify.]`.
+
+This lets the slow model self-correct when the ack tone contradicts the real answer. Example: the user asks something where the right answer is "no", the fast model acked with "Uh-huh." anyway. On the next turn, the slow model sees the previous ack and can briefly clarify the mismatch ("Earlier I went 'uh-huh' but the actual answer is no…").
+
+Post-hoc (one turn delayed), not synchronous — the slow model can't avoid contradicting its own ack on the same turn, only acknowledge the mismatch afterward. A synchronous-block design where `wait_for_speech` waits for the ack decision before returning is documented as a future iteration.
+
 ## Why this isn't in the MCP server
 
 The ack happens server-side without involving the agent — that's the whole point of acking. The local Electron app makes the decision, plays it via TTS, and the agent's real response comes a moment later. Putting this in the MCP server would round-trip through the agent and lose the latency advantage.

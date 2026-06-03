@@ -266,10 +266,19 @@ server.tool(
     // avoid responding twice to one thought.
     const continuationLine = data.continuationOfPriorResponse
       ? '\n[Note: this continues what you already responded to — only reply if it adds genuinely new information; otherwise stay silent and wait again.]' : '';
+    // Fast-ack feedback: a short discourse filler (e.g. "Mm-hmm.", "Got it.")
+    // already played for the user before your previous response. If your last
+    // reply contradicted the ack's tone (e.g. the ack said "Uh-huh." but you
+    // ended up saying "no" / "actually I disagree"), you may briefly clarify
+    // the mismatch in your next turn. If the ack and your response were
+    // consistent, ignore this note.
+    const ackLine = data.previousAckPhrase
+      ? `\n[Previous fast-ack played: ${JSON.stringify(data.previousAckPhrase)}. If it didn't fit your real response, you may briefly clarify.]`
+      : '';
 
     if (entries.length === 0) {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
-      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${statusLine}${errorLines}${chatLine}` }] };
+      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${statusLine}${errorLines}${chatLine}${ackLine}` }] };
     }
 
     // Each entry is now one logical speaker turn (#178 snapshot model); no
@@ -287,7 +296,7 @@ server.tool(
     return {
       content: [{
         type: "text",
-        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):\n\n${transcriptText}${chatLine}${continuationLine}`,
+        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):\n\n${transcriptText}${chatLine}${continuationLine}${ackLine}`,
       }],
     };
   }

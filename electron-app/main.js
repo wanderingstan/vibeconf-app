@@ -378,6 +378,10 @@ const localServer = new globalThis.LocalServer({
       // the agent is still generating the real response.
       ackTtsPending = true;
       speakText(ack);
+      // Surface the phrase to the slow model on its next wait_for_speech,
+      // so it can self-correct if its real response contradicts the ack
+      // tone. Cleared after one read on the local-server side.
+      localServer.setLastAckPhrase(ack);
     }
   },
   onModeChange: (mode) => {

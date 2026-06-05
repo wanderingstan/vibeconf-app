@@ -331,13 +331,20 @@
         if (idleSecs < 60) return `idle ${idleSecs}s`;
         return `STALE ${ago(d.lastWaitForSpeechAt)}`;
       })();
-      const ackSummary = (() => {
+      // Ack rendered on two lines: phrase on its own line, metadata
+      // (source · latency · age) on the next so the phrase is readable
+      // and the box width is dominated by the metadata line, not by long
+      // ack phrases.
+      const ackLines = (() => {
         const ev = d.lastAckEvent;
-        if (!ev) return '(none yet)';
+        if (!ev) return ['ack:      (none yet)'];
         const phrase = ev.phrase ? `"${ev.phrase}"` : 'SKIP';
         const latency = ev.latencyMs != null ? `${ev.latencyMs}ms` : '?';
         const src = ev.source === 'llm-fallback-builtin' ? 'fallback' : (ev.source || '?');
-        return `${phrase} · ${src} · ${latency} · ${ago(ev.at)}`;
+        return [
+          `ack:      ${phrase}`,
+          `          ${src} · ${latency} · ${ago(ev.at)}`,
+        ];
       })();
       const lines = [
         'DEBUG',
@@ -348,7 +355,7 @@
         `sharing:  ${d.sharing ? 'yes' : 'no'}`,
         `loop:     ${loopHealth}`,
         `last WfS: ${ago(d.lastWaitForSpeechAt)}`,
-        `ack:      ${ackSummary}`,
+        ...ackLines,
         `queued:   ${(d.pendingBotSpeech || []).length}`,
         `members:  ${(d.participants || []).length}`,
       ];
@@ -385,7 +392,7 @@
         // rest light grey.
         if (i === 0) ctx.fillStyle = '#fdd663';
         else if (ln.startsWith('loop:') && ln.includes('STALE')) ctx.fillStyle = '#ea4335';
-        else if (ln.startsWith('ack:') && ln.includes('fallback')) ctx.fillStyle = '#ea4335';
+        else if (ln.includes('fallback') && (ln.startsWith('ack:') || ln.startsWith('          '))) ctx.fillStyle = '#ea4335';
         else ctx.fillStyle = '#e8eaed';
         ctx.fillText(ln, boxX + pad, boxY + pad + i * lineH);
       }

@@ -77,6 +77,21 @@ function agoLabel(ts) {
   return `${Math.round(secs / 3600)}h ago`;
 }
 
+function ackLabel(ev) {
+  if (!ev) return '(none yet)';
+  const ago = agoLabel(ev.at);
+  const phrase = ev.phrase ? JSON.stringify(ev.phrase) : 'SKIP';
+  const latency = ev.latencyMs != null ? `${ev.latencyMs}ms` : '?';
+  let sourceTag;
+  switch (ev.source) {
+    case 'llm':                   sourceTag = '🟢 llm'; break;
+    case 'llm-fallback-builtin':  sourceTag = `🔴 llm→builtin (${ev.error || 'failed'})`; break;
+    case 'builtin':               sourceTag = '⚪️ builtin'; break;
+    default:                      sourceTag = ev.source || '?';
+  }
+  return `${phrase} · ${sourceTag} · ${latency} · ${ago}`;
+}
+
 function agentLoopHealth(s) {
   if (s.activeWaiters > 0) return `🟢 listening (${s.activeWaiters} waiter${s.activeWaiters > 1 ? 's' : ''})`;
   if (!s.lastWaitForSpeechAt) return '⚪️ no wait_for_speech yet — agent may not have started the loop';
@@ -120,6 +135,7 @@ function renderCallState(s) {
     `Screen rec perm:    ${s.screenRecording || 'unknown'}`,
     `Agent loop:         ${agentLoopHealth(s)}`,
     `Last wait_for_speech: ${agoLabel(s.lastWaitForSpeechAt)}`,
+    `Last ack:           ${ackLabel(s.lastAckEvent)}`,
     `Queued speech (${queued.length}):`,
     ...queuedLines,
     `Participants (${(s.participants || []).length}):`,

@@ -39,9 +39,15 @@ function getProviderConfig(store) {
   };
 }
 
+// Returns { phrase, source, latencyMs, error }.
+//   phrase    string | null  (null means SKIP)
+//   source    'llm' | 'llm-fallback-builtin' | 'builtin'
+//   latencyMs number — measured from entry to return for the chosen path
+//   error     string | undefined — set when the LLM path failed and we fell back
 async function decide({ text, wordCount, addressivity, mode, recentTranscript, store, log }) {
   const prefs = getPrefs(store);
   const config = getProviderConfig(store);
+  const started = Date.now();
 
   if (config.provider === 'openai-compat') {
     try {
@@ -50,17 +56,27 @@ async function decide({ text, wordCount, addressivity, mode, recentTranscript, s
         config,
         log,
       });
-      return phrase; // string or null (SKIP)
+      return { phrase, source: 'llm', latencyMs: Date.now() - started };
     } catch (err) {
       // Endpoint unreachable / timed out / parse error — fall back to builtin
       // so the bot is never strictly worse than baseline.
       log?.(`ack-llm failed (${err.message}); falling back to builtin`);
-      return builtin.decide({ wordCount, prefs });
+      const phrase = builtin.decide({ wordCount, prefs });
+      return {
+        phrase,
+        source: 'llm-fallback-builtin',
+        latencyMs: Date.now() - started,
+        error: err.message,
+      };
     }
   }
 
   // Default: builtin
-  return builtin.decide({ wordCount, prefs });
+  return {
+    phrase: builtin.decide({ wordCount, prefs }),
+    source: 'builtin',
+    latencyMs: Date.now() - started,
+  };
 }
 
 // Fire-and-forget warmup. main.js calls this on join_call to pre-populate

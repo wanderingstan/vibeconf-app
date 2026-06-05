@@ -367,7 +367,7 @@ const localServer = new globalThis.LocalServer({
       // (LM Studio, Ollama, OpenAI, OpenRouter, etc.). Endpoint failures fall
       // back to builtin so the bot is never worse than baseline.
       const ackModule = require('./ack');
-      const ack = await ackModule.decide({
+      const ackResult = await ackModule.decide({
         text,
         wordCount,
         addressivity,
@@ -375,6 +375,19 @@ const localServer = new globalThis.LocalServer({
         recentTranscript: localServer.transcripts.slice(-5),
         store,
         log: (msg) => console.log(ts(), '[ack]', msg),
+      });
+      const ack = ackResult.phrase;
+
+      // Record health/status for the troubleshooting panel — visible at-a-
+      // glance whether the LLM path is hitting, falling back, or skipped.
+      localServer.setLastAckEvent({
+        phrase: ack,
+        source: ackResult.source,
+        latencyMs: ackResult.latencyMs,
+        error: ackResult.error,
+        wordCount,
+        addressivity,
+        at: Date.now(),
       });
 
       if (!ack) {

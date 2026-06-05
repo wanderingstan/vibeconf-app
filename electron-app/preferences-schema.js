@@ -114,6 +114,87 @@ const PREFERENCES = {
       'Must be a full http:// or https:// URL with no trailing slash.',
     requiresRestart: true,
   },
+
+  // ── Conversation timing knobs ────────────────────────────────────────────
+  // All read live from the local-server via the getPref callback — set_preference
+  // takes effect on the next time the value is consulted (no app restart).
+  // Per-profile, so different bot personas can have different conversational
+  // rhythms.
+
+  bargeInGraceMs: {
+    type: 'number',
+    default: 2000,
+    min: 0,
+    max: 10_000,
+    description:
+      'How long the bot waits after detecting a human interruption before ' +
+      'actually stopping its TTS. Tunes the bot\'s "patience" — higher means ' +
+      'a brief overlap is tolerated as natural conversation; lower means ' +
+      'the bot drops out almost instantly. Default 2000ms.',
+  },
+  bargeInBotRandomMinMs: {
+    type: 'number',
+    default: 1000,
+    min: 0,
+    max: 10_000,
+    description:
+      'When two bots try to speak at the same moment, each waits a random ' +
+      'delay in [min, max] before committing to its turn — preventing ' +
+      'lockstep talking over each other. This is the floor of that range.',
+  },
+  bargeInBotRandomMaxMs: {
+    type: 'number',
+    default: 4000,
+    min: 0,
+    max: 30_000,
+    description:
+      'Ceiling of the bot-vs-bot random-delay range (see bargeInBotRandomMinMs).',
+  },
+  bargeInStashMaxAgeMs: {
+    type: 'number',
+    default: 10_000,
+    min: 0,
+    max: 60_000,
+    description:
+      'When the bot yields mid-thought to a human, its queued speech is ' +
+      'stashed and auto-replayed on the next silence gap if still fresh. ' +
+      'This is how fresh (ms) the stash must be to replay; older than this ' +
+      'and the slow model regenerates from scratch. Higher = more "the bot ' +
+      'patiently waited and just said its thing"; lower = more "the bot ' +
+      're-thinks every gap." Default 10s.',
+  },
+  captionDropoutGraceMs: {
+    type: 'number',
+    default: 2000,
+    min: 0,
+    max: 30_000,
+    description:
+      'How long a participant tile can stay active without caption text ' +
+      'arriving before the bot decides the captions have dropped out (and ' +
+      'surfaces that to the agent as a warning). See issue #187.',
+  },
+  defaultSilenceSeconds: {
+    type: 'number',
+    default: 2,
+    min: 1,
+    max: 30,
+    description:
+      'Default silence threshold (seconds) for wait_for_speech if the agent ' +
+      'doesn\'t pass one. The bot waits this long after a speaker stops ' +
+      'before considering their turn complete. Higher = more patient (bot ' +
+      'lets users compose longer thoughts); lower = snappier.',
+  },
+  defaultMaxWaitForSpeechSec: {
+    type: 'number',
+    default: 55,
+    min: 5,
+    max: 300,
+    description:
+      'Maximum seconds wait_for_speech blocks before returning empty. The ' +
+      'agent should re-call after a timeout. Default 55 (just under typical ' +
+      'HTTP timeouts). Raise only if you have a reason — long blocks make ' +
+      'the agent appear stalled.',
+  },
 };
 
 function validate(key, value) {

@@ -128,7 +128,7 @@ class LocalServer {
     this.lastAckPhrase = null;
 
     // Speech the bot was about to say when a human interrupted (barge-in).
-    // Held for BARGE_IN_STASH_MAX_AGE_MS, then auto-replayed on the next
+    // Held for the bargeInStashMaxAgeMs pref window, then auto-replayed on the next
     // silence resolution — matches the conversational rhythm of "I raised
     // my hand, the floor opened, I speak my thought." If too stale, the
     // stash is discarded and the agent's slow model regenerates from
@@ -164,9 +164,11 @@ class LocalServer {
     //                        delays, whichever bot's timer fires first
     //                        yields, the other detects silence and continues
     //                        — emergent resolution, no deadlock.
-    this.bargeInGraceMs = 2000;
-    this.bargeInBotRandomMinMs = 1000;
-    this.bargeInBotRandomMaxMs = 4000;
+    // Barge-in / silence timing knobs now read live from preferences each
+    // time they're consulted (this._pref helper). The agent can tune them
+    // mid-call via set_preference, and they're per-profile so different
+    // personas can have different conversational rhythms. Schema defaults
+    // match what these used to be hardcoded as. See preferences-schema.js.
     this._bargeInTimer = null;
 
     // Auto-leave when alone (#145). Only fires once at least one other
@@ -825,11 +827,12 @@ class LocalServer {
 
   _armBargeIn() {
     if (this._bargeInTimer || this.botState !== 'speaking') return;
-    console.log(ts(), '🛡️  [barge-in] armed — grace ' + this.bargeInGraceMs + 'ms');
+    const graceMs = this._pref('bargeInGraceMs');
+    console.log(ts(), '🛡️  [barge-in] armed — grace ' + graceMs + 'ms');
     this._bargeInTimer = setTimeout(() => {
       this._bargeInTimer = null;
       this._evaluateBargeIn();
-    }, this.bargeInGraceMs);
+    }, graceMs);
   }
 
   // Grace period elapsed. Decide whether to back off based on who's
@@ -867,8 +870,8 @@ class LocalServer {
     // All interrupters are bots. Wait an additional random delay; if still
     // being interrupted at the end of it, back off. Whichever bot's random
     // timer fires first will yield first, breaking the tie.
-    const min = this.bargeInBotRandomMinMs;
-    const max = this.bargeInBotRandomMaxMs;
+    const min = this._pref('bargeInBotRandomMinMs');
+    const max = this._pref('bargeInBotRandomMaxMs');
     const delay = Math.floor(min + Math.random() * (max - min));
     console.log(ts(), '🛡️  [barge-in] bot-vs-bot — random additional delay ' + delay + 'ms before deciding');
     this._bargeInTimer = setTimeout(() => {
@@ -892,7 +895,7 @@ class LocalServer {
     // resolution we'll auto-replay if the stash is still fresh — captures
     // the natural conversational rhythm of "I raised my hand, the floor
     // opened, I just say what I was going to say." If the stash ages out
-    // (>BARGE_IN_STASH_MAX_AGE_MS), it's discarded silently and the slow
+    // (older than bargeInStashMaxAgeMs), it's discarded silently and the slow
     // model regenerates fresh.
     if (this.pendingBotSpeech.length > 0) {
       console.log(ts(), '🛡️  [barge-in] stashing', this.pendingBotSpeech.length, 'queued bot speech entries for possible replay');
@@ -907,14 +910,17 @@ class LocalServer {
     this._setBotState('yielding', { reason }, { force: true });
   }
 
-  // Window after the barge-in beyond which the stashed speech is too stale
-  // to safely replay (the conversation has likely moved on). Picked to be
-  // short enough that the queued thought almost certainly still fits the
-  // moment — humans speak ~150wpm, so 10s is at most one short sentence
-  // of new content past the stash, very unlikely to invalidate the plan.
-  // If users report awkward replays, tighten this. If they report missing
-  // replays, loosen it.
-  static BARGE_IN_STASH_MAX_AGE_MS = 10_000;
+  // Live preference read with schema-default fallback. Used for every
+  // conversation timing knob in this class so set_preference takes effect
+  // immediately (no app restart).
+  _pref(key) {
+    if (this.getPref) {
+      const stored = this.getPref(key);
+      if (stored !== undefined && stored !== null) return stored;
+    }
+    const spec = prefsSchema.PREFERENCES[key];
+    return spec ? spec.default : undefined;
+  }
 
   // Attempt to replay any fresh barge-in stash before the waiter returns
   // to the slow model. Returns the array of texts that were played (or
@@ -923,8 +929,9 @@ class LocalServer {
   _maybeReplayBargeInStash() {
     if (!this.bargeInStash) return null;
     const ageMs = Date.now() - this.bargeInStash.at;
-    if (ageMs > LocalServer.BARGE_IN_STASH_MAX_AGE_MS) {
-      console.log(ts(), '🛡️  [barge-in] discarding stash — too stale (' + ageMs + 'ms old, max ' + LocalServer.BARGE_IN_STASH_MAX_AGE_MS + 'ms)');
+    const maxAgeMs = this._pref('bargeInStashMaxAgeMs');
+    if (ageMs > maxAgeMs) {
+      console.log(ts(), '🛡️  [barge-in] discarding stash — too stale (' + ageMs + 'ms old, max ' + maxAgeMs + 'ms)');
       this.bargeInStash = null;
       return null;
     }
@@ -1390,7 +1397,7 @@ class LocalServer {
   async _handleGet(req, res, url, roomId) {
     const since = url.searchParams.get('since');
     const wait = parseInt(url.searchParams.get('wait') || '0', 10);
-    const silence = parseInt(url.searchParams.get('silence') || '2', 10);
+    const silence = parseInt(url.searchParams.get('silence') || String(this._pref('defaultSilenceSeconds')), 10);
     const bot = url.searchParams.get('bot');
 
     // Non-blocking: return immediately
@@ -1401,7 +1408,7 @@ class LocalServer {
     }
 
     // Long-poll: wait for speech + silence
-    const clampedWait = Math.min(55, Math.max(1, wait));
+    const clampedWait = Math.min(this._pref('defaultMaxWaitForSpeechSec'), Math.max(1, wait));
     const clampedSilence = Math.max(1, silence);
 
     // Bump the "last wait_for_speech" clock at the start of the long-poll

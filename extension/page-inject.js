@@ -331,6 +331,14 @@
         if (idleSecs < 60) return `idle ${idleSecs}s`;
         return `STALE ${ago(d.lastWaitForSpeechAt)}`;
       })();
+      const ackSummary = (() => {
+        const ev = d.lastAckEvent;
+        if (!ev) return '(none yet)';
+        const phrase = ev.phrase ? `"${ev.phrase}"` : 'SKIP';
+        const latency = ev.latencyMs != null ? `${ev.latencyMs}ms` : '?';
+        const src = ev.source === 'llm-fallback-builtin' ? 'fallback' : (ev.source || '?');
+        return `${phrase} · ${src} · ${latency} · ${ago(ev.at)}`;
+      })();
       const lines = [
         'DEBUG',
         `call:     ${d.callStatus || 'unknown'}`,
@@ -340,13 +348,14 @@
         `sharing:  ${d.sharing ? 'yes' : 'no'}`,
         `loop:     ${loopHealth}`,
         `last WfS: ${ago(d.lastWaitForSpeechAt)}`,
+        `ack:      ${ackSummary}`,
         `queued:   ${(d.pendingBotSpeech || []).length}`,
         `members:  ${(d.participants || []).length}`,
       ];
 
-      const pad = 14;
-      const lineH = 22;
-      const font = '600 16px ui-monospace, SFMono-Regular, Menlo, monospace';
+      const pad = 16;
+      const lineH = 30;
+      const font = '600 22px ui-monospace, SFMono-Regular, Menlo, monospace';
       ctx.save();
       ctx.font = font;
       ctx.textAlign = 'left';
@@ -359,7 +368,9 @@
       }
       const boxW = Math.ceil(maxW) + pad * 2;
       const boxH = lineH * lines.length + pad * 2;
-      const boxX = canvas.width - boxW - 24;
+      // Left-aligned so the box doesn't shift horizontally as line widths
+      // change (the ack line in particular grows/shrinks with the phrase).
+      const boxX = 24;
       const boxY = 24;
       // Background panel
       ctx.fillStyle = 'rgba(0, 0, 0, 0.72)';
@@ -370,9 +381,11 @@
       // Text
       for (let i = 0; i < lines.length; i++) {
         const ln = lines[i];
-        // Color the STALE line red; the DEBUG header bright; rest white
+        // Color: DEBUG header yellow; STALE loop red; ack-fallback red;
+        // rest light grey.
         if (i === 0) ctx.fillStyle = '#fdd663';
         else if (ln.startsWith('loop:') && ln.includes('STALE')) ctx.fillStyle = '#ea4335';
+        else if (ln.startsWith('ack:') && ln.includes('fallback')) ctx.fillStyle = '#ea4335';
         else ctx.fillStyle = '#e8eaed';
         ctx.fillText(ln, boxX + pad, boxY + pad + i * lineH);
       }

@@ -275,10 +275,17 @@ server.tool(
     const ackLine = data.previousAckPhrase
       ? `\n[Previous fast-ack played: ${JSON.stringify(data.previousAckPhrase)}. If it didn't fit your real response, you may briefly clarify.]`
       : '';
+    // The local-server auto-replayed bot speech that had been queued before
+    // a barge-in interruption — the queued thought went out as soon as the
+    // floor was clear. Don't try to repeat it; either build on it or stay
+    // silent if it already covered what you wanted to say.
+    const replayLine = Array.isArray(data.replayedBargeInStash) && data.replayedBargeInStash.length
+      ? `\n[Auto-replayed your previously-yielded speech on the silence gap: ${data.replayedBargeInStash.map(s => JSON.stringify(s)).join(' · ')}. That speech already played — do NOT repeat it. Either build on it or stay silent.]`
+      : '';
 
     if (entries.length === 0) {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
-      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${statusLine}${errorLines}${chatLine}${ackLine}` }] };
+      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${statusLine}${errorLines}${chatLine}${ackLine}${replayLine}` }] };
     }
 
     // Each entry is now one logical speaker turn (#178 snapshot model); no
@@ -296,7 +303,7 @@ server.tool(
     return {
       content: [{
         type: "text",
-        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):\n\n${transcriptText}${chatLine}${continuationLine}${ackLine}`,
+        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):\n\n${transcriptText}${chatLine}${continuationLine}${ackLine}${replayLine}`,
       }],
     };
   }

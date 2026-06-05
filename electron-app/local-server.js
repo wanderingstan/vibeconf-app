@@ -127,6 +127,21 @@ class LocalServer {
     // but the real answer is "no, actually..."). Cleared after one read.
     this.lastAckPhrase = null;
 
+    // Speech the bot was about to say when a human interrupted (barge-in).
+    // Held for BARGE_IN_STASH_MAX_AGE_MS, then auto-replayed on the next
+    // silence resolution — matches the conversational rhythm of "I raised
+    // my hand, the floor opened, I speak my thought." If too stale, the
+    // stash is discarded and the agent's slow model regenerates from
+    // scratch instead.
+    //
+    // Shape: { entries: [{ text, voice, emoji }], at: ms }
+    this.bargeInStash = null;
+    // Texts of any stash that was replayed in the just-completed resolve.
+    // Surfaced once on the next _buildResponse, then cleared, so the slow
+    // model knows the queued thought already happened and can build on it
+    // (or stay silent).
+    this._lastReplayedStash = null;
+
     // Last ack decision event — phrase, source ('llm' / 'llm-fallback-builtin'
     // / 'builtin'), latency, and any error. Surfaced in the troubleshooting
     // panel so it's visible at-a-glance whether the LLM path is hitting,
@@ -873,15 +888,56 @@ class LocalServer {
     } catch (err) {
       console.warn(ts(), '[barge-in] onStopTts failed:', err.message);
     }
-    // Drop any queued bot speech — the agent should re-decide what to say
-    // after hearing what interrupted it.
+    // Stash queued bot speech instead of dropping it. On the next silence
+    // resolution we'll auto-replay if the stash is still fresh — captures
+    // the natural conversational rhythm of "I raised my hand, the floor
+    // opened, I just say what I was going to say." If the stash ages out
+    // (>BARGE_IN_STASH_MAX_AGE_MS), it's discarded silently and the slow
+    // model regenerates fresh.
     if (this.pendingBotSpeech.length > 0) {
-      console.log(ts(), '🛡️  [barge-in] dropping', this.pendingBotSpeech.length, 'queued bot speech entries');
+      console.log(ts(), '🛡️  [barge-in] stashing', this.pendingBotSpeech.length, 'queued bot speech entries for possible replay');
+      this.bargeInStash = {
+        entries: [...this.pendingBotSpeech],
+        at: Date.now(),
+      };
       this.pendingBotSpeech = [];
     }
     // Move out of 'speaking' into an explicit yielding state so humans can see
     // the bot has something queued conceptually but is not talking over them.
     this._setBotState('yielding', { reason }, { force: true });
+  }
+
+  // Window after the barge-in beyond which the stashed speech is too stale
+  // to safely replay (the conversation has likely moved on). Picked to be
+  // short enough that the queued thought almost certainly still fits the
+  // moment — humans speak ~150wpm, so 10s is at most one short sentence
+  // of new content past the stash, very unlikely to invalidate the plan.
+  // If users report awkward replays, tighten this. If they report missing
+  // replays, loosen it.
+  static BARGE_IN_STASH_MAX_AGE_MS = 10_000;
+
+  // Attempt to replay any fresh barge-in stash before the waiter returns
+  // to the slow model. Returns the array of texts that were played (or
+  // null if nothing). The bot speaks via the existing onBotSpeech path,
+  // so TTS playback / transcript registration follow the normal route.
+  _maybeReplayBargeInStash() {
+    if (!this.bargeInStash) return null;
+    const ageMs = Date.now() - this.bargeInStash.at;
+    if (ageMs > LocalServer.BARGE_IN_STASH_MAX_AGE_MS) {
+      console.log(ts(), '🛡️  [barge-in] discarding stash — too stale (' + ageMs + 'ms old, max ' + LocalServer.BARGE_IN_STASH_MAX_AGE_MS + 'ms)');
+      this.bargeInStash = null;
+      return null;
+    }
+    const entries = this.bargeInStash.entries;
+    console.log(ts(), '🛡️  [barge-in] replaying stash — ' + entries.length + ' entries, ' + ageMs + 'ms old');
+    this.bargeInStash = null;
+    const texts = [];
+    for (const { text, voice, emoji } of entries) {
+      this._setBotState('speaking', { emoji });
+      this.onBotSpeech(text, voice, emoji);
+      texts.push(text);
+    }
+    return texts;
   }
 
   _resolveWaiter(waiter, reason = 'unknown') {
@@ -891,6 +947,16 @@ class LocalServer {
     clearTimeout(waiter.silenceTimer);
     const waitedMs = waiter.startTime ? Date.now() - waiter.startTime : 0;
     console.log(ts(), '✅ [resolve] wait_for_speech resolved — reason=' + reason + ', waited=' + waitedMs + 'ms');
+
+    // Auto-replay any fresh barge-in stash on silence resolution — that's
+    // the "you had your hand raised, the room went quiet, just speak"
+    // moment. Skip on timeout/mention/displaced/etc; only silence is the
+    // natural conversational gap.
+    if (reason === 'silence') {
+      const replayed = this._maybeReplayBargeInStash();
+      if (replayed) this._lastReplayedStash = replayed;
+    }
+
     const response = this._buildResponse(waiter.since, waiter.bot, waiter.startTime);
 
     // If there are actual transcript entries, the agent will now process them → thinking state.
@@ -1014,6 +1080,13 @@ class LocalServer {
     const previousAckPhrase = startTime ? this.lastAckPhrase : null;
     if (startTime && this.lastAckPhrase) this.lastAckPhrase = null;
 
+    // Same one-shot surface for any barge-in stash that just auto-replayed.
+    // The slow model needs to know its queued thought already went out so
+    // it doesn't try to repeat it — instead it can build on it or stay
+    // silent.
+    const replayedBargeInStash = startTime ? this._lastReplayedStash : null;
+    if (startTime && this._lastReplayedStash) this._lastReplayedStash = null;
+
     return {
       success: true,
       roomId: this.roomId,
@@ -1022,6 +1095,7 @@ class LocalServer {
       elapsed,
       continuationOfPriorResponse,
       previousAckPhrase,
+      replayedBargeInStash,
       transcript: {
         entries,
         count: entries.length,

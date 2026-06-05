@@ -63,4 +63,14 @@ async function decide({ text, wordCount, addressivity, mode, recentTranscript, s
   return builtin.decide({ wordCount, prefs });
 }
 
-module.exports = { decide };
+// Fire-and-forget warmup. main.js calls this on join_call to pre-populate
+// the LLM engine's KV cache so the first real ack of the call doesn't pay
+// the multi-second cold-prefill cost. Builtin needs no warmup — it's a
+// noop in that case.
+async function warmup({ store, log }) {
+  const config = getProviderConfig(store);
+  if (config.provider !== 'openai-compat') return;
+  return openaiCompat.warmup({ config, log });
+}
+
+module.exports = { decide, warmup };

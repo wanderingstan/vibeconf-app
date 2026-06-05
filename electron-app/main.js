@@ -182,6 +182,16 @@ const localServer = new globalThis.LocalServer({
     }
     const meetUrl = `https://meet.google.com/${meetCode}`;
     loadMeetURL(meetUrl);
+
+    // Pre-warm the LLM ack engine so the first real ack of the call
+    // doesn't pay the multi-second cold-prefill cost. Fire-and-forget;
+    // the ~5-10s bot-navigating-to-Meet window absorbs the warmup
+    // latency invisibly. Noop when ackProvider is 'builtin'.
+    const ackModule = require('./ack');
+    ackModule.warmup({
+      store,
+      log: (msg) => console.log(ts(), '[ack]', msg),
+    }).catch(() => {});
   },
   onLeaveCall: () => {
     console.log('[local-server] Leave call requested by agent');

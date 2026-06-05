@@ -130,4 +130,56 @@ async function decide({ text, addressivity, mode, recentTranscript, config, log 
   }
 }
 
-module.exports = { decide };
+// Fire-and-forget warmup. Sends a trivial completion request using the same
+// system prompt the real ack calls will use, so the engine's KV cache for
+// the prefix gets populated. Subsequent acks hit the cached prefix and
+// skip the multi-second cold-prefill cost.
+//
+// Called from main.js when the bot joins a call — at that moment the user
+// is most likely to start speaking soon, and the ~5-10s bot-navigating-to-
+// Meet window absorbs the warmup latency invisibly.
+async function warmup({ config, log }) {
+  const { endpoint, apiKey, model, promptPath } = config;
+  if (!endpoint) return;
+  const systemPrompt = loadSystemPrompt(promptPath);
+  const url = endpoint.replace(/\/+$/, '') + '/chat/completions';
+  const body = {
+    model: model || 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: 'User said: "warmup"\n/no_think' },
+    ],
+    temperature: 0,
+    max_tokens: 4,
+  };
+  // Wider timeout than a real ack — first inference can be 3-5s on small
+  // models. If even this fails, real acks will fall back to builtin until
+  // the engine is responsive.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  const started = Date.now();
+  try {
+    log?.(`ack-llm warmup → ${model || 'gpt-4o-mini'}`);
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (!resp.ok) {
+      log?.(`ack-llm warmup HTTP ${resp.status}`);
+      return;
+    }
+    await resp.json();
+    log?.(`ack-llm warmup ok (${Date.now() - started}ms)`);
+  } catch (err) {
+    log?.(`ack-llm warmup failed (${err.message})`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+module.exports = { decide, warmup };

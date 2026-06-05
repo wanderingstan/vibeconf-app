@@ -1330,6 +1330,14 @@ class LocalServer {
     const clampedWait = Math.min(55, Math.max(1, wait));
     const clampedSilence = Math.max(1, silence);
 
+    // Bump the "last wait_for_speech" clock at the start of the long-poll
+    // call, not inside the waiter-registration branch. The agent counts
+    // as "in the loop" regardless of whether the call returns immediately
+    // (because speech is already past the silence threshold) or registers
+    // a real waiter. Without this, immediate-return acks make the panel's
+    // Last WfS line grow stale even though the agent is actively polling.
+    this.lastWaitForSpeechAt = Date.now();
+
     // Check if there are already entries that satisfy the silence condition
     const existing = this._entriesSince(since, bot);
     if (existing.length > 0) {

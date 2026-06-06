@@ -558,12 +558,13 @@ const simulateSpeaker = document.getElementById('simulateSpeaker');
 const simulateSpeechStatus = document.getElementById('simulateSpeechStatus');
 
 if (simulateSpeechBtn) {
-  simulateSpeechBtn.addEventListener('click', async () => {
+  async function submitSimulatedSpeech() {
     const text = simulateText.value.trim();
     const speaker = simulateSpeaker.value.trim() || 'Test User';
     if (!text) {
       simulateSpeechStatus.textContent = 'Enter some text first.';
       simulateSpeechStatus.style.color = '#fdd663';
+      simulateText.focus();
       return;
     }
     simulateSpeechBtn.disabled = true;
@@ -572,7 +573,10 @@ if (simulateSpeechBtn) {
     try {
       const result = await api.invoke('simulate-speech', { text, speaker });
       if (result?.ok) {
-        simulateSpeechStatus.textContent = `Injected as ${speaker}.`;
+        // Echo the submitted text back since it won't appear in any caption
+        // feed the user can see. Truncate so the status line stays compact.
+        const echo = text.length > 80 ? text.slice(0, 80) + '…' : text;
+        simulateSpeechStatus.textContent = `Sent as ${speaker}: "${echo}"`;
         simulateSpeechStatus.style.color = '#81c995';
         simulateText.value = '';
       } else {
@@ -584,13 +588,20 @@ if (simulateSpeechBtn) {
       simulateSpeechStatus.style.color = '#ea4335';
     } finally {
       simulateSpeechBtn.disabled = false;
-      setTimeout(() => { simulateSpeechStatus.textContent = ''; }, 4000);
+      // Refocus so the user is primed to type the next message immediately.
+      simulateText.focus();
+      setTimeout(() => { simulateSpeechStatus.textContent = ''; }, 6000);
     }
-  });
+  }
 
-  // Cmd-Enter or Ctrl-Enter submits from the textarea
+  simulateSpeechBtn.addEventListener('click', submitSimulatedSpeech);
+
+  // Enter submits, Shift-Enter inserts a newline (chat-app convention).
   simulateText.addEventListener('keydown', (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') simulateSpeechBtn.click();
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      submitSimulatedSpeech();
+    }
   });
 }
 

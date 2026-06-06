@@ -161,6 +161,21 @@
       </div>
 
       <div class="section">
+        <h2>Simulate Speech</h2>
+        <p class="helper-text" style="margin:0 0 8px">Inject a synthetic caption turn into the conversation pipeline — same path Meet captions use. Bot reacts as if this person had spoken aloud. Useful when you can't speak (coffee shop), want to paste test data, or need to script a flow.</p>
+        <div class="field">
+          <label for="simulateSpeaker">Speaker name</label>
+          <input type="text" id="simulateSpeaker" value="Test User" />
+        </div>
+        <div class="field">
+          <label for="simulateText">What they said</label>
+          <textarea id="simulateText" rows="3" placeholder="Type message — Enter sends, Shift-Enter adds a newline"></textarea>
+        </div>
+        <button id="simulateSpeechBtn">Send to Bot</button>
+        <span id="simulateSpeechStatus" class="helper-text" style="margin-left:8px"></span>
+      </div>
+
+      <div class="section">
         <h2>Whiteboard</h2>
         <p class="helper-text" style="margin:0 0 8px">Normally the agent shares the whiteboard automatically. Use this only if it didn't.</p>
         <button id="shareWhiteboardBtn">Share Whiteboard</button>
@@ -193,21 +208,6 @@
       </div>
 
       <button id="devtoolsBtn" style="margin-top:8px">Open DevTools</button>
-
-      <div class="section">
-        <h2>Simulate Speech</h2>
-        <p class="helper-text" style="margin:0 0 8px">Inject a synthetic caption turn into the conversation pipeline — same path Meet captions use. Bot reacts as if this person had spoken aloud. Useful when you can't speak (coffee shop), want to paste test data, or need to script a flow.</p>
-        <div class="field">
-          <label for="simulateSpeaker">Speaker name</label>
-          <input type="text" id="simulateSpeaker" value="Test User" />
-        </div>
-        <div class="field">
-          <label for="simulateText">What they said</label>
-          <textarea id="simulateText" rows="3" placeholder="Hey Jimmy, can you summarize what we just discussed?"></textarea>
-        </div>
-        <button id="simulateSpeechBtn">Send to Bot</button>
-        <span id="simulateSpeechStatus" class="helper-text" style="margin-left:8px"></span>
-      </div>
 
       <div class="section">
         <h2>Test TTS</h2>

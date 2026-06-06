@@ -6,7 +6,8 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dev": "electron . --devtools=true",
+    "dev": "electron .",
+    "dev-with-tools": "electron . --devtools=true",
     "pack": "electron-builder --dir",
     "dist": "electron-builder && tccutil reset All com.vibeconferencing.agent",
     "dist:fast": "electron-builder -c.mac.notarize=false && tccutil reset All com.vibeconferencing.agent"

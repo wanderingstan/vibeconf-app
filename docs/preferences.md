@@ -49,6 +49,24 @@ Avatar emoji overrides (`idle` / `listening` / `yielding`) are *not* persistent 
 | `websiteUrl` | string | `''` (uses `https://vibeconferencing.com`) | ✓ | Override the website host for auth / sync / room URLs. Useful for pointing at a Vercel preview branch (`https://vibeconferencing-git-BRANCH-lets-vibe.vercel.app`) without rebuilding. Must be a full `http://` or `https://` URL with no trailing slash. |
 | `syncBaseUrl` | string | `''` | ✓ | **Legacy.** Same purpose as `websiteUrl`, kept as fallback for older configs. Prefer `websiteUrl`. |
 
+### Conversation timing knobs
+
+Live-tunable thresholds that shape the bot's conversational rhythm. All read on every consultation, so `set_preference` takes effect immediately — no app restart. Per-profile, so different bot personas can carry different feels (a snappy interviewer vs. a patient note-taker).
+
+| Key | Type | Default | What |
+|---|---|---|---|
+| `bargeInGraceMs` | number | `2000` | How long the bot waits after detecting a human interruption before actually stopping its TTS. Higher = brief overlap tolerated as natural; lower = bot drops out instantly. |
+| `bargeInBotRandomMinMs` | number | `1000` | When two bots try to speak simultaneously, each waits a random delay in `[min, max]` before committing — prevents lockstep collision. Floor of that range. |
+| `bargeInBotRandomMaxMs` | number | `4000` | Ceiling of the bot-vs-bot random-delay range. |
+| `bargeInStashMaxAgeMs` | number | `10000` | When the bot yields mid-thought to a human, its queued speech is stashed. On the next silence gap, if the stash is younger than this, the bot auto-replays it (skipping a slow-model round-trip). Older than this, the stash is discarded and the slow model regenerates fresh. |
+| `captionDropoutGraceMs` | number | `2000` | Reserved for caption-dropout detection (#187); not currently wired into logic. |
+| `defaultSilenceSeconds` | number | `2` | Default silence threshold for `wait_for_speech` if the agent doesn't pass one. Higher = bot patiently lets users compose longer thoughts; lower = snappier. |
+| `defaultMaxWaitForSpeechSec` | number | `55` | Maximum seconds `wait_for_speech` long-polls before returning empty. Default just under typical HTTP timeouts. Raise only if you have a reason. |
+
+**A/B testing different feels.** Set up two profiles with different values, switch with `--profile=<name>`, talk to each. Saved per-profile so swaps are durable.
+
+**Live tuning during a call.** Ask the bot directly: *"set bargeInGraceMs to 500 for this session."* The slow model will call `set_preference` and the next barge-in evaluation uses the new value.
+
 ## Adding a new preference
 
 In `electron-app/preferences-schema.js`:

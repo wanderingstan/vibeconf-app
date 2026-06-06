@@ -83,6 +83,21 @@ If you're filing an issue, include the session log path + the rough time the sym
 | Meet view feels laggy | Chromium-side, usually the avatar render loop. | Try lowering the avatar canvas FPS in `extension/page-inject.js`'s `config.fps` if running from source. |
 | Local-server polling thrashes CPU | The MCP agent is calling `wait_for_speech` in a tight loop instead of long-polling. | Make sure the agent uses `wait_for_speech` (which blocks server-side) rather than polling `read_transcripts` every second. |
 
+## Driving the bot when you can't speak
+
+The Troubleshooting panel has a **Simulate Speech** section that injects synthetic caption turns straight into the conversation pipeline — the bot reacts as if the named participant actually spoke. Useful when:
+
+- You're coding in a coffee shop and can't speak aloud
+- You want to paste test conversational data to drive a specific flow
+- You need to script a flow without a live Meet
+- You're reproducing a bug from a transcript snippet
+
+Two fields: a **Speaker name** (defaults to "Test User", overrideable to any string — including an existing participant's name) and a **What they said** textarea. Click **Send to Bot** or hit Cmd-Enter from the textarea.
+
+The injected turn travels the same `updateTurns()` path real captions use, so silence detection, the fast-ack pipeline, the slow model, and TTS all run unchanged.
+
+Caveat: the bot must already be in a call (`callStatus: in-call`) for the injection to land. Pressing the button while idle returns an error to the status line.
+
 ## When things are weird and you can't tell why
 
 1. `get_room_info` from the agent — check the `errors` field and `callStatus`.

@@ -2364,6 +2364,14 @@ function setupIPC() {
 
   ipcMain.handle('get-call-state', () => localServer.getCallStateSnapshot());
 
+  // "Simulate speech" — the troubleshooting panel can inject a synthetic
+  // caption turn as if a participant just spoke. Useful when coding in a
+  // coffee shop, pasting test conversational data, or scripting flows
+  // without a live mic.
+  ipcMain.handle('simulate-speech', (_event, { text, speaker } = {}) => {
+    return localServer.injectSimulatedTurn({ text, speaker });
+  });
+
   ipcMain.on('someone-presenting', (_event, { presenting, presenterName }) => {
     localServer.setSomeoneElsePresenting(presenting, presenterName);
   });

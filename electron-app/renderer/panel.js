@@ -552,6 +552,48 @@ speakTextBtn.addEventListener('click', () => {
   setTimeout(() => { speakTextBtn.textContent = 'Speak using TTS'; }, 3000);
 });
 
+const simulateSpeechBtn = document.getElementById('simulateSpeechBtn');
+const simulateText = document.getElementById('simulateText');
+const simulateSpeaker = document.getElementById('simulateSpeaker');
+const simulateSpeechStatus = document.getElementById('simulateSpeechStatus');
+
+if (simulateSpeechBtn) {
+  simulateSpeechBtn.addEventListener('click', async () => {
+    const text = simulateText.value.trim();
+    const speaker = simulateSpeaker.value.trim() || 'Test User';
+    if (!text) {
+      simulateSpeechStatus.textContent = 'Enter some text first.';
+      simulateSpeechStatus.style.color = '#fdd663';
+      return;
+    }
+    simulateSpeechBtn.disabled = true;
+    simulateSpeechStatus.textContent = 'Sending…';
+    simulateSpeechStatus.style.color = '#9aa0a6';
+    try {
+      const result = await api.invoke('simulate-speech', { text, speaker });
+      if (result?.ok) {
+        simulateSpeechStatus.textContent = `Injected as ${speaker}.`;
+        simulateSpeechStatus.style.color = '#81c995';
+        simulateText.value = '';
+      } else {
+        simulateSpeechStatus.textContent = `Failed: ${result?.error || 'unknown'}`;
+        simulateSpeechStatus.style.color = '#ea4335';
+      }
+    } catch (err) {
+      simulateSpeechStatus.textContent = `Error: ${err.message}`;
+      simulateSpeechStatus.style.color = '#ea4335';
+    } finally {
+      simulateSpeechBtn.disabled = false;
+      setTimeout(() => { simulateSpeechStatus.textContent = ''; }, 4000);
+    }
+  });
+
+  // Cmd-Enter or Ctrl-Enter submits from the textarea
+  simulateText.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') simulateSpeechBtn.click();
+  });
+}
+
 speakTextInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') speakTextBtn.click();
 });

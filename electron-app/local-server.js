@@ -604,6 +604,33 @@ class LocalServer {
   // Replaces the event-log model where each caption tick produced a new
   // appended transcript entry, which forced consumers to do delta-tracking
   // to reconstruct the actual utterance.
+  // Inject a synthetic caption turn — same path the Meet scraper uses, but
+  // sourced from the panel's "Simulate speech" textbox instead. Lets us
+  // drive the bot in a noisy environment, paste in conversational test
+  // data, or unit-test the conversation logic without a live Meet.
+  //
+  // Marks the turn as already-settled (isBottommost=false) so silence
+  // resolution kicks in naturally on the next _checkWaiters pass.
+  injectSimulatedTurn({ text, speaker }) {
+    if (!this.roomId) return { ok: false, error: 'Not in a call (no roomId)' };
+    const cleanText = String(text || '').trim();
+    if (!cleanText) return { ok: false, error: 'Empty text' };
+    const speakerName = String(speaker || '').trim() || 'Simulated';
+    // Use a clearly-out-of-band turnId so this never collides with the
+    // scraper's stream (which starts at 1 and grows incrementally).
+    const turnId = -Date.now();
+    this.updateTurns([{
+      turnId,
+      speaker: speakerName,
+      text: cleanText,
+      isBottommost: false,
+    }]);
+    console.log(ts(), '💉 [simulate] Injected turn from', JSON.stringify(speakerName) + ':', JSON.stringify(cleanText.slice(0, 80)));
+    // Nudge waiters in case they're sitting on the silence threshold.
+    this._checkWaiters();
+    return { ok: true, turnId };
+  }
+
   updateTurns(incoming) {
     if (!this.roomId || !Array.isArray(incoming) || incoming.length === 0) return;
     const now = Date.now();

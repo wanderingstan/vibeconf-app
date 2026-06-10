@@ -475,13 +475,35 @@ async function sendChatFlow(text) {
   if (!input) throw new Error('Could not find the chat input');
   await typeIntoInput(input, text);
   await delay(100);
-  // Meet sends on Enter.
-  const enter = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
-  input.dispatchEvent(new KeyboardEvent('keydown', enter));
-  input.dispatchEvent(new KeyboardEvent('keypress', enter));
-  input.dispatchEvent(new KeyboardEvent('keyup', enter));
-  await delay(200);
-  const sent = input.value.trim() === '';
+
+  // Prefer clicking the real send button — synthetic Enter keystrokes are
+  // untrusted events that Meet's React handlers don't always honor, which
+  // is the source of the intermittent "input not cleared" failures (#190).
+  // findByAriaLabel only matches button/[role=button], so it can't collide
+  // with the textarea (whose aria-label is also "Send a message").
+  const trySend = () => {
+    const sendBtn = findByAriaLabel('Send a message') || findByAriaLabel('Send message');
+    if (sendBtn && !sendBtn.disabled) {
+      sendBtn.click();
+      return 'button';
+    }
+    const enter = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
+    input.dispatchEvent(new KeyboardEvent('keydown', enter));
+    input.dispatchEvent(new KeyboardEvent('keypress', enter));
+    input.dispatchEvent(new KeyboardEvent('keyup', enter));
+    return 'enter';
+  };
+
+  let via = trySend();
+  // Poll for the input to clear (= send succeeded) instead of a single
+  // 200ms-later snapshot; retry through the other path halfway in.
+  let sent = false;
+  for (let i = 0; i < 15; i++) {
+    await delay(100);
+    if (input.value.trim() === '') { sent = true; break; }
+    if (i === 7) via = trySend();
+  }
+  console.log('[electron-meet] sendChat via ' + via + ' — sent: ' + sent);
   await restorePeoplePane(); // close chat, restore speech tracking
   return sent;
 }

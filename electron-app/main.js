@@ -267,6 +267,25 @@ const localServer = new globalThis.LocalServer({
             meetView.webContents.send('trigger-screen-share', { shareType: 'window' });
           }
         }, 2000);
+        // #189: drop the board-only URL into Meet chat the first time the
+        // whiteboard is shared this call, so participants can open it in
+        // their own browser instead of squinting at the shared tile.
+        // Delayed past the share trigger because sending chat briefly
+        // steals the side pane from speaker detection.
+        if (!whiteboardLinkPostedForCall) {
+          whiteboardLinkPostedForCall = true;
+          setTimeout(async () => {
+            const base = (getWebsiteUrl() || '').replace(/\/$/, '');
+            if (!base) return;
+            const url = `${base}/room/${meetCode}?mode=whiteboard`;
+            const result = await chatRequest('send-chat', { text: `Whiteboard (live): ${url}` });
+            if (!result?.ok) {
+              // Allow a retry on the next share rather than silently never posting.
+              whiteboardLinkPostedForCall = false;
+              console.warn('[main] #189 auto-post whiteboard link failed:', result?.error);
+            }
+          }, 5000);
+        }
       }
     }
   },
@@ -463,6 +482,8 @@ const localServer = new globalThis.LocalServer({
   },
 
   onCallStatusChange: (status) => {
+    // #189: a fresh call gets a fresh auto-posted whiteboard link.
+    if (status !== 'in-call') whiteboardLinkPostedForCall = false;
     // Forward to page-inject so the avatar can show 🫥 while joining/waiting.
     if (meetView && !meetView.webContents.isDestroyed()) {
       meetView.webContents.send('extension-message', {
@@ -655,6 +676,9 @@ let panelView = null;     // left sidebar BrowserView
 let meetView = null;      // right Meet BrowserView
 let whiteboardWindow = null;
 let fullScreenShareRequested = false;
+// #189: whether we've already auto-posted the whiteboard URL to Meet chat
+// this call. Reset when the call ends so the next call posts again.
+let whiteboardLinkPostedForCall = false;
 
 function createWhiteboardWindow(roomUrl) {
   // Position off the bottom-right of the screen so macOS doesn't clamp to (0,0)

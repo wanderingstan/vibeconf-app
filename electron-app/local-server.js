@@ -106,6 +106,13 @@ class LocalServer {
     this.setPref = setPref || (() => {});
     this.applyPref = applyPref || (() => {});
     this.botState = 'idle';
+    // #221: when 'thinking' started, and the pending deferred downgrade (if
+    // any) — see the thinkingHoldMs logic in _setBotState.
+    this._thinkingSince = 0;
+    this._thinkingHoldTimer = null;
+    // #222: name this session last joined under — rejoining as yourself is
+    // exempt from the duplicate-name guard (our own presence may linger).
+    this._everJoinedAs = null;
 
     // Mode is persistent user-controlled behavior; distinct from transient botState.
     //   active  — responds freely (ack on every pause, speaks its thoughts)
@@ -984,21 +991,76 @@ class LocalServer {
     }
   }
 
+  // #222: best-effort check whether `name` is already present in the call —
+  // first against the live Meet roster (when we're already in the call),
+  // then against the website's room presence (other bots register there
+  // even when our app hasn't joined yet, which is how two fresh sessions
+  // both default to "Jimmy" and collide). Returns a human-readable source
+  // string when taken, null when free. Network failures return null — the
+  // guard must never block a join just because presence is unreachable.
+  async _nameAlreadyInCall(roomId, name) {
+    const wanted = (name || '').trim().toLowerCase();
+    if (!wanted) return null;
+    const live = (this.participants || []).find(
+      (p) => !p.isSelf && (p.name || '').trim().toLowerCase() === wanted
+    );
+    if (live) return 'visible in the Meet roster';
+    const base = (this.getWebsiteUrl() || '').replace(/\/$/, '');
+    if (!base) return null;
+    try {
+      const resp = await fetch(`${base}/api/room/${roomId}/presence`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      const member = (data.members || []).find(
+        (m) => (m.name || '').trim().toLowerCase() === wanted
+      );
+      if (member) return `registered in room presence as ${member.role || 'member'}`;
+    } catch {
+      // Presence unreachable or slow — fall through to allowing the join.
+    }
+    return null;
+  }
+
   _setBotState(state, extra, { force } = {}) {
     if (this.botState === state) return;
     // Keep the visible "I want to speak but I'm yielding" signal while the
     // interrupter is still talking. A follow-up wait_for_speech call should
     // not make the avatar look merely idle/listening again.
     if (!force && this.botState === 'yielding' && state === 'listening' && this.anyoneSpeaking) return;
-    // Don't downgrade thinking/speaking to listening just because a new
-    // wait_for_speech showed up — the avatar should stay 🤔/😄 until that
-    // turn naturally completes (tts-ended fires with force=true, or a fresh
-    // 'thinking' from new user speech replaces it). Without this guard the
-    // ack visibly flickered to 🙂 mid-acknowledgment whenever the agent
-    // called wait_for_speech twice in a row.
-    if (!force && (this.botState === 'speaking' || this.botState === 'thinking') && state === 'listening') return;
+    // Don't downgrade speaking to listening just because a new
+    // wait_for_speech showed up — the avatar should stay 😄 until that
+    // turn naturally completes (tts-ended fires with force=true).
+    if (!force && this.botState === 'speaking' && state === 'listening') return;
+    // Thinking gets the same protection but only for thinkingHoldMs — long
+    // enough that the ack doesn't visibly flicker to 🙂 mid-acknowledgment
+    // when the agent calls wait_for_speech twice in a row, but bounded so
+    // an agent that re-arms without speaking doesn't leave the avatar stuck
+    // pondering through silence (#221). If still inside the hold, schedule a
+    // deferred re-attempt — nothing else retries this transition.
+    if (!force && this.botState === 'thinking' && state === 'listening') {
+      const holdMs = this._pref('thinkingHoldMs');
+      const heldFor = Date.now() - (this._thinkingSince || 0);
+      if (heldFor < holdMs) {
+        if (!this._thinkingHoldTimer) {
+          this._thinkingHoldTimer = setTimeout(() => {
+            this._thinkingHoldTimer = null;
+            if (this.botState === 'thinking' && this.waiters.length > 0) {
+              this._setBotState('listening');
+            }
+          }, holdMs - heldFor + 50);
+        }
+        return;
+      }
+      console.log(ts(), '🧠 [thinking] held ' + Math.round(heldFor) + 'ms ≥ ' + holdMs + 'ms with no bot speech — downgrading to listening');
+    }
     const prev = this.botState;
     this.botState = state;
+    if (this._thinkingHoldTimer) {
+      clearTimeout(this._thinkingHoldTimer);
+      this._thinkingHoldTimer = null;
+    }
     // Leaving 'speaking' — TTS ended naturally or got cut off. Cancel any
     // armed barge-in timer so we don't fire stop-tts against a silent bot.
     if (prev === 'speaking' && state !== 'speaking') {
@@ -1219,6 +1281,13 @@ class LocalServer {
         // in _setBotState short-circuits.
         console.log(ts(), '🧠 [thinking] Processing transcript — ' + wordCount + ' words, ' + deduped.length + ' entry/ies');
         this.botState = 'thinking';
+        // Restart the #221 hold window — a fresh utterance earns a fresh
+        // thinking display, even if a deferred downgrade was pending.
+        this._thinkingSince = Date.now();
+        if (this._thinkingHoldTimer) {
+          clearTimeout(this._thinkingHoldTimer);
+          this._thinkingHoldTimer = null;
+        }
         // Pass joinedText so the ack handler can do addressivity matching
         // (#155). wordCount stays the primary threshold; text is supplemental.
         this.onBotStateChange('thinking', { wordCount, text: joinedText });
@@ -1861,8 +1930,26 @@ class LocalServer {
     if (data.meta?.action === 'join') {
       const meetCode = data.meta.meetCode || roomId;
       const botName = data.meta.botName;
-      this.onJoinCall(meetCode, botName);
-      results.join = { ok: true };
+      // #222: refuse to join under a name that's already in the call — two
+      // same-named bots are indistinguishable in the Meet roster, the
+      // transcript, and bot-to-bot addressivity. Skip the check when
+      // rejoining under a name this session already used (our own presence
+      // entry may not have expired), and allow meta.force to override.
+      if (botName && !data.meta.force && botName !== this._everJoinedAs) {
+        const clash = await this._nameAlreadyInCall(meetCode, botName);
+        if (clash) {
+          console.log('[local-server] Join refused — name collision:', botName, '(' + clash + ')');
+          results.join = {
+            ok: false,
+            error: `Bot name "${botName}" is already in this call (${clash}). Choose a different bot_name, or pass force:true to join anyway.`,
+          };
+        }
+      }
+      if (!results.join) {
+        this.onJoinCall(meetCode, botName);
+        if (botName) this._everJoinedAs = botName;
+        results.join = { ok: true };
+      }
     }
 
     // Handle leave command

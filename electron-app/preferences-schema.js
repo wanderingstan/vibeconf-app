@@ -145,6 +145,19 @@ const PREFERENCES = {
       'a brief overlap is tolerated as natural conversation; lower means ' +
       'the bot drops out almost instantly. Default 2000ms.',
   },
+  thinkingHoldMs: {
+    type: 'number',
+    default: 8000,
+    min: 0,
+    max: 60_000,
+    description:
+      'How long the avatar may keep showing "thinking" after new speech ' +
+      'resolves a wait_for_speech, when the agent re-arms listening without ' +
+      'speaking. Long enough to cover the fast-ack decision + ack TTS so the ' +
+      '🤔 doesn\'t flicker away mid-acknowledgment; after this the state ' +
+      'downgrades to listening so the bot doesn\'t look stuck pondering ' +
+      'through silence (#221). Default 8000ms.',
+  },
   bargeInBotRandomMinMs: {
     type: 'number',
     default: 1000,

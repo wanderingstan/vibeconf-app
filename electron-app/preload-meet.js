@@ -889,11 +889,22 @@ async function autoJoin(botName) {
 
     // Click join
     let clicked = false;
-    for (let attempt = 0; attempt < 5 && !clicked; attempt++) {
+    for (let attempt = 0; attempt < 30 && !clicked; attempt++) {
       await delay(1000);
-      // The "Others may see your video differently" overlay can render over
-      // the pre-join screen and hide the join button. Clear it first (#227).
-      dismissBlockingModals();
+      // Clear blocking pre-join overlays before looking for the join button.
+      // Known "Others may see your video differently" overlay (#227), gated by
+      // heading so we never click an unrelated "Got it":
+      if (dismissBlockingModals()) continue;
+      // Meet's "Sign in with your Google account" promo popup can also render
+      // before the join panel and delay/overlay the join button (6232133). It
+      // isn't in the gated heading list; on the pre-join screen any remaining
+      // "Got it" is a promo we want gone, so dismiss it here.
+      const gotIt = findByText('Got it');
+      if (gotIt) {
+        console.log('[electron-meet] Dismissing pre-join sign-in popup');
+        gotIt.click();
+        continue;
+      }
       const joinBtn =
         findByText('Ask to join') ||
         findByText('Join now') ||

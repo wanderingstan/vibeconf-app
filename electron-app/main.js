@@ -1985,13 +1985,33 @@ function showIdle() {
 }
 
 async function loadMeetURL(meetUrl) {
-  if (!meetView || meetView.webContents.isDestroyed()) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
 
-  // Wipe cached Meet identity before each join — otherwise Meet skips the
-  // pre-join "Your name" input and the bot is stuck with whatever name it
-  // picked on first join. Awaited so the clear completes before navigation.
+  // Destroy and recreate the meetView before every join. Clearing storage
+  // alone is insufficient: Meet caches the green-room identity *in-memory*
+  // at the BrowserView level, so a webContents.loadURL into the same view
+  // leaves the previous Meet SPA's state alive (visible in logs as
+  // duplicated [electron-meet] / [bots-in-calls] lines from two live
+  // preload contexts). Tearing down the view is the only thing that
+  // matches what "quit and relaunch the app" does. Mirrors the same dance
+  // swapMeetViewPartition already uses for the partition-change case.
+  if (meetView) {
+    try { mainWindow.removeBrowserView(meetView); } catch (err) {
+      console.warn('[electron] removeBrowserView failed:', err.message);
+    }
+    meetView = null;
+  }
+
+  // Now that no view is bound to it, also wipe disk-backed Meet caches so
+  // the fresh view starts truly blank. (Without the destroy above this
+  // alone wasn't enough; without this the in-memory part is fixed but
+  // localStorage / cookies could still re-seed the identity.)
   await clearMeetIdentityCache(currentMeetPartition);
-  if (!meetView || meetView.webContents.isDestroyed()) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  meetView = createMeetView(currentMeetPartition);
+  mainWindow.addBrowserView(meetView);
+  layoutViews();
 
   meetView.webContents.loadURL(meetUrl);
 

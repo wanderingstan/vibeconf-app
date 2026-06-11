@@ -72,6 +72,9 @@
       // True while at least one participant is currently speaking (from
       // DOMSpeakerTracker). Suppressed when mode='silent'.
       this.anyoneSpeaking = false;
+      // When the floor last went quiet. Drives the post-speech grace window
+      // (see HEARING_GRACE_MS in the emoji waterfall).
+      this.lastAnyoneSpeakingFalseAt = 0;
       // Deaf flag — set from the scraper's CC-button watcher via 'set-deaf'.
       // When true (and we're in-call), the avatar shows 🙉 so participants in
       // the Meet itself see that the bot can't hear them and can re-enable
@@ -231,7 +234,18 @@
       const audioPlaying = (this.speaking && this.state !== 'thinking')
         ? (this.speakingEmojiOverride || VirtualCamera.ACTIVITY_EMOJIS.speaking)
         : null;
-      const hearing = (this.anyoneSpeaking && this.mode !== 'silent' && !this.speaking && this.state !== 'thinking' && this.state !== 'speaking' && this.state !== 'yielding')
+      // Post-speech grace: hold 😐 for ~2.5s after the floor goes quiet, so
+      // the avatar doesn't flicker to 🙂 in the silence-threshold gap before
+      // botState transitions to 'thinking'. Window is renderer-side only
+      // (server's silence threshold is a pref we don't sync here); 2500ms
+      // matches the typical default and degrades gracefully if the server
+      // window is shorter (thinking state takes over) or longer (😐 expires
+      // and the regular listening emoji shows — same as today).
+      const HEARING_GRACE_MS = 2500;
+      const stillInGrace = !this.anyoneSpeaking
+        && this.lastAnyoneSpeakingFalseAt > 0
+        && (Date.now() - this.lastAnyoneSpeakingFalseAt) < HEARING_GRACE_MS;
+      const hearing = ((this.anyoneSpeaking || stillInGrace) && this.mode !== 'silent' && !this.speaking && this.state !== 'thinking' && this.state !== 'speaking' && this.state !== 'yielding')
         ? VirtualCamera.HEARING_EMOJI : null;
       const activityEmoji = this.state === 'yielding'
         ? (this.yieldingEmojiOverride || VirtualCamera.ACTIVITY_EMOJIS.yielding)
@@ -905,7 +919,18 @@
 
       case 'set-anyone-speaking':
         if (typeof payload?.anyoneSpeaking === 'boolean') {
-          for (const cam of cameras.values()) cam.anyoneSpeaking = payload.anyoneSpeaking;
+          for (const cam of cameras.values()) {
+            // Stamp when the floor went quiet so the avatar can hold 😐
+            // through the server's silence-threshold window. Without this
+            // the avatar flickers 😐 → 🙂 (default listening) → 🤔 in the
+            // 2-ish-second gap before botState becomes 'thinking', reading
+            // as "done, back to normal" then "wait, thinking now" instead
+            // of one continuous "I heard you, processing."
+            if (cam.anyoneSpeaking && !payload.anyoneSpeaking) {
+              cam.lastAnyoneSpeakingFalseAt = Date.now();
+            }
+            cam.anyoneSpeaking = payload.anyoneSpeaking;
+          }
         }
         break;
 

@@ -971,6 +971,13 @@ class DOMSpeakerTracker {
           info.lastChange = Date.now();
           console.log('[speaker-tracker] (observer)', name, '→', isSpeaking);
           ipcRenderer.send('update-speaking', { name, speaking: isSpeaking });
+          // Also fire participants-updated immediately so local-server's
+          // anyoneSpeaking flips on this edge. Without this, short
+          // utterances (<2s) can complete entirely between the periodic
+          // 2s snapshots, anyoneSpeaking never goes true→false, and
+          // page-inject's grace-window stamp never fires — leaving the
+          // avatar at 🙂 instead of 😐 in the silence-threshold gap.
+          ipcRenderer.send('participants-updated', this.getParticipantList());
         }
       }
     }
@@ -1026,6 +1033,10 @@ class DOMSpeakerTracker {
         // meant the local-server never got the 'stopped speaking' edge from this
         // path (it had to wait for the periodic participants-updated broadcast).
         ipcRenderer.send('update-speaking', { name, speaking: isSpeaking });
+        // Push participants snapshot immediately so local-server's anyoneSpeaking
+        // flips on this edge (instead of waiting for the next 2s broadcast).
+        // See observer path for the full rationale.
+        ipcRenderer.send('participants-updated', this.getParticipantList());
       } else if (info.speaking) {
         ipcRenderer.send('update-speaking', { name, speaking: true });
       }

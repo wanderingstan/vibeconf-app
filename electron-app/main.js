@@ -2426,15 +2426,23 @@ function setupIPC() {
         action: shouldMute ? 'mute-mic' : 'unmute-mic',
       });
     }
-    // TTS playback finished — return to idle (or listening if a waiter is
-    // active). force=true so the speaking-→-listening guard in _setBotState
+    // TTS playback finished. Three cases:
+    //   - waiter active (agent already called wait_for_speech) → 'listening'.
+    //     Agent explicitly handed the floor back; this turn is done.
+    //   - no waiter, callStatus=in-call → 'thinking'. Agent might still be
+    //     working on this turn (more tool calls, another speak, etc.). The
+    //     avatar stays on 🤔 instead of flashing 🙂 between the speak and
+    //     whatever comes next — matches "thinking = mid-turn, listening =
+    //     waiting for next turn."
+    //   - everything else (post-leave, between calls) → 'idle'.
+    // force=true so the speaking→thinking|listening guard in _setBotState
     // (which prevents premature transitions when speak/wait_for_speech are
     // called back-to-back) doesn't block this legitimate end-of-speech.
-    localServer._setBotState(
-      localServer.waiters.length > 0 ? 'listening' : 'idle',
-      undefined,
-      { force: true }
-    );
+    let nextState;
+    if (localServer.waiters.length > 0) nextState = 'listening';
+    else if (localServer.callStatus === 'in-call') nextState = 'thinking';
+    else nextState = 'idle';
+    localServer._setBotState(nextState, undefined, { force: true });
   });
 
   // User toggled the mic in Meet's UI — map to listening mode.

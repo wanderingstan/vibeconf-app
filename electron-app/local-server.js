@@ -1503,6 +1503,18 @@ class LocalServer {
     // Last WfS line grow stale even though the agent is actively polling.
     this.lastWaitForSpeechAt = Date.now();
 
+    // Agent is back at the listen-for-next-turn step → any "working" thinking
+    // state we set during inter-turn tool calls should clear so the avatar
+    // returns to listening (🙂). Forced to bypass the (speaking|thinking) →
+    // listening guard, which exists for the in-turn fast-ack window — here
+    // there's no in-flight ack to protect, the agent has explicitly handed
+    // the floor back. User-speech-driven thinking already transitioned
+    // through speaking by the time wait_for_speech is called, so it isn't
+    // affected.
+    if (this.botState === 'thinking') {
+      this._setBotState('listening', undefined, { force: true });
+    }
+
     // Check if there are already entries that satisfy the silence condition
     const existing = this._entriesSince(since, bot);
     if (existing.length > 0) {
@@ -1578,6 +1590,19 @@ class LocalServer {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: false, error: 'sender is required' }));
       return;
+    }
+
+    // "Working" signal: any bot POST while the room thinks the bot is idle
+    // means the agent is doing something between turns — calling a tool,
+    // updating the whiteboard, changing its avatar background, etc. From the
+    // call's perspective the bot is "thinking" / busy, not just sitting
+    // around. Flip the state so the avatar shows 🤔 instead of 🙂. Cleared
+    // when the agent next calls wait_for_speech (see _handleGet wait>0 path).
+    // No wordCount/text passed → ack handler in main.js falls through and
+    // skips, so this doesn't trigger an "Mm-hmm." mid-tool-call.
+    if (data.role === 'bot' && this.callStatus === 'in-call' && this.botState === 'listening') {
+      console.log(ts(), '🛠️  [working] bot action while listening — entering thinking');
+      this._setBotState('thinking');
     }
 
     const results = {};

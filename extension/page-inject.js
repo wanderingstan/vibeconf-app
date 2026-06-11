@@ -211,18 +211,24 @@
       // Emoji priority:
       //   1. Not in call (any callStatus other than 'in-call') → 🫥
       //   2. In-call but agent has never engaged yet → 🫥 (still loading)
-      //   3. Audio is playing (this.speaking) → 😄. This wins over 'thinking'
-      //      so the ack TTS ("Got it.", "Let me think about that.") shows the
-      //      speaking face — from the user's perspective audio = speaking.
+      //   3. Activity state thinking → 🤔. Wins over audioPlaying so the ack
+      //      TTS ("Got it.", "Let me think about that.") stays under the
+      //      thinking face — without this the avatar flickers 🤔 → 😄 → 🤔
+      //      → 😄 (ack-audio → ack-done → real-thinking → real-speaking),
+      //      which reads as "done? oh wait still thinking? speaking now"
+      //      instead of one continuous "responding."
       //   4. Activity state yielding → 🙋 (has something to say, deferring)
-      //   5. Activity state thinking → 🤔 (agent processing, no audio yet)
+      //   5. Audio is playing (this.speaking) and state isn't 'thinking' →
+      //      😄. Covers the real response (state='speaking') and any TTS
+      //      that runs outside the response loop.
       //   6. Someone in the call is speaking → 😐 (acks "I heard you").
       //      Skipped in silent mode and during own activity.
       //   7. botState=idle between turns → 😔
       //   8. botState=listening → mode emoji (🙂 / 🤐 / 😶)
       const notOnLine = VirtualCamera.CALL_STATUS_EMOJIS[this.callStatus] || (!this.hasEngaged ? '\u{1FAE5}' : null);
       // Audio playing: per-response override > default 😄. Cleared on tts-ended.
-      const audioPlaying = this.speaking
+      // Suppressed when state === 'thinking' so the ack stays under 🤔.
+      const audioPlaying = (this.speaking && this.state !== 'thinking')
         ? (this.speakingEmojiOverride || VirtualCamera.ACTIVITY_EMOJIS.speaking)
         : null;
       const hearing = (this.anyoneSpeaking && this.mode !== 'silent' && !this.speaking && this.state !== 'thinking' && this.state !== 'speaking' && this.state !== 'yielding')

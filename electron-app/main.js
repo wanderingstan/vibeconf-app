@@ -752,26 +752,69 @@ function ensureMeetSessionConfigured(partition) {
 // so the chosen mode survives app restarts.
 let currentMeetPartition = MEET_GUEST_PARTITION;
 
-// Wipe meet.google.com-scoped storage on the given partition. Meet caches the
-// green-room "Your name" preference in localStorage, so without this the bot
-// re-uses the previous call's name forever (no way to change identity from
-// the join screen once one is set). Scoped to meet.google.com so Google
-// account sign-in (lives on accounts.google.com) survives — only the Meet-
-// side identity preference is dropped. Cheap and fire-and-forget.
-function clearMeetIdentityCache(partition) {
+// Wipe Meet-side identity caches on the given partition. Meet caches the
+// guest "Your name" preference, and once it has *any* cached identity it
+// skips the pre-join name input entirely — so without this the bot is stuck
+// with whatever name it picked on first join. Scoped tightly so Google
+// account sign-in (accounts.google.com) survives — only Meet's own caches
+// are dropped.
+//
+// Three-pronged because clearStorageData's `origin` filter only matches
+// origin-scoped storages (localStorage, IndexedDB, cachestorage), NOT
+// cookies set with `domain=.google.com` — those have to be enumerated and
+// removed by hand. Service workers are global on the partition; clearing
+// them unscoped is fine since we don't use SWs elsewhere.
+//
+// Runs BEFORE each join, not after leave, so it doesn't matter how the
+// previous call ended (host-ended, app quit, auto-leave, crash).
+async function clearMeetIdentityCache(partition) {
+  const sess = session.fromPartition(partition);
+  const summary = { cookiesRemoved: 0, storagesCleared: [], errors: [] };
+
+  // 1. Origin-scoped storages.
   try {
-    const sess = session.fromPartition(partition);
-    sess.clearStorageData({
+    await sess.clearStorageData({
       origin: 'https://meet.google.com',
-      storages: ['cookies', 'localstorage', 'indexdb', 'cachestorage', 'serviceworkers'],
-    }).then(() => {
-      console.log('[electron] Cleared meet.google.com storage on', partition);
-    }).catch((err) => {
-      console.warn('[electron] clearMeetIdentityCache failed:', err.message);
+      storages: ['localstorage', 'indexdb', 'cachestorage'],
     });
+    summary.storagesCleared.push('localstorage', 'indexdb', 'cachestorage');
   } catch (err) {
-    console.warn('[electron] clearMeetIdentityCache threw:', err.message);
+    summary.errors.push(`origin-scoped: ${err.message}`);
   }
+
+  // 2. Cookies whose domain covers meet.google.com (including .google.com
+  // domain-wildcard cookies that origin filter misses). Don't touch
+  // accounts.google.com cookies — those are sign-in state.
+  try {
+    const all = await sess.cookies.get({});
+    for (const c of all) {
+      const d = (c.domain || '').replace(/^\./, '');
+      if (d === 'meet.google.com' || (d === 'google.com' && c.path !== '/accounts')) {
+        const url = `https://${(c.domain || '').replace(/^\./, '')}${c.path || '/'}`;
+        try {
+          await sess.cookies.remove(url, c.name);
+          summary.cookiesRemoved++;
+        } catch (err) {
+          summary.errors.push(`cookie ${c.name}: ${err.message}`);
+        }
+      }
+    }
+  } catch (err) {
+    summary.errors.push(`cookie enumeration: ${err.message}`);
+  }
+
+  // 3. Service workers (unscoped — we don't register any of our own).
+  try {
+    await sess.clearStorageData({ storages: ['serviceworkers'] });
+    summary.storagesCleared.push('serviceworkers');
+  } catch (err) {
+    summary.errors.push(`serviceworkers: ${err.message}`);
+  }
+
+  console.log('[electron] Cleared Meet identity cache on', partition,
+    '— cookies:', summary.cookiesRemoved,
+    '· storages:', summary.storagesCleared.join(','),
+    summary.errors.length ? '· errors: ' + summary.errors.join('; ') : '');
 }
 
 // Apply Meet-specific session config to a given session. Called per
@@ -1941,7 +1984,13 @@ function showIdle() {
   console.log('[electron] Returned to idle state');
 }
 
-function loadMeetURL(meetUrl) {
+async function loadMeetURL(meetUrl) {
+  if (!meetView || meetView.webContents.isDestroyed()) return;
+
+  // Wipe cached Meet identity before each join — otherwise Meet skips the
+  // pre-join "Your name" input and the bot is stuck with whatever name it
+  // picked on first join. Awaited so the clear completes before navigation.
+  await clearMeetIdentityCache(currentMeetPartition);
   if (!meetView || meetView.webContents.isDestroyed()) return;
 
   meetView.webContents.loadURL(meetUrl);
@@ -2094,7 +2143,8 @@ function setupIPC() {
     localServer.clearRoom();
     closeClaudeTerminal();
     showIdle();
-    clearMeetIdentityCache(currentMeetPartition);
+    // Identity cache is cleared at *join* time, not here — so it doesn't
+    // matter how the previous call ended (host-ended, app quit, crash).
   });
 
   ipcMain.on('get-meet-status', (event) => {

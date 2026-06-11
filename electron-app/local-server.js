@@ -89,6 +89,7 @@ class LocalServer {
     // agent can avoid double-responding to the same thought.
     this.lastRespondedSpeaker = null;
     this.lastRespondedText = null;
+    this.lastRespondedAt = null;
 
     // Pending bot speech — queued when speak() is called before the bot is
     // actually admitted to the call. Flushed in setCallStatus when status
@@ -246,6 +247,7 @@ class LocalServer {
     this.captionsOn = null;
     this.lastRespondedSpeaker = null;
     this.lastRespondedText = null;
+    this.lastRespondedAt = null;
     this._resetAutoLeave();
     this.resolveAllWaiters();
     // Use the setter so onCallStatusChange fires — the avatar uses this to
@@ -267,6 +269,7 @@ class LocalServer {
     this.captionsOn = null;
     this.lastRespondedSpeaker = null;
     this.lastRespondedText = null;
+    this.lastRespondedAt = null;
     this._resetAutoLeave();
     this.resolveAllWaiters();
     this.setCallStatus('idle');
@@ -1060,17 +1063,22 @@ class LocalServer {
 
       // Phantom-resolve guard: Meet sometimes re-emits an already-answered
       // turn with the same text (caption DOM revision bumps lastUpdated
-      // without changing content). Without this guard the bot acks and the
-      // slow model re-responds to a turn it already handled — exactly the
-      // 08:03:03 incident: identical 24-word "Berlin" prompt re-processed
-      // 60s after the original response, ack "Hmm, let me adjust that"
-      // played out of nowhere. Detect by exact equality vs. lastRespondedText
-      // and skip the local thinking transition; the agent still gets the
-      // response with continuationOfPriorResponse=true so it can stay silent.
+      // without changing content). Detect by exact equality vs.
+      // lastRespondedText AND no new speech-stop since we last responded —
+      // if the speaker tracker saw the floor go quiet after lastRespondedAt,
+      // there was a real new utterance and the identical text is just
+      // caption-lag, not a phantom. Without the lastSpeechStoppedAt check
+      // this guard nuked legitimate turns whose captions hadn't caught up
+      // yet (8:26:17 incident: user asked for a background change but
+      // Meet's caption DOM still showed the previous turn).
       const allSameSpeaker = deduped.every(e => e.participantName === this.lastRespondedSpeaker);
+      const newSpeechSinceResponse = !!this.lastRespondedAt
+        && !!this.lastSpeechStoppedAt
+        && this.lastSpeechStoppedAt > this.lastRespondedAt;
       const isExactPhantom = !!this.lastRespondedText
         && allSameSpeaker
-        && joinedText === this.lastRespondedText;
+        && joinedText === this.lastRespondedText
+        && !newSpeechSinceResponse;
       if (isExactPhantom) {
         console.log(ts(), '👻 [phantom] Skipping thinking — transcript identical to last responded turn (' + wordCount + ' words)');
       } else {
@@ -1655,6 +1663,7 @@ class LocalServer {
             if (lastMember) {
               this.lastRespondedSpeaker = lastMember.participantName;
               this.lastRespondedText = lastMember.text;
+              this.lastRespondedAt = Date.now();
             }
             if (this.callStatus !== 'in-call') {
               console.log('[local-server] Queueing bot speech until in-call:', t.text.slice(0, 40));

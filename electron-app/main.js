@@ -332,6 +332,14 @@ const localServer = new globalThis.LocalServer({
       const wordCount = extra?.wordCount || 0;
       const text = (extra?.text || '').toLowerCase();
 
+      // Working-state thinking (agent doing tool work between turns or
+      // post-speak) has no user-speech context — wordCount=0, text=''.
+      // Without this gate the ack-llm fires with an empty "User said: \"\""
+      // prompt and the model hallucinates a phrase ("Hmm, let me think.")
+      // that plays out of nowhere mid-tool-call. Real user-speech thinking
+      // always passes wordCount, so this only suppresses the working path.
+      if (wordCount <= 0) return;
+
       // Addressivity (#155). Three regimes:
       //   - 1:1 (one human + this bot)  → always ack, no ambiguity
       //   - multi-participant, my name  → always ack (forced)

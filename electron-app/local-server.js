@@ -1057,16 +1057,34 @@ class LocalServer {
         .filter(Boolean)
         .join(' ');
       const wordCount = joinedText.split(/\s+/).filter(Boolean).length;
-      // Always fire the change callback with the new wordCount — even if state
-      // is already 'thinking' from a previous turn — so the ack handler runs.
-      // Without this, agent loops that call wait_for_speech twice in a row
-      // skip the ack on the second resolution because the equal-state guard
-      // in _setBotState short-circuits.
-      console.log(ts(), '🧠 [thinking] Processing transcript — ' + wordCount + ' words, ' + deduped.length + ' entry/ies');
-      this.botState = 'thinking';
-      // Pass joinedText so the ack handler can do addressivity matching
-      // (#155). wordCount stays the primary threshold; text is supplemental.
-      this.onBotStateChange('thinking', { wordCount, text: joinedText });
+
+      // Phantom-resolve guard: Meet sometimes re-emits an already-answered
+      // turn with the same text (caption DOM revision bumps lastUpdated
+      // without changing content). Without this guard the bot acks and the
+      // slow model re-responds to a turn it already handled — exactly the
+      // 08:03:03 incident: identical 24-word "Berlin" prompt re-processed
+      // 60s after the original response, ack "Hmm, let me adjust that"
+      // played out of nowhere. Detect by exact equality vs. lastRespondedText
+      // and skip the local thinking transition; the agent still gets the
+      // response with continuationOfPriorResponse=true so it can stay silent.
+      const allSameSpeaker = deduped.every(e => e.participantName === this.lastRespondedSpeaker);
+      const isExactPhantom = !!this.lastRespondedText
+        && allSameSpeaker
+        && joinedText === this.lastRespondedText;
+      if (isExactPhantom) {
+        console.log(ts(), '👻 [phantom] Skipping thinking — transcript identical to last responded turn (' + wordCount + ' words)');
+      } else {
+        // Always fire the change callback with the new wordCount — even if state
+        // is already 'thinking' from a previous turn — so the ack handler runs.
+        // Without this, agent loops that call wait_for_speech twice in a row
+        // skip the ack on the second resolution because the equal-state guard
+        // in _setBotState short-circuits.
+        console.log(ts(), '🧠 [thinking] Processing transcript — ' + wordCount + ' words, ' + deduped.length + ' entry/ies');
+        this.botState = 'thinking';
+        // Pass joinedText so the ack handler can do addressivity matching
+        // (#155). wordCount stays the primary threshold; text is supplemental.
+        this.onBotStateChange('thinking', { wordCount, text: joinedText });
+      }
     }
 
     waiter.resolve(response);

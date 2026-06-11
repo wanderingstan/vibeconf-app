@@ -946,9 +946,26 @@ class DOMSpeakerTracker {
 
   _checkSpeakingChange(element) {
     for (const [name, info] of this.participants) {
-      if (!info.element) continue;
-      if (info.element === element || info.element.contains(element) || element.contains?.(info.element)) {
-        const isSpeaking = this._isSpeakingIndicatorActive(info.element, name);
+      if (!info.item) continue;
+      // Match via the TILE (info.item), not the indicator (info.element).
+      // Meet rotates the indicator div on layout changes (e.g. video focus
+      // shifting after a long bot turn), orphaning the captured ref. The
+      // tile is stable across these rotations. When we match the tile, re-
+      // find the indicator on-demand so the next read uses the live element.
+      // Symptom this fixes: speaker-tracker silently drops 30+ seconds of
+      // speech because the observer fires on a rotated element that doesn't
+      // === the stale info.element.
+      if (info.item === element || info.item.contains(element) || element.contains?.(info.item)) {
+        const liveIndicator = (info.element && info.item.contains(info.element))
+          ? info.element
+          : findSpeakingIndicator(info.item);
+        if (!liveIndicator) continue;
+        if (liveIndicator !== info.element) {
+          console.log('[speaker-tracker] Indicator rotated for', name, '— refreshing reference');
+          info.element = liveIndicator;
+          info.lastClasses = liveIndicator.className;
+        }
+        const isSpeaking = this._isSpeakingIndicatorActive(liveIndicator, name);
         if (isSpeaking !== info.speaking) {
           info.speaking = isSpeaking;
           info.lastChange = Date.now();
@@ -985,7 +1002,21 @@ class DOMSpeakerTracker {
 
   _pollSpeakingState() {
     for (const [name, info] of this.participants) {
-      if (!info.element) continue;
+      if (!info.item) continue;
+      // Refresh the indicator if it's been detached from the tile (Meet
+      // rotated the speaking-bars div). Same rationale as in
+      // _checkSpeakingChange: without this the 200ms poll reads a class
+      // that never changes again and we miss every utterance until the
+      // 2s _scanParticipants pass installs a new ref.
+      if (!info.element || !info.item.contains(info.element)) {
+        const live = findSpeakingIndicator(info.item);
+        if (!live) continue;
+        if (live !== info.element) {
+          console.log('[speaker-tracker] Indicator rotated for', name, '(poll path) — refreshing');
+          info.element = live;
+          info.lastClasses = live.className;
+        }
+      }
       const isSpeaking = this._isSpeakingIndicatorActive(info.element, name);
       if (isSpeaking !== info.speaking) {
         info.speaking = isSpeaking;

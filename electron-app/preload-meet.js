@@ -1071,11 +1071,40 @@ class CaptionScraper {
 
   _observe() {
     this.isRunning = true;
+    this._captionsOn = true; // _waitForCaptions just confirmed
+    this._lastReenableAt = 0;
     this._pollInterval = setInterval(() => this._checkCaptions(), 1000);
+  }
+
+  // Captions can be toggled OFF mid-call (user click, Meet layout change,
+  // etc). Before this watcher that failed silently: the container query
+  // below returned null forever and the bot went deaf while
+  // `wait_for_speech` kept reporting "no one spoke" (real incident,
+  // 2026-06-05, 24 minutes). Detect the flip, notify main, try to re-click.
+  // TODO(#226): fold into a consolidated health tick.
+  _checkCaptionsButton() {
+    const on = !!document.querySelector('[aria-label="Turn off captions" i]')
+      || !!findByAriaLabel('Turn off captions')
+      || !!findByAriaLabel('Desactivar subtítulos');
+    if (on !== this._captionsOn) {
+      this._captionsOn = on;
+      console.warn('[electron-meet] [CC] captions flipped', on ? 'ON' : 'OFF', 'mid-call');
+      ipcRenderer.send('captions-state', { on });
+    }
+    if (!on) {
+      // Self-heal at most once per 5s — a user deliberately keeping them
+      // off shouldn't fight a tight loop.
+      const now = Date.now();
+      if (now - this._lastReenableAt > 5000) {
+        this._lastReenableAt = now;
+        this._enableCaptions();
+      }
+    }
   }
 
   _checkCaptions() {
     try {
+      this._checkCaptionsButton();
       const container = document.querySelector('div[role="region"][aria-label="Captions"]');
       if (!container) return;
 

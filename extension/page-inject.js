@@ -72,6 +72,11 @@
       // True while at least one participant is currently speaking (from
       // DOMSpeakerTracker). Suppressed when mode='silent'.
       this.anyoneSpeaking = false;
+      // Deaf flag — set from the scraper's CC-button watcher via 'set-deaf'.
+      // When true (and we're in-call), the avatar shows 🙉 so participants in
+      // the Meet itself see that the bot can't hear them and can re-enable
+      // captions. Takes priority over everything except the not-on-line emoji.
+      this.deaf = false;
       // Per-response speaking emoji (set by speak's emoji param). Cleared
       // when the TTS queue drains. Falls through to ACTIVITY_EMOJIS.speaking.
       this.speakingEmojiOverride = null;
@@ -232,8 +237,12 @@
       const listeningEmoji = (this.mode === 'active' && this.listeningEmojiOverride)
         ? this.listeningEmojiOverride
         : VirtualCamera.MODE_EMOJIS[this.mode] || VirtualCamera.MODE_EMOJIS.active;
+      // Deaf takes priority over everything except not-on-line — the whole
+      // point is making "can't hear you" visible while otherwise in-call.
+      const deafEmoji = this.deaf ? '\u{1F649}' : null; // 🙉
       const emoji =
         notOnLine
+        || deafEmoji
         || audioPlaying
         || activityEmoji
         || hearing
@@ -970,6 +979,14 @@
         console.log('[bots-in-calls] stop-tts reason=' + reason + ' wasPlaying=' + wasPlaying + ' droppedQueue=' + droppedQueue);
         break;
       }
+
+      case 'set-deaf':
+        // Captions on/off from the scraper's CC-button watcher.
+        // payload.deaf === true → avatar shows 🙉 to participants.
+        if (payload) {
+          for (const cam of cameras.values()) cam.deaf = !!payload.deaf;
+        }
+        break;
 
       case 'set-avatar-emoji-override':
         // Persistent agent overrides for resting/yielding emojis. payload.idle,

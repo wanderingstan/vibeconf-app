@@ -35,7 +35,7 @@ function ts() {
 }
 
 class LocalServer {
-  constructor({ port, appVersion, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, getWebsiteUrl, getWhiteboardLoadedUrl, getPref, setPref, applyPref } = {}) {
+  constructor({ port, appVersion, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, getWebsiteUrl, getWhiteboardLoadedUrl, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.appVersion = appVersion || null;
     this.onBotSpeech = onBotSpeech || (() => {});
@@ -51,6 +51,7 @@ class LocalServer {
     this.onModeChange = onModeChange || (() => {});        // 'active' | 'passive' | 'silent'
     this.onCallStatusChange = onCallStatusChange || (() => {}); // 'idle' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
     this.onAnyoneSpeakingChange = onAnyoneSpeakingChange || (() => {}); // boolean
+    this.onCaptionsChange = onCaptionsChange || (() => {}); // boolean — true=on, false=off (=== deaf)
     this.onParticipantsFirstSeen = onParticipantsFirstSeen || (() => {}); // fires once per call when DOMSpeakerTracker first reports participants
     this.onAvatarEmojiOverride = onAvatarEmojiOverride || (() => {}); // ({idle?, listening?}) — null/undefined for that key means reset
     this.onSetCamera = onSetCamera || (() => {}); // (on: boolean)
@@ -120,6 +121,10 @@ class LocalServer {
     // Real-time speaking state (from DOMSpeakerTracker, not captions)
     this.anyoneSpeaking = false;       // true if any participant is currently speaking
     this.lastSpeechStoppedAt = null;   // timestamp (ms) when last person stopped speaking
+
+    // Captions on/off (from the scraper's CC-button watcher). The bot hears
+    // through captions, so captions-off === deaf. null = unknown / pre-join.
+    this.captionsOn = null;
 
     // Whiteboard asset registry (#157). Bots can register a local file path
     // and get back an opaque http://127.0.0.1:PORT/asset/{token} URL they
@@ -191,6 +196,7 @@ class LocalServer {
     this.presenterName = null;
     this.anyoneSpeaking = false;
     this.lastSpeechStoppedAt = null;
+    this.captionsOn = null;
     this.lastRespondedSpeaker = null;
     this.lastRespondedText = null;
     this._resetAutoLeave();
@@ -211,11 +217,24 @@ class LocalServer {
     this.presenterName = null;
     this.anyoneSpeaking = false;
     this.lastSpeechStoppedAt = null;
+    this.captionsOn = null;
     this.lastRespondedSpeaker = null;
     this.lastRespondedText = null;
     this._resetAutoLeave();
     this.resolveAllWaiters();
     this.setCallStatus('idle');
+  }
+
+  // Captions toggled on/off (from the scraper's CC-button watcher). The bot
+  // hears via captions, so off === deaf. Forwarded to main so it can flip
+  // the avatar emoji as a visible signal to call participants. Surfaces in
+  // wait_for_speech timeouts so the agent can ask humans to turn captions
+  // back on.
+  setCaptionsOn(on) {
+    if (this.captionsOn === on) return;
+    this.captionsOn = on;
+    console.log(ts(), on ? '🟢 [captions] back ON' : '🔴 [captions] OFF — bot is deaf');
+    this.onCaptionsChange(on);
   }
 
   setCallStatus(status) {
@@ -363,6 +382,7 @@ class LocalServer {
       localProfile: this.localProfile,
       botState: this.botState,
       anyoneSpeaking: this.anyoneSpeaking,
+      captionsOn: this.captionsOn,
       sharing: this.sharing,
       someoneElsePresenting: this.someoneElsePresenting,
       presenterName: this.presenterName,
@@ -1014,6 +1034,7 @@ class LocalServer {
         localProfile: this.localProfile,
         errors: this.errors,
         permissions: this.permissions,
+        captionsOn: this.captionsOn,
         chatUnread: this.chatUnread,
         roomUrl: this.roomId ? `${(this.getWebsiteUrl() || '').replace(/\/$/, '')}/room/${this.roomId}` : null,
         whiteboardUrl: this.roomId ? `${(this.getWebsiteUrl() || '').replace(/\/$/, '')}/room/${this.roomId}?mode=whiteboard` : null,

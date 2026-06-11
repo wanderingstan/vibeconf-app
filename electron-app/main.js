@@ -419,6 +419,18 @@ const localServer = new globalThis.LocalServer({
     }
   },
 
+  onCaptionsChange: (on) => {
+    // Captions are the bot's only ear — off === deaf. Flip the avatar emoji
+    // so call participants (who can fix it) see the bot can't hear, instead
+    // of just sitting silent. Cleared when captions return.
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('extension-message', {
+        action: 'set-deaf',
+        payload: { deaf: on === false },
+      });
+    }
+  },
+
   onParticipantsFirstSeen: () => {
     // Used to be the avatar engagement trigger, but the captions-ready
     // signal is more honest: people pane fills before captions are usable,
@@ -2309,6 +2321,14 @@ function setupIPC() {
     // TODO(#178 phase 2): forward settled turns to the remote sync for the
     // webapp room view, replacing the old per-entry sync.postTranscripts feed
     // for captions.
+  });
+
+  // Captions toggled on/off mid-call (deaf-bot detection). The scraper
+  // self-heals by re-clicking the CC button; this keeps the server state in
+  // sync so the avatar can flip to 🙉 and wait_for_speech timeouts can
+  // tell the agent the room isn't silent — the bot is deaf.
+  ipcMain.on('captions-state', (_event, { on }) => {
+    localServer.setCaptionsOn(!!on);
   });
 
   // --- Speaking state ---

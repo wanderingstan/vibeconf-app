@@ -285,7 +285,13 @@ server.tool(
 
     if (entries.length === 0) {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
-      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${statusLine}${errorLines}${chatLine}${ackLine}${replayLine}` }] };
+      // Deaf-bot hint: if Meet captions are off, the bot can't hear anything.
+      // Distinguish that from "the room is silent" so the agent can ask humans
+      // to re-enable captions instead of looping silent timeouts.
+      const deafLine = status.captionsOn === false
+        ? '\n[Captions are OFF in Meet — the bot hears via captions, so it is DEAF until they are re-enabled. The app is retrying automatically; if this persists, say or chat: "Could someone turn captions back on? (CC button in Meet\'s toolbar)"]'
+        : '';
+      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${statusLine}${errorLines}${chatLine}${ackLine}${replayLine}${deafLine}` }] };
     }
 
     // Each entry is now one logical speaker turn (#178 snapshot model); no

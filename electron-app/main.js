@@ -450,6 +450,18 @@ const localServer = new globalThis.LocalServer({
     }
   },
 
+  onCaptionsChange: (on) => {
+    // Captions are the bot's only ear — off === deaf. Flip the avatar emoji
+    // so call participants (who can fix it) see the bot can't hear, instead
+    // of just sitting silent. Cleared when captions return.
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('extension-message', {
+        action: 'set-deaf',
+        payload: { deaf: on === false },
+      });
+    }
+  },
+
   onParticipantsFirstSeen: () => {
     // Used to be the avatar engagement trigger, but the captions-ready
     // signal is more honest: people pane fills before captions are usable,
@@ -770,6 +782,71 @@ function ensureMeetSessionConfigured(partition) {
 // Currently active partition for the meetView. Persisted to the prefs store
 // so the chosen mode survives app restarts.
 let currentMeetPartition = MEET_GUEST_PARTITION;
+
+// Wipe Meet-side identity caches on the given partition. Meet caches the
+// guest "Your name" preference, and once it has *any* cached identity it
+// skips the pre-join name input entirely — so without this the bot is stuck
+// with whatever name it picked on first join. Scoped tightly so Google
+// account sign-in (accounts.google.com) survives — only Meet's own caches
+// are dropped.
+//
+// Three-pronged because clearStorageData's `origin` filter only matches
+// origin-scoped storages (localStorage, IndexedDB, cachestorage), NOT
+// cookies set with `domain=.google.com` — those have to be enumerated and
+// removed by hand. Service workers are global on the partition; clearing
+// them unscoped is fine since we don't use SWs elsewhere.
+//
+// Runs BEFORE each join, not after leave, so it doesn't matter how the
+// previous call ended (host-ended, app quit, auto-leave, crash).
+async function clearMeetIdentityCache(partition) {
+  const sess = session.fromPartition(partition);
+  const summary = { cookiesRemoved: 0, storagesCleared: [], errors: [] };
+
+  // 1. Origin-scoped storages.
+  try {
+    await sess.clearStorageData({
+      origin: 'https://meet.google.com',
+      storages: ['localstorage', 'indexdb', 'cachestorage'],
+    });
+    summary.storagesCleared.push('localstorage', 'indexdb', 'cachestorage');
+  } catch (err) {
+    summary.errors.push(`origin-scoped: ${err.message}`);
+  }
+
+  // 2. Cookies whose domain covers meet.google.com (including .google.com
+  // domain-wildcard cookies that origin filter misses). Don't touch
+  // accounts.google.com cookies — those are sign-in state.
+  try {
+    const all = await sess.cookies.get({});
+    for (const c of all) {
+      const d = (c.domain || '').replace(/^\./, '');
+      if (d === 'meet.google.com' || (d === 'google.com' && c.path !== '/accounts')) {
+        const url = `https://${(c.domain || '').replace(/^\./, '')}${c.path || '/'}`;
+        try {
+          await sess.cookies.remove(url, c.name);
+          summary.cookiesRemoved++;
+        } catch (err) {
+          summary.errors.push(`cookie ${c.name}: ${err.message}`);
+        }
+      }
+    }
+  } catch (err) {
+    summary.errors.push(`cookie enumeration: ${err.message}`);
+  }
+
+  // 3. Service workers (unscoped — we don't register any of our own).
+  try {
+    await sess.clearStorageData({ storages: ['serviceworkers'] });
+    summary.storagesCleared.push('serviceworkers');
+  } catch (err) {
+    summary.errors.push(`serviceworkers: ${err.message}`);
+  }
+
+  console.log('[electron] Cleared Meet identity cache on', partition,
+    '— cookies:', summary.cookiesRemoved,
+    '· storages:', summary.storagesCleared.join(','),
+    summary.errors.length ? '· errors: ' + summary.errors.join('; ') : '');
+}
 
 // Apply Meet-specific session config to a given session. Called per
 // partition so each identity mode shares the exact same handler setup.
@@ -1938,8 +2015,34 @@ function showIdle() {
   console.log('[electron] Returned to idle state');
 }
 
-function loadMeetURL(meetUrl) {
-  if (!meetView || meetView.webContents.isDestroyed()) return;
+async function loadMeetURL(meetUrl) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  // Destroy and recreate the meetView before every join. Clearing storage
+  // alone is insufficient: Meet caches the green-room identity *in-memory*
+  // at the BrowserView level, so a webContents.loadURL into the same view
+  // leaves the previous Meet SPA's state alive (visible in logs as
+  // duplicated [electron-meet] / [bots-in-calls] lines from two live
+  // preload contexts). Tearing down the view is the only thing that
+  // matches what "quit and relaunch the app" does. Mirrors the same dance
+  // swapMeetViewPartition already uses for the partition-change case.
+  if (meetView) {
+    try { mainWindow.removeBrowserView(meetView); } catch (err) {
+      console.warn('[electron] removeBrowserView failed:', err.message);
+    }
+    meetView = null;
+  }
+
+  // Now that no view is bound to it, also wipe disk-backed Meet caches so
+  // the fresh view starts truly blank. (Without the destroy above this
+  // alone wasn't enough; without this the in-memory part is fixed but
+  // localStorage / cookies could still re-seed the identity.)
+  await clearMeetIdentityCache(currentMeetPartition);
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  meetView = createMeetView(currentMeetPartition);
+  mainWindow.addBrowserView(meetView);
+  layoutViews();
 
   meetView.webContents.loadURL(meetUrl);
 
@@ -2091,6 +2194,8 @@ function setupIPC() {
     localServer.clearRoom();
     closeClaudeTerminal();
     showIdle();
+    // Identity cache is cleared at *join* time, not here — so it doesn't
+    // matter how the previous call ended (host-ended, app quit, crash).
   });
 
   ipcMain.on('get-meet-status', (event) => {
@@ -2340,6 +2445,14 @@ function setupIPC() {
     // TODO(#178 phase 2): forward settled turns to the remote sync for the
     // webapp room view, replacing the old per-entry sync.postTranscripts feed
     // for captions.
+  });
+
+  // Captions toggled on/off mid-call (deaf-bot detection). The scraper
+  // self-heals by re-clicking the CC button; this keeps the server state in
+  // sync so the avatar can flip to 🙉 and wait_for_speech timeouts can
+  // tell the agent the room isn't silent — the bot is deaf.
+  ipcMain.on('captions-state', (_event, { on }) => {
+    localServer.setCaptionsOn(!!on);
   });
 
   // --- Speaking state ---

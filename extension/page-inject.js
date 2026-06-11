@@ -72,6 +72,14 @@
       // True while at least one participant is currently speaking (from
       // DOMSpeakerTracker). Suppressed when mode='silent'.
       this.anyoneSpeaking = false;
+      // When the floor last went quiet. Drives the post-speech grace window
+      // (see HEARING_GRACE_MS in the emoji waterfall).
+      this.lastAnyoneSpeakingFalseAt = 0;
+      // Deaf flag — set from the scraper's CC-button watcher via 'set-deaf'.
+      // When true (and we're in-call), the avatar shows 🙉 so participants in
+      // the Meet itself see that the bot can't hear them and can re-enable
+      // captions. Takes priority over everything except the not-on-line emoji.
+      this.deaf = false;
       // Per-response speaking emoji (set by speak's emoji param). Cleared
       // when the TTS queue drains. Falls through to ACTIVITY_EMOJIS.speaking.
       this.speakingEmojiOverride = null;
@@ -206,21 +214,38 @@
       // Emoji priority:
       //   1. Not in call (any callStatus other than 'in-call') → 🫥
       //   2. In-call but agent has never engaged yet → 🫥 (still loading)
-      //   3. Audio is playing (this.speaking) → 😄. This wins over 'thinking'
-      //      so the ack TTS ("Got it.", "Let me think about that.") shows the
-      //      speaking face — from the user's perspective audio = speaking.
+      //   3. Activity state thinking → 🤔. Wins over audioPlaying so the ack
+      //      TTS ("Got it.", "Let me think about that.") stays under the
+      //      thinking face — without this the avatar flickers 🤔 → 😄 → 🤔
+      //      → 😄 (ack-audio → ack-done → real-thinking → real-speaking),
+      //      which reads as "done? oh wait still thinking? speaking now"
+      //      instead of one continuous "responding."
       //   4. Activity state yielding → 🙋 (has something to say, deferring)
-      //   5. Activity state thinking → 🤔 (agent processing, no audio yet)
+      //   5. Audio is playing (this.speaking) and state isn't 'thinking' →
+      //      😄. Covers the real response (state='speaking') and any TTS
+      //      that runs outside the response loop.
       //   6. Someone in the call is speaking → 😐 (acks "I heard you").
       //      Skipped in silent mode and during own activity.
       //   7. botState=idle between turns → 😔
       //   8. botState=listening → mode emoji (🙂 / 🤐 / 😶)
       const notOnLine = VirtualCamera.CALL_STATUS_EMOJIS[this.callStatus] || (!this.hasEngaged ? '\u{1FAE5}' : null);
       // Audio playing: per-response override > default 😄. Cleared on tts-ended.
-      const audioPlaying = this.speaking
+      // Suppressed when state === 'thinking' so the ack stays under 🤔.
+      const audioPlaying = (this.speaking && this.state !== 'thinking')
         ? (this.speakingEmojiOverride || VirtualCamera.ACTIVITY_EMOJIS.speaking)
         : null;
-      const hearing = (this.anyoneSpeaking && this.mode !== 'silent' && !this.speaking && this.state !== 'thinking' && this.state !== 'speaking' && this.state !== 'yielding')
+      // Post-speech grace: hold 😐 for ~2.5s after the floor goes quiet, so
+      // the avatar doesn't flicker to 🙂 in the silence-threshold gap before
+      // botState transitions to 'thinking'. Window is renderer-side only
+      // (server's silence threshold is a pref we don't sync here); 2500ms
+      // matches the typical default and degrades gracefully if the server
+      // window is shorter (thinking state takes over) or longer (😐 expires
+      // and the regular listening emoji shows — same as today).
+      const HEARING_GRACE_MS = 2500;
+      const stillInGrace = !this.anyoneSpeaking
+        && this.lastAnyoneSpeakingFalseAt > 0
+        && (Date.now() - this.lastAnyoneSpeakingFalseAt) < HEARING_GRACE_MS;
+      const hearing = ((this.anyoneSpeaking || stillInGrace) && this.mode !== 'silent' && !this.speaking && this.state !== 'thinking' && this.state !== 'speaking' && this.state !== 'yielding')
         ? VirtualCamera.HEARING_EMOJI : null;
       const activityEmoji = this.state === 'yielding'
         ? (this.yieldingEmojiOverride || VirtualCamera.ACTIVITY_EMOJIS.yielding)
@@ -232,8 +257,12 @@
       const listeningEmoji = (this.mode === 'active' && this.listeningEmojiOverride)
         ? this.listeningEmojiOverride
         : VirtualCamera.MODE_EMOJIS[this.mode] || VirtualCamera.MODE_EMOJIS.active;
+      // Deaf takes priority over everything except not-on-line — the whole
+      // point is making "can't hear you" visible while otherwise in-call.
+      const deafEmoji = this.deaf ? '\u{1F649}' : null; // 🙉
       const emoji =
         notOnLine
+        || deafEmoji
         || audioPlaying
         || activityEmoji
         || hearing
@@ -910,7 +939,18 @@
 
       case 'set-anyone-speaking':
         if (typeof payload?.anyoneSpeaking === 'boolean') {
-          for (const cam of cameras.values()) cam.anyoneSpeaking = payload.anyoneSpeaking;
+          for (const cam of cameras.values()) {
+            // Stamp when the floor went quiet so the avatar can hold 😐
+            // through the server's silence-threshold window. Without this
+            // the avatar flickers 😐 → 🙂 (default listening) → 🤔 in the
+            // 2-ish-second gap before botState becomes 'thinking', reading
+            // as "done, back to normal" then "wait, thinking now" instead
+            // of one continuous "I heard you, processing."
+            if (cam.anyoneSpeaking && !payload.anyoneSpeaking) {
+              cam.lastAnyoneSpeakingFalseAt = Date.now();
+            }
+            cam.anyoneSpeaking = payload.anyoneSpeaking;
+          }
         }
         break;
 
@@ -990,6 +1030,14 @@
         console.log('[bots-in-calls] stop-tts reason=' + reason + ' wasPlaying=' + wasPlaying + ' droppedQueue=' + droppedQueue);
         break;
       }
+
+      case 'set-deaf':
+        // Captions on/off from the scraper's CC-button watcher.
+        // payload.deaf === true → avatar shows 🙉 to participants.
+        if (payload) {
+          for (const cam of cameras.values()) cam.deaf = !!payload.deaf;
+        }
+        break;
 
       case 'set-avatar-emoji-override':
         // Persistent agent overrides for resting/yielding emojis. payload.idle,

@@ -752,6 +752,28 @@ function ensureMeetSessionConfigured(partition) {
 // so the chosen mode survives app restarts.
 let currentMeetPartition = MEET_GUEST_PARTITION;
 
+// Wipe meet.google.com-scoped storage on the given partition. Meet caches the
+// green-room "Your name" preference in localStorage, so without this the bot
+// re-uses the previous call's name forever (no way to change identity from
+// the join screen once one is set). Scoped to meet.google.com so Google
+// account sign-in (lives on accounts.google.com) survives — only the Meet-
+// side identity preference is dropped. Cheap and fire-and-forget.
+function clearMeetIdentityCache(partition) {
+  try {
+    const sess = session.fromPartition(partition);
+    sess.clearStorageData({
+      origin: 'https://meet.google.com',
+      storages: ['cookies', 'localstorage', 'indexdb', 'cachestorage', 'serviceworkers'],
+    }).then(() => {
+      console.log('[electron] Cleared meet.google.com storage on', partition);
+    }).catch((err) => {
+      console.warn('[electron] clearMeetIdentityCache failed:', err.message);
+    });
+  } catch (err) {
+    console.warn('[electron] clearMeetIdentityCache threw:', err.message);
+  }
+}
+
 // Apply Meet-specific session config to a given session. Called per
 // partition so each identity mode shares the exact same handler setup.
 //   - Strip CSP so the preload's page-inject eval() isn't blocked by
@@ -2072,6 +2094,7 @@ function setupIPC() {
     localServer.clearRoom();
     closeClaudeTerminal();
     showIdle();
+    clearMeetIdentityCache(currentMeetPartition);
   });
 
   ipcMain.on('get-meet-status', (event) => {

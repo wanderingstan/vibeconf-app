@@ -16,6 +16,25 @@ function ts() {
   return d.toTimeString().slice(0, 8) + '.' + String(d.getMilliseconds()).padStart(3, '0');
 }
 
+// Auto-stamp every console line with HH:MM:SS.mmm so the session log is a
+// timeline by default. Skip stamping when the caller already prefixed with
+// ts() to avoid double-timestamps. Catches main + everything else that
+// console.log()s into stdout (preload-meet and page-inject lines come in
+// already-stamped via their own monkey-patch, so this skip path matters).
+(function installTimestampedConsole() {
+  const TS_RE = /^\d{2}:\d{2}:\d{2}\.\d{3}$/;
+  const wrap = (fn) => (...args) => {
+    if (args.length && typeof args[0] === 'string' && TS_RE.test(args[0])) {
+      fn(...args);
+    } else {
+      fn(ts(), ...args);
+    }
+  };
+  console.log = wrap(console.log.bind(console));
+  console.warn = wrap(console.warn.bind(console));
+  console.error = wrap(console.error.bind(console));
+})();
+
 // Round-trip request to the Meet preload (read/send chat). Sends on `channel`
 // with a unique requestId and resolves with the matching 'chat-result' reply,
 // or a timeout error. preload-meet.js handles 'read-chat'/'send-chat'.

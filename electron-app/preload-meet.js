@@ -7,6 +7,27 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
+// Auto-stamp every console line with HH:MM:SS.mmm BEFORE any other code runs,
+// so [electron-meet] / [speaker-tracker] / [CC] / [bots-in-calls] lines all
+// flow into the main process timeline with a wall-clock prefix. main.js's own
+// console wrapper sees the prefix and skips re-stamping. Page-inject is eval'd
+// into this same context (contextIsolation: false), so this single wrap
+// covers both preload-meet AND page-inject log sites.
+(function installTimestampedConsole() {
+  const _ts = () => {
+    const d = new Date();
+    return d.toTimeString().slice(0, 8) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+  };
+  const TS_RE = /^\d{2}:\d{2}:\d{2}\.\d{3}$/;
+  const wrap = (fn) => (...args) => {
+    if (args.length && typeof args[0] === 'string' && TS_RE.test(args[0])) fn(...args);
+    else fn(_ts(), ...args);
+  };
+  console.log = wrap(console.log.bind(console));
+  console.warn = wrap(console.warn.bind(console));
+  console.error = wrap(console.error.bind(console));
+})();
+
 // ---------------------------------------------------------------------------
 // Inject page-inject.js IMMEDIATELY — before any page scripts execute.
 // With contextIsolation: false, this runs in the page's JS context,

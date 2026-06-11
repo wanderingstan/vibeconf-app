@@ -34,6 +34,24 @@ function ts() {
   return d.toTimeString().slice(0, 8) + '.' + String(d.getMilliseconds()).padStart(3, '0');
 }
 
+// Auto-stamp every console line with HH:MM:SS.mmm. Skip when caller already
+// supplied a ts() prefix so existing `console.log(ts(), '...')` sites don't
+// double-stamp. Runs in the main process — same wrapper as main.js, but
+// idempotent: if main.js already wrapped, wrapping again just adds a second
+// no-op layer (TS_RE matches its own output, so the second wrapper skips).
+(function installTimestampedConsole() {
+  if (console.__tsWrapped) return;
+  console.__tsWrapped = true;
+  const TS_RE = /^\d{2}:\d{2}:\d{2}\.\d{3}$/;
+  const wrap = (fn) => (...args) => {
+    if (args.length && typeof args[0] === 'string' && TS_RE.test(args[0])) fn(...args);
+    else fn(ts(), ...args);
+  };
+  console.log = wrap(console.log.bind(console));
+  console.warn = wrap(console.warn.bind(console));
+  console.error = wrap(console.error.bind(console));
+})();
+
 class LocalServer {
   constructor({ port, appVersion, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, getWebsiteUrl, getWhiteboardLoadedUrl, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;

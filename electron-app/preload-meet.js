@@ -168,6 +168,28 @@ function findByAriaLabel(label) {
   );
 }
 
+// Auto-dismiss Meet onboarding/info modals that block the bot's join flow
+// and button detection (#227). Meet has started showing a one-time
+// "Others may see your video differently" overlay (pre-join or just after
+// admission) that sits on top of the UI until its "Got it" button is
+// clicked — blocking detection of the people pane, CC button, Leave button,
+// etc. We gate on a known heading so an unrelated "Got it" elsewhere in the
+// DOM can't be clicked by accident. Returns true if something was dismissed.
+const DISMISSABLE_MODAL_HEADINGS = [
+  'Others may see your video differently',
+];
+function dismissBlockingModals() {
+  const present = DISMISSABLE_MODAL_HEADINGS.some((h) => findByText(h));
+  if (!present) return false;
+  const gotIt = findByText('Got it', { exact: true });
+  if (gotIt) {
+    gotIt.click();
+    console.log('[electron-meet] Dismissed blocking modal via "Got it"');
+    return true;
+  }
+  return false;
+}
+
 async function typeIntoInput(input, value) {
   input.focus();
   input.click();
@@ -609,6 +631,11 @@ function installCallHealthTick() {
   let lastParticipantsKey = '';
 
   const tick = () => {
+    // Dismiss any blocking Meet onboarding modal before probing the DOM —
+    // the overlay sits on top of the UI and would otherwise skew pane /
+    // present / button detection below (#227).
+    try { dismissBlockingModals(); } catch { /* non-fatal */ }
+
     let next;
     try { next = gatherCallHealthSnapshot(); }
     catch (err) {
@@ -864,6 +891,9 @@ async function autoJoin(botName) {
     let clicked = false;
     for (let attempt = 0; attempt < 5 && !clicked; attempt++) {
       await delay(1000);
+      // The "Others may see your video differently" overlay can render over
+      // the pre-join screen and hide the join button. Clear it first (#227).
+      dismissBlockingModals();
       const joinBtn =
         findByText('Ask to join') ||
         findByText('Join now') ||

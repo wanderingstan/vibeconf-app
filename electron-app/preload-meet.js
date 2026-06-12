@@ -1212,7 +1212,7 @@ class DOMSpeakerTracker {
       info.lastTrueAt = now;
       return true;
     }
-    const SPEAKING_GRACE_MS = 1500;
+    const SPEAKING_GRACE_MS = 1000;
     if (info.lastTrueAt && (now - info.lastTrueAt) < SPEAKING_GRACE_MS) {
       return true;
     }

@@ -287,7 +287,17 @@
         }, '*');
       }
       const emojiSize = Math.min(w, h) * 0.65;
-      const bob = Math.sin(t * 0.8) * (emojiSize * 0.02);
+      // Idle liveness (#223). The avatar must never look like a frozen frame
+      // on the video feed — a static tile reads as "the bot crashed." Two
+      // small continuous motions run in EVERY state:
+      //   - bob: gentle vertical bobbing. Period ~4s (was ~13s, too slow to
+      //     perceive as alive over a glance).
+      //   - breathe: subtle scale pulse, applied below for non-speaking
+      //     states (speaking has its own louder amplitude-driven scale).
+      // Both amplitudes are deliberately well under the thinking sway and the
+      // speaking jaw motion so they don't compete with the meaningful states.
+      const bob = Math.sin(this.frameCount * 0.045) * (emojiSize * 0.018);
+      const breathe = 1 + Math.sin(this.frameCount * 0.04) * 0.012; // ±1.2%, ~3.5s
       // Speaking animation, amplitude-driven (lip-sync). We read the bot's
       // current TTS loudness from the VirtualMic analyser and use it to "open
       // the jaw": a vertical stretch + bounce that tracks the actual audio, so
@@ -334,7 +344,13 @@
       // center. The scaleX/scaleY give the "mouth open" jaw effect.
       ctx.translate(cx + thinkSway, cy + bob - speakBounce);
       if (speakTilt) ctx.rotate(speakTilt);
-      if (this.speaking) ctx.scale(speakScaleX, speakScaleY);
+      if (this.speaking) {
+        ctx.scale(speakScaleX, speakScaleY);
+      } else {
+        // Idle/listening/thinking breathing — keeps the glyph subtly alive
+        // without the loud jaw motion of the speaking path. (#223)
+        ctx.scale(breathe, breathe);
+      }
       ctx.fillText(emoji, 0, 0);
       ctx.restore();
 

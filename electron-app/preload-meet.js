@@ -481,36 +481,170 @@ ipcRenderer.on('send-chat', async (_event, { requestId, text }) => {
 });
 
 // ---------------------------------------------------------------------------
-// Mic permission check
+// Consolidated call-health tick (#226)
 // ---------------------------------------------------------------------------
+//
+// Single 1s setInterval that does ONE DOM pass per tick, diffs against the
+// previous snapshot, and emits per-edge IPCs. Replaces five separate
+// watchers that each ran their own setInterval + querySelector + previous-
+// state tracking. Same IPC channel names as before so main.js consumers
+// don't change.
+//
+// What's NOT folded in (different lifecycle / cadence):
+//   - speakingPollInterval (200ms) — performance-sensitive
+//   - caption text scraping inside CaptionScraper — content ingestion
+//   - DOMSpeakerTracker.checkInterval (2s) — owns its own state machine
+//   - startMicMuteWatcher — event-driven MutationObserver
+//
+// New signals slot in by adding a key to gatherCallHealthSnapshot() plus a
+// diff/emit clause below — no new timer needed.
 
-let lastMicStatus = 'unknown';
-
-function checkMicPermission() {
-  const btn = document.querySelector('button[data-is-muted]');
-  if (!btn) return;
-
-  const label = btn.getAttribute('aria-label') || '';
-  const isMutedAttr = btn.getAttribute('data-is-muted');
-
-  const isHealthy =
-    (label === 'Turn off microphone' && isMutedAttr === 'false') ||
-    (label === 'Turn on microphone' && isMutedAttr === 'true');
-
-  const newStatus = isHealthy ? 'healthy' : 'problem';
-
-  if (newStatus === 'problem') {
-    if (newStatus !== lastMicStatus) {
-      console.warn('[electron-meet] Mic issue:', label, 'data-is-muted:', isMutedAttr);
-    }
-    ipcRenderer.send('to-panel', {
-      action: 'error',
-      message: `Microphone issue: "${label}". Try reloading the Meet window.`,
-    });
-  } else if (newStatus !== lastMicStatus) {
-    ipcRenderer.send('to-panel', { action: 'mic-status', status: 'healthy' });
+function gatherCallHealthSnapshot() {
+  // Mic: button label + data-is-muted tell us whether the mic is wired up.
+  // Single querySelector shared with the mic-mute watcher, but that one
+  // operates on its own (MutationObserver), so reading here is independent.
+  const micBtn = document.querySelector('button[data-is-muted]');
+  let micHealth = 'unknown';
+  if (micBtn) {
+    const label = micBtn.getAttribute('aria-label') || '';
+    const muted = micBtn.getAttribute('data-is-muted');
+    const ok = (label === 'Turn off microphone' && muted === 'false')
+            || (label === 'Turn on microphone' && muted === 'true');
+    micHealth = ok ? 'healthy' : 'problem';
   }
-  lastMicStatus = newStatus;
+
+  // Presenting: who's currently sharing? Three states — self, other, none.
+  // Self check first since "You are presenting" is the most authoritative.
+  let selfPresenting = false;
+  let presenterName = null;
+  const presentingNow =
+    document.querySelector('[aria-label*="You are presenting" i]') ||
+    document.querySelector('[aria-label*="Stop presenting" i]') ||
+    document.querySelector('[data-tooltip*="Stop presenting" i]') ||
+    document.querySelector('button[aria-label*="stop" i][aria-label*="present" i]') ||
+    document.querySelector('[data-tooltip*="stop" i][data-tooltip*="present" i]');
+  if (presentingNow) {
+    selfPresenting = true;
+  } else {
+    const presentBtn =
+      findByAriaLabel('Share screen') ||
+      findByAriaLabel('Present now') ||
+      document.querySelector('[data-tooltip*="presenting" i]') ||
+      document.querySelector('[data-tooltip*="Present" i]') ||
+      document.querySelector('[data-tooltip*="Share screen" i]');
+    if (presentBtn) {
+      const tooltip = presentBtn.getAttribute('data-tooltip') || presentBtn.getAttribute('aria-label') || '';
+      const match = tooltip.match(/^(.+?)\s+is presenting/i);
+      if (match) presenterName = match[1];
+    }
+  }
+
+  // Participant list — domSpeakerTracker keeps the canonical map; we just
+  // snapshot it here. After the recent edge-fired fix in _checkSpeakingChange
+  // this is mostly redundant as a heartbeat, but cheap insurance against any
+  // edge-emit miss.
+  const participants = (typeof domSpeakerTracker !== 'undefined' && domSpeakerTracker.getParticipantList)
+    ? domSpeakerTracker.getParticipantList()
+    : [];
+
+  return {
+    micHealth,
+    chatUnread: hasUnreadChat(),
+    chatPaneOpen: isChatPaneOpen(),
+    peoplePaneOpen: visiblePeopleTileCount() > 0,
+    selfPresenting,
+    presenterName, // null when nobody else is presenting
+    participants,
+  };
+}
+
+function installCallHealthTick() {
+  let last = {};
+  let lastMicReported = 'unknown';
+  let lastParticipantsKey = '';
+
+  const tick = () => {
+    let next;
+    try { next = gatherCallHealthSnapshot(); }
+    catch (err) {
+      console.warn('[health-tick] snapshot threw:', err.message);
+      return;
+    }
+
+    // --- Mic ---
+    // Original semantics: WARN once on transition into problem, re-broadcast
+    // the to-panel error EVERY tick while in problem state (the panel uses
+    // it as a persistent banner that needs continuous re-assertion), and
+    // emit 'healthy' once on recovery.
+    if (next.micHealth === 'problem') {
+      if (lastMicReported !== 'problem') {
+        const btn = document.querySelector('button[data-is-muted]');
+        const label = btn?.getAttribute('aria-label') || '';
+        const muted = btn?.getAttribute('data-is-muted');
+        console.warn('[electron-meet] Mic issue:', label, 'data-is-muted:', muted);
+      }
+      const btn = document.querySelector('button[data-is-muted]');
+      const label = btn?.getAttribute('aria-label') || '';
+      ipcRenderer.send('to-panel', {
+        action: 'error',
+        message: `Microphone issue: "${label}". Try reloading the Meet window.`,
+      });
+    } else if (next.micHealth === 'healthy' && lastMicReported !== 'healthy') {
+      ipcRenderer.send('to-panel', { action: 'mic-status', status: 'healthy' });
+    }
+    lastMicReported = next.micHealth;
+
+    // --- Chat unread ---
+    if (next.chatUnread !== last.chatUnread) {
+      ipcRenderer.send('chat-unread', { unread: next.chatUnread });
+    }
+
+    // --- Pane state ---
+    if (next.chatPaneOpen !== last.chatPaneOpen || next.peoplePaneOpen !== last.peoplePaneOpen) {
+      ipcRenderer.send('pane-state', {
+        chatPaneOpen: next.chatPaneOpen,
+        peoplePaneOpen: next.peoplePaneOpen,
+      });
+    }
+
+    // --- Presenting state ---
+    // Match the previous watcher's emit pattern: self-presenting and
+    // someone-presenting are independent channels. Self-presenting forces
+    // someone-presenting=false (we're the one presenting).
+    if (next.selfPresenting !== last.selfPresenting) {
+      ipcRenderer.send('self-presenting', { presenting: next.selfPresenting });
+    }
+    const someoneElse = !next.selfPresenting && !!next.presenterName;
+    const lastSomeoneElse = !last.selfPresenting && !!last.presenterName;
+    if (someoneElse !== lastSomeoneElse || next.presenterName !== last.presenterName) {
+      ipcRenderer.send('someone-presenting', {
+        presenting: someoneElse,
+        presenterName: someoneElse ? next.presenterName : null,
+      });
+    }
+
+    // --- Participants ---
+    // Keyed snapshot diff — re-emit only when the list actually changes
+    // (name set or speaking flags). The edge-fired path in
+    // _checkSpeakingChange handles most updates; this is the heartbeat.
+    if (next.participants.length > 0) {
+      const key = next.participants
+        .map(p => `${p.name}:${p.speaking ? 1 : 0}:${p.isSelf ? 1 : 0}`)
+        .sort()
+        .join('|');
+      if (key !== lastParticipantsKey) {
+        lastParticipantsKey = key;
+        ipcRenderer.send('participants-updated', next.participants);
+      }
+    }
+
+    last = next;
+  };
+
+  setInterval(tick, 1000);
+  // Fire one immediately so consumers don't have to wait a full second for
+  // the first snapshot (e.g. a still-loading panel asking for state).
+  tick();
 }
 
 // ---------------------------------------------------------------------------
@@ -1441,82 +1575,14 @@ window.addEventListener('DOMContentLoaded', () => {
     // Default unmuted = active mode, which is the historical default.
     startMicMuteWatcher();
 
-    // Start mic health checks
-    setInterval(checkMicPermission, 5000);
-
-    // Periodically send participant list to main process
-    setInterval(() => {
-      const participants = domSpeakerTracker.getParticipantList();
-      if (participants.length > 0) {
-        ipcRenderer.send('participants-updated', participants);
-      }
-    }, 2000);
-
-    // Passive unread-chat signal — read from the chat button's aria-label
-    // ("… - New message") WITHOUT opening the pane, so it doesn't disturb the
-    // speaker tracker. Only emit on change.
-    let lastChatUnread = null;
-    setInterval(() => {
-      const unread = hasUnreadChat();
-      if (unread !== lastChatUnread) {
-        lastChatUnread = unread;
-        ipcRenderer.send('chat-unread', { unread });
-      }
-    }, 2000);
-
-    // Pane-visibility signal for the debug panel — which side pane is showing.
-    let lastPaneState = '';
-    setInterval(() => {
-      const state = { chatPaneOpen: isChatPaneOpen(), peoplePaneOpen: visiblePeopleTileCount() > 0 };
-      const key = `${state.chatPaneOpen}|${state.peoplePaneOpen}`;
-      if (key !== lastPaneState) {
-        lastPaneState = key;
-        ipcRenderer.send('pane-state', state);
-      }
-    }, 1000);
-
-    // Detect presenting state:
-    // - "Stop presenting" button/overlay OR toolbar share button with stop label → WE are presenting
-    // - Present button tooltip says "{Name} is presenting" → someone ELSE is presenting
-    // - Normal Present button → nobody is presenting
-    setInterval(() => {
-      // Check if we are currently presenting. Two locations depending on window size:
-      // 1. Large window: "Stop presenting" overlay button on the shared content
-      // 2. Small window: the toolbar share button itself shows "Stop presenting"
-      // Ground truth: the share button's aria-label reads "You are presenting"
-      // while we're actively sharing. Check that first, then fall back to the
-      // "Stop presenting" button/overlay variants for older/other layouts.
-      const presentingNow =
-        document.querySelector('[aria-label*="You are presenting" i]') ||
-        document.querySelector('[aria-label*="Stop presenting" i]') ||
-        document.querySelector('[data-tooltip*="Stop presenting" i]') ||
-        document.querySelector('button[aria-label*="stop" i][aria-label*="present" i]') ||
-        document.querySelector('[data-tooltip*="stop" i][data-tooltip*="present" i]');
-      if (presentingNow) {
-        ipcRenderer.send('self-presenting', { presenting: true });
-        ipcRenderer.send('someone-presenting', { presenting: false, presenterName: null });
-        return;
-      }
-      ipcRenderer.send('self-presenting', { presenting: false });
-
-      // Check if someone else is presenting
-      const presentBtn =
-        findByAriaLabel('Share screen') ||
-        findByAriaLabel('Present now') ||
-        document.querySelector('[data-tooltip*="presenting" i]') ||
-        document.querySelector('[data-tooltip*="Present" i]') ||
-        document.querySelector('[data-tooltip*="Share screen" i]');
-      if (presentBtn) {
-        const tooltip = presentBtn.getAttribute('data-tooltip') || presentBtn.getAttribute('aria-label') || '';
-        // When someone else is presenting, tooltip is like "John Doe is presenting"
-        const match = tooltip.match(/^(.+?)\s+is presenting/i);
-        if (match) {
-          ipcRenderer.send('someone-presenting', { presenting: true, presenterName: match[1] });
-        } else {
-          ipcRenderer.send('someone-presenting', { presenting: false, presenterName: null });
-        }
-      }
-    }, 3000);
+    // Single consolidated call-health tick (#226). One 1s setInterval, one
+    // DOM pass, diff vs. last snapshot, emit per-edge IPCs. Replaces the
+    // mic-permission, participants, chat-unread, pane-state, and presenting
+    // watchers (5 timers → 1). IPC channel names stay the same so consumers
+    // in main.js don't change. Caption text scraping (own subsystem),
+    // 200ms speaker poll (different cadence), and the mic-mute
+    // MutationObserver (event-driven) stay separate. See issue #226.
+    installCallHealthTick();
 
     // Start sync and announce arrival
     const meetCode = window.location.pathname.replace('/', '');

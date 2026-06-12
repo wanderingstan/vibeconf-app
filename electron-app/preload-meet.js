@@ -1144,7 +1144,7 @@ class DOMSpeakerTracker {
           info.element = liveIndicator;
           info.lastClasses = liveIndicator.className;
         }
-        const isSpeaking = this._isSpeakingIndicatorActive(liveIndicator, name);
+        const isSpeaking = this._isSpeakingWithGrace(liveIndicator, name, Date.now());
         if (isSpeaking !== info.speaking) {
           info.speaking = isSpeaking;
           info.lastChange = Date.now();
@@ -1186,6 +1186,39 @@ class DOMSpeakerTracker {
     return recentChange && (info.classChangeCount >= 2 || info.wasAnimating);
   }
 
+  // Asymmetric grace wrapper around _isSpeakingIndicatorActive. Meet's
+  // three-bar indicator cycles classes 5-10 Hz while someone speaks, but
+  // brief animation pauses (or a missed observer tick) make the raw
+  // detector flip false mid-utterance. Without grace, anyoneSpeaking
+  // flickered true→false→true→... and lastSpeechStoppedAt got set on the
+  // first transient drop, leaving wait_for_speech waiting on a stale
+  // "stopped" timestamp while the user was still talking. Real-world
+  // incident: 36-second delay before the bot responded to "leave the call"
+  // because the tracker silently declared the speaker stopped on a
+  // sub-second indicator gap.
+  //
+  // Grace is asymmetric: true is trusted instantly (so the avatar flips
+  // 😐 with no perceived lag), false is delayed by SPEAKING_GRACE_MS so
+  // brief drops don't escape as "stopped" events. Tuning trade-off: too
+  // short and we false-stop, too long and the post-utterance silence
+  // window stretches by that much. 1500ms covers Meet's longest observed
+  // animation gap with margin and adds only minor lag to the silence
+  // threshold (already 2000ms).
+  _isSpeakingWithGrace(element, name, now) {
+    const info = this.participants.get(name);
+    if (!info) return false;
+    const raw = this._isSpeakingIndicatorActive(element, name);
+    if (raw) {
+      info.lastTrueAt = now;
+      return true;
+    }
+    const SPEAKING_GRACE_MS = 1500;
+    if (info.lastTrueAt && (now - info.lastTrueAt) < SPEAKING_GRACE_MS) {
+      return true;
+    }
+    return false;
+  }
+
   _pollSpeakingState() {
     for (const [name, info] of this.participants) {
       if (!info.item) continue;
@@ -1203,7 +1236,7 @@ class DOMSpeakerTracker {
           info.lastClasses = live.className;
         }
       }
-      const isSpeaking = this._isSpeakingIndicatorActive(info.element, name);
+      const isSpeaking = this._isSpeakingWithGrace(info.element, name, Date.now());
       if (isSpeaking !== info.speaking) {
         info.speaking = isSpeaking;
         info.lastChange = Date.now();

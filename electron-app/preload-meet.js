@@ -481,6 +481,73 @@ ipcRenderer.on('send-chat', async (_event, { requestId, text }) => {
 });
 
 // ---------------------------------------------------------------------------
+// Present-button discovery
+// ---------------------------------------------------------------------------
+//
+// Meet's toolbar share button cycles through four label states. We treat
+// the first two as "OK to click to start a share" and surface the others
+// as state, not failure:
+//
+//   "Share screen" / "Present now"          → idle, click to start
+//   "<participant name> is presenting"      → someone ELSE sharing —
+//                                             still clickable to take over
+//                                             (or to view; Meet allows
+//                                             concurrent presenters).
+//   "You are presenting"                    → WE are sharing — clicking
+//                                             would re-open the picker;
+//                                             callers detect this state
+//                                             separately and short-circuit.
+//   anything else                           → unknown — error path.
+//
+// Both aria-label and data-tooltip carry the text depending on Meet's
+// build. probePresentingState() extracts the semantic state from whichever
+// is present; findPresentButton() returns the clickable element regardless
+// of which label variant Meet is currently rendering.
+
+const PRESENT_LABEL_IDLE_RE = /^(?:Share screen|Present now)$/i;
+const PRESENT_LABEL_SOMEONE_ELSE_RE = /(.+?)\s+is presenting$/i;
+const PRESENT_LABEL_SELF_RE = /^You are presenting$/i;
+
+function presentButtonText(el) {
+  // Prefer aria-label (used by current builds) but fall back to
+  // data-tooltip (older builds). Either may be present, sometimes both.
+  return (el.getAttribute('aria-label') || el.getAttribute('data-tooltip') || '').trim();
+}
+
+function findPresentButton() {
+  // Iterate the small set of toolbar candidates and pick the one whose
+  // text matches a known state. Sweeping every aria-label*="present" in
+  // the DOM would also match "Stop presenting" overlays from active
+  // shares, which is not what we want here.
+  const candidates = [
+    ...document.querySelectorAll('button[aria-label]'),
+    ...document.querySelectorAll('[role="button"][aria-label]'),
+    ...document.querySelectorAll('[data-tooltip]'),
+  ];
+  for (const el of candidates) {
+    const t = presentButtonText(el);
+    if (!t) continue;
+    if (PRESENT_LABEL_IDLE_RE.test(t)) return el;
+    if (PRESENT_LABEL_SOMEONE_ELSE_RE.test(t)) return el;
+    if (PRESENT_LABEL_SELF_RE.test(t)) return el;
+  }
+  return null;
+}
+
+function probePresentingState() {
+  const btn = findPresentButton();
+  if (!btn) return { selfPresenting: false, presenterName: null, buttonFound: false };
+  const t = presentButtonText(btn);
+  if (PRESENT_LABEL_SELF_RE.test(t)) {
+    return { selfPresenting: true, presenterName: null, buttonFound: true };
+  }
+  const m = t.match(PRESENT_LABEL_SOMEONE_ELSE_RE);
+  if (m) return { selfPresenting: false, presenterName: m[1], buttonFound: true };
+  // Idle ("Share screen" / "Present now") — nobody presenting.
+  return { selfPresenting: false, presenterName: null, buttonFound: true };
+}
+
+// ---------------------------------------------------------------------------
 // Consolidated call-health tick (#226)
 // ---------------------------------------------------------------------------
 //
@@ -513,31 +580,9 @@ function gatherCallHealthSnapshot() {
     micHealth = ok ? 'healthy' : 'problem';
   }
 
-  // Presenting: who's currently sharing? Three states — self, other, none.
-  // Self check first since "You are presenting" is the most authoritative.
-  let selfPresenting = false;
-  let presenterName = null;
-  const presentingNow =
-    document.querySelector('[aria-label*="You are presenting" i]') ||
-    document.querySelector('[aria-label*="Stop presenting" i]') ||
-    document.querySelector('[data-tooltip*="Stop presenting" i]') ||
-    document.querySelector('button[aria-label*="stop" i][aria-label*="present" i]') ||
-    document.querySelector('[data-tooltip*="stop" i][data-tooltip*="present" i]');
-  if (presentingNow) {
-    selfPresenting = true;
-  } else {
-    const presentBtn =
-      findByAriaLabel('Share screen') ||
-      findByAriaLabel('Present now') ||
-      document.querySelector('[data-tooltip*="presenting" i]') ||
-      document.querySelector('[data-tooltip*="Present" i]') ||
-      document.querySelector('[data-tooltip*="Share screen" i]');
-    if (presentBtn) {
-      const tooltip = presentBtn.getAttribute('data-tooltip') || presentBtn.getAttribute('aria-label') || '';
-      const match = tooltip.match(/^(.+?)\s+is presenting/i);
-      if (match) presenterName = match[1];
-    }
-  }
+  // Presenting state — see probePresentingState() for the full label
+  // taxonomy. Three states: self / other / none.
+  const { selfPresenting, presenterName } = probePresentingState();
 
   // Participant list — domSpeakerTracker keeps the canonical map; we just
   // snapshot it here. After the recent edge-fired fix in _checkSpeakingChange
@@ -1429,19 +1474,21 @@ async function clickPresentNow(shareType) {
     return 'already-presenting';
   }
 
-  // Meet's "Present now" button — try multiple selectors
-  // When someone else is presenting, the tooltip changes to "{Name} is presenting"
-  const presentBtn =
-    findByAriaLabel('Share screen') ||
-    findByAriaLabel('Present now') ||
-    findByText('Present now') ||
-    document.querySelector('[data-tooltip="Share screen"]') ||
-    document.querySelector('[data-tooltip="Present now"]') ||
-    document.querySelector('[data-tooltip*="is presenting" i]');
+  // Meet's "Present now" button — labels cycle through "Share screen" /
+  // "Present now" (idle), "<name> is presenting" (someone else sharing),
+  // or "You are presenting" (us). We can click the button in any of the
+  // first two states; the "You are presenting" / Stop-presenting case
+  // was handled by the alreadyPresenting check above. Pre-#226 selector
+  // list missed the "<name> is presenting" case in some Meet builds
+  // where the label moved from data-tooltip to aria-label, so the bot
+  // reported "Could not find button" while the button was right there.
+  const presentBtn = findPresentButton();
 
   if (presentBtn) {
+    const label = presentButtonText(presentBtn);
+    console.log('[electron-meet] Present button found, label="' + label + '"');
     presentBtn.click();
-    console.log('[electron-meet] Clicked "Present now"');
+    console.log('[electron-meet] Clicked Present button');
 
     // Wait for the share picker to appear, then select share type
     await delay(500);

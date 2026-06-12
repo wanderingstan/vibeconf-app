@@ -721,7 +721,7 @@ function ensureStatusBar() {
   style.textContent = `
     #vibeconf-status-bar {
       position: fixed; top: 0; left: 0; right: 0; height: 56px;
-      background: #cc2222; color: #ffffff;
+      background: #8ab4f8; color: #ffffff;
       font-family: 'Google Sans', 'Roboto', sans-serif; font-size: 26px;
       font-weight: 500;
       display: flex; align-items: center; padding: 0 24px;
@@ -729,9 +729,9 @@ function ensureStatusBar() {
       letter-spacing: 0.5px;
     }
     #vibeconf-status-bar .icon { margin-right: 14px; font-size: 28px; }
-    #vibeconf-status-bar .label { color: #ffcccc; margin-right: 12px; }
+    #vibeconf-status-bar .label { color: #e8f0fe; margin-right: 12px; }
     #vibeconf-status-bar .status { color: #ffffff; }
-    #vibeconf-status-bar .status.error { color: #ffaaaa; font-weight: 700; }
+    #vibeconf-status-bar .status.error { color: #fce8e6; font-weight: 700; }
     #vibeconf-status-bar .status.active { color: #ffffff; }
     body { padding-top: 56px !important; }
   `;

@@ -825,17 +825,26 @@ class LocalServer {
       }
 
       // Nobody is speaking (or captions say they stopped) — check threshold.
-      // Use the MOST RECENT activity signal: either lastSpeechStoppedAt (DOM
-      // tracker stopped) or the most recent caption timestamp. If the speaker
-      // tracker missed a speech-start (audio meter ramp-up lag), a fresh
-      // caption arrives while lastSpeechStoppedAt is stale (minutes old). Using
-      // the stale value would treat a brand-new utterance as already-silent
-      // and resolve immediately on speech-onset — the user-visible "you flip to
-      // thinking the moment I start talking" bug.
+      //
+      // Picking silenceStart:
+      //   - If the tracker fired stop RECENTLY, trust stopTime as-is. Meet's
+      //     captions often keep revising trailing text for 1-2s after speech
+      //     actually ends; treating those revisions as new activity stretches
+      //     the silence window unnecessarily (real-world: ~1.4s extra wait
+      //     observed in a 30s utterance log, every turn).
+      //   - If stopTime is STALE (tracker missed a speech-start, common
+      //     after long bot turns when the indicator rotates), fall back to
+      //     the most recent caption activity. Without this fallback a fresh
+      //     utterance with a multi-minute-old stopTime would resolve
+      //     immediately at speech-onset.
       const silenceMs = waiter.silence * 1000;
       const lastEntryTime = lastEntryActivityTime;
       const stopTime = this.lastSpeechStoppedAt || 0;
-      const silenceStart = Math.max(stopTime, lastEntryTime) || Date.now();
+      const STOP_FRESH_MS = silenceMs * 3; // ~6s with default 2s silence
+      const stopIsFresh = stopTime && (Date.now() - stopTime) < STOP_FRESH_MS;
+      const silenceStart = stopIsFresh
+        ? stopTime
+        : (Math.max(stopTime, lastEntryTime) || Date.now());
       const elapsed = Date.now() - silenceStart;
 
       if (elapsed >= silenceMs) {

@@ -25,8 +25,8 @@ function buildSystem(botName) {
     `{"understanding": "...", "stance": "...", "people": "..."}`,
     ``,
     `- understanding: a few sentences capturing what is being discussed right now. Rewrite freely as the topic moves.`,
-    `- stance: the single point ${botName} would make if the floor opened this instant — a sentence or two, already shaped to be said aloud. If ${botName} has nothing worth adding right now, use "".`,
-    `- people: accumulating notes on who is in the call (roles, expertise, relationships, who has been quiet). ADD to the prior people notes; do NOT discard what is already there.`,
+    `- stance: the single point ${botName} would make if the floor opened this instant. Derive it FRESH from the MOST RECENT part of the transcript every time — reconsider what is most worth saying given where the conversation is NOW. Do NOT reuse or echo any earlier stance. One or two sentences, shaped to be said aloud. Use "" only if there is genuinely nothing to add right now.`,
+    `- people: notes on each participant. Names appear in the transcript as "Name: ...". List everyone you can identify, with any role, expertise, or notable behavior, and note who has stayed quiet. Build on the prior people notes — keep facts already recorded and add new ones.`,
     ``,
     `Output ONLY the JSON object — no prose, no markdown, no code fences.`,
   ].join('\n');
@@ -34,15 +34,20 @@ function buildSystem(botName) {
 
 function buildUser({ transcript, workingMemory }) {
   const wm = workingMemory || {};
+  // Deliberately do NOT feed the prior `stance` back in: a small model echoes
+  // whatever stance it's shown instead of re-deriving it (observed: stance
+  // frozen at its first value across an entire call while understanding moved).
+  // understanding + people ARE fed, because they're meant to evolve with
+  // continuity. stance is re-derived fresh from the transcript every time.
   return [
-    `CURRENT WORKING MEMORY:`,
+    `CURRENT WORKING MEMORY (for continuity — update as needed):`,
     `understanding: ${wm.understanding || '(empty)'}`,
-    `stance: ${wm.stance || '(empty)'}`,
     `people: ${wm.people || '(empty)'}`,
     ``,
     `RECENT TRANSCRIPT:`,
     transcript || '(none)',
     ``,
+    `Re-derive "stance" fresh from the most recent exchange above. Output the JSON now.`,
     `/no_think`,
   ].join('\n');
 }

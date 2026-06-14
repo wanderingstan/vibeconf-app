@@ -1,0 +1,136 @@
+# Two-Tier Model Architecture — Design
+
+Status: **design / experiment** · Branch: `feat/two-tier` (off `feat/llm-ack`) · Drafted 2026-06-14
+
+## Goal
+
+Replace the single-slow-model + fast-ack design with a genuine two-tier split, so the
+bot reacts in real time without paying slow-model latency on every turn, and can speak
+*immediately* when called on even after sitting silent through minutes of human discussion.
+
+## The core problem with today's architecture
+
+Today the **slow session drives**: the `/join-call` Claude session long-polls
+`wait_for_speech`, decides every response itself, and the fast-ack LLM only plays a
+filler phrase ("Mm-hmm") to hide that latency. Two consequences:
+
+1. Every substantive turn waits on Opus/Fable — seconds of latency, garnished with an ack.
+2. While the bot is silent on the sidelines, the slow session is **blocked** in
+   `wait_for_speech` doing nothing. When finally called on, it must digest minutes of
+   transcript in real time — slow and brittle.
+
+## The inversion
+
+| | Slow tier | Fast tier |
+|---|---|---|
+| **Is** | the user's subscription `/join-call` session (Opus/Fable) | a capable **local** model via the openai-compat interface |
+| **Owns** | "what are we actually building / what matters" | "what do I say right now, and when" |
+| **Reacts to** | consult requests + ambient "refresh understanding" | speech + chat events |
+| **Cadence** | seconds, occasional, background | sub-second, continuous |
+| **Cost** | flat (subscription) | free (local compute) |
+| **Outputs** | `understanding` + `stance` (workingMemory) + consult answers | `speak` / `update_whiteboard` |
+
+Key reframe: the slow tier is **"the session that knows what we're working on,"** not
+merely "the smarter model." Its value is *context the human is steering*, not raw IQ.
+`consult_slow` means "ask the part of me that's been in the room with the human."
+
+### Why local model for the fast tier (not Agent SDK / Channels)
+
+- The **Claude Agent SDK** bills metered API credits — ruinous for a tier that fires on
+  every utterance for an hour. The interactive slow session is covered by the flat
+  subscription; the fast tier must not be metered.
+- **Channels** (research preview) only push events into a session; they don't choose the
+  model and don't change the billing story.
+- A **local model** (LM Studio / Ollama via `ack/openai-compat.js`, which we already
+  built) is free, and *we* own the invocation loop in Node — we call it whenever a speech
+  event lands or a timer fires. No new dependency, no streaming-generator machinery, full
+  control over context.
+
+## Central data structure: `workingMemory`
+
+(Named to avoid collision with the shared **whiteboard** feature. This is the bot's
+private, internal mental state — not a shared artifact.)
+
+Lives in `local-server`, maintained continuously by the **slow** model *while the bot is
+silent*, read by the **fast** model to phrase a response instantly:
+
+```
+workingMemory = {
+  understanding: "...",   // slow model's running read of the discussion
+  stance:        "...",   // the point I'd make if the floor opened right now
+  updatedAt, updatedBy
+}
+```
+
+The slow model pre-chews substance in the background, so the call-on moment is cheap:
+the fast model does **phrasing only** (read `stance` + last utterance → one spoken
+sentence, <500ms) rather than catching up on minutes of transcript in real time.
+
+Both fields are concrete enough to **log, diff, and show in the debug overlay** so we can
+watch the slow model's read evolve live during a call.
+
+## `consult_slow` has two modes
+
+- **Ambient** (the important one): timer- or accumulation-triggered, **non-blocking**,
+  runs while the bot is quiet, refreshes `workingMemory`. This is what lets the bot stay
+  warm through a long discussion it isn't part of yet.
+- **On-demand**: the fast model hits a turn it can't phrase from `workingMemory`, blocks
+  briefly for a targeted answer. This is the **only** place the old ack still earns its
+  keep — filling the 2–10s of a real consult.
+
+## Floor detection stays where it is
+
+`local-server` already detects silence / floor-open (`_checkWaiters`,
+`lastSpeechStoppedAt`, speaker-tracker grace). The fast model decides *whether* to take an
+opening; local-server tells it *when* an opening exists. **Do not move floor detection
+into the model.**
+
+## What happens to the ack subsystem
+
+It shrinks, doesn't die. Most turns need no ack — the fast model just answers. The ack
+repurposes to one narrow job: fill the gap while an **on-demand** `consult_slow` is in
+flight. `ack/openai-compat.js` is reused as the fast-model client.
+
+## No toggle — the branch is the isolation
+
+We deliberately do **not** add a `conversationEngine` pref. `main` (via `feat/llm-ack`)
+stays the stable single-tier bot; this branch is the experiment. That avoids dual-path
+`if (engine === ...)` clutter in the new code.
+
+## Phasing
+
+**Phase 0 — purely additive, current loop untouched.**
+Prove the riskiest assumption (*can the slow model maintain a useful `workingMemory` in
+the background, and can the fast model phrase a good contribution from it?*) with zero
+risk to the working bot:
+- Add `workingMemory` state + read/write endpoints in `local-server`.
+- Slow session maintains it between its turns (new MCP tools: `post_understanding` /
+  ambient `wait_for_context`).
+- Upgrade the fast model; when there's an opening, let it speak a real short contribution
+  drawn from `workingMemory` instead of "Mm-hmm."
+
+**Phase 1 — invert the driver.**
+Fast model becomes authoritative for speech; slow session moves fully to background
+comprehension + consults. The `wait_for_speech`-drives-everything loop is retired on this
+branch.
+
+## New surface to build
+
+- `workingMemory` state + HTTP/MCP read-write in `local-server`.
+- Slow-session "background comprehension" skill mode + MCP tools
+  (`wait_for_context`, `post_understanding`, `consult` answer path).
+- Fast-driver module (Node, in `local-server`/`main`) that reads `workingMemory` and
+  phrases via the local model through `ack/openai-compat.js`.
+- Debug-overlay surfacing of `understanding` / `stance`.
+
+## Open questions
+
+- **Local-model pick** — pending hardware test. Target: M2 Pro / 32GB. Need a model that
+  phrases a 1–2 sentence response with TTFT < ~400ms and total < ~1s while Electron +
+  Meet + the model all share 32GB. Candidates: Qwen2.5-7B / Qwen3-8B (likely sweet spot),
+  Qwen2.5-14B (better comprehension, still fast), 32B (fits at Q4 but probably too slow
+  for the fast path with everything else running). Prefer MLX builds. Measure TTFT + tok/s
+  in LM Studio on a representative "stance + utterance → sentence" prompt.
+- How aggressively to refresh `workingMemory` (every utterance? every N seconds? on
+  accumulation?) — tune against local-model cost and staleness.
+- Whether `understanding` and `stance` are one slow-model call or two.

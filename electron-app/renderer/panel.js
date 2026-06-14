@@ -122,6 +122,16 @@ function renderCallState(s) {
         const tag = e.emoji ? ` ${e.emoji}` : '';
         return `    ${i + 1}.${tag} "${snippet}${more}"`;
       });
+  // workingMemory (two-tier). Show each field on its own indented block so we
+  // can watch the slow model's read evolve live during a call.
+  const wm = s.workingMemory || {};
+  const wmField = (label, val) => {
+    const text = (val || '').trim();
+    if (!text) return [`    ${label}: (empty)`];
+    const wrapped = text.replace(/\s+/g, ' ');
+    return [`    ${label}:`, `      ${wrapped.slice(0, 240)}${wrapped.length > 240 ? '…' : ''}`];
+  };
+  const wmAge = wm.updatedAt ? agoLabel(wm.updatedAt) : 'never';
   callStateDebug.textContent = [
     `Call status:        ${s.callStatus || 'unknown'}`,
     `Bot state:          ${s.botState || 'unknown'}`,
@@ -136,6 +146,10 @@ function renderCallState(s) {
     `Agent loop:         ${agentLoopHealth(s)}`,
     `Last wait_for_speech: ${agoLabel(s.lastWaitForSpeechAt)}`,
     `Last ack:           ${ackLabel(s.lastAckEvent)}`,
+    `Working memory (updated ${wmAge}${wm.updatedBy ? ` by ${wm.updatedBy}` : ''}):`,
+    ...wmField('understanding', wm.understanding),
+    ...wmField('stance', wm.stance),
+    ...wmField('people', wm.people),
     `Queued speech (${queued.length}):`,
     ...queuedLines,
     `Participants (${(s.participants || []).length}):`,

@@ -53,7 +53,7 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, getWebsiteUrl, getWhiteboardLoadedUrl, getPref, setPref, applyPref } = {}) {
+  constructor({ port, appVersion, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, getWebsiteUrl, getWhiteboardLoadedUrl, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.appVersion = appVersion || null;
     this.onBotSpeech = onBotSpeech || (() => {});
@@ -70,6 +70,7 @@ class LocalServer {
     this.onCallStatusChange = onCallStatusChange || (() => {}); // 'idle' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
     this.onAnyoneSpeakingChange = onAnyoneSpeakingChange || (() => {}); // boolean
     this.onCaptionsChange = onCaptionsChange || (() => {}); // boolean — true=on, false=off (=== deaf)
+    this.onWorkingMemoryChange = onWorkingMemoryChange || (() => {}); // ({understanding, stance, updatedAt, updatedBy})
     this.onParticipantsFirstSeen = onParticipantsFirstSeen || (() => {}); // fires once per call when DOMSpeakerTracker first reports participants
     this.onAvatarEmojiOverride = onAvatarEmojiOverride || (() => {}); // ({idle?, listening?}) — null/undefined for that key means reset
     this.onSetCamera = onSetCamera || (() => {}); // (on: boolean)
@@ -140,6 +141,19 @@ class LocalServer {
     // Real-time speaking state (from DOMSpeakerTracker, not captions)
     this.anyoneSpeaking = false;       // true if any participant is currently speaking
     this.lastSpeechStoppedAt = null;   // timestamp (ms) when last person stopped speaking
+
+    // Two-tier "workingMemory" (docs/two-tier-design.md). The bot's private
+    // internal read of the conversation — NOT the shared whiteboard. The slow
+    // model maintains this in the background while the bot is silent; the fast
+    // model phrases responses from it instantly. Phase 0: state + endpoints
+    // only, consumers wired in later steps.
+    //   understanding — slow model's running read of the discussion (churns)
+    //   stance        — the point the bot would make if the floor opened now (churns)
+    //   people        — accumulating notes about who's in the call (roles,
+    //                    expertise, who's been quiet). Distinct from the
+    //                    mechanical this.participants presence list; this is
+    //                    semantic knowledge that persists across topic shifts.
+    this.workingMemory = { understanding: '', stance: '', people: '', updatedAt: null, updatedBy: null };
 
     // Last fast-ack phrase the bot played (or null). Surfaces to the slow
     // model on its next wait_for_speech so the model can self-correct if
@@ -248,6 +262,7 @@ class LocalServer {
     this.lastRespondedSpeaker = null;
     this.lastRespondedText = null;
     this.lastRespondedAt = null;
+    this.workingMemory = { understanding: '', stance: '', people: '', updatedAt: null, updatedBy: null };
     this._resetAutoLeave();
     this.resolveAllWaiters();
     // Use the setter so onCallStatusChange fires — the avatar uses this to
@@ -270,6 +285,7 @@ class LocalServer {
     this.lastRespondedSpeaker = null;
     this.lastRespondedText = null;
     this.lastRespondedAt = null;
+    this.workingMemory = { understanding: '', stance: '', people: '', updatedAt: null, updatedBy: null };
     this._resetAutoLeave();
     this.resolveAllWaiters();
     this.setCallStatus('idle');
@@ -285,6 +301,30 @@ class LocalServer {
     this.captionsOn = on;
     console.log(ts(), on ? '🟢 [captions] back ON' : '🔴 [captions] OFF — bot is deaf');
     this.onCaptionsChange(on);
+  }
+
+  // --- workingMemory (two-tier, docs/two-tier-design.md) ----------------------
+
+  getWorkingMemory() {
+    return { ...this.workingMemory };
+  }
+
+  // Partial update — pass any of { understanding, stance, people }. Unset
+  // fields are left as-is so the slow model can refresh just one (e.g. update
+  // the topic read without touching the accumulated people notes). Returns the
+  // merged result. updatedBy is for debug attribution.
+  setWorkingMemory({ understanding, stance, people, updatedBy } = {}) {
+    if (typeof understanding === 'string') this.workingMemory.understanding = understanding;
+    if (typeof stance === 'string') this.workingMemory.stance = stance;
+    if (typeof people === 'string') this.workingMemory.people = people;
+    this.workingMemory.updatedAt = Date.now();
+    if (updatedBy) this.workingMemory.updatedBy = updatedBy;
+    const u = (this.workingMemory.understanding || '').length;
+    const s = (this.workingMemory.stance || '').length;
+    const p = (this.workingMemory.people || '').length;
+    console.log(ts(), `🧩 [workingMemory] updated by ${updatedBy || '?'} (understanding ${u}c, stance ${s}c, people ${p}c)`);
+    this.onWorkingMemoryChange(this.getWorkingMemory());
+    return this.getWorkingMemory();
   }
 
   setCallStatus(status) {
@@ -447,6 +487,7 @@ class LocalServer {
       botState: this.botState,
       anyoneSpeaking: this.anyoneSpeaking,
       captionsOn: this.captionsOn,
+      workingMemory: this.getWorkingMemory(),
       sharing: this.sharing,
       someoneElsePresenting: this.someoneElsePresenting,
       presenterName: this.presenterName,
@@ -1231,6 +1272,7 @@ class LocalServer {
         errors: this.errors,
         permissions: this.permissions,
         captionsOn: this.captionsOn,
+        workingMemory: this.getWorkingMemory(),
         chatUnread: this.chatUnread,
         roomUrl: this.roomId ? `${(this.getWebsiteUrl() || '').replace(/\/$/, '')}/room/${this.roomId}` : null,
         whiteboardUrl: this.roomId ? `${(this.getWebsiteUrl() || '').replace(/\/$/, '')}/room/${this.roomId}?mode=whiteboard` : null,
@@ -1340,6 +1382,39 @@ class LocalServer {
         success: true,
         preferences: prefsSchema.describe(this.getPref),
       }));
+      return;
+    }
+
+    // workingMemory read/write (two-tier, docs/two-tier-design.md).
+    // GET  → current { understanding, stance, updatedAt, updatedBy }
+    // POST → partial update; body may contain understanding and/or stance.
+    //        updatedBy (optional) is for debug attribution (e.g. bot name).
+    if (url.pathname === '/api/working-memory' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, workingMemory: this.getWorkingMemory() }));
+      return;
+    }
+    if (url.pathname === '/api/working-memory' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      let parsed;
+      try { parsed = JSON.parse(body || '{}'); } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'Invalid JSON' }));
+        return;
+      }
+      if (typeof parsed.understanding !== 'string' && typeof parsed.stance !== 'string' && typeof parsed.people !== 'string') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'Provide understanding, stance, and/or people (string)' }));
+        return;
+      }
+      const updated = this.setWorkingMemory({
+        understanding: parsed.understanding,
+        stance: parsed.stance,
+        people: parsed.people,
+        updatedBy: parsed.updatedBy,
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, workingMemory: updated }));
       return;
     }
 

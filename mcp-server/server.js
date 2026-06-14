@@ -968,6 +968,73 @@ server.tool(
   }
 );
 
+// --- get_working_memory ---
+// Two-tier architecture (docs/two-tier-design.md). The bot's private internal
+// read of the conversation — distinct from the shared whiteboard. Read it to
+// see the current running understanding + stance; the fast model phrases from
+// this so it can speak instantly when called on.
+server.tool(
+  "get_working_memory",
+  "Read the bot's private working memory for this call: 'understanding' (the running read of what's being discussed) and 'stance' (the point the bot would make if the floor opened now). This is the bot's internal mental state, NOT the shared whiteboard participants see. Use it to check what the slow model currently believes before phrasing a response, or to decide whether the understanding needs refreshing.",
+  {},
+  async () => {
+    try {
+      const resp = await fetch(`${BASE_URL}/api/working-memory`);
+      const data = await resp.json();
+      if (!data?.success) {
+        return { content: [{ type: "text", text: `Error: ${data?.error || 'Could not fetch working memory'}` }] };
+      }
+      const wm = data.workingMemory || {};
+      const age = wm.updatedAt ? `${Math.round((Date.now() - wm.updatedAt) / 1000)}s ago` : 'never';
+      return { content: [{ type: "text", text:
+        `Working memory (updated ${age}${wm.updatedBy ? ` by ${wm.updatedBy}` : ''}):\n\n` +
+        `UNDERSTANDING:\n${wm.understanding || '(empty)'}\n\n` +
+        `STANCE:\n${wm.stance || '(empty)'}\n\n` +
+        `PEOPLE:\n${wm.people || '(empty)'}`
+      }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
+// --- post_understanding ---
+// The slow model's background-comprehension write path. Maintains the bot's
+// working memory while it's silent on the sidelines, so the call-on moment is
+// cheap (the fast model only has to phrase, not catch up on minutes of talk).
+server.tool(
+  "post_understanding",
+  "Update the bot's private working memory for this call. Pass any of 'understanding' (your running read of what's being discussed), 'stance' (the point you'd make if the floor opened right now), or 'people' (accumulating notes about who's in the call — roles, expertise, who's been quiet). Unset fields are left as-is, so you can refresh the topic read without disturbing the people notes. Call this in the background as the conversation evolves, even when you're NOT speaking, so the bot can respond instantly when called on. This is internal state, not the shared whiteboard.",
+  {
+    understanding: z.string().optional().describe("Running read of what's being discussed. Keep it concise and current. Churns as the topic moves."),
+    stance: z.string().optional().describe("The point the bot would make if the floor opened now. A bullet or two, ready to be phrased into speech."),
+    people: z.string().optional().describe("Accumulating notes about participants: roles, expertise, relationships, who's been quiet. Persists across topic shifts — update it as you learn things, don't rewrite it from scratch each turn."),
+  },
+  async ({ understanding, stance, people }) => {
+    if (understanding == null && stance == null && people == null) {
+      return { content: [{ type: "text", text: "Provide understanding, stance, and/or people." }] };
+    }
+    try {
+      const resp = await fetch(`${BASE_URL}/api/working-memory`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ understanding, stance, people, updatedBy: BOT_NAME }),
+      });
+      const data = await resp.json();
+      if (!data?.success) {
+        return { content: [{ type: "text", text: `Error: ${data?.error || 'Failed to update working memory'}` }] };
+      }
+      const wm = data.workingMemory || {};
+      const u = (wm.understanding || '').length;
+      const s = (wm.stance || '').length;
+      const p = (wm.people || '').length;
+      return { content: [{ type: "text", text: `Working memory updated (understanding ${u} chars, stance ${s} chars, people ${p} chars).` }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
 // --- get_room_info ---
 server.tool(
   "get_room_info",

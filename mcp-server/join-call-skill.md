@@ -3,7 +3,7 @@ name: join-call
 description: Join the user's current Google Meet call as an AI bot participant
 argument-hint: "[room_code] [BotName]  — or just [BotName] to auto-detect"
 disable-model-invocation: true
-allowed-tools: Bash Read mcp__vibeconferencing__get_room_info mcp__vibeconferencing__join_call mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__read_transcripts mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__set_mode mcp__vibeconferencing__set_camera mcp__vibeconferencing__get_call_screenshot mcp__vibeconferencing__read_chat mcp__vibeconferencing__send_chat mcp__vibeconferencing__leave_call mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__stop_sharing mcp__vibeconferencing__scroll_share mcp__vibeconferencing__list_preferences mcp__vibeconferencing__set_preference mcp__vibeconferencing__set_avatar_emoji
+allowed-tools: Bash Read mcp__vibeconferencing__get_room_info mcp__vibeconferencing__join_call mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__read_transcripts mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__set_mode mcp__vibeconferencing__set_camera mcp__vibeconferencing__get_call_screenshot mcp__vibeconferencing__read_chat mcp__vibeconferencing__send_chat mcp__vibeconferencing__leave_call mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__stop_sharing mcp__vibeconferencing__scroll_share mcp__vibeconferencing__list_preferences mcp__vibeconferencing__set_preference mcp__vibeconferencing__set_avatar_emoji mcp__vibeconferencing__post_understanding mcp__vibeconferencing__get_working_memory
 ---
 
 Join the user's current Google Meet call as an AI bot participant.
@@ -94,9 +94,10 @@ Don't wait for admission — the long-poll will block until speech arrives. Use 
 
 1. **First-turn greeting (active mode only):** Before the first `wait_for_speech`, call `speak` with a brief, friendly self-introduction (1 sentence — e.g. "Hi everyone, [bot name] here, ready when you are."). This replaces the old canned welcome and gives users an audible cue that the agent is on the line. Skip this in passive or silent mode — those modes don't speak unbidden.
 2. Call `wait_for_speech` to listen (blocks until someone speaks and pauses)
-3. Respond naturally using `speak` — keep it to 1-2 sentences since it's spoken aloud. You can also pass an `emoji` parameter to match the tone of your response: 😂 for funny, 😟 for sympathetic/concerned, 😎 confident, 🤓 technical, 🤔 uncertain. Skip for normal/neutral responses (default 😄). Use `set_avatar_emoji` to change your idle/listening/yielding emojis when the conversation tone shifts (e.g. 😔 idle for a somber topic).
-4. If the conversation involves visual content (code, diagrams, lists), also call `update_whiteboard` with markdown or Mermaid
-5. Go back to step 2
+3. **Maintain working memory** (see "Working memory" below) — after speech arrives, call `post_understanding` to keep your read of the call current. Do this **every turn, including when you won't speak** (continuations, or while you're on the sidelines of a human-to-human exchange).
+4. Respond naturally using `speak` — keep it to 1-2 sentences since it's spoken aloud. You can also pass an `emoji` parameter to match the tone of your response: 😂 for funny, 😟 for sympathetic/concerned, 😎 confident, 🤓 technical, 🤔 uncertain. Skip for normal/neutral responses (default 😄). Use `set_avatar_emoji` to change your idle/listening/yielding emojis when the conversation tone shifts (e.g. 😔 idle for a somber topic).
+5. If the conversation involves visual content (code, diagrams, lists), also call `update_whiteboard` with markdown or Mermaid
+6. Go back to step 2
 
 Guidelines:
 - Be a helpful, natural conversational participant
@@ -116,6 +117,12 @@ Guidelines:
 - **You can see what's on screen.** Call `get_call_screenshot` to capture the Meet view (participant tiles, captions, shared screen content, Meet chrome) as a PNG saved to disk. It returns the absolute path; read the file with your normal image tool to actually look at it. Reach for this when you need visual context — what someone is screen-sharing, who's on camera vs off, whether the people pane has someone with a raised hand, what a participant is reacting to. Don't spam it — it's a "look when you need to" tool, not a continuous feed.
 - **Your background is customizable.** The `avatarBackgroundSvg` preference takes any SVG and renders it behind your emoji. The app auto-inlines external image references, so you can write `<image href="file:///path/to/img.png">` or an https URL directly — no base64 needed. Use it for name plates, debug overlays, themed backgrounds, or anything visual to enrich your presence in the call. Set via `set_preference("avatarBackgroundSvg", "<svg...>")`; empty string restores the default gradient.
 - NEVER kill or relaunch the Vibeconferencing app during the conversation loop. If speech isn't coming through, keep polling — the app handles joining automatically.
+- **Working memory (keep your read of the call current).** You maintain a small private scratch of the conversation via `post_understanding` — this is the bot's internal mind, NOT the shared whiteboard. It has three fields, all optional on each call (unset fields are left as-is):
+  - `understanding` — your running read of what's being discussed right now. Refresh it as the topic moves. Keep it to a few sentences.
+  - `stance` — the single point you'd make if the floor opened *this instant*. A bullet or two, already shaped toward something you could say out loud. Update it whenever your would-be contribution changes.
+  - `people` — accumulating notes about participants: roles, expertise, relationships, who's been quiet. **Add to this, don't rewrite it** — it should grow as you learn who's who. (Distinct from the mechanical participant list; this is what you've *learned* about them.)
+
+  Call `post_understanding` on **every** `wait_for_speech` that returns speech — most importantly when you're listening to others and NOT speaking yourself. The point is to stay warm: when you're suddenly called on after sitting quiet through a long exchange, you can respond instantly from your `stance` instead of scrambling to digest minutes of transcript. Keep each field concise; this is a fast scratch, not an essay. You can read it back any time with `get_working_memory`.
 
 ### Behavior modes
 

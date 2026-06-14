@@ -161,6 +161,7 @@ class LocalServer {
     // the last refresh; the delta vs. the current total is the accumulation.
     this._charsAtLastComprehension = 0;
     this._comprehensionInFlight = false;
+    this._comprehensionCount = 0; // refreshes done this call — drives the warm-up ramp
 
     // Last fast-ack phrase the bot played (or null). Surfaces to the slow
     // model on its next wait_for_speech so the model can self-correct if
@@ -272,6 +273,7 @@ class LocalServer {
     this.workingMemory = { understanding: '', stance: '', people: '', updatedAt: null, updatedBy: null };
     this._charsAtLastComprehension = 0;
     this._comprehensionInFlight = false;
+    this._comprehensionCount = 0; // refreshes done this call — drives the warm-up ramp
     this._resetAutoLeave();
     this.resolveAllWaiters();
     // Use the setter so onCallStatusChange fires — the avatar uses this to
@@ -297,6 +299,7 @@ class LocalServer {
     this.workingMemory = { understanding: '', stance: '', people: '', updatedAt: null, updatedBy: null };
     this._charsAtLastComprehension = 0;
     this._comprehensionInFlight = false;
+    this._comprehensionCount = 0; // refreshes done this call — drives the warm-up ramp
     this._resetAutoLeave();
     this.resolveAllWaiters();
     this.setCallStatus('idle');
@@ -368,11 +371,26 @@ class LocalServer {
     if (this._comprehensionInFlight) return;
     const total = this._transcriptCharsTotal();
     const accumulated = Math.max(0, total - this._charsAtLastComprehension);
-    const threshold = Number(this._pref('comprehendCharThreshold')) || 500;
+
+    // 0 disables the size-based refresh entirely. (Number(0)||500 would wrongly
+    // re-enable it, so handle 0 explicitly.)
+    const raw = this._pref('comprehendCharThreshold');
+    const steady = (raw === 0) ? 0 : (Number(raw) || 500);
+    if (steady === 0) return;
+
+    // Warm-up ramp: the first couple of refreshes fire after much less speech,
+    // so workingMemory gets populated in the opening minute instead of staying
+    // empty until 500c of human talk piles up. After the ramp, settle to the
+    // steady cadence. Clamped to steady so a low steady value can't be exceeded.
+    const ramp = [Math.min(120, steady), Math.min(300, steady)];
+    const threshold = this._comprehensionCount < ramp.length
+      ? ramp[this._comprehensionCount]
+      : steady;
     if (accumulated < threshold) return;
 
     this._comprehensionInFlight = true;
-    console.log(ts(), `🧩 [comprehend] accumulation ${accumulated}c ≥ ${threshold}c — refreshing working memory`);
+    this._comprehensionCount++;
+    console.log(ts(), `🧩 [comprehend] accumulation ${accumulated}c ≥ ${threshold}c (refresh #${this._comprehensionCount}) — refreshing working memory`);
     const transcript = this._recentTranscriptText();
     const wm = this.getWorkingMemory();
     Promise.resolve()

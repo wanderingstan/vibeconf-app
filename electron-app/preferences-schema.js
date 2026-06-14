@@ -16,7 +16,9 @@ const PREFERENCES = {
       'Two-tier experiment: how many characters of NEW transcript must pile ' +
       'up before the bot refreshes its background working memory (understanding / ' +
       'stance / people) via the local model. Lower = fresher but more local-model ' +
-      'calls; higher = cheaper but staler. 0 disables the size-based refresh. ' +
+      'calls; higher = cheaper but staler. The first two refreshes of a call fire ' +
+      'sooner (~120c then ~300c) so working memory warms up fast, then settle to ' +
+      'this value. 0 disables the size-based refresh. ' +
       'Requires the local (openai-compat) model to be configured.',
   },
   ackShortMin: {

@@ -56,8 +56,9 @@ silent*, read by the **fast** model to phrase a response instantly:
 
 ```
 workingMemory = {
-  understanding: "...",   // slow model's running read of the discussion
-  stance:        "...",   // the point I'd make if the floor opened right now
+  understanding: "...",   // slow model's running read of the discussion (churns)
+  stance:        "...",   // the point I'd make if the floor opened right now (churns)
+  people:        "...",   // accumulating notes on who's in the call (persists)
   updatedAt, updatedBy
 }
 ```
@@ -66,8 +67,19 @@ The slow model pre-chews substance in the background, so the call-on moment is c
 the fast model does **phrasing only** (read `stance` + last utterance → one spoken
 sentence, <500ms) rather than catching up on minutes of transcript in real time.
 
-Both fields are concrete enough to **log, diff, and show in the debug overlay** so we can
-watch the slow model's read evolve live during a call.
+**Why three fields, not one** — they have different *lifecycles*. `understanding` and
+`stance` churn (rewritten on every refresh as the topic moves). `people` accumulates:
+"Bob is the CEO," "Sarah is the AI expert," "John joined but hasn't spoken" are true
+regardless of the current topic and must survive a topic-read refresh. Folding people
+into `understanding` would drop the roster every time the slow model re-reads the
+discussion. `people` is also distinct from the mechanical `this.participants` presence
+list (who's here / speaking *now*) — it's *semantic* knowledge only the slow model can
+derive, and it's queried differently (the fast model wants "who's the decision-maker"
+independent of the topic).
+
+All fields are concrete enough to **log, diff, and show in the troubleshooting panel** so
+we can watch the slow model's read evolve live during a call. Partial updates are
+supported — refresh just the topic read without disturbing accumulated people notes.
 
 ## `consult_slow` has two modes
 

@@ -154,6 +154,26 @@ branch.
   the constraint + numbers under "Why local model for the fast tier" above. Qwen3.5-9B was
   rejected (reasoning loop). Larger non-reasoning models (14B) remain a future upgrade path
   if 7B phrasing proves too thin.
-- How aggressively to refresh `workingMemory` (every utterance? every N seconds? on
-  accumulation?) — tune against local-model cost and staleness.
-- Whether `understanding` and `stance` are one slow-model call or two.
+- ~~How aggressively to refresh `workingMemory`~~ — RESOLVED 2026-06-14: **size-based,
+  not time-based.** `local-server` counts new caption chars and fires a background refresh
+  when accumulation crosses `comprehendCharThreshold` (pref, default 500c). A quiet call
+  burns no refreshes; a busy one refreshes proportionally to how much was said.
+
+  **Who maintains it in the background:** the single slow session is blocked in
+  `wait_for_speech` and can't do true background work, so the **local model** does the
+  accumulation-triggered refresh in-process (`electron-app/comprehend.js`, via the same
+  openai-compat endpoint as the fast-ack). This also tests the local model's *comprehension*
+  (not just phrasing). The slow session still writes `workingMemory` on its own turns (per
+  the skill) — so there are two writers; `updatedBy` (`auto` = background local model,
+  bot-name = slow session) distinguishes them in the panel, which lets us compare quality
+  directly. If the local model's background comprehension proves too thin, the escalation
+  is a dedicated second session (Phase 1).
+
+  Fallback before this landed: tag `checkpoint/phase0-silence-trigger` (slow session only,
+  refreshing at silence boundaries).
+
+  Still to tune: the default threshold (500c) against local-model cost vs. staleness on
+  real calls; and whether two writers (background + slow session) is keeper or confusing.
+- Whether the background comprehension and the fast-ack phrasing should share one LM Studio
+  instance (they currently would — single loaded model serializes the two call types) or
+  run on separate endpoints.

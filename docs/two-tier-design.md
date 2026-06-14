@@ -46,6 +46,19 @@ merely "the smarter model." Its value is *context the human is steering*, not ra
   event lands or a timer fires. No new dependency, no streaming-generator machinery, full
   control over context.
 
+**Constraint discovered in testing (2026-06-14): the fast tier must be a NON-reasoning
+model.** A reasoning/thinking model (tried Qwen3.5-9B) deliberates out loud and, on a
+trivial phrasing task, spiralled into a minute-long repetition loop. `/no_think` was not
+honored, and our `stripThink()` backstop only catches `<think>…</think>` tags — it does
+*not* catch plain-text "Thinking Process:" reasoning, so we can't scrub it after the fact.
+The fast tier's job is "no deliberation, just phrase," so a reasoning-first model fights
+the goal architecturally. Pick a plain instruct model.
+
+**Chosen fast-tier model: `qwen2.5-7b-instruct-mlx` (4-bit).** On M2 Pro / 32GB it
+returns a one-sentence reply in ~1.15s cold (~630ms TTFT + ~0.5s generation at ~44 tok/s),
+clean EOS stop, no thinking wrapper. TTFT improves with the `warmup()` KV-cache preload.
+Comfortable memory headroom alongside Electron + Meet.
+
 ## Central data structure: `workingMemory`
 
 (Named to avoid collision with the shared **whiteboard** feature. This is the bot's
@@ -137,12 +150,10 @@ branch.
 
 ## Open questions
 
-- **Local-model pick** — pending hardware test. Target: M2 Pro / 32GB. Need a model that
-  phrases a 1–2 sentence response with TTFT < ~400ms and total < ~1s while Electron +
-  Meet + the model all share 32GB. Candidates: Qwen2.5-7B / Qwen3-8B (likely sweet spot),
-  Qwen2.5-14B (better comprehension, still fast), 32B (fits at Q4 but probably too slow
-  for the fast path with everything else running). Prefer MLX builds. Measure TTFT + tok/s
-  in LM Studio on a representative "stance + utterance → sentence" prompt.
+- ~~**Local-model pick**~~ — RESOLVED 2026-06-14: `qwen2.5-7b-instruct-mlx` (4-bit). See
+  the constraint + numbers under "Why local model for the fast tier" above. Qwen3.5-9B was
+  rejected (reasoning loop). Larger non-reasoning models (14B) remain a future upgrade path
+  if 7B phrasing proves too thin.
 - How aggressively to refresh `workingMemory` (every utterance? every N seconds? on
   accumulation?) — tune against local-model cost and staleness.
 - Whether `understanding` and `stance` are one slow-model call or two.

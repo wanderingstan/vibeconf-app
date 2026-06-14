@@ -8,6 +8,17 @@
 // store.get('key') ?? PREFERENCES.key.default in the consumer.
 
 const PREFERENCES = {
+  comprehendCharThreshold: {
+    type: 'number',
+    default: 500,
+    min: 0,
+    description:
+      'Two-tier experiment: how many characters of NEW transcript must pile ' +
+      'up before the bot refreshes its background working memory (understanding / ' +
+      'stance / people) via the local model. Lower = fresher but more local-model ' +
+      'calls; higher = cheaper but staler. 0 disables the size-based refresh. ' +
+      'Requires the local (openai-compat) model to be configured.',
+  },
   ackShortMin: {
     type: 'number',
     default: 20,

@@ -89,4 +89,4 @@ async function warmup({ store, log }) {
   return openaiCompat.warmup({ config, log });
 }
 
-module.exports = { decide, warmup };
+module.exports = { decide, warmup, getProviderConfig };

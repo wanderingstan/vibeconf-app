@@ -489,6 +489,30 @@ const localServer = new globalThis.LocalServer({
     }
   },
 
+  // Background working-memory refresh (two-tier experiment). Fired by
+  // local-server when enough new transcript has accumulated. Runs the local
+  // model off the hot path and writes the result back. Non-blocking and
+  // best-effort — failures are swallowed in comprehend() and we just skip.
+  onComprehensionDue: async (transcript, workingMemory) => {
+    const ackModule = require('./ack');
+    const config = ackModule.getProviderConfig(store);
+    // Needs a local OpenAI-compatible endpoint (same one the fast-ack uses).
+    // No local model configured → nothing to comprehend with; skip silently.
+    if (config.provider !== 'openai-compat') return;
+    const { comprehend } = require('./comprehend');
+    const botName = store?.get('botName') || 'the bot';
+    const result = await comprehend({
+      transcript,
+      workingMemory,
+      botName,
+      config: { endpoint: config.endpoint, apiKey: config.apiKey, model: config.model, timeoutMs: 8000 },
+      log: (m) => console.log(ts(), '🧩', m),
+    });
+    if (result) {
+      localServer.setWorkingMemory({ ...result, updatedBy: 'auto' });
+    }
+  },
+
   onParticipantsFirstSeen: () => {
     // Used to be the avatar engagement trigger, but the captions-ready
     // signal is more honest: people pane fills before captions are usable,

@@ -53,7 +53,7 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, getWebsiteUrl, getWhiteboardLoadedUrl, getPref, setPref, applyPref } = {}) {
+  constructor({ port, appVersion, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, getWebsiteUrl, getWhiteboardLoadedUrl, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.appVersion = appVersion || null;
     this.onBotSpeech = onBotSpeech || (() => {});
@@ -71,6 +71,7 @@ class LocalServer {
     this.onAnyoneSpeakingChange = onAnyoneSpeakingChange || (() => {}); // boolean
     this.onCaptionsChange = onCaptionsChange || (() => {}); // boolean — true=on, false=off (=== deaf)
     this.onWorkingMemoryChange = onWorkingMemoryChange || (() => {}); // ({understanding, stance, updatedAt, updatedBy})
+    this.onComprehensionDue = onComprehensionDue || (async () => {}); // async (transcriptText, workingMemory) — background refresh
     this.onParticipantsFirstSeen = onParticipantsFirstSeen || (() => {}); // fires once per call when DOMSpeakerTracker first reports participants
     this.onAvatarEmojiOverride = onAvatarEmojiOverride || (() => {}); // ({idle?, listening?}) — null/undefined for that key means reset
     this.onSetCamera = onSetCamera || (() => {}); // (on: boolean)
@@ -154,6 +155,12 @@ class LocalServer {
     //                    mechanical this.participants presence list; this is
     //                    semantic knowledge that persists across topic shifts.
     this.workingMemory = { understanding: '', stance: '', people: '', updatedAt: null, updatedBy: null };
+    // Background comprehension trigger — fires onComprehensionDue when enough
+    // NEW transcript has accumulated since the last refresh (size-based, not
+    // time-based). _charsAtLastComprehension is the transcript char total at
+    // the last refresh; the delta vs. the current total is the accumulation.
+    this._charsAtLastComprehension = 0;
+    this._comprehensionInFlight = false;
 
     // Last fast-ack phrase the bot played (or null). Surfaces to the slow
     // model on its next wait_for_speech so the model can self-correct if
@@ -263,6 +270,8 @@ class LocalServer {
     this.lastRespondedText = null;
     this.lastRespondedAt = null;
     this.workingMemory = { understanding: '', stance: '', people: '', updatedAt: null, updatedBy: null };
+    this._charsAtLastComprehension = 0;
+    this._comprehensionInFlight = false;
     this._resetAutoLeave();
     this.resolveAllWaiters();
     // Use the setter so onCallStatusChange fires — the avatar uses this to
@@ -286,6 +295,8 @@ class LocalServer {
     this.lastRespondedText = null;
     this.lastRespondedAt = null;
     this.workingMemory = { understanding: '', stance: '', people: '', updatedAt: null, updatedBy: null };
+    this._charsAtLastComprehension = 0;
+    this._comprehensionInFlight = false;
     this._resetAutoLeave();
     this.resolveAllWaiters();
     this.setCallStatus('idle');
@@ -325,6 +336,55 @@ class LocalServer {
     console.log(ts(), `🧩 [workingMemory] updated by ${updatedBy || '?'} (understanding ${u}c, stance ${s}c, people ${p}c)`);
     this.onWorkingMemoryChange(this.getWorkingMemory());
     return this.getWorkingMemory();
+  }
+
+  // Total chars of caption transcript currently held — the accumulation
+  // signal for background comprehension. Captions exclude the bot's own
+  // speech, so this measures how much OTHERS have said.
+  _transcriptCharsTotal() {
+    let total = 0;
+    for (const turn of this.turns.values()) total += (turn.text || '').length;
+    return total;
+  }
+
+  // Build a compact recent-transcript string for the comprehension model.
+  _recentTranscriptText(limit = 30) {
+    const entries = this._entriesSince(null, null) || [];
+    return entries
+      .slice(-limit)
+      .map(e => `${e.participantName || 'someone'}: ${e.text}`)
+      .join('\n');
+  }
+
+  // Size-based background-comprehension trigger (docs/two-tier-design.md).
+  // Fires onComprehensionDue when enough NEW transcript has accumulated since
+  // the last refresh. Self-guarding (single-flight) and non-blocking — the
+  // handler does the local-model call off the hot path. Called from
+  // updateTurns. Time is deliberately NOT the trigger: a quiet call shouldn't
+  // burn refreshes, and a busy one should refresh proportionally to how much
+  // was said.
+  _maybeComprehend() {
+    if (this.callStatus !== 'in-call') return;
+    if (this._comprehensionInFlight) return;
+    const total = this._transcriptCharsTotal();
+    const accumulated = Math.max(0, total - this._charsAtLastComprehension);
+    const threshold = Number(this._pref('comprehendCharThreshold')) || 500;
+    if (accumulated < threshold) return;
+
+    this._comprehensionInFlight = true;
+    console.log(ts(), `🧩 [comprehend] accumulation ${accumulated}c ≥ ${threshold}c — refreshing working memory`);
+    const transcript = this._recentTranscriptText();
+    const wm = this.getWorkingMemory();
+    Promise.resolve()
+      .then(() => this.onComprehensionDue(transcript, wm))
+      .catch(err => console.warn(ts(), '🧩 [comprehend] handler error:', err.message))
+      .finally(() => {
+        this._comprehensionInFlight = false;
+        // Reset the accumulation baseline to the total as of NOW (not the
+        // total at fire time) so text that arrived during the refresh counts
+        // toward the next one.
+        this._charsAtLastComprehension = this._transcriptCharsTotal();
+      });
   }
 
   setCallStatus(status) {
@@ -776,6 +836,8 @@ class LocalServer {
     }
 
     if (changed) this._checkWaiters();
+    // Size-based background comprehension — self-guards, non-blocking.
+    if (changed) this._maybeComprehend();
   }
 
   // Project caption turns as transcript-shaped entries so the existing

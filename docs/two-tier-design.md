@@ -173,7 +173,18 @@ branch.
   refreshing at silence boundaries).
 
   Still to tune: the default threshold (500c) against local-model cost vs. staleness on
-  real calls; and whether two writers (background + slow session) is keeper or confusing.
+  real calls.
+
+  **Two writers → one (RESOLVED 2026-06-14).** Briefly both the background path
+  (`updatedBy: auto`) and the slow session (`updatedBy: <bot-name>`) wrote workingMemory,
+  and they thrashed: a log showed the slow session firing `post_understanding` every
+  ~8-10s during a monologue (far more than once-per-turn; the model ignored the
+  once-per-turn instruction). Fix: **background `auto` is the sole writer.**
+  `post_understanding` was removed from the join-call skill's allowed-tools entirely (so
+  the session physically cannot write — more robust than instructing it not to), and the
+  skill now tells the session to *read* `get_working_memory` to orient. The slow session
+  keeps its own full context and its separate speak path, so this doesn't affect its
+  ability to respond.
 - Whether the background comprehension and the fast-ack phrasing should share one LM Studio
   instance (they currently would — single loaded model serializes the two call types) or
   run on separate endpoints.

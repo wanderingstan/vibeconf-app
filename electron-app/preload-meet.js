@@ -1647,17 +1647,47 @@ ipcRenderer.on('trigger-screen-share', async (_event, options) => {
   }, 3000);
 });
 
+function findStopPresentingButton() {
+  return document.querySelector('[aria-label*="Stop presenting" i]')
+    || document.querySelector('[aria-label*="Stop sharing" i]')
+    || document.querySelector('[data-tooltip*="Stop presenting" i]')
+    || document.querySelector('[data-tooltip*="Stop sharing" i]');
+}
+
+// Robustly stop presenting (#174). A single click can miss: Meet's toolbar
+// auto-hides and re-renders, so the Stop button often isn't in the DOM at the
+// instant the agent calls stop_sharing — the old one-shot click then gave up
+// and reported "stopped" while Meet was still presenting. Poll-click-verify for
+// a few seconds against probePresentingState() (the same "You are presenting"
+// ground truth status.sharing is derived from), retrying the click until Meet
+// actually leaves the presenting state. For whiteboard shares onStopSharing has
+// already closed the share window, so presenting usually ends on its own and we
+// confirm on the first tick without needing a click.
 ipcRenderer.on('trigger-stop-sharing', () => {
   console.log('[electron-meet] Stop sharing triggered');
-  const stopBtn = document.querySelector('[aria-label*="Stop presenting"], [aria-label*="Stop sharing"], [data-tooltip*="Stop presenting"], [data-tooltip*="Stop sharing"]');
-  if (stopBtn) {
-    stopBtn.click();
-    console.log('[electron-meet] Clicked stop sharing button');
-    ipcRenderer.send('screen-share-stopped');
-  } else {
-    console.log('[electron-meet] Stop sharing button not found (may have already stopped)');
-    ipcRenderer.send('screen-share-stopped');
-  }
+  const startTime = Date.now();
+  let clicks = 0;
+  const poll = setInterval(() => {
+    if (!probePresentingState().selfPresenting) {
+      clearInterval(poll);
+      console.log('[electron-meet] Stop sharing confirmed (not presenting) after',
+        Date.now() - startTime, 'ms,', clicks, 'click(s)');
+      ipcRenderer.send('screen-share-stopped');
+      return;
+    }
+    const stopBtn = findStopPresentingButton();
+    if (stopBtn) {
+      stopBtn.click();
+      clicks++;
+      console.log('[electron-meet] Clicked stop sharing button (attempt', clicks + ')');
+    }
+    if (Date.now() - startTime > 4000) {
+      clearInterval(poll);
+      console.warn('[electron-meet] Stop sharing: still presenting after 4s and',
+        clicks, 'click(s) — giving up; the agent will see status.sharing is still true');
+      ipcRenderer.send('screen-share-stopped');
+    }
+  }, 300);
 });
 
 // ---------------------------------------------------------------------------

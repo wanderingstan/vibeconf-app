@@ -178,14 +178,38 @@ function findByAriaLabel(label) {
 const DISMISSABLE_MODAL_HEADINGS = [
   'Others may see your video differently',
 ];
+let _lastModalDumpAt = 0;
 function dismissBlockingModals() {
-  const present = DISMISSABLE_MODAL_HEADINGS.some((h) => findByText(h));
-  if (!present) return false;
-  const gotIt = findByText('Got it', { exact: true });
-  if (gotIt) {
-    gotIt.click();
-    console.log('[electron-meet] Dismissed blocking modal via "Got it"');
-    return true;
+  // Detect the modal by scanning the whole body text (case-insensitive). This
+  // is more robust than the per-text-node walker, which misses a heading split
+  // across spans/line-breaks. Cheap: a string scan, no layout reflow.
+  const bodyText = (document.body && document.body.textContent || '').toLowerCase();
+  const heading = DISMISSABLE_MODAL_HEADINGS.find((h) => bodyText.includes(h.toLowerCase()));
+  if (!heading) return false;
+
+  // Find the "Got it" dismiss button directly among clickable elements — the
+  // label may be nested in a span, and the button may be mid-fade-in on one
+  // tick (isVisible flaky), so we match by text/aria across all candidates and
+  // the 1s tick retries until one is clickable. Gated by the known heading so
+  // an unrelated "Got it" can't be clicked by accident.
+  const clickables = document.querySelectorAll('button, [role="button"]');
+  for (const el of clickables) {
+    const label = (el.textContent || '').trim().toLowerCase();
+    const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
+    if ((label === 'got it' || aria === 'got it') && isVisible(el)) {
+      el.click();
+      console.log('[electron-meet] Dismissed blocking modal "' + heading + '" via "Got it"');
+      return true;
+    }
+  }
+
+  // Heading present but no clickable "Got it" matched — capture the modal DOM
+  // (throttled) so we can see exactly how Meet renders it and fix the selector.
+  if (Date.now() - _lastModalDumpAt > 15000) {
+    _lastModalDumpAt = Date.now();
+    const dlg = document.querySelector('[role="dialog"], [aria-modal="true"]');
+    const sample = (dlg ? dlg.outerHTML : (document.body ? document.body.innerHTML : '')).slice(0, 2500);
+    console.warn('[electron-meet] Blocking modal "' + heading + '" present but no "Got it" button matched. DOM sample:\n' + sample);
   }
   return false;
 }

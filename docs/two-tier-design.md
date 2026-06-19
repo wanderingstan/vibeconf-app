@@ -19,6 +19,26 @@ filler phrase ("Mm-hmm") to hide that latency. Two consequences:
    `wait_for_speech` doing nothing. When finally called on, it must digest minutes of
    transcript in real time — slow and brittle.
 
+## Single-voice model (clarified 2026-06-19) — the destination
+
+The end state is **not** two models that both speak. It's:
+
+- **Fast model = the sole voice + the personality.** Everything the bot *says* is
+  phrased and spoken by the fast model. Its job is communication and character.
+- **Slow model = the "smart subconscious."** It does the hard reasoning and forms
+  substance into `workingMemory`, but **never speaks directly.** It hands meaning to
+  the fast model; the fast model decides how (and whether) to voice it.
+
+This dissolves the "two voices collide" coordination problem — there is only one
+voice. The older `consult_slow`-with-two-modes design (below) let both tiers speak;
+that is dropped. `consult_slow` survives only as the fast model pulling on the
+subconscious for substance, never as the slow model speaking.
+
+**Next concrete step: a shadow harness.** At each floor-open, the fast model drafts
+`{speak, text}` from `stance` — logged, not spoken, zero behavior change. We compare
+fast-from-stance against what the slow session actually says, to learn whether the
+fast model can become the sole voice *before* we invert the driver.
+
 ## The inversion
 
 | | Slow tier | Fast tier |

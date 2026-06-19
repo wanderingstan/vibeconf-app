@@ -301,11 +301,24 @@ const localServer = new globalThis.LocalServer({
     const js = `(() => {
       const vh = window.innerHeight || 800;
       const step = ${px === null ? 'Math.round(vh * 0.85)' : px};
-      let top;
-      if ('${dir}' === 'top') { window.scrollTo({ top: 0, behavior: 'smooth' }); return 'top'; }
-      if ('${dir}' === 'bottom') { window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }); return 'bottom'; }
-      top = '${dir}' === 'up' ? -step : step;
-      window.scrollBy({ top, left: 0, behavior: 'smooth' });
+      // Find what actually scrolls. A loaded URL is the document itself, so the
+      // document scrolls. Markdown is rendered into a nested container (.wb-slide,
+      // overflow-y:auto) while html/body are overflow:hidden — so the document
+      // doesn't move and we must scroll the inner container instead (issue #234).
+      const doc = document.scrollingElement || document.documentElement;
+      let target = doc;
+      if (doc.scrollHeight - doc.clientHeight <= 4) {
+        let mostHidden = 0;
+        for (const el of document.querySelectorAll('*')) {
+          const oy = getComputedStyle(el).overflowY;
+          if (oy !== 'auto' && oy !== 'scroll') continue;
+          const hidden = el.scrollHeight - el.clientHeight;
+          if (hidden > mostHidden + 4) { target = el; mostHidden = hidden; }
+        }
+      }
+      if ('${dir}' === 'top') { target.scrollTo({ top: 0, behavior: 'smooth' }); return 'top'; }
+      if ('${dir}' === 'bottom') { target.scrollTo({ top: target.scrollHeight, behavior: 'smooth' }); return 'bottom'; }
+      target.scrollBy({ top: '${dir}' === 'up' ? -step : step, left: 0, behavior: 'smooth' });
       return '${dir}';
     })()`;
     try {

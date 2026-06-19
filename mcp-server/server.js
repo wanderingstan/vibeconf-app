@@ -711,7 +711,7 @@ server.tool(
 // --- scroll_share ---
 server.tool(
   "scroll_share",
-  "Scroll the content currently being shared in the whiteboard window — useful when you've loaded a website (via update_whiteboard with a url) and want to move down a long page. Scrolls smoothly. Direction: 'down'/'up' move ~one screenful, 'top'/'bottom' jump to the ends. Only affects a shared URL/website, not markdown whiteboard content.",
+  "Scroll the content currently being shared in the whiteboard window — useful when you've loaded a long website (via update_whiteboard with a url) or posted markdown longer than the viewport and want to move down. Scrolls smoothly. Direction: 'down'/'up' move ~one screenful, 'top'/'bottom' jump to the ends. Works on whatever is in the share window, URL or markdown alike.",
   {
     direction: z.enum(["down", "up", "top", "bottom"]).optional().describe("Scroll direction. Default: down."),
     amount: z.number().optional().describe("Pixels to scroll for up/down (default: ~85% of the viewport). Ignored for top/bottom."),

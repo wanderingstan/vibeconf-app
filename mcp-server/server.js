@@ -652,15 +652,16 @@ server.tool(
   }
 );
 
-// --- share_whiteboard ---
-server.tool(
-  "share_whiteboard",
-  "Start screen sharing in the Google Meet call. By default shares the whiteboard window (use update_whiteboard to set content). Can also share the entire screen.",
-  {
-    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
-    share_type: z.enum(["whiteboard", "screen"]).optional().describe("What to share. 'whiteboard' (default) shares the whiteboard window. 'screen' shares the entire screen."),
-  },
-  async ({ room_id, share_type }) => {
+// --- start_share (alias: share_whiteboard) ---
+// "Screen share" is the Meet feature for presenting visual content; the
+// whiteboard window is just the default content source (it can also load any
+// URL, or you can share the whole screen). Shared schema + handler so the
+// legacy share_whiteboard name keeps working for skills in the wild (#177).
+const startShareSchema = {
+  room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  share_type: z.enum(["whiteboard", "screen"]).optional().describe("What to share. 'whiteboard' (default) shares the bot's whiteboard window — set its content with update_whiteboard (markdown/Mermaid, an image, or any URL). 'screen' shares the entire screen."),
+};
+async function startShareHandler({ room_id, share_type }) {
     const roomId = room_id || ROOM_ID;
     if (!roomId) {
       return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
@@ -711,7 +712,10 @@ server.tool(
       // recovered. Don't report failure over stale/transient errors when the
       // share is actually live.
       if (statusData.status?.sharing === true) {
-        return { content: [{ type: "text", text: "Whiteboard is now being shared in the call. Use update_whiteboard to change its content." }] };
+        const msg = shareType === 'screen'
+          ? "Your screen is now being shared in the call."
+          : "The whiteboard window is now being shared in the call. Use update_whiteboard to change what it shows.";
+        return { content: [{ type: "text", text: msg }] };
       }
 
       // Not presenting — explain why, using errors from THIS attempt.
@@ -733,13 +737,24 @@ server.tool(
     } else {
       return { content: [{ type: "text", text: `Error: ${data.error || "Failed to share"}` }] };
     }
-  }
+}
+server.tool(
+  "start_share",
+  "Start screen-sharing into the Google Meet call so participants can see it. By default shares the bot's whiteboard window (set its content with update_whiteboard — markdown/Mermaid or any URL); pass share_type 'screen' to share the whole screen instead.",
+  startShareSchema,
+  startShareHandler
+);
+server.tool(
+  "share_whiteboard",
+  "Alias for start_share (kept for back-compat). Starts screen-sharing into the call; defaults to the bot's whiteboard window.",
+  startShareSchema,
+  startShareHandler
 );
 
 // --- stop_sharing ---
 server.tool(
   "stop_sharing",
-  "Stop screen sharing the whiteboard in the Google Meet call.",
+  "Stop the bot's screen share in the Google Meet call.",
   {
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
@@ -773,7 +788,7 @@ server.tool(
 // --- scroll_share ---
 server.tool(
   "scroll_share",
-  "Scroll the content currently being shared in the whiteboard window — useful when you've loaded a long website (via update_whiteboard with a url) or posted markdown longer than the viewport and want to move down. Scrolls smoothly. Direction: 'down'/'up' move ~one screenful, 'top'/'bottom' jump to the ends. Works on whatever is in the share window, URL or markdown alike.",
+  "Scroll the content currently being screen-shared into the call — useful when you've loaded a long website (via update_whiteboard with a url) or posted markdown longer than the viewport and want to move down. Scrolls smoothly. Direction: 'down'/'up' move ~one screenful, 'top'/'bottom' jump to the ends. Works on whatever is in the share, URL or markdown alike.",
   {
     direction: z.enum(["down", "up", "top", "bottom"]).optional().describe("Scroll direction. Default: down."),
     amount: z.number().optional().describe("Pixels to scroll for up/down (default: ~85% of the viewport). Ignored for top/bottom."),
@@ -1254,8 +1269,9 @@ server.tool(
     if (status.roomUrl) {
       sections.push(`Full room URL (whole room UI): ${status.roomUrl}`);
     }
-    if (status.whiteboardLoadedUrl) {
-      sections.push(`Whiteboard window currently loaded: ${status.whiteboardLoadedUrl} (what's actually rendering in the share, post-update_whiteboard / scroll_share)`);
+    const shareUrl = status.screenShareUrl || status.whiteboardLoadedUrl; // #177 rename; tolerate old field
+    if (shareUrl) {
+      sections.push(`Currently sharing: ${shareUrl} (what's rendering in the screen share now, post-update_whiteboard / scroll_share)`);
     }
 
     if (status.someoneElsePresenting) {

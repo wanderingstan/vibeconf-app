@@ -597,7 +597,9 @@ class LocalServer {
       peoplePaneOpen: !!this.peoplePaneOpen,
       screenRecording: this.permissions?.screenRecording,
       roomId: this.roomId,
-      whiteboardLoadedUrl: this.getWhiteboardLoadedUrl(),
+      // What URL is loaded in the bot's screen-share window right now (#177).
+      // Named for the share, not the whiteboard, since it can be any URL.
+      screenShareUrl: this.getWhiteboardLoadedUrl(),
       sessionLogPath: getSessionLogPath(),
       activeWaiters: this.waiters.length,
       lastAckEvent: this.lastAckEvent,
@@ -1441,7 +1443,9 @@ class LocalServer {
         chatUnread: this.chatUnread,
         roomUrl: this.roomId ? `${(this.getWebsiteUrl() || '').replace(/\/$/, '')}/room/${this.roomId}` : null,
         whiteboardUrl: this.roomId ? `${(this.getWebsiteUrl() || '').replace(/\/$/, '')}/room/${this.roomId}?mode=whiteboard` : null,
-        whiteboardLoadedUrl: this.getWhiteboardLoadedUrl(),
+        // What's loaded in the screen-share window now — any URL, not just the
+        // whiteboard (#177).
+        screenShareUrl: this.getWhiteboardLoadedUrl(),
         sessionLogPath: getSessionLogPath(),
       },
     };

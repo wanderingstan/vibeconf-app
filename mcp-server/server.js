@@ -559,6 +559,47 @@ server.tool(
   }
 );
 
+// --- read_whiteboard ---
+server.tool(
+  "read_whiteboard",
+  "Read the current contents of the shared whiteboard — the markdown/Mermaid source text, not a screenshot. Use this before update_whiteboard to build on what's already there (your own earlier writes or another bot's), or to recall what you put up. Returns the source and the current version number. (get_room_info also includes the board, but this is the clean, dedicated read.)",
+  {
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ room_id }) => {
+    let roomId = room_id || ROOM_ID;
+    // Prefer the app's active room when it's in a call — authoritative over a
+    // stale env/arg, mirroring get_room_info.
+    try {
+      const probe = await fetch(`${BASE_URL}/api/sync/no-room`);
+      const probeData = await probe.json();
+      const activeStatuses = ["in-call", "joining", "waiting-to-be-admitted"];
+      if (probeData.roomId && activeStatuses.includes(probeData.status?.callStatus)) {
+        roomId = probeData.roomId;
+        ROOM_ID = probeData.roomId;
+      }
+    } catch {
+      // Local server unreachable — fall through with whatever roomId we have.
+    }
+    if (!roomId) {
+      return { content: [{ type: "text", text: "Not in a call and no room_id provided — nothing to read." }] };
+    }
+
+    const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`);
+    const data = await resp.json();
+    if (!data.success) {
+      return { content: [{ type: "text", text: `Error: ${data.error || "Unknown error"}` }] };
+    }
+    const wb = data.whiteboard || {};
+    const content = (wb.content || "").trim();
+    if (!content) {
+      return { content: [{ type: "text", text: "The whiteboard is currently empty." }] };
+    }
+    const version = wb.version != null ? ` (version ${wb.version})` : "";
+    return { content: [{ type: "text", text: `Current whiteboard contents${version}:\n\n${content}` }] };
+  }
+);
+
 // --- leave_call ---
 server.tool(
   "leave_call",

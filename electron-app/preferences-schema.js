@@ -86,6 +86,16 @@ const PREFERENCES = {
       "The bot's display name in Meet calls. Takes effect on the next call.",
     requiresRestart: true,
   },
+  botPersonality: {
+    type: 'string',
+    default: '',
+    maxLength: 2000,
+    description:
+      "Two-tier experiment: the voice/character the fast model speaks in (e.g. " +
+      "'dry, concise, a bit wry; never corporate'). Used by the shadow harness " +
+      "now (drafting what the bot would say) and by the fast model once it " +
+      "becomes the bot's voice. Empty = a neutral, conversational default.",
+  },
   ttsVoiceId: {
     type: 'string',
     default: '',

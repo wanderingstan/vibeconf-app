@@ -53,7 +53,7 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, onInspectDom, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref } = {}) {
+  constructor({ port, appVersion, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onShadowPhrase, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, onInspectDom, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.appVersion = appVersion || null;
     this.onBotSpeech = onBotSpeech || (() => {});
@@ -73,6 +73,10 @@ class LocalServer {
     this.onCaptionsChange = onCaptionsChange || (() => {}); // boolean — true=on, false=off (=== deaf)
     this.onWorkingMemoryChange = onWorkingMemoryChange || (() => {}); // ({understanding, stance, updatedAt, updatedBy})
     this.onComprehensionDue = onComprehensionDue || (async () => {}); // async (transcriptText, workingMemory) — background refresh
+    // Two-tier shadow harness: async ({lastUtterance, workingMemory, recentTranscript})
+    // fired at floor-open. Fast model drafts what it WOULD say from `stance`;
+    // log-only for now (never spoken). docs/two-tier-design.md.
+    this.onShadowPhrase = onShadowPhrase || (async () => {});
     this.onParticipantsFirstSeen = onParticipantsFirstSeen || (() => {}); // fires once per call when DOMSpeakerTracker first reports participants
     this.onAvatarEmojiOverride = onAvatarEmojiOverride || (() => {}); // ({idle?, listening?}) — null/undefined for that key means reset
     this.onSetCamera = onSetCamera || (() => {}); // (on: boolean)
@@ -1309,6 +1313,16 @@ class LocalServer {
         // Pass joinedText so the ack handler can do addressivity matching
         // (#155). wordCount stays the primary threshold; text is supplemental.
         this.onBotStateChange('thinking', { wordCount, text: joinedText });
+
+        // Two-tier shadow harness: at this floor-open, ask the fast model what
+        // it WOULD say from the current stance — logged only, never spoken, so
+        // we can compare against what the slow session actually says. Fire-and-
+        // forget; must never disturb the real turn (docs/two-tier-design.md).
+        Promise.resolve(this.onShadowPhrase({
+          lastUtterance: joinedText,
+          workingMemory: this.getWorkingMemory(),
+          recentTranscript: this._recentTranscriptText(12),
+        })).catch(() => {});
       }
     }
 

@@ -593,6 +593,33 @@ const localServer = new globalThis.LocalServer({
       localServer.setWorkingMemory({ ...result, updatedBy: 'auto' });
     }
   },
+  // Two-tier shadow harness (docs/two-tier-design.md): at each floor-open, ask
+  // the fast model what it WOULD say from the current stance. LOG-ONLY — never
+  // spoken. Lets us compare fast-from-stance against what the slow session
+  // actually says, to judge whether the fast model can become the sole voice.
+  onShadowPhrase: async ({ lastUtterance, workingMemory, recentTranscript }) => {
+    const ackModule = require('./ack');
+    const config = ackModule.getProviderConfig(store);
+    if (config.provider !== 'openai-compat') return; // no local model → nothing to draft with
+    const { phrase } = require('./phrase');
+    const botName = store?.get('botName') || 'the bot';
+    const personality = store?.get('botPersonality') || '';
+    const result = await phrase({
+      lastUtterance,
+      workingMemory,
+      recentTranscript,
+      botName,
+      personality,
+      config: { endpoint: config.endpoint, apiKey: config.apiKey, model: config.model, timeoutMs: 6000 },
+      log: (m) => console.log(ts(), '🗣️  [shadow]', m),
+    });
+    if (!result) { console.log(ts(), '🗣️  [shadow] no draft (parse/endpoint failure)'); return; }
+    if (result.speak) {
+      console.log(ts(), `🗣️  [shadow] WOULD SAY (${result.ms}ms): "${result.text}"`);
+    } else {
+      console.log(ts(), `🗣️  [shadow] would STAY QUIET (${result.ms}ms)${result.text ? ' — ' + result.text : ''}`);
+    }
+  },
 
   onParticipantsFirstSeen: () => {
     // Used to be the avatar engagement trigger, but the captions-ready

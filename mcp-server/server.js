@@ -803,10 +803,10 @@ server.tool(
 // --- inspect_dom ---
 server.tool(
   "inspect_dom",
-  "Inspect the live DOM of the bot's Google Meet call, or of the window it's currently sharing — returns the matched elements' outerHTML. Read-only. Use it to debug what's actually on screen: locate a modal and its dismiss button, find why a whiteboard rendered blank, or check Meet's UI state. Pair with get_call_screenshot (pixels) for a fuller picture.",
+  "Inspect the live DOM of the bot's Google Meet call, or of whatever it's currently screen-sharing into the call — returns the matched elements' outerHTML. Read-only. Use it to debug what's actually on screen: locate a modal and its dismiss button, find why a share rendered blank, or check Meet's UI state. Pair with get_call_screenshot (pixels) for a fuller picture.",
   {
     selector: z.string().describe("CSS selector to query, e.g. '[role=dialog]', 'button', '.some-class'. Defaults to 'body'."),
-    target: z.enum(["meet", "whiteboard"]).optional().describe("Which DOM to read. 'meet' (default) = the bot's Google Meet call page. 'whiteboard' = the window currently being shared."),
+    target: z.enum(["meet", "share"]).optional().describe("Which DOM to read. 'meet' (default) = the bot's Google Meet call page. 'share' = the window currently being screen-shared into the call — that's the whiteboard if you're sharing the whiteboard, or any URL you loaded into it via update_whiteboard."),
     max_elements: z.number().optional().describe("Max matched elements to return (default 5, max 20)."),
     max_chars: z.number().optional().describe("Max characters of outerHTML per element (default 4000, max 20000); longer elements are truncated."),
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),

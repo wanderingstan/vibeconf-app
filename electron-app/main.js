@@ -360,12 +360,15 @@ const localServer = new globalThis.LocalServer({
     if (which === 'meet' || which === 'call') {
       wc = meetView && !meetView.webContents.isDestroyed() ? meetView.webContents : null;
       if (!wc) return { ok: false, error: 'No active Meet view (the bot is not in a call).' };
-    } else if (which === 'whiteboard' || which === 'share' || which === 'screen') {
+    } else if (which === 'share' || which === 'screen' || which === 'whiteboard') {
+      // 'share' is the canonical term — the window being screen-shared into Meet,
+      // whatever it shows (the whiteboard, or any URL loaded into it). 'whiteboard'
+      // is accepted as a back-compat alias.
       wc = whiteboardWindow && !whiteboardWindow.isDestroyed() && !whiteboardWindow.webContents.isDestroyed()
         ? whiteboardWindow.webContents : null;
-      if (!wc) return { ok: false, error: 'No whiteboard/share window is open (nothing is being shared).' };
+      if (!wc) return { ok: false, error: 'No screen-share window is open (nothing is being shared into the call).' };
     } else {
-      return { ok: false, error: `Unknown target '${target}'. Use 'meet' or 'whiteboard'.` };
+      return { ok: false, error: `Unknown target '${target}'. Use 'meet' or 'share'.` };
     }
     const sel = String(selector || 'body');
     const maxEls = Math.max(1, Math.min(20, Number(maxElements) || 5));

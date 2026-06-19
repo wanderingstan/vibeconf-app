@@ -800,6 +800,48 @@ server.tool(
   }
 );
 
+// --- inspect_dom ---
+server.tool(
+  "inspect_dom",
+  "Inspect the live DOM of the bot's Google Meet call, or of the window it's currently sharing — returns the matched elements' outerHTML. Read-only. Use it to debug what's actually on screen: locate a modal and its dismiss button, find why a whiteboard rendered blank, or check Meet's UI state. Pair with get_call_screenshot (pixels) for a fuller picture.",
+  {
+    selector: z.string().describe("CSS selector to query, e.g. '[role=dialog]', 'button', '.some-class'. Defaults to 'body'."),
+    target: z.enum(["meet", "whiteboard"]).optional().describe("Which DOM to read. 'meet' (default) = the bot's Google Meet call page. 'whiteboard' = the window currently being shared."),
+    max_elements: z.number().optional().describe("Max matched elements to return (default 5, max 20)."),
+    max_chars: z.number().optional().describe("Max characters of outerHTML per element (default 4000, max 20000); longer elements are truncated."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ selector, target, max_elements, max_chars, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) {
+      return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    }
+    const tgt = target || "meet";
+    const sel = selector || "body";
+    const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
+        meta: { action: "inspect-dom", target: tgt, selector: sel, maxElements: max_elements, maxChars: max_chars },
+      })),
+    });
+    const data = await resp.json();
+    const r = data.results?.inspectDom;
+    if (!r) {
+      return { content: [{ type: "text", text: `Error: ${data.error || "No response from app"}` }] };
+    }
+    if (!r.ok) {
+      return { content: [{ type: "text", text: `Error: ${r.error || "inspect failed"}` }] };
+    }
+    if (!r.returned) {
+      return { content: [{ type: "text", text: `No elements matched '${sel}' in the ${tgt} DOM.` }] };
+    }
+    const header = `Matched ${r.total} element(s) for '${sel}' in the ${tgt} DOM; showing ${r.returned}:`;
+    const body = r.html.map((h, i) => `--- [${i + 1}] ---\n${h}`).join("\n\n");
+    return { content: [{ type: "text", text: `${header}\n\n${body}` }] };
+  }
+);
+
 // --- set_mode ---
 server.tool(
   "set_mode",

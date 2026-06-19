@@ -350,6 +350,48 @@ const localServer = new globalThis.LocalServer({
       return { ok: false, error: err.message };
     }
   },
+  // Read-only DOM extraction: run querySelectorAll in the Meet view
+  // or the shared whiteboard window and return the matched elements' outerHTML.
+  // Lets the bot inspect what it (or a participant) is actually looking at —
+  // e.g. locate a modal's dismiss button, debug a blank whiteboard render.
+  onInspectDom: async ({ target, selector, maxElements, maxChars } = {}) => {
+    const which = (target || 'meet').toLowerCase();
+    let wc = null;
+    if (which === 'meet' || which === 'call') {
+      wc = meetView && !meetView.webContents.isDestroyed() ? meetView.webContents : null;
+      if (!wc) return { ok: false, error: 'No active Meet view (the bot is not in a call).' };
+    } else if (which === 'whiteboard' || which === 'share' || which === 'screen') {
+      wc = whiteboardWindow && !whiteboardWindow.isDestroyed() && !whiteboardWindow.webContents.isDestroyed()
+        ? whiteboardWindow.webContents : null;
+      if (!wc) return { ok: false, error: 'No whiteboard/share window is open (nothing is being shared).' };
+    } else {
+      return { ok: false, error: `Unknown target '${target}'. Use 'meet' or 'whiteboard'.` };
+    }
+    const sel = String(selector || 'body');
+    const maxEls = Math.max(1, Math.min(20, Number(maxElements) || 5));
+    const perElCap = Math.max(200, Math.min(20000, Number(maxChars) || 4000));
+    const js = `(() => {
+      try {
+        const els = Array.from(document.querySelectorAll(${JSON.stringify(sel)}));
+        const cap = ${perElCap};
+        const html = els.slice(0, ${maxEls}).map((el) => {
+          const h = el.outerHTML || '';
+          return h.length > cap ? h.slice(0, cap) + '\\n…[truncated ' + (h.length - cap) + ' chars]' : h;
+        });
+        return { ok: true, total: els.length, returned: html.length, html };
+      } catch (e) {
+        return { ok: false, error: String((e && e.message) || e) };
+      }
+    })()`;
+    try {
+      const result = await wc.executeJavaScript(js, true);
+      console.log('[local-server] inspect-dom', which, JSON.stringify(sel), '→',
+        result?.ok ? `${result.returned}/${result.total} els` : `error: ${result?.error}`);
+      return result || { ok: false, error: 'no result' };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  },
   onBotStateChange: async (state, extra) => {
     console.log('[local-server] Bot state:', state, extra || '');
     // Forward state to page-inject.js to update avatar emoji
@@ -1466,7 +1508,7 @@ function ensureClaudeIntegration(localPort) {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '17';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '18';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}

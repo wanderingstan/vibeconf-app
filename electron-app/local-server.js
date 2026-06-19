@@ -53,7 +53,7 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref } = {}) {
+  constructor({ port, appVersion, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, onInspectDom, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.appVersion = appVersion || null;
     this.onBotSpeech = onBotSpeech || (() => {});
@@ -65,6 +65,7 @@ class LocalServer {
     this.onJoinCall = onJoinCall || (() => {});
     this.onLoadUrl = onLoadUrl || (() => {});
     this.onScrollShare = onScrollShare || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onInspectDom = onInspectDom || (async () => ({ ok: false, error: 'not implemented' }));
     this.onBotStateChange = onBotStateChange || (() => {}); // 'idle' | 'listening' | 'thinking' | 'speaking' | 'yielding'
     this.onModeChange = onModeChange || (() => {});        // 'active' | 'passive' | 'silent'
     this.onCallStatusChange = onCallStatusChange || (() => {}); // 'idle' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
@@ -2002,6 +2003,17 @@ class LocalServer {
     if (data.meta?.action === 'scroll-share') {
       const r = await this.onScrollShare({ direction: data.meta.direction, amount: data.meta.amount });
       results.scrollShare = r || { ok: true };
+    }
+
+    // Handle inspect-dom command — read-only DOM extraction from the Meet view
+    // or the shared whiteboard window, for debugging/introspection.
+    if (data.meta?.action === 'inspect-dom') {
+      results.inspectDom = await this.onInspectDom({
+        target: data.meta.target,
+        selector: data.meta.selector,
+        maxElements: data.meta.maxElements,
+        maxChars: data.meta.maxChars,
+      });
     }
 
     // Handle set-mode command — persistent bot behavior mode

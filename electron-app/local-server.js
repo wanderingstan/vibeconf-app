@@ -53,7 +53,7 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, getWebsiteUrl, getWhiteboardLoadedUrl, getPref, setPref, applyPref } = {}) {
+  constructor({ port, appVersion, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.appVersion = appVersion || null;
     this.onBotSpeech = onBotSpeech || (() => {});
@@ -83,6 +83,14 @@ class LocalServer {
     // agent (or the panel) can confirm what's actually being shared — useful
     // after update_whiteboard({url}) and scroll_share (#169).
     this.getWhiteboardLoadedUrl = getWhiteboardLoadedUrl || (() => null);
+    // The user's persistent panel/store botName preference (#212). Read live so
+    // the MCP can resolve an omitted bot_name to the panel preference instead of
+    // a frozen env default, and so we never overwrite it on a per-call basis.
+    this.getConfiguredBotName = getConfiguredBotName || (() => null);
+    // Per-call name override (#212): what the agent asked this bot to be called
+    // in THIS call. Set on join when bot_name is explicit, cleared on leave.
+    // The persistent store preference (getConfiguredBotName) is never touched.
+    this.currentCallBotName = null;
     this.chatUnread = false; // passive "… - New message" signal from the chat button
 
     // Response-state tracking — what the bot last responded to. Used to detect
@@ -551,6 +559,13 @@ class LocalServer {
   // a live status indicator that persists until the next ack.
   setLastAckEvent(event) {
     this.lastAckEvent = event || null;
+  }
+
+  // The name to actually use in Meet for this call (#212): the per-call
+  // override if the agent set one, otherwise the user's persistent panel
+  // preference. preload-meet reads this to fill Meet's pre-join name input.
+  getEffectiveBotName() {
+    return this.currentCallBotName || this.getConfiguredBotName() || null;
   }
 
   getCallStateSnapshot() {
@@ -1505,6 +1520,11 @@ class LocalServer {
           localServerUrl: this.getLocalServerUrl(),
           localServerPort: this.port,
           localProfile: this.localProfile,
+          // #212: the user's persistent panel preference. The MCP reads this to
+          // resolve an omitted bot_name to the configured name instead of a
+          // frozen env default. currentCallBotName is the active per-call override.
+          configuredBotName: this.getConfiguredBotName(),
+          currentCallBotName: this.currentCallBotName,
         },
       }));
       return;
@@ -1946,6 +1966,9 @@ class LocalServer {
         }
       }
       if (!results.join) {
+        // #212: remember the per-call name override here (not in the persistent
+        // store). preload-meet types getEffectiveBotName() into Meet.
+        if (botName) this.currentCallBotName = botName;
         this.onJoinCall(meetCode, botName);
         if (botName) this._everJoinedAs = botName;
         results.join = { ok: true };
@@ -1954,6 +1977,7 @@ class LocalServer {
 
     // Handle leave command
     if (data.meta?.action === 'leave') {
+      this.currentCallBotName = null; // #212: clear the per-call name override
       this.onLeaveCall();
       results.leave = { ok: true };
     }

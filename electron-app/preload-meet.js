@@ -751,13 +751,13 @@ let BOT_NAME = 'Jimmy';
 // autoJoin would type the default 'Jimmy' into the name input even when the
 // user has a different botName configured. Keep the promise around so the
 // DOMContentLoaded handler can await it before reading BOT_NAME.
-const botNameLoaded = ipcRenderer.invoke('get-config', ['botName']).then((result) => {
-  if (result?.botName) {
-    BOT_NAME = result.botName;
-    console.log('[electron-meet] Loaded botName from config:', BOT_NAME);
+const botNameLoaded = ipcRenderer.invoke('get-meet-bot-name').then((name) => {
+  if (name) {
+    BOT_NAME = name;
+    console.log('[electron-meet] Loaded botName for this call:', BOT_NAME);
   }
 }).catch((err) => {
-  console.warn('[electron-meet] Failed to load botName from config:', err.message);
+  console.warn('[electron-meet] Failed to load botName:', err.message);
 });
 
 function ensureStatusBar() {

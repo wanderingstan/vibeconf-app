@@ -65,9 +65,30 @@ let lastPollTime = null;
 // a push channel from the app to the MCP server).
 let botNameLocked = false;
 
-function resolveBotName(name) {
-  const resolved = String(name || '').trim();
-  return resolved || BOT_NAME;
+// When the agent omits bot_name, prefer the user's live panel preference
+// (the local-server's configuredBotName) over the frozen env default — so an
+// env default like VIBECONF_BOT_NAME never silently flows into the call and
+// overwrites what the user set in the panel (#212). Cached for the process
+// lifetime to avoid repeated GETs; falls back to the env BOT_NAME when the
+// local-server isn't reachable (cold start).
+let cachedConfiguredName; // undefined = not fetched, null = unavailable
+async function fetchConfiguredBotName() {
+  if (cachedConfiguredName !== undefined) return cachedConfiguredName;
+  try {
+    const resp = await fetch(`${BASE_URL}/api/sync/no-room`);
+    const data = await resp.json();
+    cachedConfiguredName = String(data?.status?.configuredBotName || '').trim() || null;
+  } catch {
+    cachedConfiguredName = null;
+  }
+  return cachedConfiguredName;
+}
+
+async function resolveBotName(name) {
+  const explicit = String(name || '').trim();
+  if (explicit) return explicit;
+  const configured = await fetchConfiguredBotName();
+  return configured || BOT_NAME;
 }
 
 const server = new McpServer({
@@ -1256,7 +1277,7 @@ server.tool(
   },
   async ({ room_id, bot_name }) => {
     try {
-      const joinedBotName = resolveBotName(bot_name);
+      const joinedBotName = await resolveBotName(bot_name);
       // If the lock is set but the bot name changed, check whether the
       // previous call is actually still in progress. The local-server is
       // the source of truth — handles every call-end path (explicit

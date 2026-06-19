@@ -135,6 +135,10 @@ const localServer = new globalThis.LocalServer({
     } catch { /* ignore */ }
     return null;
   },
+  // The user's persistent panel preference, read live (#212). Lets the MCP
+  // resolve an omitted bot_name to this instead of a frozen env default, and
+  // keeps join_call from ever overwriting it.
+  getConfiguredBotName: () => (store?.get('botName') || 'Jimmy'),
   onBotSpeech: (text, voice, emoji) => {
     console.log('[local-server] Bot speech:', text.slice(0, 80), emoji ? `(emoji: ${emoji})` : '');
     ackTtsPending = false;
@@ -188,15 +192,13 @@ const localServer = new globalThis.LocalServer({
     console.log('[local-server] Join call requested by agent:', meetCode, botName);
     logSessionHeaderUpdate('roomId', meetCode);
     if (botName) {
-      // Persist so preload-meet.js's get-config read picks up THIS name when
-      // typing into Meet's pre-join name input. Without this, the agent can
-      // pass bot_name='Coltrane' but preload would still type the previously
-      // stored botName into Meet.
-      if (store) store.set('botName', botName);
+      // #212: do NOT persist to the store — that's the user's panel preference
+      // and a per-call name must not silently overwrite it. The per-call name
+      // lives in localServer.currentCallBotName (set in the join handler);
+      // preload-meet types localServer.getEffectiveBotName() into Meet via the
+      // get-meet-bot-name IPC. We still update the sync-client config so the
+      // bot registers in the room under this call's name.
       sync.updateConfig?.({ botName });
-      if (panelView && !panelView.webContents.isDestroyed()) {
-        panelView.webContents.send('set-bot-name', botName);
-      }
       logSessionHeaderUpdate('botName', botName);
     }
     const meetUrl = `https://meet.google.com/${meetCode}`;
@@ -2224,6 +2226,14 @@ function setupIPC() {
   // --- Config ---
   ipcMain.handle('get-config', (_event, keys) => {
     return store.getMultiple(keys);
+  });
+
+  // #212: the name preload-meet should type into Meet's pre-join input — the
+  // per-call override if one is active, else the persistent panel preference.
+  // Separate from get-config('botName') (which the panel uses to show the
+  // persistent preference) so a per-call name never leaks into the panel field.
+  ipcMain.handle('get-meet-bot-name', () => {
+    return localServer.getEffectiveBotName() || store.get('botName') || 'Jimmy';
   });
 
   ipcMain.handle('set-config', (_event, key, value) => {

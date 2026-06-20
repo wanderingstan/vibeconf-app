@@ -86,6 +86,16 @@ const PREFERENCES = {
       "The bot's display name in Meet calls. Takes effect on the next call.",
     requiresRestart: true,
   },
+  shadowPhrase: {
+    type: 'boolean',
+    default: false,
+    description:
+      'Two-tier experiment: at each floor-open, have the fast local model draft ' +
+      'what it WOULD say from the current stance and log it (never spoken). OFF by ' +
+      'default because it hits the same local model as the fast-ack and background ' +
+      'comprehension — running all three at once overloads a single LM Studio ' +
+      'instance (HTTP 500s, aborted acks). Turn ON only for measurement sessions.',
+  },
   botPersonality: {
     type: 'string',
     default: '',

@@ -598,6 +598,11 @@ const localServer = new globalThis.LocalServer({
   // spoken. Lets us compare fast-from-stance against what the slow session
   // actually says, to judge whether the fast model can become the sole voice.
   onShadowPhrase: async ({ lastUtterance, workingMemory, recentTranscript }) => {
+    // OFF by default — the shadow draft hits the same local model as the fast-ack
+    // (which fires at this same floor-open) and background comprehension; running
+    // all three at once overloads one LM Studio instance (HTTP 500s, aborted acks
+    // — observed 2026-06-19). Enable only for measurement sessions.
+    if (!store?.get('shadowPhrase')) return;
     const ackModule = require('./ack');
     const config = ackModule.getProviderConfig(store);
     if (config.provider !== 'openai-compat') return; // no local model → nothing to draft with

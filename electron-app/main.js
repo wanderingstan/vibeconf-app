@@ -124,10 +124,11 @@ const sync = new globalThis.SyncClient({
 // Any real bot speech clears this flag so the next tts-ended transitions normally.
 let ackTtsPending = false;
 
-// Two-tier shadow EVAL pairing: the most recent fast-model draft from a
-// floor-open, held until the slow session actually speaks so we can log them
-// side by side ([shadow-eval]). { speak, text, ms, at }. Null when none pending.
-let pendingShadowDraft = null;
+// Two-tier triage EVAL pairing: the most recent fast-model turn-taking verdict
+// from a floor-open, held until the slow session actually speaks so we can log
+// whether triage correctly predicted a response was expected. { ack, category,
+// ms, at }. Null when none pending.
+let pendingTriage = null;
 
 // Local HTTP server for agent communication (replaces remote sync for MCP)
 const localServer = new globalThis.LocalServer({
@@ -146,16 +147,18 @@ const localServer = new globalThis.LocalServer({
   getConfiguredBotName: () => (store?.get('botName') || 'Jimmy'),
   onBotSpeech: (text, voice, emoji) => {
     console.log('[local-server] Bot speech:', text.slice(0, 80), emoji ? `(emoji: ${emoji})` : '');
-    // Shadow EVAL: pair the most recent fast-model draft with what the slow
-    // session ACTUALLY said, on one line, so the post-call read is a direct
-    // comparison instead of interleaved timestamps. gap = floor-open draft →
-    // this utterance. Cleared after pairing; unmatched drafts are overwritten.
-    if (pendingShadowDraft) {
-      const d = pendingShadowDraft;
-      pendingShadowDraft = null;
-      const gap = ((Date.now() - d.at) / 1000).toFixed(1);
-      const fast = d.speak ? `FAST[speak,${d.ms}ms]="${d.text}"` : `FAST[quiet]${d.text ? '(' + d.text + ')' : ''}`;
-      console.log(ts(), `🔬 [shadow-eval] gap=${gap}s | ${fast} | SLOW="${text}"`);
+    // Triage EVAL: pair the fast model's turn-taking verdict with the fact that
+    // the slow session DID speak this turn — the ground truth for "was a response
+    // expected?". triage said ack=true → correct (it predicted the response).
+    // triage said ack=false but slow spoke → a MISS (it should have acked; the
+    // slow model came in late, exactly Stan's recoverable case). gap = floor-open
+    // verdict → this utterance (≈ how long the ack would have covered).
+    if (pendingTriage) {
+      const t = pendingTriage;
+      pendingTriage = null;
+      const gap = ((Date.now() - t.at) / 1000).toFixed(1);
+      const hit = t.ack ? 'ACK✓ (predicted response)' : 'NO-ACK✗ (missed — slow came in late)';
+      console.log(ts(), `🚦 [triage-eval] gap=${gap}s | triage=${t.ack ? 'ACK' : 'no-ack'}[${t.category},${t.ms}ms] → SLOW SPOKE → ${hit}`);
     }
     ackTtsPending = false;
     speakText(text, voice, emoji);
@@ -549,7 +552,7 @@ const localServer = new globalThis.LocalServer({
     if (status !== 'in-call') whiteboardLinkPostedForCall = false;
     // Don't let a shadow draft from a finished call pair with the next call's
     // greeting (shadow-eval).
-    if (status !== 'in-call') pendingShadowDraft = null;
+    if (status !== 'in-call') pendingTriage = null;
     // Forward to page-inject so the avatar can show 🫥 while joining/waiting.
     if (meetView && !meetView.webContents.isDestroyed()) {
       meetView.webContents.send('extension-message', {
@@ -613,43 +616,34 @@ const localServer = new globalThis.LocalServer({
       localServer.setWorkingMemory({ ...result, updatedBy: 'auto' });
     }
   },
-  // Two-tier shadow harness (docs/two-tier-design.md): at each floor-open, ask
-  // the fast model what it WOULD say from the current stance. LOG-ONLY — never
-  // spoken. Lets us compare fast-from-stance against what the slow session
-  // actually says, to judge whether the fast model can become the sole voice.
-  onShadowPhrase: async ({ lastUtterance, workingMemory, recentTranscript, roster, mode }) => {
-    // OFF by default — the shadow draft hits the same local model as the fast-ack
-    // (which fires at this same floor-open) and background comprehension; running
-    // all three at once overloads one LM Studio instance (HTTP 500s, aborted acks
-    // — observed 2026-06-19). Enable only for measurement sessions.
+  // Two-tier TRIAGE shadow (docs/two-tier-design.md): at each floor-open, the
+  // fast model classifies whether the bot is being addressed (ack expected) vs
+  // the others talking among themselves. LOG-ONLY — non-authoritative; the slow
+  // session still drives all speech. Validates the classifier's accuracy before
+  // wiring it to fire instant acks. The eval settled that the 7B can't be the
+  // voice; turn-taking is the role it can actually do (classification).
+  onShadowPhrase: async ({ lastUtterance, recentTranscript, roster }) => {
+    // Gated by the shadowPhrase pref (kept its name; now gates the triage shadow).
     if (!store?.get('shadowPhrase')) return;
-    // Shared local-model endpoint, independent of ackProvider (so the shadow
-    // runs with a builtin ack — the low-contention eval setup).
+    // Shared local-model endpoint, independent of ackProvider (builtin ack = low
+    // contention while the triage shadow measures).
     const config = require('./ack').getLocalModelConfig(store);
-    const { phrase } = require('./phrase');
+    const { triage } = require('./triage');
     const botName = store?.get('botName') || 'the bot';
-    const personality = store?.get('botPersonality') || '';
-    const result = await phrase({
+    const result = await triage({
       lastUtterance,
-      workingMemory,
       recentTranscript,
       roster,
-      mode,
       botName,
-      personality,
-      config: { endpoint: config.endpoint, apiKey: config.apiKey, model: config.model, timeoutMs: 6000 },
-      log: (m) => console.log(ts(), '🗣️  [shadow]', m),
+      config: { endpoint: config.endpoint, apiKey: config.apiKey, model: config.model, timeoutMs: 5000 },
+      log: (m) => console.log(ts(), '🚦 [triage]', m),
     });
-    if (!result) { console.log(ts(), '🗣️  [shadow] no draft (parse/endpoint failure)'); return; }
-    if (result.speak) {
-      console.log(ts(), `🗣️  [shadow] WOULD SAY [${mode}] (${result.ms}ms): "${result.text}"`);
-    } else {
-      console.log(ts(), `🗣️  [shadow] would STAY QUIET [${mode}] (${result.ms}ms)${result.text ? ' — ' + result.text : ''}`);
-    }
-    // Hold the draft so the next real (slow-session) utterance can be logged
-    // beside it for side-by-side evaluation. A newer draft overwrites an
-    // unmatched one (the slow session stayed quiet through that floor-open).
-    pendingShadowDraft = { speak: result.speak, text: result.text, ms: result.ms, at: Date.now() };
+    if (!result) { console.log(ts(), '🚦 [triage] no verdict (parse/endpoint failure)'); return; }
+    console.log(ts(), `🚦 [triage] ack=${result.ack ? 'YES' : 'no'} [${result.category}] (${result.ms}ms) — ${result.reason}`);
+    // Hold the verdict so the next slow-session utterance can confirm whether a
+    // response really was expected (ground truth). Overwritten by the next
+    // floor-open if the slow session stays quiet through this one.
+    pendingTriage = { ack: result.ack, category: result.category, ms: result.ms, at: Date.now() };
   },
 
   onParticipantsFirstSeen: () => {

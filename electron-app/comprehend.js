@@ -86,10 +86,26 @@ async function comprehend({ transcript, workingMemory, roster, botName, config, 
     ],
     temperature: 0.3,
     max_tokens: 500,
-    // Ask for guaranteed-valid JSON (LM Studio / OpenAI-compat structured
-    // output) so a stray prose wrapper doesn't wipe the whole refresh. Harmless
-    // if the server ignores it; extractJson still runs as a backstop.
-    response_format: { type: 'json_object' },
+    // Guaranteed-valid structured JSON so a stray prose/fence wrapper doesn't
+    // wipe the whole refresh. LM Studio (MLX) rejects type:'json_object' — it
+    // wants 'json_schema'. extractJson stays as a backstop.
+    response_format: {
+      type: 'json_schema',
+      json_schema: {
+        name: 'working_memory',
+        strict: true,
+        schema: {
+          type: 'object',
+          properties: {
+            understanding: { type: 'string' },
+            stance: { type: 'string' },
+            people: { type: 'string' },
+          },
+          required: ['understanding', 'stance', 'people'],
+          additionalProperties: false,
+        },
+      },
+    },
   };
 
   const controller = new AbortController();

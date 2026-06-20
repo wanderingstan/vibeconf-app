@@ -80,8 +80,22 @@ async function phrase({ workingMemory, recentTranscript, lastUtterance, roster, 
     ],
     temperature: 0.5,
     max_tokens: 200,
-    // Guaranteed-valid JSON so a stray wrapper doesn't drop the draft.
-    response_format: { type: 'json_object' },
+    // Guaranteed-valid structured JSON so a stray prose/fence wrapper doesn't
+    // drop the draft. LM Studio (MLX) rejects type:'json_object' — it wants
+    // 'json_schema'. extractJson stays as a backstop for servers that ignore it.
+    response_format: {
+      type: 'json_schema',
+      json_schema: {
+        name: 'phrase_decision',
+        strict: true,
+        schema: {
+          type: 'object',
+          properties: { speak: { type: 'boolean' }, text: { type: 'string' } },
+          required: ['speak', 'text'],
+          additionalProperties: false,
+        },
+      },
+    },
   };
 
   const controller = new AbortController();

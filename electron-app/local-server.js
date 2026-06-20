@@ -371,6 +371,14 @@ class LocalServer {
   }
 
   // Build a compact recent-transcript string for the comprehension model.
+  // Log each finalized caption turn so the session log is a true record of what
+  // the bot HEARD (every speaker except the bot's own TTS), making it possible to
+  // correlate responses against the actual conversation without inferring timing.
+  _logHeard(speaker, text) {
+    const t = (text || '').trim();
+    if (t) console.log(ts(), '👂 [heard]', (speaker || 'someone') + ':', t);
+  }
+
   _recentTranscriptText(limit = 30) {
     const entries = this._entriesSince(null, null) || [];
     return entries
@@ -872,6 +880,7 @@ class LocalServer {
           source: 'caption',
         });
         changed = true;
+        if (!isBottommost) this._logHeard(inc.speaker, inc.text); // arrived already final
       } else {
         let entryChanged = false;
         if (existing.text !== inc.text) {
@@ -881,6 +890,7 @@ class LocalServer {
         if (!existing.settled && !isBottommost) {
           existing.settled = true;
           entryChanged = true;
+          this._logHeard(existing.speaker, existing.text); // just settled — log final text
         }
         if (entryChanged) {
           existing.lastUpdated = now;
@@ -895,6 +905,7 @@ class LocalServer {
         turn.settled = true;
         turn.lastUpdated = now;
         changed = true;
+        this._logHeard(turn.speaker, turn.text);
       }
     }
 
@@ -1323,7 +1334,7 @@ class LocalServer {
         // Without this, agent loops that call wait_for_speech twice in a row
         // skip the ack on the second resolution because the equal-state guard
         // in _setBotState short-circuits.
-        console.log(ts(), '🧠 [thinking] Processing transcript — ' + wordCount + ' words, ' + deduped.length + ' entry/ies');
+        console.log(ts(), '🧠 [thinking] Processing transcript — ' + wordCount + ' words, ' + deduped.length + ' entry/ies: "' + joinedText.slice(0, 240) + (joinedText.length > 240 ? '…' : '') + '"');
         this.botState = 'thinking';
         // Restart the #221 hold window — a fresh utterance earns a fresh
         // thinking display, even if a deferred downgrade was pending.

@@ -2496,6 +2496,15 @@ function setupIPC() {
 
   // --- Sync ---
   ipcMain.on('start-sync', (_event, { meetCode, botName }) => {
+    // Re-establish the room in local-server if it isn't already this one. On a
+    // normal join roomId is already set (skip — setRoom would wipe transcripts/
+    // working memory). But if a spurious "You can't join" page made the error
+    // path clearRoom() and the operator then manually recovered (#238), roomId
+    // is null here and we must re-set it so the app tracks the call again.
+    if (meetCode && localServer.roomId !== meetCode) {
+      console.log('[electron] start-sync re-establishing room (was', localServer.roomId, '→', meetCode + ')');
+      localServer.setRoom(meetCode);
+    }
     sync.updateConfig({ roomId: meetCode, baseUrl: getWebsiteUrl() });
     if (botName) sync.updateConfig({ botName });
     sync.ensureRoom().then(() => {

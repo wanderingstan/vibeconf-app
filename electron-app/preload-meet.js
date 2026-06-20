@@ -1708,6 +1708,65 @@ ipcRenderer.on('trigger-stop-sharing', () => {
 });
 
 // ---------------------------------------------------------------------------
+// In-call setup — idempotent, path-independent (#238)
+// ---------------------------------------------------------------------------
+
+// Everything that must happen once the bot is actually in the call: flip the
+// app's callStatus to in-call (via the 'Participating' status), start the
+// caption/speaker trackers + health tick, and kick off sync. Guarded so it runs
+// exactly once per page load, and only when the in-call toolbar (Leave call) is
+// actually present. Driven by BOTH the autoJoin success path AND a standalone
+// watcher (installInCallWatcher) — so we recover cleanly no matter how we got
+// in: normal admission, or manual recovery after a spurious "You can't join
+// this video call" page that made autoJoin bail. Before this, a manual recovery
+// left Meet in the call but the app stuck at not-joined (no trackers, no sync).
+let inCallSetupDone = false;
+let inCallWatcher = null;
+function enterInCallState() {
+  if (inCallSetupDone) return;
+  const leaveBtn = findByAriaLabel('Leave call') ||
+    document.querySelector('[data-tooltip="Leave call"]');
+  if (!leaveBtn) return; // not actually in the call yet
+  inCallSetupDone = true;
+  if (inCallWatcher) { clearInterval(inCallWatcher); inCallWatcher = null; }
+  console.log('[electron-meet] In-call toolbar detected — entering in-call state');
+
+  // Flips the app's callStatus → in-call (main maps 'Participating' → in-call).
+  sendStatus('Participating in Meet');
+
+  // Captions: the toolbar's "Leave call" often renders before the captions
+  // button, so a one-shot click misses; clickCaptionsWhenReady retries.
+  clickCaptionsWhenReady();
+  captionScraper.onReady = () => {
+    console.log('[electron-meet] Captions ready');
+    ipcRenderer.send('captions-ready');
+  };
+  captionScraper.start();
+  domSpeakerTracker.start();
+  startMicMuteWatcher();
+  installCallHealthTick();
+
+  // Start sync + announce arrival.
+  const meetCode = window.location.pathname.replace('/', '');
+  if (meetCode) {
+    ipcRenderer.send('start-sync', { meetCode, botName: BOT_NAME });
+    ipcRenderer.send('bot-joined-call', { meetCode, botName: BOT_NAME });
+  }
+}
+
+// Standalone safety net: poll for the in-call toolbar and run setup the moment
+// it appears, regardless of how we entered. Catches manual recovery from the
+// spurious denial page (where autoJoin already returned). No-ops once setup is
+// done (enterInCallState clears the interval).
+function installInCallWatcher() {
+  if (inCallWatcher) return;
+  inCallWatcher = setInterval(() => {
+    if (inCallSetupDone) { clearInterval(inCallWatcher); inCallWatcher = null; return; }
+    enterInCallState();
+  }, 1500);
+}
+
+// ---------------------------------------------------------------------------
 // Auto-start after DOM loads
 // ---------------------------------------------------------------------------
 
@@ -1727,6 +1786,13 @@ window.addEventListener('DOMContentLoaded', () => {
     // lose to Meet's pre-join render and we'd type the default 'Jimmy'.
     await botNameLoaded;
 
+    // Standalone safety net runs the whole time, so even if autoJoin bails on a
+    // spurious "You can't join" page and the operator manually recovers, the
+    // moment the in-call toolbar appears we set up trackers + sync + status
+    // (#238). enterInCallState is idempotent, so the normal path below and this
+    // watcher converge without double-setup.
+    installInCallWatcher();
+
     for (let i = 0; i < 30; i++) {
       const nameInput =
         document.querySelector('input[placeholder="Your name"]') ||
@@ -1741,44 +1807,9 @@ window.addEventListener('DOMContentLoaded', () => {
       await delay(1000);
     }
 
-    // Only start trackers if we're actually in the call
-    const leaveBtn = findByAriaLabel('Leave call') ||
-      document.querySelector('[data-tooltip="Leave call"]');
-    if (!leaveBtn) {
-      console.warn('[electron-meet] Not in call, skipping tracker setup');
-      return;
-    }
-
-    // Start trackers in parallel. Captions were already clicked during the
-    // admission loop (~seconds earlier), so by the time we get here Meet's
-    // toolbar is rendering the captions UI in parallel with our setup.
-    // captionScraper now just polls for the "Turn off captions" label to
-    // confirm captions are actually on, then fires 'captions-ready' to
-    // main, which flushes the deferred welcome speech.
-    captionScraper.onReady = () => {
-      console.log('[electron-meet] Captions ready');
-      ipcRenderer.send('captions-ready');
-    };
-    captionScraper.start();
-    domSpeakerTracker.start();
-    // Don't auto-mute on admission — the mic state IS the mode toggle now.
-    // Default unmuted = active mode, which is the historical default.
-    startMicMuteWatcher();
-
-    // Single consolidated call-health tick (#226). One 1s setInterval, one
-    // DOM pass, diff vs. last snapshot, emit per-edge IPCs. Replaces the
-    // mic-permission, participants, chat-unread, pane-state, and presenting
-    // watchers (5 timers → 1). IPC channel names stay the same so consumers
-    // in main.js don't change. Caption text scraping (own subsystem),
-    // 200ms speaker poll (different cadence), and the mic-mute
-    // MutationObserver (event-driven) stay separate. See issue #226.
-    installCallHealthTick();
-
-    // Start sync and announce arrival
-    const meetCode = window.location.pathname.replace('/', '');
-    if (meetCode) {
-      ipcRenderer.send('start-sync', { meetCode, botName: BOT_NAME });
-      ipcRenderer.send('bot-joined-call', { meetCode, botName: BOT_NAME });
-    }
+    // Normal path: if admission succeeded, set up now (don't wait up to 1.5s for
+    // the watcher tick). No-ops if the watcher already ran it, or if we're not
+    // actually in the call yet (the watcher will catch it later).
+    enterInCallState();
   })();
 });

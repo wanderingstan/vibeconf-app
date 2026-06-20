@@ -219,6 +219,18 @@ const PREFERENCES = {
       'arriving before the bot decides the captions have dropped out (and ' +
       'surfaces that to the agent as a warning). See issue #187.',
   },
+  botSpeakJitterMaxMs: {
+    type: 'number',
+    default: 800,
+    min: 0,
+    max: 5000,
+    description:
+      'When the call has 2+ other participants (so another bot could answer the ' +
+      'same prompt in lockstep), the bot waits a random 0–N ms before speaking, to ' +
+      'decorrelate simultaneous starts (#230) — two bots sharing identical timing ' +
+      'otherwise speak in unison. Solo / single-human calls skip the jitter and ' +
+      'speak immediately. 0 disables. Higher = more separation but more lag.',
+  },
   defaultSilenceSeconds: {
     type: 'number',
     default: 2,

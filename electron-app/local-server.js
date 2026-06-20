@@ -535,6 +535,30 @@ class LocalServer {
     this._autoLeaveTriggered = false;
   }
 
+  // Speak now, or after a small random jitter when another bot could answer the
+  // same prompt in lockstep (#230). Two bots with identical timing logic
+  // otherwise start speaking in unison; a random 0–N ms delay decorrelates the
+  // starts so one clearly goes first. Gated on 2+ other participants (the only
+  // case a collision is possible) so solo / single-human calls stay snappy —
+  // we can't reliably tell from one app that another participant IS a bot
+  // (this.members is local-only), so participant count is the cheap proxy.
+  _speakWithBotJitter(t) {
+    const speakNow = () => {
+      if (this.callStatus !== 'in-call') return; // call ended during the jitter
+      this._setBotState('speaking', { emoji: t.emoji });
+      this.onBotSpeech(t.text, t.voice, t.emoji);
+    };
+    const others = (this.participants || []).filter(p => !p.isSelf && p.name && p.name !== 'You').length;
+    const maxJitter = Number(this._pref('botSpeakJitterMaxMs')) || 0;
+    if (others >= 2 && maxJitter > 0) {
+      const jitter = Math.floor(Math.random() * maxJitter);
+      console.log(ts(), `🎲 [bot-jitter] ${others} others in call — delaying speak ${jitter}ms to avoid lockstep`);
+      setTimeout(speakNow, jitter);
+    } else {
+      speakNow();
+    }
+  }
+
   _flushPendingBotSpeech() {
     if (this.pendingBotSpeech.length === 0) return;
     console.log('[local-server] Flushing', this.pendingBotSpeech.length,
@@ -1976,8 +2000,7 @@ class LocalServer {
               console.log('[local-server] Queueing bot speech until in-call:', t.text.slice(0, 40));
               this.pendingBotSpeech.push({ text: t.text, voice: t.voice, emoji: t.emoji });
             } else {
-              this._setBotState('speaking', { emoji: t.emoji });
-              this.onBotSpeech(t.text, t.voice, t.emoji);
+              this._speakWithBotJitter({ text: t.text, voice: t.voice, emoji: t.emoji });
             }
           }
         }

@@ -594,11 +594,11 @@ const localServer = new globalThis.LocalServer({
   // model off the hot path and writes the result back. Non-blocking and
   // best-effort — failures are swallowed in comprehend() and we just skip.
   onComprehensionDue: async (transcript, workingMemory, roster) => {
-    const ackModule = require('./ack');
-    const config = ackModule.getProviderConfig(store);
-    // Needs a local OpenAI-compatible endpoint (same one the fast-ack uses).
-    // No local model configured → nothing to comprehend with; skip silently.
-    if (config.provider !== 'openai-compat') return;
+    // Uses the shared local-model endpoint directly — NOT gated on ackProvider
+    // (comprehension is its own consumer; it runs even when the ack is builtin).
+    // The enable switch is comprehendCharThreshold (0 disables, checked in
+    // local-server). comprehend() fails gracefully if no endpoint is up.
+    const config = require('./ack').getLocalModelConfig(store);
     const { comprehend } = require('./comprehend');
     const botName = store?.get('botName') || 'the bot';
     const result = await comprehend({
@@ -623,9 +623,9 @@ const localServer = new globalThis.LocalServer({
     // all three at once overloads one LM Studio instance (HTTP 500s, aborted acks
     // — observed 2026-06-19). Enable only for measurement sessions.
     if (!store?.get('shadowPhrase')) return;
-    const ackModule = require('./ack');
-    const config = ackModule.getProviderConfig(store);
-    if (config.provider !== 'openai-compat') return; // no local model → nothing to draft with
+    // Shared local-model endpoint, independent of ackProvider (so the shadow
+    // runs with a builtin ack — the low-contention eval setup).
+    const config = require('./ack').getLocalModelConfig(store);
     const { phrase } = require('./phrase');
     const botName = store?.get('botName') || 'the bot';
     const personality = store?.get('botPersonality') || '';

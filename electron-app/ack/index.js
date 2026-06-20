@@ -39,6 +39,22 @@ function getProviderConfig(store) {
   };
 }
 
+// The shared local OpenAI-compatible model endpoint, INDEPENDENT of which
+// provider the ack itself uses. The fast-ack, background comprehension, and the
+// shadow drafter are three separate consumers of this one endpoint; each has
+// its own enable switch (ackProvider / comprehendCharThreshold / shadowPhrase).
+// So comprehend + shadow can run with ackProvider='builtin' (cheap wordcount
+// ack, no LM Studio hit) while still using the local model themselves — which
+// is exactly the low-contention setup for a two-tier eval. Decoupling fixes the
+// bug where setting ackProvider=builtin silently disabled comprehend + shadow.
+function getLocalModelConfig(store) {
+  return {
+    endpoint: store?.get('ackEndpoint') || 'http://127.0.0.1:1234/v1',
+    apiKey: store?.get('ackApiKey') || '',
+    model: store?.get('ackModel') || 'gpt-4o-mini',
+  };
+}
+
 // Returns { phrase, source, latencyMs, error }.
 //   phrase    string | null  (null means SKIP)
 //   source    'llm' | 'llm-fallback-builtin' | 'builtin'
@@ -89,4 +105,4 @@ async function warmup({ store, log }) {
   return openaiCompat.warmup({ config, log });
 }
 
-module.exports = { decide, warmup, getProviderConfig };
+module.exports = { decide, warmup, getProviderConfig, getLocalModelConfig };

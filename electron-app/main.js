@@ -2225,7 +2225,8 @@ async function loadMeetURL(meetUrl) {
     const body = message.replace(/^\d{2}:\d{2}:\d{2}\.\d{3}\s+/, '');
     if (body.startsWith('[electron-meet]') ||
         body.startsWith('[bots-in-calls]') || body.startsWith('[captions]') ||
-        body.startsWith('[chat]') || body.startsWith('[speaker-tracker]')) {
+        body.startsWith('[chat]') || body.startsWith('[speaker-tracker]') ||
+        body.startsWith('[speaker-health]') || body.startsWith('[caption-health]')) {
       if (level === 2) console.warn(message);
       else if (level === 3) console.error(message);
       else console.log(message);

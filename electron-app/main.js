@@ -1330,6 +1330,42 @@ function launchClaudeTerminal(meetCode) {
   const claudeDir = store.get('claudeWorkDir') || '/tmp';
   const botName = store.get('botName') || 'Jimmy';
 
+  // Profile instances (second bot, e.g. Samantha): the auto-launch runs `claude`
+  // from a generic cwd (/tmp), which would pick up the USER-SCOPED ~/.claude.json
+  // vibeconferencing server (port 7865 = the PRIMARY app) and talk to the wrong
+  // bot. Write a profile-specific MCP config pointing at THIS app's port and pass
+  // --mcp-config + --strict-mcp-config so the spawned session targets this app
+  // only. The default (non-profile) instance keeps using the global config.
+  let mcpFlags = '';
+  if (appProfile) {
+    try {
+      const mcpServerPath = app.isPackaged
+        ? path.join(process.resourcesPath, 'mcp-server', 'server.js')
+        : path.join(__dirname, '..', 'mcp-server', 'server.js');
+      const cfg = {
+        mcpServers: {
+          vibeconferencing: {
+            command: 'node',
+            args: [mcpServerPath],
+            env: {
+              VIBECONF_ROOM_ID: '',
+              VIBECONF_BOT_NAME: botName,
+              VIBECONF_BASE_URL: `http://127.0.0.1:${localServer.port}`,
+            },
+          },
+        },
+      };
+      const cfgPath = path.join(app.getPath('userData'), 'mcp-config.json');
+      fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+      // Inner quotes escaped for the AppleScript `do script "…"` wrapper below;
+      // quote the path because the profile userData dir contains spaces.
+      mcpFlags = ` --mcp-config \\"${cfgPath}\\" --strict-mcp-config`;
+      console.log('[electron] Profile', appProfile, '— launching Claude pinned to port', localServer.port, 'via', cfgPath);
+    } catch (err) {
+      console.error('[electron] Failed to write profile MCP config:', err.message);
+    }
+  }
+
   // Position terminal below the Electron window, matching its width
   let termBounds = null;
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1342,7 +1378,7 @@ function launchClaudeTerminal(meetCode) {
   // Build the claude command with optional --dangerously-skip-permissions
   const dangerousMode = store.get('dangerousMode');
   const dangerousFlag = dangerousMode ? ' --dangerously-skip-permissions' : '';
-  const claudeCmd = `claude${dangerousFlag} \\"/join-call ${meetCode} ${botName.replace(/"/g, '')}\\"`;
+  const claudeCmd = `claude${dangerousFlag}${mcpFlags} \\"/join-call ${meetCode} ${botName.replace(/"/g, '')}\\"`;
 
   // Open a Terminal window running the command. When Terminal isn't already
   // running, `do script` would spawn TWO windows — the auto-created launch

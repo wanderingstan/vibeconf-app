@@ -22,11 +22,12 @@ Branch: `feat/two-tier`. Companion docs: `two-tier-design.md` (the design),
   being addressed / is a quick ack expected?" classifier. Promising in principle;
   underperformed in first testing (too conservative). Non-authoritative: the slow
   model always still answers, so its mistakes are cheap.
-- **The likely next big move:** drive the bot off **streaming headless Claude
-  Code** (`claude -p --output-format stream-json --include-partial-messages`,
-  subscription auth, our MCP server attached) — speak sentences as they stream.
-  Confirmed viable on the flat subscription; would get low latency *with* full
-  quality. A real rebuild, not yet started.
+- **Streaming headless Claude Code** (`claude -p --output-format stream-json …`,
+  subscription auth) is **viable and free** — but the spike showed it doesn't beat
+  the ~2.5s TTFT floor for short replies, and multi-step turns (its real edge) are
+  rare in a call. **DECISION (2026-06-20): parked** as a background Mode-B option;
+  it would also cost the "transport your live session" dream. We continue with the
+  two-phase bot and chase snappiness via the **fast ack** instead.
 
 ---
 
@@ -174,10 +175,31 @@ These are the editable prompt surfaces (kept as files, not buried in code):
 - `electron-app/triage.js` / `phrase.js` / `comprehend.js` — the 7B prompts
   (currently inline in JS; phrase/comprehend are the now-parked fast-voice path).
 
-## Open questions / decisions pending
+## DECISION (2026-06-20): keep the two-phase bot; park streaming
 
-- Is ~3–5s (two-phase) good enough, or do we pursue streaming for sub-2s?
-- Is the triage classifier salvageable with prompt tuning, or is the addressivity
-  signal better derived mechanically?
-- Does the streaming rebuild justify its cost, given the two-phase bot already
-  works?
+We're sticking with the **slow model + two-phase response** as the bot, and
+**parking the streaming rebuild as a background possibility**, for concrete
+reasons:
+- The spike showed streaming's latency win over two-phase is **marginal for short
+  replies** (both ~2.5–3s, TTFT-bound) — its real edge is long/multi-step turns.
+- **Multi-step tasks are rare in a *call*** (conversational, usually single-step)
+  compared to a coding session — so streaming's main advantage mostly doesn't
+  apply here. (Stan's call.)
+- A rebuild would **sacrifice the "transport your live session" dream** (Mode A),
+  for modest gain.
+
+**The latency lever is the fast ack, not streaming.** So the near-term direction
+is: keep iterating on snappiness on the *current* architecture — get **triage
+working** (fix its prompt) so the bot can fire a smart **instant ack** ("On it",
+<1s) when addressed, covering the slow model's ~2.5s TTFT, with the two-phase
+answer landing behind it. No rebuild required.
+
+Streaming stays documented and de-risked (`scripts/stream-claude-spike.mjs`,
+viable on subscription) if the product ever heads toward Mode B (dedicated avatar).
+
+## Still-open (smaller) questions
+
+- Is the triage classifier salvageable with prompt tuning (it under-acked badly in
+  first testing), or is addressivity better derived mechanically?
+- Tune the bot-vs-bot jitter / add the "back off when not specifically addressed"
+  half once triage is reliable.

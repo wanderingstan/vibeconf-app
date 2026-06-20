@@ -574,7 +574,7 @@ const localServer = new globalThis.LocalServer({
   // local-server when enough new transcript has accumulated. Runs the local
   // model off the hot path and writes the result back. Non-blocking and
   // best-effort — failures are swallowed in comprehend() and we just skip.
-  onComprehensionDue: async (transcript, workingMemory) => {
+  onComprehensionDue: async (transcript, workingMemory, roster) => {
     const ackModule = require('./ack');
     const config = ackModule.getProviderConfig(store);
     // Needs a local OpenAI-compatible endpoint (same one the fast-ack uses).
@@ -585,6 +585,7 @@ const localServer = new globalThis.LocalServer({
     const result = await comprehend({
       transcript,
       workingMemory,
+      roster,
       botName,
       config: { endpoint: config.endpoint, apiKey: config.apiKey, model: config.model, timeoutMs: 8000 },
       log: (m) => console.log(ts(), '🧩', m),
@@ -597,7 +598,7 @@ const localServer = new globalThis.LocalServer({
   // the fast model what it WOULD say from the current stance. LOG-ONLY — never
   // spoken. Lets us compare fast-from-stance against what the slow session
   // actually says, to judge whether the fast model can become the sole voice.
-  onShadowPhrase: async ({ lastUtterance, workingMemory, recentTranscript }) => {
+  onShadowPhrase: async ({ lastUtterance, workingMemory, recentTranscript, roster }) => {
     // OFF by default — the shadow draft hits the same local model as the fast-ack
     // (which fires at this same floor-open) and background comprehension; running
     // all three at once overloads one LM Studio instance (HTTP 500s, aborted acks
@@ -613,6 +614,7 @@ const localServer = new globalThis.LocalServer({
       lastUtterance,
       workingMemory,
       recentTranscript,
+      roster,
       botName,
       personality,
       config: { endpoint: config.endpoint, apiKey: config.apiKey, model: config.model, timeoutMs: 6000 },

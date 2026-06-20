@@ -379,6 +379,27 @@ class LocalServer {
       .join('\n');
   }
 
+  // The known participant roster as authoritative text for the local model —
+  // names + human/bot/self, cross-referenced against registered bot members
+  // (#162). We hand this to comprehend/phrase so the model never has to re-derive
+  // who's in the call from captions (it does that poorly, leaving `people` empty).
+  _rosterText() {
+    const botNames = new Set(
+      (this.members || [])
+        .filter((m) => m.role === 'bot' && m.name)
+        .map((m) => m.name.toLowerCase())
+    );
+    return (this.participants || [])
+      .filter(p => p.name && p.name !== 'You')
+      .map(p => {
+        const kind = p.isSelf
+          ? 'this bot (me)'
+          : (botNames.has((p.name || '').toLowerCase()) ? 'a bot' : 'a human');
+        return `- ${p.name} (${kind})`;
+      })
+      .join('\n');
+  }
+
   // Size-based background-comprehension trigger (docs/two-tier-design.md).
   // Fires onComprehensionDue when enough NEW transcript has accumulated since
   // the last refresh. Self-guarding (single-flight) and non-blocking — the
@@ -413,8 +434,9 @@ class LocalServer {
     console.log(ts(), `🧩 [comprehend] accumulation ${accumulated}c ≥ ${threshold}c (refresh #${this._comprehensionCount}) — refreshing working memory`);
     const transcript = this._recentTranscriptText();
     const wm = this.getWorkingMemory();
+    const roster = this._rosterText();
     Promise.resolve()
-      .then(() => this.onComprehensionDue(transcript, wm))
+      .then(() => this.onComprehensionDue(transcript, wm, roster))
       .catch(err => console.warn(ts(), '🧩 [comprehend] handler error:', err.message))
       .finally(() => {
         this._comprehensionInFlight = false;
@@ -1322,6 +1344,7 @@ class LocalServer {
           lastUtterance: joinedText,
           workingMemory: this.getWorkingMemory(),
           recentTranscript: this._recentTranscriptText(12),
+          roster: this._rosterText(),
         })).catch(() => {});
       }
     }

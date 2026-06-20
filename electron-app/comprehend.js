@@ -26,13 +26,13 @@ function buildSystem(botName) {
     ``,
     `- understanding: a few sentences capturing what is being discussed right now. Rewrite freely as the topic moves.`,
     `- stance: the single point ${botName} would make if the floor opened this instant. Derive it FRESH from the MOST RECENT part of the transcript every time — reconsider what is most worth saying given where the conversation is NOW. Do NOT reuse or echo any earlier stance. One or two sentences, shaped to be said aloud. Use "" only if there is genuinely nothing to add right now.`,
-    `- people: notes on each participant. Names appear in the transcript as "Name: ...". List everyone you can identify, with any role, expertise, or notable behavior, and note who has stayed quiet. Build on the prior people notes — keep facts already recorded and add new ones.`,
+    `- people: notes on each participant. You are GIVEN the roster of who is in the call (names + human/bot) — your people notes MUST list every one of them by name. Add any role, expertise, or notable behavior you can infer, and note who has stayed quiet. Build on the prior people notes — keep facts already recorded and add new ones. Never leave this empty when a roster is provided.`,
     ``,
     `Output ONLY the JSON object — no prose, no markdown, no code fences.`,
   ].join('\n');
 }
 
-function buildUser({ transcript, workingMemory }) {
+function buildUser({ transcript, workingMemory, roster }) {
   const wm = workingMemory || {};
   // Deliberately do NOT feed the prior `stance` back in: a small model echoes
   // whatever stance it's shown instead of re-deriving it (observed: stance
@@ -40,6 +40,9 @@ function buildUser({ transcript, workingMemory }) {
   // understanding + people ARE fed, because they're meant to evolve with
   // continuity. stance is re-derived fresh from the transcript every time.
   return [
+    `WHO IS IN THE CALL (authoritative roster — your "people" must cover each by name):`,
+    roster || '(roster unavailable — infer participants from the transcript)',
+    ``,
     `CURRENT WORKING MEMORY (for continuity — update as needed):`,
     `understanding: ${wm.understanding || '(empty)'}`,
     `people: ${wm.people || '(empty)'}`,
@@ -70,7 +73,7 @@ function extractJson(raw) {
 // Returns { understanding?, stance?, people? } (only string fields the model
 // returned) or null on any failure. Never throws — this is background work and
 // a flaky/slow endpoint must not disturb the call.
-async function comprehend({ transcript, workingMemory, botName, config, log }) {
+async function comprehend({ transcript, workingMemory, roster, botName, config, log }) {
   const { endpoint, apiKey, model } = config || {};
   if (!endpoint) { log?.('comprehend: no endpoint configured'); return null; }
 
@@ -79,10 +82,14 @@ async function comprehend({ transcript, workingMemory, botName, config, log }) {
     model: model || 'gpt-4o-mini',
     messages: [
       { role: 'system', content: buildSystem(botName || 'the bot') },
-      { role: 'user', content: buildUser({ transcript, workingMemory }) },
+      { role: 'user', content: buildUser({ transcript, workingMemory, roster }) },
     ],
     temperature: 0.3,
     max_tokens: 500,
+    // Ask for guaranteed-valid JSON (LM Studio / OpenAI-compat structured
+    // output) so a stray prose wrapper doesn't wipe the whole refresh. Harmless
+    // if the server ignores it; extractJson still runs as a backstop.
+    response_format: { type: 'json_object' },
   };
 
   const controller = new AbortController();

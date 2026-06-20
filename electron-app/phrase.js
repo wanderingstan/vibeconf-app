@@ -34,12 +34,13 @@ function buildSystem(botName, personality) {
   ].join('\n');
 }
 
-function buildUser({ workingMemory, recentTranscript, lastUtterance }) {
+function buildUser({ workingMemory, recentTranscript, lastUtterance, roster }) {
   const wm = workingMemory || {};
   return [
     `YOUR CURRENT STANCE (what you'd most want to contribute): ${wm.stance || '(none formed yet)'}`,
     `DISCUSSION SO FAR: ${wm.understanding || '(unknown)'}`,
-    `PEOPLE IN THE CALL: ${wm.people || '(unknown)'}`,
+    `WHO IS IN THE CALL: ${roster || '(unknown)'}`,
+    `NOTES ON PEOPLE: ${wm.people || '(none yet)'}`,
     ``,
     `RECENT TRANSCRIPT:`,
     recentTranscript || '(none)',
@@ -66,7 +67,7 @@ function extractJson(raw) {
 }
 
 // Returns { speak: boolean, text: string, ms: number } or null on any failure.
-async function phrase({ workingMemory, recentTranscript, lastUtterance, botName, personality, config, log }) {
+async function phrase({ workingMemory, recentTranscript, lastUtterance, roster, botName, personality, config, log }) {
   const { endpoint, apiKey, model } = config || {};
   if (!endpoint) { log?.('no endpoint configured'); return null; }
 
@@ -75,10 +76,12 @@ async function phrase({ workingMemory, recentTranscript, lastUtterance, botName,
     model: model || 'gpt-4o-mini',
     messages: [
       { role: 'system', content: buildSystem(botName || 'the bot', personality) },
-      { role: 'user', content: buildUser({ workingMemory, recentTranscript, lastUtterance }) },
+      { role: 'user', content: buildUser({ workingMemory, recentTranscript, lastUtterance, roster }) },
     ],
     temperature: 0.5,
     max_tokens: 200,
+    // Guaranteed-valid JSON so a stray wrapper doesn't drop the draft.
+    response_format: { type: 'json_object' },
   };
 
   const controller = new AbortController();

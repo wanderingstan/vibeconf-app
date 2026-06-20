@@ -112,6 +112,22 @@ fast-voice and the two-phase skill hack: stream the *good* model, get low latenc
 *and* quality. Not yet built; challenges include sentence-chunking for TTS,
 mid-stream barge-in, and the stream pausing on tool calls.
 
+## A big product implication of streaming (decision input)
+
+Streaming requires the app to **spawn and control** the brain process (to read its
+token stream), so the brain becomes a **dedicated headless Claude Code process
+with its own fresh context.** That means we **lose the "transport your live
+session into the call" dream** — today (Mode A) you can run `/join-call` inside
+your *own* working session and *that* session, with all its context, becomes the
+bot. You can't have both: an interactive session and a headless streamer can't
+co-drive one session (same collision as two bots on one app). So streaming is a
+step **from Mode A (connect your Claude session) toward Mode B (dedicated polished
+avatar)** — a product-direction choice, not just a perf win.
+
+Possible hybrid: `/join-call` could *hand off* — capture your context (summary,
+CLAUDE.md, project) and **seed** a fresh headless streamer with it. You transport
+your *context*, not the live session.
+
 ## Things that were keepers regardless of the two-tier outcome
 
 The experiment drove a lot of plain-good infrastructure that stands on its own:

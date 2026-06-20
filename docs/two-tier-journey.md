@@ -128,6 +128,30 @@ Possible hybrid: `/join-call` could *hand off* — capture your context (summary
 CLAUDE.md, project) and **seed** a fresh headless streamer with it. You transport
 your *context*, not the live session.
 
+## Streaming spike result (2026-06-20)
+
+Ran `scripts/stream-claude-spike.mjs` (headless `claude -p` streaming). Findings:
+- **Works:** text deltas stream; chunking into spoken sentences works.
+- **On subscription:** `ANTHROPIC_API_KEY` not set → flat cost. The `cost_usd` in the
+  result (~$0.03–0.09/reply) is **informational equivalent**, not billed. ✓ The
+  dealbreaker is cleared.
+- **But the latency floor is ~2–2.7s time-to-first-token**, and streaming does NOT
+  remove it. First *sentence* landed at ~2.4–3.2s; full reply ~4s. For a short
+  reply that's **basically the same as the two-phase slow bot** — both are
+  TTFT-bound. Streaming's real win is **long/multi-step replies** (speak sentence 1
+  while the rest generates) + architectural cleanliness, not short-turn latency.
+- **Key reframe:** nothing beats the ~2.5s TTFT floor for the *first words* except
+  a **fast-tier instant ack** (<1s "On it"). So the genuinely snappy architecture
+  is **fast ack (covers TTFT) → slow model streams the real answer** — which means
+  the **triage/ack tier earns its place after all**, and the near-term snappiness
+  win (smart instant acks) is buildable on the CURRENT bot without the rebuild.
+- Each run cold-starts a fresh session (overhead included); a persistent `--resume`
+  brain would have lower recurring TTFT (unmeasured).
+
+**Net:** streaming is viable and free, but it's a Mode-B architectural foundation
++ long-reply win, NOT a dramatic short-reply latency win. The latency lever is the
+fast ack, not streaming.
+
 ## Things that were keepers regardless of the two-tier outcome
 
 The experiment drove a lot of plain-good infrastructure that stands on its own:

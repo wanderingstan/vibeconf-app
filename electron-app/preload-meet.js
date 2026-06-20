@@ -1137,11 +1137,25 @@ class DOMSpeakerTracker {
     for (const [name, info] of this.participants) {
       const itemLive = info.item ? document.contains(info.item) : false;
       const indLive = !!(info.element && info.item && info.item.contains(info.element));
-      const chg = info._hbChanges || 0;
+      const chg = info._hbChanges || 0;       // container className changes
+      const mut = info._hbSubtreeMut || 0;    // ANY mutation under the tile
       info._hbChanges = 0;
-      parts.push(`${name}${info.isSelf ? '(self)' : ''}[spk=${info.speaking ? 1 : 0} item=${itemLive ? 'live' : 'STALE'} ind=${indLive ? 'live' : 'STALE'} chg=${chg}]`);
+      info._hbSubtreeMut = 0;
+      parts.push(`${name}${info.isSelf ? '(self)' : ''}[spk=${info.speaking ? 1 : 0} item=${itemLive ? 'live' : 'STALE'} ind=${indLive ? 'live' : 'STALE'} chg=${chg} mut=${mut}]`);
     }
     console.log('[speaker-health] tiles=' + visiblePeopleTileCount() + ' | ' + (parts.join(' ') || '(no participants tracked)'));
+
+    // One-time structural dump of a non-self participant's indicator so we can
+    // see how Meet renders the speaking animation (where to watch for it).
+    if (!this._dumpedIndicator) {
+      for (const [name, info] of this.participants) {
+        if (info.isSelf || !info.element) continue;
+        this._dumpedIndicator = true;
+        const html = (info.element.outerHTML || '').slice(0, 600);
+        console.log('[speaker-health] indicator DOM for ' + name + ': ' + html);
+        break;
+      }
+    }
   }
 
   _ensurePeoplePaneOpen() {
@@ -1242,6 +1256,12 @@ class DOMSpeakerTracker {
       // speech because the observer fires on a rotated element that doesn't
       // === the stale info.element.
       if (info.item === element || info.item.contains(element) || element.contains?.(info.item)) {
+        // Diagnostic: count ANY mutation under this tile (not just container
+        // className). If [speaker-health] shows mut>0 while chg=0 during a
+        // speaker we miss, the audio-meter animation lives in the subtree
+        // (child bars' class/style) and the container-className detector is
+        // looking at the wrong place — that's the fix target (#229).
+        info._hbSubtreeMut = (info._hbSubtreeMut || 0) + 1;
         const liveIndicator = (info.element && info.item.contains(info.element))
           ? info.element
           : findSpeakingIndicator(info.item);

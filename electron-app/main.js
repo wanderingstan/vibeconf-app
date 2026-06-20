@@ -124,6 +124,11 @@ const sync = new globalThis.SyncClient({
 // Any real bot speech clears this flag so the next tts-ended transitions normally.
 let ackTtsPending = false;
 
+// Two-tier shadow EVAL pairing: the most recent fast-model draft from a
+// floor-open, held until the slow session actually speaks so we can log them
+// side by side ([shadow-eval]). { speak, text, ms, at }. Null when none pending.
+let pendingShadowDraft = null;
+
 // Local HTTP server for agent communication (replaces remote sync for MCP)
 const localServer = new globalThis.LocalServer({
   appVersion: app.getVersion(),
@@ -141,6 +146,17 @@ const localServer = new globalThis.LocalServer({
   getConfiguredBotName: () => (store?.get('botName') || 'Jimmy'),
   onBotSpeech: (text, voice, emoji) => {
     console.log('[local-server] Bot speech:', text.slice(0, 80), emoji ? `(emoji: ${emoji})` : '');
+    // Shadow EVAL: pair the most recent fast-model draft with what the slow
+    // session ACTUALLY said, on one line, so the post-call read is a direct
+    // comparison instead of interleaved timestamps. gap = floor-open draft →
+    // this utterance. Cleared after pairing; unmatched drafts are overwritten.
+    if (pendingShadowDraft) {
+      const d = pendingShadowDraft;
+      pendingShadowDraft = null;
+      const gap = ((Date.now() - d.at) / 1000).toFixed(1);
+      const fast = d.speak ? `FAST[speak,${d.ms}ms]="${d.text}"` : `FAST[quiet]${d.text ? '(' + d.text + ')' : ''}`;
+      console.log(ts(), `🔬 [shadow-eval] gap=${gap}s | ${fast} | SLOW="${text}"`);
+    }
     ackTtsPending = false;
     speakText(text, voice, emoji);
   },
@@ -531,6 +547,9 @@ const localServer = new globalThis.LocalServer({
   onCallStatusChange: (status) => {
     // #189: a fresh call gets a fresh auto-posted whiteboard link.
     if (status !== 'in-call') whiteboardLinkPostedForCall = false;
+    // Don't let a shadow draft from a finished call pair with the next call's
+    // greeting (shadow-eval).
+    if (status !== 'in-call') pendingShadowDraft = null;
     // Forward to page-inject so the avatar can show 🫥 while joining/waiting.
     if (meetView && !meetView.webContents.isDestroyed()) {
       meetView.webContents.send('extension-message', {
@@ -626,6 +645,10 @@ const localServer = new globalThis.LocalServer({
     } else {
       console.log(ts(), `🗣️  [shadow] would STAY QUIET (${result.ms}ms)${result.text ? ' — ' + result.text : ''}`);
     }
+    // Hold the draft so the next real (slow-session) utterance can be logged
+    // beside it for side-by-side evaluation. A newer draft overwrites an
+    // unmatched one (the slow session stayed quiet through that floor-open).
+    pendingShadowDraft = { speak: result.speak, text: result.text, ms: result.ms, at: Date.now() };
   },
 
   onParticipantsFirstSeen: () => {

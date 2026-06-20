@@ -1115,6 +1115,12 @@ class DOMSpeakerTracker {
     }, 2000);
     this._startObserving();
     this.speakingPollInterval = setInterval(() => this._pollSpeakingState(), 200);
+    // Diagnostic heartbeat (5s): makes a "deaf" window legible after the fact.
+    // Per participant: is the tile still attached, is the indicator live, and
+    // how many raw indicator class-changes (audio-meter animation) we've seen
+    // since the last beat — chg>0 means that person's meter was animating (they
+    // were speaking) even if our detection threshold missed it. See #229/#187.
+    this.healthInterval = setInterval(() => this._logHealth(), 5000);
   }
 
   stop() {
@@ -1122,6 +1128,20 @@ class DOMSpeakerTracker {
     if (this.observer) this.observer.disconnect();
     if (this.checkInterval) clearInterval(this.checkInterval);
     if (this.speakingPollInterval) clearInterval(this.speakingPollInterval);
+    if (this.healthInterval) clearInterval(this.healthInterval);
+  }
+
+  _logHealth() {
+    if (!this.isTracking) return;
+    const parts = [];
+    for (const [name, info] of this.participants) {
+      const itemLive = info.item ? document.contains(info.item) : false;
+      const indLive = !!(info.element && info.item && info.item.contains(info.element));
+      const chg = info._hbChanges || 0;
+      info._hbChanges = 0;
+      parts.push(`${name}${info.isSelf ? '(self)' : ''}[spk=${info.speaking ? 1 : 0} item=${itemLive ? 'live' : 'STALE'} ind=${indLive ? 'live' : 'STALE'} chg=${chg}]`);
+    }
+    console.log('[speaker-health] tiles=' + visiblePeopleTileCount() + ' | ' + (parts.join(' ') || '(no participants tracked)'));
   }
 
   _ensurePeoplePaneOpen() {
@@ -1259,6 +1279,7 @@ class DOMSpeakerTracker {
 
     if (currentClasses !== info.lastClasses) {
       info.classChangeCount++;
+      info._hbChanges = (info._hbChanges || 0) + 1; // raw animation activity for [speaker-health]
       info.lastClasses = currentClasses;
       info.lastClassChangeTime = now;
     }
@@ -1436,6 +1457,19 @@ class CaptionScraper {
     this._captionsOn = true; // _waitForCaptions just confirmed
     this._lastReenableAt = 0;
     this._pollInterval = setInterval(() => this._checkCaptions(), 1000);
+    // Diagnostic heartbeat (5s): pairs with [speaker-health] to make a deaf
+    // window legible — is the captions region present, how many turn nodes are
+    // in it, and how long since new caption text actually arrived (#229/#187).
+    this._healthInterval = setInterval(() => this._logHealth(), 5000);
+  }
+
+  _logHealth() {
+    if (!this.isRunning) return;
+    const container = document.querySelector('div[role="region"][aria-label="Captions"]');
+    const nodes = container ? [...container.children].filter(c => c.querySelector('img')).length : -1;
+    const age = this._lastNewTurnsAt ? (Date.now() - this._lastNewTurnsAt) + 'ms' : 'never';
+    console.log('[caption-health] on=' + (this._captionsOn ? 1 : 0) +
+      ' region=' + (container ? 'yes' : 'NULL') + ' turnNodes=' + nodes + ' lastNewText=' + age);
   }
 
   // Captions can be toggled OFF mid-call (user click, Meet layout change,
@@ -1507,6 +1541,7 @@ class CaptionScraper {
       const snapshot = turns.map(t => `${t.turnId}:${t.speaker}:${t.text}`).join('|');
       if (snapshot !== this._lastSentSnapshot) {
         this._lastSentSnapshot = snapshot;
+        this._lastNewTurnsAt = Date.now(); // for [caption-health]
         ipcRenderer.send('caption-turns', { turns });
       }
 
@@ -1531,6 +1566,7 @@ class CaptionScraper {
 
   stop() {
     if (this._pollInterval) clearInterval(this._pollInterval);
+    if (this._healthInterval) clearInterval(this._healthInterval);
     this.isRunning = false;
   }
 }

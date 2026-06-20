@@ -1073,23 +1073,6 @@ async function autoJoin(botName) {
 // DOM Speaker Tracker (from content-script.js)
 // ---------------------------------------------------------------------------
 
-// Locate the speaking indicator within a participant tile by structure rather
-// than jsname/class. Meet's speaking indicator is a div whose only children are
-// exactly three empty <div>s (the three animated bars/dots). Google rotates
-// jsname/class tokens regularly, but the three-bars shape is stable.
-function findSpeakingIndicator(item) {
-  const candidates = item.querySelectorAll('div');
-  for (const el of candidates) {
-    const kids = el.children;
-    if (kids.length !== 3) continue;
-    if (kids[0].tagName !== 'DIV' || kids[1].tagName !== 'DIV' || kids[2].tagName !== 'DIV') continue;
-    if (kids[0].children.length || kids[1].children.length || kids[2].children.length) continue;
-    if (kids[0].textContent || kids[1].textContent || kids[2].textContent) continue;
-    return el;
-  }
-  return null;
-}
-
 // Find the "People" toggle in the bottom bar. Match leniently — with
 // participants present the accessible name often carries a count (e.g.
 // "People3"), so an exact "People" check misses it. startsWith handles both.
@@ -1152,18 +1135,6 @@ class DOMSpeakerTracker {
       parts.push(`${name}${info.isSelf ? '(self)' : ''}[spk=${info.speaking ? 1 : 0} item=${itemLive ? 'live' : 'STALE'} mut=${mut}]`);
     }
     console.log('[speaker-health] tiles=' + visiblePeopleTileCount() + ' | ' + (parts.join(' ') || '(no participants tracked)'));
-
-    // One-time structural dump of a non-self participant's indicator so we can
-    // see how Meet renders the speaking animation (where to watch for it).
-    if (!this._dumpedIndicator) {
-      for (const [name, info] of this.participants) {
-        if (info.isSelf || !info.element) continue;
-        this._dumpedIndicator = true;
-        const html = (info.element.outerHTML || '').slice(0, 600);
-        console.log('[speaker-health] indicator DOM for ' + name + ': ' + html);
-        break;
-      }
-    }
   }
 
   _ensurePeoplePaneOpen() {
@@ -1195,20 +1166,10 @@ class DOMSpeakerTracker {
     for (const item of items) {
       const name = item.getAttribute('aria-label');
       if (!name) continue;
-      const indicator = findSpeakingIndicator(item);
-      if (!indicator) {
-        // Warn once per participant — likely a DOM-shape change in Meet
-        // (Google rotated tokens or restructured the tile). Without the
-        // indicator, anyoneSpeaking stays false and wait_for_speech falls back
-        // to caption-based silence detection, which is slower.
-        if (!this._missingWarned) this._missingWarned = new Set();
-        if (!this._missingWarned.has(name)) {
-          this._missingWarned.add(name);
-          console.warn('[speaker-tracker] No speaking indicator found for', name,
-            '— Meet DOM may have changed; fix findSpeakingIndicator() in preload-meet.js');
-        }
-        continue;
-      }
+      // Register every participant tile. Detection is mutation-rate based
+      // (_checkSpeakingChange), so we no longer need to locate a specific
+      // indicator element — which also means a Meet DOM change can't make us
+      // skip a participant and go blind to them.
 
       // Self-detection: Meet's own tile has a "(You)" text node next to the
       // display name (the aria-label is just the name, so we can't infer from
@@ -1221,13 +1182,11 @@ class DOMSpeakerTracker {
           console.log('[speaker-tracker] Identified self tile:', name);
         }
         this.participants.set(name, {
-          speaking: false, isSelf, element: indicator, item,
-          lastClasses: indicator.className, classChangeCount: 0,
-          lastPollTime: Date.now(), lastChange: Date.now(),
+          speaking: false, isSelf, item,
+          mutTimes: [], lastTrueAt: 0, lastChange: Date.now(),
         });
       } else {
         const info = this.participants.get(name);
-        info.element = indicator;
         info.item = item;
         info.isSelf = isSelf;
       }

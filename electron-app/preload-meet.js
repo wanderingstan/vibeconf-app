@@ -784,6 +784,15 @@ const botNameLoaded = ipcRenderer.invoke('get-meet-bot-name').then((name) => {
   console.warn('[electron-meet] Failed to load botName:', err.message);
 });
 
+// Debug visual: outline the participant tile the speaker tracker thinks is
+// speaking, so it can be eyeballed against Meet's own animating mic meter
+// (#229 diagnosis). Off unless the speakerDebugBorder config flag is set.
+let speakerDebugBorder = false;
+ipcRenderer.invoke('get-config', ['speakerDebugBorder']).then((r) => {
+  speakerDebugBorder = !!r?.speakerDebugBorder;
+  if (speakerDebugBorder) console.log('[electron-meet] speakerDebugBorder ON — speaking tiles will be outlined');
+}).catch(() => {});
+
 function ensureStatusBar() {
   if (document.getElementById('vibeconf-status-bar')) return;
   const bar = document.createElement('div');
@@ -1136,12 +1145,9 @@ class DOMSpeakerTracker {
     const parts = [];
     for (const [name, info] of this.participants) {
       const itemLive = info.item ? document.contains(info.item) : false;
-      const indLive = !!(info.element && info.item && info.item.contains(info.element));
-      const chg = info._hbChanges || 0;       // container className changes
-      const mut = info._hbSubtreeMut || 0;    // ANY mutation under the tile
-      info._hbChanges = 0;
+      const mut = info._hbSubtreeMut || 0;    // tile mutations since last beat (the detection signal)
       info._hbSubtreeMut = 0;
-      parts.push(`${name}${info.isSelf ? '(self)' : ''}[spk=${info.speaking ? 1 : 0} item=${itemLive ? 'live' : 'STALE'} ind=${indLive ? 'live' : 'STALE'} chg=${chg} mut=${mut}]`);
+      parts.push(`${name}${info.isSelf ? '(self)' : ''}[spk=${info.speaking ? 1 : 0} item=${itemLive ? 'live' : 'STALE'} mut=${mut}]`);
     }
     console.log('[speaker-health] tiles=' + visiblePeopleTileCount() + ' | ' + (parts.join(' ') || '(no participants tracked)'));
 
@@ -1244,142 +1250,107 @@ class DOMSpeakerTracker {
     });
   }
 
+  // Detection signal (#229): count mutations WITHIN a participant's tile in a
+  // rolling window. Meet's audio meter churns the bar classes 5-10 Hz while
+  // someone speaks, so a high tile-mutation rate == speaking. This replaced the
+  // old approach of pinning to one structurally-guessed indicator element and
+  // watching its className — that broke intermittently when findSpeakingIndicator
+  // matched the wrong "3 empty divs" element (mute/pin controls have them too)
+  // or held a stale ref after a Meet re-render, going totally deaf (chg=0 in
+  // [speaker-health] while the real meter churned). Counting mutations across the
+  // whole tile is robust to which element animates, to class-name rotation, and
+  // to node swaps.
   _checkSpeakingChange(element) {
+    const now = Date.now();
     for (const [name, info] of this.participants) {
       if (!info.item) continue;
-      // Match via the TILE (info.item), not the indicator (info.element).
-      // Meet rotates the indicator div on layout changes (e.g. video focus
-      // shifting after a long bot turn), orphaning the captured ref. The
-      // tile is stable across these rotations. When we match the tile, re-
-      // find the indicator on-demand so the next read uses the live element.
-      // Symptom this fixes: speaker-tracker silently drops 30+ seconds of
-      // speech because the observer fires on a rotated element that doesn't
-      // === the stale info.element.
-      if (info.item === element || info.item.contains(element) || element.contains?.(info.item)) {
-        // Diagnostic: count ANY mutation under this tile (not just container
-        // className). If [speaker-health] shows mut>0 while chg=0 during a
-        // speaker we miss, the audio-meter animation lives in the subtree
-        // (child bars' class/style) and the container-className detector is
-        // looking at the wrong place — that's the fix target (#229).
+      // Only count mutations that occur strictly WITHIN this tile — not on an
+      // ancestor (e.g. a body-level class change), which isn't tile-specific
+      // and would falsely mark everyone speaking at once.
+      if (info.item === element || info.item.contains(element)) {
+        (info.mutTimes || (info.mutTimes = [])).push(now);
         info._hbSubtreeMut = (info._hbSubtreeMut || 0) + 1;
-        const liveIndicator = (info.element && info.item.contains(info.element))
-          ? info.element
-          : findSpeakingIndicator(info.item);
-        if (!liveIndicator) continue;
-        if (liveIndicator !== info.element) {
-          console.log('[speaker-tracker] Indicator rotated for', name, '— refreshing reference');
-          info.element = liveIndicator;
-          info.lastClasses = liveIndicator.className;
-        }
-        const isSpeaking = this._isSpeakingWithGrace(liveIndicator, name, Date.now());
-        if (isSpeaking !== info.speaking) {
-          info.speaking = isSpeaking;
-          info.lastChange = Date.now();
-          console.log('[speaker-tracker] (observer)', name, '→', isSpeaking);
-          ipcRenderer.send('update-speaking', { name, speaking: isSpeaking });
-          // Also fire participants-updated immediately so local-server's
-          // anyoneSpeaking flips on this edge. Without this, short
-          // utterances (<2s) can complete entirely between the periodic
-          // 2s snapshots, anyoneSpeaking never goes true→false, and
-          // page-inject's grace-window stamp never fires — leaving the
-          // avatar at 🙂 instead of 😐 in the silence-threshold gap.
-          ipcRenderer.send('participants-updated', this.getParticipantList());
-        }
+        this._evaluateSpeaking(info, name, now, 'observer');
       }
     }
   }
 
-  _isSpeakingIndicatorActive(element, name) {
-    if (!element) return false;
-    const info = name ? this.participants.get(name) : null;
-    if (!info) return false;
-
-    const currentClasses = element.className || '';
-    const now = Date.now();
-
-    if (currentClasses !== info.lastClasses) {
-      info.classChangeCount++;
-      info._hbChanges = (info._hbChanges || 0) + 1; // raw animation activity for [speaker-health]
-      info.lastClasses = currentClasses;
-      info.lastClassChangeTime = now;
-    }
-
-    if (now - info.lastPollTime > 2000) {
-      info.wasAnimating = info.classChangeCount >= 2;
-      info.classChangeCount = 0;
-      info.lastPollTime = now;
-    }
-
-    const recentChange = info.lastClassChangeTime && (now - info.lastClassChangeTime < 1000);
-    return recentChange && (info.classChangeCount >= 2 || info.wasAnimating);
+  // Raw speaking signal: enough tile mutations in the recent window.
+  _isSpeakingByMutation(info, now) {
+    const WINDOW_MS = 1200;
+    const MIN_MUTATIONS = 3; // meter does ~6-12 in this window; idle UI does <3
+    const t = info.mutTimes;
+    if (!t || !t.length) return false;
+    while (t.length && now - t[0] > WINDOW_MS) t.shift();
+    return t.length >= MIN_MUTATIONS;
   }
 
-  // Asymmetric grace wrapper around _isSpeakingIndicatorActive. Meet's
-  // three-bar indicator cycles classes 5-10 Hz while someone speaks, but
-  // brief animation pauses (or a missed observer tick) make the raw
-  // detector flip false mid-utterance. Without grace, anyoneSpeaking
-  // flickered true→false→true→... and lastSpeechStoppedAt got set on the
-  // first transient drop, leaving wait_for_speech waiting on a stale
-  // "stopped" timestamp while the user was still talking. Real-world
-  // incident: 36-second delay before the bot responded to "leave the call"
-  // because the tracker silently declared the speaker stopped on a
-  // sub-second indicator gap.
-  //
-  // Grace is asymmetric: true is trusted instantly (so the avatar flips
-  // 😐 with no perceived lag), false is delayed by SPEAKING_GRACE_MS so
-  // brief drops don't escape as "stopped" events. Tuning trade-off: too
-  // short and we false-stop, too long and the post-utterance silence
-  // window stretches by that much. 1500ms covers Meet's longest observed
-  // animation gap with margin and adds only minor lag to the silence
-  // threshold (already 2000ms).
-  _isSpeakingWithGrace(element, name, now) {
-    const info = this.participants.get(name);
-    if (!info) return false;
-    const raw = this._isSpeakingIndicatorActive(element, name);
-    if (raw) {
-      info.lastTrueAt = now;
-      return true;
-    }
+  // Asymmetric grace: true trusted instantly (avatar flips with no lag), false
+  // held for SPEAKING_GRACE_MS so a brief animation pause mid-utterance doesn't
+  // escape as a premature "stopped" (which used to leave wait_for_speech on a
+  // stale stopped-timestamp — the 36s-late-response incident). The rolling
+  // window already smooths; this adds margin on top.
+  _isSpeakingWithGrace(info, now) {
+    const raw = this._isSpeakingByMutation(info, now);
+    if (raw) { info.lastTrueAt = now; return true; }
     const SPEAKING_GRACE_MS = 1000;
-    if (info.lastTrueAt && (now - info.lastTrueAt) < SPEAKING_GRACE_MS) {
-      return true;
-    }
+    if (info.lastTrueAt && (now - info.lastTrueAt) < SPEAKING_GRACE_MS) return true;
     return false;
   }
 
+  // Shared flip: evaluate speaking, and on an edge emit the IPCs + toggle the
+  // debug border. source distinguishes the observer (mutation-driven, catches
+  // the true edge instantly) from the 200ms poll (catches the false edge once
+  // the window drains, since the observer only fires while mutations arrive).
+  _evaluateSpeaking(info, name, now, source) {
+    const isSpeaking = this._isSpeakingWithGrace(info, now);
+    if (isSpeaking !== info.speaking) {
+      info.speaking = isSpeaking;
+      info.lastChange = now;
+      console.log('[speaker-tracker] (' + source + ')', name, '→', isSpeaking);
+      this._applyDebugBorder(info, isSpeaking);
+      ipcRenderer.send('update-speaking', { name, speaking: isSpeaking });
+      ipcRenderer.send('participants-updated', this.getParticipantList());
+    } else if (info.speaking && source === 'poll') {
+      // Re-assert active speech so local-server's silence timer keeps resetting.
+      ipcRenderer.send('update-speaking', { name, speaking: true });
+    }
+  }
+
+  // Visual diagnostic (gated by speakerDebugBorder config): outline the tile we
+  // currently think is speaking, so it can be eyeballed against Meet's own
+  // animating mic meter in the same row.
+  _applyDebugBorder(info, speaking) {
+    if (!speakerDebugBorder || !info.item) return;
+    this._injectDebugStyle(); // lazy — flag is loaded async, head exists by now
+    try { info.item.classList.toggle('vibeconf-spk-debug', !!speaking); } catch { /* ignore */ }
+  }
+
+  _injectDebugStyle() {
+    if (this._debugStyleInjected) return;
+    this._debugStyleInjected = true;
+    try {
+      const style = document.createElement('style');
+      style.textContent = `
+        .vibeconf-spk-debug {
+          outline: 3px solid #00e5ff !important;
+          outline-offset: -3px !important;
+          border-radius: 6px;
+          animation: vibeconf-spk-pulse 0.7s ease-in-out infinite !important;
+        }
+        @keyframes vibeconf-spk-pulse {
+          0%, 100% { box-shadow: 0 0 6px 2px rgba(0,229,255,0.55); }
+          50%      { box-shadow: 0 0 16px 5px rgba(0,229,255,1); }
+        }`;
+      document.head.appendChild(style);
+    } catch { /* ignore */ }
+  }
+
   _pollSpeakingState() {
+    const now = Date.now();
     for (const [name, info] of this.participants) {
       if (!info.item) continue;
-      // Refresh the indicator if it's been detached from the tile (Meet
-      // rotated the speaking-bars div). Same rationale as in
-      // _checkSpeakingChange: without this the 200ms poll reads a class
-      // that never changes again and we miss every utterance until the
-      // 2s _scanParticipants pass installs a new ref.
-      if (!info.element || !info.item.contains(info.element)) {
-        const live = findSpeakingIndicator(info.item);
-        if (!live) continue;
-        if (live !== info.element) {
-          console.log('[speaker-tracker] Indicator rotated for', name, '(poll path) — refreshing');
-          info.element = live;
-          info.lastClasses = live.className;
-        }
-      }
-      const isSpeaking = this._isSpeakingWithGrace(info.element, name, Date.now());
-      if (isSpeaking !== info.speaking) {
-        info.speaking = isSpeaking;
-        info.lastChange = Date.now();
-        console.log('[speaker-tracker] (poll)', name, '→', isSpeaking);
-        // Also IPC the false transition — previously only true was sent, which
-        // meant the local-server never got the 'stopped speaking' edge from this
-        // path (it had to wait for the periodic participants-updated broadcast).
-        ipcRenderer.send('update-speaking', { name, speaking: isSpeaking });
-        // Push participants snapshot immediately so local-server's anyoneSpeaking
-        // flips on this edge (instead of waiting for the next 2s broadcast).
-        // See observer path for the full rationale.
-        ipcRenderer.send('participants-updated', this.getParticipantList());
-      } else if (info.speaking) {
-        ipcRenderer.send('update-speaking', { name, speaking: true });
-      }
+      this._evaluateSpeaking(info, name, now, 'poll');
     }
   }
 

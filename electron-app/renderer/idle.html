@@ -37,6 +37,15 @@
       font-size: 13px;
       color: #9e9e9e;
     }
+    .test-link {
+      display: inline-block;
+      margin-top: 14px;
+      font-size: 13px;
+      color: #8ab4f8;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .test-link:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -51,6 +60,18 @@
     </div>
     <h1>Vibeconferencing</h1>
     <p>Join a Google Meet call to get started</p>
+    <a id="testMeetLink" class="test-link" href="https://meet.google.com/paz-sqoa-npe">Start default testing meet ↗</a>
   </div>
+  <script>
+    // Open the default testing meet in the user's external browser (so they can
+    // join as a human alongside the bot). vibeconfOpenExternal is set by the
+    // meetView preload (contextIsolation:false). Falls back to a normal nav.
+    document.getElementById('testMeetLink').addEventListener('click', (e) => {
+      if (window.vibeconfOpenExternal) {
+        e.preventDefault();
+        window.vibeconfOpenExternal('https://meet.google.com/paz-sqoa-npe');
+      }
+    });
+  </script>
 </body>
 </html>

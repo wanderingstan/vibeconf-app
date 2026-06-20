@@ -7,6 +7,11 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
+// meetView runs with contextIsolation:false, so the preload and page share one
+// window. Expose a tiny helper the idle screen uses to open a URL in the user's
+// external browser (the "Start default testing meet" link).
+try { window.vibeconfOpenExternal = (url) => ipcRenderer.send('open-external-url', url); } catch { /* window not ready */ }
+
 // Auto-stamp every console line with HH:MM:SS.mmm BEFORE any other code runs,
 // so [electron-meet] / [speaker-tracker] / [CC] / [bots-in-calls] lines all
 // flow into the main process timeline with a wall-clock prefix. main.js's own

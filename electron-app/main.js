@@ -2394,6 +2394,13 @@ function setupIPC() {
     }
   });
 
+  // Open a URL in the user's external default browser (e.g. the idle screen's
+  // "Start default testing meet" link — so the operator can join the meet as a
+  // human in their own browser, separate from the bot's Electron Meet view).
+  ipcMain.on('open-external-url', (_event, url) => {
+    if (typeof url === 'string' && /^https:\/\//i.test(url)) shell.openExternal(url);
+  });
+
   ipcMain.on('leave-meet', () => {
     currentMeetUrl = null;
     detectedMeetUrl = null; // Reset so detection will re-notify about the same Meet

@@ -786,11 +786,13 @@ const botNameLoaded = ipcRenderer.invoke('get-meet-bot-name').then((name) => {
 
 // Debug visual: outline the participant tile the speaker tracker thinks is
 // speaking, so it can be eyeballed against Meet's own animating mic meter
-// (#229 diagnosis). Off unless the speakerDebugBorder config flag is set.
-let speakerDebugBorder = false;
+// (#229 diagnosis). Defaults ON — the bot's Meet view is only ever seen by the
+// operator in the Electron window, never by call participants, so there's no
+// reason to hide it. Set speakerDebugBorder:false in config.json to disable.
+let speakerDebugBorder = true;
 ipcRenderer.invoke('get-config', ['speakerDebugBorder']).then((r) => {
-  speakerDebugBorder = !!r?.speakerDebugBorder;
-  if (speakerDebugBorder) console.log('[electron-meet] speakerDebugBorder ON — speaking tiles will be outlined');
+  speakerDebugBorder = r?.speakerDebugBorder !== false; // explicit false disables
+  console.log('[electron-meet] speakerDebugBorder', speakerDebugBorder ? 'ON — speaking tiles outlined' : 'OFF');
 }).catch(() => {});
 
 function ensureStatusBar() {

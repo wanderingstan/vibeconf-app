@@ -16,19 +16,36 @@ function stripThink(raw) {
   return String(raw || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 }
 
-function buildSystem(botName, personality) {
+// The bot's posture is governed by its MODE — the same active/passive/silent
+// lever the rest of the app uses — NOT by the fast model second-guessing whether
+// it's its turn (which it does badly: it talked itself out of every turn in
+// testing). Mode decides the default; the model only phrases accordingly.
+function modeGuidance(mode) {
+  switch (mode) {
+    case 'passive':
+      return `MODE: PASSIVE. You are a quiet participant in a conversation that is mostly between other people. Set speak=true ONLY if you were directly addressed — named, or clearly asked a question. Otherwise set speak=false: the others are talking among themselves and must not be interrupted.`;
+    case 'silent':
+      return `MODE: SILENT. Always set speak=false.`;
+    case 'active':
+    default:
+      return `MODE: ACTIVE. You are an engaged participant. The floor just opened — set speak=true and contribute whenever you have something useful to add or are continuing an exchange you're part of. Lean toward contributing; set speak=false only for pure filler, or when another person clearly still holds the floor.`;
+  }
+}
+
+function buildSystem(botName, personality, mode) {
   return [
     `You are ${botName}, an AI participant speaking aloud in a live group voice call.`,
     personality
       ? `Your personality / voice: ${personality}`
       : `Speak naturally and conversationally, like a thoughtful colleague.`,
     `You are given your own current internal "stance" (the point you'd most want to make right now), a brief read of the discussion, notes on who's in the call, and the most recent thing said.`,
-    `The floor has just opened (someone finished talking). Decide whether THIS is your moment to speak.`,
+    `The floor has just opened (someone finished talking).`,
+    ``,
+    modeGuidance(mode),
     ``,
     `Reply as STRICT JSON with exactly these keys: {"speak": true|false, "text": "..."}.`,
-    `- speak=true → "text" is the single thing to say now, in ${botName}'s own voice: one or two sentences, natural spoken language, no markdown or lists.`,
-    `- speak=false → stay quiet (not your turn, or nothing worth adding). Put a short reason in "text".`,
-    `Prefer silence over filler. Speak only when you genuinely add value, are addressed, or a question is left hanging.`,
+    `- speak=true → "text" is the single thing to say now, in ${botName}'s own voice: one or two sentences, natural spoken language, no markdown or lists. Do NOT put reasoning here — only the words to be spoken aloud.`,
+    `- speak=false → "text" is a brief reason for staying quiet (not spoken).`,
     ``,
     `Output ONLY the JSON object — no prose, no code fences.`,
   ].join('\n');
@@ -67,7 +84,7 @@ function extractJson(raw) {
 }
 
 // Returns { speak: boolean, text: string, ms: number } or null on any failure.
-async function phrase({ workingMemory, recentTranscript, lastUtterance, roster, botName, personality, config, log }) {
+async function phrase({ workingMemory, recentTranscript, lastUtterance, roster, mode, botName, personality, config, log }) {
   const { endpoint, apiKey, model } = config || {};
   if (!endpoint) { log?.('no endpoint configured'); return null; }
 
@@ -75,7 +92,7 @@ async function phrase({ workingMemory, recentTranscript, lastUtterance, roster, 
   const body = {
     model: model || 'gpt-4o-mini',
     messages: [
-      { role: 'system', content: buildSystem(botName || 'the bot', personality) },
+      { role: 'system', content: buildSystem(botName || 'the bot', personality, mode) },
       { role: 'user', content: buildUser({ workingMemory, recentTranscript, lastUtterance, roster }) },
     ],
     temperature: 0.5,

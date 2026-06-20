@@ -1345,6 +1345,7 @@ class LocalServer {
           workingMemory: this.getWorkingMemory(),
           recentTranscript: this._recentTranscriptText(12),
           roster: this._rosterText(),
+          mode: this.mode,
         })).catch(() => {});
       }
     }

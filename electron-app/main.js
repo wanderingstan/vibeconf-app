@@ -617,7 +617,7 @@ const localServer = new globalThis.LocalServer({
   // the fast model what it WOULD say from the current stance. LOG-ONLY — never
   // spoken. Lets us compare fast-from-stance against what the slow session
   // actually says, to judge whether the fast model can become the sole voice.
-  onShadowPhrase: async ({ lastUtterance, workingMemory, recentTranscript, roster }) => {
+  onShadowPhrase: async ({ lastUtterance, workingMemory, recentTranscript, roster, mode }) => {
     // OFF by default — the shadow draft hits the same local model as the fast-ack
     // (which fires at this same floor-open) and background comprehension; running
     // all three at once overloads one LM Studio instance (HTTP 500s, aborted acks
@@ -634,6 +634,7 @@ const localServer = new globalThis.LocalServer({
       workingMemory,
       recentTranscript,
       roster,
+      mode,
       botName,
       personality,
       config: { endpoint: config.endpoint, apiKey: config.apiKey, model: config.model, timeoutMs: 6000 },
@@ -641,9 +642,9 @@ const localServer = new globalThis.LocalServer({
     });
     if (!result) { console.log(ts(), '🗣️  [shadow] no draft (parse/endpoint failure)'); return; }
     if (result.speak) {
-      console.log(ts(), `🗣️  [shadow] WOULD SAY (${result.ms}ms): "${result.text}"`);
+      console.log(ts(), `🗣️  [shadow] WOULD SAY [${mode}] (${result.ms}ms): "${result.text}"`);
     } else {
-      console.log(ts(), `🗣️  [shadow] would STAY QUIET (${result.ms}ms)${result.text ? ' — ' + result.text : ''}`);
+      console.log(ts(), `🗣️  [shadow] would STAY QUIET [${mode}] (${result.ms}ms)${result.text ? ' — ' + result.text : ''}`);
     }
     // Hold the draft so the next real (slow-session) utterance can be logged
     // beside it for side-by-side evaluation. A newer draft overwrites an

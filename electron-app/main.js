@@ -294,16 +294,34 @@ const localServer = new globalThis.LocalServer({
         // Delayed past the share trigger because sending chat briefly
         // steals the side pane from speaker detection.
         if (!whiteboardLinkPostedForCall) {
-          whiteboardLinkPostedForCall = true;
+          whiteboardLinkPostedForCall = true; // set now to prevent double-scheduling this call; reset below on any failure
           setTimeout(async () => {
             const base = (getWebsiteUrl() || '').replace(/\/$/, '');
-            if (!base) return;
-            const url = `${base}/room/${meetCode}?mode=whiteboard`;
-            const result = await chatRequest('send-chat', { text: `Whiteboard (live): ${url}` });
-            if (!result?.ok) {
-              // Allow a retry on the next share rather than silently never posting.
+            if (!base || !meetCode) {
+              // #241: don't silently early-return — log it and allow a retry.
               whiteboardLinkPostedForCall = false;
-              console.warn('[main] #189 auto-post whiteboard link failed:', result?.error);
+              console.warn('[main] #189 whiteboard auto-post skipped — empty base/room (base=' +
+                JSON.stringify(base) + ', room=' + JSON.stringify(meetCode) + ')');
+              return;
+            }
+            const url = `${base}/room/${meetCode}?mode=whiteboard`;
+            // #241: the chat pane can be slow/flaky to open right after a share,
+            // so retry a few times rather than failing on one bad attempt (the
+            // user may only share once, so "retry on next share" wasn't enough).
+            let posted = false;
+            for (let i = 1; i <= 3 && !posted; i++) {
+              const result = await chatRequest('send-chat', { text: `Whiteboard (live): ${url}` });
+              if (result?.ok) {
+                posted = true;
+                console.log('[main] #189 posted whiteboard link to chat:', url);
+              } else {
+                console.warn('[main] #189 whiteboard link post attempt', i, 'failed:', result?.error || '(no result)');
+                if (i < 3) await new Promise((r) => setTimeout(r, 2000));
+              }
+            }
+            if (!posted) {
+              whiteboardLinkPostedForCall = false; // allow another try on the next share
+              console.warn('[main] #189 gave up auto-posting whiteboard link after 3 attempts');
             }
           }, 5000);
         }

@@ -724,6 +724,18 @@ function installCallHealthTick() {
     try { dismissBlockingModals(); } catch { /* non-fatal */ }
     try { acceptRecordingConsentIfPresent(); } catch { /* non-fatal */ }
 
+    // #242: clear a stale error banner once we're actually in the call. The
+    // "join button not found" error (#240) could linger after a manual recovery
+    // because the clear depends on enterInCallState having re-fired. If the
+    // in-call toolbar is present but the status bar still shows .error, reset it.
+    try {
+      const inCallNow = !!(findByAriaLabel('Leave call') || document.querySelector('[data-tooltip="Leave call"]'));
+      const statusEl = document.getElementById('vibeconf-status');
+      if (inCallNow && statusEl && statusEl.classList.contains('error')) {
+        sendStatus('Participating in Meet');
+      }
+    } catch { /* non-fatal */ }
+
     let next;
     try { next = gatherCallHealthSnapshot(); }
     catch (err) {
@@ -986,9 +998,15 @@ async function autoJoin(botName) {
       }
     }
 
-    // Click join
+    // Click join. Use a TIME deadline, not a fixed attempt count (#240): the
+    // modal/popup dismissals below each `continue` the loop, so a fixed budget
+    // got exhausted by popups on a slow cold join before the real "Ask to join"
+    // button finished rendering — and the bot bailed with "join button not
+    // found". A wall-clock deadline keeps looking for the button for the full
+    // window regardless of how many popups we cleared first.
     let clicked = false;
-    for (let attempt = 0; attempt < 30 && !clicked; attempt++) {
+    const joinDeadline = Date.now() + 60000;
+    while (!clicked && Date.now() < joinDeadline) {
       await delay(1000);
       // Clear blocking pre-join overlays before looking for the join button.
       // Known "Others may see your video differently" overlay (#227), gated by

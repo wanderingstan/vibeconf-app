@@ -454,7 +454,10 @@ const localServer = new globalThis.LocalServer({
 
     // Play acknowledgment sounds when entering 'thinking' state.
     // Only in active mode — passive/silent shouldn't blurt "mm-hmm" unprompted.
-    if (state === 'thinking' && localServer.mode === 'active') {
+    // When triage is enabled (shadowPhrase), the ack is gated by the smart
+    // triage verdict in onShadowPhrase instead of this regex-addressivity path —
+    // skip here to avoid a double ack.
+    if (state === 'thinking' && localServer.mode === 'active' && !store?.get('shadowPhrase')) {
       const wordCount = extra?.wordCount || 0;
       const text = (extra?.text || '').toLowerCase();
 
@@ -679,6 +682,28 @@ const localServer = new globalThis.LocalServer({
     // response really was expected (ground truth). Overwritten by the next
     // floor-open if the slow session stays quiet through this one.
     pendingTriage = { ack: result.ack, category: result.category, ms: result.ms, at: Date.now() };
+
+    // INSTANT ACK (non-authoritative): if triage says the bot is being addressed,
+    // play a quick filler to cover the slow model's ~2.5s TTFT — "On it" while the
+    // slow session generates the real response. Triage being wrong is cheap: a
+    // missed ack just means the slow answer arrives without a filler; a stray ack
+    // is one short phrase. Only in active mode + in-call. The regex ack-on-thinking
+    // is suppressed (above) while triage drives, so no double ack.
+    if (result.ack && localServer.mode === 'active' && localServer.callStatus === 'in-call') {
+      const wordCount = (lastUtterance || '').split(/\s+/).filter(Boolean).length;
+      const prefs = require('./preferences-schema').PREFERENCES;
+      const longMin = Number(store?.get('ackLongMin')) || prefs.ackLongMin.default;
+      const arr = wordCount >= longMin
+        ? (store?.get('ackLongPhrases') || prefs.ackLongPhrases.default)
+        : (store?.get('ackShortPhrases') || prefs.ackShortPhrases.default);
+      const phrase = arr[Math.floor(Math.random() * arr.length)];
+      if (phrase) {
+        console.log(ts(), `👂 [ack] (triage-gated) Playing: ${JSON.stringify(phrase)} (${result.ms}ms after floor-open)`);
+        ackTtsPending = true;
+        speakText(phrase);
+        localServer.setLastAckPhrase(phrase);
+      }
+    }
   },
 
   onParticipantsFirstSeen: () => {

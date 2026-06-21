@@ -281,6 +281,27 @@ const PREFERENCES = {
       'said, not wall-clock. 0 = exactly today\'s behavior. Costs continuous ' +
       'slow-model turns — fine on the flat subscription, not metered. Try e.g. 600.',
   },
+  ackEndpoint: {
+    type: 'string',
+    default: 'http://127.0.0.1:1234/v1',
+    pattern: /^https?:\/\/.+/,
+    description:
+      'OpenAI-compatible base URL for the LOCAL fast model used by the ack, ' +
+      'background comprehension, triage, and the active-listening completeness ' +
+      'gate (#243/#245/#237). Default is LM Studio (http://127.0.0.1:1234/v1). ' +
+      'Point at the Apple on-device wrapper (http://127.0.0.1:11535/v1) or any ' +
+      'openai-compat server. Read live — takes effect on the next model call, no ' +
+      'restart. Pair with ackModel.',
+  },
+  ackModel: {
+    type: 'string',
+    default: 'qwen2.5-7b-instruct-mlx',
+    description:
+      'Model name requested from ackEndpoint for the local fast-model consumers ' +
+      '(ack / comprehend / triage / completeness gate). Must match a model the ' +
+      'endpoint serves — e.g. "apple-on-device" for the Apple wrapper, ' +
+      '"qwen2.5-7b-instruct-mlx" for LM Studio. Read live; no restart.',
+  },
   probeFiring: {
     type: 'boolean',
     default: false,

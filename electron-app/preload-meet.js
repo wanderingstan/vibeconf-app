@@ -932,31 +932,65 @@ function sendStatus(status) {
 // captions" does, so a single click attempt misses and we fall through to
 // captionScraper's eventual retry (~30s later). This polls every 250ms
 // for up to 30 seconds and clicks at the first opportunity.
+// In some layouts (cross-org / guest views, #247) the captions button appears
+// late, in a different node, or with a relabeled aria-label — so the old
+// fixed-interval poll over a fixed 30s window raced and silently lost (= deaf
+// bot). Instead: act immediately if present, then a MutationObserver (childList
+// for late insertion, attributes for an existing button whose aria-label flips
+// on) catches it whenever/wherever it renders, with a low-freq safety poll, and
+// a backstop that ESCALATES the deaf state (#246) instead of giving up silently.
 let captionsClickArmed = false;
 function clickCaptionsWhenReady() {
   if (captionsClickArmed) return;
   captionsClickArmed = true;
   const startTime = Date.now();
-  const poll = setInterval(() => {
-    const onBtn = findByAriaLabel('Turn on captions') || findByAriaLabel('Activar subtítulos');
+  let settled = false;
+  let observer = null;
+  let safetyPoll = null;
+  let backstop = null;
+
+  const cleanup = () => {
+    if (observer) { observer.disconnect(); observer = null; }
+    if (safetyPoll) { clearInterval(safetyPoll); safetyPoll = null; }
+    if (backstop) { clearTimeout(backstop); backstop = null; }
+  };
+
+  const attempt = () => {
+    if (settled) return true;
     const offBtn = findByAriaLabel('Turn off captions') || findByAriaLabel('Desactivar subtítulos');
     if (offBtn) {
-      clearInterval(poll);
+      settled = true; cleanup();
       console.log('[electron-meet] [CC] Already on, no click needed (', Date.now() - startTime, 'ms after admission)');
-      return;
+      return true;
     }
+    const onBtn = findByAriaLabel('Turn on captions') || findByAriaLabel('Activar subtítulos');
     if (onBtn) {
-      clearInterval(poll);
+      settled = true; cleanup();
       onBtn.click();
-      console.log('[electron-meet] [CC] Clicked "Turn on captions" at', Date.now() - startTime, 'ms after admission');
-      return;
+      console.log('[electron-meet] [CC] Clicked "Turn on captions" at', Date.now() - startTime, 'ms after admission (observer)');
+      return true;
     }
-    if (Date.now() - startTime > 30_000) {
-      clearInterval(poll);
-      console.warn('[electron-meet] [CC] Captions button never appeared after 30s');
-      dumpCaptionDiagnostics('clickCaptionsWhenReady gave up after 30s');
-    }
-  }, 250);
+    return false;
+  };
+
+  if (attempt()) return;
+
+  observer = new MutationObserver(() => { attempt(); });
+  try {
+    observer.observe(document.body, {
+      childList: true, subtree: true, attributes: true, attributeFilter: ['aria-label'],
+    });
+  } catch { /* body not ready — the safety poll still covers it */ }
+
+  safetyPoll = setInterval(attempt, 1000);
+
+  backstop = setTimeout(() => {
+    if (settled) return;
+    cleanup();
+    console.warn('[electron-meet] [CC] Captions button never appeared after 60s — escalating deaf');
+    dumpCaptionDiagnostics('clickCaptionsWhenReady: button never appeared (60s, observer+poll)');
+    try { ipcRenderer.send('captions-state', { on: false }); } catch { /* ignore */ }
+  }, 60_000);
 }
 
 async function autoJoin(botName) {
@@ -1484,12 +1518,16 @@ class CaptionScraper {
     }
   }
 
-  _waitForCaptions() {
+  // The toolbar's caption button labels itself "Turn off captions" only when
+  // captions are actually ON — more reliable than the [aria-label="Captions"]
+  // container (which exists earlier). Poll for that confirmation; if it never
+  // flips, RE-CLICK and retry with backoff (the click can land before the button
+  // is wired). After the last round, ESCALATE the deaf state (#246) rather than
+  // silently giving up — a clicked-but-never-confirmed bot is still deaf.
+  _waitForCaptions(round = 0) {
+    const ROUND_POLLS = [120, 160, 200]; // ×250ms = 30s, 40s, 50s (backoff)
+    const maxPolls = ROUND_POLLS[round] || 200;
     let attempts = 0;
-    // The toolbar's caption button labels itself "Turn off captions" only
-    // when captions are actually ON — much more reliable than checking
-    // [aria-label="Captions"] container presence (which exists earlier).
-    // 250ms poll, retry the click after 30s if the button never flips.
     const poll = setInterval(() => {
       const captionsAreOn = !!document.querySelector('[aria-label="Turn off captions" i]')
         || !!findByAriaLabel('Turn off captions')
@@ -1497,20 +1535,23 @@ class CaptionScraper {
       if (captionsAreOn) {
         clearInterval(poll);
         console.log('[electron-meet] [CC] Captions confirmed on at', Date.now(),
-          'after', attempts * 250, 'ms of polling');
+          'after', attempts * 250, 'ms (round', round, ')');
         this._observe();
         if (this.onReady) { try { this.onReady(); } catch {} }
-      } else if (++attempts > 120) { // 30s of 250ms polls
+        return;
+      }
+      if (++attempts > maxPolls) {
         clearInterval(poll);
-        console.warn('[electron-meet] Captions never flipped on; retrying click');
-        dumpCaptionDiagnostics('_waitForCaptions: never confirmed on after 30s');
-        this._enableCaptions();
-        setTimeout(() => {
-          if (findByAriaLabel('Turn off captions')) {
-            this._observe();
-            if (this.onReady) { try { this.onReady(); } catch {} }
-          }
-        }, 5000);
+        if (round < ROUND_POLLS.length - 1) {
+          console.warn('[electron-meet] [CC] Captions never flipped (round', round, ') — re-clicking, retrying with backoff');
+          dumpCaptionDiagnostics('_waitForCaptions: not confirmed, round ' + round);
+          this._enableCaptions();
+          this._waitForCaptions(round + 1);
+        } else {
+          console.warn('[electron-meet] [CC] Captions never confirmed after', round + 1, 'rounds — escalating deaf');
+          dumpCaptionDiagnostics('_waitForCaptions: gave up after ' + (round + 1) + ' rounds');
+          try { ipcRenderer.send('captions-state', { on: false }); } catch { /* ignore */ }
+        }
       }
     }, 250);
   }

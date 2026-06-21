@@ -219,6 +219,41 @@ function dismissBlockingModals() {
   return false;
 }
 
+// Auto-accept Meet's AI-recording disclosure dialog that blocks admission (#130).
+// Premium Meet calls show a modal — "This video call is being recorded and
+// transcribed. Gemini is taking notes." — with Leave / Join now buttons. Left
+// unhandled, the bot sits stuck at 'waiting-to-be-admitted'. We click "Join now"
+// (the dialog's data-mdc-dialog-action="ok" button) to consent on the user's
+// behalf, gated on the recording heading so a stray "Join now" elsewhere can't be
+// clicked. Returns true if accepted. Surfaces a one-time status so the operator
+// knows the bot consented to recording for them.
+let _recordingConsentNotified = false;
+function acceptRecordingConsentIfPresent() {
+  const dlg = document.querySelector('[role="dialog"][aria-modal="true"], [role="dialog"]');
+  if (!dlg) return false;
+  const text = (dlg.textContent || '').toLowerCase();
+  const isRecordingConsent =
+    text.includes('being recorded') ||
+    text.includes('recorded and transcribed') ||
+    text.includes('taking notes');
+  if (!isRecordingConsent) return false;
+
+  // Accept = the dialog's "ok" action (labelled "Join now"); fall back to text.
+  const okBtn = dlg.querySelector('button[data-mdc-dialog-action="ok"]')
+    || [...dlg.querySelectorAll('button, [role="button"]')]
+         .find((b) => /\bjoin now\b/i.test(b.textContent || ''));
+  if (okBtn && isVisible(okBtn)) {
+    okBtn.click();
+    if (!_recordingConsentNotified) {
+      _recordingConsentNotified = true;
+      console.log('[electron-meet] Accepted call-recording disclosure (clicked "Join now") — recording/transcription consented on the user\'s behalf');
+      try { sendStatus('Accepted recording disclosure (call is being recorded/transcribed)'); } catch { /* status bar not ready */ }
+    }
+    return true;
+  }
+  return false;
+}
+
 async function typeIntoInput(input, value) {
   input.focus();
   input.click();
@@ -684,8 +719,10 @@ function installCallHealthTick() {
   const tick = () => {
     // Dismiss any blocking Meet onboarding modal before probing the DOM —
     // the overlay sits on top of the UI and would otherwise skew pane /
-    // present / button detection below (#227).
+    // present / button detection below (#227). Also accept the AI-recording
+    // disclosure if it appears mid-call (e.g. recording toggled on later) (#130).
     try { dismissBlockingModals(); } catch { /* non-fatal */ }
+    try { acceptRecordingConsentIfPresent(); } catch { /* non-fatal */ }
 
     let next;
     try { next = gatherCallHealthSnapshot(); }
@@ -957,6 +994,9 @@ async function autoJoin(botName) {
       // Known "Others may see your video differently" overlay (#227), gated by
       // heading so we never click an unrelated "Got it":
       if (dismissBlockingModals()) continue;
+      // #130: if the AI-recording disclosure dialog is up at pre-join, accepting
+      // it ("Join now") IS the join/consent — count it as clicked and move on.
+      if (acceptRecordingConsentIfPresent()) { clicked = true; continue; }
       // Meet's "Sign in with your Google account" promo popup can also render
       // before the join panel and delay/overlay the join button (6232133). It
       // isn't in the gated heading list; on the pre-join screen any remaining
@@ -1011,6 +1051,12 @@ async function autoJoin(botName) {
     while (!admitted) {
       await delay(1000);
       waitedSeconds++;
+
+      // #130: a premium call shows an AI-recording disclosure dialog ("…being
+      // recorded and transcribed. Gemini is taking notes.") with a "Join now"
+      // button. Its "Join now" also trips hasJoinUI below, so without accepting
+      // it the loop waits forever. Click it to consent, then re-evaluate.
+      if (acceptRecordingConsentIfPresent()) continue;
 
       const bodyText = document.body.innerText;
       const waitingText = bodyText.includes('wait until') ||

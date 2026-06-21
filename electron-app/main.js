@@ -657,7 +657,10 @@ const localServer = new globalThis.LocalServer({
       log: (m) => console.log(ts(), '🚦 [triage]', m),
     });
     if (!result) { console.log(ts(), '🚦 [triage] no verdict (parse/endpoint failure)'); return; }
-    console.log(ts(), `🚦 [triage] ack=${result.ack ? 'YES' : 'no'} [${result.category}] (${result.ms}ms) — ${result.reason}`);
+    // Log the EXACT utterance triage classified — the offline harness proved the
+    // classifier is ~perfect on clean input, so any live miss is a stale/wrong
+    // input or an eval-pairing artifact. This makes that diagnosable against [heard].
+    console.log(ts(), `🚦 [triage] ack=${result.ack ? 'YES' : 'no'} [${result.category}] (${result.ms}ms) — ${result.reason} | on: "${(lastUtterance || '').slice(0, 120)}"`);
     // Hold the verdict so the next slow-session utterance can confirm whether a
     // response really was expected (ground truth). Overwritten by the next
     // floor-open if the slow session stays quiet through this one.

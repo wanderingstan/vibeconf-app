@@ -400,6 +400,38 @@ function visiblePeopleTileCount() {
   return n;
 }
 
+// Diagnostic dump for the captions-button race (#247). When the "Turn on
+// captions" button can't be found (or never confirms on), we go silently deaf —
+// and we've only been logging "button never appeared", which doesn't tell us WHY.
+// This captures what the toolbar ACTUALLY contains so we can SEE the failing view
+// (suspected: the cross-org / guest layout from a personal-Gmail-hosted meeting,
+// where the captions control may be missing, renamed, or tucked behind the
+// "More options" ⋮ menu) instead of guessing. Cheap, read-only; safe to call on
+// every failure path. Pairs with #246 (escalating the deaf state, not just logging it).
+function dumpCaptionDiagnostics(reason) {
+  try {
+    const labelEls = document.querySelectorAll('button[aria-label], [role="button"][aria-label]');
+    const uniqLabels = Array.from(new Set(
+      Array.from(labelEls).map(b => b.getAttribute('aria-label')).filter(Boolean)
+    ));
+    const ccOn = !!findByAriaLabel('Turn on captions') || !!findByAriaLabel('Activar subtítulos');
+    const ccOff = !!findByAriaLabel('Turn off captions') || !!findByAriaLabel('Desactivar subtítulos');
+    const moreMenu = !!findByAriaLabel('More options') || !!findByAriaLabel('Más opciones');
+    const guestNameInput = !!document.querySelector('input[aria-label*="name" i], input[placeholder*="name" i]');
+    console.warn('[electron-meet] [CC-diag] ' + reason +
+      ' — tiles=' + visiblePeopleTileCount() +
+      ' ccOnBtn=' + ccOn + ' ccOffBtn=' + ccOff + ' moreMenuBtn=' + moreMenu +
+      ' guestNameInput=' + guestNameInput +
+      ' totalToolbarBtns=' + uniqLabels.length +
+      ' url=' + location.href);
+    // The full label list is the money shot: it shows whether "Turn on captions"
+    // is absent, renamed, or hidden in a submenu in this (guest) view.
+    console.warn('[electron-meet] [CC-diag] button aria-labels: ' + JSON.stringify(uniqLabels));
+  } catch (e) {
+    console.warn('[electron-meet] [CC-diag] dump failed:', e && e.message);
+  }
+}
+
 function getChatToggle() {
   // Label is "Chat with everyone" or "Chat with everyone - New message".
   return document.querySelector(
@@ -922,6 +954,7 @@ function clickCaptionsWhenReady() {
     if (Date.now() - startTime > 30_000) {
       clearInterval(poll);
       console.warn('[electron-meet] [CC] Captions button never appeared after 30s');
+      dumpCaptionDiagnostics('clickCaptionsWhenReady gave up after 30s');
     }
   }, 250);
 }
@@ -1447,6 +1480,7 @@ class CaptionScraper {
       console.log('[electron-meet] [CC] _enableCaptions: already on');
     } else {
       console.warn('[electron-meet] [CC] _enableCaptions: no captions button in DOM');
+      dumpCaptionDiagnostics('_enableCaptions: no captions button in DOM');
     }
   }
 
@@ -1469,6 +1503,7 @@ class CaptionScraper {
       } else if (++attempts > 120) { // 30s of 250ms polls
         clearInterval(poll);
         console.warn('[electron-meet] Captions never flipped on; retrying click');
+        dumpCaptionDiagnostics('_waitForCaptions: never confirmed on after 30s');
         this._enableCaptions();
         setTimeout(() => {
           if (findByAriaLabel('Turn off captions')) {

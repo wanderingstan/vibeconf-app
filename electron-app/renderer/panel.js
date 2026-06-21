@@ -413,6 +413,29 @@ shareWhiteboardBtn.addEventListener('click', async () => {
 // Bot Google identity — guest vs account mode (#170)
 // ---------------------------------------------------------------------------
 
+const meetAccountEmail = document.getElementById('meetAccountEmail');
+// Show WHICH Google account the bot is actually signed in as — surfaces the gap
+// that hid #250 (mode said "account" while the bot was silently logged out).
+function refreshAccountEmail(mode) {
+  if (!meetAccountEmail) return;
+  if (mode !== 'account') { meetAccountEmail.style.display = 'none'; return; }
+  meetAccountEmail.style.display = '';
+  meetAccountEmail.textContent = 'Checking signed-in account…';
+  meetAccountEmail.className = 'account-email';
+  api.invoke('get-meet-account-email').then((r) => {
+    if (r && r.signedIn && r.email) {
+      meetAccountEmail.textContent = '✓ Signed in as ' + r.email;
+      meetAccountEmail.className = 'account-email email-ok';
+    } else {
+      meetAccountEmail.textContent = '⚠ Mode is "account" but NO Google session — the bot is not actually signed in. Click "Sign in to Google as bot".';
+      meetAccountEmail.className = 'account-email email-bad';
+    }
+  }).catch(() => {
+    meetAccountEmail.textContent = '(could not read signed-in account)';
+    meetAccountEmail.className = 'account-email';
+  });
+}
+
 function applyMeetMode(mode) {
   if (!meetModeIndicator) return;
   meetModeIndicator.textContent = mode;
@@ -423,6 +446,7 @@ function applyMeetMode(mode) {
     meetSignInBtn.style.display = '';
     meetSignOutBtn.style.display = 'none';
   }
+  refreshAccountEmail(mode);
 }
 
 // Initial state on panel load.

@@ -2619,6 +2619,34 @@ function setupIPC() {
     mode: currentMeetPartition === MEET_GUEST_PARTITION ? 'guest' : 'account',
   }));
 
+  // Which Google account the bot is ACTUALLY signed in as (not just "account
+  // mode" — the real email). Surfaces the gap that hid #250: the app knew the
+  // mode but never the identity, so a silently-logged-out bot looked "signed
+  // in". Reads the account partition's live Google session via ListAccounts
+  // (cookie-authenticated; returns nothing when not signed in). Best-effort.
+  ipcMain.handle('get-meet-account-email', async () => {
+    if (currentMeetPartition === MEET_GUEST_PARTITION) return { signedIn: false, email: null };
+    try {
+      const sess = session.fromPartition(MEET_ACCOUNT_PARTITION);
+      const resp = await sess.fetch(
+        'https://accounts.google.com/ListAccounts?gpsia=1&source=ClientLogin&json=standard'
+      );
+      const body = await resp.text();
+      // Defensive: the response is a nested JSON array; pull email-shaped tokens
+      // rather than trusting a fixed index across format changes. ListAccounts
+      // lists the default/active account first. Content is account data, so the
+      // email matches ARE the signed-in accounts.
+      const emails = Array.from(
+        new Set(body.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [])
+      );
+      const email = emails[0] || null;
+      return { signedIn: !!email, email, allEmails: emails };
+    } catch (err) {
+      console.warn('[electron] get-meet-account-email failed:', err.message);
+      return { signedIn: false, email: null, error: err.message };
+    }
+  });
+
   // Swap meetView to the account partition and navigate to Google's
   // ServiceLogin flow with a Meet landing page. First time: user signs in,
   // cookies land in the account partition, persist across launches. Later

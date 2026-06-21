@@ -419,3 +419,15 @@ button:disabled {
   white-space: nowrap;
 }
 .popout-btn:hover { background: #3c4043; border-color: #8ab4f8; color: #aecbfa; }
+
+/* Bot Google Identity — which account is actually signed in */
+.account-email {
+  font-size: 12px;
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #303134;
+  word-break: break-all;
+}
+.account-email.email-ok { background: rgba(129, 201, 149, 0.15); color: #81c995; }
+.account-email.email-bad { background: rgba(242, 139, 130, 0.15); color: #f28b82; }

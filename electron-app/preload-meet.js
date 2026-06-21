@@ -1911,6 +1911,14 @@ window.addEventListener('DOMContentLoaded', () => {
   // /landing, etc.), only when actually navigated into a meeting code.
   if (!/^\/[a-z]{3}-[a-z]{4}-[a-z]{3}/i.test(window.location.pathname)) {
     console.log('[electron-meet] Meet home/landing (no meeting code) — skipping join automation');
+    // Still show the "bot view" banner so it's clear this is the bot's browser,
+    // not a normal Meet tab. Set the text directly (not sendStatus, which would
+    // ping main with a status update).
+    try {
+      ensureStatusBar();
+      const el = document.getElementById('vibeconf-status');
+      if (el) el.textContent = 'Google Meet home — bot is signed in here, not in a call';
+    } catch { /* body not ready */ }
     return;
   }
 

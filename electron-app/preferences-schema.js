@@ -10,16 +10,17 @@
 const PREFERENCES = {
   comprehendCharThreshold: {
     type: 'number',
-    default: 500,
+    default: 0,
     min: 0,
     description:
-      'Two-tier experiment: how many characters of NEW transcript must pile ' +
-      'up before the bot refreshes its background working memory (understanding / ' +
-      'stance / people) via the local model. Lower = fresher but more local-model ' +
-      'calls; higher = cheaper but staler. The first two refreshes of a call fire ' +
-      'sooner (~120c then ~300c) so working memory warms up fast, then settle to ' +
-      'this value. 0 disables the size-based refresh. ' +
-      'Requires the local (openai-compat) model to be configured.',
+      'Two-tier experiment (OFF by default): how many characters of NEW transcript ' +
+      'must pile up before the bot refreshes its background working memory ' +
+      '(understanding / stance / people) via a local model. 0 disables it (the ' +
+      'default) — without this, a bot with no local model running would ping the ' +
+      'endpoint every ~500c and fail. Set to e.g. 500 ONLY if you have a local ' +
+      '(openai-compat / LM Studio) model configured and want to test the two-tier ' +
+      'working memory. Lower = fresher but more local-model calls; the first two ' +
+      'refreshes fire sooner (~120c then ~300c) to warm up, then settle to this value.',
   },
   ackShortMin: {
     type: 'number',

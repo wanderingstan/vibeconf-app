@@ -431,3 +431,10 @@ button:disabled {
 }
 .account-email.email-ok { background: rgba(129, 201, 149, 0.15); color: #81c995; }
 .account-email.email-bad { background: rgba(242, 139, 130, 0.15); color: #f28b82; }
+
+/* Small inline debug link (e.g. default testing meet) */
+.text-link {
+  color: #8ab4f8;
+  text-decoration: none;
+}
+.text-link:hover { color: #aecbfa; text-decoration: underline; }

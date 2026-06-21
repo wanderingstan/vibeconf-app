@@ -379,7 +379,8 @@ meetUrlInput.addEventListener('keydown', (e) => {
 // auto-fills the URL here, ready to send the bot in too. Eases testing.
 const DEFAULT_MEET_URL = 'https://meet.google.com/paz-sqoa-npe';
 const defaultMeetBtn = document.getElementById('defaultMeetBtn');
-defaultMeetBtn?.addEventListener('click', () => {
+defaultMeetBtn?.addEventListener('click', (e) => {
+  e.preventDefault();
   api.send('open-external-url', DEFAULT_MEET_URL);
 });
 

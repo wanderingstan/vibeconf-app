@@ -433,6 +433,35 @@ api.invoke('get-meet-mode').then((info) => {
 // Stay in sync when main swaps partitions.
 api.on('meet-mode-changed', ({ mode }) => applyMeetMode(mode));
 
+// --- Live caption feed: the "bot's-eye view" of exactly what captions the bot
+// is receiving, mirroring the [caption-raw]/[heard] logs. Each tick main sends
+// the full current turn snapshot; render the recent history with the still-
+// growing (bottommost) turn marked LIVE, so you can compare it in real time
+// against the bot's Meet view. ---
+function renderCaptionFeed(turns) {
+  if (!rawCaptionText || !Array.isArray(turns)) return;
+  const recent = turns.slice(-12);
+  rawCaptionText.innerHTML = recent.map((t) => {
+    const live = t.isBottommost;
+    const speaker = (t.speaker || '?').replace(/[<>&]/g, '');
+    const text = (t.text || '').replace(/[<>&]/g, '');
+    return `<div class="cap-line${live ? ' cap-live' : ''}">`
+      + `<span class="cap-tag">${live ? 'LIVE' : 'settled'}</span> `
+      + `<span class="cap-speaker">${speaker}:</span> ${text}</div>`;
+  }).join('') || '<span class="helper-text">No captions yet.</span>';
+  rawCaptionText.scrollTop = rawCaptionText.scrollHeight;
+}
+api.on('caption-feed', ({ turns }) => renderCaptionFeed(turns));
+
+// Captions on/off (deaf signal) — a badge so a deaf bot is obvious at a glance.
+function renderCaptionState(on) {
+  const el = document.getElementById('captionStateBadge');
+  if (!el) return;
+  el.textContent = on ? '● captions ON' : '○ captions OFF — bot is DEAF';
+  el.className = 'caption-badge ' + (on ? 'cap-on' : 'cap-off');
+}
+api.on('caption-state', ({ on }) => renderCaptionState(on));
+
 meetSignInBtn?.addEventListener('click', async () => {
   meetSignInBtn.disabled = true;
   meetSignInBtn.textContent = 'Switching to Google sign-in...';

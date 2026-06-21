@@ -2763,6 +2763,12 @@ function setupIPC() {
     const turns = payload?.turns;
     if (!Array.isArray(turns)) return;
     localServer.updateTurns(turns);
+    // Mirror the live caption state into the troubleshooting panel — the
+    // "bot's-eye view" of exactly what captions the bot is receiving, so you
+    // can compare it in real time against the bot's Meet view.
+    if (panelView && !panelView.webContents.isDestroyed()) {
+      panelView.webContents.send('caption-feed', { turns });
+    }
     // TODO(#178 phase 2): forward settled turns to the remote sync for the
     // webapp room view, replacing the old per-entry sync.postTranscripts feed
     // for captions.
@@ -2774,6 +2780,9 @@ function setupIPC() {
   // tell the agent the room isn't silent — the bot is deaf.
   ipcMain.on('captions-state', (_event, { on }) => {
     localServer.setCaptionsOn(!!on);
+    if (panelView && !panelView.webContents.isDestroyed()) {
+      panelView.webContents.send('caption-state', { on: !!on });
+    }
   });
 
   // --- Speaking state ---

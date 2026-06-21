@@ -378,3 +378,29 @@ button:disabled {
 .auth-action-btn:hover {
   color: #aecbfa;
 }
+
+/* Live caption feed — the bot's-eye view (#troubleshooting) */
+.caption-feed .cap-line {
+  padding: 1px 0;
+  line-height: 1.35;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+.caption-feed .cap-tag {
+  display: inline-block;
+  min-width: 48px;
+  font-size: 9px;
+  color: #9aa0a6;
+  text-transform: uppercase;
+}
+.caption-feed .cap-live { color: #8ab4f8; }
+.caption-feed .cap-live .cap-tag { color: #8ab4f8; font-weight: 600; }
+.caption-feed .cap-speaker { color: #e8eaed; font-weight: 600; }
+
+.caption-badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+.caption-badge.cap-on { background: rgba(129, 201, 149, 0.18); color: #81c995; }
+.caption-badge.cap-off { background: rgba(242, 139, 130, 0.18); color: #f28b82; font-weight: 600; }

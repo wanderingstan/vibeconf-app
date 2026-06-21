@@ -391,6 +391,18 @@
           `          ${src} · ${latency} · ${ago(ev.at)}`,
         ];
       })();
+      // Latest caption the bot heard + whether captions are even on. Surfacing
+      // this on the camera makes a deaf bot obvious to everyone in the call —
+      // when captions stop reaching the bot, "heard" freezes while people talk.
+      const captionLines = (() => {
+        const status = d.captionsOn ? 'ON' : 'OFF — DEAF';
+        const c = d.lastCaption;
+        if (!c || !c.text) return [`caps:     ${status}`, `heard:    (nothing yet)`];
+        let txt = String(c.text).replace(/\s+/g, ' ').trim();
+        const max = 40;
+        if (txt.length > max) txt = '…' + txt.slice(-max); // most-recent tail
+        return [`caps:     ${status}`, `heard:    ${c.speaker || '?'}: ${txt}`];
+      })();
       const lines = [
         'DEBUG',
         `call:     ${d.callStatus || 'unknown'}`,
@@ -403,6 +415,7 @@
         ...ackLines,
         `queued:   ${(d.pendingBotSpeech || []).length}`,
         `members:  ${(d.participants || []).length}`,
+        ...captionLines,
       ];
 
       const pad = 16;
@@ -438,6 +451,8 @@
         if (i === 0) ctx.fillStyle = '#fdd663';
         else if (ln.startsWith('loop:') && ln.includes('STALE')) ctx.fillStyle = '#ea4335';
         else if (ln.includes('fallback') && (ln.startsWith('ack:') || ln.startsWith('          '))) ctx.fillStyle = '#ea4335';
+        else if (ln.startsWith('caps:') && ln.includes('DEAF')) ctx.fillStyle = '#ea4335';
+        else if (ln.startsWith('heard:')) ctx.fillStyle = '#8ab4f8';
         else ctx.fillStyle = '#e8eaed';
         ctx.fillText(ln, boxX + pad, boxY + pad + i * lineH);
       }

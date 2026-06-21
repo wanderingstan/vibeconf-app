@@ -666,6 +666,19 @@ class LocalServer {
       botState: this.botState,
       anyoneSpeaking: this.anyoneSpeaking,
       captionsOn: this.captionsOn,
+      // Latest caption the bot actually heard — surfaced on the virtual-camera
+      // debug overlay so a deaf bot is visible to everyone in the call (when
+      // captions stop reaching the bot this stops advancing).
+      lastCaption: (() => {
+        let latest = null;
+        for (const turn of this.turns.values()) {
+          if (!turn.text) continue;
+          if (!latest || (turn.lastUpdated || 0) >= (latest.lastUpdated || 0)) latest = turn;
+        }
+        if (latest) return { speaker: latest.speaker || '?', text: latest.text };
+        const tx = this.transcripts[this.transcripts.length - 1];
+        return tx && tx.text ? { speaker: tx.participantName || '?', text: tx.text } : null;
+      })(),
       workingMemory: this.getWorkingMemory(),
       sharing: this.sharing,
       someoneElsePresenting: this.someoneElsePresenting,

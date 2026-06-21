@@ -2626,25 +2626,46 @@ function setupIPC() {
   // (cookie-authenticated; returns nothing when not signed in). Best-effort.
   ipcMain.handle('get-meet-account-email', async () => {
     if (currentMeetPartition === MEET_GUEST_PARTITION) return { signedIn: false, email: null };
+    const sess = session.fromPartition(MEET_ACCOUNT_PARTITION);
+
+    // AUTHORITATIVE signed-in check: the live cookie jar. Google's master-auth
+    // cookies (domain=.google.com) are the ground truth — the bot auto-admitting
+    // as a member proves they're present even when ListAccounts parsing fails.
+    // (An earlier version inferred "signed in" from email-parse success, which
+    // false-negatived a genuinely-signed-in bot.)
+    let signedIn = false;
     try {
-      const sess = session.fromPartition(MEET_ACCOUNT_PARTITION);
+      const all = await sess.cookies.get({});
+      const AUTH = ['__Secure-1PSID', 'SID', '__Secure-3PSID', 'SSID', 'HSID', 'SAPISID'];
+      signedIn = all.some((c) =>
+        /(^|\.)google\.com$/.test((c.domain || '').replace(/^\./, '')) &&
+        AUTH.includes(c.name) && c.value
+      );
+    } catch (err) {
+      console.warn('[electron] get-meet-account-email cookie check failed:', err.message);
+    }
+
+    // Best-effort email via ListAccounts — needs credentials:'include' or
+    // session.fetch won't attach the session's cookies and Google answers
+    // logged-out. Failure here no longer flips signedIn.
+    let email = null;
+    let allEmails = [];
+    try {
       const resp = await sess.fetch(
-        'https://accounts.google.com/ListAccounts?gpsia=1&source=ClientLogin&json=standard'
+        'https://accounts.google.com/ListAccounts?gpsia=1&source=ClientLogin&json=standard',
+        { credentials: 'include' }
       );
       const body = await resp.text();
-      // Defensive: the response is a nested JSON array; pull email-shaped tokens
-      // rather than trusting a fixed index across format changes. ListAccounts
-      // lists the default/active account first. Content is account data, so the
-      // email matches ARE the signed-in accounts.
-      const emails = Array.from(
+      allEmails = Array.from(
         new Set(body.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [])
       );
-      const email = emails[0] || null;
-      return { signedIn: !!email, email, allEmails: emails };
+      email = allEmails[0] || null;
+      if (email) signedIn = true;
     } catch (err) {
-      console.warn('[electron] get-meet-account-email failed:', err.message);
-      return { signedIn: false, email: null, error: err.message };
+      console.warn('[electron] get-meet-account-email ListAccounts failed:', err.message);
     }
+
+    return { signedIn, email, allEmails };
   });
 
   // Swap meetView to the account partition and navigate to Google's

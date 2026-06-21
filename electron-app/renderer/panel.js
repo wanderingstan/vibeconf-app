@@ -426,8 +426,12 @@ function refreshAccountEmail(mode) {
     if (r && r.signedIn && r.email) {
       meetAccountEmail.textContent = '✓ Signed in as ' + r.email;
       meetAccountEmail.className = 'account-email email-ok';
+    } else if (r && r.signedIn) {
+      // Auth cookies present but we couldn't read the email — signed in for sure.
+      meetAccountEmail.textContent = '✓ Signed in to Google (could not read which account)';
+      meetAccountEmail.className = 'account-email email-ok';
     } else {
-      meetAccountEmail.textContent = '⚠ Mode is "account" but NO Google session — the bot is not actually signed in. Click "Sign in to Google as bot".';
+      meetAccountEmail.textContent = '⚠ Mode is "account" but no Google session detected — the bot may not be signed in. If joins require admission, click "Sign in to Google as bot".';
       meetAccountEmail.className = 'account-email email-bad';
     }
   }).catch(() => {

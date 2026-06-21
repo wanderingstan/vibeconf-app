@@ -2645,43 +2645,34 @@ function setupIPC() {
       console.warn('[electron] get-meet-account-email cookie check failed:', err.message);
     }
 
-    // Best-effort email via ListAccounts. net.request with useSessionCookies is
-    // the reliable way to attach the partition's cookies (session.fetch even
-    // with credentials:'include' answered logged-out). Failure no longer flips
-    // signedIn — that's already settled from the cookie jar above.
+    // Best-effort email: read it straight from the bot's live signed-in Google
+    // page (the meetView). Meet renders the account in its account-switcher
+    // button (aria-label "Google Account: <name> (<email>)"). This beats the
+    // ListAccounts API (which 400s on its modern params). Only works while the
+    // meetView is on a google.com page (in a call / Meet home); otherwise we
+    // report signed-in without the email.
     let email = null;
-    let allEmails = [];
     try {
-      const { status, body } = await new Promise((resolve, reject) => {
-        const req = net.request({
-          url: 'https://accounts.google.com/ListAccounts?gpsia=1&source=ClientLogin&json=standard',
-          session: sess,
-          useSessionCookies: true,
-        });
-        // Some Google endpoints answer differently to a non-browser UA.
-        req.setHeader('User-Agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36');
-        let data = '';
-        req.on('response', (res) => {
-          res.on('data', (c) => { data += c.toString(); });
-          res.on('end', () => resolve({ status: res.statusCode, body: data }));
-          res.on('error', reject);
-        });
-        req.on('error', reject);
-        req.end();
-      });
-      // Diagnostic: surface exactly what ListAccounts returns so we stop guessing.
-      console.log('[electron] ListAccounts status=' + status + ' len=' + body.length +
-        ' snippet=' + JSON.stringify(body.slice(0, 200)));
-      allEmails = Array.from(
-        new Set(body.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [])
-      );
-      email = allEmails[0] || null;
-      if (email) signedIn = true;
+      if (meetView && !meetView.webContents.isDestroyed()) {
+        const url = meetView.webContents.getURL() || '';
+        if (/\bgoogle\.com\b/.test(url)) {
+          email = await meetView.webContents.executeJavaScript(`(() => {
+            for (const el of document.querySelectorAll('[aria-label]')) {
+              const a = el.getAttribute('aria-label') || '';
+              if (/Google Account|Cuenta de Google/i.test(a)) {
+                const m = a.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}/);
+                if (m) return m[0];
+              }
+            }
+            return null;
+          })()`, true);
+        }
+      }
     } catch (err) {
-      console.warn('[electron] get-meet-account-email ListAccounts failed:', err.message);
+      console.warn('[electron] get-meet-account-email DOM read failed:', err.message);
     }
 
-    return { signedIn, email, allEmails };
+    return { signedIn, email, allEmails: email ? [email] : [] };
   });
 
   // Swap meetView to the account partition and navigate to Google's

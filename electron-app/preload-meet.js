@@ -1941,9 +1941,28 @@ function installInCallWatcher() {
 // ---------------------------------------------------------------------------
 
 window.addEventListener('DOMContentLoaded', () => {
+  // ALWAYS show the bot-view banner first — on a Meet call, the Meet home, OR a
+  // Google sign-in page (logged out, meet.google.com redirects to accounts.
+  // google.com). Its whole job is to mark this as the bot's browser view,
+  // independent of login state. ensureStatusBar is idempotent; the in-call path
+  // refines the text later. Set text directly (not sendStatus, which would ping
+  // main with a status update).
+  try {
+    ensureStatusBar();
+    const el = document.getElementById('vibeconf-status');
+    if (el) {
+      const href = window.location.href;
+      el.textContent = /accounts\.google\.com|ServiceLogin|signin/i.test(href)
+        ? "Bot's view — sign the bot in to Google here"
+        : /^\/[a-z]{3}-[a-z]{4}-[a-z]{3}/i.test(window.location.pathname)
+          ? "Bot's view of Google Meet"
+          : "Bot's view — Google Meet home (not in a call)";
+    }
+  } catch { /* body not ready */ }
+
   // Only run Meet automation on actual Meet pages
   if (!window.location.href.includes('meet.google.com')) {
-    console.log('[electron-meet] Not a Meet page, skipping automation');
+    console.log('[electron-meet] Not a Meet page (banner shown), skipping automation');
     return;
   }
   // Run join automation ONLY on a meeting-code URL. We now load Meet home
@@ -1952,14 +1971,6 @@ window.addEventListener('DOMContentLoaded', () => {
   // /landing, etc.), only when actually navigated into a meeting code.
   if (!/^\/[a-z]{3}-[a-z]{4}-[a-z]{3}/i.test(window.location.pathname)) {
     console.log('[electron-meet] Meet home/landing (no meeting code) — skipping join automation');
-    // Still show the "bot view" banner so it's clear this is the bot's browser,
-    // not a normal Meet tab. Set the text directly (not sendStatus, which would
-    // ping main with a status update).
-    try {
-      ensureStatusBar();
-      const el = document.getElementById('vibeconf-status');
-      if (el) el.textContent = 'Google Meet home — bot is signed in here, not in a call';
-    } catch { /* body not ready */ }
     return;
   }
 

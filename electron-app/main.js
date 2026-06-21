@@ -2,7 +2,7 @@
 // Manages Meet BrowserView + panel sidebar in a single window,
 // IPC routing, TTS, and sync.
 
-const { app, BrowserWindow, BrowserView, ipcMain, session, shell, nativeImage, desktopCapturer, systemPreferences, dialog, Menu } = require('electron');
+const { app, BrowserWindow, BrowserView, ipcMain, session, shell, nativeImage, desktopCapturer, systemPreferences, dialog, Menu, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const vm = require('vm');
@@ -2645,17 +2645,28 @@ function setupIPC() {
       console.warn('[electron] get-meet-account-email cookie check failed:', err.message);
     }
 
-    // Best-effort email via ListAccounts — needs credentials:'include' or
-    // session.fetch won't attach the session's cookies and Google answers
-    // logged-out. Failure here no longer flips signedIn.
+    // Best-effort email via ListAccounts. net.request with useSessionCookies is
+    // the reliable way to attach the partition's cookies (session.fetch even
+    // with credentials:'include' answered logged-out). Failure no longer flips
+    // signedIn — that's already settled from the cookie jar above.
     let email = null;
     let allEmails = [];
     try {
-      const resp = await sess.fetch(
-        'https://accounts.google.com/ListAccounts?gpsia=1&source=ClientLogin&json=standard',
-        { credentials: 'include' }
-      );
-      const body = await resp.text();
+      const body = await new Promise((resolve, reject) => {
+        const req = net.request({
+          url: 'https://accounts.google.com/ListAccounts?gpsia=1&source=ClientLogin&json=standard',
+          session: sess,
+          useSessionCookies: true,
+        });
+        let data = '';
+        req.on('response', (res) => {
+          res.on('data', (c) => { data += c.toString(); });
+          res.on('end', () => resolve(data));
+          res.on('error', reject);
+        });
+        req.on('error', reject);
+        req.end();
+      });
       allEmails = Array.from(
         new Set(body.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [])
       );

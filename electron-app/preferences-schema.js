@@ -87,6 +87,15 @@ const PREFERENCES = {
       "The bot's display name in Meet calls. Takes effect on the next call.",
     requiresRestart: true,
   },
+  logRawCaptions: {
+    type: 'boolean',
+    default: false,
+    description:
+      'Debug/data-collection: log the raw in-flight caption progression ' +
+      '([caption-raw]) — every partial as Meet captions grow, marked LIVE vs ' +
+      'settled. The messy data needed to test utterance-completeness detection ' +
+      '(#243). Verbose; turn ON only when collecting test data, OFF for normal use.',
+  },
   shadowPhrase: {
     type: 'boolean',
     default: false,

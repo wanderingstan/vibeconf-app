@@ -379,6 +379,20 @@ class LocalServer {
     if (t) console.log(ts(), '👂 [heard]', (speaker || 'someone') + ':', t);
   }
 
+  // Raw in-flight caption progression (gated by logRawCaptions pref) — every
+  // partial as Meet's captions grow, marked LIVE (still being edited) vs settled.
+  // This is the messy data needed to test utterance-COMPLETENESS detection (#243):
+  // a "settled" snapshot is the ground-truth "complete" point; the LIVE partials
+  // before it are the "is this done yet?" judgments. [heard] only logs the final
+  // text — too late for completeness. Off by default (verbose); enable for data
+  // collection.
+  _logRawCaption(turnId, speaker, text, isBottommost) {
+    if (!this._pref('logRawCaptions')) return;
+    const t = (text || '').trim();
+    if (t) console.log(ts(), '📝 [caption-raw] t' + turnId + (isBottommost ? ' LIVE   ' : ' settled') +
+      ' ' + (speaker || '?') + ': ' + JSON.stringify(t));
+  }
+
   _recentTranscriptText(limit = 30) {
     const entries = this._entriesSince(null, null) || [];
     return entries
@@ -910,12 +924,14 @@ class LocalServer {
           source: 'caption',
         });
         changed = true;
+        this._logRawCaption(inc.turnId, inc.speaker, inc.text, isBottommost);
         if (!isBottommost) this._logHeard(inc.speaker, inc.text); // arrived already final
       } else {
         let entryChanged = false;
         if (existing.text !== inc.text) {
           existing.text = inc.text;
           entryChanged = true;
+          this._logRawCaption(inc.turnId, inc.speaker, inc.text, isBottommost);
         }
         if (!existing.settled && !isBottommost) {
           existing.settled = true;

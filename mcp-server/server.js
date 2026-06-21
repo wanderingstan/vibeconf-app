@@ -327,6 +327,19 @@ server.tool(
 
     const elapsed = data.elapsed || Math.round((Date.now() - startTime) / 1000);
 
+    // Active-listening background tick (#245): the floor is STILL BUSY — others
+    // are talking and you are NOT being addressed. You were surfaced early only
+    // so you can keep your understanding current and (optionally) bank a brief
+    // active-listening probe for later. Do NOT speak now; update and loop.
+    if (data.backgroundTick) {
+      return {
+        content: [{
+          type: "text",
+          text: `[BACKGROUND TICK — do NOT speak] Conversation is ongoing and you are not being addressed. This is a chance to think, not to talk.\n\nLatest (${deduped.length} turn(s), ${elapsed}s):\n${transcriptText}\n\nNow: silently update your sense of the discussion (optionally call post_understanding), and if there's a natural opening coming you could imagine a SHORT active-listening interjection for — keep it in mind. Then call wait_for_speech again. Do NOT call speak.${chatLine}`,
+        }],
+      };
+    }
+
     return {
       content: [{
         type: "text",

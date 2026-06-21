@@ -26,6 +26,11 @@ const ASSET_MIME_TYPES = {
 
 const DEFAULT_PORT = 7865;
 
+// How often a background-tick waiter re-checks whether enough new transcript has
+// accumulated to surface the slow model (#245). This is just the sampling
+// granularity — the actual trigger is content (chars), not time.
+const BACKGROUND_TICK_POLL_MS = 2500;
+
 // Short HH:MM:SS.mmm timestamp for emoji diagnostic logs — lets us cross-
 // reference log lines with actual conversation moments. Keep it local so
 // reading the log doesn't require mental clock-math.
@@ -801,6 +806,7 @@ class LocalServer {
       w.resolved = true;
       clearTimeout(w.timer);
       clearTimeout(w.silenceTimer);
+      clearTimeout(w.tickTimer);
       w.resolve({ success: true, autoLeft: true, asOf: new Date().toISOString(), transcript: { entries: [] } });
     }
     this.waiters = [];
@@ -1308,24 +1314,60 @@ class LocalServer {
     return texts;
   }
 
+  // Active-listening experiment (#245). When backgroundTickChars > 0, surface
+  // the (otherwise blocked) slow model EARLY during ongoing conversation so it
+  // can update its understanding / bank a probe — without speaking. The trigger
+  // is CONTENT-based (new chars since this waiter's `since`, like
+  // comprehendCharThreshold), so it scales with how much was actually said, not
+  // wall-clock. The threshold is rolled ONCE per waiter with a random margin
+  // (backgroundTickJitterFrac) so multiple bots don't tick in lockstep (#230).
+  // We poll on a short fixed cadence and fire when enough new content arrives.
+  _scheduleBackgroundTick(waiter) {
+    const base = Number(this._pref('backgroundTickChars')) || 0;
+    if (base <= 0) return;
+    if (waiter._tickThreshold == null) {
+      const fracRaw = Number(this._pref('backgroundTickJitterFrac'));
+      const frac = Number.isFinite(fracRaw) ? Math.max(0, fracRaw) : 0;
+      waiter._tickThreshold = Math.round(base * (1 + Math.random() * frac));
+    }
+    clearTimeout(waiter.tickTimer);
+    waiter.tickTimer = setTimeout(() => {
+      waiter.tickTimer = null;
+      if (waiter.resolved) return;
+      const entries = this._entriesSince(waiter.since, waiter.bot);
+      const newChars = entries.reduce((n, e) => n + (e.text ? e.text.length : 0), 0);
+      if (newChars >= waiter._tickThreshold) {
+        console.log(ts(), '🫧 [background-tick] surfacing slow model — ' + newChars + ' new chars ≥ threshold ' + waiter._tickThreshold + ' (' + entries.length + ' entries to bank from)');
+        this._resolveWaiter(waiter, 'background_tick');
+      } else {
+        this._scheduleBackgroundTick(waiter);
+      }
+    }, BACKGROUND_TICK_POLL_MS);
+  }
+
   _resolveWaiter(waiter, reason = 'unknown') {
     if (waiter.resolved) return;
     waiter.resolved = true;
     clearTimeout(waiter.timer);
     clearTimeout(waiter.silenceTimer);
+    clearTimeout(waiter.tickTimer);
     const waitedMs = waiter.startTime ? Date.now() - waiter.startTime : 0;
     console.log(ts(), '✅ [resolve] wait_for_speech resolved — reason=' + reason + ', waited=' + waitedMs + 'ms');
 
     // Auto-replay any fresh barge-in stash on silence resolution — that's
     // the "you had your hand raised, the room went quiet, just speak"
     // moment. Skip on timeout/mention/displaced/etc; only silence is the
-    // natural conversational gap.
+    // natural conversational gap. A background_tick is explicitly NOT a gap —
+    // the floor is still busy — so never replay the stash on a tick.
     if (reason === 'silence') {
       const replayed = this._maybeReplayBargeInStash();
       if (replayed) this._lastReplayedStash = replayed;
     }
 
     const response = this._buildResponse(waiter.since, waiter.bot, waiter.startTime);
+    // Tag so the MCP layer / skill know this is a "bank and loop, do NOT speak"
+    // surface rather than a real turn.
+    if (reason === 'background_tick') response.backgroundTick = true;
 
     // If there are actual transcript entries, the agent will now process them → thinking state.
     // Captions arrive as multiple progressively-growing entries for one utterance
@@ -1909,6 +1951,7 @@ class LocalServer {
         old.resolved = true;
         clearTimeout(old.timer);
         clearTimeout(old.silenceTimer);
+        clearTimeout(old.tickTimer);
         old.resolve({ success: true, displaced: true, asOf: new Date().toISOString(), transcript: { entries: [] } });
       }
       this.waiters = [];
@@ -1923,6 +1966,7 @@ class LocalServer {
         startTime,
         resolved: false,
         silenceTimer: null,
+        tickTimer: null,
         timer: setTimeout(() => {
           console.log(ts(), '⌛ [resolve] wait_for_speech full timeout (' + clampedWait + 's) hit');
           this._resolveWaiter(waiter, 'timeout');
@@ -1931,6 +1975,9 @@ class LocalServer {
       this.waiters.push(waiter);
       this.lastWaitForSpeechAt = Date.now();
       this._setBotState('listening');
+      // Active-listening experiment (#245): if backgroundTickSeconds > 0, arm a
+      // recurring early-surface so the slow model can think mid-conversation.
+      this._scheduleBackgroundTick(waiter);
 
       // If entries already exist but silence hasn't elapsed, start checking
       if (existing.length > 0) {

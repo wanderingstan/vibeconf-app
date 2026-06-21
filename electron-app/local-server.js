@@ -1371,12 +1371,19 @@ class LocalServer {
         // (#155). wordCount stays the primary threshold; text is supplemental.
         this.onBotStateChange('thinking', { wordCount, text: joinedText });
 
-        // Two-tier shadow harness: at this floor-open, ask the fast model what
-        // it WOULD say from the current stance — logged only, never spoken, so
-        // we can compare against what the slow session actually says. Fire-and-
-        // forget; must never disturb the real turn (docs/two-tier-design.md).
+        // Two-tier shadow harness (now: triage classifier). Feed it the SINGLE
+        // most-recent turn WITH its speaker label — not joinedText, which is the
+        // windowed merge of every turn in the wait window. The merge mashed
+        // multiple speakers (and truncated fragments) into one blob and gave the
+        // classifier garbage to judge ("…Request Samantha, can you" = Samantha's
+        // turn + the cut-off start of Stan's next turn). The classifier is ~perfect
+        // on clean input (offline 19/19); recentTranscript still carries context.
+        const lastTurn = deduped[deduped.length - 1];
+        const lastUtteranceLabeled = lastTurn && lastTurn.text
+          ? `${lastTurn.participantName || 'someone'}: ${lastTurn.text.trim()}`
+          : joinedText;
         Promise.resolve(this.onShadowPhrase({
-          lastUtterance: joinedText,
+          lastUtterance: lastUtteranceLabeled,
           workingMemory: this.getWorkingMemory(),
           recentTranscript: this._recentTranscriptText(12),
           roster: this._rosterText(),

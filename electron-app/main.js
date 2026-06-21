@@ -232,6 +232,16 @@ const localServer = new globalThis.LocalServer({
       store,
       log: (msg) => console.log(ts(), '[ack]', msg),
     }).catch(() => {});
+
+    // Also warm the LOCAL model used by triage / comprehend (independent of
+    // ackProvider) — without this the first few triage requests cold-start-timed
+    // out while LM Studio loaded the model. Only when those features are on.
+    if (store?.get('shadowPhrase') || (Number(store?.get('comprehendCharThreshold')) || 0) > 0) {
+      ackModule.warmupLocalModel({
+        store,
+        log: (msg) => console.log(ts(), '[triage-warmup]', msg),
+      }).catch(() => {});
+    }
   },
   onLeaveCall: () => {
     console.log('[local-server] Leave call requested by agent');

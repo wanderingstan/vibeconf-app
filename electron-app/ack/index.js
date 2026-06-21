@@ -105,4 +105,14 @@ async function warmup({ store, log }) {
   return openaiCompat.warmup({ config, log });
 }
 
-module.exports = { decide, warmup, getProviderConfig, getLocalModelConfig };
+// Warm up the shared LOCAL model (used by triage + comprehend) regardless of
+// ackProvider — so the first triage request isn't a 5s cold-start timeout while
+// LM Studio loads the model (observed live: first 3 triage calls timed out, then
+// warmed to ~1.9s). A trivial completion loads the model; the exact prompt is
+// irrelevant for warmup. Fire-and-forget.
+async function warmupLocalModel({ store, log }) {
+  const lm = getLocalModelConfig(store);
+  return openaiCompat.warmup({ config: { ...lm, promptPath: '' }, log });
+}
+
+module.exports = { decide, warmup, getProviderConfig, getLocalModelConfig, warmupLocalModel };

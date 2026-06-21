@@ -31,6 +31,15 @@ Branch: `feat/two-tier`. Companion docs: `two-tier-design.md` (the design),
   ~0.34s warm (~2–5× faster than the 7B). Addressivity quality is weaker (79% vs
   the 7B's 100%) — but completeness is a more local/syntactic task and looks more
   tractable (50%→74% on one prompt edit; iteration ongoing).
+- **Active listening is built (v1), gated-off, on `feat/background-tick`.** The
+  thesis — *fast model owns the clock, slow model owns the words* — is now working
+  code: `wait_for_speech` can surface the slow model early (`background_tick`,
+  content-triggered + jittered) so it can think and `bank_probe` short
+  interjections; on a brief opening the Apple **completeness judge** fires one as a
+  cheap turn-taking **bet** (right → buys ~3s of slow-model time; wrong → mild). The
+  firing gate is currently too shy (the *safe* failure); tuning the (now editable)
+  completeness prompt against real caption data is the next lever. See the build
+  section below.
 - **Streaming headless Claude Code** (`claude -p --output-format stream-json …`,
   subscription auth) is **viable and free** — but the spike showed it doesn't beat
   the ~2.5s TTFT floor for short replies, and multi-step turns (its real edge) are
@@ -276,6 +285,62 @@ started → yield the floor" — is independently valuable, needed by the probe 
 and depends on neither the bank nor the slow model. Extends the existing
 `bargeInGraceMs` to distinguish "same speaker resumed" from "new speaker grabbing
 the floor." Tracked in #245 (active listening).
+
+## Building active listening: branch `feat/background-tick` (2026-06-21)
+
+Took the thesis from issue to working v1 on its own branch (kept off `feat/two-tier`
+so Stan's beta16 data-collection call stayed on a known-good build). Everything is
+gated behind default-off prefs — zero behavior change until switched on.
+
+### Step 0 — the enabling mechanism: `wait_for_speech` returns a tagged result
+The blocker that made banking impossible: the slow Claude session is stuck in
+`wait_for_speech` (long-poll) and only wakes at a definitive break, so it can't
+think during a stretch it isn't part of. (The ~500-char `workingMemory` refresh is
+the *local* model via `comprehend()`, NOT the slow session — a point we'd been
+conflating.) Fix: `wait_for_speech` can now resolve *early* with a tagged
+`background_tick` result. On a tick the skill is told `[BACKGROUND TICK — do NOT
+speak]` → it updates understanding / banks a probe and loops without speaking; only
+a real silence still lets it talk. This is what lets the (otherwise blocked) slow
+model think mid-conversation — the prerequisite for everything else.
+
+### The trigger is content-based, not time-based
+The tick fires on **new transcript chars** accumulated (`backgroundTickChars`),
+mirroring the proven `comprehendCharThreshold` — because the need to re-think scales
+with *how much was said*, not wall-clock. A slow talker generates little to
+reconsider; a dense exchange generates a lot, and content-based self-adjusts. Time
+appears only as a 2.5s polling granularity, never the trigger.
+
+### Anti-lockstep jitter
+Same lineage as #230's speak-jitter: each waiter rolls its effective threshold to
+`base × (1 + random·backgroundTickJitterFrac)` (default +0–30%), so two bots tick —
+and later fire probes — on drifting cadences instead of in unison.
+
+### The probe-as-bet, v1 (dropped the stale-(b) complication)
+The full design banked both (a) a short probe and (b) the longer real thing; v1
+banks **only short probes** and falls through to the normal fresh answer if the
+probe lands. So: slow model banks via `bank_probe` (TTL `probeMaxAgeMs`, generic
+fallback when empty); on a *brief* quiet (`probeSilenceMs`, shorter than the full
+turn gate) the local-server runs the **Apple completeness judge** on the last
+utterance; only a finished thought is a real opening → fire the freshest probe.
+Guards encode the lessons: rate-limited (`probeMinIntervalMs`), **name-mention skip**
+so we never probe-before-answer when addressed (the disabled-ack lesson), and probes
+are short enough to clear `bargeInGraceMs` so they're fire-and-forget, never stashed
+— and barge-in-exempt by construction (Stan: a sub-second utterance can't monologue
+over anyone, so it needs no yield path).
+
+### Division of labor, realized
+Slow model **owns the words** (banks interjections with real substance); Apple
+**owns the clock** (completeness-gates the firing). The completeness harness we built
+for measurement became the live firing gate — the two halves of the branch meeting.
+
+### Status / open
+Plumbing works end-to-end and is inert by default. The **completeness gate is
+currently too conservative** (holds on some genuinely-complete thoughts) — but that's
+the *safe* failure (a missed probe is silence, never an interruption), and it's the
+prompt-tuning target, not a bug. The prompt now lives in the editable, hot-reloaded
+`electron-app/prompts/completeness-system.md` (same file the offline harness scores),
+so Stan/Seth can tune the firing bar and re-run `completeness-eval.mjs` in seconds.
+Next: tune against real captured `[caption-raw]` data; then **back-off detection**.
 
 ## Things that were keepers regardless of the two-tier outcome
 

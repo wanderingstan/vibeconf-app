@@ -227,6 +227,56 @@ We built the offline loop, same playbook as triage:
   Demonstrates the seconds-per-iteration loop. **Next input: real captured
   `[caption-raw]` data** from a logging call, then keep tuning.
 
+## The thesis this clarified: fast model owns the clock, slow model owns the words (2026-06-21)
+
+Seth asked for the bots to "practice active listening." They can't today — no
+quick reaction, no bank of things to say. But the ask reframed the whole two-tier
+division of labor into the cleanest statement we've had:
+
+- **Slow model owns the WORDS.** During conversation the bot is *not* part of, the
+  slow model crafts short, context-aware **active-listening interjections** and
+  banks them ready-to-fire: *"good point about latency"*, *"what about OpenAI?"*,
+  plus never-stale generics (*"interesting…"*). Substance is the slow model's job —
+  exactly where the fast/7B voice failed.
+- **Fast model (Apple) owns the CLOCK.** It makes the purely-local timing calls:
+  *is there an opening?* (the completeness judge, reused) and *did a different
+  participant just grab the floor?* (back off). Timing is what a sub-second model
+  is actually good at — and notably NOT the addressivity nuance it's weak at.
+
+**Why this isn't the ack we just killed.** The disabled instant-ack fired *when the
+bot was addressed* and duplicated the slow reply already coming. These fire *when
+the bot is NOT addressed* — so there's no slow reply to be redundant with. Wholly
+different moment, real value.
+
+**The load-bearing insight — interjection-as-probe.** A short interjection at a
+*suspected* break is a cheap turn-taking bet with asymmetric payoff: if the speaker
+wasn't done, they keep going (mildly interrupted, low cost); if they *were* done,
+the bot has bought ~3s for the slow model to think. This attacks the ~3s floor in a
+way the ack couldn't — it converts latency into a gamble we can afford to lose.
+Because the break-detection can be *softer* than the 2s "definitely done" gate, the
+bot gets snappier without committing to a full answer.
+
+**Probes are exempt from the barge-in gate (Stan).** Normal speech goes through
+`bargeInGraceMs` because the bot might start a monologue over someone. A probe is
+short *by construction* and fired only on a likely opening — no monologue risk — so
+it bypasses the grace machinery; no yield path needed for a sub-second utterance.
+
+**Open tensions (be honest):**
+- *Staleness vs. the blocked slow model.* The slow model can't background (it's
+  blocked in `wait_for_speech`), so the bank rots. Likely refill: each time the
+  slow model *does* surface, it emits 2–3 bankable interjections as a side output;
+  Apple select-and-fires from that small set + generics. The bank will sometimes be
+  empty/stale — accept it.
+- *Frequency budget.* Over-done "active listening" is worse than silence (needy
+  bot). Hard rate limit + high firing bar; the low-rudeness claim only holds if the
+  probes are short *and* rare.
+
+**Cleanly-shippable first piece:** back-off detection — "a *different* participant
+started → yield the floor" — is independently valuable, needed by the probe anyway,
+and depends on neither the bank nor the slow model. Extends the existing
+`bargeInGraceMs` to distinguish "same speaker resumed" from "new speaker grabbing
+the floor." Tracked in #245 (active listening).
+
 ## Things that were keepers regardless of the two-tier outcome
 
 The experiment drove a lot of plain-good infrastructure that stands on its own:

@@ -369,6 +369,17 @@ meetUrlInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !joinBtn.disabled) joinBtn.click();
 });
 
+// Quick-join the baked-in default testing meet (moved here from the old idle
+// page, which is now the real Meet home).
+const DEFAULT_MEET_URL = 'https://meet.google.com/paz-sqoa-npe';
+const defaultMeetBtn = document.getElementById('defaultMeetBtn');
+defaultMeetBtn?.addEventListener('click', () => {
+  meetUrlInput.value = DEFAULT_MEET_URL;
+  api.joinMeet(DEFAULT_MEET_URL);
+  joinBtn.textContent = 'Joining...';
+  joinBtn.disabled = true;
+});
+
 document.getElementById('leaveCallBtn').addEventListener('click', () => {
   api.send('leave-meet');
   exitCallState();

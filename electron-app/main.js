@@ -1022,6 +1022,12 @@ const MEET_GUEST_PARTITION = 'persist:meet-guest';
 // name. For now a single default account partition lets us prove the swap.
 const MEET_ACCOUNT_PARTITION = 'persist:meet-account-default';
 
+// The idle Meet view: instead of a custom branded placeholder, show the real
+// Google Meet home page. Lets the operator see sign-in state at a glance, start
+// meetings, and debug manually in the same browser the bot uses. Join automation
+// is gated off here in preload-meet (only meeting-code URLs trigger it).
+const MEET_HOME_URL = 'https://meet.google.com/';
+
 // Track which Meet partitions have already had configureMeetSession applied
 // so swap-on-the-fly doesn't double-register handlers (which would call
 // callback() twice and crash getDisplayMedia / permission flows).
@@ -2212,7 +2218,7 @@ function swapMeetViewPartition(newPartition, { navigateTo } = {}) {
   if (navigateTo) {
     meetView.webContents.loadURL(navigateTo);
   } else {
-    meetView.webContents.loadFile(path.join(__dirname, 'renderer', 'idle.html'));
+    meetView.webContents.loadURL(MEET_HOME_URL);
   }
 
   currentMeetPartition = newPartition;
@@ -2340,7 +2346,7 @@ function createMainWindow() {
   mainWindow.on('resize', layoutViews);
 
   // Load idle placeholder in the Meet view
-  meetView.webContents.loadFile(path.join(__dirname, 'renderer', 'idle.html'));
+  meetView.webContents.loadURL(MEET_HOME_URL);
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -2352,7 +2358,7 @@ function createMainWindow() {
 
 function showIdle() {
   if (!meetView || meetView.webContents.isDestroyed()) return;
-  meetView.webContents.loadFile(path.join(__dirname, 'renderer', 'idle.html'));
+  meetView.webContents.loadURL(MEET_HOME_URL);
   sync.stopPolling();
   // Close whiteboard window if open
   if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {

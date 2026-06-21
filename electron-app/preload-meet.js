@@ -1905,6 +1905,14 @@ window.addEventListener('DOMContentLoaded', () => {
     console.log('[electron-meet] Not a Meet page, skipping automation');
     return;
   }
+  // Run join automation ONLY on a meeting-code URL. We now load Meet home
+  // (meet.google.com/) as the idle view so the operator can sign in / start
+  // meetings / debug manually — the join poll must not fire there (or on /new,
+  // /landing, etc.), only when actually navigated into a meeting code.
+  if (!/^\/[a-z]{3}-[a-z]{4}-[a-z]{3}/i.test(window.location.pathname)) {
+    console.log('[electron-meet] Meet home/landing (no meeting code) — skipping join automation');
+    return;
+  }
 
   // Watch for pre-join screen
   (async () => {

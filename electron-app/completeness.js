@@ -16,6 +16,33 @@
 // freelance keys + ```json fences), so the prompt itself pins the exact shape and
 // extractJson tolerates fences. Returns null on any failure; never throws.
 
+const fs = require('fs');
+const path = require('path');
+
+// The completeness prompt lives in prompts/completeness-system.md so Stan/Seth
+// can tune the firing bar without editing code — hot-reloaded on mtime change
+// (re-run scripts/completeness-eval.mjs to iterate). The inline FALLBACK below
+// is the source of truth if the file is missing/unreadable. Override the path
+// with VIBECONF_COMPLETENESS_PROMPT_PATH if needed.
+const DEFAULT_PROMPT_PATH = path.join(__dirname, 'prompts', 'completeness-system.md');
+let _promptCache = { path: null, mtimeMs: 0, content: null };
+
+const FALLBACK_SYSTEM = [
+  `You watch the LIVE, still-updating captions of one speaker in a group voice call. Captions are messy: NO punctuation, lowercase, run-ons. Because there is NEVER punctuation, you must judge completeness from GRAMMAR, not from a period.`,
+  `Decide ONE thing: has the speaker reached the end of a complete sentence/clause/question (someone could now respond), or are they cut off mid-phrase with an obviously missing word coming next?`,
+  `This is NOT about who they are addressing or whether a reply is wanted. ONLY: is the last word a natural END of a thought, or a DANGLING word that demands a continuation?`,
+  ``,
+  `complete=FALSE only when the final word leaves an obvious grammatical gap — it ends on a dangling connector or an article/preposition with its object missing: "...share the white", "...we need to", "...a diagram on the", "what do you", "the part is to". You can feel the next word is required.`,
+  `complete=TRUE when the words form a finished sentence or question even without punctuation: "can you share the whiteboard", "what do you think", "the demo went really well", "what should we work on next", "thanks that is really helpful". A finished question/statement is COMPLETE even though it has no question mark or period.`,
+  ``,
+  `Do NOT mark something partial just because it contains function words ("can you", "what do you", "the") — those are fine WITHIN a finished sentence. Only the DANGLING-at-the-very-end case is partial.`,
+  `Examples — partial: "jimmy can you" | "i think the most important part is to" | "and then after that we need to". complete: "jimmy can you share the whiteboard" | "what do you think jimmy" | "lets keep testing and see how it holds up".`,
+  ``,
+  `Reply as STRICT JSON: {"complete": true|false, "reason": "..."}.`,
+  `"reason" is a short phrase (for debugging), not spoken.`,
+  `Output ONLY the JSON object — no prose, no code fences.`,
+].join('\n');
+
 function stripThink(raw) {
   return String(raw || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 }
@@ -28,22 +55,21 @@ function extractJson(raw) {
   try { return JSON.parse(text.slice(start, end + 1)); } catch { return null; }
 }
 
+// Hot-reloaded system prompt: prompts/completeness-system.md if present (re-read
+// only when its mtime changes), else the inline FALLBACK_SYSTEM. Never throws.
 function buildSystem() {
-  return [
-    `You watch the LIVE, still-updating captions of one speaker in a group voice call. Captions are messy: NO punctuation, lowercase, run-ons. Because there is NEVER punctuation, you must judge completeness from GRAMMAR, not from a period.`,
-    `Decide ONE thing: has the speaker reached the end of a complete sentence/clause/question (someone could now respond), or are they cut off mid-phrase with an obviously missing word coming next?`,
-    `This is NOT about who they are addressing or whether a reply is wanted. ONLY: is the last word a natural END of a thought, or a DANGLING word that demands a continuation?`,
-    ``,
-    `complete=FALSE only when the final word leaves an obvious grammatical gap — it ends on a dangling connector or an article/preposition with its object missing: "...share the white", "...we need to", "...a diagram on the", "what do you", "the part is to". You can feel the next word is required.`,
-    `complete=TRUE when the words form a finished sentence or question even without punctuation: "can you share the whiteboard", "what do you think", "the demo went really well", "what should we work on next", "thanks that is really helpful". A finished question/statement is COMPLETE even though it has no question mark or period.`,
-    ``,
-    `Do NOT mark something partial just because it contains function words ("can you", "what do you", "the") — those are fine WITHIN a finished sentence. Only the DANGLING-at-the-very-end case is partial.`,
-    `Examples — partial: "jimmy can you" | "i think the most important part is to" | "and then after that we need to". complete: "jimmy can you share the whiteboard" | "what do you think jimmy" | "lets keep testing and see how it holds up".`,
-    ``,
-    `Reply as STRICT JSON: {"complete": true|false, "reason": "..."}.`,
-    `"reason" is a short phrase (for debugging), not spoken.`,
-    `Output ONLY the JSON object — no prose, no code fences.`,
-  ].join('\n');
+  const resolved = process.env.VIBECONF_COMPLETENESS_PROMPT_PATH || DEFAULT_PROMPT_PATH;
+  try {
+    const stat = fs.statSync(resolved);
+    if (_promptCache.path === resolved && _promptCache.mtimeMs === stat.mtimeMs) {
+      return _promptCache.content;
+    }
+    const content = fs.readFileSync(resolved, 'utf8').trim();
+    _promptCache = { path: resolved, mtimeMs: stat.mtimeMs, content };
+    return content;
+  } catch {
+    return _promptCache.content || FALLBACK_SYSTEM;
+  }
 }
 
 function buildUser(text) {

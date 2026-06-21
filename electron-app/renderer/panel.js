@@ -462,6 +462,24 @@ function renderCaptionState(on) {
 }
 api.on('caption-state', ({ on }) => renderCaptionState(on));
 
+// --- Pop the panel out into its own window (place it next to the bot's Meet). ---
+const popoutPanelBtn = document.getElementById('popoutPanelBtn');
+function applyPopoutLabel(poppedOut) {
+  if (!popoutPanelBtn) return;
+  popoutPanelBtn.textContent = poppedOut ? '⧉ Dock' : '⧉ Pop out';
+}
+if (popoutPanelBtn) {
+  popoutPanelBtn.addEventListener('click', async () => {
+    try {
+      const res = await api.invoke('toggle-panel-popout');
+      applyPopoutLabel(!!res?.poppedOut);
+    } catch { /* ignore */ }
+  });
+  api.invoke('get-panel-popout').then((r) => applyPopoutLabel(!!r?.poppedOut)).catch(() => {});
+}
+// Main tells us when the state changes (incl. user closing the popout window).
+api.on('panel-popout-changed', ({ poppedOut }) => applyPopoutLabel(!!poppedOut));
+
 meetSignInBtn?.addEventListener('click', async () => {
   meetSignInBtn.disabled = true;
   meetSignInBtn.textContent = 'Switching to Google sign-in...';

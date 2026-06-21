@@ -833,6 +833,7 @@ let store;
 let mainWindow = null;   // single window that holds both views
 let panelView = null;     // left sidebar BrowserView
 let meetView = null;      // right Meet BrowserView
+let panelPopoutWindow = null; // when popped out, the panelView lives here instead
 let whiteboardWindow = null;
 let fullScreenShareRequested = false;
 // #189: whether we've already auto-posted the whiteboard URL to Meet chat
@@ -2104,12 +2105,69 @@ function createMeetView(partition) {
 function layoutViews() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   const [width, height] = mainWindow.getContentSize();
-  if (panelView && !panelView.webContents.isDestroyed()) {
+  // When the panel is popped out into its own window, it's no longer a child of
+  // mainWindow — Meet takes the full width and the popout window lays itself out.
+  const poppedOut = !!panelPopoutWindow;
+  const panelW = poppedOut ? 0 : PANEL_WIDTH;
+  if (!poppedOut && panelView && !panelView.webContents.isDestroyed()) {
     panelView.setBounds({ x: 0, y: 0, width: PANEL_WIDTH, height });
   }
   if (meetView && !meetView.webContents.isDestroyed()) {
-    meetView.setBounds({ x: PANEL_WIDTH, y: 0, width: width - PANEL_WIDTH, height });
+    meetView.setBounds({ x: panelW, y: 0, width: width - panelW, height });
   }
+}
+
+// Pop the panel out into its own resizable window (or dock it back). Re-parents
+// the SAME panelView BrowserView, so every panelView.webContents.send(...) keeps
+// working unchanged and the panel's state is preserved across the move. Lets the
+// "bot's-eye view" sit at any size next to the bot's Meet window (Stan's ask).
+function setPanelPoppedOut(out) {
+  if (!panelView || panelView.webContents.isDestroyed()) return false;
+
+  if (out && !panelPopoutWindow) {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.removeBrowserView(panelView);
+    const win = new BrowserWindow({
+      width: PANEL_WIDTH + 80,
+      height: 820,
+      title: "Vibeconferencing — Bot's-eye view",
+      icon: path.join(__dirname, 'icon.png'),
+      parent: mainWindow || undefined, // closes with the app; still freely movable
+      webPreferences: { nodeIntegration: false, contextIsolation: true },
+    });
+    panelPopoutWindow = win;
+    win.addBrowserView(panelView);
+    const fit = () => {
+      if (win.isDestroyed() || panelView.webContents.isDestroyed()) return;
+      const [w, h] = win.getContentSize();
+      panelView.setBounds({ x: 0, y: 0, width: w, height: h });
+    };
+    fit();
+    win.on('resize', fit);
+    // Detach the view BEFORE teardown so its webContents (and all its state)
+    // survives — then re-dock into the main window. Handles both the Dock
+    // button and the user closing the popout window directly.
+    win.on('close', () => { try { win.removeBrowserView(panelView); } catch { /* already gone */ } });
+    win.on('closed', () => {
+      panelPopoutWindow = null;
+      if (panelView && !panelView.webContents.isDestroyed() && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.addBrowserView(panelView);
+      }
+      layoutViews();
+      if (panelView && !panelView.webContents.isDestroyed()) {
+        panelView.webContents.send('panel-popout-changed', { poppedOut: false });
+      }
+    });
+    layoutViews();
+    panelView.webContents.send('panel-popout-changed', { poppedOut: true });
+    return true;
+  }
+
+  if (!out && panelPopoutWindow) {
+    // Dock back by closing the popout; the close/closed handlers re-attach.
+    panelPopoutWindow.close();
+    return true;
+  }
+  return false;
 }
 
 // Swap the meetView to a different session partition (#170). Tears down
@@ -2456,6 +2514,14 @@ function setupIPC() {
     updateDebugOverlayPushInterval(on);
     return on;
   });
+
+  // Pop the panel out into its own window (or dock it back) — lets the bot's-eye
+  // view sit at any size next to the bot's Meet window.
+  ipcMain.handle('toggle-panel-popout', () => {
+    setPanelPoppedOut(!panelPopoutWindow);
+    return { poppedOut: !!panelPopoutWindow };
+  });
+  ipcMain.handle('get-panel-popout', () => ({ poppedOut: !!panelPopoutWindow }));
 
 
   // --- Auth check ---

@@ -706,6 +706,30 @@ const localServer = new globalThis.LocalServer({
     }
   },
 
+  // Active-listening firing gate (#245). The local-server detected a brief
+  // opening (room went quiet, bot not directly addressed). Run the Apple/local
+  // completeness judge on the last utterance: only a genuinely FINISHED thought
+  // is a real opening worth interjecting at. If so, fire a banked/generic probe.
+  // Cheap guards (mode, rate limit, name-mention) already passed in local-server.
+  onProbeOpening: async ({ lastUtterance, recentTranscript, roster }) => {
+    if (!store?.get('probeFiring')) return;
+    const config = require('./ack').getLocalModelConfig(store);
+    const { judgeComplete } = require('./completeness');
+    // Judge the raw last utterance (strip the "Speaker: " label the gate added).
+    const text = (lastUtterance || '').replace(/^[^:]+:\s*/, '').trim();
+    if (!text) return;
+    const verdict = await judgeComplete({
+      text,
+      config: { endpoint: config.endpoint, apiKey: config.apiKey, model: config.model, timeoutMs: 4000 },
+      log: (m) => console.log(ts(), '🎣 [probe-gate]', m),
+    });
+    if (!verdict) { console.log(ts(), '🎣 [probe-gate] no verdict (endpoint/parse failure) — skip'); return; }
+    console.log(ts(), `🎣 [probe-gate] complete=${verdict.complete} (${verdict.ms}ms) — ${verdict.reason} | on: "${text.slice(0, 100)}"`);
+    if (!verdict.complete) return; // not a real opening — they're mid-thought
+    const spoken = localServer.fireProbe();
+    if (spoken) console.log(ts(), `🎣 [probe] spoke: ${JSON.stringify(spoken)}`);
+  },
+
   onParticipantsFirstSeen: () => {
     // Used to be the avatar engagement trigger, but the captions-ready
     // signal is more honest: people pane fills before captions are usable,

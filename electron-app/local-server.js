@@ -58,7 +58,7 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onShadowPhrase, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, onInspectDom, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref } = {}) {
+  constructor({ port, appVersion, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onShadowPhrase, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, onInspectDom, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.appVersion = appVersion || null;
     this.onBotSpeech = onBotSpeech || (() => {});
@@ -82,6 +82,10 @@ class LocalServer {
     // fired at floor-open. Fast model drafts what it WOULD say from `stance`;
     // log-only for now (never spoken). docs/two-tier-design.md.
     this.onShadowPhrase = onShadowPhrase || (async () => {});
+    // Active-listening (#245): fires on a brief silence (a soft opening) when
+    // probeFiring is on, so main.js can run the completeness gate and decide
+    // whether to fire a banked probe. async ({ lastUtterance, recentTranscript, roster }).
+    this.onProbeOpening = onProbeOpening || (async () => {});
     this.onParticipantsFirstSeen = onParticipantsFirstSeen || (() => {}); // fires once per call when DOMSpeakerTracker first reports participants
     this.onAvatarEmojiOverride = onAvatarEmojiOverride || (() => {}); // ({idle?, listening?}) — null/undefined for that key means reset
     this.onSetCamera = onSetCamera || (() => {}); // (on: boolean)
@@ -193,6 +197,15 @@ class LocalServer {
     // its full response contradicts the ack tone (e.g. ack was "Uh-huh"
     // but the real answer is "no, actually..."). Cleared after one read.
     this.lastAckPhrase = null;
+
+    // Active-listening probe bank (#245). The slow model deposits short,
+    // context-aware interjections here on background ticks via bank_probe;
+    // the Apple firing gate fires the freshest fresh one at a detected opening
+    // (or a generic fallback). Each entry: { text, at: ms }. lastProbeAt drives
+    // the rate limit so the bot doesn't over-interject.
+    this.probeBank = [];
+    this.lastProbeAt = 0;
+    this._probeTimer = null;
 
     // Speech the bot was about to say when a human interrupted (barge-in).
     // Held for the bargeInStashMaxAgeMs pref window, then auto-replayed on the next
@@ -740,6 +753,15 @@ class LocalServer {
       // The interrupter went silent before our grace timer fired — drop
       // the back-off monitor (#154).
       this._clearBargeIn('interrupter went silent');
+      // Active listening (#245): arm a SOFT-opening probe on a brief quiet —
+      // shorter than the full turn-silence gate. If the room is still quiet
+      // after probeSilenceMs, _maybeProbeOpening runs the completeness gate.
+      // No-op unless probeFiring is on (checked inside).
+      if (this._pref('probeFiring')) {
+        clearTimeout(this._probeTimer);
+        const ms = Number(this._pref('probeSilenceMs')) || 700;
+        this._probeTimer = setTimeout(() => this._maybeProbeOpening(), ms);
+      }
     } else if (!wasSpeaking && this.anyoneSpeaking) {
       // Speech just started — cancel any pending silence timers
       for (const waiter of this.waiters) {
@@ -748,6 +770,9 @@ class LocalServer {
           waiter.silenceTimer = null;
         }
       }
+      // Speaker resumed — cancel any pending soft-opening probe (no opening).
+      clearTimeout(this._probeTimer);
+      this._probeTimer = null;
       this.onAnyoneSpeakingChange(true);
       // If the bot is mid-utterance when someone else starts speaking, arm
       // the back-off monitor (#154). _armBargeIn is a no-op if not in the
@@ -1345,6 +1370,104 @@ class LocalServer {
     }, BACKGROUND_TICK_POLL_MS);
   }
 
+  // --- Active-listening probe bank + firing gate (#245) ---
+
+  // The slow model deposits a short interjection on a background tick. Keep only
+  // the last few; freshness is enforced at fire time via probeMaxAgeMs.
+  bankProbe(text) {
+    const t = (text || '').trim();
+    if (!t) return false;
+    this.probeBank.push({ text: t, at: Date.now() });
+    if (this.probeBank.length > 5) this.probeBank = this.probeBank.slice(-5);
+    console.log(ts(), '🎣 [probe] banked: ' + JSON.stringify(t) + ' (bank size ' + this.probeBank.length + ')');
+    return true;
+  }
+
+  // Newest banked probe still within probeMaxAgeMs, removed from the bank.
+  // Drops any staler entries it passes. Returns text or null.
+  _consumeFreshProbe() {
+    const maxAge = Number(this._pref('probeMaxAgeMs')) || 0;
+    const now = Date.now();
+    while (this.probeBank.length) {
+      const entry = this.probeBank.pop();
+      if (maxAge <= 0 || now - entry.at <= maxAge) return entry.text;
+      // stale — discard and keep looking back
+    }
+    return null;
+  }
+
+  // Most-recent transcript turn NOT spoken by the bot itself (or null). Used to
+  // judge openings/addressivity off the last thing a human/other-bot actually said.
+  _lastAttributedTurn() {
+    const entries = this._entriesSince(null, null) || [];
+    const myName = (this.getEffectiveBotName() || '').toLowerCase();
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const e = entries[i];
+      const name = (e.participantName || '').toLowerCase();
+      if (name && myName && name === myName) continue;
+      if (e.text && e.text.trim()) return e;
+    }
+    return null;
+  }
+
+  // Brief-silence soft-opening hook. Armed in the speech-stop branch only when
+  // probeFiring is on; if the room is still quiet after probeSilenceMs, surface
+  // an opening to main.js (which runs the Apple completeness gate). All cheap
+  // guards live here so we never even call the model when a probe couldn't fire.
+  _maybeProbeOpening() {
+    this._probeTimer = null;
+    if (!this._pref('probeFiring')) return;
+    if (this.mode !== 'active' || this.callStatus !== 'in-call') return;
+    if (this.anyoneSpeaking || this.botState === 'speaking') return;
+    if (this.waiters.length === 0) return; // slow model isn't listening
+    const minInterval = Number(this._pref('probeMinIntervalMs')) || 0;
+    if (minInterval > 0 && Date.now() - this.lastProbeAt < minInterval) return;
+    // Don't probe when the bot is directly addressed by name — that turn wants a
+    // real answer, and a probe ahead of it would just be a redundant filler
+    // (the lesson from the disabled triage ack). Let the normal path handle it.
+    const lastTurn = this._lastAttributedTurn();
+    const myName = (this.getEffectiveBotName() || '').toLowerCase();
+    if (lastTurn && myName && lastTurn.text && lastTurn.text.toLowerCase().includes(myName)) return;
+    const lastUtterance = lastTurn && lastTurn.text
+      ? `${lastTurn.participantName || 'someone'}: ${lastTurn.text.trim()}`
+      : null;
+    if (!lastUtterance) return;
+    Promise.resolve(this.onProbeOpening({
+      lastUtterance,
+      recentTranscript: this._recentTranscriptText(12),
+      roster: this._rosterText(),
+    })).catch(() => {});
+  }
+
+  // Called back by main.js once the completeness gate confirms a genuine opening.
+  // Re-checks the fast guards (state may have changed during the ~0.6s model
+  // call), selects a banked probe (or a generic fallback), and speaks it.
+  // Probes are SHORT by construction, so they complete well within bargeInGraceMs
+  // and are never stashed/replayed — they're fire-and-forget by design. Returns
+  // the spoken text or null.
+  fireProbe() {
+    if (!this._pref('probeFiring')) return null;
+    if (this.mode !== 'active' || this.callStatus !== 'in-call') return null;
+    if (this.anyoneSpeaking || this.botState === 'speaking') return null;
+    const minInterval = Number(this._pref('probeMinIntervalMs')) || 0;
+    if (minInterval > 0 && Date.now() - this.lastProbeAt < minInterval) return null;
+    let text = this._consumeFreshProbe();
+    let source = 'banked';
+    if (!text) {
+      const generics = this._pref('probeGenericPhrases') || [];
+      if (Array.isArray(generics) && generics.length) {
+        text = generics[Math.floor(Math.random() * generics.length)];
+        source = 'generic';
+      }
+    }
+    if (!text) return null;
+    this.lastProbeAt = Date.now();
+    console.log(ts(), '🎣 [probe] firing (' + source + '): ' + JSON.stringify(text));
+    this._setBotState('speaking', {});
+    this.onBotSpeech(text, undefined, undefined);
+    return text;
+  }
+
   _resolveWaiter(waiter, reason = 'unknown') {
     if (waiter.resolved) return;
     waiter.resolved = true;
@@ -1733,6 +1856,25 @@ class LocalServer {
       });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: true, workingMemory: updated }));
+      return;
+    }
+
+    if (url.pathname === '/api/bank-probe' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      let parsed;
+      try { parsed = JSON.parse(body || '{}'); } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'Invalid JSON' }));
+        return;
+      }
+      if (typeof parsed.text !== 'string' || !parsed.text.trim()) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'Provide text (non-empty string)' }));
+        return;
+      }
+      const ok = this.bankProbe(parsed.text);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: ok, bankSize: this.probeBank.length }));
       return;
     }
 

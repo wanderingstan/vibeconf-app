@@ -1167,6 +1167,38 @@ server.tool(
   }
 );
 
+// --- bank_probe ---
+// Active-listening (#245). On a background tick — when you're NOT being addressed
+// but the conversation is moving — you can deposit a SHORT interjection here. The
+// app's fast-model firing gate may speak it at the next natural opening to show
+// you're listening and to buy you time, without you having to fully respond.
+server.tool(
+  "bank_probe",
+  "Active listening: stash a SHORT (2–6 word) interjection the bot may say at the next natural opening in the conversation — e.g. 'Good point about latency.', 'What about cost?', 'Interesting.'. Use this on a [BACKGROUND TICK] when you're following along but not being directly addressed: it lets the bot react in real time (a brief acknowledgment or nudge) while you keep thinking. Keep it short and low-stakes — it's a probe, not your full point. Only the freshest banked probe is used, and it's discarded if the conversation moves on, so re-bank as the topic evolves. Does nothing user-visible unless the active-listening firing gate (probeFiring) is enabled.",
+  {
+    text: z.string().describe("The short interjection to bank (2–6 words). One natural spoken phrase."),
+  },
+  async ({ text }) => {
+    if (!text || !text.trim()) {
+      return { content: [{ type: "text", text: "Provide a non-empty interjection." }] };
+    }
+    try {
+      const resp = await fetch(`${BASE_URL}/api/bank-probe`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      const data = await resp.json();
+      if (!data?.success) {
+        return { content: [{ type: "text", text: `Error: ${data?.error || 'Failed to bank probe'}` }] };
+      }
+      return { content: [{ type: "text", text: `Probe banked (${data.bankSize} in bank). It may fire at the next opening; re-bank if the topic shifts.` }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
 // --- get_room_info ---
 server.tool(
   "get_room_info",

@@ -281,6 +281,59 @@ const PREFERENCES = {
       'said, not wall-clock. 0 = exactly today\'s behavior. Costs continuous ' +
       'slow-model turns — fine on the flat subscription, not metered. Try e.g. 600.',
   },
+  probeFiring: {
+    type: 'boolean',
+    default: false,
+    description:
+      'Active-listening firing gate (#245), OFF by default. When ON, on a brief ' +
+      'quiet (probeSilenceMs — shorter than the full turn-silence gate) the bot ' +
+      'runs the Apple completeness judge on the last utterance; if it\'s a genuine ' +
+      'opening AND the bot isn\'t directly named, it fires a SHORT interjection — ' +
+      'the freshest banked probe (bank_probe, deposited by the slow model on ' +
+      'background ticks) or a probeGenericPhrases fallback. This is the "active ' +
+      'listening" behavior: cheap probes that fill gaps and buy the slow model ' +
+      'time. Needs an openai-compat endpoint (ackEndpoint/ackModel) for the gate.',
+  },
+  probeSilenceMs: {
+    type: 'number',
+    default: 700,
+    min: 200,
+    max: 5000,
+    description:
+      'How briefly the room must go quiet before the active-listening firing gate ' +
+      '(probeFiring) considers an opening. Deliberately shorter than the full ' +
+      'wait_for_speech silence gate (defaultSilenceSeconds) so a probe lands in ' +
+      'the gap before a real turn would resolve. Default 700ms.',
+  },
+  probeMinIntervalMs: {
+    type: 'number',
+    default: 25000,
+    min: 0,
+    max: 600000,
+    description:
+      'Rate limit for active-listening probes: minimum ms between fired probes, ' +
+      'so the bot doesn\'t get needy/chatty. Over-done active listening is worse ' +
+      'than silence. Default 25s.',
+  },
+  probeMaxAgeMs: {
+    type: 'number',
+    default: 30000,
+    min: 0,
+    max: 600000,
+    description:
+      'Freshness window for a banked probe. Probes deposited by the slow model ' +
+      'older than this are discarded at fire time (the conversation has moved on) ' +
+      'and the bot falls back to a generic. Default 30s.',
+  },
+  probeGenericPhrases: {
+    type: 'string[]',
+    default: ['Interesting.', 'Mm, right.', 'Go on.', 'Huh.', 'Makes sense.', 'Hmm.'],
+    minItems: 1,
+    description:
+      'Fallback active-listening interjections fired when the probe bank is empty ' +
+      'or stale. Kept deliberately short and content-free so they\'re never wrong. ' +
+      'One is chosen at random.',
+  },
   backgroundTickJitterFrac: {
     type: 'number',
     default: 0.3,

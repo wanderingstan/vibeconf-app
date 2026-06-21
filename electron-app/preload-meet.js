@@ -895,7 +895,12 @@ function ensureStatusBar() {
   style.textContent = `
     #vibeconf-status-bar {
       position: fixed; top: 0; left: 0; right: 0; height: 56px;
-      background: #8ab4f8; color: #ffffff;
+      /* Partially transparent so any Google buttons beneath stay visible... */
+      background: rgba(138, 180, 248, 0.78); color: #ffffff;
+      /* ...and click-through so they stay USABLE for debugging — the banner
+         never intercepts pointer events (#bot-view banner is purely a label). */
+      pointer-events: none;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
       font-family: 'Google Sans', 'Roboto', sans-serif; font-size: 26px;
       font-weight: 500;
       display: flex; align-items: center; padding: 0 24px;

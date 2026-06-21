@@ -621,6 +621,11 @@ const localServer = new globalThis.LocalServer({
         payload: { deaf: on === false },
       });
     }
+    // Keep the panel's caption badge consistent — this fires for the
+    // self-correcting on-state (captions text arrived) as well as toggles.
+    if (panelView && !panelView.webContents.isDestroyed()) {
+      panelView.webContents.send('caption-state', { on: !!on });
+    }
   },
 
   // Background working-memory refresh (two-tier experiment). Fired by

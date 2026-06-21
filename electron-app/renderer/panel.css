@@ -408,6 +408,7 @@ button:disabled {
 /* Pop-out panel button (troubleshooting header) */
 .popout-btn {
   flex: 0 0 auto;
+  width: auto; /* override the global `button { width: 100% }` so it sizes to its text */
   font-size: 12px;
   padding: 4px 10px;
   border-radius: 8px;

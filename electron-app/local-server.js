@@ -909,6 +909,14 @@ class LocalServer {
 
   updateTurns(incoming) {
     if (!this.roomId || !Array.isArray(incoming) || incoming.length === 0) return;
+    // If caption turns with text are arriving, captions are definitionally ON —
+    // make captionsOn self-correcting. The captions-state IPC only fires on
+    // toggle CHANGES, so a clean join where captions were never toggled left the
+    // flag stuck false (showing a bogus "DEAF" on the overlay while the bot was
+    // clearly hearing). Actual caption text is the ground truth.
+    if (!this.captionsOn && incoming.some((t) => t && t.text && String(t.text).trim())) {
+      this.setCaptionsOn(true);
+    }
     const now = Date.now();
     const incomingIds = new Set();
     let changed = false;

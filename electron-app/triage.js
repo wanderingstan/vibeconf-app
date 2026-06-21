@@ -71,43 +71,54 @@ async function triage({ recentTranscript, lastUtterance, roster, botName, config
   if (!endpoint) { log?.('no endpoint configured'); return null; }
 
   const url = endpoint.replace(/\/+$/, '') + '/chat/completions';
-  const body = {
-    model: model || 'gpt-4o-mini',
-    messages: [
-      { role: 'system', content: buildSystem(botName || 'the bot') },
-      { role: 'user', content: buildUser({ recentTranscript, lastUtterance, roster, botName: botName || 'the bot' }) },
-    ],
-    temperature: 0.1, // classification — keep it decisive
-    max_tokens: 120,
-    response_format: {
-      type: 'json_schema',
-      json_schema: {
-        name: 'triage_decision',
-        strict: true,
-        schema: {
-          type: 'object',
-          properties: {
-            ack: { type: 'boolean' },
-            category: { type: 'string' },
-            reason: { type: 'string' },
-          },
-          required: ['ack', 'category', 'reason'],
-          additionalProperties: false,
-        },
+  const messages = [
+    { role: 'system', content: buildSystem(botName || 'the bot') },
+    { role: 'user', content: buildUser({ recentTranscript, lastUtterance, roster, botName: botName || 'the bot' }) },
+  ];
+  // Strict structured output via json_schema — LM Studio supports it. Some
+  // openai-compat servers (e.g. the Apple-on-device wrappers, #243) don't and
+  // reject it with a 400; in that case we retry WITHOUT response_format and lean
+  // on extractJson + the "Output ONLY the JSON object" instruction in the prompt.
+  const SCHEMA = {
+    type: 'json_schema',
+    json_schema: {
+      name: 'triage_decision',
+      strict: true,
+      schema: {
+        type: 'object',
+        properties: { ack: { type: 'boolean' }, category: { type: 'string' }, reason: { type: 'string' } },
+        required: ['ack', 'category', 'reason'],
+        additionalProperties: false,
       },
     },
   };
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Number(config?.timeoutMs) || 5000);
+  const post = async (useSchema) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Number(config?.timeoutMs) || 5000);
+    try {
+      const body = { model: model || 'gpt-4o-mini', messages, temperature: 0.1, max_tokens: 120 };
+      if (useSchema) body.response_format = SCHEMA;
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      return resp;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   const started = Date.now();
   try {
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
+    let resp = await post(true);
+    if (resp.status === 400) {
+      // Likely "response_format unsupported" — retry plain (prompt asks for JSON).
+      log?.('HTTP 400 with json_schema — retrying without structured output');
+      resp = await post(false);
+    }
     if (!resp.ok) { log?.(`HTTP ${resp.status}`); return null; }
     const data = await resp.json();
     const parsed = extractJson(data?.choices?.[0]?.message?.content || '');
@@ -121,8 +132,6 @@ async function triage({ recentTranscript, lastUtterance, roster, botName, config
   } catch (err) {
     log?.(err.name === 'AbortError' ? 'timed out' : err.message);
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }
 

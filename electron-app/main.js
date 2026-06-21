@@ -671,6 +671,10 @@ const localServer = new globalThis.LocalServer({
     // classifier is ~perfect on clean input, so any live miss is a stale/wrong
     // input or an eval-pairing artifact. This makes that diagnosable against [heard].
     console.log(ts(), `🚦 [triage] ack=${result.ack ? 'YES' : 'no'} [${result.category}] (${result.ms}ms) — ${result.reason} | on: "${(lastUtterance || '').slice(0, 120)}"`);
+    // Dump the FULL input as one JSON line so a live miss can be replayed EXACTLY
+    // in scripts/triage-eval.mjs (offline reconstruction couldn't reproduce the
+    // 'other-bot' misclassification — the live recentTranscript differs).
+    console.log(ts(), '🚦 [triage-input] ' + JSON.stringify({ botName, roster, lastUtterance, recentTranscript }));
     // Hold the verdict so the next slow-session utterance can confirm whether a
     // response really was expected (ground truth). Overwritten by the next
     // floor-open if the slow session stays quiet through this one.

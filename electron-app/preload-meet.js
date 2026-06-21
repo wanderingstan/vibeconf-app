@@ -1495,9 +1495,32 @@ class CaptionScraper {
     if (!this.isRunning) return;
     const container = document.querySelector('div[role="region"][aria-label="Captions"]');
     const nodes = container ? [...container.children].filter(c => c.querySelector('img')).length : -1;
-    const age = this._lastNewTurnsAt ? (Date.now() - this._lastNewTurnsAt) + 'ms' : 'never';
+    const ageMs = this._lastNewTurnsAt ? (Date.now() - this._lastNewTurnsAt) : null;
+    const age = ageMs == null ? 'never' : ageMs + 'ms';
     console.log('[caption-health] on=' + (this._captionsOn ? 1 : 0) +
       ' region=' + (container ? 'yes' : 'NULL') + ' turnNodes=' + nodes + ' lastNewText=' + age);
+
+    // #229/#187: captions ON, region present, turns existed — but no new text for
+    // a long time = a STALL (the bot is deaf). The blocker is often a mid-call
+    // modal we don't recognize (e.g. one without a [role=dialog]). Auto-capture
+    // the screen so it self-documents: list every visible button label (the
+    // modal's dismiss button will be in there) + dump any dialog-ish element.
+    const STALL_MS = 25000;
+    if (this._captionsOn && nodes > 0 && ageMs != null && ageMs > STALL_MS &&
+        Date.now() - (this._lastStallDumpAt || 0) > 30000) {
+      this._lastStallDumpAt = Date.now();
+      try {
+        const btns = [...document.querySelectorAll('button, [role="button"]')]
+          .filter(isVisible)
+          .map(b => ((b.textContent || '').trim() || b.getAttribute('aria-label') || '').slice(0, 40))
+          .filter(Boolean);
+        const dialogs = [...document.querySelectorAll('[role="dialog"], [aria-modal="true"]')]
+          .map(d => (d.outerHTML || '').slice(0, 1500));
+        console.warn('[caption-stall] no new captions for ' + Math.round(ageMs / 1000) +
+          's while ON — likely a blocking overlay. Visible buttons: ' + JSON.stringify(btns));
+        if (dialogs.length) console.warn('[caption-stall] dialog DOM:\n' + dialogs.join('\n---\n'));
+      } catch { /* non-fatal */ }
+    }
   }
 
   // Captions can be toggled OFF mid-call (user click, Meet layout change,

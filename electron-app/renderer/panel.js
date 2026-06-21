@@ -56,7 +56,12 @@ function showScreen(screen) {
   screen.style.display = 'block';
 }
 
-document.getElementById('openSettingsBtn').addEventListener('click', () => showScreen(settingsScreen));
+document.getElementById('openSettingsBtn').addEventListener('click', () => {
+  showScreen(settingsScreen);
+  // Re-read the signed-in account each time Settings opens — the Google account
+  // chip renders async, so a single fetch at panel load often missed it.
+  if (typeof refreshAccountEmail === 'function') refreshAccountEmail(lastMeetMode);
+});
 document.getElementById('backFromSettingsBtn').addEventListener('click', () => showScreen(mainScreen));
 document.getElementById('openTroubleshootingBtn').addEventListener('click', () => showScreen(troubleshootingScreen));
 document.getElementById('backFromTroubleshootingBtn').addEventListener('click', () => showScreen(mainScreen));
@@ -439,8 +444,10 @@ function refreshAccountEmail(mode) {
   });
 }
 
+let lastMeetMode = 'guest';
 function applyMeetMode(mode) {
   if (!meetModeIndicator) return;
+  lastMeetMode = mode;
   meetModeIndicator.textContent = mode;
   if (mode === 'account') {
     meetSignInBtn.style.display = 'none';

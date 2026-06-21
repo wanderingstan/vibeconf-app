@@ -2660,38 +2660,34 @@ function setupIPC() {
     let email = null;
     let allEmails = [];
     try {
-      if (meetView && !meetView.webContents.isDestroyed()) {
-        const url = meetView.webContents.getURL() || '';
-        if (/\bgoogle\.com\b/.test(url)) {
-          // Scan aria-labels AND visible text, and walk same-origin subframes —
-          // Google's account chip often lives in a separate OneGoogle frame the
-          // top document can't reach via querySelector. Returns a debug object
-          // so a miss is diagnosable (how many iframes, how many cross-origin).
-          const dbg = await meetView.webContents.executeJavaScript(`(() => {
-            const RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}/g;
-            const out = new Set();
-            const scan = (doc) => {
-              try {
-                for (const el of doc.querySelectorAll('[aria-label]')) {
-                  const m = (el.getAttribute('aria-label') || '').match(RE);
-                  if (m) m.forEach((x) => out.add(x));
-                }
-                const t = (doc.body && doc.body.innerText) || '';
-                (t.match(RE) || []).forEach((x) => out.add(x));
-              } catch (e) { /* cross-origin */ }
-            };
-            scan(document);
-            let crossOrigin = 0;
-            for (const f of document.querySelectorAll('iframe')) {
-              try { if (f.contentDocument) scan(f.contentDocument); else crossOrigin++; }
-              catch { crossOrigin++; }
+      if (meetView && !meetView.webContents.isDestroyed() &&
+          /\bgoogle\.com\b/.test(meetView.webContents.getURL() || '')) {
+        // The signed-in account is in the OneGoogle account chip:
+        //   <a aria-label="Google Account: <name> (<email>)">
+        // It renders asynchronously after page load, so the one-shot fetch at
+        // panel load missed it — retry a few times. Confirmed not in an iframe.
+        const SCAN = `(() => {
+          const RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}/g;
+          const out = new Set();
+          for (const el of document.querySelectorAll('[aria-label*="Google Account" i]')) {
+            (((el.getAttribute('aria-label') || '').match(RE)) || []).forEach((x) => out.add(x));
+          }
+          if (!out.size) { // fallback: any aria-label on the page
+            for (const el of document.querySelectorAll('[aria-label]')) {
+              (((el.getAttribute('aria-label') || '').match(RE)) || []).forEach((x) => out.add(x));
             }
-            return { emails: [...out], iframeTotal: document.querySelectorAll('iframe').length, crossOrigin };
-          })()`, true);
-          console.log('[electron] account-email scan:', JSON.stringify(dbg));
-          allEmails = (dbg && dbg.emails) || [];
-          email = allEmails.find((e) => !/noreply|no-reply|example\.com/i.test(e)) || allEmails[0] || null;
+          }
+          return [...out];
+        })()`;
+        for (let attempt = 0; attempt < 5 && !email; attempt++) {
+          if (attempt) await new Promise((r) => setTimeout(r, 400));
+          try {
+            const found = await meetView.webContents.executeJavaScript(SCAN, true);
+            allEmails = Array.isArray(found) ? found : [];
+            email = allEmails.find((e) => !/noreply|no-reply|example\.com/i.test(e)) || allEmails[0] || null;
+          } catch { /* page mid-navigation; retry */ }
         }
+        console.log('[electron] account-email:', email || '(none yet)', 'all=' + JSON.stringify(allEmails));
       }
     } catch (err) {
       console.warn('[electron] get-meet-account-email DOM read failed:', err.message);

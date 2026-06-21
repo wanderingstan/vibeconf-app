@@ -173,48 +173,52 @@ function findByAriaLabel(label) {
   );
 }
 
-// Auto-dismiss Meet onboarding/info modals that block the bot's join flow
-// and button detection (#227). Meet has started showing a one-time
-// "Others may see your video differently" overlay (pre-join or just after
-// admission) that sits on top of the UI until its "Got it" button is
-// clicked — blocking detection of the people pane, CC button, Leave button,
-// etc. We gate on a known heading so an unrelated "Got it" elsewhere in the
-// DOM can't be clicked by accident. Returns true if something was dismissed.
-const DISMISSABLE_MODAL_HEADINGS = [
-  'Others may see your video differently',
+// Auto-dismiss Meet's one-time onboarding/info modals that block the bot's join
+// flow and button detection (#227, #240). Meet shows a whole FAMILY of these —
+// "Others may see your video differently", "Your screen may not appear to others
+// the way it appears for you", and more — each dismissed by a single "Got it"
+// button. Enumerating every heading is a losing game (they change, and an
+// uncaught one likely contributed to #240's cold-join failures), so this is a
+// CATCH-ALL: in Meet, a visible "Got it" button is always a dismissible info
+// modal, so we click any we find. The recording-consent dialog (#130) uses
+// Leave / Join now (not "Got it"), so it's unaffected. Returns true if dismissed.
+const KNOWN_MODAL_HEADINGS = [ // for clearer logging only — NOT a gate
+  'others may see your video differently',
+  'your screen may not appear',
+  'may not appear to others',
 ];
 let _lastModalDumpAt = 0;
 function dismissBlockingModals() {
-  // Detect the modal by scanning the whole body text (case-insensitive). This
-  // is more robust than the per-text-node walker, which misses a heading split
-  // across spans/line-breaks. Cheap: a string scan, no layout reflow.
-  const bodyText = (document.body && document.body.textContent || '').toLowerCase();
-  const heading = DISMISSABLE_MODAL_HEADINGS.find((h) => bodyText.includes(h.toLowerCase()));
-  if (!heading) return false;
-
-  // Find the "Got it" dismiss button directly among clickable elements — the
-  // label may be nested in a span, and the button may be mid-fade-in on one
-  // tick (isVisible flaky), so we match by text/aria across all candidates and
-  // the 1s tick retries until one is clickable. Gated by the known heading so
-  // an unrelated "Got it" can't be clicked by accident.
+  // Click any visible "Got it" button (label may be nested in a span; match by
+  // text or aria-label across all candidates).
   const clickables = document.querySelectorAll('button, [role="button"]');
   for (const el of clickables) {
     const label = (el.textContent || '').trim().toLowerCase();
     const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
     if ((label === 'got it' || aria === 'got it') && isVisible(el)) {
       el.click();
-      console.log('[electron-meet] Dismissed blocking modal "' + heading + '" via "Got it"');
+      const bodyText = (document.body && document.body.textContent || '').toLowerCase();
+      const known = KNOWN_MODAL_HEADINGS.find((h) => bodyText.includes(h));
+      console.log('[electron-meet] Dismissed info modal via "Got it"' +
+        (known ? ' (' + known + ')' : ' (unrecognized heading)'));
       return true;
     }
   }
 
-  // Heading present but no clickable "Got it" matched — capture the modal DOM
-  // (throttled) so we can see exactly how Meet renders it and fix the selector.
-  if (Date.now() - _lastModalDumpAt > 15000) {
-    _lastModalDumpAt = Date.now();
-    const dlg = document.querySelector('[role="dialog"], [aria-modal="true"]');
-    const sample = (dlg ? dlg.outerHTML : (document.body ? document.body.innerHTML : '')).slice(0, 2500);
-    console.warn('[electron-meet] Blocking modal "' + heading + '" present but no "Got it" button matched. DOM sample:\n' + sample);
+  // No "Got it" found. If a modal dialog is nonetheless sitting open and
+  // blocking (and it's not the recording-consent dialog handled elsewhere),
+  // dump its DOM (throttled) so we can learn its dismiss button — maybe it uses
+  // a different label we should add. This is how we finally capture the rare
+  // ones we can't reproduce on demand.
+  const dlg = document.querySelector('[role="dialog"][aria-modal="true"], [aria-modal="true"], [role="dialog"]');
+  if (dlg && isVisible(dlg) && Date.now() - _lastModalDumpAt > 15000) {
+    const txt = (dlg.textContent || '').toLowerCase();
+    const isRecordingConsent = txt.includes('being recorded') || txt.includes('taking notes');
+    if (!isRecordingConsent) {
+      _lastModalDumpAt = Date.now();
+      console.warn('[electron-meet] Modal dialog open with no "Got it" button — DOM sample so we can handle it:\n' +
+        (dlg.outerHTML || '').slice(0, 2500));
+    }
   }
   return false;
 }
@@ -1075,6 +1079,9 @@ async function autoJoin(botName) {
       // button. Its "Join now" also trips hasJoinUI below, so without accepting
       // it the loop waits forever. Click it to consent, then re-evaluate.
       if (acceptRecordingConsentIfPresent()) continue;
+      // #240: a "Got it" info modal ("…screen may not appear…", etc.) can also
+      // appear during admission and block — clear it before evaluating state.
+      if (dismissBlockingModals()) continue;
 
       const bodyText = document.body.innerText;
       const waitingText = bodyText.includes('wait until') ||

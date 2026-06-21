@@ -2383,7 +2383,19 @@ async function loadMeetURL(meetUrl) {
   // the fresh view starts truly blank. (Without the destroy above this
   // alone wasn't enough; without this the in-memory part is fixed but
   // localStorage / cookies could still re-seed the identity.)
-  await clearMeetIdentityCache(currentMeetPartition);
+  //
+  // GUEST MODE ONLY. This clear nukes .google.com path="/" cookies — which in
+  // account mode ARE the Google master-auth cookies (SID/SSID/HSID/SAPISID/
+  // __Secure-1PSID, all domain=.google.com path=/, NOT path=/accounts). So
+  // running it in account mode silently signed the bot OUT of Google before
+  // every join → it joined un-authenticated and couldn't be auto-admitted to
+  // invited meetings (#250). The cache only exists to reset Meet's cached guest
+  // "Your name", which doesn't apply in account mode (name comes from Google).
+  if (currentMeetPartition === MEET_GUEST_PARTITION) {
+    await clearMeetIdentityCache(currentMeetPartition);
+  } else {
+    console.log('[electron] Account mode — skipping Meet identity-cache clear to preserve Google sign-in');
+  }
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
   meetView = createMeetView(currentMeetPartition);

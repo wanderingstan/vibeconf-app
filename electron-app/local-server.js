@@ -397,12 +397,18 @@ class LocalServer {
         .filter((m) => m.role === 'bot' && m.name)
         .map((m) => m.name.toLowerCase())
     );
+    // Identify "me" by the bot's own name, not just the flaky isSelf flag — the
+    // speaker tracker sometimes fails to mark the self tile, which mislabeled the
+    // bot as "a bot" (not "you") and confused the triage classifier into treating
+    // direct addresses as other-bot. The bot always knows its own name.
+    const myName = (this.getEffectiveBotName() || '').toLowerCase();
     return (this.participants || [])
       .filter(p => p.name && p.name !== 'You')
       .map(p => {
-        const kind = p.isSelf
-          ? 'this bot (me)'
-          : (botNames.has((p.name || '').toLowerCase()) ? 'a bot' : 'a human');
+        const nameLower = (p.name || '').toLowerCase();
+        const kind = (p.isSelf || (myName && nameLower === myName))
+          ? 'this bot — YOU'
+          : (botNames.has(nameLower) ? 'a bot' : 'a human');
         return `- ${p.name} (${kind})`;
       })
       .join('\n');

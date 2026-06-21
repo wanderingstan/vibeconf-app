@@ -18,10 +18,19 @@ Branch: `feat/two-tier`. Companion docs: `two-tier-design.md` (the design),
   is the voice**, made to *feel* fast by a **two-phase response** — speak a short
   reply immediately, then do deeper work only if the turn needs it. Good substance
   at ~3–5s, and it never leaves the human in silence.
-- **The fast model's real job is triage, not voice** — a sub-second "is the bot
-  being addressed / is a quick ack expected?" classifier. Promising in principle;
-  underperformed in first testing (too conservative). Non-authoritative: the slow
-  model always still answers, so its mistakes are cheap.
+- **The fast model's real job is classification, not voice** — and we narrowed
+  *which* classification. **Addressivity triage** ("is the bot being addressed?")
+  works great on the 7B (19/19 offline once we fixed a wrong-model bug) — but the
+  **instant ack it would fire proved redundant**: it landed ~0.8s before the
+  two-phase reply, both bounded by the same ~3s floor, so we **disabled it**. If
+  turn-taking costs ~3s either way, the slow model may as well own it. **The
+  surviving fast-model role is utterance-completeness** ("has the human finished
+  talking yet?") — the one job that runs *inside* the silence window and so is
+  **not** defeated by the latency floor, *if* the model is sub-second.
+- **Apple on-device (#243) is the sub-second candidate.** Tested 2026-06-21:
+  ~0.34s warm (~2–5× faster than the 7B). Addressivity quality is weaker (79% vs
+  the 7B's 100%) — but completeness is a more local/syntactic task and looks more
+  tractable (50%→74% on one prompt edit; iteration ongoing).
 - **Streaming headless Claude Code** (`claude -p --output-format stream-json …`,
   subscription auth) is **viable and free** — but the spike showed it doesn't beat
   the ~2.5s TTFT floor for short replies, and multi-step turns (its real edge) are
@@ -153,6 +162,71 @@ Ran `scripts/stream-claude-spike.mjs` (headless `claude -p` streaming). Findings
 + long-reply win, NOT a dramatic short-reply latency win. The latency lever is the
 fast ack, not streaming.
 
+## Triage, resolved: good classifier, redundant ack (2026-06-20→21)
+
+After the streaming spike pointed back at the fast ack as "the latency lever," we
+chased triage to a conclusion — and it turned into a useful *negative* result.
+
+- **The "triage under-acks" failure was a wrong-model bug, not a capability
+  ceiling.** Live, the bot was running a stale `qwen3-1.7b-mlx`, not the validated
+  7B. Proven by replaying the exact logged inputs (`[triage-input]`): the **7B
+  scored 19/19** on the offline harness (`scripts/triage-eval.mjs`), the 1.7B
+  failed them. Root-caused via three layered bugs: garbled multi-speaker input
+  (fixed: pass the last *attributed* turn), cold-start timeouts (fixed:
+  `warmupLocalModel` on join), then the model-name mismatch (the real one).
+- **So we wired the instant ack** (triage YES → quick "On it" filler) — and then
+  **disabled it**, because in practice it was **redundant**. The ack landed only
+  ~0.8s before the two-phase slow reply (both ~3s, TTFT-bound), so it added a
+  stray utterance for almost no perceived-latency gain.
+- **Stan's reframe (the keeper insight):** *if* turn-taking costs ~the same three
+  seconds whether the fast model gates it or not, then **let the slow model make
+  the turn-taking decisions** — don't add a second brain to save a margin that
+  isn't there. This is why triage-for-ack is parked.
+
+**What survives:** classification where the fast tier's *speed* actually buys
+something the slow tier can't — i.e. a judgment that must happen *before* the slow
+model is even invoked. That's **utterance-completeness**.
+
+## The Apple on-device experiment (#243, 2026-06-21)
+
+Stan stood up `apple-to-openai` (an OpenAI-compatible wrapper over Apple
+Intelligence) at `http://127.0.0.1:11535/v1`, model `apple-on-device`. We probed it:
+
+- **Speed — the headline.** ~0.34s warm on trivial calls; ~0.6–0.95s on full
+  classification calls. **~2–5× faster than the 7B** (~1.9s warm). This is the
+  number the whole fast-tier idea needed, and it's the first backend that delivers
+  genuinely sub-second.
+- **Addressivity triage: 79% (15/19)** vs the 7B's 100%. It nails clean direct
+  address but misses the *about-vs-to* nuance ("I was talking to Jimmy earlier" →
+  false ack) and garbled overlapping captions. Confirms Stan's prior: a small
+  model isn't a great addressivity classifier. (Possibly recoverable with prompt
+  tuning — untested.)
+- **Mechanics:** `json_schema` is **accepted (200) but ignored** — it freelances
+  keys and wraps JSON in ```` ```json ```` fences. So structure is prompt-only; our
+  `extractJson` strips the fences. The 400-fallback we added doesn't trigger here
+  (harmless).
+
+### Completeness detection — the role the latency floor can't kill
+
+The insight (Stan's): the fast tier's speed only matters where a decision must be
+made *inside the silence window*, before the slow model runs. **"Has the speaker
+finished?"** is exactly that — and at ~0.34s, Apple is fast enough to gate it.
+
+We built the offline loop, same playbook as triage:
+- **`logRawCaptions` pref (beta16)** logs `[caption-raw]` — every in-flight partial
+  as Meet captions grow, marked LIVE vs settled. That messy progression *is* a
+  labeled dataset (settled = complete; superseded LIVE prefixes = partial).
+- **`electron-app/completeness.js`** — the `judgeComplete()` classifier +
+  `parseCaptionLog()`.
+- **`scripts/completeness-eval.mjs`** — offline harness; built-in synthetic cases
+  (runnable today) + `--log` to replay real captured captions. Reports accuracy
+  **and p50/p95 latency** (latency is the make-or-break metric here).
+- **First Apple run:** a naive "lean toward not-complete / function-word" prompt
+  got stuck answering *partial* for everything (50%). **One de-bias edit** (judge
+  grammar not punctuation; only a dangling-end is partial) → **74%, p50 ~722ms.**
+  Demonstrates the seconds-per-iteration loop. **Next input: real captured
+  `[caption-raw]` data** from a logging call, then keep tuning.
+
 ## Things that were keepers regardless of the two-tier outcome
 
 The experiment drove a lot of plain-good infrastructure that stands on its own:
@@ -172,8 +246,12 @@ These are the editable prompt surfaces (kept as files, not buried in code):
 - `mcp-server/join-call-skill.md` — the **slow model's** behavior, incl. the
   two-phase loop. *This is the highest-leverage one.*
 - `electron-app/ack/prompts/ack-system.md` — the filler-ack prompt.
-- `electron-app/triage.js` / `phrase.js` / `comprehend.js` — the 7B prompts
-  (currently inline in JS; phrase/comprehend are the now-parked fast-voice path).
+- `electron-app/completeness.js` — the **utterance-completeness** prompt (the live
+  fast-tier candidate). Iterate with `scripts/completeness-eval.mjs`.
+- `electron-app/triage.js` — the addressivity classifier (good on the 7B; ack
+  parked). Iterate with `scripts/triage-eval.mjs --endpoint … --model …`.
+- `electron-app/phrase.js` / `comprehend.js` — the 7B prompts for the now-parked
+  fast-voice path.
 
 ## DECISION (2026-06-20): keep the two-phase bot; park streaming
 
@@ -197,9 +275,20 @@ answer landing behind it. No rebuild required.
 Streaming stays documented and de-risked (`scripts/stream-claude-spike.mjs`,
 viable on subscription) if the product ever heads toward Mode B (dedicated avatar).
 
+> **Addendum (2026-06-21):** the "smart instant ack" plan above didn't survive
+> contact. We got triage working (7B, 19/19) and wired the ack — then found it
+> **redundant** against the two-phase reply (~0.8s ahead, same ~3s floor) and
+> disabled it. The latency lever moved from *ack* to **utterance-completeness**
+> (decide *when* it's time to respond, inside the silence window) on a sub-second
+> Apple-on-device model. See the two sections above.
+
 ## Still-open (smaller) questions
 
-- Is the triage classifier salvageable with prompt tuning (it under-acked badly in
-  first testing), or is addressivity better derived mechanically?
-- Tune the bot-vs-bot jitter / add the "back off when not specifically addressed"
-  half once triage is reliable.
+- **Can completeness detection get good enough on Apple-on-device to gate the
+  turn?** First pass 74% on synthetic data; needs (a) real captured `[caption-raw]`
+  data and (b) more prompt tuning. Headline metric stays **latency** (must hold
+  sub-second under load).
+- **Apple addressivity via prompt tuning:** 79% out of the box — worth one tuning
+  pass, given the speed, even if it only ever feeds a non-authoritative signal.
+- The bot-vs-bot jitter / "back off when not specifically addressed" half — still
+  waits on a reliable addressivity signal (now likely the 7B, not Apple).

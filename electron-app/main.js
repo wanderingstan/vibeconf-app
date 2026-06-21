@@ -2652,21 +2652,26 @@ function setupIPC() {
     let email = null;
     let allEmails = [];
     try {
-      const body = await new Promise((resolve, reject) => {
+      const { status, body } = await new Promise((resolve, reject) => {
         const req = net.request({
           url: 'https://accounts.google.com/ListAccounts?gpsia=1&source=ClientLogin&json=standard',
           session: sess,
           useSessionCookies: true,
         });
+        // Some Google endpoints answer differently to a non-browser UA.
+        req.setHeader('User-Agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36');
         let data = '';
         req.on('response', (res) => {
           res.on('data', (c) => { data += c.toString(); });
-          res.on('end', () => resolve(data));
+          res.on('end', () => resolve({ status: res.statusCode, body: data }));
           res.on('error', reject);
         });
         req.on('error', reject);
         req.end();
       });
+      // Diagnostic: surface exactly what ListAccounts returns so we stop guessing.
+      console.log('[electron] ListAccounts status=' + status + ' len=' + body.length +
+        ' snippet=' + JSON.stringify(body.slice(0, 200)));
       allEmails = Array.from(
         new Set(body.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [])
       );

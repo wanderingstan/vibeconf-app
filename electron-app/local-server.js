@@ -631,14 +631,19 @@ class LocalServer {
     //      no live-speaker state to lose.
     // If someone IS speaking, we do nothing here: chatUnread stays set and rides
     // along when speech resolves naturally at the next pause — nothing dropped.
+    // Wake a pending wait_for_speech on a new unread — but ONLY if nobody's
+    // speaking (don't interrupt a live speaker; that's also when reading chat
+    // would blind speaker detection). We intentionally do NOT gate on
+    // chatPaneOpen: the agent is asleep in wait_for_speech and needs waking for a
+    // new message regardless of pane state, and that flag can be stale (it races
+    // the pane open/close animation — observed suppressing legit wakes).
     if (unread) {
       const blocked = this.anyoneSpeaking ? 'someone-speaking'
-        : this.chatPaneOpen ? 'chat-pane-open'
         : this.waiters.length === 0 ? 'no-active-waiter'
         : null;
       if (blocked) {
         console.log(ts(), '💬 [chat-wake] new unread but NOT waking —', blocked,
-          '(anyoneSpeaking=' + this.anyoneSpeaking + ' chatPaneOpen=' + this.chatPaneOpen + ' waiters=' + this.waiters.length + ')');
+          '(anyoneSpeaking=' + this.anyoneSpeaking + ' waiters=' + this.waiters.length + ')');
       } else {
         console.log(ts(), '💬 [chat-wake] new unread in quiet room — waking', this.waiters.length, 'waiter(s)');
         for (const waiter of [...this.waiters]) {

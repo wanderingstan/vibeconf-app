@@ -456,7 +456,48 @@ function applyMeetMode(mode) {
     meetSignOutBtn.style.display = 'none';
   }
   refreshAccountEmail(mode);
+  refreshBotIdentity(mode); // keep the main-view identity row in sync
 }
+
+// --- Bot Meet identity on the MAIN view (so the auto-admit login isn't buried
+// in Settings — the confusion behind people signing into the wrong session). ---
+const botIdentityStatus = document.getElementById('botIdentityStatus');
+const botSignInMainBtn = document.getElementById('botSignInMainBtn');
+const botSignOutMainBtn = document.getElementById('botSignOutMainBtn');
+
+async function refreshBotIdentity(mode) {
+  if (!botIdentityStatus) return;
+  const m = mode || lastMeetMode;
+  if (m !== 'account') {
+    botIdentityStatus.textContent = '👤 Guest — won\'t auto-admit to invite-only meets';
+    botIdentityStatus.style.color = '#fdd663';
+    if (botSignInMainBtn) botSignInMainBtn.style.display = 'inline-block';
+    if (botSignOutMainBtn) botSignOutMainBtn.style.display = 'none';
+    return;
+  }
+  if (botSignInMainBtn) botSignInMainBtn.style.display = 'none';
+  if (botSignOutMainBtn) botSignOutMainBtn.style.display = 'inline-block';
+  botIdentityStatus.textContent = '✓ Signed in (reading account…)';
+  botIdentityStatus.style.color = '#81c995';
+  try {
+    const r = await api.invoke('get-meet-account-email');
+    if (r?.signedIn && r.email) botIdentityStatus.textContent = '✓ ' + r.email + ' — auto-admits';
+    else if (r?.signedIn) botIdentityStatus.textContent = '✓ Signed in (couldn\'t read which account)';
+    else { botIdentityStatus.textContent = '⚠ Account mode but not signed in yet'; botIdentityStatus.style.color = '#fdd663'; }
+  } catch { botIdentityStatus.textContent = '✓ Signed in'; }
+}
+
+botSignInMainBtn?.addEventListener('click', async () => {
+  botSignInMainBtn.disabled = true;
+  botSignInMainBtn.textContent = 'Opening Google sign-in…';
+  try { await api.invoke('meet-sign-in-as-bot'); applyMeetMode('account'); } catch { /* ignore */ }
+  setTimeout(() => { botSignInMainBtn.disabled = false; botSignInMainBtn.textContent = 'Sign in as bot'; refreshBotIdentity('account'); }, 4000);
+});
+botSignOutMainBtn?.addEventListener('click', async () => {
+  botSignOutMainBtn.disabled = true;
+  try { await api.invoke('meet-sign-out-bot'); applyMeetMode('guest'); } catch { /* ignore */ }
+  setTimeout(() => { botSignOutMainBtn.disabled = false; }, 1500);
+});
 
 // Initial state on panel load.
 api.invoke('get-meet-mode').then((info) => {

@@ -33,6 +33,17 @@
         <div class="helper-text" style="margin-top:6px">Some features may not work until you are logged in to vibeconferencing.com.</div>
       </div>
 
+      <!-- Bot's Google Meet identity, surfaced on the MAIN view (was buried in
+           Settings). This is the login that controls auto-admit — distinct from
+           the vibeconferencing.com login above. -->
+      <div id="botIdentityMain" style="margin-bottom:12px;padding:8px 12px;border:1px solid #5f6368;border-radius:8px;background:#3c4043;font-size:12px;display:flex;align-items:center;justify-content:space-between;gap:8px">
+        <span style="line-height:1.4"><strong>Bot's Meet sign-in:</strong> <span id="botIdentityStatus">checking…</span></span>
+        <span style="white-space:nowrap">
+          <button id="botSignInMainBtn" class="auth-action-btn" style="display:none">Sign in as bot</button>
+          <button id="botSignOutMainBtn" class="auth-action-btn" style="display:none">Use guest</button>
+        </span>
+      </div>
+
       <p class="helper-text">Google Meet calls in Chrome or Safari will be automatically detected.</p>
       <div class="field">
         <label for="meetUrl">Meet URL</label>

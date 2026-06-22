@@ -438,16 +438,24 @@
       ctx.font = font;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'top';
-      // No background panel (it was distracting as the box resized). Draw text
-      // directly with a soft shadow so it stays legible over any avatar bg.
-      ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
-      ctx.shadowBlur = 4;
+      // No background panel (it was distracting as the box resized). Instead the
+      // classic text-on-TV treatment: a dark OUTLINE (stroke) behind each line
+      // guarantees contrast over ANY avatar background (light or busy), plus a
+      // soft shadow for depth. Stroke is the workhorse; shadow is polish.
+      ctx.lineJoin = 'round';   // avoid spiky corners on the outline
+      ctx.miterLimit = 2;
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.9)';
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
+      ctx.shadowBlur = 3;
       ctx.shadowOffsetX = 0;
       ctx.shadowOffsetY = 1;
       const boxX = 24;
       const boxY = 24;
       for (let i = 0; i < lines.length; i++) {
         const ln = lines[i];
+        const x = boxX + pad;
+        const y = boxY + pad + i * lineH;
         // Headers yellow; STALE loop / DEAF caps / ack-fallback red; heard blue;
         // proc teal; rest light grey.
         if (ln === 'CALL' || ln === 'LOOP') ctx.fillStyle = '#fdd663';
@@ -457,7 +465,13 @@
         else if (ln.startsWith('heard:')) ctx.fillStyle = '#8ab4f8';
         else if (ln.startsWith('proc:')) ctx.fillStyle = '#5bd1c4';
         else ctx.fillStyle = '#e8eaed';
-        ctx.fillText(ln, boxX + pad, boxY + pad + i * lineH);
+        // Outline first (carries the shadow), then the colored fill on top with
+        // the shadow disabled so it doesn't muddy the glyph interior.
+        ctx.strokeText(ln, x, y);
+        ctx.save();
+        ctx.shadowColor = 'transparent';
+        ctx.fillText(ln, x, y);
+        ctx.restore();
       }
       ctx.restore();
     }

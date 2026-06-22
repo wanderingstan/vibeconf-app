@@ -850,6 +850,12 @@ const localServer = new globalThis.LocalServer({
       });
     } else if (key === 'avatarBackgroundSvg') {
       pushAvatarBackground(value);
+    } else if (key === 'studioSound') {
+      // Toggle Meet's voice filter live (no rejoin needed) when in-call.
+      if (localServer.callStatus === 'in-call' && meetView && !meetView.webContents.isDestroyed()) {
+        console.log('[electron] studioSound pref changed →', value, '— applying live');
+        meetView.webContents.send('set-studio-sound', { enabled: value !== false });
+      }
     }
   },
 });

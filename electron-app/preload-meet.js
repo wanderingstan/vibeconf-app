@@ -457,9 +457,15 @@ async function openChatPane() {
     console.log('[chat] Chat pane already open');
     return true;
   }
-  const btn = getChatToggle();
+  // The chat toggle can render late after admission (same toolbar race as the
+  // captions/present buttons) — a one-shot lookup fails instantly when chat is
+  // sent/read early in a call. Wait for the button instead of giving up.
+  let btn = getChatToggle();
   if (!btn) {
-    console.warn('[chat] ❌ Chat toggle button not found');
+    for (let i = 0; i < 30 && !btn; i++) { await delay(300); btn = getChatToggle(); } // up to ~9s
+  }
+  if (!btn) {
+    console.warn('[chat] ❌ Chat toggle button not found (after ~9s wait)');
     return false;
   }
   console.log('[chat] → switching to Chat pane (clicking', JSON.stringify(btn.getAttribute('aria-label')), ')');

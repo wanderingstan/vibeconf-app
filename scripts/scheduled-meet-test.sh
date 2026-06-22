@@ -33,7 +33,7 @@ echo "" | tee -a "$LOG"
 echo "=== exit code: $CODE ===" | tee -a "$LOG"
 
 # Pull the harness's SIGNALS summary lines into a one-line JSON history entry.
-stalls=$(grep -oE 'wait_for_speech timeouts: [0-9]+' "$LOG" | tail -1 | grep -oE '[0-9]+$' || echo "?")
+stalls=$(grep -oE '\([0-9]+ real stall' "$LOG" | tail -1 | grep -oE '[0-9]+' || echo "?")
 fails=$(grep -oE 'failed steps: +[0-9]+' "$LOG" | tail -1 | grep -oE '[0-9]+$' || echo "?")
 overlaps=$(grep -oE 'cross-bot speak overlaps \(<1.2s\): [0-9]+' "$LOG" | tail -1 | grep -oE '[0-9]+$' || echo "?")
 

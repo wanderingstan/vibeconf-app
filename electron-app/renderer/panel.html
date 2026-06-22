@@ -40,6 +40,7 @@
       </div>
       <button id="joinBtn" class="primary" disabled>Join Meet</button>
       <div class="helper-text" style="margin-top:8px">You can also join by typing <code>/join-call</code> in any Claude Code session.</div>
+      <div class="helper-text" style="margin-top:4px"><a href="#" id="defaultMeetBtn" class="text-link">Open default testing meet in browser ↗</a></div>
 
       <div id="connectedSection" style="display:none">
         <button id="leaveCallBtn" style="margin-top:8px;background:#d93025;color:#fff;border:none;padding:8px 16px;border-radius:20px;cursor:pointer">Leave Call</button>
@@ -94,6 +95,7 @@
           In <strong>account</strong> mode the bot is signed into Google and inherits that account's name.
           The choice persists across launches.
         </p>
+        <div id="meetAccountEmail" class="account-email" style="display:none"></div>
         <button id="meetSignInBtn">Sign in to Google as bot</button>
         <button id="meetSignOutBtn" style="display:none">Sign out (use as guest)</button>
       </div>
@@ -145,7 +147,10 @@
   <div class="screen" id="troubleshootingScreen" style="display:none">
     <div class="container">
       <button id="backFromTroubleshootingBtn" class="back-btn">&larr; Back</button>
-      <h1>Troubleshooting</h1>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+        <h1 style="margin:0">Troubleshooting</h1>
+        <button id="popoutPanelBtn" class="popout-btn" title="Open this panel in its own window so you can place it next to the bot's Meet view">⧉ Pop out</button>
+      </div>
 
       <div id="micPermissionWarning" class="error-bar" style="display:none;margin-bottom:8px">Microphone permission problem detected</div>
 
@@ -201,9 +206,11 @@
       </div>
 
       <div class="section">
-        <h2>Live Caption Text</h2>
+        <h2>Live Captions <span class="helper-text">(bot's-eye view)</span></h2>
+        <p class="helper-text" style="margin:0 0 6px">Exactly what captions the bot is receiving — the still-growing turn is marked LIVE. Compare in real time against the bot's Meet tile.</p>
+        <div id="captionStateBadge" class="caption-badge" style="margin-bottom:6px"></div>
         <div class="field">
-          <div id="rawCaptionText" class="audio-status" style="max-height:100px;overflow-y:auto;font-family:monospace;font-size:11px;white-space:pre-wrap"></div>
+          <div id="rawCaptionText" class="audio-status caption-feed" style="max-height:240px;overflow-y:auto;font-family:monospace;font-size:11px;white-space:pre-wrap"></div>
         </div>
       </div>
 

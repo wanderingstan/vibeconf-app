@@ -378,3 +378,63 @@ button:disabled {
 .auth-action-btn:hover {
   color: #aecbfa;
 }
+
+/* Live caption feed — the bot's-eye view (#troubleshooting) */
+.caption-feed .cap-line {
+  padding: 1px 0;
+  line-height: 1.35;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+.caption-feed .cap-tag {
+  display: inline-block;
+  min-width: 48px;
+  font-size: 9px;
+  color: #9aa0a6;
+  text-transform: uppercase;
+}
+.caption-feed .cap-live { color: #8ab4f8; }
+.caption-feed .cap-live .cap-tag { color: #8ab4f8; font-weight: 600; }
+.caption-feed .cap-speaker { color: #e8eaed; font-weight: 600; }
+
+.caption-badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+.caption-badge.cap-on { background: rgba(129, 201, 149, 0.18); color: #81c995; }
+.caption-badge.cap-off { background: rgba(242, 139, 130, 0.18); color: #f28b82; font-weight: 600; }
+
+/* Pop-out panel button (troubleshooting header) */
+.popout-btn {
+  flex: 0 0 auto;
+  width: auto; /* override the global `button { width: 100% }` so it sizes to its text */
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid #5f6368;
+  background: #303134;
+  color: #e8eaed;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.popout-btn:hover { background: #3c4043; border-color: #8ab4f8; color: #aecbfa; }
+
+/* Bot Google Identity — which account is actually signed in */
+.account-email {
+  font-size: 12px;
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #303134;
+  word-break: break-all;
+}
+.account-email.email-ok { background: rgba(129, 201, 149, 0.15); color: #81c995; }
+.account-email.email-bad { background: rgba(242, 139, 130, 0.15); color: #f28b82; }
+
+/* Small inline debug link (e.g. default testing meet) */
+.text-link {
+  color: #8ab4f8;
+  text-decoration: none;
+}
+.text-link:hover { color: #aecbfa; text-decoration: underline; }

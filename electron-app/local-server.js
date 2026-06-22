@@ -113,6 +113,7 @@ class LocalServer {
     // agent can avoid double-responding to the same thought.
     this.lastRespondedSpeaker = null;
     this.lastRespondedText = null;
+    this.lastProcessingText = null;
     this.lastRespondedAt = null;
 
     // Pending bot speech — queued when speak() is called before the bot is
@@ -307,6 +308,7 @@ class LocalServer {
     this.captionsOn = null;
     this.lastRespondedSpeaker = null;
     this.lastRespondedText = null;
+    this.lastProcessingText = null;
     this.lastRespondedAt = null;
     this.workingMemory = { understanding: '', stance: '', people: '', updatedAt: null, updatedBy: null };
     this._charsAtLastComprehension = 0;
@@ -333,6 +335,7 @@ class LocalServer {
     this.captionsOn = null;
     this.lastRespondedSpeaker = null;
     this.lastRespondedText = null;
+    this.lastProcessingText = null;
     this.lastRespondedAt = null;
     this.workingMemory = { understanding: '', stance: '', people: '', updatedAt: null, updatedBy: null };
     this._charsAtLastComprehension = 0;
@@ -635,6 +638,37 @@ class LocalServer {
     if (this.chatUnread === unread) return;
     this.chatUnread = unread;
     console.log('[local-server] Chat unread:', unread);
+
+    // Pipeline a NEW chat message like speech: wake a pending wait_for_speech so
+    // the agent handles it promptly instead of only on the next ~55s long-poll
+    // return. BUT only in a quiet room — for two reasons:
+    //   1. Don't interrupt a live speaker (chat is lower priority than the floor).
+    //   2. Reading chat opens the chat pane, which closes the people pane and
+    //      BLINDS speaker detection (captions keep flowing, but who's-speaking
+    //      state is lost). If we only open chat when nobody's speaking, there's
+    //      no live-speaker state to lose.
+    // If someone IS speaking, we do nothing here: chatUnread stays set and rides
+    // along when speech resolves naturally at the next pause — nothing dropped.
+    // Wake a pending wait_for_speech on a new unread — but ONLY if nobody's
+    // speaking (don't interrupt a live speaker; that's also when reading chat
+    // would blind speaker detection). We intentionally do NOT gate on
+    // chatPaneOpen: the agent is asleep in wait_for_speech and needs waking for a
+    // new message regardless of pane state, and that flag can be stale (it races
+    // the pane open/close animation — observed suppressing legit wakes).
+    if (unread) {
+      const blocked = this.anyoneSpeaking ? 'someone-speaking'
+        : this.waiters.length === 0 ? 'no-active-waiter'
+        : null;
+      if (blocked) {
+        console.log(ts(), '💬 [chat-wake] new unread but NOT waking —', blocked,
+          '(anyoneSpeaking=' + this.anyoneSpeaking + ' waiters=' + this.waiters.length + ')');
+      } else {
+        console.log(ts(), '💬 [chat-wake] new unread in quiet room — waking', this.waiters.length, 'waiter(s)');
+        for (const waiter of [...this.waiters]) {
+          this._resolveWaiter(waiter, 'chat');
+        }
+      }
+    }
   }
 
   setPaneState({ chatPaneOpen, peoplePaneOpen } = {}) {
@@ -684,6 +718,25 @@ class LocalServer {
       botState: this.botState,
       anyoneSpeaking: this.anyoneSpeaking,
       captionsOn: this.captionsOn,
+      // Latest caption the bot actually heard — surfaced on the virtual-camera
+      // debug overlay so a deaf bot is visible to everyone in the call (when
+      // captions stop reaching the bot this stops advancing).
+      lastCaption: (() => {
+        let latest = null;
+        for (const turn of this.turns.values()) {
+          if (!turn.text) continue;
+          if (!latest || (turn.lastUpdated || 0) >= (latest.lastUpdated || 0)) latest = turn;
+        }
+        // live = the latest turn is still being edited (not yet settled) — i.e.
+        // the caption is still in flux vs a completed utterance.
+        if (latest) return { speaker: latest.speaker || '?', text: latest.text, live: !latest.settled };
+        const tx = this.transcripts[this.transcripts.length - 1];
+        return tx && tx.text ? { speaker: tx.participantName || '?', text: tx.text, live: false } : null;
+      })(),
+      // What was last shipped to the slow model for processing (set at the
+      // thinking transition) — distinct from lastCaption, which is the freshest
+      // caption and may still be growing. Cleared implies nothing processed yet.
+      processing: this.lastProcessingText || null,
       workingMemory: this.getWorkingMemory(),
       sharing: this.sharing,
       someoneElsePresenting: this.someoneElsePresenting,
@@ -927,6 +980,14 @@ class LocalServer {
 
   updateTurns(incoming) {
     if (!this.roomId || !Array.isArray(incoming) || incoming.length === 0) return;
+    // If caption turns with text are arriving, captions are definitionally ON —
+    // make captionsOn self-correcting. The captions-state IPC only fires on
+    // toggle CHANGES, so a clean join where captions were never toggled left the
+    // flag stuck false (showing a bogus "DEAF" on the overlay while the bot was
+    // clearly hearing). Actual caption text is the ground truth.
+    if (!this.captionsOn && incoming.some((t) => t && t.text && String(t.text).trim())) {
+      this.setCaptionsOn(true);
+    }
     const now = Date.now();
     const incomingIds = new Set();
     let changed = false;
@@ -1491,6 +1552,9 @@ class LocalServer {
     // Tag so the MCP layer / skill know this is a "bank and loop, do NOT speak"
     // surface rather than a real turn.
     if (reason === 'background_tick') response.backgroundTick = true;
+    // Tag a chat-triggered wake so the MCP layer can phrase it as "new chat"
+    // rather than a misleading "no one spoke / timed out".
+    if (reason === 'chat') response.chatWake = true;
 
     // If there are actual transcript entries, the agent will now process them → thinking state.
     // Captions arrive as multiple progressively-growing entries for one utterance
@@ -1547,6 +1611,15 @@ class LocalServer {
         // in _setBotState short-circuits.
         console.log(ts(), '🧠 [thinking] Processing transcript — ' + wordCount + ' words, ' + deduped.length + ' entry/ies: "' + joinedText.slice(0, 240) + (joinedText.length > 240 ? '…' : '') + '"');
         this.botState = 'thinking';
+        // Capture exactly what just SHIPPED to the slow model for this thinking
+        // cycle — so the debug overlay can distinguish "heard" (latest caption,
+        // possibly still in flux) from what's actually being processed right now.
+        const procTurn = deduped[deduped.length - 1];
+        this.lastProcessingText = {
+          speaker: (procTurn && procTurn.participantName) || '?',
+          text: joinedText,
+          at: Date.now(),
+        };
         // Restart the #221 hold window — a fresh utterance earns a fresh
         // thinking display, even if a deferred downgrade was pending.
         this._thinkingSince = Date.now();
@@ -1899,6 +1972,13 @@ class LocalServer {
         } else {
           // default: read
           const result = await this.onReadChat();
+          // The agent has now consumed the chat — clear the unread flag so a LATER
+          // message produces a fresh false→true transition (and wakes the loop).
+          // Meet's own "New message" indicator doesn't reliably clear on a brief
+          // programmatic pane-open, so chatUnread would otherwise stick true and
+          // suppress all future chat-wakes (#chat-wake). This is authoritative:
+          // a successful read means the messages were seen.
+          if (result?.ok) this.setChatUnread(false);
           res.writeHead(result?.ok ? 200 : 500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: !!result?.ok, messages: result?.messages || [], error: result?.error }));
         }

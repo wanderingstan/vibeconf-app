@@ -306,6 +306,12 @@ server.tool(
 
     if (entries.length === 0) {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
+      // Chat-triggered wake: a new chat message arrived while the room was quiet
+      // (the loop now pipelines chat like speech). Lead with that instead of a
+      // misleading "no one spoke / timed out".
+      if (data.chatWake) {
+        return { content: [{ type: "text", text: `(New chat message — the room was quiet, so you were woken to handle it.)${chatLine || '\n[Call read_chat to see it, then respond aloud and/or in chat.]'}${statusLine}${errorLines}` }] };
+      }
       // Deaf-bot hint: if Meet captions are off, the bot can't hear anything.
       // Distinguish that from "the room is silent" so the agent can ask humans
       // to re-enable captions instead of looping silent timeouts.

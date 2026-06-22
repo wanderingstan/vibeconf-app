@@ -56,7 +56,12 @@ function showScreen(screen) {
   screen.style.display = 'block';
 }
 
-document.getElementById('openSettingsBtn').addEventListener('click', () => showScreen(settingsScreen));
+document.getElementById('openSettingsBtn').addEventListener('click', () => {
+  showScreen(settingsScreen);
+  // Re-read the signed-in account each time Settings opens — the Google account
+  // chip renders async, so a single fetch at panel load often missed it.
+  if (typeof refreshAccountEmail === 'function') refreshAccountEmail(lastMeetMode);
+});
 document.getElementById('backFromSettingsBtn').addEventListener('click', () => showScreen(mainScreen));
 document.getElementById('openTroubleshootingBtn').addEventListener('click', () => showScreen(troubleshootingScreen));
 document.getElementById('backFromTroubleshootingBtn').addEventListener('click', () => showScreen(mainScreen));
@@ -122,16 +127,8 @@ function renderCallState(s) {
         const tag = e.emoji ? ` ${e.emoji}` : '';
         return `    ${i + 1}.${tag} "${snippet}${more}"`;
       });
-  // workingMemory (two-tier). Show each field on its own indented block so we
-  // can watch the slow model's read evolve live during a call.
-  const wm = s.workingMemory || {};
-  const wmField = (label, val) => {
-    const text = (val || '').trim();
-    if (!text) return [`    ${label}: (empty)`];
-    const wrapped = text.replace(/\s+/g, ' ');
-    return [`    ${label}:`, `      ${wrapped.slice(0, 240)}${wrapped.length > 240 ? '…' : ''}`];
-  };
-  const wmAge = wm.updatedAt ? agoLabel(wm.updatedAt) : 'never';
+  // (workingMemory / stance display removed — the two-tier experiment that
+  // maintained it is parked, so the fields were always empty noise.)
   callStateDebug.textContent = [
     `Call status:        ${s.callStatus || 'unknown'}`,
     `Bot state:          ${s.botState || 'unknown'}`,
@@ -146,10 +143,6 @@ function renderCallState(s) {
     `Agent loop:         ${agentLoopHealth(s)}`,
     `Last wait_for_speech: ${agoLabel(s.lastWaitForSpeechAt)}`,
     `Last ack:           ${ackLabel(s.lastAckEvent)}`,
-    `Working memory (updated ${wmAge}${wm.updatedBy ? ` by ${wm.updatedBy}` : ''}):`,
-    ...wmField('understanding', wm.understanding),
-    ...wmField('stance', wm.stance),
-    ...wmField('people', wm.people),
     `Queued speech (${queued.length}):`,
     ...queuedLines,
     `Participants (${(s.participants || []).length}):`,
@@ -381,6 +374,16 @@ meetUrlInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !joinBtn.disabled) joinBtn.click();
 });
 
+// Open the baked-in default testing meet in the USER's own browser (so the
+// operator joins as a human alongside the bot). The app's tab-detection then
+// auto-fills the URL here, ready to send the bot in too. Eases testing.
+const DEFAULT_MEET_URL = 'https://meet.google.com/paz-sqoa-npe';
+const defaultMeetBtn = document.getElementById('defaultMeetBtn');
+defaultMeetBtn?.addEventListener('click', (e) => {
+  e.preventDefault();
+  api.send('open-external-url', DEFAULT_MEET_URL);
+});
+
 document.getElementById('leaveCallBtn').addEventListener('click', () => {
   api.send('leave-meet');
   exitCallState();
@@ -413,8 +416,37 @@ shareWhiteboardBtn.addEventListener('click', async () => {
 // Bot Google identity — guest vs account mode (#170)
 // ---------------------------------------------------------------------------
 
+const meetAccountEmail = document.getElementById('meetAccountEmail');
+// Show WHICH Google account the bot is actually signed in as — surfaces the gap
+// that hid #250 (mode said "account" while the bot was silently logged out).
+function refreshAccountEmail(mode) {
+  if (!meetAccountEmail) return;
+  if (mode !== 'account') { meetAccountEmail.style.display = 'none'; return; }
+  meetAccountEmail.style.display = '';
+  meetAccountEmail.textContent = 'Checking signed-in account…';
+  meetAccountEmail.className = 'account-email';
+  api.invoke('get-meet-account-email').then((r) => {
+    if (r && r.signedIn && r.email) {
+      meetAccountEmail.textContent = '✓ Signed in as ' + r.email;
+      meetAccountEmail.className = 'account-email email-ok';
+    } else if (r && r.signedIn) {
+      // Auth cookies present but we couldn't read the email — signed in for sure.
+      meetAccountEmail.textContent = '✓ Signed in to Google (could not read which account)';
+      meetAccountEmail.className = 'account-email email-ok';
+    } else {
+      meetAccountEmail.textContent = '⚠ Mode is "account" but no Google session detected — the bot may not be signed in. If joins require admission, click "Sign in to Google as bot".';
+      meetAccountEmail.className = 'account-email email-bad';
+    }
+  }).catch(() => {
+    meetAccountEmail.textContent = '(could not read signed-in account)';
+    meetAccountEmail.className = 'account-email';
+  });
+}
+
+let lastMeetMode = 'guest';
 function applyMeetMode(mode) {
   if (!meetModeIndicator) return;
+  lastMeetMode = mode;
   meetModeIndicator.textContent = mode;
   if (mode === 'account') {
     meetSignInBtn.style.display = 'none';
@@ -423,6 +455,7 @@ function applyMeetMode(mode) {
     meetSignInBtn.style.display = '';
     meetSignOutBtn.style.display = 'none';
   }
+  refreshAccountEmail(mode);
 }
 
 // Initial state on panel load.
@@ -432,6 +465,53 @@ api.invoke('get-meet-mode').then((info) => {
 
 // Stay in sync when main swaps partitions.
 api.on('meet-mode-changed', ({ mode }) => applyMeetMode(mode));
+
+// --- Live caption feed: the "bot's-eye view" of exactly what captions the bot
+// is receiving, mirroring the [caption-raw]/[heard] logs. Each tick main sends
+// the full current turn snapshot; render the recent history with the still-
+// growing (bottommost) turn marked LIVE, so you can compare it in real time
+// against the bot's Meet view. ---
+function renderCaptionFeed(turns) {
+  if (!rawCaptionText || !Array.isArray(turns)) return;
+  const recent = turns.slice(-12);
+  rawCaptionText.innerHTML = recent.map((t) => {
+    const live = t.isBottommost;
+    const speaker = (t.speaker || '?').replace(/[<>&]/g, '');
+    const text = (t.text || '').replace(/[<>&]/g, '');
+    return `<div class="cap-line${live ? ' cap-live' : ''}">`
+      + `<span class="cap-tag">${live ? 'LIVE' : 'settled'}</span> `
+      + `<span class="cap-speaker">${speaker}:</span> ${text}</div>`;
+  }).join('') || '<span class="helper-text">No captions yet.</span>';
+  rawCaptionText.scrollTop = rawCaptionText.scrollHeight;
+}
+api.on('caption-feed', ({ turns }) => renderCaptionFeed(turns));
+
+// Captions on/off (deaf signal) — a badge so a deaf bot is obvious at a glance.
+function renderCaptionState(on) {
+  const el = document.getElementById('captionStateBadge');
+  if (!el) return;
+  el.textContent = on ? '● captions ON' : '○ captions OFF — bot is DEAF';
+  el.className = 'caption-badge ' + (on ? 'cap-on' : 'cap-off');
+}
+api.on('caption-state', ({ on }) => renderCaptionState(on));
+
+// --- Pop the panel out into its own window (place it next to the bot's Meet). ---
+const popoutPanelBtn = document.getElementById('popoutPanelBtn');
+function applyPopoutLabel(poppedOut) {
+  if (!popoutPanelBtn) return;
+  popoutPanelBtn.textContent = poppedOut ? '⧉ Dock' : '⧉ Pop out';
+}
+if (popoutPanelBtn) {
+  popoutPanelBtn.addEventListener('click', async () => {
+    try {
+      const res = await api.invoke('toggle-panel-popout');
+      applyPopoutLabel(!!res?.poppedOut);
+    } catch { /* ignore */ }
+  });
+  api.invoke('get-panel-popout').then((r) => applyPopoutLabel(!!r?.poppedOut)).catch(() => {});
+}
+// Main tells us when the state changes (incl. user closing the popout window).
+api.on('panel-popout-changed', ({ poppedOut }) => applyPopoutLabel(!!poppedOut));
 
 meetSignInBtn?.addEventListener('click', async () => {
   meetSignInBtn.disabled = true;

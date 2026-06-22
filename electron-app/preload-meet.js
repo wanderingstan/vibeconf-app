@@ -400,6 +400,38 @@ function visiblePeopleTileCount() {
   return n;
 }
 
+// Diagnostic dump for the captions-button race (#247). When the "Turn on
+// captions" button can't be found (or never confirms on), we go silently deaf —
+// and we've only been logging "button never appeared", which doesn't tell us WHY.
+// This captures what the toolbar ACTUALLY contains so we can SEE the failing view
+// (suspected: the cross-org / guest layout from a personal-Gmail-hosted meeting,
+// where the captions control may be missing, renamed, or tucked behind the
+// "More options" ⋮ menu) instead of guessing. Cheap, read-only; safe to call on
+// every failure path. Pairs with #246 (escalating the deaf state, not just logging it).
+function dumpCaptionDiagnostics(reason) {
+  try {
+    const labelEls = document.querySelectorAll('button[aria-label], [role="button"][aria-label]');
+    const uniqLabels = Array.from(new Set(
+      Array.from(labelEls).map(b => b.getAttribute('aria-label')).filter(Boolean)
+    ));
+    const ccOn = !!findByAriaLabel('Turn on captions') || !!findByAriaLabel('Activar subtítulos');
+    const ccOff = !!findByAriaLabel('Turn off captions') || !!findByAriaLabel('Desactivar subtítulos');
+    const moreMenu = !!findByAriaLabel('More options') || !!findByAriaLabel('Más opciones');
+    const guestNameInput = !!document.querySelector('input[aria-label*="name" i], input[placeholder*="name" i]');
+    console.warn('[electron-meet] [CC-diag] ' + reason +
+      ' — tiles=' + visiblePeopleTileCount() +
+      ' ccOnBtn=' + ccOn + ' ccOffBtn=' + ccOff + ' moreMenuBtn=' + moreMenu +
+      ' guestNameInput=' + guestNameInput +
+      ' totalToolbarBtns=' + uniqLabels.length +
+      ' url=' + location.href);
+    // The full label list is the money shot: it shows whether "Turn on captions"
+    // is absent, renamed, or hidden in a submenu in this (guest) view.
+    console.warn('[electron-meet] [CC-diag] button aria-labels: ' + JSON.stringify(uniqLabels));
+  } catch (e) {
+    console.warn('[electron-meet] [CC-diag] dump failed:', e && e.message);
+  }
+}
+
 function getChatToggle() {
   // Label is "Chat with everyone" or "Chat with everyone - New message".
   return document.querySelector(
@@ -425,21 +457,49 @@ async function openChatPane() {
     console.log('[chat] Chat pane already open');
     return true;
   }
-  const btn = getChatToggle();
+  // The chat toggle can render late after admission (same toolbar race as the
+  // captions/present buttons) — a one-shot lookup fails instantly when chat is
+  // sent/read early in a call. Wait for the button instead of giving up.
+  let btn = getChatToggle();
   if (!btn) {
-    console.warn('[chat] ❌ Chat toggle button not found');
+    for (let i = 0; i < 30 && !btn; i++) { await delay(300); btn = getChatToggle(); } // up to ~9s
+  }
+  if (!btn) {
+    console.warn('[chat] ❌ Chat toggle button not found (after ~9s wait)');
+    // Instrument it like the captions race: dump every toolbar button's
+    // aria-label so we can SEE whether "Chat with everyone" is relabeled, in the
+    // "More options" (⋮) overflow menu, or genuinely absent (e.g. guest view).
+    try {
+      const labels = Array.from(new Set(
+        Array.from(document.querySelectorAll('button[aria-label], [role="button"][aria-label]'))
+          .map((b) => b.getAttribute('aria-label')).filter(Boolean)
+      ));
+      const moreMenu = !!findByAriaLabel('More options') || !!findByAriaLabel('Más opciones');
+      console.warn('[chat] [chat-diag] toolbar buttons=' + labels.length + ' moreMenu=' + moreMenu +
+        ' — labels: ' + JSON.stringify(labels));
+    } catch (e) { console.warn('[chat] [chat-diag] dump failed:', e && e.message); }
     return false;
   }
-  console.log('[chat] → switching to Chat pane (clicking', JSON.stringify(btn.getAttribute('aria-label')), ')');
-  btn.click();
-  for (let i = 0; i < 20; i++) {
-    await delay(150);
-    if (isChatPaneOpen()) {
-      console.log('[chat] ✓ Chat pane open');
-      return true;
+  // The first click sometimes doesn't open the pane (observed: click registers
+  // but the pane never appears, while a later click works — a Meet click/animation
+  // timing thing, especially soon after admission). RETRY the click a few times,
+  // re-fetching the toggle each round (its label flips "…- New message" ↔ plain as
+  // unread state changes). Guard against oscillation: if the pane DID open, return
+  // immediately; only re-click while it's still closed.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    btn = getChatToggle() || btn;
+    console.log('[chat] → switching to Chat pane (clicking', JSON.stringify(btn.getAttribute('aria-label')), ', attempt', attempt + 1, ')');
+    btn.click();
+    for (let i = 0; i < 16; i++) { // ~2.4s per attempt
+      await delay(150);
+      if (isChatPaneOpen()) {
+        console.log('[chat] ✓ Chat pane open (attempt', attempt + 1, ')');
+        return true;
+      }
     }
+    console.warn('[chat] pane not open after click (attempt', attempt + 1, 'of 3) — retrying');
   }
-  console.warn('[chat] ❌ Chat pane did not open after click');
+  console.warn('[chat] ❌ Chat pane did not open after 3 click attempts');
   return false;
 }
 
@@ -863,7 +923,12 @@ function ensureStatusBar() {
   style.textContent = `
     #vibeconf-status-bar {
       position: fixed; top: 0; left: 0; right: 0; height: 56px;
-      background: #8ab4f8; color: #ffffff;
+      /* Partially transparent so any Google buttons beneath stay visible... */
+      background: rgba(138, 180, 248, 0.78); color: #ffffff;
+      /* ...and click-through so they stay USABLE for debugging — the banner
+         never intercepts pointer events (#bot-view banner is purely a label). */
+      pointer-events: none;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
       font-family: 'Google Sans', 'Roboto', sans-serif; font-size: 26px;
       font-weight: 500;
       display: flex; align-items: center; padding: 0 24px;
@@ -900,30 +965,65 @@ function sendStatus(status) {
 // captions" does, so a single click attempt misses and we fall through to
 // captionScraper's eventual retry (~30s later). This polls every 250ms
 // for up to 30 seconds and clicks at the first opportunity.
+// In some layouts (cross-org / guest views, #247) the captions button appears
+// late, in a different node, or with a relabeled aria-label — so the old
+// fixed-interval poll over a fixed 30s window raced and silently lost (= deaf
+// bot). Instead: act immediately if present, then a MutationObserver (childList
+// for late insertion, attributes for an existing button whose aria-label flips
+// on) catches it whenever/wherever it renders, with a low-freq safety poll, and
+// a backstop that ESCALATES the deaf state (#246) instead of giving up silently.
 let captionsClickArmed = false;
 function clickCaptionsWhenReady() {
   if (captionsClickArmed) return;
   captionsClickArmed = true;
   const startTime = Date.now();
-  const poll = setInterval(() => {
-    const onBtn = findByAriaLabel('Turn on captions') || findByAriaLabel('Activar subtítulos');
+  let settled = false;
+  let observer = null;
+  let safetyPoll = null;
+  let backstop = null;
+
+  const cleanup = () => {
+    if (observer) { observer.disconnect(); observer = null; }
+    if (safetyPoll) { clearInterval(safetyPoll); safetyPoll = null; }
+    if (backstop) { clearTimeout(backstop); backstop = null; }
+  };
+
+  const attempt = () => {
+    if (settled) return true;
     const offBtn = findByAriaLabel('Turn off captions') || findByAriaLabel('Desactivar subtítulos');
     if (offBtn) {
-      clearInterval(poll);
+      settled = true; cleanup();
       console.log('[electron-meet] [CC] Already on, no click needed (', Date.now() - startTime, 'ms after admission)');
-      return;
+      return true;
     }
+    const onBtn = findByAriaLabel('Turn on captions') || findByAriaLabel('Activar subtítulos');
     if (onBtn) {
-      clearInterval(poll);
+      settled = true; cleanup();
       onBtn.click();
-      console.log('[electron-meet] [CC] Clicked "Turn on captions" at', Date.now() - startTime, 'ms after admission');
-      return;
+      console.log('[electron-meet] [CC] Clicked "Turn on captions" at', Date.now() - startTime, 'ms after admission (observer)');
+      return true;
     }
-    if (Date.now() - startTime > 30_000) {
-      clearInterval(poll);
-      console.warn('[electron-meet] [CC] Captions button never appeared after 30s');
-    }
-  }, 250);
+    return false;
+  };
+
+  if (attempt()) return;
+
+  observer = new MutationObserver(() => { attempt(); });
+  try {
+    observer.observe(document.body, {
+      childList: true, subtree: true, attributes: true, attributeFilter: ['aria-label'],
+    });
+  } catch { /* body not ready — the safety poll still covers it */ }
+
+  safetyPoll = setInterval(attempt, 1000);
+
+  backstop = setTimeout(() => {
+    if (settled) return;
+    cleanup();
+    console.warn('[electron-meet] [CC] Captions button never appeared after 60s — escalating deaf');
+    dumpCaptionDiagnostics('clickCaptionsWhenReady: button never appeared (60s, observer+poll)');
+    try { ipcRenderer.send('captions-state', { on: false }); } catch { /* ignore */ }
+  }, 60_000);
 }
 
 async function autoJoin(botName) {
@@ -1098,8 +1198,26 @@ async function autoJoin(botName) {
       // entry or the call is otherwise inaccessible. Fail fast rather than
       // burning the 15s limbo grace, and give the agent a specific reason.
       if (bodyText.includes("You can't join this video call")) {
-        sendStatus("Error: can't join this video call (host blocked entry or call inaccessible)");
         console.warn('[electron-meet] Denial page detected: "You can\'t join this video call"');
+        // #238: the "You can't join" denial is often SPURIOUS/intermittent — a
+        // reload commonly gets straight in. Retry by reloading the meet page a few
+        // times with backoff before giving up. Count is kept in sessionStorage so
+        // it survives the reload (module state resets); cleared on admission below.
+        const MAX_DENIAL_RETRIES = 3;
+        let tries = 0;
+        try { tries = parseInt(sessionStorage.getItem('vibeconf-denial-retries') || '0', 10) || 0; } catch { /* ignore */ }
+        if (tries < MAX_DENIAL_RETRIES) {
+          tries++;
+          try { sessionStorage.setItem('vibeconf-denial-retries', String(tries)); } catch { /* ignore */ }
+          const backoff = 2000 * tries; // 2s, 4s, 6s
+          sendStatus(`Denied — reloading to retry join (attempt ${tries}/${MAX_DENIAL_RETRIES})`);
+          console.warn(`[electron-meet] Denial — reloading to retry (attempt ${tries}/${MAX_DENIAL_RETRIES}, backoff ${backoff}ms)`);
+          await delay(backoff);
+          window.location.reload();
+          return;
+        }
+        sendStatus("Error: can't join this video call (host blocked entry or call inaccessible)");
+        console.warn('[electron-meet] Denial persisted after', MAX_DENIAL_RETRIES, 'retries — giving up');
         return;
       }
       if (bodyText.includes('You have been removed from the meeting')) {
@@ -1110,6 +1228,7 @@ async function autoJoin(botName) {
 
       if (inCallUI && !hasJoinUI) {
         admitted = true;
+        try { sessionStorage.removeItem('vibeconf-denial-retries'); } catch { /* ignore */ } // #238: reset on success
         sendStatus('Participating in Meet');
         // Don't try a one-shot captions click here — the toolbar's "Leave
         // call" button often renders before "Turn on captions" does, so a
@@ -1447,15 +1566,20 @@ class CaptionScraper {
       console.log('[electron-meet] [CC] _enableCaptions: already on');
     } else {
       console.warn('[electron-meet] [CC] _enableCaptions: no captions button in DOM');
+      dumpCaptionDiagnostics('_enableCaptions: no captions button in DOM');
     }
   }
 
-  _waitForCaptions() {
+  // The toolbar's caption button labels itself "Turn off captions" only when
+  // captions are actually ON — more reliable than the [aria-label="Captions"]
+  // container (which exists earlier). Poll for that confirmation; if it never
+  // flips, RE-CLICK and retry with backoff (the click can land before the button
+  // is wired). After the last round, ESCALATE the deaf state (#246) rather than
+  // silently giving up — a clicked-but-never-confirmed bot is still deaf.
+  _waitForCaptions(round = 0) {
+    const ROUND_POLLS = [120, 160, 200]; // ×250ms = 30s, 40s, 50s (backoff)
+    const maxPolls = ROUND_POLLS[round] || 200;
     let attempts = 0;
-    // The toolbar's caption button labels itself "Turn off captions" only
-    // when captions are actually ON — much more reliable than checking
-    // [aria-label="Captions"] container presence (which exists earlier).
-    // 250ms poll, retry the click after 30s if the button never flips.
     const poll = setInterval(() => {
       const captionsAreOn = !!document.querySelector('[aria-label="Turn off captions" i]')
         || !!findByAriaLabel('Turn off captions')
@@ -1463,19 +1587,23 @@ class CaptionScraper {
       if (captionsAreOn) {
         clearInterval(poll);
         console.log('[electron-meet] [CC] Captions confirmed on at', Date.now(),
-          'after', attempts * 250, 'ms of polling');
+          'after', attempts * 250, 'ms (round', round, ')');
         this._observe();
         if (this.onReady) { try { this.onReady(); } catch {} }
-      } else if (++attempts > 120) { // 30s of 250ms polls
+        return;
+      }
+      if (++attempts > maxPolls) {
         clearInterval(poll);
-        console.warn('[electron-meet] Captions never flipped on; retrying click');
-        this._enableCaptions();
-        setTimeout(() => {
-          if (findByAriaLabel('Turn off captions')) {
-            this._observe();
-            if (this.onReady) { try { this.onReady(); } catch {} }
-          }
-        }, 5000);
+        if (round < ROUND_POLLS.length - 1) {
+          console.warn('[electron-meet] [CC] Captions never flipped (round', round, ') — re-clicking, retrying with backoff');
+          dumpCaptionDiagnostics('_waitForCaptions: not confirmed, round ' + round);
+          this._enableCaptions();
+          this._waitForCaptions(round + 1);
+        } else {
+          console.warn('[electron-meet] [CC] Captions never confirmed after', round + 1, 'rounds — escalating deaf');
+          dumpCaptionDiagnostics('_waitForCaptions: gave up after ' + (round + 1) + ' rounds');
+          try { ipcRenderer.send('captions-state', { on: false }); } catch { /* ignore */ }
+        }
       }
     }, 250);
   }
@@ -1689,7 +1817,27 @@ async function clickPresentNow(shareType) {
   // list missed the "<name> is presenting" case in some Meet builds
   // where the label moved from data-tooltip to aria-label, so the bot
   // reported "Could not find button" while the button was right there.
-  const presentBtn = findPresentButton();
+  // Wait for the present button to render. The Meet toolbar can appear a second
+  // or two after admission, so a one-shot lookup loses the race when a share is
+  // requested early (the automated test surfaced this: "Could not find Present
+  // now" logged 1.5s BEFORE "In-call toolbar detected"). Poll up to 10s; also
+  // re-check alreadyPresenting each tick in case it flips on mid-wait.
+  let presentBtn = findPresentButton();
+  if (!presentBtn) {
+    const waitStart = Date.now();
+    while (Date.now() - waitStart < 10_000) {
+      await delay(300);
+      if (document.querySelector('[aria-label*="Stop presenting" i], [aria-label*="Stop sharing" i], [data-tooltip*="Stop presenting" i], [data-tooltip*="Stop sharing" i]')) {
+        console.log('[electron-meet] Became already-presenting while waiting for Present button');
+        return 'already-presenting';
+      }
+      presentBtn = findPresentButton();
+      if (presentBtn) {
+        console.log('[electron-meet] Present button appeared after', Date.now() - waitStart, 'ms wait');
+        break;
+      }
+    }
+  }
 
   if (presentBtn) {
     const label = presentButtonText(presentBtn);
@@ -1865,9 +2013,36 @@ function installInCallWatcher() {
 // ---------------------------------------------------------------------------
 
 window.addEventListener('DOMContentLoaded', () => {
+  // ALWAYS show the bot-view banner first — on a Meet call, the Meet home, OR a
+  // Google sign-in page (logged out, meet.google.com redirects to accounts.
+  // google.com). Its whole job is to mark this as the bot's browser view,
+  // independent of login state. ensureStatusBar is idempotent; the in-call path
+  // refines the text later. Set text directly (not sendStatus, which would ping
+  // main with a status update).
+  try {
+    ensureStatusBar();
+    const el = document.getElementById('vibeconf-status');
+    if (el) {
+      const href = window.location.href;
+      el.textContent = /accounts\.google\.com|ServiceLogin|signin/i.test(href)
+        ? "Bot's view — sign the bot in to Google here"
+        : /^\/[a-z]{3}-[a-z]{4}-[a-z]{3}/i.test(window.location.pathname)
+          ? "Bot's view of Google Meet"
+          : "Bot's view — Google Meet home (not in a call)";
+    }
+  } catch { /* body not ready */ }
+
   // Only run Meet automation on actual Meet pages
   if (!window.location.href.includes('meet.google.com')) {
-    console.log('[electron-meet] Not a Meet page, skipping automation');
+    console.log('[electron-meet] Not a Meet page (banner shown), skipping automation');
+    return;
+  }
+  // Run join automation ONLY on a meeting-code URL. We now load Meet home
+  // (meet.google.com/) as the idle view so the operator can sign in / start
+  // meetings / debug manually — the join poll must not fire there (or on /new,
+  // /landing, etc.), only when actually navigated into a meeting code.
+  if (!/^\/[a-z]{3}-[a-z]{4}-[a-z]{3}/i.test(window.location.pathname)) {
+    console.log('[electron-meet] Meet home/landing (no meeting code) — skipping join automation');
     return;
   }
 

@@ -2,7 +2,7 @@
 // Manages Meet BrowserView + panel sidebar in a single window,
 // IPC routing, TTS, and sync.
 
-const { app, BrowserWindow, BrowserView, ipcMain, session, shell, nativeImage, desktopCapturer, systemPreferences, dialog, Menu } = require('electron');
+const { app, BrowserWindow, BrowserView, ipcMain, session, shell, nativeImage, desktopCapturer, systemPreferences, dialog, Menu, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const vm = require('vm');
@@ -621,6 +621,11 @@ const localServer = new globalThis.LocalServer({
         payload: { deaf: on === false },
       });
     }
+    // Keep the panel's caption badge consistent — this fires for the
+    // self-correcting on-state (captions text arrived) as well as toggles.
+    if (panelView && !panelView.webContents.isDestroyed()) {
+      panelView.webContents.send('caption-state', { on: !!on });
+    }
   },
 
   // Background working-memory refresh (two-tier experiment). Fired by
@@ -857,6 +862,7 @@ let store;
 let mainWindow = null;   // single window that holds both views
 let panelView = null;     // left sidebar BrowserView
 let meetView = null;      // right Meet BrowserView
+let panelPopoutWindow = null; // when popped out, the panelView lives here instead
 let whiteboardWindow = null;
 let fullScreenShareRequested = false;
 // #189: whether we've already auto-posted the whiteboard URL to Meet chat
@@ -1039,6 +1045,12 @@ const MEET_GUEST_PARTITION = 'persist:meet-guest';
 // #144's googleAccount: <email> binding — slugify email → unique partition
 // name. For now a single default account partition lets us prove the swap.
 const MEET_ACCOUNT_PARTITION = 'persist:meet-account-default';
+
+// The idle Meet view: instead of a custom branded placeholder, show the real
+// Google Meet home page. Lets the operator see sign-in state at a glance, start
+// meetings, and debug manually in the same browser the bot uses. Join automation
+// is gated off here in preload-meet (only meeting-code URLs trigger it).
+const MEET_HOME_URL = 'https://meet.google.com/';
 
 // Track which Meet partitions have already had configureMeetSession applied
 // so swap-on-the-fly doesn't double-register handlers (which would call
@@ -1255,6 +1267,13 @@ if (appProfile) {
   console.log('[electron] Using app profile:', appProfile, 'userData:', profileUserData);
 }
 
+// Automated test instances (profile test*, or VIBECONF_NO_NOTIFICATIONS) must not
+// fire OS push notifications — a scheduled nightly run would otherwise spam the
+// user's devices with "Meet detected" / error toasts (e.g. the guest "present
+// button not found" share error). Gate all Notification sites on this.
+const SUPPRESS_NOTIFICATIONS = /^test/i.test(appProfile || '') || !!process.env.VIBECONF_NO_NOTIFICATIONS;
+if (SUPPRESS_NOTIFICATIONS) console.log('[electron] OS notifications suppressed (test/headless instance)');
+
 // ---------------------------------------------------------------------------
 // Helper: speak text via TTS → send audio to Meet view
 // ---------------------------------------------------------------------------
@@ -1363,6 +1382,7 @@ function broadcastError(message) {
     mainWindow.isFocused();
 
   if (inForeground) return;
+  if (SUPPRESS_NOTIFICATIONS) return;
 
   const now = Date.now();
   const lastShown = recentErrorNotifications.get(message);
@@ -2014,7 +2034,7 @@ allURLs`;
           }
           // Show macOS notification
           const { Notification } = require('electron');
-          if (Notification.isSupported()) {
+          if (Notification.isSupported() && !SUPPRESS_NOTIFICATIONS) {
             const notification = new Notification({
               title: 'Google Meet Detected',
               body: `Found call: ${meetCode}. Click Join in Vibeconferencing to connect your bot.`,
@@ -2128,12 +2148,69 @@ function createMeetView(partition) {
 function layoutViews() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   const [width, height] = mainWindow.getContentSize();
-  if (panelView && !panelView.webContents.isDestroyed()) {
+  // When the panel is popped out into its own window, it's no longer a child of
+  // mainWindow — Meet takes the full width and the popout window lays itself out.
+  const poppedOut = !!panelPopoutWindow;
+  const panelW = poppedOut ? 0 : PANEL_WIDTH;
+  if (!poppedOut && panelView && !panelView.webContents.isDestroyed()) {
     panelView.setBounds({ x: 0, y: 0, width: PANEL_WIDTH, height });
   }
   if (meetView && !meetView.webContents.isDestroyed()) {
-    meetView.setBounds({ x: PANEL_WIDTH, y: 0, width: width - PANEL_WIDTH, height });
+    meetView.setBounds({ x: panelW, y: 0, width: width - panelW, height });
   }
+}
+
+// Pop the panel out into its own resizable window (or dock it back). Re-parents
+// the SAME panelView BrowserView, so every panelView.webContents.send(...) keeps
+// working unchanged and the panel's state is preserved across the move. Lets the
+// "bot's-eye view" sit at any size next to the bot's Meet window (Stan's ask).
+function setPanelPoppedOut(out) {
+  if (!panelView || panelView.webContents.isDestroyed()) return false;
+
+  if (out && !panelPopoutWindow) {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.removeBrowserView(panelView);
+    const win = new BrowserWindow({
+      width: PANEL_WIDTH + 80,
+      height: 820,
+      title: "Vibeconferencing — Bot's-eye view",
+      icon: path.join(__dirname, 'icon.png'),
+      parent: mainWindow || undefined, // closes with the app; still freely movable
+      webPreferences: { nodeIntegration: false, contextIsolation: true },
+    });
+    panelPopoutWindow = win;
+    win.addBrowserView(panelView);
+    const fit = () => {
+      if (win.isDestroyed() || panelView.webContents.isDestroyed()) return;
+      const [w, h] = win.getContentSize();
+      panelView.setBounds({ x: 0, y: 0, width: w, height: h });
+    };
+    fit();
+    win.on('resize', fit);
+    // Detach the view BEFORE teardown so its webContents (and all its state)
+    // survives — then re-dock into the main window. Handles both the Dock
+    // button and the user closing the popout window directly.
+    win.on('close', () => { try { win.removeBrowserView(panelView); } catch { /* already gone */ } });
+    win.on('closed', () => {
+      panelPopoutWindow = null;
+      if (panelView && !panelView.webContents.isDestroyed() && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.addBrowserView(panelView);
+      }
+      layoutViews();
+      if (panelView && !panelView.webContents.isDestroyed()) {
+        panelView.webContents.send('panel-popout-changed', { poppedOut: false });
+      }
+    });
+    layoutViews();
+    panelView.webContents.send('panel-popout-changed', { poppedOut: true });
+    return true;
+  }
+
+  if (!out && panelPopoutWindow) {
+    // Dock back by closing the popout; the close/closed handlers re-attach.
+    panelPopoutWindow.close();
+    return true;
+  }
+  return false;
 }
 
 // Swap the meetView to a different session partition (#170). Tears down
@@ -2173,7 +2250,7 @@ function swapMeetViewPartition(newPartition, { navigateTo } = {}) {
   if (navigateTo) {
     meetView.webContents.loadURL(navigateTo);
   } else {
-    meetView.webContents.loadFile(path.join(__dirname, 'renderer', 'idle.html'));
+    meetView.webContents.loadURL(MEET_HOME_URL);
   }
 
   currentMeetPartition = newPartition;
@@ -2189,8 +2266,16 @@ function swapMeetViewPartition(newPartition, { navigateTo } = {}) {
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
-    width: 800 + PANEL_WIDTH,
-    height: 550,
+    // Meet view = width - PANEL_WIDTH. The old 800px-wide Meet view was narrow
+    // enough that Google Meet collapsed toolbar buttons (chat, captions, present)
+    // into the "More options" overflow menu — the root cause of the recurring
+    // "<button> not found" failures (confirmed via [chat-diag]: chat absent from
+    // the toolbar, moreMenu=true). Give the Meet view ~1280px so the full toolbar
+    // stays expanded, and a min-width so it can't be shrunk back into collapse.
+    width: 1280 + PANEL_WIDTH,
+    height: 820,
+    minWidth: 1000 + PANEL_WIDTH,
+    minHeight: 600,
     title: 'Vibeconferencing',
     icon: path.join(__dirname, 'icon.png'),
     webPreferences: {
@@ -2301,7 +2386,7 @@ function createMainWindow() {
   mainWindow.on('resize', layoutViews);
 
   // Load idle placeholder in the Meet view
-  meetView.webContents.loadFile(path.join(__dirname, 'renderer', 'idle.html'));
+  meetView.webContents.loadURL(MEET_HOME_URL);
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -2313,7 +2398,7 @@ function createMainWindow() {
 
 function showIdle() {
   if (!meetView || meetView.webContents.isDestroyed()) return;
-  meetView.webContents.loadFile(path.join(__dirname, 'renderer', 'idle.html'));
+  meetView.webContents.loadURL(MEET_HOME_URL);
   sync.stopPolling();
   // Close whiteboard window if open
   if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
@@ -2344,7 +2429,19 @@ async function loadMeetURL(meetUrl) {
   // the fresh view starts truly blank. (Without the destroy above this
   // alone wasn't enough; without this the in-memory part is fixed but
   // localStorage / cookies could still re-seed the identity.)
-  await clearMeetIdentityCache(currentMeetPartition);
+  //
+  // GUEST MODE ONLY. This clear nukes .google.com path="/" cookies — which in
+  // account mode ARE the Google master-auth cookies (SID/SSID/HSID/SAPISID/
+  // __Secure-1PSID, all domain=.google.com path=/, NOT path=/accounts). So
+  // running it in account mode silently signed the bot OUT of Google before
+  // every join → it joined un-authenticated and couldn't be auto-admitted to
+  // invited meetings (#250). The cache only exists to reset Meet's cached guest
+  // "Your name", which doesn't apply in account mode (name comes from Google).
+  if (currentMeetPartition === MEET_GUEST_PARTITION) {
+    await clearMeetIdentityCache(currentMeetPartition);
+  } else {
+    console.log('[electron] Account mode — skipping Meet identity-cache clear to preserve Google sign-in');
+  }
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
   meetView = createMeetView(currentMeetPartition);
@@ -2481,6 +2578,14 @@ function setupIPC() {
     return on;
   });
 
+  // Pop the panel out into its own window (or dock it back) — lets the bot's-eye
+  // view sit at any size next to the bot's Meet window.
+  ipcMain.handle('toggle-panel-popout', () => {
+    setPanelPoppedOut(!panelPopoutWindow);
+    return { poppedOut: !!panelPopoutWindow };
+  });
+  ipcMain.handle('get-panel-popout', () => ({ poppedOut: !!panelPopoutWindow }));
+
 
   // --- Auth check ---
   ipcMain.handle('check-auth', () => {
@@ -2559,6 +2664,77 @@ function setupIPC() {
     partition: currentMeetPartition,
     mode: currentMeetPartition === MEET_GUEST_PARTITION ? 'guest' : 'account',
   }));
+
+  // Which Google account the bot is ACTUALLY signed in as (not just "account
+  // mode" — the real email). Surfaces the gap that hid #250: the app knew the
+  // mode but never the identity, so a silently-logged-out bot looked "signed
+  // in". Reads the account partition's live Google session via ListAccounts
+  // (cookie-authenticated; returns nothing when not signed in). Best-effort.
+  ipcMain.handle('get-meet-account-email', async () => {
+    if (currentMeetPartition === MEET_GUEST_PARTITION) return { signedIn: false, email: null };
+    const sess = session.fromPartition(MEET_ACCOUNT_PARTITION);
+
+    // AUTHORITATIVE signed-in check: the live cookie jar. Google's master-auth
+    // cookies (domain=.google.com) are the ground truth — the bot auto-admitting
+    // as a member proves they're present even when ListAccounts parsing fails.
+    // (An earlier version inferred "signed in" from email-parse success, which
+    // false-negatived a genuinely-signed-in bot.)
+    let signedIn = false;
+    try {
+      const all = await sess.cookies.get({});
+      const AUTH = ['__Secure-1PSID', 'SID', '__Secure-3PSID', 'SSID', 'HSID', 'SAPISID'];
+      signedIn = all.some((c) =>
+        /(^|\.)google\.com$/.test((c.domain || '').replace(/^\./, '')) &&
+        AUTH.includes(c.name) && c.value
+      );
+    } catch (err) {
+      console.warn('[electron] get-meet-account-email cookie check failed:', err.message);
+    }
+
+    // Best-effort email: read it straight from the bot's live signed-in Google
+    // page (the meetView). Meet renders the account in its account-switcher
+    // button (aria-label "Google Account: <name> (<email>)"). This beats the
+    // ListAccounts API (which 400s on its modern params). Only works while the
+    // meetView is on a google.com page (in a call / Meet home); otherwise we
+    // report signed-in without the email.
+    let email = null;
+    let allEmails = [];
+    try {
+      if (meetView && !meetView.webContents.isDestroyed() &&
+          /\bgoogle\.com\b/.test(meetView.webContents.getURL() || '')) {
+        // The signed-in account is in the OneGoogle account chip:
+        //   <a aria-label="Google Account: <name> (<email>)">
+        // It renders asynchronously after page load, so the one-shot fetch at
+        // panel load missed it — retry a few times. Confirmed not in an iframe.
+        const SCAN = `(() => {
+          const RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}/g;
+          const out = new Set();
+          for (const el of document.querySelectorAll('[aria-label*="Google Account" i]')) {
+            (((el.getAttribute('aria-label') || '').match(RE)) || []).forEach((x) => out.add(x));
+          }
+          if (!out.size) { // fallback: any aria-label on the page
+            for (const el of document.querySelectorAll('[aria-label]')) {
+              (((el.getAttribute('aria-label') || '').match(RE)) || []).forEach((x) => out.add(x));
+            }
+          }
+          return [...out];
+        })()`;
+        for (let attempt = 0; attempt < 5 && !email; attempt++) {
+          if (attempt) await new Promise((r) => setTimeout(r, 400));
+          try {
+            const found = await meetView.webContents.executeJavaScript(SCAN, true);
+            allEmails = Array.isArray(found) ? found : [];
+            email = allEmails.find((e) => !/noreply|no-reply|example\.com/i.test(e)) || allEmails[0] || null;
+          } catch { /* page mid-navigation; retry */ }
+        }
+        console.log('[electron] account-email:', email || '(none yet)', 'all=' + JSON.stringify(allEmails));
+      }
+    } catch (err) {
+      console.warn('[electron] get-meet-account-email DOM read failed:', err.message);
+    }
+
+    return { signedIn, email, allEmails };
+  });
 
   // Swap meetView to the account partition and navigate to Google's
   // ServiceLogin flow with a Meet landing page. First time: user signs in,
@@ -2787,6 +2963,12 @@ function setupIPC() {
     const turns = payload?.turns;
     if (!Array.isArray(turns)) return;
     localServer.updateTurns(turns);
+    // Mirror the live caption state into the troubleshooting panel — the
+    // "bot's-eye view" of exactly what captions the bot is receiving, so you
+    // can compare it in real time against the bot's Meet view.
+    if (panelView && !panelView.webContents.isDestroyed()) {
+      panelView.webContents.send('caption-feed', { turns });
+    }
     // TODO(#178 phase 2): forward settled turns to the remote sync for the
     // webapp room view, replacing the old per-entry sync.postTranscripts feed
     // for captions.
@@ -2798,6 +2980,9 @@ function setupIPC() {
   // tell the agent the room isn't silent — the bot is deaf.
   ipcMain.on('captions-state', (_event, { on }) => {
     localServer.setCaptionsOn(!!on);
+    if (panelView && !panelView.webContents.isDestroyed()) {
+      panelView.webContents.send('caption-state', { on: !!on });
+    }
   });
 
   // --- Speaking state ---

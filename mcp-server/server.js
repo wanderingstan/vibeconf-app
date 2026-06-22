@@ -1159,7 +1159,8 @@ server.tool(
         `Working memory (updated ${age}${wm.updatedBy ? ` by ${wm.updatedBy}` : ''}):\n\n` +
         `UNDERSTANDING:\n${wm.understanding || '(empty)'}\n\n` +
         `STANCE:\n${wm.stance || '(empty)'}\n\n` +
-        `PEOPLE:\n${wm.people || '(empty)'}`
+        `PEOPLE:\n${wm.people || '(empty)'}\n\n` +
+        `ENGAGEMENT (who the bot is actively talking with — feeds the fast addressing judge):\n${wm.engagement || '(empty)'}`
       }] };
     } catch (err) {
       return { content: [{ type: "text", text: `Error: ${err.message}` }] };
@@ -1178,16 +1179,17 @@ server.tool(
     understanding: z.string().optional().describe("Running read of what's being discussed. Keep it concise and current. Churns as the topic moves."),
     stance: z.string().optional().describe("The point the bot would make if the floor opened now. A bullet or two, ready to be phrased into speech."),
     people: z.string().optional().describe("Accumulating notes about participants: roles, expertise, relationships, who's been quiet. Persists across topic shifts — update it as you learn things, don't rewrite it from scratch each turn."),
+    engagement: z.string().optional().describe("Who the bot is actively in a back-and-forth with right now, by name, vs sidelined (e.g. 'actively talking with Stan' or 'sidelined; Stan and Samantha are talking to each other'). This feeds the fast addressing judge so a bare 'you'/unnamed follow-up resolves to the right person. A background pass keeps it fresh; override it here when you know better."),
   },
-  async ({ understanding, stance, people }) => {
-    if (understanding == null && stance == null && people == null) {
-      return { content: [{ type: "text", text: "Provide understanding, stance, and/or people." }] };
+  async ({ understanding, stance, people, engagement }) => {
+    if (understanding == null && stance == null && people == null && engagement == null) {
+      return { content: [{ type: "text", text: "Provide understanding, stance, people, and/or engagement." }] };
     }
     try {
       const resp = await fetch(`${BASE_URL}/api/working-memory`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ understanding, stance, people, updatedBy: BOT_NAME }),
+        body: JSON.stringify({ understanding, stance, people, engagement, updatedBy: BOT_NAME }),
       });
       const data = await resp.json();
       if (!data?.success) {
@@ -1197,7 +1199,8 @@ server.tool(
       const u = (wm.understanding || '').length;
       const s = (wm.stance || '').length;
       const p = (wm.people || '').length;
-      return { content: [{ type: "text", text: `Working memory updated (understanding ${u} chars, stance ${s} chars, people ${p} chars).` }] };
+      const e = (wm.engagement || '').length;
+      return { content: [{ type: "text", text: `Working memory updated (understanding ${u} chars, stance ${s} chars, people ${p} chars, engagement ${e} chars).` }] };
     } catch (err) {
       return { content: [{ type: "text", text: `Error: ${err.message}` }] };
     }

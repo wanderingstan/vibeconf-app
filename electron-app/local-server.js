@@ -185,7 +185,7 @@ class LocalServer {
     //                    expertise, who's been quiet). Distinct from the
     //                    mechanical this.participants presence list; this is
     //                    semantic knowledge that persists across topic shifts.
-    this.workingMemory = { understanding: '', stance: '', people: '', updatedAt: null, updatedBy: null };
+    this.workingMemory = { understanding: '', stance: '', people: '', engagement: '', updatedAt: null, updatedBy: null };
     // Background comprehension trigger — fires onComprehensionDue when enough
     // NEW transcript has accumulated since the last refresh (size-based, not
     // time-based). _charsAtLastComprehension is the transcript char total at
@@ -311,7 +311,7 @@ class LocalServer {
     this.lastRespondedText = null;
     this.lastProcessingText = null;
     this.lastRespondedAt = null;
-    this.workingMemory = { understanding: '', stance: '', people: '', updatedAt: null, updatedBy: null };
+    this.workingMemory = { understanding: '', stance: '', people: '', engagement: '', updatedAt: null, updatedBy: null };
     this._charsAtLastComprehension = 0;
     this._comprehensionInFlight = false;
     this._comprehensionCount = 0; // refreshes done this call — drives the warm-up ramp
@@ -338,7 +338,7 @@ class LocalServer {
     this.lastRespondedText = null;
     this.lastProcessingText = null;
     this.lastRespondedAt = null;
-    this.workingMemory = { understanding: '', stance: '', people: '', updatedAt: null, updatedBy: null };
+    this.workingMemory = { understanding: '', stance: '', people: '', engagement: '', updatedAt: null, updatedBy: null };
     this._charsAtLastComprehension = 0;
     this._comprehensionInFlight = false;
     this._comprehensionCount = 0; // refreshes done this call — drives the warm-up ramp
@@ -369,16 +369,18 @@ class LocalServer {
   // fields are left as-is so the slow model can refresh just one (e.g. update
   // the topic read without touching the accumulated people notes). Returns the
   // merged result. updatedBy is for debug attribution.
-  setWorkingMemory({ understanding, stance, people, updatedBy } = {}) {
+  setWorkingMemory({ understanding, stance, people, engagement, updatedBy } = {}) {
     if (typeof understanding === 'string') this.workingMemory.understanding = understanding;
     if (typeof stance === 'string') this.workingMemory.stance = stance;
     if (typeof people === 'string') this.workingMemory.people = people;
+    if (typeof engagement === 'string') this.workingMemory.engagement = engagement;
     this.workingMemory.updatedAt = Date.now();
     if (updatedBy) this.workingMemory.updatedBy = updatedBy;
     const u = (this.workingMemory.understanding || '').length;
     const s = (this.workingMemory.stance || '').length;
     const p = (this.workingMemory.people || '').length;
-    console.log(ts(), `🧩 [workingMemory] updated by ${updatedBy || '?'} (understanding ${u}c, stance ${s}c, people ${p}c)`);
+    const e = (this.workingMemory.engagement || '').length;
+    console.log(ts(), `🧩 [workingMemory] updated by ${updatedBy || '?'} (understanding ${u}c, stance ${s}c, people ${p}c, engagement ${e}c)`);
     this.onWorkingMemoryChange(this.getWorkingMemory());
     return this.getWorkingMemory();
   }
@@ -1950,15 +1952,16 @@ class LocalServer {
         res.end(JSON.stringify({ success: false, error: 'Invalid JSON' }));
         return;
       }
-      if (typeof parsed.understanding !== 'string' && typeof parsed.stance !== 'string' && typeof parsed.people !== 'string') {
+      if (typeof parsed.understanding !== 'string' && typeof parsed.stance !== 'string' && typeof parsed.people !== 'string' && typeof parsed.engagement !== 'string') {
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: false, error: 'Provide understanding, stance, and/or people (string)' }));
+        res.end(JSON.stringify({ success: false, error: 'Provide understanding, stance, people, and/or engagement (string)' }));
         return;
       }
       const updated = this.setWorkingMemory({
         understanding: parsed.understanding,
         stance: parsed.stance,
         people: parsed.people,
+        engagement: parsed.engagement,
         updatedBy: parsed.updatedBy,
       });
       res.writeHead(200, { 'Content-Type': 'application/json' });

@@ -36,6 +36,7 @@ function buildSystem(botName) {
     ``,
     `How to decide:`,
     `- Lines beginning "${botName}:" are ${botName}'s OWN past words — never read them as someone addressing it.`,
+    `- If an ENGAGEMENT STATE is given saying ${botName} is mid-exchange with someone, then a bare "you"/"can you…"/an unnamed follow-up in the finished line refers to ${botName} — treat it as addressed. If it says ${botName} is sidelined while others talk to each other, a bare "you" is NOT ${botName} unless the finished line names it.`,
     `- ${botName} IS addressed when the finished line speaks TO it: (a) names it in a question/request ("${botName}, can you…"); or (b) is a clear question/request to the bot in a 1:1-style exchange even without the name ("Can you summarize that?"), INCLUDING a follow-up that continues ${botName}'s own just-finished exchange ("And can you also add…?", "now do the same for…"); or (c) is a collective question that explicitly invites everyone using the second person ("What do you all think?", "you guys?", "anyone?").`,
     `- ${botName} is NOT addressed when: the line only MENTIONS it in passing ("I was talking to ${botName} earlier", "${botName} already did that") — that is ABOUT it, not TO it; or a DIFFERENT participant is named; or people are chatting among themselves; or it's a statement, a greeting, or thinking out loud that expects no answer.`,
     `- Only say yes if THIS finished line genuinely addresses ${botName}. If ${botName}'s name is absent AND it is not plainly a question/request aimed at the bot, say no. Do NOT invent an address that isn't in the text.`,
@@ -53,9 +54,13 @@ function buildSystem(botName) {
   ].join('\n');
 }
 
-function buildUser({ recentTranscript, lastUtterance, roster, botName }) {
+function buildUser({ recentTranscript, lastUtterance, roster, botName, engagement }) {
   return [
     `WHO IS IN THE CALL: ${roster || '(unknown)'}`,
+    ``,
+    engagement
+      ? `ENGAGEMENT STATE (who ${botName} is actively talking with right now — use this to resolve a bare "you"): ${engagement}`
+      : `ENGAGEMENT STATE: (none — no active exchange tracked yet)`,
     ``,
     `RECENT TRANSCRIPT (most recent last):`,
     recentTranscript || '(none)',
@@ -76,14 +81,14 @@ function extractJson(raw) {
 
 // Returns { ack: boolean, category: string, reason: string, ms: number } or null
 // on any failure. Never throws.
-async function triage({ recentTranscript, lastUtterance, roster, botName, config, log }) {
+async function triage({ recentTranscript, lastUtterance, roster, botName, engagement, config, log }) {
   const { endpoint, apiKey, model } = config || {};
   if (!endpoint) { log?.('no endpoint configured'); return null; }
 
   const url = endpoint.replace(/\/+$/, '') + '/chat/completions';
   const messages = [
     { role: 'system', content: buildSystem(botName || 'the bot') },
-    { role: 'user', content: buildUser({ recentTranscript, lastUtterance, roster, botName: botName || 'the bot' }) },
+    { role: 'user', content: buildUser({ recentTranscript, lastUtterance, roster, botName: botName || 'the bot', engagement }) },
   ];
   // Strict structured output via json_schema — LM Studio supports it. Some
   // openai-compat servers (e.g. the Apple-on-device wrappers, #243) don't and

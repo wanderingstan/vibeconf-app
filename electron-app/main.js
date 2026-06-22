@@ -704,11 +704,17 @@ const localServer = new globalThis.LocalServer({
     const config = require('./ack').getLocalModelConfig(store);
     const { triage } = require('./triage');
     const botName = store?.get('botName') || 'the bot';
+    // Feed the background-maintained engagement state (#243) so a bare "you" /
+    // unnamed follow-up resolves to this bot when it's mid-exchange. comprehend
+    // keeps this fresh on the same (Apple) local model; the slow session can
+    // override it via post_understanding.
+    const engagement = localServer.getWorkingMemory?.()?.engagement || '';
     const result = await triage({
       lastUtterance,
       recentTranscript,
       roster,
       botName,
+      engagement,
       config: { endpoint: config.endpoint, apiKey: config.apiKey, model: config.model, timeoutMs: 5000 },
       log: (m) => console.log(ts(), '🚦 [triage]', m),
     });

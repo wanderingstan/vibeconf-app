@@ -22,11 +22,12 @@ function buildSystem(botName) {
   return [
     `You maintain the private working memory of an AI participant named ${botName} in a live group voice call.`,
     `You are given the recent transcript and the current working memory. Produce an UPDATED working memory as STRICT JSON with exactly these keys:`,
-    `{"understanding": "...", "stance": "...", "people": "..."}`,
+    `{"understanding": "...", "stance": "...", "people": "...", "engagement": "..."}`,
     ``,
     `- understanding: a few sentences capturing what is being discussed right now. Rewrite freely as the topic moves.`,
     `- stance: the single point ${botName} would make if the floor opened this instant. Derive it FRESH from the MOST RECENT part of the transcript every time — reconsider what is most worth saying given where the conversation is NOW. Do NOT reuse or echo any earlier stance. One or two sentences, shaped to be said aloud. Use "" only if there is genuinely nothing to add right now.`,
     `- people: notes on each participant. You are GIVEN the roster of who is in the call (names + human/bot) — your people notes MUST list every one of them by name. Add any role, expertise, or notable behavior you can infer, and note who has stayed quiet. Build on the prior people notes — keep facts already recorded and add new ones. Never leave this empty when a roster is provided.`,
+    `- engagement: WHO ${botName} is actively in a back-and-forth with right now, by name, versus sidelined. This is what lets a later bare "you" or "can you…" be resolved to the right person. If ${botName} was just addressed and replied, say so ("actively talking with Stan"). If ${botName} hasn't been addressed recently and the others are talking among themselves, say ${botName} is on the sidelines and name who is talking ("sidelined; Stan and Samantha are talking to each other"). Update it as the active speakers shift. Use "" only if the call just started with no exchange yet.`,
     ``,
     `Output ONLY the JSON object — no prose, no markdown, no code fences.`,
   ].join('\n');
@@ -46,12 +47,12 @@ function buildUser({ transcript, workingMemory, roster }) {
     `CURRENT WORKING MEMORY (for continuity — update as needed):`,
     `understanding: ${wm.understanding || '(empty)'}`,
     `people: ${wm.people || '(empty)'}`,
+    `engagement: ${wm.engagement || '(empty)'}`,
     ``,
     `RECENT TRANSCRIPT:`,
     transcript || '(none)',
     ``,
-    `Re-derive "stance" fresh from the most recent exchange above. Output the JSON now.`,
-    `/no_think`,
+    `Re-derive "stance" fresh from the most recent exchange above, and update "engagement" to reflect who is actively talking with whom right now. Output the JSON now.`,
   ].join('\n');
 }
 
@@ -78,49 +79,57 @@ async function comprehend({ transcript, workingMemory, roster, botName, config, 
   if (!endpoint) { log?.('comprehend: no endpoint configured'); return null; }
 
   const url = endpoint.replace(/\/+$/, '') + '/chat/completions';
-  const body = {
-    model: model || 'gpt-4o-mini',
-    messages: [
-      { role: 'system', content: buildSystem(botName || 'the bot') },
-      { role: 'user', content: buildUser({ transcript, workingMemory, roster }) },
-    ],
-    temperature: 0.3,
-    max_tokens: 500,
-    // Guaranteed-valid structured JSON so a stray prose/fence wrapper doesn't
-    // wipe the whole refresh. LM Studio (MLX) rejects type:'json_object' — it
-    // wants 'json_schema'. extractJson stays as a backstop.
-    response_format: {
-      type: 'json_schema',
-      json_schema: {
-        name: 'working_memory',
-        strict: true,
-        schema: {
-          type: 'object',
-          properties: {
-            understanding: { type: 'string' },
-            stance: { type: 'string' },
-            people: { type: 'string' },
-          },
-          required: ['understanding', 'stance', 'people'],
-          additionalProperties: false,
+  const messages = [
+    { role: 'system', content: buildSystem(botName || 'the bot') },
+    { role: 'user', content: buildUser({ transcript, workingMemory, roster }) },
+  ];
+  // Guaranteed-valid structured JSON so a stray prose/fence wrapper doesn't
+  // wipe the whole refresh. Some openai-compat servers (e.g. certain Apple
+  // on-device wrappers, #243) reject json_schema with a 400; in that case we
+  // retry WITHOUT response_format and lean on extractJson + "JSON only".
+  const SCHEMA = {
+    type: 'json_schema',
+    json_schema: {
+      name: 'working_memory',
+      strict: true,
+      schema: {
+        type: 'object',
+        properties: {
+          understanding: { type: 'string' },
+          stance: { type: 'string' },
+          people: { type: 'string' },
+          engagement: { type: 'string' },
         },
+        required: ['understanding', 'stance', 'people', 'engagement'],
+        additionalProperties: false,
       },
     },
   };
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Number(config?.timeoutMs) || 8000);
+  const post = async (useSchema) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Number(config?.timeoutMs) || 8000);
+    try {
+      const body = { model: model || 'gpt-4o-mini', messages, temperature: 0.3, max_tokens: 500 };
+      if (useSchema) body.response_format = SCHEMA;
+      return await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   const started = Date.now();
   try {
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
+    let resp = await post(true);
+    if (resp.status === 400) {
+      log?.('comprehend: HTTP 400 with json_schema — retrying without structured output');
+      resp = await post(false);
+    }
     if (!resp.ok) {
       log?.(`comprehend: HTTP ${resp.status}`);
       return null;
@@ -133,17 +142,16 @@ async function comprehend({ transcript, workingMemory, roster, botName, config, 
     if (typeof parsed.understanding === 'string') out.understanding = parsed.understanding.trim();
     if (typeof parsed.stance === 'string') out.stance = parsed.stance.trim();
     if (typeof parsed.people === 'string') out.people = parsed.people.trim();
-    if (!('understanding' in out) && !('stance' in out) && !('people' in out)) {
+    if (typeof parsed.engagement === 'string') out.engagement = parsed.engagement.trim();
+    if (!('understanding' in out) && !('stance' in out) && !('people' in out) && !('engagement' in out)) {
       log?.('comprehend: reply had no usable fields');
       return null;
     }
-    log?.(`comprehend: ok in ${Date.now() - started}ms (u${(out.understanding||'').length} s${(out.stance||'').length} p${(out.people||'').length})`);
+    log?.(`comprehend: ok in ${Date.now() - started}ms (u${(out.understanding||'').length} s${(out.stance||'').length} p${(out.people||'').length} e${(out.engagement||'').length})`);
     return out;
   } catch (err) {
     log?.(`comprehend: ${err.name === 'AbortError' ? 'timed out' : err.message}`);
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }
 

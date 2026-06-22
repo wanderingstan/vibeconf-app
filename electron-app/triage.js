@@ -22,23 +22,34 @@ function stripThink(raw) {
   return String(raw || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 }
 
+// Prompt tuned for Apple's on-device FoundationModels backend (#243). Notes:
+// - No vendor control tokens (e.g. Qwen's "/no_think") — Apple's model doesn't
+//   understand them and leaks them into output. Plain instructions only.
+// - The hard cases are mention-vs-address and collective questions; the rules
+//   below call those out explicitly because the model otherwise pattern-matches
+//   the bot's name into a false "addressed".
 function buildSystem(botName) {
   return [
-    `You are the instant turn-taking judgment for ${botName}, a participant in a live group voice call. The floor just opened (someone finished talking).`,
-    `Decide ONE thing: is ${botName} being addressed, such that a response from ${botName} is expected right NOW?`,
-    `You are NOT writing the response — a separate, slower part of ${botName} does that. Your only job is the snap call of whether ${botName} is being spoken to, so it can acknowledge instantly instead of leaving an awkward silence.`,
-    `Lines in the transcript beginning "${botName}:" are ${botName}'s OWN earlier words — not someone addressing it.`,
+    `You are the instant turn-taking judgment for ${botName}, one participant in a live group voice call. Someone just finished talking and the floor is open.`,
+    `Decide ONE thing: did that finished line address ${botName}, such that a reply FROM ${botName} is expected right now?`,
+    `You are NOT writing the reply — a separate, slower part of ${botName} does that. Your only job is the snap yes/no so ${botName} can acknowledge instantly instead of leaving an awkward silence.`,
     ``,
-    `Reply as STRICT JSON: {"ack": true|false, "category": "...", "reason": "..."}.`,
+    `How to decide:`,
+    `- Lines beginning "${botName}:" are ${botName}'s OWN past words — never read them as someone addressing it.`,
+    `- ${botName} IS addressed when the finished line speaks TO it: (a) names it in a question/request ("${botName}, can you…"); or (b) is a clear question/request to the bot in a 1:1-style exchange even without the name ("Can you summarize that?"), INCLUDING a follow-up that continues ${botName}'s own just-finished exchange ("And can you also add…?", "now do the same for…"); or (c) is a collective question that explicitly invites everyone using the second person ("What do you all think?", "you guys?", "anyone?").`,
+    `- ${botName} is NOT addressed when: the line only MENTIONS it in passing ("I was talking to ${botName} earlier", "${botName} already did that") — that is ABOUT it, not TO it; or a DIFFERENT participant is named; or people are chatting among themselves; or it's a statement, a greeting, or thinking out loud that expects no answer.`,
+    `- Only say yes if THIS finished line genuinely addresses ${botName}. If ${botName}'s name is absent AND it is not plainly a question/request aimed at the bot, say no. Do NOT invent an address that isn't in the text.`,
+    ``,
+    `Reply as STRICT JSON only — no prose, no code fences:`,
+    `{"ack": true|false, "category": "...", "reason": "..."}`,
     `"category" is exactly one of:`,
-    `- "addressed"      — ${botName} is directly spoken to, named, or asked a question/request. → ack=true`,
-    `- "other-bot"      — a DIFFERENT participant is being addressed (another name), not ${botName}. → ack=false`,
-    `- "human-to-human" — people are talking among themselves; ${botName} is not part of this exchange. → ack=false`,
-    `- "ambient"        — open discussion ${botName} could optionally join but isn't required to. → ack=false`,
+    `- "addressed"      — spoken TO ${botName}: named request/question, a 1:1 question, or a collective "you all/you guys/anyone" question. ack=true`,
+    `- "other-bot"      — a DIFFERENT named participant is addressed, not ${botName}. ack=false`,
+    `- "human-to-human" — people talking among themselves; ${botName} is not part of it. ack=false`,
+    `- "ambient"        — open talk ${botName} could optionally join but isn't required to, or a passing mention of ${botName}. ack=false`,
     ``,
-    `Set ack=true ONLY for "addressed". When torn between "addressed" and "ambient", choose false — a missed ack is recoverable (the slow part still answers), but a wrong ack interrupts people.`,
-    `"reason" is a short phrase (for debugging), not spoken.`,
-    `Output ONLY the JSON object — no prose, no code fences.`,
+    `When genuinely torn between "addressed" and "ambient", choose "ambient" (ack=false) — a missed ack is recoverable (the slow part still answers), a wrong ack interrupts people. But a real collective "you all"-style question counts as "addressed".`,
+    `"reason" is a brief debug phrase (a few words).`,
   ].join('\n');
 }
 
@@ -51,8 +62,7 @@ function buildUser({ recentTranscript, lastUtterance, roster, botName }) {
     ``,
     `>>> THE LINE THAT JUST FINISHED: ${lastUtterance || '(silence)'}`,
     ``,
-    `Is ${botName} being addressed here? Output the JSON now.`,
-    `/no_think`,
+    `Did that finished line address ${botName}? Output the JSON now.`,
   ].join('\n');
 }
 

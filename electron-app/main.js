@@ -1243,6 +1243,13 @@ if (appProfile) {
   console.log('[electron] Using app profile:', appProfile, 'userData:', profileUserData);
 }
 
+// Automated test instances (profile test*, or VIBECONF_NO_NOTIFICATIONS) must not
+// fire OS push notifications — a scheduled nightly run would otherwise spam the
+// user's devices with "Meet detected" / error toasts (e.g. the guest "present
+// button not found" share error). Gate all Notification sites on this.
+const SUPPRESS_NOTIFICATIONS = /^test/i.test(appProfile || '') || !!process.env.VIBECONF_NO_NOTIFICATIONS;
+if (SUPPRESS_NOTIFICATIONS) console.log('[electron] OS notifications suppressed (test/headless instance)');
+
 // ---------------------------------------------------------------------------
 // Helper: speak text via TTS → send audio to Meet view
 // ---------------------------------------------------------------------------
@@ -1351,6 +1358,7 @@ function broadcastError(message) {
     mainWindow.isFocused();
 
   if (inForeground) return;
+  if (SUPPRESS_NOTIFICATIONS) return;
 
   const now = Date.now();
   const lastShown = recentErrorNotifications.get(message);
@@ -2002,7 +2010,7 @@ allURLs`;
           }
           // Show macOS notification
           const { Notification } = require('electron');
-          if (Notification.isSupported()) {
+          if (Notification.isSupported() && !SUPPRESS_NOTIFICATIONS) {
             const notification = new Notification({
               title: 'Google Meet Detected',
               body: `Found call: ${meetCode}. Click Join in Vibeconferencing to connect your bot.`,

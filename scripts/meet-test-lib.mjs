@@ -70,9 +70,24 @@ export class Bot {
   }
 
   async shareWhiteboard() {
-    const { data, ms } = await this._sync({ meta: { action: 'share-whiteboard', shareType: 'whiteboard' } });
-    log(this.name, 'shareWhiteboard', { ms, ok: data?.success !== false });
-    return data;
+    const started = Date.now();
+    await this._sync({ meta: { action: 'share-whiteboard', shareType: 'whiteboard' } });
+    // The POST only ENQUEUES the share; the actual "Present now" click happens
+    // async in the app and can fail ("present button not found") without the POST
+    // erroring. Verify the bot is really sharing before calling it a success —
+    // otherwise a silent share failure (e.g. guests often can't present in Meet)
+    // would be reported green. Poll status.sharing up to ~6s.
+    let sharing = false;
+    for (let i = 0; i < 20 && !sharing; i++) {
+      await sleep(300);
+      try { sharing = !!(await this.status()).sharing; } catch { /* retry */ }
+    }
+    const ms = Date.now() - started;
+    log(this.name, 'shareWhiteboard', {
+      ms, ok: sharing,
+      note: sharing ? 'sharing confirmed' : 'NOT sharing after 6s — present likely failed (guest can\'t present?)',
+    });
+    return { sharing };
   }
 
   async stopSharing() {
@@ -130,6 +145,7 @@ export class Bot {
       callStatus: data?.status?.callStatus,
       captionsOn: data?.status?.captionsOn,
       botState: data?.status?.botState,
+      sharing: data?.status?.sharing,
       participants: data?.status?.participants || data?.participants || [],
     };
   }

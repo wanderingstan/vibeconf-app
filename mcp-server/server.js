@@ -602,7 +602,7 @@ server.tool(
 // --- read_whiteboard ---
 server.tool(
   "play_audio",
-  "Play an audio file (sound effect, clip, jingle, etc.) INTO the Google Meet call through the bot's virtual mic — everyone hears it. Provide exactly ONE source: url (remote audio file), path (absolute local file path — e.g. a sound a local tool just generated), or data (base64-encoded audio bytes). mp3/wav/ogg supported. The bot treats it as speaking (won't talk over it). Not for background music (use the whiteboard for that later).",
+  "Play an audio file INTO the Google Meet call through the bot's virtual mic — everyone hears it. BEST FOR SPEECH/VOICE audio (e.g. a recorded human utterance, a TTS clip): Meet's mic pipeline (noise cancellation + voice-activity detection) aggressively SUPPRESSES non-voice audio, so sound effects and music are filtered out / come through choppy and are NOT reliable through this path — use the whiteboard/screen-share for those instead. Provide exactly ONE source: url (remote audio file), path (absolute local file path — e.g. a clip a local tool just generated), or data (base64-encoded audio bytes). mp3/wav/ogg supported. Sequenced after any spoken ack and treated as speaking (won't talk over itself).",
   {
     url: z.string().optional().describe("Remote audio file URL, e.g. https://example.com/airhorn.mp3"),
     path: z.string().optional().describe("Absolute local file path to an audio file (mp3/wav/ogg). The app reads and plays it — no upload needed."),

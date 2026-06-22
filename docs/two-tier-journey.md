@@ -304,7 +304,7 @@ a real silence still lets it talk. This is what lets the (otherwise blocked) slo
 model think mid-conversation — the prerequisite for everything else.
 
 ### The trigger is content-based, not time-based
-The tick fires on **new transcript chars** accumulated (`backgroundTickChars`),
+The tick fires on **new transcript words** accumulated (`backgroundTickWords`),
 mirroring the proven `comprehendCharThreshold` — because the need to re-think scales
 with *how much was said*, not wall-clock. A slow talker generates little to
 reconsider; a dense exchange generates a lot, and content-based self-adjusts. Time

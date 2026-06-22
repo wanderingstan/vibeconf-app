@@ -189,14 +189,26 @@ export function report() {
 
   // A timeout is only a REAL STALL if the bot should have heard something:
   //  (a) captions were OFF  → deaf bot, or
-  //  (b) ANOTHER bot's speech overlapped this wait window → heard-nothing-despite-
-  //      speech = the group silence-resolution bug.
+  //  (b) ANOTHER bot's speech was actually CAPTIONED inside this wait window →
+  //      heard-nothing-despite-speech = the group silence-resolution bug (#248).
   // A timeout in a genuinely quiet room (captions on, nobody else speaking) is
   // expected, not a failure — so it doesn't gate the run.
+  //
+  // Crucial: a speak event's timestamp (s.t) is the HTTP-ACCEPT time — when TTS was
+  // queued — which precedes audible playback + Meet captioning by ~1-3s (synth +
+  // playback + caption lag). Gating overlap on s.t therefore false-positives: a wait
+  // window that overlaps a speak-accept but CLOSES before that speech is captioned
+  // never had a chance to hear it. So gate on caption-ARRIVAL time (s.t + lag), not
+  // accept time — only count it if the caption would have landed inside the window.
+  const CAPTION_LAG_MS = Number(process.env.VIBECONF_CAPTION_LAG_MS) || 2500;
   const realStalls = timeouts.filter((e) => {
     if (e.meta?.captionsOn === false) return true;
     const { windowStart, windowEnd } = e.meta || {};
-    return speaks.some((s) => s.bot !== e.bot && s.t >= windowStart && s.t <= windowEnd);
+    return speaks.some((s) => {
+      if (s.bot === e.bot) return false;
+      const captionAt = s.t + CAPTION_LAG_MS; // when that speech becomes captioned
+      return captionAt >= windowStart && captionAt <= windowEnd;
+    });
   });
 
   // Cross-bot speak overlap: informational only. Incidental coincidence in

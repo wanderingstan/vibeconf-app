@@ -1133,7 +1133,12 @@ async function autoJoin(botName) {
         findByText('Ask to join') ||
         findByText('Join now') ||
         findByAriaLabel('Ask to join') ||
-        findByAriaLabel('Join');
+        findByAriaLabel('Join') ||
+        // "Switch here" replaces Join now when this Google account already has a
+        // lingering presence in the meeting (another tab/device/old session). It
+        // joins directly. The button has no aria-label, but its "Switch here"
+        // text is reliable; findByText returns the clickable <button> ancestor.
+        findByText('Switch here');
 
       if (joinBtn) {
         const btnText = joinBtn.textContent.trim();
@@ -1187,7 +1192,7 @@ async function autoJoin(botName) {
       const waitingText = bodyText.includes('wait until') ||
         bodyText.includes('asking to be let in') ||
         bodyText.includes('Please wait');
-      const hasJoinUI = !!findByText('Ask to join') || !!findByText('Join now');
+      const hasJoinUI = !!findByText('Ask to join') || !!findByText('Join now') || !!findByText('Switch here');
       const inCallUI =
         findByAriaLabel('Leave call') ||
         findByAriaLabel('Turn on captions') ||
@@ -2142,7 +2147,7 @@ window.addEventListener('DOMContentLoaded', () => {
         document.querySelector('input[placeholder="Your name"]') ||
         document.querySelector('input[aria-label="Your name"]') ||
         document.querySelector('input[autocomplete="name"]');
-      const joinBtn = findByText('Ask to join') || findByText('Join now');
+      const joinBtn = findByText('Ask to join') || findByText('Join now') || findByText('Switch here');
 
       if (nameInput || joinBtn) {
         await autoJoin(BOT_NAME);

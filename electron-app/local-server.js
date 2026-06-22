@@ -620,6 +620,22 @@ class LocalServer {
     if (this.chatUnread === unread) return;
     this.chatUnread = unread;
     console.log('[local-server] Chat unread:', unread);
+
+    // Pipeline a NEW chat message like speech: wake a pending wait_for_speech so
+    // the agent handles it promptly instead of only on the next ~55s long-poll
+    // return. BUT only in a quiet room — for two reasons:
+    //   1. Don't interrupt a live speaker (chat is lower priority than the floor).
+    //   2. Reading chat opens the chat pane, which closes the people pane and
+    //      BLINDS speaker detection (captions keep flowing, but who's-speaking
+    //      state is lost). If we only open chat when nobody's speaking, there's
+    //      no live-speaker state to lose.
+    // If someone IS speaking, we do nothing here: chatUnread stays set and rides
+    // along when speech resolves naturally at the next pause — nothing dropped.
+    if (unread && !this.anyoneSpeaking && !this.chatPaneOpen) {
+      for (const waiter of [...this.waiters]) {
+        this._resolveWaiter(waiter, 'chat');
+      }
+    }
   }
 
   setPaneState({ chatPaneOpen, peoplePaneOpen } = {}) {
@@ -1356,6 +1372,9 @@ class LocalServer {
     }
 
     const response = this._buildResponse(waiter.since, waiter.bot, waiter.startTime);
+    // Tag a chat-triggered wake so the MCP layer can phrase it as "new chat"
+    // rather than a misleading "no one spoke / timed out".
+    if (reason === 'chat') response.chatWake = true;
 
     // If there are actual transcript entries, the agent will now process them → thinking state.
     // Captions arrive as multiple progressively-growing entries for one utterance

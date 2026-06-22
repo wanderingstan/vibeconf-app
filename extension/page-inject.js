@@ -426,6 +426,7 @@
         `last WfS: ${ago(d.lastWaitForSpeechAt)}`,
         ...ackLines,
         `queued:   ${(d.pendingBotSpeech || []).length}`,
+        `chat:     ${d.chatUnread ? 'UNREAD' : 'none'}`,
         heard,
         proc,
       ];

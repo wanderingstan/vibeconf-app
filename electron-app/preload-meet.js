@@ -466,6 +466,18 @@ async function openChatPane() {
   }
   if (!btn) {
     console.warn('[chat] ❌ Chat toggle button not found (after ~9s wait)');
+    // Instrument it like the captions race: dump every toolbar button's
+    // aria-label so we can SEE whether "Chat with everyone" is relabeled, in the
+    // "More options" (⋮) overflow menu, or genuinely absent (e.g. guest view).
+    try {
+      const labels = Array.from(new Set(
+        Array.from(document.querySelectorAll('button[aria-label], [role="button"][aria-label]'))
+          .map((b) => b.getAttribute('aria-label')).filter(Boolean)
+      ));
+      const moreMenu = !!findByAriaLabel('More options') || !!findByAriaLabel('Más opciones');
+      console.warn('[chat] [chat-diag] toolbar buttons=' + labels.length + ' moreMenu=' + moreMenu +
+        ' — labels: ' + JSON.stringify(labels));
+    } catch (e) { console.warn('[chat] [chat-diag] dump failed:', e && e.message); }
     return false;
   }
   console.log('[chat] → switching to Chat pane (clicking', JSON.stringify(btn.getAttribute('aria-label')), ')');

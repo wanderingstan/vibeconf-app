@@ -237,42 +237,55 @@ const authStatus = document.getElementById('authStatus');
 const loginBtn = document.getElementById('loginBtn');
 const logoutBtn = document.getElementById('logoutBtn');
 
-const loginPrompt = document.getElementById('loginPrompt');
-const mainLoginBtn = document.getElementById('mainLoginBtn');
+// User (vibeconferencing.com) identity row on the MAIN view — always shown.
+const userIdStatus = document.getElementById('userIdStatus');
+const userSignInMainBtn = document.getElementById('userSignInMainBtn');
+const userSignOutMainBtn = document.getElementById('userSignOutMainBtn');
+
+function setUserRow(signedIn, who) {
+  if (userIdStatus) {
+    userIdStatus.textContent = signedIn ? `✓ ${who}` : '⚠ not signed in';
+    userIdStatus.style.color = signedIn ? '#81c995' : '#fdd663';
+  }
+  if (userSignInMainBtn) userSignInMainBtn.style.display = signedIn ? 'none' : 'inline-block';
+  if (userSignOutMainBtn) userSignOutMainBtn.style.display = signedIn ? 'inline-block' : 'none';
+}
 
 async function checkAuthStatus() {
   try {
     const data = await api.invoke('check-auth');
     if (data?.authenticated) {
-      authStatus.textContent = `Logged in as ${data.user.name}`;
+      const who = data.user?.email || data.user?.name || 'signed in';
+      authStatus.textContent = `Logged in as ${data.user?.name || who}`;
       authStatus.style.color = '#81c995';
       loginBtn.style.display = 'none';
       logoutBtn.style.display = 'inline-block';
-      loginPrompt.style.display = 'none';
+      setUserRow(true, who);
     } else {
       authStatus.textContent = 'Not logged in';
       authStatus.style.color = '#f28b82';
       loginBtn.style.display = 'block';
       logoutBtn.style.display = 'none';
-      loginPrompt.style.display = 'block';
+      setUserRow(false);
     }
   } catch {
     authStatus.textContent = 'Auth check failed';
     authStatus.style.color = '#f28b82';
     loginBtn.style.display = 'block';
     logoutBtn.style.display = 'none';
-    loginPrompt.style.display = 'block';
+    setUserRow(false);
   }
 }
 
-mainLoginBtn.addEventListener('click', async () => {
-  mainLoginBtn.textContent = 'Opening Google sign-in...';
-  mainLoginBtn.disabled = true;
-  await api.invoke('login');
-  setTimeout(() => {
-    mainLoginBtn.textContent = 'Sign in with Google';
-    mainLoginBtn.disabled = false;
-  }, 3000);
+userSignInMainBtn?.addEventListener('click', async () => {
+  userSignInMainBtn.disabled = true;
+  userSignInMainBtn.textContent = 'Opening…';
+  try { await api.invoke('login'); } catch { /* ignore */ }
+  setTimeout(() => { userSignInMainBtn.disabled = false; userSignInMainBtn.textContent = 'Sign in'; checkAuthStatus(); }, 3000);
+});
+userSignOutMainBtn?.addEventListener('click', async () => {
+  try { await api.invoke('logout'); } catch { /* ignore */ }
+  checkAuthStatus();
 });
 
 loginBtn.addEventListener('click', async () => {

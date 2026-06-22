@@ -150,6 +150,31 @@ export class Bot {
     };
   }
 
+  // --- chat (Meet text chat) ---
+
+  async sendChat(text) {
+    const { data, ms } = await this._post('/api/chat', JSON.stringify({ action: 'send', text }));
+    log(this.name, 'sendChat', { ms, ok: data?.success !== false, note: data?.error || `"${text.slice(0, 40)}"` });
+    return data;
+  }
+
+  async readChat() {
+    const { data, ms } = await this._post('/api/chat', JSON.stringify({ action: 'read' }));
+    const msgs = Array.isArray(data?.messages) ? data.messages : [];
+    log(this.name, 'readChat', { ms, ok: data?.success !== false, note: data?.error || `${msgs.length} msg(s)` });
+    return msgs;
+  }
+
+  // Read chat and assert a substring is present — verifies cross-bot delivery
+  // (e.g. this bot can SEE what another bot posted). Logs ok=false if absent.
+  async expectChatContains(needle) {
+    const msgs = await this.readChat();
+    const hay = msgs.map((m) => (typeof m === 'string' ? m : `${m.sender || ''} ${m.text || m.message || ''}`)).join('\n');
+    const found = hay.includes(needle);
+    log(this.name, 'expectChatContains', { ok: found, note: found ? `found "${needle}"` : `MISSING "${needle}" in ${msgs.length} msg(s)` });
+    return found;
+  }
+
   async leave() {
     const { data, ms } = await this._sync({ meta: { action: 'leave' } });
     log(this.name, 'leave', { ms, ok: data?.success !== false });

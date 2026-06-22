@@ -2242,8 +2242,16 @@ function swapMeetViewPartition(newPartition, { navigateTo } = {}) {
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
-    width: 800 + PANEL_WIDTH,
-    height: 550,
+    // Meet view = width - PANEL_WIDTH. The old 800px-wide Meet view was narrow
+    // enough that Google Meet collapsed toolbar buttons (chat, captions, present)
+    // into the "More options" overflow menu — the root cause of the recurring
+    // "<button> not found" failures (confirmed via [chat-diag]: chat absent from
+    // the toolbar, moreMenu=true). Give the Meet view ~1280px so the full toolbar
+    // stays expanded, and a min-width so it can't be shrunk back into collapse.
+    width: 1280 + PANEL_WIDTH,
+    height: 820,
+    minWidth: 1000 + PANEL_WIDTH,
+    minHeight: 600,
     title: 'Vibeconferencing',
     icon: path.join(__dirname, 'icon.png'),
     webPreferences: {

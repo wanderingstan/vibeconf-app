@@ -1885,35 +1885,61 @@ async function clickPresentNow(shareType) {
 // confirmed live by Stan.) Best-effort with short waits, since menus/dialogs
 // animate in.
 async function setStudioSound(enabled) {
-  const waitFor = async (fn, ms = 4000) => {
+  const waitFor = async (fn, ms = 5000) => {
     const t0 = Date.now();
-    while (Date.now() - t0 < ms) { const el = fn(); if (el) return el; await delay(150); }
+    while (Date.now() - t0 < ms) { try { const el = fn(); if (el) return el; } catch { /* ignore */ } await delay(150); }
     return null;
   };
+  const findToggle = () => document.querySelector('[role="switch"][aria-label*="Studio sound" i], [aria-label*="Studio sound" i]');
+  const findAudioTab = () =>
+    document.querySelector('[role="tab"][aria-label*="Audio" i]') ||
+    // a clickable item whose own text is exactly "Audio" (the settings left-nav)
+    Array.from(document.querySelectorAll('[role="tab"], [role="menuitemradio"], button, [role="button"], [tabindex]'))
+      .find((el) => el.textContent && el.textContent.trim().toLowerCase() === 'audio' && isVisible(el)) || null;
   try {
+    // 1) Open the ⋮ menu
     const more = await waitFor(() => findByAriaLabel('More options'));
-    if (!more) { console.warn('[studio-sound] "More options" not found'); return false; }
+    if (!more) { console.warn('[studio-sound] step1: "More options" not found'); return false; }
     more.click();
-    const settings = await waitFor(() => findByText('Settings', { exact: true }));
-    if (!settings) { console.warn('[studio-sound] "Settings" menu item not found'); return false; }
+    console.log('[studio-sound] step1: clicked More options');
+
+    // 2) Click "Settings" — scope to the just-opened menu's items so we don't
+    //    grab some unrelated "Settings" text elsewhere on the page.
+    const settings = await waitFor(() =>
+      Array.from(document.querySelectorAll('[role="menuitem"], [role="menuitemradio"], li, [role="button"]'))
+        .find((el) => el.textContent && el.textContent.trim().toLowerCase().startsWith('settings') && isVisible(el)));
+    if (!settings) { console.warn('[studio-sound] step2: "Settings" menu item not found'); return false; }
     settings.click();
-    // Audio tab within the settings dialog (be safe per Stan's steps).
-    const audioTab = await waitFor(() =>
-      document.querySelector('[role="tab"][aria-label*="Audio" i], button[aria-label*="Audio" i]'));
-    if (audioTab) audioTab.click();
-    // The "Studio sound" switch (role=switch, so findByAriaLabel — which is
-    // button-only — won't see it).
-    const sw = await waitFor(() => document.querySelector('[aria-label*="Studio sound" i]'));
+    console.log('[studio-sound] step2: clicked Settings');
+
+    // 3) Wait for the Settings dialog, then make sure we're on the AUDIO tab.
+    //    Meet may open it on a different tab — click Audio and VERIFY the Studio
+    //    sound toggle actually appears, retrying the tab click a few times.
+    await waitFor(() => document.querySelector('[role="dialog"]'));
+    let sw = findToggle();
+    for (let attempt = 0; attempt < 4 && !sw; attempt++) {
+      const tab = findAudioTab();
+      if (tab) { tab.click(); console.log('[studio-sound] step3: clicked Audio tab (attempt', attempt + 1, ')'); }
+      else { console.log('[studio-sound] step3: Audio tab not found (attempt', attempt + 1, ')'); }
+      sw = await waitFor(findToggle, 1500);
+    }
+
     if (!sw) {
-      console.warn('[studio-sound] "Studio sound" toggle not found');
+      // Diagnostic dump so we can see what the dialog actually offers.
+      const tabs = Array.from(document.querySelectorAll('[role="tab"], [role="dialog"] [role="button"], [role="dialog"] li'))
+        .map((el) => (el.getAttribute('aria-label') || el.textContent || '').trim()).filter(Boolean).slice(0, 30);
+      console.warn('[studio-sound] step4: "Studio sound" toggle not found. Dialog items:', JSON.stringify(tabs));
     } else {
       const isOn = sw.getAttribute('aria-checked') === 'true' || sw.getAttribute('aria-pressed') === 'true';
-      if (isOn !== enabled) { sw.click(); console.log('[studio-sound] toggled to', enabled); }
-      else { console.log('[studio-sound] already', enabled); }
+      if (isOn !== enabled) { sw.click(); console.log('[studio-sound] step4: toggled Studio sound to', enabled); }
+      else { console.log('[studio-sound] step4: Studio sound already', enabled); }
     }
-    const close = await waitFor(() => findByAriaLabel('Close dialog') || document.querySelector('[aria-label*="Close dialog" i]'), 2000);
-    if (close) close.click();
-    return true;
+
+    // 5) Close the dialog.
+    const close = await waitFor(() =>
+      findByAriaLabel('Close dialog') || document.querySelector('[role="dialog"] [aria-label*="Close" i]'), 2000);
+    if (close) { close.click(); console.log('[studio-sound] step5: closed dialog'); }
+    return !!sw;
   } catch (e) {
     console.warn('[studio-sound] error:', e.message);
     return false;

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent for the scheduled automated Meet test (Stan's Mac mini).
+  Install: see scripts/SCHEDULING.md. Runs the wrapper nightly at 03:00 in the
+  logged-in GUI session (required for Electron + mic/cam/screen perms). Invoked
+  via `zsh -lc` so it inherits the user's full PATH (node/pnpm).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.vibeconferencing.meet-test</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>/Users/wanderingstan/Developer/vibeconferencing/scripts/scheduled-meet-test.sh</string>
+  </array>
+
+  <!-- Nightly at 03:00. Edit Hour/Minute to taste; add more <dict> entries to
+       this array for multiple times per day. -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict>
+      <key>Hour</key><integer>3</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+  </array>
+
+  <!-- launchd's own stdout/err (the wrapper also writes its own timestamped log
+       under ~/vibeconf-test-results/). -->
+  <key>StandardOutPath</key>
+  <string>/Users/wanderingstan/vibeconf-test-results/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/wanderingstan/vibeconf-test-results/launchd.err.log</string>
+
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

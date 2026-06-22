@@ -1356,6 +1356,20 @@ server.tool(
       sections.push(`Currently sharing: ${shareUrl} (what's rendering in the screen share now, post-update_whiteboard / scroll_share)`);
     }
 
+    // #244: surface the current avatar background so the bot can recall it
+    // ("what's my background?") across context resets, without parsing raw SVG.
+    if (status.avatarBackground?.set) {
+      const ab = status.avatarBackground;
+      const bits = [];
+      if (ab.caption) bits.push(`"${ab.caption}"`);
+      if (ab.imageRef) bits.push(`image: ${ab.imageRef}`);
+      bits.push(`${ab.length} chars of SVG`);
+      sections.push(
+        `Avatar background: custom (${bits.join(', ')})` +
+        (ab.caption ? '' : ' — set avatarBackgroundCaption to label it for later recall')
+      );
+    }
+
     if (status.someoneElsePresenting) {
       sections.push(`Someone else presenting: ${status.presenterName || 'yes'}`);
     }

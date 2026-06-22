@@ -146,6 +146,16 @@ const PREFERENCES = {
       "the emoji's bounce provides motion. Use to display backgrounds, name plates, " +
       "debug info, or anything SVG can render.",
   },
+  avatarBackgroundCaption: {
+    type: 'string',
+    default: '',
+    description:
+      "Optional human-readable label for your current avatar background (e.g. " +
+      "'Berlin skyline at dusk'). Purely for recall — set it alongside " +
+      "avatarBackgroundSvg so you (or a future context after a reset) can answer " +
+      "'what's my background?' without parsing raw SVG. Surfaced in get_room_info; " +
+      "not rendered.",
+  },
   websiteUrl: {
     type: 'string',
     default: '',

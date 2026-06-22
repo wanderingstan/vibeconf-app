@@ -750,6 +750,23 @@ class LocalServer {
       // What URL is loaded in the bot's screen-share window right now (#177).
       // Named for the share, not the whiteboard, since it can be any URL.
       screenShareUrl: this.getWhiteboardLoadedUrl(),
+      // Human-readable hint about the bot's current avatar background so it can
+      // answer "what's my background?" and recall it across context resets
+      // (#244) — the raw SVG lives in the preference but is opaque/large.
+      avatarBackground: (() => {
+        const svg = (this.getPref('avatarBackgroundSvg') || '').toString();
+        const caption = (this.getPref('avatarBackgroundCaption') || '').toString().trim();
+        if (!svg.trim()) return { set: false, caption: caption || null, imageRef: null };
+        // Derive a hint from the first <image href> (file basename or URL).
+        let imageRef = null;
+        const m = svg.match(/<image[^>]*\shref=["']([^"']+)["']/i);
+        if (m) {
+          const ref = m[1];
+          if (/^data:/i.test(ref)) imageRef = '(inline data URI)';
+          else { try { imageRef = ref.replace(/^file:\/\//, '').split('/').pop() || ref; } catch { imageRef = ref; } }
+        }
+        return { set: true, caption: caption || null, imageRef, length: svg.length };
+      })(),
       sessionLogPath: getSessionLogPath(),
       activeWaiters: this.waiters.length,
       lastAckEvent: this.lastAckEvent,

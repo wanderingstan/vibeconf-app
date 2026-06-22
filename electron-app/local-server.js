@@ -1400,30 +1400,46 @@ class LocalServer {
     return texts;
   }
 
-  // Active-listening experiment (#245). When backgroundTickChars > 0, surface
-  // the (otherwise blocked) slow model EARLY during ongoing conversation so it
-  // can update its understanding / bank a probe — without speaking. The trigger
-  // is CONTENT-based (new chars since this waiter's `since`, like
-  // comprehendCharThreshold), so it scales with how much was actually said, not
-  // wall-clock. The threshold is rolled ONCE per waiter with a random margin
-  // (backgroundTickJitterFrac) so multiple bots don't tick in lockstep (#230).
-  // We poll on a short fixed cadence and fire when enough new content arrives.
+  // Total words heard from others (not the bot itself) across all caption turns.
+  // since=null = no time filter — this is a running TOTAL, snapshotted as a
+  // per-waiter baseline so the tick can measure a true DELTA (see below).
+  _tickWordCount(bot) {
+    const entries = this._entriesSince(null, bot);
+    return entries.reduce((n, e) => n + (e.text ? e.text.trim().split(/\s+/).filter(Boolean).length : 0), 0);
+  }
+
+  // Active-listening experiment (#245). When backgroundTickWords > 0, surface the
+  // (otherwise blocked) slow model EARLY during ongoing conversation so it can
+  // update its understanding / bank a probe — without speaking. The trigger is
+  // CONTENT-based: fire once per `threshold` NEW words (delta), so it scales with
+  // how much was actually said, not wall-clock.
+  //
+  // DELTA, not cumulative: we snapshot a per-waiter baseline (total words heard at
+  // the moment this waiter starts listening) and fire when total − baseline ≥
+  // threshold. Counting waiter.since here was the bug — a single long, still-
+  // growing turn keeps its lastUpdated past `since`, so _entriesSince(since) re-
+  // counted its FULL length every poll and the tick re-fired every ~2.5s. Measuring
+  // against an absolute baseline makes one monologue tick once per threshold-words.
+  //
+  // The threshold is rolled ONCE per waiter with a random margin
+  // (backgroundTickJitterFrac) so multiple bots don't tick in lockstep (#230). We
+  // poll on a short fixed cadence and fire when enough new content has arrived.
   _scheduleBackgroundTick(waiter) {
-    const base = Number(this._pref('backgroundTickChars')) || 0;
+    const base = Number(this._pref('backgroundTickWords')) || 0;
     if (base <= 0) return;
     if (waiter._tickThreshold == null) {
       const fracRaw = Number(this._pref('backgroundTickJitterFrac'));
       const frac = Number.isFinite(fracRaw) ? Math.max(0, fracRaw) : 0;
       waiter._tickThreshold = Math.round(base * (1 + Math.random() * frac));
+      waiter._tickBaselineWords = this._tickWordCount(waiter.bot); // delta baseline
     }
     clearTimeout(waiter.tickTimer);
     waiter.tickTimer = setTimeout(() => {
       waiter.tickTimer = null;
       if (waiter.resolved) return;
-      const entries = this._entriesSince(waiter.since, waiter.bot);
-      const newChars = entries.reduce((n, e) => n + (e.text ? e.text.length : 0), 0);
-      if (newChars >= waiter._tickThreshold) {
-        console.log(ts(), '🫧 [background-tick] surfacing slow model — ' + newChars + ' new chars ≥ threshold ' + waiter._tickThreshold + ' (' + entries.length + ' entries to bank from)');
+      const newWords = this._tickWordCount(waiter.bot) - waiter._tickBaselineWords;
+      if (newWords >= waiter._tickThreshold) {
+        console.log(ts(), '🫧 [background-tick] surfacing slow model — ' + newWords + ' new words ≥ threshold ' + waiter._tickThreshold);
         this._resolveWaiter(waiter, 'background_tick');
       } else {
         this._scheduleBackgroundTick(waiter);

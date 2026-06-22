@@ -263,23 +263,25 @@ const PREFERENCES = {
       'HTTP timeouts). Raise only if you have a reason — long blocks make ' +
       'the agent appear stalled.',
   },
-  backgroundTickChars: {
+  backgroundTickWords: {
     type: 'number',
     default: 0,
     min: 0,
-    max: 5000,
+    max: 1000,
     description:
       'Active-listening experiment (#245), OFF by default (0). When > 0, ' +
       'wait_for_speech surfaces the slow model EARLY — once this many NEW ' +
-      'transcript characters pile up during conversation the bot is NOT part of ' +
-      '— with a "background_tick" result instead of blocking until a definitive ' +
-      'silence. On a tick the slow session updates its understanding / banks a ' +
-      'brief active-listening probe and loops WITHOUT speaking; only a real ' +
-      'silence resolution lets it speak. This is the mechanism that lets the ' +
-      '(otherwise blocked) slow model think during long stretches. Content-based ' +
-      '(like comprehendCharThreshold) so it scales with how much was actually ' +
-      'said, not wall-clock. 0 = exactly today\'s behavior. Costs continuous ' +
-      'slow-model turns — fine on the flat subscription, not metered. Try e.g. 600.',
+      'transcript WORDS pile up during conversation the bot is NOT part of — ' +
+      'with a "background_tick" result instead of blocking until a definitive ' +
+      'silence. Measured as a true DELTA (words since the last tick), so one long ' +
+      'monologue ticks once per this-many words rather than every poll. On a tick ' +
+      'the slow session updates its understanding / banks a brief active-listening ' +
+      'probe and loops WITHOUT speaking; only a real silence resolution lets it ' +
+      'speak. This is the mechanism that lets the (otherwise blocked) slow model ' +
+      'think during long stretches. Content-based, so it scales with how much was ' +
+      'actually said, not wall-clock. 0 = exactly today\'s behavior. Costs ' +
+      'continuous slow-model turns — fine on the flat subscription, not metered. ' +
+      'Try e.g. 100.',
   },
   ackEndpoint: {
     type: 'string',
@@ -361,9 +363,9 @@ const PREFERENCES = {
     min: 0,
     max: 2,
     description:
-      'Anti-lockstep jitter for backgroundTickChars (#245/#230). Each time the ' +
+      'Anti-lockstep jitter for backgroundTickWords (#245/#230). Each time the ' +
       'bot re-arms a background tick it rolls its effective threshold to ' +
-      'backgroundTickChars × (1 + random·thisFraction) — so multiple bots in the ' +
+      'backgroundTickWords × (1 + random·thisFraction) — so multiple bots in the ' +
       'same call surface (and later fire probes) on DIFFERENT cadences instead of ' +
       'in unison. 0.3 = up to +30%. 0 disables the jitter (all bots tick at the ' +
       'same threshold — not recommended with 2+ bots).',

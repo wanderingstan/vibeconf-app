@@ -61,6 +61,18 @@ const SCRIPTS = {
   },
 };
 
+// Fallback for any bot without a named script (e.g. a 3rd/4th fleet member) —
+// a simple join → speak → listen → leave so it still participates and exercises
+// turn-taking/lockstep with the others rather than sitting idle.
+const DEFAULT_SCRIPT = async (bot) => {
+  await bot.join();
+  await sleep(5000);
+  await bot.speak(`${bot.name} here, joining the test.`);
+  await bot.waitForSpeech({ wait: 12, silence: 2 });
+  await bot.speak(`${bot.name} signing off.`);
+  await bot.leave();
+};
+
 async function main() {
   console.log(`meet-test → room ${ROOM}, bots: ${BOTS.map((b) => `${b.name}:${b.port}`).join(', ')}\n`);
 
@@ -75,8 +87,8 @@ async function main() {
 
   const started = Date.now();
   await Promise.all(BOTS.map((b) => {
-    const script = SCRIPTS[b.name];
-    if (!script) { console.warn(`(no script for ${b.name} — skipping)`); return Promise.resolve(); }
+    const script = SCRIPTS[b.name] || DEFAULT_SCRIPT;
+    if (!SCRIPTS[b.name]) console.log(`(no named script for ${b.name} — using default join/speak/listen/leave)`);
     return script(b).catch((err) => console.error(`✗ [${b.name}] script error:`, err.message));
   }));
   console.log(`\nAll scripts finished in ${Math.round((Date.now() - started) / 1000)}s.`);

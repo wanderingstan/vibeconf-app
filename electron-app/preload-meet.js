@@ -1897,11 +1897,15 @@ async function setStudioSound(enabled) {
     Array.from(document.querySelectorAll('[role="tab"], [role="menuitemradio"], button, [role="button"], [tabindex]'))
       .find((el) => el.textContent && el.textContent.trim().toLowerCase() === 'audio' && isVisible(el)) || null;
   try {
-    // 1) Open the ⋮ menu
-    const more = await waitFor(() => findByAriaLabel('More options'));
-    if (!more) { console.warn('[studio-sound] step1: "More options" not found'); return false; }
+    // 1) Open the toolbar ⋮ menu. EXACT aria-label match — a substring match also
+    //    hits the per-participant "More options for <name>" tile buttons (which
+    //    open a pin/remove menu with no Settings). The main toolbar button is
+    //    exactly "More options".
+    const more = await waitFor(() =>
+      document.querySelector('button[aria-label="More options" i], [role="button"][aria-label="More options" i]'));
+    if (!more) { console.warn('[studio-sound] step1: toolbar "More options" not found'); return false; }
     more.click();
-    console.log('[studio-sound] step1: clicked More options');
+    console.log('[studio-sound] step1: clicked toolbar More options');
 
     // 2) Click "Settings" — scope to the just-opened menu's items so we don't
     //    grab some unrelated "Settings" text elsewhere on the page.

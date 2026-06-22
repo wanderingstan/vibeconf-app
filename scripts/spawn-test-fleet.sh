@@ -19,11 +19,13 @@
 #
 # Prints the --bots string to hand to meet-test.mjs.
 #
-# NOTE on Google sign-in: a fresh test profile starts LOGGED OUT → the bot joins
-# as a guest and the meet host must admit it (and it may hit the guest-view
-# captions path). For unattended auto-admit, sign each test profile into Google
-# ONCE (it persists, post-beta21): launch one, open the app, Settings → "Sign in
-# to Google as bot". Do this per profile the first time.
+# NOTE on Google sign-in: NOT needed for the default test meet (paz-sqoa-npe) —
+# it's open for anyone to join as a guest, no account and no host admission. So a
+# fresh, logged-out test profile joins it unattended. That's exactly why it's the
+# default: the most open/unrestricted place to test. (Sign-in only matters for
+# RESTRICTED meets — e.g. a cross-org host that requires auto-admit; for those,
+# sign each profile into Google once via Settings → "Sign in to Google as bot",
+# which now persists post-beta21.)
 
 set -e
 REPO="/Users/wanderingstan/Developer/vibeconferencing"

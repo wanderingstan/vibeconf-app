@@ -391,32 +391,45 @@
           `          ${src} · ${latency} · ${ago(ev.at)}`,
         ];
       })();
-      // Latest caption the bot heard + whether captions are even on. Surfacing
-      // this on the camera makes a deaf bot obvious to everyone in the call —
-      // when captions stop reaching the bot, "heard" freezes while people talk.
-      const captionLines = (() => {
-        const status = d.captionsOn ? 'ON' : 'OFF — DEAF';
+      const clip = (s, max = 40) => {
+        let t = String(s || '').replace(/\s+/g, ' ').trim();
+        return t.length > max ? '…' + t.slice(-max) : t; // keep the most-recent tail
+      };
+      // heard = freshest caption (may still be in flux → "(live)") vs settled.
+      // proc  = what was last SHIPPED to the slow model for processing.
+      const heard = (() => {
         const c = d.lastCaption;
-        if (!c || !c.text) return [`caps:     ${status}`, `heard:    (nothing yet)`];
-        let txt = String(c.text).replace(/\s+/g, ' ').trim();
-        const max = 40;
-        if (txt.length > max) txt = '…' + txt.slice(-max); // most-recent tail
-        return [`caps:     ${status}`, `heard:    ${c.speaker || '?'}: ${txt}`];
+        if (!c || !c.text) return 'heard:    (nothing yet)';
+        return `heard:    ${c.speaker || '?'}: ${clip(c.text)} ${c.live ? '(live)' : '(settled)'}`;
       })();
-      const lines = [
-        'DEBUG',
-        `call:     ${d.callStatus || 'unknown'}`,
-        `state:    ${d.botState || 'unknown'}`,
+      const proc = (() => {
+        const p = d.processing;
+        if (!p || !p.text) return 'proc:     (idle)';
+        return `proc:     ${p.speaker || '?'}: ${clip(p.text)}`;
+      })();
+
+      // Two clusters: CALL (overall health) and LOOP (the hear/speak cycle).
+      // Each is its own line-list; blank lines and headers separate them.
+      const callLines = [
+        'CALL',
+        `in-call:  ${d.callStatus === 'in-call' ? 'yes' : (d.callStatus || 'unknown')}`,
+        `sharing:  ${d.sharing ? 'yes' : 'no'}${d.someoneElsePresenting ? ' (other)' : ''}`,
+        `members:  ${(d.participants || []).length}`,
+        `caps:     ${d.captionsOn ? 'ON' : 'OFF — DEAF'}`,
+      ];
+      const loopLines = [
+        'LOOP',
         `mode:     ${d.mode || 'unknown'}`,
+        `state:    ${d.botState || 'unknown'}`,
         `speaking: ${d.anyoneSpeaking ? 'yes' : 'no'}`,
-        `sharing:  ${d.sharing ? 'yes' : 'no'}`,
         `loop:     ${loopHealth}`,
         `last WfS: ${ago(d.lastWaitForSpeechAt)}`,
         ...ackLines,
         `queued:   ${(d.pendingBotSpeech || []).length}`,
-        `members:  ${(d.participants || []).length}`,
-        ...captionLines,
+        heard,
+        proc,
       ];
+      const lines = [...callLines, '', ...loopLines];
 
       const pad = 16;
       const lineH = 30;
@@ -425,34 +438,24 @@
       ctx.font = font;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'top';
-      // Measure widest line
-      let maxW = 0;
-      for (const ln of lines) {
-        const w = ctx.measureText(ln).width;
-        if (w > maxW) maxW = w;
-      }
-      const boxW = Math.ceil(maxW) + pad * 2;
-      const boxH = lineH * lines.length + pad * 2;
-      // Left-aligned so the box doesn't shift horizontally as line widths
-      // change (the ack line in particular grows/shrinks with the phrase).
+      // No background panel (it was distracting as the box resized). Draw text
+      // directly with a soft shadow so it stays legible over any avatar bg.
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
+      ctx.shadowBlur = 4;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 1;
       const boxX = 24;
       const boxY = 24;
-      // Background panel
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.72)';
-      ctx.fillRect(boxX, boxY, boxW, boxH);
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
-      ctx.lineWidth = 1;
-      ctx.strokeRect(boxX + 0.5, boxY + 0.5, boxW - 1, boxH - 1);
-      // Text
       for (let i = 0; i < lines.length; i++) {
         const ln = lines[i];
-        // Color: DEBUG header yellow; STALE loop red; ack-fallback red;
-        // rest light grey.
-        if (i === 0) ctx.fillStyle = '#fdd663';
+        // Headers yellow; STALE loop / DEAF caps / ack-fallback red; heard blue;
+        // proc teal; rest light grey.
+        if (ln === 'CALL' || ln === 'LOOP') ctx.fillStyle = '#fdd663';
         else if (ln.startsWith('loop:') && ln.includes('STALE')) ctx.fillStyle = '#ea4335';
         else if (ln.includes('fallback') && (ln.startsWith('ack:') || ln.startsWith('          '))) ctx.fillStyle = '#ea4335';
         else if (ln.startsWith('caps:') && ln.includes('DEAF')) ctx.fillStyle = '#ea4335';
         else if (ln.startsWith('heard:')) ctx.fillStyle = '#8ab4f8';
+        else if (ln.startsWith('proc:')) ctx.fillStyle = '#5bd1c4';
         else ctx.fillStyle = '#e8eaed';
         ctx.fillText(ln, boxX + pad, boxY + pad + i * lineH);
       }

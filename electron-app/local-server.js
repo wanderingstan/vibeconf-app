@@ -104,6 +104,7 @@ class LocalServer {
     // agent can avoid double-responding to the same thought.
     this.lastRespondedSpeaker = null;
     this.lastRespondedText = null;
+    this.lastProcessingText = null;
     this.lastRespondedAt = null;
 
     // Pending bot speech — queued when speak() is called before the bot is
@@ -289,6 +290,7 @@ class LocalServer {
     this.captionsOn = null;
     this.lastRespondedSpeaker = null;
     this.lastRespondedText = null;
+    this.lastProcessingText = null;
     this.lastRespondedAt = null;
     this.workingMemory = { understanding: '', stance: '', people: '', updatedAt: null, updatedBy: null };
     this._charsAtLastComprehension = 0;
@@ -315,6 +317,7 @@ class LocalServer {
     this.captionsOn = null;
     this.lastRespondedSpeaker = null;
     this.lastRespondedText = null;
+    this.lastProcessingText = null;
     this.lastRespondedAt = null;
     this.workingMemory = { understanding: '', stance: '', people: '', updatedAt: null, updatedBy: null };
     this._charsAtLastComprehension = 0;
@@ -675,10 +678,16 @@ class LocalServer {
           if (!turn.text) continue;
           if (!latest || (turn.lastUpdated || 0) >= (latest.lastUpdated || 0)) latest = turn;
         }
-        if (latest) return { speaker: latest.speaker || '?', text: latest.text };
+        // live = the latest turn is still being edited (not yet settled) — i.e.
+        // the caption is still in flux vs a completed utterance.
+        if (latest) return { speaker: latest.speaker || '?', text: latest.text, live: !latest.settled };
         const tx = this.transcripts[this.transcripts.length - 1];
-        return tx && tx.text ? { speaker: tx.participantName || '?', text: tx.text } : null;
+        return tx && tx.text ? { speaker: tx.participantName || '?', text: tx.text, live: false } : null;
       })(),
+      // What was last shipped to the slow model for processing (set at the
+      // thinking transition) — distinct from lastCaption, which is the freshest
+      // caption and may still be growing. Cleared implies nothing processed yet.
+      processing: this.lastProcessingText || null,
       workingMemory: this.getWorkingMemory(),
       sharing: this.sharing,
       someoneElsePresenting: this.someoneElsePresenting,
@@ -1403,6 +1412,15 @@ class LocalServer {
         // in _setBotState short-circuits.
         console.log(ts(), '🧠 [thinking] Processing transcript — ' + wordCount + ' words, ' + deduped.length + ' entry/ies: "' + joinedText.slice(0, 240) + (joinedText.length > 240 ? '…' : '') + '"');
         this.botState = 'thinking';
+        // Capture exactly what just SHIPPED to the slow model for this thinking
+        // cycle — so the debug overlay can distinguish "heard" (latest caption,
+        // possibly still in flux) from what's actually being processed right now.
+        const procTurn = deduped[deduped.length - 1];
+        this.lastProcessingText = {
+          speaker: (procTurn && procTurn.participantName) || '?',
+          text: joinedText,
+          at: Date.now(),
+        };
         // Restart the #221 hold window — a fresh utterance earns a fresh
         // thinking display, even if a deferred downgrade was pending.
         this._thinkingSince = Date.now();

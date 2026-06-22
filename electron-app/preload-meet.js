@@ -1957,33 +1957,54 @@ async function setStudioSound(enabled) {
 
 ipcRenderer.on('set-studio-sound', (_event, payload) => { setStudioSound(!!(payload && payload.enabled)); });
 
+// Detect Meet's intermittent screen-share error modal ("Can't share your screen
+// / Something went wrong when screen sharing. Please try again."). Returns the
+// matched text or null after watching for `ms`.
+async function waitForShareError(ms) {
+  const errorTexts = ["Can't share your screen", 'Something went wrong when screen sharing'];
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    const txt = document.body?.innerText || '';
+    for (const e of errorTexts) if (txt.includes(e)) return e;
+    await delay(250);
+  }
+  return null;
+}
+
+// Dismiss that modal. Its button is "Ok" (the old selector only had Close/
+// Dismiss/Got it and missed it). Try aria-labels first, then the Ok/OK button text.
+function dismissShareErrorModal() {
+  const byLabel = document.querySelector('[aria-label="Close" i], [aria-label="Dismiss" i], [aria-label="Got it" i]');
+  if (byLabel) { byLabel.click(); return true; }
+  const ok = findByText('Ok', { exact: true }) || findByText('OK', { exact: true });
+  if (ok) { ok.click(); return true; }
+  return false;
+}
+
 ipcRenderer.on('trigger-screen-share', async (_event, options) => {
   const shareType = options?.shareType || 'window';
   console.log('[electron-meet] Screen share triggered, type:', shareType);
-  const result = await clickPresentNow(shareType);
-  if (result === 'already-presenting') {
-    // Not an error — the share is already active. Tell main so it can report a
-    // truthful "already sharing" instead of a misleading "couldn't find button".
-    ipcRenderer.send('self-presenting', { presenting: true });
-  } else if (result === 'not-found') {
-    ipcRenderer.send('screen-share-error', 'Could not find Present button');
-  }
 
-  // Watch for screen share error dialogs
-  setTimeout(() => {
-    const errorTexts = ["Can't share your screen", "Something went wrong when screen sharing"];
-    const allText = document.body?.innerText || '';
-    for (const errText of errorTexts) {
-      if (allText.includes(errText)) {
-        console.error('[electron-meet] Screen share error detected:', errText);
-        ipcRenderer.send('screen-share-error', errText);
-        // Try to dismiss the dialog
-        const dismissBtn = document.querySelector('[aria-label="Close"], [aria-label="Dismiss"], [aria-label="Got it"]');
-        if (dismissBtn) dismissBtn.click();
-        break;
-      }
+  // The "Something went wrong … Please try again" error is intermittent, so on it
+  // we dismiss the modal and RE-attempt the share a couple times before giving up.
+  const MAX_ATTEMPTS = 3;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const result = await clickPresentNow(shareType);
+    if (result === 'already-presenting') { ipcRenderer.send('self-presenting', { presenting: true }); return; }
+    if (result === 'not-found') { ipcRenderer.send('screen-share-error', 'Could not find Present button'); return; }
+
+    const err = await waitForShareError(4000);
+    if (!err) return; // no error modal → share proceeded
+
+    console.warn('[electron-meet] Screen share error (attempt ' + attempt + '/' + MAX_ATTEMPTS + '):', err);
+    dismissShareErrorModal();
+    if (attempt < MAX_ATTEMPTS) {
+      await delay(1200);
+      console.log('[electron-meet] Retrying screen share…');
+    } else {
+      ipcRenderer.send('screen-share-error', err);
     }
-  }, 3000);
+  }
 });
 
 function findStopPresentingButton() {

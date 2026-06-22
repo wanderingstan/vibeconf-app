@@ -323,6 +323,14 @@
       const thinkSway = this.state === 'thinking'
         ? Math.sin(t * 1.2) * 8
         : 0;
+      // Background-tick "noted that" pulse — a quick head-tilt + pop that eases
+      // out over ~700ms when the avatar enters thinking (set in 'set-bot-state').
+      // Framerate-robust via wall-clock. sin gives a smooth 0→1→0.
+      const PULSE_MS = 700;
+      const pulseAge = Date.now() - (this._tickPulseAt || 0);
+      const tickPulse = (pulseAge >= 0 && pulseAge < PULSE_MS) ? Math.sin((pulseAge / PULSE_MS) * Math.PI) : 0;
+      const tickTilt = tickPulse * 0.16; // ~9° peak head tilt
+      const tickPop = 1 + tickPulse * 0.12; // ~12% peak enlarge
 
       ctx.save();
       ctx.textAlign = 'center';
@@ -343,13 +351,13 @@
       // Apply translation + rotation + non-uniform scale around the avatar
       // center. The scaleX/scaleY give the "mouth open" jaw effect.
       ctx.translate(cx + thinkSway, cy + bob - speakBounce);
-      if (speakTilt) ctx.rotate(speakTilt);
+      if (speakTilt || tickTilt) ctx.rotate(speakTilt + tickTilt);
       if (this.speaking) {
-        ctx.scale(speakScaleX, speakScaleY);
+        ctx.scale(speakScaleX * tickPop, speakScaleY * tickPop);
       } else {
         // Idle/listening/thinking breathing — keeps the glyph subtly alive
         // without the loud jaw motion of the speaking path. (#223)
-        ctx.scale(breathe, breathe);
+        ctx.scale(breathe * tickPop, breathe * tickPop);
       }
       ctx.fillText(emoji, 0, 0);
       ctx.restore();
@@ -964,6 +972,10 @@
         // Update avatar state: 'idle' | 'listening' | 'thinking' | 'speaking' | 'yielding'
         if (payload?.state) {
           for (const cam of cameras.values()) {
+            // Brief "noted that" pulse on entering thinking — this is what a
+            // background_tick (#245) causes, so the avatar tilts+pops to signal
+            // the slow model just surfaced. Harmless before a normal response too.
+            if (payload.state === 'thinking' && cam.state !== 'thinking') cam._tickPulseAt = Date.now();
             cam.state = payload.state;
             // hasEngaged flips only on actual interaction — thinking,
             // speaking, or yielding. Pure 'listening' (agent in wait_for_speech with

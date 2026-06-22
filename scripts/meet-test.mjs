@@ -26,36 +26,45 @@ const BOTS = arg('bots', 'Jimmy:7865,Samantha:7866').split(',').map((s) => { con
 
 const COLORADO_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#e8855b"/><path d="M0 70 L30 40 L50 60 L70 35 L100 65 L100 100 L0 100Z" fill="#33406b"/></svg>';
 
+// Per-run chat nonces so each bot can verify it RECEIVED the other's posted
+// message (chat history persists in the meet, so the nonce disambiguates this
+// run). Date.now() is fine here — this is a normal node script.
+const NONCE_J = `chatJ-${Date.now()}`;
+const NONCE_S = `chatS-${Date.now()}`;
+
 // Per-bot scripts. Each is an async fn given its Bot. They run concurrently, so
 // timing/overlap between bots is exercised the way a real call would.
 const SCRIPTS = {
-  // Jimmy: the "presenter" — exercises whiteboard share + background, narrating.
+  // Jimmy: the "presenter" — whiteboard share + background, plus chat send/read.
   Jimmy: async (bot) => {
     await bot.join();
     await sleep(4000); // admission + captions
     await bot.speak('Hi, Jimmy here. Starting the screen-share test now.', { emoji: '🤓' });
     await bot.updateWhiteboard('# Automated Test\n\n```mermaid\ngraph TD\n  A[Harness] --> B[Bots]\n  B --> C[Meet]\n```');
     await bot.shareWhiteboard();
+    await bot.sendChat(`Jimmy chat check ${NONCE_J}`); // CHAT: post (tests send)
     await sleep(2000);
     await bot.speak('Diagram is on the board. Changing my background.');
     await bot.setBackground(COLORADO_SVG);
     await bot.setAvatarEmoji('😎');
     await sleep(2000);
     await bot.waitForSpeech({ wait: 10, silence: 2 }); // listen for Samantha
+    await bot.expectChatContains(NONCE_S); // CHAT: did Jimmy receive Samantha's post?
     await bot.stopSharing();
     await bot.speak('Stopping the share. Test complete on my end.');
     await bot.leave();
   },
 
-  // Samantha: the "responder" — speaks and listens, to exercise turn-taking
-  // and surface the cross-bot lockstep / group wait_for_speech behaviors.
+  // Samantha: the "responder" — speaks, listens, plus chat send/read.
   Samantha: async (bot) => {
     await bot.join();
     await sleep(4500);
     await bot.speak('Samantha here too, listening for Jimmy.');
+    await bot.sendChat(`Samantha chat check ${NONCE_S}`); // CHAT: post (tests send)
     const r1 = await bot.waitForSpeech({ wait: 12, silence: 2 });
     if (r1.spoke) await bot.speak('Got it, Jimmy — I can hear you.');
     await bot.waitForSpeech({ wait: 10, silence: 2 });
+    await bot.expectChatContains(NONCE_J); // CHAT: did Samantha receive Jimmy's post?
     await bot.speak('Wrapping up on my side too.');
     await bot.leave();
   },

@@ -50,7 +50,13 @@ export class Bot {
   // --- actions (mirror the MCP tools) ---
 
   async join() {
-    const { data, ms } = await this._sync({ meta: { action: 'join', meetCode: this.room, botName: this.name } });
+    // force:true — a test deliberately reuses the same room + bot names, so a
+    // prior run can leave this name stuck in room presence (TTL ~10min). Without
+    // force, the join is refused as a name-collision and the app never navigates
+    // to the meet (stays on Meet home → everything cascade-fails). Forcing past
+    // our own stale presence is correct for the harness. (Production has a real,
+    // separate bug here: a bot can't reclaim its own name on rejoin/restart.)
+    const { data, ms } = await this._sync({ meta: { action: 'join', meetCode: this.room, botName: this.name, force: true } });
     const ok = !!data?.results?.join?.ok || data?.success !== false;
     log(this.name, 'join', { ms, ok, note: ok ? '' : JSON.stringify(data).slice(0, 120) });
     return ok;

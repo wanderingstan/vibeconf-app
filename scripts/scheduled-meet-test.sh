@@ -25,8 +25,10 @@ echo "node: $(command -v node) $(node -v 2>/dev/null)" | tee -a "$LOG"
 echo "pnpm: $(command -v pnpm) $(pnpm -v 2>/dev/null)" | tee -a "$LOG"
 echo "" | tee -a "$LOG"
 
-# Run the one-shot CI target; capture everything, preserve its exit code.
-pnpm test:meet:ci 2>&1 | tee -a "$LOG"
+# Run the one-shot DMG target — the scheduled run on the always-on Mac mini
+# drives the PACKAGED app so it tests the exact artifact an average user runs
+# (no source-vs-package fidelity gap). Capture everything, preserve exit code.
+pnpm test:meet:dmg 2>&1 | tee -a "$LOG"
 CODE=${pipestatus[1]:-$?}   # zsh: exit code of pnpm, not tee
 
 echo "" | tee -a "$LOG"

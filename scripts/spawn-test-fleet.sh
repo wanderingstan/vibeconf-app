@@ -13,9 +13,15 @@
 # only launches the apps. Drive them with: node scripts/meet-test.mjs
 #
 # Usage:
-#   scripts/spawn-test-fleet.sh            # 2 bots (Jimmy, Samantha)
+#   scripts/spawn-test-fleet.sh            # 2 bots from SOURCE (Jimmy, Samantha)
 #   scripts/spawn-test-fleet.sh 3          # 3 bots (adds Cosmo)
+#   scripts/spawn-test-fleet.sh 2 --dmg    # drive the INSTALLED packaged app
+#                                          #   (real-artifact fidelity; mini/CI)
 #   scripts/spawn-test-fleet.sh 2 --kill   # stop a previously-spawned fleet
+#
+# --dmg vs source: --dmg launches /Applications/Vibeconferencing.app so automated
+# testing exercises the exact build users run (catches packaging-only bugs). Plain
+# (source) is for active development. The scheduled mini run uses --dmg.
 #
 # Prints the --bots string to hand to meet-test.mjs.
 #
@@ -33,12 +39,22 @@ ELECTRON="$REPO/electron-app"
 NAMES=(Jimmy Samantha Cosmo Dizzy)        # display names by index
 BASE_PORT=7901
 
-N="${1:-2}"
-if ! [[ "$N" =~ '^[0-9]+$' ]]; then echo "usage: $0 [count] [--kill]"; exit 1; fi
+# Flag parsing (position-independent): a numeric arg = count; --kill / --dmg flags.
+N=2
+KILL=0
+DMG=0
+for a in "$@"; do
+  case "$a" in
+    --kill) KILL=1 ;;
+    --dmg)  DMG=1 ;;
+    <->)    N="$a" ;;   # zsh: <-> matches an integer
+    *) echo "usage: $0 [count] [--dmg] [--kill]"; exit 1 ;;
+  esac
+done
 if (( N < 1 || N > 4 )); then echo "count must be 1–4"; exit 1; fi
 
-# --kill: stop instances on the test ports.
-if [[ "$2" == "--kill" ]]; then
+# --kill: stop instances on the test ports (works regardless of how they launched).
+if (( KILL )); then
   echo "▶ Stopping test fleet…"
   for i in $(seq 1 $N); do
     port=$((BASE_PORT + i - 1))
@@ -49,15 +65,34 @@ if [[ "$2" == "--kill" ]]; then
   exit 0
 fi
 
-echo "▶ Spawning $N test bot(s) — agent-less, isolated profiles"
+# --dmg drives the INSTALLED packaged app (/Applications/Vibeconferencing.app) so
+# automated testing exercises the exact artifact an average user runs — no
+# source-vs-package fidelity gap (e.g. asar/build.files bugs that only show
+# packaged). Default (no --dmg) runs from source for active development.
+if (( DMG )); then
+  APP="/Applications/Vibeconferencing.app"
+  [[ -d "$APP" ]] || { echo "✗ DMG app not found at $APP — install it first (or drop --dmg to run from source)"; exit 1; }
+  echo "▶ Spawning $N test bot(s) from the PACKAGED app (--dmg) — agent-less, isolated profiles"
+else
+  echo "▶ Spawning $N test bot(s) from SOURCE — agent-less, isolated profiles"
+fi
+
 BOTS_ARG=""
 for i in $(seq 1 $N); do
   profile="test$i"
   port=$((BASE_PORT + i - 1))
   name="${NAMES[$i]}"
   echo "  • $name — profile=$profile port=$port"
-  nohup zsh -c "cd '$ELECTRON' && pnpm dev -- --profile=$profile --local-port=$port --bot-name=$name" \
-    >"/tmp/vibeconf-$profile.log" 2>&1 &
+  if (( DMG )); then
+    # open -n = new instance (profiles bypass the single-instance lock). It
+    # returns immediately and runs detached under LaunchServices; we wait/kill by
+    # port below, and the app writes its own session log under the profile's
+    # userData (…/profiles/testN/logs), so no stdout redirect needed.
+    open -n -a "Vibeconferencing" --args --profile="$profile" --local-port="$port" --bot-name="$name"
+  else
+    nohup zsh -c "cd '$ELECTRON' && pnpm dev -- --profile=$profile --local-port=$port --bot-name=$name" \
+      >"/tmp/vibeconf-$profile.log" 2>&1 &
+  fi
   BOTS_ARG+="${BOTS_ARG:+,}$name:$port"
 done
 

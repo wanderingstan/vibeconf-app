@@ -1,8 +1,18 @@
 # Scheduling the automated Meet test (Mac mini)
 
-Runs `pnpm test:meet:ci` (spawn 2 test bots → drive scripted scenarios against the
-open meet `paz-sqoa-npe` → teardown) on a nightly schedule, capturing a log + a
-one-line JSON result per run for trend tracking.
+Runs `pnpm test:meet:dmg` (spawn 2 test bots **from the installed packaged app** →
+drive scripted scenarios against the open meet `paz-sqoa-npe` → teardown) on a
+nightly schedule, capturing a log + a one-line JSON result per run for trend
+tracking.
+
+**Why `:dmg` (packaged) for the scheduled run:** the Mac mini is the always-on
+machine, so it's our only automated-test host — but we want automated testing to
+reflect the **average user**, who runs the packaged DMG, not from source. The
+harness drives bots over HTTP regardless of how the app launched, so `--dmg` points
+the fleet at `/Applications/Vibeconferencing.app` and tests the exact artifact
+users get (catching packaging-only bugs like asar/build.files issues that never
+show from source). **Keep the installed app up to date** with the build you want to
+validate. Your manual testing also uses the DMG; from-source is for development.
 
 **Why a LaunchAgent (not cron / not a Claude `/schedule` cloud agent):** the test
 spawns real Electron apps that need a **logged-in GUI session** plus mic / camera /

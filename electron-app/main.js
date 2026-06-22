@@ -677,17 +677,26 @@ const localServer = new globalThis.LocalServer({
     // local-server). comprehend() fails gracefully if no endpoint is up.
     const config = require('./ack').getLocalModelConfig(store);
     const { comprehend } = require('./comprehend');
+    const { classifyEngagement } = require('./engagement');
     const botName = store?.get('botName') || 'the bot';
-    const result = await comprehend({
-      transcript,
-      workingMemory,
-      roster,
-      botName,
-      config: { endpoint: config.endpoint, apiKey: config.apiKey, model: config.model, timeoutMs: 8000 },
-      log: (m) => console.log(ts(), '🧩', m),
-    });
-    if (result) {
-      localServer.setWorkingMemory({ ...result, updatedBy: 'auto' });
+    const cfg = { endpoint: config.endpoint, apiKey: config.apiKey, model: config.model };
+    // Run the working-memory refresh and the dedicated engagement classifier
+    // (#243) in parallel — separate calls because folding engagement into
+    // comprehend's bundled JSON made the small model anchor the bot in every
+    // exchange; the isolated speaker→addressee classifier doesn't. See
+    // engagement.js for the why.
+    const [result, eng] = await Promise.all([
+      comprehend({ transcript, workingMemory, roster, botName, config: { ...cfg, timeoutMs: 8000 }, log: (m) => console.log(ts(), '🧩', m) }),
+      classifyEngagement({ transcript, roster, botName, config: { ...cfg, timeoutMs: 6000 }, log: (m) => console.log(ts(), '🤝', m) }),
+    ]);
+    const patch = {};
+    if (result) Object.assign(patch, result);
+    if (eng && typeof eng.engagement === 'string') {
+      patch.engagement = eng.engagement;
+      console.log(ts(), `🤝 [engagement] ${eng.speaker} → ${eng.addressing} ⇒ "${eng.engagement}" (${eng.ms}ms)`);
+    }
+    if (Object.keys(patch).length) {
+      localServer.setWorkingMemory({ ...patch, updatedBy: 'auto' });
     }
   },
   // Two-tier TRIAGE shadow (docs/two-tier-design.md): at each floor-open, the

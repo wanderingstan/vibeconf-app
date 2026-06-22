@@ -127,14 +127,17 @@ export class Bot {
     // that overlaps someone else's speech is the group silence-resolution bug.
     let captionsOn = null;
     if (timedOut) { try { captionsOn = (await this.status()).captionsOn; } catch { /* ignore */ } }
+    const chatWake = !!data?.chatWake; // woken by a new chat message (quiet room)
     log(this.name, 'waitForSpeech', {
       ms, ok: true,
-      note: timedOut
-        ? `timeout (${ms}ms)${captionsOn === false ? ' — DEAF (captions off)' : ''}`
-        : `heard ${entries.length}: "${(entries[entries.length - 1].text || '').slice(0, 40)}"`,
+      note: chatWake
+        ? `chat-wake (${ms}ms)`
+        : timedOut
+          ? `timeout (${ms}ms)${captionsOn === false ? ' — DEAF (captions off)' : ''}`
+          : `heard ${entries.length}: "${(entries[entries.length - 1].text || '').slice(0, 40)}"`,
       meta: timedOut ? { timedOut: true, captionsOn, windowStart: started, windowEnd: started + ms } : { timedOut: false },
     });
-    return { spoke: !timedOut, transcript: entries, timedOut, ms };
+    return { spoke: !timedOut, transcript: entries, timedOut, ms, chatWake };
   }
 
   // GET the call-state snapshot — for stall / deaf assertions between steps.
@@ -191,6 +194,12 @@ export class Bot {
 }
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Record a custom assertion into the shared event log so report()'s fail count
+// (and the run's exit code) includes it. ok=false marks a failed step.
+export function record(bot, action, ok, note = '') {
+  return log(bot, action, { ok, note });
+}
 
 // --- report: latency percentiles per action, stalls, cross-bot overlap ---
 export function report() {

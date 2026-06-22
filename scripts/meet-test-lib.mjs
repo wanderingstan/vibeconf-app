@@ -15,8 +15,8 @@ const MCP_VERSIONS = { app: 'test-harness', mcp: '0.1.0' };
 
 // Shared event log across all bots — the timeline the report is built from.
 export const events = [];
-function log(bot, action, { ms, ok = true, note = '' } = {}) {
-  const e = { t: Date.now(), bot, action, ms, ok, note };
+function log(bot, action, { ms, ok = true, note = '', meta = null } = {}) {
+  const e = { t: Date.now(), bot, action, ms, ok, note, meta };
   events.push(e);
   const tag = ok ? '·' : '✗';
   console.log(`${tag} [${bot}] ${action}${ms != null ? ` ${ms}ms` : ''}${note ? ` — ${note}` : ''}`);
@@ -106,9 +106,18 @@ export class Bot {
     const entries = (data?.transcript?.entries || []).filter((e) => e.participantName !== this.name);
     if (data?.asOf) this.since = data.asOf;
     const timedOut = entries.length === 0;
+    // On a timeout, grab captionsOn now so the report can tell a genuinely-quiet
+    // room (not a failure) from a DEAF bot (real stall). The window [start,end]
+    // lets the report check whether another bot was actually speaking — a timeout
+    // that overlaps someone else's speech is the group silence-resolution bug.
+    let captionsOn = null;
+    if (timedOut) { try { captionsOn = (await this.status()).captionsOn; } catch { /* ignore */ } }
     log(this.name, 'waitForSpeech', {
       ms, ok: true,
-      note: timedOut ? `timeout (${ms}ms)` : `heard ${entries.length}: "${(entries[entries.length - 1].text || '').slice(0, 40)}"`,
+      note: timedOut
+        ? `timeout (${ms}ms)${captionsOn === false ? ' — DEAF (captions off)' : ''}`
+        : `heard ${entries.length}: "${(entries[entries.length - 1].text || '').slice(0, 40)}"`,
+      meta: timedOut ? { timedOut: true, captionsOn, windowStart: started, windowEnd: started + ms } : { timedOut: false },
     });
     return { spoke: !timedOut, transcript: entries, timedOut, ms };
   }
@@ -158,19 +167,37 @@ export function report() {
     console.log(`  ${action.padEnd(22)} n=${String(arr.length).padStart(3)}  p50=${pct(arr, 50)}  p95=${pct(arr, 95)}  max=${Math.max(...arr)}`);
   }
 
-  const stalls = events.filter((e) => e.action === 'waitForSpeech' && /timeout/.test(e.note));
   const fails = events.filter((e) => !e.ok);
-  // Cross-bot speak overlap: two bots' speak events within 1.2s = lockstep risk.
   const speaks = events.filter((e) => e.action === 'speak').sort((a, b) => a.t - b.t);
+  const timeouts = events.filter((e) => e.action === 'waitForSpeech' && e.meta?.timedOut);
+
+  // A timeout is only a REAL STALL if the bot should have heard something:
+  //  (a) captions were OFF  → deaf bot, or
+  //  (b) ANOTHER bot's speech overlapped this wait window → heard-nothing-despite-
+  //      speech = the group silence-resolution bug.
+  // A timeout in a genuinely quiet room (captions on, nobody else speaking) is
+  // expected, not a failure — so it doesn't gate the run.
+  const realStalls = timeouts.filter((e) => {
+    if (e.meta?.captionsOn === false) return true;
+    const { windowStart, windowEnd } = e.meta || {};
+    return speaks.some((s) => s.bot !== e.bot && s.t >= windowStart && s.t <= windowEnd);
+  });
+
+  // Cross-bot speak overlap: informational only. Incidental coincidence in
+  // concurrent scripts isn't lockstep — true lockstep needs a dedicated scenario
+  // (two bots told to answer the SAME prompt). So we report it, but it does NOT
+  // gate the run.
   let overlaps = 0;
   for (let i = 1; i < speaks.length; i++) {
     if (speaks[i].bot !== speaks[i - 1].bot && speaks[i].t - speaks[i - 1].t < 1200) overlaps++;
   }
 
   console.log('\nSIGNALS:');
-  console.log(`  wait_for_speech timeouts: ${stalls.length}`);
+  console.log(`  wait_for_speech timeouts: ${timeouts.length} (${realStalls.length} real stall${realStalls.length === 1 ? '' : 's'}, rest were quiet-room)`);
+  if (realStalls.length) console.log(`    ⚠ real stalls: ${realStalls.map((e) => `${e.bot}${e.meta?.captionsOn === false ? '(deaf)' : '(heard-nothing)'}`).join(', ')}`);
   console.log(`  failed steps:             ${fails.length}${fails.length ? ' — ' + fails.map((f) => `${f.bot}/${f.action}`).join(', ') : ''}`);
-  console.log(`  cross-bot speak overlaps (<1.2s): ${overlaps}${overlaps ? '  ⚠ possible lockstep' : ''}`);
+  console.log(`  cross-bot speak overlaps (<1.2s): ${overlaps} (informational — not a failure; use a dedicated lockstep scenario to test for real)`);
   console.log('─'.repeat(72));
-  return { stalls: stalls.length, fails: fails.length, overlaps };
+  // Gate on real stalls + failures only. Overlaps and quiet-room timeouts don't fail.
+  return { stalls: realStalls.length, timeouts: timeouts.length, fails: fails.length, overlaps };
 }

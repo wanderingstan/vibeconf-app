@@ -275,6 +275,33 @@ const localServer = new globalThis.LocalServer({
     };
     checkAndLeave();
   },
+  // Play an arbitrary audio file into the call (#audio). Resolve the source to
+  // base64 (inline data / local file via fs / remote URL via fetch), then route
+  // it through the SAME virtual-mic playback TTS uses (unmute-mic → play-tts).
+  // decodeAudioData (renderer side) handles mp3/wav/ogg, so no format flag.
+  onPlayAudio: async ({ url, path: filePath, audioData, emoji }) => {
+    try {
+      let base64 = audioData || null;
+      if (!base64 && filePath) base64 = fs.readFileSync(filePath).toString('base64');
+      if (!base64 && url) {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`fetch ${res.status}`);
+        base64 = Buffer.from(await res.arrayBuffer()).toString('base64');
+      }
+      if (!base64) { console.error('[local-server] play-audio: no source provided'); return; }
+      console.log('[local-server] play-audio:', url || filePath || '(inline)', '→', base64.length, 'b64');
+      if (meetView && !meetView.webContents.isDestroyed()) {
+        meetView.webContents.send('extension-message', { action: 'unmute-mic' });
+        setTimeout(() => {
+          meetView.webContents.send('extension-message', { action: 'play-tts', payload: { audioData: base64, emoji } });
+        }, 300);
+      }
+    } catch (err) {
+      console.error('[local-server] play-audio failed:', err.message);
+      // Don't strand 'speaking' if resolving the audio failed.
+      if (localServer.botState === 'speaking') localServer._setBotState(localServer.waiters.length ? 'listening' : 'idle', undefined, { force: true });
+    }
+  },
   onShareWhiteboard: (shareType) => {
     console.log('[local-server] Share requested by agent, type:', shareType);
     const meetCode = localServer.roomId;

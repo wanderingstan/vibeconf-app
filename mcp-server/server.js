@@ -601,6 +601,37 @@ server.tool(
 
 // --- read_whiteboard ---
 server.tool(
+  "play_audio",
+  "Play an audio file (sound effect, clip, jingle, etc.) INTO the Google Meet call through the bot's virtual mic — everyone hears it. Provide exactly ONE source: url (remote audio file), path (absolute local file path — e.g. a sound a local tool just generated), or data (base64-encoded audio bytes). mp3/wav/ogg supported. The bot treats it as speaking (won't talk over it). Not for background music (use the whiteboard for that later).",
+  {
+    url: z.string().optional().describe("Remote audio file URL, e.g. https://example.com/airhorn.mp3"),
+    path: z.string().optional().describe("Absolute local file path to an audio file (mp3/wav/ogg). The app reads and plays it — no upload needed."),
+    data: z.string().optional().describe("Base64-encoded audio bytes, for audio generated in-memory by a tool."),
+    emoji: z.string().optional().describe("Optional emoji to show on the bot's avatar while the audio plays, e.g. 🔊"),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ url, path, data, emoji, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    if (!url && !path && !data) return { content: [{ type: "text", text: "Error: provide one of url, path, or data." }] };
+    try {
+      const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(botSyncPayload(BOT_NAME, { meta: { action: "play-audio", url, path, audioData: data, emoji } })),
+      });
+      const d = await resp.json().catch(() => ({}));
+      if (d.success || d.results?.playAudio?.ok) {
+        return { content: [{ type: "text", text: `Playing audio (${url ? "url" : path ? "local file" : "inline data"}) into the call.` }] };
+      }
+      return { content: [{ type: "text", text: `Failed to play audio: ${d.error || "unknown"}` }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error contacting local server: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
   "read_whiteboard",
   "Read the current contents of the shared whiteboard — the markdown/Mermaid source text, not a screenshot. Use this before update_whiteboard to build on what's already there (your own earlier writes or another bot's), or to recall what you put up. Returns the source and the current version number. (get_room_info also includes the board, but this is the clean, dedicated read.)",
   {

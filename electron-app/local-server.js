@@ -58,7 +58,7 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onShadowPhrase, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, onInspectDom, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref } = {}) {
+  constructor({ port, appVersion, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onShadowPhrase, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, onInspectDom, onPlayAudio, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.appVersion = appVersion || null;
     this.onBotSpeech = onBotSpeech || (() => {});
@@ -70,6 +70,7 @@ class LocalServer {
     this.onJoinCall = onJoinCall || (() => {});
     this.onLoadUrl = onLoadUrl || (() => {});
     this.onScrollShare = onScrollShare || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onPlayAudio = onPlayAudio || (() => {});
     this.onInspectDom = onInspectDom || (async () => ({ ok: false, error: 'not implemented' }));
     this.onBotStateChange = onBotStateChange || (() => {}); // 'idle' | 'listening' | 'thinking' | 'speaking' | 'yielding'
     this.onModeChange = onModeChange || (() => {});        // 'active' | 'passive' | 'silent'
@@ -2381,6 +2382,15 @@ class LocalServer {
     if (data.meta?.action === 'stop-sharing') {
       this.onStopSharing();
       results.stopSharing = { ok: true };
+    }
+
+    // Play an arbitrary audio file (url / local path / inline base64) into the
+    // call via the bot's virtual mic — reuses the TTS playback path (#audio).
+    // Treat it as speaking so the bot won't talk over it; 'tts-ended' clears it.
+    if (data.meta?.action === 'play-audio') {
+      this._setBotState('speaking', { emoji: data.meta.emoji });
+      this.onPlayAudio({ url: data.meta.url, path: data.meta.path, audioData: data.meta.audioData, emoji: data.meta.emoji });
+      results.playAudio = { ok: true };
     }
 
     // Handle load-url command (load arbitrary URL in whiteboard window)

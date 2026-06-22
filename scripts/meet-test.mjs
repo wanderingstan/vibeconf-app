@@ -18,7 +18,7 @@
 // Exit code is non-zero if any step failed or a stall was detected — so this can
 // gate CI later.
 
-import { Bot, sleep, report } from './meet-test-lib.mjs';
+import { Bot, sleep, report, record } from './meet-test-lib.mjs';
 
 const arg = (name, def) => { const i = process.argv.indexOf('--' + name); return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : def; };
 const ROOM = arg('room', 'paz-sqoa-npe');
@@ -52,7 +52,7 @@ const SCRIPTS = {
     await bot.expectChatContains(NONCE_S); // CHAT: did Jimmy receive Samantha's post?
     await bot.stopSharing();
     await bot.speak('Stopping the share. Test complete on my end.');
-    await bot.leave();
+    // leave() happens centrally in main() after the chat-wake phase.
   },
 
   // Samantha: the "responder" — speaks, listens, plus chat send/read.
@@ -66,7 +66,7 @@ const SCRIPTS = {
     await bot.waitForSpeech({ wait: 10, silence: 2 });
     await bot.expectChatContains(NONCE_J); // CHAT: did Samantha receive Jimmy's post?
     await bot.speak('Wrapping up on my side too.');
-    await bot.leave();
+    // leave() happens centrally in main() after the chat-wake phase.
   },
 };
 
@@ -79,8 +79,31 @@ const DEFAULT_SCRIPT = async (bot) => {
   await bot.speak(`${bot.name} here, joining the test.`);
   await bot.waitForSpeech({ wait: 12, silence: 2 });
   await bot.speak(`${bot.name} signing off.`);
-  await bot.leave();
+  // leave() happens centrally in main() after the chat-wake phase.
 };
+
+// Coordinated chat-WAKE assertion: in a quiet room, a chat message should
+// promptly wake a bot sitting in wait_for_speech (the beta39 chatWake path) —
+// not leave it blocked until the ~55s timeout. Sequential coordination (one
+// waiter, one poster) makes the timing deterministic. Needs 2+ bots.
+async function chatWakeTest(bots) {
+  if (bots.length < 2) { console.log('\n(chat-wake test needs 2+ bots — skipping)'); return; }
+  const [waiter, poster] = bots;
+  console.log('\n— chat-wake test (quiet room) —');
+  await sleep(4000); // let trailing TTS/captions settle so the room is genuinely quiet
+  const nonce = `wake-${Date.now()}`;
+  const started = Date.now();
+  const waitP = waiter.waitForSpeech({ wait: 25, silence: 2 }); // long wait; expect early wake
+  await sleep(2500); // ensure the waiter is parked in its long-poll
+  await poster.sendChat(`wake check ${nonce}`);
+  const r = await waitP;
+  const elapsed = Date.now() - started;
+  // PASS = woken by chat, promptly (well under the 25s cap), not a full timeout.
+  const ok = r.chatWake === true && elapsed < 12000;
+  record(waiter.name, 'chatWake', ok,
+    ok ? `woke in ${elapsed}ms via chat`
+       : `expected chat-wake; got ${r.chatWake ? 'chatWake' : (r.timedOut ? 'timeout' : 'speech')} in ${elapsed}ms (room may not have been quiet)`);
+}
 
 async function main() {
   console.log(`meet-test → room ${ROOM}, bots: ${BOTS.map((b) => `${b.name}:${b.port}`).join(', ')}\n`);
@@ -97,10 +120,16 @@ async function main() {
   const started = Date.now();
   await Promise.all(BOTS.map((b) => {
     const script = SCRIPTS[b.name] || DEFAULT_SCRIPT;
-    if (!SCRIPTS[b.name]) console.log(`(no named script for ${b.name} — using default join/speak/listen/leave)`);
+    if (!SCRIPTS[b.name]) console.log(`(no named script for ${b.name} — using default join/speak/listen)`);
     return script(b).catch((err) => console.error(`✗ [${b.name}] script error:`, err.message));
   }));
-  console.log(`\nAll scripts finished in ${Math.round((Date.now() - started) / 1000)}s.`);
+  console.log(`\nScenario scripts finished in ${Math.round((Date.now() - started) / 1000)}s.`);
+
+  // Coordinated phase that needs a quiet room + the bots still in the call.
+  await chatWakeTest(BOTS).catch((err) => console.error('✗ chat-wake test error:', err.message));
+
+  // Central teardown (scripts no longer leave themselves).
+  await Promise.all(BOTS.map((b) => b.leave().catch(() => {})));
 
   const r = report();
   process.exit(r.fails > 0 || r.stalls > 0 ? 1 : 0);

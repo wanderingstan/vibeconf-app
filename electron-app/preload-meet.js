@@ -1198,8 +1198,26 @@ async function autoJoin(botName) {
       // entry or the call is otherwise inaccessible. Fail fast rather than
       // burning the 15s limbo grace, and give the agent a specific reason.
       if (bodyText.includes("You can't join this video call")) {
-        sendStatus("Error: can't join this video call (host blocked entry or call inaccessible)");
         console.warn('[electron-meet] Denial page detected: "You can\'t join this video call"');
+        // #238: the "You can't join" denial is often SPURIOUS/intermittent — a
+        // reload commonly gets straight in. Retry by reloading the meet page a few
+        // times with backoff before giving up. Count is kept in sessionStorage so
+        // it survives the reload (module state resets); cleared on admission below.
+        const MAX_DENIAL_RETRIES = 3;
+        let tries = 0;
+        try { tries = parseInt(sessionStorage.getItem('vibeconf-denial-retries') || '0', 10) || 0; } catch { /* ignore */ }
+        if (tries < MAX_DENIAL_RETRIES) {
+          tries++;
+          try { sessionStorage.setItem('vibeconf-denial-retries', String(tries)); } catch { /* ignore */ }
+          const backoff = 2000 * tries; // 2s, 4s, 6s
+          sendStatus(`Denied — reloading to retry join (attempt ${tries}/${MAX_DENIAL_RETRIES})`);
+          console.warn(`[electron-meet] Denial — reloading to retry (attempt ${tries}/${MAX_DENIAL_RETRIES}, backoff ${backoff}ms)`);
+          await delay(backoff);
+          window.location.reload();
+          return;
+        }
+        sendStatus("Error: can't join this video call (host blocked entry or call inaccessible)");
+        console.warn('[electron-meet] Denial persisted after', MAX_DENIAL_RETRIES, 'retries — giving up');
         return;
       }
       if (bodyText.includes('You have been removed from the meeting')) {
@@ -1210,6 +1228,7 @@ async function autoJoin(botName) {
 
       if (inCallUI && !hasJoinUI) {
         admitted = true;
+        try { sessionStorage.removeItem('vibeconf-denial-retries'); } catch { /* ignore */ } // #238: reset on success
         sendStatus('Participating in Meet');
         // Don't try a one-shot captions click here — the toolbar's "Leave
         // call" button often renders before "Turn on captions" does, so a

@@ -96,6 +96,17 @@ const PREFERENCES = {
       'settled. The messy data needed to test utterance-completeness detection ' +
       '(#243). Verbose; turn ON only when collecting test data, OFF for normal use.',
   },
+  studioSound: {
+    type: 'boolean',
+    default: true,
+    description:
+      'Meet\'s "Studio sound" voice filter (noise cancellation + voice-activity ' +
+      'detection). ON (default) = Meet\'s normal behavior, best for the bot\'s ' +
+      'spoken voice but it SUPPRESSES non-voice audio. Set FALSE to have the bot ' +
+      'turn Studio sound OFF once in-call (More options → Settings → Audio), so ' +
+      'sound effects / music played via play_audio pass through the mic. Costs a ' +
+      'bit of voice enhancement. Availability depends on the Meet account tier.',
+  },
   shadowPhrase: {
     type: 'boolean',
     default: false,

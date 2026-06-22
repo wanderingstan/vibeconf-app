@@ -1877,6 +1877,51 @@ async function clickPresentNow(shareType) {
   return 'not-found';
 }
 
+// ---------------------------------------------------------------------------
+// Studio sound (Meet's voice filter). Disabling it lets non-voice audio (sound
+// effects / music via play_audio) pass through the bot's mic — Meet's pipeline
+// otherwise suppresses anything that isn't speech. Navigates the in-call UI:
+// More options (⋮) → Settings → Audio → toggle "Studio sound" → Close. (Steps
+// confirmed live by Stan.) Best-effort with short waits, since menus/dialogs
+// animate in.
+async function setStudioSound(enabled) {
+  const waitFor = async (fn, ms = 4000) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) { const el = fn(); if (el) return el; await delay(150); }
+    return null;
+  };
+  try {
+    const more = await waitFor(() => findByAriaLabel('More options'));
+    if (!more) { console.warn('[studio-sound] "More options" not found'); return false; }
+    more.click();
+    const settings = await waitFor(() => findByText('Settings', { exact: true }));
+    if (!settings) { console.warn('[studio-sound] "Settings" menu item not found'); return false; }
+    settings.click();
+    // Audio tab within the settings dialog (be safe per Stan's steps).
+    const audioTab = await waitFor(() =>
+      document.querySelector('[role="tab"][aria-label*="Audio" i], button[aria-label*="Audio" i]'));
+    if (audioTab) audioTab.click();
+    // The "Studio sound" switch (role=switch, so findByAriaLabel — which is
+    // button-only — won't see it).
+    const sw = await waitFor(() => document.querySelector('[aria-label*="Studio sound" i]'));
+    if (!sw) {
+      console.warn('[studio-sound] "Studio sound" toggle not found');
+    } else {
+      const isOn = sw.getAttribute('aria-checked') === 'true' || sw.getAttribute('aria-pressed') === 'true';
+      if (isOn !== enabled) { sw.click(); console.log('[studio-sound] toggled to', enabled); }
+      else { console.log('[studio-sound] already', enabled); }
+    }
+    const close = await waitFor(() => findByAriaLabel('Close dialog') || document.querySelector('[aria-label*="Close dialog" i]'), 2000);
+    if (close) close.click();
+    return true;
+  } catch (e) {
+    console.warn('[studio-sound] error:', e.message);
+    return false;
+  }
+}
+
+ipcRenderer.on('set-studio-sound', (_event, payload) => { setStudioSound(!!(payload && payload.enabled)); });
+
 ipcRenderer.on('trigger-screen-share', async (_event, options) => {
   const shareType = options?.shareType || 'window';
   console.log('[electron-meet] Screen share triggered, type:', shareType);

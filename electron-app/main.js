@@ -618,6 +618,17 @@ const localServer = new globalThis.LocalServer({
         payload: { status },
       });
     }
+    // Studio sound: if disabled by pref, turn off Meet's voice filter once in-call
+    // so non-voice audio (SFX/music via play_audio) passes through. Delay lets the
+    // in-call toolbar (More options ⋮) finish rendering. Default leaves it ON.
+    if (status === 'in-call' && store.get('studioSound') === false && meetView && !meetView.webContents.isDestroyed()) {
+      setTimeout(() => {
+        if (meetView && !meetView.webContents.isDestroyed()) {
+          console.log('[electron] Disabling Meet Studio sound (studioSound pref = false)');
+          meetView.webContents.send('set-studio-sound', { enabled: false });
+        }
+      }, 2500);
+    }
     // Also let the panel reflect real call state. Showing "Leave Call" between
     // "URL navigated" and "actually admitted" is misleading — especially when
     // entry is denied, since that 15s grace window leaves the button visible

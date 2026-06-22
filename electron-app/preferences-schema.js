@@ -405,8 +405,16 @@ function validate(key, value) {
     return { ok: true, value };
   }
   if (spec.type === 'boolean') {
-    if (typeof value !== 'boolean') return { ok: false, error: `Expected boolean` };
-    return { ok: true, value };
+    // Coerce common string/number forms — LLM agents routinely pass booleans as
+    // the string "true"/"false" (mirrors the number case's string leniency).
+    if (typeof value === 'boolean') return { ok: true, value };
+    if (typeof value === 'number' && (value === 0 || value === 1)) return { ok: true, value: value === 1 };
+    if (typeof value === 'string') {
+      const v = value.trim().toLowerCase();
+      if (['true', '1', 'yes', 'on'].includes(v)) return { ok: true, value: true };
+      if (['false', '0', 'no', 'off'].includes(v)) return { ok: true, value: false };
+    }
+    return { ok: false, error: `Expected boolean (true/false), got ${typeof value}: ${JSON.stringify(value)}` };
   }
   if (spec.type === 'string[]') {
     if (!Array.isArray(value) || !value.every(s => typeof s === 'string')) {

@@ -480,16 +480,26 @@ async function openChatPane() {
     } catch (e) { console.warn('[chat] [chat-diag] dump failed:', e && e.message); }
     return false;
   }
-  console.log('[chat] → switching to Chat pane (clicking', JSON.stringify(btn.getAttribute('aria-label')), ')');
-  btn.click();
-  for (let i = 0; i < 20; i++) {
-    await delay(150);
-    if (isChatPaneOpen()) {
-      console.log('[chat] ✓ Chat pane open');
-      return true;
+  // The first click sometimes doesn't open the pane (observed: click registers
+  // but the pane never appears, while a later click works — a Meet click/animation
+  // timing thing, especially soon after admission). RETRY the click a few times,
+  // re-fetching the toggle each round (its label flips "…- New message" ↔ plain as
+  // unread state changes). Guard against oscillation: if the pane DID open, return
+  // immediately; only re-click while it's still closed.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    btn = getChatToggle() || btn;
+    console.log('[chat] → switching to Chat pane (clicking', JSON.stringify(btn.getAttribute('aria-label')), ', attempt', attempt + 1, ')');
+    btn.click();
+    for (let i = 0; i < 16; i++) { // ~2.4s per attempt
+      await delay(150);
+      if (isChatPaneOpen()) {
+        console.log('[chat] ✓ Chat pane open (attempt', attempt + 1, ')');
+        return true;
+      }
     }
+    console.warn('[chat] pane not open after click (attempt', attempt + 1, 'of 3) — retrying');
   }
-  console.warn('[chat] ❌ Chat pane did not open after click');
+  console.warn('[chat] ❌ Chat pane did not open after 3 click attempts');
   return false;
 }
 

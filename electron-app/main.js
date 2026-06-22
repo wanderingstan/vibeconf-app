@@ -279,28 +279,28 @@ const localServer = new globalThis.LocalServer({
   // base64 (inline data / local file via fs / remote URL via fetch), then route
   // it through the SAME virtual-mic playback TTS uses (unmute-mic → play-tts).
   // decodeAudioData (renderer side) handles mp3/wav/ogg, so no format flag.
-  onPlayAudio: async ({ url, path: filePath, audioData, emoji }) => {
-    try {
-      let base64 = audioData || null;
-      if (!base64 && filePath) base64 = fs.readFileSync(filePath).toString('base64');
-      if (!base64 && url) {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`fetch ${res.status}`);
-        base64 = Buffer.from(await res.arrayBuffer()).toString('base64');
+  onPlayAudio: ({ url, path: filePath, audioData, emoji }) => {
+    // Funnel through the same serial audio chain as speakText so a preceding
+    // spoken ack always plays BEFORE this sound, regardless of fetch vs synth
+    // timing (#audio).
+    enqueueAudio(async () => {
+      try {
+        let base64 = audioData || null;
+        if (!base64 && filePath) base64 = fs.readFileSync(filePath).toString('base64');
+        if (!base64 && url) {
+          const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+          if (!res.ok) throw new Error(`fetch ${res.status}`);
+          base64 = Buffer.from(await res.arrayBuffer()).toString('base64');
+        }
+        if (!base64) { console.error('[local-server] play-audio: no source provided'); return; }
+        console.log('[local-server] play-audio:', url || filePath || '(inline)', '→', base64.length, 'b64');
+        await sendPlayTts(base64, emoji);
+      } catch (err) {
+        console.error('[local-server] play-audio failed:', err.message);
+        // Don't strand 'speaking' if resolving the audio failed.
+        if (localServer.botState === 'speaking') localServer._setBotState(localServer.waiters.length ? 'listening' : 'idle', undefined, { force: true });
       }
-      if (!base64) { console.error('[local-server] play-audio: no source provided'); return; }
-      console.log('[local-server] play-audio:', url || filePath || '(inline)', '→', base64.length, 'b64');
-      if (meetView && !meetView.webContents.isDestroyed()) {
-        meetView.webContents.send('extension-message', { action: 'unmute-mic' });
-        setTimeout(() => {
-          meetView.webContents.send('extension-message', { action: 'play-tts', payload: { audioData: base64, emoji } });
-        }, 300);
-      }
-    } catch (err) {
-      console.error('[local-server] play-audio failed:', err.message);
-      // Don't strand 'speaking' if resolving the audio failed.
-      if (localServer.botState === 'speaking') localServer._setBotState(localServer.waiters.length ? 'listening' : 'idle', undefined, { force: true });
-    }
+    });
   },
   onShareWhiteboard: (shareType) => {
     console.log('[local-server] Share requested by agent, type:', shareType);
@@ -1338,52 +1338,66 @@ function stripMarkdownForTts(text) {
   return out.trim();
 }
 
+// Unmute the mic and send the audio to the renderer's TTS queue. Resolves AFTER
+// the play-tts is sent (post the 300ms unmute settle), so callers can chain to
+// preserve send order.
+function sendPlayTts(base64Audio, emoji) {
+  return new Promise((resolve) => {
+    if (!meetView || meetView.webContents.isDestroyed()) {
+      console.error('[electron] Meet view not available for audio playback');
+      return resolve();
+    }
+    meetView.webContents.send('extension-message', { action: 'unmute-mic' });
+    setTimeout(() => {
+      meetView.webContents.send('extension-message', { action: 'play-tts', payload: { audioData: base64Audio, emoji } });
+      console.log('[electron] Sent play-tts to Meet view', emoji ? `(emoji: ${emoji})` : '');
+      resolve();
+    }, 300);
+  });
+}
+
+// Serialize audio PRODUCTION (TTS synth + play_audio fetch/read) so play-tts
+// messages reach the renderer in REQUEST order. Without this, a fast play_audio
+// fetch can overtake a slower TTS synth and the sound plays before the spoken
+// ack (#audio). The renderer's ttsQueue then plays them in arrival = request
+// order. It also removes a latent voice-override race between concurrent speaks.
+// A failed/slow item is caught so it can't block the chain. Note: this serializes
+// PRODUCTION only — a long clip doesn't block the chain (it returns once sent);
+// playback serialization is the renderer's ttsQueue.
+let _audioChain = Promise.resolve();
+function enqueueAudio(produceAndSend) {
+  _audioChain = _audioChain.then(produceAndSend).catch((e) => console.error('[electron] audio-chain item failed:', e?.message));
+  return _audioChain;
+}
+
 function speakText(text, voice, emoji) {
   // Sanitize markdown out of the spoken string only (#160).
   const spokenText = stripMarkdownForTts(text);
-
-  // Temporarily override voice if specified (works for both macOS and ElevenLabs)
-  const originalMacVoice = tts.macosVoice;
-  const originalELVoice = tts.voiceId;
-  if (voice) {
-    tts.updateConfig({ macosVoice: voice });
-    // If it looks like an ElevenLabs voice ID, also set voiceId
-    if (voice.length > 15) tts.updateConfig({ voiceId: voice });
-  }
-
-  tts.synthesize(spokenText)
-    .then((audioBuffer) => {
-      if (!audioBuffer) {
-        console.error('[electron] TTS returned null/empty buffer');
-        return;
-      }
+  enqueueAudio(async () => {
+    // Temporarily override voice if specified (works for both macOS and
+    // ElevenLabs). Safe under serialization — no concurrent speak can clobber it.
+    const originalMacVoice = tts.macosVoice;
+    const originalELVoice = tts.voiceId;
+    if (voice) {
+      tts.updateConfig({ macosVoice: voice });
+      if (voice.length > 15) tts.updateConfig({ voiceId: voice });
+    }
+    try {
+      const audioBuffer = await tts.synthesize(spokenText);
+      if (!audioBuffer) { console.error('[electron] TTS returned null/empty buffer'); return; }
       const base64Audio = Buffer.from(audioBuffer).toString('base64');
       console.log('[electron] TTS synthesized:', text.slice(0, 40), '→', base64Audio.length, 'bytes base64');
-      // Unmute mic before speaking
-      if (meetView && !meetView.webContents.isDestroyed()) {
-        meetView.webContents.send('extension-message', { action: 'unmute-mic' });
-        setTimeout(() => {
-          meetView.webContents.send('extension-message', {
-            action: 'play-tts',
-            payload: { audioData: base64Audio, emoji },
-          });
-          console.log('[electron] Sent play-tts to Meet view', emoji ? `(emoji: ${emoji})` : '');
-        }, 300);
-      } else {
-        console.error('[electron] Meet view not available for TTS playback');
-      }
-    })
-    .catch((err) => {
+      await sendPlayTts(base64Audio, emoji);
+    } catch (err) {
       console.error('[electron] TTS error:', err.message);
       broadcastError('TTS: ' + err.message.slice(0, 120));
-    })
-    .finally(() => {
-      // Restore original voices after one-off override
+    } finally {
       if (voice) {
         tts.updateConfig({ macosVoice: originalMacVoice });
         tts.voiceId = originalELVoice;
       }
-    });
+    }
+  });
 }
 
 // Track recent error notifications so a flapping condition doesn't spam the

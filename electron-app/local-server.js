@@ -631,9 +631,19 @@ class LocalServer {
     //      no live-speaker state to lose.
     // If someone IS speaking, we do nothing here: chatUnread stays set and rides
     // along when speech resolves naturally at the next pause — nothing dropped.
-    if (unread && !this.anyoneSpeaking && !this.chatPaneOpen) {
-      for (const waiter of [...this.waiters]) {
-        this._resolveWaiter(waiter, 'chat');
+    if (unread) {
+      const blocked = this.anyoneSpeaking ? 'someone-speaking'
+        : this.chatPaneOpen ? 'chat-pane-open'
+        : this.waiters.length === 0 ? 'no-active-waiter'
+        : null;
+      if (blocked) {
+        console.log(ts(), '💬 [chat-wake] new unread but NOT waking —', blocked,
+          '(anyoneSpeaking=' + this.anyoneSpeaking + ' chatPaneOpen=' + this.chatPaneOpen + ' waiters=' + this.waiters.length + ')');
+      } else {
+        console.log(ts(), '💬 [chat-wake] new unread in quiet room — waking', this.waiters.length, 'waiter(s)');
+        for (const waiter of [...this.waiters]) {
+          this._resolveWaiter(waiter, 'chat');
+        }
       }
     }
   }

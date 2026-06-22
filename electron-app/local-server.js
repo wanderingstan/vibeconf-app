@@ -1788,6 +1788,13 @@ class LocalServer {
         } else {
           // default: read
           const result = await this.onReadChat();
+          // The agent has now consumed the chat — clear the unread flag so a LATER
+          // message produces a fresh false→true transition (and wakes the loop).
+          // Meet's own "New message" indicator doesn't reliably clear on a brief
+          // programmatic pane-open, so chatUnread would otherwise stick true and
+          // suppress all future chat-wakes (#chat-wake). This is authoritative:
+          // a successful read means the messages were seen.
+          if (result?.ok) this.setChatUnread(false);
           res.writeHead(result?.ok ? 200 : 500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: !!result?.ok, messages: result?.messages || [], error: result?.error }));
         }

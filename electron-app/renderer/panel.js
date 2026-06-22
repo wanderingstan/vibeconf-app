@@ -494,7 +494,7 @@ async function refreshBotIdentity(mode) {
   botIdentityStatus.style.color = '#81c995';
   try {
     const r = await api.invoke('get-meet-account-email');
-    if (r?.signedIn && r.email) botIdentityStatus.textContent = '✓ ' + r.email + ' — auto-admits';
+    if (r?.signedIn && r.email) botIdentityStatus.textContent = '✓ ' + r.email;
     else if (r?.signedIn) botIdentityStatus.textContent = '✓ Signed in (couldn\'t read which account)';
     else { botIdentityStatus.textContent = '⚠ Account mode but not signed in yet'; botIdentityStatus.style.color = '#fdd663'; }
   } catch { botIdentityStatus.textContent = '✓ Signed in'; }

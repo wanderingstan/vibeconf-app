@@ -512,6 +512,12 @@ botSignOutMainBtn?.addEventListener('click', async () => {
   setTimeout(() => { botSignOutMainBtn.disabled = false; }, 1500);
 });
 
+// Keep polling the bot identity while in account mode — the email isn't readable
+// until the human finishes the Google sign-in (which takes far longer than the
+// one-shot refetch above), and the account chip only appears afterward. Cheap:
+// no scan in guest mode.
+setInterval(() => { if (lastMeetMode === 'account') refreshBotIdentity('account'); }, 7000);
+
 // Initial state on panel load.
 api.invoke('get-meet-mode').then((info) => {
   if (info?.mode) applyMeetMode(info.mode);

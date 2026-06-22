@@ -33,15 +33,15 @@
            (Google Meet, controls auto-admit) are easy to confuse, so surface
            both with their email or a sign-in button. -->
       <div id="identityBlock" style="margin-bottom:12px;padding:8px 12px;border:1px solid #5f6368;border-radius:8px;background:#3c4043;font-size:12px">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
-          <span style="line-height:1.5"><strong>User sign-in:</strong> <span id="userIdStatus">checking…</span></span>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px" title="Your vibeconferencing.com login. Required for whiteboard/room access (creating and coordinating the shared room the bots use).">
+          <span style="line-height:1.5"><strong>User identity:</strong> <span id="userIdStatus">checking…</span></span>
           <span style="white-space:nowrap">
             <button id="userSignInMainBtn" class="auth-action-btn" style="display:none">Sign in</button>
             <button id="userSignOutMainBtn" class="auth-action-btn" style="display:none">Log out</button>
           </span>
         </div>
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-          <span style="line-height:1.5"><strong>Bot sign-in:</strong> <span id="botIdentityStatus">checking…</span></span>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px" title="The bot's Google Meet sign-in. Totally optional — only needed so the bot can auto-admit into invite-only meetings. Guest mode works for open meetings.">
+          <span style="line-height:1.5"><strong>Bot identity:</strong> <span id="botIdentityStatus">checking…</span></span>
           <span style="white-space:nowrap">
             <button id="botSignInMainBtn" class="auth-action-btn" style="display:none">Sign in as bot</button>
             <button id="botSignOutMainBtn" class="auth-action-btn" style="display:none">Use guest</button>

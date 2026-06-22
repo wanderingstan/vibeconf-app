@@ -2766,14 +2766,19 @@ function setupIPC() {
         const SCAN = `(() => {
           const RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}/g;
           const out = new Set();
-          for (const el of document.querySelectorAll('[aria-label*="Google Account" i]')) {
-            (((el.getAttribute('aria-label') || '').match(RE)) || []).forEach((x) => out.add(x));
+          // Search the top doc + any SAME-ORIGIN iframes (the Google bar is
+          // usually inline, but be safe). Cross-origin iframes throw → skipped.
+          const docs = [document];
+          for (const f of document.querySelectorAll('iframe')) {
+            try { if (f.contentDocument) docs.push(f.contentDocument); } catch (e) { /* cross-origin */ }
           }
-          if (!out.size) { // fallback: any aria-label on the page
-            for (const el of document.querySelectorAll('[aria-label]')) {
+          const scan = (sel) => { for (const d of docs) {
+            for (const el of d.querySelectorAll(sel)) {
               (((el.getAttribute('aria-label') || '').match(RE)) || []).forEach((x) => out.add(x));
             }
-          }
+          } };
+          scan('[aria-label*="Google Account" i]');
+          if (!out.size) scan('[aria-label]'); // fallback: any aria-label
           return [...out];
         })()`;
         for (let attempt = 0; attempt < 5 && !email; attempt++) {

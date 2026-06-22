@@ -1770,7 +1770,27 @@ async function clickPresentNow(shareType) {
   // list missed the "<name> is presenting" case in some Meet builds
   // where the label moved from data-tooltip to aria-label, so the bot
   // reported "Could not find button" while the button was right there.
-  const presentBtn = findPresentButton();
+  // Wait for the present button to render. The Meet toolbar can appear a second
+  // or two after admission, so a one-shot lookup loses the race when a share is
+  // requested early (the automated test surfaced this: "Could not find Present
+  // now" logged 1.5s BEFORE "In-call toolbar detected"). Poll up to 10s; also
+  // re-check alreadyPresenting each tick in case it flips on mid-wait.
+  let presentBtn = findPresentButton();
+  if (!presentBtn) {
+    const waitStart = Date.now();
+    while (Date.now() - waitStart < 10_000) {
+      await delay(300);
+      if (document.querySelector('[aria-label*="Stop presenting" i], [aria-label*="Stop sharing" i], [data-tooltip*="Stop presenting" i], [data-tooltip*="Stop sharing" i]')) {
+        console.log('[electron-meet] Became already-presenting while waiting for Present button');
+        return 'already-presenting';
+      }
+      presentBtn = findPresentButton();
+      if (presentBtn) {
+        console.log('[electron-meet] Present button appeared after', Date.now() - waitStart, 'ms wait');
+        break;
+      }
+    }
+  }
 
   if (presentBtn) {
     const label = presentButtonText(presentBtn);

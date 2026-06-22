@@ -90,12 +90,16 @@ async function chatWakeTest(bots) {
   if (bots.length < 2) { console.log('\n(chat-wake test needs 2+ bots — skipping)'); return; }
   const [waiter, poster] = bots;
   console.log('\n— chat-wake test (quiet room) —');
-  // The wake only fires in a genuinely QUIET room. Trailing TTS/captions from
-  // the scenario are still settling, so DRAIN them first: a short wait_for_speech
-  // absorbs any in-flight speech and leaves the room quiet before the real test.
-  await sleep(3000);
-  await waiter.waitForSpeech({ wait: 6, silence: 1 }); // drain trailing speech
-  await sleep(1500);
+  // The wake only fires in a genuinely QUIET room. Trailing TTS/captions from the
+  // scenario keep resolving the waiter as "speech" for several seconds, so a
+  // single drain isn't enough — LOOP wait_for_speech until one TIMES OUT (no
+  // speech in the window = confirmed quiet) before running the real test.
+  let quiet = false;
+  for (let i = 0; i < 8 && !quiet; i++) {
+    const d = await waiter.waitForSpeech({ wait: 6, silence: 2 });
+    quiet = d.timedOut; // a timeout means nobody spoke in the window
+  }
+  if (!quiet) { record(waiter.name, 'chatWake', false, 'could not reach a quiet room to test the wake'); return; }
   const nonce = `wake-${Date.now()}`;
   const started = Date.now();
   const waitP = waiter.waitForSpeech({ wait: 25, silence: 2 }); // long wait; expect early wake

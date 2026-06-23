@@ -323,6 +323,10 @@ class LocalServer {
   }
 
   clearRoom() {
+    // Tell the website we're leaving so our presence entry doesn't linger and
+    // block the next session's join (name-collision, #252). Fire-and-forget,
+    // BEFORE we null roomId/name below.
+    this._deregisterPresence();
     this.roomId = null;
     this.transcripts = [];
     this.turns = new Map();
@@ -1234,6 +1238,24 @@ class LocalServer {
       // Presence unreachable or slow — fall through to allowing the join.
     }
     return null;
+  }
+
+  // Remove our presence entry from the website on leave so a stale "still here"
+  // member doesn't block the next session reclaiming this name (#252). Reads
+  // roomId/name at call time, so call it BEFORE clearRoom nulls them.
+  _deregisterPresence() {
+    const roomId = this.roomId;
+    const name = this.getEffectiveBotName();
+    const base = (this.getWebsiteUrl() || '').replace(/\/$/, '');
+    if (!roomId || !name || !base) return;
+    fetch(`${base}/api/room/${roomId}/presence?name=${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+      signal: AbortSignal.timeout(3000),
+    }).then((r) => {
+      console.log(ts(), r.ok
+        ? `🚪 [presence] de-registered "${name}" from room ${roomId}`
+        : `[presence] de-register HTTP ${r.status} (endpoint may not be deployed yet)`);
+    }).catch((e) => console.log(ts(), '[presence] de-register failed:', e.message));
   }
 
   _setBotState(state, extra, { force } = {}) {

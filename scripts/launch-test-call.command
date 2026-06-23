@@ -145,19 +145,25 @@ OSA
 echo "  • opening agent terminals…"
 osascript >/dev/null 2>&1 <<OSA
 tell application "Terminal"
-  do script "cd '$REPO' && claude --mcp-config '$REPO/.mcp.json' --strict-mcp-config \"/join-call $ROOM Jimmy\""
-  delay 0.6
-  set jId to id of window 1
-  do script "cd '$SAM_DIR' && claude --mcp-config '$SAM_DIR/.mcp.json' --strict-mcp-config \"/join-call $ROOM Samantha\""
-  delay 0.6
-  set sId to id of window 1
+  -- do script returns the TAB it ran in; match each window by its tab (robust:
+  -- Terminal opens a blank "spare" window on cold launch, so window-index/front
+  -- ordering is unreliable). Jimmy → top-right, Samantha → bottom-right; any
+  -- OTHER window (the spare) gets closed.
+  set jt to do script "cd '$REPO' && claude --mcp-config '$REPO/.mcp.json' --strict-mcp-config \"/join-call $ROOM Jimmy\""
+  set st to do script "cd '$SAM_DIR' && claude --mcp-config '$SAM_DIR/.mcp.json' --strict-mcp-config \"/join-call $ROOM Samantha\""
   activate
-  try
-    set bounds of window id jId to {$HALFW, $TOPY, $SCRW, $BOTY}
-  end try
-  try
-    set bounds of window id sId to {$HALFW, $BOTY, $SCRW, $SCRH}
-  end try
+  delay 1
+  repeat with w in windows
+    try
+      if (selected tab of w) is jt then
+        set bounds of w to {$HALFW, $TOPY, $SCRW, $BOTY}
+      else if (selected tab of w) is st then
+        set bounds of w to {$HALFW, $BOTY, $SCRW, $SCRH}
+      else
+        close w saving no
+      end if
+    end try
+  end repeat
 end tell
 OSA
 

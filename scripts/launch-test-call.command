@@ -32,24 +32,37 @@ echo "▶ Launching test call in room: $ROOM"
 echo "▶ Preflight: clearing any prior test session…"
 set +e  # cleanup is best-effort; a missing target must not abort the launch
 
-# 1. Close the agent Terminal windows we tagged on a previous run.
-osascript >/dev/null 2>&1 <<'OSA'
-tell application "Terminal"
-  repeat with w in (every window)
-    try
-      if (custom title of (selected tab of w)) starts with "vibeconf-agent" then close w saving no
-    end try
-  end repeat
-end tell
-OSA
+# Order matters: KILL the processes first, THEN close their Terminal windows.
+# Terminal refuses to close (via AppleScript) a window that still has a running
+# process like `claude` in it — closing first was a no-op, so windows piled up.
+
+# 1. Kill leftover agent claude sessions pinned to our mcp configs (join-call).
+#    This session has no '--mcp-config … /join-call' in its argv, so it's safe.
+if pkill -f "claude --mcp-config.*join-call" 2>/dev/null; then echo "  • killed a stale agent session"; fi
 
 # 2. Quit our dev Electron app(s) — matched by our app path only (covers both
 #    Jimmy and Samantha, who run from the same electron-app dir).
 if pkill -f "vibeconferencing/electron-app" 2>/dev/null; then echo "  • quit a running Electron app"; fi
 
-# 3. Kill leftover agent claude sessions pinned to our mcp configs (join-call).
-#    This session has no '--mcp-config … /join-call' in its argv, so it's safe.
-if pkill -f "claude --mcp-config.*join-call" 2>/dev/null; then echo "  • killed a stale agent session"; fi
+sleep 1  # let the killed shells drop back to an idle prompt so they're closeable
+
+# 3. Now close the agent Terminal windows we tagged on a previous run. Collect
+#    matches first, then close — closing while iterating `windows` skips entries.
+osascript >/dev/null 2>&1 <<'OSA'
+tell application "Terminal"
+  set toClose to {}
+  repeat with w in windows
+    try
+      if (custom title of (selected tab of w)) contains "vibeconf-agent" then set end of toClose to w
+    end try
+  end repeat
+  repeat with w in toClose
+    try
+      close w saving no
+    end try
+  end repeat
+end tell
+OSA
 
 sleep 1
 # If something we don't manage is still holding Jimmy's port, warn (don't kill).

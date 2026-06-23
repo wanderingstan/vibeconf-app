@@ -2150,7 +2150,12 @@ class LocalServer {
   async _handleGet(req, res, url, roomId) {
     const since = url.searchParams.get('since');
     const wait = parseInt(url.searchParams.get('wait') || '0', 10);
-    const silence = parseInt(url.searchParams.get('silence') || String(this._pref('defaultSilenceSeconds')), 10);
+    // parseFloat, not parseInt — fractional thresholds like 1.4s are valid and
+    // were silently truncated to 1s before. When the agent omits 'silence', fall
+    // back to the defaultSilenceSeconds preference (the tunable default).
+    const silenceParam = url.searchParams.get('silence');
+    const silenceRaw = silenceParam != null ? parseFloat(silenceParam) : Number(this._pref('defaultSilenceSeconds'));
+    const silence = Number.isFinite(silenceRaw) ? silenceRaw : 1.4;
     const bot = url.searchParams.get('bot');
 
     // Non-blocking: return immediately

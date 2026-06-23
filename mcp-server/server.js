@@ -211,7 +211,7 @@ server.tool(
   "Long-poll: blocks until someone in the call finishes speaking (a pause in conversation). Returns the complete transcript of what was said. Much more efficient than polling read_transcripts repeatedly. The server waits for new speech, then waits for a conversation break (silence) before returning, so you get complete thoughts rather than fragments.",
   {
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
-    silence_seconds: z.number().optional().describe("How many seconds of silence to wait before considering speech 'done'. Default: 1.4"),
+    silence_seconds: z.number().optional().describe("How many seconds of silence to wait before considering speech 'done'. If omitted, the app's defaultSilenceSeconds preference is used (1.4 by default)."),
     timeout_seconds: z.number().optional().describe("Maximum seconds to wait before returning even if nobody speaks. Default: 55"),
   },
   async ({ room_id, silence_seconds, timeout_seconds }) => {
@@ -220,7 +220,11 @@ server.tool(
       return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
     }
 
-    const silenceSec = silence_seconds || 1.4;
+    // Only send silence= when the agent explicitly overrides it; otherwise omit
+    // it so the server applies the defaultSilenceSeconds preference (tunable via
+    // set_preference). Previously this hardcoded a default and ALWAYS sent it,
+    // which dead-lettered the pref entirely.
+    const silenceParam = silence_seconds != null ? `&silence=${silence_seconds}` : '';
     const waitSec = Math.min(55, timeout_seconds || 55);
 
     // Get baseline timestamp if we don't have one
@@ -231,7 +235,7 @@ server.tool(
     }
 
     // Single server-side long-poll request
-    const url = `${BASE_URL}/api/sync/${roomId}?since=${lastPollTime}&wait=${waitSec}&silence=${silenceSec}&bot=${encodeURIComponent(BOT_NAME)}`;
+    const url = `${BASE_URL}/api/sync/${roomId}?since=${lastPollTime}&wait=${waitSec}${silenceParam}&bot=${encodeURIComponent(BOT_NAME)}`;
     const startTime = Date.now();
     const resp = await fetch(url);
     const data = await resp.json();

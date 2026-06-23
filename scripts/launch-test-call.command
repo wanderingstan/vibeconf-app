@@ -32,15 +32,18 @@ echo "▶ Launching test call in room: $ROOM"
 echo "▶ Preflight: clearing any prior test session…"
 set +e  # cleanup is best-effort; a missing target must not abort the launch
 
-# 1. Find the agent windows by their LIVE command — do this BEFORE killing, while
-#    the title still shows "claude --mcp-config" (after we kill it the title
-#    reverts to the shell and the match is lost). Collect their window ids.
+# 1. Find the agent windows by their LIVE command — do this BEFORE killing (after
+#    we kill it the title reverts to the shell and the match is lost). Match on
+#    "join-call": the title cycles the foreground process (caffeinate/gpgconf/
+#    claude) and truncates the middle ("claude --mcp-con….json"), but the command
+#    tail "…/join-call <room> <name>" is always present and untruncated — and
+#    nothing else runs join-call (this dev session runs claude --channels).
 AGENT_IDS=$(osascript 2>/dev/null <<'OSA'
 tell application "Terminal"
   set s to ""
   repeat with w in windows
     try
-      if (name of w) contains "claude --mcp-config" then set s to s & (id of w as string) & " "
+      if (name of w) contains "join-call" then set s to s & (id of w as string) & " "
     end try
   end repeat
   return s

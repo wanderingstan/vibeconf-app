@@ -147,19 +147,21 @@ osascript >/dev/null 2>&1 <<OSA
 tell application "Terminal"
   -- do script returns the TAB it ran in; match each window by its tab (robust:
   -- Terminal opens a blank "spare" window on cold launch, so window-index/front
-  -- ordering is unreliable). Jimmy → top-right, Samantha → bottom-right; any
-  -- OTHER window (the spare) gets closed.
-  set jt to do script "cd '$REPO' && claude --mcp-config '$REPO/.mcp.json' --strict-mcp-config \"/join-call $ROOM Jimmy\""
-  set st to do script "cd '$SAM_DIR' && claude --mcp-config '$SAM_DIR/.mcp.json' --strict-mcp-config \"/join-call $ROOM Samantha\""
+  -- ordering is unreliable). Jimmy → top-right, Samantha → bottom-right. The
+  -- spare (a window NOT running claude) gets closed; a claude window is never
+  -- closed even if its tab match misses, so a mismatch can't nuke the agents.
+  -- (NB: "st" is a reserved word in AppleScript — use jtab/stab.)
+  set jtab to do script "cd '$REPO' && claude --mcp-config '$REPO/.mcp.json' --strict-mcp-config \"/join-call $ROOM Jimmy\""
+  set stab to do script "cd '$SAM_DIR' && claude --mcp-config '$SAM_DIR/.mcp.json' --strict-mcp-config \"/join-call $ROOM Samantha\""
   activate
   delay 1
   repeat with w in windows
     try
-      if (selected tab of w) is jt then
+      if (selected tab of w) is jtab then
         set bounds of w to {$HALFW, $TOPY, $SCRW, $BOTY}
-      else if (selected tab of w) is st then
+      else if (selected tab of w) is stab then
         set bounds of w to {$HALFW, $BOTY, $SCRW, $SCRH}
-      else
+      else if not ((processes of (selected tab of w)) contains "claude") then
         close w saving no
       end if
     end try

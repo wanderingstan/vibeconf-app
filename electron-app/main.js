@@ -221,6 +221,10 @@ const localServer = new globalThis.LocalServer({
       logSessionHeaderUpdate('botName', botName);
     }
     const meetUrl = `https://meet.google.com/${meetCode}`;
+    // Track what we've joined for EVERY join path — the panel paths set this,
+    // but the MCP /join-call path didn't, which left browser Meet-detection
+    // (and its push notifications) running mid-call. Mirror the other paths.
+    currentMeetUrl = meetUrl;
     loadMeetURL(meetUrl);
 
     // Pre-warm the LLM ack engine so the first real ack of the call

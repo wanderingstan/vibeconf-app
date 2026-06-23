@@ -2347,14 +2347,24 @@ function swapMeetViewPartition(newPartition, { navigateTo } = {}) {
 }
 
 function createMainWindow() {
+  // Optional explicit window placement from CLI (--window-x/-y/-w/-h), used by
+  // the multi-bot test launcher to tile windows in a grid. Setting x/y at
+  // creation is reliable (System Events moves from outside get reverted by the
+  // window server for some instances). Omitted → Electron centers as usual.
+  const winX = cliArgs['window-x'] != null ? parseInt(cliArgs['window-x'], 10) : null;
+  const winY = cliArgs['window-y'] != null ? parseInt(cliArgs['window-y'], 10) : null;
+  const winW = cliArgs['window-w'] != null ? parseInt(cliArgs['window-w'], 10) : null;
+  const winH = cliArgs['window-h'] != null ? parseInt(cliArgs['window-h'], 10) : null;
   mainWindow = new BrowserWindow({
     // Meet view = width - PANEL_WIDTH. Sized to fit a laptop screen comfortably.
     // (An earlier extra-large window chased a toolbar-collapse theory that turned
     // out not to be the real cause — the recurring "<button> not found" issues
     // were click/timing/selector bugs, since fixed. We keep the Meet view a touch
     // wider than the old 800px for a little toolbar margin, no more.)
-    width: 880 + PANEL_WIDTH,
-    height: 600,
+    width: Number.isFinite(winW) ? winW : 880 + PANEL_WIDTH,
+    height: Number.isFinite(winH) ? winH : 600,
+    ...(Number.isFinite(winX) ? { x: winX } : {}),
+    ...(Number.isFinite(winY) ? { y: winY } : {}),
     minWidth: 640 + PANEL_WIDTH,
     minHeight: 460,
     title: 'Vibeconferencing',

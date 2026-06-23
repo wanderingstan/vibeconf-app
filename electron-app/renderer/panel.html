@@ -28,6 +28,11 @@
       </div>
       <div class="error-bar" id="errorBar" style="display:none"><span id="errorText"></span><button class="error-close" id="errorClose">&times;</button></div>
 
+      <!-- Big, glanceable bot identity so two Electron apps are easy to tell
+           apart at a glance. Shows the Google account name when signed in, else
+           the Bot Name preference (the guest name). -->
+      <div id="botNameBig" title="This bot's name in the call — its Google account name when signed in, otherwise the Bot Name preference." style="font-family:'Google Sans',Roboto,sans-serif;font-size:26px;font-weight:700;text-align:center;margin:6px 0 12px;color:#8ab4f8;letter-spacing:0.3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">—</div>
+
       <!-- Both identities, always shown explicitly on the main view. The USER
            login (vibeconferencing.com, for room creation) and the BOT login
            (Google Meet, controls auto-admit) are easy to confuse, so surface
@@ -95,6 +100,7 @@
       <div class="field">
         <label for="botName">Bot Name</label>
         <input type="text" id="botName" value="Jimmy" />
+        <div class="helper-text">Only used when the bot joins as a <strong>guest</strong> (not signed in to Google). When the bot is signed in, it uses its Google account name instead.</div>
       </div>
       <div class="field">
         <label for="websiteUrl">Website URL</label>

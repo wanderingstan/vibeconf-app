@@ -216,6 +216,7 @@ if (debugOverlayToggle) {
 
 api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'claudeWorkDir', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases']).then((result) => {
   if (result?.botName) { botNameInput.value = result.botName; currentBotName = result.botName; }
+  try { updateBotNameBig(); } catch { /* defined below; ignore on first paint */ }
   // Prefer the new websiteUrl key; fall back to legacy syncBaseUrl so users with
   // older configs still see their existing override populated in the field.
   const effectiveUrl = result?.websiteUrl || result?.syncBaseUrl || '';
@@ -471,6 +472,19 @@ function applyMeetMode(mode) {
   }
   refreshAccountEmail(mode);
   refreshBotIdentity(mode); // keep the main-view identity row in sync
+  updateBotNameBig();
+}
+
+// Big glanceable bot-name label so multiple app instances are easy to tell
+// apart. Shows the Google account name when signed in (account mode), else the
+// Bot Name preference (the guest name).
+const botNameBig = document.getElementById('botNameBig');
+let botAccountName = null; // the bot's Google display name when signed in
+function updateBotNameBig() {
+  if (!botNameBig) return;
+  botNameBig.textContent = (lastMeetMode === 'account' && botAccountName)
+    ? botAccountName
+    : (currentBotName || (botNameInput && botNameInput.value.trim()) || 'Bot');
 }
 
 // --- Bot Meet identity on the MAIN view (so the auto-admit login isn't buried
@@ -487,6 +501,8 @@ async function refreshBotIdentity(mode) {
     botIdentityStatus.style.color = '#fdd663';
     if (botSignInMainBtn) botSignInMainBtn.style.display = 'inline-block';
     if (botSignOutMainBtn) botSignOutMainBtn.style.display = 'none';
+    botAccountName = null; // guest → big name uses the Bot Name preference
+    updateBotNameBig();
     return;
   }
   if (botSignInMainBtn) botSignInMainBtn.style.display = 'none';
@@ -498,6 +514,10 @@ async function refreshBotIdentity(mode) {
     if (r?.signedIn && r.email) botIdentityStatus.textContent = '✓ ' + r.email;
     else if (r?.signedIn) botIdentityStatus.textContent = '✓ Signed in (couldn\'t read which account)';
     else { botIdentityStatus.textContent = '⚠ Account mode but not signed in yet'; botIdentityStatus.style.color = '#fdd663'; }
+    // Big-name label: prefer the Google display name, fall back to the email's
+    // local part, then (handled in updateBotNameBig) the Bot Name preference.
+    botAccountName = r?.name || (r?.email ? r.email.split('@')[0] : null);
+    updateBotNameBig();
   } catch { botIdentityStatus.textContent = '✓ Signed in'; }
 }
 
@@ -825,6 +845,7 @@ botNameInput.addEventListener('change', () => {
   currentBotName = name;
   api.invoke('set-config', 'botName', name);
   api.send('to-meet', { action: 'set-config', payload: { botName: name } });
+  updateBotNameBig();
 });
 
 websiteUrlInput.addEventListener('change', () => {

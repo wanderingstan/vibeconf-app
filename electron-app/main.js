@@ -2799,6 +2799,7 @@ function setupIPC() {
     // meetView is on a google.com page (in a call / Meet home); otherwise we
     // report signed-in without the email.
     let email = null;
+    let name = null;
     let allEmails = [];
     try {
       if (meetView && !meetView.webContents.isDestroyed() &&
@@ -2807,9 +2808,12 @@ function setupIPC() {
         //   <a aria-label="Google Account: <name> (<email>)">
         // It renders asynchronously after page load, so the one-shot fetch at
         // panel load missed it — retry a few times. Confirmed not in an iframe.
+        // We grab both the email AND the display name (for the big panel label).
         const SCAN = `(() => {
           const RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}/g;
+          const NAME_RE = /Google Account:\\s*(.+?)\\s*\\(/i;
           const out = new Set();
+          let name = null;
           // Search the top doc + any SAME-ORIGIN iframes (the Google bar is
           // usually inline, but be safe). Cross-origin iframes throw → skipped.
           const docs = [document];
@@ -2818,28 +2822,31 @@ function setupIPC() {
           }
           const scan = (sel) => { for (const d of docs) {
             for (const el of d.querySelectorAll(sel)) {
-              (((el.getAttribute('aria-label') || '').match(RE)) || []).forEach((x) => out.add(x));
+              const al = el.getAttribute('aria-label') || '';
+              ((al.match(RE)) || []).forEach((x) => out.add(x));
+              if (!name) { const m = al.match(NAME_RE); if (m) name = m[1].trim(); }
             }
           } };
           scan('[aria-label*="Google Account" i]');
           if (!out.size) scan('[aria-label]'); // fallback: any aria-label
-          return [...out];
+          return { emails: [...out], name };
         })()`;
         for (let attempt = 0; attempt < 5 && !email; attempt++) {
           if (attempt) await new Promise((r) => setTimeout(r, 400));
           try {
             const found = await meetView.webContents.executeJavaScript(SCAN, true);
-            allEmails = Array.isArray(found) ? found : [];
+            allEmails = Array.isArray(found?.emails) ? found.emails : [];
+            if (found?.name) name = found.name;
             email = allEmails.find((e) => !/noreply|no-reply|example\.com/i.test(e)) || allEmails[0] || null;
           } catch { /* page mid-navigation; retry */ }
         }
-        console.log('[electron] account-email:', email || '(none yet)', 'all=' + JSON.stringify(allEmails));
+        console.log('[electron] account-email:', email || '(none yet)', 'name=' + JSON.stringify(name), 'all=' + JSON.stringify(allEmails));
       }
     } catch (err) {
       console.warn('[electron] get-meet-account-email DOM read failed:', err.message);
     }
 
-    return { signedIn, email, allEmails };
+    return { signedIn, email, name, allEmails };
   });
 
   // Swap meetView to the account partition and navigate to Google's

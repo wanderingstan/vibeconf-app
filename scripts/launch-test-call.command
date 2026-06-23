@@ -24,38 +24,41 @@ SAM_DIR="/Users/wanderingstan/Developer/vibeconf-bots/samantha"
 echo "▶ Launching test call in room: $ROOM"
 
 # ── Preflight: clear any PRIOR test session so stale apps/terminals don't skew
-# the run. This is deliberately TARGETED — it only touches things this script
-# created: the agent Terminal windows it tags with a "vibeconf-agent" custom
-# title, our dev Electron apps (matched by their app path), and leftover agent
-# claude sessions (matched by "--mcp-config … /join-call"). It never closes your
-# other Terminal windows, other Electron apps, or this session.
+# the run. TARGETED — it only touches our agent Terminal windows (identified by
+# the live `claude --mcp-config` command in their title), our dev Electron apps
+# (by app path), and leftover agent claude sessions. It never closes your other
+# Terminal windows, other Electron apps, or this session (which runs claude
+# WITHOUT --mcp-config).
 echo "▶ Preflight: clearing any prior test session…"
 set +e  # cleanup is best-effort; a missing target must not abort the launch
 
-# Order matters: KILL the processes first, THEN close their Terminal windows.
-# Terminal refuses to close (via AppleScript) a window that still has a running
-# process like `claude` in it — closing first was a no-op, so windows piled up.
+# 1. Find the agent windows by their LIVE command — do this BEFORE killing, while
+#    the title still shows "claude --mcp-config" (after we kill it the title
+#    reverts to the shell and the match is lost). Collect their window ids.
+AGENT_IDS=$(osascript 2>/dev/null <<'OSA'
+tell application "Terminal"
+  set s to ""
+  repeat with w in windows
+    try
+      if (name of w) contains "claude --mcp-config" then set s to s & (id of w as string) & " "
+    end try
+  end repeat
+  return s
+end tell
+OSA
+)
 
-# 1. Kill leftover agent claude sessions pinned to our mcp configs (join-call).
-#    This session has no '--mcp-config … /join-call' in its argv, so it's safe.
+# 2. Kill the agent claude sessions + our Electron apps.
 if pkill -f "claude --mcp-config.*join-call" 2>/dev/null; then echo "  • killed a stale agent session"; fi
-
-# 2. Quit our dev Electron app(s) — matched by our app path only (covers both
-#    Jimmy and Samantha, who run from the same electron-app dir).
 if pkill -f "vibeconferencing/electron-app" 2>/dev/null; then echo "  • quit a running Electron app"; fi
 
-sleep 1  # let the killed shells drop back to an idle prompt so they're closeable
+sleep 1  # let the killed shells drop to an idle prompt so the windows close cleanly
 
-# 3. Close the agent windows from a previous run. PRIMARY: the exact window ids
-#    we recorded when opening them (no title dependency). FALLBACK: any window
-#    still tagged with a "vibeconf-agent" custom title. The processes inside are
-#    already dead (step 1), so idle windows close without a "process running"
-#    prompt. Reports counts so we can see the failure mode on the next run.
-BYID=0
-if [ -f /tmp/vibeconf-agent-windows.txt ]; then
-  while read -r wid; do
-    [ -n "$wid" ] || continue
-    R=$(osascript 2>/dev/null <<OSA
+# 3. Close the windows we found (now idle → no "process running" prompt).
+FOUND=0; CLOSED=0
+for wid in ${AGENT_IDS}; do
+  FOUND=$((FOUND+1))
+  R=$(osascript 2>/dev/null <<OSA
 tell application "Terminal"
   set ws to (every window whose id is $wid)
   if (count of ws) is 0 then return "gone"
@@ -67,32 +70,10 @@ tell application "Terminal"
 end tell
 OSA
 )
-    [ "$R" = "closed" ] && BYID=$((BYID+1))
-  done < /tmp/vibeconf-agent-windows.txt
-  rm -f /tmp/vibeconf-agent-windows.txt
-fi
-BYTITLE=$(osascript 2>/dev/null <<'OSA'
-tell application "Terminal"
-  set toClose to {}
-  repeat with w in windows
-    try
-      if (custom title of (selected tab of w)) contains "vibeconf-agent" then set end of toClose to w
-    end try
-  end repeat
-  set n to 0
-  repeat with w in toClose
-    try
-      close w saving no
-      set n to n + 1
-    end try
-  end repeat
-  return n
-end tell
-OSA
-)
-echo "  • terminal cleanup: closed ${BYID} by id, ${BYTITLE:-0} by title"
+  [ "$R" = "closed" ] && CLOSED=$((CLOSED+1))
+done
+echo "  • terminal cleanup: found ${FOUND} agent window(s), closed ${CLOSED}"
 
-sleep 1
 # If something we don't manage is still holding Jimmy's port, warn (don't kill).
 if curl -sf "http://127.0.0.1:7865/api/sync/no-room" >/dev/null 2>&1; then
   echo "⚠ Port 7865 is still in use after cleanup — an unmanaged process may hold it. Quit it manually if the launch misbehaves."
@@ -128,44 +109,15 @@ sleep 2  # let the panels finish initializing before the agents call join_call
 # 4. Open an agent Terminal per bot. Each uses an explicit --mcp-config pinned to
 #    its app's port + --strict-mcp-config so it can't talk to the wrong app.
 echo "  • opening agent terminals…"
-# Record each agent WINDOW ID so the next run's preflight can close exactly
-# these. `id of front window` right after `do script` was unreliable (it returned
-# this .command's own window — new-window creation is async inside the tell
-# block, and both ids came back identical). Instead DIFF the window-id list
-# before/after each `do script` to find the genuinely new window, then title it
-# via its id (a human cue + fallback match).
-TAG=$(osascript 2>&1 <<OSA
-on newWin(beforeIds)
-  tell application "Terminal"
-    repeat with w in windows
-      if beforeIds does not contain (id of w) then return (id of w)
-    end repeat
-  end tell
-  return 0
-end newWin
-
+# No tagging needed — the next run's preflight finds these by their live
+# "claude --mcp-config" command in the window title.
+osascript >/dev/null 2>&1 <<OSA
 tell application "Terminal"
-  set before1 to id of every window
   do script "cd '$REPO' && claude --mcp-config '$REPO/.mcp.json' --strict-mcp-config \"/join-call $ROOM Jimmy\""
-  delay 0.6
-  set jid to my newWin(before1)
-  try
-    set custom title of (selected tab of window id jid) to "vibeconf-agent-jimmy"
-  end try
   do script "cd '$SAM_DIR' && claude --mcp-config '$SAM_DIR/.mcp.json' --strict-mcp-config \"/join-call $ROOM Samantha\""
-  delay 0.6
-  set sid to my newWin(before1 & {jid})
-  try
-    set custom title of (selected tab of window id sid) to "vibeconf-agent-samantha"
-  end try
   activate
-  return (jid as string) & " " & (sid as string)
 end tell
 OSA
-)
-# Persist the window ids (one per line) for next run's cleanup.
-printf '%s\n' $TAG > /tmp/vibeconf-agent-windows.txt 2>/dev/null
-echo "  • agent window ids: $TAG"
 
 echo "✓ Done. Two app windows + two agent terminals should be coming up."
 echo "  App logs: /tmp/vibeconf-jimmy-app.log, /tmp/vibeconf-samantha-app.log"

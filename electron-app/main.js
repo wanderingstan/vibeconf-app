@@ -2615,6 +2615,25 @@ function setupIPC() {
     return store.getMultiple(keys);
   });
 
+  // Bot vitals for the panel: is the on-device fast model reachable? Pings the
+  // configured ack endpoint (Apple wrapper / any openai-compat) GET /v1/models
+  // with a short timeout. Read-only; never throws. The panel polls this.
+  ipcMain.handle('get-fast-model-status', async () => {
+    const { endpoint, model } = require('./ack').getLocalModelConfig(store);
+    if (!endpoint) return { ok: false, endpoint: null, model: null, error: 'no endpoint' };
+    const url = endpoint.replace(/\/+$/, '') + '/models';
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2500);
+    try {
+      const resp = await fetch(url, { signal: controller.signal });
+      return { ok: resp.ok, endpoint, model, status: resp.status };
+    } catch (err) {
+      return { ok: false, endpoint, model, error: err.name === 'AbortError' ? 'timeout' : err.message };
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+
   // #212: the name preload-meet should type into Meet's pre-join input — the
   // per-call override if one is active, else the persistent panel preference.
   // Separate from get-config('botName') (which the panel uses to show the

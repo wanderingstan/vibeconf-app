@@ -222,6 +222,7 @@ api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', '
   if (effectiveUrl) { websiteUrlInput.value = effectiveUrl; syncBaseUrl = effectiveUrl; }
   if (result?.ttsApiKey) ttsApiKeyInput.value = result.ttsApiKey;
   if (result?.ttsVoiceId) ttsVoiceIdInput.value = result.ttsVoiceId;
+  try { refreshVoiceStatus(); } catch { /* defined below; ignore if not yet */ }
   if (result?.claudeWorkDir) claudeWorkDirInput.value = result.claudeWorkDir;
   if (result?.dangerousMode) dangerousModeInput.checked = true;
   if (result?.ackShortMin != null) ackShortMinInput.value = result.ackShortMin;
@@ -518,6 +519,52 @@ botSignOutMainBtn?.addEventListener('click', async () => {
 // no scan in guest mode.
 setInterval(() => { if (lastMeetMode === 'account') refreshBotIdentity('account'); }, 7000);
 
+// --- Bot vitals: fast-model reachability + voice mode -----------------------
+// Read-only indicators so the bot's current capabilities are visible at a glance
+// next to the identity rows. Fast model = the on-device (Apple) endpoint that
+// powers triage/engagement; Voice = ElevenLabs (a voice ID is set) vs built-in.
+const fastModelStatus = document.getElementById('fastModelStatus');
+const voiceStatus = document.getElementById('voiceStatus');
+
+async function refreshFastModelStatus() {
+  if (!fastModelStatus) return;
+  try {
+    const r = await api.invoke('get-fast-model-status');
+    if (r?.ok) {
+      fastModelStatus.textContent = `✓ Detected — ${r.model || 'model'}`;
+      fastModelStatus.style.color = '#81c995';
+      fastModelStatus.title = `Reachable at ${r.endpoint}`;
+    } else {
+      fastModelStatus.textContent = `✗ Not detected — falling back to built-in ack`;
+      fastModelStatus.style.color = '#fdd663';
+      fastModelStatus.title = r?.endpoint ? `No response from ${r.endpoint}${r.error ? ` (${r.error})` : ''}` : 'No endpoint configured';
+    }
+  } catch {
+    fastModelStatus.textContent = '✗ Not detected';
+    fastModelStatus.style.color = '#fdd663';
+  }
+}
+
+function refreshVoiceStatus() {
+  if (!voiceStatus) return;
+  const id = (ttsVoiceIdInput?.value || '').trim();
+  if (id) {
+    voiceStatus.textContent = '🔊 ElevenLabs voice set';
+    voiceStatus.style.color = '#81c995';
+    voiceStatus.title = `ElevenLabs voice ID: ${id}`;
+  } else {
+    voiceStatus.textContent = '🔈 Built-in macOS voice';
+    voiceStatus.style.color = '#9aa0a6';
+    voiceStatus.title = 'No ElevenLabs voice ID set — using the built-in macOS voice.';
+  }
+}
+
+refreshFastModelStatus();
+refreshVoiceStatus();
+// Poll the fast model (cheap localhost ping); the voice line updates on edit too.
+setInterval(refreshFastModelStatus, 7000);
+ttsVoiceIdInput?.addEventListener('input', refreshVoiceStatus);
+
 // Initial state on panel load.
 api.invoke('get-meet-mode').then((info) => {
   if (info?.mode) applyMeetMode(info.mode);
@@ -799,6 +846,7 @@ ttsApiKeyInput.addEventListener('change', () => {
 
 ttsVoiceIdInput.addEventListener('change', () => {
   api.send('update-tts-config', { voiceId: ttsVoiceIdInput.value.trim() });
+  refreshVoiceStatus();
 });
 
 claudeWorkDirInput.addEventListener('change', () => {

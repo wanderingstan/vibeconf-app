@@ -47,6 +47,17 @@
             <button id="botSignOutMainBtn" class="auth-action-btn" style="display:none">Use guest</button>
           </span>
         </div>
+        <!-- Bot vitals: read-only capability indicators so the bot's current
+             state is visible at a glance — is the on-device fast model reachable,
+             and is a premium (ElevenLabs) voice set vs the built-in macOS voice. -->
+        <div style="margin-top:6px;padding-top:6px;border-top:1px solid #5f6368">
+          <div style="display:flex;align-items:center;gap:8px;line-height:1.5" title="The on-device fast model (Apple FoundationModels via the OpenAI-compatible wrapper) that powers turn-taking triage and engagement. 'Detected' means the configured endpoint answered just now.">
+            <strong>Fast model:</strong> <span id="fastModelStatus">checking…</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;line-height:1.5" title="Text-to-speech voice. ElevenLabs is used when a voice ID is set; otherwise the bot speaks with the built-in macOS voice.">
+            <strong>Voice:</strong> <span id="voiceStatus">checking…</span>
+          </div>
+        </div>
       </div>
 
       <p class="helper-text">Google Meet calls in Chrome or Safari will be automatically detected.</p>

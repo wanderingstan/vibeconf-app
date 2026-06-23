@@ -521,9 +521,22 @@ const localServer = new globalThis.LocalServer({
         const n = (m.name || '').toLowerCase();
         if (n && n !== myName) otherNames.add(n);
       }
-      const nameRe = (n) => new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-      const addressedToMe = myName ? nameRe(myName).test(text) : false;
-      const addressedToOther = [...otherNames].some((n) => nameRe(n).test(text));
+      // People address each other by FIRST name ("hey jimmy"), but the Meet
+      // roster carries full account names ("jimmy bot", "Stan James" — a
+      // signed-in bot shows its Google name). Match the full name OR its first
+      // token, so "jimmy" recognizes the "jimmy bot" participant. (Without this,
+      // a bot misreads a turn addressed to another bot as "unspecified" and acks
+      // into it.)
+      const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const nameMatches = (full) => {
+        const clean = (full || '').trim();
+        if (!clean) return false;
+        const toks = clean.split(/\s+/);
+        const cands = toks.length > 1 ? [clean, toks[0]] : [clean];
+        return cands.some((c) => c.length >= 2 && new RegExp(`\\b${esc(c)}\\b`, 'i').test(text));
+      };
+      const addressedToMe = myName ? nameMatches(myName) : false;
+      const addressedToOther = [...otherNames].some((n) => nameMatches(n));
       // 1:1 = exactly one non-self, non-bot participant in the call. Use the
       // already-tagged isBot from the snapshot so the count is correct even
       // when the bot list is populating slowly.

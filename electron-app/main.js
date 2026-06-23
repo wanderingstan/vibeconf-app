@@ -538,8 +538,14 @@ const localServer = new globalThis.LocalServer({
       else if (addressedToOther) addressivity = 'other';
       else addressivity = 'unspecified';
 
-      if (addressivity === 'other') {
-        console.log(ts(), '🤐 [ack] Suppressing — addressed to someone else');
+      // Only ack when we're actually being addressed: named ('me') or a true
+      // 1:1 ('me-1on1'). In a multi-party call, 'other' (someone else named) and
+      // 'unspecified' (no name at all) must NOT ack — otherwise the bot blurts a
+      // filler into a long utterance it wasn't part of and interrupts the speaker
+      // (live: Samantha acked "hey jimmy, …" because she misread it as unspecified
+      // and jumped into a mid-sentence pause).
+      if (addressivity === 'other' || addressivity === 'unspecified') {
+        console.log(ts(), '🤐 [ack] Suppressing — not addressed to me (' + addressivity + ')');
         return;
       }
 

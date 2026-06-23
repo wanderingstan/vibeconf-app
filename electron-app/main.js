@@ -488,7 +488,9 @@ const localServer = new globalThis.LocalServer({
     // When triage is enabled (shadowPhrase), the ack is gated by the smart
     // triage verdict in onShadowPhrase instead of this regex-addressivity path —
     // skip here to avoid a double ack.
-    if (state === 'thinking' && localServer.mode === 'active' && !store?.get('shadowPhrase')) {
+    // A background_tick is a silent "think, don't speak" wake (#245) — never
+    // fire a spoken ack there, or the bot interrupts whoever still has the floor.
+    if (state === 'thinking' && localServer.mode === 'active' && !store?.get('shadowPhrase') && !extra?.backgroundTick) {
       const wordCount = extra?.wordCount || 0;
       const text = (extra?.text || '').toLowerCase();
 

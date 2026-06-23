@@ -1665,7 +1665,9 @@ class LocalServer {
         }
         // Pass joinedText so the ack handler can do addressivity matching
         // (#155). wordCount stays the primary threshold; text is supplemental.
-        this.onBotStateChange('thinking', { wordCount, text: joinedText });
+        // backgroundTick flags a "bank and loop, do NOT speak" wake so the ack
+        // handler skips the spoken filler (a tick must not interrupt a speaker).
+        this.onBotStateChange('thinking', { wordCount, text: joinedText, backgroundTick: reason === 'background_tick' });
 
         // Two-tier shadow harness (now: triage classifier). Feed it the SINGLE
         // most-recent turn WITH its speaker label — not joinedText, which is the
@@ -1674,17 +1676,21 @@ class LocalServer {
         // classifier garbage to judge ("…Request Samantha, can you" = Samantha's
         // turn + the cut-off start of Stan's next turn). The classifier is ~perfect
         // on clean input (offline 19/19); recentTranscript still carries context.
-        const lastTurn = deduped[deduped.length - 1];
-        const lastUtteranceLabeled = lastTurn && lastTurn.text
-          ? `${lastTurn.participantName || 'someone'}: ${lastTurn.text.trim()}`
-          : joinedText;
-        Promise.resolve(this.onShadowPhrase({
-          lastUtterance: lastUtteranceLabeled,
-          workingMemory: this.getWorkingMemory(),
-          recentTranscript: this._recentTranscriptText(12),
-          roster: this._rosterText(),
-          mode: this.mode,
-        })).catch(() => {});
+        // Skip on a background_tick — the floor is still busy; triage firing an
+        // instant ack there would interrupt the speaker mid-utterance.
+        if (reason !== 'background_tick') {
+          const lastTurn = deduped[deduped.length - 1];
+          const lastUtteranceLabeled = lastTurn && lastTurn.text
+            ? `${lastTurn.participantName || 'someone'}: ${lastTurn.text.trim()}`
+            : joinedText;
+          Promise.resolve(this.onShadowPhrase({
+            lastUtterance: lastUtteranceLabeled,
+            workingMemory: this.getWorkingMemory(),
+            recentTranscript: this._recentTranscriptText(12),
+            roster: this._rosterText(),
+            mode: this.mode,
+          })).catch(() => {});
+        }
       }
     }
 

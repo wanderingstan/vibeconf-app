@@ -23,80 +23,56 @@ SAM_DIR="/Users/wanderingstan/Developer/vibeconf-bots/samantha"
 
 echo "▶ Launching test call in room: $ROOM"
 
-# ── Preflight: clear any PRIOR test session so stale apps/terminals don't skew
-# the run. TARGETED — it only touches our agent Terminal windows (identified by
-# the live `claude --mcp-config` command in their title), our dev Electron apps
-# (by app path), and leftover agent claude sessions. It never closes your other
-# Terminal windows, other Electron apps, or this session (which runs claude
-# WITHOUT --mcp-config).
+# ── Preflight: clear any prior test session. Stan doesn't use Terminal for
+# anything else, so clear it wholesale — kill the agent processes, then close
+# every Terminal window EXCEPT this script's own (we can't quit Terminal outright;
+# that would kill the window running this script mid-run).
 echo "▶ Preflight: clearing any prior test session…"
 set +e  # cleanup is best-effort; a missing target must not abort the launch
 
-# 1. Find the agent windows by their LIVE command — do this BEFORE killing (after
-#    we kill it the title reverts to the shell and the match is lost). Match on
-#    "join-call": the title cycles the foreground process (caffeinate/gpgconf/
-#    claude) and truncates the middle ("claude --mcp-con….json"), but the command
-#    tail "…/join-call <room> <name>" is always present and untruncated — and
-#    nothing else runs join-call (this dev session runs claude --channels).
-AGENT_IDS=$(osascript 2>/dev/null <<'OSA'
-tell application "Terminal"
-  set s to ""
-  repeat with w in windows
-    try
-      if (name of w) contains "join-call" then set s to s & (id of w as string) & " "
-    end try
-  end repeat
-  return s
-end tell
-OSA
-)
+# This script's own Terminal window — capture FIRST so we never close it. (At
+# script start, before any `do script`, `front window` is reliably this window.)
+SELF_WIN=$(osascript -e 'tell application "Terminal" to id of front window' 2>/dev/null)
 
-# Self-diagnose: if nothing matched, show what `name of window` actually returns
-# (it may differ from the displayed title bar) so we can fix the match string.
-if [ -z "${AGENT_IDS// /}" ]; then
-  echo "  • (no agent windows matched 'join-call'; window names AppleScript sees:)"
-  osascript 2>/dev/null <<'OSA'
-tell application "Terminal"
-  set s to ""
-  repeat with w in windows
-    try
-      set s to s & "      • " & (name of w) & linefeed
-    end try
-  end repeat
-  return s
-end tell
-OSA
-fi
-
-# 2. Kill the agent claude sessions + our Electron apps.
-if pkill -f "claude --mcp-config.*join-call" 2>/dev/null; then echo "  • killed a stale agent session"; fi
+# Kill agent claude sessions (+ their caffeinate wrappers) and our Electron apps.
+# "/join-call" matches both `claude … /join-call` and its caffeinate parent; a
+# lingering process otherwise keeps Terminal's "process running" close-prompt up.
+if pkill -f "/join-call" 2>/dev/null; then echo "  • killed stale agent session(s)"; fi
 if pkill -f "vibeconferencing/electron-app" 2>/dev/null; then echo "  • quit a running Electron app"; fi
 
-sleep 1  # let the killed shells drop to an idle prompt so the windows close cleanly
+sleep 1  # let the killed shells drop to idle so the windows close without a prompt
 
-# 3. Close the windows we found (now idle → no "process running" prompt).
-FOUND=0; CLOSED=0
-for wid in ${AGENT_IDS}; do
-  FOUND=$((FOUND+1))
-  R=$(osascript 2>/dev/null <<OSA
+# Close every Terminal window except this script's. Collect first, then close
+# (closing while iterating `windows` skips entries). Guarded: if we couldn't id
+# our own window, skip — better to leave stale windows than risk closing myself.
+if [ -n "$SELF_WIN" ]; then
+  CLOSED=$(osascript 2>/dev/null <<OSA
 tell application "Terminal"
-  set ws to (every window whose id is $wid)
-  if (count of ws) is 0 then return "gone"
-  try
-    close ws saving no
-    return "closed"
-  end try
-  return "blocked"
+  set toClose to {}
+  repeat with w in windows
+    try
+      if (id of w) is not ${SELF_WIN} then set end of toClose to w
+    end try
+  end repeat
+  set n to 0
+  repeat with w in toClose
+    try
+      close w saving no
+      set n to n + 1
+    end try
+  end repeat
+  return n
 end tell
 OSA
 )
-  [ "$R" = "closed" ] && CLOSED=$((CLOSED+1))
-done
-echo "  • terminal cleanup: found ${FOUND} agent window(s), closed ${CLOSED}"
+  echo "  • closed ${CLOSED:-0} old terminal window(s)"
+else
+  echo "  • (couldn't identify this window — skipping terminal cleanup to avoid closing myself)"
+fi
 
 # If something we don't manage is still holding Jimmy's port, warn (don't kill).
 if curl -sf "http://127.0.0.1:7865/api/sync/no-room" >/dev/null 2>&1; then
-  echo "⚠ Port 7865 is still in use after cleanup — an unmanaged process may hold it. Quit it manually if the launch misbehaves."
+  echo "⚠ Port 7865 is still in use after cleanup — quit it manually if the launch misbehaves."
 fi
 set -e
 

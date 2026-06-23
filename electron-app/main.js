@@ -2056,6 +2056,11 @@ allURLs`;
 
     function pollForMeet() {
       if (currentMeetUrl || pollInFlight) return;
+      // Already in a call (joined via the panel OR /join-call MCP, where
+      // currentMeetUrl isn't set)? Don't scan the browser for other Meets —
+      // it's pointless mid-call and was spamming "Google Meet Detected" push
+      // notifications (and burning AppleScript timeouts) during live calls.
+      if (localServer.callStatus === 'in-call') return;
       pollInFlight = true;
 
       const pollStart = Date.now();

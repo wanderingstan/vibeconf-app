@@ -46,9 +46,32 @@ if pkill -f "vibeconferencing/electron-app" 2>/dev/null; then echo "  • quit a
 
 sleep 1  # let the killed shells drop back to an idle prompt so they're closeable
 
-# 3. Now close the agent Terminal windows we tagged on a previous run. Collect
-#    matches first, then close — closing while iterating `windows` skips entries.
-osascript >/dev/null 2>&1 <<'OSA'
+# 3. Close the agent windows from a previous run. PRIMARY: the exact window ids
+#    we recorded when opening them (no title dependency). FALLBACK: any window
+#    still tagged with a "vibeconf-agent" custom title. The processes inside are
+#    already dead (step 1), so idle windows close without a "process running"
+#    prompt. Reports counts so we can see the failure mode on the next run.
+BYID=0
+if [ -f /tmp/vibeconf-agent-windows.txt ]; then
+  while read -r wid; do
+    [ -n "$wid" ] || continue
+    R=$(osascript 2>/dev/null <<OSA
+tell application "Terminal"
+  set ws to (every window whose id is $wid)
+  if (count of ws) is 0 then return "gone"
+  try
+    close ws saving no
+    return "closed"
+  end try
+  return "blocked"
+end tell
+OSA
+)
+    [ "$R" = "closed" ] && BYID=$((BYID+1))
+  done < /tmp/vibeconf-agent-windows.txt
+  rm -f /tmp/vibeconf-agent-windows.txt
+fi
+BYTITLE=$(osascript 2>/dev/null <<'OSA'
 tell application "Terminal"
   set toClose to {}
   repeat with w in windows
@@ -56,13 +79,18 @@ tell application "Terminal"
       if (custom title of (selected tab of w)) contains "vibeconf-agent" then set end of toClose to w
     end try
   end repeat
+  set n to 0
   repeat with w in toClose
     try
       close w saving no
+      set n to n + 1
     end try
   end repeat
+  return n
 end tell
 OSA
+)
+echo "  • terminal cleanup: closed ${BYID} by id, ${BYTITLE:-0} by title"
 
 sleep 1
 # If something we don't manage is still holding Jimmy's port, warn (don't kill).
@@ -100,17 +128,30 @@ sleep 2  # let the panels finish initializing before the agents call join_call
 # 4. Open an agent Terminal per bot. Each uses an explicit --mcp-config pinned to
 #    its app's port + --strict-mcp-config so it can't talk to the wrong app.
 echo "  • opening agent terminals…"
-# Tag each agent window with a "vibeconf-agent" custom title so the preflight
-# above can find and close exactly these on the next run (and nothing else).
-osascript >/dev/null <<OSA
+# Record each agent WINDOW ID to a temp file so the preflight on the next run can
+# close exactly these (robust — no dependency on the custom-title quirk). Also
+# set a readable custom title as a human cue + a fallback match. `id of front
+# window` right after `do script` is the window it just created.
+TAG=$(osascript 2>&1 <<OSA
 tell application "Terminal"
   set jtab to do script "cd '$REPO' && claude --mcp-config '$REPO/.mcp.json' --strict-mcp-config \"/join-call $ROOM Jimmy\""
-  set custom title of jtab to "vibeconf-agent-jimmy"
+  set jid to id of front window
+  try
+    set custom title of jtab to "vibeconf-agent-jimmy"
+  end try
   set stab to do script "cd '$SAM_DIR' && claude --mcp-config '$SAM_DIR/.mcp.json' --strict-mcp-config \"/join-call $ROOM Samantha\""
-  set custom title of stab to "vibeconf-agent-samantha"
+  set sid to id of front window
+  try
+    set custom title of stab to "vibeconf-agent-samantha"
+  end try
   activate
+  return (jid as string) & " " & (sid as string)
 end tell
 OSA
+)
+# Persist the window ids (one per line) for next run's cleanup.
+printf '%s\n' $TAG > /tmp/vibeconf-agent-windows.txt 2>/dev/null
+echo "  • agent window ids: $TAG"
 
 echo "✓ Done. Two app windows + two agent terminals should be coming up."
 echo "  App logs: /tmp/vibeconf-jimmy-app.log, /tmp/vibeconf-samantha-app.log"

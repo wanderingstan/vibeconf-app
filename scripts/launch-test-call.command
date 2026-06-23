@@ -133,8 +133,18 @@ tell application "System Events"
       if (title of w) contains "Vibeconf" then set tw to w
     end repeat
     if tw is missing value then set tw to window 1 of p
-    set position of tw to {$2, $3}
+    -- Size first, then re-read the ACTUAL size (the app clamps to a ~1020px
+    -- min width) and clamp the position so a too-wide window stays on-screen
+    -- instead of overflowing the right/bottom edge (the laptop case).
     set size of tw to {$HALFW, $HALFH}
+    set sz to size of tw
+    set px to $2
+    set py to $3
+    if (px + (item 1 of sz)) > $SCRW then set px to ($SCRW - (item 1 of sz))
+    if (py + (item 2 of sz)) > $SCRH then set py to ($SCRH - (item 2 of sz))
+    if px < 0 then set px to 0
+    if py < $MENUBAR then set py to $MENUBAR
+    set position of tw to {px, py}
   end try
 end tell
 OSA

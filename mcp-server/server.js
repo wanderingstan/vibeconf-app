@@ -345,7 +345,7 @@ server.tool(
       return {
         content: [{
           type: "text",
-          text: `[BACKGROUND TICK — do NOT speak] Conversation is ongoing and you are not being addressed. This is a chance to think, not to talk.\n\nLatest (${deduped.length} turn(s), ${elapsed}s):\n${transcriptText}\n\nNow: silently update your sense of the discussion (optionally call post_understanding), and if there's a natural opening coming you could imagine a SHORT active-listening interjection for — keep it in mind. Then call wait_for_speech again. Do NOT call speak.${chatLine}`,
+          text: `[BACKGROUND TICK] The conversation is ongoing and you are not being directly addressed. This is mainly your chance to THINK, not to talk.\n\nLatest (${deduped.length} turn(s), ${elapsed}s):\n${transcriptText}\n\nUsually you should just silently update your sense of the discussion (optionally call post_understanding), keep any short interjection you can imagine in mind, then call wait_for_speech again WITHOUT speaking — most ticks should end in silence.\n\nBUT: if something just said genuinely compels you — a point you are uniquely able to add, a question squarely in your wheelhouse, a moment you'd regret staying silent on — you MAY speak ONE short interjection now. Use this sparingly and only when you truly feel you must; if in doubt, stay silent and keep listening.${chatLine}`,
         }],
       };
     }

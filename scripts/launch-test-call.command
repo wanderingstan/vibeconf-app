@@ -106,12 +106,12 @@ nohup zsh -c "cd '$ELECTRON' && pnpm dev -- --profile=bot2 --local-port=7866 --b
 # 3. Wait for both local-servers to come up.
 wait_for_port() {
   local port=$1 name=$2
-  for i in {1..40}; do
+  for i in {1..80}; do
     if curl -sf "http://127.0.0.1:$port/api/sync/no-room" >/dev/null 2>&1; then
       echo "  ✓ $name app ready on $port"
       return 0
     fi
-    sleep 1
+    sleep 0.5  # poll often so we proceed the instant the server answers
   done
   echo "  ✗ $name app did NOT come up on $port — check /tmp/vibeconf-$name-app.log"
   return 1
@@ -119,7 +119,9 @@ wait_for_port() {
 echo "  • waiting for apps…"
 wait_for_port 7865 jimmy || exit 1
 wait_for_port 7866 samantha || exit 1
-sleep 2  # let the panels finish initializing before the agents call join_call
+# No extra buffer: the port responding means the local-server is up, which is
+# all join_call needs. (The wait above is real Electron-startup time, not a
+# fixed delay — we proceed the instant both servers answer.)
 
 # Minimize the Electron DevTools windows ("Developer Tools - …") so they don't
 # clutter the grid. (The apps self-position via --window-* above; only the

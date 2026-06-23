@@ -77,15 +77,32 @@ if curl -sf "http://127.0.0.1:7865/api/sync/no-room" >/dev/null 2>&1; then
 fi
 set -e
 
-# 1. Jimmy's app — default profile, port 7865, devtools (matches the usual flow).
-#    --bot-name=Jimmy is passed so the window-arrange step below can find this
-#    app's process (Samantha already carries --bot-name).
-echo "  • starting Jimmy's app (7865)…"
-nohup zsh -c "cd '$ELECTRON' && pnpm dev -- --devtools=true --bot-name=Jimmy" >/tmp/vibeconf-jimmy-app.log 2>&1 &
+# ── Window grid geometry (debug nicety): a 2×2 grid — apps on top, each agent
+# terminal directly BELOW its app (Jimmy left column, Samantha right column).
+# Adapts to the CURRENT screen (roomy on an external monitor; on the laptop the
+# apps' ~1020px min width forces some overlap). The apps are CREATED at these
+# coords via --window-* flags (reliable — moving them from outside via System
+# Events gets reverted by the window server for some instances).
+read -r SCRW SCRH <<< "$(osascript -e 'tell application "Finder" to get bounds of window of desktop' 2>/dev/null | awk -F', ' '{print $3, $4}')"
+SCRW=${SCRW:-1512}; SCRH=${SCRH:-982}
+MENUBAR=28
+HALFW=$(( SCRW / 2 ))
+HALFH=$(( (SCRH - MENUBAR) / 2 ))
+MINAPPW=1020   # 640 + PANEL_WIDTH(380): the app's enforced min width
+APPW=$(( HALFW > MINAPPW ? HALFW : MINAPPW ))
+TOPY=$MENUBAR
+BOTY=$(( MENUBAR + HALFH ))
+SAMX=$(( SCRW - APPW )); [ "$SAMX" -lt 0 ] && SAMX=0   # right column, flush-right
+WIN="--window-y=$TOPY --window-w=$APPW --window-h=$HALFH"
+echo "  • grid ${SCRW}×${SCRH}: apps top, terminals below"
 
-# 2. Samantha's app — bot2 profile, port 7866.
+# 1. Jimmy's app — default profile, port 7865, devtools. Created top-left.
+echo "  • starting Jimmy's app (7865)…"
+nohup zsh -c "cd '$ELECTRON' && pnpm dev -- --devtools=true --bot-name=Jimmy --window-x=0 $WIN" >/tmp/vibeconf-jimmy-app.log 2>&1 &
+
+# 2. Samantha's app — bot2 profile, port 7866. Created top-right.
 echo "  • starting Samantha's app (7866)…"
-nohup zsh -c "cd '$ELECTRON' && pnpm dev -- --profile=bot2 --local-port=7866 --bot-name=Samantha" >/tmp/vibeconf-samantha-app.log 2>&1 &
+nohup zsh -c "cd '$ELECTRON' && pnpm dev -- --profile=bot2 --local-port=7866 --bot-name=Samantha --window-x=$SAMX $WIN" >/tmp/vibeconf-samantha-app.log 2>&1 &
 
 # 3. Wait for both local-servers to come up.
 wait_for_port() {
@@ -105,60 +122,9 @@ wait_for_port 7865 jimmy || exit 1
 wait_for_port 7866 samantha || exit 1
 sleep 2  # let the panels finish initializing before the agents call join_call
 
-# ── Arrange windows in a 2×2 grid (debug nicety): apps on top, each agent
-# terminal directly BELOW its app (Jimmy left column, Samantha right column).
-# Geometry adapts to the CURRENT screen — roomy on an external monitor, cramped
-# on the laptop (the app's ~1020px min width forces some overlap at half-screen).
-# All best-effort; needs Automation/Accessibility (granted once).
-read -r SCRW SCRH <<< "$(osascript -e 'tell application "Finder" to get bounds of window of desktop' 2>/dev/null | awk -F', ' '{print $3, $4}')"
-SCRW=${SCRW:-1512}; SCRH=${SCRH:-982}
-MENUBAR=28
-HALFW=$(( SCRW / 2 ))
-HALFH=$(( (SCRH - MENUBAR) / 2 ))
-TOPY=$MENUBAR
-BOTY=$(( MENUBAR + HALFH ))
-
-# Position an Electron app's main window by its --bot-name. "MacOS/Electron"
-# excludes the launcher shell + helper procs; we target the "Vibeconferencing"
-# window so a separate devtools window isn't moved instead.
-arrange_app() {  # $1=botname  $2=x  $3=y
-  local pid; pid=$(pgrep -f "MacOS/Electron.*bot-name=$1" | head -1)
-  [ -n "$pid" ] || return
-  osascript >/dev/null 2>&1 <<OSA
-tell application "System Events"
-  try
-    set p to (first process whose unix id is $pid)
-    set tw to missing value
-    repeat with w in windows of p
-      if (title of w) contains "Vibeconf" then set tw to w
-    end repeat
-    if tw is missing value then set tw to window 1 of p
-    -- Retry 5x: the move is intermittently rejected while the window is
-    -- mid-render/focus (observed on the second app), and retrying catches a
-    -- moment it sticks. Each pass: size first, re-read the ACTUAL size (the app
-    -- clamps to a ~1020px min width), then clamp the position so a too-wide
-    -- window stays on-screen instead of overflowing the right/bottom edge.
-    repeat 5 times
-      try
-        set size of tw to {$HALFW, $HALFH}
-        set sz to size of tw
-        set px to $2
-        set py to $3
-        if (px + (item 1 of sz)) > $SCRW then set px to ($SCRW - (item 1 of sz))
-        if (py + (item 2 of sz)) > $SCRH then set py to ($SCRH - (item 2 of sz))
-        if px < 0 then set px to 0
-        if py < $MENUBAR then set py to $MENUBAR
-        set position of tw to {px, py}
-      end try
-      delay 0.25
-    end repeat
-  end try
-end tell
-OSA
-}
-echo "  • arranging windows (${SCRW}×${SCRH})…"
 # Minimize the Electron DevTools windows ("Developer Tools - …") so they don't
-# clutter the grid or get grabbed by the positioning instead of the main window.
+# clutter the grid. (The apps self-position via --window-* above; only the
+# DevTools windows + the terminals still need System Events.)
 osascript >/dev/null 2>&1 <<'OSA'
 tell application "System Events"
   repeat with p in (processes whose name is "Electron")
@@ -170,8 +136,6 @@ tell application "System Events"
   end repeat
 end tell
 OSA
-arrange_app Jimmy 0 "$TOPY"
-arrange_app Samantha "$HALFW" "$TOPY"
 
 # 4. Open an agent Terminal per bot, positioning each below its app. Each uses an
 #    explicit --mcp-config pinned to its app's port + --strict-mcp-config.

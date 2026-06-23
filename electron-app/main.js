@@ -3089,10 +3089,24 @@ function setupIPC() {
   // ON (local-server self-corrects on incoming text).
   ipcMain.on('caption-stall', (_event, info) => {
     const secs = Math.round((info?.ageMs || 0) / 1000);
-    console.log(`[electron] caption stall reported (${secs}s, ${info?.nodes ?? '?'} nodes) — marking bot deaf`);
+    // ONLY real deafness: captions frozen WHILE a remote participant is actually
+    // speaking. "No new captions" is also true when the room is quiet/muted or
+    // when the bot itself is speaking (its own captions are excluded) — neither
+    // is deafness. anyoneSpeaking is speaker-TILE based (independent of captions),
+    // so it's the right discriminator. (Live 2026-06-23: a silent room got
+    // flagged deaf and the bot announced "I've gone deaf" — #259.)
+    if (!localServer.anyoneSpeaking) {
+      console.log(`[electron] caption stall (${secs}s) but no remote speaker active — quiet/self-speaking, NOT deaf; ignoring`);
+      return;
+    }
+    console.log(`[electron] caption stall (${secs}s, ${info?.nodes ?? '?'} nodes) while a remote is speaking — bot is deaf; escalating + self-healing`);
     localServer.setCaptionsOn(false);
     if (panelView && !panelView.webContents.isDestroyed()) {
       panelView.webContents.send('caption-state', { on: false });
+    }
+    // D (#259): self-heal — only on CONFIRMED deafness, never during quiet rooms.
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('recover-captions');
     }
   });
 

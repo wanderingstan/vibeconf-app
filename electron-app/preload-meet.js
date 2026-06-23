@@ -1689,12 +1689,11 @@ class CaptionScraper {
         console.warn('[caption-stall] context — visible buttons: ' + JSON.stringify(btns));
         if (dialogs.length) console.warn('[caption-stall] dialog DOM:\n' + dialogs.join('\n---\n'));
       } catch (err) { console.warn('[caption-stall] dump failed: ' + err.message); }
-      // C (#259): escalate — on-but-frozen captions === deaf. main routes this
-      // through the existing deaf path (🙉 emoji + the wait_for_speech timeout
-      // warning), and it auto-clears when real caption text returns.
+      // Report the stall to main (#259). Main decides whether it's REAL deafness
+      // (a remote is speaking) vs a quiet room / the bot's own speech — and only
+      // then escalates (🙉 + agent warning) and asks us to self-heal (D). We no
+      // longer self-trigger recovery here: that toggled captions during silence.
       try { ipcRenderer.send('caption-stall', { ageMs, nodes }); } catch { /* non-fatal */ }
-      // D (#259): self-heal — toggle captions to rebuild the frozen region.
-      try { this._recoverCaptions(); } catch (err) { console.warn('[caption-stall] recover threw: ' + err.message); }
     }
   }
 
@@ -1798,6 +1797,13 @@ class CaptionScraper {
 }
 
 const captionScraper = new CaptionScraper();
+
+// Main confirmed real deafness (caption stall WHILE a remote is speaking) and
+// asks us to self-heal by rebuilding the caption region (#259). Gated in main so
+// we never toggle captions during a quiet room or the bot's own speech.
+ipcRenderer.on('recover-captions', () => {
+  try { captionScraper._recoverCaptions(); } catch (e) { console.warn('[caption-stall] recover handler failed: ' + e.message); }
+});
 
 // ---------------------------------------------------------------------------
 // Page message listener — forward from page-inject.js to main process

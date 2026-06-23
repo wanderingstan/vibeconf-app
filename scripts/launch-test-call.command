@@ -23,10 +23,40 @@ SAM_DIR="/Users/wanderingstan/Developer/vibeconf-bots/samantha"
 
 echo "▶ Launching test call in room: $ROOM"
 
-# Already running? (a stale Jimmy holds the default single-instance lock)
+# ── Preflight: clear any PRIOR test session so stale apps/terminals don't skew
+# the run. This is deliberately TARGETED — it only touches things this script
+# created: the agent Terminal windows it tags with a "vibeconf-agent" custom
+# title, our dev Electron apps (matched by their app path), and leftover agent
+# claude sessions (matched by "--mcp-config … /join-call"). It never closes your
+# other Terminal windows, other Electron apps, or this session.
+echo "▶ Preflight: clearing any prior test session…"
+set +e  # cleanup is best-effort; a missing target must not abort the launch
+
+# 1. Close the agent Terminal windows we tagged on a previous run.
+osascript >/dev/null 2>&1 <<'OSA'
+tell application "Terminal"
+  repeat with w in (every window)
+    try
+      if (custom title of (selected tab of w)) starts with "vibeconf-agent" then close w saving no
+    end try
+  end repeat
+end tell
+OSA
+
+# 2. Quit our dev Electron app(s) — matched by our app path only (covers both
+#    Jimmy and Samantha, who run from the same electron-app dir).
+if pkill -f "vibeconferencing/electron-app" 2>/dev/null; then echo "  • quit a running Electron app"; fi
+
+# 3. Kill leftover agent claude sessions pinned to our mcp configs (join-call).
+#    This session has no '--mcp-config … /join-call' in its argv, so it's safe.
+if pkill -f "claude --mcp-config.*join-call" 2>/dev/null; then echo "  • killed a stale agent session"; fi
+
+sleep 1
+# If something we don't manage is still holding Jimmy's port, warn (don't kill).
 if curl -sf "http://127.0.0.1:7865/api/sync/no-room" >/dev/null 2>&1; then
-  echo "⚠ Something is already on port 7865 (Jimmy may be running). Quit it first if this misbehaves."
+  echo "⚠ Port 7865 is still in use after cleanup — an unmanaged process may hold it. Quit it manually if the launch misbehaves."
 fi
+set -e
 
 # 1. Jimmy's app — default profile, port 7865, devtools (matches the usual flow).
 echo "  • starting Jimmy's app (7865)…"
@@ -57,10 +87,14 @@ sleep 2  # let the panels finish initializing before the agents call join_call
 # 4. Open an agent Terminal per bot. Each uses an explicit --mcp-config pinned to
 #    its app's port + --strict-mcp-config so it can't talk to the wrong app.
 echo "  • opening agent terminals…"
+# Tag each agent window with a "vibeconf-agent" custom title so the preflight
+# above can find and close exactly these on the next run (and nothing else).
 osascript >/dev/null <<OSA
 tell application "Terminal"
-  do script "cd '$REPO' && claude --mcp-config '$REPO/.mcp.json' --strict-mcp-config \"/join-call $ROOM Jimmy\""
-  do script "cd '$SAM_DIR' && claude --mcp-config '$SAM_DIR/.mcp.json' --strict-mcp-config \"/join-call $ROOM Samantha\""
+  set jtab to do script "cd '$REPO' && claude --mcp-config '$REPO/.mcp.json' --strict-mcp-config \"/join-call $ROOM Jimmy\""
+  set custom title of jtab to "vibeconf-agent-jimmy"
+  set stab to do script "cd '$SAM_DIR' && claude --mcp-config '$SAM_DIR/.mcp.json' --strict-mcp-config \"/join-call $ROOM Samantha\""
+  set custom title of stab to "vibeconf-agent-samantha"
   activate
 end tell
 OSA

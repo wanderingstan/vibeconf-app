@@ -3082,6 +3082,20 @@ function setupIPC() {
     }
   });
 
+  // Captions report ON but the text stream is frozen (#259) — the bot is deaf
+  // even though the CC button still says "on". Route it through the same deaf
+  // path as captions-off so the 🙉 emoji flips and the wait_for_speech timeout
+  // warns the agent. Auto-clears: the next real caption flips captionsOn back
+  // ON (local-server self-corrects on incoming text).
+  ipcMain.on('caption-stall', (_event, info) => {
+    const secs = Math.round((info?.ageMs || 0) / 1000);
+    console.log(`[electron] caption stall reported (${secs}s, ${info?.nodes ?? '?'} nodes) — marking bot deaf`);
+    localServer.setCaptionsOn(false);
+    if (panelView && !panelView.webContents.isDestroyed()) {
+      panelView.webContents.send('caption-state', { on: false });
+    }
+  });
+
   // --- Speaking state ---
   ipcMain.on('update-speaking', (_event, { name, speaking }) => {
     if (name && sync.roomId) {

@@ -1575,6 +1575,29 @@ class CaptionScraper {
     }
   }
 
+  // D (self-heal, #259): a confirmed stall means captions report ON but the
+  // stream is frozen — Meet re-rendered the region into a shape the per-child
+  // parser reads as empty. Toggle captions OFF then back ON to force Meet to
+  // tear down and rebuild the region with a fresh structure. Rate-limited so we
+  // never thrash; best-effort — if it doesn't clear the stall, the next
+  // detection retries. New caption text then auto-clears the deaf state.
+  _recoverCaptions() {
+    const now = Date.now();
+    if (now - (this._lastRecoverAt || 0) < 45000) return; // at most once / 45s
+    this._lastRecoverAt = now;
+    const offBtn = findByAriaLabel('Turn off captions') || findByAriaLabel('Desactivar subtítulos');
+    if (!offBtn) {
+      console.warn('[caption-stall] recover: no "Turn off captions" button — trying enable only');
+      try { this._enableCaptions(); } catch { /* non-fatal */ }
+      return;
+    }
+    console.warn('[caption-stall] recover: toggling captions OFF→ON to rebuild a frozen caption region');
+    try { offBtn.click(); } catch (e) { console.warn('[caption-stall] recover off-click failed: ' + e.message); }
+    setTimeout(() => {
+      try { this._enableCaptions(); } catch (e) { console.warn('[caption-stall] recover re-enable failed: ' + e.message); }
+    }, 1200);
+  }
+
   // The toolbar's caption button labels itself "Turn off captions" only when
   // captions are actually ON — more reliable than the [aria-label="Captions"]
   // container (which exists earlier). Poll for that confirmation; if it never
@@ -1666,6 +1689,12 @@ class CaptionScraper {
         console.warn('[caption-stall] context — visible buttons: ' + JSON.stringify(btns));
         if (dialogs.length) console.warn('[caption-stall] dialog DOM:\n' + dialogs.join('\n---\n'));
       } catch (err) { console.warn('[caption-stall] dump failed: ' + err.message); }
+      // C (#259): escalate — on-but-frozen captions === deaf. main routes this
+      // through the existing deaf path (🙉 emoji + the wait_for_speech timeout
+      // warning), and it auto-clears when real caption text returns.
+      try { ipcRenderer.send('caption-stall', { ageMs, nodes }); } catch { /* non-fatal */ }
+      // D (#259): self-heal — toggle captions to rebuild the frozen region.
+      try { this._recoverCaptions(); } catch (err) { console.warn('[caption-stall] recover threw: ' + err.message); }
     }
   }
 

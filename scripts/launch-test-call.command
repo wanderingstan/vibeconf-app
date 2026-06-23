@@ -51,6 +51,23 @@ end tell
 OSA
 )
 
+# Self-diagnose: if nothing matched, show what `name of window` actually returns
+# (it may differ from the displayed title bar) so we can fix the match string.
+if [ -z "${AGENT_IDS// /}" ]; then
+  echo "  • (no agent windows matched 'join-call'; window names AppleScript sees:)"
+  osascript 2>/dev/null <<'OSA'
+tell application "Terminal"
+  set s to ""
+  repeat with w in windows
+    try
+      set s to s & "      • " & (name of w) & linefeed
+    end try
+  end repeat
+  return s
+end tell
+OSA
+fi
+
 # 2. Kill the agent claude sessions + our Electron apps.
 if pkill -f "claude --mcp-config.*join-call" 2>/dev/null; then echo "  • killed a stale agent session"; fi
 if pkill -f "vibeconferencing/electron-app" 2>/dev/null; then echo "  • quit a running Electron app"; fi

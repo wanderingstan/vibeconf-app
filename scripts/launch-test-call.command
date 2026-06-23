@@ -140,6 +140,19 @@ end tell
 OSA
 }
 echo "  • arranging windows (${SCRW}×${SCRH})…"
+# Minimize the Electron DevTools windows ("Developer Tools - …") so they don't
+# clutter the grid or get grabbed by the positioning instead of the main window.
+osascript >/dev/null 2>&1 <<'OSA'
+tell application "System Events"
+  repeat with p in (processes whose name is "Electron")
+    repeat with w in windows of p
+      try
+        if (title of w) contains "Developer Tools" then set value of attribute "AXMinimized" of w to true
+      end try
+    end repeat
+  end repeat
+end tell
+OSA
 arrange_app Jimmy 0 "$TOPY"
 arrange_app Samantha "$HALFW" "$TOPY"
 

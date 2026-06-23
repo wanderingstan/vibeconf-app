@@ -77,12 +77,12 @@ if curl -sf "http://127.0.0.1:7865/api/sync/no-room" >/dev/null 2>&1; then
 fi
 set -e
 
-# ── Window grid geometry (debug nicety): a 2×2 grid — apps on top, each agent
-# terminal directly BELOW its app (Jimmy left column, Samantha right column).
-# Adapts to the CURRENT screen (roomy on an external monitor; on the laptop the
-# apps' ~1020px min width forces some overlap). The apps are CREATED at these
-# coords via --window-* flags (reliable — moving them from outside via System
-# Events gets reverted by the window server for some instances).
+# ── Window grid geometry (debug nicety): one ROW per bot — APP on the left,
+# its agent TERMINAL on the right. Jimmy = top row, Samantha = bottom row.
+# Adapts to the current screen (clean on an external monitor; on the laptop the
+# apps' ~1020px min width overlaps into the terminal column). Apps are CREATED
+# at these coords via --window-* flags (reliable — moving them from outside via
+# System Events gets reverted by the window server for some instances).
 read -r SCRW SCRH <<< "$(osascript -e 'tell application "Finder" to get bounds of window of desktop' 2>/dev/null | awk -F', ' '{print $3, $4}')"
 SCRW=${SCRW:-1512}; SCRH=${SCRH:-982}
 MENUBAR=28
@@ -92,17 +92,16 @@ MINAPPW=1020   # 640 + PANEL_WIDTH(380): the app's enforced min width
 APPW=$(( HALFW > MINAPPW ? HALFW : MINAPPW ))
 TOPY=$MENUBAR
 BOTY=$(( MENUBAR + HALFH ))
-SAMX=$(( SCRW - APPW )); [ "$SAMX" -lt 0 ] && SAMX=0   # right column, flush-right
-WIN="--window-y=$TOPY --window-w=$APPW --window-h=$HALFH"
-echo "  • grid ${SCRW}×${SCRH}: apps top, terminals below"
+WINWH="--window-w=$APPW --window-h=$HALFH"
+echo "  • grid ${SCRW}×${SCRH}: Jimmy row (top), Samantha row (bottom) — app left, terminal right"
 
-# 1. Jimmy's app — default profile, port 7865, devtools. Created top-left.
+# 1. Jimmy's app — default profile, port 7865, devtools. Top-LEFT.
 echo "  • starting Jimmy's app (7865)…"
-nohup zsh -c "cd '$ELECTRON' && pnpm dev -- --devtools=true --bot-name=Jimmy --window-x=0 $WIN" >/tmp/vibeconf-jimmy-app.log 2>&1 &
+nohup zsh -c "cd '$ELECTRON' && pnpm dev -- --devtools=true --bot-name=Jimmy --window-x=0 --window-y=$TOPY $WINWH" >/tmp/vibeconf-jimmy-app.log 2>&1 &
 
-# 2. Samantha's app — bot2 profile, port 7866. Created top-right.
+# 2. Samantha's app — bot2 profile, port 7866. Bottom-LEFT.
 echo "  • starting Samantha's app (7866)…"
-nohup zsh -c "cd '$ELECTRON' && pnpm dev -- --profile=bot2 --local-port=7866 --bot-name=Samantha --window-x=$SAMX $WIN" >/tmp/vibeconf-samantha-app.log 2>&1 &
+nohup zsh -c "cd '$ELECTRON' && pnpm dev -- --profile=bot2 --local-port=7866 --bot-name=Samantha --window-x=0 --window-y=$BOTY $WINWH" >/tmp/vibeconf-samantha-app.log 2>&1 &
 
 # 3. Wait for both local-servers to come up.
 wait_for_port() {
@@ -137,22 +136,28 @@ tell application "System Events"
 end tell
 OSA
 
-# 4. Open an agent Terminal per bot, positioning each below its app. Each uses an
-#    explicit --mcp-config pinned to its app's port + --strict-mcp-config.
+# 4. Open an agent Terminal per bot — Jimmy's terminal top-RIGHT, Samantha's
+#    bottom-RIGHT (right column, beside each bot's app). Terminal is fresh after
+#    the preflight killall, so the window each `do script` just created is
+#    window 1 — capture its id right then (deterministic; titles are unreliable
+#    because the bot name sits at the truncated tail). Each uses an --mcp-config
+#    pinned to its app's port.
 echo "  • opening agent terminals…"
 osascript >/dev/null 2>&1 <<OSA
 tell application "Terminal"
   do script "cd '$REPO' && claude --mcp-config '$REPO/.mcp.json' --strict-mcp-config \"/join-call $ROOM Jimmy\""
-  delay 0.4
-  try
-    set bounds of front window to {0, $BOTY, $HALFW, $SCRH}
-  end try
+  delay 0.6
+  set jId to id of window 1
   do script "cd '$SAM_DIR' && claude --mcp-config '$SAM_DIR/.mcp.json' --strict-mcp-config \"/join-call $ROOM Samantha\""
-  delay 0.4
-  try
-    set bounds of front window to {$HALFW, $BOTY, $SCRW, $SCRH}
-  end try
+  delay 0.6
+  set sId to id of window 1
   activate
+  try
+    set bounds of window id jId to {$HALFW, $TOPY, $SCRW, $BOTY}
+  end try
+  try
+    set bounds of window id sId to {$HALFW, $BOTY, $SCRW, $SCRH}
+  end try
 end tell
 OSA
 

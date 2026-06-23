@@ -78,8 +78,10 @@ fi
 set -e
 
 # 1. Jimmy's app — default profile, port 7865, devtools (matches the usual flow).
+#    --bot-name=Jimmy is passed so the window-arrange step below can find this
+#    app's process (Samantha already carries --bot-name).
 echo "  • starting Jimmy's app (7865)…"
-nohup zsh -c "cd '$ELECTRON' && pnpm dev-with-tools" >/tmp/vibeconf-jimmy-app.log 2>&1 &
+nohup zsh -c "cd '$ELECTRON' && pnpm dev -- --devtools=true --bot-name=Jimmy" >/tmp/vibeconf-jimmy-app.log 2>&1 &
 
 # 2. Samantha's app — bot2 profile, port 7866.
 echo "  • starting Samantha's app (7866)…"
@@ -103,15 +105,59 @@ wait_for_port 7865 jimmy || exit 1
 wait_for_port 7866 samantha || exit 1
 sleep 2  # let the panels finish initializing before the agents call join_call
 
-# 4. Open an agent Terminal per bot. Each uses an explicit --mcp-config pinned to
-#    its app's port + --strict-mcp-config so it can't talk to the wrong app.
+# ── Arrange windows in a 2×2 grid (debug nicety): apps on top, each agent
+# terminal directly BELOW its app (Jimmy left column, Samantha right column).
+# Geometry adapts to the CURRENT screen — roomy on an external monitor, cramped
+# on the laptop (the app's ~1020px min width forces some overlap at half-screen).
+# All best-effort; needs Automation/Accessibility (granted once).
+read -r SCRW SCRH <<< "$(osascript -e 'tell application "Finder" to get bounds of window of desktop' 2>/dev/null | awk -F', ' '{print $3, $4}')"
+SCRW=${SCRW:-1512}; SCRH=${SCRH:-982}
+MENUBAR=28
+HALFW=$(( SCRW / 2 ))
+HALFH=$(( (SCRH - MENUBAR) / 2 ))
+TOPY=$MENUBAR
+BOTY=$(( MENUBAR + HALFH ))
+
+# Position an Electron app's main window by its --bot-name. "MacOS/Electron"
+# excludes the launcher shell + helper procs; we target the "Vibeconferencing"
+# window so a separate devtools window isn't moved instead.
+arrange_app() {  # $1=botname  $2=x  $3=y
+  local pid; pid=$(pgrep -f "MacOS/Electron.*bot-name=$1" | head -1)
+  [ -n "$pid" ] || return
+  osascript >/dev/null 2>&1 <<OSA
+tell application "System Events"
+  try
+    set p to (first process whose unix id is $pid)
+    set tw to missing value
+    repeat with w in windows of p
+      if (title of w) contains "Vibeconf" then set tw to w
+    end repeat
+    if tw is missing value then set tw to window 1 of p
+    set position of tw to {$2, $3}
+    set size of tw to {$HALFW, $HALFH}
+  end try
+end tell
+OSA
+}
+echo "  • arranging windows (${SCRW}×${SCRH})…"
+arrange_app Jimmy 0 "$TOPY"
+arrange_app Samantha "$HALFW" "$TOPY"
+
+# 4. Open an agent Terminal per bot, positioning each below its app. Each uses an
+#    explicit --mcp-config pinned to its app's port + --strict-mcp-config.
 echo "  • opening agent terminals…"
-# No tagging needed — the next run's preflight finds these by their live
-# "claude --mcp-config" command in the window title.
 osascript >/dev/null 2>&1 <<OSA
 tell application "Terminal"
   do script "cd '$REPO' && claude --mcp-config '$REPO/.mcp.json' --strict-mcp-config \"/join-call $ROOM Jimmy\""
+  delay 0.4
+  try
+    set bounds of front window to {0, $BOTY, $HALFW, $SCRH}
+  end try
   do script "cd '$SAM_DIR' && claude --mcp-config '$SAM_DIR/.mcp.json' --strict-mcp-config \"/join-call $ROOM Samantha\""
+  delay 0.4
+  try
+    set bounds of front window to {$HALFW, $BOTY, $SCRW, $SCRH}
+  end try
   activate
 end tell
 OSA

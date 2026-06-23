@@ -264,14 +264,15 @@ const PREFERENCES = {
   },
   defaultSilenceSeconds: {
     type: 'number',
-    default: 2,
+    default: 1.4,
     min: 1,
     max: 30,
     description:
       'Default silence threshold (seconds) for wait_for_speech if the agent ' +
       'doesn\'t pass one. The bot waits this long after a speaker stops ' +
       'before considering their turn complete. Higher = more patient (bot ' +
-      'lets users compose longer thoughts); lower = snappier.',
+      'lets users compose longer thoughts); lower = snappier. 1.4 has felt ' +
+      'good in live calls; 2.0 was the old default.',
   },
   defaultMaxWaitForSpeechSec: {
     type: 'number',

@@ -1851,6 +1851,17 @@ app.whenReady().then(async () => {
         version: app.getVersion(),
         platform: process.platform,
         electron: process.versions.electron,
+        profile: appProfile || 'default',
+        // Behavior/experiment prefs in effect for this session, so a log
+        // self-documents which knobs were on (blank = schema default).
+        defaultSilenceSeconds: store?.get('defaultSilenceSeconds'),
+        shadowPhrase: store?.get('shadowPhrase'),
+        backgroundTickWords: store?.get('backgroundTickWords'),
+        comprehendCharThreshold: store?.get('comprehendCharThreshold'),
+        probeFiring: store?.get('probeFiring'),
+        ackProvider: store?.get('ackProvider'),
+        ackEndpoint: store?.get('ackEndpoint'),
+        ackModel: store?.get('ackModel'),
       },
     });
     console.log('[electron] Session log:', logPath);

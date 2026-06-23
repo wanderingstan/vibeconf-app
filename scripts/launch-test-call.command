@@ -23,30 +23,29 @@ SAM_DIR="/Users/wanderingstan/Developer/vibeconf-bots/samantha"
 
 echo "▶ Launching test call in room: $ROOM"
 
-# ── Preflight: clear any prior test session. Stan doesn't use Terminal for
-# anything else, so clear it wholesale — kill the agent processes, then close
-# every Terminal window EXCEPT this script's own (we can't quit Terminal outright;
-# that would kill the window running this script mid-run).
+# ── Preflight: clear any prior test session. The agent terminals run in the
+# built-in Terminal.app (opened via `osascript tell "Terminal"` at the end),
+# which is a SEPARATE app from your shell's terminal (Ghostty/iTerm). So unless
+# this script is itself running inside Terminal.app, we just quit Terminal.app
+# wholesale to clear all stale agent windows — they reopen fresh below. (Closing
+# them one-by-one is unreliable: shell-init keeps the windows "busy", so Terminal
+# pops a close-confirmation sheet AppleScript can't pass.)
 echo "▶ Preflight: clearing any prior test session…"
 set +e  # cleanup is best-effort; a missing target must not abort the launch
 
-# This script's own Terminal window — capture FIRST so we never close it. (At
-# script start, before any `do script`, `front window` is reliably this window.)
-SELF_WIN=$(osascript -e 'tell application "Terminal" to id of front window' 2>/dev/null)
-
-# Kill agent claude sessions (+ their caffeinate wrappers) and our Electron apps.
-# "/join-call" matches both `claude … /join-call` and its caffeinate parent; a
-# lingering process otherwise keeps Terminal's "process running" close-prompt up.
+# Kill agent claude sessions (+ caffeinate wrappers) and our Electron apps.
 if pkill -f "/join-call" 2>/dev/null; then echo "  • killed stale agent session(s)"; fi
 if pkill -f "vibeconferencing/electron-app" 2>/dev/null; then echo "  • quit a running Electron app"; fi
 
-sleep 1  # let the killed shells drop to idle so the windows close without a prompt
-
-# Close every Terminal window except this script's. Collect first, then close
-# (closing while iterating `windows` skips entries). Guarded: if we couldn't id
-# our own window, skip — better to leave stale windows than risk closing myself.
-if [ -n "$SELF_WIN" ]; then
-  CLOSED=$(osascript 2>/dev/null <<OSA
+# Clear the stale agent Terminal.app windows.
+if [ "$TERM_PROGRAM" = "Apple_Terminal" ]; then
+  # Running INSIDE Terminal.app — can't quit it (would kill this script), so
+  # close every window except our own. (Needs Terminal's Prompt-before-closing
+  # = Never, and even then "busy" windows can resist — running from Ghostty/iTerm
+  # via the branch below is the reliable path.)
+  SELF_WIN=$(osascript -e 'tell application "Terminal" to id of front window' 2>/dev/null)
+  if [ -n "$SELF_WIN" ]; then
+    osascript 2>/dev/null <<OSA
 tell application "Terminal"
   set toClose to {}
   repeat with w in windows
@@ -54,20 +53,22 @@ tell application "Terminal"
       if (id of w) is not ${SELF_WIN} then set end of toClose to w
     end try
   end repeat
-  set n to 0
   repeat with w in toClose
     try
       close w saving no
-      set n to n + 1
     end try
   end repeat
-  return n
 end tell
 OSA
-)
-  echo "  • closed ${CLOSED:-0} old terminal window(s)"
-else
-  echo "  • (couldn't identify this window — skipping terminal cleanup to avoid closing myself)"
+    echo "  • closed other Terminal windows"
+  fi
+elif pgrep -x Terminal >/dev/null 2>&1; then
+  # We're in Ghostty/iTerm — Terminal.app holds ONLY our agent windows. Quit it
+  # wholesale (its agent processes are already killed above). It relaunches fresh
+  # when we open the new agent terminals below.
+  killall Terminal 2>/dev/null
+  sleep 1
+  echo "  • quit Terminal.app (cleared all stale agent windows)"
 fi
 
 # If something we don't manage is still holding Jimmy's port, warn (don't kill).

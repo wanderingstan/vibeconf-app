@@ -429,7 +429,7 @@
         'LOOP',
         `mode:     ${d.mode || 'unknown'}`,
         `state:    ${d.botState || 'unknown'}`,
-        `speaking: ${d.anyoneSpeaking ? 'yes' : 'no'}`,
+        `speaking: ${this.anyoneSpeaking ? 'yes' : 'no'}`,
         `loop:     ${loopHealth}`,
         `last WfS: ${ago(d.lastWaitForSpeechAt)}`,
         ...ackLines,

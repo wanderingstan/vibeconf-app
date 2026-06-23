@@ -128,21 +128,35 @@ sleep 2  # let the panels finish initializing before the agents call join_call
 # 4. Open an agent Terminal per bot. Each uses an explicit --mcp-config pinned to
 #    its app's port + --strict-mcp-config so it can't talk to the wrong app.
 echo "  • opening agent terminals…"
-# Record each agent WINDOW ID to a temp file so the preflight on the next run can
-# close exactly these (robust — no dependency on the custom-title quirk). Also
-# set a readable custom title as a human cue + a fallback match. `id of front
-# window` right after `do script` is the window it just created.
+# Record each agent WINDOW ID so the next run's preflight can close exactly
+# these. `id of front window` right after `do script` was unreliable (it returned
+# this .command's own window — new-window creation is async inside the tell
+# block, and both ids came back identical). Instead DIFF the window-id list
+# before/after each `do script` to find the genuinely new window, then title it
+# via its id (a human cue + fallback match).
 TAG=$(osascript 2>&1 <<OSA
+on newWin(beforeIds)
+  tell application "Terminal"
+    repeat with w in windows
+      if beforeIds does not contain (id of w) then return (id of w)
+    end repeat
+  end tell
+  return 0
+end newWin
+
 tell application "Terminal"
-  set jtab to do script "cd '$REPO' && claude --mcp-config '$REPO/.mcp.json' --strict-mcp-config \"/join-call $ROOM Jimmy\""
-  set jid to id of front window
+  set before1 to id of every window
+  do script "cd '$REPO' && claude --mcp-config '$REPO/.mcp.json' --strict-mcp-config \"/join-call $ROOM Jimmy\""
+  delay 0.6
+  set jid to my newWin(before1)
   try
-    set custom title of jtab to "vibeconf-agent-jimmy"
+    set custom title of (selected tab of window id jid) to "vibeconf-agent-jimmy"
   end try
-  set stab to do script "cd '$SAM_DIR' && claude --mcp-config '$SAM_DIR/.mcp.json' --strict-mcp-config \"/join-call $ROOM Samantha\""
-  set sid to id of front window
+  do script "cd '$SAM_DIR' && claude --mcp-config '$SAM_DIR/.mcp.json' --strict-mcp-config \"/join-call $ROOM Samantha\""
+  delay 0.6
+  set sid to my newWin(before1 & {jid})
   try
-    set custom title of stab to "vibeconf-agent-samantha"
+    set custom title of (selected tab of window id sid) to "vibeconf-agent-samantha"
   end try
   activate
   return (jid as string) & " " & (sid as string)

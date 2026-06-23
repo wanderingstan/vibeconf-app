@@ -1643,16 +1643,29 @@ class CaptionScraper {
         Date.now() - (this._lastStallDumpAt || 0) > 30000) {
       this._lastStallDumpAt = Date.now();
       try {
+        // The real signature seen live (2026-06-23, Samantha): captions ON,
+        // turnNodes GROWING (Meet IS rendering), but our per-child span/text
+        // extraction yields nothing → the snapshot freezes and the bot goes
+        // silently deaf. Dump the caption region's last children so the parser
+        // break self-documents — that's the one thing needed to fix it (#259).
+        const capKids = container ? [...container.children].slice(-5).map((c, i) => {
+          const hasImg = !!c.querySelector('img');
+          const span = c.querySelector('span');
+          const spanTxt = span ? JSON.stringify((span.textContent || '').trim().slice(0, 30)) : 'NONE';
+          const text = JSON.stringify((c.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60));
+          return `  [${i}] img=${hasImg} span=${spanTxt} text=${text}\n      html=${(c.outerHTML || '').slice(0, 400)}`;
+        }) : [];
+        console.warn('[caption-stall] DEAF — no new captions for ' + Math.round(ageMs / 1000) +
+          's while captions ON with ' + nodes + ' nodes present (Meet still rendering, parser not reading). Last caption children:\n' + capKids.join('\n'));
         const btns = [...document.querySelectorAll('button, [role="button"]')]
           .filter(isVisible)
           .map(b => ((b.textContent || '').trim() || b.getAttribute('aria-label') || '').slice(0, 40))
           .filter(Boolean);
         const dialogs = [...document.querySelectorAll('[role="dialog"], [aria-modal="true"]')]
           .map(d => (d.outerHTML || '').slice(0, 1500));
-        console.warn('[caption-stall] no new captions for ' + Math.round(ageMs / 1000) +
-          's while ON — likely a blocking overlay. Visible buttons: ' + JSON.stringify(btns));
+        console.warn('[caption-stall] context — visible buttons: ' + JSON.stringify(btns));
         if (dialogs.length) console.warn('[caption-stall] dialog DOM:\n' + dialogs.join('\n---\n'));
-      } catch { /* non-fatal */ }
+      } catch (err) { console.warn('[caption-stall] dump failed: ' + err.message); }
     }
   }
 

@@ -2535,7 +2535,8 @@ async function loadMeetURL(meetUrl) {
     if (body.startsWith('[electron-meet]') ||
         body.startsWith('[bots-in-calls]') || body.startsWith('[captions]') ||
         body.startsWith('[chat]') || body.startsWith('[speaker-tracker]') ||
-        body.startsWith('[speaker-health]') || body.startsWith('[caption-health]')) {
+        body.startsWith('[speaker-health]') || body.startsWith('[caption-health]') ||
+        body.startsWith('[caption-stall]')) {
       if (level === 2) console.warn(message);
       else if (level === 3) console.error(message);
       else console.log(message);

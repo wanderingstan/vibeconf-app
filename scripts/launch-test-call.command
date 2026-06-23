@@ -128,7 +128,7 @@ wait_for_port 7866 samantha || exit 1
 # DevTools windows + the terminals still need System Events.)
 osascript >/dev/null 2>&1 <<'OSA'
 tell application "System Events"
-  repeat with p in (processes whose name is "Electron")
+  repeat with p in (processes whose name is "Electron" or name is "Vibeconferencing")
     repeat with w in windows of p
       try
         if (title of w) contains "Developer Tools" then set value of attribute "AXMinimized" of w to true
@@ -171,5 +171,24 @@ tell application "Terminal"
 end tell
 OSA
 
+# The bots open a fresh DevTools window when they ENTER the call (a new Chromium
+# instance), which is after the early minimize above. Run a DETACHED sweep that
+# keeps DevTools windows minimized for ~30s as the bots join — without blocking.
+( for _ in {1..10}; do
+    osascript >/dev/null 2>&1 <<'OSA'
+tell application "System Events"
+  repeat with p in (processes whose name is "Electron" or name is "Vibeconferencing")
+    repeat with w in windows of p
+      try
+        if (title of w) contains "Developer Tools" then set value of attribute "AXMinimized" of w to true
+      end try
+    end repeat
+  end repeat
+end tell
+OSA
+    sleep 3
+  done ) >/dev/null 2>&1 &
+
 echo "✓ Done. Two app windows + two agent terminals should be coming up."
 echo "  App logs: /tmp/vibeconf-jimmy-app.log, /tmp/vibeconf-samantha-app.log"
+echo "  (minimizing any DevTools windows for ~30s as the bots join)"

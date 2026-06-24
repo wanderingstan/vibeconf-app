@@ -9,7 +9,7 @@
 // This is the Slack analog of main.js's createMeetView + the (Meet) preload's
 // page-message plumbing, split across the two surfaces.
 
-const { BrowserView, session } = require('electron');
+const { BrowserView, session, globalShortcut } = require('electron');
 const path = require('path');
 const { SLACK } = require('./slack-selectors');
 
@@ -145,6 +145,33 @@ function createSlackSurface(mainWindow, opts = {}) {
     win.webContents.on('page-title-updated', (_e, title) => reportTitle(title));
     try { reportTitle(win.getTitle()); } catch { /* not ready */ }
 
+    // Integrate the huddle popup with the main app window instead of leaving it
+    // as a 2nd free-floating window: parent it (so they group — move/focus/
+    // minimize together; not a separate dock/taskbar entry) and lay it OVER the
+    // app. Once in the huddle the underlying app.slack.com view isn't needed, so
+    // the popup "becomes" the call surface. Electron can't embed a window.open
+    // popup as a BrowserView, so it stays a window — this is the closest to
+    // single-window. setMinimumSize keeps it wide enough for the side panel even
+    // if the app window is narrower. Only the huddle (about:blank) overlays —
+    // not a transient app.slack.com window.
+    const isHuddlePopup = !details || !details.url || details.url === 'about:blank';
+    if (isHuddlePopup && mainWindow && !mainWindow.isDestroyed()) {
+      try {
+        win.setParentWindow(mainWindow);
+        const overlay = () => {
+          if (mainWindow && !mainWindow.isDestroyed() && win && !win.isDestroyed()) {
+            win.setBounds(mainWindow.getBounds());
+          }
+        };
+        overlay();
+        mainWindow.on('move', overlay);
+        mainWindow.on('resize', overlay);
+        win.on('closed', () => {
+          try { mainWindow.removeListener('move', overlay); mainWindow.removeListener('resize', overlay); } catch { /* ignore */ }
+        });
+      } catch (e) { console.warn('[slack-surface] overlay setup failed:', e && e.message); }
+    }
+
     // Auto-confirm the lobby/preview ("Slack - Huddle Preview" → "Start Huddle").
     if (autojoin) clickWhenReady(win.webContents, SLACK.huddle.lobbyStartButton, 'lobby Start Huddle');
 
@@ -157,7 +184,28 @@ function createSlackSurface(mainWindow, opts = {}) {
   });
 
   if (url) view.webContents.loadURL(url);
-  return { view, getPopups: () => popups.slice() };
+
+  // Toggle between the huddle overlay and the app/panel underneath. The huddle
+  // is a child window laid OVER the app (always on top of it), so to reach the
+  // controls you hide the huddle. A SYSTEM shortcut so it works even while the
+  // huddle covers everything; a panel "show controls" button can call the same
+  // toggleHuddle() later (exposed on the return value).
+  const toggleHuddle = () => {
+    let any = false;
+    for (const w of popups) {
+      if (w.isDestroyed()) continue;
+      any = true;
+      if (w.isVisible()) w.hide(); else w.show();
+    }
+    console.log('[slack-surface] toggled huddle visibility' + (any ? '' : ' (no huddle window yet)'));
+  };
+  const TOGGLE_ACCEL = 'CommandOrControl+Shift+0';
+  try {
+    globalShortcut.register(TOGGLE_ACCEL, toggleHuddle);
+    console.log('[slack-surface] huddle/controls toggle = ' + TOGGLE_ACCEL);
+  } catch (e) { console.warn('[slack-surface] toggle register failed:', e && e.message); }
+
+  return { view, getPopups: () => popups.slice(), toggleHuddle };
 }
 
 module.exports = { createSlackSurface };

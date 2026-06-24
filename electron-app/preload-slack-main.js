@@ -53,3 +53,19 @@ try {
 window.__vibeconf_getScreenShareSource = async function () {
   return ipcRenderer.invoke('get-screen-share-source');
 };
+
+// Forward TTS/media commands from main to the page-inject media layer — the
+// VirtualMic lives HERE in the main window (where Slack/Chime captures audio).
+// Mic/camera/chat are huddle-popup concerns (handled there), so we only forward
+// the audio-out actions. main.js already sends these to meetView, which in Slack
+// mode IS this view, so the bot's existing TTS path reaches the huddle.
+ipcRenderer.on('extension-message', (_event, message) => {
+  if (message && (message.action === 'play-tts' || message.action === 'play-speech-test')) {
+    window.postMessage({
+      __botsInCalls: true,
+      __fromExtension: true,
+      action: message.action,
+      payload: message.payload,
+    }, '*');
+  }
+});

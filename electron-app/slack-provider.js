@@ -132,24 +132,27 @@ class SlackProvider extends CallProvider {
     const more = document.querySelector(SLACK.moreActions.button);
     if (!more) { console.warn('[slack] [CC] "More actions" button not found'); return false; }
     more.click();
-    console.log('[slack] [CC] opened More actions menu');
+    console.log('[slack] [CC] clicked More actions');
 
     const show = await waitFor(() => findMenuItemByText(SLACK.captions.showCaptionsItemText));
-    if (!show) { console.warn('[slack] [CC] "Show captions" item not found'); return false; }
-    // "Show captions" is a SUBMENU parent — HOVER to expand it (clicking it
-    // doesn't open the submenu). Fire the full hover sequence on the menuitem.
-    const hoverTarget = show.closest('[role="menuitem"]') || show;
-    for (const type of ['pointerover', 'mouseover', 'mouseenter', 'pointermove', 'mousemove']) {
-      hoverTarget.dispatchEvent(new MouseEvent(type, { bubbles: true }));
-    }
-    console.log('[slack] [CC] hovered "Show captions" — waiting for the submenu');
+    if (!show) { console.warn('[slack] [CC] "Show captions" not found'); return false; }
+    show.click(); // enables captions (overlay) AND reveals the mode submenu
+    console.log('[slack] [CC] clicked "Show captions"');
 
-    const sbs = await waitFor(() =>
-      document.querySelector(SLACK.captions.sideBySideButton) ||
-      findMenuItemByText(SLACK.captions.sideBySideLabelPrefix), 4000);
-    if (!sbs) { console.warn('[slack] [CC] "Side-by-side" not found after hover'); return false; }
-    sbs.click();
-    console.log('[slack] [CC] clicked "Side-by-side" — captions on');
+    // "Side-by-side" (a menuitemcheckbox) switches caption mode. Wait for it to
+    // be present AND visible, then drive a full click sequence — a bare .click()
+    // didn't register on it.
+    const sbs = await waitFor(() => {
+      const el = document.querySelector(SLACK.captions.sideBySideButton)
+        || findMenuItemByText(SLACK.captions.sideBySideLabelPrefix);
+      return el && isVisible(el) ? el : null;
+    }, 4000);
+    if (!sbs) { console.warn('[slack] [CC] "Side-by-side" not found/visible'); return false; }
+    if (sbs.getAttribute('aria-checked') === 'true') { console.log('[slack] [CC] side-by-side already active'); return true; }
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+      sbs.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true }));
+    }
+    console.log('[slack] [CC] clicked "Side-by-side" — aria-checked now:', sbs.getAttribute('aria-checked'));
     return true;
   }
 

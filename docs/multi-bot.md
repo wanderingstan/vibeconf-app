@@ -106,6 +106,34 @@ take what the group agrees on and implement / review actual code changes.
 Join the current Meet via /join-call, then wait for instructions.
 ```
 
+## Automated test fleet (agent-less)
+
+The recipes above *drive* bots by hand (or by an agent). For **automated regression testing** there's a separate, agent-less path: `scripts/spawn-test-fleet.sh` boots N bots in dedicated, isolated `testN` profiles on ports `7901+`, and `scripts/meet-test.mjs` runs them through a scripted scenario (join, speak, whiteboard share, chat send/read, listen) — deterministic, zero Claude agents, zero tokens. The bots join the open guest meet `paz-sqoa-npe` (no sign-in needed). Exit code is non-zero on any failed step or stall, so it can gate CI.
+
+```bash
+pnpm test:meet:ci       # run from SOURCE (active development)
+pnpm test:meet:dmg      # the INSTALLED app — /Applications/Vibeconferencing.app
+pnpm test:meet:built    # the freshly-BUILT app — electron-app/dist/mac*/…app
+```
+
+Each spawns the fleet, runs the scenario, and tears it down (`spawn-test-fleet.sh N --kill`, which reaps both the port holders and any lingering GUI mains by `--profile`).
+
+**Installed vs built — and why both exist.** `--dmg` and `--built` both exercise the real packaged artifact (asar, `build.files`), catching packaging-only bugs that source runs miss. They differ only in *which copy*:
+
+| Target | Runs | Use when |
+|---|---|---|
+| `test:meet:dmg` | `/Applications/Vibeconferencing.app` (installed) | testing exactly what users — and the scheduled nightly — run |
+| `test:meet:built` | newest `electron-app/dist/mac*/Vibeconferencing.app` | testing a fresh build **without** installing it over `/Applications` |
+
+The trap `--built` avoids: after `pnpm dist:fast`, your new build sits in `dist/` *uninstalled* while `/Applications` still holds the old app — so `test:meet:dmg` tests the stale install and silently "passes," making the fresh build's changes look missing. `test:meet:built` drives the `dist/` bundle directly (launched by explicit path):
+
+```bash
+cd electron-app && pnpm dist:fast   # builds dist/…/Vibeconferencing.app (no install)
+cd .. && pnpm test:meet:built       # drives that build directly
+```
+
+Both resolve paths relative to the checkout they run from (the script is dir-agnostic), so `--built` always finds *that* worktree's latest build.
+
 ## Mental model
 
 Think of each profile as a separate **persona** in spirit (your name in Meet, your voice, your Google login, your prefs), even though under the hood "persona" is a future UX concept built on top of these primitives. See issue #207 for where this is headed: a single `--as <persona-name>` launcher that resolves to the right profile + port + MCP install.

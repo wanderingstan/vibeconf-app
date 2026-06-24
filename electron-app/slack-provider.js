@@ -153,25 +153,22 @@ class SlackProvider extends CallProvider {
     const show = await waitFor(() => findMenuItemByText(SLACK.captions.showCaptionsItemText));
     if (!show) { console.warn('[slack] [CC] "Show captions" not found'); return false; }
     const showBtn = show.closest('[role="menuitem"]') || show;
-    clickItem(showBtn); // hover (opens the submenu) + click
-    console.log('[slack] [CC] interacted with "Show captions" (data-qa=' + showBtn.getAttribute('data-qa') + ')');
+    clickItem(showBtn); // turns captions on + opens the submenu (it stays open)
+    console.log('[slack] [CC] clicked "Show captions" — waiting for the submenu');
+    await delay(600); // let the submenu render
 
-    const findSbs = () => {
-      const el = document.querySelector(SLACK.captions.sideBySideButton)
-        || findMenuItemByText(SLACK.captions.sideBySideLabelPrefix);
-      return el && isVisible(el) ? el : null;
-    };
-    let sbs = await waitFor(findSbs, 3000);
-    if (!sbs) {
-      // Fallback: open the submenu via the keyboard (focus the trigger, ArrowRight).
-      console.log('[slack] [CC] submenu not open via hover/click — trying keyboard ArrowRight');
-      try { showBtn.focus(); } catch { /* ignore */ }
-      for (const key of ['ArrowRight', 'Enter']) {
-        showBtn.dispatchEvent(new KeyboardEvent('keydown', { key, code: key, bubbles: true, cancelable: true }));
-      }
-      sbs = await waitFor(findSbs, 3000);
+    let sbs = document.querySelector(SLACK.captions.sideBySideButton)
+      || findMenuItemByText(SLACK.captions.sideBySideLabelPrefix);
+    if (!sbs || !isVisible(sbs)) {
+      // Stop guessing — dump the visible menu items so we can see Side-by-side's
+      // real selector/label in the live submenu.
+      const items = [...document.querySelectorAll('[role="menuitem"], [role="menuitemcheckbox"], [data-qa*="menu_item"], button[data-qa]')]
+        .filter(isVisible)
+        .map((e) => ({ dq: e.getAttribute('data-qa'), label: (e.getAttribute('aria-label') || e.textContent || '').trim().slice(0, 40) }))
+        .slice(0, 30);
+      console.warn('[slack] [CC] Side-by-side not found. Visible menu items: ' + JSON.stringify(items));
+      return false;
     }
-    if (!sbs) { console.warn('[slack] [CC] "Side-by-side" not found/visible (submenu didn\'t open)'); return false; }
     if (sbs.getAttribute('aria-checked') === 'true') { console.log('[slack] [CC] side-by-side already active'); return true; }
     clickItem(sbs);
     console.log('[slack] [CC] clicked "Side-by-side" — aria-checked now:', sbs.getAttribute('aria-checked'));

@@ -497,7 +497,7 @@ async function refreshBotIdentity(mode) {
   if (!botIdentityStatus) return;
   const m = mode || lastMeetMode;
   if (m !== 'account') {
-    botIdentityStatus.textContent = '👤 Guest — won\'t auto-admit to invite-only meets';
+    botIdentityStatus.textContent = '👤 Guest';
     botIdentityStatus.style.color = '#fdd663';
     if (botSignInMainBtn) botSignInMainBtn.style.display = 'inline-block';
     if (botSignOutMainBtn) botSignOutMainBtn.style.display = 'none';

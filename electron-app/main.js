@@ -2522,6 +2522,9 @@ function createMainWindow() {
       partition: currentMeetPartition,
       url: slackUrl,
       devtools: !!(cliArgs && cliArgs['devtools']),
+      // Auto-join the channel's huddle (header button → lobby confirm). Default
+      // on in the Slack scaffold; --slack-autojoin=false to just load the channel.
+      autojoin: cliArgs['slack-autojoin'] !== 'false',
     });
     meetView = surface.view;
   } else {

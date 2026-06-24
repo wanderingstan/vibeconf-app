@@ -20,6 +20,23 @@ const { SLACK } = require('./slack-selectors');
 // version when Slack tightens its cutoff.
 const SLACK_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
 
+// Poll for `selector` in a webContents and click it once it appears (Slack is a
+// SPA, so toolbar/lobby buttons render well after load). Runs in-page via
+// executeJavaScript so the preloads stay media/scrape-only. Logs with a [slack]
+// prefix so the console-message forwarder surfaces it in the main stdout.
+function clickWhenReady(webContents, selector, label, { tries = 60, intervalMs = 500 } = {}) {
+  const js = `(() => {
+    const sel = ${JSON.stringify(selector)}, label = ${JSON.stringify(label)};
+    let n = 0;
+    const t = setInterval(() => {
+      const el = document.querySelector(sel);
+      if (el) { el.click(); clearInterval(t); console.log('[slack] autojoin: clicked ' + label); }
+      else if (++n > ${tries}) { clearInterval(t); console.warn('[slack] autojoin: timed out waiting for ' + label); }
+    }, ${intervalMs});
+  })();`;
+  webContents.executeJavaScript(js).catch(() => {});
+}
+
 // Build the Slack surface bound to a session partition.
 //   mainWindow — the app's BrowserWindow (for layout; caller addBrowserView's it)
 //   opts.partition — session partition (reuse the bot's; login carries to popup)
@@ -27,7 +44,7 @@ const SLACK_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/53
 //   opts.devtools  — open DevTools on the popup (handy for live driving)
 // Returns { view, getPopups }.
 function createSlackSurface(mainWindow, opts = {}) {
-  const { partition, url, devtools, userAgent = SLACK_UA } = opts;
+  const { partition, url, devtools, userAgent = SLACK_UA, autojoin = false } = opts;
 
   // Spoof Chrome at the SESSION level so EVERY window in this partition — main,
   // workspace ("Redirecting…"), huddle popup — inherits it and stays in the one
@@ -44,6 +61,21 @@ function createSlackSurface(mainWindow, opts = {}) {
   });
   // Spoof Chrome BEFORE the first load so app.slack.com's UA check passes.
   view.webContents.setUserAgent(userAgent);
+
+  // Surface the main view's [slack] logs (incl. autojoin) in the main stdout.
+  view.webContents.on('console-message', (_e, _level, message) => {
+    if (typeof message === 'string' && message.includes('[slack]')) console.log(message);
+  });
+
+  // Auto-join: once the channel SPA has loaded, click the channel-header
+  // "Huddle" button (start OR join the active one). That opens the lobby popup,
+  // which we auto-confirm in did-create-window below.
+  if (autojoin) {
+    view.webContents.on('did-finish-load', () => {
+      console.log('[slack] autojoin: channel loaded — waiting for the Huddle button');
+      clickWhenReady(view.webContents, SLACK.huddle.startButton, 'channel Huddle button');
+    });
+  }
 
   // The huddle opens an about:blank popup — allow it and inject our scrape
   // preload so we can read/drive the huddle UI. about:blank inherits the
@@ -97,6 +129,9 @@ function createSlackSurface(mainWindow, opts = {}) {
     };
     win.webContents.on('page-title-updated', (_e, title) => reportTitle(title));
     try { reportTitle(win.getTitle()); } catch { /* not ready */ }
+
+    // Auto-confirm the lobby/preview ("Slack - Huddle Preview" → "Start Huddle").
+    if (autojoin) clickWhenReady(win.webContents, SLACK.huddle.lobbyStartButton, 'lobby Start Huddle');
 
     if (devtools) { try { win.webContents.openDevTools({ mode: 'detach' }); } catch { /* ignore */ } }
     win.on('closed', () => {

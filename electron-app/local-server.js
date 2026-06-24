@@ -1907,7 +1907,14 @@ class LocalServer {
     }
 
     const url = new URL(req.url, `http://127.0.0.1:${this.port}`);
-    const pathMatch = url.pathname.match(/^\/api\/sync\/([a-z]+-[a-z]+-[a-z]+)$/);
+    // Room id is any lowercase slug — the server adopts whatever id the first
+    // request uses (see "Accept requests for any room ID" below). This used to
+    // be locked to Meet's three-group code shape (`xxx-xxxx-xxx`), which 404'd
+    // any non-Meet room: a Slack huddle has no Meet code, so wait_for_speech to
+    // e.g. `/api/sync/slack-huddle` fell through to 404 and returned instantly
+    // (looked like a 3ms "timeout"). `no-room` is intercepted by its own GET
+    // handler above, so the broader pattern doesn't shadow it.
+    const pathMatch = url.pathname.match(/^\/api\/sync\/([a-z0-9-]+)$/);
 
     // Room creation endpoint (for compatibility with sync-client.js)
     if (url.pathname === '/api/rooms/create' && req.method === 'POST') {

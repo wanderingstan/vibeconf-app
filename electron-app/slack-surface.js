@@ -113,6 +113,9 @@ function createSlackSurface(mainWindow, opts = {}) {
   });
 
   const popups = [];
+  // The live huddle popup (about:blank) — where SlackProvider runs. main.js
+  // routes DOM call-commands (mic/camera/chat/share/captions) to its webContents.
+  let huddlePopup = null;
   view.webContents.on('did-create-window', (win, details) => {
     popups.push(win);
     try { win.webContents.setUserAgent(userAgent); } catch { /* ignore */ }
@@ -155,6 +158,10 @@ function createSlackSurface(mainWindow, opts = {}) {
     // if the app window is narrower. Only the huddle (about:blank) overlays —
     // not a transient app.slack.com window.
     const isHuddlePopup = !details || !details.url || details.url === 'about:blank';
+    if (isHuddlePopup) {
+      huddlePopup = win; // command target for main.js (mic/camera/chat/share/captions)
+      win.on('closed', () => { if (huddlePopup === win) huddlePopup = null; });
+    }
     if (isHuddlePopup && mainWindow && !mainWindow.isDestroyed()) {
       try {
         win.setParentWindow(mainWindow);
@@ -205,7 +212,12 @@ function createSlackSurface(mainWindow, opts = {}) {
     console.log('[slack-surface] huddle/controls toggle = ' + TOGGLE_ACCEL);
   } catch (e) { console.warn('[slack-surface] toggle register failed:', e && e.message); }
 
-  return { view, getPopups: () => popups.slice(), toggleHuddle };
+  // webContents of the live huddle popup (the SlackProvider command target), or
+  // null if there's no huddle yet / it closed.
+  const getHuddleWebContents = () =>
+    (huddlePopup && !huddlePopup.isDestroyed()) ? huddlePopup.webContents : null;
+
+  return { view, getPopups: () => popups.slice(), toggleHuddle, getHuddleWebContents };
 }
 
 module.exports = { createSlackSurface };

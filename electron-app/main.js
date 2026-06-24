@@ -41,13 +41,56 @@ function ts() {
   console.error = wrap(console.error.bind(console));
 })();
 
-// Round-trip request to the Meet preload (read/send chat). Sends on `channel`
+// --- Provider-aware command routing (#264) -------------------------------
+// Meet drives the whole call through one surface (meetView). Slack splits it:
+// DOM commands (mic/camera/chat/share/captions) target the huddle POPUP where
+// SlackProvider runs, while audio-out (play-tts/play-speech-test/play-join-chime)
+// targets the MAIN app.slack.com window (the VirtualMic that Chime captures).
+// Set in createMainWindow when --provider=slack.
+let slackProviderMode = false;
+let slackSurface = null;
+// In Slack mode, ONLY these commands target the huddle POPUP (huddle-UI / DOM
+// ops handled by SlackProvider). Everything else — TTS/play-* (VirtualMic),
+// avatar/engagement (VirtualCamera), etc. — is a page-inject op on the MAIN
+// app.slack.com window, so it stays on meetView (same as Meet).
+const SLACK_POPUP_CMDS = new Set([
+  CALL_COMMANDS.ACTIONS.unmuteMic, CALL_COMMANDS.ACTIONS.muteMic,
+  CALL_COMMANDS.ACTIONS.cameraOn, CALL_COMMANDS.ACTIONS.cameraOff,
+  CALL_COMMANDS.triggerScreenShare, CALL_COMMANDS.triggerStopSharing,
+  CALL_COMMANDS.setStudioSound, CALL_COMMANDS.recoverCaptions,
+  CALL_COMMANDS.readChat, CALL_COMMANDS.sendChat,
+]);
+
+// The webContents a call command should target, given its action/channel name.
+function callCmdWC(name) {
+  if (slackProviderMode && slackSurface && SLACK_POPUP_CMDS.has(name)) {
+    const wc = slackSurface.getHuddleWebContents && slackSurface.getHuddleWebContents();
+    if (wc) return wc; // no live huddle popup yet → fall through to meetView
+  }
+  return (meetView && !meetView.webContents.isDestroyed()) ? meetView.webContents : null;
+}
+// Send a dedicated call-command channel (trigger-screen-share, set-studio-sound,
+// recover-captions, …) to the right surface.
+function sendCallCmd(channel, payload) {
+  const wc = callCmdWC(channel);
+  if (!wc) return;
+  if (payload === undefined) wc.send(channel); else wc.send(channel, payload);
+}
+// Send an extension-message {action, …} to the right surface (routed by action).
+function sendExtMsg(message) {
+  const wc = callCmdWC(message && message.action);
+  if (wc) wc.send(CALL_COMMANDS.extensionMessage, message);
+}
+
+// Round-trip request to the call preload (read/send chat). Sends on `channel`
 // with a unique requestId and resolves with the matching 'chat-result' reply,
-// or a timeout error. preload-meet.js handles 'read-chat'/'send-chat'.
+// or a timeout error. Handled by preload-meet.js (Meet) / preload-slack-huddle.js
+// (Slack), routed to the right surface via callCmdWC.
 function chatRequest(channel, payload) {
   return new Promise((resolve) => {
-    if (!meetView || meetView.webContents.isDestroyed()) {
-      resolve({ ok: false, error: 'No active Meet view' });
+    const wc = callCmdWC(channel);
+    if (!wc) {
+      resolve({ ok: false, error: 'No active call view' });
       return;
     }
     const requestId = `chat-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -62,7 +105,7 @@ function chatRequest(channel, payload) {
       resolve(data);
     };
     ipcMain.on(CALL_EVENTS.chatResult, handler);
-    meetView.webContents.send(channel, { requestId, ...payload });
+    wc.send(channel, { requestId, ...payload });
   });
 }
 
@@ -321,7 +364,7 @@ const localServer = new globalThis.LocalServer({
         // Full screen share — no whiteboard window needed
         fullScreenShareRequested = true;
         if (meetView && !meetView.webContents.isDestroyed()) {
-          meetView.webContents.send(CALL_COMMANDS.triggerScreenShare, { shareType: 'screen' });
+          sendCallCmd(CALL_COMMANDS.triggerScreenShare, { shareType: 'screen' });
         }
       } else {
         // Whiteboard share — open whiteboard window first. Keep the flag
@@ -332,7 +375,7 @@ const localServer = new globalThis.LocalServer({
         ipcMain.emit('start-whiteboard-share', {}, { meetCode });
         setTimeout(() => {
           if (meetView && !meetView.webContents.isDestroyed()) {
-            meetView.webContents.send(CALL_COMMANDS.triggerScreenShare, { shareType: 'window' });
+            sendCallCmd(CALL_COMMANDS.triggerScreenShare, { shareType: 'window' });
           }
         }, 2000);
         // #189: drop the board-only URL into Meet chat the first time the
@@ -385,7 +428,7 @@ const localServer = new globalThis.LocalServer({
     }
     // Click Meet's "Stop presenting" button — works for both whiteboard and full-screen shares
     if (meetView && !meetView.webContents.isDestroyed()) {
-      meetView.webContents.send(CALL_COMMANDS.triggerStopSharing);
+      sendCallCmd(CALL_COMMANDS.triggerStopSharing);
     }
   },
   onLoadUrl: (url) => {
@@ -656,7 +699,7 @@ const localServer = new globalThis.LocalServer({
       setTimeout(() => {
         if (meetView && !meetView.webContents.isDestroyed()) {
           console.log('[electron] Disabling Meet Studio sound (studioSound pref = false)');
-          meetView.webContents.send(CALL_COMMANDS.setStudioSound, { enabled: false });
+          sendCallCmd(CALL_COMMANDS.setStudioSound, { enabled: false });
         }
       }, 2500);
     }
@@ -900,7 +943,7 @@ const localServer = new globalThis.LocalServer({
       // Toggle Meet's voice filter live (no rejoin needed) when in-call.
       if (localServer.callStatus === 'in-call' && meetView && !meetView.webContents.isDestroyed()) {
         console.log('[electron] studioSound pref changed →', value, '— applying live');
-        meetView.webContents.send(CALL_COMMANDS.setStudioSound, { enabled: value !== false });
+        sendCallCmd(CALL_COMMANDS.setStudioSound, { enabled: value !== false });
       }
     }
   },
@@ -1410,9 +1453,9 @@ function sendPlayTts(base64Audio, emoji) {
       console.error('[electron] Meet view not available for audio playback');
       return resolve();
     }
-    meetView.webContents.send('extension-message', { action: CALL_COMMANDS.ACTIONS.unmuteMic });
+    sendExtMsg({ action: CALL_COMMANDS.ACTIONS.unmuteMic });
     setTimeout(() => {
-      meetView.webContents.send('extension-message', { action: CALL_COMMANDS.ACTIONS.playTts, payload: { audioData: base64Audio, emoji } });
+      sendExtMsg({ action: CALL_COMMANDS.ACTIONS.playTts, payload: { audioData: base64Audio, emoji } });
       console.log('[electron] Sent play-tts to Meet view', emoji ? `(emoji: ${emoji})` : '');
       resolve();
     }, 300);
@@ -2527,6 +2570,9 @@ function createMainWindow() {
       autojoin: cliArgs['slack-autojoin'] !== 'false',
     });
     meetView = surface.view;
+    // Enable provider-aware command routing: DOM commands → the huddle popup.
+    slackProviderMode = true;
+    slackSurface = surface;
   } else {
     meetView = createMeetView(currentMeetPartition);
   }
@@ -2968,12 +3014,9 @@ function setupIPC() {
     if (!meetView || meetView.webContents.isDestroyed()) return;
     const audioBuffer = fs.readFileSync(testSpeechPath);
     const base64Audio = Buffer.from(audioBuffer).toString('base64');
-    meetView.webContents.send('extension-message', { action: CALL_COMMANDS.ACTIONS.unmuteMic });
+    sendExtMsg({ action: CALL_COMMANDS.ACTIONS.unmuteMic });
     setTimeout(() => {
-      meetView.webContents.send('extension-message', {
-        action: CALL_COMMANDS.ACTIONS.playTts,
-        payload: { audioData: base64Audio },
-      });
+      sendExtMsg({ action: CALL_COMMANDS.ACTIONS.playTts, payload: { audioData: base64Audio } });
     }, 300);
   });
 
@@ -3201,7 +3244,7 @@ function setupIPC() {
     }
     // D (#259): self-heal — only on CONFIRMED deafness, never during quiet rooms.
     if (meetView && !meetView.webContents.isDestroyed()) {
-      meetView.webContents.send(CALL_COMMANDS.recoverCaptions);
+      sendCallCmd(CALL_COMMANDS.recoverCaptions);
     }
   });
 
@@ -3349,7 +3392,7 @@ function setupIPC() {
 
     // Trigger screen share in Meet
     if (meetView && meetView.webContents) {
-      meetView.webContents.send(CALL_COMMANDS.triggerScreenShare);
+      sendCallCmd(CALL_COMMANDS.triggerScreenShare);
     }
 
     return { success: true, url: roomUrl };

@@ -13,6 +13,11 @@ const vm = require('vm');
 // MEET.* rather than inline literals.
 const { MEET } = require('./meet-selectors');
 
+// The provider contract this file implements (GoogleMeetProvider, below). The
+// DOM automation must run in the Meet page world, so the provider lives in the
+// preload; the IPC command handlers delegate to it.
+const { CallProvider, CALL_COMMANDS } = require('./call-provider');
+
 // meetView runs with contextIsolation:false, so the preload and page share one
 // window. Expose a tiny helper the idle screen uses to open a URL in the user's
 // external browser (the "Start default testing meet" link).
@@ -80,20 +85,15 @@ ipcRenderer.on('extension-message', (_event, message) => {
   // Forward to page context via window.postMessage
   // page-inject.js listens for __botsInCalls messages
   if (message.action === 'play-tts') {
-    window.postMessage({
-      __botsInCalls: true,
-      __fromExtension: true,
-      action: 'play-tts',
-      payload: message.payload,
-    }, '*');
+    meetProvider.speak(message.payload);
   } else if (message.action === 'unmute-mic') {
-    setMicMuted(false);
+    meetProvider.setMicMuted(false);
   } else if (message.action === 'mute-mic') {
-    setMicMuted(true);
+    meetProvider.setMicMuted(true);
   } else if (message.action === 'camera-on') {
-    setCameraOff(false);
+    meetProvider.setCameraOn(true);
   } else if (message.action === 'camera-off') {
-    setCameraOff(true);
+    meetProvider.setCameraOn(false);
   } else if (message.action === 'play-speech-test') {
     // Resolve test audio — main process sends the base64 directly
     window.postMessage({
@@ -633,7 +633,7 @@ async function sendChatFlow(text) {
 
 ipcRenderer.on('read-chat', async (_event, { requestId }) => {
   let result;
-  try { result = { ok: true, messages: await readChatFlow() }; }
+  try { result = { ok: true, messages: await meetProvider.readChat() }; }
   catch (err) { result = { ok: false, error: err.message }; }
   ipcRenderer.send('chat-result', { requestId, ...result });
 });
@@ -641,7 +641,7 @@ ipcRenderer.on('read-chat', async (_event, { requestId }) => {
 ipcRenderer.on('send-chat', async (_event, { requestId, text }) => {
   let result;
   try {
-    const sent = await sendChatFlow(text);
+    const sent = await meetProvider.sendChat(text);
     result = sent ? { ok: true } : { ok: false, error: 'Message may not have sent (input not cleared)' };
   } catch (err) { result = { ok: false, error: err.message }; }
   ipcRenderer.send('chat-result', { requestId, ...result });
@@ -1850,7 +1850,7 @@ const captionScraper = new CaptionScraper();
 // asks us to self-heal by rebuilding the caption region (#259). Gated in main so
 // we never toggle captions during a quiet room or the bot's own speech.
 ipcRenderer.on('recover-captions', () => {
-  try { captionScraper._recoverCaptions(); } catch (e) { console.warn('[caption-stall] recover handler failed: ' + e.message); }
+  try { meetProvider.recoverCaptions(); } catch (e) { console.warn('[caption-stall] recover handler failed: ' + e.message); }
 });
 
 // ---------------------------------------------------------------------------
@@ -2051,7 +2051,7 @@ async function setStudioSound(enabled) {
   }
 }
 
-ipcRenderer.on('set-studio-sound', (_event, payload) => { setStudioSound(!!(payload && payload.enabled)); });
+ipcRenderer.on('set-studio-sound', (_event, payload) => { meetProvider.setStudioSound(!!(payload && payload.enabled)); });
 
 // Detect Meet's intermittent screen-share error modal ("Can't share your screen
 // / Something went wrong when screen sharing. Please try again."). Returns the
@@ -2077,30 +2077,8 @@ function dismissShareErrorModal() {
   return false;
 }
 
-ipcRenderer.on('trigger-screen-share', async (_event, options) => {
-  const shareType = options?.shareType || 'window';
-  console.log('[electron-meet] Screen share triggered, type:', shareType);
-
-  // The "Something went wrong … Please try again" error is intermittent, so on it
-  // we dismiss the modal and RE-attempt the share a couple times before giving up.
-  const MAX_ATTEMPTS = 3;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const result = await clickPresentNow(shareType);
-    if (result === 'already-presenting') { ipcRenderer.send('self-presenting', { presenting: true }); return; }
-    if (result === 'not-found') { ipcRenderer.send('screen-share-error', 'Could not find Present button'); return; }
-
-    const err = await waitForShareError(4000);
-    if (!err) return; // no error modal → share proceeded
-
-    console.warn('[electron-meet] Screen share error (attempt ' + attempt + '/' + MAX_ATTEMPTS + '):', err);
-    dismissShareErrorModal();
-    if (attempt < MAX_ATTEMPTS) {
-      await delay(1200);
-      console.log('[electron-meet] Retrying screen share…');
-    } else {
-      ipcRenderer.send('screen-share-error', err);
-    }
-  }
+ipcRenderer.on('trigger-screen-share', (_event, options) => {
+  meetProvider.startShare(options?.shareType || 'window');
 });
 
 function findStopPresentingButton() {
@@ -2119,32 +2097,109 @@ function findStopPresentingButton() {
 // actually leaves the presenting state. For whiteboard shares onStopSharing has
 // already closed the share window, so presenting usually ends on its own and we
 // confirm on the first tick without needing a click.
-ipcRenderer.on('trigger-stop-sharing', () => {
-  console.log('[electron-meet] Stop sharing triggered');
-  const startTime = Date.now();
-  let clicks = 0;
-  const poll = setInterval(() => {
-    if (!probePresentingState().selfPresenting) {
-      clearInterval(poll);
-      console.log('[electron-meet] Stop sharing confirmed (not presenting) after',
-        Date.now() - startTime, 'ms,', clicks, 'click(s)');
-      ipcRenderer.send('screen-share-stopped');
-      return;
+ipcRenderer.on('trigger-stop-sharing', () => { meetProvider.stopShare(); });
+
+// ---------------------------------------------------------------------------
+// GoogleMeetProvider — the CallProvider implementation for Google Meet.
+//
+// The DOM automation must run in the Meet page world (contextIsolation:false),
+// so the provider lives here in the preload. main.js is unchanged: it still
+// drives the call over the same IPC channels, and the command handlers above
+// now delegate to this object. Command methods wrap the existing DOM functions;
+// the two screen-share loops moved in verbatim as _runScreenShare/_runStopShare.
+//
+// NOT YET migrated (a later slice): the event surface. The trackers
+// (captionScraper, domSpeakerTracker, the health tick) still emit CALL_EVENTS
+// straight to IPC rather than through the provider.
+// ---------------------------------------------------------------------------
+class GoogleMeetProvider extends CallProvider {
+  static get id() { return 'google-meet'; }
+
+  async join(botName) { return autoJoin(botName ?? BOT_NAME); }
+
+  async leave() {
+    // Leaving is driven from main (leave-meet → the Meet view is closed); the
+    // in-call "Leave call" button is the provider-side affordance. Not yet
+    // wired to an IPC command — present for interface completeness.
+    const btn = findByAriaLabel(MEET.join.leaveCallLabel);
+    if (btn) btn.click();
+  }
+
+  // Fire-and-forget (matches the original handlers, which didn't await).
+  setMicMuted(muted) { setMicMuted(muted); }
+  setCameraOn(on) { setCameraOff(!on); }
+  speak(payload) {
+    window.postMessage({
+      __botsInCalls: true,
+      __fromExtension: true,
+      action: CALL_COMMANDS.ACTIONS.playTts,
+      payload,
+    }, '*');
+  }
+  async setStudioSound(enabled) { return setStudioSound(enabled); }
+
+  async enableCaptions() { clickCaptionsWhenReady(); }
+  async recoverCaptions() { return captionScraper._recoverCaptions(); }
+
+  async readChat() { return readChatFlow(); }
+  async sendChat(text) { return sendChatFlow(text); }
+
+  async startShare(shareType) {
+    console.log('[electron-meet] Screen share triggered, type:', shareType);
+    // The "Something went wrong … Please try again" error is intermittent, so on
+    // it we dismiss the modal and RE-attempt the share a couple times before
+    // giving up.
+    const MAX_ATTEMPTS = 3;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      const result = await clickPresentNow(shareType);
+      if (result === 'already-presenting') { ipcRenderer.send('self-presenting', { presenting: true }); return; }
+      if (result === 'not-found') { ipcRenderer.send('screen-share-error', 'Could not find Present button'); return; }
+
+      const err = await waitForShareError(4000);
+      if (!err) return; // no error modal → share proceeded
+
+      console.warn('[electron-meet] Screen share error (attempt ' + attempt + '/' + MAX_ATTEMPTS + '):', err);
+      dismissShareErrorModal();
+      if (attempt < MAX_ATTEMPTS) {
+        await delay(1200);
+        console.log('[electron-meet] Retrying screen share…');
+      } else {
+        ipcRenderer.send('screen-share-error', err);
+      }
     }
-    const stopBtn = findStopPresentingButton();
-    if (stopBtn) {
-      stopBtn.click();
-      clicks++;
-      console.log('[electron-meet] Clicked stop sharing button (attempt', clicks + ')');
-    }
-    if (Date.now() - startTime > 4000) {
-      clearInterval(poll);
-      console.warn('[electron-meet] Stop sharing: still presenting after 4s and',
-        clicks, 'click(s) — giving up; the agent will see status.sharing is still true');
-      ipcRenderer.send('screen-share-stopped');
-    }
-  }, 300);
-});
+  }
+
+  stopShare() {
+    console.log('[electron-meet] Stop sharing triggered');
+    const startTime = Date.now();
+    let clicks = 0;
+    const poll = setInterval(() => {
+      if (!probePresentingState().selfPresenting) {
+        clearInterval(poll);
+        console.log('[electron-meet] Stop sharing confirmed (not presenting) after',
+          Date.now() - startTime, 'ms,', clicks, 'click(s)');
+        ipcRenderer.send('screen-share-stopped');
+        return;
+      }
+      const stopBtn = findStopPresentingButton();
+      if (stopBtn) {
+        stopBtn.click();
+        clicks++;
+        console.log('[electron-meet] Clicked stop sharing button (attempt', clicks + ')');
+      }
+      if (Date.now() - startTime > 4000) {
+        clearInterval(poll);
+        console.warn('[electron-meet] Stop sharing: still presenting after 4s and',
+          clicks, 'click(s) — giving up; the agent will see status.sharing is still true');
+        ipcRenderer.send('screen-share-stopped');
+      }
+    }, 300);
+  }
+
+  getParticipants() { return domSpeakerTracker.getParticipantList(); }
+}
+
+const meetProvider = new GoogleMeetProvider();
 
 // ---------------------------------------------------------------------------
 // In-call setup — idempotent, path-independent (#238)

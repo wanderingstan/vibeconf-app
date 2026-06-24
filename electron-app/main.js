@@ -2494,12 +2494,42 @@ function createMainWindow() {
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 
-  // --- Meet view (right) ---
+  // --- Call view (right) ---
   // Restore the previously-chosen partition (guest by default). The choice
   // persists across launches so signing in as the bot stays sticky (#170).
   currentMeetPartition = store.get('meetPartition') || MEET_GUEST_PARTITION;
   ensureMeetSessionConfigured(currentMeetPartition);
-  meetView = createMeetView(currentMeetPartition);
+
+  // Provider selection (#264).
+  //
+  // END STATE (the goal): the app is provider-AGNOSTIC and picks Meet vs Slack
+  // (vs any registered backend) at RUNTIME — each provider declares how to
+  // DETECT it (Meet = a meet.google.com URL; Slack = a "Huddle:" window title)
+  // and how to build its surface(s); the app runs the detectors / follows the
+  // user into whichever call appears, no relaunch. That's a registry-driven
+  // switch over `meetView`, built once the Slack surface is proven live.
+  //
+  // FOR NOW: --provider=slack is a launch-time TEST SCAFFOLD to drive + validate
+  // the Slack two-surface backend in isolation (MAIN app.slack.com window for
+  // media + an injected huddle popup for UI/DOM, self-contained in
+  // slack-surface.js). Default stays Google Meet. Optional --slack-url=<deep-link>.
+  const slackMode = cliArgs['provider'] === 'slack';
+  if (slackMode) {
+    const { createSlackSurface } = require('./slack-surface');
+    const slackUrl = cliArgs['slack-url'] || 'https://app.slack.com/';
+    console.log('[electron] Provider: SLACK — loading', slackUrl);
+    const surface = createSlackSurface(mainWindow, {
+      partition: currentMeetPartition,
+      url: slackUrl,
+      devtools: !!(cliArgs && cliArgs['devtools']),
+      // Auto-join the channel's huddle (header button → lobby confirm). Default
+      // on in the Slack scaffold; --slack-autojoin=false to just load the channel.
+      autojoin: cliArgs['slack-autojoin'] !== 'false',
+    });
+    meetView = surface.view;
+  } else {
+    meetView = createMeetView(currentMeetPartition);
+  }
   mainWindow.addBrowserView(meetView);
 
   // Open DevTools on demand from panel — registered once, references the
@@ -2514,8 +2544,9 @@ function createMainWindow() {
   layoutViews();
   mainWindow.on('resize', layoutViews);
 
-  // Load idle placeholder in the Meet view
-  meetView.webContents.loadURL(MEET_HOME_URL);
+  // Load idle placeholder in the Meet view. In Slack mode the surface already
+  // loaded app.slack.com (or the channel deep-link) in createSlackSurface.
+  if (!slackMode) meetView.webContents.loadURL(MEET_HOME_URL);
 
   mainWindow.on('closed', () => {
     mainWindow = null;

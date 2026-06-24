@@ -595,7 +595,26 @@
     }
 
     getTrack() {
-      return this.destination.stream.getAudioTracks()[0];
+      // Consumers can END our destination track — Slack stop()s the mic track on
+      // the lobby→huddle handoff (and on device switches), which would leave
+      // every later getUserMedia holding a DEAD track: silent mic, "we can't hear
+      // you", no TTS out. If the current track is ended, rebuild the destination
+      // (with a fresh silent keep-alive) so we always return a LIVE track. TTS
+      // sources connect to this.destination, so they follow the rebuild. Meet
+      // never stops the track this way, so this branch is Slack-only in practice.
+      let track = this.destination.stream.getAudioTracks()[0];
+      if (!track || track.readyState === 'ended') {
+        this.destination = this.audioCtx.createMediaStreamDestination();
+        const silence = this.audioCtx.createGain();
+        silence.gain.value = 0;
+        silence.connect(this.destination);
+        const osc = this.audioCtx.createOscillator();
+        osc.connect(silence);
+        osc.start();
+        track = this.destination.stream.getAudioTracks()[0];
+        console.log('[bots-in-calls] VirtualMic track was ended — rebuilt destination; new track:', track.id);
+      }
+      return track;
     }
 
     // Soft two-tone "I'm in the room" chime — used when admission completes,
@@ -1651,8 +1670,15 @@
     }
   }
 
-  // Initialize the audio capture manager
-  const audioCaptureManager = new AudioCaptureManager();
+  // Audio capture hooks window.RTCPeerConnection to capture per-participant
+  // audio for STT. It's VESTIGIAL — Meet and Slack both use DOM captions for the
+  // transcript now — and the Meet-shaped hook BREAKS Slack/Chime's WebRTC (it
+  // replaces RTCPeerConnection without preserving statics / instanceof). Gate it
+  // off via window.__vibeconf_disableAudioCapture (set by preload-slack-main); a
+  // stub keeps the status handlers working. Default: enabled (Meet unchanged).
+  const audioCaptureManager = window.__vibeconf_disableAudioCapture
+    ? { participants: new Map(), connectionCount: 0 } // stub — NO RTCPeerConnection hook
+    : new AudioCaptureManager();
 
   // Expose for debugging from console
   window.__botsInCallsAudioCapture = audioCaptureManager;
@@ -1871,8 +1897,13 @@
     }
   }
 
-  // Initialize transcription (but don't start listening until requested)
-  const transcription = new SpeakerAttributedTranscription(audioCaptureManager);
+  // Initialize transcription (Web Speech STT; don't start until requested). Also
+  // skipped when capture is disabled (Slack uses DOM captions) — a stub keeps the
+  // botSpeaking suppression + start/stop/get calls working as no-ops, so the TTS
+  // (speak) path doesn't depend on it.
+  const transcription = window.__vibeconf_disableAudioCapture
+    ? { botSpeaking: false, startListening() {}, stopListening() {}, getRecentTranscripts() { return []; } }
+    : new SpeakerAttributedTranscription(audioCaptureManager);
   window.__botsInCallsTranscription = transcription;
 
   // ---------------------------------------------------------------------------

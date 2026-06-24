@@ -357,7 +357,7 @@ function exitCallState() {
   inCall = false;
   connectedSection.style.display = 'none';
   joinBtn.style.display = '';
-  joinBtn.textContent = 'Join Meet';
+  joinBtn.textContent = 'Join Call';
   updateJoinBtnState();
 
   roomIdField.style.display = 'none';
@@ -379,7 +379,7 @@ joinBtn.addEventListener('click', () => {
   setTimeout(() => {
     if (!inCall) {
       joinBtn.style.display = '';
-      joinBtn.textContent = 'Join Meet';
+      joinBtn.textContent = 'Join Call';
       updateJoinBtnState();
     }
   }, 3000);

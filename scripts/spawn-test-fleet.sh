@@ -80,20 +80,58 @@ else
   echo "▶ Spawning $N test bot(s) from SOURCE — agent-less, isolated profiles"
 fi
 
+# ── Window grid: tile the spawned app windows so a watching human can see them
+# all at once. No effect on the headless harness (it drives via HTTP). Windows
+# are CREATED at these coords via --window-* flags, which the app applies at
+# BrowserWindow creation — reliable, unlike moving from outside via System Events
+# (the window server reverts those for some instances). The CI fleet has no agent
+# terminals, so each bot gets a full grid cell. Set VIBECONF_NO_WINDOW_GRID=1 to
+# skip (e.g. a headless nightly run that doesn't care about placement).
+GRID=1
+[[ -n "${VIBECONF_NO_WINDOW_GRID:-}" ]] && GRID=0
+if (( GRID )); then
+  read -r SCRW SCRH <<< "$(osascript -e 'tell application "Finder" to get bounds of window of desktop' 2>/dev/null | awk -F', ' '{print $3, $4}')"
+  SCRW=${SCRW:-1512}; SCRH=${SCRH:-982}
+  MENUBAR=28
+  case $N in
+    1) COLS=1; ROWS=1 ;;
+    2) COLS=1; ROWS=2 ;;   # 2 bots: stacked full-width rows — cleanest on a laptop
+    *) COLS=2; ROWS=2 ;;   # 3–4 bots: 2×2 grid
+  esac
+  CELLW=$(( SCRW / COLS ))
+  CELLH=$(( (SCRH - MENUBAR) / ROWS ))
+  MINAPPW=1020   # 640 + PANEL_WIDTH(380): the app's enforced min width
+  APPW=$(( CELLW > MINAPPW ? CELLW : MINAPPW ))
+  APPH=$CELLH
+  echo "  • window grid ${SCRW}×${SCRH}: ${COLS}×${ROWS}, each ~${APPW}×${APPH}"
+fi
+
 BOTS_ARG=""
 for i in $(seq 1 $N); do
   profile="test$i"
   port=$((BASE_PORT + i - 1))
   name="${NAMES[$i]}"
-  echo "  • $name — profile=$profile port=$port"
+  WINFLAGS=""
+  if (( GRID )); then
+    idx=$(( i - 1 ))
+    col=$(( idx % COLS ))
+    row=$(( idx / COLS ))
+    wx=$(( col * CELLW ))
+    wy=$(( MENUBAR + row * CELLH ))
+    WINFLAGS="--window-x=$wx --window-y=$wy --window-w=$APPW --window-h=$APPH"
+    echo "  • $name — profile=$profile port=$port  @ ${wx},${wy}"
+  else
+    echo "  • $name — profile=$profile port=$port"
+  fi
   if (( DMG )); then
     # open -n = new instance (profiles bypass the single-instance lock). It
     # returns immediately and runs detached under LaunchServices; we wait/kill by
     # port below, and the app writes its own session log under the profile's
     # userData (…/profiles/testN/logs), so no stdout redirect needed.
-    open -n -a "Vibeconferencing" --args --profile="$profile" --local-port="$port" --bot-name="$name"
+    # ${=WINFLAGS}: zsh word-splits the flags into separate argv entries.
+    open -n -a "Vibeconferencing" --args --profile="$profile" --local-port="$port" --bot-name="$name" ${=WINFLAGS}
   else
-    nohup zsh -c "cd '$ELECTRON' && pnpm dev -- --profile=$profile --local-port=$port --bot-name=$name" \
+    nohup zsh -c "cd '$ELECTRON' && pnpm dev -- --profile=$profile --local-port=$port --bot-name=$name $WINFLAGS" \
       >"/tmp/vibeconf-$profile.log" 2>&1 &
   fi
   BOTS_ARG+="${BOTS_ARG:+,}$name:$port"

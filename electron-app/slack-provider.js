@@ -49,6 +49,22 @@ async function waitFor(fn, ms = 5000, step = 150) {
   return null;
 }
 
+// Robustly "click" a Slack menu item. Slack's React menus often act on the
+// pointer/mouse-DOWN sequence on the interactive ANCESTOR (the [role=menuitem]),
+// not a bare .click() on an inner label span — so a plain click silently no-ops
+// and the menu just stays open. Drive the full sequence on the right target.
+function clickItem(el) {
+  const target = el.closest('[role="menuitem"], [role="menuitemcheckbox"], button, [role="button"]') || el;
+  const opts = { bubbles: true, cancelable: true, view: window, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+  try { target.dispatchEvent(new PointerEvent('pointerover', opts)); } catch { /* PointerEvent may be unavailable */ }
+  try { target.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch { /* ignore */ }
+  target.dispatchEvent(new MouseEvent('mousedown', opts));
+  try { target.dispatchEvent(new PointerEvent('pointerup', opts)); } catch { /* ignore */ }
+  target.dispatchEvent(new MouseEvent('mouseup', opts));
+  target.dispatchEvent(new MouseEvent('click', opts));
+  return target;
+}
+
 // First visible menu item whose text contains `text` (case-insensitive).
 function findMenuItemByText(text) {
   const lower = text.toLowerCase();
@@ -136,22 +152,18 @@ class SlackProvider extends CallProvider {
 
     const show = await waitFor(() => findMenuItemByText(SLACK.captions.showCaptionsItemText));
     if (!show) { console.warn('[slack] [CC] "Show captions" not found'); return false; }
-    show.click(); // enables captions (overlay) AND reveals the mode submenu
-    console.log('[slack] [CC] clicked "Show captions"');
+    console.log('[slack] [CC] clicking "Show captions" on', clickItem(show).outerHTML.slice(0, 80));
 
-    // "Side-by-side" (a menuitemcheckbox) switches caption mode. Wait for it to
-    // be present AND visible, then drive a full click sequence — a bare .click()
-    // didn't register on it.
+    // "Side-by-side" (a menuitemcheckbox in the submenu that "Show captions"
+    // reveals). Wait for it present AND visible, then drive the same sequence.
     const sbs = await waitFor(() => {
       const el = document.querySelector(SLACK.captions.sideBySideButton)
         || findMenuItemByText(SLACK.captions.sideBySideLabelPrefix);
       return el && isVisible(el) ? el : null;
     }, 4000);
-    if (!sbs) { console.warn('[slack] [CC] "Side-by-side" not found/visible'); return false; }
+    if (!sbs) { console.warn('[slack] [CC] "Side-by-side" not found/visible (submenu didn\'t open?)'); return false; }
     if (sbs.getAttribute('aria-checked') === 'true') { console.log('[slack] [CC] side-by-side already active'); return true; }
-    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
-      sbs.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true }));
-    }
+    clickItem(sbs);
     console.log('[slack] [CC] clicked "Side-by-side" — aria-checked now:', sbs.getAttribute('aria-checked'));
     return true;
   }

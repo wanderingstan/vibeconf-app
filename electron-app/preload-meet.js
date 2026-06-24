@@ -16,7 +16,7 @@ const { MEET } = require('./meet-selectors');
 // The provider contract this file implements (GoogleMeetProvider, below). The
 // DOM automation must run in the Meet page world, so the provider lives in the
 // preload; the IPC command handlers delegate to it.
-const { CallProvider, CALL_COMMANDS } = require('./call-provider');
+const { CallProvider, CALL_COMMANDS, CALL_EVENTS } = require('./call-provider');
 
 // meetView runs with contextIsolation:false, so the preload and page share one
 // window. Expose a tiny helper the idle screen uses to open a URL in the user's
@@ -337,7 +337,7 @@ function startMicMuteWatcher() {
     if (suppressMicMuteWatcher) return;
     const muted = btn.getAttribute(MEET.mic.mutedAttr) === 'true';
     console.log('[electron-meet] User toggled mic →', muted ? 'muted (passive)' : 'unmuted (active)');
-    ipcRenderer.send('mic-mute-changed', { muted });
+    meetProvider.emit(CALL_EVENTS.micMuteChanged, { muted });
   });
   observer.observe(btn, { attributes: true, attributeFilter: [MEET.mic.mutedAttr] });
   console.log('[electron-meet] Mic mute watcher started');
@@ -635,7 +635,7 @@ ipcRenderer.on('read-chat', async (_event, { requestId }) => {
   let result;
   try { result = { ok: true, messages: await meetProvider.readChat() }; }
   catch (err) { result = { ok: false, error: err.message }; }
-  ipcRenderer.send('chat-result', { requestId, ...result });
+  meetProvider.emit(CALL_EVENTS.chatResult, { requestId, ...result });
 });
 
 ipcRenderer.on('send-chat', async (_event, { requestId, text }) => {
@@ -644,7 +644,7 @@ ipcRenderer.on('send-chat', async (_event, { requestId, text }) => {
     const sent = await meetProvider.sendChat(text);
     result = sent ? { ok: true } : { ok: false, error: 'Message may not have sent (input not cleared)' };
   } catch (err) { result = { ok: false, error: err.message }; }
-  ipcRenderer.send('chat-result', { requestId, ...result });
+  meetProvider.emit(CALL_EVENTS.chatResult, { requestId, ...result });
 });
 
 // ---------------------------------------------------------------------------
@@ -827,12 +827,12 @@ function installCallHealthTick() {
 
     // --- Chat unread ---
     if (next.chatUnread !== last.chatUnread) {
-      ipcRenderer.send('chat-unread', { unread: next.chatUnread });
+      meetProvider.emit(CALL_EVENTS.chatUnread, { unread: next.chatUnread });
     }
 
     // --- Pane state ---
     if (next.chatPaneOpen !== last.chatPaneOpen || next.peoplePaneOpen !== last.peoplePaneOpen) {
-      ipcRenderer.send('pane-state', {
+      meetProvider.emit(CALL_EVENTS.paneState, {
         chatPaneOpen: next.chatPaneOpen,
         peoplePaneOpen: next.peoplePaneOpen,
       });
@@ -843,12 +843,12 @@ function installCallHealthTick() {
     // someone-presenting are independent channels. Self-presenting forces
     // someone-presenting=false (we're the one presenting).
     if (next.selfPresenting !== last.selfPresenting) {
-      ipcRenderer.send('self-presenting', { presenting: next.selfPresenting });
+      meetProvider.emit(CALL_EVENTS.selfPresenting, { presenting: next.selfPresenting });
     }
     const someoneElse = !next.selfPresenting && !!next.presenterName;
     const lastSomeoneElse = !last.selfPresenting && !!last.presenterName;
     if (someoneElse !== lastSomeoneElse || next.presenterName !== last.presenterName) {
-      ipcRenderer.send('someone-presenting', {
+      meetProvider.emit(CALL_EVENTS.someonePresenting, {
         presenting: someoneElse,
         presenterName: someoneElse ? next.presenterName : null,
       });
@@ -865,7 +865,7 @@ function installCallHealthTick() {
         .join('|');
       if (key !== lastParticipantsKey) {
         lastParticipantsKey = key;
-        ipcRenderer.send('participants-updated', next.participants);
+        meetProvider.emit(CALL_EVENTS.participantsUpdated, next.participants);
       }
     }
 
@@ -952,7 +952,7 @@ function sendStatus(status) {
     else if (status === 'Participating in Meet') el.classList.add('active');
   }
   // Also notify main process for logging
-  ipcRenderer.send('meet-status-update', status);
+  meetProvider.emit(CALL_EVENTS.statusUpdate, status);
 }
 
 // Poll for the captions button and click it as soon as it appears.
@@ -1017,7 +1017,7 @@ function clickCaptionsWhenReady() {
     cleanup();
     console.warn('[electron-meet] [CC] Captions button never appeared after 60s — escalating deaf');
     dumpCaptionDiagnostics('clickCaptionsWhenReady: button never appeared (60s, observer+poll)');
-    try { ipcRenderer.send('captions-state', { on: false }); } catch { /* ignore */ }
+    try { meetProvider.emit(CALL_EVENTS.captionsState, { on: false }); } catch { /* ignore */ }
   }, 60_000);
 }
 
@@ -1518,11 +1518,11 @@ class DOMSpeakerTracker {
       info.lastChange = now;
       console.log('[speaker-tracker] (' + source + ')', name, '→', isSpeaking);
       this._applyDebugBorder(info, isSpeaking);
-      ipcRenderer.send('update-speaking', { name, speaking: isSpeaking });
-      ipcRenderer.send('participants-updated', this.getParticipantList());
+      meetProvider.emit(CALL_EVENTS.speakingChanged, { name, speaking: isSpeaking });
+      meetProvider.emit(CALL_EVENTS.participantsUpdated, this.getParticipantList());
     } else if (info.speaking && source === 'poll') {
       // Re-assert active speech so local-server's silence timer keeps resetting.
-      ipcRenderer.send('update-speaking', { name, speaking: true });
+      meetProvider.emit(CALL_EVENTS.speakingChanged, { name, speaking: true });
     }
   }
 
@@ -1678,7 +1678,7 @@ class CaptionScraper {
         } else {
           console.warn('[electron-meet] [CC] Captions never confirmed after', round + 1, 'rounds — escalating deaf');
           dumpCaptionDiagnostics('_waitForCaptions: gave up after ' + (round + 1) + ' rounds');
-          try { ipcRenderer.send('captions-state', { on: false }); } catch { /* ignore */ }
+          try { meetProvider.emit(CALL_EVENTS.captionsState, { on: false }); } catch { /* ignore */ }
         }
       }
     }, 250);
@@ -1741,7 +1741,7 @@ class CaptionScraper {
       // (a remote is speaking) vs a quiet room / the bot's own speech — and only
       // then escalates (🙉 + agent warning) and asks us to self-heal (D). We no
       // longer self-trigger recovery here: that toggled captions during silence.
-      try { ipcRenderer.send('caption-stall', { ageMs, nodes }); } catch { /* non-fatal */ }
+      try { meetProvider.emit(CALL_EVENTS.captionStall, { ageMs, nodes }); } catch { /* non-fatal */ }
     }
   }
 
@@ -1758,7 +1758,7 @@ class CaptionScraper {
     if (on !== this._captionsOn) {
       this._captionsOn = on;
       console.warn('[electron-meet] [CC] captions flipped', on ? 'ON' : 'OFF', 'mid-call');
-      ipcRenderer.send('captions-state', { on });
+      meetProvider.emit(CALL_EVENTS.captionsState, { on });
     }
     if (!on) {
       // Self-heal at most once per 5s — a user deliberately keeping them
@@ -1815,7 +1815,7 @@ class CaptionScraper {
       if (snapshot !== this._lastSentSnapshot) {
         this._lastSentSnapshot = snapshot;
         this._lastNewTurnsAt = Date.now(); // for [caption-health]
-        ipcRenderer.send('caption-turns', { turns });
+        meetProvider.emit(CALL_EVENTS.captionTurns, { turns });
       }
 
       // Live-growing caption display on the panel uses the bottommost turn's
@@ -1863,7 +1863,7 @@ window.addEventListener('message', (event) => {
 
   if (event.data.action === 'dom-speaker-change') {
     const { name, speaking } = event.data.payload;
-    if (name) ipcRenderer.send('update-speaking', { name, speaking });
+    if (name) meetProvider.emit(CALL_EVENTS.speakingChanged, { name, speaking });
   }
 
   if (event.data.action === 'tts-ended') {
@@ -1871,7 +1871,7 @@ window.addEventListener('message', (event) => {
     // wants the mic open so the bot can be heard; passive/silent want it muted
     // so the user's mute click maps cleanly to mode. The current mode lives in
     // the main process, so we just ask main to decide.
-    ipcRenderer.send('tts-ended');
+    meetProvider.emit(CALL_EVENTS.ttsEnded);
   }
 
   if (event.data.action === 'log') {
@@ -2115,6 +2115,16 @@ ipcRenderer.on('trigger-stop-sharing', () => { meetProvider.stopShare(); });
 class GoogleMeetProvider extends CallProvider {
   static get id() { return 'google-meet'; }
 
+  // Event surface: the single seam for call events leaving the provider. The
+  // trackers/handlers call meetProvider.emit(CALL_EVENTS.x, payload) instead of
+  // ipcRenderer.send directly, so the provider owns BOTH directions of the
+  // contract. Forwarding to IPC keeps main.js unchanged. Preserve the original
+  // arg shape: a payload-less event must not send an explicit `undefined`.
+  emit(channel, payload) {
+    if (payload === undefined) ipcRenderer.send(channel);
+    else ipcRenderer.send(channel, payload);
+  }
+
   async join(botName) { return autoJoin(botName ?? BOT_NAME); }
 
   async leave() {
@@ -2152,8 +2162,8 @@ class GoogleMeetProvider extends CallProvider {
     const MAX_ATTEMPTS = 3;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       const result = await clickPresentNow(shareType);
-      if (result === 'already-presenting') { ipcRenderer.send('self-presenting', { presenting: true }); return; }
-      if (result === 'not-found') { ipcRenderer.send('screen-share-error', 'Could not find Present button'); return; }
+      if (result === 'already-presenting') { meetProvider.emit(CALL_EVENTS.selfPresenting, { presenting: true }); return; }
+      if (result === 'not-found') { meetProvider.emit(CALL_EVENTS.screenShareError, 'Could not find Present button'); return; }
 
       const err = await waitForShareError(4000);
       if (!err) return; // no error modal → share proceeded
@@ -2164,7 +2174,7 @@ class GoogleMeetProvider extends CallProvider {
         await delay(1200);
         console.log('[electron-meet] Retrying screen share…');
       } else {
-        ipcRenderer.send('screen-share-error', err);
+        meetProvider.emit(CALL_EVENTS.screenShareError, err);
       }
     }
   }
@@ -2178,7 +2188,7 @@ class GoogleMeetProvider extends CallProvider {
         clearInterval(poll);
         console.log('[electron-meet] Stop sharing confirmed (not presenting) after',
           Date.now() - startTime, 'ms,', clicks, 'click(s)');
-        ipcRenderer.send('screen-share-stopped');
+        meetProvider.emit(CALL_EVENTS.screenShareStopped);
         return;
       }
       const stopBtn = findStopPresentingButton();
@@ -2191,7 +2201,7 @@ class GoogleMeetProvider extends CallProvider {
         clearInterval(poll);
         console.warn('[electron-meet] Stop sharing: still presenting after 4s and',
           clicks, 'click(s) — giving up; the agent will see status.sharing is still true');
-        ipcRenderer.send('screen-share-stopped');
+        meetProvider.emit(CALL_EVENTS.screenShareStopped);
       }
     }, 300);
   }
@@ -2233,7 +2243,7 @@ function enterInCallState() {
   clickCaptionsWhenReady();
   captionScraper.onReady = () => {
     console.log('[electron-meet] Captions ready');
-    ipcRenderer.send('captions-ready');
+    meetProvider.emit(CALL_EVENTS.captionsReady);
   };
   captionScraper.start();
   domSpeakerTracker.start();
@@ -2244,7 +2254,7 @@ function enterInCallState() {
   const meetCode = window.location.pathname.replace('/', '');
   if (meetCode) {
     ipcRenderer.send('start-sync', { meetCode, botName: BOT_NAME });
-    ipcRenderer.send('bot-joined-call', { meetCode, botName: BOT_NAME });
+    meetProvider.emit(CALL_EVENTS.botJoinedCall, { meetCode, botName: BOT_NAME });
   }
 }
 

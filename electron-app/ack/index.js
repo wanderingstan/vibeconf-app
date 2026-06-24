@@ -28,9 +28,9 @@ function getProviderConfig(store) {
   // Keys + their defaults:
   return {
     provider: store?.get('ackProvider') || 'builtin',
-    endpoint: store?.get('ackEndpoint') || 'http://127.0.0.1:1234/v1',
+    endpoint: store?.get('ackEndpoint') || 'http://127.0.0.1:11535/v1',
     apiKey: store?.get('ackApiKey') || '',
-    model: store?.get('ackModel') || 'qwen2.5-7b-instruct-mlx',
+    model: store?.get('ackModel') || 'apple-on-device',
     timeoutMs: Number(store?.get('ackTimeoutMs')) || 500,
     // Override path for the system prompt. Empty = use bundled default at
     // electron-app/ack/prompts/ack-system.md (which is also editable in
@@ -49,9 +49,9 @@ function getProviderConfig(store) {
 // bug where setting ackProvider=builtin silently disabled comprehend + shadow.
 function getLocalModelConfig(store) {
   return {
-    endpoint: store?.get('ackEndpoint') || 'http://127.0.0.1:1234/v1',
+    endpoint: store?.get('ackEndpoint') || 'http://127.0.0.1:11535/v1',
     apiKey: store?.get('ackApiKey') || '',
-    model: store?.get('ackModel') || 'qwen2.5-7b-instruct-mlx',
+    model: store?.get('ackModel') || 'apple-on-device',
   };
 }
 

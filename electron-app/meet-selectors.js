@@ -1,0 +1,195 @@
+// meet-selectors.js — Google Meet DOM coupling, centralized.
+//
+// Every Meet-specific literal that preload-meet.js keys off of lives here:
+// CSS selectors, aria-label / button text, URL patterns, and the structural
+// regexes that read Meet's UI. This is the explicit, swappable surface of the
+// "Google Meet" video-call provider — the first step toward a CallProvider
+// abstraction where Meet is one backend among others (Slack, etc.).
+//
+// Pure data plus tiny pure string helpers. NO DOM access, NO side effects, NO
+// requires — safe to load in the preload (contextIsolation: false) and, later,
+// in a Node-side provider module.
+//
+// Convention: scalar constants for point lookups (so call sites stay a 1:1
+// swap), arrays only where the existing code already iterates a list. Strings
+// are copied byte-for-byte from the original inline literals — including the
+// case-insensitive `i` flag inside attribute selectors — so this extraction is
+// behavior-preserving.
+
+const MEET = {
+  // -------------------------------------------------------------------------
+  // URLs / navigation
+  // -------------------------------------------------------------------------
+  url: {
+    host: 'meet.google.com',
+    // A real meeting code path: /abc-defg-hij (three-four-three letters).
+    meetingCodePath: /^\/[a-z]{3}-[a-z]{4}-[a-z]{3}/i,
+    // Google sign-in redirect (logged-out meet.google.com lands here).
+    signInPage: /accounts\.google\.com|ServiceLogin|signin/i,
+  },
+
+  // -------------------------------------------------------------------------
+  // Microphone — Meet's toggle swaps aria-label + data-is-muted together.
+  // -------------------------------------------------------------------------
+  mic: {
+    button: 'button[data-is-muted][aria-label*="microphone" i]',
+    anyButton: 'button[data-is-muted]',
+    mutedAttr: 'data-is-muted',
+    labelOn: 'Turn off microphone', // label shown when the mic is ON
+    labelOff: 'Turn on microphone', // label shown when the mic is OFF
+  },
+
+  // -------------------------------------------------------------------------
+  // Camera — label is the action you'd take, so it reveals current state.
+  // -------------------------------------------------------------------------
+  camera: {
+    onButton: 'button[aria-label="Turn off camera"]', // present when camera ON
+    offButton: 'button[aria-label="Turn on camera"]', // present when camera OFF
+  },
+
+  // -------------------------------------------------------------------------
+  // Captions (CC). Bilingual labels: Meet localizes to the account locale.
+  // -------------------------------------------------------------------------
+  captions: {
+    region: 'div[role="region"][aria-label="Captions"]',
+    enableLabelEn: 'Turn on captions', // click to enable
+    enableLabelEs: 'Activar subtítulos',
+    disableLabelEn: 'Turn off captions', // present (clickable) only when CC is ON
+    disableLabelEs: 'Desactivar subtítulos',
+    // Direct querySelector form of the "captions are on" check.
+    onSelector: '[aria-label="Turn off captions" i]',
+    // Caption "speaker" label Meet uses for the bot's own TTS — filtered out
+    // (we record our own speech authoritatively elsewhere). Distinct from the
+    // people-tile "(You)" marker.
+    selfSpeaker: 'You',
+  },
+
+  // -------------------------------------------------------------------------
+  // Chat — read & send. Sender headers / message bodies detected structurally.
+  // -------------------------------------------------------------------------
+  chat: {
+    toggle: 'button[aria-label^="Chat with everyone" i], [role="button"][aria-label^="Chat with everyone" i]',
+    input: 'textarea[aria-label="Send a message" i]',
+    sendLabelA: 'Send a message',
+    sendLabelB: 'Send message',
+    unreadRe: /new message/i,
+    messageBody: '[data-message-id]',
+    messageIdAttr: 'data-message-id',
+    pinMessageRe: /pin message/i,
+    // A sender-header timestamp like "2:32 PM".
+    timestampRe: /^\d{1,2}:\d{2}\s*([AP]\.?M\.?)?$/i,
+  },
+
+  // -------------------------------------------------------------------------
+  // People pane — the source the speaker tracker reads.
+  // -------------------------------------------------------------------------
+  people: {
+    tile: 'div[role="listitem"][aria-label]',
+    labelledButton: '[role="button"][aria-labelledby]',
+    buttonFallback: 'button[aria-label^="People" i], [role="button"][aria-label^="People" i]',
+    labelPrefix: 'People',
+    selfMarker: '(You)', // text node next to the bot's own display name
+  },
+
+  // -------------------------------------------------------------------------
+  // Present / screen share. Toolbar button cycles through label states; both
+  // aria-label and data-tooltip carry the text depending on Meet's build.
+  // -------------------------------------------------------------------------
+  present: {
+    idleRe: /^(?:Share screen|Present now)$/i,
+    someoneElseRe: /(.+?)\s+is presenting$/i,
+    selfRe: /^You are presenting$/i,
+    // "Already presenting" / stop-share affordances (any of these = sharing).
+    // Individual variants preserve the original `||` priority order where a
+    // specific element is returned and clicked; the combined form is for the
+    // boolean "is anything stop-able present" check (a single querySelector,
+    // matching the original combined selector used in clickPresentNow's wait).
+    stopAriaPresenting: '[aria-label*="Stop presenting" i]',
+    stopAriaSharing: '[aria-label*="Stop sharing" i]',
+    stopTooltipPresenting: '[data-tooltip*="Stop presenting" i]',
+    stopTooltipSharing: '[data-tooltip*="Stop sharing" i]',
+    stopSelector:
+      '[aria-label*="Stop presenting" i], [aria-label*="Stop sharing" i], [data-tooltip*="Stop presenting" i], [data-tooltip*="Stop sharing" i]',
+    // Share-picker options (text). Window-share falls back to full-screen.
+    pickerEntireScreenA: 'Your entire screen',
+    pickerEntireScreenB: 'Entire screen',
+    pickerWindow: 'A window',
+    // Intermittent share-failure modal.
+    errorTexts: ["Can't share your screen", 'Something went wrong when screen sharing'],
+    // Its dismiss affordances: aria-labelled close, else an "Ok"/"OK" button.
+    errorDismissSelector: '[aria-label="Close" i], [aria-label="Dismiss" i], [aria-label="Got it" i]',
+    okTextA: 'Ok',
+    okTextB: 'OK',
+  },
+
+  // -------------------------------------------------------------------------
+  // Studio sound (voice filter): ⋮ → Settings → Audio → toggle → Close.
+  // -------------------------------------------------------------------------
+  studioSound: {
+    // EXACT match — substring would also hit per-participant "More options for <name>".
+    moreOptions: 'button[aria-label="More options" i], [role="button"][aria-label="More options" i]',
+    moreOptionsLabelEn: 'More options',
+    moreOptionsLabelEs: 'Más opciones',
+    toggle: '[role="switch"][aria-label*="Studio sound" i], [aria-label*="Studio sound" i]',
+    audioTab: '[role="tab"][aria-label*="Audio" i]',
+    audioTabText: 'audio', // left-nav item whose text is exactly "Audio"
+    settingsText: 'settings', // menu item whose text starts with "Settings"
+    closeDialogLabel: 'Close dialog',
+    closeDialogSelector: '[role="dialog"] [aria-label*="Close" i]',
+  },
+
+  // -------------------------------------------------------------------------
+  // Join / admission flow.
+  // -------------------------------------------------------------------------
+  join: {
+    // Pre-join "Your name" guest input — three forms, tried in order.
+    nameInputs: [
+      'input[placeholder="Your name"]',
+      'input[aria-label="Your name"]',
+      'input[autocomplete="name"]',
+    ],
+    // CC-diagnostics' looser "is there a name input" probe.
+    nameInputLoose: 'input[aria-label*="name" i], input[placeholder*="name" i]',
+    joinTextAsk: 'Ask to join',
+    joinTextNow: 'Join now',
+    joinTextSwitch: 'Switch here', // direct-join when the account has a lingering presence
+    joinLabel: 'Join',
+    // Dialogs to dismiss before the join button on the pre-join screen.
+    dismissTexts: ['Got it', 'Dismiss', 'OK', 'Allow', 'Close', 'No thanks', 'Not now'],
+    gotItText: 'Got it',
+    leaveCallLabel: 'Leave call', // in-call ground truth
+    leaveCallTooltip: '[data-tooltip="Leave call"]',
+    // AI-recording disclosure dialog (premium calls) — heading match.
+    recordingConsentTexts: ['being recorded', 'recorded and transcribed', 'taking notes'],
+    // Denial / removal pages.
+    denialCantJoin: "You can't join this video call",
+    denialRemoved: 'You have been removed from the meeting',
+    // "Waiting to be admitted" body text.
+    waitingTexts: ['wait until', 'asking to be let in', 'Please wait'],
+  },
+
+  // -------------------------------------------------------------------------
+  // Modals / dialogs.
+  // -------------------------------------------------------------------------
+  modals: {
+    gotItText: 'got it', // catch-all dismiss for Meet info modals (lowercased compare)
+    // Headings we recognize — for clearer logging only, NOT a gate.
+    knownHeadings: [
+      'others may see your video differently',
+      'your screen may not appear',
+      'may not appear to others',
+    ],
+    anyDialog: '[role="dialog"][aria-modal="true"], [aria-modal="true"], [role="dialog"]',
+    dialogOrModal: '[role="dialog"][aria-modal="true"], [role="dialog"]',
+    // The recording dialog's "Join now" affordance (Material dialog ok action).
+    recordingOkButton: 'button[data-mdc-dialog-action="ok"]',
+  },
+};
+
+// Tiny pure helper: the aria-label selector findByAriaLabel() builds. Kept here
+// so the selector shape (button + role=button, substring, case-insensitive)
+// stays with the rest of the Meet coupling. Mirrors the original inline literal.
+MEET.ariaLabelSelector = (label) =>
+  `button[aria-label*="${label}" i], [role="button"][aria-label*="${label}" i]`;
+
+module.exports = { MEET };

@@ -13,6 +13,13 @@ const { BrowserView } = require('electron');
 const path = require('path');
 const { SLACK } = require('./slack-selectors');
 
+// Slack sniffs the UA and rejects Electron (and older Chrome) — "your browser is
+// not supported". Spoof a CURRENT desktop Chrome, set explicitly on the
+// webContents (overrides the session UA and guarantees it reaches the page).
+// Isolated to the Slack surface so Meet's CHROME_UA is untouched. Bump the
+// version when Slack tightens its cutoff.
+const SLACK_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
+
 // Build the Slack surface bound to a session partition.
 //   mainWindow — the app's BrowserWindow (for layout; caller addBrowserView's it)
 //   opts.partition — session partition (reuse the bot's; login carries to popup)
@@ -20,7 +27,7 @@ const { SLACK } = require('./slack-selectors');
 //   opts.devtools  — open DevTools on the popup (handy for live driving)
 // Returns { view, getPopups }.
 function createSlackSurface(mainWindow, opts = {}) {
-  const { partition, url, devtools } = opts;
+  const { partition, url, devtools, userAgent = SLACK_UA } = opts;
 
   const view = new BrowserView({
     webPreferences: {
@@ -30,6 +37,8 @@ function createSlackSurface(mainWindow, opts = {}) {
       partition,
     },
   });
+  // Spoof Chrome BEFORE the first load so app.slack.com's UA check passes.
+  view.webContents.setUserAgent(userAgent);
 
   // The huddle opens an about:blank popup — allow it and inject our scrape
   // preload so we can read/drive the huddle UI. about:blank inherits the
@@ -52,6 +61,7 @@ function createSlackSurface(mainWindow, opts = {}) {
   const popups = [];
   view.webContents.on('did-create-window', (win, details) => {
     popups.push(win);
+    try { win.webContents.setUserAgent(userAgent); } catch { /* ignore */ }
     console.log('[slack-surface] popup created (url=' + (details && details.url) + ')');
 
     // Huddle detection: the popup title flips to "Huddle: …" when a huddle is

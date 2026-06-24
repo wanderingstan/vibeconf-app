@@ -66,10 +66,10 @@ function chatRequest(channel, payload) {
 // so require() fails. We load them as text and run in the current context.
 // ---------------------------------------------------------------------------
 
-// In packaged app, extension files are in Resources/extension; in dev, they're in ../extension
-const EXT_DIR = app.isPackaged
-  ? path.join(process.resourcesPath, 'extension')
-  : path.join(__dirname, '..', 'extension');
+// The formerly-separate scripts (page-inject, sync-client, tts, stt) and
+// test-speech.mp3 now live alongside main.js in electron-app/ (bundled via the
+// build's files glob), so __dirname resolves in both dev and packaged builds.
+const EXT_DIR = __dirname;
 
 // Expose Node modules on globalThis so vm-loaded scripts can use them
 globalThis.require = require;
@@ -3165,6 +3165,23 @@ function setupIPC() {
     // D (#259): self-heal — only on CONFIRMED deafness, never during quiet rooms.
     if (meetView && !meetView.webContents.isDestroyed()) {
       meetView.webContents.send('recover-captions');
+    }
+  });
+
+  // #263: dump the full denial/limbo page DOM to a file the instant the bot is
+  // stuck on it (the "You can't join this video call" screen auto-dismisses in
+  // ~30s, too fast to catch in DevTools). Written next to the session log so
+  // it's easy to find after an unattended run.
+  ipcMain.on('capture-dom', (_event, info) => {
+    try {
+      const logDir = path.dirname(getSessionLogPath());
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const file = path.join(logDir, `denial-capture-${stamp}.html`);
+      fs.writeFileSync(file, info?.html || '', 'utf-8');
+      console.warn(`[capture-dom] Saved denial/limbo DOM (${info?.reason || '?'}) → ${file}`);
+      console.warn(`[capture-dom]   url=${info?.url || ''}`);
+    } catch (err) {
+      console.warn('[capture-dom] failed to save DOM:', err.message);
     }
   });
 

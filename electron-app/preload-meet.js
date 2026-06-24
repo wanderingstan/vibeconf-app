@@ -46,7 +46,7 @@ try { window.vibeconfOpenExternal = (url) => ipcRenderer.send('open-external-url
 // scripts could call getUserMedia before that, getting a real mic stream instead
 // of our VirtualMic, causing TTS audio to silently fail.
 try {
-  const pageInjectPath = path.join(__dirname, '..', 'extension', 'page-inject.js');
+  const pageInjectPath = path.join(__dirname, 'page-inject.js');
   const pageInjectCode = fs.readFileSync(pageInjectPath, 'utf-8');
   (0, eval)(pageInjectCode);
   console.log('[electron-meet] page-inject.js loaded (preload, before page scripts)');
@@ -1026,6 +1026,29 @@ function clickCaptionsWhenReady() {
   }, 60_000);
 }
 
+// Diagnostic: snapshot the full page DOM when the bot is stuck on an
+// unrecognized full-screen state — most importantly the "You can't join this
+// video call" denial page, which Meet auto-dismisses after ~30s (too fast to
+// catch live in DevTools). Captures once per page-load (the flag resets on the
+// reload that navigation triggers), so each denial-retry reload re-captures.
+// Fires from BOTH the join-click loop and the admission loop, so we get the DOM
+// even when our string-match isn't detecting the denial. The full outerHTML is
+// written to a file by the main process (capture-dom handler); the visible text
+// is also logged inline so the exact wording lands in the session log.
+let _denialDomCaptured = false;
+function captureDenialDom(reason) {
+  if (_denialDomCaptured) return;
+  _denialDomCaptured = true;
+  let innerText = '';
+  let html = '';
+  try { innerText = (document.body && document.body.innerText || '').slice(0, 4000); } catch { /* ignore */ }
+  try { html = document.documentElement.outerHTML || ''; } catch { /* ignore */ }
+  console.warn('[electron-meet] Denial/limbo DOM capture (' + reason + '). Visible text:\n' + innerText);
+  try {
+    ipcRenderer.send('capture-dom', { reason, url: location.href, innerText, html });
+  } catch { /* ignore */ }
+}
+
 async function autoJoin(botName) {
   console.log('[electron-meet] ===== AUTO-JOIN STARTING =====');
   sendStatus('Joining Meet...');
@@ -1109,6 +1132,7 @@ async function autoJoin(botName) {
     // found". A wall-clock deadline keeps looking for the button for the full
     // window regardless of how many popups we cleared first.
     let clicked = false;
+    let noJoinButtonSeconds = 0;
     const joinDeadline = Date.now() + 60000;
     while (!clicked && Date.now() < joinDeadline) {
       await delay(1000);
@@ -1150,6 +1174,21 @@ async function autoJoin(botName) {
           sendStatus('Waiting to be admitted...');
         } else {
           sendStatus('Joining...');
+        }
+      } else {
+        // No join button this tick. On a normal pre-join it appears within a
+        // few seconds; if it never comes we're likely stuck on a denial/limbo
+        // page that has no join button — most importantly "You can't join this
+        // video call" (#263). The #238 self-heal only runs in the admission
+        // loop below, which we never reach without clicking join, so this loop
+        // would otherwise spin silently until the deadline. Capture the DOM
+        // (it auto-dismisses in ~30s) and log periodically so the stuck state
+        // is visible.
+        noJoinButtonSeconds++;
+        if (noJoinButtonSeconds === 4) captureDenialDom('join-click: no join button after 4s');
+        if (noJoinButtonSeconds % 10 === 0) {
+          console.warn('[electron-meet] Still no join button after', noJoinButtonSeconds,
+            's on pre-join (denial/limbo page? see denial-capture-*.html)');
         }
       }
     }
@@ -1204,6 +1243,7 @@ async function autoJoin(botName) {
       // burning the 15s limbo grace, and give the agent a specific reason.
       if (bodyText.includes("You can't join this video call")) {
         console.warn('[electron-meet] Denial page detected: "You can\'t join this video call"');
+        captureDenialDom('admission: You cant join this video call');
         // #238: the "You can't join" denial is often SPURIOUS/intermittent — a
         // reload commonly gets straight in. Retry by reloading the meet page a few
         // times with backoff before giving up. Count is kept in sessionStorage so
@@ -1247,6 +1287,7 @@ async function autoJoin(botName) {
 
       if (!waitingText && !hasJoinUI && !inCallUI) {
         limboSeconds++;
+        if (limboSeconds === 3) captureDenialDom('admission: limbo (no waiting/join/in-call UI)');
         if (limboSeconds >= LIMBO_GRACE_SECONDS) {
           // Genuine failure: waiting UI gone, never saw in-call UI.
           sendStatus("Error: couldn't enter call (denied or removed?)");
@@ -1256,6 +1297,7 @@ async function autoJoin(botName) {
         }
       } else {
         limboSeconds = 0; // reset whenever a known UI is visible
+        _denialDomCaptured = false; // allow a fresh capture if we re-enter limbo
       }
 
       if (waitedSeconds % logEvery === 0) {

@@ -98,9 +98,15 @@
       </div>
 
       <div class="field">
-        <label for="botName">Bot Name</label>
+        <label for="botName">Bot Name (Meet)</label>
         <input type="text" id="botName" value="Jimmy" />
-        <div class="helper-text">Only used when the bot joins as a <strong>guest</strong> (not signed in to Google). When the bot is signed in, it uses its Google account name instead.</div>
+        <div class="helper-text">The bot's name on <strong>Google Meet</strong> — used when it joins as a guest. When signed in, it uses its Google account name instead.</div>
+      </div>
+
+      <div class="field">
+        <label for="slackBotName">Bot Name (Slack)</label>
+        <input type="text" id="slackBotName" value="" placeholder="(uses the Slack account name)" />
+        <div class="helper-text">The bot's name on <strong>Slack</strong> — it joins as its signed-in Slack account, so set this to match that account's display name. Used so the bot recognizes when it's addressed in a huddle.</div>
       </div>
       <div class="field">
         <label for="websiteUrl">Website URL</label>

@@ -192,4 +192,15 @@ SLACK.parseClientUrl = (url) => {
 // Build the main-window URL to navigate to a given channel.
 SLACK.buildClientUrl = (team, channel) => `${SLACK.huddle.clientUrlBase}/${team}/${channel}`;
 
+// Stable vibeconferencing room code for a huddle. A Slack huddle is per-channel,
+// so team+channel uniquely identifies it — the analogue of a Meet code. One room
+// per huddle keeps each huddle's whiteboard/chat separate on vibeconferencing.com.
+// Lowercased to satisfy the local-server's room-id slug pattern ([a-z0-9-]+);
+// Slack ids are mixed-case (T…/C…) but case-insensitively unique, so this is safe.
+SLACK.roomCodeFor = (team, channel) => `slack-${team}-${channel}`.toLowerCase();
+SLACK.roomCodeFromUrl = (url) => {
+  const p = SLACK.parseClientUrl(url);
+  return p ? SLACK.roomCodeFor(p.team, p.channel) : null;
+};
+
 module.exports = { SLACK };

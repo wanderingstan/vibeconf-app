@@ -27,6 +27,7 @@ const meetModeIndicator = document.getElementById('meetModeIndicator');
 
 // Settings
 const botNameInput = document.getElementById('botName');
+const slackBotNameInput = document.getElementById('slackBotName');
 const websiteUrlInput = document.getElementById('websiteUrl');
 const ttsApiKeyInput = document.getElementById('ttsApiKey');
 const ttsVoiceIdInput = document.getElementById('ttsVoiceId');
@@ -214,8 +215,9 @@ if (debugOverlayToggle) {
 // Load saved config
 // ---------------------------------------------------------------------------
 
-api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'claudeWorkDir', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases']).then((result) => {
+api.invoke('get-config', ['botName', 'slackBotName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'claudeWorkDir', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases']).then((result) => {
   if (result?.botName) { botNameInput.value = result.botName; currentBotName = result.botName; }
+  if (result?.slackBotName && slackBotNameInput) slackBotNameInput.value = result.slackBotName;
   try { updateBotNameBig(); } catch { /* defined below; ignore on first paint */ }
   // Prefer the new websiteUrl key; fall back to legacy syncBaseUrl so users with
   // older configs still see their existing override populated in the field.
@@ -877,6 +879,12 @@ botNameInput.addEventListener('change', () => {
   updateBotNameBig();
   refreshBotIdentity(); // keep the guest "👤 Guest 'Name'" line in sync
 });
+
+if (slackBotNameInput) {
+  slackBotNameInput.addEventListener('change', () => {
+    api.invoke('set-config', 'slackBotName', slackBotNameInput.value.trim());
+  });
+}
 
 websiteUrlInput.addEventListener('change', () => {
   const url = websiteUrlInput.value.trim().replace(/\/+$/, '');

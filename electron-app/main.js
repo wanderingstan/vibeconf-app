@@ -41,13 +41,71 @@ function ts() {
   console.error = wrap(console.error.bind(console));
 })();
 
-// Round-trip request to the Meet preload (read/send chat). Sends on `channel`
+// --- Provider-aware command routing (#264) -------------------------------
+// Meet drives the whole call through one surface (meetView). Slack splits it:
+// DOM commands (mic/camera/chat/share/captions) target the huddle POPUP where
+// SlackProvider runs, while audio-out (play-tts/play-speech-test/play-join-chime)
+// targets the MAIN app.slack.com window (the VirtualMic that Chime captures).
+// Set in createMainWindow when --provider=slack.
+let slackProviderMode = false;
+let slackSurface = null;
+// In Slack mode, ONLY these commands target the huddle POPUP (huddle-UI / DOM
+// ops handled by SlackProvider). Everything else — TTS/play-* (VirtualMic),
+// avatar/engagement (VirtualCamera), etc. — is a page-inject op on the MAIN
+// app.slack.com window, so it stays on meetView (same as Meet).
+const SLACK_POPUP_CMDS = new Set([
+  CALL_COMMANDS.ACTIONS.unmuteMic, CALL_COMMANDS.ACTIONS.muteMic,
+  CALL_COMMANDS.ACTIONS.cameraOn, CALL_COMMANDS.ACTIONS.cameraOff,
+  CALL_COMMANDS.triggerScreenShare, CALL_COMMANDS.triggerStopSharing,
+  CALL_COMMANDS.setStudioSound, CALL_COMMANDS.recoverCaptions,
+  CALL_COMMANDS.readChat, CALL_COMMANDS.sendChat,
+]);
+
+// The webContents a call command should target, given its action/channel name.
+function callCmdWC(name) {
+  if (slackProviderMode && slackSurface && SLACK_POPUP_CMDS.has(name)) {
+    // These commands (chat, mic, camera, captions, share) are handled ONLY by
+    // the huddle popup. If it isn't up yet (e.g. a chat fired before auto-join
+    // completed), return null — do NOT fall back to meetView (the main
+    // app.slack.com window). That window has no popup-command handlers, so a
+    // misrouted send is silently dropped and chatRequest hangs to its 15s
+    // timeout. null makes the caller fail fast ("No active call view") instead.
+    return (slackSurface.getHuddleWebContents && slackSurface.getHuddleWebContents()) || null;
+  }
+  return (meetView && !meetView.webContents.isDestroyed()) ? meetView.webContents : null;
+}
+// Send a dedicated call-command channel (trigger-screen-share, set-studio-sound,
+// recover-captions, …) to the right surface.
+function sendCallCmd(channel, payload) {
+  const wc = callCmdWC(channel);
+  if (!wc) return;
+  if (payload === undefined) wc.send(channel); else wc.send(channel, payload);
+}
+// Send an extension-message {action, …} to the right surface (routed by action).
+function sendExtMsg(message) {
+  const wc = callCmdWC(message && message.action);
+  if (wc) wc.send(CALL_COMMANDS.extensionMessage, message);
+}
+
+// The bot's name on the ACTIVE platform, for addressivity (recognizing when the
+// bot is addressed) in the conversation loop. On Slack the bot joins as its
+// signed-in Slack ACCOUNT, so use the separate slackBotName; on Meet it's the
+// Meet botName (guest name / Google account name). Distinct because the bot's
+// display name commonly differs between the two.
+function getActiveBotName() {
+  if (slackProviderMode) return store?.get('slackBotName') || store?.get('botName') || '';
+  return store?.get('botName') || '';
+}
+
+// Round-trip request to the call preload (read/send chat). Sends on `channel`
 // with a unique requestId and resolves with the matching 'chat-result' reply,
-// or a timeout error. preload-meet.js handles 'read-chat'/'send-chat'.
+// or a timeout error. Handled by preload-meet.js (Meet) / preload-slack-huddle.js
+// (Slack), routed to the right surface via callCmdWC.
 function chatRequest(channel, payload) {
   return new Promise((resolve) => {
-    if (!meetView || meetView.webContents.isDestroyed()) {
-      resolve({ ok: false, error: 'No active Meet view' });
+    const wc = callCmdWC(channel);
+    if (!wc) {
+      resolve({ ok: false, error: 'No active call view' });
       return;
     }
     const requestId = `chat-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -62,7 +120,7 @@ function chatRequest(channel, payload) {
       resolve(data);
     };
     ipcMain.on(CALL_EVENTS.chatResult, handler);
-    meetView.webContents.send(channel, { requestId, ...payload });
+    wc.send(channel, { requestId, ...payload });
   });
 }
 
@@ -321,7 +379,7 @@ const localServer = new globalThis.LocalServer({
         // Full screen share — no whiteboard window needed
         fullScreenShareRequested = true;
         if (meetView && !meetView.webContents.isDestroyed()) {
-          meetView.webContents.send(CALL_COMMANDS.triggerScreenShare, { shareType: 'screen' });
+          sendCallCmd(CALL_COMMANDS.triggerScreenShare, { shareType: 'screen' });
         }
       } else {
         // Whiteboard share — open whiteboard window first. Keep the flag
@@ -332,7 +390,7 @@ const localServer = new globalThis.LocalServer({
         ipcMain.emit('start-whiteboard-share', {}, { meetCode });
         setTimeout(() => {
           if (meetView && !meetView.webContents.isDestroyed()) {
-            meetView.webContents.send(CALL_COMMANDS.triggerScreenShare, { shareType: 'window' });
+            sendCallCmd(CALL_COMMANDS.triggerScreenShare, { shareType: 'window' });
           }
         }, 2000);
         // #189: drop the board-only URL into Meet chat the first time the
@@ -385,7 +443,7 @@ const localServer = new globalThis.LocalServer({
     }
     // Click Meet's "Stop presenting" button — works for both whiteboard and full-screen shares
     if (meetView && !meetView.webContents.isDestroyed()) {
-      meetView.webContents.send(CALL_COMMANDS.triggerStopSharing);
+      sendCallCmd(CALL_COMMANDS.triggerStopSharing);
     }
   },
   onLoadUrl: (url) => {
@@ -515,7 +573,7 @@ const localServer = new globalThis.LocalServer({
       //   - multi-participant, no name  → default by wordCount
       // Names are matched as whole words, case-insensitive.
       const snap = localServer.getCallStateSnapshot();
-      const myName = (store?.get('botName') || '').toLowerCase();
+      const myName = getActiveBotName().toLowerCase();
       const otherNames = new Set(
         (snap.participants || [])
           .filter((p) => !p.isSelf && p.name && p.name !== 'You')
@@ -656,7 +714,7 @@ const localServer = new globalThis.LocalServer({
       setTimeout(() => {
         if (meetView && !meetView.webContents.isDestroyed()) {
           console.log('[electron] Disabling Meet Studio sound (studioSound pref = false)');
-          meetView.webContents.send(CALL_COMMANDS.setStudioSound, { enabled: false });
+          sendCallCmd(CALL_COMMANDS.setStudioSound, { enabled: false });
         }
       }, 2500);
     }
@@ -709,7 +767,7 @@ const localServer = new globalThis.LocalServer({
     const config = require('./ack').getLocalModelConfig(store);
     const { comprehend } = require('./comprehend');
     const { classifyEngagement } = require('./engagement');
-    const botName = store?.get('botName') || 'the bot';
+    const botName = getActiveBotName() || 'the bot';
     const cfg = { endpoint: config.endpoint, apiKey: config.apiKey, model: config.model };
     // Run the working-memory refresh and the dedicated engagement classifier
     // (#243) in parallel — separate calls because folding engagement into
@@ -743,7 +801,7 @@ const localServer = new globalThis.LocalServer({
     // contention while the triage shadow measures).
     const config = require('./ack').getLocalModelConfig(store);
     const { triage } = require('./triage');
-    const botName = store?.get('botName') || 'the bot';
+    const botName = getActiveBotName() || 'the bot';
     // Feed the background-maintained engagement state (#243) so a bare "you" /
     // unnamed follow-up resolves to this bot when it's mid-exchange. comprehend
     // keeps this fresh on the same (Apple) local model; the slow session can
@@ -900,7 +958,7 @@ const localServer = new globalThis.LocalServer({
       // Toggle Meet's voice filter live (no rejoin needed) when in-call.
       if (localServer.callStatus === 'in-call' && meetView && !meetView.webContents.isDestroyed()) {
         console.log('[electron] studioSound pref changed →', value, '— applying live');
-        meetView.webContents.send(CALL_COMMANDS.setStudioSound, { enabled: value !== false });
+        sendCallCmd(CALL_COMMANDS.setStudioSound, { enabled: value !== false });
       }
     }
   },
@@ -1410,9 +1468,9 @@ function sendPlayTts(base64Audio, emoji) {
       console.error('[electron] Meet view not available for audio playback');
       return resolve();
     }
-    meetView.webContents.send('extension-message', { action: CALL_COMMANDS.ACTIONS.unmuteMic });
+    sendExtMsg({ action: CALL_COMMANDS.ACTIONS.unmuteMic });
     setTimeout(() => {
-      meetView.webContents.send('extension-message', { action: CALL_COMMANDS.ACTIONS.playTts, payload: { audioData: base64Audio, emoji } });
+      sendExtMsg({ action: CALL_COMMANDS.ACTIONS.playTts, payload: { audioData: base64Audio, emoji } });
       console.log('[electron] Sent play-tts to Meet view', emoji ? `(emoji: ${emoji})` : '');
       resolve();
     }, 300);
@@ -2527,6 +2585,25 @@ function createMainWindow() {
       autojoin: cliArgs['slack-autojoin'] !== 'false',
     });
     meetView = surface.view;
+    // Enable provider-aware command routing: DOM commands → the huddle popup.
+    slackProviderMode = true;
+    slackSurface = surface;
+    // Derive a STABLE per-huddle room code from the channel's team+channel
+    // (the Slack analogue of a Meet code) and key both the local server and the
+    // vibeconferencing.com sync on it — exactly as the Meet join path does with
+    // a meet code. Without this, roomId would be whatever placeholder the first
+    // sync request happens to send, collapsing every huddle into one shared room
+    // (and one shared whiteboard/chat). The code is deterministic from the URL,
+    // so we can set it now rather than waiting on join confirmation.
+    const { SLACK } = require('./slack-selectors');
+    const slackRoom = SLACK.roomCodeFromUrl(slackUrl);
+    if (slackRoom) {
+      localServer.setRoom(slackRoom);
+      sync.updateConfig({ roomId: slackRoom, baseUrl: getWebsiteUrl() });
+      console.log('[electron] Slack room code:', slackRoom);
+    } else {
+      console.warn('[electron] Slack: no team/channel in --slack-url; room code not set —', slackUrl);
+    }
   } else {
     meetView = createMeetView(currentMeetPartition);
   }
@@ -2968,12 +3045,9 @@ function setupIPC() {
     if (!meetView || meetView.webContents.isDestroyed()) return;
     const audioBuffer = fs.readFileSync(testSpeechPath);
     const base64Audio = Buffer.from(audioBuffer).toString('base64');
-    meetView.webContents.send('extension-message', { action: CALL_COMMANDS.ACTIONS.unmuteMic });
+    sendExtMsg({ action: CALL_COMMANDS.ACTIONS.unmuteMic });
     setTimeout(() => {
-      meetView.webContents.send('extension-message', {
-        action: CALL_COMMANDS.ACTIONS.playTts,
-        payload: { audioData: base64Audio },
-      });
+      sendExtMsg({ action: CALL_COMMANDS.ACTIONS.playTts, payload: { audioData: base64Audio } });
     }, 300);
   });
 
@@ -3201,7 +3275,7 @@ function setupIPC() {
     }
     // D (#259): self-heal — only on CONFIRMED deafness, never during quiet rooms.
     if (meetView && !meetView.webContents.isDestroyed()) {
-      meetView.webContents.send(CALL_COMMANDS.recoverCaptions);
+      sendCallCmd(CALL_COMMANDS.recoverCaptions);
     }
   });
 
@@ -3349,7 +3423,7 @@ function setupIPC() {
 
     // Trigger screen share in Meet
     if (meetView && meetView.webContents) {
-      meetView.webContents.send(CALL_COMMANDS.triggerScreenShare);
+      sendCallCmd(CALL_COMMANDS.triggerScreenShare);
     }
 
     return { success: true, url: roomUrl };

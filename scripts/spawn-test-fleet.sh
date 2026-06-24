@@ -78,6 +78,22 @@ PROFILE_BASE=$( (( SLACK )) && echo "slacktest" || echo "test" )
 # --kill: stop instances on the test ports (works regardless of how they launched).
 if (( KILL )); then
   echo "▶ Stopping test fleet…"
+  # GRACEFUL LEAVE first: tell each live bot to LEAVE its call so its tile/presence
+  # is dropped right away, instead of ghosting until the ~10min presence TTL. Stale
+  # same-named bots from a prior run collide with the next run's bots and produce
+  # flaky chat/caption failures (Stan spotted prior-run Jimmy/Samantha still in the
+  # meet). The 'leave' action fires onLeaveCall regardless of room, so any valid
+  # slug path works. Then settle briefly so Meet/Slack processes the hangup before
+  # we SIGKILL the process out from under it.
+  left=0
+  for i in $(seq 1 $N); do
+    port=$((BASE_PORT + i - 1))
+    if curl -sf -X POST "http://127.0.0.1:$port/api/sync/fleet-leave" \
+         -H 'Content-Type: application/json' -d '{"sender":"fleet-kill","meta":{"action":"leave"}}' >/dev/null 2>&1; then
+      echo "  • sent leave to bot on $port"; left=1
+    fi
+  done
+  if (( left )); then echo "  • settling 3s for call hangup…"; sleep 3; fi
   for i in $(seq 1 $N); do
     port=$((BASE_PORT + i - 1))
     profile="${PROFILE_BASE}$i"
@@ -161,11 +177,25 @@ if (( GRID )); then
   echo "  • window grid ${SCRW}×${SCRH}: ${COLS}×${ROWS}, each ~${APPW}×${APPH}"
 fi
 
+# Per-run name suffix (MEET ONLY): a SIGKILL'd bot ghosts in the Meet room until
+# the ~10min presence TTL, so a fresh run reusing the same names collides with the
+# ghost. A unique per-run suffix (e.g. Jimmy-r4af) sidesteps the collision; the
+# graceful-leave above is the primary fix, this is belt-and-suspenders for when a
+# bot crashed and never left. meet-test resolves its per-name scenario by the BASE
+# name (before the last '-'), so the suffixed name still runs the right script.
+# Slack identity comes from the signed-in ACCOUNT, not --bot-name, so a suffix
+# there would only desync addressivity — skip it. Disable with VIBECONF_NO_RUN_TAG=1.
+RUN_TAG=""
+if (( ! SLACK )) && [[ -z "${VIBECONF_NO_RUN_TAG:-}" ]]; then
+  RUN_TAG=$(printf 'r%x' $RANDOM)   # 15 bits → ~32k values, unique enough within a TTL window
+  echo "  • per-run name suffix: -$RUN_TAG (set VIBECONF_NO_RUN_TAG=1 to disable)"
+fi
+
 BOTS_ARG=""
 for i in $(seq 1 $N); do
   profile="${PROFILE_BASE}$i"
   port=$((BASE_PORT + i - 1))
-  name="${NAMES[$i]}"
+  name="${NAMES[$i]}${RUN_TAG:+-$RUN_TAG}"
   WINFLAGS=""
   if (( GRID )); then
     idx=$(( i - 1 ))

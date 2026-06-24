@@ -34,7 +34,10 @@
 # which now persists post-beta21.)
 
 set -e
-REPO="/Users/wanderingstan/Developer/vibeconferencing"
+# Dir-agnostic: default to this script's own repo (scripts/ -> repo root via
+# zsh ${0:A:h:h}), so it works from any worktree/clone. Override with
+# VIBECONF_REPO to point at a specific checkout.
+REPO="${VIBECONF_REPO:-${0:A:h:h}}"
 ELECTRON="$REPO/electron-app"
 NAMES=(Jimmy Samantha Cosmo Dizzy)        # display names by index
 BASE_PORT=7901

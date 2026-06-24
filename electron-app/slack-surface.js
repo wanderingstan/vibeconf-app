@@ -9,7 +9,7 @@
 // This is the Slack analog of main.js's createMeetView + the (Meet) preload's
 // page-message plumbing, split across the two surfaces.
 
-const { BrowserView } = require('electron');
+const { BrowserView, session } = require('electron');
 const path = require('path');
 const { SLACK } = require('./slack-selectors');
 
@@ -29,6 +29,11 @@ const SLACK_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/53
 function createSlackSurface(mainWindow, opts = {}) {
   const { partition, url, devtools, userAgent = SLACK_UA } = opts;
 
+  // Spoof Chrome at the SESSION level so EVERY window in this partition — main,
+  // workspace ("Redirecting…"), huddle popup — inherits it and stays in the one
+  // authenticated session. (Slack rejects Electron / old Chrome.)
+  if (partition) { try { session.fromPartition(partition).setUserAgent(userAgent); } catch { /* ignore */ } }
+
   const view = new BrowserView({
     webPreferences: {
       preload: path.join(__dirname, 'preload-slack-main.js'),
@@ -45,15 +50,20 @@ function createSlackSurface(mainWindow, opts = {}) {
   // opener's origin + session, so the popup is same-partition and freely
   // injectable. (#264 two-surface — the genuinely new piece vs Meet.)
   view.webContents.setWindowOpenHandler(({ url: popupUrl }) => {
-    console.log('[slack-surface] window.open intercepted →', popupUrl || '(about:blank)');
+    // Slack opens TWO kinds of child window:
+    //   • the huddle UI — about:blank → inject the SCRAPE preload (our target).
+    //   • a real app.slack.com window (e.g. picking a workspace, "Redirecting…")
+    //     → it's another main surface; give it the MEDIA preload.
+    // BOTH must stay in the authenticated `partition`, else Slack bounces them
+    // through a logged-out redirect (the blank "Redirecting…" window).
+    const isHuddlePopup = !popupUrl || popupUrl === 'about:blank';
+    const preload = path.join(__dirname, isHuddlePopup ? 'preload-slack-huddle.js' : 'preload-slack-main.js');
+    console.log('[slack-surface] window.open →', popupUrl || '(about:blank)',
+      isHuddlePopup ? '[huddle popup → scrape]' : '[slack window → media]');
     return {
       action: 'allow',
       overrideBrowserWindowOptions: {
-        webPreferences: {
-          preload: path.join(__dirname, 'preload-slack-huddle.js'),
-          contextIsolation: false,
-          sandbox: false,
-        },
+        webPreferences: { preload, contextIsolation: false, sandbox: false, partition },
       },
     };
   });

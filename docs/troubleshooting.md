@@ -80,7 +80,7 @@ If you're filing an issue, include the session log path + the rough time the sym
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Meet view feels laggy | Chromium-side, usually the avatar render loop. | Try lowering the avatar canvas FPS in `extension/page-inject.js`'s `config.fps` if running from source. |
+| Meet view feels laggy | Chromium-side, usually the avatar render loop. | Try lowering the avatar canvas FPS in `electron-app/page-inject.js`'s `config.fps` if running from source. |
 | Local-server polling thrashes CPU | The MCP agent is calling `wait_for_speech` in a tight loop instead of long-polling. | Make sure the agent uses `wait_for_speech` (which blocks server-side) rather than polling `read_transcripts` every second. |
 
 ## Driving the bot when you can't speak

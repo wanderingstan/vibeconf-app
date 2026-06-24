@@ -19,7 +19,7 @@ Set via the MCP `set_mode` tool, or from the panel UI. Mode persists across the 
 
 ## States
 
-States are computed in `local-server.js` based on what's happening in the call. They're broadcast to the avatar renderer in `extension/page-inject.js`.
+States are computed in `local-server.js` based on what's happening in the call. They're broadcast to the avatar renderer in `electron-app/page-inject.js`.
 
 | State | Default emoji | When |
 |---|---|---|

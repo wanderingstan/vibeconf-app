@@ -11,7 +11,7 @@ Today an "encounter" is split across **two planes that share zero state**:
 
 - **The Meet grid** — where *presence & personality* live. The bot avatar is a
   transient emoji stream painted into a virtual camera
-  (`extension/page-inject.js` `VirtualCamera`; state machine in
+  (`electron-app/page-inject.js` `VirtualCamera`; state machine in
   `electron-app/local-server.js` `_setBotState` → idle / listening / thinking /
   speaking / yielding). Expressive, but **trapped in a fixed tile** and it **never
   touches the board**.
@@ -172,7 +172,7 @@ to start.
 
 ## Appendix — key code anchors
 
-- Avatar render + state: `extension/page-inject.js` (`VirtualCamera`),
+- Avatar render + state: `electron-app/page-inject.js` (`VirtualCamera`),
   `electron-app/local-server.js` (`_setBotState`), `electron-app/main.js` (IPC),
   `mcp-server/server.js` (`set_avatar_emoji`), `electron-app/preferences-schema.js`
   (`avatarBackgroundSvg`).

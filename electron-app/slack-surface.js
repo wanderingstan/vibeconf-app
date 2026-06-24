@@ -63,6 +63,12 @@ function createSlackSurface(mainWindow, opts = {}) {
     return {
       action: 'allow',
       overrideBrowserWindowOptions: {
+        // Open WIDE: the huddle UI is responsive and HIDES the Thread/Captions
+        // side-panel below a width threshold — and the chat editor / transcript
+        // live in that panel, so a narrow popup means those selectors aren't in
+        // the DOM at all. Force a width that keeps the side-panel mounted.
+        width: 1280,
+        height: 860,
         webPreferences: { preload, contextIsolation: false, sandbox: false, partition },
       },
     };

@@ -2583,6 +2583,22 @@ function createMainWindow() {
     // Enable provider-aware command routing: DOM commands → the huddle popup.
     slackProviderMode = true;
     slackSurface = surface;
+    // Derive a STABLE per-huddle room code from the channel's team+channel
+    // (the Slack analogue of a Meet code) and key both the local server and the
+    // vibeconferencing.com sync on it — exactly as the Meet join path does with
+    // a meet code. Without this, roomId would be whatever placeholder the first
+    // sync request happens to send, collapsing every huddle into one shared room
+    // (and one shared whiteboard/chat). The code is deterministic from the URL,
+    // so we can set it now rather than waiting on join confirmation.
+    const { SLACK } = require('./slack-selectors');
+    const slackRoom = SLACK.roomCodeFromUrl(slackUrl);
+    if (slackRoom) {
+      localServer.setRoom(slackRoom);
+      sync.updateConfig({ roomId: slackRoom, baseUrl: getWebsiteUrl() });
+      console.log('[electron] Slack room code:', slackRoom);
+    } else {
+      console.warn('[electron] Slack: no team/channel in --slack-url; room code not set —', slackUrl);
+    }
   } else {
     meetView = createMeetView(currentMeetPartition);
   }

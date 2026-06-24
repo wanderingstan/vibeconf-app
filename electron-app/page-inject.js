@@ -595,7 +595,26 @@
     }
 
     getTrack() {
-      return this.destination.stream.getAudioTracks()[0];
+      // Consumers can END our destination track — Slack stop()s the mic track on
+      // the lobby→huddle handoff (and on device switches), which would leave
+      // every later getUserMedia holding a DEAD track: silent mic, "we can't hear
+      // you", no TTS out. If the current track is ended, rebuild the destination
+      // (with a fresh silent keep-alive) so we always return a LIVE track. TTS
+      // sources connect to this.destination, so they follow the rebuild. Meet
+      // never stops the track this way, so this branch is Slack-only in practice.
+      let track = this.destination.stream.getAudioTracks()[0];
+      if (!track || track.readyState === 'ended') {
+        this.destination = this.audioCtx.createMediaStreamDestination();
+        const silence = this.audioCtx.createGain();
+        silence.gain.value = 0;
+        silence.connect(this.destination);
+        const osc = this.audioCtx.createOscillator();
+        osc.connect(silence);
+        osc.start();
+        track = this.destination.stream.getAudioTracks()[0];
+        console.log('[bots-in-calls] VirtualMic track was ended — rebuilt destination; new track:', track.id);
+      }
+      return track;
     }
 
     // Soft two-tone "I'm in the room" chime — used when admission completes,

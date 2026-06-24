@@ -62,6 +62,12 @@ function createSlackSurface(mainWindow, opts = {}) {
   // Spoof Chrome BEFORE the first load so app.slack.com's UA check passes.
   view.webContents.setUserAgent(userAgent);
 
+  // Mute the bot's audio OUTPUT (playback only — NOT the mic, so TTS still goes
+  // out). The bot reads the transcript from captions; if it played the incoming
+  // huddle audio through the speakers, a co-located human's mic would pick it up
+  // and feed back into an endless reverb. Same as createMeetView's setAudioMuted.
+  view.webContents.setAudioMuted(true);
+
   // Surface the main view's [slack] logs (incl. autojoin) in the main stdout.
   view.webContents.on('console-message', (_e, _level, message) => {
     if (typeof message === 'string' && message.includes('[slack]')) console.log(message);
@@ -110,6 +116,10 @@ function createSlackSurface(mainWindow, opts = {}) {
   view.webContents.on('did-create-window', (win, details) => {
     popups.push(win);
     try { win.webContents.setUserAgent(userAgent); } catch { /* ignore */ }
+    // Mute the popup's audio output too — the huddle media may play from here.
+    // (Playback only; the VirtualMic/TTS is unaffected.) Prevents the feedback
+    // reverb when a human shares the machine's speakers/mic.
+    try { win.webContents.setAudioMuted(true); } catch { /* ignore */ }
     // Force a wide size AND a minimum — the overrideBrowserWindowOptions size
     // doesn't stick (Slack resizes the popup after open), and below a width
     // threshold the huddle hides the chat/captions side-panel (so those

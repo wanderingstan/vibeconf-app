@@ -267,9 +267,20 @@ class SlackProvider extends CallProvider {
   }
 
   // --- Not yet implemented (see header) ------------------------------------
-  async join(/* botName */) {
-    // RECON NEEDED: how a bot starts/joins a huddle from app.slack.com.
-    return this.notImplemented('join');
+  // TWO-SURFACE: join runs in the MAIN app.slack.com window — the channel-header
+  // "Huddle" button lives there, not in the huddle popup this provider mostly
+  // targets. The caller navigates the main window to /client/<team>/<channel>
+  // first (SLACK.buildClientUrl); join() clicks the button, which STARTS a new
+  // huddle or JOINS the active one. The popup then opens and the rest of this
+  // provider takes over. Huddle-active detection = the POPUP window TITLE
+  // ("Huddle: …"), read in-process main-side via SLACK.isHuddleWindowTitle.
+  async join(/* channel already navigated by caller */) {
+    const btn = document.querySelector(SLACK.huddle.startButton);
+    if (btn) { btn.click(); console.log('[slack] channel-header Huddle clicked (start/join)'); return true; }
+    const k = SLACK.huddle.startKey; // fallback: Cmd+Option+Shift+H
+    document.dispatchEvent(new KeyboardEvent('keydown', { ...k, bubbles: true, cancelable: true }));
+    console.log('[slack] start/join huddle via keyboard fallback');
+    return true;
   }
   speak(/* payload */) {
     // TWO-SURFACE: TTS audio rides the MAIN app.slack.com window's media patch,

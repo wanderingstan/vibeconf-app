@@ -15,6 +15,34 @@
 
 const SLACK = {
   // -------------------------------------------------------------------------
+  // Huddle lifecycle — detection + start/join.
+  //
+  // DETECTION. A huddle's window URL is about:blank (useless), so detection
+  // keys off the window/tab TITLE — "Huddle: #testing - <workspace> - Slack".
+  // Two contexts:
+  //   • USER's EXTERNAL browser (Chrome/Safari) — the auto-follow case, like
+  //     Meet's detection. AppleScript scans windows/tabs, but matches the TITLE
+  //     here (Meet matches the tab URL meet.google.com/…; Slack can't, so use
+  //     `windowTitlePrefix`). The title also yields the channel NAME (#testing);
+  //     a sibling app.slack.com/client/<team>/<channel> tab gives the IDs.
+  //   • OUR OWN Electron popup (when the bot drives Slack itself) — we own that
+  //     BrowserWindow, so read win.getTitle() / 'page-title-updated' in-process,
+  //     no AppleScript.
+  //
+  // START/JOIN (main app.slack.com window): a real /client/<team>/<channel> URL
+  // and the channel-header "Huddle" button — starts a new huddle OR joins the
+  // active one (keyboard: Cmd+Option+Shift+H).
+  // -------------------------------------------------------------------------
+  huddle: {
+    windowTitlePrefix: 'Huddle:', // popup window title when a huddle is live
+    clientUrlBase: 'https://app.slack.com/client', // + /<team>/<channel>
+    clientUrlRe: /app\.slack\.com\/client\/([^/?#]+)\/([^/?#]+)/,
+    // Channel-header button: starts a huddle, or joins the active one if present.
+    startButton: 'button[data-qa="huddle_channel_header_button__start_button"]',
+    startKey: { code: 'KeyH', metaKey: true, altKey: true, shiftKey: true },
+  },
+
+  // -------------------------------------------------------------------------
   // Screen share — toolbar button; aria-pressed + aria-label flip with state.
   // -------------------------------------------------------------------------
   screenShare: {
@@ -144,5 +172,19 @@ SLACK.participantName = (ariaLabel) => {
   const m = (ariaLabel || '').match(SLACK.participants.nameRe);
   return m ? m[1] : null;
 };
+
+// True if a window title marks an active huddle ("Huddle: …"). The popup is
+// about:blank, so this title check (read in-process, main side) is how we
+// detect the live huddle — the Slack analog of Meet's URL check.
+SLACK.isHuddleWindowTitle = (title) => (title || '').trim().startsWith(SLACK.huddle.windowTitlePrefix);
+
+// Parse a main-window /client/<team>/<channel> URL → { team, channel } (or null).
+SLACK.parseClientUrl = (url) => {
+  const m = (url || '').match(SLACK.huddle.clientUrlRe);
+  return m ? { team: m[1], channel: m[2] } : null;
+};
+
+// Build the main-window URL to navigate to a given channel.
+SLACK.buildClientUrl = (team, channel) => `${SLACK.huddle.clientUrlBase}/${team}/${channel}`;
 
 module.exports = { SLACK };

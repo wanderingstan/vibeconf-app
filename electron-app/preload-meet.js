@@ -1049,6 +1049,44 @@ function captureDenialDom(reason) {
   } catch { /* ignore */ }
 }
 
+// Shared denial/removal handling for BOTH the join-click and admission loops
+// (#263). The "You can't join this video call" denial can appear at the
+// pre-join stage too — where there's no join button, so the bot never advances
+// to the admission loop that originally held the #238 self-heal. Detection has
+// to run in both places. Returns true if this was a denial/removal page (caller
+// should stop its loop and return); on the spurious-denial path it reloads
+// (retry count survives via sessionStorage) before returning true.
+async function handleDenialPage(bodyText, stage) {
+  if (bodyText.includes("You can't join this video call")) {
+    console.warn('[electron-meet] Denial page detected (' + stage + '): "You can\'t join this video call"');
+    captureDenialDom(stage + ': You cant join this video call');
+    // #238: this denial is often SPURIOUS/intermittent — a reload commonly gets
+    // straight in. Retry by reloading a few times with backoff before giving up.
+    const MAX_DENIAL_RETRIES = 3;
+    let tries = 0;
+    try { tries = parseInt(sessionStorage.getItem('vibeconf-denial-retries') || '0', 10) || 0; } catch { /* ignore */ }
+    if (tries < MAX_DENIAL_RETRIES) {
+      tries++;
+      try { sessionStorage.setItem('vibeconf-denial-retries', String(tries)); } catch { /* ignore */ }
+      const backoff = 2000 * tries; // 2s, 4s, 6s
+      sendStatus(`Denied — reloading to retry join (attempt ${tries}/${MAX_DENIAL_RETRIES})`);
+      console.warn(`[electron-meet] Denial — reloading to retry (attempt ${tries}/${MAX_DENIAL_RETRIES}, backoff ${backoff}ms)`);
+      await delay(backoff);
+      window.location.reload();
+      return true;
+    }
+    sendStatus("Error: can't join this video call (host blocked entry or call inaccessible)");
+    console.warn('[electron-meet] Denial persisted after', MAX_DENIAL_RETRIES, 'retries — giving up');
+    return true;
+  }
+  if (bodyText.includes('You have been removed from the meeting')) {
+    sendStatus('Error: removed from the meeting');
+    console.warn('[electron-meet] Removal page detected (' + stage + ')');
+    return true;
+  }
+  return false;
+}
+
 async function autoJoin(botName) {
   console.log('[electron-meet] ===== AUTO-JOIN STARTING =====');
   sendStatus('Joining Meet...');
@@ -1136,6 +1174,10 @@ async function autoJoin(botName) {
     const joinDeadline = Date.now() + 60000;
     while (!clicked && Date.now() < joinDeadline) {
       await delay(1000);
+      // #263: the "You can't join" denial can show up here at the pre-join
+      // stage (no join button to click), so detect + self-heal it in THIS loop
+      // too — not just the admission loop below. Reloads on the spurious path.
+      if (await handleDenialPage((document.body && document.body.innerText) || '', 'join-click')) return;
       // Clear blocking pre-join overlays before looking for the join button.
       // Known "Others may see your video differently" overlay (#227), gated by
       // heading so we never click an unrelated "Got it":
@@ -1238,38 +1280,11 @@ async function autoJoin(botName) {
         findByAriaLabel('Turn off captions') ||
         document.querySelector('[data-tooltip="Leave call"]');
 
-      // Explicit denial pages — Meet shows one of these when the host blocks
-      // entry or the call is otherwise inaccessible. Fail fast rather than
-      // burning the 15s limbo grace, and give the agent a specific reason.
-      if (bodyText.includes("You can't join this video call")) {
-        console.warn('[electron-meet] Denial page detected: "You can\'t join this video call"');
-        captureDenialDom('admission: You cant join this video call');
-        // #238: the "You can't join" denial is often SPURIOUS/intermittent — a
-        // reload commonly gets straight in. Retry by reloading the meet page a few
-        // times with backoff before giving up. Count is kept in sessionStorage so
-        // it survives the reload (module state resets); cleared on admission below.
-        const MAX_DENIAL_RETRIES = 3;
-        let tries = 0;
-        try { tries = parseInt(sessionStorage.getItem('vibeconf-denial-retries') || '0', 10) || 0; } catch { /* ignore */ }
-        if (tries < MAX_DENIAL_RETRIES) {
-          tries++;
-          try { sessionStorage.setItem('vibeconf-denial-retries', String(tries)); } catch { /* ignore */ }
-          const backoff = 2000 * tries; // 2s, 4s, 6s
-          sendStatus(`Denied — reloading to retry join (attempt ${tries}/${MAX_DENIAL_RETRIES})`);
-          console.warn(`[electron-meet] Denial — reloading to retry (attempt ${tries}/${MAX_DENIAL_RETRIES}, backoff ${backoff}ms)`);
-          await delay(backoff);
-          window.location.reload();
-          return;
-        }
-        sendStatus("Error: can't join this video call (host blocked entry or call inaccessible)");
-        console.warn('[electron-meet] Denial persisted after', MAX_DENIAL_RETRIES, 'retries — giving up');
-        return;
-      }
-      if (bodyText.includes('You have been removed from the meeting')) {
-        sendStatus('Error: removed from the meeting');
-        console.warn('[electron-meet] Removal page detected');
-        return;
-      }
+      // Explicit denial/removal pages — Meet shows one when the host blocks
+      // entry or the call is inaccessible. Fail fast (with #238 reload-retry)
+      // rather than burning the 15s limbo grace. Shared with the join-click
+      // loop above via handleDenialPage (#263).
+      if (await handleDenialPage(bodyText, 'admission')) return;
 
       if (inCallUI && !hasJoinUI) {
         admitted = true;

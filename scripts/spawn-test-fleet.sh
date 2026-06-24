@@ -61,8 +61,17 @@ if (( KILL )); then
   echo "▶ Stopping test fleet…"
   for i in $(seq 1 $N); do
     port=$((BASE_PORT + i - 1))
+    profile="test$i"
     pid=$(lsof -ti tcp:$port 2>/dev/null || true)
     if [[ -n "$pid" ]]; then echo "  • killing pid $pid on $port"; kill "$pid" 2>/dev/null || true; fi
+    # Port-only kill misses GUI Electron mains that aren't currently holding the
+    # port — those linger as ghost participants and pile up across repeated runs,
+    # causing room contention (the false chat/caption failures). Also reap by the
+    # isolated --profile flag so every testN instance dies regardless of port
+    # state. The pattern omits the leading dashes (BSD pkill treats a pattern
+    # starting with "-" as an option); "profile=testN" still uniquely matches the
+    # full argv and never matches the real bots (default/bot2 on 7865/7866).
+    if pkill -f "profile=$profile" 2>/dev/null; then echo "  • reaped lingering profile=$profile process(es)"; fi
   done
   echo "✓ done"
   exit 0

@@ -53,9 +53,18 @@ function emit(channel, payload) {
 // watch scraping work end-to-end. Deduped to avoid log/IPC spam.
 let lastRoster = '';
 let lastCaption = '';
+let reportedInCall = false;
 function tick() {
   try {
     const parts = provider.getParticipants();
+    // Once participant tiles exist we're past the lobby and actually in the
+    // huddle — tell the app so it flips to 'in-call' (main.js maps a status
+    // containing "In call" → in-call), which unlocks the panel (TTS test, etc.).
+    if (!reportedInCall && parts.length) {
+      reportedInCall = true;
+      emit(CALL_EVENTS.statusUpdate, 'In call (Slack huddle)');
+      console.log('[slack-huddle] in a huddle — reported in-call to the app');
+    }
     const pk = JSON.stringify(parts);
     if (parts.length && pk !== lastRoster) {
       lastRoster = pk;

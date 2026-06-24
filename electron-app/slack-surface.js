@@ -74,6 +74,15 @@ function createSlackSurface(mainWindow, opts = {}) {
     try { win.webContents.setUserAgent(userAgent); } catch { /* ignore */ }
     console.log('[slack-surface] popup created (url=' + (details && details.url) + ')');
 
+    // Surface OUR popup logs ([slack-huddle]/[slack]) in the main stdout so they
+    // sit alongside [slack-surface] — the popup is a separate renderer, so its
+    // console doesn't reach here otherwise. Filtered to avoid Slack's own noise.
+    win.webContents.on('console-message', (_e, _level, message) => {
+      if (typeof message === 'string' && (message.includes('[slack-huddle]') || message.includes('[slack]'))) {
+        console.log(message);
+      }
+    });
+
     // Huddle detection: the popup title flips to "Huddle: …" when a huddle is
     // live. Watch it (in-process — no AppleScript needed for OUR own window).
     const reportTitle = (title) => {

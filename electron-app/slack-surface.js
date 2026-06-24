@@ -110,6 +110,11 @@ function createSlackSurface(mainWindow, opts = {}) {
   view.webContents.on('did-create-window', (win, details) => {
     popups.push(win);
     try { win.webContents.setUserAgent(userAgent); } catch { /* ignore */ }
+    // Force a wide size AND a minimum — the overrideBrowserWindowOptions size
+    // doesn't stick (Slack resizes the popup after open), and below a width
+    // threshold the huddle hides the chat/captions side-panel (so those
+    // selectors leave the DOM). The minimum stops Slack shrinking it back.
+    try { win.setMinimumSize(1100, 760); win.setSize(1280, 860); } catch { /* ignore */ }
     console.log('[slack-surface] popup created (url=' + (details && details.url) + ')');
 
     // Surface OUR popup logs ([slack-huddle]/[slack]) in the main stdout so they

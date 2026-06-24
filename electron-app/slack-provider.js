@@ -55,13 +55,20 @@ async function waitFor(fn, ms = 5000, step = 150) {
 // and the menu just stays open. Drive the full sequence on the right target.
 function clickItem(el) {
   const target = el.closest('[role="menuitem"], [role="menuitemcheckbox"], button, [role="button"]') || el;
-  const opts = { bubbles: true, cancelable: true, view: window, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+  // Include the element-center COORDINATES on every event. Coord-less synthetic
+  // events (clientX/Y = 0,0) get ignored by menu hit-testing as "outside the
+  // element" — which is why a found-and-clicked item still didn't activate.
+  const r = target.getBoundingClientRect();
+  const cx = Math.round(r.left + r.width / 2);
+  const cy = Math.round(r.top + r.height / 2);
+  const opts = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, screenX: cx, screenY: cy, button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true };
   const P = (t) => { try { target.dispatchEvent(new PointerEvent(t, opts)); } catch { /* unavailable */ } };
   const M = (t) => target.dispatchEvent(new MouseEvent(t, opts));
   // HOVER first — submenu triggers (aria-haspopup) open on mouse-enter, which
-  // React derives from native mouseover. Then the click sequence for plain items.
+  // React derives from native mouseover. Then the full press/release/click.
   P('pointerover'); P('pointerenter'); M('mouseover'); M('mouseenter'); P('pointermove'); M('mousemove');
   P('pointerdown'); M('mousedown'); P('pointerup'); M('mouseup'); M('click');
+  try { target.click(); } catch { /* native click as a backup */ }
   return target;
 }
 
@@ -171,8 +178,11 @@ class SlackProvider extends CallProvider {
     }
     if (sbs.getAttribute('aria-checked') === 'true') { console.log('[slack] [CC] side-by-side already active'); return true; }
     clickItem(sbs);
-    console.log('[slack] [CC] clicked "Side-by-side" — aria-checked now:', sbs.getAttribute('aria-checked'));
-    return true;
+    await delay(300); // let React settle before reading the result
+    const checked = sbs.getAttribute('aria-checked');
+    const opened = !!document.querySelector(SLACK.captions.panel);
+    console.log('[slack] [CC] clicked "Side-by-side" — aria-checked:', checked, '| captions panel:', opened);
+    return checked === 'true' || opened;
   }
 
   captionsOn() { return !!document.querySelector(SLACK.captions.panel); }

@@ -546,6 +546,23 @@ setInterval(() => { if (lastMeetMode === 'account') refreshBotIdentity('account'
 const fastModelStatus = document.getElementById('fastModelStatus');
 const voiceStatus = document.getElementById('voiceStatus');
 
+const FAST_MODEL_DOWNLOAD_URL = 'https://github.com/gety-ai/apple-on-device-openai/releases';
+
+// "✗ Not detected — Download now", where "Download now" opens the release page
+// in the default browser (via the https-validated open-external-url IPC).
+function showFastModelNotDetected(title) {
+  fastModelStatus.textContent = '✗ Not detected — ';
+  const dl = document.createElement('a');
+  dl.textContent = 'Download now';
+  dl.href = '#';
+  dl.style.color = '#8ab4f8';
+  dl.style.textDecoration = 'underline';
+  dl.onclick = (e) => { e.preventDefault(); api.send('open-external-url', FAST_MODEL_DOWNLOAD_URL); };
+  fastModelStatus.appendChild(dl);
+  fastModelStatus.style.color = '#fdd663';
+  fastModelStatus.title = title || '';
+}
+
 async function refreshFastModelStatus() {
   if (!fastModelStatus) return;
   try {
@@ -555,13 +572,10 @@ async function refreshFastModelStatus() {
       fastModelStatus.style.color = '#81c995';
       fastModelStatus.title = `Reachable at ${r.endpoint}`;
     } else {
-      fastModelStatus.textContent = `✗ Not detected — falling back to built-in ack`;
-      fastModelStatus.style.color = '#fdd663';
-      fastModelStatus.title = r?.endpoint ? `No response from ${r.endpoint}${r.error ? ` (${r.error})` : ''}` : 'No endpoint configured';
+      showFastModelNotDetected(r?.endpoint ? `No response from ${r.endpoint}${r.error ? ` (${r.error})` : ''}` : 'No endpoint configured');
     }
   } catch {
-    fastModelStatus.textContent = '✗ Not detected';
-    fastModelStatus.style.color = '#fdd663';
+    showFastModelNotDetected();
   }
 }
 

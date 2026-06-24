@@ -209,6 +209,10 @@ done
 
 echo ""
 echo "✓ Fleet up. Drive it with:"
-echo "    node scripts/meet-test.mjs --bots $BOTS_ARG"
+if (( SLACK )); then
+  echo "    node scripts/slack-test.mjs --bots $BOTS_ARG"
+else
+  echo "    node scripts/meet-test.mjs --bots $BOTS_ARG"
+fi
 echo ""
 echo "  Stop it with: $0 $N --kill"

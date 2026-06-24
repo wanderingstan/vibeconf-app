@@ -210,7 +210,7 @@ done
 echo ""
 echo "✓ Fleet up. Drive it with:"
 if (( SLACK )); then
-  echo "    node scripts/slack-test.mjs --bots $BOTS_ARG"
+  echo "    node scripts/slack-test.mjs --bots $BOTS_ARG --slack-url=$SLACK_URL"
 else
   echo "    node scripts/meet-test.mjs --bots $BOTS_ARG"
 fi

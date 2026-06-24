@@ -17,12 +17,21 @@
 //
 // Exit code is non-zero if any step failed — so it can gate CI later.
 
+import { createRequire } from 'module';
 import { Bot, sleep, report } from './meet-test-lib.mjs';
 
+// Reuse the app's room-code derivation so the test drives the SAME room the app
+// keyed at launch (slack-<team>-<channel>). Otherwise a placeholder path would
+// write transcripts to a phantom vibeconferencing room that the app never uses.
+const require = createRequire(import.meta.url);
+const { SLACK } = require('../electron-app/slack-selectors.js');
+
 const arg = (name, def) => { const i = process.argv.indexOf('--' + name); return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : def; };
-// Room is just the local-server URL path here — the bot drives whatever call
-// it's already in (the huddle), so any stable label works.
-const ROOM = arg('room', 'slack-huddle');
+// Room = the per-huddle code derived from --slack-url (the channel the fleet
+// joined), matching what the app set via SLACK.roomCodeFromUrl. --room overrides;
+// 'slack-huddle' is the last-resort fallback when neither is supplied.
+const slackUrl = arg('slack-url', '');
+const ROOM = arg('room', (slackUrl && SLACK.roomCodeFromUrl(slackUrl)) || 'slack-huddle');
 const BOTS = arg('bots', 'Jimmy:7901').split(',').map((s) => { const [name, port] = s.split(':'); return new Bot(name, Number(port), ROOM); });
 
 // Per-run nonces so each bot can verify the OTHER's (or its own) chat landed.

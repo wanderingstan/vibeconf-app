@@ -164,8 +164,14 @@ class SlackProvider extends CallProvider {
     console.log('[slack] [CC] clicked "Show captions" — waiting for the submenu');
     await delay(600); // let the submenu render
 
-    let sbs = document.querySelector(SLACK.captions.sideBySideButton)
-      || findMenuItemByText(SLACK.captions.sideBySideLabelPrefix);
+    // BOTH caption-mode checkboxes — "Side-by-side" and "Closed captions" —
+    // share the same data-qa, so the bare data-qa selector grabs the wrong one
+    // (we were toggling Closed captions). Disambiguate by LABEL: the visible
+    // menuitemcheckbox whose text/aria-label is "Side-by-side".
+    const sbsLabel = SLACK.captions.sideBySideLabelPrefix.toLowerCase();
+    let sbs = [...document.querySelectorAll('[role="menuitemcheckbox"]')]
+      .find((el) => isVisible(el) && ((el.getAttribute('aria-label') || el.textContent || '').toLowerCase().includes(sbsLabel)));
+    if (!sbs) sbs = findMenuItemByText(SLACK.captions.sideBySideLabelPrefix);
     if (!sbs || !isVisible(sbs)) {
       // Stop guessing — dump the visible menu items so we can see Side-by-side's
       // real selector/label in the live submenu.

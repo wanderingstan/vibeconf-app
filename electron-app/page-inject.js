@@ -1651,8 +1651,15 @@
     }
   }
 
-  // Initialize the audio capture manager
-  const audioCaptureManager = new AudioCaptureManager();
+  // Audio capture hooks window.RTCPeerConnection to capture per-participant
+  // audio for STT. It's VESTIGIAL — Meet and Slack both use DOM captions for the
+  // transcript now — and the Meet-shaped hook BREAKS Slack/Chime's WebRTC (it
+  // replaces RTCPeerConnection without preserving statics / instanceof). Gate it
+  // off via window.__vibeconf_disableAudioCapture (set by preload-slack-main); a
+  // stub keeps the status handlers working. Default: enabled (Meet unchanged).
+  const audioCaptureManager = window.__vibeconf_disableAudioCapture
+    ? { participants: new Map(), connectionCount: 0 } // stub — NO RTCPeerConnection hook
+    : new AudioCaptureManager();
 
   // Expose for debugging from console
   window.__botsInCallsAudioCapture = audioCaptureManager;
@@ -1871,8 +1878,13 @@
     }
   }
 
-  // Initialize transcription (but don't start listening until requested)
-  const transcription = new SpeakerAttributedTranscription(audioCaptureManager);
+  // Initialize transcription (Web Speech STT; don't start until requested). Also
+  // skipped when capture is disabled (Slack uses DOM captions) — a stub keeps the
+  // botSpeaking suppression + start/stop/get calls working as no-ops, so the TTS
+  // (speak) path doesn't depend on it.
+  const transcription = window.__vibeconf_disableAudioCapture
+    ? { botSpeaking: false, startListening() {}, stopListening() {}, getRecentTranscripts() { return []; } }
+    : new SpeakerAttributedTranscription(audioCaptureManager);
   window.__botsInCallsTranscription = transcription;
 
   // ---------------------------------------------------------------------------

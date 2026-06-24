@@ -31,8 +31,15 @@ const path = require('path');
   console.error = wrap(console.error.bind(console));
 })();
 
-// Inject the media patch BEFORE Slack's scripts run (same file Meet uses — the
-// getUserMedia / RTCPeerConnection override is host-page-agnostic).
+// Disable the vestigial audio-capture path (the RTCPeerConnection hook) BEFORE
+// page-inject installs it — it's unused (we read the transcript from Slack's DOM
+// captions) and the Meet-shaped wrapper breaks Slack/Chime's WebRTC. Keeps the
+// getUserMedia virtual-mic + play-tts (speak) path. Must be set before the eval.
+window.__vibeconf_disableAudioCapture = true;
+
+// Inject the media patch BEFORE Slack's scripts run (the getUserMedia virtual-mic
+// + play-tts path is host-page-agnostic; the RTCPeerConnection hook is gated off
+// above for Slack/Chime).
 try {
   const code = fs.readFileSync(path.join(__dirname, 'page-inject.js'), 'utf-8');
   (0, eval)(code);

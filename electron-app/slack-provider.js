@@ -62,7 +62,12 @@ class SlackProvider extends CallProvider {
   // --- Camera --------------------------------------------------------------
   isCameraOn() {
     const b = document.querySelector(SLACK.camera.button);
-    return !!b && b.getAttribute('aria-label') === SLACK.camera.labelOn;
+    if (!b) return false;
+    // Prefer the language-independent inner data-qa icon; fall back to the
+    // (localized) aria-label only if neither icon is present.
+    if (b.querySelector(SLACK.camera.iconOn)) return true;
+    if (b.querySelector(SLACK.camera.iconOff)) return false;
+    return b.getAttribute('aria-label') === SLACK.camera.labelOn;
   }
   async setCameraOn(on) {
     const b = document.querySelector(SLACK.camera.button);

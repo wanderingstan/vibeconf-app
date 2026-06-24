@@ -55,23 +55,48 @@ N=2
 KILL=0
 DMG=0
 BUILT=0
+SLACK=0
+SLACK_URL=""
 for a in "$@"; do
   case "$a" in
-    --kill)  KILL=1 ;;
-    --dmg)   DMG=1 ;;
-    --built) BUILT=1 ;;
-    <->)     N="$a" ;;   # zsh: <-> matches an integer
-    *) echo "usage: $0 [count] [--dmg|--built] [--kill]"; exit 1 ;;
+    --kill)        KILL=1 ;;
+    --dmg)         DMG=1 ;;
+    --built)       BUILT=1 ;;
+    --slack)       SLACK=1 ;;
+    --slack-url=*) SLACK_URL="${a#--slack-url=}" ;;
+    <->)           N="$a" ;;   # zsh: <-> matches an integer
+    *) echo "usage: $0 [count] [--dmg|--built] [--slack --slack-url=URL] [--kill]"; exit 1 ;;
   esac
 done
 if (( N < 1 || N > 4 )); then echo "count must be 1–4"; exit 1; fi
 
+# Slack bots use a DISTINCT profile namespace — signed into a Slack ACCOUNT (one-
+# time manual login per profile), not Google/guest. Meet bots = test1.., Slack
+# bots = slacktest1.. So `--slack --kill` reaps the right ones too.
+PROFILE_BASE=$( (( SLACK )) && echo "slacktest" || echo "test" )
+
 # --kill: stop instances on the test ports (works regardless of how they launched).
 if (( KILL )); then
   echo "▶ Stopping test fleet…"
+  # GRACEFUL LEAVE first: tell each live bot to LEAVE its call so its tile/presence
+  # is dropped right away, instead of ghosting until the ~10min presence TTL. Stale
+  # same-named bots from a prior run collide with the next run's bots and produce
+  # flaky chat/caption failures (Stan spotted prior-run Jimmy/Samantha still in the
+  # meet). The 'leave' action fires onLeaveCall regardless of room, so any valid
+  # slug path works. Then settle briefly so Meet/Slack processes the hangup before
+  # we SIGKILL the process out from under it.
+  left=0
   for i in $(seq 1 $N); do
     port=$((BASE_PORT + i - 1))
-    profile="test$i"
+    if curl -sf -X POST "http://127.0.0.1:$port/api/sync/fleet-leave" \
+         -H 'Content-Type: application/json' -d '{"sender":"fleet-kill","meta":{"action":"leave"}}' >/dev/null 2>&1; then
+      echo "  • sent leave to bot on $port"; left=1
+    fi
+  done
+  if (( left )); then echo "  • settling 3s for call hangup…"; sleep 3; fi
+  for i in $(seq 1 $N); do
+    port=$((BASE_PORT + i - 1))
+    profile="${PROFILE_BASE}$i"
     pid=$(lsof -ti tcp:$port 2>/dev/null || true)
     if [[ -n "$pid" ]]; then echo "  • killing pid $pid on $port"; kill "$pid" 2>/dev/null || true; fi
     # Port-only kill misses GUI Electron mains that aren't currently holding the
@@ -85,6 +110,17 @@ if (( KILL )); then
   done
   echo "✓ done"
   exit 0
+fi
+
+# Slack launch args: --provider=slack + the channel to auto-join. Each slacktestN
+# profile must be signed into a (distinct) Slack account ONCE first — there's no
+# guest path. Do that one-time login manually, e.g.:
+#   cd electron-app && pnpm dev -- --provider=slack --profile=slacktest1 \
+#     --slack-url=https://app.slack.com/client/<team>/<channel>   # then log in, close
+EXTRA_ARGS=""
+if (( SLACK )); then
+  [[ -n "$SLACK_URL" ]] || { echo "✗ --slack needs --slack-url=https://app.slack.com/client/<team>/<channel>"; exit 1; }
+  EXTRA_ARGS="--provider=slack --slack-url=$SLACK_URL"
 fi
 
 # Packaged-app modes exercise the real artifact (asar, build.files) — no
@@ -141,11 +177,25 @@ if (( GRID )); then
   echo "  • window grid ${SCRW}×${SCRH}: ${COLS}×${ROWS}, each ~${APPW}×${APPH}"
 fi
 
+# Per-run name suffix (MEET ONLY): a SIGKILL'd bot ghosts in the Meet room until
+# the ~10min presence TTL, so a fresh run reusing the same names collides with the
+# ghost. A unique per-run suffix (e.g. Jimmy-r4af) sidesteps the collision; the
+# graceful-leave above is the primary fix, this is belt-and-suspenders for when a
+# bot crashed and never left. meet-test resolves its per-name scenario by the BASE
+# name (before the last '-'), so the suffixed name still runs the right script.
+# Slack identity comes from the signed-in ACCOUNT, not --bot-name, so a suffix
+# there would only desync addressivity — skip it. Disable with VIBECONF_NO_RUN_TAG=1.
+RUN_TAG=""
+if (( ! SLACK )) && [[ -z "${VIBECONF_NO_RUN_TAG:-}" ]]; then
+  RUN_TAG=$(printf 'r%x' $RANDOM)   # 15 bits → ~32k values, unique enough within a TTL window
+  echo "  • per-run name suffix: -$RUN_TAG (set VIBECONF_NO_RUN_TAG=1 to disable)"
+fi
+
 BOTS_ARG=""
 for i in $(seq 1 $N); do
-  profile="test$i"
+  profile="${PROFILE_BASE}$i"
   port=$((BASE_PORT + i - 1))
-  name="${NAMES[$i]}"
+  name="${NAMES[$i]}${RUN_TAG:+-$RUN_TAG}"
   WINFLAGS=""
   if (( GRID )); then
     idx=$(( i - 1 ))
@@ -166,9 +216,9 @@ for i in $(seq 1 $N); do
     # bundle PATH ("$APP") so we run exactly the chosen copy (installed vs built),
     # not whatever LaunchServices resolves the app NAME to.
     # ${=WINFLAGS}: zsh word-splits the flags into separate argv entries.
-    open -n "$APP" --args --profile="$profile" --local-port="$port" --bot-name="$name" ${=WINFLAGS}
+    open -n "$APP" --args --profile="$profile" --local-port="$port" --bot-name="$name" ${=WINFLAGS} ${=EXTRA_ARGS}
   else
-    nohup zsh -c "cd '$ELECTRON' && pnpm dev -- --profile=$profile --local-port=$port --bot-name=$name $WINFLAGS" \
+    nohup zsh -c "cd '$ELECTRON' && pnpm dev -- --profile=$profile --local-port=$port --bot-name=$name $WINFLAGS $EXTRA_ARGS" \
       >"/tmp/vibeconf-$profile.log" 2>&1 &
   fi
   BOTS_ARG+="${BOTS_ARG:+,}$name:$port"
@@ -189,6 +239,10 @@ done
 
 echo ""
 echo "✓ Fleet up. Drive it with:"
-echo "    node scripts/meet-test.mjs --bots $BOTS_ARG"
+if (( SLACK )); then
+  echo "    node scripts/slack-test.mjs --bots $BOTS_ARG --slack-url=$SLACK_URL"
+else
+  echo "    node scripts/meet-test.mjs --bots $BOTS_ARG"
+fi
 echo ""
 echo "  Stop it with: $0 $N --kill"

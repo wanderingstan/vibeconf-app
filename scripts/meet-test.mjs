@@ -132,8 +132,12 @@ async function main() {
 
   const started = Date.now();
   await Promise.all(BOTS.map((b) => {
-    const script = SCRIPTS[b.name] || DEFAULT_SCRIPT;
-    if (!SCRIPTS[b.name]) console.log(`(no named script for ${b.name} — using default join/speak/listen)`);
+    // Resolve the scenario by BASE name: spawn-test-fleet appends a per-run suffix
+    // (e.g. Jimmy-r4af) to dodge ghost-name collisions, so strip back to the role
+    // before the last '-'. Plain names (Jimmy) resolve directly.
+    const role = SCRIPTS[b.name] ? b.name : b.name.replace(/-[^-]+$/, '');
+    const script = SCRIPTS[role] || DEFAULT_SCRIPT;
+    if (!SCRIPTS[role]) console.log(`(no named script for ${b.name} — using default join/speak/listen)`);
     return script(b).catch((err) => console.error(`✗ [${b.name}] script error:`, err.message));
   }));
   console.log(`\nScenario scripts finished in ${Math.round((Date.now() - started) / 1000)}s.`);

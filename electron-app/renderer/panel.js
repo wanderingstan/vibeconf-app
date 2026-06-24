@@ -497,7 +497,22 @@ async function refreshBotIdentity(mode) {
   if (!botIdentityStatus) return;
   const m = mode || lastMeetMode;
   if (m !== 'account') {
-    botIdentityStatus.textContent = '👤 Guest';
+    // Guest mode: the bot appears under the Bot Name preference, so show it
+    // inline with a quick "Change" link straight to Settings (focused on the
+    // name field) — no hunting through the menu.
+    botIdentityStatus.textContent = currentBotName ? `👤 Guest ‘${currentBotName}’ ` : '👤 Guest ';
+    const change = document.createElement('a');
+    change.textContent = 'Change';
+    change.href = '#';
+    change.style.color = '#8ab4f8';
+    change.style.textDecoration = 'underline';
+    change.style.fontSize = '0.9em';
+    change.onclick = (e) => {
+      e.preventDefault();
+      showScreen(settingsScreen);
+      if (botNameInput) { botNameInput.focus(); botNameInput.select(); }
+    };
+    botIdentityStatus.appendChild(change);
     botIdentityStatus.style.color = '#fdd663';
     if (botSignInMainBtn) botSignInMainBtn.style.display = 'inline-block';
     if (botSignOutMainBtn) botSignOutMainBtn.style.display = 'none';
@@ -860,6 +875,7 @@ botNameInput.addEventListener('change', () => {
   api.invoke('set-config', 'botName', name);
   api.send('to-meet', { action: 'set-config', payload: { botName: name } });
   updateBotNameBig();
+  refreshBotIdentity(); // keep the guest "👤 Guest 'Name'" line in sync
 });
 
 websiteUrlInput.addEventListener('change', () => {

@@ -64,8 +64,13 @@ const SLACK_POPUP_CMDS = new Set([
 // The webContents a call command should target, given its action/channel name.
 function callCmdWC(name) {
   if (slackProviderMode && slackSurface && SLACK_POPUP_CMDS.has(name)) {
-    const wc = slackSurface.getHuddleWebContents && slackSurface.getHuddleWebContents();
-    if (wc) return wc; // no live huddle popup yet → fall through to meetView
+    // These commands (chat, mic, camera, captions, share) are handled ONLY by
+    // the huddle popup. If it isn't up yet (e.g. a chat fired before auto-join
+    // completed), return null — do NOT fall back to meetView (the main
+    // app.slack.com window). That window has no popup-command handlers, so a
+    // misrouted send is silently dropped and chatRequest hangs to its 15s
+    // timeout. null makes the caller fail fast ("No active call view") instead.
+    return (slackSurface.getHuddleWebContents && slackSurface.getHuddleWebContents()) || null;
   }
   return (meetView && !meetView.webContents.isDestroyed()) ? meetView.webContents : null;
 }

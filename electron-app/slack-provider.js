@@ -244,30 +244,45 @@ class SlackProvider extends CallProvider {
     return out;
   }
 
+  // The side panel shows the Thread tab OR the Captions tab, not both — so any
+  // chat excursion hides captions and the bot goes deaf (wait_for_speech then
+  // sees no transcript). After a chat op, hop back to Captions so listening
+  // resumes. No-op if the Captions tab isn't present (captions never enabled).
+  async restoreListening() {
+    if (document.querySelector(SLACK.tabs.captions)) await this.switchToCaptionsTab();
+  }
+
   async readChat() {
     await this.switchToThreadTab();
     await delay(300); // let the thread render
-    return this.scrapeChatMessages();
+    try { return this.scrapeChatMessages(); }
+    finally { await this.restoreListening(); }
   }
 
   async sendChat(text) {
     await this.switchToThreadTab();
-    await delay(200);
-    const editor = document.querySelector(SLACK.chat.editor);
-    if (!editor) { console.warn('[slack] chat editor not found'); return false; }
-    await this._typeIntoQuill(editor, text);
-    await delay(100);
-    // Prefer the real send button (enabled once there's text); fall back to Enter.
-    const send = document.querySelector(SLACK.chat.sendButton);
-    if (send && send.getAttribute(SLACK.chat.sendDisabledAttr) !== 'true') {
-      send.click();
-    } else {
-      const enter = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
-      editor.dispatchEvent(new KeyboardEvent('keydown', enter));
-      editor.dispatchEvent(new KeyboardEvent('keyup', enter));
-    }
-    await delay(200);
-    return true; // best-effort; send-confirmation check is a TODO (verify live)
+    // Poll for the Quill editor instead of a fixed delay — on a cold popup (the
+    // first sendChat right after the huddle mounts) the Thread panel/editor can
+    // take a beat to render, and a single immediate querySelector returned null,
+    // hanging the IPC round-trip until the 15s chat timeout. waitFor returns as
+    // soon as it appears (≤4s), so a warm popup is still ~instant.
+    const editor = await waitFor(() => document.querySelector(SLACK.chat.editor), 4000);
+    if (!editor) { console.warn('[slack] chat editor not found (Thread panel not ready)'); await this.restoreListening(); return false; }
+    try {
+      await this._typeIntoQuill(editor, text);
+      await delay(100);
+      // Prefer the real send button (enabled once there's text); fall back to Enter.
+      const send = document.querySelector(SLACK.chat.sendButton);
+      if (send && send.getAttribute(SLACK.chat.sendDisabledAttr) !== 'true') {
+        send.click();
+      } else {
+        const enter = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
+        editor.dispatchEvent(new KeyboardEvent('keydown', enter));
+        editor.dispatchEvent(new KeyboardEvent('keyup', enter));
+      }
+      await delay(200);
+      return true; // best-effort; send-confirmation check is a TODO (verify live)
+    } finally { await this.restoreListening(); }
   }
 
   // Inject text into Slack's Quill (ql-editor) contenteditable. execCommand

@@ -37,9 +37,14 @@ const SLACK = {
     windowTitlePrefix: 'Huddle:', // popup window title when a huddle is live
     clientUrlBase: 'https://app.slack.com/client', // + /<team>/<channel>
     clientUrlRe: /app\.slack\.com\/client\/([^/?#]+)\/([^/?#]+)/,
-    // Channel-header button: starts a huddle, or joins the active one if present.
+    // Channel-header button (MAIN window): opens the huddle lobby/preview popup.
     startButton: 'button[data-qa="huddle_channel_header_button__start_button"]',
     startKey: { code: 'KeyH', metaKey: true, altKey: true, shiftKey: true },
+    // Lobby/preview popup: a camera/mic preview, then "Start Huddle" to actually
+    // enter. The popup title is "Slack - Huddle Preview" here; it flips to
+    // "Huddle: …" once joined.
+    lobbyStartButton: 'button[data-qa="huddle_invite_window_with_preview_content_join_button"]', // aria-label "Start Huddle"
+    lobbyTitle: 'Slack - Huddle Preview',
   },
 
   // -------------------------------------------------------------------------

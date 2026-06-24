@@ -276,10 +276,22 @@ class SlackProvider extends CallProvider {
   // ("Huddle: …"), read in-process main-side via SLACK.isHuddleWindowTitle.
   async join(/* channel already navigated by caller */) {
     const btn = document.querySelector(SLACK.huddle.startButton);
-    if (btn) { btn.click(); console.log('[slack] channel-header Huddle clicked (start/join)'); return true; }
+    if (btn) { btn.click(); console.log('[slack] channel-header Huddle clicked (opens lobby)'); return true; }
     const k = SLACK.huddle.startKey; // fallback: Cmd+Option+Shift+H
     document.dispatchEvent(new KeyboardEvent('keydown', { ...k, bubbles: true, cancelable: true }));
     console.log('[slack] start/join huddle via keyboard fallback');
+    return true;
+  }
+
+  // Step 2 of joining: the lobby/preview popup ("Slack - Huddle Preview") shows a
+  // camera/mic preview; click "Start Huddle" to actually enter. Runs in the
+  // POPUP (where this provider lives), unlike join() which is the main window.
+  // After this, the popup title flips to "Huddle: …" and the huddle UI mounts.
+  async confirmJoin() {
+    const btn = document.querySelector(SLACK.huddle.lobbyStartButton);
+    if (!btn) { console.warn('[slack] lobby "Start Huddle" button not found'); return false; }
+    btn.click();
+    console.log('[slack] clicked lobby "Start Huddle" — entering huddle');
     return true;
   }
   speak(/* payload */) {

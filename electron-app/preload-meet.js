@@ -7,6 +7,12 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
+// Google Meet DOM coupling lives in one registry — the explicit, swappable
+// surface of the "Meet" video-call provider (first step toward a CallProvider
+// abstraction). All selectors / aria-labels / URL patterns below reference
+// MEET.* rather than inline literals.
+const { MEET } = require('./meet-selectors');
+
 // meetView runs with contextIsolation:false, so the preload and page share one
 // window. Expose a tiny helper the idle screen uses to open a URL in the user's
 // external browser (the "Start default testing meet" link).
@@ -168,9 +174,7 @@ function findByAriaLabel(label) {
   // nodes are real and motivated isVisible()), aria-labeled elements in
   // Meet's DOM don't have hidden-duplicate buttons. Add a visible-only
   // variant if a future caller needs one.
-  return document.querySelector(
-    `button[aria-label*="${label}" i], [role="button"][aria-label*="${label}" i]`
-  );
+  return document.querySelector(MEET.ariaLabelSelector(label));
 }
 
 // Auto-dismiss Meet's one-time onboarding/info modals that block the bot's join
@@ -182,11 +186,7 @@ function findByAriaLabel(label) {
 // CATCH-ALL: in Meet, a visible "Got it" button is always a dismissible info
 // modal, so we click any we find. The recording-consent dialog (#130) uses
 // Leave / Join now (not "Got it"), so it's unaffected. Returns true if dismissed.
-const KNOWN_MODAL_HEADINGS = [ // for clearer logging only — NOT a gate
-  'others may see your video differently',
-  'your screen may not appear',
-  'may not appear to others',
-];
+const KNOWN_MODAL_HEADINGS = MEET.modals.knownHeadings; // for clearer logging only — NOT a gate
 let _lastModalDumpAt = 0;
 function dismissBlockingModals() {
   // Click any visible "Got it" button (label may be nested in a span; match by
@@ -195,7 +195,7 @@ function dismissBlockingModals() {
   for (const el of clickables) {
     const label = (el.textContent || '').trim().toLowerCase();
     const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
-    if ((label === 'got it' || aria === 'got it') && isVisible(el)) {
+    if ((label === MEET.modals.gotItText || aria === MEET.modals.gotItText) && isVisible(el)) {
       el.click();
       const bodyText = (document.body && document.body.textContent || '').toLowerCase();
       const known = KNOWN_MODAL_HEADINGS.find((h) => bodyText.includes(h));
@@ -210,7 +210,7 @@ function dismissBlockingModals() {
   // dump its DOM (throttled) so we can learn its dismiss button — maybe it uses
   // a different label we should add. This is how we finally capture the rare
   // ones we can't reproduce on demand.
-  const dlg = document.querySelector('[role="dialog"][aria-modal="true"], [aria-modal="true"], [role="dialog"]');
+  const dlg = document.querySelector(MEET.modals.anyDialog);
   if (dlg && isVisible(dlg) && Date.now() - _lastModalDumpAt > 15000) {
     const txt = (dlg.textContent || '').toLowerCase();
     const isRecordingConsent = txt.includes('being recorded') || txt.includes('taking notes');
@@ -233,17 +233,14 @@ function dismissBlockingModals() {
 // knows the bot consented to recording for them.
 let _recordingConsentNotified = false;
 function acceptRecordingConsentIfPresent() {
-  const dlg = document.querySelector('[role="dialog"][aria-modal="true"], [role="dialog"]');
+  const dlg = document.querySelector(MEET.modals.dialogOrModal);
   if (!dlg) return false;
   const text = (dlg.textContent || '').toLowerCase();
-  const isRecordingConsent =
-    text.includes('being recorded') ||
-    text.includes('recorded and transcribed') ||
-    text.includes('taking notes');
+  const isRecordingConsent = MEET.join.recordingConsentTexts.some((t) => text.includes(t));
   if (!isRecordingConsent) return false;
 
   // Accept = the dialog's "ok" action (labelled "Join now"); fall back to text.
-  const okBtn = dlg.querySelector('button[data-mdc-dialog-action="ok"]')
+  const okBtn = dlg.querySelector(MEET.modals.recordingOkButton)
     || [...dlg.querySelectorAll('button, [role="button"]')]
          .find((b) => /\bjoin now\b/i.test(b.textContent || ''));
   if (okBtn && isVisible(okBtn)) {
@@ -302,12 +299,12 @@ async function typeIntoInput(input, value) {
 // ---------------------------------------------------------------------------
 
 function getMicButton() {
-  return document.querySelector('button[data-is-muted][aria-label*="microphone" i]');
+  return document.querySelector(MEET.mic.button);
 }
 
 function isMicMuted() {
   const btn = getMicButton();
-  return btn?.getAttribute('data-is-muted') === 'true';
+  return btn?.getAttribute(MEET.mic.mutedAttr) === 'true';
 }
 
 // Set when we toggle the mic ourselves (TTS unmute / re-mute) so the
@@ -317,7 +314,7 @@ let suppressMicMuteWatcher = false;
 function setMicMuted(mute) {
   const btn = getMicButton();
   if (!btn) return;
-  const currentlyMuted = btn.getAttribute('data-is-muted') === 'true';
+  const currentlyMuted = btn.getAttribute(MEET.mic.mutedAttr) === 'true';
   if (mute !== currentlyMuted) {
     suppressMicMuteWatcher = true;
     btn.click();
@@ -338,11 +335,11 @@ function startMicMuteWatcher() {
   }
   const observer = new MutationObserver(() => {
     if (suppressMicMuteWatcher) return;
-    const muted = btn.getAttribute('data-is-muted') === 'true';
+    const muted = btn.getAttribute(MEET.mic.mutedAttr) === 'true';
     console.log('[electron-meet] User toggled mic →', muted ? 'muted (passive)' : 'unmuted (active)');
     ipcRenderer.send('mic-mute-changed', { muted });
   });
-  observer.observe(btn, { attributes: true, attributeFilter: ['data-is-muted'] });
+  observer.observe(btn, { attributes: true, attributeFilter: [MEET.mic.mutedAttr] });
   console.log('[electron-meet] Mic mute watcher started');
 }
 
@@ -355,13 +352,13 @@ function startMicMuteWatcher() {
 // action you'd take by clicking. So we read the current state from the label.
 function getCameraButton() {
   return (
-    document.querySelector('button[aria-label="Turn off camera"]') ||
-    document.querySelector('button[aria-label="Turn on camera"]')
+    document.querySelector(MEET.camera.onButton) ||
+    document.querySelector(MEET.camera.offButton)
   );
 }
 
 function isCameraOn() {
-  return !!document.querySelector('button[aria-label="Turn off camera"]');
+  return !!document.querySelector(MEET.camera.onButton);
 }
 
 function setCameraOff(off) {
@@ -394,7 +391,7 @@ function setCameraOff(off) {
 // reliable visibility test.
 function visiblePeopleTileCount() {
   let n = 0;
-  for (const el of document.querySelectorAll('div[role="listitem"][aria-label]')) {
+  for (const el of document.querySelectorAll(MEET.people.tile)) {
     if (el.getClientRects().length > 0) n++;
   }
   return n;
@@ -414,10 +411,10 @@ function dumpCaptionDiagnostics(reason) {
     const uniqLabels = Array.from(new Set(
       Array.from(labelEls).map(b => b.getAttribute('aria-label')).filter(Boolean)
     ));
-    const ccOn = !!findByAriaLabel('Turn on captions') || !!findByAriaLabel('Activar subtítulos');
-    const ccOff = !!findByAriaLabel('Turn off captions') || !!findByAriaLabel('Desactivar subtítulos');
-    const moreMenu = !!findByAriaLabel('More options') || !!findByAriaLabel('Más opciones');
-    const guestNameInput = !!document.querySelector('input[aria-label*="name" i], input[placeholder*="name" i]');
+    const ccOn = !!findByAriaLabel(MEET.captions.enableLabelEn) || !!findByAriaLabel(MEET.captions.enableLabelEs);
+    const ccOff = !!findByAriaLabel(MEET.captions.disableLabelEn) || !!findByAriaLabel(MEET.captions.disableLabelEs);
+    const moreMenu = !!findByAriaLabel(MEET.studioSound.moreOptionsLabelEn) || !!findByAriaLabel(MEET.studioSound.moreOptionsLabelEs);
+    const guestNameInput = !!document.querySelector(MEET.join.nameInputLoose);
     console.warn('[electron-meet] [CC-diag] ' + reason +
       ' — tiles=' + visiblePeopleTileCount() +
       ' ccOnBtn=' + ccOn + ' ccOffBtn=' + ccOff + ' moreMenuBtn=' + moreMenu +
@@ -434,18 +431,16 @@ function dumpCaptionDiagnostics(reason) {
 
 function getChatToggle() {
   // Label is "Chat with everyone" or "Chat with everyone - New message".
-  return document.querySelector(
-    'button[aria-label^="Chat with everyone" i], [role="button"][aria-label^="Chat with everyone" i]'
-  );
+  return document.querySelector(MEET.chat.toggle);
 }
 
 function hasUnreadChat() {
   const btn = getChatToggle();
-  return !!btn && /new message/i.test(btn.getAttribute('aria-label') || '');
+  return !!btn && MEET.chat.unreadRe.test(btn.getAttribute('aria-label') || '');
 }
 
 function getChatInput() {
-  return document.querySelector('textarea[aria-label="Send a message" i]');
+  return document.querySelector(MEET.chat.input);
 }
 
 function isChatPaneOpen() {
@@ -474,7 +469,7 @@ async function openChatPane() {
         Array.from(document.querySelectorAll('button[aria-label], [role="button"][aria-label]'))
           .map((b) => b.getAttribute('aria-label')).filter(Boolean)
       ));
-      const moreMenu = !!findByAriaLabel('More options') || !!findByAriaLabel('Más opciones');
+      const moreMenu = !!findByAriaLabel(MEET.studioSound.moreOptionsLabelEn) || !!findByAriaLabel(MEET.studioSound.moreOptionsLabelEs);
       console.warn('[chat] [chat-diag] toolbar buttons=' + labels.length + ' moreMenu=' + moreMenu +
         ' — labels: ' + JSON.stringify(labels));
     } catch (e) { console.warn('[chat] [chat-diag] dump failed:', e && e.message); }
@@ -544,7 +539,7 @@ function senderFromHeader(el) {
   const [nameEl, timeEl] = el.children;
   if (nameEl.tagName !== 'DIV' || timeEl.tagName !== 'DIV') return null;
   const timeText = timeEl.textContent.trim();
-  if (!/^\d{1,2}:\d{2}\s*([AP]\.?M\.?)?$/i.test(timeText)) return null;
+  if (!MEET.chat.timestampRe.test(timeText)) return null;
   const name = nameEl.textContent.trim();
   return name || null;
 }
@@ -562,9 +557,9 @@ function scrapeChatMessages() {
     const sender = senderFromHeader(el);
     if (sender) markers.push({ kind: 'header', el, sender });
   }
-  for (const el of document.querySelectorAll('[data-message-id]')) {
+  for (const el of document.querySelectorAll(MEET.chat.messageBody)) {
     if (el.tagName === 'BUTTON') continue;
-    if (/pin message/i.test(el.getAttribute('aria-label') || '')) continue;
+    if (MEET.chat.pinMessageRe.test(el.getAttribute('aria-label') || '')) continue;
     markers.push({ kind: 'msg', el });
   }
   markers.sort((a, b) => {
@@ -577,7 +572,7 @@ function scrapeChatMessages() {
   let currentSender = '';
   for (const m of markers) {
     if (m.kind === 'header') { currentSender = m.sender; continue; }
-    const id = m.el.getAttribute('data-message-id');
+    const id = m.el.getAttribute(MEET.chat.messageIdAttr);
     if (!id || seen.has(id)) continue;
     const text = (m.el.innerText || '').trim();
     if (!text) continue;
@@ -610,7 +605,7 @@ async function sendChatFlow(text) {
   // findByAriaLabel only matches button/[role=button], so it can't collide
   // with the textarea (whose aria-label is also "Send a message").
   const trySend = () => {
-    const sendBtn = findByAriaLabel('Send a message') || findByAriaLabel('Send message');
+    const sendBtn = findByAriaLabel(MEET.chat.sendLabelA) || findByAriaLabel(MEET.chat.sendLabelB);
     if (sendBtn && !sendBtn.disabled) {
       sendBtn.click();
       return 'button';
@@ -676,9 +671,9 @@ ipcRenderer.on('send-chat', async (_event, { requestId, text }) => {
 // is present; findPresentButton() returns the clickable element regardless
 // of which label variant Meet is currently rendering.
 
-const PRESENT_LABEL_IDLE_RE = /^(?:Share screen|Present now)$/i;
-const PRESENT_LABEL_SOMEONE_ELSE_RE = /(.+?)\s+is presenting$/i;
-const PRESENT_LABEL_SELF_RE = /^You are presenting$/i;
+const PRESENT_LABEL_IDLE_RE = MEET.present.idleRe;
+const PRESENT_LABEL_SOMEONE_ELSE_RE = MEET.present.someoneElseRe;
+const PRESENT_LABEL_SELF_RE = MEET.present.selfRe;
 
 function presentButtonText(el) {
   // Prefer aria-label (used by current builds) but fall back to
@@ -742,13 +737,13 @@ function gatherCallHealthSnapshot() {
   // Mic: button label + data-is-muted tell us whether the mic is wired up.
   // Single querySelector shared with the mic-mute watcher, but that one
   // operates on its own (MutationObserver), so reading here is independent.
-  const micBtn = document.querySelector('button[data-is-muted]');
+  const micBtn = document.querySelector(MEET.mic.anyButton);
   let micHealth = 'unknown';
   if (micBtn) {
     const label = micBtn.getAttribute('aria-label') || '';
-    const muted = micBtn.getAttribute('data-is-muted');
-    const ok = (label === 'Turn off microphone' && muted === 'false')
-            || (label === 'Turn on microphone' && muted === 'true');
+    const muted = micBtn.getAttribute(MEET.mic.mutedAttr);
+    const ok = (label === MEET.mic.labelOn && muted === 'false')
+            || (label === MEET.mic.labelOff && muted === 'true');
     micHealth = ok ? 'healthy' : 'problem';
   }
 
@@ -793,7 +788,7 @@ function installCallHealthTick() {
     // because the clear depends on enterInCallState having re-fired. If the
     // in-call toolbar is present but the status bar still shows .error, reset it.
     try {
-      const inCallNow = !!(findByAriaLabel('Leave call') || document.querySelector('[data-tooltip="Leave call"]'));
+      const inCallNow = !!(findByAriaLabel(MEET.join.leaveCallLabel) || document.querySelector(MEET.join.leaveCallTooltip));
       const statusEl = document.getElementById('vibeconf-status');
       if (inCallNow && statusEl && statusEl.classList.contains('error')) {
         sendStatus('Participating in Meet');
@@ -814,12 +809,12 @@ function installCallHealthTick() {
     // emit 'healthy' once on recovery.
     if (next.micHealth === 'problem') {
       if (lastMicReported !== 'problem') {
-        const btn = document.querySelector('button[data-is-muted]');
+        const btn = document.querySelector(MEET.mic.anyButton);
         const label = btn?.getAttribute('aria-label') || '';
-        const muted = btn?.getAttribute('data-is-muted');
+        const muted = btn?.getAttribute(MEET.mic.mutedAttr);
         console.warn('[electron-meet] Mic issue:', label, 'data-is-muted:', muted);
       }
-      const btn = document.querySelector('button[data-is-muted]');
+      const btn = document.querySelector(MEET.mic.anyButton);
       const label = btn?.getAttribute('aria-label') || '';
       ipcRenderer.send('to-panel', {
         action: 'error',
@@ -990,13 +985,13 @@ function clickCaptionsWhenReady() {
 
   const attempt = () => {
     if (settled) return true;
-    const offBtn = findByAriaLabel('Turn off captions') || findByAriaLabel('Desactivar subtítulos');
+    const offBtn = findByAriaLabel(MEET.captions.disableLabelEn) || findByAriaLabel(MEET.captions.disableLabelEs);
     if (offBtn) {
       settled = true; cleanup();
       console.log('[electron-meet] [CC] Already on, no click needed (', Date.now() - startTime, 'ms after admission)');
       return true;
     }
-    const onBtn = findByAriaLabel('Turn on captions') || findByAriaLabel('Activar subtítulos');
+    const onBtn = findByAriaLabel(MEET.captions.enableLabelEn) || findByAriaLabel(MEET.captions.enableLabelEs);
     if (onBtn) {
       settled = true; cleanup();
       onBtn.click();
@@ -1057,7 +1052,7 @@ function captureDenialDom(reason) {
 // should stop its loop and return); on the spurious-denial path it reloads
 // (retry count survives via sessionStorage) before returning true.
 async function handleDenialPage(bodyText, stage) {
-  if (bodyText.includes("You can't join this video call")) {
+  if (bodyText.includes(MEET.join.denialCantJoin)) {
     console.warn('[electron-meet] Denial page detected (' + stage + '): "You can\'t join this video call"');
     captureDenialDom(stage + ': You cant join this video call');
     // #238: this denial is often SPURIOUS/intermittent — a reload commonly gets
@@ -1079,7 +1074,7 @@ async function handleDenialPage(bodyText, stage) {
     console.warn('[electron-meet] Denial persisted after', MAX_DENIAL_RETRIES, 'retries — giving up');
     return true;
   }
-  if (bodyText.includes('You have been removed from the meeting')) {
+  if (bodyText.includes(MEET.join.denialRemoved)) {
     sendStatus('Error: removed from the meeting');
     console.warn('[electron-meet] Removal page detected (' + stage + ')');
     return true;
@@ -1095,7 +1090,7 @@ async function autoJoin(botName) {
     await delay(3000);
 
     // Dismiss dialogs
-    for (const label of ['Got it', 'Dismiss', 'OK', 'Allow', 'Close', 'No thanks', 'Not now']) {
+    for (const label of MEET.join.dismissTexts) {
       const btn = findByText(label);
       if (btn) {
         btn.click();
@@ -1108,9 +1103,7 @@ async function autoJoin(botName) {
     // the bot under that account's display name instead (see #167). Warn so
     // the mismatch isn't silent.
     const nameInput =
-      document.querySelector('input[placeholder="Your name"]') ||
-      document.querySelector('input[aria-label="Your name"]') ||
-      document.querySelector('input[autocomplete="name"]');
+      MEET.join.nameInputs.map((sel) => document.querySelector(sel)).find(Boolean) || null;
 
     if (nameInput) {
       await typeIntoInput(nameInput, botName);
@@ -1144,13 +1137,13 @@ async function autoJoin(botName) {
     }
 
     // Check mic health before joining
-    const micBtn = document.querySelector('button[data-is-muted]');
+    const micBtn = document.querySelector(MEET.mic.anyButton);
     if (micBtn) {
       const micLabel = micBtn.getAttribute('aria-label') || '';
-      const micMuted = micBtn.getAttribute('data-is-muted');
+      const micMuted = micBtn.getAttribute(MEET.mic.mutedAttr);
       const micHealthy =
-        (micLabel === 'Turn off microphone' && micMuted === 'false') ||
-        (micLabel === 'Turn on microphone' && micMuted === 'true');
+        (micLabel === MEET.mic.labelOn && micMuted === 'false') ||
+        (micLabel === MEET.mic.labelOff && micMuted === 'true');
 
       if (!micHealthy) {
         console.warn('[electron-meet] Mic problem on pre-join screen');
@@ -1189,22 +1182,22 @@ async function autoJoin(botName) {
       // before the join panel and delay/overlay the join button (6232133). It
       // isn't in the gated heading list; on the pre-join screen any remaining
       // "Got it" is a promo we want gone, so dismiss it here.
-      const gotIt = findByText('Got it');
+      const gotIt = findByText(MEET.join.gotItText);
       if (gotIt) {
         console.log('[electron-meet] Dismissing pre-join sign-in popup');
         gotIt.click();
         continue;
       }
       const joinBtn =
-        findByText('Ask to join') ||
-        findByText('Join now') ||
-        findByAriaLabel('Ask to join') ||
-        findByAriaLabel('Join') ||
+        findByText(MEET.join.joinTextAsk) ||
+        findByText(MEET.join.joinTextNow) ||
+        findByAriaLabel(MEET.join.joinTextAsk) ||
+        findByAriaLabel(MEET.join.joinLabel) ||
         // "Switch here" replaces Join now when this Google account already has a
         // lingering presence in the meeting (another tab/device/old session). It
         // joins directly. The button has no aria-label, but its "Switch here"
         // text is reliable; findByText returns the clickable <button> ancestor.
-        findByText('Switch here');
+        findByText(MEET.join.joinTextSwitch);
 
       if (joinBtn) {
         const btnText = joinBtn.textContent.trim();
@@ -1270,15 +1263,13 @@ async function autoJoin(botName) {
       if (dismissBlockingModals()) continue;
 
       const bodyText = document.body.innerText;
-      const waitingText = bodyText.includes('wait until') ||
-        bodyText.includes('asking to be let in') ||
-        bodyText.includes('Please wait');
-      const hasJoinUI = !!findByText('Ask to join') || !!findByText('Join now') || !!findByText('Switch here');
+      const waitingText = MEET.join.waitingTexts.some((t) => bodyText.includes(t));
+      const hasJoinUI = !!findByText(MEET.join.joinTextAsk) || !!findByText(MEET.join.joinTextNow) || !!findByText(MEET.join.joinTextSwitch);
       const inCallUI =
-        findByAriaLabel('Leave call') ||
-        findByAriaLabel('Turn on captions') ||
-        findByAriaLabel('Turn off captions') ||
-        document.querySelector('[data-tooltip="Leave call"]');
+        findByAriaLabel(MEET.join.leaveCallLabel) ||
+        findByAriaLabel(MEET.captions.enableLabelEn) ||
+        findByAriaLabel(MEET.captions.disableLabelEn) ||
+        document.querySelector(MEET.join.leaveCallTooltip);
 
       // Explicit denial/removal pages — Meet shows one when the host blocks
       // entry or the call is inaccessible. Fail fast (with #238 reload-retry)
@@ -1334,13 +1325,13 @@ async function autoJoin(botName) {
 // participants present the accessible name often carries a count (e.g.
 // "People3"), so an exact "People" check misses it. startsWith handles both.
 function findPeopleButton() {
-  for (const btn of document.querySelectorAll('[role="button"][aria-labelledby]')) {
+  for (const btn of document.querySelectorAll(MEET.people.labelledButton)) {
     const labelId = btn.getAttribute('aria-labelledby');
     if (!labelId) continue;
     const label = document.getElementById(labelId);
-    if (label && label.textContent.trim().startsWith('People')) return btn;
+    if (label && label.textContent.trim().startsWith(MEET.people.labelPrefix)) return btn;
   }
-  return document.querySelector('button[aria-label^="People" i], [role="button"][aria-label^="People" i]');
+  return document.querySelector(MEET.people.buttonFallback);
 }
 
 class DOMSpeakerTracker {
@@ -1419,7 +1410,7 @@ class DOMSpeakerTracker {
   }
 
   _scanParticipants() {
-    const items = document.querySelectorAll('div[role="listitem"][aria-label]');
+    const items = document.querySelectorAll(MEET.people.tile);
     for (const item of items) {
       const name = item.getAttribute('aria-label');
       if (!name) continue;
@@ -1432,7 +1423,7 @@ class DOMSpeakerTracker {
       // display name (the aria-label is just the name, so we can't infer from
       // that alone). Without this flag the bot's TTS audio meter pulses get
       // counted as someone-is-speaking and cancel the silence timer.
-      const isSelf = item.textContent.includes('(You)');
+      const isSelf = item.textContent.includes(MEET.people.selfMarker);
 
       if (!this.participants.has(name)) {
         if (isSelf) {
@@ -1618,8 +1609,8 @@ class CaptionScraper {
   }
 
   _enableCaptions() {
-    const ccButton = findByAriaLabel('Turn on captions') || findByAriaLabel('Activar subtítulos');
-    const offBtn = findByAriaLabel('Turn off captions') || findByAriaLabel('Desactivar subtítulos');
+    const ccButton = findByAriaLabel(MEET.captions.enableLabelEn) || findByAriaLabel(MEET.captions.enableLabelEs);
+    const offBtn = findByAriaLabel(MEET.captions.disableLabelEn) || findByAriaLabel(MEET.captions.disableLabelEs);
     if (ccButton) {
       console.log('[electron-meet] [CC] _enableCaptions: clicking "Turn on captions"');
       ccButton.click();
@@ -1642,7 +1633,7 @@ class CaptionScraper {
     const now = Date.now();
     if (now - (this._lastRecoverAt || 0) < 45000) return; // at most once / 45s
     this._lastRecoverAt = now;
-    const offBtn = findByAriaLabel('Turn off captions') || findByAriaLabel('Desactivar subtítulos');
+    const offBtn = findByAriaLabel(MEET.captions.disableLabelEn) || findByAriaLabel(MEET.captions.disableLabelEs);
     if (!offBtn) {
       console.warn('[caption-stall] recover: no "Turn off captions" button — trying enable only');
       try { this._enableCaptions(); } catch { /* non-fatal */ }
@@ -1666,9 +1657,9 @@ class CaptionScraper {
     const maxPolls = ROUND_POLLS[round] || 200;
     let attempts = 0;
     const poll = setInterval(() => {
-      const captionsAreOn = !!document.querySelector('[aria-label="Turn off captions" i]')
-        || !!findByAriaLabel('Turn off captions')
-        || !!findByAriaLabel('Desactivar subtítulos');
+      const captionsAreOn = !!document.querySelector(MEET.captions.onSelector)
+        || !!findByAriaLabel(MEET.captions.disableLabelEn)
+        || !!findByAriaLabel(MEET.captions.disableLabelEs);
       if (captionsAreOn) {
         clearInterval(poll);
         console.log('[electron-meet] [CC] Captions confirmed on at', Date.now(),
@@ -1706,7 +1697,7 @@ class CaptionScraper {
 
   _logHealth() {
     if (!this.isRunning) return;
-    const container = document.querySelector('div[role="region"][aria-label="Captions"]');
+    const container = document.querySelector(MEET.captions.region);
     const nodes = container ? [...container.children].filter(c => c.querySelector('img')).length : -1;
     const ageMs = this._lastNewTurnsAt ? (Date.now() - this._lastNewTurnsAt) : null;
     const age = ageMs == null ? 'never' : ageMs + 'ms';
@@ -1761,9 +1752,9 @@ class CaptionScraper {
   // 2026-06-05, 24 minutes). Detect the flip, notify main, try to re-click.
   // TODO(#226): fold into a consolidated health tick.
   _checkCaptionsButton() {
-    const on = !!document.querySelector('[aria-label="Turn off captions" i]')
-      || !!findByAriaLabel('Turn off captions')
-      || !!findByAriaLabel('Desactivar subtítulos');
+    const on = !!document.querySelector(MEET.captions.onSelector)
+      || !!findByAriaLabel(MEET.captions.disableLabelEn)
+      || !!findByAriaLabel(MEET.captions.disableLabelEs);
     if (on !== this._captionsOn) {
       this._captionsOn = on;
       console.warn('[electron-meet] [CC] captions flipped', on ? 'ON' : 'OFF', 'mid-call');
@@ -1783,7 +1774,7 @@ class CaptionScraper {
   _checkCaptions() {
     try {
       this._checkCaptionsButton();
-      const container = document.querySelector('div[role="region"][aria-label="Captions"]');
+      const container = document.querySelector(MEET.captions.region);
       if (!container) return;
 
       // Snapshot every caption block currently in the DOM, in order. Each
@@ -1804,7 +1795,7 @@ class CaptionScraper {
         const speaker = span?.textContent?.trim() || 'unknown';
         let text = child.textContent.replace(/\s+/g, ' ').trim();
         if (text.startsWith(speaker)) text = text.slice(speaker.length).trim();
-        if (!text || speaker === 'You') continue;
+        if (!text || speaker === MEET.captions.selfSpeaker) continue;
 
         // Assign a stable turn id the first time we see this DOM node.
         let turnId = this._turnIdByChild.get(child);
@@ -1910,10 +1901,10 @@ async function clickPresentNow(shareType) {
   // the share is already active (often with the infinity-mirror anti-loop
   // dialog showing). Detect it and tell the caller it's a no-op success.
   const alreadyPresenting =
-    document.querySelector('[aria-label*="Stop presenting" i]') ||
-    document.querySelector('[aria-label*="Stop sharing" i]') ||
-    document.querySelector('[data-tooltip*="Stop presenting" i]') ||
-    document.querySelector('[data-tooltip*="Stop sharing" i]');
+    document.querySelector(MEET.present.stopAriaPresenting) ||
+    document.querySelector(MEET.present.stopAriaSharing) ||
+    document.querySelector(MEET.present.stopTooltipPresenting) ||
+    document.querySelector(MEET.present.stopTooltipSharing);
   if (alreadyPresenting) {
     console.log('[electron-meet] Already presenting — skipping Present click');
     return 'already-presenting';
@@ -1937,7 +1928,7 @@ async function clickPresentNow(shareType) {
     const waitStart = Date.now();
     while (Date.now() - waitStart < 10_000) {
       await delay(300);
-      if (document.querySelector('[aria-label*="Stop presenting" i], [aria-label*="Stop sharing" i], [data-tooltip*="Stop presenting" i], [data-tooltip*="Stop sharing" i]')) {
+      if (document.querySelector(MEET.present.stopSelector)) {
         console.log('[electron-meet] Became already-presenting while waiting for Present button');
         return 'already-presenting';
       }
@@ -1961,8 +1952,8 @@ async function clickPresentNow(shareType) {
     if (shareType === 'screen') {
       // Full screen share
       const entireScreen =
-        findByText('Your entire screen') ||
-        findByText('Entire screen');
+        findByText(MEET.present.pickerEntireScreenA) ||
+        findByText(MEET.present.pickerEntireScreenB);
       if (entireScreen) {
         entireScreen.click();
         console.log('[electron-meet] Selected "entire screen"');
@@ -1970,9 +1961,9 @@ async function clickPresentNow(shareType) {
     } else {
       // Window share (for whiteboard)
       const windowOption =
-        findByText('A window') ||
-        findByText('Your entire screen') ||
-        findByText('Entire screen');
+        findByText(MEET.present.pickerWindow) ||
+        findByText(MEET.present.pickerEntireScreenA) ||
+        findByText(MEET.present.pickerEntireScreenB);
       if (windowOption) {
         windowOption.click();
         console.log('[electron-meet] Selected window/screen share type');
@@ -2000,19 +1991,19 @@ async function setStudioSound(enabled) {
     while (Date.now() - t0 < ms) { try { const el = fn(); if (el) return el; } catch { /* ignore */ } await delay(150); }
     return null;
   };
-  const findToggle = () => document.querySelector('[role="switch"][aria-label*="Studio sound" i], [aria-label*="Studio sound" i]');
+  const findToggle = () => document.querySelector(MEET.studioSound.toggle);
   const findAudioTab = () =>
-    document.querySelector('[role="tab"][aria-label*="Audio" i]') ||
+    document.querySelector(MEET.studioSound.audioTab) ||
     // a clickable item whose own text is exactly "Audio" (the settings left-nav)
     Array.from(document.querySelectorAll('[role="tab"], [role="menuitemradio"], button, [role="button"], [tabindex]'))
-      .find((el) => el.textContent && el.textContent.trim().toLowerCase() === 'audio' && isVisible(el)) || null;
+      .find((el) => el.textContent && el.textContent.trim().toLowerCase() === MEET.studioSound.audioTabText && isVisible(el)) || null;
   try {
     // 1) Open the toolbar ⋮ menu. EXACT aria-label match — a substring match also
     //    hits the per-participant "More options for <name>" tile buttons (which
     //    open a pin/remove menu with no Settings). The main toolbar button is
     //    exactly "More options".
     const more = await waitFor(() =>
-      document.querySelector('button[aria-label="More options" i], [role="button"][aria-label="More options" i]'));
+      document.querySelector(MEET.studioSound.moreOptions));
     if (!more) { console.warn('[studio-sound] step1: toolbar "More options" not found'); return false; }
     more.click();
     console.log('[studio-sound] step1: clicked toolbar More options');
@@ -2021,7 +2012,7 @@ async function setStudioSound(enabled) {
     //    grab some unrelated "Settings" text elsewhere on the page.
     const settings = await waitFor(() =>
       Array.from(document.querySelectorAll('[role="menuitem"], [role="menuitemradio"], li, [role="button"]'))
-        .find((el) => el.textContent && el.textContent.trim().toLowerCase().startsWith('settings') && isVisible(el)));
+        .find((el) => el.textContent && el.textContent.trim().toLowerCase().startsWith(MEET.studioSound.settingsText) && isVisible(el)));
     if (!settings) { console.warn('[studio-sound] step2: "Settings" menu item not found'); return false; }
     settings.click();
     console.log('[studio-sound] step2: clicked Settings');
@@ -2051,7 +2042,7 @@ async function setStudioSound(enabled) {
 
     // 5) Close the dialog.
     const close = await waitFor(() =>
-      findByAriaLabel('Close dialog') || document.querySelector('[role="dialog"] [aria-label*="Close" i]'), 2000);
+      findByAriaLabel(MEET.studioSound.closeDialogLabel) || document.querySelector(MEET.studioSound.closeDialogSelector), 2000);
     if (close) { close.click(); console.log('[studio-sound] step5: closed dialog'); }
     return !!sw;
   } catch (e) {
@@ -2066,7 +2057,7 @@ ipcRenderer.on('set-studio-sound', (_event, payload) => { setStudioSound(!!(payl
 // / Something went wrong when screen sharing. Please try again."). Returns the
 // matched text or null after watching for `ms`.
 async function waitForShareError(ms) {
-  const errorTexts = ["Can't share your screen", 'Something went wrong when screen sharing'];
+  const errorTexts = MEET.present.errorTexts;
   const t0 = Date.now();
   while (Date.now() - t0 < ms) {
     const txt = document.body?.innerText || '';
@@ -2079,9 +2070,9 @@ async function waitForShareError(ms) {
 // Dismiss that modal. Its button is "Ok" (the old selector only had Close/
 // Dismiss/Got it and missed it). Try aria-labels first, then the Ok/OK button text.
 function dismissShareErrorModal() {
-  const byLabel = document.querySelector('[aria-label="Close" i], [aria-label="Dismiss" i], [aria-label="Got it" i]');
+  const byLabel = document.querySelector(MEET.present.errorDismissSelector);
   if (byLabel) { byLabel.click(); return true; }
-  const ok = findByText('Ok', { exact: true }) || findByText('OK', { exact: true });
+  const ok = findByText(MEET.present.okTextA, { exact: true }) || findByText(MEET.present.okTextB, { exact: true });
   if (ok) { ok.click(); return true; }
   return false;
 }
@@ -2113,10 +2104,10 @@ ipcRenderer.on('trigger-screen-share', async (_event, options) => {
 });
 
 function findStopPresentingButton() {
-  return document.querySelector('[aria-label*="Stop presenting" i]')
-    || document.querySelector('[aria-label*="Stop sharing" i]')
-    || document.querySelector('[data-tooltip*="Stop presenting" i]')
-    || document.querySelector('[data-tooltip*="Stop sharing" i]');
+  return document.querySelector(MEET.present.stopAriaPresenting)
+    || document.querySelector(MEET.present.stopAriaSharing)
+    || document.querySelector(MEET.present.stopTooltipPresenting)
+    || document.querySelector(MEET.present.stopTooltipSharing);
 }
 
 // Robustly stop presenting (#174). A single click can miss: Meet's toolbar
@@ -2172,8 +2163,8 @@ let inCallSetupDone = false;
 let inCallWatcher = null;
 function enterInCallState() {
   if (inCallSetupDone) return;
-  const leaveBtn = findByAriaLabel('Leave call') ||
-    document.querySelector('[data-tooltip="Leave call"]');
+  const leaveBtn = findByAriaLabel(MEET.join.leaveCallLabel) ||
+    document.querySelector(MEET.join.leaveCallTooltip);
   if (!leaveBtn) return; // not actually in the call yet
   inCallSetupDone = true;
   if (inCallWatcher) { clearInterval(inCallWatcher); inCallWatcher = null; }
@@ -2230,16 +2221,16 @@ window.addEventListener('DOMContentLoaded', () => {
     const el = document.getElementById('vibeconf-status');
     if (el) {
       const href = window.location.href;
-      el.textContent = /accounts\.google\.com|ServiceLogin|signin/i.test(href)
+      el.textContent = MEET.url.signInPage.test(href)
         ? "Bot's view — sign the bot in to Google here"
-        : /^\/[a-z]{3}-[a-z]{4}-[a-z]{3}/i.test(window.location.pathname)
+        : MEET.url.meetingCodePath.test(window.location.pathname)
           ? "Bot's view of Google Meet"
           : "Bot's view — Google Meet home (not in a call)";
     }
   } catch { /* body not ready */ }
 
   // Only run Meet automation on actual Meet pages
-  if (!window.location.href.includes('meet.google.com')) {
+  if (!window.location.href.includes(MEET.url.host)) {
     console.log('[electron-meet] Not a Meet page (banner shown), skipping automation');
     return;
   }
@@ -2247,7 +2238,7 @@ window.addEventListener('DOMContentLoaded', () => {
   // (meet.google.com/) as the idle view so the operator can sign in / start
   // meetings / debug manually — the join poll must not fire there (or on /new,
   // /landing, etc.), only when actually navigated into a meeting code.
-  if (!/^\/[a-z]{3}-[a-z]{4}-[a-z]{3}/i.test(window.location.pathname)) {
+  if (!MEET.url.meetingCodePath.test(window.location.pathname)) {
     console.log('[electron-meet] Meet home/landing (no meeting code) — skipping join automation');
     return;
   }
@@ -2270,10 +2261,8 @@ window.addEventListener('DOMContentLoaded', () => {
 
     for (let i = 0; i < 30; i++) {
       const nameInput =
-        document.querySelector('input[placeholder="Your name"]') ||
-        document.querySelector('input[aria-label="Your name"]') ||
-        document.querySelector('input[autocomplete="name"]');
-      const joinBtn = findByText('Ask to join') || findByText('Join now') || findByText('Switch here');
+        MEET.join.nameInputs.map((sel) => document.querySelector(sel)).find(Boolean) || null;
+      const joinBtn = findByText(MEET.join.joinTextAsk) || findByText(MEET.join.joinTextNow) || findByText(MEET.join.joinTextSwitch);
 
       if (nameInput || joinBtn) {
         await autoJoin(BOT_NAME);

@@ -32,20 +32,13 @@
     },
     "files": [
       "*.js",
+      "*.mp3",
       "renderer/**/*",
       "ack/**/*",
       "prompts/**/*",
       "icon.png"
     ],
     "extraResources": [
-      {
-        "from": "../extension",
-        "to": "extension",
-        "filter": [
-          "*.js",
-          "*.mp3"
-        ]
-      },
       {
         "from": "../mcp-server",
         "to": "mcp-server",

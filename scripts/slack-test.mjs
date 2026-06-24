@@ -18,7 +18,7 @@
 // Exit code is non-zero if any step failed — so it can gate CI later.
 
 import { createRequire } from 'module';
-import { Bot, sleep, report } from './meet-test-lib.mjs';
+import { Bot, sleep, report, record } from './meet-test-lib.mjs';
 
 // Reuse the app's room-code derivation so the test drives the SAME room the app
 // keyed at launch (slack-<team>-<channel>). Otherwise a placeholder path would
@@ -38,8 +38,28 @@ const BOTS = arg('bots', 'Jimmy:7901').split(',').map((s) => { const [name, port
 const stamp = process.argv.includes('--stamp') ? process.argv[process.argv.indexOf('--stamp') + 1] : String(BOTS.length);
 const nonce = (b) => `slackchat-${b.name}-${stamp}`;
 
+// Slack bots auto-join on launch, but that takes several seconds (load channel →
+// click Huddle → lobby → start → popup). Driving before in-call sends commands to
+// a not-yet-live huddle popup. Wait for each bot to report in-call first — the
+// agent-facing analogue of meet-test's join() barrier.
+async function waitForInCall(bot, timeoutMs = 35000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try { if ((await bot.status()).callStatus === 'in-call') return true; } catch { /* retry */ }
+    await sleep(1000);
+  }
+  return false;
+}
+
 async function run() {
   const [a, b] = BOTS;
+
+  // 0) Barrier: wait for the auto-join to land before driving anything.
+  for (const bot of BOTS) {
+    const ok = await waitForInCall(bot);
+    record(bot.name, 'inCall', ok, ok ? '' : 'not in-call after 35s — auto-join failed?');
+    if (!ok) return; // nothing else will work; bail so the failure is clear
+  }
 
   // 1) Speak (→ main-window VirtualMic). Heard by the human/other bot via captions.
   await a.speak('Slack command-wiring test. Can you hear me?');

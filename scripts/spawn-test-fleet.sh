@@ -15,13 +15,20 @@
 # Usage:
 #   scripts/spawn-test-fleet.sh            # 2 bots from SOURCE (Jimmy, Samantha)
 #   scripts/spawn-test-fleet.sh 3          # 3 bots (adds Cosmo)
-#   scripts/spawn-test-fleet.sh 2 --dmg    # drive the INSTALLED packaged app
-#                                          #   (real-artifact fidelity; mini/CI)
+#   scripts/spawn-test-fleet.sh 2 --dmg    # drive the INSTALLED app (/Applications)
+#   scripts/spawn-test-fleet.sh 2 --built  # drive the freshly-BUILT app (dist/)
 #   scripts/spawn-test-fleet.sh 2 --kill   # stop a previously-spawned fleet
 #
-# --dmg vs source: --dmg launches /Applications/Vibeconferencing.app so automated
-# testing exercises the exact build users run (catches packaging-only bugs). Plain
-# (source) is for active development. The scheduled mini run uses --dmg.
+# Three sources, all agent-less:
+#   (default) SOURCE   — pnpm dev; active development.
+#   --dmg     INSTALLED — /Applications/Vibeconferencing.app; the exact artifact
+#                         an average user runs. The scheduled mini run uses --dmg.
+#   --built   BUILT    — the newest electron-builder output under
+#                         electron-app/dist/mac*/Vibeconferencing.app, i.e. the
+#                         DMG you just built BEFORE installing it. Use this to
+#                         test a fresh build without clobbering the installed app.
+# --dmg and --built both exercise the real packaged artifact (asar, build.files);
+# they differ only in WHICH copy — installed vs just-built.
 #
 # Prints the --bots string to hand to meet-test.mjs.
 #
@@ -42,16 +49,19 @@ ELECTRON="$REPO/electron-app"
 NAMES=(Jimmy Samantha Cosmo Dizzy)        # display names by index
 BASE_PORT=7901
 
-# Flag parsing (position-independent): a numeric arg = count; --kill / --dmg flags.
+# Flag parsing (position-independent): a numeric arg = count; --kill / --dmg /
+# --built flags.
 N=2
 KILL=0
 DMG=0
+BUILT=0
 for a in "$@"; do
   case "$a" in
-    --kill) KILL=1 ;;
-    --dmg)  DMG=1 ;;
-    <->)    N="$a" ;;   # zsh: <-> matches an integer
-    *) echo "usage: $0 [count] [--dmg] [--kill]"; exit 1 ;;
+    --kill)  KILL=1 ;;
+    --dmg)   DMG=1 ;;
+    --built) BUILT=1 ;;
+    <->)     N="$a" ;;   # zsh: <-> matches an integer
+    *) echo "usage: $0 [count] [--dmg|--built] [--kill]"; exit 1 ;;
   esac
 done
 if (( N < 1 || N > 4 )); then echo "count must be 1–4"; exit 1; fi
@@ -77,14 +87,30 @@ if (( KILL )); then
   exit 0
 fi
 
-# --dmg drives the INSTALLED packaged app (/Applications/Vibeconferencing.app) so
-# automated testing exercises the exact artifact an average user runs — no
-# source-vs-package fidelity gap (e.g. asar/build.files bugs that only show
-# packaged). Default (no --dmg) runs from source for active development.
+# Packaged-app modes exercise the real artifact (asar, build.files) — no
+# source-vs-package fidelity gap. --dmg = the INSTALLED app (/Applications); the
+# exact thing users run. --built = the freshly-BUILT app under electron-app/dist
+# (this checkout's latest electron-builder output), so you can test a build
+# WITHOUT installing it over the current /Applications copy. Default = source.
+if (( DMG && BUILT )); then
+  echo "✗ choose one of --dmg (installed) or --built (dist/), not both"; exit 1
+fi
+PKG=0          # 1 = launch a packaged .app by path (dmg or built); 0 = source
+APP=""
 if (( DMG )); then
   APP="/Applications/Vibeconferencing.app"
-  [[ -d "$APP" ]] || { echo "✗ DMG app not found at $APP — install it first (or drop --dmg to run from source)"; exit 1; }
-  echo "▶ Spawning $N test bot(s) from the PACKAGED app (--dmg) — agent-less, isolated profiles"
+  [[ -d "$APP" ]] || { echo "✗ Installed app not found at $APP — install the DMG first (or use --built / drop the flag for source)"; exit 1; }
+  PKG=1
+  echo "▶ Spawning $N test bot(s) from the INSTALLED app (--dmg): $APP"
+elif (( BUILT )); then
+  # Newest electron-builder output for THIS checkout: dist/mac*/Vibeconferencing.app
+  # (mac-arm64 / mac / mac-universal). (N)=nullglob so no match → empty (no error
+  # under set -e); om = order by mtime, newest first → [1] is the latest build.
+  built=("$ELECTRON"/dist/mac*/Vibeconferencing.app(Nom))
+  APP="${built[1]}"
+  [[ -n "$APP" && -d "$APP" ]] || { echo "✗ No built app under $ELECTRON/dist/mac*/ — run 'pnpm dist:fast' in electron-app first (or use --dmg / drop the flag for source)"; exit 1; }
+  PKG=1
+  echo "▶ Spawning $N test bot(s) from the BUILT app (--built): $APP"
 else
   echo "▶ Spawning $N test bot(s) from SOURCE — agent-less, isolated profiles"
 fi
@@ -132,13 +158,15 @@ for i in $(seq 1 $N); do
   else
     echo "  • $name — profile=$profile port=$port"
   fi
-  if (( DMG )); then
+  if (( PKG )); then
     # open -n = new instance (profiles bypass the single-instance lock). It
-    # returns immediately and runs detached under LaunchServices; we wait/kill by
-    # port below, and the app writes its own session log under the profile's
-    # userData (…/profiles/testN/logs), so no stdout redirect needed.
+    # returns immediately and runs detached; we wait/kill by port below, and the
+    # app writes its own session log under the profile's userData
+    # (…/profiles/testN/logs), so no stdout redirect needed. Launch by explicit
+    # bundle PATH ("$APP") so we run exactly the chosen copy (installed vs built),
+    # not whatever LaunchServices resolves the app NAME to.
     # ${=WINFLAGS}: zsh word-splits the flags into separate argv entries.
-    open -n -a "Vibeconferencing" --args --profile="$profile" --local-port="$port" --bot-name="$name" ${=WINFLAGS}
+    open -n "$APP" --args --profile="$profile" --local-port="$port" --bot-name="$name" ${=WINFLAGS}
   else
     nohup zsh -c "cd '$ELECTRON' && pnpm dev -- --profile=$profile --local-port=$port --bot-name=$name $WINFLAGS" \
       >"/tmp/vibeconf-$profile.log" 2>&1 &

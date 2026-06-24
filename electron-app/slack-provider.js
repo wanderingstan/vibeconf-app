@@ -7,14 +7,16 @@
 // the per-tile speaking signal. It runs against the huddle POPUP DOM (the
 // surface that renders the call UI).
 //
-// NOT wired yet (deliberate — these come after the recon gaps close and the
-// two-surface Electron plumbing lands):
+// Implemented (DOM): camera, screen share, mic mute/unmute, leave, enable
+// captions, scrape captions, read/send chat (Thread tab), participants, speaking.
+//
+// NOT wired yet (deliberate — after the two-surface Electron plumbing lands):
 //   • IPC / CALL_EVENTS emit + the command handlers (cf. Meet steps 3–4)
 //   • join(): how to start/join a huddle isn't in the recon yet
-//   • setMicMuted(): no mic-toggle button was captured — selector needed
-//   • speak(): TTS/media goes through the MAIN app.slack.com window's
-//     getUserMedia/RTCPeerConnection patch, not this popup (#264 two-surface)
-//   • readChat()/sendChat(): the "Thread" tab's message DOM wasn't collected
+//   • speak(): TTS/media goes through the MAIN app.slack.com window — Stan
+//     confirmed (2026-06-24) the main window owns getUserMedia/RTCPeerConnection
+//     (it shows the OS mic/cam in-use indicators), so the media patch injects
+//     there, not in this popup (#264 two-surface).
 //   • the main.js surface-topology seam (setWindowOpenHandler for the popup)
 // Search this file for "RECON NEEDED" / "TWO-SURFACE".
 //
@@ -96,6 +98,21 @@ class SlackProvider extends CallProvider {
     return true;
   }
 
+  // --- Microphone ----------------------------------------------------------
+  // State reads off the aria-label (no aria-pressed; the toggled-on class is a
+  // rotating hash). "Unmute microphone" is shown WHILE MUTED. Language-bound —
+  // a language-independent muted-icon data-qa would be better if recon finds one.
+  isMicMuted() {
+    const b = document.querySelector(SLACK.mic.button);
+    return !!b && b.getAttribute('aria-label') === SLACK.mic.labelUnmute;
+  }
+  setMicMuted(mute) {
+    const b = document.querySelector(SLACK.mic.button);
+    if (!b) { console.warn('[slack] mic button not found'); return false; }
+    if (this.isMicMuted() !== !!mute) { b.click(); console.log('[slack] mic', mute ? 'muted' : 'unmuted'); }
+    return true;
+  }
+
   // --- Leave ---------------------------------------------------------------
   async leave() {
     const b = document.querySelector(SLACK.leave.button);
@@ -157,6 +174,78 @@ class SlackProvider extends CallProvider {
     return false;
   }
 
+  // --- Chat (the "Thread" tab) ---------------------------------------------
+  // Scrape messages in DOM order. Sender info is on the first message of a run
+  // only, so carry it forward; dedup by the row's stable data-msg-ts.
+  scrapeChatMessages() {
+    const panel = document.querySelector(SLACK.chat.threadPanel) || document;
+    const out = [];
+    const seen = new Set();
+    let sender = '';
+    let senderId = null;
+    for (const row of panel.querySelectorAll(SLACK.chat.messageContainer)) {
+      const btn = row.querySelector(SLACK.chat.senderNameButton);
+      if (btn) {
+        sender = (btn.textContent || '').trim() || sender;
+        senderId = btn.getAttribute(SLACK.chat.senderIdAttr) || senderId;
+      }
+      const id = row.getAttribute(SLACK.chat.msgTsAttr);
+      if (!id || seen.has(id)) continue;
+      const text = (row.querySelector(SLACK.chat.messageText)?.textContent || '').trim();
+      if (!text) continue;
+      seen.add(id);
+      out.push({ id, sender: sender || 'unknown', senderId, text });
+    }
+    return out;
+  }
+
+  async readChat() {
+    await this.switchToThreadTab();
+    await delay(300); // let the thread render
+    return this.scrapeChatMessages();
+  }
+
+  async sendChat(text) {
+    await this.switchToThreadTab();
+    await delay(200);
+    const editor = document.querySelector(SLACK.chat.editor);
+    if (!editor) { console.warn('[slack] chat editor not found'); return false; }
+    await this._typeIntoQuill(editor, text);
+    await delay(100);
+    // Prefer the real send button (enabled once there's text); fall back to Enter.
+    const send = document.querySelector(SLACK.chat.sendButton);
+    if (send && send.getAttribute(SLACK.chat.sendDisabledAttr) !== 'true') {
+      send.click();
+    } else {
+      const enter = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
+      editor.dispatchEvent(new KeyboardEvent('keydown', enter));
+      editor.dispatchEvent(new KeyboardEvent('keyup', enter));
+    }
+    await delay(200);
+    return true; // best-effort; send-confirmation check is a TODO (verify live)
+  }
+
+  // Inject text into Slack's Quill (ql-editor) contenteditable. execCommand
+  // insertText is the most reliable path (Quill listens to beforeinput/input);
+  // fall back to dispatching the input events directly. Quill is finicky — this
+  // is best-effort until verified in a live huddle.
+  async _typeIntoQuill(editor, text) {
+    editor.focus();
+    try {
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      range.collapse(false);
+      sel.addRange(range);
+    } catch { /* selection not available */ }
+    const ok = typeof document.execCommand === 'function' && document.execCommand('insertText', false, text);
+    if (!ok) {
+      editor.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: text, bubbles: true, cancelable: true }));
+      editor.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: text, bubbles: true }));
+    }
+  }
+
   // --- Roster + speaking ---------------------------------------------------
   // Both come straight off the participant tiles (#264): name from the tile
   // aria-label, a stable userId from data-qa, self from the gridcell id, and
@@ -182,20 +271,16 @@ class SlackProvider extends CallProvider {
     // RECON NEEDED: how a bot starts/joins a huddle from app.slack.com.
     return this.notImplemented('join');
   }
-  setMicMuted(/* muted */) {
-    // RECON NEEDED: the mic-toggle button DOM wasn't captured.
-    console.warn('[slack] setMicMuted: no mic-button selector yet (recon needed)');
-    return false;
-  }
   speak(/* payload */) {
     // TWO-SURFACE: TTS audio rides the MAIN app.slack.com window's media patch,
     // not this popup. Wired when the two-surface injection lands.
     console.warn('[slack] speak: media path lives in the main window (two-surface, not wired)');
   }
   async recoverCaptions() { return this.notImplemented('recoverCaptions'); }
-  async readChat() { return this.notImplemented('readChat'); }   // RECON NEEDED: Thread tab DOM
-  async sendChat(/* text */) { return this.notImplemented('sendChat'); }
-  async setStudioSound(/* enabled */) { return this.notImplemented('setStudioSound'); }
+  async setStudioSound(/* enabled */) {
+    // No Slack analog of Meet's "Studio sound" voice filter — no-op.
+    return true;
+  }
 }
 
 module.exports = { SlackProvider };

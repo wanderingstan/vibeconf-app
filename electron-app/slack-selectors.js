@@ -36,6 +36,17 @@ const SLACK = {
   },
 
   // -------------------------------------------------------------------------
+  // Microphone — label is the action you'd take. No aria-pressed; state reads
+  // off the aria-label (localized) for now. Keyboard: Cmd+Shift+Space.
+  // -------------------------------------------------------------------------
+  mic: {
+    button: 'button[data-qa="segmented-mute-button-main"]',
+    labelMute: 'Mute microphone', // shown when UNMUTED (click to mute)
+    labelUnmute: 'Unmute microphone', // shown when MUTED (click to unmute)
+    key: { code: 'Space', metaKey: true, shiftKey: true },
+  },
+
+  // -------------------------------------------------------------------------
   // Leave the huddle. Keyboard fallback: Option+Shift+H (Alt+Shift+KeyH).
   // -------------------------------------------------------------------------
   leave: {
@@ -76,6 +87,28 @@ const SLACK = {
     thread: 'button[data-qa="tabs_item"][id="threads"]',
     activeClass: 'c-tabs__tab--active',
     selectedAttr: 'aria-selected', // "true" on the active tab
+  },
+
+  // -------------------------------------------------------------------------
+  // Chat — Slack calls huddle chat the "Thread" tab. Read & send.
+  // -------------------------------------------------------------------------
+  chat: {
+    // Thread side-panel (Slack's name for huddle chat) — aria-label localized.
+    threadPanel: '[data-qa="tabs_content_container"][aria-label="Thread"]',
+    // Compose box: a Quill contenteditable inside the message_input container.
+    inputContainer: '[data-qa="message_input"]',
+    editor: '[data-qa="texty_input"]', // role=textbox, contenteditable (Quill)
+    sendButton: '[data-qa="texty_send_button"]', // aria-disabled="true" until there's text
+    sendDisabledAttr: 'aria-disabled',
+    // One message row, with a stable per-message id (data-msg-ts) for dedup.
+    messageContainer: '[data-qa="message_container"]',
+    msgTsAttr: 'data-msg-ts',
+    // Within a row: sender info appears on the FIRST message of a run only;
+    // later messages from the same sender omit it — carry it forward (same
+    // pattern as Meet's chat headers). Text body is data-qa="message-text".
+    senderNameButton: '[data-qa="message_sender_name"]', // text = display name
+    senderIdAttr: 'data-message-sender', // stable userId on the sender button
+    messageText: '[data-qa="message-text"]',
   },
 
   // -------------------------------------------------------------------------

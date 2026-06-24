@@ -82,6 +82,16 @@ function sendExtMsg(message) {
   if (wc) wc.send(CALL_COMMANDS.extensionMessage, message);
 }
 
+// The bot's name on the ACTIVE platform, for addressivity (recognizing when the
+// bot is addressed) in the conversation loop. On Slack the bot joins as its
+// signed-in Slack ACCOUNT, so use the separate slackBotName; on Meet it's the
+// Meet botName (guest name / Google account name). Distinct because the bot's
+// display name commonly differs between the two.
+function getActiveBotName() {
+  if (slackProviderMode) return store?.get('slackBotName') || store?.get('botName') || '';
+  return store?.get('botName') || '';
+}
+
 // Round-trip request to the call preload (read/send chat). Sends on `channel`
 // with a unique requestId and resolves with the matching 'chat-result' reply,
 // or a timeout error. Handled by preload-meet.js (Meet) / preload-slack-huddle.js
@@ -558,7 +568,7 @@ const localServer = new globalThis.LocalServer({
       //   - multi-participant, no name  → default by wordCount
       // Names are matched as whole words, case-insensitive.
       const snap = localServer.getCallStateSnapshot();
-      const myName = (store?.get('botName') || '').toLowerCase();
+      const myName = getActiveBotName().toLowerCase();
       const otherNames = new Set(
         (snap.participants || [])
           .filter((p) => !p.isSelf && p.name && p.name !== 'You')
@@ -752,7 +762,7 @@ const localServer = new globalThis.LocalServer({
     const config = require('./ack').getLocalModelConfig(store);
     const { comprehend } = require('./comprehend');
     const { classifyEngagement } = require('./engagement');
-    const botName = store?.get('botName') || 'the bot';
+    const botName = getActiveBotName() || 'the bot';
     const cfg = { endpoint: config.endpoint, apiKey: config.apiKey, model: config.model };
     // Run the working-memory refresh and the dedicated engagement classifier
     // (#243) in parallel — separate calls because folding engagement into
@@ -786,7 +796,7 @@ const localServer = new globalThis.LocalServer({
     // contention while the triage shadow measures).
     const config = require('./ack').getLocalModelConfig(store);
     const { triage } = require('./triage');
-    const botName = store?.get('botName') || 'the bot';
+    const botName = getActiveBotName() || 'the bot';
     // Feed the background-maintained engagement state (#243) so a bare "you" /
     // unnamed follow-up resolves to this bot when it's mid-exchange. comprehend
     // keeps this fresh on the same (Apple) local model; the slow session can

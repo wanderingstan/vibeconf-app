@@ -104,9 +104,17 @@ function tick() {
       reportedInCall = true;
       emit(CALL_EVENTS.statusUpdate, 'In call (Slack huddle)');
       console.log('[slack-huddle] in a huddle — reported in-call to the app');
-      // Standard join setup: turn on side-by-side captions (the Slack analog of
-      // auto-enabling captions on Meet). Delay so the in-call toolbar settles.
-      setTimeout(() => {
+      // Standard join setup, after the in-call toolbar settles: turn the camera
+      // on (the Slack lobby defaults it OFF, so the bot's virtual-camera avatar
+      // wouldn't show otherwise — we already own the toggle, so no lobby DOM is
+      // needed), then enable side-by-side captions (the Slack analog of
+      // auto-enabling captions on Meet). Camera first: it's a single idempotent
+      // click, done before captions opens its menus.
+      setTimeout(async () => {
+        try {
+          const camOk = await provider.setCameraOn(true);
+          console.log('[slack-huddle] setCameraOn →', camOk);
+        } catch (e) { console.warn('[slack-huddle] setCameraOn error:', e && e.message); }
         provider.enableCaptions()
           .then((ok) => console.log('[slack-huddle] enableCaptions →', ok))
           .catch((e) => console.warn('[slack-huddle] enableCaptions error:', e && e.message));

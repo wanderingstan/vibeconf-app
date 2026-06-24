@@ -56,12 +56,12 @@ async function waitFor(fn, ms = 5000, step = 150) {
 function clickItem(el) {
   const target = el.closest('[role="menuitem"], [role="menuitemcheckbox"], button, [role="button"]') || el;
   const opts = { bubbles: true, cancelable: true, view: window, pointerId: 1, pointerType: 'mouse', isPrimary: true };
-  try { target.dispatchEvent(new PointerEvent('pointerover', opts)); } catch { /* PointerEvent may be unavailable */ }
-  try { target.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch { /* ignore */ }
-  target.dispatchEvent(new MouseEvent('mousedown', opts));
-  try { target.dispatchEvent(new PointerEvent('pointerup', opts)); } catch { /* ignore */ }
-  target.dispatchEvent(new MouseEvent('mouseup', opts));
-  target.dispatchEvent(new MouseEvent('click', opts));
+  const P = (t) => { try { target.dispatchEvent(new PointerEvent(t, opts)); } catch { /* unavailable */ } };
+  const M = (t) => target.dispatchEvent(new MouseEvent(t, opts));
+  // HOVER first — submenu triggers (aria-haspopup) open on mouse-enter, which
+  // React derives from native mouseover. Then the click sequence for plain items.
+  P('pointerover'); P('pointerenter'); M('mouseover'); M('mouseenter'); P('pointermove'); M('mousemove');
+  P('pointerdown'); M('mousedown'); P('pointerup'); M('mouseup'); M('click');
   return target;
 }
 
@@ -152,16 +152,26 @@ class SlackProvider extends CallProvider {
 
     const show = await waitFor(() => findMenuItemByText(SLACK.captions.showCaptionsItemText));
     if (!show) { console.warn('[slack] [CC] "Show captions" not found'); return false; }
-    console.log('[slack] [CC] clicking "Show captions" on', clickItem(show).outerHTML.slice(0, 80));
+    const showBtn = show.closest('[role="menuitem"]') || show;
+    clickItem(showBtn); // hover (opens the submenu) + click
+    console.log('[slack] [CC] interacted with "Show captions" (data-qa=' + showBtn.getAttribute('data-qa') + ')');
 
-    // "Side-by-side" (a menuitemcheckbox in the submenu that "Show captions"
-    // reveals). Wait for it present AND visible, then drive the same sequence.
-    const sbs = await waitFor(() => {
+    const findSbs = () => {
       const el = document.querySelector(SLACK.captions.sideBySideButton)
         || findMenuItemByText(SLACK.captions.sideBySideLabelPrefix);
       return el && isVisible(el) ? el : null;
-    }, 4000);
-    if (!sbs) { console.warn('[slack] [CC] "Side-by-side" not found/visible (submenu didn\'t open?)'); return false; }
+    };
+    let sbs = await waitFor(findSbs, 3000);
+    if (!sbs) {
+      // Fallback: open the submenu via the keyboard (focus the trigger, ArrowRight).
+      console.log('[slack] [CC] submenu not open via hover/click — trying keyboard ArrowRight');
+      try { showBtn.focus(); } catch { /* ignore */ }
+      for (const key of ['ArrowRight', 'Enter']) {
+        showBtn.dispatchEvent(new KeyboardEvent('keydown', { key, code: key, bubbles: true, cancelable: true }));
+      }
+      sbs = await waitFor(findSbs, 3000);
+    }
+    if (!sbs) { console.warn('[slack] [CC] "Side-by-side" not found/visible (submenu didn\'t open)'); return false; }
     if (sbs.getAttribute('aria-checked') === 'true') { console.log('[slack] [CC] side-by-side already active'); return true; }
     clickItem(sbs);
     console.log('[slack] [CC] clicked "Side-by-side" — aria-checked now:', sbs.getAttribute('aria-checked'));

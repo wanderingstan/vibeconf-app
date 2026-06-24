@@ -64,6 +64,13 @@ function tick() {
       reportedInCall = true;
       emit(CALL_EVENTS.statusUpdate, 'In call (Slack huddle)');
       console.log('[slack-huddle] in a huddle — reported in-call to the app');
+      // Standard join setup: turn on side-by-side captions (the Slack analog of
+      // auto-enabling captions on Meet). Delay so the in-call toolbar settles.
+      setTimeout(() => {
+        provider.enableCaptions()
+          .then((ok) => console.log('[slack-huddle] enableCaptions →', ok))
+          .catch((e) => console.warn('[slack-huddle] enableCaptions error:', e && e.message));
+      }, 2000);
     }
     const pk = JSON.stringify(parts);
     if (parts.length && pk !== lastRoster) {

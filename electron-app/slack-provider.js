@@ -128,21 +128,28 @@ class SlackProvider extends CallProvider {
   // More actions (⋯) → "Show captions" submenu → "Side-by-side". Best-effort:
   // the submenu may need a hover to expand, so we click AND dispatch mouseover.
   async enableCaptions() {
+    if (this.captionsOn()) { console.log('[slack] [CC] captions panel already present'); return true; }
     const more = document.querySelector(SLACK.moreActions.button);
     if (!more) { console.warn('[slack] [CC] "More actions" button not found'); return false; }
     more.click();
+    console.log('[slack] [CC] opened More actions menu');
 
     const show = await waitFor(() => findMenuItemByText(SLACK.captions.showCaptionsItemText));
     if (!show) { console.warn('[slack] [CC] "Show captions" item not found'); return false; }
-    show.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-    show.click();
+    // "Show captions" is a SUBMENU parent — HOVER to expand it (clicking it
+    // doesn't open the submenu). Fire the full hover sequence on the menuitem.
+    const hoverTarget = show.closest('[role="menuitem"]') || show;
+    for (const type of ['pointerover', 'mouseover', 'mouseenter', 'pointermove', 'mousemove']) {
+      hoverTarget.dispatchEvent(new MouseEvent(type, { bubbles: true }));
+    }
+    console.log('[slack] [CC] hovered "Show captions" — waiting for the submenu');
 
     const sbs = await waitFor(() =>
       document.querySelector(SLACK.captions.sideBySideButton) ||
-      findMenuItemByText(SLACK.captions.sideBySideLabelPrefix));
-    if (!sbs) { console.warn('[slack] [CC] "Side-by-side" option not found'); return false; }
+      findMenuItemByText(SLACK.captions.sideBySideLabelPrefix), 4000);
+    if (!sbs) { console.warn('[slack] [CC] "Side-by-side" not found after hover'); return false; }
     sbs.click();
-    console.log('[slack] [CC] enabled side-by-side captions');
+    console.log('[slack] [CC] clicked "Side-by-side" — captions on');
     return true;
   }
 

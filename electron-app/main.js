@@ -3148,16 +3148,17 @@ function setupIPC() {
     console.log('[page-inject]', line);
   });
 
-  // Captions confirmed on (toolbar shows "Turn off captions"). This is
-  // the canonical "the bot can actually hear what's said" signal. We use
-  // it to BOTH flush deferred bot speech AND engage the avatar — anything
-  // earlier means the avatar shows 🙂 before the bot is really listening.
+  // Captions confirmed on (toolbar shows "Turn off captions"). This is the
+  // canonical "the bot can actually hear what's said" signal — we use it to
+  // flush any deferred bot speech (queued before the bot could be heard).
+  // NOTE: this no longer engages the avatar. Captions are turned on by the
+  // bot's OWN auto-setup with no agent involved, so flipping 🫥 → 🙂 here
+  // showed a face before any agent backend was actually connected. Engagement
+  // now gates on real agent activity (wait_for_speech / speak) in page-inject's
+  // set-bot-state handler, so 🫥 means "in the call but no agent driving yet."
   ipcMain.on(CALL_EVENTS.captionsReady, () => {
-    console.log('[electron] Captions ready — flushing pending bot speech and engaging avatar');
+    console.log('[electron] Captions ready — flushing pending bot speech');
     localServer._flushPendingBotSpeech();
-    if (meetView && !meetView.webContents.isDestroyed()) {
-      meetView.webContents.send('extension-message', { action: 'set-engaged' });
-    }
   });
 
   ipcMain.on(CALL_EVENTS.ttsEnded, () => {

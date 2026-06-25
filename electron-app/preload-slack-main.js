@@ -54,18 +54,28 @@ window.__vibeconf_getScreenShareSource = async function () {
   return ipcRenderer.invoke('get-screen-share-source');
 };
 
-// Forward TTS/media commands from main to the page-inject media layer — the
-// VirtualMic lives HERE in the main window (where Slack/Chime captures audio).
-// Mic/camera/chat are huddle-popup concerns (handled there), so we only forward
-// the audio-out actions. main.js already sends these to meetView, which in Slack
-// mode IS this view, so the bot's existing TTS path reaches the huddle.
+// Bridge main → page-inject (same generic forward as google-meet-provider's
+// inbound handler). The VirtualMic AND the virtual-camera avatar both live HERE
+// in the main window, so page-inject needs the avatar-state messages too —
+// set-bot-state / set-call-status / set-anyone-speaking / set-mode /
+// set-avatar-* — not just the audio-out (play-tts / play-speech-test). main.js
+// sends those to meetView, which in Slack mode IS this view. Forwarding only the
+// two audio actions (the old behavior) left the avatar inert: it never learned
+// callStatus or botState, so it sat on 🫥 forever. Mic/camera/chat extension-
+// messages are routed to the huddle POPUP (SLACK_POPUP_CMDS), so they don't reach
+// this window — a generic forward is safe (page-inject ignores unknown actions).
 ipcRenderer.on('extension-message', (_event, message) => {
-  if (message && (message.action === 'play-tts' || message.action === 'play-speech-test')) {
-    window.postMessage({
-      __botsInCalls: true,
-      __fromExtension: true,
-      action: message.action,
-      payload: message.payload,
-    }, '*');
+  if (!message) return;
+  window.postMessage({ __botsInCalls: true, __fromExtension: true, ...message }, '*');
+});
+
+// Bridge page-inject → main: forward its 'log' lines (e.g. "Avatar → 🫥 ·
+// callStatus=… hasEngaged=…") to the main-process stdout/session log, exactly as
+// google-meet-provider does, so the Slack avatar's transitions are observable in
+// session logs like Meet's. ('page-inject-log' is consumed in main.js.)
+window.addEventListener('message', (event) => {
+  if (event.source !== window || !event.data?.__botsInCalls) return;
+  if (event.data.action === 'log' && event.data.payload?.line) {
+    ipcRenderer.send('page-inject-log', event.data.payload.line);
   }
 });

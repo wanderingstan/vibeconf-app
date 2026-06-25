@@ -84,6 +84,23 @@ async function run() {
     await b.speak('Got it — Samantha here, replying.');
     await a.waitForSpeech({ wait: 12, silence: 2 });
   }
+
+  // 5) Screen-share parity with Meet: share the whiteboard, confirm Slack
+  //    actually engaged (status.sharing is now driven by the popup's REAL
+  //    isSharing() via selfPresenting — not the optimistic request flag), then
+  //    stop and confirm it cleared. Mirrors meet-test's shareWhiteboard check.
+  const { sharing } = await a.shareWhiteboard();
+  if (sharing) {
+    await sleep(1500);
+    await a.stopSharing();
+    // Let the popup heartbeat report the toggle went off (selfPresenting:false).
+    let stillSharing = true;
+    for (let i = 0; i < 10 && stillSharing; i++) {
+      await sleep(500);
+      try { stillSharing = !!(await a.status()).sharing; } catch { /* retry */ }
+    }
+    record(a.name, 'shareStopped', !stillSharing, stillSharing ? 'still sharing after stop' : 'share stopped cleanly');
+  }
 }
 
 run()

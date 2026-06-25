@@ -1199,6 +1199,13 @@ const MEET_GUEST_PARTITION = 'persist:meet-guest';
 // #144's googleAccount: <email> binding — slugify email → unique partition
 // name. For now a single default account partition lets us prove the swap.
 const MEET_ACCOUNT_PARTITION = 'persist:meet-account-default';
+// Slack gets its OWN partition, independent of Meet's guest/account mode. Sharing
+// the Meet partition meant the runtime switch loaded Slack into whatever the Meet
+// mode was (e.g. persist:meet-account-default) — which could already hold a Slack
+// session for a DIFFERENT workspace, producing an endless client→auth→signin loop
+// when the joined huddle's team didn't match. A dedicated partition keeps the
+// Slack login in one consistent place.
+const SLACK_PARTITION = 'persist:slack';
 
 // The idle Meet view: instead of a custom branded placeholder, show the real
 // Google Meet home page. Lets the operator see sign-in state at a glance, start
@@ -2101,8 +2108,10 @@ app.whenReady().then(async () => {
     }
   });
 
-  // --- Meet detection: poll Chrome tabs for active Meet calls ---
+  // --- Meet/Slack detection: poll Chrome/Safari/Brave tabs for active Meet
+  // calls and Slack huddles ---
   let detectedMeetUrl = null;
+  let detectedSlackHuddle = null;
   let meetDetectionInterval = null;
   let currentMeetUrl = null; // Track what we've joined
   let automationPromptShown = false; // only nag about Automation permission once
@@ -2125,8 +2134,16 @@ if chromeRunning then
     repeat with w in windows
       repeat with t in tabs of w
         set tabURL to URL of t
+        set tabTitle to ""
+        try
+          set tabTitle to title of t
+        end try
         if tabURL starts with "https://meet.google.com/" then
-          set allURLs to allURLs & tabURL & linefeed
+          set allURLs to allURLs & "MEET:" & tabURL & linefeed
+        else if tabURL starts with "https://app.slack.com/client/" then
+          set allURLs to allURLs & "SLACK:" & tabURL & "|||" & tabTitle & linefeed
+        else if tabURL is "about:blank" then
+          set allURLs to allURLs & "BLANK:" & tabTitle & linefeed
         end if
       end repeat
     end repeat
@@ -2137,8 +2154,16 @@ if safariRunning then
     repeat with w in windows
       repeat with t in tabs of w
         set tabURL to URL of t
+        set tabTitle to ""
+        try
+          set tabTitle to title of t
+        end try
         if tabURL starts with "https://meet.google.com/" then
-          set allURLs to allURLs & tabURL & linefeed
+          set allURLs to allURLs & "MEET:" & tabURL & linefeed
+        else if tabURL starts with "https://app.slack.com/client/" then
+          set allURLs to allURLs & "SLACK:" & tabURL & "|||" & tabTitle & linefeed
+        else if tabURL is "about:blank" then
+          set allURLs to allURLs & "BLANK:" & tabTitle & linefeed
         end if
       end repeat
     end repeat
@@ -2149,8 +2174,16 @@ if braveRunning then
     repeat with w in windows
       repeat with t in tabs of w
         set tabURL to URL of t
+        set tabTitle to ""
+        try
+          set tabTitle to title of t
+        end try
         if tabURL starts with "https://meet.google.com/" then
-          set allURLs to allURLs & tabURL & linefeed
+          set allURLs to allURLs & "MEET:" & tabURL & linefeed
+        else if tabURL starts with "https://app.slack.com/client/" then
+          set allURLs to allURLs & "SLACK:" & tabURL & "|||" & tabTitle & linefeed
+        else if tabURL is "about:blank" then
+          set allURLs to allURLs & "BLANK:" & tabTitle & linefeed
         end if
       end repeat
     end repeat
@@ -2158,7 +2191,7 @@ if braveRunning then
 end if
 allURLs`;
 
-    console.log('[electron] Meet detection started');
+    console.log('[electron] Meet/Slack detection started');
 
     function pollForMeet() {
       if (currentMeetUrl || pollInFlight) return;
@@ -2202,12 +2235,63 @@ allURLs`;
         }
         console.log(`[electron] Meet poll ok (${elapsed}s)`);
 
-        const result = (stdout || '').trim();
-        const urls = result.split('\n').filter(u => /meet\.google\.com\/[a-z]+-[a-z]+-[a-z]+/.test(u));
+        const lines = (stdout || '').trim().split('\n').map((l) => l.trim()).filter(Boolean);
+        const urls = lines.filter((l) => l.startsWith('MEET:')).map((l) => l.slice(5))
+          .filter((u) => /meet\.google\.com\/[a-z]+-[a-z]+-[a-z]+/.test(u));
         const meetUrl = urls[0] || null;
 
-        // Forward all detected Meet URLs to local server for MCP access
+        // Slack huddle: a live browser huddle shows up as an about:blank window
+        // (the huddle popup, whose TITLE carries the workspace) alongside a
+        // workspace tab that carries the team/channel. With MULTIPLE Slack tabs
+        // open we must pick the one actually IN the huddle, not just the first —
+        // so match the huddle popup's workspace to the right tab's title.
+        const slackTabs = lines.filter((l) => l.startsWith('SLACK:')).map((l) => {
+          const [url, ...rest] = l.slice(6).split('|||');
+          return { url, title: (rest.join('|||') || '').trim() };
+        }).filter((t) => /app\.slack\.com\/client\/[^/]+\/[^/?#]+/.test(t.url));
+        const blankTitles = lines.filter((l) => l.startsWith('BLANK:')).map((l) => l.slice(6).trim());
+        const huddleTitle = blankTitles.find((t) => /^Huddle:/i.test(t));
+        let slackHuddleUrl = null;
+        if (huddleTitle) {
+          // "Huddle: #channel - Workspace - Slack 🎤" → workspace is the 2nd
+          // " - " segment; match the Slack tab whose title names that workspace.
+          const ws = (huddleTitle.split(' - ')[1] || '').trim();
+          const match = ws && slackTabs.find((t) => t.title.includes(ws));
+          slackHuddleUrl = (match && match.url) || (slackTabs.length === 1 ? slackTabs[0].url : null);
+          if (slackTabs.length > 1 && !match) {
+            console.warn('[electron] Slack huddle "' + huddleTitle + '": ' + slackTabs.length +
+              ' Slack tabs, none matched workspace "' + ws + '" — not auto-selecting. Tabs:',
+              JSON.stringify(slackTabs.map((t) => t.title)));
+          }
+        } else if (blankTitles.length && slackTabs.length === 1) {
+          // A blank (huddle) window + exactly one Slack tab → unambiguous.
+          slackHuddleUrl = slackTabs[0].url;
+        }
+
+        // Forward all detected Meet URLs + any Slack huddle to local server for MCP access
         localServer.setDetectedMeetUrls(urls);
+        localServer.setDetectedSlackHuddle(slackHuddleUrl);
+
+        if (slackHuddleUrl && slackHuddleUrl !== detectedSlackHuddle) {
+          detectedSlackHuddle = slackHuddleUrl;
+          console.log('[electron] Slack huddle detected:', slackHuddleUrl);
+          if (panelView && !panelView.webContents.isDestroyed()) {
+            panelView.webContents.send('slack-huddle-detected', { url: slackHuddleUrl });
+          }
+          const { Notification } = require('electron');
+          if (Notification.isSupported() && !SUPPRESS_NOTIFICATIONS) {
+            const n = new Notification({
+              title: 'Slack Huddle Detected',
+              body: 'Found a Slack huddle in your browser. Open Vibeconferencing to connect your bot.',
+              silent: false,
+            });
+            n.on('click', () => { if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); } });
+            n.show();
+          }
+        } else if (!slackHuddleUrl && detectedSlackHuddle) {
+          detectedSlackHuddle = null;
+          if (panelView && !panelView.webContents.isDestroyed()) panelView.webContents.send('slack-huddle-detected', null);
+        }
 
         if (meetUrl && meetUrl !== detectedMeetUrl) {
           detectedMeetUrl = meetUrl;
@@ -2250,6 +2334,9 @@ allURLs`;
 
   // IPC: join detected meet and launch Claude
   ipcMain.on('join-detected-meet', (_event, { url, meetCode }) => {
+    // Runtime provider switch: if we're currently on Slack, rebuild a Meet view
+    // first so loadMeetURL doesn't try to drive the Slack surface.
+    activateMeetProvider();
     currentMeetUrl = url;
     loadMeetURL(url);
     localServer.setRoom(meetCode);
@@ -2265,6 +2352,16 @@ allURLs`;
 
     // Launch Claude Code in Terminal — MCP tools are globally installed
     launchClaudeTerminal(meetCode);
+  });
+
+  // Join a detected (or pasted) Slack huddle — the runtime provider switch. No
+  // --provider flag needed: build the Slack two-surface on the workspace URL and
+  // auto-join the huddle. (Agent connection is the same as a --provider=slack
+  // launch — the bot auto-joins; an MCP client drives it.)
+  ipcMain.on('join-detected-slack', (_event, { url }) => {
+    if (!url) return;
+    console.log('[electron] Join detected Slack huddle:', url);
+    activateSlackProvider(url, { autojoin: true });
   });
 
   // Auto-join if launched with --meet-url
@@ -2448,6 +2545,74 @@ function swapMeetViewPartition(newPartition, { navigateTo } = {}) {
   }
 }
 
+// --- Runtime provider switch (#264): join a Meet call OR a Slack huddle with no
+// relaunch, so --provider is just a launch shortcut. Both rebuild `meetView`
+// using the same teardown pattern as swapMeetViewPartition. ---
+
+// Derive + register the Slack room (code → local server + vibeconferencing.com
+// sync + ensureRoom). Shared by the launch-time slack block and activateSlackProvider.
+function setupSlackRoom(slackUrl) {
+  const { SLACK } = require('./slack-selectors');
+  const slackRoom = SLACK.roomCodeFromUrl(slackUrl);
+  if (!slackRoom) {
+    console.warn('[electron] Slack: no team/channel in URL; room code not set —', slackUrl);
+    return;
+  }
+  localServer.setRoom(slackRoom);
+  sync.updateConfig({ roomId: slackRoom, baseUrl: getWebsiteUrl() });
+  console.log('[electron] Slack room code:', slackRoom);
+  sync.ensureRoom().then((ok) => {
+    sync.startPolling();
+    console.log('[electron] Slack room ensured:', slackRoom,
+      ok ? 'OK' : '(NOT created — log into ' + getWebsiteUrl() + ' so the bot can create rooms)');
+  }).catch((e) => console.warn('[electron] Slack ensureRoom error:', e && e.message));
+}
+
+// Switch the embedded view to the Slack two-surface on a workspace/huddle URL,
+// tearing down whatever view (Meet, or an older Slack surface) was there.
+function activateSlackProvider(slackUrl, { autojoin = true } = {}) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  console.log('[electron] Activating Slack provider:', slackUrl);
+  if (meetView) {
+    try { mainWindow.removeBrowserView(meetView); } catch (err) { console.warn('[electron] removeBrowserView failed:', err.message); }
+    meetView = null;
+  }
+  ensureMeetSessionConfigured(SLACK_PARTITION);
+  const { createSlackSurface } = require('./slack-surface');
+  const surface = createSlackSurface(mainWindow, {
+    partition: SLACK_PARTITION,
+    url: slackUrl,
+    devtools: !!(cliArgs && cliArgs['devtools']),
+    autojoin,
+  });
+  meetView = surface.view;
+  slackProviderMode = true;
+  slackSurface = surface;
+  mainWindow.addBrowserView(meetView);
+  layoutViews();
+  setupSlackRoom(slackUrl);
+
+  console.log('[electron] Slack provider on partition:', SLACK_PARTITION);
+}
+
+// Ensure the embedded view is a Google Meet view (switching back from Slack if
+// needed) before loading a Meet URL.
+function activateMeetProvider() {
+  if (!slackProviderMode && meetView && !meetView.webContents.isDestroyed()) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  console.log('[electron] Activating Meet provider (was slack=' + slackProviderMode + ')');
+  if (meetView) {
+    try { mainWindow.removeBrowserView(meetView); } catch (err) { console.warn('[electron] removeBrowserView failed:', err.message); }
+    meetView = null;
+  }
+  slackProviderMode = false;
+  slackSurface = null;
+  ensureMeetSessionConfigured(currentMeetPartition);
+  meetView = createMeetView(currentMeetPartition);
+  mainWindow.addBrowserView(meetView);
+  layoutViews();
+}
+
 function createMainWindow() {
   // Optional explicit window placement from CLI (--window-x/-y/-w/-h), used by
   // the multi-bot test launcher to tile windows in a grid. Setting x/y at
@@ -2566,24 +2731,21 @@ function createMainWindow() {
 
   // Provider selection (#264).
   //
-  // END STATE (the goal): the app is provider-AGNOSTIC and picks Meet vs Slack
-  // (vs any registered backend) at RUNTIME — each provider declares how to
-  // DETECT it (Meet = a meet.google.com URL; Slack = a "Huddle:" window title)
-  // and how to build its surface(s); the app runs the detectors / follows the
-  // user into whichever call appears, no relaunch. That's a registry-driven
-  // switch over `meetView`, built once the Slack surface is proven live.
-  //
-  // FOR NOW: --provider=slack is a launch-time TEST SCAFFOLD to drive + validate
-  // the Slack two-surface backend in isolation (MAIN app.slack.com window for
-  // media + an injected huddle popup for UI/DOM, self-contained in
-  // slack-surface.js). Default stays Google Meet. Optional --slack-url=<deep-link>.
+  // The app now switches between Meet and Slack at RUNTIME (no relaunch):
+  // browser detection finds either a meet.google.com call or an app.slack.com
+  // huddle, the panel's Join routes to activateMeetProvider / activateSlackProvider
+  // (above), and each rebuilds `meetView` into the right surface. So --provider is
+  // just a launch SHORTCUT (and how the test fleet boots straight into Slack);
+  // dropping it falls back to Meet-at-launch, then the runtime switch takes over.
+  // Optional --slack-url=<deep-link> picks the channel to auto-join at launch.
   const slackMode = cliArgs['provider'] === 'slack';
   if (slackMode) {
     const { createSlackSurface } = require('./slack-surface');
     const slackUrl = cliArgs['slack-url'] || 'https://app.slack.com/';
     console.log('[electron] Provider: SLACK — loading', slackUrl);
+    ensureMeetSessionConfigured(SLACK_PARTITION);
     const surface = createSlackSurface(mainWindow, {
-      partition: currentMeetPartition,
+      partition: SLACK_PARTITION,
       url: slackUrl,
       devtools: !!(cliArgs && cliArgs['devtools']),
       // Auto-join the channel's huddle (header button → lobby confirm). Default
@@ -2594,35 +2756,10 @@ function createMainWindow() {
     // Enable provider-aware command routing: DOM commands → the huddle popup.
     slackProviderMode = true;
     slackSurface = surface;
-    // Derive a STABLE per-huddle room code from the channel's team+channel
-    // (the Slack analogue of a Meet code) and key both the local server and the
-    // vibeconferencing.com sync on it — exactly as the Meet join path does with
-    // a meet code. Without this, roomId would be whatever placeholder the first
-    // sync request happens to send, collapsing every huddle into one shared room
-    // (and one shared whiteboard/chat). The code is deterministic from the URL,
-    // so we can set it now rather than waiting on join confirmation.
-    const { SLACK } = require('./slack-selectors');
-    const slackRoom = SLACK.roomCodeFromUrl(slackUrl);
-    if (slackRoom) {
-      localServer.setRoom(slackRoom);
-      sync.updateConfig({ roomId: slackRoom, baseUrl: getWebsiteUrl() });
-      console.log('[electron] Slack room code:', slackRoom);
-      // Create the vibeconferencing.com room and start syncing — exactly as the
-      // Meet join path does. Without ensureRoom the shared-whiteboard window
-      // loads /room/<code> and shows "this room doesn't exist", because nothing
-      // ever created it server-side (the Slack path was missing this entirely).
-      // ensureRoom sends the vc_session cookie (read from the default session),
-      // so the bot auto-creates the room when you're logged into the website
-      // once — no manual visit needed. Without a login the create 401s and the
-      // whiteboard share has no room, same as a logged-out Meet bot.
-      sync.ensureRoom().then((ok) => {
-        sync.startPolling();
-        console.log('[electron] Slack room ensured:', slackRoom,
-          ok ? 'OK' : '(NOT created — log into ' + getWebsiteUrl() + ' so the bot can create rooms)');
-      }).catch((e) => console.warn('[electron] Slack ensureRoom error:', e && e.message));
-    } else {
-      console.warn('[electron] Slack: no team/channel in --slack-url; room code not set —', slackUrl);
-    }
+    // Room code → local server + vibeconferencing.com sync + ensureRoom. The
+    // code is deterministic from the URL (team+channel), the Slack analogue of a
+    // Meet code. Shared with the runtime activateSlackProvider path.
+    setupSlackRoom(slackUrl);
   } else {
     meetView = createMeetView(currentMeetPartition);
   }

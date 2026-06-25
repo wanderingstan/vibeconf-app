@@ -996,12 +996,14 @@
             // the slow model just surfaced. Harmless before a normal response too.
             if (payload.state === 'thinking' && cam.state !== 'thinking') cam._tickPulseAt = Date.now();
             cam.state = payload.state;
-            // hasEngaged flips only on actual interaction — thinking,
-            // speaking, or yielding. Pure 'listening' (agent in wait_for_speech with
-            // nothing happening) still counts as boot/idle from the user's
-            // perspective, so 🫥 should persist through the boot phase
-            // until the bot actually processes or responds to something.
-            if (payload.state === 'thinking' || payload.state === 'speaking' || payload.state === 'yielding') {
+            // hasEngaged = "a real agent backend is driving us", which is the
+            // meaning of 🫥 vs a face: 🫥 = in the call but unattended. ANY
+            // non-idle bot state proves an agent is on the line — 'listening'
+            // is set only by an agent calling wait_for_speech, and thinking/
+            // speaking/yielding by it processing/responding. Bot-side auto-setup
+            // (join, captions, camera) never sets these, so it can't false-trip.
+            // 'idle' is the between-turns/boot resting state and does NOT engage.
+            if (payload.state && payload.state !== 'idle') {
               cam.hasEngaged = true;
             }
           }
@@ -1043,12 +1045,10 @@
         if (mic) mic.playJoinChime();
         break;
 
-      case 'set-engaged':
-        // Sent when DOMSpeakerTracker first reports participants — the
-        // canonical "bot is fully integrated" moment. Flips the avatar
-        // off 🫥 and onto its mode emoji.
-        for (const cam of cameras.values()) cam.hasEngaged = true;
-        break;
+      // (Removed: 'set-engaged'. Avatar engagement no longer fires on
+      // captions-ready / first-participants — both happen via the bot's own
+      // setup with no agent. hasEngaged now flips on real agent activity in
+      // the 'set-bot-state' handler above, so 🫥 means "no agent driving yet".)
 
       case 'set-call-status':
         // Forwarded from local-server: 'idle' | 'joining' |

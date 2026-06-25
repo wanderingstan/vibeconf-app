@@ -159,6 +159,25 @@ export class Bot {
     };
   }
 
+  // --- screenshot (what the bot sees in the call) ---
+
+  // Capture the bot's call view to a PNG on disk; returns { path, ok }. Building
+  // block for share-verification (screenshot → vision-check a nonce is visible).
+  async screenshot() {
+    const { data, ms } = await this._post('/api/call-screenshot', JSON.stringify({}));
+    const ok = !!data?.path && data?.success !== false;
+    log(this.name, 'screenshot', { ms, ok, note: ok ? data.path.split('/').pop() : (data?.error || 'no path') });
+    return { path: data?.path || null, ok };
+  }
+
+  // Detection status (no-room): Meet URLs + any Slack huddle the app found in
+  // browser tabs. Used by the detection test.
+  async detected() {
+    const resp = await fetch(`${this.base}/api/sync/no-room`);
+    const data = await resp.json().catch(() => ({}));
+    return { meetUrls: data?.detectedMeetUrls || [], slackHuddleUrl: data?.detectedSlackHuddleUrl || null };
+  }
+
   // --- chat (Meet text chat) ---
 
   async sendChat(text) {

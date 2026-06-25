@@ -1,7 +1,7 @@
 ---
 name: join-call
 description: Join the user's current Google Meet call as an AI bot participant
-argument-hint: "[room_code] [BotName]  — or just [BotName] to auto-detect"
+argument-hint: "[meet code | Meet URL] [BotName]  — or just [BotName] to auto-detect"
 disable-model-invocation: true
 allowed-tools: Bash Read mcp__vibeconferencing__get_room_info mcp__vibeconferencing__join_call mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__read_whiteboard mcp__vibeconferencing__read_transcripts mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__set_mode mcp__vibeconferencing__set_camera mcp__vibeconferencing__get_call_screenshot mcp__vibeconferencing__read_chat mcp__vibeconferencing__send_chat mcp__vibeconferencing__leave_call mcp__vibeconferencing__start_share mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__stop_sharing mcp__vibeconferencing__scroll_share mcp__vibeconferencing__inspect_dom mcp__vibeconferencing__list_preferences mcp__vibeconferencing__set_preference mcp__vibeconferencing__set_avatar_emoji mcp__vibeconferencing__get_working_memory mcp__vibeconferencing__post_understanding mcp__vibeconferencing__bank_probe
 ---
@@ -10,7 +10,9 @@ Join the user's current Google Meet call as an AI bot participant.
 
 ## Step 1: Determine the room code and bot name
 
-Parse `$ARGUMENTS` for a meet code (pattern: `xxx-xxxx-xxx`). If found, use it directly and skip detection. Any non-code argument is the bot name.
+Parse `$ARGUMENTS` for the room. **Accept either a bare meet code (`xxx-xxxx-xxx`) OR a full Meet URL** — most people will paste the call's URL, not a code. If it's a `https://meet.google.com/xxx-xxxx-xxx` URL, **extract the `xxx-xxxx-xxx` code** from it and use that (strip any `?`/`#` query). If found (either form), use it directly and skip detection. Any remaining non-code argument is the bot name.
+
+**Slack huddles:** a Slack huddle has no code, just a URL (`https://app.slack.com/client/<team>/<channel>`). `/join-call` is the Google Meet path — to join a **Slack huddle**, paste its URL into the Vibeconferencing app's "Meet/Slack URL" field and click **Join** (the app switches to the Slack provider, auto-joins the huddle, and launches the agent for you). If the user hands you a Slack huddle URL here, tell them to use the app's Join button rather than `/join-call`.
 
 **If no bot name is in `$ARGUMENTS`**, check your loaded `CLAUDE.md` context for a persona / character name. If the project's CLAUDE.md describes you as a specific character (e.g. "You are Coltrane, a jazz facilitator…"), use that name as your bot name. The persona name becomes your Meet display name AND your conversational identity. Pass it to `join_call` via the `bot_name` parameter — the app persists it before navigating to Meet, so it'll appear correctly in the participant list.
 
@@ -18,6 +20,8 @@ If neither `$ARGUMENTS` nor CLAUDE.md supplies a name, fall back to the user's c
 
 Examples:
 - `/join-call abc-defg-hij` -> room code `abc-defg-hij`, name from CLAUDE.md persona or "Jimmy"
+- `/join-call https://meet.google.com/abc-defg-hij` -> extract code `abc-defg-hij` from the URL
+- `/join-call https://meet.google.com/abc-defg-hij Stanbot` -> code `abc-defg-hij`, bot name "Stanbot"
 - `/join-call abc-defg-hij Stanbot` -> room code `abc-defg-hij`, bot name "Stanbot" (arg wins over CLAUDE.md)
 - `/join-call Stanbot` -> auto-detect room, bot name "Stanbot"
 - `/join-call` -> auto-detect room, name from CLAUDE.md persona or "Jimmy"

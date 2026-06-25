@@ -176,9 +176,20 @@ function isValidMeetUrl(url) {
   return /meet\.google\.com\/[a-z]+-[a-z]+-[a-z]+/.test(url);
 }
 
+// A Slack workspace/channel URL — joining it switches the app to the Slack
+// provider at runtime and auto-joins that channel's huddle.
+function isValidSlackUrl(url) {
+  return /app\.slack\.com\/client\/[^/]+\/[^/?#]+/.test(url);
+}
+
+function isJoinableUrl(url) {
+  if (isValidSlackUrl(url)) return true;
+  return isValidMeetUrl(url.startsWith('http') ? url : 'https://meet.google.com/' + url);
+}
+
 function updateJoinBtnState() {
   const url = meetUrlInput.value.trim();
-  joinBtn.disabled = !url || !isValidMeetUrl(url.startsWith('http') ? url : 'https://meet.google.com/' + url);
+  joinBtn.disabled = !url || !isJoinableUrl(url);
 }
 
 meetUrlInput.addEventListener('input', updateJoinBtnState);
@@ -324,6 +335,16 @@ api.on('meet-detected', (data) => {
   }
 });
 
+// A Slack huddle detected in the browser (about:blank window + an app.slack.com
+// workspace tab). Fill the URL so the user can Join it — joining switches to the
+// Slack provider at runtime (no --provider flag).
+api.on('slack-huddle-detected', (data) => {
+  if (data && data.url && !inCall) {
+    meetUrlInput.value = data.url;
+    updateJoinBtnState();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Error display
 // ---------------------------------------------------------------------------
@@ -370,8 +391,13 @@ function exitCallState() {
 joinBtn.addEventListener('click', () => {
   let url = meetUrlInput.value.trim();
   if (!url) return;
-  if (!url.startsWith('http')) url = 'https://meet.google.com/' + url;
-  api.joinMeet(url);
+  if (isValidSlackUrl(url)) {
+    // Runtime provider switch: build the Slack surface + auto-join the huddle.
+    api.send('join-detected-slack', { url });
+  } else {
+    if (!url.startsWith('http')) url = 'https://meet.google.com/' + url;
+    api.joinMeet(url);
+  }
   joinBtn.textContent = 'Joining...';
   joinBtn.disabled = true;
 

@@ -78,7 +78,13 @@ function callCmdWC(name) {
 // recover-captions, …) to the right surface.
 function sendCallCmd(channel, payload) {
   const wc = callCmdWC(channel);
-  if (!wc) return;
+  if (!wc) {
+    // Previously a silent return — which hid #269: the whiteboard Present-now
+    // trigger was dropped whenever meetView was momentarily null/destroyed, with
+    // no trace. Make every dropped command visible.
+    console.warn('[electron] sendCallCmd: no target webContents for "' + channel + '" — command DROPPED (call view null/destroyed?)');
+    return;
+  }
   if (payload === undefined) wc.send(channel); else wc.send(channel, payload);
 }
 // Send an extension-message {action, …} to the right surface (routed by action).
@@ -403,11 +409,24 @@ const localServer = new globalThis.LocalServer({
         // #158's infinity-mirror), not the full-screen-grab branch.
         fullScreenShareRequested = false;
         ipcMain.emit('start-whiteboard-share', {}, { meetCode });
-        setTimeout(() => {
-          if (meetView && !meetView.webContents.isDestroyed()) {
-            sendCallCmd(CALL_COMMANDS.triggerScreenShare, { shareType: 'window' });
+        // Trigger Meet's "Present now" once the whiteboard window is up. A single
+        // 2s setTimeout silently dropped the trigger whenever meetView was
+        // null/destroyed at that instant (mid-rejoin / view swap), so startShare
+        // never ran, the bot never presented, and the failure was invisible
+        // (#269). Retry a few times, re-resolving meetView each attempt;
+        // clickPresentNow's already-presenting guard makes re-triggers harmless
+        // no-ops once the share has engaged.
+        (async () => {
+          for (let attempt = 1; attempt <= 5; attempt++) {
+            await new Promise((r) => setTimeout(r, attempt === 1 ? 1800 : 2000));
+            if (meetView && !meetView.webContents.isDestroyed()) {
+              console.log('[electron] Whiteboard share: Present-now trigger attempt ' + attempt + '/5');
+              sendCallCmd(CALL_COMMANDS.triggerScreenShare, { shareType: 'window' });
+            } else {
+              console.warn('[electron] Whiteboard share: meetView unavailable on Present trigger attempt ' + attempt + '/5 (#269)');
+            }
           }
-        }, 2000);
+        })();
         // #189: drop the board-only URL into Meet chat the first time the
         // whiteboard is shared this call, so participants can open it in
         // their own browser instead of squinting at the shared tile.

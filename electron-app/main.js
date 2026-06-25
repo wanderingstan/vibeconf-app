@@ -1199,6 +1199,13 @@ const MEET_GUEST_PARTITION = 'persist:meet-guest';
 // #144's googleAccount: <email> binding — slugify email → unique partition
 // name. For now a single default account partition lets us prove the swap.
 const MEET_ACCOUNT_PARTITION = 'persist:meet-account-default';
+// Slack gets its OWN partition, independent of Meet's guest/account mode. Sharing
+// the Meet partition meant the runtime switch loaded Slack into whatever the Meet
+// mode was (e.g. persist:meet-account-default) — which could already hold a Slack
+// session for a DIFFERENT workspace, producing an endless client→auth→signin loop
+// when the joined huddle's team didn't match. A dedicated partition keeps the
+// Slack login in one consistent place.
+const SLACK_PARTITION = 'persist:slack';
 
 // The idle Meet view: instead of a custom branded placeholder, show the real
 // Google Meet home page. Lets the operator see sign-in state at a glance, start
@@ -2538,10 +2545,10 @@ function activateSlackProvider(slackUrl, { autojoin = true } = {}) {
     try { mainWindow.removeBrowserView(meetView); } catch (err) { console.warn('[electron] removeBrowserView failed:', err.message); }
     meetView = null;
   }
-  ensureMeetSessionConfigured(currentMeetPartition);
+  ensureMeetSessionConfigured(SLACK_PARTITION);
   const { createSlackSurface } = require('./slack-surface');
   const surface = createSlackSurface(mainWindow, {
-    partition: currentMeetPartition,
+    partition: SLACK_PARTITION,
     url: slackUrl,
     devtools: !!(cliArgs && cliArgs['devtools']),
     autojoin,
@@ -2713,8 +2720,9 @@ function createMainWindow() {
     const { createSlackSurface } = require('./slack-surface');
     const slackUrl = cliArgs['slack-url'] || 'https://app.slack.com/';
     console.log('[electron] Provider: SLACK — loading', slackUrl);
+    ensureMeetSessionConfigured(SLACK_PARTITION);
     const surface = createSlackSurface(mainWindow, {
-      partition: currentMeetPartition,
+      partition: SLACK_PARTITION,
       url: slackUrl,
       devtools: !!(cliArgs && cliArgs['devtools']),
       // Auto-join the channel's huddle (header button → lobby confirm). Default

@@ -187,14 +187,16 @@ const PREFERENCES = {
 
   bargeInGraceMs: {
     type: 'number',
-    default: 2000,
+    default: 3500,
     min: 0,
     max: 10_000,
     description:
       'How long the bot waits after detecting a human interruption before ' +
       'actually stopping its TTS. Tunes the bot\'s "patience" — higher means ' +
-      'a brief overlap is tolerated as natural conversation; lower means ' +
-      'the bot drops out almost instantly. Default 2000ms.',
+      'a brief overlap (a cough, a "yeah" backchannel, a false start) is ridden ' +
+      'out as natural conversation; lower means the bot drops out almost ' +
+      'instantly. Read live, so it can be tuned mid-call (per profile). Raised ' +
+      'from 2000 → 3500ms: 2s felt over-eager to yield on real calls. Default 3500ms.',
   },
   thinkingHoldMs: {
     type: 'number',

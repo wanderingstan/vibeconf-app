@@ -374,7 +374,13 @@ const localServer = new globalThis.LocalServer({
     console.log('[local-server] Share requested by agent, type:', shareType);
     const meetCode = localServer.roomId;
     if (meetCode) {
-      localServer.setSharing(true);
+      // Meet sets sharing optimistically (the present-flow is reliable). On Slack
+      // the share engages ~2s later (whiteboard window opens, then the popup
+      // clicks the share button → getDisplayMedia), and the popup reports the
+      // REAL toggle state via selfPresenting → setSharing. So DON'T pre-set true
+      // on Slack: let the actual share drive `sharing`, so the flag can't claim a
+      // share that silently failed (and a too-early stop can't get masked).
+      if (!slackProviderMode) localServer.setSharing(true);
       if (shareType === 'screen') {
         // Full screen share — no whiteboard window needed
         fullScreenShareRequested = true;

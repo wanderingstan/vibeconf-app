@@ -2607,6 +2607,19 @@ function createMainWindow() {
       localServer.setRoom(slackRoom);
       sync.updateConfig({ roomId: slackRoom, baseUrl: getWebsiteUrl() });
       console.log('[electron] Slack room code:', slackRoom);
+      // Create the vibeconferencing.com room and start syncing — exactly as the
+      // Meet join path does. Without ensureRoom the shared-whiteboard window
+      // loads /room/<code> and shows "this room doesn't exist", because nothing
+      // ever created it server-side (the Slack path was missing this entirely).
+      // ensureRoom sends the vc_session cookie (read from the default session),
+      // so the bot auto-creates the room when you're logged into the website
+      // once — no manual visit needed. Without a login the create 401s and the
+      // whiteboard share has no room, same as a logged-out Meet bot.
+      sync.ensureRoom().then((ok) => {
+        sync.startPolling();
+        console.log('[electron] Slack room ensured:', slackRoom,
+          ok ? 'OK' : '(NOT created — log into ' + getWebsiteUrl() + ' so the bot can create rooms)');
+      }).catch((e) => console.warn('[electron] Slack ensureRoom error:', e && e.message));
     } else {
       console.warn('[electron] Slack: no team/channel in --slack-url; room code not set —', slackUrl);
     }

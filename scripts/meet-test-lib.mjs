@@ -18,7 +18,7 @@ export const events = [];
 function log(bot, action, { ms, ok = true, note = '', meta = null } = {}) {
   const e = { t: Date.now(), bot, action, ms, ok, note, meta };
   events.push(e);
-  const tag = ok ? '·' : '✗';
+  const tag = ok ? '✅' : '❌';
   console.log(`${tag} [${bot}] ${action}${ms != null ? ` ${ms}ms` : ''}${note ? ` — ${note}` : ''}`);
   return e;
 }
@@ -263,8 +263,12 @@ export function report() {
   console.log('\nSIGNALS:');
   console.log(`  wait_for_speech timeouts: ${timeouts.length} (${realStalls.length} real stall${realStalls.length === 1 ? '' : 's'}, rest were quiet-room)`);
   if (realStalls.length) console.log(`    ⚠ real stalls: ${realStalls.map((e) => `${e.bot}${e.meta?.captionsOn === false ? '(deaf)' : '(heard-nothing)'}`).join(', ')}`);
-  console.log(`  failed steps:             ${fails.length}${fails.length ? ' — ' + fails.map((f) => `${f.bot}/${f.action}`).join(', ') : ''}`);
+  console.log(`  ${fails.length ? '❌' : '✅'} failed steps:          ${fails.length}${fails.length ? ' — ' + fails.map((f) => `${f.bot}/${f.action}`).join(', ') : ''}`);
   console.log(`  cross-bot speak overlaps (<1.2s): ${overlaps} (informational — not a failure; use a dedicated lockstep scenario to test for real)`);
+  console.log('─'.repeat(72));
+  // Bottom-line verdict: gates on real stalls + failed steps (matches the exit code).
+  const passed = fails.length === 0 && realStalls.length === 0;
+  console.log(passed ? '✅ PASS — all steps green' : `❌ FAIL — ${fails.length} failed step(s), ${realStalls.length} real stall(s)`);
   console.log('─'.repeat(72));
   // Gate on real stalls + failures only. Overlaps and quiet-room timeouts don't fail.
   return { stalls: realStalls.length, timeouts: timeouts.length, fails: fails.length, overlaps };

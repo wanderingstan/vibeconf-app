@@ -284,12 +284,21 @@ const localServer = new globalThis.LocalServer({
       sync.updateConfig?.({ botName });
       logSessionHeaderUpdate('botName', botName);
     }
-    const meetUrl = `https://meet.google.com/${meetCode}`;
-    // Track what we've joined for EVERY join path — the panel paths set this,
-    // but the MCP /join-call path didn't, which left browser Meet-detection
-    // (and its push notifications) running mid-call. Mirror the other paths.
-    currentMeetUrl = meetUrl;
-    loadMeetURL(meetUrl);
+    // Slack: the bot is ALREADY in the huddle (the surface auto-joined on the
+    // provider switch) and the room/sync are already set up. There's no Meet URL
+    // to navigate to — synthesizing meet.google.com/<slack-code> would load a
+    // broken page into the Slack surface. So skip navigation; /join-call becomes
+    // "confirm in-call + start the loop". For Meet, navigate as before.
+    if (slackProviderMode || /^slack-/.test(meetCode || '')) {
+      console.log('[local-server] Slack join — bot already in huddle, skipping Meet navigation');
+    } else {
+      const meetUrl = `https://meet.google.com/${meetCode}`;
+      // Track what we've joined for EVERY join path — the panel paths set this,
+      // but the MCP /join-call path didn't, which left browser Meet-detection
+      // (and its push notifications) running mid-call. Mirror the other paths.
+      currentMeetUrl = meetUrl;
+      loadMeetURL(meetUrl);
+    }
 
     // Pre-warm the LLM ack engine so the first real ack of the call
     // doesn't pay the multi-second cold-prefill cost. Fire-and-forget;
@@ -1601,7 +1610,10 @@ let claudeTerminalWindowIds = [];
 function launchClaudeTerminal(meetCode) {
   const { execFile } = require('child_process');
   const claudeDir = store.get('claudeWorkDir') || '/tmp';
-  const botName = store.get('botName') || 'Jimmy';
+  // Use the ACTIVE provider's name: in Slack mode getActiveBotName() returns the
+  // slackBotName override (else botName); for Meet it's botName. Keeps the
+  // spawned /join-call <code> <name> + MCP env aligned with the call we're in.
+  const botName = getActiveBotName() || store.get('botName') || 'Jimmy';
 
   // Profile instances (second bot, e.g. Samantha): the auto-launch runs `claude`
   // from a generic cwd (/tmp), which would pick up the USER-SCOPED ~/.claude.json
@@ -2362,6 +2374,16 @@ allURLs`;
     if (!url) return;
     console.log('[electron] Join detected Slack huddle:', url);
     activateSlackProvider(url, { autojoin: true });
+    // Spawn the Claude terminal with the MCP wired — same as Meet — so the agent
+    // can drive the conversation loop. activateSlackProvider → setupSlackRoom has
+    // already set localServer.roomId to the slack-<team>-<channel> code; pass it
+    // as the /join-call code. The bot is auto-joining the huddle, and onJoinCall
+    // skips Meet navigation for slack- codes, so /join-call just starts the loop.
+    if (localServer.roomId) {
+      launchClaudeTerminal(localServer.roomId);
+    } else {
+      console.warn('[electron] join-detected-slack: no room id; skipping Claude terminal launch');
+    }
   });
 
   // Auto-join if launched with --meet-url

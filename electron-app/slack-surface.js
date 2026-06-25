@@ -37,6 +37,29 @@ function clickWhenReady(webContents, selector, label, { tries = 60, intervalMs =
   webContents.executeJavaScript(js).catch(() => {});
 }
 
+// Watch for a button whose visible text exactly matches `text` and click it
+// whenever it appears. Used for modals that have no stable data-qa — notably the
+// "You're in this huddle on a different device" dialog ("Switch to this device" /
+// "Use both devices"), which blocks auto-join when the bot account is in the
+// huddle on another session (e.g. two bot accounts on one machine, or a stale
+// session). We DON'T clearInterval on click, so a modal that re-appears later in
+// the call is dismissed again; the button vanishes after a successful click, so
+// it won't double-fire. Matched by text because Slack ships no data-qa here.
+function clickButtonByTextRepeating(webContents, text, label, { tries = 240, intervalMs = 500 } = {}) {
+  const js = `(() => {
+    const text = ${JSON.stringify(text)}, label = ${JSON.stringify(label)};
+    let n = 0;
+    const t = setInterval(() => {
+      const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+      const el = [...document.querySelectorAll('button, [role="button"]')]
+        .find((e) => norm(e.textContent).includes(text) && e.offsetParent !== null);
+      if (el) { el.click(); console.log('[slack] autojoin: clicked ' + label); }
+      if (++n > ${tries}) clearInterval(t);
+    }, ${intervalMs});
+  })();`;
+  webContents.executeJavaScript(js).catch(() => {});
+}
+
 // Build the Slack surface bound to a session partition.
 //   mainWindow — the app's BrowserWindow (for layout; caller addBrowserView's it)
 //   opts.partition — session partition (reuse the bot's; login carries to popup)
@@ -181,6 +204,14 @@ function createSlackSurface(mainWindow, opts = {}) {
 
     // Auto-confirm the lobby/preview ("Slack - Huddle Preview" → "Start Huddle").
     if (autojoin) clickWhenReady(win.webContents, SLACK.huddle.lobbyStartButton, 'lobby Start Huddle');
+
+    // The "You're in this huddle on a different device" modal renders in THIS
+    // huddle popup (Stan confirmed 2026-06-24) when the bot account is already in
+    // the huddle on another session (two bot accounts on one machine, or a stale
+    // device) — it blocks the join. Claim the huddle for this bot instance by
+    // clicking "Switch to this device" whenever it appears. Runs always (not just
+    // autojoin) so a manually-driven bot is unblocked too.
+    clickButtonByTextRepeating(win.webContents, 'Switch to this device', '"Switch to this device" (different-device modal)');
 
     if (devtools) { try { win.webContents.openDevTools({ mode: 'detach' }); } catch { /* ignore */ } }
     win.on('closed', () => {

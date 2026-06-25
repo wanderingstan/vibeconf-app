@@ -2592,12 +2592,7 @@ function activateSlackProvider(slackUrl, { autojoin = true } = {}) {
   layoutViews();
   setupSlackRoom(slackUrl);
 
-  // Lightweight nav logging — surfaces a workspace mismatch / sign-in bounce in
-  // the terminal (no auto-devtools). Remove once the Slack runtime path is settled.
-  console.log('[electron] Slack provider partition:', SLACK_PARTITION);
-  const swc = surface.view.webContents;
-  swc.on('did-navigate', (_e, u) => console.log('[slack-main] did-navigate:', u));
-  swc.on('did-fail-load', (_e, code, desc, u) => console.warn('[slack-main] did-fail-load:', code, desc, u));
+  console.log('[electron] Slack provider on partition:', SLACK_PARTITION);
 }
 
 // Ensure the embedded view is a Google Meet view (switching back from Slack if

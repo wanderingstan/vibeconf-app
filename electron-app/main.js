@@ -2134,12 +2134,16 @@ if chromeRunning then
     repeat with w in windows
       repeat with t in tabs of w
         set tabURL to URL of t
+        set tabTitle to ""
+        try
+          set tabTitle to title of t
+        end try
         if tabURL starts with "https://meet.google.com/" then
           set allURLs to allURLs & "MEET:" & tabURL & linefeed
         else if tabURL starts with "https://app.slack.com/client/" then
-          set allURLs to allURLs & "SLACK:" & tabURL & linefeed
+          set allURLs to allURLs & "SLACK:" & tabURL & "|||" & tabTitle & linefeed
         else if tabURL is "about:blank" then
-          set allURLs to allURLs & "BLANK:" & linefeed
+          set allURLs to allURLs & "BLANK:" & tabTitle & linefeed
         end if
       end repeat
     end repeat
@@ -2150,12 +2154,16 @@ if safariRunning then
     repeat with w in windows
       repeat with t in tabs of w
         set tabURL to URL of t
+        set tabTitle to ""
+        try
+          set tabTitle to title of t
+        end try
         if tabURL starts with "https://meet.google.com/" then
           set allURLs to allURLs & "MEET:" & tabURL & linefeed
         else if tabURL starts with "https://app.slack.com/client/" then
-          set allURLs to allURLs & "SLACK:" & tabURL & linefeed
+          set allURLs to allURLs & "SLACK:" & tabURL & "|||" & tabTitle & linefeed
         else if tabURL is "about:blank" then
-          set allURLs to allURLs & "BLANK:" & linefeed
+          set allURLs to allURLs & "BLANK:" & tabTitle & linefeed
         end if
       end repeat
     end repeat
@@ -2166,12 +2174,16 @@ if braveRunning then
     repeat with w in windows
       repeat with t in tabs of w
         set tabURL to URL of t
+        set tabTitle to ""
+        try
+          set tabTitle to title of t
+        end try
         if tabURL starts with "https://meet.google.com/" then
           set allURLs to allURLs & "MEET:" & tabURL & linefeed
         else if tabURL starts with "https://app.slack.com/client/" then
-          set allURLs to allURLs & "SLACK:" & tabURL & linefeed
+          set allURLs to allURLs & "SLACK:" & tabURL & "|||" & tabTitle & linefeed
         else if tabURL is "about:blank" then
-          set allURLs to allURLs & "BLANK:" & linefeed
+          set allURLs to allURLs & "BLANK:" & tabTitle & linefeed
         end if
       end repeat
     end repeat
@@ -2229,12 +2241,32 @@ allURLs`;
         const meetUrl = urls[0] || null;
 
         // Slack huddle: a live browser huddle shows up as an about:blank window
-        // (the huddle popup) open ALONGSIDE a workspace tab that carries the
-        // team/channel. Require BOTH so we don't flag Slack merely being open.
-        const slackChannelUrls = lines.filter((l) => l.startsWith('SLACK:')).map((l) => l.slice(6))
-          .filter((u) => /app\.slack\.com\/client\/[^/]+\/[^/?#]+/.test(u));
-        const hasBlankWindow = lines.some((l) => l.startsWith('BLANK:'));
-        const slackHuddleUrl = (hasBlankWindow && slackChannelUrls[0]) ? slackChannelUrls[0] : null;
+        // (the huddle popup, whose TITLE carries the workspace) alongside a
+        // workspace tab that carries the team/channel. With MULTIPLE Slack tabs
+        // open we must pick the one actually IN the huddle, not just the first —
+        // so match the huddle popup's workspace to the right tab's title.
+        const slackTabs = lines.filter((l) => l.startsWith('SLACK:')).map((l) => {
+          const [url, ...rest] = l.slice(6).split('|||');
+          return { url, title: (rest.join('|||') || '').trim() };
+        }).filter((t) => /app\.slack\.com\/client\/[^/]+\/[^/?#]+/.test(t.url));
+        const blankTitles = lines.filter((l) => l.startsWith('BLANK:')).map((l) => l.slice(6).trim());
+        const huddleTitle = blankTitles.find((t) => /^Huddle:/i.test(t));
+        let slackHuddleUrl = null;
+        if (huddleTitle) {
+          // "Huddle: #channel - Workspace - Slack 🎤" → workspace is the 2nd
+          // " - " segment; match the Slack tab whose title names that workspace.
+          const ws = (huddleTitle.split(' - ')[1] || '').trim();
+          const match = ws && slackTabs.find((t) => t.title.includes(ws));
+          slackHuddleUrl = (match && match.url) || (slackTabs.length === 1 ? slackTabs[0].url : null);
+          if (slackTabs.length > 1 && !match) {
+            console.warn('[electron] Slack huddle "' + huddleTitle + '": ' + slackTabs.length +
+              ' Slack tabs, none matched workspace "' + ws + '" — not auto-selecting. Tabs:',
+              JSON.stringify(slackTabs.map((t) => t.title)));
+          }
+        } else if (blankTitles.length && slackTabs.length === 1) {
+          // A blank (huddle) window + exactly one Slack tab → unambiguous.
+          slackHuddleUrl = slackTabs[0].url;
+        }
 
         // Forward all detected Meet URLs + any Slack huddle to local server for MCP access
         localServer.setDetectedMeetUrls(urls);
@@ -2560,16 +2592,12 @@ function activateSlackProvider(slackUrl, { autojoin = true } = {}) {
   layoutViews();
   setupSlackRoom(slackUrl);
 
-  // DIAGNOSTIC (runtime-switch sign-in loop): log Slack's navigations + load
-  // failures and open devtools on the MAIN Slack surface, so a login loop is
-  // inspectable (which URL it bounces between, any blocked request / unsupported-
-  // browser notice). Remove once the runtime login flow is confirmed working.
+  // Lightweight nav logging — surfaces a workspace mismatch / sign-in bounce in
+  // the terminal (no auto-devtools). Remove once the Slack runtime path is settled.
   console.log('[electron] Slack provider partition:', SLACK_PARTITION);
   const swc = surface.view.webContents;
   swc.on('did-navigate', (_e, u) => console.log('[slack-main] did-navigate:', u));
-  swc.on('did-navigate-in-page', (_e, u) => console.log('[slack-main] did-navigate-in-page:', u));
   swc.on('did-fail-load', (_e, code, desc, u) => console.warn('[slack-main] did-fail-load:', code, desc, u));
-  try { swc.openDevTools({ mode: 'detach' }); } catch { /* ignore */ }
 }
 
 // Ensure the embedded view is a Google Meet view (switching back from Slack if

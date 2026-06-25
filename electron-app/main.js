@@ -2564,7 +2564,7 @@ function activateSlackProvider(slackUrl, { autojoin = true } = {}) {
   // failures and open devtools on the MAIN Slack surface, so a login loop is
   // inspectable (which URL it bounces between, any blocked request / unsupported-
   // browser notice). Remove once the runtime login flow is confirmed working.
-  console.log('[electron] Slack provider partition:', currentMeetPartition);
+  console.log('[electron] Slack provider partition:', SLACK_PARTITION);
   const swc = surface.view.webContents;
   swc.on('did-navigate', (_e, u) => console.log('[slack-main] did-navigate:', u));
   swc.on('did-navigate-in-page', (_e, u) => console.log('[slack-main] did-navigate-in-page:', u));

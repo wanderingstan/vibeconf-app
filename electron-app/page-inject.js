@@ -62,13 +62,20 @@
       this.ctx = this.canvas.getContext('2d');
       this.frameCount = 0;
       this.speaking = false;
-      this.state = 'idle'; // 'idle' | 'listening' | 'thinking' | 'speaking' | 'yielding'
-      this.mode = 'active'; // 'active' | 'passive' | 'silent'
-      this.callStatus = 'idle'; // 'idle' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
+      // Seed persistent state from the module-level avatarState, NOT hardcoded
+      // defaults. A camera can be created mid-call — e.g. turning the camera on
+      // makes the host page re-acquire the video stream, spawning a fresh
+      // VirtualCamera — and state messages are only pushed on CHANGE, so a fresh
+      // camera that defaulted to idle/🫥 would never learn it's in-call+engaged
+      // and would sit on 🫥 while the bot is actually talking. avatarState holds
+      // the last known values so a new camera picks up where the call is.
+      this.state = avatarState.state;   // 'idle' | 'listening' | 'thinking' | 'speaking' | 'yielding'
+      this.mode = avatarState.mode;     // 'active' | 'passive' | 'silent'
+      this.callStatus = avatarState.callStatus; // 'idle' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
       // True once the agent has done anything besides idle. Stays 🫥 until then,
       // since "in-call but agent not yet engaged" still means not on the line.
       // Resets whenever a new call begins.
-      this.hasEngaged = false;
+      this.hasEngaged = avatarState.hasEngaged;
       // True while at least one participant is currently speaking (from
       // DOMSpeakerTracker). Suppressed when mode='silent'.
       this.anyoneSpeaking = false;
@@ -79,7 +86,7 @@
       // When true (and we're in-call), the avatar shows 🙉 so participants in
       // the Meet itself see that the bot can't hear them and can re-enable
       // captions. Takes priority over everything except the not-on-line emoji.
-      this.deaf = false;
+      this.deaf = avatarState.deaf;
       // Per-response speaking emoji (set by speak's emoji param). Cleared
       // when the TTS queue drains. Falls through to ACTIVITY_EMOJIS.speaking.
       this.speakingEmojiOverride = null;
@@ -90,13 +97,14 @@
       this.debugOverlayEnabled = debugOverlayEnabledGlobal;
       this.debugInfo = debugInfoLatest;
       // Persistent overrides from agent's set_avatar_emoji calls. null = use
-      // default for that state.
-      this.idleEmojiOverride = null;
-      this.listeningEmojiOverride = null;
-      this.yieldingEmojiOverride = null;
+      // default for that state. Seeded from avatarState so a camera created
+      // mid-call keeps the configured emoji instead of reverting to defaults.
+      this.idleEmojiOverride = avatarState.idleEmojiOverride;
+      this.listeningEmojiOverride = avatarState.listeningEmojiOverride;
+      this.yieldingEmojiOverride = avatarState.yieldingEmojiOverride;
       // Optional custom background. null = use default animated gradient.
       // Set by the 'set-avatar-background' message after server-side resolve.
-      this.backgroundImage = null;
+      this.backgroundImage = avatarState.backgroundImage;
       this.stopped = false;
 
       // Draw the first frame synchronously so the track has content immediately
@@ -717,6 +725,19 @@
   let debugOverlayEnabledGlobal = false;
   let debugInfoLatest = null;
 
+  // Last-known avatar/call state, kept at module scope for the SAME reason as the
+  // debug-overlay globals: state messages (set-call-status / set-bot-state /
+  // set-mode / set-avatar-*) are pushed only on CHANGE, so a VirtualCamera created
+  // AFTER those messages (e.g. the camera being toggled on mid-call re-acquires
+  // the video stream → a fresh camera) must seed from here or it resets to the
+  // 🫥 idle default and stays there while the bot is actually engaged. The set-*
+  // handlers update both every live camera AND this object.
+  const avatarState = {
+    state: 'idle', mode: 'active', callStatus: 'idle', hasEngaged: false,
+    deaf: false, idleEmojiOverride: null, listeningEmojiOverride: null,
+    yieldingEmojiOverride: null, backgroundImage: null,
+  };
+
   function getCamera(width, height) {
     const key = `${width}x${height}`;
     if (!cameras.has(key)) {
@@ -1007,6 +1028,8 @@
               cam.hasEngaged = true;
             }
           }
+          avatarState.state = payload.state; // seed future cameras
+          if (payload.state !== 'idle') avatarState.hasEngaged = true;
           console.debug('[bots-in-calls] Bot state:', payload.state);
         }
         break;
@@ -1015,6 +1038,7 @@
         // Update persistent mode: 'active' | 'passive' | 'silent'
         if (payload?.mode) {
           for (const cam of cameras.values()) cam.mode = payload.mode;
+          avatarState.mode = payload.mode; // seed future cameras
           console.debug('[bots-in-calls] Bot mode:', payload.mode);
         }
         break;
@@ -1055,14 +1079,15 @@
         // 'waiting-to-be-admitted' | 'in-call' | 'left'. Used to show 🫥
         // before the bot is actually in the call.
         if (payload?.status) {
+          const resets = payload.status === 'idle' || payload.status === 'joining' || payload.status === 'left';
           for (const cam of cameras.values()) {
             cam.callStatus = payload.status;
             // New-call markers reset the engagement gate — show 🫥 again
             // until the agent re-engages.
-            if (payload.status === 'idle' || payload.status === 'joining' || payload.status === 'left') {
-              cam.hasEngaged = false;
-            }
+            if (resets) cam.hasEngaged = false;
           }
+          avatarState.callStatus = payload.status; // seed future cameras
+          if (resets) avatarState.hasEngaged = false;
           console.debug('[bots-in-calls] Call status:', payload.status);
         }
         break;
@@ -1116,6 +1141,7 @@
         // payload.deaf === true → avatar shows 🙉 to participants.
         if (payload) {
           for (const cam of cameras.values()) cam.deaf = !!payload.deaf;
+          avatarState.deaf = !!payload.deaf; // seed future cameras
         }
         break;
 
@@ -1129,6 +1155,10 @@
             if ('listening' in payload) cam.listeningEmojiOverride = payload.listening;
             if ('yielding' in payload) cam.yieldingEmojiOverride = payload.yielding;
           }
+          // Seed future cameras so a mid-call camera respawn keeps the override.
+          if ('idle' in payload) avatarState.idleEmojiOverride = payload.idle;
+          if ('listening' in payload) avatarState.listeningEmojiOverride = payload.listening;
+          if ('yielding' in payload) avatarState.yieldingEmojiOverride = payload.yielding;
           console.log('[bots-in-calls] Avatar emoji overrides:',
             'idle=' + (payload.idle ?? 'unchanged'),
             'listening=' + (payload.listening ?? 'unchanged'),
@@ -1189,6 +1219,14 @@
               cam.backgroundImage = null;
             };
             img.src = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+          }
+          // Seed future cameras (mid-call respawn keeps the custom background).
+          if (!svg) {
+            avatarState.backgroundImage = null;
+          } else {
+            const seedImg = new Image();
+            seedImg.onload = () => { avatarState.backgroundImage = seedImg; };
+            seedImg.src = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
           }
         }
         break;

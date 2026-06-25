@@ -218,6 +218,7 @@ if (debugOverlayToggle) {
 api.invoke('get-config', ['botName', 'slackBotName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'claudeWorkDir', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases']).then((result) => {
   if (result?.botName) { botNameInput.value = result.botName; currentBotName = result.botName; }
   if (result?.slackBotName && slackBotNameInput) slackBotNameInput.value = result.slackBotName;
+  refreshSlackIdentity();
   try { updateBotNameBig(); } catch { /* defined below; ignore on first paint */ }
   // Prefer the new websiteUrl key; fall back to legacy syncBaseUrl so users with
   // older configs still see their existing override populated in the field.
@@ -537,6 +538,30 @@ async function refreshBotIdentity(mode) {
     updateBotNameBig();
   } catch { botIdentityStatus.textContent = '✓ Signed in'; }
 }
+
+// --- Bot Slack identity on the MAIN view (parity with Bot Meet identity). In a
+// huddle the bot's name is the signed-in Slack ACCOUNT name; the slackBotName
+// preference is an optional display override. We can't read the live Slack
+// account name from here, so show the override when set, else a note — with a
+// Change link straight to the Settings field, mirroring the guest-Meet row. ---
+const botSlackIdentityStatus = document.getElementById('botSlackIdentityStatus');
+function refreshSlackIdentity() {
+  if (!botSlackIdentityStatus) return;
+  const name = (slackBotNameInput && slackBotNameInput.value.trim()) || '';
+  botSlackIdentityStatus.textContent = name ? `💬 ‘${name}’ ` : '💬 Uses Slack account name ';
+  botSlackIdentityStatus.style.color = name ? '#81c995' : '#9aa0a6';
+  const change = document.createElement('a');
+  change.textContent = 'Change';
+  change.href = '#';
+  change.style.cssText = 'color:#8ab4f8;text-decoration:underline;font-size:0.9em';
+  change.onclick = (e) => {
+    e.preventDefault();
+    showScreen(settingsScreen);
+    if (slackBotNameInput) { slackBotNameInput.focus(); slackBotNameInput.select(); }
+  };
+  botSlackIdentityStatus.appendChild(change);
+}
+refreshSlackIdentity();
 
 botSignInMainBtn?.addEventListener('click', async () => {
   botSignInMainBtn.disabled = true;
@@ -883,6 +908,7 @@ botNameInput.addEventListener('change', () => {
 if (slackBotNameInput) {
   slackBotNameInput.addEventListener('change', () => {
     api.invoke('set-config', 'slackBotName', slackBotNameInput.value.trim());
+    refreshSlackIdentity();
   });
 }
 

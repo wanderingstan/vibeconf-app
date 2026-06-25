@@ -166,6 +166,7 @@ class LocalServer {
     // State exposed to agents
     this.localProfile = null;   // optional app profile name for multi-agent local runs
     this.detectedMeetUrls = [];  // Meet URLs found in browser tabs (when not in a call)
+    this.detectedSlackHuddleUrl = null; // app.slack.com/client/<team>/<channel> when a huddle is live in a browser tab
     this.participants = [];      // [{ name, speaking }] from DOM speaker tracker
     this.someoneElsePresenting = false;  // another participant is screen sharing
     this.presenterName = null;   // name of the person presenting (if any)
@@ -639,6 +640,10 @@ class LocalServer {
 
   setDetectedMeetUrls(urls) {
     this.detectedMeetUrls = urls || [];
+  }
+
+  setDetectedSlackHuddle(url) {
+    this.detectedSlackHuddleUrl = url || null;
   }
 
   setChatUnread(unread) {
@@ -1831,6 +1836,7 @@ class LocalServer {
       members: this.members,
       participants: this.participants,
       detectedMeetUrls: this.detectedMeetUrls,
+      detectedSlackHuddleUrl: this.detectedSlackHuddleUrl,
       status: {
         callStatus: this.callStatus,
         sharing: this.sharing,
@@ -1930,6 +1936,7 @@ class LocalServer {
         success: true,
         roomId: this.roomId,
         detectedMeetUrls: this.detectedMeetUrls,
+        detectedSlackHuddleUrl: this.detectedSlackHuddleUrl,
         status: {
           callStatus: this.callStatus,
           mode: this.mode,

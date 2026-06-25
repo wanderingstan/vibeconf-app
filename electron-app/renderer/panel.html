@@ -46,11 +46,14 @@
           </span>
         </div>
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px" title="The bot's Google Meet sign-in. Totally optional — only needed so the bot can auto-admit into invite-only meetings. Guest mode works for open meetings.">
-          <span style="line-height:1.5"><strong>Bot identity:</strong> <span id="botIdentityStatus">checking…</span></span>
+          <span style="line-height:1.5"><strong>Bot Meet identity:</strong> <span id="botIdentityStatus">checking…</span></span>
           <span style="white-space:nowrap">
             <button id="botSignInMainBtn" class="auth-action-btn" style="display:none">Sign in as bot</button>
             <button id="botSignOutMainBtn" class="auth-action-btn" style="display:none">Use guest</button>
           </span>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px" title="The bot's Slack identity for huddles — the Slack account it's signed into. Set a display-name override in Settings (Bot Name · Slack), or leave it blank to use the signed-in Slack account name.">
+          <span style="line-height:1.5"><strong>Bot Slack identity:</strong> <span id="botSlackIdentityStatus">—</span></span>
         </div>
         <!-- Bot vitals: read-only capability indicators so the bot's current
              state is visible at a glance — is the on-device fast model reachable,
@@ -65,10 +68,10 @@
         </div>
       </div>
 
-      <p class="helper-text">Google Meet calls in Chrome or Safari will be automatically detected.</p>
+      <p class="helper-text">Google Meet calls and Slack huddles in Chrome or Safari will be automatically detected.</p>
       <div class="field">
-        <label for="meetUrl">Meet URL</label>
-        <input type="text" id="meetUrl" placeholder="https://meet.google.com/xxx-xxxx-xxx" />
+        <label for="meetUrl">Meet/Slack URL</label>
+        <input type="text" id="meetUrl" placeholder="meet.google.com/xxx-xxxx-xxx or app.slack.com/client/…" />
       </div>
       <button id="joinBtn" class="primary" disabled>Join Call</button>
       <div class="helper-text" style="margin-top:8px">You can also join by typing <code>/join-call</code> in any Claude Code session.</div>

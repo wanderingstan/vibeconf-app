@@ -2101,8 +2101,10 @@ app.whenReady().then(async () => {
     }
   });
 
-  // --- Meet detection: poll Chrome tabs for active Meet calls ---
+  // --- Meet/Slack detection: poll Chrome/Safari/Brave tabs for active Meet
+  // calls and Slack huddles ---
   let detectedMeetUrl = null;
+  let detectedSlackHuddle = null;
   let meetDetectionInterval = null;
   let currentMeetUrl = null; // Track what we've joined
   let automationPromptShown = false; // only nag about Automation permission once
@@ -2126,7 +2128,11 @@ if chromeRunning then
       repeat with t in tabs of w
         set tabURL to URL of t
         if tabURL starts with "https://meet.google.com/" then
-          set allURLs to allURLs & tabURL & linefeed
+          set allURLs to allURLs & "MEET:" & tabURL & linefeed
+        else if tabURL starts with "https://app.slack.com/client/" then
+          set allURLs to allURLs & "SLACK:" & tabURL & linefeed
+        else if tabURL is "about:blank" then
+          set allURLs to allURLs & "BLANK:" & linefeed
         end if
       end repeat
     end repeat
@@ -2138,7 +2144,11 @@ if safariRunning then
       repeat with t in tabs of w
         set tabURL to URL of t
         if tabURL starts with "https://meet.google.com/" then
-          set allURLs to allURLs & tabURL & linefeed
+          set allURLs to allURLs & "MEET:" & tabURL & linefeed
+        else if tabURL starts with "https://app.slack.com/client/" then
+          set allURLs to allURLs & "SLACK:" & tabURL & linefeed
+        else if tabURL is "about:blank" then
+          set allURLs to allURLs & "BLANK:" & linefeed
         end if
       end repeat
     end repeat
@@ -2150,7 +2160,11 @@ if braveRunning then
       repeat with t in tabs of w
         set tabURL to URL of t
         if tabURL starts with "https://meet.google.com/" then
-          set allURLs to allURLs & tabURL & linefeed
+          set allURLs to allURLs & "MEET:" & tabURL & linefeed
+        else if tabURL starts with "https://app.slack.com/client/" then
+          set allURLs to allURLs & "SLACK:" & tabURL & linefeed
+        else if tabURL is "about:blank" then
+          set allURLs to allURLs & "BLANK:" & linefeed
         end if
       end repeat
     end repeat
@@ -2158,7 +2172,7 @@ if braveRunning then
 end if
 allURLs`;
 
-    console.log('[electron] Meet detection started');
+    console.log('[electron] Meet/Slack detection started');
 
     function pollForMeet() {
       if (currentMeetUrl || pollInFlight) return;
@@ -2202,12 +2216,43 @@ allURLs`;
         }
         console.log(`[electron] Meet poll ok (${elapsed}s)`);
 
-        const result = (stdout || '').trim();
-        const urls = result.split('\n').filter(u => /meet\.google\.com\/[a-z]+-[a-z]+-[a-z]+/.test(u));
+        const lines = (stdout || '').trim().split('\n').map((l) => l.trim()).filter(Boolean);
+        const urls = lines.filter((l) => l.startsWith('MEET:')).map((l) => l.slice(5))
+          .filter((u) => /meet\.google\.com\/[a-z]+-[a-z]+-[a-z]+/.test(u));
         const meetUrl = urls[0] || null;
 
-        // Forward all detected Meet URLs to local server for MCP access
+        // Slack huddle: a live browser huddle shows up as an about:blank window
+        // (the huddle popup) open ALONGSIDE a workspace tab that carries the
+        // team/channel. Require BOTH so we don't flag Slack merely being open.
+        const slackChannelUrls = lines.filter((l) => l.startsWith('SLACK:')).map((l) => l.slice(6))
+          .filter((u) => /app\.slack\.com\/client\/[^/]+\/[^/?#]+/.test(u));
+        const hasBlankWindow = lines.some((l) => l.startsWith('BLANK:'));
+        const slackHuddleUrl = (hasBlankWindow && slackChannelUrls[0]) ? slackChannelUrls[0] : null;
+
+        // Forward all detected Meet URLs + any Slack huddle to local server for MCP access
         localServer.setDetectedMeetUrls(urls);
+        localServer.setDetectedSlackHuddle(slackHuddleUrl);
+
+        if (slackHuddleUrl && slackHuddleUrl !== detectedSlackHuddle) {
+          detectedSlackHuddle = slackHuddleUrl;
+          console.log('[electron] Slack huddle detected:', slackHuddleUrl);
+          if (panelView && !panelView.webContents.isDestroyed()) {
+            panelView.webContents.send('slack-huddle-detected', { url: slackHuddleUrl });
+          }
+          const { Notification } = require('electron');
+          if (Notification.isSupported() && !SUPPRESS_NOTIFICATIONS) {
+            const n = new Notification({
+              title: 'Slack Huddle Detected',
+              body: 'Found a Slack huddle in your browser. Open Vibeconferencing to connect your bot.',
+              silent: false,
+            });
+            n.on('click', () => { if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); } });
+            n.show();
+          }
+        } else if (!slackHuddleUrl && detectedSlackHuddle) {
+          detectedSlackHuddle = null;
+          if (panelView && !panelView.webContents.isDestroyed()) panelView.webContents.send('slack-huddle-detected', null);
+        }
 
         if (meetUrl && meetUrl !== detectedMeetUrl) {
           detectedMeetUrl = meetUrl;

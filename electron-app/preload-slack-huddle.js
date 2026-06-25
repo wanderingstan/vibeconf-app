@@ -93,6 +93,7 @@ function emit(channel, payload) {
 // watch scraping work end-to-end. Deduped to avoid log/IPC spam.
 let lastRoster = '';
 let lastCaption = '';
+let lastSharing = false;
 let reportedInCall = false;
 function tick() {
   try {
@@ -137,6 +138,18 @@ function tick() {
         });
         console.log('[slack-huddle] caption:', JSON.stringify(last));
       }
+    }
+    // Report the REAL screen-share state (the toggle button's pressed attr) so
+    // the app's `sharing` flag reflects what Slack is actually doing — the parity
+    // analog of Meet's screen-share-stopped correction. selfPresenting →
+    // setSharing(presenting) in main.js. This both CONFIRMS an agent-requested
+    // share actually engaged and CATCHES a stop/drop (user clicked the button,
+    // stream died) that the optimistic setSharing(true) wouldn't notice.
+    const sharing = provider.isSharing();
+    if (sharing !== lastSharing) {
+      lastSharing = sharing;
+      emit(CALL_EVENTS.selfPresenting, { presenting: sharing });
+      console.log('[slack-huddle] self-presenting:', sharing);
     }
   } catch { /* DOM not ready yet */ }
 }

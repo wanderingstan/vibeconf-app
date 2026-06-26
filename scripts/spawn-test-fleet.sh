@@ -97,7 +97,14 @@ if (( KILL )); then
   for i in $(seq 1 $N); do
     port=$((BASE_PORT + i - 1))
     profile="${PROFILE_BASE}$i"
-    pid=$(lsof -ti tcp:$port 2>/dev/null || true)
+    # -sTCP:LISTEN: match ONLY the bot's listening socket, not clients holding an
+    # open connection to it. Without this, an in-process driver (node:test's
+    # call-parity matrix runs --kill from an after() hook while still holding
+    # keep-alive connections to 7901/7902) is itself returned here and gets
+    # SIGKILLed — the test runner kills itself mid-suite (file reported SIGTERM,
+    # Slack block never ran). The standalone :ci scripts dodge it only because the
+    # driver has already exited before --kill runs.
+    pid=$(lsof -ti tcp:$port -sTCP:LISTEN 2>/dev/null || true)
     if [[ -n "$pid" ]]; then echo "  • killing pid $pid on $port"; kill "$pid" 2>/dev/null || true; fi
     # Port-only kill misses GUI Electron mains that aren't currently holding the
     # port — those linger as ghost participants and pile up across repeated runs,

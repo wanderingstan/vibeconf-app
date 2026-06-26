@@ -75,25 +75,44 @@ export class Bot {
     return data;
   }
 
-  async shareWhiteboard() {
+  async shareWhiteboard({ sustainMs = 4000 } = {}) {
     const started = Date.now();
     await this._sync({ meta: { action: 'share-whiteboard', shareType: 'whiteboard' } });
     // The POST only ENQUEUES the share; the actual "Present now" click happens
-    // async in the app and can fail ("present button not found") without the POST
-    // erroring. Verify the bot is really sharing before calling it a success —
-    // otherwise a silent share failure (e.g. guests often can't present in Meet)
-    // would be reported green. Poll status.sharing up to ~6s.
+    // async in the app and can fail without the POST erroring. Verify the bot is
+    // really sharing before calling it a success — otherwise a silent share
+    // failure (guest can't present in Meet; "no video stream" on a Slack huddle)
+    // is reported green.
+    //
+    // Two phases — and the second matters: status.sharing can flip true for a
+    // beat and then COLLAPSE (Slack's present flow flickered self-presenting
+    // true→false in ~2s with "Video was requested, but no video stream was
+    // provided"). A one-shot "saw true once" check passes on that flicker — a
+    // false pass. So require sharing to first engage, then STAY up for sustainMs.
     let sharing = false;
-    for (let i = 0; i < 20 && !sharing; i++) {
+    for (let i = 0; i < 20 && !sharing; i++) { // phase 1: wait up to ~6s to engage
       await sleep(300);
       try { sharing = !!(await this.status()).sharing; } catch { /* retry */ }
     }
+    let sustained = sharing, droppedAfterMs = null;
+    if (sharing) { // phase 2: it must HOLD, not flicker
+      const holdUntil = Date.now() + sustainMs;
+      while (Date.now() < holdUntil) {
+        await sleep(400);
+        let still = sharing;
+        try { still = !!(await this.status()).sharing; } catch { /* treat as unknown, keep prior */ }
+        if (!still) { sustained = false; droppedAfterMs = Date.now() - started; break; }
+      }
+    }
     const ms = Date.now() - started;
+    const ok = sustained;
     log(this.name, 'shareWhiteboard', {
-      ms, ok: sharing,
-      note: sharing ? 'sharing confirmed' : 'NOT sharing after 6s — present likely failed (guest can\'t present?)',
+      ms, ok,
+      note: !sharing ? 'NOT sharing after 6s — present never engaged (guest can\'t present? no video stream?)'
+        : !sustained ? `engaged then COLLAPSED after ~${droppedAfterMs}ms — share did not hold (flicker / no video stream)`
+          : `sharing held for ${sustainMs}ms`,
     });
-    return { sharing };
+    return { sharing: sustained, engaged: sharing, sustained, droppedAfterMs };
   }
 
   async stopSharing() {

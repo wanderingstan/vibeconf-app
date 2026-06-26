@@ -507,12 +507,12 @@
           ctx.restore();
         }
       };
-      // Right column starts just past the widest stats line.
+      // Fixed columns (left 1/3, right 2/3 of the canvas) so the right column
+      // doesn't jump around as the stats text changes width.
       const leftX = boxX + pad;
-      let leftW = 0;
-      for (const ln of leftLines) leftW = Math.max(leftW, ctx.measureText(ln).width);
+      const rightX = canvas.width / 3;
       drawColumn(leftLines, leftX);
-      drawColumn(rightLines, leftX + leftW + 40);
+      drawColumn(rightLines, rightX);
       ctx.restore();
     }
 

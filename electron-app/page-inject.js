@@ -394,9 +394,13 @@
         const phrase = ev.phrase ? `"${ev.phrase}"` : 'SKIP';
         const latency = ev.latencyMs != null ? `${ev.latencyMs}ms` : '?';
         const src = ev.source === 'llm-fallback-builtin' ? 'fallback' : (ev.source || '?');
+        // src / latency / age each on their own line so the left column stays
+        // narrow (this metadata was the widest line in the stats column).
         return [
           `ack:      ${phrase}`,
-          `          ${src} · ${latency} · ${ago(ev.at)}`,
+          `          ${src}`,
+          `          ${latency}`,
+          `          ${ago(ev.at)}`,
         ];
       })();
       const clip = (s, max = 40) => {

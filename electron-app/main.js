@@ -1586,7 +1586,10 @@ function launchClaudeTerminal(meetCode) {
   // running, `do script` would spawn TWO windows — the auto-created launch
   // window plus the scripted one. Reuse the launch window (window 1) in that
   // case; only spawn a fresh window when Terminal is already up.
-  const cmd = `cd ${claudeDir.replace(/"/g, '\\"')} && ${claudeCmd}`;
+  // Set VIBECONF_LOCAL_PORT for the spawned session so the agent-activity hook
+  // (a child process of claude) reports this bot's transcript to THIS app's
+  // local server — not the default 7865 (correct for profile bots on 7866+).
+  const cmd = `cd ${claudeDir.replace(/"/g, '\\"')} && VIBECONF_LOCAL_PORT=${localServer.port} ${claudeCmd}`;
   const script = `tell application "Terminal"
   if not running then
     do script "${cmd}" in window 1
@@ -1787,7 +1790,7 @@ function done() { process.exit(0); }
 setTimeout(done, 1500); // never hang the agent
 `;
 
-function ensureAgentActivityHook(localPort) {
+function ensureAgentActivityHook() {
   const home = process.env.HOME || process.env.USERPROFILE;
   const claudeDir = path.join(home, '.claude');
   const hookPath = path.join(claudeDir, 'vibeconf-agent-hook.cjs');
@@ -1799,8 +1802,12 @@ function ensureAgentActivityHook(localPort) {
     try { existing = fs.readFileSync(hookPath, 'utf-8'); } catch { /* missing */ }
     if (existing !== AGENT_HOOK_CONTENT) fs.writeFileSync(hookPath, AGENT_HOOK_CONTENT);
 
-    // Bake the port into the command so the right local-server is targeted.
-    const desiredCmd = `VIBECONF_LOCAL_PORT=${localPort || 7865} node "${hookPath}"`;
+    // No port baked into the command: the hook reads VIBECONF_LOCAL_PORT from
+    // its inherited env (app-spawned sessions set it to THEIR bot's port — see
+    // launchClaudeTerminal) and falls back to 7865 (the primary app) for an
+    // existing session that ran /join-call. This is why the same global hook
+    // works for every bot — the port comes from the session, not the command.
+    const desiredCmd = `node "${hookPath}"`;
     let settings = {};
     try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')); } catch { /* none yet */ }
     if (!settings.hooks) settings.hooks = {};
@@ -1819,7 +1826,7 @@ function ensureAgentActivityHook(localPort) {
       hooks: [{ type: 'command', command: desiredCmd }],
     });
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-    console.log('[electron] Installed agent-activity PostToolUse hook → local server port', localPort || 7865);
+    console.log('[electron] Installed agent-activity PostToolUse hook (port from session env, default 7865)');
   } catch (err) {
     console.warn('[electron] Failed to install agent-activity hook:', err.message);
   }
@@ -1921,7 +1928,8 @@ function ensureClaudeIntegration(localPort) {
   }
 
   // Agent-activity overlay hook (independent of the MCP/skill version bumps).
-  ensureAgentActivityHook(localPort);
+  // Port-agnostic: app-spawned sessions inject VIBECONF_LOCAL_PORT themselves.
+  ensureAgentActivityHook();
 
   if (changed) {
     console.log('[electron] Claude integration installed. Restart Claude Code to pick up MCP changes.');

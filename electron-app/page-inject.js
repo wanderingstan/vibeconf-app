@@ -438,7 +438,17 @@
         heard,
         proc,
       ];
-      const lines = [...callLines, '', ...loopLines];
+      // AGENT — recent activity tailed from the driving Claude session's
+      // transcript (proof of life + early "off the rails" signal). Lines are
+      // pre-formatted compact strings (🗣 text / 🔧 tool / 💬 prompt). Keep the
+      // START (emoji + tool name), unlike the caption clips which keep the tail.
+      const head = (s, max = 46) => { const t = String(s || ''); return t.length > max ? t.slice(0, max - 1) + '…' : t; };
+      const agentLines = (() => {
+        const log = d.agentLog || [];
+        if (!log.length) return ['AGENT', '  (no agent session)'];
+        return ['AGENT', ...log.map((l) => '  ' + head(l))];
+      })();
+      const lines = [...callLines, '', ...loopLines, '', ...agentLines];
 
       const pad = 16;
       const lineH = 30;
@@ -467,7 +477,7 @@
         const y = boxY + pad + i * lineH;
         // Headers yellow; STALE loop / DEAF caps / ack-fallback red; heard blue;
         // proc teal; rest light grey.
-        if (ln === 'CALL' || ln === 'LOOP') ctx.fillStyle = '#fdd663';
+        if (ln === 'CALL' || ln === 'LOOP' || ln === 'AGENT') ctx.fillStyle = '#fdd663';
         else if (ln.startsWith('loop:') && ln.includes('STALE')) ctx.fillStyle = '#ea4335';
         else if (ln.includes('fallback') && (ln.startsWith('ack:') || ln.startsWith('          '))) ctx.fillStyle = '#ea4335';
         else if (ln.startsWith('caps:') && ln.includes('DEAF')) ctx.fillStyle = '#ea4335';

@@ -9,7 +9,7 @@
 
 const fs = require('fs');
 
-const MAX_LINES = 12;          // ring-buffer depth shown on the overlay
+const MAX_LINES = 16;          // ring-buffer depth — fills the side column next to the stats
 const SEED_TAIL_BYTES = 64 * 1024; // how much of an existing transcript to seed from
 
 function clip(s, max) {

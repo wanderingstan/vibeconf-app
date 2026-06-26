@@ -448,7 +448,10 @@
         if (!log.length) return ['AGENT', '  (no agent session)'];
         return ['AGENT', ...log.map((l) => '  ' + head(l))];
       })();
-      const lines = [...callLines, '', ...loopLines, '', ...agentLines];
+      // Left column = the stats (CALL + LOOP). Right column = the agent tail,
+      // so it can run taller (newest at the bottom) without pushing the stats
+      // off-frame.
+      const leftLines = [...callLines, '', ...loopLines];
 
       const pad = 16;
       const lineH = 30;
@@ -471,27 +474,37 @@
       ctx.shadowOffsetY = 1;
       const boxX = 24;
       const boxY = 24;
-      for (let i = 0; i < lines.length; i++) {
-        const ln = lines[i];
-        const x = boxX + pad;
-        const y = boxY + pad + i * lineH;
-        // Headers yellow; STALE loop / DEAF caps / ack-fallback red; heard blue;
-        // proc teal; rest light grey.
-        if (ln === 'CALL' || ln === 'LOOP' || ln === 'AGENT') ctx.fillStyle = '#fdd663';
-        else if (ln.startsWith('loop:') && ln.includes('STALE')) ctx.fillStyle = '#ea4335';
-        else if (ln.includes('fallback') && (ln.startsWith('ack:') || ln.startsWith('          '))) ctx.fillStyle = '#ea4335';
-        else if (ln.startsWith('caps:') && ln.includes('DEAF')) ctx.fillStyle = '#ea4335';
-        else if (ln.startsWith('heard:')) ctx.fillStyle = '#8ab4f8';
-        else if (ln.startsWith('proc:')) ctx.fillStyle = '#5bd1c4';
-        else ctx.fillStyle = '#e8eaed';
-        // Outline first (carries the shadow), then the colored fill on top with
-        // the shadow disabled so it doesn't muddy the glyph interior.
-        ctx.strokeText(ln, x, y);
-        ctx.save();
-        ctx.shadowColor = 'transparent';
-        ctx.fillText(ln, x, y);
-        ctx.restore();
-      }
+      // Headers yellow; STALE loop / DEAF caps / ack-fallback red; heard blue;
+      // proc teal; rest light grey.
+      const colorFor = (ln) => {
+        if (ln === 'CALL' || ln === 'LOOP' || ln === 'AGENT') return '#fdd663';
+        if (ln.startsWith('loop:') && ln.includes('STALE')) return '#ea4335';
+        if (ln.includes('fallback') && (ln.startsWith('ack:') || ln.startsWith('          '))) return '#ea4335';
+        if (ln.startsWith('caps:') && ln.includes('DEAF')) return '#ea4335';
+        if (ln.startsWith('heard:')) return '#8ab4f8';
+        if (ln.startsWith('proc:')) return '#5bd1c4';
+        return '#e8eaed';
+      };
+      const drawColumn = (colLines, x) => {
+        for (let i = 0; i < colLines.length; i++) {
+          const ln = colLines[i];
+          const y = boxY + pad + i * lineH;
+          ctx.fillStyle = colorFor(ln);
+          // Outline first (carries the shadow), then the colored fill on top
+          // with the shadow disabled so it doesn't muddy the glyph interior.
+          ctx.strokeText(ln, x, y);
+          ctx.save();
+          ctx.shadowColor = 'transparent';
+          ctx.fillText(ln, x, y);
+          ctx.restore();
+        }
+      };
+      // Right column starts just past the widest stats line.
+      const leftX = boxX + pad;
+      let leftW = 0;
+      for (const ln of leftLines) leftW = Math.max(leftW, ctx.measureText(ln).width);
+      drawColumn(leftLines, leftX);
+      drawColumn(agentLines, leftX + leftW + 40);
       ctx.restore();
     }
 

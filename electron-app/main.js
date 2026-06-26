@@ -328,6 +328,7 @@ const localServer = new globalThis.LocalServer({
   },
   onLeaveCall: () => {
     console.log('[local-server] Leave call requested by agent');
+    shareGeneration++; // cancel any in-flight Present-now retry loop before the view tears down
 
     // Wait for any in-flight TTS to finish so goodbye speech actually plays.
     // botState leaves 'speaking' when the `tts-ended` IPC fires (page-inject
@@ -413,12 +414,33 @@ const localServer = new globalThis.LocalServer({
         // 2s setTimeout silently dropped the trigger whenever meetView was
         // null/destroyed at that instant (mid-rejoin / view swap), so startShare
         // never ran, the bot never presented, and the failure was invisible
-        // (#269). Retry a few times, re-resolving meetView each attempt;
-        // clickPresentNow's already-presenting guard makes re-triggers harmless
-        // no-ops once the share has engaged.
+        // (#269). Retry a few times, re-resolving meetView each attempt.
+        //
+        // But the loop must STOP firing once the share lands or the call moves
+        // on — otherwise a stray retry re-triggers after the share already
+        // engaged or after a stop/leave tore down the whiteboard window. On Meet
+        // that's a harmless no-op (idempotent Present-now guard); on Slack the
+        // control is a single TOGGLE, so a late re-click flips sharing OFF and
+        // then getDisplayMedia crashes ("Video was requested, but no video stream
+        // was provided") on the gone window. Guard with a generation token
+        // (cancel on stop/leave) and, on Slack, stop as soon as `sharing` (the
+        // real selfPresenting toggle) reports engaged.
+        const myGen = ++shareGeneration;
         (async () => {
           for (let attempt = 1; attempt <= 5; attempt++) {
             await new Promise((r) => setTimeout(r, attempt === 1 ? 1800 : 2000));
+            if (myGen !== shareGeneration) {
+              console.log('[electron] Whiteboard share: Present trigger loop cancelled (superseded by stop/leave/new share)');
+              return;
+            }
+            // On Slack `sharing` tracks the REAL toggle (selfPresenting), so once
+            // it's engaged, re-triggering would turn it back OFF — stop. On Meet
+            // `sharing` is set optimistically up front, so it isn't a reliable
+            // "engaged" signal there; keep the belt-and-suspenders retries.
+            if (slackProviderMode && localServer.sharing) {
+              console.log('[electron] Whiteboard share: engaged on Slack (attempt ' + attempt + ') — stopping retries');
+              return;
+            }
             if (meetView && !meetView.webContents.isDestroyed()) {
               console.log('[electron] Whiteboard share: Present-now trigger attempt ' + attempt + '/5');
               sendCallCmd(CALL_COMMANDS.triggerScreenShare, { shareType: 'window' });
@@ -470,6 +492,7 @@ const localServer = new globalThis.LocalServer({
   onStopSharing: () => {
     console.log('[local-server] Stop sharing requested by agent');
     fullScreenShareRequested = false;
+    shareGeneration++; // cancel any in-flight Present-now retry loop (it would re-toggle Slack)
     // Close the whiteboard window — this ends the display media stream for whiteboard shares
     if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
       whiteboardWindow.close();
@@ -1047,6 +1070,12 @@ let meetView = null;      // right Meet BrowserView
 let panelPopoutWindow = null; // when popped out, the panelView lives here instead
 let whiteboardWindow = null;
 let fullScreenShareRequested = false;
+// Generation token for the whiteboard-share "Present now" retry loop. Bumped on
+// every new share AND on stop/leave, so a stray retry can't fire after the share
+// already succeeded or after the whiteboard window was torn down. On Slack the
+// share control is a single TOGGLE, so a late retry re-click flips it OFF and
+// then crashes getDisplayMedia ("no video stream") on the gone window.
+let shareGeneration = 0;
 // #189: whether we've already auto-posted the whiteboard URL to Meet chat
 // this call. Reset when the call ends so the next call posts again.
 let whiteboardLinkPostedForCall = false;

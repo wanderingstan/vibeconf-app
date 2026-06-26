@@ -1717,7 +1717,10 @@ function launchClaudeTerminal(meetCode) {
   // running, `do script` would spawn TWO windows — the auto-created launch
   // window plus the scripted one. Reuse the launch window (window 1) in that
   // case; only spawn a fresh window when Terminal is already up.
-  const cmd = `cd ${claudeDir.replace(/"/g, '\\"')} && ${claudeCmd}`;
+  // Set VIBECONF_LOCAL_PORT for the spawned session so the agent-activity hook
+  // (a child process of claude) reports this bot's transcript to THIS app's
+  // local server — not the default 7865 (correct for profile bots on 7866+).
+  const cmd = `cd ${claudeDir.replace(/"/g, '\\"')} && VIBECONF_LOCAL_PORT=${localServer.port} ${claudeCmd}`;
   const script = `tell application "Terminal"
   if not running then
     do script "${cmd}" in window 1
@@ -1885,6 +1888,102 @@ if (!appProfile) {
 // Auto-install MCP config + Claude skill on first launch
 // ---------------------------------------------------------------------------
 
+// Agent-activity hook: a tiny PostToolUse hook, scoped to mcp__vibeconferencing__*
+// tools, that reports the DRIVING session's transcript path to this app's local
+// server. Scoping to our own MCP tools means only the session actually driving a
+// bot reports (no cross-session noise), and it works for BOTH launch paths
+// (app-spawned OR an existing session that ran /join-call). The app tails that
+// transcript onto the debug overlay (gated by the debugOverlay toggle).
+const AGENT_HOOK_CONTENT = `#!/usr/bin/env node
+// Auto-installed by Vibeconferencing — reports the Claude session's transcript
+// path to the local bot server for the debug-overlay agent-activity tail.
+// Never blocks or breaks the agent: swallows all errors, exits 0 fast.
+const http = require('http');
+let raw = '';
+process.stdin.on('data', (c) => { raw += c; });
+process.stdin.on('end', () => {
+  let d = {};
+  try { d = JSON.parse(raw); } catch (e) {}
+  const transcriptPath = d.transcript_path;
+  if (!transcriptPath) return done();
+  const port = process.env.VIBECONF_LOCAL_PORT || '7865';
+  const body = JSON.stringify({ sessionId: d.session_id, transcriptPath });
+  const req = http.request({
+    host: '127.0.0.1', port, path: '/api/agent-session', method: 'POST',
+    headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
+    timeout: 500,
+  }, (res) => { res.resume(); res.on('end', done); });
+  req.on('error', done);
+  req.on('timeout', () => { req.destroy(); done(); });
+  req.write(body); req.end();
+});
+function done() { process.exit(0); }
+setTimeout(done, 1500); // never hang the agent
+`;
+
+function ensureAgentActivityHook() {
+  const home = process.env.HOME || process.env.USERPROFILE;
+  const claudeDir = path.join(home, '.claude');
+  const hookPath = path.join(claudeDir, 'vibeconf-agent-hook.cjs');
+  const settingsPath = path.join(claudeDir, 'settings.json');
+  try {
+    fs.mkdirSync(claudeDir, { recursive: true });
+    // Write the hook file only when its content differs (avoid needless churn).
+    let existing = '';
+    try { existing = fs.readFileSync(hookPath, 'utf-8'); } catch { /* missing */ }
+    if (existing !== AGENT_HOOK_CONTENT) fs.writeFileSync(hookPath, AGENT_HOOK_CONTENT);
+
+    // No port baked into the command: the hook reads VIBECONF_LOCAL_PORT from
+    // its inherited env (app-spawned sessions set it to THEIR bot's port — see
+    // launchClaudeTerminal) and falls back to 7865 (the primary app) for an
+    // existing session that ran /join-call. This is why the same global hook
+    // works for every bot — the port comes from the session, not the command.
+    const desiredCmd = `node "${hookPath}"`;
+    let settings = {};
+    try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')); } catch { /* none yet */ }
+    if (!settings.hooks) settings.hooks = {};
+    if (!Array.isArray(settings.hooks.PostToolUse)) settings.hooks.PostToolUse = [];
+    // Is our entry already present with the right command? (idempotent)
+    const isOurs = (e) => (e.hooks || []).some((h) => typeof h.command === 'string' && h.command.includes('vibeconf-agent-hook'));
+    const current = settings.hooks.PostToolUse.find(isOurs);
+    if (current && current.matcher === 'mcp__vibeconferencing__.*' && current.hooks?.[0]?.command === desiredCmd) {
+      return; // already correct
+    }
+    // Drop any stale vibeconf entries, then add the current one (preserves the
+    // user's own hooks).
+    settings.hooks.PostToolUse = settings.hooks.PostToolUse.filter((e) => !isOurs(e));
+    settings.hooks.PostToolUse.push({
+      matcher: 'mcp__vibeconferencing__.*',
+      hooks: [{ type: 'command', command: desiredCmd }],
+    });
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+    console.log('[electron] Installed agent-activity PostToolUse hook (port from session env, default 7865)');
+  } catch (err) {
+    console.warn('[electron] Failed to install agent-activity hook:', err.message);
+  }
+}
+
+function removeAgentActivityHook() {
+  const home = process.env.HOME || process.env.USERPROFILE;
+  const claudeDir = path.join(home, '.claude');
+  const hookPath = path.join(claudeDir, 'vibeconf-agent-hook.cjs');
+  const settingsPath = path.join(claudeDir, 'settings.json');
+  try {
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+    if (Array.isArray(settings.hooks?.PostToolUse)) {
+      const before = settings.hooks.PostToolUse.length;
+      settings.hooks.PostToolUse = settings.hooks.PostToolUse.filter(
+        (e) => !(e.hooks || []).some((h) => typeof h.command === 'string' && h.command.includes('vibeconf-agent-hook'))
+      );
+      if (settings.hooks.PostToolUse.length !== before) {
+        fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+        console.log('[electron] Removed agent-activity hook from settings.json');
+      }
+    }
+  } catch { /* no settings file */ }
+  try { fs.rmSync(hookPath, { force: true }); } catch { /* ignore */ }
+}
+
 function ensureClaudeIntegration(localPort) {
   const home = process.env.HOME || process.env.USERPROFILE;
   const claudeDir = path.join(home, '.claude');
@@ -1959,6 +2058,10 @@ function ensureClaudeIntegration(localPort) {
     console.log('[electron] Skill v%s already installed', SKILL_VERSION);
   }
 
+  // Agent-activity overlay hook (independent of the MCP/skill version bumps).
+  // Port-agnostic: app-spawned sessions inject VIBECONF_LOCAL_PORT themselves.
+  ensureAgentActivityHook();
+
   if (changed) {
     console.log('[electron] Claude integration installed. Restart Claude Code to pick up MCP changes.');
   }
@@ -1990,6 +2093,9 @@ function uninstallClaudeIntegration() {
     fs.rmSync(skillDir, { recursive: true, force: true });
     console.log('[electron] Removed skill at', skillDir);
   } catch {}
+
+  // Remove the agent-activity hook (settings.json entry + script file).
+  removeAgentActivityHook();
 
   console.log('[electron] Claude integration uninstalled.');
 }

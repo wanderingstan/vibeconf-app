@@ -148,6 +148,8 @@ function renderCallState(s) {
     ...queuedLines,
     `Participants (${(s.participants || []).length}):`,
     ...(parts.length ? parts : ['    (none detected)']),
+    `Agent activity (${(s.agentLog || []).length}):`,
+    ...((s.agentLog || []).length ? s.agentLog.map((l) => `    ${l}`) : ['    (no agent session)']),
   ].join('\n');
 }
 

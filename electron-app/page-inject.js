@@ -402,9 +402,13 @@
         const phrase = ev.phrase ? `"${ev.phrase}"` : 'SKIP';
         const latency = ev.latencyMs != null ? `${ev.latencyMs}ms` : '?';
         const src = ev.source === 'llm-fallback-builtin' ? 'fallback' : (ev.source || '?');
+        // src / latency / age each on their own line so the left column stays
+        // narrow (this metadata was the widest line in the stats column).
         return [
           `ack:      ${phrase}`,
-          `          ${src} · ${latency} · ${ago(ev.at)}`,
+          `          ${src}`,
+          `          ${latency}`,
+          `          ${ago(ev.at)}`,
         ];
       })();
       const clip = (s, max = 40) => {
@@ -443,10 +447,27 @@
         ...ackLines,
         `queued:   ${(d.pendingBotSpeech || []).length}`,
         `chat:     ${d.chatUnread ? 'UNREAD' : 'none'}`,
-        heard,
-        proc,
+        // heard/proc moved to the RIGHT column (above the agent log) — they're
+        // the other wide lines, so keeping them out of the left column keeps it
+        // narrow and the right column anchored close to the stats.
       ];
-      const lines = [...callLines, '', ...loopLines];
+      // AGENT — recent activity tailed from the driving Claude session's
+      // transcript (proof of life + early "off the rails" signal). Lines are
+      // pre-formatted compact strings (🗣 text / 🔧 tool / 💬 prompt). Rendered
+      // in full — long lines just run off the right edge of the canvas (no
+      // ellipsis), using as much of the surface as fits.
+      const agentLines = (() => {
+        const log = d.agentLog || [];
+        if (!log.length) return ['AGENT', '  (no agent session)'];
+        return ['AGENT', ...log.map((l) => '  ' + l)];
+      })();
+      // Right column: the two wide caption lines (heard/proc) on top, then the
+      // agent activity tail beneath them.
+      const rightLines = [heard, proc, '', ...agentLines];
+      // Left column = the stats (CALL + LOOP). Right column = the agent tail,
+      // so it can run taller (newest at the bottom) without pushing the stats
+      // off-frame.
+      const leftLines = [...callLines, '', ...loopLines];
 
       const pad = 16;
       const lineH = 30;
@@ -469,27 +490,37 @@
       ctx.shadowOffsetY = 1;
       const boxX = 24;
       const boxY = 24;
-      for (let i = 0; i < lines.length; i++) {
-        const ln = lines[i];
-        const x = boxX + pad;
-        const y = boxY + pad + i * lineH;
-        // Headers yellow; STALE loop / DEAF caps / ack-fallback red; heard blue;
-        // proc teal; rest light grey.
-        if (ln === 'CALL' || ln === 'LOOP') ctx.fillStyle = '#fdd663';
-        else if (ln.startsWith('loop:') && ln.includes('STALE')) ctx.fillStyle = '#ea4335';
-        else if (ln.includes('fallback') && (ln.startsWith('ack:') || ln.startsWith('          '))) ctx.fillStyle = '#ea4335';
-        else if (ln.startsWith('caps:') && ln.includes('DEAF')) ctx.fillStyle = '#ea4335';
-        else if (ln.startsWith('heard:')) ctx.fillStyle = '#8ab4f8';
-        else if (ln.startsWith('proc:')) ctx.fillStyle = '#5bd1c4';
-        else ctx.fillStyle = '#e8eaed';
-        // Outline first (carries the shadow), then the colored fill on top with
-        // the shadow disabled so it doesn't muddy the glyph interior.
-        ctx.strokeText(ln, x, y);
-        ctx.save();
-        ctx.shadowColor = 'transparent';
-        ctx.fillText(ln, x, y);
-        ctx.restore();
-      }
+      // Headers yellow; STALE loop / DEAF caps / ack-fallback red; heard blue;
+      // proc teal; rest light grey.
+      const colorFor = (ln) => {
+        if (ln === 'CALL' || ln === 'LOOP' || ln === 'AGENT') return '#fdd663';
+        if (ln.startsWith('loop:') && ln.includes('STALE')) return '#ea4335';
+        if (ln.includes('fallback') && (ln.startsWith('ack:') || ln.startsWith('          '))) return '#ea4335';
+        if (ln.startsWith('caps:') && ln.includes('DEAF')) return '#ea4335';
+        if (ln.startsWith('heard:')) return '#8ab4f8';
+        if (ln.startsWith('proc:')) return '#5bd1c4';
+        return '#e8eaed';
+      };
+      const drawColumn = (colLines, x) => {
+        for (let i = 0; i < colLines.length; i++) {
+          const ln = colLines[i];
+          const y = boxY + pad + i * lineH;
+          ctx.fillStyle = colorFor(ln);
+          // Outline first (carries the shadow), then the colored fill on top
+          // with the shadow disabled so it doesn't muddy the glyph interior.
+          ctx.strokeText(ln, x, y);
+          ctx.save();
+          ctx.shadowColor = 'transparent';
+          ctx.fillText(ln, x, y);
+          ctx.restore();
+        }
+      };
+      // Fixed columns (left 1/3, right 2/3 of the canvas) so the right column
+      // doesn't jump around as the stats text changes width.
+      const leftX = boxX + pad;
+      const rightX = canvas.width / 3;
+      drawColumn(leftLines, leftX);
+      drawColumn(rightLines, rightX);
       ctx.restore();
     }
 

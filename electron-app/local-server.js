@@ -9,6 +9,7 @@ const crypto = require('crypto');
 const { URL } = require('url');
 const prefsSchema = require('./preferences-schema.js');
 const { getRecentSessionLog, getSessionLogPath } = require('./session-log.js');
+const { TranscriptTailer } = require('./agent-transcript.js');
 
 // Mime types for the whiteboard asset server (#157). Conservative list —
 // images and PDFs, the formats the whiteboard markdown / window can actually
@@ -143,6 +144,12 @@ class LocalServer {
     //   passive — silent until its name is mentioned
     //   silent  — listens for its name but never speaks; can still act (whiteboard, tools)
     this.mode = 'active';
+
+    // Agent-activity tail: the driving Claude session reports its transcript
+    // path here (via the auto-installed hook); we tail it into a ring buffer
+    // shown on the debug overlay. Gated by the same `debugOverlay` toggle.
+    this.agentLog = [];
+    this._agentTailer = new TranscriptTailer({ onLines: (lines) => { this.agentLog = lines; } });
 
     // Room state (single room — the active call)
     this.roomId = null;
@@ -711,6 +718,16 @@ class LocalServer {
     return this.currentCallBotName || this.getConfiguredBotName() || null;
   }
 
+  // Bind (or rebind) the agent-activity tail to a Claude session transcript.
+  // Called from the /api/agent-session route, which the PostToolUse hook hits.
+  setAgentSession({ sessionId, transcriptPath } = {}) {
+    if (!transcriptPath) return;
+    if (transcriptPath !== this._agentTailer.path) {
+      console.log('[local-server] Agent session bound:', sessionId || '?', '→', transcriptPath);
+    }
+    this._agentTailer.bind(transcriptPath, sessionId);
+  }
+
   getCallStateSnapshot() {
     // Cross-reference Meet participants against registered bot members so
     // the panel can show (bot) alongside (self) (#162). Same logic the MCP
@@ -749,6 +766,9 @@ class LocalServer {
       // thinking transition) — distinct from lastCaption, which is the freshest
       // caption and may still be growing. Cleared implies nothing processed yet.
       processing: this.lastProcessingText || null,
+      // Recent agent (Claude session) activity — compact lines tailed from the
+      // driving session's transcript. Shown on the debug overlay only.
+      agentLog: this.agentLog || [],
       workingMemory: this.getWorkingMemory(),
       sharing: this.sharing,
       someoneElsePresenting: this.someoneElsePresenting,
@@ -2008,6 +2028,18 @@ class LocalServer {
       });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: true, workingMemory: updated }));
+      return;
+    }
+
+    // The driving Claude session's PostToolUse hook reports its transcript path
+    // here so we can tail it onto the debug overlay. Best-effort; never errors.
+    if (url.pathname === '/api/agent-session' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      let parsed;
+      try { parsed = JSON.parse(body || '{}'); } catch { parsed = {}; }
+      this.setAgentSession({ sessionId: parsed.sessionId, transcriptPath: parsed.transcriptPath });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true }));
       return;
     }
 

@@ -22,6 +22,8 @@
 // Exit non-zero on a real failure (share didn't engage, or vision didn't see it).
 
 import { readFileSync } from 'fs';
+import { execFile } from 'child_process';
+import { dirname } from 'path';
 import { Bot, sleep, report, record } from './meet-test-lib.mjs';
 
 const arg = (name, def) => { const i = process.argv.indexOf('--' + name); return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : def; };
@@ -32,9 +34,28 @@ const stamp = process.argv.includes('--stamp') ? process.argv[process.argv.index
 const NONCE = `SHAREOK-${stamp}`;
 const VISION_MODEL = process.env.VIBECONF_VISION_MODEL || 'claude-haiku-4-5-20251001';
 
-// Ask Claude vision whether `needle` is visible in the screenshot. Returns
-// true/false, or null when there's no API key (can't assert).
+// Ask Claude whether `needle` is visible in the screenshot. PREFERS the `claude`
+// CLI — it uses the user's Claude subscription, so no API key is needed (the
+// model the whole product assumes you have). --add-dir lets it Read the
+// screenshot from the OS temp dir; --allowedTools Read keeps it to just looking.
+// Returns true/false, or null when the CLI is unavailable AND there's no API key
+// fallback (the test then captures + prints the path for a manual eyeball).
+function claudeCliSees(imagePath, needle) {
+  return new Promise((resolve) => {
+    const prompt = `Read the image file at ${imagePath} (a Google Meet screenshot). Is the text "${needle}" visible anywhere in it, including inside a shared-screen / presentation tile? Answer with ONLY one word: yes or no.`;
+    execFile('claude', ['-p', prompt, '--allowedTools', 'Read', '--add-dir', dirname(imagePath)],
+      { timeout: 120000 }, (err, stdout) => {
+        if (err) { resolve(null); return; } // claude not installed / not logged in
+        resolve(/\byes\b/i.test((stdout || '').trim()));
+      });
+  });
+}
+
 async function visionSeesText(imagePath, needle) {
+  // 1) Claude CLI (subscription — the preferred path, no key).
+  const viaCli = await claudeCliSees(imagePath, needle);
+  if (viaCli !== null) return viaCli;
+  // 2) Anthropic API fallback (e.g. CI with a key but no interactive claude login).
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) return null;
   const b64 = readFileSync(imagePath).toString('base64');
@@ -102,8 +123,9 @@ async function run() {
   if (shot.ok) {
     const seen = await visionSeesText(shot.path, NONCE);
     if (seen === null) {
-      // No API key (or vision unavailable): capture-and-eyeball, not a failure.
-      record(b.name, 'nonceVisible', true, `SKIPPED vision (no ANTHROPIC_API_KEY) — eyeball: ${shot.path}`);
+      // Neither the claude CLI nor an API key was available: capture-and-eyeball,
+      // not a failure.
+      record(b.name, 'nonceVisible', true, `SKIPPED vision (no claude CLI + no ANTHROPIC_API_KEY) — eyeball: ${shot.path}`);
     } else {
       record(b.name, 'nonceVisible', seen,
         seen ? `vision confirms "${NONCE}" is on the shared screen` : `vision did NOT see "${NONCE}" — share may not have delivered. ${shot.path}`);

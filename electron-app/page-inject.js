@@ -435,8 +435,9 @@
         ...ackLines,
         `queued:   ${(d.pendingBotSpeech || []).length}`,
         `chat:     ${d.chatUnread ? 'UNREAD' : 'none'}`,
-        heard,
-        proc,
+        // heard/proc moved to the RIGHT column (above the agent log) — they're
+        // the other wide lines, so keeping them out of the left column keeps it
+        // narrow and the right column anchored close to the stats.
       ];
       // AGENT — recent activity tailed from the driving Claude session's
       // transcript (proof of life + early "off the rails" signal). Lines are
@@ -448,6 +449,9 @@
         if (!log.length) return ['AGENT', '  (no agent session)'];
         return ['AGENT', ...log.map((l) => '  ' + head(l))];
       })();
+      // Right column: the two wide caption lines (heard/proc) on top, then the
+      // agent activity tail beneath them.
+      const rightLines = [heard, proc, '', ...agentLines];
       // Left column = the stats (CALL + LOOP). Right column = the agent tail,
       // so it can run taller (newest at the bottom) without pushing the stats
       // off-frame.
@@ -504,7 +508,7 @@
       let leftW = 0;
       for (const ln of leftLines) leftW = Math.max(leftW, ctx.measureText(ln).width);
       drawColumn(leftLines, leftX);
-      drawColumn(agentLines, leftX + leftW + 40);
+      drawColumn(rightLines, leftX + leftW + 40);
       ctx.restore();
     }
 

@@ -12,9 +12,14 @@ const fs = require('fs');
 const MAX_LINES = 16;          // ring-buffer depth — fills the side column next to the stats
 const SEED_TAIL_BYTES = 64 * 1024; // how much of an existing transcript to seed from
 
-function clip(s, max) {
+// Collapse whitespace to a single line. No ellipsis truncation — the overlay
+// lets text run to (and off) the canvas edge, using as much surface as fits.
+// The generous cap only guards per-frame draw cost against a pathological
+// multi-KB tool arg; it sits far beyond the visible width, so it never shows
+// as a cut-off line.
+function oneLine(s) {
   const t = String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
-  return t.length > max ? t.slice(0, max - 1) + '…' : t;
+  return t.length > 200 ? t.slice(0, 200) : t;
 }
 
 function shortPath(p) {
@@ -33,14 +38,14 @@ function prettyToolName(name) {
 // surface the salient arg (command / file / pattern), not the whole input.
 function briefToolInput(input) {
   if (!input || typeof input !== 'object') return '';
-  if (typeof input.command === 'string') return clip(input.command, 48);
+  if (typeof input.command === 'string') return oneLine(input.command);
   if (typeof input.file_path === 'string') return shortPath(input.file_path);
   if (typeof input.path === 'string') return shortPath(input.path);
-  if (typeof input.pattern === 'string') return clip(input.pattern, 36);
-  if (typeof input.query === 'string') return clip(input.query, 36);
-  if (typeof input.url === 'string') return clip(input.url, 44);
-  if (typeof input.prompt === 'string') return clip(input.prompt, 36);
-  if (typeof input.description === 'string') return clip(input.description, 36);
+  if (typeof input.pattern === 'string') return oneLine(input.pattern);
+  if (typeof input.query === 'string') return oneLine(input.query);
+  if (typeof input.url === 'string') return oneLine(input.url);
+  if (typeof input.prompt === 'string') return oneLine(input.prompt);
+  if (typeof input.description === 'string') return oneLine(input.description);
   return '';
 }
 
@@ -55,22 +60,22 @@ function formatEntry(entry) {
       if (Array.isArray(content)) {
         for (const block of content) {
           if (block.type === 'text' && block.text && block.text.trim()) {
-            out.push('🗣 ' + clip(block.text, 60));
+            out.push('🗣 ' + oneLine(block.text));
           } else if (block.type === 'tool_use') {
             const b = briefToolInput(block.input);
             out.push('🔧 ' + prettyToolName(block.name) + (b ? ': ' + b : ''));
           }
         }
       } else if (typeof content === 'string' && content.trim()) {
-        out.push('🗣 ' + clip(content, 60));
+        out.push('🗣 ' + oneLine(content));
       }
     } else if (type === 'user') {
       // Real user prompt = string content. tool_result blocks are noise; skip.
       if (typeof content === 'string' && content.trim()) {
-        out.push('💬 ' + clip(content, 56));
+        out.push('💬 ' + oneLine(content));
       } else if (Array.isArray(content)) {
         const txt = content.find((b) => b.type === 'text' && b.text);
-        if (txt) out.push('💬 ' + clip(txt.text, 56));
+        if (txt) out.push('💬 ' + oneLine(txt.text));
       }
     }
   } catch { /* malformed entry — skip */ }

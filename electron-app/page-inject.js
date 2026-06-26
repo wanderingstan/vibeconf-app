@@ -441,13 +441,13 @@
       ];
       // AGENT — recent activity tailed from the driving Claude session's
       // transcript (proof of life + early "off the rails" signal). Lines are
-      // pre-formatted compact strings (🗣 text / 🔧 tool / 💬 prompt). Keep the
-      // START (emoji + tool name), unlike the caption clips which keep the tail.
-      const head = (s, max = 46) => { const t = String(s || ''); return t.length > max ? t.slice(0, max - 1) + '…' : t; };
+      // pre-formatted compact strings (🗣 text / 🔧 tool / 💬 prompt). Rendered
+      // in full — long lines just run off the right edge of the canvas (no
+      // ellipsis), using as much of the surface as fits.
       const agentLines = (() => {
         const log = d.agentLog || [];
         if (!log.length) return ['AGENT', '  (no agent session)'];
-        return ['AGENT', ...log.map((l) => '  ' + head(l))];
+        return ['AGENT', ...log.map((l) => '  ' + l)];
       })();
       // Right column: the two wide caption lines (heard/proc) on top, then the
       // agent activity tail beneath them.

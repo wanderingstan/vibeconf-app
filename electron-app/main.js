@@ -341,6 +341,7 @@ const localServer = new globalThis.LocalServer({
   },
   onLeaveCall: () => {
     console.log('[local-server] Leave call requested by agent');
+    stopAllRunwayFaces('leave-call'); // P2: end Runway sessions + timers when leaving the call
     shareGeneration++; // cancel any in-flight Present-now retry loop before the view tears down
 
     // Wait for any in-flight TTS to finish so goodbye speech actually plays.
@@ -1164,6 +1165,15 @@ function runwayReestablish(why) {
   Promise.resolve(setRunwayFace(seat, true)).finally(() => setTimeout(() => { _runwayReestablishing = false; }, 8000));
 }
 ipcMain.on('runway-avatar-lost', () => runwayReestablish('renderer reported loss'));
+
+// P2: tear down ALL runway faces — clears renewal timers + ends server-side Runway/LiveKit
+// sessions so we don't leak "ghost avatars" on leave-call / idle / window-close / quit. (codex.)
+async function stopAllRunwayFaces(why) {
+  const seats = Object.keys(_runway).filter((s) => _runway[s] && (_runway[s].enabled || _runway[s].sessionId));
+  if (!seats.length) return;
+  console.log('[runway] stopping all faces (' + why + '):', seats.join(', '));
+  for (const seat of seats) { try { await setRunwayFace(seat, false); } catch (e) {} }
+}
 
 let whiteboardWindow = null;
 let fullScreenShareRequested = false;
@@ -2672,6 +2682,7 @@ app.on('window-all-closed', () => {
 // Close any terminal windows we opened, synchronously, before the process
 // exits — covers Cmd-Q and other quit paths the async close would miss.
 app.on('before-quit', () => {
+  stopAllRunwayFaces('before-quit'); // P2: best-effort end of Runway sessions on quit (fire-and-forget)
   closeAllClaudeTerminalsSync();
 });
 

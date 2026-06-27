@@ -95,10 +95,42 @@ class TTSProvider {
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => '');
-      throw new Error(`ElevenLabs API error ${response.status}: ${errorText}`);
+      // Parse ElevenLabs' structured error so callers can react to specific
+      // conditions (esp. quota_exceeded) instead of regex-matching a raw string.
+      let detail = null;
+      try { detail = JSON.parse(errorText)?.detail || null; } catch {}
+      const code = detail?.status || detail?.code || null;
+      let message = `ElevenLabs API error ${response.status}`;
+      if (code === 'quota_exceeded') {
+        // Pull the credit numbers out of the message for a clean, actionable note.
+        const m = /You have (\d+) credits remaining, while (\d+) credits are required/.exec(detail?.message || '');
+        const remaining = m ? Number(m[1]) : null;
+        const required = m ? Number(m[2]) : null;
+        message = remaining != null
+          ? `ElevenLabs quota exhausted — ${remaining} credits left, ${required} needed for this line`
+          : `ElevenLabs quota exhausted`;
+        const err = new Error(message);
+        err.code = 'quota_exceeded';
+        err.status = response.status;
+        err.quota = { remaining, required };
+        throw err;
+      }
+      const err = new Error(`${message}: ${errorText}`);
+      err.code = code || 'http_error';
+      err.status = response.status;
+      throw err;
     }
 
     return response.arrayBuffer();
+  }
+
+  // Force the macOS `say` fallback for a single utterance, regardless of the
+  // configured provider. main.js calls this when ElevenLabs fails (e.g. quota
+  // exhausted mid-call) so the bot stays audible with a degraded voice rather
+  // than going silent. Returns an ArrayBuffer or null. Throws if not on macOS.
+  async sayFallback(text) {
+    if (!text?.trim()) return null;
+    return this._macosSay(text);
   }
 
   async _macosSay(text) {

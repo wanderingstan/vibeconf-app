@@ -208,11 +208,13 @@ class LocalServer {
     // but the real answer is "no, actually..."). Cleared after one read.
     this.lastAckPhrase = null;
 
-    // Active-listening probe bank (#245). The slow model deposits short,
-    // context-aware interjections here on background ticks via bank_probe;
-    // the Apple firing gate fires the freshest fresh one at a detected opening
-    // (or a generic fallback). Each entry: { text, at: ms }. lastProbeAt drives
-    // the rate limit so the bot doesn't over-interject.
+    // Active-listening probe bank (#245). The slow model deposits a short,
+    // context-aware interjection here on background ticks via bank_probe; the
+    // Apple firing gate fires it at a detected opening (or a generic fallback).
+    // SINGLE-SLOT: holds only the freshest probe — each tick replaces the prior
+    // one, and firing consumes it (no stale backlog). Stays an array (0 or 1
+    // entry { text, at: ms }) for snapshot/back-compat. lastProbeAt drives the
+    // rate limit so the bot doesn't over-interject.
     this.probeBank = [];
     this.lastProbeAt = 0;
     this._probeTimer = null;
@@ -799,6 +801,26 @@ class LocalServer {
         return { set: true, caption: caption || null, imageRef, length: svg.length };
       })(),
       sessionLogPath: getSessionLogPath(),
+      // The active experiment/timing knobs, surfaced on the debug overlay so
+      // anyone in the call can see which flags a given bot is running (e.g.
+      // whether Seth's bots have probeFiring on). Resolved to the EFFECTIVE
+      // value — store override if set, else the schema default — so unset
+      // knobs show what the bot actually runs, not a blank.
+      experiments: {
+        defaultSilenceSeconds: this._pref('defaultSilenceSeconds'),
+        probeFiring: this._pref('probeFiring'),
+        backgroundTickWords: this._pref('backgroundTickWords'),
+        probeSilenceMs: this._pref('probeSilenceMs'),
+        triageAck: this._pref('triageAck'),
+      },
+      // The slow model's banked interjections (#245), newest-last — so the
+      // overlay can show the probe content evolving across ticks. Only
+      // populated when probeFiring is on (otherwise nothing banks/fires).
+      // lastProbeFiredAt lets the overlay show when one was last spoken.
+      probeBank: this._pref('probeFiring')
+        ? (this.probeBank || []).map((p) => ({ text: p.text, at: p.at }))
+        : [],
+      lastProbeFiredAt: this.lastProbeAt || 0,
       activeWaiters: this.waiters.length,
       lastAckEvent: this.lastAckEvent,
       lastWaitForSpeechAt: this.lastWaitForSpeechAt,
@@ -1516,28 +1538,31 @@ class LocalServer {
 
   // --- Active-listening probe bank + firing gate (#245) ---
 
-  // The slow model deposits a short interjection on a background tick. Keep only
-  // the last few; freshness is enforced at fire time via probeMaxAgeMs.
+  // The slow model deposits a short interjection on a background tick. We hold
+  // only the SINGLE freshest probe — each tick replaces the prior one. A probe
+  // composed against an older moment is never worth speaking once a newer one
+  // exists, and once the freshest is fired we'd rather stay silent than dole out
+  // a stale-context backlog. (`probeBank` stays an array for snapshot/back-compat
+  // but never holds more than one entry.) Freshness is still age-gated at fire
+  // time via probeMaxAgeMs.
   bankProbe(text) {
     const t = (text || '').trim();
     if (!t) return false;
-    this.probeBank.push({ text: t, at: Date.now() });
-    if (this.probeBank.length > 5) this.probeBank = this.probeBank.slice(-5);
-    console.log(ts(), '🎣 [probe] banked: ' + JSON.stringify(t) + ' (bank size ' + this.probeBank.length + ')');
+    this.probeBank = [{ text: t, at: Date.now() }];
+    console.log(ts(), '🎣 [probe] banked: ' + JSON.stringify(t) + ' (replaces prior)');
     return true;
   }
 
-  // Newest banked probe still within probeMaxAgeMs, removed from the bank.
-  // Drops any staler entries it passes. Returns text or null.
+  // The freshest banked probe if still within probeMaxAgeMs, removed from the
+  // bank (so it fires at most once). Returns text or null. With single-slot
+  // banking there is never a backlog to fall back to — once fired or aged out,
+  // the bot stays silent until the next tick composes a new probe.
   _consumeFreshProbe() {
     const maxAge = Number(this._pref('probeMaxAgeMs')) || 0;
-    const now = Date.now();
-    while (this.probeBank.length) {
-      const entry = this.probeBank.pop();
-      if (maxAge <= 0 || now - entry.at <= maxAge) return entry.text;
-      // stale — discard and keep looking back
-    }
-    return null;
+    const entry = this.probeBank.pop();
+    if (!entry) return null;
+    if (maxAge <= 0 || Date.now() - entry.at <= maxAge) return entry.text;
+    return null; // stale — discarded (popped above), nothing older to try
   }
 
   // Most-recent transcript turn NOT spoken by the bot itself (or null). Used to

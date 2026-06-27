@@ -1567,11 +1567,18 @@ function speakText(text, voice, emoji) {
   enqueueAudio(async () => {
     // Temporarily override voice if specified (works for both macOS and
     // ElevenLabs). Safe under serialization — no concurrent speak can clobber it.
+    // Route by identity: a name that matches an installed macOS voice forces the
+    // macOS provider (so it actually plays even with an EL key set); anything
+    // else is treated as an ElevenLabs voice ID. Restored in finally.
     const originalMacVoice = tts.macosVoice;
     const originalELVoice = tts.voiceId;
+    const originalProvider = tts.provider;
     if (voice) {
-      tts.updateConfig({ macosVoice: voice });
-      if (voice.length > 15) tts.updateConfig({ voiceId: voice });
+      if (macosVoiceNameSet.has(voice)) {
+        tts.updateConfig({ provider: 'macos-say', macosVoice: voice });
+      } else {
+        tts.updateConfig({ provider: 'elevenlabs', voiceId: voice });
+      }
     }
     try {
       const audioBuffer = await tts.synthesize(spokenText);
@@ -1579,17 +1586,99 @@ function speakText(text, voice, emoji) {
       const base64Audio = Buffer.from(audioBuffer).toString('base64');
       console.log('[electron] TTS synthesized:', text.slice(0, 40), '→', base64Audio.length, 'bytes base64');
       await sendPlayTts(base64Audio, emoji);
+      // ElevenLabs is back — if we'd previously degraded to the macOS voice,
+      // tell the agent its normal voice is restored (rides status.errors → the
+      // agent sees it on its next wait_for_speech lull).
+      if (ttsVoiceFallbackActive) {
+        ttsVoiceFallbackActive = false;
+        localServer.addError('Voice restored — ElevenLabs is working again; back to your normal voice.');
+      }
     } catch (err) {
       console.error('[electron] TTS error:', err.message);
       broadcastError('TTS: ' + err.message.slice(0, 120));
+      // Don't go silent on an ElevenLabs failure (esp. quota_exceeded mid-call):
+      // fall back to the macOS `say` voice so the bot keeps talking, just in a
+      // plainer voice. Only the audio degrades — the words still land.
+      try {
+        const fallbackBuffer = await tts.sayFallback(spokenText);
+        if (fallbackBuffer) {
+          const base64Audio = Buffer.from(fallbackBuffer).toString('base64');
+          console.log('[electron] TTS fell back to macOS say:', text.slice(0, 40), '→', base64Audio.length, 'bytes base64');
+          await sendPlayTts(base64Audio, emoji);
+          // Tell the agent ONCE that its voice changed, so it knows it now
+          // sounds different (and can mention it / not be surprised). Rides the
+          // status.errors channel the agent already reads on each lull.
+          if (!ttsVoiceFallbackActive) {
+            ttsVoiceFallbackActive = true;
+            const why = err.code === 'quota_exceeded' ? 'ElevenLabs quota exhausted' : `ElevenLabs unavailable (${(err.message || '').slice(0, 60)})`;
+            localServer.addError(`Voice changed: ${why} — now speaking in the macOS fallback voice, which sounds noticeably different. Your words still play; you may briefly acknowledge the voice change if it fits.`);
+          }
+        }
+      } catch (fbErr) {
+        console.error('[electron] TTS macOS fallback also failed:', fbErr.message);
+      }
     } finally {
       if (voice) {
         tts.updateConfig({ macosVoice: originalMacVoice });
         tts.voiceId = originalELVoice;
+        tts.provider = originalProvider;
       }
     }
   });
 }
+
+// The in-flight `say` child for voice-preview auditions (preferences). Killed
+// before starting a new one so rapid dropdown changes don't overlap.
+let _voicePreviewChild = null;
+
+// Installed macOS `say` voice names (populated at startup). Lets the speak()
+// voice-override route a name to the right provider — a macOS voice name forces
+// the macOS provider even when an ElevenLabs key is set, instead of being
+// mis-sent to ElevenLabs as a (nonexistent) voice ID.
+let macosVoiceNameSet = new Set();
+
+// Enumerate installed macOS `say` voices → [{ name, locale, sample }], quality
+// first (Premium > Enhanced > plain), then English, then name. Shared by the
+// preferences dropdown IPC and the startup name-set build.
+async function enumerateMacosVoices() {
+  if (process.platform !== 'darwin') return [];
+  const { execFile } = require('child_process');
+  return new Promise((resolve) => {
+    execFile('say', ['-v', '?'], { timeout: 5000, maxBuffer: 1 << 20 }, (err, stdout) => {
+      if (err) { console.error('[electron] enumerateMacosVoices failed:', err.message); return resolve([]); }
+      // Lines: "Samantha  en_US  # Hello..." but newer multi-locale voices use a
+      // single space and parens ("Eddy (English (US)) en_US  # ...") and some
+      // locales carry digits ("Majed  ar_001  # ..."). Split on '#', then peel
+      // the locale (last word) off the left; everything before it is the name.
+      const voices = [];
+      for (const line of String(stdout || '').split('\n')) {
+        const hash = line.indexOf('#');
+        if (hash < 0) continue;
+        const left = line.slice(0, hash).trim();
+        const sample = line.slice(hash + 1).trim();
+        const m = /^(.*\S)\s+([A-Za-z]{2,3}(?:_[A-Za-z0-9]+)?)$/.exec(left);
+        if (!m) continue;
+        voices.push({ name: m[1].trim(), locale: m[2], sample });
+      }
+      const seen = new Set();
+      const deduped = voices.filter((v) => (seen.has(v.name) ? false : seen.add(v.name)));
+      const tier = (v) => (/\(Premium\)/i.test(v.name) ? 0 : /\(Enhanced\)/i.test(v.name) ? 1 : 2);
+      deduped.sort((a, b) => {
+        const ta = tier(a), tb = tier(b);
+        if (ta !== tb) return ta - tb;
+        const ae = a.locale.startsWith('en'), be = b.locale.startsWith('en');
+        if (ae !== be) return ae ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+      resolve(deduped);
+    });
+  });
+}
+
+// True while we've degraded from ElevenLabs to the macOS `say` voice (e.g.
+// quota exhausted). Gates the one-shot "your voice changed" notice to the agent
+// so it fires once on degrade and once on recovery, not on every utterance.
+let ttsVoiceFallbackActive = false;
 
 // Track recent error notifications so a flapping condition doesn't spam the
 // notification center. Same message within this window is suppressed.
@@ -2236,13 +2325,18 @@ app.whenReady().then(async () => {
   }
 
   // Load saved config
-  const savedConfig = store.getMultiple(['ttsApiKey', 'ttsVoiceId', 'botName', 'syncBaseUrl', 'macosVoice']);
+  const savedConfig = store.getMultiple(['ttsApiKey', 'ttsVoiceId', 'botName', 'syncBaseUrl', 'macosVoice', 'ttsProvider']);
   if (savedConfig.ttsApiKey) {
     tts.updateConfig({ apiKey: savedConfig.ttsApiKey });
     stt.updateConfig({ apiKey: savedConfig.ttsApiKey });
   }
   if (savedConfig.ttsVoiceId) tts.updateConfig({ voiceId: savedConfig.ttsVoiceId });
   if (savedConfig.macosVoice) tts.updateConfig({ macosVoice: savedConfig.macosVoice });
+  // Explicit provider override (e.g. bot chose a built-in voice as primary).
+  if (savedConfig.ttsProvider) tts.updateConfig({ provider: savedConfig.ttsProvider });
+  // Prime the macOS voice-name set so speak()'s voice-override can route a name
+  // to the right provider from the first utterance (refreshed on each list call).
+  enumerateMacosVoices().then((vs) => { macosVoiceNameSet = new Set(vs.map((v) => v.name)); }).catch(() => {});
   if (savedConfig.botName) sync.updateConfig({ botName: savedConfig.botName });
   if (savedConfig.syncBaseUrl) sync.updateConfig({ baseUrl: savedConfig.syncBaseUrl });
 
@@ -3707,6 +3801,49 @@ function setupIPC() {
     if (config.voiceId) {
       store.set('ttsVoiceId', config.voiceId);
     }
+    // Built-in macOS `say` voice — used when no ElevenLabs key is set, and as
+    // the fallback voice when ElevenLabs is unavailable (e.g. quota exhausted).
+    if (config.macosVoice) {
+      store.set('macosVoice', config.macosVoice);
+    }
+    // Explicit provider override ('macos-say' / 'elevenlabs' / 'auto'). Lets the
+    // bot (or user) force the built-in voice as primary even with an EL key set.
+    if (config.provider) {
+      store.set('ttsProvider', config.provider);
+    }
+  });
+
+  // List the installed macOS `say` voices for the preferences dropdown — the
+  // exact voices our macOS TTS path (tts._macosSay → `say -v Name`) can use.
+  // Returns [{ name, locale, sample }], quality-sorted (Premium > Enhanced >
+  // plain), English first. Also refreshes the name set used by speak() routing.
+  ipcMain.handle('list-macos-voices', async () => {
+    const voices = await enumerateMacosVoices();
+    macosVoiceNameSet = new Set(voices.map((v) => v.name));
+    return voices;
+  });
+
+  // Speak a short sample in the given macOS voice through the LOCAL speakers
+  // (not the call's virtual mic) so the user can audition a voice when they
+  // pick it in preferences. `say` with no -o plays on the default output.
+  // Cancels any in-flight preview so rapid changes don't overlap.
+  ipcMain.handle('preview-macos-voice', (_event, name) => {
+    if (process.platform !== 'darwin' || !name || typeof name !== 'string') return false;
+    const { execFile } = require('child_process');
+    try { if (_voicePreviewChild) _voicePreviewChild.kill(); } catch {}
+    // Strip the "(Premium)"/"(Enhanced)" quality suffix for the spoken phrase
+    // (keep the full name for `say -v`, which needs the exact identifier).
+    const spoken = name.replace(/\s*\([^)]*\)\s*$/, '').trim() || name;
+    _voicePreviewChild = execFile('say', ['-v', name, `Hello, my name is ${spoken}`], { timeout: 10000 }, () => {});
+    return true;
+  });
+
+  // Open the macOS pane where users download additional system voices:
+  // System Settings → Accessibility → Spoken Content → System Voice.
+  ipcMain.handle('open-voice-settings', () => {
+    if (process.platform !== 'darwin') return false;
+    shell.openExternal('x-apple.systempreferences:com.apple.preference.universalaccess?SpeechContent');
+    return true;
   });
 
   // --- Sync config ---

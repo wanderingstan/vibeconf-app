@@ -417,109 +417,121 @@ function isElevenLabsActive() {
   return !!config.ttsApiKey;
 }
 
+// Parse `say -v '?'` into [{ name, locale, sample, tier }], quality first
+// (Premium > Enhanced > plain), English first, then name. Robust to the
+// parenthetical multi-locale voices ("Eddy (English (US)) en_US") and numeric
+// locales ("Majed ar_001") that the simple column regex drops.
+function listMacosVoices() {
+  let output;
+  try { output = execSync('say -v "?"', { encoding: 'utf-8', timeout: 5000 }); }
+  catch { return []; }
+  const voices = [];
+  for (const line of output.split('\n')) {
+    const hash = line.indexOf('#');
+    if (hash < 0) continue;
+    const left = line.slice(0, hash).trim();
+    const sample = line.slice(hash + 1).trim();
+    const m = /^(.*\S)\s+([A-Za-z]{2,3}(?:_[A-Za-z0-9]+)?)$/.exec(left);
+    if (!m) continue;
+    const name = m[1].trim();
+    const tier = /\(Premium\)/i.test(name) ? 0 : /\(Enhanced\)/i.test(name) ? 1 : 2;
+    voices.push({ name, locale: m[2], sample, tier });
+  }
+  const seen = new Set();
+  const deduped = voices.filter(v => (seen.has(v.name) ? false : seen.add(v.name)));
+  deduped.sort((a, b) => {
+    if (a.tier !== b.tier) return a.tier - b.tier;
+    const ae = a.locale.startsWith('en'), be = b.locale.startsWith('en');
+    if (ae !== be) return ae ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+  return deduped;
+}
+
 // --- list_voices ---
 server.tool(
   "list_voices",
-  "List available text-to-speech voices. If ElevenLabs API key is configured, shows ElevenLabs voices. Otherwise shows macOS system voices.",
+  "List available text-to-speech voices — both ElevenLabs (if an API key is configured) and the built-in macOS voices. To use a built-in voice call set_voice with its EXACT name (e.g. 'Ava (Premium)'). The Premium/Enhanced macOS voices are far higher quality than the plain ones — prefer those.",
   {},
   async () => {
     const config = readConfig();
+    const sections = [];
+
+    // Current voice, derived from the active provider.
+    const usingMac = config.ttsProvider === 'macos-say' || !isElevenLabsActive();
+    sections.push(`Current voice: ${usingMac ? `${config.macosVoice || 'Samantha'} (built-in macOS)` : 'ElevenLabs (see below)'}`);
 
     if (isElevenLabsActive()) {
-      // Fetch ElevenLabs voices
       try {
-        const resp = await fetch('https://api.elevenlabs.io/v1/voices', {
-          headers: { 'xi-api-key': config.ttsApiKey },
-        });
+        const resp = await fetch('https://api.elevenlabs.io/v1/voices', { headers: { 'xi-api-key': config.ttsApiKey } });
         if (!resp.ok) throw new Error(`API error ${resp.status}`);
         const data = await resp.json();
-
         const voices = data.voices.map(v =>
-          `${v.name} — ${v.labels?.accent || ''} ${v.labels?.gender || ''} ${v.labels?.age || ''}`.trim() + ` [id: ${v.voice_id}]`
+          `${v.name} — ${`${v.labels?.accent || ''} ${v.labels?.gender || ''} ${v.labels?.age || ''}`.trim()} [id: ${v.voice_id}]`
         );
-
-        const currentVoice = config.ttsVoiceId || 'CwhRBWXzGAHq8TQ4Fs17';
-        const currentName = data.voices.find(v => v.voice_id === currentVoice)?.name || currentVoice;
-
-        return {
-          content: [{
-            type: "text",
-            text: `Provider: ElevenLabs\nCurrent voice: ${currentName}\n\nAvailable voices:\n${voices.join('\n')}`,
-          }],
-        };
+        sections.push(`=== ElevenLabs voices ===\n${voices.join('\n')}`);
       } catch (err) {
-        return { content: [{ type: "text", text: `Error fetching ElevenLabs voices: ${err.message}` }] };
-      }
-    } else {
-      // macOS say voices
-      try {
-        const output = execSync('say -v "?"', { encoding: 'utf-8', timeout: 5000 });
-        const voices = output
-          .split('\n')
-          .filter(line => line.includes('en_'))
-          .map(line => {
-            const match = line.match(/^(.+?)\s{2,}(\w{2}_\w{2})/);
-            if (match) return `${match[1].trim()} (${match[2]})`;
-            return line.trim();
-          })
-          .filter(Boolean);
-
-        const currentVoice = config.macosVoice || 'Samantha';
-
-        return {
-          content: [{
-            type: "text",
-            text: `Provider: macOS say\nCurrent voice: ${currentVoice}\n\nAvailable English voices:\n${voices.join('\n')}`,
-          }],
-        };
-      } catch (err) {
-        return { content: [{ type: "text", text: `Error listing voices: ${err.message}` }] };
+        sections.push(`=== ElevenLabs voices ===\n(error fetching: ${err.message})`);
       }
     }
+
+    // Built-in macOS voices — always shown so the bot can pick a high-quality
+    // built-in voice even when an ElevenLabs key is set (e.g. to save EL quota).
+    const mac = listMacosVoices();
+    if (mac.length) {
+      const fmt = (v) => `${v.name} (${v.locale})`;
+      const premium = mac.filter(v => v.tier === 0).map(fmt);
+      const enhanced = mac.filter(v => v.tier === 1).map(fmt);
+      const stdEn = mac.filter(v => v.tier === 2 && v.locale.startsWith('en')).map(v => v.name);
+      const lines = ['=== Built-in macOS voices ==='];
+      lines.push('★ HIGH QUALITY (recommended) — Premium: ' + (premium.length ? premium.join(', ') : '(none installed)'));
+      lines.push('★ HIGH QUALITY — Enhanced: ' + (enhanced.length ? enhanced.join(', ') : '(none installed)'));
+      lines.push(`Standard English (lower quality): ${stdEn.join(', ')}`);
+      lines.push('To use one, call set_voice with the EXACT name including any "(Premium)"/"(Enhanced)" suffix.');
+      sections.push(lines.join('\n'));
+    }
+
+    return { content: [{ type: "text", text: sections.join('\n\n') }] };
   }
 );
 
 // --- set_voice ---
 server.tool(
   "set_voice",
-  "Change the bot's text-to-speech voice. Use list_voices to see available options. The choice is saved and persists across sessions.",
+  "Change the bot's text-to-speech voice. Use list_voices to see options. Pass the EXACT voice name — a built-in macOS voice (e.g. 'Ava (Premium)') OR an ElevenLabs voice name/ID. A built-in voice is matched first and, when chosen, becomes the active voice even if an ElevenLabs key is set. Saved across sessions; use the speak `voice` parameter for immediate effect this turn.",
   {
-    voice: z.string().describe("Voice name (e.g. 'Samantha', 'Daniel') for macOS, or voice name/ID for ElevenLabs"),
+    voice: z.string().describe("Exact voice name. Built-in macOS (e.g. 'Ava (Premium)', 'Samantha') or ElevenLabs voice name/ID."),
   },
   async ({ voice }) => {
     try {
       const config = readConfig();
 
+      // Match a built-in macOS voice first (case-insensitive, exact) — lets the
+      // bot pick a high-quality built-in voice regardless of the EL key.
+      const mac = listMacosVoices();
+      const macMatch = mac.find(v => v.name.toLowerCase() === voice.toLowerCase());
+      if (macMatch) {
+        config.macosVoice = macMatch.name;
+        config.ttsProvider = 'macos-say'; // force the built-in voice as primary
+        writeConfig(config);
+        return { content: [{ type: "text", text: `Voice changed to the built-in macOS voice "${macMatch.name}". It's now your primary voice (ElevenLabs disabled until you switch back). Pass voice:"${macMatch.name}" to speak for immediate effect; the saved default applies on app restart.` }] };
+      }
+
+      // Else try ElevenLabs by name or ID.
       if (isElevenLabsActive()) {
-        // Look up ElevenLabs voice by name or ID
-        const resp = await fetch('https://api.elevenlabs.io/v1/voices', {
-          headers: { 'xi-api-key': config.ttsApiKey },
-        });
+        const resp = await fetch('https://api.elevenlabs.io/v1/voices', { headers: { 'xi-api-key': config.ttsApiKey } });
         if (!resp.ok) throw new Error(`API error ${resp.status}`);
         const data = await resp.json();
-
-        const match = data.voices.find(v =>
-          v.name.toLowerCase() === voice.toLowerCase() || v.voice_id === voice
-        );
-        if (!match) {
-          return { content: [{ type: "text", text: `Voice "${voice}" not found. Use list_voices to see available options.` }] };
+        const match = data.voices.find(v => v.name.toLowerCase() === voice.toLowerCase() || v.voice_id === voice);
+        if (match) {
+          config.ttsVoiceId = match.voice_id;
+          config.ttsProvider = 'elevenlabs';
+          writeConfig(config);
+          return { content: [{ type: "text", text: `Voice changed to ElevenLabs "${match.name}". Pass voice:"${match.voice_id}" to speak for immediate effect; the saved default applies on app restart.` }] };
         }
-
-        config.ttsVoiceId = match.voice_id;
-        writeConfig(config);
-        return { content: [{ type: "text", text: `Voice changed to "${match.name}". Use the voice parameter in speak for immediate effect, or restart the app for the saved default to take effect.` }] };
-      } else {
-        // macOS say voice
-        const output = execSync('say -v "?"', { encoding: 'utf-8', timeout: 5000 });
-        const voiceExists = output.split('\n').some(line => line.trim().startsWith(voice));
-        if (!voiceExists) {
-          return { content: [{ type: "text", text: `Voice "${voice}" not found. Use list_voices to see available options.` }] };
-        }
-
-        config.macosVoice = voice;
-        writeConfig(config);
-        return { content: [{ type: "text", text: `Voice changed to "${voice}". Use the voice parameter in speak for immediate effect, or restart the app for the saved default to take effect.` }] };
       }
+
+      return { content: [{ type: "text", text: `Voice "${voice}" not found. Call list_voices to see exact available names (built-in voices need the full name, including any "(Premium)"/"(Enhanced)" suffix).` }] };
     } catch (err) {
       return { content: [{ type: "text", text: `Error setting voice: ${err.message}` }] };
     }

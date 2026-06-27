@@ -249,6 +249,13 @@ function isMicMuted() {
 // MutationObserver below doesn't interpret our own click as a user gesture.
 let suppressMicMuteWatcher = false;
 
+// Set while a chat read/send is mid-flight so the DOMSpeakerTracker's 2s
+// people-pane self-heal (_ensurePeoplePaneOpen) doesn't slam the side panel
+// back to People the instant we switch it to Chat — that race reopened People
+// before isChatPaneOpen() could ever observe the chat input, so the pane
+// "flashed" open but openChatPane() always gave up. Cleared in a finally.
+let chatPaneBusy = false;
+
 function setMicMuted(mute) {
   const btn = getMicButton();
   if (!btn) return;
@@ -538,15 +545,22 @@ function scrapeChatMessages() {
 }
 
 async function readChatFlow() {
-  const opened = await openChatPane();
-  if (!opened) throw new Error('Could not open the chat pane');
-  await delay(300); // let messages render
-  const messages = scrapeChatMessages();
-  await restorePeoplePane(); // close chat, restore speech tracking
-  return messages;
+  chatPaneBusy = true; // pause the people-pane self-heal while chat is open
+  try {
+    const opened = await openChatPane();
+    if (!opened) throw new Error('Could not open the chat pane');
+    await delay(300); // let messages render
+    const messages = scrapeChatMessages();
+    await restorePeoplePane(); // close chat, restore speech tracking
+    return messages;
+  } finally {
+    chatPaneBusy = false;
+  }
 }
 
 async function sendChatFlow(text) {
+  chatPaneBusy = true; // pause the people-pane self-heal while chat is open
+  try {
   const opened = await openChatPane();
   if (!opened) throw new Error('Could not open the chat pane');
   const input = getChatInput();
@@ -584,6 +598,9 @@ async function sendChatFlow(text) {
   console.log('[electron-meet] sendChat via ' + via + ' — sent: ' + sent);
   await restorePeoplePane(); // close chat, restore speech tracking
   return sent;
+  } finally {
+    chatPaneBusy = false;
+  }
 }
 
 ipcRenderer.on('read-chat', async (_event, { requestId }) => {
@@ -1341,6 +1358,9 @@ class DOMSpeakerTracker {
   }
 
   _ensurePeoplePaneOpen() {
+    // Don't fight an in-flight chat read/send — it deliberately switched the
+    // side panel to Chat and will restore People when done (#chat-race).
+    if (chatPaneBusy) return;
     // Detect "pane is open" by the same structural marker _scanParticipants uses:
     // tiles only exist when the people list is rendered. The previous check used
     // jsname="jrQDbd" + a stale aria-label fallback; once Google rotated jsname

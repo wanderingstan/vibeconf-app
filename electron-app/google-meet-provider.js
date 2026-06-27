@@ -385,6 +385,23 @@ function isChatPaneOpen() {
   return !!getChatInput();
 }
 
+// Meet's chat toggle binds its handler to the pointerdown/pointerup jsaction,
+// so a synthetic el.click() (which dispatches only a 'click' event) doesn't
+// actuate it — confirmed live: a real user click opens the chat pane, but
+// el.click() never does, so openChatPane polled and gave up ("Could not open
+// the chat pane"). Dispatch the full pointer + mouse sequence so Meet's
+// handlers fire the same way a trusted click would.
+function firePointerClick(el) {
+  if (!el) return;
+  const base = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, buttons: 1 };
+  const ptr = { ...base, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+  try { el.dispatchEvent(new PointerEvent('pointerdown', ptr)); } catch { /* PointerEvent unavailable */ }
+  el.dispatchEvent(new MouseEvent('mousedown', base));
+  try { el.dispatchEvent(new PointerEvent('pointerup', { ...ptr, buttons: 0 })); } catch { /* ignore */ }
+  el.dispatchEvent(new MouseEvent('mouseup', { ...base, buttons: 0 }));
+  el.dispatchEvent(new MouseEvent('click', { ...base, buttons: 0 }));
+}
+
 async function openChatPane() {
   if (isChatPaneOpen()) {
     console.log('[chat] Chat pane already open');
@@ -422,7 +439,7 @@ async function openChatPane() {
   for (let attempt = 0; attempt < 3; attempt++) {
     btn = getChatToggle() || btn;
     console.log('[chat] → switching to Chat pane (clicking', JSON.stringify(btn.getAttribute('aria-label')), ', attempt', attempt + 1, ')');
-    btn.click();
+    firePointerClick(btn);
     for (let i = 0; i < 16; i++) { // ~2.4s per attempt
       await delay(150);
       if (isChatPaneOpen()) {
@@ -545,7 +562,7 @@ async function sendChatFlow(text) {
   const trySend = () => {
     const sendBtn = findByAriaLabel(MEET.chat.sendLabelA) || findByAriaLabel(MEET.chat.sendLabelB);
     if (sendBtn && !sendBtn.disabled) {
-      sendBtn.click();
+      firePointerClick(sendBtn);
       return 'button';
     }
     const enter = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };

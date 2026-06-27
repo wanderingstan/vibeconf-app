@@ -9,8 +9,9 @@
     "dev": "electron .",
     "dev-with-tools": "electron . --devtools=true",
     "pack": "electron-builder --dir",
-    "dist": "electron-builder && tccutil reset All com.vibeconferencing.agent",
-    "dist:fast": "electron-builder -c.mac.notarize=false && tccutil reset All com.vibeconferencing.agent"
+    "dist": "electron-builder",
+    "dist:fast": "electron-builder -c.mac.notarize=false",
+    "reset-perms": "tccutil reset All com.vibeconferencing.agent"
   },
   "build": {
     "appId": "com.vibeconferencing.agent",

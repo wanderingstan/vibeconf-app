@@ -24,7 +24,7 @@ endpoint still works for power users via `ackEndpoint` / `ackModel`.
 
 | Mechanism | Trigger | Context fed to model | Model | Decides / Sets | Gate (pref) |
 |---|---|---|---|---|---|
-| **Ack (triage)** | A turn *settles* (floor-open; bot → "thinking"). Not every caption. | `lastUtterance`, `recentTranscript` (12), `roster`, **`engagement`**, `mode` | Apple (fast) | "Are we being addressed *this* turn?" → if yes, fire an instant ack filler to cover slow-model latency. Non-authoritative. | `shadowPhrase` |
+| **Ack (triage)** | A turn *settles* (floor-open; bot → "thinking"). Not every caption. | `lastUtterance`, `recentTranscript` (12), `roster`, **`engagement`**, `mode` | Apple (fast) | "Are we being addressed *this* turn?" → if yes, fire an instant ack filler to cover slow-model latency. Non-authoritative. | `triageAck` |
 | **Comprehend** | Every X words (`comprehendCharThreshold`) | `transcript`, prior `workingMemory`, `roster` | Apple (fast) | Sets `understanding` / `stance` / `people` (legacy fossil; `stance` unused now) | `comprehendCharThreshold > 0` |
 | **Engagement** | Same trigger as Comprehend (runs in parallel) | `transcript`, `roster` — deliberately **no** bot self-reference | Apple (fast) | Sets **`engagement`** — the current speaker→addressee pair; the bot is placed relative to it in plain code (`placeEngagement`) | rides comprehend trigger |
 | **Background Tick** | Every X words (`backgroundTickWords`), polled @ 2.5 s; resolves a `wait_for_speech` waiter (reason `background_tick`) → wakes the slow session | recent transcript turns; the slow session has full context + tools | Claude (slow) | **Do NOT speak.** Silently update understanding (optionally `post_understanding`) and optionally **bank** a short probe (`bank_probe`) for later firing | `backgroundTickWords > 0` |
@@ -67,7 +67,7 @@ endpoint still works for power users via `ackEndpoint` / `ackModel`.
 
 | Mechanism | Producer trigger (local-server) | Handler (main.js) | Model module |
 |---|---|---|---|
-| Ack (triage) | `onShadowPhrase` (at the "thinking" transition) | `onShadowPhrase` | `electron-app/triage.js` |
+| Ack (triage) | `onTriageAck` (at the "thinking" transition) | `onTriageAck` | `electron-app/triage.js` |
 | Comprehend | `onComprehensionDue` | `onComprehensionDue` | `electron-app/comprehend.js` |
 | Engagement | `onComprehensionDue` (parallel) | `onComprehensionDue` | `electron-app/engagement.js` |
 | Background Tick | `_scheduleBackgroundTick` → `_resolveWaiter(…, 'background_tick')` | the slow session's tick prompt (`mcp-server/server.js`) | Claude |

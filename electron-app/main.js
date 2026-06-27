@@ -2450,6 +2450,16 @@ app.whenReady().then(async () => {
   // Prime the macOS voice-name set so speak()'s voice-override can route a name
   // to the right provider from the first utterance (refreshed on each list call).
   enumerateMacosVoices().then((vs) => { macosVoiceNameSet = new Set(vs.map((v) => v.name)); }).catch(() => {});
+
+  // P2 real voices: if no ElevenLabs key is stored, load it from the vault so the avatars speak in
+  // a real voice instead of robotic macOS `say`. Per-seat voice via VIBECONF_TTS_VOICE (distinct
+  // voices for SAL vs SOLIENNE). Both are no-ops if the key/env aren't present (emoji bots safe).
+  if (!savedConfig.ttsApiKey) {
+    const _grab = (p, k) => { try { return (fs.readFileSync(p, 'utf8').match(new RegExp(`^${k}=("?)([^"\\n]+)\\1`, 'm')) || [])[2]; } catch { return undefined; } };
+    const _elKey = _grab(path.join(require('os').homedir(), '.seth/vault/credentials.env'), 'ELEVENLABS_API_KEY');
+    if (_elKey) { tts.updateConfig({ apiKey: _elKey }); stt.updateConfig({ apiKey: _elKey }); console.log('[tts] ElevenLabs key loaded from vault → real voice'); }
+  }
+  if (process.env.VIBECONF_TTS_VOICE) { tts.updateConfig({ voiceId: process.env.VIBECONF_TTS_VOICE }); console.log('[tts] per-seat voice →', process.env.VIBECONF_TTS_VOICE); }
   if (savedConfig.botName) sync.updateConfig({ botName: savedConfig.botName });
   if (savedConfig.syncBaseUrl) sync.updateConfig({ baseUrl: savedConfig.syncBaseUrl });
 

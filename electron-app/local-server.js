@@ -59,7 +59,7 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onShadowPhrase, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, onInspectDom, onPlayAudio, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref } = {}) {
+  constructor({ port, appVersion, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, onInspectDom, onPlayAudio, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.appVersion = appVersion || null;
     this.onBotSpeech = onBotSpeech || (() => {});
@@ -83,7 +83,7 @@ class LocalServer {
     // Two-tier shadow harness: async ({lastUtterance, workingMemory, recentTranscript})
     // fired at floor-open. Fast model drafts what it WOULD say from `stance`;
     // log-only for now (never spoken). docs/two-tier-design.md.
-    this.onShadowPhrase = onShadowPhrase || (async () => {});
+    this.onTriageAck = onTriageAck || (async () => {});
     // Active-listening (#245): fires on a brief silence (a soft opening) when
     // probeFiring is on, so main.js can run the completeness gate and decide
     // whether to fire a banked probe. async ({ lastUtterance, recentTranscript, roster }).
@@ -1730,7 +1730,7 @@ class LocalServer {
           const lastUtteranceLabeled = lastTurn && lastTurn.text
             ? `${lastTurn.participantName || 'someone'}: ${lastTurn.text.trim()}`
             : joinedText;
-          Promise.resolve(this.onShadowPhrase({
+          Promise.resolve(this.onTriageAck({
             lastUtterance: lastUtteranceLabeled,
             workingMemory: this.getWorkingMemory(),
             recentTranscript: this._recentTranscriptText(12),

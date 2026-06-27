@@ -107,15 +107,19 @@ const PREFERENCES = {
       'sound effects / music played via play_audio pass through the mic. Costs a ' +
       'bit of voice enhancement. Availability depends on the Meet account tier.',
   },
-  shadowPhrase: {
+  triageAck: {
     type: 'boolean',
     default: false,
     description:
-      'Two-tier experiment: at each floor-open, have the fast local model draft ' +
-      'what it WOULD say from the current stance and log it (never spoken). OFF by ' +
-      'default because it hits the same local model as the fast-ack and background ' +
-      'comprehension — running all three at once overloads a single LM Studio ' +
-      'instance (HTTP 500s, aborted acks). Turn ON only for measurement sessions.',
+      'Use the on-device fast model (Apple triage) to decide whether the bot is ' +
+      'being addressed THIS turn, and if so fire an instant ack filler to cover the ' +
+      "slow model's response latency (#243/#245). OFF (default) = the simpler " +
+      'regex-addressivity ack path. ON = smarter ack gating via triage.js against ' +
+      'the ackEndpoint (Apple on-device by default), with the background-maintained ' +
+      'engagement state fed in so a bare "you" resolves to this bot mid-exchange. ' +
+      'Independent of ackProvider, which only chooses the ack PHRASE source. ' +
+      '(Formerly named shadowPhrase — that pref gated the now-removed two-tier ' +
+      'shadow drafter; it was repurposed to gate the triage-ack.)',
   },
   botPersonality: {
     type: 'string',

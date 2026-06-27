@@ -319,7 +319,7 @@ const localServer = new globalThis.LocalServer({
     // Also warm the LOCAL model used by triage / comprehend (independent of
     // ackProvider) — without this the first few triage requests cold-start-timed
     // out while LM Studio loaded the model. Only when those features are on.
-    if (store?.get('shadowPhrase') || (Number(store?.get('comprehendCharThreshold')) || 0) > 0) {
+    if (store?.get('triageAck') || (Number(store?.get('comprehendCharThreshold')) || 0) > 0) {
       ackModule.warmupLocalModel({
         store,
         log: (msg) => console.log(ts(), '[triage-warmup]', msg),
@@ -606,12 +606,12 @@ const localServer = new globalThis.LocalServer({
 
     // Play acknowledgment sounds when entering 'thinking' state.
     // Only in active mode — passive/silent shouldn't blurt "mm-hmm" unprompted.
-    // When triage is enabled (shadowPhrase), the ack is gated by the smart
-    // triage verdict in onShadowPhrase instead of this regex-addressivity path —
+    // When triage is enabled (triageAck), the ack is gated by the smart
+    // triage verdict in onTriageAck instead of this regex-addressivity path —
     // skip here to avoid a double ack.
     // A background_tick is a silent "think, don't speak" wake (#245) — never
     // fire a spoken ack there, or the bot interrupts whoever still has the floor.
-    if (state === 'thinking' && localServer.mode === 'active' && !store?.get('shadowPhrase') && !extra?.backgroundTick) {
+    if (state === 'thinking' && localServer.mode === 'active' && !store?.get('triageAck') && !extra?.backgroundTick) {
       const wordCount = extra?.wordCount || 0;
       const text = (extra?.text || '').toLowerCase();
 
@@ -851,9 +851,9 @@ const localServer = new globalThis.LocalServer({
   // session still drives all speech. Validates the classifier's accuracy before
   // wiring it to fire instant acks. The eval settled that the 7B can't be the
   // voice; turn-taking is the role it can actually do (classification).
-  onShadowPhrase: async ({ lastUtterance, recentTranscript, roster }) => {
-    // Gated by the shadowPhrase pref (kept its name; now gates the triage shadow).
-    if (!store?.get('shadowPhrase')) return;
+  onTriageAck: async ({ lastUtterance, recentTranscript, roster }) => {
+    // Gated by the triageAck pref: Apple triage decides ack yes/no for this turn.
+    if (!store?.get('triageAck')) return;
     // Shared local-model endpoint, independent of ackProvider (builtin ack = low
     // contention while the triage shadow measures).
     const config = require('./ack').getLocalModelConfig(store);
@@ -2103,6 +2103,17 @@ function uninstallClaudeIntegration() {
 app.whenReady().then(async () => {
   store = new Store(app.getPath('userData'));
 
+  // One-time migration: `shadowPhrase` was renamed to `triageAck` (it gates the
+  // Apple triage-ack now, not the old two-tier shadow drafter). Carry an
+  // existing value over, then drop the stale key.
+  try {
+    if (store.get('triageAck') === undefined && store.get('shadowPhrase') !== undefined) {
+      store.set('triageAck', store.get('shadowPhrase'));
+      store.delete('shadowPhrase');
+      console.log('[electron] Migrated pref shadowPhrase → triageAck');
+    }
+  } catch { /* non-fatal */ }
+
   // Persistent rotating session log (#173). Tees stdout/stderr to a per-
   // session file under userData/logs/ so we can post-mortem mid-call
   // weirdness. The get_session_log MCP tool reads from the same file.
@@ -2117,7 +2128,7 @@ app.whenReady().then(async () => {
         // Behavior/experiment prefs in effect for this session, so a log
         // self-documents which knobs were on (blank = schema default).
         defaultSilenceSeconds: store?.get('defaultSilenceSeconds'),
-        shadowPhrase: store?.get('shadowPhrase'),
+        triageAck: store?.get('triageAck'),
         backgroundTickWords: store?.get('backgroundTickWords'),
         comprehendCharThreshold: store?.get('comprehendCharThreshold'),
         probeFiring: store?.get('probeFiring'),

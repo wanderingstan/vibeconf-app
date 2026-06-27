@@ -307,10 +307,15 @@ const localServer = new globalThis.LocalServer({
 
       // P2: env-gated Runway photoreal face. VIBECONF_RUNWAY=1 + a known seat name (SAL/SOLIENNE)
       // auto-activates the face ~8s after join (lets the Meet camera initialize). Default OFF —
-      // without the env var this is a no-op and the emoji bot is unchanged.
+      // without the env var this is a no-op and the emoji bot is unchanged. IDEMPOTENT: onJoinCall
+      // fires again on a re-join (the Meet pre-join "limbo" often needs one retry), so only kick
+      // off the face if it isn't already enabled for this seat — else two sessions race and the
+      // browser flaps between connects (dup-identity), dropping the face to emoji.
       if (process.env.VIBECONF_RUNWAY) {
         const seat = String(botName || '').toLowerCase();
-        if (seat === 'sal' || seat === 'solienne') setTimeout(() => setRunwayFace(seat, true), 8000);
+        if ((seat === 'sal' || seat === 'solienne') && !(_runway[seat] && _runway[seat].enabled)) {
+          setTimeout(() => setRunwayFace(seat, true), 8000);
+        }
       }
     }
 
@@ -1091,22 +1096,56 @@ function loadRunwayEnv() {
   for (const k of ['LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET']) process.env[k] ||= grab(vault, k);
   process.env.RUNWAY_API_KEY ||= grab(proto, 'RUNWAY_API_KEY') || grab(vault, 'RUNWAY_API_KEY');
 }
+// P2: per-seat runway session state for auto-renewal. Runway realtime sessions expire after a few
+// minutes (observed ~7m) — the avatar worker leaves the room and the face drops to emoji. So we
+// re-provision a fresh session on a timer (ahead of expiry), send the bot a new connect, and tear
+// down the previous session/room. A failure retries sooner so a transient error can't kill the face.
+// P2: per-seat Runway session auto-renewal. Runway realtime_sessions expire after a few minutes
+// (~7m observed) → the avatar worker leaves and the face drops to emoji. We re-provision ahead of
+// expiry on a timer. Each seat carries a generation counter + `enabled` flag so overlapping
+// renewals / a manual `off` / a Meet reload can't leave a stale session driving the face: every
+// path re-checks (enabled && gen) after each await and tears down anything it created while stale.
+// (New-room renewal = a brief emoji flash on rotate; gapless same-room renewal is a post-call
+// enhancement — the avatar video is published by Runway's own lemonslice-avatar-agent identity,
+// so overlap behaviour needs verifying before we keep both workers in one room. codex 2026-06-27.)
+const _runway = {}; // seat -> { sessionId, roomName, mod, gen, enabled, timer }
+const RUNWAY_RENEW_MS = 4 * 60 * 1000; // renew before the ~5-7m expiry
+
 async function setRunwayFace(seat, on) {
-  try {
-    if (!meetView || meetView.webContents.isDestroyed()) return;
-    if (on) {
+  const st = _runway[seat] || (_runway[seat] = { gen: 0, enabled: false, sessionId: null, roomName: null, mod: null, timer: null });
+  if (on) {
+    st.enabled = true;
+    const gen = ++st.gen;                              // this activation/renewal's generation
+    if (st.timer) { clearTimeout(st.timer); st.timer = null; }
+    try {
+      if (!meetView || meetView.webContents.isDestroyed()) return;
       loadRunwayEnv();
       const { pathToFileURL } = require('url');
       const mod = await import(pathToFileURL(path.join(__dirname, '..', 'scripts', 'runway-session.mjs')).href);
+      const prevSession = st.sessionId, prevRoom = st.roomName;
       const s = await mod.createAvatarSession(seat);
+      // staleness guard: a newer renewal or an `off` landed while we awaited → abort + clean up.
+      if (!st.enabled || st.gen !== gen) {
+        try { await mod.endAvatarSession({ sessionId: s.sessionId, roomName: s.roomName }); } catch (e) {}
+        return;
+      }
       meetView.webContents.send('runway-avatar', { type: 'connect', url: s.livekitUrl, token: s.botToken });
-      console.log('[runway] face ON for', seat, '→ room', s.roomName, 'session', s.sessionId);
-    } else {
-      meetView.webContents.send('runway-avatar', { type: 'disconnect' });
-      console.log('[runway] face OFF');
+      console.log('[runway] face', prevSession ? 'RENEWED' : 'ON', 'for', seat, '→ room', s.roomName, 'gen', gen);
+      st.sessionId = s.sessionId; st.roomName = s.roomName; st.mod = mod;
+      if (prevSession) { try { await mod.endAvatarSession({ sessionId: prevSession, roomName: prevRoom }); } catch (e) {} }
+      if (st.enabled && st.gen === gen) st.timer = setTimeout(() => setRunwayFace(seat, true), RUNWAY_RENEW_MS);
+    } catch (e) {
+      console.error('[runway] setRunwayFace failed:', e && e.message);
+      // transient failure: retry sooner without clobbering the active session record.
+      if (st.enabled && st.gen === gen) { if (st.timer) clearTimeout(st.timer); st.timer = setTimeout(() => setRunwayFace(seat, true), 30000); }
     }
-  } catch (e) {
-    console.error('[runway] setRunwayFace failed (emoji stays):', e && e.message);
+  } else {
+    st.enabled = false; st.gen++;                       // invalidate any in-flight renewal
+    if (st.timer) { clearTimeout(st.timer); st.timer = null; }
+    if (st.sessionId && st.mod) { try { await st.mod.endAvatarSession({ sessionId: st.sessionId, roomName: st.roomName }); } catch (e) {} }
+    st.sessionId = null; st.roomName = null;
+    if (meetView && !meetView.webContents.isDestroyed()) meetView.webContents.send('runway-avatar', { type: 'disconnect' });
+    console.log('[runway] face OFF for', seat);
   }
 }
 // manual toggle from panel/devtools: ipcRenderer.invoke('runway-face', { seat:'sal', on:true })

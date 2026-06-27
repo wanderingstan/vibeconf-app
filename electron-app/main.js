@@ -304,6 +304,14 @@ const localServer = new globalThis.LocalServer({
       // (and its push notifications) running mid-call. Mirror the other paths.
       currentMeetUrl = meetUrl;
       loadMeetURL(meetUrl);
+
+      // P2: env-gated Runway photoreal face. VIBECONF_RUNWAY=1 + a known seat name (SAL/SOLIENNE)
+      // auto-activates the face ~8s after join (lets the Meet camera initialize). Default OFF —
+      // without the env var this is a no-op and the emoji bot is unchanged.
+      if (process.env.VIBECONF_RUNWAY) {
+        const seat = String(botName || '').toLowerCase();
+        if (seat === 'sal' || seat === 'solienne') setTimeout(() => setRunwayFace(seat, true), 8000);
+      }
     }
 
     // Pre-warm the LLM ack engine so the first real ack of the call
@@ -1068,6 +1076,41 @@ let mainWindow = null;   // single window that holds both views
 let panelView = null;     // left sidebar BrowserView
 let meetView = null;      // right Meet BrowserView
 let panelPopoutWindow = null; // when popped out, the panelView lives here instead
+
+// ── P2: Runway photoreal face (opt-in) ──────────────────────────────────────
+// Provision a puppet-mode avatar session (scripts/runway-session.mjs) and tell the Meet page to
+// connect — runway-avatar.js renders the avatar video into the camera. Guard-preserving (our
+// brain+TTS drive it). Reverts to emoji on disconnect / any failure. No-op unless triggered.
+function loadRunwayEnv() {
+  const need = ['LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET', 'RUNWAY_API_KEY'];
+  if (need.every((k) => process.env[k])) return;
+  const osx = require('os');
+  const grab = (p, k) => { try { return (fs.readFileSync(p, 'utf8').match(new RegExp(`^${k}=("?)([^"\\n]+)\\1`, 'm')) || [])[2]; } catch { return undefined; } };
+  const vault = path.join(osx.homedir(), '.seth/vault/credentials.env');
+  const proto = path.join(osx.homedir(), 'Projects/standalone/spirit-avatar-proto/.env.local');
+  for (const k of ['LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET']) process.env[k] ||= grab(vault, k);
+  process.env.RUNWAY_API_KEY ||= grab(proto, 'RUNWAY_API_KEY') || grab(vault, 'RUNWAY_API_KEY');
+}
+async function setRunwayFace(seat, on) {
+  try {
+    if (!meetView || meetView.webContents.isDestroyed()) return;
+    if (on) {
+      loadRunwayEnv();
+      const { pathToFileURL } = require('url');
+      const mod = await import(pathToFileURL(path.join(__dirname, '..', 'scripts', 'runway-session.mjs')).href);
+      const s = await mod.createAvatarSession(seat);
+      meetView.webContents.send('runway-avatar', { type: 'connect', url: s.livekitUrl, token: s.botToken });
+      console.log('[runway] face ON for', seat, '→ room', s.roomName, 'session', s.sessionId);
+    } else {
+      meetView.webContents.send('runway-avatar', { type: 'disconnect' });
+      console.log('[runway] face OFF');
+    }
+  } catch (e) {
+    console.error('[runway] setRunwayFace failed (emoji stays):', e && e.message);
+  }
+}
+// manual toggle from panel/devtools: ipcRenderer.invoke('runway-face', { seat:'sal', on:true })
+ipcMain.handle('runway-face', (_e, { seat = 'sal', on = true } = {}) => setRunwayFace(seat, on));
 let whiteboardWindow = null;
 let fullScreenShareRequested = false;
 // Generation token for the whiteboard-share "Present now" retry loop. Bumped on

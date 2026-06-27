@@ -105,6 +105,9 @@
       // Optional custom background. null = use default animated gradient.
       // Set by the 'set-avatar-background' message after server-side resolve.
       this.backgroundImage = avatarState.backgroundImage;
+      // P2: optional Runway avatar <video> (set via setAvatarVideo). When playing it
+      // replaces the emoji as the camera. null = normal emoji avatar (default, unchanged).
+      this.avatarVideo = null;
       this.stopped = false;
 
       // Draw the first frame synchronously so the track has content immediately
@@ -175,11 +178,24 @@
       }
     }
 
+    // P2: attach/detach a Runway avatar <video> as the camera source. Opt-in; null restores emoji.
+    setAvatarVideo(videoEl) {
+      this.avatarVideo = videoEl || null;
+    }
+
     _render() {
       const { canvas, ctx } = this;
       const w = canvas.width;
       const h = canvas.height;
       this.frameCount++;
+
+      // --- P2: Runway avatar face (opt-in). When a playing avatar video is attached, it
+      // replaces the emoji entirely. Inert unless setAvatarVideo() was called. Falls back to
+      // the emoji render until the video has real frames. ---
+      if (this.avatarVideo && this.avatarVideo.readyState >= 2 && this.avatarVideo.videoWidth > 0) {
+        try { ctx.drawImage(this.avatarVideo, 0, 0, w, h); return; }
+        catch (e) { /* draw/taint failure → fall through to the emoji render */ }
+      }
 
       // --- Background: custom SVG (if loaded) or animated gradient fallback ---
       const t = this.frameCount * 0.02;
@@ -777,6 +793,13 @@
     }
     return cameras.get(key);
   }
+
+  // P2 bridge — lets runway-avatar.js (separate page script) drive the Runway face: set the
+  // avatar <video> on every VirtualCamera, and read the bot's TTS mic track to publish to
+  // Runway. Uses mic.getTrack() (rebuild-aware — survives the Slack stop()/rebuild). No-ops on
+  // the default emoji path (only used when a connect message activates the face).
+  window.__vibeSetAvatarVideo = (el) => { try { cameras.forEach((c) => c.setAvatarVideo && c.setAvatarVideo(el)); } catch (e) { console.warn('[bots-in-calls] setAvatarVideo bridge:', e && e.message); } };
+  window.__vibeMicTrack = () => { try { return mic ? mic.getTrack() : null; } catch (e) { return null; } };
 
   const _getUserMedia = MediaDevices.prototype.getUserMedia;
 

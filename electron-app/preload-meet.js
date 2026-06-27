@@ -54,6 +54,23 @@ try {
   console.error('[electron-meet] Failed to load page-inject.js:', err.message);
 }
 
+// P2 (Runway faces): load livekit-client (→ window.LivekitClient) + runway-avatar.js from
+// ../extension. OPT-IN — runway-avatar.js stays idle until a {source:'runway-avatar'} message,
+// so this never affects the default emoji bots. Wrapped so a failure can't disturb page-inject.
+try {
+  const extDir = path.join(__dirname, '..', 'extension');
+  (0, eval)(fs.readFileSync(path.join(extDir, 'livekit-client.umd.js'), 'utf-8'));
+  (0, eval)(fs.readFileSync(path.join(extDir, 'runway-avatar.js'), 'utf-8'));
+  console.log('[electron-meet] P2 runway-avatar.js + livekit-client loaded (idle until connect)');
+} catch (err) {
+  console.error('[electron-meet] P2 runway-avatar/livekit-client load failed (emoji bots unaffected):', err.message);
+}
+
+// P2: forward Runway-face control to runway-avatar.js (which listens for source:'runway-avatar').
+ipcRenderer.on('runway-avatar', (_event, payload) => {
+  window.postMessage({ source: 'runway-avatar', ...payload }, '*');
+});
+
 // ---------------------------------------------------------------------------
 // Expose screen share helper to page context (for getDisplayMedia override)
 // ---------------------------------------------------------------------------

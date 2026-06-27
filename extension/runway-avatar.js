@@ -64,8 +64,8 @@
       const LK = window.LivekitClient;
       let track = null;
       for (let i = 0; i < 40 && this.connected; i++) { // wait up to ~20s for the mic to exist
-        const s = window.__vibeMicStream && window.__vibeMicStream();
-        track = s && s.getAudioTracks && s.getAudioTracks()[0];
+        // __vibeMicTrack() is rebuild-aware (survives the Slack stop()/destination rebuild)
+        track = window.__vibeMicTrack && window.__vibeMicTrack();
         if (track && track.readyState === 'live') break;
         await new Promise((r) => setTimeout(r, 500));
       }

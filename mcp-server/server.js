@@ -662,7 +662,7 @@ const SOUND_TOOL_DESC = (() => {
     .map(([cat, ids]) => `  ${cat}: ${ids.map((id) => id.split('/')[1]).join(', ')}`)
     .join('\n');
   return [
-    "Play a built-in sound effect INTO the call (airhorn, applause, rimshot, coin, etc.) — a fun way to react. Pass the sound `name` as \"<category>/<sound>\" (e.g. \"game/coin\", \"notification/success\", \"ui/error\").",
+    "Play a built-in sound effect INTO the call (coin, level-up, success/error chimes, button clicks, portal whoosh, etc.) — a fun way to react. This is a UI/game-feedback library, NOT comedy SFX (no airhorn/rimshot/applause). Pass the sound `name` as \"<category>/<sound>\" (e.g. \"game/coin\", \"notification/success\", \"ui/submit\").",
     "NOTE: sound effects play cleanly only with the Meet 'studio sound' filter OFF — if they come through choppy, set the studioSound preference to false first (set_preference). They go through the bot's virtual mic and are treated as speaking (won't talk over your own speech).",
     "",
     `Available sounds (${SOUND_CATALOG.count || (SOUND_CATALOG.ids || []).length} total), as <category>/<name>:`,

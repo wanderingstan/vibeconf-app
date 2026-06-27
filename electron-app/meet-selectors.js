@@ -69,7 +69,13 @@ const MEET = {
   // -------------------------------------------------------------------------
   chat: {
     toggle: 'button[aria-label^="Chat with everyone" i], [role="button"][aria-label^="Chat with everyone" i]',
-    input: 'textarea[aria-label="Send a message" i]',
+    // Match the chat textarea by its STABLE attributes (maxlength=4000 is the
+    // chat input's 4000-char limit), not the aria-label — Meet relabels the
+    // aria-label/placeholder ("Send a message" ↔ other states, e.g. when chat
+    // history is on), so an exact aria-label match intermittently misses an
+    // input that's right there (the pane opens but isChatPaneOpen returns
+    // false → "Could not open the chat pane"). aria-label kept as a fallback.
+    input: 'textarea[maxlength="4000"], textarea[aria-label^="Send a message" i]',
     sendLabelA: 'Send a message',
     sendLabelB: 'Send message',
     unreadRe: /new message/i,

@@ -2144,6 +2144,12 @@ function uninstallClaudeIntegration() {
 }
 
 app.whenReady().then(async () => {
+  // P2: force plain system DNS (no DoH). Chromium's built-in resolver does Secure DNS by
+  // default, which can't resolve LiveKit's dynamic media/TURN hosts (*.host/.turn.livekit.cloud)
+  // → -105 in WebRTC → the Runway avatar video never connects. The OS resolver handles them, so
+  // route host resolution through it. Harmless for Meet/everything else.
+  try { app.configureHostResolver({ secureDnsMode: 'off' }); console.log('[runway] host resolver → secureDnsMode off (plain system DNS)'); } catch (e) { console.warn('[runway] configureHostResolver failed:', e && e.message); }
+
   store = new Store(app.getPath('userData'));
 
   // Persistent rotating session log (#173). Tees stdout/stderr to a per-
@@ -3076,6 +3082,7 @@ async function loadMeetURL(meetUrl) {
         body.startsWith('[bots-in-calls]') || body.startsWith('[captions]') ||
         body.startsWith('[chat]') || body.startsWith('[speaker-tracker]') ||
         body.startsWith('[speaker-health]') || body.startsWith('[caption-health]') ||
+        body.startsWith('[runway-avatar]') ||
         body.startsWith('[caption-stall]')) {
       if (level === 2) console.warn(message);
       else if (level === 3) console.error(message);

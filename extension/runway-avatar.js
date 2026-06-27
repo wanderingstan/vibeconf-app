@@ -30,23 +30,31 @@
       if (!LK) throw new Error('window.LivekitClient not loaded (livekit-client UMD must be injected first)');
       if (!url || !token) throw new Error('connect requires { url, token }');
 
-      const room = new LK.Room({ adaptiveStream: true, dynacast: true });
+      // adaptiveStream/dynacast OFF: our real consumer is canvas.drawImage, not a visible/sized
+      // DOM element. With adaptiveStream the SFU sees a tiny off-screen <video> as "not visible"
+      // and starves the track (videoWidth stays 0 → never paints). (codex review, 2026-06-27.)
+      const room = new LK.Room({ adaptiveStream: false, dynacast: false });
       this.room = room;
 
-      room.on(LK.RoomEvent.TrackSubscribed, (track) => {
+      room.on(LK.RoomEvent.ConnectionStateChanged, (state) => console.log(TAG, 'connection state:', state));
+      room.on(LK.RoomEvent.TrackSubscribed, (track, pub, participant) => {
+        console.log(TAG, 'subscribed:', track.kind, pub && pub.trackSid, participant && participant.identity);
         if (track.kind === 'video') {
           const el = track.attach();
           el.muted = true; el.playsInline = true; el.autoplay = true;
-          // keep it off-DOM but alive; drawImage in VirtualCamera reads frames from it
-          el.style.position = 'fixed'; el.style.left = '-9999px'; el.style.width = '2px'; el.style.height = '2px';
+          // Visible-but-invisible: real size + ~0 opacity so adaptiveStream/decoder keep frames flowing.
+          el.style.position = 'fixed'; el.style.left = '0'; el.style.bottom = '0';
+          el.style.width = '160px'; el.style.height = '90px'; el.style.opacity = '0.01'; el.style.pointerEvents = 'none';
           (document.body || document.documentElement).appendChild(el);
-          const p = el.play && el.play(); if (p && p.catch) p.catch(() => {});
+          for (const ev of ['loadedmetadata', 'canplay', 'playing', 'resize', 'error']) {
+            el.addEventListener(ev, () => console.log(TAG, 'video event:', ev, { rs: el.readyState, w: el.videoWidth, h: el.videoHeight, t: el.currentTime }));
+          }
+          this._hb = setInterval(() => console.log(TAG, 'video heartbeat', { rs: el.readyState, w: el.videoWidth, h: el.videoHeight, t: el.currentTime, track: track.mediaStreamTrack && track.mediaStreamTrack.readyState, muted: track.mediaStreamTrack && track.mediaStreamTrack.muted }), 2000);
+          const p = el.play && el.play(); if (p && p.catch) p.catch((e) => console.warn(TAG, 'video play failed:', e && e.message));
           this.videoEl = el;
           window.__vibeSetAvatarVideo && window.__vibeSetAvatarVideo(el);
           console.log(TAG, 'avatar VIDEO attached → VirtualCamera');
         } else if (track.kind === 'audio') {
-          // P2b: route this to the virtual mic for perfect sync. For P2a we leave it detached
-          // (humans hear the bot's local TTS); attaching here would double the audio.
           console.log(TAG, 'avatar audio track available (left detached for P2a)');
         }
       });
@@ -80,6 +88,8 @@
     }
 
     _revert() {
+      try { if (this._hb) clearInterval(this._hb); } catch (e) {}
+      this._hb = null;
       try { window.__vibeSetAvatarVideo && window.__vibeSetAvatarVideo(null); } catch (e) {}
       try { if (this.videoEl) this.videoEl.remove(); } catch (e) {}
       this.videoEl = null; this.connected = false;

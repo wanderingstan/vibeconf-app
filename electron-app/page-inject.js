@@ -191,10 +191,18 @@
 
       // --- P2: Runway avatar face (opt-in). When a playing avatar video is attached, it
       // replaces the emoji entirely. Inert unless setAvatarVideo() was called. Falls back to
-      // the emoji render until the video has real frames. ---
-      if (this.avatarVideo && this.avatarVideo.readyState >= 2 && this.avatarVideo.videoWidth > 0) {
-        try { ctx.drawImage(this.avatarVideo, 0, 0, w, h); return; }
-        catch (e) { /* draw/taint failure → fall through to the emoji render */ }
+      // the emoji render until the video has real frames. (diagnostic logs once per camera.) ---
+      if (this.avatarVideo) {
+        if (!this._avatarSeenLogged) { this._avatarSeenLogged = true; console.log('[runway-avatar] _render sees avatarVideo (waiting for frames): rs=' + this.avatarVideo.readyState + ' w=' + this.avatarVideo.videoWidth); }
+        if (this.avatarVideo.readyState >= 2 && this.avatarVideo.videoWidth > 0) {
+          try {
+            ctx.drawImage(this.avatarVideo, 0, 0, w, h);
+            if (!this._avatarDrawLogged) { this._avatarDrawLogged = true; console.log('[runway-avatar] FIRST avatar frame drawn to camera ✅ (' + this.avatarVideo.videoWidth + 'x' + this.avatarVideo.videoHeight + ')'); }
+            return;
+          } catch (e) {
+            if (!this._avatarErrLogged) { this._avatarErrLogged = true; console.warn('[runway-avatar] drawImage FAILED (taint/decode?): ' + (e && e.message)); }
+          }
+        }
       }
 
       // --- Background: custom SVG (if loaded) or animated gradient fallback ---
@@ -785,20 +793,30 @@
     yieldingEmojiOverride: null, backgroundImage: null,
   };
 
+  // P2: latch the avatar video so a camera created AFTER the track arrives (or recreated on a
+  // camera toggle) still picks it up — otherwise the avatar is dropped on a timing race. (codex.)
+  let pendingAvatarVideo = null;
+
   function getCamera(width, height) {
     const key = `${width}x${height}`;
     if (!cameras.has(key)) {
-      cameras.set(key, new VirtualCamera(width, height));
-      console.log('[bots-in-calls] Created virtual camera:', key);
+      const cam = new VirtualCamera(width, height);
+      if (pendingAvatarVideo) cam.setAvatarVideo(pendingAvatarVideo);
+      cameras.set(key, cam);
+      console.log('[bots-in-calls] Created virtual camera:', key, 'pendingAvatar=', !!pendingAvatarVideo);
     }
     return cameras.get(key);
   }
 
   // P2 bridge — lets runway-avatar.js (separate page script) drive the Runway face: set the
-  // avatar <video> on every VirtualCamera, and read the bot's TTS mic track to publish to
-  // Runway. Uses mic.getTrack() (rebuild-aware — survives the Slack stop()/rebuild). No-ops on
-  // the default emoji path (only used when a connect message activates the face).
-  window.__vibeSetAvatarVideo = (el) => { try { cameras.forEach((c) => c.setAvatarVideo && c.setAvatarVideo(el)); } catch (e) { console.warn('[bots-in-calls] setAvatarVideo bridge:', e && e.message); } };
+  // avatar <video> on every VirtualCamera (+ latch it for cameras created later), and read the
+  // bot's TTS mic track to publish to Runway (rebuild-aware getTrack(), survives the Slack
+  // stop()/rebuild). No-ops on the default emoji path (only used when a connect message fires).
+  window.__vibeSetAvatarVideo = (el) => {
+    pendingAvatarVideo = el || null;
+    let n = 0; try { cameras.forEach((c) => { n++; c.setAvatarVideo && c.setAvatarVideo(pendingAvatarVideo); }); } catch (e) { console.warn('[bots-in-calls] setAvatarVideo bridge:', e && e.message); }
+    console.log('[bots-in-calls] avatar video set:', !!pendingAvatarVideo, 'cameras=', n);
+  };
   window.__vibeMicTrack = () => { try { return mic ? mic.getTrack() : null; } catch (e) { return null; } };
 
   const _getUserMedia = MediaDevices.prototype.getUserMedia;

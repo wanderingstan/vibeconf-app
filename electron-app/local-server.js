@@ -2517,6 +2517,21 @@ class LocalServer {
       results.playAudio = { ok: true };
     }
 
+    // Play a bundled sound-effect by id ("arcade/coin"). Resolves the id to its
+    // shipped mp3 here (the app owns the files; the MCP server only knows names)
+    // and reuses the play-audio path. Unknown id → ok:false with the reason.
+    if (data.meta?.action === 'play-sound') {
+      const sounds = require('./sounds.js');
+      const abs = sounds.resolvePath(data.meta.name);
+      if (abs) {
+        this._setBotState('speaking', { emoji: data.meta.emoji });
+        this.onPlayAudio({ path: abs, emoji: data.meta.emoji });
+        results.playSound = { ok: true, id: data.meta.name };
+      } else {
+        results.playSound = { ok: false, reason: `unknown sound "${data.meta.name}"` };
+      }
+    }
+
     // Handle load-url command (load arbitrary URL in whiteboard window)
     if (data.meta?.action === 'load-url' && data.meta.url) {
       this.onLoadUrl(data.meta.url);

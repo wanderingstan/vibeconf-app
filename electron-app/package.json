@@ -33,6 +33,7 @@
     "files": [
       "*.js",
       "*.mp3",
+      "sounds/**/*",
       "renderer/**/*",
       "ack/**/*",
       "prompts/**/*",

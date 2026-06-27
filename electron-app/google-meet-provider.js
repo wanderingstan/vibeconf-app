@@ -193,19 +193,50 @@ function acceptRecordingConsentIfPresent() {
   return false;
 }
 
+// Read the current text of the chat input regardless of its shape: a
+// <textarea> exposes .value, a contenteditable div (history-on Meet) exposes
+// .textContent. Used for typing-confirmation and the "input cleared = sent"
+// check, both of which previously assumed .value and threw on a div.
+function inputText(el) {
+  return ((el.isContentEditable ? el.textContent : el.value) || '');
+}
+
 async function typeIntoInput(input, value) {
   input.focus();
   input.click();
   await delay(200);
 
-  input.select();
-  const ok = document.execCommand('insertText', false, value);
-  if (ok && input.value === value) return true;
+  const isCE = input.isContentEditable;
 
-  // Meet's chat input is a <textarea>; calling HTMLInputElement's value setter
-  // on it throws "Illegal invocation" because `this` is the wrong type. Pull
-  // the setter from the element's own prototype chain, with fallbacks for
-  // either built-in type if the immediate prototype's descriptor is missing.
+  // Select existing content so insertText replaces rather than appends.
+  if (isCE) {
+    const range = document.createRange();
+    range.selectNodeContents(input);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  } else if (typeof input.select === 'function') {
+    input.select();
+  }
+
+  const ok = document.execCommand('insertText', false, value);
+  if (ok && inputText(input).trim() === value.trim()) return true;
+
+  if (isCE) {
+    // Contenteditable fallback (no native value setter exists for a div): set
+    // textContent and fire an input event so Meet's React handler (jsaction
+    // input:q3884e) registers the change.
+    input.textContent = value;
+    input.dispatchEvent(new InputEvent('input', {
+      bubbles: true, cancelable: true, data: value, inputType: 'insertText',
+    }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return inputText(input).trim() === value.trim();
+  }
+
+  // <textarea>/<input>: calling HTMLInputElement's value setter on it throws
+  // "Illegal invocation" because `this` is the wrong type. Pull the setter from
+  // the element's own prototype chain, with fallbacks for either built-in type.
   const valueDescriptor =
     Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value') ||
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value') ||
@@ -229,7 +260,7 @@ async function typeIntoInput(input, value) {
   input.dispatchEvent(new Event('change', { bubbles: true }));
   input.dispatchEvent(new Event('blur', { bubbles: true }));
   input.focus();
-  return input.value === value;
+  return inputText(input).trim() === value.trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -592,7 +623,7 @@ async function sendChatFlow(text) {
   let sent = false;
   for (let i = 0; i < 15; i++) {
     await delay(100);
-    if (input.value.trim() === '') { sent = true; break; }
+    if (inputText(input).trim() === '') { sent = true; break; }
     if (i === 7) via = trySend();
   }
   console.log('[electron-meet] sendChat via ' + via + ' — sent: ' + sent);

@@ -69,13 +69,15 @@ const MEET = {
   // -------------------------------------------------------------------------
   chat: {
     toggle: 'button[aria-label^="Chat with everyone" i], [role="button"][aria-label^="Chat with everyone" i]',
-    // Match the chat textarea by its STABLE attributes (maxlength=4000 is the
-    // chat input's 4000-char limit), not the aria-label — Meet relabels the
-    // aria-label/placeholder ("Send a message" ↔ other states, e.g. when chat
-    // history is on), so an exact aria-label match intermittently misses an
-    // input that's right there (the pane opens but isChatPaneOpen returns
-    // false → "Could not open the chat pane"). aria-label kept as a fallback.
-    input: 'textarea[maxlength="4000"], textarea[aria-label^="Send a message" i]',
+    // The chat input renders DIFFERENTLY depending on the account/chat-history
+    // setting, so match BOTH shapes and never rely on the aria-label (Meet sets
+    // it to "Send a message" OR "History is on" depending on state):
+    //   • history OFF → a real <textarea> (match by the stable maxlength=4000)
+    //   • history ON  → a contenteditable div role="textbox" aria-multiline
+    // The Ask-Gemini box is role="combobox" (not textbox), so it's excluded.
+    // Typing/clearing must handle the contenteditable case (see typeIntoInput /
+    // inputText) since a contenteditable div has no .value.
+    input: 'textarea[maxlength="4000"], [contenteditable="true"][role="textbox"][aria-multiline="true"]',
     sendLabelA: 'Send a message',
     sendLabelB: 'Send message',
     unreadRe: /new message/i,

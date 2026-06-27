@@ -31,6 +31,7 @@ const slackBotNameInput = document.getElementById('slackBotName');
 const websiteUrlInput = document.getElementById('websiteUrl');
 const ttsApiKeyInput = document.getElementById('ttsApiKey');
 const ttsVoiceIdInput = document.getElementById('ttsVoiceId');
+const macosVoiceSelect = document.getElementById('macosVoice');
 const claudeWorkDirInput = document.getElementById('claudeWorkDir');
 const dangerousModeInput = document.getElementById('dangerousMode');
 const ackShortMinInput = document.getElementById('ackShortMin');
@@ -228,7 +229,7 @@ if (debugOverlayToggle) {
 // Load saved config
 // ---------------------------------------------------------------------------
 
-api.invoke('get-config', ['botName', 'slackBotName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'claudeWorkDir', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases']).then((result) => {
+api.invoke('get-config', ['botName', 'slackBotName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'claudeWorkDir', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases']).then((result) => {
   if (result?.botName) { botNameInput.value = result.botName; currentBotName = result.botName; }
   if (result?.slackBotName && slackBotNameInput) slackBotNameInput.value = result.slackBotName;
   refreshSlackIdentity();
@@ -239,6 +240,9 @@ api.invoke('get-config', ['botName', 'slackBotName', 'websiteUrl', 'syncBaseUrl'
   if (effectiveUrl) { websiteUrlInput.value = effectiveUrl; syncBaseUrl = effectiveUrl; }
   if (result?.ttsApiKey) ttsApiKeyInput.value = result.ttsApiKey;
   if (result?.ttsVoiceId) ttsVoiceIdInput.value = result.ttsVoiceId;
+  // Default the dropdown to Samantha when unset, to match tts.js's actual
+  // default voice (so the UI reflects what's really used before any pick).
+  populateMacosVoices(result?.macosVoice || 'Samantha');
   try { refreshVoiceStatus(); } catch { /* defined below; ignore if not yet */ }
   if (result?.claudeWorkDir) claudeWorkDirInput.value = result.claudeWorkDir;
   if (result?.dangerousMode) dangerousModeInput.checked = true;
@@ -657,7 +661,8 @@ function refreshVoiceStatus() {
     voiceStatus.style.color = '#81c995';
     voiceStatus.title = `ElevenLabs voice ID: ${id}`;
   } else {
-    voiceStatus.textContent = '🔈 Built-in macOS voice';
+    const macVoice = (macosVoiceSelect?.value || '').trim();
+    voiceStatus.textContent = macVoice ? `🔈 Built-in macOS voice: ${macVoice}` : '🔈 Built-in macOS voice';
     voiceStatus.style.color = '#9aa0a6';
     voiceStatus.title = 'No ElevenLabs voice ID set — using the built-in macOS voice.';
   }
@@ -960,6 +965,57 @@ ttsApiKeyInput.addEventListener('change', () => {
 ttsVoiceIdInput.addEventListener('change', () => {
   api.send('update-tts-config', { voiceId: ttsVoiceIdInput.value.trim() });
   refreshVoiceStatus();
+});
+
+// Populate the built-in macOS voice dropdown from `say -v '?'` (via main).
+// `selected` is the currently-saved voice name to pre-select.
+async function populateMacosVoices(selected) {
+  if (!macosVoiceSelect) return;
+  let voices = [];
+  try { voices = await api.invoke('list-macos-voices'); } catch { /* ignore */ }
+  if (!Array.isArray(voices) || voices.length === 0) {
+    // Not on macOS, or enumeration failed — keep a single sane default.
+    macosVoiceSelect.innerHTML = '<option value="">Samantha (default)</option>';
+    return;
+  }
+  macosVoiceSelect.innerHTML = '';
+  // Group by quality tier (the list arrives pre-sorted Premium→Enhanced→plain)
+  // so the good downloadable voices are clearly separated from the poor ones.
+  const tierOf = (name) => (/\(Premium\)/i.test(name) ? 'Premium' : /\(Enhanced\)/i.test(name) ? 'Enhanced' : 'Standard');
+  const groups = {};
+  for (const v of voices) {
+    const t = tierOf(v.name);
+    if (!groups[t]) {
+      const og = document.createElement('optgroup');
+      og.label = t === 'Standard' ? 'Standard (lower quality)' : `${t} (high quality)`;
+      groups[t] = og;
+      macosVoiceSelect.appendChild(og);
+    }
+    const opt = document.createElement('option');
+    opt.value = v.name;
+    opt.textContent = `${v.name} (${v.locale})`;
+    if (v.name === selected) opt.selected = true;
+    groups[t].appendChild(opt);
+  }
+  // If the saved voice wasn't in the list (e.g. uninstalled), default to the
+  // first English voice so the dropdown reflects what will actually be used.
+  if (selected && !voices.some((v) => v.name === selected)) {
+    macosVoiceSelect.selectedIndex = 0;
+  }
+}
+
+macosVoiceSelect?.addEventListener('change', () => {
+  const name = macosVoiceSelect.value;
+  if (!name) return;
+  api.send('update-tts-config', { macosVoice: name });
+  refreshVoiceStatus();
+  // Audition the chosen voice on the local speakers.
+  api.invoke('preview-macos-voice', name).catch(() => {});
+});
+
+document.getElementById('openVoiceSettingsBtn')?.addEventListener('click', (e) => {
+  e.preventDefault();
+  api.invoke('open-voice-settings').catch(() => {});
 });
 
 claudeWorkDirInput.addEventListener('change', () => {

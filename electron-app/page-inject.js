@@ -485,16 +485,52 @@
         if (!log.length) return ['AGENT', '  (no agent session)'];
         return ['AGENT', ...log.map((l) => '  ' + l)];
       })();
-      // Right column: the two wide caption lines (heard/proc) on top, then the
-      // agent activity tail beneath them.
-      const rightLines = [heard, proc, '', ...agentLines];
-      // Left column = the stats (CALL + LOOP). Right column = the agent tail,
-      // so it can run taller (newest at the bottom) without pushing the stats
-      // off-frame.
-      const leftLines = [...callLines, '', ...loopLines];
+      // PROBE — the slow model's freshest banked interjection (#245), the one
+      // that would actually fire next if an opening appears. Only this newest
+      // entry is ever fired (_consumeFreshProbe pops the latest); older banked
+      // probes just age out, so we show only the latest. Hidden unless
+      // probeFiring is on and something is banked.
+      const probeLines = (() => {
+        const bank = d.probeBank || [];
+        if (!bank.length) return [];
+        const latest = bank[bank.length - 1];
+        const fired = d.lastProbeFiredAt ? `  (last fired ${ago(d.lastProbeFiredAt)})` : '';
+        return [
+          'PROBE' + fired,
+          `▸ "${String(latest.text || '').replace(/\s+/g, ' ').trim()}" ${ago(latest.at)}`,
+          '',
+        ];
+      })();
+      // Right column: banked probes (if any) on top, then the two wide caption
+      // lines (heard/proc), then the agent activity tail beneath them.
+      const rightLines = [...probeLines, heard, proc, '', ...agentLines];
+      // EXP — the active experiment/timing knobs (#273), so anyone in the call
+      // can read off which flags a given bot is running. Values are the
+      // EFFECTIVE settings (store override or schema default), resolved server-
+      // side. on/off booleans render ON/off; numbers render as-is.
+      const expLines = (() => {
+        const e = d.experiments;
+        if (!e) return [];
+        const onoff = (v) => (v ? 'ON' : 'off');
+        const num = (v) => (v == null ? '?' : String(v));
+        return [
+          'EXP',
+          `silence:  ${num(e.defaultSilenceSeconds)}s`,
+          `probe:    ${onoff(e.probeFiring)}`,
+          `probeMs:  ${num(e.probeSilenceMs)}`,
+          `tickWord: ${num(e.backgroundTickWords)}`,
+          `triageAck:${onoff(e.triageAck)}`,
+        ];
+      })();
+      // Left column = the stats (CALL + LOOP + EXP). Right column = the agent
+      // tail, so it can run taller (newest at the bottom) without pushing the
+      // stats off-frame.
+      const leftLines = [...callLines, '', ...loopLines, '', ...expLines];
 
       const pad = 16;
-      const lineH = 30;
+      // 27px leading keeps the now-taller left column (CALL+LOOP+EXP, ~25 lines)
+      // within the 720px canvas — at 30px the last EXP lines clipped off-frame.
+      const lineH = 27;
       const font = '600 22px ui-monospace, SFMono-Regular, Menlo, monospace';
       ctx.save();
       ctx.font = font;
@@ -517,7 +553,12 @@
       // Headers yellow; STALE loop / DEAF caps / ack-fallback red; heard blue;
       // proc teal; rest light grey.
       const colorFor = (ln) => {
-        if (ln === 'CALL' || ln === 'LOOP' || ln === 'AGENT') return '#fdd663';
+        if (ln === 'CALL' || ln === 'LOOP' || ln === 'AGENT' || ln === 'EXP') return '#fdd663';
+        if (ln.startsWith('PROBE')) return '#fdd663';
+        // The freshest banked probe (the one that fires next) pops green.
+        if (ln.startsWith('▸ ')) return '#81c995';
+        // EXP flags that are ON pop green so an active experiment is obvious.
+        if ((ln.startsWith('probe:') || ln.startsWith('triageAck')) && ln.includes('ON')) return '#81c995';
         if (ln.startsWith('loop:') && ln.includes('STALE')) return '#ea4335';
         if (ln.includes('fallback') && (ln.startsWith('ack:') || ln.startsWith('          '))) return '#ea4335';
         if (ln.startsWith('caps:') && ln.includes('DEAF')) return '#ea4335';

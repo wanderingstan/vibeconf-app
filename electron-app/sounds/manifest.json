@@ -1,0 +1,511 @@
+{
+  "generated": "scripts/build-sounds-manifest.mjs",
+  "source": "github.com/e3ntity/react-sounds",
+  "count": 72,
+  "sounds": [
+    {
+      "id": "ambient/campfire",
+      "category": "ambient",
+      "name": "campfire",
+      "file": "ambient/campfire.mp3",
+      "bytes": 352802
+    },
+    {
+      "id": "ambient/heartbeat",
+      "category": "ambient",
+      "name": "heartbeat",
+      "file": "ambient/heartbeat.mp3",
+      "bytes": 352802
+    },
+    {
+      "id": "ambient/rain",
+      "category": "ambient",
+      "name": "rain",
+      "file": "ambient/rain.mp3",
+      "bytes": 352802
+    },
+    {
+      "id": "ambient/water_stream",
+      "category": "ambient",
+      "name": "water_stream",
+      "file": "ambient/water_stream.mp3",
+      "bytes": 352802
+    },
+    {
+      "id": "ambient/wind",
+      "category": "ambient",
+      "name": "wind",
+      "file": "ambient/wind.mp3",
+      "bytes": 352802
+    },
+    {
+      "id": "arcade/coin",
+      "category": "arcade",
+      "name": "coin",
+      "file": "arcade/coin.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "arcade/coin_bling",
+      "category": "arcade",
+      "name": "coin_bling",
+      "file": "arcade/coin_bling.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "arcade/jump",
+      "category": "arcade",
+      "name": "jump",
+      "file": "arcade/jump.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "arcade/level_down",
+      "category": "arcade",
+      "name": "level_down",
+      "file": "arcade/level_down.mp3",
+      "bytes": 23271
+    },
+    {
+      "id": "arcade/level_up",
+      "category": "arcade",
+      "name": "level_up",
+      "file": "arcade/level_up.mp3",
+      "bytes": 28851
+    },
+    {
+      "id": "arcade/power_down",
+      "category": "arcade",
+      "name": "power_down",
+      "file": "arcade/power_down.mp3",
+      "bytes": 17181
+    },
+    {
+      "id": "arcade/power_up",
+      "category": "arcade",
+      "name": "power_up",
+      "file": "arcade/power_up.mp3",
+      "bytes": 17181
+    },
+    {
+      "id": "arcade/upgrade",
+      "category": "arcade",
+      "name": "upgrade",
+      "file": "arcade/upgrade.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "game/coin",
+      "category": "game",
+      "name": "coin",
+      "file": "game/coin.mp3",
+      "bytes": 16748
+    },
+    {
+      "id": "game/hit",
+      "category": "game",
+      "name": "hit",
+      "file": "game/hit.mp3",
+      "bytes": 5580
+    },
+    {
+      "id": "game/miss",
+      "category": "game",
+      "name": "miss",
+      "file": "game/miss.mp3",
+      "bytes": 5476
+    },
+    {
+      "id": "game/portal_closing",
+      "category": "game",
+      "name": "portal_closing",
+      "file": "game/portal_closing.mp3",
+      "bytes": 33481
+    },
+    {
+      "id": "game/portal_opening",
+      "category": "game",
+      "name": "portal_opening",
+      "file": "game/portal_opening.mp3",
+      "bytes": 43721
+    },
+    {
+      "id": "game/void",
+      "category": "game",
+      "name": "void",
+      "file": "game/void.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "misc/silence",
+      "category": "misc",
+      "name": "silence",
+      "file": "misc/silence.mp3",
+      "bytes": 1613
+    },
+    {
+      "id": "notification/completed",
+      "category": "notification",
+      "name": "completed",
+      "file": "notification/completed.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "notification/error",
+      "category": "notification",
+      "name": "error",
+      "file": "notification/error.mp3",
+      "bytes": 8822
+    },
+    {
+      "id": "notification/info",
+      "category": "notification",
+      "name": "info",
+      "file": "notification/info.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "notification/message",
+      "category": "notification",
+      "name": "message",
+      "file": "notification/message.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "notification/notification",
+      "category": "notification",
+      "name": "notification",
+      "file": "notification/notification.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "notification/popup",
+      "category": "notification",
+      "name": "popup",
+      "file": "notification/popup.mp3",
+      "bytes": 4537
+    },
+    {
+      "id": "notification/reminder",
+      "category": "notification",
+      "name": "reminder",
+      "file": "notification/reminder.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "notification/success",
+      "category": "notification",
+      "name": "success",
+      "file": "notification/success.mp3",
+      "bytes": 25775
+    },
+    {
+      "id": "notification/warning",
+      "category": "notification",
+      "name": "warning",
+      "file": "notification/warning.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "system/boot_down",
+      "category": "system",
+      "name": "boot_down",
+      "file": "system/boot_down.mp3",
+      "bytes": 22530
+    },
+    {
+      "id": "system/boot_up",
+      "category": "system",
+      "name": "boot_up",
+      "file": "system/boot_up.mp3",
+      "bytes": 50856
+    },
+    {
+      "id": "system/device_connect",
+      "category": "system",
+      "name": "device_connect",
+      "file": "system/device_connect.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "system/device_disconnect",
+      "category": "system",
+      "name": "device_disconnect",
+      "file": "system/device_disconnect.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "system/lock",
+      "category": "system",
+      "name": "lock",
+      "file": "system/lock.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "system/screenshot",
+      "category": "system",
+      "name": "screenshot",
+      "file": "system/screenshot.mp3",
+      "bytes": 7620
+    },
+    {
+      "id": "system/trash",
+      "category": "system",
+      "name": "trash",
+      "file": "system/trash.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "ui/blocked",
+      "category": "ui",
+      "name": "blocked",
+      "file": "ui/blocked.mp3",
+      "bytes": 14288
+    },
+    {
+      "id": "ui/button_hard",
+      "category": "ui",
+      "name": "button_hard",
+      "file": "ui/button_hard.mp3",
+      "bytes": 14710
+    },
+    {
+      "id": "ui/button_hard_double",
+      "category": "ui",
+      "name": "button_hard_double",
+      "file": "ui/button_hard_double.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "ui/button_medium",
+      "category": "ui",
+      "name": "button_medium",
+      "file": "ui/button_medium.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "ui/button_soft",
+      "category": "ui",
+      "name": "button_soft",
+      "file": "ui/button_soft.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "ui/button_soft_double",
+      "category": "ui",
+      "name": "button_soft_double",
+      "file": "ui/button_soft_double.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "ui/button_squishy",
+      "category": "ui",
+      "name": "button_squishy",
+      "file": "ui/button_squishy.mp3",
+      "bytes": 5266
+    },
+    {
+      "id": "ui/buzz",
+      "category": "ui",
+      "name": "buzz",
+      "file": "ui/buzz.mp3",
+      "bytes": 8822
+    },
+    {
+      "id": "ui/buzz_deep",
+      "category": "ui",
+      "name": "buzz_deep",
+      "file": "ui/buzz_deep.mp3",
+      "bytes": 16122
+    },
+    {
+      "id": "ui/buzz_long",
+      "category": "ui",
+      "name": "buzz_long",
+      "file": "ui/buzz_long.mp3",
+      "bytes": 17181
+    },
+    {
+      "id": "ui/copy",
+      "category": "ui",
+      "name": "copy",
+      "file": "ui/copy.mp3",
+      "bytes": 3443
+    },
+    {
+      "id": "ui/input_blur",
+      "category": "ui",
+      "name": "input_blur",
+      "file": "ui/input_blur.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "ui/input_focus",
+      "category": "ui",
+      "name": "input_focus",
+      "file": "ui/input_focus.mp3",
+      "bytes": 6575
+    },
+    {
+      "id": "ui/item_deselect",
+      "category": "ui",
+      "name": "item_deselect",
+      "file": "ui/item_deselect.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "ui/item_select",
+      "category": "ui",
+      "name": "item_select",
+      "file": "ui/item_select.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "ui/keystroke_hard",
+      "category": "ui",
+      "name": "keystroke_hard",
+      "file": "ui/keystroke_hard.mp3",
+      "bytes": 8822
+    },
+    {
+      "id": "ui/keystroke_medium",
+      "category": "ui",
+      "name": "keystroke_medium",
+      "file": "ui/keystroke_medium.mp3",
+      "bytes": 8822
+    },
+    {
+      "id": "ui/keystroke_soft",
+      "category": "ui",
+      "name": "keystroke_soft",
+      "file": "ui/keystroke_soft.mp3",
+      "bytes": 8822
+    },
+    {
+      "id": "ui/panel_collapse",
+      "category": "ui",
+      "name": "panel_collapse",
+      "file": "ui/panel_collapse.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "ui/panel_expand",
+      "category": "ui",
+      "name": "panel_expand",
+      "file": "ui/panel_expand.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "ui/pop_close",
+      "category": "ui",
+      "name": "pop_close",
+      "file": "ui/pop_close.mp3",
+      "bytes": 10793
+    },
+    {
+      "id": "ui/pop_open",
+      "category": "ui",
+      "name": "pop_open",
+      "file": "ui/pop_open.mp3",
+      "bytes": 10714
+    },
+    {
+      "id": "ui/popup_close",
+      "category": "ui",
+      "name": "popup_close",
+      "file": "ui/popup_close.mp3",
+      "bytes": 17181
+    },
+    {
+      "id": "ui/popup_open",
+      "category": "ui",
+      "name": "popup_open",
+      "file": "ui/popup_open.mp3",
+      "bytes": 17181
+    },
+    {
+      "id": "ui/radio_select",
+      "category": "ui",
+      "name": "radio_select",
+      "file": "ui/radio_select.mp3",
+      "bytes": 13837
+    },
+    {
+      "id": "ui/send",
+      "category": "ui",
+      "name": "send",
+      "file": "ui/send.mp3",
+      "bytes": 3807
+    },
+    {
+      "id": "ui/submit",
+      "category": "ui",
+      "name": "submit",
+      "file": "ui/submit.mp3",
+      "bytes": 8822
+    },
+    {
+      "id": "ui/success_bling",
+      "category": "ui",
+      "name": "success_bling",
+      "file": "ui/success_bling.mp3",
+      "bytes": 11838
+    },
+    {
+      "id": "ui/success_blip",
+      "category": "ui",
+      "name": "success_blip",
+      "file": "ui/success_blip.mp3",
+      "bytes": 10900
+    },
+    {
+      "id": "ui/success_chime",
+      "category": "ui",
+      "name": "success_chime",
+      "file": "ui/success_chime.mp3",
+      "bytes": 21802
+    },
+    {
+      "id": "ui/tab_close",
+      "category": "ui",
+      "name": "tab_close",
+      "file": "ui/tab_close.mp3",
+      "bytes": 8822
+    },
+    {
+      "id": "ui/tab_open",
+      "category": "ui",
+      "name": "tab_open",
+      "file": "ui/tab_open.mp3",
+      "bytes": 8822
+    },
+    {
+      "id": "ui/toggle_off",
+      "category": "ui",
+      "name": "toggle_off",
+      "file": "ui/toggle_off.mp3",
+      "bytes": 6314
+    },
+    {
+      "id": "ui/toggle_on",
+      "category": "ui",
+      "name": "toggle_on",
+      "file": "ui/toggle_on.mp3",
+      "bytes": 6678
+    },
+    {
+      "id": "ui/window_close",
+      "category": "ui",
+      "name": "window_close",
+      "file": "ui/window_close.mp3",
+      "bytes": 8822
+    },
+    {
+      "id": "ui/window_open",
+      "category": "ui",
+      "name": "window_open",
+      "file": "ui/window_open.mp3",
+      "bytes": 8822
+    }
+  ]
+}

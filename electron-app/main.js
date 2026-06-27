@@ -1150,6 +1150,21 @@ async function setRunwayFace(seat, on) {
 }
 // manual toggle from panel/devtools: ipcRenderer.invoke('runway-face', { seat:'sal', on:true })
 ipcMain.handle('runway-face', (_e, { seat = 'sal', on = true } = {}) => setRunwayFace(seat, on));
+
+// P2 loss-recovery: the renderer reports an unexpected room drop (network blip, Runway session
+// death) → re-establish the face for THIS app's seat. Debounced so a burst of disconnect events
+// collapses to one re-establish. Only acts if the face was meant to be on (enabled).
+let _runwayReestablishing = false;
+function runwayReestablish(why) {
+  const seat = String(process.env.VIBECONF_PROFILE || '').toLowerCase();
+  if ((seat !== 'sal' && seat !== 'solienne') || _runwayReestablishing) return;
+  if (!(_runway[seat] && _runway[seat].enabled)) return; // face wasn't on — nothing to recover
+  _runwayReestablishing = true;
+  console.log('[runway] re-establishing', seat, '(' + why + ')');
+  Promise.resolve(setRunwayFace(seat, true)).finally(() => setTimeout(() => { _runwayReestablishing = false; }, 8000));
+}
+ipcMain.on('runway-avatar-lost', () => runwayReestablish('renderer reported loss'));
+
 let whiteboardWindow = null;
 let fullScreenShareRequested = false;
 // Generation token for the whiteboard-share "Present now" retry loop. Bumped on
@@ -3135,6 +3150,12 @@ async function loadMeetURL(meetUrl) {
       // Notify panel that Meet is loaded
       if (panelView && !panelView.webContents.isDestroyed()) {
         panelView.webContents.send('meet-status', { url, ready: true });
+      }
+      // P2 reload-recovery: a Meet page reload (e.g. the pre-join limbo re-join) silently destroys
+      // the renderer's LiveKit connection without a Disconnected event. If the face was on, the
+      // freshly-loaded runway-avatar.js has nothing — re-establish once it's had a moment to load.
+      if (_runway[String(process.env.VIBECONF_PROFILE || '').toLowerCase()]?.enabled) {
+        setTimeout(() => runwayReestablish('meet page (re)load'), 4000);
       }
       // Push current state to page-inject — first-call timing race fix.
       // Without this, the initial 'joining' callStatus may have fired before

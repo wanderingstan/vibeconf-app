@@ -49,7 +49,14 @@
           for (const ev of ['loadedmetadata', 'canplay', 'playing', 'resize', 'error']) {
             el.addEventListener(ev, () => console.log(TAG, 'video event:', ev, { rs: el.readyState, w: el.videoWidth, h: el.videoHeight, t: el.currentTime }));
           }
-          this._hb = setInterval(() => console.log(TAG, 'video heartbeat', { rs: el.readyState, w: el.videoWidth, h: el.videoHeight, t: el.currentTime, track: track.mediaStreamTrack && track.mediaStreamTrack.readyState, muted: track.mediaStreamTrack && track.mediaStreamTrack.muted }), 2000);
+          // Watchdog: log only on width change (0↔real = the failure/recovery signal), and
+          // self-stop when the track ends so renewals don't leak intervals.
+          this._hbLast = -1;
+          this._hb = setInterval(() => {
+            const w = el.videoWidth, ended = track.mediaStreamTrack && track.mediaStreamTrack.readyState === 'ended';
+            if (w !== this._hbLast) { console.log(TAG, 'video state w=' + w + ' rs=' + el.readyState + ' track=' + (track.mediaStreamTrack && track.mediaStreamTrack.readyState)); this._hbLast = w; }
+            if (ended) { clearInterval(this._hb); this._hb = null; }
+          }, 3000);
           const p = el.play && el.play(); if (p && p.catch) p.catch((e) => console.warn(TAG, 'video play failed:', e && e.message));
           this.videoEl = el;
           window.__vibeSetAvatarVideo && window.__vibeSetAvatarVideo(el);
@@ -58,7 +65,17 @@
           console.log(TAG, 'avatar audio track available (left detached for P2a)');
         }
       });
-      room.on(LK.RoomEvent.Disconnected, (reason) => { console.log(TAG, 'room disconnected:', reason); this._revert(); });
+      room.on(LK.RoomEvent.Disconnected, (reason) => {
+        console.log(TAG, 'room disconnected:', reason);
+        const expected = this._expectedClose;
+        this._revert();
+        // Unexpected drop (network blip, server, Runway session death) → ask main to re-establish.
+        // Expected closes (a new connect / explicit disconnect) set _expectedClose so we don't loop.
+        if (!expected) {
+          console.log(TAG, 'UNEXPECTED disconnect → requesting re-establish');
+          try { window.postMessage({ source: 'runway-avatar-status', type: 'lost' }, '*'); } catch (e) {}
+        }
+      });
       room.on(LK.RoomEvent.Reconnecting, () => console.log(TAG, 'reconnecting…'));
 
       await room.connect(url, token);
@@ -96,6 +113,7 @@
     }
 
     disconnect() {
+      this._expectedClose = true; // intentional close — suppress loss-recovery signal
       this._revert();
       try { this.room && this.room.disconnect(); } catch (e) {}
       this.room = null;

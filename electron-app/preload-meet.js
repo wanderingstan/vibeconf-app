@@ -71,6 +71,13 @@ ipcRenderer.on('runway-avatar', (_event, payload) => {
   window.postMessage({ source: 'runway-avatar', ...payload }, '*');
 });
 
+// P2 loss-recovery: runway-avatar.js posts {source:'runway-avatar-status', type:'lost'} on an
+// unexpected room drop → tell main to re-establish the face for this seat.
+window.addEventListener('message', (ev) => {
+  const m = ev && ev.data;
+  if (m && m.source === 'runway-avatar-status' && m.type === 'lost') ipcRenderer.send('runway-avatar-lost');
+});
+
 // ---------------------------------------------------------------------------
 // Expose screen share helper to page context (for getDisplayMedia override)
 // ---------------------------------------------------------------------------

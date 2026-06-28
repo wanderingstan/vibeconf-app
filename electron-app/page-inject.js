@@ -706,20 +706,50 @@
       return true;
     }
 
-    getTrack() {
+    getTrack(consumer = 'unknown') {
       // #274 fix (codex hypothesis): ONE stable master destination for the lifetime of
-      // the page — NEVER rebuilt. Each consumer (the call via getUserMedia; Runway via
-      // __vibeMicTrack) gets an INDEPENDENT clone(). So when Slack/Meet stop()s its own
-      // mic track on the lobby→huddle handoff or a device switch, only THAT clone dies —
-      // our master and every other clone stay live, and the call simply re-acquires a
-      // fresh clone on its next getUserMedia. We never hand out (or replace) the master
-      // track itself, so the call can never end up pinned to a track WE killed. The OLD
-      // rebuild path swapped the destination out from under an already-acquired consumer:
-      // Runway's getTrack() got the new live track while Meet stayed pinned to the dead
-      // one → "face animates, but no audio." Clones eliminate that split-brain. TTS
-      // sources connect to this.destination (the master), so every live clone carries
-      // the speech.
-      return this.destination.stream.getAudioTracks()[0].clone();
+      // the page — NEVER rebuilt under normal operation. Each consumer (the call via
+      // getUserMedia; Runway via __vibeMicTrack) gets an INDEPENDENT clone(). So when
+      // Slack/Meet stop()s its own mic track on the lobby→huddle handoff or a device
+      // switch, only THAT clone dies — our master and every other clone stay live, and
+      // the call simply re-acquires a fresh clone on its next getUserMedia. We never hand
+      // out (or replace) the master track itself, so the call can never end up pinned to
+      // a track WE killed. The OLD rebuild path swapped the destination out from under an
+      // already-acquired consumer: Runway's getTrack() got the new live track while Meet
+      // stayed pinned to the dead one → "face animates, but no audio." Clones eliminate
+      // that split-brain. TTS sources connect to this.destination (the master), so every
+      // live clone carries the speech.
+
+      // Master-liveness guard (codex): consumers only ever get clones, so the master
+      // shouldn't end — but removing the rebuild made master death TERMINAL (every future
+      // clone dead until reload) if the AudioContext closes or Chromium ends the
+      // destination track. Guarded one-time revive + loud log so the soak surfaces it
+      // instead of going silently dead. This is NOT the old per-ended rebuild — it only
+      // fires when the MASTER itself is dead, never to swap a track out from a consumer.
+      let master = this.destination.stream.getAudioTracks()[0];
+      if (!master || master.readyState === 'ended' || this.audioCtx.state === 'closed') {
+        console.warn(`[bots-in-calls] #274 GUARD: master dead (consumer=${consumer} master=${master && master.readyState} ctx=${this.audioCtx.state}) — reviving destination`);
+        if (this.audioCtx.state === 'closed') this.audioCtx = new AudioContext();
+        this.destination = this.audioCtx.createMediaStreamDestination();
+        const silence = this.audioCtx.createGain(); silence.gain.value = 0; silence.connect(this.destination);
+        const osc = this.audioCtx.createOscillator(); osc.connect(silence); osc.start();
+        master = this.destination.stream.getAudioTracks()[0];
+      }
+
+      const clone = master.clone();
+      // Clone lifecycle instrumentation (codex): label by consumer + log when THIS clone
+      // ENDS, so the soak can prove the failure mode directly — e.g. the Slack lobby clone
+      // ends AND a fresh 'call:getUserMedia' is re-acquired after the huddle goes live
+      // (the Slack-regression check), not hidden behind a healthy master-track log.
+      console.log(`[bots-in-calls] #274 getTrack consumer=${consumer} clone=${clone.id} master=${master.id} (masterState=${master.readyState})`);
+      clone.addEventListener('ended', () => {
+        console.log(`[bots-in-calls] #274 clone ENDED consumer=${consumer} clone=${clone.id} (master now ${this.destination.stream.getAudioTracks()[0] && this.destination.stream.getAudioTracks()[0].readyState})`);
+      });
+      // Keep a handle on the clone the CALL holds, so the play-tts diagnostic can log the
+      // ACTUAL call clone's readyState (codex) — a dead call clone must not hide behind a
+      // healthy master log.
+      if (consumer.startsWith('call')) this._lastCallTrack = clone;
+      return clone;
     }
 
     // Soft two-tone "I'm in the room" chime — used when admission completes,
@@ -859,7 +889,7 @@
     let n = 0; try { cameras.forEach((c) => { n++; c.setAvatarVideo && c.setAvatarVideo(pendingAvatarVideo); }); } catch (e) { console.warn('[bots-in-calls] setAvatarVideo bridge:', e && e.message); }
     console.log('[bots-in-calls] avatar video set:', !!pendingAvatarVideo, 'cameras=', n);
   };
-  window.__vibeMicTrack = () => { try { return mic ? mic.getTrack() : null; } catch (e) { return null; } };
+  window.__vibeMicTrack = () => { try { return mic ? mic.getTrack('runway') : null; } catch (e) { return null; } };
 
   const _getUserMedia = MediaDevices.prototype.getUserMedia;
 
@@ -883,7 +913,7 @@
         mic = new VirtualMic();
         console.log('[bots-in-calls] Created VirtualMic for getUserMedia, AudioContext state:', mic.audioCtx.state);
       }
-      const audioTrack = mic.getTrack();
+      const audioTrack = mic.getTrack('call:getUserMedia');
       console.log('[bots-in-calls] Providing audio track:', audioTrack.id, 'enabled:', audioTrack.enabled, 'readyState:', audioTrack.readyState);
       tracks.push(audioTrack);
     }
@@ -1227,11 +1257,13 @@
             console.log('[bots-in-calls] AudioContext suspended, resuming for TTS');
             mic.audioCtx.resume();
           }
-          const track = mic.destination.stream.getAudioTracks()[0]; // master track, for diagnostics only (getTrack() now clones)
+          const master = mic.destination.stream.getAudioTracks()[0];
+          const callClone = mic._lastCallTrack; // the clone the CALL actually holds (codex: a dead call-clone must NOT hide behind a healthy master log)
           console.log('[bots-in-calls] Queuing TTS audio, data length:', payload.audioData.length,
             'queue size:', ttsQueue.length,
             'AudioContext state:', mic.audioCtx.state,
-            'track enabled:', track?.enabled, 'readyState:', track?.readyState, 'muted:', track?.muted,
+            'CALL-clone:', callClone?.id, 'enabled:', callClone?.enabled, 'readyState:', callClone?.readyState, 'muted:', callClone?.muted,
+            'master readyState:', master?.readyState,
             'destination tracks:', mic.destination.stream.getAudioTracks().length);
           ttsQueue.push({ audioData: payload.audioData, emoji: payload.emoji });
           playNextTTS();

@@ -306,7 +306,9 @@ function renderProfileMenu(data) {
     top.textContent = p.name + (p.isCurrent ? '  · this window' : '');
     top.style.cssText = 'font-weight:600;color:#e8eaed;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
     const sub = document.createElement('div');
-    sub.textContent = p.meetAccountEmail || p.botName || '— no account bound —';
+    // Prefer the most identifying remembered fact: bound account email, then the
+    // remembered Meet/Slack display name, then the Bot Name default (#282).
+    sub.textContent = p.meetAccountEmail || p.lastMeetName || p.lastSlackName || p.botName || '— no account bound —';
     sub.style.cssText = 'color:#9aa0a6;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
     label.appendChild(top); label.appendChild(sub);
     row.appendChild(dot); row.appendChild(label);
@@ -361,11 +363,14 @@ if (debugOverlayToggle) {
 // Load saved config
 // ---------------------------------------------------------------------------
 
-api.invoke('get-config', ['botName', 'slackBotName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'claudeWorkDir', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases']).then((result) => {
+api.invoke('get-config', ['botName', 'slackBotName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'claudeWorkDir', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
   if (result?.botName) { botNameInput.value = result.botName; currentBotName = result.botName; }
   if (result?.slackBotName && slackBotNameInput) slackBotNameInput.value = result.slackBotName;
+  rememberedMeetName = result?.lastMeetName || null;   // #282 remembered names
+  rememberedSlackName = result?.lastSlackName || null;
   refreshSlackIdentity();
   try { updateBotNameBig(); } catch { /* defined below; ignore on first paint */ }
+  try { updateCallIdentity(); } catch { /* defined below */ }
   // Prefer the new websiteUrl key; fall back to legacy syncBaseUrl so users with
   // older configs still see their existing override populated in the field.
   const effectiveUrl = result?.websiteUrl || result?.syncBaseUrl || '';
@@ -651,12 +656,15 @@ function applyMeetMode(mode) {
 // name lives in the sub-line (updateCallIdentity) so the heading never lies.
 const botNameBig = document.getElementById('botNameBig');
 const botCallIdentity = document.getElementById('botCallIdentity');
-let botAccountName = null; // the bot's Google display name when signed in
-let callProvider = null;   // 'meet' | 'slack' while in a call, else null
+let botAccountName = null;   // the bot's Google display name when signed in
+let callProvider = null;     // 'meet' | 'slack' while in a call, else null
+let rememberedMeetName = null;  // last Meet display name for this profile (#282)
+let rememberedSlackName = null; // last Slack display name for this profile (#282)
 function updateBotNameBig() {
   if (!botNameBig) return;
-  botNameBig.textContent = appProfileName
-    || currentBotName || (botNameInput && botNameInput.value.trim()) || 'Bot';
+  // Stable slot identity: the profile name, or "Default" for the unnamed
+  // instance (#282). The actual/remembered name lives in the sub-line below.
+  botNameBig.textContent = appProfileName || 'Default';
 }
 
 // The "appearing as" sub-line: dim "not in a call" when idle; once in a call,
@@ -665,8 +673,14 @@ function updateBotNameBig() {
 function updateCallIdentity() {
   if (!botCallIdentity) return;
   if (!inCall || !callProvider) {
-    botCallIdentity.textContent = 'not in a call';
+    // Idle: surface the remembered name so the profile isn't anonymous between
+    // calls (#282). Prefer a real remembered Meet name, then Slack, then the
+    // (not-yet-used) Bot Name as "will appear as", else nothing.
     botCallIdentity.style.color = '#9aa0a6';
+    if (rememberedMeetName) botCallIdentity.textContent = `↩ last in Meet as ${rememberedMeetName}`;
+    else if (rememberedSlackName) botCallIdentity.textContent = `↩ last in Slack as ${rememberedSlackName}`;
+    else if (currentBotName) botCallIdentity.textContent = `will appear as ${currentBotName}`;
+    else botCallIdentity.textContent = 'not in a call';
     return;
   }
   let appearing;
@@ -728,6 +742,7 @@ async function refreshBotIdentity(mode) {
     // In-call name: prefer the Google display name, fall back to the email's
     // local part, then (in updateCallIdentity) the Bot Name preference.
     botAccountName = r?.name || (r?.email ? r.email.split('@')[0] : null);
+    if (r?.name) rememberedMeetName = r.name; // persist for the idle sub-line after the call (#282)
     updateBotNameBig();
     updateCallIdentity(); // refresh "in Meet as …" once the account name resolves
   } catch { botIdentityStatus.textContent = '✓ Signed in'; }

@@ -763,6 +763,13 @@ const localServer = new globalThis.LocalServer({
   },
 
   onCallStatusChange: (status) => {
+    // #282: remember the name used in a Slack huddle (the slackBotName override,
+    // else the bot name) so the profile selector + idle sub-line can show it.
+    // The live Slack account name isn't readable, so this is our best signal.
+    if (status === 'in-call' && slackProviderMode && store) {
+      const slackName = store.get('slackBotName') || store.get('botName') || null;
+      if (slackName && store.get('lastSlackName') !== slackName) store.set('lastSlackName', slackName);
+    }
     // #189: a fresh call gets a fresh auto-posted whiteboard link.
     if (status !== 'in-call') whiteboardLinkPostedForCall = false;
     // Don't let a shadow draft from a finished call pair with the next call's
@@ -3599,6 +3606,12 @@ function setupIPC() {
     if (email && store && !meetAccountEmailPinned && store.get('meetAccountEmail') !== email) {
       store.set('meetAccountEmail', email);
       console.log('[electron] Bound profile Meet account →', email);
+    }
+    // Remember the last Meet display name for this profile (the signed-in Google
+    // name). Stable, so the profile selector + idle sub-line can show it without
+    // a live call (#282). Display-only — distinct from the authuser-pinning email.
+    if (name && store && store.get('lastMeetName') !== name) {
+      store.set('lastMeetName', name);
     }
 
     return { signedIn, email, name, allEmails };

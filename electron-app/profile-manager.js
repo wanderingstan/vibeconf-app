@@ -33,6 +33,8 @@ function readProfileConfig(profilesRoot, name) {
     botName: cfg.botName || null,
     slackBotName: cfg.slackBotName || null,
     meetAccountEmail: cfg.meetAccountEmail || null,
+    lastMeetName: cfg.lastMeetName || null,   // remembered Meet display name (#282)
+    lastSlackName: cfg.lastSlackName || null, // remembered Slack display name (#282)
   };
 }
 

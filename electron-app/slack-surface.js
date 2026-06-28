@@ -9,7 +9,7 @@
 // This is the Slack analog of main.js's createMeetView + the (Meet) preload's
 // page-message plumbing, split across the two surfaces.
 
-const { BrowserView, session, globalShortcut } = require('electron');
+const { BrowserView, session, globalShortcut, shell } = require('electron');
 const path = require('path');
 const { SLACK } = require('./slack-selectors');
 
@@ -111,28 +111,49 @@ function createSlackSurface(mainWindow, opts = {}) {
   // opener's origin + session, so the popup is same-partition and freely
   // injectable. (#264 two-surface — the genuinely new piece vs Meet.)
   view.webContents.setWindowOpenHandler(({ url: popupUrl }) => {
-    // Slack opens TWO kinds of child window:
-    //   • the huddle UI — about:blank → inject the SCRAPE preload (our target).
-    //   • a real app.slack.com window (e.g. picking a workspace, "Redirecting…")
-    //     → it's another main surface; give it the MEDIA preload.
-    // BOTH must stay in the authenticated `partition`, else Slack bounces them
-    // through a logged-out redirect (the blank "Redirecting…" window).
+    // The huddle UI is an about:blank popup — KEEP it a popup and inject the
+    // scrape preload (it's our command/scrape target; the lobby/preview confirm
+    // happens inside this same popup, see did-create-window below).
     const isHuddlePopup = !popupUrl || popupUrl === 'about:blank';
-    const preload = path.join(__dirname, isHuddlePopup ? 'preload-slack-huddle.js' : 'preload-slack-main.js');
-    console.log('[slack-surface] window.open →', popupUrl || '(about:blank)',
-      isHuddlePopup ? '[huddle popup → scrape]' : '[slack window → media]');
-    return {
-      action: 'allow',
-      overrideBrowserWindowOptions: {
-        // Open WIDE: the huddle UI is responsive and HIDES the Thread/Captions
-        // side-panel below a width threshold — and the chat editor / transcript
-        // live in that panel, so a narrow popup means those selectors aren't in
-        // the DOM at all. Force a width that keeps the side-panel mounted.
-        width: 1280,
-        height: 860,
-        webPreferences: { preload, contextIsolation: false, sandbox: false, partition },
-      },
-    };
+    if (isHuddlePopup) {
+      console.log('[slack-surface] window.open → (about:blank) [huddle popup → scrape]');
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          // Open WIDE: the huddle UI is responsive and HIDES the Thread/Captions
+          // side-panel below a width threshold — and the chat editor / transcript
+          // live in that panel, so a narrow popup means those selectors aren't in
+          // the DOM at all. Force a width that keeps the side-panel mounted.
+          width: 1280,
+          height: 860,
+          webPreferences: { preload: path.join(__dirname, 'preload-slack-huddle.js'), contextIsolation: false, sandbox: false, partition },
+        },
+      };
+    }
+
+    // Any OTHER window.open is a real navigation — the workspace chooser's
+    // "join", a "Redirecting…" bounce, or an SSO step (Slack/Google). As a
+    // SEPARATE popup, Slack's first paint races our per-popup UA spoof
+    // (did-create-window runs too late), so Slack serves its "browser not
+    // supported" gate. Instead, load it in the MAIN view — that webContents
+    // already carries the Chrome UA explicitly — and DENY the popup. Same
+    // partition, so auth cookies are shared. This is what makes the in-app Slack
+    // login flow work (#285); the huddle popup above is unaffected.
+    let host = '';
+    try { host = new URL(popupUrl).hostname; } catch { /* unparseable */ }
+    const isAuthFlow = /(^|\.)slack\.com$/.test(host)
+      || /(^|\.)google\.com$/.test(host) || /(^|\.)googleusercontent\.com$/.test(host);
+    if (isAuthFlow) {
+      console.log('[slack-surface] window.open →', popupUrl, '[load in main view, no popup]');
+      try { view.webContents.loadURL(popupUrl); } catch (e) { console.warn('[slack-surface] main-view load failed:', e && e.message); }
+      return { action: 'deny' };
+    }
+
+    // A genuinely external link (e.g. a URL shared in chat) — open it in the
+    // user's real browser rather than hijacking the bot's Slack view.
+    console.log('[slack-surface] window.open →', popupUrl, '[external → system browser]');
+    shell.openExternal(popupUrl).catch(() => {});
+    return { action: 'deny' };
   });
 
   const popups = [];

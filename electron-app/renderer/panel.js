@@ -208,6 +208,17 @@ api.invoke('get-app-version').then((version) => {
   if (el && version) el.textContent = `v${version}`;
 }).catch(() => {});
 
+// Prefill the URL field from whatever the app is already pointed at (e.g. a
+// --meet-url CLI launch), so you can tell at a glance which call this instance
+// is for. The live meet-detected event handles later programmatic joins; this
+// covers the case where the URL was set before the panel finished loading.
+api.invoke('get-call-state').then((s) => {
+  if (s && s.currentMeetUrl && !inCall && !meetUrlInput.value.trim()) {
+    meetUrlInput.value = s.currentMeetUrl;
+    updateJoinBtnState();
+  }
+}).catch(() => {});
+
 Promise.all([
   api.invoke('get-app-profile'),
   api.invoke('get-local-port').catch(() => null),

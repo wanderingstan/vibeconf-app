@@ -3164,6 +3164,16 @@ function showIdle() {
 async function loadMeetURL(meetUrl) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
+  // Record what we're pointing at so the panel's URL field reflects it (covers
+  // --meet-url CLI launches and any programmatic join), and notify the panel now.
+  try {
+    localServer.setCurrentUrl(meetUrl);
+    if (panelView && !panelView.webContents.isDestroyed()) {
+      const meetCode = (meetUrl.match(/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/) || [])[1] || '';
+      panelView.webContents.send('meet-detected', { url: meetUrl, meetCode });
+    }
+  } catch { /* non-fatal */ }
+
   // Destroy and recreate the meetView before every join. Clearing storage
   // alone is insufficient: Meet caches the green-room identity *in-memory*
   // at the BrowserView level, so a webContents.loadURL into the same view

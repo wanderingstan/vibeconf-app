@@ -154,6 +154,8 @@ class LocalServer {
 
     // Room state (single room — the active call)
     this.roomId = null;
+    this.currentUrl = null;      // the meet/slack URL currently loaded (set by loadMeetURL),
+                                 // surfaced to the panel so the URL field reflects CLI launches
     this.transcripts = [];       // { id, participantName, role, text, isFinal, timestamp, voice? }
                                  // Holds bot speech + page-inject Web Speech entries. Meet
                                  // captions live in `turns` (snapshot model, #178) and are
@@ -304,6 +306,13 @@ class LocalServer {
   // Room management
   // -------------------------------------------------------------------------
 
+  // The meet/slack URL currently loaded in the bot's view. Set by loadMeetURL so
+  // the panel can reflect a --meet-url CLI launch (or any programmatic join) in
+  // the URL field — useful to tell at a glance which call a test is running.
+  setCurrentUrl(url) {
+    this.currentUrl = url || null;
+  }
+
   setRoom(roomId) {
     this.roomId = roomId;
     this.transcripts = [];
@@ -339,6 +348,7 @@ class LocalServer {
     // BEFORE we null roomId/name below.
     this._deregisterPresence();
     this.roomId = null;
+    this.currentUrl = null;
     this.transcripts = [];
     this.turns = new Map();
     this.members = [];
@@ -781,6 +791,8 @@ class LocalServer {
       peoplePaneOpen: !!this.peoplePaneOpen,
       screenRecording: this.permissions?.screenRecording,
       roomId: this.roomId,
+      // The meet/slack URL the bot is pointed at (reflects --meet-url launches).
+      currentMeetUrl: this.currentUrl,
       // What URL is loaded in the bot's screen-share window right now (#177).
       // Named for the share, not the whiteboard, since it can be any URL.
       screenShareUrl: this.getWhiteboardLoadedUrl(),
@@ -1883,6 +1895,7 @@ class LocalServer {
       participants: this.participants,
       detectedMeetUrls: this.detectedMeetUrls,
       detectedSlackHuddleUrl: this.detectedSlackHuddleUrl,
+      currentMeetUrl: this.currentUrl,
       status: {
         callStatus: this.callStatus,
         sharing: this.sharing,
@@ -1981,6 +1994,7 @@ class LocalServer {
       res.end(JSON.stringify({
         success: true,
         roomId: this.roomId,
+        currentMeetUrl: this.currentUrl,
         detectedMeetUrls: this.detectedMeetUrls,
         detectedSlackHuddleUrl: this.detectedSlackHuddleUrl,
         status: {

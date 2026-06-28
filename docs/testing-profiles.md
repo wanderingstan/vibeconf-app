@@ -31,6 +31,15 @@ The guest class is intentionally login-free so we keep exercising the
 non-Google guest join path (the most open, unattended case) even after adding
 signed-in profiles for invite-only / Workspace-history-on meets.
 
+> **Why not one combined Google+Slack profile?** You *could* — since #282 a
+> single `session` partition holds both a Google and a Slack login (the cookies
+> are domain-scoped, no conflict), and that's exactly what a real user's default
+> profile does. For test fixtures we keep them separate anyway: the name encodes
+> which auth is present, a stale Slack session can't muddy a Meet run, and the
+> `test-meet-google-*` profiles carry specific *account* semantics (internal vs
+> external Workspace account, #281/#283). Combining saves only one-time logins,
+> which `setup-test-profiles.sh` already does in a single pass.
+
 These are **separate from your real working bots** (the default profile, `codex`,
 etc.) — the test fleet never touches those.
 

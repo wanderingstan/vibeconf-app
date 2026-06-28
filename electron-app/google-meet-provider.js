@@ -1400,6 +1400,7 @@ class DOMSpeakerTracker {
   start() {
     if (this.isTracking) return;
     this.isTracking = true;
+    console.log('[speaker-tracker] started — (debug) set __vibePauseHeal=true in this console to freeze the people-pane self-heal while investigating');
     this._ensurePeoplePaneOpen();
     this.checkInterval = setInterval(() => {
       this._scanParticipants();
@@ -1441,6 +1442,13 @@ class DOMSpeakerTracker {
   }
 
   _ensurePeoplePaneOpen() {
+    // DEBUG escape hatch: set `__vibePauseHeal = true` in the Meet view's
+    // DevTools console to FREEZE the people-pane self-heal while manually
+    // investigating the chat / side panel (it otherwise keeps yanking the side
+    // panel back to People). `__vibePauseHeal = false` resumes. Human-only
+    // (console), not bot-reachable. contextIsolation:false → the console shares
+    // this window. (#284 debugging)
+    if (window.__vibePauseHeal) return;
     // Don't fight an in-flight chat read/send — it deliberately switched the
     // side panel to Chat and will restore People when done (#chat-race).
     if (chatPaneBusy) return;

@@ -785,11 +785,27 @@ botSignOutMainBtn?.addEventListener('click', async () => {
   setTimeout(() => { botSignOutMainBtn.disabled = false; }, 1500);
 });
 
-// Keep polling the bot identity while in account mode — the email isn't readable
-// until the human finishes the Google sign-in (which takes far longer than the
-// one-shot refetch above), and the account chip only appears afterward. Cheap:
-// no scan in guest mode.
-setInterval(() => { if (lastMeetMode === 'account') refreshBotIdentity('account'); }, 7000);
+// Keep the Bot Meet identity honest. AUTHORITATIVE: re-derive mode from the live
+// cookies (get-meet-mode → isSignedInToGoogle) rather than trusting the
+// optimistic event-driven flag, so the pane self-corrects once a Google sign-in
+// completes regardless of event ordering. While still resolving the account
+// email, retry the scrape.
+//
+// SKIPPED WHILE IN A CALL: identity is settled then, and refreshBotIdentity runs
+// get-meet-account-email — a DOM scrape on the live meet page — which spams the
+// meet console every 7s and is noise while debugging a call (Stan).
+setInterval(() => {
+  if (inCall) return;
+  api.invoke('get-meet-mode').then((info) => {
+    if (!info?.mode) return;
+    if (info.mode !== lastMeetMode) {
+      applyMeetMode(info.mode);            // mode changed (e.g. login just finished) → full refresh
+    } else if (info.mode === 'account' && !botAccountName) {
+      refreshBotIdentity('account');        // signed in but email not resolved yet → retry the scrape
+    }
+    // else: stable (guest, or account with email already shown) → just the cheap cookie read above
+  }).catch(() => {});
+}, 7000);
 
 // --- Bot vitals: fast-model reachability + voice mode -----------------------
 // Read-only indicators so the bot's current capabilities are visible at a glance

@@ -58,6 +58,7 @@ BUILT=0
 SLACK=0
 SLACK_URL=""
 GOOGLE=0
+DEVTOOLS=0
 for a in "$@"; do
   case "$a" in
     --kill)        KILL=1 ;;
@@ -66,8 +67,9 @@ for a in "$@"; do
     --slack)       SLACK=1 ;;
     --slack-url=*) SLACK_URL="${a#--slack-url=}" ;;
     --google)      GOOGLE=1 ;;
+    --devtools)    DEVTOOLS=1 ;;
     <->)           N="$a" ;;   # zsh: <-> matches an integer
-    *) echo "usage: $0 [count] [--dmg|--built] [--slack --slack-url=URL] [--google] [--kill]"; exit 1 ;;
+    *) echo "usage: $0 [count] [--dmg|--built] [--slack --slack-url=URL] [--google] [--devtools] [--kill]"; exit 1 ;;
   esac
 done
 if (( N < 1 || N > 4 )); then echo "count must be 1–4"; exit 1; fi
@@ -146,6 +148,8 @@ if (( SLACK )); then
   [[ -n "$SLACK_URL" ]] || { echo "✗ --slack needs --slack-url=https://app.slack.com/client/<team>/<channel>"; exit 1; }
   EXTRA_ARGS="--provider=slack --slack-url=$SLACK_URL"
 fi
+# Open detached DevTools on each spawned app (handy for live DOM debugging).
+(( DEVTOOLS )) && EXTRA_ARGS="$EXTRA_ARGS --devtools=true"
 
 # Packaged-app modes exercise the real artifact (asar, build.files) — no
 # source-vs-package fidelity gap. --dmg = the INSTALLED app (/Applications); the

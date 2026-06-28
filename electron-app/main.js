@@ -7,6 +7,7 @@ const path = require('path');
 const fs = require('fs');
 const vm = require('vm');
 const Store = require('./store.js');
+const profileManager = require('./profile-manager.js');
 const { resolveSvg } = require('./svg-resolver.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath } = require('./session-log.js');
 // The call-provider contract. main.js is the consumer side: it subscribes to
@@ -510,6 +511,16 @@ const localServer = new globalThis.LocalServer({
     } else {
       whiteboardWindow = createWhiteboardWindow(url);
     }
+  },
+  // Profile switcher (#282): a sibling instance asked us to come forward.
+  onFocusRequest: () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+    if (app.dock) app.dock.show();
+    app.focus({ steal: true });
   },
   onScrollShare: async ({ direction, amount } = {}) => {
     if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
@@ -1514,9 +1525,15 @@ function requestedLocalPort() {
   return null;
 }
 
+// Base userData (the default instance's dir) — captured BEFORE any profile swap
+// so the profile manager can enumerate sibling profiles under <base>/profiles
+// and share a registry there, regardless of which profile THIS instance is.
+const BASE_USER_DATA = app.getPath('userData');
+const PROFILES_ROOT = path.join(BASE_USER_DATA, 'profiles');
+
 const appProfile = requestedProfileName();
 if (appProfile) {
-  const profileUserData = path.join(app.getPath('userData'), 'profiles', appProfile);
+  const profileUserData = path.join(PROFILES_ROOT, appProfile);
   app.setPath('userData', profileUserData);
   localServer.localProfile = appProfile;
   console.log('[electron] Using app profile:', appProfile, 'userData:', profileUserData);
@@ -3296,6 +3313,98 @@ function setupIPC() {
   ipcMain.handle('get-app-version', () => app.getVersion());
 
   ipcMain.handle('get-app-profile', () => appProfile || null);
+
+  // --- Profile switcher (#282): Chrome-style list + launch/focus ------------
+  // A profile = a sibling userData dir under <base>/profiles, each its own
+  // identity. You can't rehome a RUNNING instance (userData is fixed before
+  // app-ready), so "switch" launches or focuses the instance for that profile.
+
+  // Ping ports where instances may live and read each one's localProfile from
+  // /api/sync/no-room, so we detect running profiles regardless of how they
+  // were launched (switcher, fleet, or default). Returns { profileName: port }.
+  async function scanRunningInstances() {
+    const ports = [7865]; // default instance
+    for (let p = profileManager.PROFILE_PORT_BASE; p <= profileManager.PROFILE_PORT_MAX; p++) ports.push(p);
+    for (let p = 7901; p <= 7916; p++) ports.push(p); // test fleet range
+    const running = {};
+    await Promise.all(ports.map(async (port) => {
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 350);
+        const r = await fetch(`http://127.0.0.1:${port}/api/sync/no-room`, { signal: ctrl.signal });
+        clearTimeout(t);
+        if (!r.ok) return;
+        const j = await r.json();
+        const name = j?.status?.localProfile;
+        if (name) running[name] = port;
+        else if (port === 7865) running['(default)'] = port;
+      } catch { /* not listening */ }
+    }));
+    return running;
+  }
+
+  ipcMain.handle('list-profiles', async () => {
+    const profiles = profileManager.listProfiles(PROFILES_ROOT);
+    const reg = profileManager.loadPortRegistry(BASE_USER_DATA);
+    const running = await scanRunningInstances();
+    return {
+      current: appProfile || null,
+      profiles: profiles.map((p) => ({
+        ...p,
+        port: running[p.name] || reg[p.name] || null,
+        running: !!running[p.name],
+        isCurrent: p.name === appProfile,
+      })),
+    };
+  });
+
+  // Launch (or focus, if already running) the instance for a profile. Creating
+  // a new profile is just launching a never-seen name — the dir is created by
+  // that instance at startup.
+  ipcMain.handle('switch-profile', async (_event, name) => {
+    if (!profileManager.isValidProfileName(name)) {
+      return { ok: false, error: 'Invalid profile name (letters, numbers, . _ - only)' };
+    }
+    if (name === appProfile) return { ok: true, focused: true, alreadyCurrent: true };
+
+    // Already running? Focus it instead of spawning a duplicate.
+    const running = await scanRunningInstances();
+    if (running[name]) {
+      const port = running[name];
+      try {
+        await fetch(`http://127.0.0.1:${port}/api/focus`, { method: 'POST' });
+        return { ok: true, focused: true, port };
+      } catch (err) {
+        return { ok: false, error: `Profile running on ${port} but focus failed: ${err.message}` };
+      }
+    }
+
+    // Otherwise launch a fresh instance bound to that profile + its stable port.
+    let port;
+    try { port = profileManager.portForProfile(BASE_USER_DATA, name); }
+    catch (err) { return { ok: false, error: err.message }; }
+
+    const { execFile } = require('child_process');
+    const args = [`--profile=${name}`, `--local-port=${port}`];
+    try {
+      if (app.isPackaged) {
+        // Resolve the .app bundle from the exe path and open a new instance.
+        const exe = app.getPath('exe'); // …/Vibeconferencing.app/Contents/MacOS/Vibeconferencing
+        const appBundle = exe.replace(/\/Contents\/MacOS\/[^/]+$/, '');
+        execFile('open', ['-n', appBundle, '--args', ...args], (err) => {
+          if (err) console.error('[electron] switch-profile launch failed:', err.message);
+        });
+      } else {
+        // Dev: relaunch this Electron binary with the same app dir + profile args.
+        execFile(process.execPath, [app.getAppPath(), ...args], { detached: true, stdio: 'ignore' })
+          .on('error', (err) => console.error('[electron] switch-profile dev launch failed:', err.message));
+      }
+      console.log('[electron] Launching profile', name, 'on port', port, app.isPackaged ? '(packaged)' : '(dev)');
+      return { ok: true, launched: true, port };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
 
   // Debug overlay — renders the troubleshooting snapshot onto the bot's
   // virtual camera so non-technical users can diagnose state by looking at

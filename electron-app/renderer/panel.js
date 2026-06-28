@@ -218,6 +218,81 @@ api.invoke('get-app-profile').then((profile) => {
   updateBotNameBig();
 }).catch(() => {});
 
+// --- Profile switcher (#282): Chrome-style list + launch/focus. -------------
+const profileMenuBtn = document.getElementById('profileMenuBtn');
+const profileMenu = document.getElementById('profileMenu');
+if (profileMenuBtn) profileMenuBtn.style.display = ''; // always available
+
+function closeProfileMenu() { if (profileMenu) profileMenu.style.display = 'none'; }
+
+async function doSwitchProfile(name) {
+  closeProfileMenu();
+  const n = (name || '').trim();
+  if (!n) return;
+  try {
+    const r = await api.invoke('switch-profile', n);
+    if (r && r.ok === false) window.alert('Could not switch profile: ' + (r.error || 'unknown'));
+  } catch (e) { window.alert('Could not switch profile: ' + e.message); }
+}
+
+function renderProfileMenu(data) {
+  if (!profileMenu) return;
+  profileMenu.innerHTML = '';
+  const profiles = (data && data.profiles) || [];
+  if (!profiles.length) {
+    const empty = document.createElement('div');
+    empty.textContent = 'No saved profiles yet.';
+    empty.style.cssText = 'padding:6px 8px;color:#9aa0a6';
+    profileMenu.appendChild(empty);
+  }
+  for (const p of profiles) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:' + (p.isCurrent ? 'default' : 'pointer');
+    if (!p.isCurrent) {
+      row.onmouseenter = () => { row.style.background = '#3c4043'; };
+      row.onmouseleave = () => { row.style.background = ''; };
+      row.onclick = () => doSwitchProfile(p.name);
+    }
+    const dot = document.createElement('span');
+    dot.textContent = '●';
+    dot.style.color = p.running ? '#81c995' : '#5f6368';
+    dot.title = p.running ? `running on port ${p.port}` : 'not running';
+    const label = document.createElement('div');
+    label.style.cssText = 'flex:1;min-width:0';
+    const top = document.createElement('div');
+    top.textContent = p.name + (p.isCurrent ? '  · this window' : '');
+    top.style.cssText = 'font-weight:600;color:#e8eaed;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    const sub = document.createElement('div');
+    sub.textContent = p.meetAccountEmail || p.botName || '— no account bound —';
+    sub.style.cssText = 'color:#9aa0a6;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    label.appendChild(top); label.appendChild(sub);
+    row.appendChild(dot); row.appendChild(label);
+    profileMenu.appendChild(row);
+  }
+  const add = document.createElement('div');
+  add.textContent = '＋ New profile…';
+  add.style.cssText = 'padding:6px 8px;margin-top:4px;border-top:1px solid #5f6368;color:#8ab4f8;cursor:pointer';
+  add.onclick = () => {
+    const name = window.prompt('New profile name (letters, numbers, . _ - only):', '');
+    if (name) doSwitchProfile(name);
+  };
+  profileMenu.appendChild(add);
+}
+
+if (profileMenuBtn && profileMenu) {
+  profileMenuBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (profileMenu.style.display !== 'none') { closeProfileMenu(); return; }
+    profileMenu.style.display = 'block';
+    profileMenu.innerHTML = '<div style="padding:6px 8px;color:#9aa0a6">Loading…</div>';
+    try { renderProfileMenu(await api.invoke('list-profiles')); }
+    catch { profileMenu.innerHTML = '<div style="padding:6px 8px;color:#f28b82">Failed to load profiles</div>'; }
+  });
+  document.addEventListener('click', (e) => {
+    if (profileMenu.style.display !== 'none' && !profileMenu.contains(e.target) && e.target !== profileMenuBtn) closeProfileMenu();
+  });
+}
+
 const debugOverlayToggle = document.getElementById('debugOverlayToggle');
 if (debugOverlayToggle) {
   api.invoke('get-debug-overlay').then((enabled) => {

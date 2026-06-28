@@ -21,11 +21,14 @@
             <div class="app-meta">
               <span id="appVersion" class="app-version"></span>
               <span id="appProfile" class="app-profile" style="display:none"></span>
+              <button id="profileMenuBtn" title="Switch profile — each profile is a separate bot identity (its own Google/Slack login). Like Chrome profiles." style="display:none;background:none;border:none;color:#8ab4f8;cursor:pointer;font-size:11px;padding:0 2px">⇄ profiles</button>
             </div>
           </div>
         </div>
         <button id="openSettingsBtn" class="icon-btn" title="Settings">&#9881;</button>
       </div>
+      <!-- Profile switcher dropdown (#282). Populated on open from list-profiles. -->
+      <div id="profileMenu" style="display:none;position:absolute;z-index:50;top:54px;left:12px;right:12px;background:#2a2d31;border:1px solid #5f6368;border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,0.5);padding:6px;font-size:12px;max-height:60vh;overflow:auto"></div>
       <div class="error-bar" id="errorBar" style="display:none"><span id="errorText"></span><button class="error-close" id="errorClose">&times;</button></div>
 
       <!-- Big, glanceable STABLE identity so two Electron apps are easy to tell

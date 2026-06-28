@@ -32,12 +32,6 @@ const BOTS = arg('bots', 'Alice:7865,Jimmy:7866').split(',').map((s) => { const 
 
 const COLORADO_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#e8855b"/><path d="M0 70 L30 40 L50 60 L70 35 L100 65 L100 100 L0 100Z" fill="#33406b"/></svg>';
 
-// Per-run chat nonces so each bot can verify it RECEIVED the other's posted
-// message (chat history persists in the meet, so the nonce disambiguates this
-// run). Date.now() is fine here — this is a normal node script.
-const NONCE_A = `chatA-${Date.now()}`;
-const NONCE_J = `chatJ-${Date.now()}`;
-
 // Per-bot scripts. Each is an async fn given its Bot. They run concurrently, so
 // timing/overlap between bots is exercised the way a real call would. Bots are
 // Alice (-1) and Jimmy (-2), matching the fleet's naming.
@@ -49,14 +43,15 @@ const SCRIPTS = {
     await bot.speak('Hi, Alice here. Starting the screen-share test now.', { emoji: '🤓' });
     await bot.updateWhiteboard('# Automated Test\n\n```mermaid\ngraph TD\n  A[Harness] --> B[Bots]\n  B --> C[Meet]\n```');
     await bot.shareWhiteboard();
-    await bot.sendChat(`Alice chat check ${NONCE_A}`); // CHAT: post (tests send)
     await sleep(2000);
     await bot.speak('Diagram is on the board. Changing my background.');
     await bot.setBackground(COLORADO_SVG);
     await bot.setAvatarEmoji('😎');
     await sleep(2000);
     await bot.waitForSpeech({ wait: 10, silence: 2 }); // listen for Jimmy
-    await bot.expectChatContains(NONCE_J); // CHAT: did Alice receive Jimmy's post?
+    // Chat send/read is exercised in chatHandshakeTest() AFTER scenarios, when
+    // both bots are confirmed in-call — interleaving it here spread the two
+    // sends ~40s apart and read at the wrong moments (false misses).
     await bot.stopSharing();
     await bot.speak('Stopping the share. Test complete on my end.');
     // leave() happens centrally in main() after the chat-wake phase.
@@ -67,11 +62,10 @@ const SCRIPTS = {
     await bot.join();
     await sleep(4500);
     await bot.speak('Jimmy here too, listening for Alice.');
-    await bot.sendChat(`Jimmy chat check ${NONCE_J}`); // CHAT: post (tests send)
     const r1 = await bot.waitForSpeech({ wait: 12, silence: 2 });
     if (r1.spoke) await bot.speak('Got it, Alice — I can hear you.');
     await bot.waitForSpeech({ wait: 10, silence: 2 });
-    await bot.expectChatContains(NONCE_A); // CHAT: did Jimmy receive Alice's post?
+    // Chat send/read moved to chatHandshakeTest() — see Alice's note above.
     await bot.speak('Wrapping up on my side too.');
     // leave() happens centrally in main() after the chat-wake phase.
   },
@@ -88,6 +82,27 @@ const DEFAULT_SCRIPT = async (bot) => {
   await bot.speak(`${bot.name} signing off.`);
   // leave() happens centrally in main() after the chat-wake phase.
 };
+
+// Deterministic chat send + cross-read handshake. Runs AFTER the scenario
+// scripts, when every bot is confirmed in-call, so the two posts happen close
+// together and each read has a generous propagation window. This is the real
+// test of "bot A can SEND and bot B can SEE it" — decoupled from speech/share
+// timing (the old inline version spread the sends ~40s apart and read at the
+// wrong moments, producing false misses).
+async function chatHandshakeTest(bots) {
+  if (bots.length < 2) { console.log('\n(chat handshake needs 2+ bots — skipping)'); return; }
+  console.log('\n— chat send + cross-read handshake —');
+  // Tag each bot's nonce by its base role name so the assertion is order-free
+  // even if the fleet has >2 members.
+  const nonced = bots.map((b) => ({ bot: b, nonce: `chat-${b.name.replace(/-[^-]+$/, '')}-${Date.now()}-${b.port}` }));
+  // Everyone posts at (about) the same time…
+  await Promise.all(nonced.map(({ bot, nonce }) => bot.sendChat(`${bot.name} handshake ${nonce}`)));
+  // …then everyone confirms they can read EVERY OTHER bot's post. Generous poll
+  // window (8 reads × 1.5s ≈ 12s) absorbs Meet's chat propagation lag.
+  await Promise.all(nonced.map(({ bot }) => Promise.all(
+    nonced.filter((o) => o.bot !== bot).map((o) => bot.expectChatContains(o.nonce, { attempts: 8, intervalMs: 1500 })),
+  )));
+}
 
 // Coordinated chat-WAKE assertion: in a quiet room, a chat message should
 // promptly wake a bot sitting in wait_for_speech (the beta39 chatWake path) —
@@ -151,7 +166,8 @@ async function main() {
   }));
   console.log(`\nScenario scripts finished in ${Math.round((Date.now() - started) / 1000)}s.`);
 
-  // Coordinated phase that needs a quiet room + the bots still in the call.
+  // Coordinated phases that need the bots still in the call.
+  await chatHandshakeTest(BOTS).catch((err) => console.error('✗ chat handshake error:', err.message));
   await chatWakeTest(BOTS).catch((err) => console.error('✗ chat-wake test error:', err.message));
 
   // Central teardown (scripts no longer leave themselves).

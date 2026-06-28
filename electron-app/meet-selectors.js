@@ -160,6 +160,10 @@ const MEET = {
     nameInputLoose: 'input[aria-label*="name" i], input[placeholder*="name" i]',
     joinTextAsk: 'Ask to join',
     joinTextNow: 'Join now',
+    // When the meeting's scheduled start is in the future, Meet warns "This
+    // meeting hasn't started" and the join button reads "Join anyway" instead
+    // of "Join now". Same action — let the bot through.
+    joinTextAnyway: 'Join anyway',
     joinTextSwitch: 'Switch here', // direct-join when the account has a lingering presence
     joinLabel: 'Join',
     // Dialogs to dismiss before the join button on the pre-join screen.

@@ -1259,6 +1259,7 @@ async function autoJoin(botName) {
       const joinBtn =
         findByText(MEET.join.joinTextAsk) ||
         findByText(MEET.join.joinTextNow) ||
+        findByText(MEET.join.joinTextAnyway) || // future-scheduled meeting ("Join anyway")
         findByAriaLabel(MEET.join.joinTextAsk) ||
         findByAriaLabel(MEET.join.joinLabel) ||
         // "Switch here" replaces Join now when this Google account already has a
@@ -1332,7 +1333,7 @@ async function autoJoin(botName) {
 
       const bodyText = document.body.innerText;
       const waitingText = MEET.join.waitingTexts.some((t) => bodyText.includes(t));
-      const hasJoinUI = !!findByText(MEET.join.joinTextAsk) || !!findByText(MEET.join.joinTextNow) || !!findByText(MEET.join.joinTextSwitch);
+      const hasJoinUI = !!findByText(MEET.join.joinTextAsk) || !!findByText(MEET.join.joinTextNow) || !!findByText(MEET.join.joinTextAnyway) || !!findByText(MEET.join.joinTextSwitch);
       const inCallUI =
         findByAriaLabel(MEET.join.leaveCallLabel) ||
         findByAriaLabel(MEET.captions.enableLabelEn) ||
@@ -2406,7 +2407,7 @@ window.addEventListener('DOMContentLoaded', () => {
     for (let i = 0; i < 30; i++) {
       const nameInput =
         MEET.join.nameInputs.map((sel) => document.querySelector(sel)).find(Boolean) || null;
-      const joinBtn = findByText(MEET.join.joinTextAsk) || findByText(MEET.join.joinTextNow) || findByText(MEET.join.joinTextSwitch);
+      const joinBtn = findByText(MEET.join.joinTextAsk) || findByText(MEET.join.joinTextNow) || findByText(MEET.join.joinTextAnyway) || findByText(MEET.join.joinTextSwitch);
 
       if (nameInput || joinBtn) {
         await autoJoin(BOT_NAME);

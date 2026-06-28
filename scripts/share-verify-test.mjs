@@ -16,8 +16,8 @@
 //   scripts/spawn-test-fleet.sh 2
 //
 // Run:
-//   node scripts/share-verify-test.mjs --bots Jimmy:7901,Samantha:7902
-//   pnpm test:share-verify -- --bots Jimmy:7901,Samantha:7902
+//   node scripts/share-verify-test.mjs --bots Alice:7901,Jimmy:7902
+//   pnpm test:share-verify -- --bots Alice:7901,Jimmy:7902
 //
 // Exit non-zero on a real failure (share didn't engage, or vision didn't see it).
 
@@ -28,7 +28,7 @@ import { Bot, sleep, report, record } from './meet-test-lib.mjs';
 
 const arg = (name, def) => { const i = process.argv.indexOf('--' + name); return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : def; };
 const ROOM = arg('room', 'paz-sqoa-npe');
-const BOTS = arg('bots', 'Jimmy:7901,Samantha:7902').split(',').map((s) => { const [name, port] = s.split(':'); return new Bot(name, Number(port), ROOM); });
+const BOTS = arg('bots', 'Alice:7901,Jimmy:7902').split(',').map((s) => { const [name, port] = s.split(':'); return new Bot(name, Number(port), ROOM); });
 const stamp = process.argv.includes('--stamp') ? process.argv[process.argv.indexOf('--stamp') + 1] : String(Date.now()).slice(-6);
 // A nonce that OCR/vision won't confuse with Meet chrome: distinctive prefix + digits.
 const NONCE = `SHAREOK-${stamp}`;

@@ -4,16 +4,17 @@
 # DEDICATED, ISOLATED test profile so runs don't pollute — or get polluted by —
 # the real Jimmy/Samantha environments.
 #
-#   profile   = test1, test2, …   (isolated userData: …/profiles/testN)
+#   profile   = test-meet-guest-1, …  (isolated userData: …/profiles/<name>;
+#               class prefix is test-meet-guest / test-meet-google / test-slack)
 #   port      = 7901, 7902, …     (distinct range from real bots 7865/7866)
-#   bot-name  = Jimmy, Samantha, Cosmo, …  (Meet display name; the harness keys
+#   bot-name  = Alice, Jimmy, Cosmo, …  (Meet display name; the harness keys
 #               scenarios on this — profile is just the sandbox, name is identity)
 #
 # Profile instances skip the Claude-terminal integration automatically, so this
 # only launches the apps. Drive them with: node scripts/meet-test.mjs
 #
 # Usage:
-#   scripts/spawn-test-fleet.sh            # 2 bots from SOURCE (Jimmy, Samantha)
+#   scripts/spawn-test-fleet.sh            # 2 bots from SOURCE (Alice, Jimmy)
 #   scripts/spawn-test-fleet.sh 3          # 3 bots (adds Cosmo)
 #   scripts/spawn-test-fleet.sh 2 --dmg    # drive the INSTALLED app (/Applications)
 #   scripts/spawn-test-fleet.sh 2 --built  # drive the freshly-BUILT app (dist/)
@@ -46,7 +47,7 @@ set -e
 # VIBECONF_REPO to point at a specific checkout.
 REPO="${VIBECONF_REPO:-${0:A:h:h}}"
 ELECTRON="$REPO/electron-app"
-NAMES=(Jimmy Samantha Cosmo Dizzy)        # display names by index
+NAMES=(Alice Jimmy Cosmo Dizzy)           # display names by index (Alice=-1, Jimmy=-2)
 BASE_PORT=7901
 
 # Flag parsing (position-independent): a numeric arg = count; --kill / --dmg /
@@ -57,6 +58,8 @@ DMG=0
 BUILT=0
 SLACK=0
 SLACK_URL=""
+GOOGLE=0
+DEVTOOLS=0
 for a in "$@"; do
   case "$a" in
     --kill)        KILL=1 ;;
@@ -64,16 +67,41 @@ for a in "$@"; do
     --built)       BUILT=1 ;;
     --slack)       SLACK=1 ;;
     --slack-url=*) SLACK_URL="${a#--slack-url=}" ;;
+    --google)      GOOGLE=1 ;;
+    --devtools)    DEVTOOLS=1 ;;
     <->)           N="$a" ;;   # zsh: <-> matches an integer
-    *) echo "usage: $0 [count] [--dmg|--built] [--slack --slack-url=URL] [--kill]"; exit 1 ;;
+    *) echo "usage: $0 [count] [--dmg|--built] [--slack --slack-url=URL] [--google] [--devtools] [--kill]"; exit 1 ;;
   esac
 done
 if (( N < 1 || N > 4 )); then echo "count must be 1–4"; exit 1; fi
 
-# Slack bots use a DISTINCT profile namespace — signed into a Slack ACCOUNT (one-
-# time manual login per profile), not Google/guest. Meet bots = test1.., Slack
-# bots = slacktest1.. So `--slack --kill` reaps the right ones too.
-PROFILE_BASE=$( (( SLACK )) && echo "slacktest" || echo "test" )
+# Each identity gets its OWN profile namespace so they don't clobber each other
+# and `--kill` reaps the right ones. The names share a `test-` prefix so all test
+# profiles sort together and guest-vs-google is obvious (#282):
+#   guest Meet (default)    = test-meet-guest-1..   (logged OUT — tests the guest join path)
+#   Google-signed-in Meet   = test-meet-google-1..  (--google; signed INTO a bot Google account
+#                                                    ONCE via Settings → "Sign in as bot";
+#                                                    needed for invite-only / Workspace meets)
+#   Slack                   = test-slack-1..        (--slack; signed into a Slack account once)
+# Keeping the guest class login-free means we KEEP testing the non-Google guest
+# path even after adding signed-in profiles for the Workspace/history-on target.
+if   (( SLACK ));  then PROFILE_BASE="test-slack"
+elif (( GOOGLE )); then PROFILE_BASE="test-meet-google"
+else                   PROFILE_BASE="test-meet-guest"
+fi
+
+# Bot names are Alice (-1), Jimmy (-2) across ALL classes. For --google these
+# match the Google accounts signed into the google profiles (test-meet-google-1
+# = alice@spiritprotocol.io, test-meet-google-2 = jimmy@spiritprotocol.io); the
+# --meet-account-email pin below is derived from the same names.
+
+# For --google, deterministically PIN each profile's Google account (#282) so
+# joins use authuser=<email> and can't fall back to a stray default account. The
+# email is <lowercase-bot-name>@$GTEST_EMAIL_DOMAIN — matching the accounts you
+# sign the google profiles into. Override the domain via env if your bot accounts
+# live elsewhere. (Pinning only SELECTS the account; you still sign each profile
+# in once — the single partition starts fresh.)
+GTEST_EMAIL_DOMAIN="${GTEST_EMAIL_DOMAIN:-spiritprotocol.io}"
 
 # --kill: stop instances on the test ports (works regardless of how they launched).
 if (( KILL )); then
@@ -96,7 +124,7 @@ if (( KILL )); then
   if (( left )); then echo "  • settling 3s for call hangup…"; sleep 3; fi
   for i in $(seq 1 $N); do
     port=$((BASE_PORT + i - 1))
-    profile="${PROFILE_BASE}$i"
+    profile="${PROFILE_BASE}-$i"
     # -sTCP:LISTEN: match ONLY the bot's listening socket, not clients holding an
     # open connection to it. Without this, an in-process driver (node:test's
     # call-parity matrix runs --kill from an after() hook while still holding
@@ -109,26 +137,29 @@ if (( KILL )); then
     # Port-only kill misses GUI Electron mains that aren't currently holding the
     # port — those linger as ghost participants and pile up across repeated runs,
     # causing room contention (the false chat/caption failures). Also reap by the
-    # isolated --profile flag so every testN instance dies regardless of port
+    # isolated --profile flag so every test instance dies regardless of port
     # state. The pattern omits the leading dashes (BSD pkill treats a pattern
-    # starting with "-" as an option); "profile=testN" still uniquely matches the
-    # full argv and never matches the real bots (default/bot2 on 7865/7866).
+    # starting with "-" as an option); "profile=test-meet-guest-1" still uniquely
+    # matches the full argv and never matches the real bots (default on 7865/66).
     if pkill -f "profile=$profile" 2>/dev/null; then echo "  • reaped lingering profile=$profile process(es)"; fi
   done
   echo "✓ done"
   exit 0
 fi
 
-# Slack launch args: --provider=slack + the channel to auto-join. Each slacktestN
+# Slack launch args: --provider=slack + the channel to auto-join. Each test-slack-N
 # profile must be signed into a (distinct) Slack account ONCE first — there's no
-# guest path. Do that one-time login manually, e.g.:
-#   cd electron-app && pnpm dev -- --provider=slack --profile=slacktest1 \
+# guest path. Do that one-time login via scripts/setup-test-profiles.sh --slack,
+# or manually, e.g.:
+#   cd electron-app && pnpm dev -- --provider=slack --profile=test-slack-1 \
 #     --slack-url=https://app.slack.com/client/<team>/<channel>   # then log in, close
 EXTRA_ARGS=""
 if (( SLACK )); then
   [[ -n "$SLACK_URL" ]] || { echo "✗ --slack needs --slack-url=https://app.slack.com/client/<team>/<channel>"; exit 1; }
   EXTRA_ARGS="--provider=slack --slack-url=$SLACK_URL"
 fi
+# Open detached DevTools on each spawned app (handy for live DOM debugging).
+(( DEVTOOLS )) && EXTRA_ARGS="$EXTRA_ARGS --devtools=true"
 
 # Packaged-app modes exercise the real artifact (asar, build.files) — no
 # source-vs-package fidelity gap. --dmg = the INSTALLED app (/Applications); the
@@ -200,9 +231,13 @@ fi
 
 BOTS_ARG=""
 for i in $(seq 1 $N); do
-  profile="${PROFILE_BASE}$i"
+  profile="${PROFILE_BASE}-$i"
   port=$((BASE_PORT + i - 1))
   name="${NAMES[$i]}${RUN_TAG:+-$RUN_TAG}"
+  # #282: pin this profile's Google account for --google runs (base name, not the
+  # run-tagged display name). ${(L)...} is zsh lowercasing.
+  ACCT_FLAG=""
+  (( GOOGLE )) && ACCT_FLAG="--meet-account-email=${(L)NAMES[$i]}@${GTEST_EMAIL_DOMAIN}"
   WINFLAGS=""
   if (( GRID )); then
     idx=$(( i - 1 ))
@@ -223,9 +258,9 @@ for i in $(seq 1 $N); do
     # bundle PATH ("$APP") so we run exactly the chosen copy (installed vs built),
     # not whatever LaunchServices resolves the app NAME to.
     # ${=WINFLAGS}: zsh word-splits the flags into separate argv entries.
-    open -n "$APP" --args --profile="$profile" --local-port="$port" --bot-name="$name" ${=WINFLAGS} ${=EXTRA_ARGS}
+    open -n "$APP" --args --profile="$profile" --local-port="$port" --bot-name="$name" ${=ACCT_FLAG} ${=WINFLAGS} ${=EXTRA_ARGS}
   else
-    nohup zsh -c "cd '$ELECTRON' && pnpm dev -- --profile=$profile --local-port=$port --bot-name=$name $WINFLAGS $EXTRA_ARGS" \
+    nohup zsh -c "cd '$ELECTRON' && pnpm dev -- --profile=$profile --local-port=$port --bot-name=$name $ACCT_FLAG $WINFLAGS $EXTRA_ARGS" \
       >"/tmp/vibeconf-$profile.log" 2>&1 &
   fi
   BOTS_ARG+="${BOTS_ARG:+,}$name:$port"

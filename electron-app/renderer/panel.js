@@ -224,7 +224,6 @@ Promise.all([
 // --- Profile switcher (#282): Chrome-style list + launch/focus. -------------
 const profileMenuBtn = document.getElementById('profileMenuBtn');
 const profileMenu = document.getElementById('profileMenu');
-if (profileMenuBtn) profileMenuBtn.style.display = ''; // always available
 
 function closeProfileMenu() { if (profileMenu) profileMenu.style.display = 'none'; }
 
@@ -288,6 +287,7 @@ function renderProfileMenu(data) {
     profileMenu.appendChild(empty);
   }
   for (const p of profiles) {
+    const displayName = p.isDefault ? 'Default' : p.name;
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:' + (p.isCurrent ? 'default' : 'pointer');
     if (!p.isCurrent) {
@@ -295,14 +295,20 @@ function renderProfileMenu(data) {
       row.onmouseleave = () => { row.style.background = ''; };
       row.onclick = () => doSwitchProfile(p.name);
     }
-    const dot = document.createElement('span');
-    dot.textContent = '●';
-    dot.style.color = p.running ? '#81c995' : '#5f6368';
-    dot.title = p.running ? `running on port ${p.port}` : 'not running';
+    // Left marker: ✓ for the current profile (so "Default" reads clearly as a
+    // profile and the active one is obvious), else a running/not-running dot.
+    const mark = document.createElement('span');
+    mark.style.cssText = 'width:14px;flex:0 0 auto;text-align:center';
+    if (p.isCurrent) {
+      mark.textContent = '✓'; mark.style.color = '#8ab4f8'; mark.title = 'current profile (this window)';
+    } else {
+      mark.textContent = '●'; mark.style.color = p.running ? '#81c995' : '#5f6368';
+      mark.title = p.running ? `running on port ${p.port}` : 'not running';
+    }
     const label = document.createElement('div');
     label.style.cssText = 'flex:1;min-width:0';
     const top = document.createElement('div');
-    top.textContent = p.name + (p.isCurrent ? '  · this window' : '');
+    top.textContent = displayName;
     top.style.cssText = 'font-weight:600;color:#e8eaed;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
     const sub = document.createElement('div');
     // Prefer the most identifying remembered fact: bound account email, then the
@@ -310,7 +316,7 @@ function renderProfileMenu(data) {
     sub.textContent = p.meetAccountEmail || p.lastMeetName || p.lastSlackName || p.botName || '— no account bound —';
     sub.style.cssText = 'color:#9aa0a6;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
     label.appendChild(top); label.appendChild(sub);
-    row.appendChild(dot); row.appendChild(label);
+    row.appendChild(mark); row.appendChild(label);
     profileMenu.appendChild(row);
   }
   const add = document.createElement('div');

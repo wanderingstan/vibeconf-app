@@ -24,17 +24,22 @@ function safeReadJSON(file) {
   return null;
 }
 
-// Read a profile's persisted identity fields for display (read-only; safe even
-// if that profile is currently running).
-function readProfileConfig(profilesRoot, name) {
-  const cfg = safeReadJSON(path.join(profilesRoot, name, 'config.json')) || {};
+// Read the identity fields from a userData dir's config.json (read-only; safe
+// even while that instance runs). Works for both a named profile dir and the
+// base userData dir (the default instance).
+function readConfigFields(dir) {
+  const cfg = safeReadJSON(path.join(dir, 'config.json')) || {};
   return {
-    name,
     botName: cfg.botName || null,
     meetAccountEmail: cfg.meetAccountEmail || null,
     lastMeetName: cfg.lastMeetName || null,   // remembered Meet display name (#282)
     lastSlackName: cfg.lastSlackName || null, // remembered Slack display name (#282)
   };
+}
+
+// A named profile's persisted identity fields for display.
+function readProfileConfig(profilesRoot, name) {
+  return { name, ...readConfigFields(path.join(profilesRoot, name)) };
 }
 
 // Every profile dir under profiles/ (each is a real, isolated identity).
@@ -98,6 +103,7 @@ module.exports = {
   listProfiles,
   listProfileNames,
   readProfileConfig,
+  readConfigFields,
   portForProfile,
   loadPortRegistry,
   isValidProfileName,

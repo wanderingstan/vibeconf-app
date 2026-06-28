@@ -3329,6 +3329,8 @@ function setupIPC() {
   // A profile = a sibling userData dir under <base>/profiles, each its own
   // identity. You can't rehome a RUNNING instance (userData is fixed before
   // app-ready), so "switch" launches or focuses the instance for that profile.
+  // The default (no --profile) instance is represented by this sentinel.
+  const DEFAULT_PROFILE_KEY = '(default)';
 
   // Ping ports where instances may live and read each one's localProfile from
   // /api/sync/no-room, so we detect running profiles regardless of how they
@@ -3348,24 +3350,39 @@ function setupIPC() {
         const j = await r.json();
         const name = j?.status?.localProfile;
         if (name) running[name] = port;
-        else if (port === 7865) running['(default)'] = port;
+        else if (port === 7865) running[DEFAULT_PROFILE_KEY] = port;
       } catch { /* not listening */ }
     }));
     return running;
   }
 
   ipcMain.handle('list-profiles', async () => {
-    const profiles = profileManager.listProfiles(PROFILES_ROOT);
+    const named = profileManager.listProfiles(PROFILES_ROOT);
     const reg = profileManager.loadPortRegistry(BASE_USER_DATA);
     const running = await scanRunningInstances();
+    // The default (no-profile) instance is a real profile too — its config lives
+    // directly in BASE_USER_DATA. Surface it as "Default" so users see it's a
+    // profile (#282). Its running port is the default 7865.
+    const defaultEntry = {
+      name: DEFAULT_PROFILE_KEY,
+      isDefault: true,
+      ...profileManager.readConfigFields(BASE_USER_DATA),
+      port: running[DEFAULT_PROFILE_KEY] || 7865,
+      running: !!running[DEFAULT_PROFILE_KEY],
+      isCurrent: !appProfile,
+    };
     return {
-      current: appProfile || null,
-      profiles: profiles.map((p) => ({
-        ...p,
-        port: running[p.name] || reg[p.name] || null,
-        running: !!running[p.name],
-        isCurrent: p.name === appProfile,
-      })),
+      current: appProfile || DEFAULT_PROFILE_KEY,
+      profiles: [
+        defaultEntry,
+        ...named.map((p) => ({
+          ...p,
+          isDefault: false,
+          port: running[p.name] || reg[p.name] || null,
+          running: !!running[p.name],
+          isCurrent: p.name === appProfile,
+        })),
+      ],
     };
   });
 
@@ -3373,15 +3390,20 @@ function setupIPC() {
   // a new profile is just launching a never-seen name — the dir is created by
   // that instance at startup.
   ipcMain.handle('switch-profile', async (_event, name) => {
-    if (!profileManager.isValidProfileName(name)) {
+    const isDefault = name === DEFAULT_PROFILE_KEY;
+    if (!isDefault && !profileManager.isValidProfileName(name)) {
       return { ok: false, error: 'Invalid profile name (letters, numbers, . _ - only)' };
     }
-    if (name === appProfile) return { ok: true, focused: true, alreadyCurrent: true };
+    // Already the current window?
+    if ((isDefault && !appProfile) || (!isDefault && name === appProfile)) {
+      return { ok: true, focused: true, alreadyCurrent: true };
+    }
 
     // Already running? Focus it instead of spawning a duplicate.
     const running = await scanRunningInstances();
-    if (running[name]) {
-      const port = running[name];
+    const runningKey = isDefault ? DEFAULT_PROFILE_KEY : name;
+    if (running[runningKey]) {
+      const port = running[runningKey];
       try {
         await fetch(`http://127.0.0.1:${port}/api/focus`, { method: 'POST' });
         return { ok: true, focused: true, port };
@@ -3390,19 +3412,24 @@ function setupIPC() {
       }
     }
 
-    // Otherwise launch a fresh instance bound to that profile + its stable port.
-    let port;
-    try { port = profileManager.portForProfile(BASE_USER_DATA, name); }
-    catch (err) { return { ok: false, error: err.message }; }
+    // Otherwise launch a fresh instance. The default takes no --profile (and the
+    // default port); a named profile gets its stable registry port.
+    let port = null;
+    let args = [];
+    if (!isDefault) {
+      try { port = profileManager.portForProfile(BASE_USER_DATA, name); }
+      catch (err) { return { ok: false, error: err.message }; }
+      args = [`--profile=${name}`, `--local-port=${port}`];
+    }
 
     const { execFile } = require('child_process');
-    const args = [`--profile=${name}`, `--local-port=${port}`];
     try {
       if (app.isPackaged) {
         // Resolve the .app bundle from the exe path and open a new instance.
         const exe = app.getPath('exe'); // …/Vibeconferencing.app/Contents/MacOS/Vibeconferencing
         const appBundle = exe.replace(/\/Contents\/MacOS\/[^/]+$/, '');
-        execFile('open', ['-n', appBundle, '--args', ...args], (err) => {
+        const openArgs = args.length ? ['-n', appBundle, '--args', ...args] : ['-n', appBundle];
+        execFile('open', openArgs, (err) => {
           if (err) console.error('[electron] switch-profile launch failed:', err.message);
         });
       } else {
@@ -3410,7 +3437,7 @@ function setupIPC() {
         execFile(process.execPath, [app.getAppPath(), ...args], { detached: true, stdio: 'ignore' })
           .on('error', (err) => console.error('[electron] switch-profile dev launch failed:', err.message));
       }
-      console.log('[electron] Launching profile', name, 'on port', port, app.isPackaged ? '(packaged)' : '(dev)');
+      console.log('[electron] Launching profile', isDefault ? '(default)' : name, port ? 'on port ' + port : '', app.isPackaged ? '(packaged)' : '(dev)');
       return { ok: true, launched: true, port };
     } catch (err) {
       return { ok: false, error: err.message };

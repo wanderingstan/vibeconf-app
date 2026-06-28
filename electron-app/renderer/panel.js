@@ -24,10 +24,11 @@ const shareWhiteboardBtn = document.getElementById('shareWhiteboardBtn');
 const meetSignInBtn = document.getElementById('meetSignInBtn');
 const meetSignOutBtn = document.getElementById('meetSignOutBtn');
 const meetModeIndicator = document.getElementById('meetModeIndicator');
+const slackSignInBtn = document.getElementById('slackSignInBtn');
+const slackSignOutBtn = document.getElementById('slackSignOutBtn');
 
 // Settings
 const botNameInput = document.getElementById('botName');
-const slackBotNameInput = document.getElementById('slackBotName');
 const websiteUrlInput = document.getElementById('websiteUrl');
 const ttsApiKeyInput = document.getElementById('ttsApiKey');
 const ttsVoiceIdInput = document.getElementById('ttsVoiceId');
@@ -41,6 +42,7 @@ const ackLongPhrasesInput = document.getElementById('ackLongPhrases');
 
 let syncBaseUrl = 'http://127.0.0.1:7865';
 let currentBotName = 'Jimmy';
+let appProfileName = null; // app profile (stable heading identity, #282); null for the default instance
 let inCall = false;
 
 // ---------------------------------------------------------------------------
@@ -206,14 +208,153 @@ api.invoke('get-app-version').then((version) => {
   if (el && version) el.textContent = `v${version}`;
 }).catch(() => {});
 
-api.invoke('get-app-profile').then((profile) => {
+Promise.all([
+  api.invoke('get-app-profile'),
+  api.invoke('get-local-port').catch(() => null),
+]).then(([profile, port]) => {
+  appProfileName = profile || null; // the stable heading identity (#282)
   const el = document.getElementById('appProfile');
   if (el && profile) {
     el.textContent = profile;
-    el.title = `App profile: "${profile}" — this Electron instance runs in an isolated userData dir with its own preferences and Google login. Launched with --profile=${profile}.`;
+    el.title = `App profile: "${profile}" — isolated userData dir with its own preferences and Google login. Launched with --profile=${profile}.`
+      + (port ? ` · local-server port ${port}` : '');
     el.style.display = '';
   }
+  updateBotNameBig();
 }).catch(() => {});
+
+// --- Profile switcher (#282): Chrome-style list + launch/focus. -------------
+const profileMenuBtn = document.getElementById('profileMenuBtn');
+const profileMenu = document.getElementById('profileMenu');
+
+function closeProfileMenu() { if (profileMenu) profileMenu.style.display = 'none'; }
+
+// Electron renderers don't implement window.prompt (it silently returns null),
+// so use a small in-DOM modal instead. Resolves to the trimmed string, or null
+// on cancel/escape. Reused by "New profile" and the navigate-webview tool.
+function inlinePrompt({ title, placeholder = '', initial = '', okLabel = 'OK' }) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:200;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#2a2d31;border:1px solid #5f6368;border-radius:10px;padding:16px;width:min(360px,86vw);box-shadow:0 10px 40px rgba(0,0,0,0.6)';
+    const t = document.createElement('div');
+    t.textContent = title;
+    t.style.cssText = 'color:#e8eaed;font-size:13px;margin-bottom:10px;line-height:1.4';
+    const input = document.createElement('input');
+    input.type = 'text'; input.value = initial; input.placeholder = placeholder;
+    input.style.cssText = 'width:100%;box-sizing:border-box;background:#202124;border:1px solid #5f6368;border-radius:6px;color:#e8eaed;padding:8px;font-size:13px;outline:none';
+    const btns = document.createElement('div');
+    btns.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:12px';
+    const cancel = document.createElement('button');
+    cancel.textContent = 'Cancel';
+    cancel.style.cssText = 'background:none;border:1px solid #5f6368;color:#9aa0a6;border-radius:18px;padding:6px 14px;cursor:pointer';
+    const ok = document.createElement('button');
+    ok.textContent = okLabel;
+    ok.style.cssText = 'background:#8ab4f8;border:none;color:#202124;border-radius:18px;padding:6px 14px;font-weight:600;cursor:pointer';
+    const close = (val) => { overlay.remove(); resolve(val); };
+    cancel.onclick = () => close(null);
+    ok.onclick = () => close(input.value.trim() || null);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); close(input.value.trim() || null); }
+      else if (e.key === 'Escape') { e.preventDefault(); close(null); }
+    });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
+    btns.appendChild(cancel); btns.appendChild(ok);
+    box.appendChild(t); box.appendChild(input); box.appendChild(btns);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    input.focus(); input.select();
+  });
+}
+
+async function doSwitchProfile(name) {
+  closeProfileMenu();
+  const n = (name || '').trim();
+  if (!n) return;
+  try {
+    const r = await api.invoke('switch-profile', n);
+    if (r && r.ok === false) window.alert('Could not switch profile: ' + (r.error || 'unknown'));
+  } catch (e) { window.alert('Could not switch profile: ' + e.message); }
+}
+
+function renderProfileMenu(data) {
+  if (!profileMenu) return;
+  profileMenu.innerHTML = '';
+  const profiles = (data && data.profiles) || [];
+  if (!profiles.length) {
+    const empty = document.createElement('div');
+    empty.textContent = 'No saved profiles yet.';
+    empty.style.cssText = 'padding:6px 8px;color:#9aa0a6';
+    profileMenu.appendChild(empty);
+  }
+  for (const p of profiles) {
+    const displayName = p.isDefault ? 'Default' : p.name;
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:' + (p.isCurrent ? 'default' : 'pointer');
+    if (!p.isCurrent) {
+      row.onmouseenter = () => { row.style.background = '#3c4043'; };
+      row.onmouseleave = () => { row.style.background = ''; };
+      row.onclick = () => doSwitchProfile(p.name);
+    }
+    // Left marker: ✓ for the current profile (so "Default" reads clearly as a
+    // profile and the active one is obvious), else a running/not-running dot.
+    const mark = document.createElement('span');
+    mark.style.cssText = 'width:14px;flex:0 0 auto;text-align:center';
+    if (p.isCurrent) {
+      mark.textContent = '✓'; mark.style.color = '#8ab4f8'; mark.title = 'current profile (this window)';
+    } else {
+      mark.textContent = '●'; mark.style.color = p.running ? '#81c995' : '#5f6368';
+      mark.title = p.running ? `running on port ${p.port}` : 'not running';
+    }
+    const label = document.createElement('div');
+    label.style.cssText = 'flex:1;min-width:0';
+    const top = document.createElement('div');
+    top.textContent = displayName;
+    top.style.cssText = 'font-weight:600;color:#e8eaed;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    const sub = document.createElement('div');
+    // Prefer the most identifying remembered fact: bound account email, then the
+    // remembered Meet/Slack display name, then the Bot Name default (#282).
+    sub.textContent = p.meetAccountEmail || p.lastMeetName || p.lastSlackName || p.botName || '— no account bound —';
+    sub.style.cssText = 'color:#9aa0a6;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    label.appendChild(top); label.appendChild(sub);
+    row.appendChild(mark); row.appendChild(label);
+    profileMenu.appendChild(row);
+  }
+  const add = document.createElement('div');
+  add.textContent = '＋ New profile…';
+  add.style.cssText = 'padding:6px 8px;margin-top:4px;border-top:1px solid #5f6368;color:#8ab4f8;cursor:pointer';
+  add.onclick = async () => {
+    closeProfileMenu();
+    const name = await inlinePrompt({ title: 'New profile name (letters, numbers, . _ - only):', placeholder: 'e.g. alice', okLabel: 'Create' });
+    if (name) doSwitchProfile(name);
+  };
+  profileMenu.appendChild(add);
+
+  // Debugging help: reveal the profiles folder so the user can delete/rename
+  // profile dirs directly (#282).
+  const folder = document.createElement('div');
+  folder.textContent = '📂 Open profiles folder';
+  folder.style.cssText = 'padding:6px 8px;color:#9aa0a6;cursor:pointer';
+  folder.onmouseenter = () => { folder.style.background = '#3c4043'; };
+  folder.onmouseleave = () => { folder.style.background = ''; };
+  folder.onclick = () => { closeProfileMenu(); api.invoke('open-profiles-folder').catch(() => {}); };
+  profileMenu.appendChild(folder);
+}
+
+if (profileMenuBtn && profileMenu) {
+  profileMenuBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (profileMenu.style.display !== 'none') { closeProfileMenu(); return; }
+    profileMenu.style.display = 'block';
+    profileMenu.innerHTML = '<div style="padding:6px 8px;color:#9aa0a6">Loading…</div>';
+    try { renderProfileMenu(await api.invoke('list-profiles')); }
+    catch { profileMenu.innerHTML = '<div style="padding:6px 8px;color:#f28b82">Failed to load profiles</div>'; }
+  });
+  document.addEventListener('click', (e) => {
+    if (profileMenu.style.display !== 'none' && !profileMenu.contains(e.target) && e.target !== profileMenuBtn) closeProfileMenu();
+  });
+}
 
 const debugOverlayToggle = document.getElementById('debugOverlayToggle');
 if (debugOverlayToggle) {
@@ -229,11 +370,13 @@ if (debugOverlayToggle) {
 // Load saved config
 // ---------------------------------------------------------------------------
 
-api.invoke('get-config', ['botName', 'slackBotName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'claudeWorkDir', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases']).then((result) => {
+api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'claudeWorkDir', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
   if (result?.botName) { botNameInput.value = result.botName; currentBotName = result.botName; }
-  if (result?.slackBotName && slackBotNameInput) slackBotNameInput.value = result.slackBotName;
+  rememberedMeetName = result?.lastMeetName || null;   // #282 remembered names
+  rememberedSlackName = result?.lastSlackName || null;
   refreshSlackIdentity();
   try { updateBotNameBig(); } catch { /* defined below; ignore on first paint */ }
+  try { updateCallIdentity(); } catch { /* defined below */ }
   // Prefer the new websiteUrl key; fall back to legacy syncBaseUrl so users with
   // older configs still see their existing override populated in the field.
   const effectiveUrl = result?.websiteUrl || result?.syncBaseUrl || '';
@@ -370,6 +513,7 @@ document.getElementById('errorClose').addEventListener('click', () => {
 
 function enterCallState(meetCode) {
   inCall = true;
+  updateCallIdentity(); // light up the "appearing as" sub-line (#282)
   connectedSection.style.display = 'block';
   joinBtn.style.display = 'none';
 
@@ -385,6 +529,8 @@ function enterCallState(meetCode) {
 
 function exitCallState() {
   inCall = false;
+  callProvider = null;
+  updateCallIdentity(); // back to "not in a call" (#282)
   connectedSection.style.display = 'none';
   joinBtn.style.display = '';
   joinBtn.textContent = 'Join Call';
@@ -510,16 +656,52 @@ function applyMeetMode(mode) {
   updateBotNameBig();
 }
 
-// Big glanceable bot-name label so multiple app instances are easy to tell
-// apart. Shows the Google account name when signed in (account mode), else the
-// Bot Name preference (the guest name).
+// Big glanceable heading = the STABLE identity so multiple app instances are
+// easy to tell apart (#282): the app profile, or the Bot Name for the default
+// (no-profile) instance. It does NOT swap to the account name — the live in-call
+// name lives in the sub-line (updateCallIdentity) so the heading never lies.
 const botNameBig = document.getElementById('botNameBig');
-let botAccountName = null; // the bot's Google display name when signed in
+const botCallIdentity = document.getElementById('botCallIdentity');
+let botAccountName = null;   // the bot's Google display name when signed in
+let callProvider = null;     // 'meet' | 'slack' while in a call, else null
+let rememberedMeetName = null;  // last Meet display name for this profile (#282)
+let rememberedSlackName = null; // last Slack display name for this profile (#282)
 function updateBotNameBig() {
   if (!botNameBig) return;
-  botNameBig.textContent = (lastMeetMode === 'account' && botAccountName)
-    ? botAccountName
-    : (currentBotName || (botNameInput && botNameInput.value.trim()) || 'Bot');
+  // Stable slot identity: the profile name, or "Default" for the unnamed
+  // instance (#282). The actual/remembered name lives in the sub-line below.
+  botNameBig.textContent = appProfileName || 'Default';
+}
+
+// The "appearing as" sub-line: dim "not in a call" when idle; once in a call,
+// the actual provider display name (Meet = Google account name, or the guest
+// green-room name; Slack = the account name, remembered or placeholder — #283).
+function updateCallIdentity() {
+  if (!botCallIdentity) return;
+  if (!inCall || !callProvider) {
+    // Idle: surface the remembered name so the profile isn't anonymous between
+    // calls (#282). Prefer a real remembered Meet name, then Slack, then the
+    // (not-yet-used) Bot Name as "will appear as", else nothing.
+    botCallIdentity.style.color = '#9aa0a6';
+    if (rememberedMeetName) botCallIdentity.textContent = `↩ last in Meet as ${rememberedMeetName}`;
+    else if (rememberedSlackName) botCallIdentity.textContent = `↩ last in Slack as ${rememberedSlackName}`;
+    else if (currentBotName) botCallIdentity.textContent = `will appear as ${currentBotName}`;
+    else botCallIdentity.textContent = 'not in a call';
+    return;
+  }
+  let appearing;
+  if (callProvider === 'slack') {
+    // We don't read the live Slack account name yet (#283); show the remembered
+    // one if we have it, else a neutral placeholder.
+    appearing = rememberedSlackName || 'your Slack account name';
+    botCallIdentity.textContent = `● in Slack as ${appearing}`;
+  } else {
+    appearing = (lastMeetMode === 'account' && botAccountName)
+      ? botAccountName
+      : (currentBotName || (botNameInput && botNameInput.value.trim()) || 'guest');
+    botCallIdentity.textContent = `● in Meet as ${appearing}`;
+  }
+  botCallIdentity.style.color = '#81c995';
 }
 
 // --- Bot Meet identity on the MAIN view (so the auto-admit login isn't buried
@@ -551,8 +733,9 @@ async function refreshBotIdentity(mode) {
     botIdentityStatus.style.color = '#fdd663';
     if (botSignInMainBtn) botSignInMainBtn.style.display = 'inline-block';
     if (botSignOutMainBtn) botSignOutMainBtn.style.display = 'none';
-    botAccountName = null; // guest → big name uses the Bot Name preference
+    botAccountName = null; // guest → in-call name uses the Bot Name preference
     updateBotNameBig();
+    updateCallIdentity();
     return;
   }
   if (botSignInMainBtn) botSignInMainBtn.style.display = 'none';
@@ -564,34 +747,29 @@ async function refreshBotIdentity(mode) {
     if (r?.signedIn && r.email) botIdentityStatus.textContent = '✓ ' + r.email;
     else if (r?.signedIn) botIdentityStatus.textContent = '✓ Signed in (couldn\'t read which account)';
     else { botIdentityStatus.textContent = '⚠ Account mode but not signed in yet'; botIdentityStatus.style.color = '#fdd663'; }
-    // Big-name label: prefer the Google display name, fall back to the email's
-    // local part, then (handled in updateBotNameBig) the Bot Name preference.
+    // In-call name: prefer the Google display name, fall back to the email's
+    // local part, then (in updateCallIdentity) the Bot Name preference.
     botAccountName = r?.name || (r?.email ? r.email.split('@')[0] : null);
+    if (r?.name) rememberedMeetName = r.name; // persist for the idle sub-line after the call (#282)
     updateBotNameBig();
+    updateCallIdentity(); // refresh "in Meet as …" once the account name resolves
   } catch { botIdentityStatus.textContent = '✓ Signed in'; }
 }
 
 // --- Bot Slack identity on the MAIN view (parity with Bot Meet identity). In a
-// huddle the bot's name is the signed-in Slack ACCOUNT name; the slackBotName
-// preference is an optional display override. We can't read the live Slack
-// account name from here, so show the override when set, else a note — with a
-// Change link straight to the Settings field, mirroring the guest-Meet row. ---
+// huddle the bot joins as its signed-in Slack ACCOUNT name. We don't read that
+// live name from the huddle DOM yet (#283), so this is informational; once a
+// remembered Slack name exists it's shown. No override preference anymore. ---
 const botSlackIdentityStatus = document.getElementById('botSlackIdentityStatus');
 function refreshSlackIdentity() {
   if (!botSlackIdentityStatus) return;
-  const name = (slackBotNameInput && slackBotNameInput.value.trim()) || '';
-  botSlackIdentityStatus.textContent = name ? `💬 ‘${name}’ ` : '💬 Uses Slack account name ';
-  botSlackIdentityStatus.style.color = name ? '#81c995' : '#9aa0a6';
-  const change = document.createElement('a');
-  change.textContent = 'Change';
-  change.href = '#';
-  change.style.cssText = 'color:#8ab4f8;text-decoration:underline;font-size:0.9em';
-  change.onclick = (e) => {
-    e.preventDefault();
-    showScreen(settingsScreen);
-    if (slackBotNameInput) { slackBotNameInput.focus(); slackBotNameInput.select(); }
-  };
-  botSlackIdentityStatus.appendChild(change);
+  if (rememberedSlackName) {
+    botSlackIdentityStatus.textContent = `💬 ${rememberedSlackName}`;
+    botSlackIdentityStatus.style.color = '#81c995';
+  } else {
+    botSlackIdentityStatus.textContent = '💬 Uses your Slack account name';
+    botSlackIdentityStatus.style.color = '#9aa0a6';
+  }
 }
 refreshSlackIdentity();
 
@@ -607,11 +785,27 @@ botSignOutMainBtn?.addEventListener('click', async () => {
   setTimeout(() => { botSignOutMainBtn.disabled = false; }, 1500);
 });
 
-// Keep polling the bot identity while in account mode — the email isn't readable
-// until the human finishes the Google sign-in (which takes far longer than the
-// one-shot refetch above), and the account chip only appears afterward. Cheap:
-// no scan in guest mode.
-setInterval(() => { if (lastMeetMode === 'account') refreshBotIdentity('account'); }, 7000);
+// Keep the Bot Meet identity honest. AUTHORITATIVE: re-derive mode from the live
+// cookies (get-meet-mode → isSignedInToGoogle) rather than trusting the
+// optimistic event-driven flag, so the pane self-corrects once a Google sign-in
+// completes regardless of event ordering. While still resolving the account
+// email, retry the scrape.
+//
+// SKIPPED WHILE IN A CALL: identity is settled then, and refreshBotIdentity runs
+// get-meet-account-email — a DOM scrape on the live meet page — which spams the
+// meet console every 7s and is noise while debugging a call (Stan).
+setInterval(() => {
+  if (inCall) return;
+  api.invoke('get-meet-mode').then((info) => {
+    if (!info?.mode) return;
+    if (info.mode !== lastMeetMode) {
+      applyMeetMode(info.mode);            // mode changed (e.g. login just finished) → full refresh
+    } else if (info.mode === 'account' && !botAccountName) {
+      refreshBotIdentity('account');        // signed in but email not resolved yet → retry the scrape
+    }
+    // else: stable (guest, or account with email already shown) → just the cheap cookie read above
+  }).catch(() => {});
+}, 7000);
 
 // --- Bot vitals: fast-model reachability + voice mode -----------------------
 // Read-only indicators so the bot's current capabilities are visible at a glance
@@ -679,8 +873,25 @@ api.invoke('get-meet-mode').then((info) => {
   if (info?.mode) applyMeetMode(info.mode);
 }).catch(() => {});
 
-// Stay in sync when main swaps partitions.
-api.on('meet-mode-changed', ({ mode }) => applyMeetMode(mode));
+// Stay in sync when sign-in/out changes identity. The event no longer carries
+// the mode (single partition now — #282); re-query the authoritative state.
+api.on('meet-mode-changed', () => {
+  api.invoke('get-meet-mode').then((info) => { if (info?.mode) applyMeetMode(info.mode); }).catch(() => {});
+});
+
+// Advanced: "Navigate Webview…" (⌘⇧L) → prompt for a URL and drive the bot's
+// embedded view there, so the operator can set up Slack/Google account state in
+// the bot's own partition (#282).
+api.on('navigate-webview-prompt', async () => {
+  const url = await inlinePrompt({
+    title: 'Navigate the bot webview to URL (advanced — Slack/Google account setup):',
+    initial: 'https://', okLabel: 'Go',
+  });
+  if (!url) return;
+  api.invoke('navigate-webview', url).then((r) => {
+    if (r && r.ok === false) window.alert('Could not navigate: ' + (r.error || 'unknown'));
+  }).catch(() => {});
+});
 
 // --- Live caption feed: the "bot's-eye view" of exactly what captions the bot
 // is receiving, mirroring the [caption-raw]/[heard] logs. Each tick main sends
@@ -754,6 +965,36 @@ meetSignOutBtn?.addEventListener('click', async () => {
   setTimeout(() => {
     meetSignOutBtn.disabled = false;
     meetSignOutBtn.textContent = 'Sign out (use as guest)';
+  }, 1500);
+});
+
+// Slack identity (#285): open Slack in the bot's view to log in / out. No state
+// toggle — Slack signed-in state isn't read yet (#283), so both buttons show.
+slackSignInBtn?.addEventListener('click', async () => {
+  slackSignInBtn.disabled = true;
+  slackSignInBtn.textContent = 'Opening Slack…';
+  try {
+    await api.invoke('slack-sign-in');
+  } catch (err) {
+    showError('Slack sign-in failed: ' + err.message);
+  }
+  setTimeout(() => {
+    slackSignInBtn.disabled = false;
+    slackSignInBtn.textContent = 'Sign into Slack';
+  }, 1500);
+});
+
+slackSignOutBtn?.addEventListener('click', async () => {
+  slackSignOutBtn.disabled = true;
+  slackSignOutBtn.textContent = 'Signing out of Slack…';
+  try {
+    await api.invoke('slack-sign-out');
+  } catch (err) {
+    showError('Slack sign-out failed: ' + err.message);
+  }
+  setTimeout(() => {
+    slackSignOutBtn.disabled = false;
+    slackSignOutBtn.textContent = 'Sign out of Slack';
   }, 1500);
 });
 
@@ -935,15 +1176,9 @@ botNameInput.addEventListener('change', () => {
   api.invoke('set-config', 'botName', name);
   api.send('to-meet', { action: 'set-config', payload: { botName: name } });
   updateBotNameBig();
+  updateCallIdentity(); // guest in-call name = Bot Name; keep it current
   refreshBotIdentity(); // keep the guest "👤 Guest 'Name'" line in sync
 });
-
-if (slackBotNameInput) {
-  slackBotNameInput.addEventListener('change', () => {
-    api.invoke('set-config', 'slackBotName', slackBotNameInput.value.trim());
-    refreshSlackIdentity();
-  });
-}
 
 websiteUrlInput.addEventListener('change', () => {
   const url = websiteUrlInput.value.trim().replace(/\/+$/, '');
@@ -1119,13 +1354,15 @@ api.on('meet-status', (status) => {
   }
 });
 
-api.on('call-status-changed', ({ status }) => {
+api.on('call-status-changed', ({ status, provider }) => {
   // Authoritative call-state signal from the local server. Only show Leave Call
   // once we're actually in the meeting; hide it on idle/left.
   if (status === 'in-call') {
+    callProvider = provider || 'meet';
     const code = meetCodeInput.value || '';
     enterCallState(code);
   } else if (status === 'idle' || status === 'left') {
+    callProvider = null;
     exitCallState();
   }
   // 'joining' / 'waiting-to-be-admitted' stay in the pre-call UI — the join

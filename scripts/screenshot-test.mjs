@@ -9,8 +9,8 @@
 //   scripts/spawn-test-fleet.sh 1
 //
 // Run:
-//   node scripts/screenshot-test.mjs --bots Jimmy:7901
-//   pnpm test:screenshot -- --bots Jimmy:7901
+//   node scripts/screenshot-test.mjs --bots Alice:7901
+//   pnpm test:screenshot -- --bots Alice:7901
 //
 // Exit non-zero if capture or PNG validation fails.
 
@@ -18,7 +18,7 @@ import { readFileSync, statSync } from 'fs';
 import { Bot, report, record } from './meet-test-lib.mjs';
 
 const arg = (name, def) => { const i = process.argv.indexOf('--' + name); return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : def; };
-const [name, port] = arg('bots', 'Jimmy:7901').split(',')[0].split(':');
+const [name, port] = arg('bots', 'Alice:7901').split(',')[0].split(':');
 const bot = new Bot(name, Number(port), 'no-room');
 
 // PNG magic number — the first 8 bytes of every valid PNG.

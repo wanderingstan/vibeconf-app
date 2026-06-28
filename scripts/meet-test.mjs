@@ -7,14 +7,14 @@
 // Claude agents → deterministic, repeatable, zero tokens.
 //
 // PREREQ: the bot apps must already be running on their ports, signed in, e.g.
-//   scripts/launch-test-call.command        (boots Jimmy:7865 + Samantha:7866)
+//   scripts/launch-test-call.command        (boots Alice:7865 + Jimmy:7866)
 // or manually: pnpm dev  /  pnpm dev -- --profile=bot2 --local-port=7866
 // You (the human) can also be in the meet to observe.
 //
 // Run:
 //   node scripts/meet-test.mjs                                  # defaults (--target default)
 //   node scripts/meet-test.mjs --target workspace               # the history-on / contenteditable-chat meet
-//   node scripts/meet-test.mjs --room paz-sqoa-npe --bots Jimmy:7865,Samantha:7866
+//   node scripts/meet-test.mjs --room paz-sqoa-npe --bots Alice:7865,Jimmy:7866
 //
 // --target <name> picks a fixture from meet-targets.mjs (default | workspace).
 // --room overrides the resolved room for ad-hoc runs.
@@ -28,49 +28,50 @@ import { resolveTarget } from './meet-targets.mjs';
 const arg = (name, def) => { const i = process.argv.indexOf('--' + name); return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : def; };
 const TARGET = resolveTarget(arg('target', 'default'));
 const ROOM = arg('room', TARGET.room); // --room overrides the target's room
-const BOTS = arg('bots', 'Jimmy:7865,Samantha:7866').split(',').map((s) => { const [name, port] = s.split(':'); return new Bot(name, Number(port), ROOM); });
+const BOTS = arg('bots', 'Alice:7865,Jimmy:7866').split(',').map((s) => { const [name, port] = s.split(':'); return new Bot(name, Number(port), ROOM); });
 
 const COLORADO_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#e8855b"/><path d="M0 70 L30 40 L50 60 L70 35 L100 65 L100 100 L0 100Z" fill="#33406b"/></svg>';
 
 // Per-run chat nonces so each bot can verify it RECEIVED the other's posted
 // message (chat history persists in the meet, so the nonce disambiguates this
 // run). Date.now() is fine here — this is a normal node script.
+const NONCE_A = `chatA-${Date.now()}`;
 const NONCE_J = `chatJ-${Date.now()}`;
-const NONCE_S = `chatS-${Date.now()}`;
 
 // Per-bot scripts. Each is an async fn given its Bot. They run concurrently, so
-// timing/overlap between bots is exercised the way a real call would.
+// timing/overlap between bots is exercised the way a real call would. Bots are
+// Alice (-1) and Jimmy (-2), matching the fleet's naming.
 const SCRIPTS = {
-  // Jimmy: the "presenter" — whiteboard share + background, plus chat send/read.
-  Jimmy: async (bot) => {
+  // Alice: the "presenter" — whiteboard share + background, plus chat send/read.
+  Alice: async (bot) => {
     await bot.join();
     await sleep(4000); // admission + captions
-    await bot.speak('Hi, Jimmy here. Starting the screen-share test now.', { emoji: '🤓' });
+    await bot.speak('Hi, Alice here. Starting the screen-share test now.', { emoji: '🤓' });
     await bot.updateWhiteboard('# Automated Test\n\n```mermaid\ngraph TD\n  A[Harness] --> B[Bots]\n  B --> C[Meet]\n```');
     await bot.shareWhiteboard();
-    await bot.sendChat(`Jimmy chat check ${NONCE_J}`); // CHAT: post (tests send)
+    await bot.sendChat(`Alice chat check ${NONCE_A}`); // CHAT: post (tests send)
     await sleep(2000);
     await bot.speak('Diagram is on the board. Changing my background.');
     await bot.setBackground(COLORADO_SVG);
     await bot.setAvatarEmoji('😎');
     await sleep(2000);
-    await bot.waitForSpeech({ wait: 10, silence: 2 }); // listen for Samantha
-    await bot.expectChatContains(NONCE_S); // CHAT: did Jimmy receive Samantha's post?
+    await bot.waitForSpeech({ wait: 10, silence: 2 }); // listen for Jimmy
+    await bot.expectChatContains(NONCE_J); // CHAT: did Alice receive Jimmy's post?
     await bot.stopSharing();
     await bot.speak('Stopping the share. Test complete on my end.');
     // leave() happens centrally in main() after the chat-wake phase.
   },
 
-  // Samantha: the "responder" — speaks, listens, plus chat send/read.
-  Samantha: async (bot) => {
+  // Jimmy: the "responder" — speaks, listens, plus chat send/read.
+  Jimmy: async (bot) => {
     await bot.join();
     await sleep(4500);
-    await bot.speak('Samantha here too, listening for Jimmy.');
-    await bot.sendChat(`Samantha chat check ${NONCE_S}`); // CHAT: post (tests send)
+    await bot.speak('Jimmy here too, listening for Alice.');
+    await bot.sendChat(`Jimmy chat check ${NONCE_J}`); // CHAT: post (tests send)
     const r1 = await bot.waitForSpeech({ wait: 12, silence: 2 });
-    if (r1.spoke) await bot.speak('Got it, Jimmy — I can hear you.');
+    if (r1.spoke) await bot.speak('Got it, Alice — I can hear you.');
     await bot.waitForSpeech({ wait: 10, silence: 2 });
-    await bot.expectChatContains(NONCE_J); // CHAT: did Samantha receive Jimmy's post?
+    await bot.expectChatContains(NONCE_A); // CHAT: did Jimmy receive Alice's post?
     await bot.speak('Wrapping up on my side too.');
     // leave() happens centrally in main() after the chat-wake phase.
   },

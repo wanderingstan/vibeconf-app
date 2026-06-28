@@ -7,14 +7,14 @@
 #   profile   = test-meet-guest-1, …  (isolated userData: …/profiles/<name>;
 #               class prefix is test-meet-guest / test-meet-google / test-slack)
 #   port      = 7901, 7902, …     (distinct range from real bots 7865/7866)
-#   bot-name  = Jimmy, Samantha, Cosmo, …  (Meet display name; the harness keys
+#   bot-name  = Alice, Jimmy, Cosmo, …  (Meet display name; the harness keys
 #               scenarios on this — profile is just the sandbox, name is identity)
 #
 # Profile instances skip the Claude-terminal integration automatically, so this
 # only launches the apps. Drive them with: node scripts/meet-test.mjs
 #
 # Usage:
-#   scripts/spawn-test-fleet.sh            # 2 bots from SOURCE (Jimmy, Samantha)
+#   scripts/spawn-test-fleet.sh            # 2 bots from SOURCE (Alice, Jimmy)
 #   scripts/spawn-test-fleet.sh 3          # 3 bots (adds Cosmo)
 #   scripts/spawn-test-fleet.sh 2 --dmg    # drive the INSTALLED app (/Applications)
 #   scripts/spawn-test-fleet.sh 2 --built  # drive the freshly-BUILT app (dist/)
@@ -47,7 +47,7 @@ set -e
 # VIBECONF_REPO to point at a specific checkout.
 REPO="${VIBECONF_REPO:-${0:A:h:h}}"
 ELECTRON="$REPO/electron-app"
-NAMES=(Jimmy Samantha Cosmo Dizzy)        # display names by index
+NAMES=(Alice Jimmy Cosmo Dizzy)           # display names by index (Alice=-1, Jimmy=-2)
 BASE_PORT=7901
 
 # Flag parsing (position-independent): a numeric arg = count; --kill / --dmg /
@@ -90,11 +90,10 @@ elif (( GOOGLE )); then PROFILE_BASE="test-meet-google"
 else                   PROFILE_BASE="test-meet-guest"
 fi
 
-# For --google, name the bots to MATCH the Google accounts signed into the
-# google profiles (test-meet-google-1 = alice@spiritprotocol.io,
-# test-meet-google-2 = jimmy@spiritprotocol.io), so the fleet labels aren't
-# confusing. Update these if you sign different accounts into those profiles.
-(( GOOGLE )) && NAMES=(Alice Jimmy Cosmo Dizzy)
+# Bot names are Alice (-1), Jimmy (-2) across ALL classes. For --google these
+# match the Google accounts signed into the google profiles (test-meet-google-1
+# = alice@spiritprotocol.io, test-meet-google-2 = jimmy@spiritprotocol.io); the
+# --meet-account-email pin below is derived from the same names.
 
 # For --google, deterministically PIN each profile's Google account (#282) so
 # joins use authuser=<email> and can't fall back to a stray default account. The

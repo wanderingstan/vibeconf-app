@@ -86,6 +86,12 @@ elif (( GOOGLE )); then PROFILE_BASE="gtest"
 else                   PROFILE_BASE="test"
 fi
 
+# For --google, name the bots to MATCH the Google accounts signed into gtest1/
+# gtest2 (gtest1 = alice@spiritprotocol.io, gtest2 = jimmy@spiritprotocol.io), so
+# the fleet labels aren't confusing. Update these if you sign different accounts
+# into those profiles.
+(( GOOGLE )) && NAMES=(Alice Jimmy Cosmo Dizzy)
+
 # --kill: stop instances on the test ports (works regardless of how they launched).
 if (( KILL )); then
   echo "▶ Stopping test fleet…"

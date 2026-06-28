@@ -313,7 +313,7 @@ const localServer = new globalThis.LocalServer({
       // browser flaps between connects (dup-identity), dropping the face to emoji.
       if (process.env.VIBECONF_RUNWAY) {
         const seat = String(botName || '').toLowerCase();
-        if ((seat === 'sal' || seat === 'solienne') && !(_runway[seat] && _runway[seat].enabled)) {
+        if ((seat === 'sal' || seat === 'solienne' || seat === 'coltrane') && !(_runway[seat] && _runway[seat].enabled)) {
           setTimeout(() => setRunwayFace(seat, true), 8000);
         }
       }
@@ -1158,7 +1158,7 @@ ipcMain.handle('runway-face', (_e, { seat = 'sal', on = true } = {}) => setRunwa
 let _runwayReestablishing = false;
 function runwayReestablish(why) {
   const seat = String(process.env.VIBECONF_PROFILE || '').toLowerCase();
-  if ((seat !== 'sal' && seat !== 'solienne') || _runwayReestablishing) return;
+  if ((seat !== 'sal' && seat !== 'solienne' && seat !== 'coltrane') || _runwayReestablishing) return;
   if (!(_runway[seat] && _runway[seat].enabled)) return; // face wasn't on — nothing to recover
   _runwayReestablishing = true;
   console.log('[runway] re-establishing', seat, '(' + why + ')');

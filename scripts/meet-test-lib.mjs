@@ -214,12 +214,25 @@ export class Bot {
 
   // Read chat and assert a substring is present — verifies cross-bot delivery
   // (e.g. this bot can SEE what another bot posted). Logs ok=false if absent.
-  async expectChatContains(needle) {
-    const msgs = await this.readChat();
-    const hay = msgs.map((m) => (typeof m === 'string' ? m : `${m.sender || ''} ${m.text || m.message || ''}`)).join('\n');
-    const found = hay.includes(needle);
-    log(this.name, 'expectChatContains', { ok: found, note: found ? `found "${needle}"` : `MISSING "${needle}" in ${msgs.length} msg(s)` });
-    return found;
+  //
+  // Cross-bot messages don't land instantly: the other bot may still be posting,
+  // or the chat pane's history hasn't finished hydrating, when we first read.
+  // So poll a few times before declaring a miss instead of reading once. Tune
+  // via opts.attempts / opts.intervalMs.
+  async expectChatContains(needle, { attempts = 5, intervalMs = 1500 } = {}) {
+    let lastCount = 0;
+    for (let i = 0; i < attempts; i++) {
+      const msgs = await this.readChat();
+      lastCount = msgs.length;
+      const hay = msgs.map((m) => (typeof m === 'string' ? m : `${m.sender || ''} ${m.text || m.message || ''}`)).join('\n');
+      if (hay.includes(needle)) {
+        log(this.name, 'expectChatContains', { ok: true, note: `found "${needle}"${i ? ` after ${i + 1} reads` : ''}` });
+        return true;
+      }
+      if (i < attempts - 1) await sleep(intervalMs);
+    }
+    log(this.name, 'expectChatContains', { ok: false, note: `MISSING "${needle}" in ${lastCount} msg(s) after ${attempts} reads` });
+    return false;
   }
 
   async leave() {

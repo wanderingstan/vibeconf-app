@@ -515,28 +515,41 @@ async function openChatPane() {
   // immediately; only re-click while it's still closed.
   for (let attempt = 0; attempt < 3; attempt++) {
     btn = getChatToggle() || btn;
-    console.log('[chat] → switching to Chat pane (clicking', JSON.stringify(btn.getAttribute('aria-label')), ', attempt', attempt + 1, ')');
-    firePointerClick(btn);
 
-    // Stage 1 — wait for the PANE to open (toggle aria-expanded), NOT the input.
-    // If the input is already present (open-guest Meets), we're done immediately.
-    let paneOpen = false;
-    for (let i = 0; i < 16; i++) { // ~2.4s
-      await delay(150);
-      if (isChatPaneOpen()) { console.log('[chat] ✓ Chat pane open + input ready (attempt', attempt + 1, ')'); return true; }
-      if (isChatPaneToggleExpanded()) { paneOpen = true; break; }
+    // Only CLICK when the pane is CLOSED. Re-clicking an already-open toggle
+    // TOGGLES IT SHUT — which for the slow history-on chat restarts the input
+    // load and starves it, so the input never settles across retries (#284:
+    // jimmy@'s "History is on" input failed for 45s while alice@'s instant
+    // textarea passed on attempt 1, purely because each retry re-clicked and
+    // reset the load). When the pane is already open, fall through and just keep
+    // waiting for the lazy input — never re-click it shut.
+    if (!isChatPaneToggleExpanded()) {
+      console.log('[chat] → switching to Chat pane (clicking', JSON.stringify(btn.getAttribute('aria-label')), ', attempt', attempt + 1, ')');
+      firePointerClick(btn);
+
+      // Stage 1 — wait for the PANE to open (toggle aria-expanded), NOT the input.
+      // If the input is already present (open-guest Meets), we're done immediately.
+      let paneOpen = false;
+      for (let i = 0; i < 16; i++) { // ~2.4s
+        await delay(150);
+        if (isChatPaneOpen()) { console.log('[chat] ✓ Chat pane open + input ready (attempt', attempt + 1, ')'); return true; }
+        if (isChatPaneToggleExpanded()) { paneOpen = true; break; }
+      }
+      if (!paneOpen) { console.warn('[chat] pane did not open after click (attempt', attempt + 1, 'of 3) — retrying'); continue; }
+    } else {
+      console.log('[chat] pane already open — waiting for the lazy input WITHOUT re-clicking (attempt', attempt + 1, ')');
     }
-    if (!paneOpen) { console.warn('[chat] pane did not open after click (attempt', attempt + 1, 'of 3) — retrying'); continue; }
 
     // Stage 2 — pane is open but the input is lazy (Workspace/history-on): give
-    // it longer to render, and nudge it to instantiate partway through.
+    // it a longer, UNINTERRUPTED window to render (the next attempt won't
+    // re-click, per the guard above), and nudge it to instantiate partway in.
     console.log('[chat] pane open; waiting for the chat input to render…');
-    for (let i = 0; i < 24; i++) { // ~3.6s
+    for (let i = 0; i < 30; i++) { // ~6s; with 3 attempts ≈ up to ~18s uninterrupted
       if (isChatPaneOpen()) { console.log('[chat] ✓ chat input ready (attempt', attempt + 1, ')'); return true; }
       if (i === 6) instantiateChatInput();
-      await delay(150);
+      await delay(200);
     }
-    console.warn('[chat] pane open but input never rendered (attempt', attempt + 1, 'of 3) — retrying');
+    console.warn('[chat] pane open but input never rendered (attempt', attempt + 1, 'of 3) — waiting more');
   }
   console.warn('[chat] ❌ Chat pane did not reach an input-ready state after 3 attempts');
   dumpChatInputDiag();

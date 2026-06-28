@@ -94,6 +94,14 @@ fi
 # into those profiles.
 (( GOOGLE )) && NAMES=(Alice Jimmy Cosmo Dizzy)
 
+# For --google, deterministically PIN each profile's Google account (#282) so
+# joins use authuser=<email> and can't fall back to a stray default account. The
+# email is <lowercase-bot-name>@$GTEST_EMAIL_DOMAIN — matching the accounts you
+# sign gtest1/gtest2 into. Override the domain via env if your bot accounts live
+# elsewhere. (Pinning only SELECTS the account; you still sign each profile in
+# once — the new single partition starts fresh.)
+GTEST_EMAIL_DOMAIN="${GTEST_EMAIL_DOMAIN:-spiritprotocol.io}"
+
 # --kill: stop instances on the test ports (works regardless of how they launched).
 if (( KILL )); then
   echo "▶ Stopping test fleet…"
@@ -224,6 +232,10 @@ for i in $(seq 1 $N); do
   profile="${PROFILE_BASE}$i"
   port=$((BASE_PORT + i - 1))
   name="${NAMES[$i]}${RUN_TAG:+-$RUN_TAG}"
+  # #282: pin this profile's Google account for --google runs (base name, not the
+  # run-tagged display name). ${(L)...} is zsh lowercasing.
+  ACCT_FLAG=""
+  (( GOOGLE )) && ACCT_FLAG="--meet-account-email=${(L)NAMES[$i]}@${GTEST_EMAIL_DOMAIN}"
   WINFLAGS=""
   if (( GRID )); then
     idx=$(( i - 1 ))
@@ -244,9 +256,9 @@ for i in $(seq 1 $N); do
     # bundle PATH ("$APP") so we run exactly the chosen copy (installed vs built),
     # not whatever LaunchServices resolves the app NAME to.
     # ${=WINFLAGS}: zsh word-splits the flags into separate argv entries.
-    open -n "$APP" --args --profile="$profile" --local-port="$port" --bot-name="$name" ${=WINFLAGS} ${=EXTRA_ARGS}
+    open -n "$APP" --args --profile="$profile" --local-port="$port" --bot-name="$name" ${=ACCT_FLAG} ${=WINFLAGS} ${=EXTRA_ARGS}
   else
-    nohup zsh -c "cd '$ELECTRON' && pnpm dev -- --profile=$profile --local-port=$port --bot-name=$name $WINFLAGS $EXTRA_ARGS" \
+    nohup zsh -c "cd '$ELECTRON' && pnpm dev -- --profile=$profile --local-port=$port --bot-name=$name $ACCT_FLAG $WINFLAGS $EXTRA_ARGS" \
       >"/tmp/vibeconf-$profile.log" 2>&1 &
   fi
   BOTS_ARG+="${BOTS_ARG:+,}$name:$port"

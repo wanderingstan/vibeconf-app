@@ -423,6 +423,45 @@ function isChatPaneOpen() {
   return !!getChatInput();
 }
 
+// Whether the chat side-panel is open, INDEPENDENT of the (lazy-rendered) input.
+// The chat toggle is a panel button: aria-expanded flips true when chat is the
+// active side panel. In Workspace/history-on Meets the contenteditable input
+// isn't in the DOM the instant the pane opens, so gating "pane open" on the
+// input (isChatPaneOpen) made openChatPane give up before the input rendered.
+function isChatPaneToggleExpanded() {
+  const btn = getChatToggle();
+  return !!btn && btn.getAttribute('aria-expanded') === 'true';
+}
+
+// Nudge the lazy chat input to instantiate once the pane is open: focus the
+// panel the toggle controls and wake any input-region candidate. Best-effort —
+// a no-op if there's nothing to click yet.
+function instantiateChatInput() {
+  const btn = getChatToggle();
+  const panelId = btn && btn.getAttribute('aria-controls');
+  const panel = (panelId && document.getElementById(panelId)) || document;
+  const candidate = panel.querySelector(
+    '[contenteditable="true"][role="textbox"], [role="textbox"], [g_editable="true"], textarea'
+  );
+  if (candidate) {
+    try { firePointerClick(candidate); if (candidate.focus) candidate.focus(); } catch { /* ignore */ }
+  }
+}
+
+// Dump the chat-panel state on failure so a live (history-on) run is
+// self-explanatory: is the pane open, and what editable elements actually exist
+// (their real role/contenteditable/aria-label/maxlength)?
+function dumpChatInputDiag() {
+  try {
+    const btn = getChatToggle();
+    const editables = Array.from(document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"]'))
+      .map((e) => ({ tag: e.tagName, role: e.getAttribute('role'), ce: e.getAttribute('contenteditable'),
+        aria: e.getAttribute('aria-label'), ml: e.getAttribute('aria-multiline'), maxlen: e.getAttribute('maxlength') }));
+    console.warn('[chat] [chat-input-diag] toggle aria-expanded=' + (btn && btn.getAttribute('aria-expanded')) +
+      ' editables=' + JSON.stringify(editables));
+  } catch (e) { console.warn('[chat] [chat-input-diag] dump failed:', e && e.message); }
+}
+
 // Meet's chat toggle binds its handler to the pointerdown/pointerup jsaction,
 // so a synthetic el.click() (which dispatches only a 'click' event) doesn't
 // actuate it — confirmed live: a real user click opens the chat pane, but
@@ -478,16 +517,29 @@ async function openChatPane() {
     btn = getChatToggle() || btn;
     console.log('[chat] → switching to Chat pane (clicking', JSON.stringify(btn.getAttribute('aria-label')), ', attempt', attempt + 1, ')');
     firePointerClick(btn);
-    for (let i = 0; i < 16; i++) { // ~2.4s per attempt
+
+    // Stage 1 — wait for the PANE to open (toggle aria-expanded), NOT the input.
+    // If the input is already present (open-guest Meets), we're done immediately.
+    let paneOpen = false;
+    for (let i = 0; i < 16; i++) { // ~2.4s
       await delay(150);
-      if (isChatPaneOpen()) {
-        console.log('[chat] ✓ Chat pane open (attempt', attempt + 1, ')');
-        return true;
-      }
+      if (isChatPaneOpen()) { console.log('[chat] ✓ Chat pane open + input ready (attempt', attempt + 1, ')'); return true; }
+      if (isChatPaneToggleExpanded()) { paneOpen = true; break; }
     }
-    console.warn('[chat] pane not open after click (attempt', attempt + 1, 'of 3) — retrying');
+    if (!paneOpen) { console.warn('[chat] pane did not open after click (attempt', attempt + 1, 'of 3) — retrying'); continue; }
+
+    // Stage 2 — pane is open but the input is lazy (Workspace/history-on): give
+    // it longer to render, and nudge it to instantiate partway through.
+    console.log('[chat] pane open; waiting for the chat input to render…');
+    for (let i = 0; i < 24; i++) { // ~3.6s
+      if (isChatPaneOpen()) { console.log('[chat] ✓ chat input ready (attempt', attempt + 1, ')'); return true; }
+      if (i === 6) instantiateChatInput();
+      await delay(150);
+    }
+    console.warn('[chat] pane open but input never rendered (attempt', attempt + 1, 'of 3) — retrying');
   }
-  console.warn('[chat] ❌ Chat pane did not open after 3 click attempts');
+  console.warn('[chat] ❌ Chat pane did not reach an input-ready state after 3 attempts');
+  dumpChatInputDiag();
   return false;
 }
 

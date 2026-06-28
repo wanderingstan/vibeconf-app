@@ -3696,6 +3696,41 @@ function setupIPC() {
     return { ok: true, mode: 'guest' };
   });
 
+  // --- Bot Slack identity (#285) — parity with the Google sign-in above. Slack
+  // has no account pin; the bot uses whatever you log into. Both just drive the
+  // embedded view (same `session` partition as Meet now). ---
+
+  // Open Slack in the bot's view for login (no autojoin — we're not joining a
+  // huddle, just signing in). Loads the Slack home; user logs in + picks the
+  // workspace.
+  ipcMain.handle('slack-sign-in', () => {
+    activateSlackProvider('https://app.slack.com/', { autojoin: false });
+    return { ok: true };
+  });
+
+  // Sign out of Slack: remove ONLY slack.com cookies from the partition (mirror
+  // of meet-sign-out-bot, which clears google.com and preserves Slack). Then
+  // reload Slack so the view reflects the logged-out state.
+  ipcMain.handle('slack-sign-out', async () => {
+    try {
+      const sess = session.fromPartition(currentMeetPartition);
+      const all = await sess.cookies.get({});
+      let removed = 0;
+      for (const c of all) {
+        const d = (c.domain || '').replace(/^\./, '');
+        if (/(^|\.)slack\.com$/.test(d)) {
+          const url = `https://${d}${c.path || '/'}`;
+          try { await sess.cookies.remove(url, c.name); removed++; } catch { /* best-effort */ }
+        }
+      }
+      console.log('[electron] Slack sign-out — removed', removed, 'slack.com cookies (Google login preserved)');
+    } catch (err) {
+      console.warn('[electron] slack-sign-out failed:', err.message);
+    }
+    activateSlackProvider('https://app.slack.com/', { autojoin: false });
+    return { ok: true };
+  });
+
   // --- TTS ---
   ipcMain.on('speak', (_event, text) => {
     if (!text) return;

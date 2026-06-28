@@ -24,6 +24,8 @@ const shareWhiteboardBtn = document.getElementById('shareWhiteboardBtn');
 const meetSignInBtn = document.getElementById('meetSignInBtn');
 const meetSignOutBtn = document.getElementById('meetSignOutBtn');
 const meetModeIndicator = document.getElementById('meetModeIndicator');
+const slackSignInBtn = document.getElementById('slackSignInBtn');
+const slackSignOutBtn = document.getElementById('slackSignOutBtn');
 
 // Settings
 const botNameInput = document.getElementById('botName');
@@ -947,6 +949,36 @@ meetSignOutBtn?.addEventListener('click', async () => {
   setTimeout(() => {
     meetSignOutBtn.disabled = false;
     meetSignOutBtn.textContent = 'Sign out (use as guest)';
+  }, 1500);
+});
+
+// Slack identity (#285): open Slack in the bot's view to log in / out. No state
+// toggle — Slack signed-in state isn't read yet (#283), so both buttons show.
+slackSignInBtn?.addEventListener('click', async () => {
+  slackSignInBtn.disabled = true;
+  slackSignInBtn.textContent = 'Opening Slack…';
+  try {
+    await api.invoke('slack-sign-in');
+  } catch (err) {
+    showError('Slack sign-in failed: ' + err.message);
+  }
+  setTimeout(() => {
+    slackSignInBtn.disabled = false;
+    slackSignInBtn.textContent = 'Sign into Slack';
+  }, 1500);
+});
+
+slackSignOutBtn?.addEventListener('click', async () => {
+  slackSignOutBtn.disabled = true;
+  slackSignOutBtn.textContent = 'Signing out of Slack…';
+  try {
+    await api.invoke('slack-sign-out');
+  } catch (err) {
+    showError('Slack sign-out failed: ' + err.message);
+  }
+  setTimeout(() => {
+    slackSignOutBtn.disabled = false;
+    slackSignOutBtn.textContent = 'Sign out of Slack';
   }, 1500);
 });
 

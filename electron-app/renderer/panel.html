@@ -148,6 +148,18 @@
       </div>
 
       <div class="section">
+        <h2>Bot Slack Identity</h2>
+        <p class="helper-text" style="margin:0 0 8px">
+          For Slack huddles the bot joins as its signed-in <strong>Slack account</strong>
+          (there's no guest path). Sign in once here — the login persists across
+          launches in this profile. This opens Slack in the bot's view; log in and
+          pick the workspace, then come back.
+        </p>
+        <button id="slackSignInBtn">Sign into Slack</button>
+        <button id="slackSignOutBtn">Sign out of Slack</button>
+      </div>
+
+      <div class="section">
         <h2>Text-to-Speech</h2>
         <div class="field">
           <label for="ttsApiKey">ElevenLabs API Key</label>

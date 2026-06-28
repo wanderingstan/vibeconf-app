@@ -627,6 +627,14 @@
       osc.connect(silence);
       osc.start();
 
+      // #274: keep the context RUNNING for the whole call. A suspended AudioContext
+      // produces no audio (the master track stays readyState:'live' but goes silent),
+      // which reads as "speak stopped landing" late in a long call. Auto-resume if the
+      // browser suspends it (backgrounding, power events) so the master never goes mute.
+      this.audioCtx.addEventListener?.('statechange', () => {
+        if (this.audioCtx.state === 'suspended') this.audioCtx.resume().catch(() => {});
+      });
+
       // Analyser for amplitude-driven lip-sync. TTS sources connect into it
       // (in parallel with the destination) so the avatar can read how loud the
       // bot is speaking right now and animate its mouth to match.
@@ -699,26 +707,19 @@
     }
 
     getTrack() {
-      // Consumers can END our destination track — Slack stop()s the mic track on
-      // the lobby→huddle handoff (and on device switches), which would leave
-      // every later getUserMedia holding a DEAD track: silent mic, "we can't hear
-      // you", no TTS out. If the current track is ended, rebuild the destination
-      // (with a fresh silent keep-alive) so we always return a LIVE track. TTS
-      // sources connect to this.destination, so they follow the rebuild. Meet
-      // never stops the track this way, so this branch is Slack-only in practice.
-      let track = this.destination.stream.getAudioTracks()[0];
-      if (!track || track.readyState === 'ended') {
-        this.destination = this.audioCtx.createMediaStreamDestination();
-        const silence = this.audioCtx.createGain();
-        silence.gain.value = 0;
-        silence.connect(this.destination);
-        const osc = this.audioCtx.createOscillator();
-        osc.connect(silence);
-        osc.start();
-        track = this.destination.stream.getAudioTracks()[0];
-        console.log('[bots-in-calls] VirtualMic track was ended — rebuilt destination; new track:', track.id);
-      }
-      return track;
+      // #274 fix (codex hypothesis): ONE stable master destination for the lifetime of
+      // the page — NEVER rebuilt. Each consumer (the call via getUserMedia; Runway via
+      // __vibeMicTrack) gets an INDEPENDENT clone(). So when Slack/Meet stop()s its own
+      // mic track on the lobby→huddle handoff or a device switch, only THAT clone dies —
+      // our master and every other clone stay live, and the call simply re-acquires a
+      // fresh clone on its next getUserMedia. We never hand out (or replace) the master
+      // track itself, so the call can never end up pinned to a track WE killed. The OLD
+      // rebuild path swapped the destination out from under an already-acquired consumer:
+      // Runway's getTrack() got the new live track while Meet stayed pinned to the dead
+      // one → "face animates, but no audio." Clones eliminate that split-brain. TTS
+      // sources connect to this.destination (the master), so every live clone carries
+      // the speech.
+      return this.destination.stream.getAudioTracks()[0].clone();
     }
 
     // Soft two-tone "I'm in the room" chime — used when admission completes,
@@ -1226,7 +1227,7 @@
             console.log('[bots-in-calls] AudioContext suspended, resuming for TTS');
             mic.audioCtx.resume();
           }
-          const track = mic.getTrack();
+          const track = mic.destination.stream.getAudioTracks()[0]; // master track, for diagnostics only (getTrack() now clones)
           console.log('[bots-in-calls] Queuing TTS audio, data length:', payload.audioData.length,
             'queue size:', ttsQueue.length,
             'AudioContext state:', mic.audioCtx.state,

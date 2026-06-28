@@ -160,6 +160,16 @@ const PREFERENCES = {
       "'what's my background?' without parsing raw SVG. Surfaced in get_room_info; " +
       "not rendered.",
   },
+  remoteLogging: {
+    type: 'boolean',
+    default: false,
+    description:
+      'Ship this app\'s session log to the backend so it can be read remotely ' +
+      'via get_session_log (instance:…) or the logs CLI — useful for debugging ' +
+      'another machine\'s bots without terminal access. Off by default; the log ' +
+      'may contain transcript text, so only enable when you want it shared. ' +
+      'Takes effect immediately (no restart).',
+  },
   websiteUrl: {
     type: 'string',
     default: '',

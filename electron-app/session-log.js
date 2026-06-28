@@ -11,6 +11,89 @@ const MAX_RETAINED_SESSIONS = 10;
 let _filePath = null;
 let _logStream = null;
 
+// --- Remote log shipping (opt-in) -----------------------------------------
+// When enabled, every teed line is also queued and periodically POSTed to the
+// backend (`/api/logs/{instanceId}`), so a session can be inspected from
+// another machine (e.g. debugging Seth's bots) via get_session_log / the logs
+// CLI. Off unless the `remoteLogging` pref is set. Lines may contain transcript
+// text, so it's deliberately opt-in.
+let _remote = null;        // { enabled, endpointBase(), instanceId, token, meta() }
+let _queue = [];           // pending complete lines (strings)
+let _lineBuf = '';         // partial trailing line not yet newline-terminated
+let _flushTimer = null;
+let _flushing = false;
+const REMOTE_MAX_QUEUE = 5000;  // hard cap so a dead endpoint can't grow memory
+const REMOTE_MAX_BATCH = 800;   // lines per POST
+
+function _enqueueChunk(chunk) {
+  if (!_remote || !_remote.enabled) return;
+  const s = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+  _lineBuf += s;
+  let idx;
+  while ((idx = _lineBuf.indexOf('\n')) !== -1) {
+    const line = _lineBuf.slice(0, idx);
+    _lineBuf = _lineBuf.slice(idx + 1);
+    if (line.length) _queue.push(line);
+  }
+  if (_queue.length > REMOTE_MAX_QUEUE) _queue.splice(0, _queue.length - REMOTE_MAX_QUEUE);
+}
+
+async function _flushRemote() {
+  if (_flushing || !_remote || !_remote.enabled || !_queue.length) return;
+  const base = (_remote.endpointBase() || '').replace(/\/$/, '');
+  if (!base) return; // backend URL not resolvable yet — keep buffering
+  _flushing = true;
+  const batch = _queue.splice(0, REMOTE_MAX_BATCH);
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (_remote.token) headers['x-vibe-logs-token'] = _remote.token;
+    const resp = await fetch(`${base}/api/logs/${encodeURIComponent(_remote.instanceId)}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ lines: batch, meta: _remote.meta ? _remote.meta() : {} }),
+    });
+    // On 4xx (bad token / payload) DROP the batch — requeuing would loop forever.
+    // On 5xx / network error (caught below) we requeue once so a blip recovers.
+    if (!resp.ok && resp.status >= 500) throw new Error(`HTTP ${resp.status}`);
+  } catch (e) {
+    // Write the failure straight to the file stream (NOT console) to avoid
+    // re-entering the stdout tee and recursing.
+    try { _logStream && _logStream.write(`[remote-log] flush failed: ${e && e.message}\n`); } catch {}
+    _queue.unshift(...batch);
+    if (_queue.length > REMOTE_MAX_QUEUE) _queue.splice(0, _queue.length - REMOTE_MAX_QUEUE);
+  } finally {
+    _flushing = false;
+  }
+}
+
+function _ensureFlushTimer(intervalMs = 3000) {
+  if (_flushTimer) return;
+  _flushTimer = setInterval(_flushRemote, intervalMs);
+  if (_flushTimer.unref) _flushTimer.unref();
+}
+
+// Configure (or reconfigure) remote shipping. Safe to call before or after the
+// log file is opened. `endpointBase` and `meta` are getters so the live
+// website URL / current room are read at flush time, not frozen here.
+function configureRemoteLog({ enabled = false, endpointBase, instanceId, token = '', meta, intervalMs } = {}) {
+  _remote = {
+    enabled: !!enabled,
+    endpointBase: endpointBase || (() => ''),
+    instanceId: instanceId || 'unknown',
+    token: token || '',
+    meta: meta || (() => ({})),
+  };
+  if (_remote.enabled) _ensureFlushTimer(intervalMs);
+  return _remote.instanceId;
+}
+
+// Toggle at runtime (e.g. when the `remoteLogging` pref changes mid-session).
+function setRemoteLoggingEnabled(enabled) {
+  if (!_remote) return;
+  _remote.enabled = !!enabled;
+  if (_remote.enabled) _ensureFlushTimer();
+}
+
 function pad(n) { return String(n).padStart(2, '0'); }
 
 function timestampForFilename(d = new Date()) {
@@ -69,10 +152,12 @@ function initSessionLog({ userDataDir, header = {} } = {}) {
 
   process.stdout.write = (chunk, ...rest) => {
     try { logStream.write(typeof chunk === 'string' ? chunk : chunk); } catch {}
+    try { _enqueueChunk(chunk); } catch {}
     return origStdoutWrite(chunk, ...rest);
   };
   process.stderr.write = (chunk, ...rest) => {
     try { logStream.write(typeof chunk === 'string' ? chunk : chunk); } catch {}
+    try { _enqueueChunk(chunk); } catch {}
     return origStderrWrite(chunk, ...rest);
   };
 
@@ -128,4 +213,6 @@ module.exports = {
   logSessionHeaderUpdate,
   getRecentSessionLog,
   getSessionLogPath,
+  configureRemoteLog,
+  setRemoteLoggingEnabled,
 };

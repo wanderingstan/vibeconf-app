@@ -9,7 +9,7 @@ const vm = require('vm');
 const Store = require('./store.js');
 const profileManager = require('./profile-manager.js');
 const { resolveSvg } = require('./svg-resolver.js');
-const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath } = require('./session-log.js');
+const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
 // The call-provider contract. main.js is the consumer side: it subscribes to
 // CALL_EVENTS (provider → app) and issues CALL_COMMANDS (app → provider) by
 // constant rather than raw channel string, so the contract is shared on both
@@ -1029,6 +1029,9 @@ const localServer = new globalThis.LocalServer({
         console.log('[electron] studioSound pref changed →', value, '— applying live');
         sendCallCmd(CALL_COMMANDS.setStudioSound, { enabled: value !== false });
       }
+    } else if (key === 'remoteLogging') {
+      setRemoteLoggingEnabled(value === true);
+      console.log('[electron] Remote logging', value === true ? 'ENABLED' : 'disabled', '(live)');
     }
   },
 });
@@ -2310,6 +2313,33 @@ app.whenReady().then(async () => {
     console.log('[electron] Requested local server port:', explicitLocalPort);
   }
   const localPort = await localServer.start();
+
+  // Remote log shipping (opt-in via `remoteLogging` pref). Build a stable
+  // instanceId from hostname + profile so the same bot is recognizable across
+  // restarts; meta is read at flush time so the current room is always fresh.
+  try {
+    const sanitize = (s) => String(s || '').replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '') || 'x';
+    const hostShort = sanitize(require('os').hostname().split('.')[0]);
+    const instanceId = `${hostShort}--${sanitize(appProfile || 'default')}`;
+    configureRemoteLog({
+      enabled: store?.get('remoteLogging') === true,
+      endpointBase: () => getWebsiteUrl(),
+      instanceId,
+      token: process.env.VIBECONF_LOGS_TOKEN || '',
+      meta: () => ({
+        version: app.getVersion(),
+        platform: process.platform,
+        profile: appProfile || 'default',
+        host: hostShort,
+        port: localServer.port,
+        room: localServer.roomId || null,
+        callStatus: localServer.callStatus || null,
+      }),
+    });
+    console.log('[electron] Remote logging', store?.get('remoteLogging') === true ? 'ENABLED' : 'available (off)', '— instance:', instanceId);
+  } catch (err) {
+    console.warn('[electron] Failed to configure remote logging:', err.message);
+  }
 
   // Check/install Claude integration. Profiled instances are intended for
   // non-default agents (for example Codex) and must not steal Claude's global

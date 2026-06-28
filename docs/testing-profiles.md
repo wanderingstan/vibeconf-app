@@ -57,9 +57,10 @@ each profile at its login page (Google accounts pre-pinned via
 `--meet-account-email`):
 
 ```bash
-scripts/setup-test-profiles.sh            # Google + Slack
+scripts/setup-test-profiles.sh            # Google + Slack, from SOURCE (pnpm dev)
 scripts/setup-test-profiles.sh --google   # just the Meet (Google) profiles
 scripts/setup-test-profiles.sh --slack    # just the Slack profiles
+scripts/setup-test-profiles.sh --installed # use the installed /Applications app
 
 # Override accounts for your environment:
 GTEST_EMAIL_DOMAIN=example.com \
@@ -75,6 +76,14 @@ Then in each window:
   profile's partition.
 
 The login persists in the profile's `session` partition across runs.
+
+> ⚠️ **Sign in under the build you'll run.** The helper defaults to **source**
+> (`pnpm dev`) so you log in under the current code. A login lives in *that
+> build's* session partition — an OLD installed build uses a different
+> (pre-#282) partition, so signing in there does **not** carry to the new code.
+> Only use `--installed` once a build *with* this change is what you run. You
+> know the new code is live when the **⇄** switcher shows next to the heading and
+> the heading reads the profile name.
 
 ## Running the fleet
 

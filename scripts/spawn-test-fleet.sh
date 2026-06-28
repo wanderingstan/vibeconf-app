@@ -57,6 +57,7 @@ DMG=0
 BUILT=0
 SLACK=0
 SLACK_URL=""
+GOOGLE=0
 for a in "$@"; do
   case "$a" in
     --kill)        KILL=1 ;;
@@ -64,16 +65,26 @@ for a in "$@"; do
     --built)       BUILT=1 ;;
     --slack)       SLACK=1 ;;
     --slack-url=*) SLACK_URL="${a#--slack-url=}" ;;
+    --google)      GOOGLE=1 ;;
     <->)           N="$a" ;;   # zsh: <-> matches an integer
-    *) echo "usage: $0 [count] [--dmg|--built] [--slack --slack-url=URL] [--kill]"; exit 1 ;;
+    *) echo "usage: $0 [count] [--dmg|--built] [--slack --slack-url=URL] [--google] [--kill]"; exit 1 ;;
   esac
 done
 if (( N < 1 || N > 4 )); then echo "count must be 1–4"; exit 1; fi
 
-# Slack bots use a DISTINCT profile namespace — signed into a Slack ACCOUNT (one-
-# time manual login per profile), not Google/guest. Meet bots = test1.., Slack
-# bots = slacktest1.. So `--slack --kill` reaps the right ones too.
-PROFILE_BASE=$( (( SLACK )) && echo "slacktest" || echo "test" )
+# Each identity gets its OWN profile namespace so they don't clobber each other
+# and `--kill` reaps the right ones:
+#   guest Meet (default)        = test1..        (logged OUT — tests the guest join path)
+#   Google-signed-in Meet       = gtest1..       (--google; signed INTO a bot Google account
+#                                                 ONCE via Settings → "Sign in to Google as bot";
+#                                                 needed for invite-only / Workspace meets)
+#   Slack                       = slacktest1..   (--slack; signed into a Slack account once)
+# Keeping `test*` guest-only means we KEEP testing the non-Google guest path even
+# after adding signed-in profiles for the Workspace/history-on target.
+if   (( SLACK ));  then PROFILE_BASE="slacktest"
+elif (( GOOGLE )); then PROFILE_BASE="gtest"
+else                   PROFILE_BASE="test"
+fi
 
 # --kill: stop instances on the test ports (works regardless of how they launched).
 if (( KILL )); then

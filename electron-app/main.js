@@ -3315,6 +3315,15 @@ function setupIPC() {
   ipcMain.handle('get-app-profile', () => appProfile || null);
   ipcMain.handle('get-local-port', () => localServer.port);
 
+  // Reveal the profiles folder in Finder so the user can delete/rename profile
+  // dirs directly (#282 debugging help).
+  ipcMain.handle('open-profiles-folder', async () => {
+    try { fs.mkdirSync(PROFILES_ROOT, { recursive: true }); } catch { /* exists */ }
+    const err = await shell.openPath(PROFILES_ROOT);
+    if (err) console.warn('[electron] open-profiles-folder failed:', err);
+    return { ok: !err, path: PROFILES_ROOT, error: err || undefined };
+  });
+
   // --- Profile switcher (#282): Chrome-style list + launch/focus ------------
   // A profile = a sibling userData dir under <base>/profiles, each its own
   // identity. You can't rehome a RUNNING instance (userData is fixed before

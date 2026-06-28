@@ -229,6 +229,45 @@ if (profileMenuBtn) profileMenuBtn.style.display = ''; // always available
 
 function closeProfileMenu() { if (profileMenu) profileMenu.style.display = 'none'; }
 
+// Electron renderers don't implement window.prompt (it silently returns null),
+// so use a small in-DOM modal instead. Resolves to the trimmed string, or null
+// on cancel/escape. Reused by "New profile" and the navigate-webview tool.
+function inlinePrompt({ title, placeholder = '', initial = '', okLabel = 'OK' }) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:200;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#2a2d31;border:1px solid #5f6368;border-radius:10px;padding:16px;width:min(360px,86vw);box-shadow:0 10px 40px rgba(0,0,0,0.6)';
+    const t = document.createElement('div');
+    t.textContent = title;
+    t.style.cssText = 'color:#e8eaed;font-size:13px;margin-bottom:10px;line-height:1.4';
+    const input = document.createElement('input');
+    input.type = 'text'; input.value = initial; input.placeholder = placeholder;
+    input.style.cssText = 'width:100%;box-sizing:border-box;background:#202124;border:1px solid #5f6368;border-radius:6px;color:#e8eaed;padding:8px;font-size:13px;outline:none';
+    const btns = document.createElement('div');
+    btns.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:12px';
+    const cancel = document.createElement('button');
+    cancel.textContent = 'Cancel';
+    cancel.style.cssText = 'background:none;border:1px solid #5f6368;color:#9aa0a6;border-radius:18px;padding:6px 14px;cursor:pointer';
+    const ok = document.createElement('button');
+    ok.textContent = okLabel;
+    ok.style.cssText = 'background:#8ab4f8;border:none;color:#202124;border-radius:18px;padding:6px 14px;font-weight:600;cursor:pointer';
+    const close = (val) => { overlay.remove(); resolve(val); };
+    cancel.onclick = () => close(null);
+    ok.onclick = () => close(input.value.trim() || null);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); close(input.value.trim() || null); }
+      else if (e.key === 'Escape') { e.preventDefault(); close(null); }
+    });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
+    btns.appendChild(cancel); btns.appendChild(ok);
+    box.appendChild(t); box.appendChild(input); box.appendChild(btns);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    input.focus(); input.select();
+  });
+}
+
 async function doSwitchProfile(name) {
   closeProfileMenu();
   const n = (name || '').trim();
@@ -276,11 +315,22 @@ function renderProfileMenu(data) {
   const add = document.createElement('div');
   add.textContent = '＋ New profile…';
   add.style.cssText = 'padding:6px 8px;margin-top:4px;border-top:1px solid #5f6368;color:#8ab4f8;cursor:pointer';
-  add.onclick = () => {
-    const name = window.prompt('New profile name (letters, numbers, . _ - only):', '');
+  add.onclick = async () => {
+    closeProfileMenu();
+    const name = await inlinePrompt({ title: 'New profile name (letters, numbers, . _ - only):', placeholder: 'e.g. alice', okLabel: 'Create' });
     if (name) doSwitchProfile(name);
   };
   profileMenu.appendChild(add);
+
+  // Debugging help: reveal the profiles folder so the user can delete/rename
+  // profile dirs directly (#282).
+  const folder = document.createElement('div');
+  folder.textContent = '📂 Open profiles folder';
+  folder.style.cssText = 'padding:6px 8px;color:#9aa0a6;cursor:pointer';
+  folder.onmouseenter = () => { folder.style.background = '#3c4043'; };
+  folder.onmouseleave = () => { folder.style.background = ''; };
+  folder.onclick = () => { closeProfileMenu(); api.invoke('open-profiles-folder').catch(() => {}); };
+  profileMenu.appendChild(folder);
 }
 
 if (profileMenuBtn && profileMenu) {
@@ -800,8 +850,11 @@ api.on('meet-mode-changed', () => {
 // Advanced: "Navigate Webview…" (⌘⇧L) → prompt for a URL and drive the bot's
 // embedded view there, so the operator can set up Slack/Google account state in
 // the bot's own partition (#282).
-api.on('navigate-webview-prompt', () => {
-  const url = window.prompt('Navigate the bot webview to URL (advanced — Slack/Google account setup):', 'https://');
+api.on('navigate-webview-prompt', async () => {
+  const url = await inlinePrompt({
+    title: 'Navigate the bot webview to URL (advanced — Slack/Google account setup):',
+    initial: 'https://', okLabel: 'Go',
+  });
   if (!url) return;
   api.invoke('navigate-webview', url).then((r) => {
     if (r && r.ok === false) window.alert('Could not navigate: ' + (r.error || 'unknown'));

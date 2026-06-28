@@ -28,10 +28,14 @@
       </div>
       <div class="error-bar" id="errorBar" style="display:none"><span id="errorText"></span><button class="error-close" id="errorClose">&times;</button></div>
 
-      <!-- Big, glanceable bot identity so two Electron apps are easy to tell
-           apart at a glance. Shows the Google account name when signed in, else
-           the Bot Name preference (the guest name). -->
-      <div id="botNameBig" title="This bot's name in the call — its Google account name when signed in, otherwise the Bot Name preference." style="font-family:'Google Sans',Roboto,sans-serif;font-size:26px;font-weight:700;text-align:center;margin:6px 0 12px;color:#8ab4f8;letter-spacing:0.3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">—</div>
+      <!-- Big, glanceable STABLE identity so two Electron apps are easy to tell
+           apart at a glance. Shows the app PROFILE (its always-true identity);
+           falls back to the Bot Name for the default (no-profile) instance. The
+           live in-call display name appears in the sub-line below (#282). -->
+      <div id="botNameBig" title="This instance's stable identity — its app profile (or the Bot Name for the default instance). The name it actually uses in a call appears below it once joined." style="font-family:'Google Sans',Roboto,sans-serif;font-size:26px;font-weight:700;text-align:center;margin:6px 0 2px;color:#8ab4f8;letter-spacing:0.3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">—</div>
+      <!-- Live "appearing as" line: dim "not in a call" when idle; lights up
+           green with the actual provider display name once in a call. -->
+      <div id="botCallIdentity" title="The name this bot is appearing under in the current call (Google account name in Meet, Slack name in a huddle). Only meaningful while in a call." style="font-family:'Google Sans',Roboto,sans-serif;font-size:12px;text-align:center;margin:0 0 12px;color:#9aa0a6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">not in a call</div>
 
       <!-- Both identities, always shown explicitly on the main view. The USER
            login (vibeconferencing.com, for room creation) and the BOT login

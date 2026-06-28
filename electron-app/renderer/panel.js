@@ -41,6 +41,7 @@ const ackLongPhrasesInput = document.getElementById('ackLongPhrases');
 
 let syncBaseUrl = 'http://127.0.0.1:7865';
 let currentBotName = 'Jimmy';
+let appProfileName = null; // app profile (stable heading identity, #282); null for the default instance
 let inCall = false;
 
 // ---------------------------------------------------------------------------
@@ -207,12 +208,14 @@ api.invoke('get-app-version').then((version) => {
 }).catch(() => {});
 
 api.invoke('get-app-profile').then((profile) => {
+  appProfileName = profile || null; // the stable heading identity (#282)
   const el = document.getElementById('appProfile');
   if (el && profile) {
     el.textContent = profile;
     el.title = `App profile: "${profile}" — this Electron instance runs in an isolated userData dir with its own preferences and Google login. Launched with --profile=${profile}.`;
     el.style.display = '';
   }
+  updateBotNameBig();
 }).catch(() => {});
 
 const debugOverlayToggle = document.getElementById('debugOverlayToggle');
@@ -370,6 +373,7 @@ document.getElementById('errorClose').addEventListener('click', () => {
 
 function enterCallState(meetCode) {
   inCall = true;
+  updateCallIdentity(); // light up the "appearing as" sub-line (#282)
   connectedSection.style.display = 'block';
   joinBtn.style.display = 'none';
 
@@ -385,6 +389,8 @@ function enterCallState(meetCode) {
 
 function exitCallState() {
   inCall = false;
+  callProvider = null;
+  updateCallIdentity(); // back to "not in a call" (#282)
   connectedSection.style.display = 'none';
   joinBtn.style.display = '';
   joinBtn.textContent = 'Join Call';
@@ -510,16 +516,41 @@ function applyMeetMode(mode) {
   updateBotNameBig();
 }
 
-// Big glanceable bot-name label so multiple app instances are easy to tell
-// apart. Shows the Google account name when signed in (account mode), else the
-// Bot Name preference (the guest name).
+// Big glanceable heading = the STABLE identity so multiple app instances are
+// easy to tell apart (#282): the app profile, or the Bot Name for the default
+// (no-profile) instance. It does NOT swap to the account name — the live in-call
+// name lives in the sub-line (updateCallIdentity) so the heading never lies.
 const botNameBig = document.getElementById('botNameBig');
+const botCallIdentity = document.getElementById('botCallIdentity');
 let botAccountName = null; // the bot's Google display name when signed in
+let callProvider = null;   // 'meet' | 'slack' while in a call, else null
 function updateBotNameBig() {
   if (!botNameBig) return;
-  botNameBig.textContent = (lastMeetMode === 'account' && botAccountName)
-    ? botAccountName
-    : (currentBotName || (botNameInput && botNameInput.value.trim()) || 'Bot');
+  botNameBig.textContent = appProfileName
+    || currentBotName || (botNameInput && botNameInput.value.trim()) || 'Bot';
+}
+
+// The "appearing as" sub-line: dim "not in a call" when idle; once in a call,
+// the actual provider display name (Meet = Google account name, or the guest
+// green-room name; Slack = the slackBotName override / account name).
+function updateCallIdentity() {
+  if (!botCallIdentity) return;
+  if (!inCall || !callProvider) {
+    botCallIdentity.textContent = 'not in a call';
+    botCallIdentity.style.color = '#9aa0a6';
+    return;
+  }
+  let appearing;
+  if (callProvider === 'slack') {
+    appearing = (slackBotNameInput && slackBotNameInput.value.trim()) || 'Slack account name';
+    botCallIdentity.textContent = `● in Slack as ${appearing}`;
+  } else {
+    appearing = (lastMeetMode === 'account' && botAccountName)
+      ? botAccountName
+      : (currentBotName || (botNameInput && botNameInput.value.trim()) || 'guest');
+    botCallIdentity.textContent = `● in Meet as ${appearing}`;
+  }
+  botCallIdentity.style.color = '#81c995';
 }
 
 // --- Bot Meet identity on the MAIN view (so the auto-admit login isn't buried
@@ -551,8 +582,9 @@ async function refreshBotIdentity(mode) {
     botIdentityStatus.style.color = '#fdd663';
     if (botSignInMainBtn) botSignInMainBtn.style.display = 'inline-block';
     if (botSignOutMainBtn) botSignOutMainBtn.style.display = 'none';
-    botAccountName = null; // guest → big name uses the Bot Name preference
+    botAccountName = null; // guest → in-call name uses the Bot Name preference
     updateBotNameBig();
+    updateCallIdentity();
     return;
   }
   if (botSignInMainBtn) botSignInMainBtn.style.display = 'none';
@@ -564,10 +596,11 @@ async function refreshBotIdentity(mode) {
     if (r?.signedIn && r.email) botIdentityStatus.textContent = '✓ ' + r.email;
     else if (r?.signedIn) botIdentityStatus.textContent = '✓ Signed in (couldn\'t read which account)';
     else { botIdentityStatus.textContent = '⚠ Account mode but not signed in yet'; botIdentityStatus.style.color = '#fdd663'; }
-    // Big-name label: prefer the Google display name, fall back to the email's
-    // local part, then (handled in updateBotNameBig) the Bot Name preference.
+    // In-call name: prefer the Google display name, fall back to the email's
+    // local part, then (in updateCallIdentity) the Bot Name preference.
     botAccountName = r?.name || (r?.email ? r.email.split('@')[0] : null);
     updateBotNameBig();
+    updateCallIdentity(); // refresh "in Meet as …" once the account name resolves
   } catch { botIdentityStatus.textContent = '✓ Signed in'; }
 }
 
@@ -679,8 +712,22 @@ api.invoke('get-meet-mode').then((info) => {
   if (info?.mode) applyMeetMode(info.mode);
 }).catch(() => {});
 
-// Stay in sync when main swaps partitions.
-api.on('meet-mode-changed', ({ mode }) => applyMeetMode(mode));
+// Stay in sync when sign-in/out changes identity. The event no longer carries
+// the mode (single partition now — #282); re-query the authoritative state.
+api.on('meet-mode-changed', () => {
+  api.invoke('get-meet-mode').then((info) => { if (info?.mode) applyMeetMode(info.mode); }).catch(() => {});
+});
+
+// Advanced: "Navigate Webview…" (⌘⇧L) → prompt for a URL and drive the bot's
+// embedded view there, so the operator can set up Slack/Google account state in
+// the bot's own partition (#282).
+api.on('navigate-webview-prompt', () => {
+  const url = window.prompt('Navigate the bot webview to URL (advanced — Slack/Google account setup):', 'https://');
+  if (!url) return;
+  api.invoke('navigate-webview', url).then((r) => {
+    if (r && r.ok === false) window.alert('Could not navigate: ' + (r.error || 'unknown'));
+  }).catch(() => {});
+});
 
 // --- Live caption feed: the "bot's-eye view" of exactly what captions the bot
 // is receiving, mirroring the [caption-raw]/[heard] logs. Each tick main sends
@@ -935,6 +982,7 @@ botNameInput.addEventListener('change', () => {
   api.invoke('set-config', 'botName', name);
   api.send('to-meet', { action: 'set-config', payload: { botName: name } });
   updateBotNameBig();
+  updateCallIdentity(); // guest in-call name = Bot Name; keep it current
   refreshBotIdentity(); // keep the guest "👤 Guest 'Name'" line in sync
 });
 
@@ -942,6 +990,7 @@ if (slackBotNameInput) {
   slackBotNameInput.addEventListener('change', () => {
     api.invoke('set-config', 'slackBotName', slackBotNameInput.value.trim());
     refreshSlackIdentity();
+    updateCallIdentity(); // keep "in Slack as …" current if changed mid-call
   });
 }
 
@@ -1119,13 +1168,15 @@ api.on('meet-status', (status) => {
   }
 });
 
-api.on('call-status-changed', ({ status }) => {
+api.on('call-status-changed', ({ status, provider }) => {
   // Authoritative call-state signal from the local server. Only show Leave Call
   // once we're actually in the meeting; hide it on idle/left.
   if (status === 'in-call') {
+    callProvider = provider || 'meet';
     const code = meetCodeInput.value || '';
     enterCallState(code);
   } else if (status === 'idle' || status === 'left') {
+    callProvider = null;
     exitCallState();
   }
   // 'joining' / 'waiting-to-be-admitted' stay in the pre-call UI — the join

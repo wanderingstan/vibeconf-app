@@ -780,7 +780,7 @@ const localServer = new globalThis.LocalServer({
     // entry is denied, since that 15s grace window leaves the button visible
     // while we wait for the denial page to be detected.
     if (panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('call-status-changed', { status });
+      panelView.webContents.send('call-status-changed', { status, provider: slackProviderMode ? 'slack' : 'meet' });
     }
   },
 
@@ -1064,6 +1064,7 @@ async function pushAvatarBackground(svgSource) {
 // ---------------------------------------------------------------------------
 
 let store;
+let meetAccountEmailPinned = false; // true when --meet-account-email pinned the account (#282)
 let mainWindow = null;   // single window that holds both views
 let panelView = null;     // left sidebar BrowserView
 let meetView = null;      // right Meet BrowserView
@@ -1243,26 +1244,25 @@ const testSpeechPath = path.join(EXT_DIR, 'test-speech.mp3');
 // Chrome-like user agent to avoid Google blocking
 const CHROME_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
-// Persistent session partition for the Meet BrowserView (#168). Routing
-// meetView through its own partition isolates its cookies/cache/storage
-// from the default session (which the panelView uses for
-// vibeconferencing.com auth) and sets up the multi-mode identity story:
-//   - persist:meet-guest          — no cookies, always guest pre-join
-//   - persist:meet-account-<...>  — future account-bound personas (#170)
-// Today only the guest partition exists; account-mode partitions get added
-// when the persona binding lands (#144 + #170).
-const MEET_GUEST_PARTITION = 'persist:meet-guest';
-// Default account partition (#170). Future per-persona partitions land via
-// #144's googleAccount: <email> binding — slugify email → unique partition
-// name. For now a single default account partition lets us prove the swap.
-const MEET_ACCOUNT_PARTITION = 'persist:meet-account-default';
-// Slack gets its OWN partition, independent of Meet's guest/account mode. Sharing
-// the Meet partition meant the runtime switch loaded Slack into whatever the Meet
-// mode was (e.g. persist:meet-account-default) — which could already hold a Slack
-// session for a DIFFERENT workspace, producing an endless client→auth→signin loop
-// when the joined huddle's team didn't match. A dedicated partition keeps the
-// Slack login in one consistent place.
-const SLACK_PARTITION = 'persist:slack';
+// ONE persistent session partition per app profile — for everything this
+// profile does, Meet AND Slack (#282). Collapsed from the old three-partition
+// split (meet-guest / meet-account-default / slack).
+//
+// The old design swapped the meetView between a "guest" and an "account"
+// partition at runtime to flip identity, and gave Slack its own box so the
+// swap wouldn't drag Slack's login around. That over-fit a *profile* property
+// (is this seat signed into Google?) onto a *runtime* mechanism. The honest
+// model: identity is decided by the PROFILE — a profile whose partition has
+// no Google cookies IS a guest; one with Google cookies is the signed-in bot.
+// No swap, no second partition. Because each app profile already sets its own
+// userData dir, this single name is physically isolated per profile, so
+// "one app profile = one partition = one identity" holds.
+//
+// Slack rides the same partition safely now: the wrong-workspace loop it used
+// to hit came from the *swapping* Meet partition; a single fixed partition
+// keeps slack.com cookies in one consistent place (they're domain-scoped, so
+// they never collide with google.com's).
+const SESSION_PARTITION = 'persist:session';
 
 // The idle Meet view: instead of a custom branded placeholder, show the real
 // Google Meet home page. Lets the operator see sign-in state at a glance, start
@@ -1270,9 +1270,9 @@ const SLACK_PARTITION = 'persist:slack';
 // is gated off here in preload-meet (only meeting-code URLs trigger it).
 const MEET_HOME_URL = 'https://meet.google.com/';
 
-// Track which Meet partitions have already had configureMeetSession applied
-// so swap-on-the-fly doesn't double-register handlers (which would call
-// callback() twice and crash getDisplayMedia / permission flows).
+// Track whether configureMeetSession has been applied to the partition so we
+// don't double-register handlers (which would call callback() twice and crash
+// getDisplayMedia / permission flows).
 const _configuredMeetPartitions = new Set();
 function ensureMeetSessionConfigured(partition) {
   if (_configuredMeetPartitions.has(partition)) return;
@@ -1280,9 +1280,44 @@ function ensureMeetSessionConfigured(partition) {
   _configuredMeetPartitions.add(partition);
 }
 
-// Currently active partition for the meetView. Persisted to the prefs store
-// so the chosen mode survives app restarts.
-let currentMeetPartition = MEET_GUEST_PARTITION;
+// The partition the meetView is bound to. There's only one now (#282) — kept as
+// a named binding so the createMeetView / ensureMeetSessionConfigured call sites
+// read clearly. Never reassigned; guest-vs-signed-in is decided by cookies, not
+// by swapping this.
+const currentMeetPartition = SESSION_PARTITION;
+
+// True iff the partition holds live Google master-auth cookies — i.e. the bot
+// is signed in (a "guest" profile simply has none). This replaces the old
+// "which partition are we on" check now that there's a single partition (#282).
+// Google's domain=.google.com auth cookies are the ground truth (the same set
+// the bot presents to auto-admit into invited meetings).
+async function isSignedInToGoogle(sess) {
+  try {
+    const all = await sess.cookies.get({});
+    const AUTH = ['__Secure-1PSID', 'SID', '__Secure-3PSID', 'SSID', 'HSID', 'SAPISID'];
+    return all.some((c) =>
+      /(^|\.)google\.com$/.test((c.domain || '').replace(/^\./, '')) &&
+      AUTH.includes(c.name) && c.value);
+  } catch (err) {
+    console.warn('[electron] isSignedInToGoogle check failed:', err.message);
+    return false;
+  }
+}
+
+// #282: append ?authuser=<email> to a Meet URL so Google selects the bot's
+// bound account rather than the partition default (authuser=0). Idempotent —
+// won't clobber an authuser already present. Returns the URL unchanged on any
+// parse failure or when email is falsy.
+function pinAuthUser(meetUrl, email) {
+  if (!email) return meetUrl;
+  try {
+    const u = new URL(meetUrl);
+    if (!u.searchParams.has('authuser')) u.searchParams.set('authuser', email);
+    return u.toString();
+  } catch {
+    return meetUrl;
+  }
+}
 
 // Wipe Meet-side identity caches on the given partition. Meet caches the
 // guest "Your name" preference, and once it has *any* cached identity it
@@ -1335,9 +1370,11 @@ async function clearMeetIdentityCache(partition) {
     summary.errors.push(`cookie enumeration: ${err.message}`);
   }
 
-  // 3. Service workers (unscoped — we don't register any of our own).
+  // 3. Service workers — scoped to the Meet origin. (Unscoped would also wipe
+  // Slack's SW, which now shares this partition (#282); Slack re-registers but
+  // there's no reason to disturb it when we're only resetting Meet's guest state.)
   try {
-    await sess.clearStorageData({ storages: ['serviceworkers'] });
+    await sess.clearStorageData({ origin: 'https://meet.google.com', storages: ['serviceworkers'] });
     summary.storagesCleared.push('serviceworkers');
   } catch (err) {
     summary.errors.push(`serviceworkers: ${err.message}`);
@@ -2192,6 +2229,21 @@ function uninstallClaudeIntegration() {
 app.whenReady().then(async () => {
   store = new Store(app.getPath('userData'));
 
+  // #282: an explicit --meet-account-email pins this profile's bound Google
+  // account deterministically (used by the test fleet so each gtest profile is
+  // unambiguously alice@/jimmy@). When set, it wins over (and is never clobbered
+  // by) the sign-in scrape, and survives sign-out. A bare email is the contract.
+  {
+    const cliEmail = cliArgs['meet-account-email'] || process.env.VIBECONF_MEET_ACCOUNT_EMAIL;
+    if (cliEmail && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(cliEmail))) {
+      meetAccountEmailPinned = true;
+      store.set('meetAccountEmail', String(cliEmail));
+      console.log('[electron] Pinned Meet account from CLI:', cliEmail);
+    } else if (cliEmail) {
+      console.warn('[electron] Ignoring invalid --meet-account-email:', cliEmail);
+    }
+  }
+
   // One-time migration: `shadowPhrase` was renamed to `triageAck` (it gates the
   // Apple triage-ack now, not the old two-tier shadow drafter). Carry an
   // existing value over, then drop the stale key.
@@ -2340,12 +2392,12 @@ app.whenReady().then(async () => {
   if (savedConfig.botName) sync.updateConfig({ botName: savedConfig.botName });
   if (savedConfig.syncBaseUrl) sync.updateConfig({ baseUrl: savedConfig.syncBaseUrl });
 
-  // Configure the Meet session partition (#168). All Meet-specific handlers
+  // Configure the single session partition (#282). All Meet-specific handlers
   // — CSP stripping, media-permission auto-grant, screen-share source
   // selection, Chrome UA — live on this partition rather than defaultSession.
-  // Keeps meetView's cookies/cache isolated from the panel + auth flows and
-  // sets up the multi-mode identity work that lands in #170.
-  configureMeetSession(session.fromPartition(MEET_GUEST_PARTITION));
+  // Slack shares it too; the Meet config is harmless-to-beneficial for Slack
+  // (CSP strip helps injection; Slack sets its own per-view UA on top).
+  ensureMeetSessionConfigured(SESSION_PARTITION);
 
   // Set dock icon on macOS
   if (process.platform === 'darwin' && app.dock) {
@@ -2775,60 +2827,29 @@ function setPanelPoppedOut(out) {
   return false;
 }
 
-// Swap the meetView to a different session partition (#170). Tears down
-// the existing view (which loses any in-flight Meet page — fine, this is
-// only invoked outside of a live call), creates a fresh one bound to the
-// new partition, re-layouts, and reloads the idle placeholder. Persists
-// the choice so it sticks across launches. Notifies the panel so UI can
-// reflect the new mode and update the sign-in/out button.
-function swapMeetViewPartition(newPartition, { navigateTo } = {}) {
+// Point the (single-partition) meetView at a Google URL — used by sign-in to
+// load the ServiceLogin flow, and by sign-out to reload the Meet home so the
+// panel reflects the new logged-out state. There's no partition swap anymore
+// (#282): identity lives in cookies, so this just navigates. Ensures a Meet
+// view exists first (switching back from Slack if needed) and notifies the
+// panel to refresh its sign-in/out button.
+function navigateMeetView(url) {
   if (!mainWindow || mainWindow.isDestroyed()) {
-    console.warn('[electron] swapMeetViewPartition: no mainWindow');
+    console.warn('[electron] navigateMeetView: no mainWindow');
     return;
   }
-  if (currentMeetPartition === newPartition && meetView && !meetView.webContents.isDestroyed()) {
-    if (navigateTo) meetView.webContents.loadURL(navigateTo);
-    return;
+  activateMeetProvider(); // rebuilds meetView on SESSION_PARTITION if we were on Slack
+  if (meetView && !meetView.webContents.isDestroyed()) {
+    meetView.webContents.loadURL(url || MEET_HOME_URL);
   }
-  console.log('[electron] Swapping meet partition:', currentMeetPartition, '→', newPartition);
-
-  // Tear down old view. removeBrowserView detaches it from mainWindow;
-  // dropping the reference lets GC reap the webContents shortly after.
-  if (meetView) {
-    try { mainWindow.removeBrowserView(meetView); } catch (err) {
-      console.warn('[electron] removeBrowserView failed:', err.message);
-    }
-    meetView = null;
-  }
-
-  // Make sure the new partition has handlers (CSP strip, perm grant,
-  // getDisplayMedia, Chrome UA). Idempotent per partition.
-  ensureMeetSessionConfigured(newPartition);
-
-  meetView = createMeetView(newPartition);
-  mainWindow.addBrowserView(meetView);
-  layoutViews();
-
-  if (navigateTo) {
-    meetView.webContents.loadURL(navigateTo);
-  } else {
-    meetView.webContents.loadURL(MEET_HOME_URL);
-  }
-
-  currentMeetPartition = newPartition;
-  if (store) store.set('meetPartition', newPartition);
-
   if (panelView && !panelView.webContents.isDestroyed()) {
-    panelView.webContents.send('meet-mode-changed', {
-      partition: newPartition,
-      mode: newPartition === MEET_GUEST_PARTITION ? 'guest' : 'account',
-    });
+    panelView.webContents.send('meet-mode-changed', { partition: SESSION_PARTITION });
   }
 }
 
 // --- Runtime provider switch (#264): join a Meet call OR a Slack huddle with no
 // relaunch, so --provider is just a launch shortcut. Both rebuild `meetView`
-// using the same teardown pattern as swapMeetViewPartition. ---
+// (same teardown pattern), now always on the single SESSION_PARTITION. ---
 
 // Derive + register the Slack room (code → local server + vibeconferencing.com
 // sync + ensureRoom). Shared by the launch-time slack block and activateSlackProvider.
@@ -2858,10 +2879,10 @@ function activateSlackProvider(slackUrl, { autojoin = true } = {}) {
     try { mainWindow.removeBrowserView(meetView); } catch (err) { console.warn('[electron] removeBrowserView failed:', err.message); }
     meetView = null;
   }
-  ensureMeetSessionConfigured(SLACK_PARTITION);
+  ensureMeetSessionConfigured(SESSION_PARTITION);
   const { createSlackSurface } = require('./slack-surface');
   const surface = createSlackSurface(mainWindow, {
-    partition: SLACK_PARTITION,
+    partition: SESSION_PARTITION,
     url: slackUrl,
     devtools: !!(cliArgs && cliArgs['devtools']),
     autojoin,
@@ -2873,7 +2894,7 @@ function activateSlackProvider(slackUrl, { autojoin = true } = {}) {
   layoutViews();
   setupSlackRoom(slackUrl);
 
-  console.log('[electron] Slack provider on partition:', SLACK_PARTITION);
+  console.log('[electron] Slack provider on partition:', SESSION_PARTITION);
 }
 
 // Ensure the embedded view is a Google Meet view (switching back from Slack if
@@ -2950,6 +2971,17 @@ function createMainWindow() {
             }
           },
         },
+        {
+          // Advanced (#282 follow-up): drive the bot's own webview to any URL to
+          // set up Slack/Google account state inside its partition.
+          label: 'Navigate Webview…',
+          accelerator: 'CmdOrCtrl+Shift+L',
+          click: () => {
+            if (panelView && !panelView.webContents.isDestroyed()) {
+              panelView.webContents.send('navigate-webview-prompt');
+            }
+          },
+        },
         { type: 'separator' },
         {
           label: 'Uninstall Claude Integration...',
@@ -3005,9 +3037,9 @@ function createMainWindow() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 
   // --- Call view (right) ---
-  // Restore the previously-chosen partition (guest by default). The choice
-  // persists across launches so signing in as the bot stays sticky (#170).
-  currentMeetPartition = store.get('meetPartition') || MEET_GUEST_PARTITION;
+  // Single partition (#282) — no "restore previous mode" anymore. Sign-in
+  // stickiness now comes from the cookies persisting in this one partition,
+  // not from remembering which partition to swap to.
   ensureMeetSessionConfigured(currentMeetPartition);
 
   // Provider selection (#264).
@@ -3024,9 +3056,9 @@ function createMainWindow() {
     const { createSlackSurface } = require('./slack-surface');
     const slackUrl = cliArgs['slack-url'] || 'https://app.slack.com/';
     console.log('[electron] Provider: SLACK — loading', slackUrl);
-    ensureMeetSessionConfigured(SLACK_PARTITION);
+    ensureMeetSessionConfigured(SESSION_PARTITION);
     const surface = createSlackSurface(mainWindow, {
-      partition: SLACK_PARTITION,
+      partition: SESSION_PARTITION,
       url: slackUrl,
       devtools: !!(cliArgs && cliArgs['devtools']),
       // Auto-join the channel's huddle (header button → lobby confirm). Default
@@ -3090,8 +3122,7 @@ async function loadMeetURL(meetUrl) {
   // leaves the previous Meet SPA's state alive (visible in logs as
   // duplicated [electron-meet] / [bots-in-calls] lines from two live
   // preload contexts). Tearing down the view is the only thing that
-  // matches what "quit and relaunch the app" does. Mirrors the same dance
-  // swapMeetViewPartition already uses for the partition-change case.
+  // matches what "quit and relaunch the app" does.
   if (meetView) {
     try { mainWindow.removeBrowserView(meetView); } catch (err) {
       console.warn('[electron] removeBrowserView failed:', err.message);
@@ -3099,30 +3130,43 @@ async function loadMeetURL(meetUrl) {
     meetView = null;
   }
 
-  // Now that no view is bound to it, also wipe disk-backed Meet caches so
-  // the fresh view starts truly blank. (Without the destroy above this
-  // alone wasn't enough; without this the in-memory part is fixed but
-  // localStorage / cookies could still re-seed the identity.)
+  // Is this profile signed into Google? Drives both the cache-clear decision
+  // and the authuser pin below. With a single partition (#282) we can't infer
+  // it from "which partition" anymore — read the live cookies.
+  const sess = session.fromPartition(currentMeetPartition);
+  const signedIn = await isSignedInToGoogle(sess);
+
+  // Now that no view is bound to it, also wipe disk-backed Meet caches so the
+  // fresh view starts truly blank (in-memory teardown above isn't enough;
+  // localStorage/cookies could re-seed the identity).
   //
-  // GUEST MODE ONLY. This clear nukes .google.com path="/" cookies — which in
-  // account mode ARE the Google master-auth cookies (SID/SSID/HSID/SAPISID/
-  // __Secure-1PSID, all domain=.google.com path=/, NOT path=/accounts). So
-  // running it in account mode silently signed the bot OUT of Google before
-  // every join → it joined un-authenticated and couldn't be auto-admitted to
-  // invited meetings (#250). The cache only exists to reset Meet's cached guest
-  // "Your name", which doesn't apply in account mode (name comes from Google).
-  if (currentMeetPartition === MEET_GUEST_PARTITION) {
-    await clearMeetIdentityCache(currentMeetPartition);
+  // GUEST ONLY. This clear nukes .google.com path="/" cookies — which when
+  // signed in ARE the Google master-auth cookies (SID/SSID/HSID/SAPISID/
+  // __Secure-1PSID, all domain=.google.com path=/, NOT path=/accounts). Running
+  // it while signed in silently signs the bot OUT before every join → it joins
+  // un-authenticated and can't be auto-admitted to invited meetings (#250). The
+  // cache only resets Meet's cached guest "Your name", moot when signed in.
+  if (signedIn) {
+    console.log('[electron] Signed in — skipping Meet identity-cache clear to preserve Google sign-in');
   } else {
-    console.log('[electron] Account mode — skipping Meet identity-cache clear to preserve Google sign-in');
+    await clearMeetIdentityCache(currentMeetPartition);
   }
   if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  // #282: pin the Google account. When signed in, append ?authuser=<email> so
+  // Meet uses the bot's bound account instead of whatever Google considers the
+  // partition default (authuser=0) — which could be a stray second account that
+  // crept in. The bound email comes from --meet-account-email or is captured at
+  // sign-in (get-meet-account-email). No pin when guest or when unknown.
+  const boundEmail = signedIn && store ? store.get('meetAccountEmail') : null;
+  const urlToLoad = boundEmail ? pinAuthUser(meetUrl, boundEmail) : meetUrl;
+  if (boundEmail) console.log('[electron] Pinning Meet account via authuser:', boundEmail);
 
   meetView = createMeetView(currentMeetPartition);
   mainWindow.addBrowserView(meetView);
   layoutViews();
 
-  meetView.webContents.loadURL(meetUrl);
+  meetView.webContents.loadURL(urlToLoad);
 
   // Forward preload-meet's console output to main stdout so [electron-meet]
   // and [CC] log lines show up alongside [local-server] / [electron] in the
@@ -3348,42 +3392,32 @@ function setupIPC() {
     return { loggedOut: true };
   });
 
-  // --- Meet identity mode (#170) ---
-  // Three IPCs let the panel sign the *bot* in to Google. Distinct from the
+  // --- Meet identity (#170 / #282) ---
+  // These IPCs let the panel sign the *bot* in to Google. Distinct from the
   // user's vibeconferencing.com login above — this is the Meet display
-  // identity, persisted in the meet-account partition (#168). When in
-  // account mode, the Google account's display name wins as the bot name.
+  // identity. Single partition now (#282): "guest vs signed-in" is decided by
+  // whether the partition holds Google cookies, not by which partition is active.
 
-  ipcMain.handle('get-meet-mode', () => ({
-    partition: currentMeetPartition,
-    mode: currentMeetPartition === MEET_GUEST_PARTITION ? 'guest' : 'account',
-  }));
+  ipcMain.handle('get-meet-mode', async () => {
+    const signedIn = await isSignedInToGoogle(session.fromPartition(currentMeetPartition));
+    return { partition: currentMeetPartition, mode: signedIn ? 'account' : 'guest' };
+  });
 
-  // Which Google account the bot is ACTUALLY signed in as (not just "account
-  // mode" — the real email). Surfaces the gap that hid #250: the app knew the
-  // mode but never the identity, so a silently-logged-out bot looked "signed
-  // in". Reads the account partition's live Google session via ListAccounts
-  // (cookie-authenticated; returns nothing when not signed in). Best-effort.
+  // Which Google account the bot is ACTUALLY signed in as (not just "signed in"
+  // — the real email). Surfaces the gap that hid #250: the app knew the mode but
+  // never the identity, so a silently-logged-out bot looked "signed in". Reads
+  // the single partition's live Google session (cookie-authoritative + a DOM
+  // scrape for the email). Best-effort. Also CAPTURES the email as the profile's
+  // bound account (store.meetAccountEmail) so loadMeetURL can pin authuser to it
+  // (#282) — unless an explicit --meet-account-email already pinned it.
   ipcMain.handle('get-meet-account-email', async () => {
-    if (currentMeetPartition === MEET_GUEST_PARTITION) return { signedIn: false, email: null };
-    const sess = session.fromPartition(MEET_ACCOUNT_PARTITION);
+    const sess = session.fromPartition(currentMeetPartition);
 
     // AUTHORITATIVE signed-in check: the live cookie jar. Google's master-auth
     // cookies (domain=.google.com) are the ground truth — the bot auto-admitting
     // as a member proves they're present even when ListAccounts parsing fails.
-    // (An earlier version inferred "signed in" from email-parse success, which
-    // false-negatived a genuinely-signed-in bot.)
-    let signedIn = false;
-    try {
-      const all = await sess.cookies.get({});
-      const AUTH = ['__Secure-1PSID', 'SID', '__Secure-3PSID', 'SSID', 'HSID', 'SAPISID'];
-      signedIn = all.some((c) =>
-        /(^|\.)google\.com$/.test((c.domain || '').replace(/^\./, '')) &&
-        AUTH.includes(c.name) && c.value
-      );
-    } catch (err) {
-      console.warn('[electron] get-meet-account-email cookie check failed:', err.message);
-    }
+    const signedIn = await isSignedInToGoogle(sess);
+    if (!signedIn) return { signedIn: false, email: null };
 
     // Best-effort email: read it straight from the bot's live signed-in Google
     // page (the meetView). Meet renders the account in its account-switcher
@@ -3439,35 +3473,73 @@ function setupIPC() {
       console.warn('[electron] get-meet-account-email DOM read failed:', err.message);
     }
 
+    // #282: bind this profile to the detected account so joins pin authuser to
+    // it. An explicit --meet-account-email (meetAccountEmailPinned) always wins
+    // and is never overwritten by a scrape. Otherwise capture the first real
+    // email we see and persist it.
+    if (email && store && !meetAccountEmailPinned && store.get('meetAccountEmail') !== email) {
+      store.set('meetAccountEmail', email);
+      console.log('[electron] Bound profile Meet account →', email);
+    }
+
     return { signedIn, email, name, allEmails };
   });
 
-  // Swap meetView to the account partition and navigate to Google's
-  // ServiceLogin flow with a Meet landing page. First time: user signs in,
-  // cookies land in the account partition, persist across launches. Later
-  // calls: already signed in, ServiceLogin bounces straight through to
-  // Meet's homepage.
+  // Navigate the (single) meetView to Google's ServiceLogin flow. No partition
+  // swap (#282): the bot signs in, cookies land in this profile's one partition
+  // and persist across launches. Later calls bounce straight through to Meet's
+  // home if already signed in.
   ipcMain.handle('meet-sign-in-as-bot', () => {
     const url = 'https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fmeet.google.com%2F';
-    swapMeetViewPartition(MEET_ACCOUNT_PARTITION, { navigateTo: url });
+    navigateMeetView(url);
     return { ok: true, mode: 'account' };
   });
 
-  // Sign the bot out: clear all storage on the account partition (cookies,
-  // localStorage, IndexedDB, service workers, cache) then swap back to the
-  // guest partition. Next sign-in will start fresh.
+  // Advanced/power-user: point the embedded webview at an arbitrary URL so the
+  // operator can drive Slack or Google into a needed state (accept an invite,
+  // switch workspace, finish a sign-in) inside the bot's OWN partition — the
+  // same cookies the bot uses. Navigates the CURRENT view in place (Meet or
+  // Slack), without switching providers. Triggered by the "Navigate Webview…"
+  // menu item (⌘⇧L) → panel prompt. Not exposed to the agent (operator-only).
+  ipcMain.handle('navigate-webview', (_event, rawUrl) => {
+    const url = String(rawUrl || '').trim();
+    if (!/^https?:\/\//i.test(url)) return { ok: false, error: 'URL must start with http(s)://' };
+    if (!meetView || meetView.webContents.isDestroyed()) {
+      activateMeetProvider();
+    }
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      console.log('[electron] navigate-webview →', url);
+      meetView.webContents.loadURL(url);
+      return { ok: true, url };
+    }
+    return { ok: false, error: 'no webview' };
+  });
+
+  // Sign the bot out: remove ONLY Google's auth cookies (the master-auth set,
+  // domain=.google.com) so the partition reverts to a guest — WITHOUT touching
+  // Slack's cookies, which now share this partition (#282). Then drop the bound
+  // account and reload Meet home so the panel reflects logged-out state. A
+  // deliberate, rare action — the old per-call partition swap is gone.
   ipcMain.handle('meet-sign-out-bot', async () => {
     try {
-      const accountSess = session.fromPartition(MEET_ACCOUNT_PARTITION);
-      await accountSess.clearStorageData({
-        storages: ['cookies', 'localstorage', 'indexdb', 'serviceworkers', 'cachestorage', 'shadercache', 'websql'],
-      });
-      await accountSess.clearCache();
-      console.log('[electron] Cleared account partition storage');
+      const sess = session.fromPartition(currentMeetPartition);
+      const all = await sess.cookies.get({});
+      let removed = 0;
+      for (const c of all) {
+        const d = (c.domain || '').replace(/^\./, '');
+        if (/(^|\.)google\.com$/.test(d) || d === 'google.com') {
+          const url = `https://${d}${c.path || '/'}`;
+          try { await sess.cookies.remove(url, c.name); removed++; } catch { /* best-effort */ }
+        }
+      }
+      // Meet's own origin-scoped caches too (the guest "Your name" etc.).
+      await sess.clearStorageData({ origin: 'https://meet.google.com', storages: ['localstorage', 'indexdb', 'cachestorage'] });
+      if (store && !meetAccountEmailPinned) store.delete('meetAccountEmail');
+      console.log('[electron] Signed bot out — removed', removed, 'google.com cookies (Slack login preserved)');
     } catch (err) {
       console.warn('[electron] meet-sign-out-bot clear failed:', err.message);
     }
-    swapMeetViewPartition(MEET_GUEST_PARTITION);
+    navigateMeetView(MEET_HOME_URL);
     return { ok: true, mode: 'guest' };
   });
 

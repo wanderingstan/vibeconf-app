@@ -419,6 +419,34 @@ function getChatInput() {
   return document.querySelector(MEET.chat.input);
 }
 
+// A Workspace-organized meeting backs its chat with a Google Chat SPACE, which
+// Meet renders as an embedded CROSS-ORIGIN iframe (chat.google.com/embed/space/…)
+// the top frame can't reach — so the bot can neither read nor post. Detect it so
+// we can warn instead of failing opaquely. Returns the iframe src (truthy) or
+// null. See #281 (root cause) / #288 (someday-support). Workaround: organize the
+// meeting from a personal @gmail account, which creates no space.
+function detectChatSpaceIframe() {
+  const f = document.querySelector('iframe[src*="chat.google.com"], iframe[src*="/embed/space"]');
+  return f ? (f.getAttribute('src') || 'chat.google.com space') : null;
+}
+
+// Build the right error when the chat pane wouldn't reach an input. If a Chat
+// space iframe is present, it's the (known, unreachable) Workspace-space case —
+// return a specific, actionable message + a machine-readable reason so callers
+// can warn the operator and the agent can announce it aloud in the call.
+function chatUnavailableError() {
+  if (detectChatSpaceIframe()) {
+    const e = new Error(
+      "This meeting's chat is a Google Chat space (embedded, cross-origin), so the bot can't read or post in it. " +
+      'Workaround: speak chat messages aloud, or have the organizer create the meeting from a personal @gmail account ' +
+      '(Workspace-organized meetings auto-create the space). See #281/#288.'
+    );
+    e.reason = 'chat-space-unreachable';
+    return e;
+  }
+  return new Error('Could not open the chat pane');
+}
+
 function isChatPaneOpen() {
   return !!getChatInput();
 }
@@ -644,7 +672,7 @@ async function readChatFlow() {
   chatPaneBusy = true; // pause the people-pane self-heal while chat is open
   try {
     const opened = await openChatPane();
-    if (!opened) throw new Error('Could not open the chat pane');
+    if (!opened) throw chatUnavailableError();
     await delay(300); // let messages render
     const messages = scrapeChatMessages();
     await restorePeoplePane(); // close chat, restore speech tracking
@@ -658,9 +686,9 @@ async function sendChatFlow(text) {
   chatPaneBusy = true; // pause the people-pane self-heal while chat is open
   try {
   const opened = await openChatPane();
-  if (!opened) throw new Error('Could not open the chat pane');
+  if (!opened) throw chatUnavailableError();
   const input = getChatInput();
-  if (!input) throw new Error('Could not find the chat input');
+  if (!input) throw chatUnavailableError();
   await typeIntoInput(input, text);
   await delay(100);
 
@@ -702,7 +730,7 @@ async function sendChatFlow(text) {
 ipcRenderer.on('read-chat', async (_event, { requestId }) => {
   let result;
   try { result = { ok: true, messages: await meetProvider.readChat() }; }
-  catch (err) { result = { ok: false, error: err.message }; }
+  catch (err) { result = { ok: false, error: err.message, reason: err.reason }; }
   meetProvider.emit(CALL_EVENTS.chatResult, { requestId, ...result });
 });
 
@@ -711,7 +739,7 @@ ipcRenderer.on('send-chat', async (_event, { requestId, text }) => {
   try {
     const sent = await meetProvider.sendChat(text);
     result = sent ? { ok: true } : { ok: false, error: 'Message may not have sent (input not cleared)' };
-  } catch (err) { result = { ok: false, error: err.message }; }
+  } catch (err) { result = { ok: false, error: err.message, reason: err.reason }; }
   meetProvider.emit(CALL_EVENTS.chatResult, { requestId, ...result });
 });
 

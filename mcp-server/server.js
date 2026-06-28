@@ -1108,6 +1108,9 @@ server.tool(
       body: JSON.stringify({ action: "read" }),
     });
     const data = await resp.json();
+    if (data?.reason === 'chat-space-unreachable') {
+      return { content: [{ type: "text", text: `⚠️ Can't read chat: this meeting's chat is a Google Chat space the bot can't access. ANNOUNCE THIS ALOUD to the participants — e.g. "Heads up: I can't see the chat in this meeting, so please say anything important out loud instead." (To fix for future calls, have the organizer create the meeting from a personal @gmail account.)` }] };
+    }
     if (!data?.success) {
       return { content: [{ type: "text", text: `Error reading chat: ${data?.error || "unknown"}` }] };
     }
@@ -1137,6 +1140,9 @@ server.tool(
     const data = await resp.json();
     if (data?.success) {
       return { content: [{ type: "text", text: `Posted to chat: "${text}"` }] };
+    }
+    if (data?.reason === 'chat-space-unreachable') {
+      return { content: [{ type: "text", text: `⚠️ Couldn't post to chat: this meeting's chat is a Google Chat space the bot can't access. SAY IT ALOUD instead (the participants can't get it from you in text here). If it was a link/snippet, read or describe it verbally. (To fix for future calls, have the organizer create the meeting from a personal @gmail account.)` }] };
     }
     return { content: [{ type: "text", text: `Error sending chat: ${data?.error || "unknown"}` }] };
   }

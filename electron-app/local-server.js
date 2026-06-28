@@ -2130,7 +2130,7 @@ class LocalServer {
           }
           const result = await this.onSendChat(String(parsed.text));
           res.writeHead(result?.ok ? 200 : 500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ success: !!result?.ok, error: result?.error }));
+          res.end(JSON.stringify({ success: !!result?.ok, error: result?.error, reason: result?.reason }));
         } else {
           // default: read
           const result = await this.onReadChat();
@@ -2142,7 +2142,7 @@ class LocalServer {
           // a successful read means the messages were seen.
           if (result?.ok) this.setChatUnread(false);
           res.writeHead(result?.ok ? 200 : 500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ success: !!result?.ok, messages: result?.messages || [], error: result?.error }));
+          res.end(JSON.stringify({ success: !!result?.ok, messages: result?.messages || [], error: result?.error, reason: result?.reason }));
         }
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json' });

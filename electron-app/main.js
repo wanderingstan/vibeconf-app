@@ -107,6 +107,25 @@ function getActiveBotName() {
 // with a unique requestId and resolves with the matching 'chat-result' reply,
 // or a timeout error. Handled by preload-meet.js (Meet) / preload-slack-huddle.js
 // (Slack), routed to the right surface via callCmdWC.
+// Once-per-call guard so a Chat-space warning doesn't spam the error list /
+// overlay every time the agent retries chat. Reset on each new join (loadMeetURL).
+let chatSpaceWarned = false;
+
+// Inspect a chat IPC result and, if it's the known unreachable-Chat-space case,
+// surface it to the operator: a panel/overlay error (once) and a log line. The
+// result is returned unchanged so the agent still gets the actionable message
+// (and can announce it aloud in the call).
+function noteChatResult(result) {
+  if (result && result.reason === 'chat-space-unreachable' && !chatSpaceWarned) {
+    chatSpaceWarned = true;
+    const msg = "Chat unavailable: this meeting's chat is a Google Chat space the bot can't reach. " +
+      'Speak chat aloud, or organize the meeting from a personal @gmail account.';
+    console.warn('[electron] [chat-space]', msg);
+    try { localServer.addError(msg); } catch { /* best-effort */ }
+  }
+  return result;
+}
+
 function chatRequest(channel, payload) {
   return new Promise((resolve) => {
     const wc = callCmdWC(channel);
@@ -1000,8 +1019,8 @@ const localServer = new globalThis.LocalServer({
     }
   },
 
-  onReadChat: async () => chatRequest(CALL_COMMANDS.readChat, {}),
-  onSendChat: async (text) => chatRequest(CALL_COMMANDS.sendChat, { text }),
+  onReadChat: async () => noteChatResult(await chatRequest(CALL_COMMANDS.readChat, {})),
+  onSendChat: async (text) => noteChatResult(await chatRequest(CALL_COMMANDS.sendChat, { text })),
   getWebsiteUrl: () => getWebsiteUrl(),
 
   // Preference plumbing for the agent-visible whitelist (preferences-schema.js).
@@ -3163,6 +3182,8 @@ function showIdle() {
 
 async function loadMeetURL(meetUrl) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  chatSpaceWarned = false; // fresh call — allow one Chat-space warning again
 
   // Record what we're pointing at so the panel's URL field reflects it (covers
   // --meet-url CLI launches and any programmatic join), and notify the panel now.

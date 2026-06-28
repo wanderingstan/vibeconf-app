@@ -207,12 +207,16 @@ api.invoke('get-app-version').then((version) => {
   if (el && version) el.textContent = `v${version}`;
 }).catch(() => {});
 
-api.invoke('get-app-profile').then((profile) => {
+Promise.all([
+  api.invoke('get-app-profile'),
+  api.invoke('get-local-port').catch(() => null),
+]).then(([profile, port]) => {
   appProfileName = profile || null; // the stable heading identity (#282)
   const el = document.getElementById('appProfile');
   if (el && profile) {
     el.textContent = profile;
-    el.title = `App profile: "${profile}" — this Electron instance runs in an isolated userData dir with its own preferences and Google login. Launched with --profile=${profile}.`;
+    el.title = `App profile: "${profile}" — isolated userData dir with its own preferences and Google login. Launched with --profile=${profile}.`
+      + (port ? ` · local-server port ${port}` : '');
     el.style.display = '';
   }
   updateBotNameBig();

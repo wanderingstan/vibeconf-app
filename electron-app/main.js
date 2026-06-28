@@ -3313,6 +3313,7 @@ function setupIPC() {
   ipcMain.handle('get-app-version', () => app.getVersion());
 
   ipcMain.handle('get-app-profile', () => appProfile || null);
+  ipcMain.handle('get-local-port', () => localServer.port);
 
   // --- Profile switcher (#282): Chrome-style list + launch/focus ------------
   // A profile = a sibling userData dir under <base>/profiles, each its own

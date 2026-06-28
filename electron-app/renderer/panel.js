@@ -27,7 +27,6 @@ const meetModeIndicator = document.getElementById('meetModeIndicator');
 
 // Settings
 const botNameInput = document.getElementById('botName');
-const slackBotNameInput = document.getElementById('slackBotName');
 const websiteUrlInput = document.getElementById('websiteUrl');
 const ttsApiKeyInput = document.getElementById('ttsApiKey');
 const ttsVoiceIdInput = document.getElementById('ttsVoiceId');
@@ -363,9 +362,8 @@ if (debugOverlayToggle) {
 // Load saved config
 // ---------------------------------------------------------------------------
 
-api.invoke('get-config', ['botName', 'slackBotName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'claudeWorkDir', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
+api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'claudeWorkDir', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
   if (result?.botName) { botNameInput.value = result.botName; currentBotName = result.botName; }
-  if (result?.slackBotName && slackBotNameInput) slackBotNameInput.value = result.slackBotName;
   rememberedMeetName = result?.lastMeetName || null;   // #282 remembered names
   rememberedSlackName = result?.lastSlackName || null;
   refreshSlackIdentity();
@@ -669,7 +667,7 @@ function updateBotNameBig() {
 
 // The "appearing as" sub-line: dim "not in a call" when idle; once in a call,
 // the actual provider display name (Meet = Google account name, or the guest
-// green-room name; Slack = the slackBotName override / account name).
+// green-room name; Slack = the account name, remembered or placeholder — #283).
 function updateCallIdentity() {
   if (!botCallIdentity) return;
   if (!inCall || !callProvider) {
@@ -685,7 +683,9 @@ function updateCallIdentity() {
   }
   let appearing;
   if (callProvider === 'slack') {
-    appearing = (slackBotNameInput && slackBotNameInput.value.trim()) || 'Slack account name';
+    // We don't read the live Slack account name yet (#283); show the remembered
+    // one if we have it, else a neutral placeholder.
+    appearing = rememberedSlackName || 'your Slack account name';
     botCallIdentity.textContent = `● in Slack as ${appearing}`;
   } else {
     appearing = (lastMeetMode === 'account' && botAccountName)
@@ -749,26 +749,19 @@ async function refreshBotIdentity(mode) {
 }
 
 // --- Bot Slack identity on the MAIN view (parity with Bot Meet identity). In a
-// huddle the bot's name is the signed-in Slack ACCOUNT name; the slackBotName
-// preference is an optional display override. We can't read the live Slack
-// account name from here, so show the override when set, else a note — with a
-// Change link straight to the Settings field, mirroring the guest-Meet row. ---
+// huddle the bot joins as its signed-in Slack ACCOUNT name. We don't read that
+// live name from the huddle DOM yet (#283), so this is informational; once a
+// remembered Slack name exists it's shown. No override preference anymore. ---
 const botSlackIdentityStatus = document.getElementById('botSlackIdentityStatus');
 function refreshSlackIdentity() {
   if (!botSlackIdentityStatus) return;
-  const name = (slackBotNameInput && slackBotNameInput.value.trim()) || '';
-  botSlackIdentityStatus.textContent = name ? `💬 ‘${name}’ ` : '💬 Uses Slack account name ';
-  botSlackIdentityStatus.style.color = name ? '#81c995' : '#9aa0a6';
-  const change = document.createElement('a');
-  change.textContent = 'Change';
-  change.href = '#';
-  change.style.cssText = 'color:#8ab4f8;text-decoration:underline;font-size:0.9em';
-  change.onclick = (e) => {
-    e.preventDefault();
-    showScreen(settingsScreen);
-    if (slackBotNameInput) { slackBotNameInput.focus(); slackBotNameInput.select(); }
-  };
-  botSlackIdentityStatus.appendChild(change);
+  if (rememberedSlackName) {
+    botSlackIdentityStatus.textContent = `💬 ${rememberedSlackName}`;
+    botSlackIdentityStatus.style.color = '#81c995';
+  } else {
+    botSlackIdentityStatus.textContent = '💬 Uses your Slack account name';
+    botSlackIdentityStatus.style.color = '#9aa0a6';
+  }
 }
 refreshSlackIdentity();
 
@@ -1132,14 +1125,6 @@ botNameInput.addEventListener('change', () => {
   updateCallIdentity(); // guest in-call name = Bot Name; keep it current
   refreshBotIdentity(); // keep the guest "👤 Guest 'Name'" line in sync
 });
-
-if (slackBotNameInput) {
-  slackBotNameInput.addEventListener('change', () => {
-    api.invoke('set-config', 'slackBotName', slackBotNameInput.value.trim());
-    refreshSlackIdentity();
-    updateCallIdentity(); // keep "in Slack as …" current if changed mid-call
-  });
-}
 
 websiteUrlInput.addEventListener('change', () => {
   const url = websiteUrlInput.value.trim().replace(/\/+$/, '');

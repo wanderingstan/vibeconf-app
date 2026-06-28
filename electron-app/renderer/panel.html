@@ -59,7 +59,7 @@
             <button id="botSignOutMainBtn" class="auth-action-btn" style="display:none">Use guest</button>
           </span>
         </div>
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px" title="The bot's Slack identity for huddles — the Slack account it's signed into. Set a display-name override in Settings (Bot Name · Slack), or leave it blank to use the signed-in Slack account name.">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px" title="The bot's Slack identity for huddles — the signed-in Slack account's display name. (Reading the live name from the huddle is tracked in #283.)">
           <span style="line-height:1.5"><strong>Bot Slack identity:</strong> <span id="botSlackIdentityStatus">—</span></span>
         </div>
         <!-- Bot vitals: read-only capability indicators so the bot's current
@@ -110,14 +110,9 @@
       <div class="field">
         <label for="botName">Bot Name (Meet)</label>
         <input type="text" id="botName" value="Jimmy" />
-        <div class="helper-text">The bot's name on <strong>Google Meet</strong> — used when it joins as a guest. When signed in, it uses its Google account name instead.</div>
+        <div class="helper-text">The bot's name on <strong>Google Meet</strong> — used when it joins as a guest. When signed in, it uses its Google account name instead. On Slack, it joins as its signed-in Slack account name.</div>
       </div>
 
-      <div class="field">
-        <label for="slackBotName">Bot Name (Slack)</label>
-        <input type="text" id="slackBotName" value="" placeholder="(uses the Slack account name)" />
-        <div class="helper-text">The bot's name on <strong>Slack</strong> — it joins as its signed-in Slack account, so set this to match that account's display name. Used so the bot recognizes when it's addressed in a huddle.</div>
-      </div>
       <div class="field">
         <label for="websiteUrl">Website URL</label>
         <input type="text" id="websiteUrl" placeholder="https://vibeconferencing.com" />

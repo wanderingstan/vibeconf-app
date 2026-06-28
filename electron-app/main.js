@@ -96,11 +96,10 @@ function sendExtMsg(message) {
 
 // The bot's name on the ACTIVE platform, for addressivity (recognizing when the
 // bot is addressed) in the conversation loop. On Slack the bot joins as its
-// signed-in Slack ACCOUNT, so use the separate slackBotName; on Meet it's the
-// Meet botName (guest name / Google account name). Distinct because the bot's
-// display name commonly differs between the two.
+// signed-in Slack ACCOUNT name — which we don't yet read from the DOM (#283) —
+// so fall back to the Meet botName until that lands. On Meet it's the botName
+// (guest name / Google account name).
 function getActiveBotName() {
-  if (slackProviderMode) return store?.get('slackBotName') || store?.get('botName') || '';
   return store?.get('botName') || '';
 }
 
@@ -763,13 +762,8 @@ const localServer = new globalThis.LocalServer({
   },
 
   onCallStatusChange: (status) => {
-    // #282: remember the name used in a Slack huddle (the slackBotName override,
-    // else the bot name) so the profile selector + idle sub-line can show it.
-    // The live Slack account name isn't readable, so this is our best signal.
-    if (status === 'in-call' && slackProviderMode && store) {
-      const slackName = store.get('slackBotName') || store.get('botName') || null;
-      if (slackName && store.get('lastSlackName') !== slackName) store.set('lastSlackName', slackName);
-    }
+    // (lastSlackName is populated once we read the real Slack display name from
+    // the huddle DOM — #283. We don't fake it from a preference anymore.)
     // #189: a fresh call gets a fresh auto-posted whiteboard link.
     if (status !== 'in-call') whiteboardLinkPostedForCall = false;
     // Don't let a shadow draft from a finished call pair with the next call's
@@ -1808,9 +1802,9 @@ let claudeTerminalWindowIds = [];
 function launchClaudeTerminal(meetCode) {
   const { execFile } = require('child_process');
   const claudeDir = store.get('claudeWorkDir') || '/tmp';
-  // Use the ACTIVE provider's name: in Slack mode getActiveBotName() returns the
-  // slackBotName override (else botName); for Meet it's botName. Keeps the
-  // spawned /join-call <code> <name> + MCP env aligned with the call we're in.
+  // Use the bot's name (getActiveBotName) so the spawned /join-call <code> <name>
+  // + MCP env align with the call we're in. (Slack's real account name is read
+  // separately — #283; until then this is the Meet/Bot Name.)
   const botName = getActiveBotName() || store.get('botName') || 'Jimmy';
 
   // Profile instances (second bot, e.g. Samantha): the auto-launch runs `claude`

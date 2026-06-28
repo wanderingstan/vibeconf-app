@@ -37,7 +37,7 @@ A sample fixture (a real 90s slice) lives at `tests/fixtures/`.
 
 ## 3. End-to-end — spawn real bots, drive over HTTP
 
-These spawn isolated, dedicated **profile** instances (`testN` / `slacktestN`) so runs never touch your real Jimmy/Samantha. The `:ci` variants spawn → run → reap automatically (exit code gates).
+These spawn isolated, dedicated **profile** instances (`test-meet-guest-*` / `test-meet-google-*` / `test-slack-*`) so runs never touch your real Jimmy/Samantha. The `:ci` variants spawn → run → reap automatically (exit code gates). See **[testing-profiles.md](testing-profiles.md)** for the profile/account/port map and fresh-machine setup.
 
 ### The main suites
 
@@ -73,7 +73,7 @@ Then drive with `pnpm test:meet --bots Jimmy:7901,Samantha:7902` (or the printed
 ## Prerequisites
 
 - **Meet tests:** none — the default test meet (`paz-sqoa-npe`) is open to guests, so logged-out profiles join unattended.
-- **Slack tests:** Slack has no guest path, so each `slacktestN` profile must be **signed into a Slack account once** (manual, persists). After that, `test:slack:ci` runs unattended. Both accounts must be in the test workspace/channel.
+- **Slack tests:** Slack has no guest path, so each `test-slack-N` profile must be **signed into a Slack account once** (`scripts/setup-test-profiles.sh --slack`; persists). After that, `test:slack:ci` runs unattended. Both accounts must be in the test workspace/channel.
 - **Detection test:** macOS **Automation** permission for the app to read browser tabs.
 - **Share-verify vision:** the `claude` CLI on `PATH` and logged in (uses your subscription) — or `ANTHROPIC_API_KEY` for the API fallback. Without either it captures the screenshot for a manual look.
 - **Replay tuning:** a fixture (`replay:extract` from a real call log; needs `logRawCaptions` ON during that call).

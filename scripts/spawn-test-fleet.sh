@@ -4,7 +4,8 @@
 # DEDICATED, ISOLATED test profile so runs don't pollute — or get polluted by —
 # the real Jimmy/Samantha environments.
 #
-#   profile   = test1, test2, …   (isolated userData: …/profiles/testN)
+#   profile   = test-meet-guest-1, …  (isolated userData: …/profiles/<name>;
+#               class prefix is test-meet-guest / test-meet-google / test-slack)
 #   port      = 7901, 7902, …     (distinct range from real bots 7865/7866)
 #   bot-name  = Jimmy, Samantha, Cosmo, …  (Meet display name; the harness keys
 #               scenarios on this — profile is just the sandbox, name is identity)
@@ -75,31 +76,32 @@ done
 if (( N < 1 || N > 4 )); then echo "count must be 1–4"; exit 1; fi
 
 # Each identity gets its OWN profile namespace so they don't clobber each other
-# and `--kill` reaps the right ones:
-#   guest Meet (default)        = test1..        (logged OUT — tests the guest join path)
-#   Google-signed-in Meet       = gtest1..       (--google; signed INTO a bot Google account
-#                                                 ONCE via Settings → "Sign in to Google as bot";
-#                                                 needed for invite-only / Workspace meets)
-#   Slack                       = slacktest1..   (--slack; signed into a Slack account once)
-# Keeping `test*` guest-only means we KEEP testing the non-Google guest path even
-# after adding signed-in profiles for the Workspace/history-on target.
-if   (( SLACK ));  then PROFILE_BASE="slacktest"
-elif (( GOOGLE )); then PROFILE_BASE="gtest"
-else                   PROFILE_BASE="test"
+# and `--kill` reaps the right ones. The names share a `test-` prefix so all test
+# profiles sort together and guest-vs-google is obvious (#282):
+#   guest Meet (default)    = test-meet-guest-1..   (logged OUT — tests the guest join path)
+#   Google-signed-in Meet   = test-meet-google-1..  (--google; signed INTO a bot Google account
+#                                                    ONCE via Settings → "Sign in as bot";
+#                                                    needed for invite-only / Workspace meets)
+#   Slack                   = test-slack-1..        (--slack; signed into a Slack account once)
+# Keeping the guest class login-free means we KEEP testing the non-Google guest
+# path even after adding signed-in profiles for the Workspace/history-on target.
+if   (( SLACK ));  then PROFILE_BASE="test-slack"
+elif (( GOOGLE )); then PROFILE_BASE="test-meet-google"
+else                   PROFILE_BASE="test-meet-guest"
 fi
 
-# For --google, name the bots to MATCH the Google accounts signed into gtest1/
-# gtest2 (gtest1 = alice@spiritprotocol.io, gtest2 = jimmy@spiritprotocol.io), so
-# the fleet labels aren't confusing. Update these if you sign different accounts
-# into those profiles.
+# For --google, name the bots to MATCH the Google accounts signed into the
+# google profiles (test-meet-google-1 = alice@spiritprotocol.io,
+# test-meet-google-2 = jimmy@spiritprotocol.io), so the fleet labels aren't
+# confusing. Update these if you sign different accounts into those profiles.
 (( GOOGLE )) && NAMES=(Alice Jimmy Cosmo Dizzy)
 
 # For --google, deterministically PIN each profile's Google account (#282) so
 # joins use authuser=<email> and can't fall back to a stray default account. The
 # email is <lowercase-bot-name>@$GTEST_EMAIL_DOMAIN — matching the accounts you
-# sign gtest1/gtest2 into. Override the domain via env if your bot accounts live
-# elsewhere. (Pinning only SELECTS the account; you still sign each profile in
-# once — the new single partition starts fresh.)
+# sign the google profiles into. Override the domain via env if your bot accounts
+# live elsewhere. (Pinning only SELECTS the account; you still sign each profile
+# in once — the single partition starts fresh.)
 GTEST_EMAIL_DOMAIN="${GTEST_EMAIL_DOMAIN:-spiritprotocol.io}"
 
 # --kill: stop instances on the test ports (works regardless of how they launched).
@@ -123,7 +125,7 @@ if (( KILL )); then
   if (( left )); then echo "  • settling 3s for call hangup…"; sleep 3; fi
   for i in $(seq 1 $N); do
     port=$((BASE_PORT + i - 1))
-    profile="${PROFILE_BASE}$i"
+    profile="${PROFILE_BASE}-$i"
     # -sTCP:LISTEN: match ONLY the bot's listening socket, not clients holding an
     # open connection to it. Without this, an in-process driver (node:test's
     # call-parity matrix runs --kill from an after() hook while still holding
@@ -136,20 +138,21 @@ if (( KILL )); then
     # Port-only kill misses GUI Electron mains that aren't currently holding the
     # port — those linger as ghost participants and pile up across repeated runs,
     # causing room contention (the false chat/caption failures). Also reap by the
-    # isolated --profile flag so every testN instance dies regardless of port
+    # isolated --profile flag so every test instance dies regardless of port
     # state. The pattern omits the leading dashes (BSD pkill treats a pattern
-    # starting with "-" as an option); "profile=testN" still uniquely matches the
-    # full argv and never matches the real bots (default/bot2 on 7865/7866).
+    # starting with "-" as an option); "profile=test-meet-guest-1" still uniquely
+    # matches the full argv and never matches the real bots (default on 7865/66).
     if pkill -f "profile=$profile" 2>/dev/null; then echo "  • reaped lingering profile=$profile process(es)"; fi
   done
   echo "✓ done"
   exit 0
 fi
 
-# Slack launch args: --provider=slack + the channel to auto-join. Each slacktestN
+# Slack launch args: --provider=slack + the channel to auto-join. Each test-slack-N
 # profile must be signed into a (distinct) Slack account ONCE first — there's no
-# guest path. Do that one-time login manually, e.g.:
-#   cd electron-app && pnpm dev -- --provider=slack --profile=slacktest1 \
+# guest path. Do that one-time login via scripts/setup-test-profiles.sh --slack,
+# or manually, e.g.:
+#   cd electron-app && pnpm dev -- --provider=slack --profile=test-slack-1 \
 #     --slack-url=https://app.slack.com/client/<team>/<channel>   # then log in, close
 EXTRA_ARGS=""
 if (( SLACK )); then
@@ -229,7 +232,7 @@ fi
 
 BOTS_ARG=""
 for i in $(seq 1 $N); do
-  profile="${PROFILE_BASE}$i"
+  profile="${PROFILE_BASE}-$i"
   port=$((BASE_PORT + i - 1))
   name="${NAMES[$i]}${RUN_TAG:+-$RUN_TAG}"
   # #282: pin this profile's Google account for --google runs (base name, not the

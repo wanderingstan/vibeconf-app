@@ -46,8 +46,11 @@ else
 fi
 
 GTEST_EMAIL_DOMAIN="${GTEST_EMAIL_DOMAIN:-spiritprotocol.io}"
-SLACKTEST1_ACCOUNT="${SLACKTEST1_ACCOUNT:-<your Slack account 1>}"
-SLACKTEST2_ACCOUNT="${SLACKTEST2_ACCOUNT:-<your Slack account 2>}"
+# Slack has no account pin (unlike Google's --meet-account-email) — you just log
+# in interactively and pick the workspace. These are optional human-readable
+# LABELS for the printed checklist, nothing the app reads.
+SLACKTEST1_ACCOUNT="${SLACKTEST1_ACCOUNT:-your Slack test account (pick the workspace)}"
+SLACKTEST2_ACCOUNT="${SLACKTEST2_ACCOUNT:-a second Slack test account (pick the workspace)}"
 SLACK_SETUP_URL="${SLACK_SETUP_URL:-https://app.slack.com/}"
 
 # profile : port : account  (ports match the fleet's BASE_PORT range so a

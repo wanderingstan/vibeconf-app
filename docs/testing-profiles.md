@@ -19,9 +19,13 @@ signed-in is obvious at a glance:
 |---|---|---|---|---|
 | **Guest Meet** | `test-meet-guest-1..N` | none (logged out) | — | **100% automatic** — the fleet creates + reaps them |
 | **Google Meet** | `test-meet-google-1..N` | Google, once | `1`=alice@spiritprotocol.io, `2`=jimmy@spiritprotocol.io | documented + `setup-test-profiles.sh`; pinned via `--meet-account-email` |
-| **Slack** | `test-slack-1..N` | Slack, once | `1`=`<slack account 1>`, `2`=`<slack account 2>` | documented + `setup-test-profiles.sh` |
+| **Slack** | `test-slack-1..N` | Slack, once | whatever you log into (no pin) | documented + `setup-test-profiles.sh` |
 
-> Fill in the Slack accounts above for your environment.
+> **Google vs Slack accounts differ.** Google has a real account pin
+> (`--meet-account-email` → `authuser=`), so the email *matters* and is set for
+> you. **Slack has no pin** — you just open the profile, log into Slack, and pick
+> the workspace; the profile uses whatever login lands in its partition. There's
+> no account value to configure, only to optionally note for your own records.
 
 The guest class is intentionally login-free so we keep exercising the
 non-Google guest join path (the most open, unattended case) even after adding

@@ -28,10 +28,20 @@
       </div>
       <div class="error-bar" id="errorBar" style="display:none"><span id="errorText"></span><button class="error-close" id="errorClose">&times;</button></div>
 
-      <!-- Big, glanceable bot identity so two Electron apps are easy to tell
-           apart at a glance. Shows the Google account name when signed in, else
-           the Bot Name preference (the guest name). -->
-      <div id="botNameBig" title="This bot's name in the call — its Google account name when signed in, otherwise the Bot Name preference." style="font-family:'Google Sans',Roboto,sans-serif;font-size:26px;font-weight:700;text-align:center;margin:6px 0 12px;color:#8ab4f8;letter-spacing:0.3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">—</div>
+      <!-- Stable identity heading + profile switcher. The "⇄" button beside the
+           name opens the switcher dropdown (anchored right under the heading);
+           the dropdown lists every profile incl. the current one (#282). -->
+      <div style="position:relative">
+        <div style="display:flex;align-items:center;justify-content:center;gap:6px;margin:6px 0 2px">
+          <div id="botNameBig" title="This instance's stable identity — its app profile, or 'Default' for the default instance. The name it actually uses in a call appears below it once joined." style="font-family:'Google Sans',Roboto,sans-serif;font-size:26px;font-weight:700;text-align:center;color:#8ab4f8;letter-spacing:0.3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">—</div>
+          <button id="profileMenuBtn" title="Switch profile — each profile is a separate bot identity (its own Google/Slack login), like Chrome profiles." style="width:auto;margin:0;flex:0 0 auto;background:none;border:none;color:#8ab4f8;cursor:pointer;font-size:18px;line-height:1;padding:2px 4px;border-radius:6px">⇄</button>
+        </div>
+        <!-- Live "appearing as" line: dim "not in a call" when idle; lights up
+             green with the actual provider display name once in a call. -->
+        <div id="botCallIdentity" title="The name this bot is appearing under in the current call (Google account name in Meet, Slack name in a huddle). Only meaningful while in a call." style="font-family:'Google Sans',Roboto,sans-serif;font-size:12px;text-align:center;margin:0 0 12px;color:#9aa0a6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">not in a call</div>
+        <!-- Profile switcher dropdown (#282). Populated on open from list-profiles. -->
+        <div id="profileMenu" style="display:none;position:absolute;z-index:50;top:100%;left:0;right:0;background:#2a2d31;border:1px solid #5f6368;border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,0.5);padding:6px;font-size:12px;max-height:60vh;overflow:auto"></div>
+      </div>
 
       <!-- Both identities, always shown explicitly on the main view. The USER
            login (vibeconferencing.com, for room creation) and the BOT login
@@ -52,7 +62,7 @@
             <button id="botSignOutMainBtn" class="auth-action-btn" style="display:none">Use guest</button>
           </span>
         </div>
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px" title="The bot's Slack identity for huddles — the Slack account it's signed into. Set a display-name override in Settings (Bot Name · Slack), or leave it blank to use the signed-in Slack account name.">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px" title="The bot's Slack identity for huddles — the signed-in Slack account's display name. (Reading the live name from the huddle is tracked in #283.)">
           <span style="line-height:1.5"><strong>Bot Slack identity:</strong> <span id="botSlackIdentityStatus">—</span></span>
         </div>
         <!-- Bot vitals: read-only capability indicators so the bot's current
@@ -103,14 +113,9 @@
       <div class="field">
         <label for="botName">Bot Name (Meet)</label>
         <input type="text" id="botName" value="Jimmy" />
-        <div class="helper-text">The bot's name on <strong>Google Meet</strong> — used when it joins as a guest. When signed in, it uses its Google account name instead.</div>
+        <div class="helper-text">The bot's name on <strong>Google Meet</strong> — used when it joins as a guest. When signed in, it uses its Google account name instead. On Slack, it joins as its signed-in Slack account name.</div>
       </div>
 
-      <div class="field">
-        <label for="slackBotName">Bot Name (Slack)</label>
-        <input type="text" id="slackBotName" value="" placeholder="(uses the Slack account name)" />
-        <div class="helper-text">The bot's name on <strong>Slack</strong> — it joins as its signed-in Slack account, so set this to match that account's display name. Used so the bot recognizes when it's addressed in a huddle.</div>
-      </div>
       <div class="field">
         <label for="websiteUrl">Website URL</label>
         <input type="text" id="websiteUrl" placeholder="https://vibeconferencing.com" />
@@ -140,6 +145,18 @@
         <div id="meetAccountEmail" class="account-email" style="display:none"></div>
         <button id="meetSignInBtn">Sign in to Google as bot</button>
         <button id="meetSignOutBtn" style="display:none">Sign out (use as guest)</button>
+      </div>
+
+      <div class="section">
+        <h2>Bot Slack Identity</h2>
+        <p class="helper-text" style="margin:0 0 8px">
+          For Slack huddles the bot joins as its signed-in <strong>Slack account</strong>
+          (there's no guest path). Sign in once here — the login persists across
+          launches in this profile. This opens Slack in the bot's view; log in and
+          pick the workspace, then come back.
+        </p>
+        <button id="slackSignInBtn">Sign into Slack</button>
+        <button id="slackSignOutBtn">Sign out of Slack</button>
       </div>
 
       <div class="section">

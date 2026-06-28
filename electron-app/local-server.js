@@ -59,7 +59,7 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, onInspectDom, onPlayAudio, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref } = {}) {
+  constructor({ port, appVersion, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, onInspectDom, onPlayAudio, onFocusRequest, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.appVersion = appVersion || null;
     this.onBotSpeech = onBotSpeech || (() => {});
@@ -72,6 +72,7 @@ class LocalServer {
     this.onLoadUrl = onLoadUrl || (() => {});
     this.onScrollShare = onScrollShare || (async () => ({ ok: false, error: 'not implemented' }));
     this.onPlayAudio = onPlayAudio || (() => {});
+    this.onFocusRequest = onFocusRequest || (() => {}); // raise this instance's window (profile switcher)
     this.onInspectDom = onInspectDom || (async () => ({ ok: false, error: 'not implemented' }));
     this.onBotStateChange = onBotStateChange || (() => {}); // 'idle' | 'listening' | 'thinking' | 'speaking' | 'yielding'
     this.onModeChange = onModeChange || (() => {});        // 'active' | 'passive' | 'silent'
@@ -153,6 +154,8 @@ class LocalServer {
 
     // Room state (single room — the active call)
     this.roomId = null;
+    this.currentUrl = null;      // the meet/slack URL currently loaded (set by loadMeetURL),
+                                 // surfaced to the panel so the URL field reflects CLI launches
     this.transcripts = [];       // { id, participantName, role, text, isFinal, timestamp, voice? }
                                  // Holds bot speech + page-inject Web Speech entries. Meet
                                  // captions live in `turns` (snapshot model, #178) and are
@@ -303,6 +306,13 @@ class LocalServer {
   // Room management
   // -------------------------------------------------------------------------
 
+  // The meet/slack URL currently loaded in the bot's view. Set by loadMeetURL so
+  // the panel can reflect a --meet-url CLI launch (or any programmatic join) in
+  // the URL field — useful to tell at a glance which call a test is running.
+  setCurrentUrl(url) {
+    this.currentUrl = url || null;
+  }
+
   setRoom(roomId) {
     this.roomId = roomId;
     this.transcripts = [];
@@ -338,6 +348,7 @@ class LocalServer {
     // BEFORE we null roomId/name below.
     this._deregisterPresence();
     this.roomId = null;
+    this.currentUrl = null;
     this.transcripts = [];
     this.turns = new Map();
     this.members = [];
@@ -780,6 +791,8 @@ class LocalServer {
       peoplePaneOpen: !!this.peoplePaneOpen,
       screenRecording: this.permissions?.screenRecording,
       roomId: this.roomId,
+      // The meet/slack URL the bot is pointed at (reflects --meet-url launches).
+      currentMeetUrl: this.currentUrl,
       // What URL is loaded in the bot's screen-share window right now (#177).
       // Named for the share, not the whiteboard, since it can be any URL.
       screenShareUrl: this.getWhiteboardLoadedUrl(),
@@ -1882,6 +1895,7 @@ class LocalServer {
       participants: this.participants,
       detectedMeetUrls: this.detectedMeetUrls,
       detectedSlackHuddleUrl: this.detectedSlackHuddleUrl,
+      currentMeetUrl: this.currentUrl,
       status: {
         callStatus: this.callStatus,
         sharing: this.sharing,
@@ -1980,6 +1994,7 @@ class LocalServer {
       res.end(JSON.stringify({
         success: true,
         roomId: this.roomId,
+        currentMeetUrl: this.currentUrl,
         detectedMeetUrls: this.detectedMeetUrls,
         detectedSlackHuddleUrl: this.detectedSlackHuddleUrl,
         status: {
@@ -1995,6 +2010,17 @@ class LocalServer {
           currentCallBotName: this.currentCallBotName,
         },
       }));
+      return;
+    }
+
+    // Focus endpoint (#282 profile switcher). A sibling instance POSTs here to
+    // raise THIS instance's window when the user picks an already-running
+    // profile — cross-process focus that OS-level "activate" can't do reliably
+    // (all instances share one bundle id).
+    if (url.pathname === '/api/focus' && req.method === 'POST') {
+      try { this.onFocusRequest(); } catch { /* best-effort */ }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
       return;
     }
 

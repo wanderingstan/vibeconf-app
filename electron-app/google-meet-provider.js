@@ -193,19 +193,50 @@ function acceptRecordingConsentIfPresent() {
   return false;
 }
 
+// Read the current text of the chat input regardless of its shape: a
+// <textarea> exposes .value, a contenteditable div (history-on Meet) exposes
+// .textContent. Used for typing-confirmation and the "input cleared = sent"
+// check, both of which previously assumed .value and threw on a div.
+function inputText(el) {
+  return ((el.isContentEditable ? el.textContent : el.value) || '');
+}
+
 async function typeIntoInput(input, value) {
   input.focus();
   input.click();
   await delay(200);
 
-  input.select();
-  const ok = document.execCommand('insertText', false, value);
-  if (ok && input.value === value) return true;
+  const isCE = input.isContentEditable;
 
-  // Meet's chat input is a <textarea>; calling HTMLInputElement's value setter
-  // on it throws "Illegal invocation" because `this` is the wrong type. Pull
-  // the setter from the element's own prototype chain, with fallbacks for
-  // either built-in type if the immediate prototype's descriptor is missing.
+  // Select existing content so insertText replaces rather than appends.
+  if (isCE) {
+    const range = document.createRange();
+    range.selectNodeContents(input);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  } else if (typeof input.select === 'function') {
+    input.select();
+  }
+
+  const ok = document.execCommand('insertText', false, value);
+  if (ok && inputText(input).trim() === value.trim()) return true;
+
+  if (isCE) {
+    // Contenteditable fallback (no native value setter exists for a div): set
+    // textContent and fire an input event so Meet's React handler (jsaction
+    // input:q3884e) registers the change.
+    input.textContent = value;
+    input.dispatchEvent(new InputEvent('input', {
+      bubbles: true, cancelable: true, data: value, inputType: 'insertText',
+    }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return inputText(input).trim() === value.trim();
+  }
+
+  // <textarea>/<input>: calling HTMLInputElement's value setter on it throws
+  // "Illegal invocation" because `this` is the wrong type. Pull the setter from
+  // the element's own prototype chain, with fallbacks for either built-in type.
   const valueDescriptor =
     Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value') ||
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value') ||
@@ -229,7 +260,7 @@ async function typeIntoInput(input, value) {
   input.dispatchEvent(new Event('change', { bubbles: true }));
   input.dispatchEvent(new Event('blur', { bubbles: true }));
   input.focus();
-  return input.value === value;
+  return inputText(input).trim() === value.trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +279,13 @@ function isMicMuted() {
 // Set when we toggle the mic ourselves (TTS unmute / re-mute) so the
 // MutationObserver below doesn't interpret our own click as a user gesture.
 let suppressMicMuteWatcher = false;
+
+// Set while a chat read/send is mid-flight so the DOMSpeakerTracker's 2s
+// people-pane self-heal (_ensurePeoplePaneOpen) doesn't slam the side panel
+// back to People the instant we switch it to Chat — that race reopened People
+// before isChatPaneOpen() could ever observe the chat input, so the pane
+// "flashed" open but openChatPane() always gave up. Cleared in a finally.
+let chatPaneBusy = false;
 
 function setMicMuted(mute) {
   const btn = getMicButton();
@@ -385,6 +423,62 @@ function isChatPaneOpen() {
   return !!getChatInput();
 }
 
+// Whether the chat side-panel is open, INDEPENDENT of the (lazy-rendered) input.
+// The chat toggle is a panel button: aria-expanded flips true when chat is the
+// active side panel. In Workspace/history-on Meets the contenteditable input
+// isn't in the DOM the instant the pane opens, so gating "pane open" on the
+// input (isChatPaneOpen) made openChatPane give up before the input rendered.
+function isChatPaneToggleExpanded() {
+  const btn = getChatToggle();
+  return !!btn && btn.getAttribute('aria-expanded') === 'true';
+}
+
+// Nudge the lazy chat input to instantiate once the pane is open: focus the
+// panel the toggle controls and wake any input-region candidate. Best-effort —
+// a no-op if there's nothing to click yet.
+function instantiateChatInput() {
+  const btn = getChatToggle();
+  const panelId = btn && btn.getAttribute('aria-controls');
+  const panel = (panelId && document.getElementById(panelId)) || document;
+  const candidate = panel.querySelector(
+    '[contenteditable="true"][role="textbox"], [role="textbox"], [g_editable="true"], textarea'
+  );
+  if (candidate) {
+    try { firePointerClick(candidate); if (candidate.focus) candidate.focus(); } catch { /* ignore */ }
+  }
+}
+
+// Dump the chat-panel state on failure so a live (history-on) run is
+// self-explanatory: is the pane open, and what editable elements actually exist
+// (their real role/contenteditable/aria-label/maxlength)?
+function dumpChatInputDiag() {
+  try {
+    const btn = getChatToggle();
+    const editables = Array.from(document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"]'))
+      .map((e) => ({ tag: e.tagName, role: e.getAttribute('role'), ce: e.getAttribute('contenteditable'),
+        aria: e.getAttribute('aria-label'), ml: e.getAttribute('aria-multiline'), maxlen: e.getAttribute('maxlength') }));
+    console.warn('[chat] [chat-input-diag] toggle aria-expanded=' + (btn && btn.getAttribute('aria-expanded')) +
+      ' editables=' + JSON.stringify(editables));
+  } catch (e) { console.warn('[chat] [chat-input-diag] dump failed:', e && e.message); }
+}
+
+// Meet's chat toggle binds its handler to the pointerdown/pointerup jsaction,
+// so a synthetic el.click() (which dispatches only a 'click' event) doesn't
+// actuate it — confirmed live: a real user click opens the chat pane, but
+// el.click() never does, so openChatPane polled and gave up ("Could not open
+// the chat pane"). Dispatch the full pointer + mouse sequence so Meet's
+// handlers fire the same way a trusted click would.
+function firePointerClick(el) {
+  if (!el) return;
+  const base = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, buttons: 1 };
+  const ptr = { ...base, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+  try { el.dispatchEvent(new PointerEvent('pointerdown', ptr)); } catch { /* PointerEvent unavailable */ }
+  el.dispatchEvent(new MouseEvent('mousedown', base));
+  try { el.dispatchEvent(new PointerEvent('pointerup', { ...ptr, buttons: 0 })); } catch { /* ignore */ }
+  el.dispatchEvent(new MouseEvent('mouseup', { ...base, buttons: 0 }));
+  el.dispatchEvent(new MouseEvent('click', { ...base, buttons: 0 }));
+}
+
 async function openChatPane() {
   if (isChatPaneOpen()) {
     console.log('[chat] Chat pane already open');
@@ -421,18 +515,44 @@ async function openChatPane() {
   // immediately; only re-click while it's still closed.
   for (let attempt = 0; attempt < 3; attempt++) {
     btn = getChatToggle() || btn;
-    console.log('[chat] → switching to Chat pane (clicking', JSON.stringify(btn.getAttribute('aria-label')), ', attempt', attempt + 1, ')');
-    btn.click();
-    for (let i = 0; i < 16; i++) { // ~2.4s per attempt
-      await delay(150);
-      if (isChatPaneOpen()) {
-        console.log('[chat] ✓ Chat pane open (attempt', attempt + 1, ')');
-        return true;
+
+    // Only CLICK when the pane is CLOSED. Re-clicking an already-open toggle
+    // TOGGLES IT SHUT — which for the slow history-on chat restarts the input
+    // load and starves it, so the input never settles across retries (#284:
+    // jimmy@'s "History is on" input failed for 45s while alice@'s instant
+    // textarea passed on attempt 1, purely because each retry re-clicked and
+    // reset the load). When the pane is already open, fall through and just keep
+    // waiting for the lazy input — never re-click it shut.
+    if (!isChatPaneToggleExpanded()) {
+      console.log('[chat] → switching to Chat pane (clicking', JSON.stringify(btn.getAttribute('aria-label')), ', attempt', attempt + 1, ')');
+      firePointerClick(btn);
+
+      // Stage 1 — wait for the PANE to open (toggle aria-expanded), NOT the input.
+      // If the input is already present (open-guest Meets), we're done immediately.
+      let paneOpen = false;
+      for (let i = 0; i < 16; i++) { // ~2.4s
+        await delay(150);
+        if (isChatPaneOpen()) { console.log('[chat] ✓ Chat pane open + input ready (attempt', attempt + 1, ')'); return true; }
+        if (isChatPaneToggleExpanded()) { paneOpen = true; break; }
       }
+      if (!paneOpen) { console.warn('[chat] pane did not open after click (attempt', attempt + 1, 'of 3) — retrying'); continue; }
+    } else {
+      console.log('[chat] pane already open — waiting for the lazy input WITHOUT re-clicking (attempt', attempt + 1, ')');
     }
-    console.warn('[chat] pane not open after click (attempt', attempt + 1, 'of 3) — retrying');
+
+    // Stage 2 — pane is open but the input is lazy (Workspace/history-on): give
+    // it a longer, UNINTERRUPTED window to render (the next attempt won't
+    // re-click, per the guard above), and nudge it to instantiate partway in.
+    console.log('[chat] pane open; waiting for the chat input to render…');
+    for (let i = 0; i < 30; i++) { // ~6s; with 3 attempts ≈ up to ~18s uninterrupted
+      if (isChatPaneOpen()) { console.log('[chat] ✓ chat input ready (attempt', attempt + 1, ')'); return true; }
+      if (i === 6) instantiateChatInput();
+      await delay(200);
+    }
+    console.warn('[chat] pane open but input never rendered (attempt', attempt + 1, 'of 3) — waiting more');
   }
-  console.warn('[chat] ❌ Chat pane did not open after 3 click attempts');
+  console.warn('[chat] ❌ Chat pane did not reach an input-ready state after 3 attempts');
+  dumpChatInputDiag();
   return false;
 }
 
@@ -521,15 +641,22 @@ function scrapeChatMessages() {
 }
 
 async function readChatFlow() {
-  const opened = await openChatPane();
-  if (!opened) throw new Error('Could not open the chat pane');
-  await delay(300); // let messages render
-  const messages = scrapeChatMessages();
-  await restorePeoplePane(); // close chat, restore speech tracking
-  return messages;
+  chatPaneBusy = true; // pause the people-pane self-heal while chat is open
+  try {
+    const opened = await openChatPane();
+    if (!opened) throw new Error('Could not open the chat pane');
+    await delay(300); // let messages render
+    const messages = scrapeChatMessages();
+    await restorePeoplePane(); // close chat, restore speech tracking
+    return messages;
+  } finally {
+    chatPaneBusy = false;
+  }
 }
 
 async function sendChatFlow(text) {
+  chatPaneBusy = true; // pause the people-pane self-heal while chat is open
+  try {
   const opened = await openChatPane();
   if (!opened) throw new Error('Could not open the chat pane');
   const input = getChatInput();
@@ -545,7 +672,7 @@ async function sendChatFlow(text) {
   const trySend = () => {
     const sendBtn = findByAriaLabel(MEET.chat.sendLabelA) || findByAriaLabel(MEET.chat.sendLabelB);
     if (sendBtn && !sendBtn.disabled) {
-      sendBtn.click();
+      firePointerClick(sendBtn);
       return 'button';
     }
     const enter = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
@@ -561,12 +688,15 @@ async function sendChatFlow(text) {
   let sent = false;
   for (let i = 0; i < 15; i++) {
     await delay(100);
-    if (input.value.trim() === '') { sent = true; break; }
+    if (inputText(input).trim() === '') { sent = true; break; }
     if (i === 7) via = trySend();
   }
   console.log('[electron-meet] sendChat via ' + via + ' — sent: ' + sent);
   await restorePeoplePane(); // close chat, restore speech tracking
   return sent;
+  } finally {
+    chatPaneBusy = false;
+  }
 }
 
 ipcRenderer.on('read-chat', async (_event, { requestId }) => {
@@ -1129,6 +1259,7 @@ async function autoJoin(botName) {
       const joinBtn =
         findByText(MEET.join.joinTextAsk) ||
         findByText(MEET.join.joinTextNow) ||
+        findByText(MEET.join.joinTextAnyway) || // future-scheduled meeting ("Join anyway")
         findByAriaLabel(MEET.join.joinTextAsk) ||
         findByAriaLabel(MEET.join.joinLabel) ||
         // "Switch here" replaces Join now when this Google account already has a
@@ -1202,7 +1333,7 @@ async function autoJoin(botName) {
 
       const bodyText = document.body.innerText;
       const waitingText = MEET.join.waitingTexts.some((t) => bodyText.includes(t));
-      const hasJoinUI = !!findByText(MEET.join.joinTextAsk) || !!findByText(MEET.join.joinTextNow) || !!findByText(MEET.join.joinTextSwitch);
+      const hasJoinUI = !!findByText(MEET.join.joinTextAsk) || !!findByText(MEET.join.joinTextNow) || !!findByText(MEET.join.joinTextAnyway) || !!findByText(MEET.join.joinTextSwitch);
       const inCallUI =
         findByAriaLabel(MEET.join.leaveCallLabel) ||
         findByAriaLabel(MEET.captions.enableLabelEn) ||
@@ -1283,6 +1414,7 @@ class DOMSpeakerTracker {
   start() {
     if (this.isTracking) return;
     this.isTracking = true;
+    console.log('[speaker-tracker] started — (debug) set __vibePauseHeal=true in this console to freeze the people-pane self-heal while investigating');
     this._ensurePeoplePaneOpen();
     this.checkInterval = setInterval(() => {
       this._scanParticipants();
@@ -1324,6 +1456,16 @@ class DOMSpeakerTracker {
   }
 
   _ensurePeoplePaneOpen() {
+    // DEBUG escape hatch: set `__vibePauseHeal = true` in the Meet view's
+    // DevTools console to FREEZE the people-pane self-heal while manually
+    // investigating the chat / side panel (it otherwise keeps yanking the side
+    // panel back to People). `__vibePauseHeal = false` resumes. Human-only
+    // (console), not bot-reachable. contextIsolation:false → the console shares
+    // this window. (#284 debugging)
+    if (window.__vibePauseHeal) return;
+    // Don't fight an in-flight chat read/send — it deliberately switched the
+    // side panel to Chat and will restore People when done (#chat-race).
+    if (chatPaneBusy) return;
     // Detect "pane is open" by the same structural marker _scanParticipants uses:
     // tiles only exist when the people list is rendered. The previous check used
     // jsname="jrQDbd" + a stale aria-label fallback; once Google rotated jsname
@@ -2265,7 +2407,7 @@ window.addEventListener('DOMContentLoaded', () => {
     for (let i = 0; i < 30; i++) {
       const nameInput =
         MEET.join.nameInputs.map((sel) => document.querySelector(sel)).find(Boolean) || null;
-      const joinBtn = findByText(MEET.join.joinTextAsk) || findByText(MEET.join.joinTextNow) || findByText(MEET.join.joinTextSwitch);
+      const joinBtn = findByText(MEET.join.joinTextAsk) || findByText(MEET.join.joinTextNow) || findByText(MEET.join.joinTextAnyway) || findByText(MEET.join.joinTextSwitch);
 
       if (nameInput || joinBtn) {
         await autoJoin(BOT_NAME);

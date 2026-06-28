@@ -69,7 +69,15 @@ const MEET = {
   // -------------------------------------------------------------------------
   chat: {
     toggle: 'button[aria-label^="Chat with everyone" i], [role="button"][aria-label^="Chat with everyone" i]',
-    input: 'textarea[aria-label="Send a message" i]',
+    // The chat input renders DIFFERENTLY depending on the account/chat-history
+    // setting, so match BOTH shapes and never rely on the aria-label (Meet sets
+    // it to "Send a message" OR "History is on" depending on state):
+    //   • history OFF → a real <textarea> (match by the stable maxlength=4000)
+    //   • history ON  → a contenteditable div role="textbox" aria-multiline
+    // The Ask-Gemini box is role="combobox" (not textbox), so it's excluded.
+    // Typing/clearing must handle the contenteditable case (see typeIntoInput /
+    // inputText) since a contenteditable div has no .value.
+    input: 'textarea[maxlength="4000"], [contenteditable="true"][role="textbox"][aria-multiline="true"]',
     sendLabelA: 'Send a message',
     sendLabelB: 'Send message',
     unreadRe: /new message/i,
@@ -152,6 +160,10 @@ const MEET = {
     nameInputLoose: 'input[aria-label*="name" i], input[placeholder*="name" i]',
     joinTextAsk: 'Ask to join',
     joinTextNow: 'Join now',
+    // When the meeting's scheduled start is in the future, Meet warns "This
+    // meeting hasn't started" and the join button reads "Join anyway" instead
+    // of "Join now". Same action — let the bot through.
+    joinTextAnyway: 'Join anyway',
     joinTextSwitch: 'Switch here', // direct-join when the account has a lingering presence
     joinLabel: 'Join',
     // Dialogs to dismiss before the join button on the pre-join screen.

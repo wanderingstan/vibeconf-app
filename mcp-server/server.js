@@ -31,6 +31,11 @@ import { homedir } from "os";
 let ROOM_ID = process.env.VIBECONF_ROOM_ID || "";
 let BOT_NAME = process.env.VIBECONF_BOT_NAME || "Jimmy";
 const BASE_URL = process.env.VIBECONF_BASE_URL || "http://127.0.0.1:7865";
+// Backend (Vercel) base — used for REMOTE session logs shipped by other machines
+// (get_session_log with an `instance` arg / list_log_instances). Distinct from
+// BASE_URL, which is this machine's local Electron app.
+const WEBSITE_URL = (process.env.VIBECONF_WEBSITE_URL || "https://vibeconferencing.com").replace(/\/$/, "");
+const LOGS_TOKEN = process.env.VIBECONF_LOGS_TOKEN || "";
 const MCP_VERSION = (() => {
   try {
     return JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf-8')).version;
@@ -130,17 +135,21 @@ async function waitForSharingState(roomId, expected, { timeoutMs = 7000, interva
 // returned in get_room_info), and persists across MCP polls.
 server.tool(
   "get_session_log",
-  "Read recent lines from the Electron app's session log. Use this to post-mortem mid-call weirdness — failed shares, blank whiteboards, unexpected state. Each session writes to its own file under userData/logs/; the file path is also returned in get_room_info as status.sessionLogPath so you can cite it if comparing two bots' logs. Optional 'grep' filters by case-insensitive regex (e.g. 'screen|share|present' to focus on screen-share lines).",
+  "Read recent lines from a Vibeconferencing session log. By default reads THIS machine's local Electron app (post-mortem mid-call weirdness — failed shares, blank whiteboards, unexpected state). Pass 'instance' to instead read a REMOTE bot's log shipped to the backend (another machine running with the remoteLogging pref on, e.g. for debugging Seth's bots) — list available instance IDs with list_log_instances. Optional 'grep' filters by case-insensitive regex (e.g. 'screen|share|present').",
   {
-    lines: z.number().optional().describe("How many recent log lines to return. Default 200. Max 5000."),
+    lines: z.number().optional().describe("How many recent log lines to return. Default 200 (local) / 500 (remote). Max 5000."),
     grep: z.string().optional().describe("Case-insensitive regex filter applied before truncation. E.g. 'screen|share' to focus on screen-share activity."),
+    instance: z.string().optional().describe("Remote instance ID (from list_log_instances, e.g. 'seths-mbp--default'). When set, reads the remote log from the backend instead of this machine's local app."),
   },
-  async ({ lines, grep }) => {
+  async ({ lines, grep, instance }) => {
     const params = new URLSearchParams();
     if (lines) params.set('lines', String(lines));
     if (grep) params.set('grep', grep);
-    const url = `${BASE_URL}/api/session-log${params.toString() ? '?' + params.toString() : ''}`;
-    const resp = await fetch(url);
+    const isRemote = !!instance;
+    const url = isRemote
+      ? `${WEBSITE_URL}/api/logs/${encodeURIComponent(instance)}${params.toString() ? '?' + params.toString() : ''}`
+      : `${BASE_URL}/api/session-log${params.toString() ? '?' + params.toString() : ''}`;
+    const resp = await fetch(url, isRemote && LOGS_TOKEN ? { headers: { 'x-vibe-logs-token': LOGS_TOKEN } } : undefined);
     const data = await resp.json();
     if (!data.success) {
       return { content: [{ type: "text", text: `Error: ${data.error || "Unknown error"}` }] };
@@ -148,8 +157,30 @@ server.tool(
     if (data.error) {
       return { content: [{ type: "text", text: `Error: ${data.error}` }] };
     }
-    const header = data.filePath ? `Session log: ${data.filePath} (${data.returnedLines}/${data.totalLines} lines${data.truncated ? ', truncated' : ''})\n---\n` : '';
+    const label = isRemote ? `Remote log: ${instance}` : (data.filePath ? `Session log: ${data.filePath}` : '');
+    const header = label ? `${label} (${data.returnedLines}/${data.totalLines} lines${data.truncated ? ', truncated' : ''})\n---\n` : '';
     return { content: [{ type: "text", text: header + (data.content || '(empty)') }] };
+  }
+);
+
+// --- list_log_instances ---
+// List remote bots currently shipping session logs to the backend (remoteLogging
+// pref on). Returns instance IDs to pass to get_session_log({ instance }).
+server.tool(
+  "list_log_instances",
+  "List remote Vibeconferencing instances that are shipping their session logs to the backend (machines/bots with the remoteLogging pref on). Returns each instance's ID, app version, profile, current room, and how long ago it was last seen. Use the returned instanceId with get_session_log({ instance }) to read that bot's log — handy for debugging another person's bots (e.g. Seth's) without terminal access to their machine.",
+  {},
+  async () => {
+    const resp = await fetch(`${WEBSITE_URL}/api/logs`, LOGS_TOKEN ? { headers: { 'x-vibe-logs-token': LOGS_TOKEN } } : undefined);
+    const data = await resp.json();
+    if (!data.success) return { content: [{ type: "text", text: `Error: ${data.error || "Unknown error"}` }] };
+    const insts = data.instances || [];
+    if (!insts.length) return { content: [{ type: "text", text: "No instances are reporting (remoteLogging may be off everywhere)." }] };
+    const lines = insts.map((i) => {
+      const age = i.lastSeen ? `${Math.round((Date.now() - new Date(i.lastSeen).getTime()) / 1000)}s ago` : '?';
+      return `• ${i.instanceId} — v${i.version || '?'}, profile=${i.profile || '?'}, room=${i.room || '—'}${i.callStatus ? ` (${i.callStatus})` : ''}, seen ${age}`;
+    });
+    return { content: [{ type: "text", text: `Remote logging instances (${insts.length}):\n${lines.join('\n')}\n\nRead one: get_session_log({ instance: "<id>" })` }] };
   }
 );
 

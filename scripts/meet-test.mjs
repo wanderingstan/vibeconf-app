@@ -12,16 +12,22 @@
 // You (the human) can also be in the meet to observe.
 //
 // Run:
-//   node scripts/meet-test.mjs                                  # defaults
+//   node scripts/meet-test.mjs                                  # defaults (--target default)
+//   node scripts/meet-test.mjs --target workspace               # the history-on / contenteditable-chat meet
 //   node scripts/meet-test.mjs --room paz-sqoa-npe --bots Jimmy:7865,Samantha:7866
+//
+// --target <name> picks a fixture from meet-targets.mjs (default | workspace).
+// --room overrides the resolved room for ad-hoc runs.
 //
 // Exit code is non-zero if any step failed or a stall was detected — so this can
 // gate CI later.
 
 import { Bot, sleep, report, record } from './meet-test-lib.mjs';
+import { resolveTarget } from './meet-targets.mjs';
 
 const arg = (name, def) => { const i = process.argv.indexOf('--' + name); return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : def; };
-const ROOM = arg('room', 'paz-sqoa-npe');
+const TARGET = resolveTarget(arg('target', 'default'));
+const ROOM = arg('room', TARGET.room); // --room overrides the target's room
 const BOTS = arg('bots', 'Jimmy:7865,Samantha:7866').split(',').map((s) => { const [name, port] = s.split(':'); return new Bot(name, Number(port), ROOM); });
 
 const COLORADO_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#e8855b"/><path d="M0 70 L30 40 L50 60 L70 35 L100 65 L100 100 L0 100Z" fill="#33406b"/></svg>';
@@ -119,7 +125,9 @@ async function chatWakeTest(bots) {
 }
 
 async function main() {
-  console.log(`meet-test → room ${ROOM}, bots: ${BOTS.map((b) => `${b.name}:${b.port}`).join(', ')}\n`);
+  console.log(`meet-test → target=${TARGET.name} (${TARGET.kind}, chat input expected: ${TARGET.chatInput}, signed-in: ${TARGET.signedIn}), room ${ROOM}, bots: ${BOTS.map((b) => `${b.name}:${b.port}`).join(', ')}`);
+  if (TARGET.signedIn) console.log(`  ⚠ this target is invite-only — the bot profiles must be signed into Google accounts invited to ${ROOM} (Settings → Sign in to Google as bot).`);
+  console.log('');
 
   // Preflight: every bot app reachable?
   const reach = await Promise.all(BOTS.map((b) => b.ping()));

@@ -51,7 +51,7 @@ function clickButtonByTextRepeating(webContents, text, label, { tries = 240, int
     let n = 0;
     const t = setInterval(() => {
       const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
-      const el = [...document.querySelectorAll('button, [role="button"]')]
+      const el = [...document.querySelectorAll('button, [role="button"], a')]
         .find((e) => norm(e.textContent).includes(text) && e.offsetParent !== null);
       if (el) { el.click(); console.log('[slack] autojoin: clicked ' + label); }
       if (++n > ${tries}) clearInterval(t);
@@ -234,6 +234,12 @@ function createSlackSurface(mainWindow, opts = {}) {
     // autojoin) so a manually-driven bot is unblocked too.
     clickButtonByTextRepeating(win.webContents, 'Switch to this device', '"Switch to this device" (different-device modal)');
 
+    // Slack's "Opening Slack…" interstitial tries to hand off to the native
+    // desktop app and offers a "use Slack in your browser" link. The bot has no
+    // native app, so click that link to stay in-browser (#287). Match the stable
+    // substring to cover "use/open Slack in your browser[ instead]".
+    clickButtonByTextRepeating(win.webContents, 'Slack in your browser', '"use Slack in your browser" interstitial');
+
     if (devtools) { try { win.webContents.openDevTools({ mode: 'detach' }); } catch { /* ignore */ } }
     win.on('closed', () => {
       const i = popups.indexOf(win);
@@ -243,6 +249,12 @@ function createSlackSurface(mainWindow, opts = {}) {
   });
 
   if (url) view.webContents.loadURL(url);
+
+  // During login/SSO the main view can hit Slack's "Opening Slack…" interstitial
+  // (native-app handoff). Keep clicking its "use Slack in your browser" link so
+  // the flow proceeds without a human — important for in-app Slack login (#285)
+  // and first-time profile setup (#287). Harmless when the link never appears.
+  clickButtonByTextRepeating(view.webContents, 'Slack in your browser', '"use Slack in your browser" interstitial (main view)');
 
   // Toggle between the huddle overlay and the app/panel underneath. The huddle
   // is a child window laid OVER the app (always on top of it), so to reach the

@@ -351,6 +351,15 @@ function renderProfileMenu(data) {
   folder.onmouseleave = () => { folder.style.background = ''; };
   folder.onclick = () => { closeProfileMenu(); api.invoke('open-profiles-folder').catch(() => {}); };
   profileMenu.appendChild(folder);
+
+  // Reveal the session-log folder — quick path to past calls' logs (#292).
+  const logs = document.createElement('div');
+  logs.textContent = '📋 Open logs folder';
+  logs.style.cssText = 'padding:6px 8px;color:#9aa0a6;cursor:pointer';
+  logs.onmouseenter = () => { logs.style.background = '#3c4043'; };
+  logs.onmouseleave = () => { logs.style.background = ''; };
+  logs.onclick = () => { closeProfileMenu(); api.invoke('open-logs-folder').catch(() => {}); };
+  profileMenu.appendChild(logs);
 }
 
 if (profileMenuBtn && profileMenu) {

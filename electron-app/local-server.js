@@ -154,6 +154,8 @@ class LocalServer {
 
     // Room state (single room — the active call)
     this.roomId = null;
+    this.callId = null;          // first-class per-join call ID (#292), minted in setRoom
+    this.callStartedAt = null;   // ISO timestamp the current call's room was set
     this.currentUrl = null;      // the meet/slack URL currently loaded (set by loadMeetURL),
                                  // surfaced to the panel so the URL field reflects CLI launches
     this.transcripts = [];       // { id, participantName, role, text, isFinal, timestamp, voice? }
@@ -348,6 +350,8 @@ class LocalServer {
     // BEFORE we null roomId/name below.
     this._deregisterPresence();
     this.roomId = null;
+    this.callId = null;
+    this.callStartedAt = null;
     this.currentUrl = null;
     this.transcripts = [];
     this.turns = new Map();
@@ -530,12 +534,27 @@ class LocalServer {
     console.log('[local-server] Call status:', status);
     this.onCallStatusChange(status);
 
+    // Mint a first-class call ID when a call begins — the first transition into
+    // an active state (joining / waiting / in-call) without one. Format:
+    // <roomCode>-<compact-UTC-timestamp> (e.g. kku-fpvq-smx-20260629T164900Z).
+    // One per call, cleared on end, so it disambiguates multiple calls within a
+    // single session log and is greppable as a `[call] id=…` block (#292).
+    const activeState = status === 'joining' || status === 'waiting-to-be-admitted' || status === 'in-call';
+    if (activeState && !this.callId) {
+      this.callStartedAt = new Date().toISOString();
+      const code = this.roomId || 'call';
+      this.callId = `${code}-${this.callStartedAt.replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}`;
+      console.log(`[call] id=${this.callId} room=${this.roomId || '(unknown)'} status=${status} started=${this.callStartedAt}`);
+    }
+
     // Drop pending speech if we never made it in (call failed / cleared).
     // Pending flush itself is gated on first-participants-seen, not in-call —
     // 'in-call' fires when Meet's UI is up, but the bot's mic track isn't
     // reliably connected to other participants until the people pane is
     // populated (a stronger 'fully wired up' signal). See _flushPendingBotSpeech.
     if (status === 'idle' || status === 'left') {
+      this.callId = null;
+      this.callStartedAt = null;
       if (this.pendingBotSpeech.length > 0) {
         console.log('[local-server] Dropping', this.pendingBotSpeech.length, 'unflushed bot speech entries (call ended)');
         this.pendingBotSpeech = [];
@@ -791,6 +810,8 @@ class LocalServer {
       peoplePaneOpen: !!this.peoplePaneOpen,
       screenRecording: this.permissions?.screenRecording,
       roomId: this.roomId,
+      callId: this.callId,
+      callStartedAt: this.callStartedAt,
       // The meet/slack URL the bot is pointed at (reflects --meet-url launches).
       currentMeetUrl: this.currentUrl,
       // What URL is loaded in the bot's screen-share window right now (#177).
@@ -1994,6 +2015,8 @@ class LocalServer {
       res.end(JSON.stringify({
         success: true,
         roomId: this.roomId,
+        callId: this.callId,
+        callStartedAt: this.callStartedAt,
         currentMeetUrl: this.currentUrl,
         detectedMeetUrls: this.detectedMeetUrls,
         detectedSlackHuddleUrl: this.detectedSlackHuddleUrl,

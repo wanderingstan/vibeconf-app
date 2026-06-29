@@ -3392,6 +3392,17 @@ function setupIPC() {
     return { ok: !err, path: PROFILES_ROOT, error: err || undefined };
   });
 
+  // Reveal this instance's session-log folder in Finder — where past calls'
+  // logs live (named by session timestamp; each call is a `[call] id=…` block
+  // inside). Honors the per-profile userData path (#292).
+  ipcMain.handle('open-logs-folder', async () => {
+    const logsDir = path.join(app.getPath('userData'), 'logs');
+    try { fs.mkdirSync(logsDir, { recursive: true }); } catch { /* exists */ }
+    const err = await shell.openPath(logsDir);
+    if (err) console.warn('[electron] open-logs-folder failed:', err);
+    return { ok: !err, path: logsDir, error: err || undefined };
+  });
+
   // --- Profile switcher (#282): Chrome-style list + launch/focus ------------
   // A profile = a sibling userData dir under <base>/profiles, each its own
   // identity. You can't rehome a RUNNING instance (userData is fixed before

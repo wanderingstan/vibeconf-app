@@ -2478,7 +2478,13 @@ app.whenReady().then(async () => {
   // Process CLI args FIRST so syncBaseUrl/botName are set before auto-login
   if (cliArgs['bot-name']) {
     sync.updateConfig({ botName: cliArgs['bot-name'] });
-    store.set('botName', cliArgs['bot-name']);
+    // A launch --bot-name is an EPHEMERAL session/display override, not a change
+    // to the user's saved botName. Set it as the active call identity (which
+    // getEffectiveBotName/get-meet-bot-name read for the Meet display name) but
+    // do NOT persist to config.json — otherwise the test fleet's per-run -r<tag>
+    // ghost-avoidance suffix (e.g. "Jimmy-rc3b") leaks into the profile's
+    // persistent botName and sticks across runs.
+    localServer.currentCallBotName = cliArgs['bot-name'];
   }
   if (cliArgs['sync-url']) {
     sync.updateConfig({ baseUrl: cliArgs['sync-url'] });

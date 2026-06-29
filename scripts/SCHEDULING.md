@@ -71,8 +71,8 @@ rm ~/Library/LaunchAgents/com.vibeconferencing.meet-test.plist
 ```
 
 ## Notes / caveats
-- **Same machine as a real bot?** The fleet uses ports 7901+ and profiles
-  `test1/2…`, distinct from the real Jimmy (7865) / Samantha (7866), so a
+- **Same machine as a real bot?** The fleet uses ports 7901+ and dedicated
+  `test-meet-*` / `test-slack-*` profiles, distinct from the real Jimmy (7865) / Samantha (7866), so a
   scheduled run won't collide with those. But two app instances both grabbing the
   mic/camera can contend — don't schedule it to overlap a real call.
 - **Display sleep:** if the Mac mini's display sleeps, Electron/WebRTC usually

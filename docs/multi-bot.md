@@ -108,7 +108,7 @@ Join the current Meet via /join-call, then wait for instructions.
 
 ## Automated test fleet (agent-less)
 
-The recipes above *drive* bots by hand (or by an agent). For **automated regression testing** there's a separate, agent-less path: `scripts/spawn-test-fleet.sh` boots N bots in dedicated, isolated `testN` profiles on ports `7901+`, and `scripts/meet-test.mjs` runs them through a scripted scenario (join, speak, whiteboard share, chat send/read, listen) — deterministic, zero Claude agents, zero tokens. The bots join the open guest meet `paz-sqoa-npe` (no sign-in needed). Exit code is non-zero on any failed step or stall, so it can gate CI.
+The recipes above *drive* bots by hand (or by an agent). For **automated regression testing** there's a separate, agent-less path: `scripts/spawn-test-fleet.sh` boots N bots in dedicated, isolated `test-meet-*` / `test-slack-*` profiles on ports `7901+`, and `scripts/meet-test.mjs` runs them through a scripted scenario (join, speak, whiteboard share, chat send/read, listen) — deterministic, zero Claude agents, zero tokens. The bots join the open guest meet `paz-sqoa-npe` (no sign-in needed). Exit code is non-zero on any failed step or stall, so it can gate CI.
 
 ```bash
 pnpm test:meet:ci       # run from SOURCE (active development)

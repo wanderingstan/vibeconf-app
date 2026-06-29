@@ -2578,7 +2578,18 @@ app.whenReady().then(async () => {
     const _elKey = _grab(path.join(require('os').homedir(), '.seth/vault/credentials.env'), 'ELEVENLABS_API_KEY');
     if (_elKey) { tts.updateConfig({ apiKey: _elKey }); stt.updateConfig({ apiKey: _elKey }); console.log('[tts] ElevenLabs key loaded from vault → real voice'); }
   }
-  if (process.env.VIBECONF_TTS_VOICE) { tts.updateConfig({ voiceId: process.env.VIBECONF_TTS_VOICE }); console.log('[tts] per-seat voice →', process.env.VIBECONF_TTS_VOICE); }
+  // P2: committed per-seat voice map so each seat launches with the RIGHT ElevenLabs voice even
+  // when VIBECONF_TTS_VOICE isn't passed (removes the "wrong voice mid-call" failure mode). The
+  // env var still OVERRIDES. Voice ids confirmed against the EL account 2026-06-29. Emoji-safe:
+  // a no-op for any seat not in the map (and when no EL key is present).
+  const SEAT_VOICES = {
+    sal: 'r9jhq7cyDn8NyBdU5uu4',       // "SAL" (cloned)
+    solienne: 'T5hSckDygoXNZPCkbcqX',  // "SOLIENNE"
+    coltrane: '0PG6ZjFmHr9LpFHm6nj7',  // "Coltrane vB — The Musician"
+  };
+  const _seat = String(process.env.VIBECONF_PROFILE || savedConfig.botName || '').toLowerCase();
+  const _seatVoice = process.env.VIBECONF_TTS_VOICE || SEAT_VOICES[_seat];
+  if (_seatVoice) { tts.updateConfig({ voiceId: _seatVoice }); console.log('[tts] voice →', _seatVoice, process.env.VIBECONF_TTS_VOICE ? '(env override)' : ('(seat-map: ' + _seat + ')')); }
   if (savedConfig.botName) sync.updateConfig({ botName: savedConfig.botName });
   if (savedConfig.syncBaseUrl) sync.updateConfig({ baseUrl: savedConfig.syncBaseUrl });
 

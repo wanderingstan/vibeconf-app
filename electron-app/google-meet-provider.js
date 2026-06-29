@@ -1518,7 +1518,18 @@ class DOMSpeakerTracker {
   }
 
   _scanParticipants() {
-    const items = document.querySelectorAll(MEET.people.tile);
+    // Scope to the in-call region so "Also invited" and "Waiting to be admitted"
+    // people (who share the same listitem markup) aren't registered as present
+    // participants (#276). If the region isn't found (Meet DOM change, or the
+    // pane is mid-render), fall back to the whole document rather than going
+    // blind to speakers — log once so the regression is visible.
+    const region = document.querySelector(MEET.people.inCallRegion);
+    if (!region && !this._warnedNoInCallRegion) {
+      console.warn('[speaker-tracker] in-call region not found — scanning all people tiles (may include also-invited/waiting)');
+      this._warnedNoInCallRegion = true;
+    }
+    if (region) this._warnedNoInCallRegion = false;
+    const items = (region || document).querySelectorAll(MEET.people.tile);
     for (const item of items) {
       const name = item.getAttribute('aria-label');
       if (!name) continue;

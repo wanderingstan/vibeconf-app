@@ -93,6 +93,12 @@ const MEET = {
   // -------------------------------------------------------------------------
   people: {
     tile: 'div[role="listitem"][aria-label]',
+    // The People pane has multiple sections: "Contributors"/in-call, plus
+    // "Also invited" (invited, not joined) and "Waiting to be admitted" (lobby).
+    // Only the in-call section's tiles are real participants. Meet wraps them in
+    // a region labelled "In call" — scope participant scanning to it so invited /
+    // knocking people aren't counted as present (#276).
+    inCallRegion: '[role="region"][aria-label="In call" i]',
     labelledButton: '[role="button"][aria-labelledby]',
     buttonFallback: 'button[aria-label^="People" i], [role="button"][aria-label^="People" i]',
     labelPrefix: 'People',

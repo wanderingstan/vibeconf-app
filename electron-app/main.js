@@ -107,6 +107,25 @@ function getActiveBotName() {
 // with a unique requestId and resolves with the matching 'chat-result' reply,
 // or a timeout error. Handled by preload-meet.js (Meet) / preload-slack-huddle.js
 // (Slack), routed to the right surface via callCmdWC.
+// Once-per-call guard so a Chat-space warning doesn't spam the error list /
+// overlay every time the agent retries chat. Reset on each new join (loadMeetURL).
+let chatSpaceWarned = false;
+
+// Inspect a chat IPC result and, if it's the known unreachable-Chat-space case,
+// surface it to the operator: a panel/overlay error (once) and a log line. The
+// result is returned unchanged so the agent still gets the actionable message
+// (and can announce it aloud in the call).
+function noteChatResult(result) {
+  if (result && result.reason === 'chat-space-unreachable' && !chatSpaceWarned) {
+    chatSpaceWarned = true;
+    const msg = "Chat unavailable: this meeting's chat is a Google Chat space the bot can't reach. " +
+      'Speak chat aloud, or organize the meeting from a personal @gmail account.';
+    console.warn('[electron] [chat-space]', msg);
+    try { localServer.addError(msg); } catch { /* best-effort */ }
+  }
+  return result;
+}
+
 function chatRequest(channel, payload) {
   return new Promise((resolve) => {
     const wc = callCmdWC(channel);
@@ -1014,8 +1033,8 @@ const localServer = new globalThis.LocalServer({
     }
   },
 
-  onReadChat: async () => chatRequest(CALL_COMMANDS.readChat, {}),
-  onSendChat: async (text) => chatRequest(CALL_COMMANDS.sendChat, { text }),
+  onReadChat: async () => noteChatResult(await chatRequest(CALL_COMMANDS.readChat, {})),
+  onSendChat: async (text) => noteChatResult(await chatRequest(CALL_COMMANDS.sendChat, { text })),
   getWebsiteUrl: () => getWebsiteUrl(),
 
   // Preference plumbing for the agent-visible whitelist (preferences-schema.js).
@@ -2582,7 +2601,13 @@ app.whenReady().then(async () => {
   // Process CLI args FIRST so syncBaseUrl/botName are set before auto-login
   if (cliArgs['bot-name']) {
     sync.updateConfig({ botName: cliArgs['bot-name'] });
-    store.set('botName', cliArgs['bot-name']);
+    // A launch --bot-name is an EPHEMERAL session/display override, not a change
+    // to the user's saved botName. Set it as the active call identity (which
+    // getEffectiveBotName/get-meet-bot-name read for the Meet display name) but
+    // do NOT persist to config.json — otherwise the test fleet's per-run -r<tag>
+    // ghost-avoidance suffix (e.g. "Jimmy-rc3b") leaks into the profile's
+    // persistent botName and sticks across runs.
+    localServer.currentCallBotName = cliArgs['bot-name'];
   }
   if (cliArgs['sync-url']) {
     sync.updateConfig({ baseUrl: cliArgs['sync-url'] });
@@ -3288,6 +3313,8 @@ function showIdle() {
 async function loadMeetURL(meetUrl) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
+  chatSpaceWarned = false; // fresh call — allow one Chat-space warning again
+
   // Record what we're pointing at so the panel's URL field reflects it (covers
   // --meet-url CLI launches and any programmatic join), and notify the panel now.
   try {
@@ -3494,6 +3521,17 @@ function setupIPC() {
     const err = await shell.openPath(PROFILES_ROOT);
     if (err) console.warn('[electron] open-profiles-folder failed:', err);
     return { ok: !err, path: PROFILES_ROOT, error: err || undefined };
+  });
+
+  // Reveal this instance's session-log folder in Finder — where past calls'
+  // logs live (named by session timestamp; each call is a `[call] id=…` block
+  // inside). Honors the per-profile userData path (#292).
+  ipcMain.handle('open-logs-folder', async () => {
+    const logsDir = path.join(app.getPath('userData'), 'logs');
+    try { fs.mkdirSync(logsDir, { recursive: true }); } catch { /* exists */ }
+    const err = await shell.openPath(logsDir);
+    if (err) console.warn('[electron] open-logs-folder failed:', err);
+    return { ok: !err, path: logsDir, error: err || undefined };
   });
 
   // --- Profile switcher (#282): Chrome-style list + launch/focus ------------

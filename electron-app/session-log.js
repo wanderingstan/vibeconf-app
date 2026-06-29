@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const MAX_RETAINED_SESSIONS = 10;
+const MAX_RETAINED_SESSIONS = 50;
 
 let _filePath = null;
 let _logStream = null;

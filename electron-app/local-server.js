@@ -284,6 +284,18 @@ class LocalServer {
     this.waiters = [];           // { resolve, since, bot, silence, timer }
     this.lastWaitForSpeechAt = null; // ms timestamp of the most recent wait_for_speech call
 
+    // --- Claude responsiveness (mid-call perf) ---------------------------------
+    // The headline "is the bot snappy today" metric is Claude's reaction time:
+    // the wall-clock gap between us answering a wait_for_speech (handing Claude
+    // the floor) and Claude's FIRST speak landing back here. Both ends pass
+    // through this server, so we can measure it live and separate "Claude is slow
+    // today" from "our code is slow" (our per-call processing is sub-ms). The
+    // two-phase skill makes that first speak the quick ack, so this stays a clean
+    // reaction time regardless of how much deeper work the turn then needs.
+    this._pendingTurnSince = null; // ms ts of the resolve we're awaiting Claude's first reply to
+    this._perfSamples = [];        // rolling [{ ts, ms }] of recent reaction times (cap 30)
+    this.lastResponseMs = null;    // most recent Claude reaction time (ms)
+
     // macOS permission status, updated by main.js. Possible values match
     // systemPreferences.getMediaAccessStatus: 'not-determined', 'granted',
     // 'denied', 'restricted', 'unknown'. 'unknown' is also used on non-darwin.
@@ -779,6 +791,10 @@ class LocalServer {
       botState: this.botState,
       anyoneSpeaking: this.anyoneSpeaking,
       captionsOn: this.captionsOn,
+      // Claude responsiveness (resolve → first speak) — the "is the bot snappy
+      // today" signal, surfaced live on the panel + camera overlay.
+      lastResponseMs: this.lastResponseMs,
+      responsePerf: this._perfStats(),
       // Latest caption the bot actually heard — surfaced on the virtual-camera
       // debug overlay so a deaf bot is visible to everyone in the call (when
       // captions stop reaching the bot this stops advancing).
@@ -1671,6 +1687,26 @@ class LocalServer {
     return text;
   }
 
+  // Rolling stats over the recent reaction-time samples. Cheap; called on every
+  // snapshot. p90 uses the nearest-rank method on the sorted window.
+  _perfStats() {
+    const arr = this._perfSamples.map((s) => s.ms).sort((a, b) => a - b);
+    if (!arr.length) return { last: this.lastResponseMs, avg: null, p90: null, count: 0 };
+    const avg = Math.round(arr.reduce((a, b) => a + b, 0) / arr.length);
+    const p90 = arr[Math.min(arr.length - 1, Math.floor(arr.length * 0.9))];
+    return { last: this.lastResponseMs, avg, p90, count: arr.length };
+  }
+
+  // Record one Claude reaction time (resolve → first speak) + log it. The marker
+  // is parseable for the post-hoc analyzer and rides remote-logging for free.
+  _recordResponseMs(ms) {
+    this.lastResponseMs = ms;
+    this._perfSamples.push({ ts: Date.now(), ms });
+    if (this._perfSamples.length > 30) this._perfSamples.shift();
+    const st = this._perfStats();
+    console.log(ts(), `⚡ [perf] Claude responded in ${ms}ms (resolve→first speak) — avg ${st.avg}ms p90 ${st.p90}ms n=${st.count}`);
+  }
+
   _resolveWaiter(waiter, reason = 'unknown') {
     if (waiter.resolved) return;
     waiter.resolved = true;
@@ -1679,6 +1715,13 @@ class LocalServer {
     clearTimeout(waiter.tickTimer);
     const waitedMs = waiter.startTime ? Date.now() - waiter.startTime : 0;
     console.log(ts(), '✅ [resolve] wait_for_speech resolved — reason=' + reason + ', waited=' + waitedMs + 'ms');
+
+    // Start the responsiveness clock for turns Claude is expected to answer (a
+    // real utterance handed over: silence gap or a direct mention). NOT timeouts
+    // (no speech) or background ticks (the floor is still busy and the bot
+    // usually stays silent). The latest such resolve wins — if Claude never
+    // spoke on the prior one, that turn simply had no audible reply.
+    if (reason === 'silence' || reason === 'mention') this._pendingTurnSince = Date.now();
 
     // Auto-replay any fresh barge-in stash on silence resolution — that's
     // the "you had your hand raised, the room went quiet, just speak"
@@ -2472,6 +2515,15 @@ class LocalServer {
           // audio plays into the void. The transcript entry is recorded
           // immediately either way so order is preserved on flush.
           if (data.role === 'bot') {
+            // Claude's reaction time: this first speak after a turn-resolve
+            // closes the clock. Null it so a same-turn phase-(c) follow-up speak
+            // doesn't recount. Bound it [100ms, 120s] to discard garbage (a stale
+            // pending crossing a long quiet stretch, or a clock skew).
+            if (this._pendingTurnSince != null) {
+              const thinkMs = Date.now() - this._pendingTurnSince;
+              this._pendingTurnSince = null;
+              if (thinkMs >= 100 && thinkMs <= 120000) this._recordResponseMs(thinkMs);
+            }
             // Record the member utterance this response is answering — the most
             // recent non-bot entry. Lets us flag the next window as a
             // continuation if that speaker just keeps extending the same thought.

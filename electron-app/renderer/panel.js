@@ -110,6 +110,29 @@ function agentLoopHealth(s) {
   return `🔴 stale ${agoLabel(s.lastWaitForSpeechAt)} — agent likely stopped the wait_for_speech loop`;
 }
 
+// Health thresholds for Claude's reaction time (ms). Tune freely — mirrored in
+// the camera overlay's colorFor(). <3s snappy, 3–4s noticeable lag, >4s sluggish.
+const PERF_GREEN_MS = 3000;
+const PERF_YELLOW_MS = 4000;
+function perfDot(ms) {
+  if (ms == null) return '⚪';
+  if (ms < PERF_GREEN_MS) return '🟢';
+  if (ms <= PERF_YELLOW_MS) return '🟡';
+  return '🔴';
+}
+
+// Claude's reaction time (resolve → first speak) — last + rolling avg/p90.
+// This is mostly "how fast is Claude today", independent of our code, so it
+// explains a lot of the day-to-day "the bot feels snappy/sluggish" swing. The
+// dot reflects the LAST value (matches the headline number beside it); avg/p90
+// give the sustained picture.
+function responsePerfLabel(s) {
+  const p = s.responsePerf;
+  if (!p || !p.count) return '⚪ — (no response timed yet)';
+  const secs = (ms) => (ms == null ? '?' : `${(ms / 1000).toFixed(1)}s`);
+  return `${perfDot(p.last)} ${secs(p.last)} (avg ${secs(p.avg)} · p90 ${secs(p.p90)} · n=${p.count})`;
+}
+
 function renderCallState(s) {
   if (!s || !s.roomId) {
     callStateDebug.textContent = 'Not in a call.';
@@ -146,6 +169,7 @@ function renderCallState(s) {
     `Screen rec perm:    ${s.screenRecording || 'unknown'}`,
     `Agent loop:         ${agentLoopHealth(s)}`,
     `Last wait_for_speech: ${agoLabel(s.lastWaitForSpeechAt)}`,
+    `Claude response:    ${responsePerfLabel(s)}`,
     `Last ack:           ${ackLabel(s.lastAckEvent)}`,
     `Queued speech (${queued.length}):`,
     ...queuedLines,

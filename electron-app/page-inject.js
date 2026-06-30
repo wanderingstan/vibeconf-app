@@ -468,6 +468,14 @@
         `speaking: ${this.anyoneSpeaking ? 'yes' : 'no'}`,
         `loop:     ${loopHealth}`,
         `last WfS: ${ago(d.lastWaitForSpeechAt)}`,
+        // Claude reaction time (resolve → first speak): last + rolling avg.
+        // The day-to-day "snappy vs sluggish" signal, mostly Claude not us.
+        `resp:     ${(() => {
+          const p = d.responsePerf;
+          if (!p || !p.count) return '—';
+          const s = (ms) => (ms == null ? '?' : (ms / 1000).toFixed(1) + 's');
+          return `${s(p.last)} (avg ${s(p.avg)} n=${p.count})`;
+        })()}`,
         ...ackLines,
         `queued:   ${(d.pendingBotSpeech || []).length}`,
         `chat:     ${d.chatUnread ? 'UNREAD' : 'none'}`,
@@ -559,6 +567,14 @@
         if (ln.startsWith('▸ ')) return '#81c995';
         // EXP flags that are ON pop green so an active experiment is obvious.
         if ((ln.startsWith('probe:') || ln.startsWith('triageAck')) && ln.includes('ON')) return '#81c995';
+        // Claude reaction-time health: colour the resp: line by the LAST value
+        // (the headline number). <3s green, 3–4s yellow, >4s red. Mirrors the
+        // panel's perfDot() thresholds.
+        if (ln.startsWith('resp:')) {
+          const mm = ln.match(/resp:\s*([\d.]+)s/);
+          if (mm) { const v = parseFloat(mm[1]); return v < 3 ? '#81c995' : v <= 4 ? '#fdd663' : '#ea4335'; }
+          return '#e8eaed';
+        }
         if (ln.startsWith('loop:') && ln.includes('STALE')) return '#ea4335';
         if (ln.includes('fallback') && (ln.startsWith('ack:') || ln.startsWith('          '))) return '#ea4335';
         if (ln.startsWith('caps:') && ln.includes('DEAF')) return '#ea4335';

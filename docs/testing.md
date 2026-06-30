@@ -35,6 +35,23 @@ A sample fixture (a real 90s slice) lives at `tests/fixtures/`.
 
 ---
 
+## 2b. Call-log analysis — `pnpm eval:log`
+
+Point it at a session log and get a **unified stats report** for the call — for post-mortems and comparing experiment configs. Parses markers the app already logs (no app changes).
+
+| Command | What it does |
+|---|---|
+| `pnpm eval:log <session.log>` | Print the stats report for one log. |
+| `pnpm eval:log latest` | Analyze the **newest** log in the app's logs dir (incl. `logs/archive/`). |
+| `pnpm eval:log <dir>` | Newest `.log` inside a directory. |
+| `pnpm eval:log <log> --json` | Machine-readable JSON (for aggregation / the experiment tracker #273). |
+
+Reports: call id (from the `[call]` marker) · room · platform · URL · **duration** · all settings/experimental flags · participants · bot speak count + avg words + greeting · **response latency** — the **measured Claude reaction time** (from the live `⚡ [perf]` marker: mean/median/p90/range, the authoritative "how fast is Claude today" signal) plus the timestamp-derived quick-reply vs full-response numbers (the fallback for logs predating the marker) · `wait_for_speech` duration · turn-taking (barge-in yields, silence resolutions) · **bot emojis by frequency** · errors (real vs transient Meet-poll blips) · engagement knobs observed (background ticks, acks fired/skipped, whiteboard updates, chat ops, caption stalls).
+
+The pure parser is exported as `analyzeLog(text)` from `scripts/eval-call-log.mjs` and unit-tested in `tests/eval-call-log.test.mjs` (runs under `pnpm test:unit`). To add a stat: extract it in `analyzeLog`, add a line in `renderReport`, and assert it in the test.
+
+---
+
 ## 3. End-to-end — spawn real bots, drive over HTTP
 
 These spawn isolated, dedicated **profile** instances (`test-meet-guest-*` / `test-meet-google-*` / `test-slack-*`) so runs never touch your real Jimmy/Samantha. The `:ci` variants spawn → run → reap automatically (exit code gates). See **[testing-profiles.md](testing-profiles.md)** for the profile/account/port map and fresh-machine setup.

@@ -3,7 +3,7 @@ name: join-call
 description: Join the user's current Google Meet call as an AI bot participant
 argument-hint: "[meet code | Meet URL] [BotName]  — or just [BotName] to auto-detect"
 disable-model-invocation: true
-allowed-tools: Bash Read mcp__vibeconferencing__get_room_info mcp__vibeconferencing__join_call mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__read_whiteboard mcp__vibeconferencing__read_transcripts mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__set_mode mcp__vibeconferencing__set_camera mcp__vibeconferencing__get_call_screenshot mcp__vibeconferencing__read_chat mcp__vibeconferencing__send_chat mcp__vibeconferencing__leave_call mcp__vibeconferencing__start_share mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__stop_sharing mcp__vibeconferencing__scroll_share mcp__vibeconferencing__inspect_dom mcp__vibeconferencing__list_preferences mcp__vibeconferencing__set_preference mcp__vibeconferencing__set_avatar_emoji mcp__vibeconferencing__play_sound mcp__vibeconferencing__get_working_memory mcp__vibeconferencing__post_understanding mcp__vibeconferencing__bank_probe
+allowed-tools: Bash Read mcp__vibeconferencing__get_room_info mcp__vibeconferencing__list_call_instances mcp__vibeconferencing__join_call mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__read_whiteboard mcp__vibeconferencing__read_transcripts mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__set_mode mcp__vibeconferencing__set_camera mcp__vibeconferencing__get_call_screenshot mcp__vibeconferencing__read_chat mcp__vibeconferencing__send_chat mcp__vibeconferencing__leave_call mcp__vibeconferencing__start_share mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__stop_sharing mcp__vibeconferencing__scroll_share mcp__vibeconferencing__inspect_dom mcp__vibeconferencing__list_preferences mcp__vibeconferencing__set_preference mcp__vibeconferencing__set_avatar_emoji mcp__vibeconferencing__play_sound mcp__vibeconferencing__get_working_memory mcp__vibeconferencing__post_understanding mcp__vibeconferencing__bank_probe
 ---
 
 Join the user's current Google Meet call as an AI bot participant.
@@ -14,17 +14,19 @@ Parse `$ARGUMENTS` for the room. **Accept either a bare meet code (`xxx-xxxx-xxx
 
 **Slack huddles:** a Slack huddle has no code, just a URL (`https://app.slack.com/client/<team>/<channel>`). `/join-call` is the Google Meet path — to join a **Slack huddle**, paste its URL into the Vibeconferencing app's "Meet/Slack URL" field and click **Join** (the app switches to the Slack provider, auto-joins the huddle, and launches the agent for you). If the user hands you a Slack huddle URL here, tell them to use the app's Join button rather than `/join-call`.
 
-**If no bot name is in `$ARGUMENTS`**, check your loaded `CLAUDE.md` context for a persona / character name. If the project's CLAUDE.md describes you as a specific character (e.g. "You are Coltrane, a jazz facilitator…"), use that name as your bot name. The persona name becomes your Meet display name AND your conversational identity. Pass it to `join_call` via the `bot_name` parameter — the app persists it before navigating to Meet, so it'll appear correctly in the participant list.
+**The name argument selects which PROFILE to drive.** Multiple Vibeconferencing app instances can run at once — each profile is its own bot (its own name, personality, and logins) on its own local-server port. The name you pass becomes `join_call`'s `bot_name`, and the MCP uses it to **route to the running app instance whose profile matches that name**. So `/join-call <code> Alice` drives the "Alice" profile's app regardless of which port the MCP started on. Call `list_call_instances` to see which profiles are currently running and targetable.
 
-If neither `$ARGUMENTS` nor CLAUDE.md supplies a name, fall back to the user's configured `botName` preference (default: "Jimmy").
+**If no name is in `$ARGUMENTS`:** if exactly one app instance is running, it's used as-is (the name is then just the display name). If several are running, `join_call` returns the list of available profiles — pass one, or ask the user which to drive. Falls back to the configured `botName` preference (default: "Jimmy") for the display name when only one instance is running and no name is given.
+
+> Note: a *profile* now IS the agent — its name, personality, and logins travel together. The older "load a persona/character from CLAUDE.md" model is being phased out in favor of the profile, so treat the name as the profile/agent to drive, not a separate persona.
 
 Examples:
-- `/join-call abc-defg-hij` -> room code `abc-defg-hij`, name from CLAUDE.md persona or "Jimmy"
+- `/join-call abc-defg-hij` -> room code `abc-defg-hij`; drives the sole running profile (or asks which, if several)
 - `/join-call https://meet.google.com/abc-defg-hij` -> extract code `abc-defg-hij` from the URL
-- `/join-call https://meet.google.com/abc-defg-hij Stanbot` -> code `abc-defg-hij`, bot name "Stanbot"
-- `/join-call abc-defg-hij Stanbot` -> room code `abc-defg-hij`, bot name "Stanbot" (arg wins over CLAUDE.md)
-- `/join-call Stanbot` -> auto-detect room, bot name "Stanbot"
-- `/join-call` -> auto-detect room, name from CLAUDE.md persona or "Jimmy"
+- `/join-call https://meet.google.com/abc-defg-hij Alice` -> code `abc-defg-hij`, drive the "Alice" profile
+- `/join-call abc-defg-hij Alice` -> room code `abc-defg-hij`, drive the "Alice" profile
+- `/join-call Alice` -> auto-detect room, drive the "Alice" profile
+- `/join-call` -> auto-detect room; drives the sole running profile (or asks which, if several)
 
 **If no room code in arguments**, first check if the Vibeconferencing app has already detected a call:
 

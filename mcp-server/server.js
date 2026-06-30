@@ -30,7 +30,11 @@ import { homedir } from "os";
 
 let ROOM_ID = process.env.VIBECONF_ROOM_ID || "";
 let BOT_NAME = process.env.VIBECONF_BOT_NAME || "Jimmy";
-const BASE_URL = process.env.VIBECONF_BASE_URL || "http://127.0.0.1:7865";
+// The local app instance this session drives. Starts at the env/default port, but
+// join_call RE-BINDS it to the instance matching the requested profile name, so a
+// single agent session can target any running profile regardless of which port
+// the app baked into the MCP config (#301). Reassigned in routeToInstance().
+let BASE_URL = process.env.VIBECONF_BASE_URL || "http://127.0.0.1:7865";
 // Backend (Vercel) base — used for REMOTE session logs shipped by other machines
 // (get_session_log with an `instance` arg / list_log_instances). Distinct from
 // BASE_URL, which is this machine's local Electron app.
@@ -47,6 +51,82 @@ const MCP_VERSIONS = {
   mcp: MCP_VERSION,
   node: process.version,
 };
+
+// ── Multi-profile instance discovery + routing (#301) ────────────────────────
+// Multiple app instances (profiles) can run at once, each on its own local-server
+// port. The agent's MCP config bakes ONE port, so without this a single session
+// could only ever reach one instance. Instead we discover running instances by
+// probing the local port range (each /api/sync/no-room reports its profile, port,
+// and bot name) and, on join_call, RE-BIND this session's BASE_URL to the instance
+// whose PROFILE matches the requested name. (Per the profile==agent direction, the
+// name passed to /join-call is the profile to drive, not a display name.)
+
+function probePorts() {
+  // The env BASE_URL's port is always probed; plus a default range. Override the
+  // range via VIBECONF_PORT_RANGE="7865-7910".
+  const set = new Set();
+  const envPort = Number((BASE_URL.match(/:(\d+)/) || [])[1]);
+  if (envPort) set.add(envPort);
+  const range = process.env.VIBECONF_PORT_RANGE || "7865-7910";
+  const [lo, hi] = range.split("-").map(Number);
+  if (Number.isFinite(lo) && Number.isFinite(hi)) for (let p = lo; p <= hi; p++) set.add(p);
+  return [...set];
+}
+
+// Returns [{ port, baseUrl, profile, botName, callStatus, roomId }] for live instances.
+async function discoverInstances() {
+  const results = await Promise.all(probePorts().map(async (port) => {
+    try {
+      const resp = await fetch(`http://127.0.0.1:${port}/api/sync/no-room`, { signal: AbortSignal.timeout(900) });
+      if (!resp.ok) return null;
+      const d = await resp.json();
+      const s = d.status || {};
+      return {
+        port,
+        baseUrl: `http://127.0.0.1:${port}`,
+        // The default profile reports null — normalize so it's addressable as "default".
+        profile: s.localProfile || "default",
+        botName: s.currentCallBotName || s.configuredBotName || null,
+        callStatus: s.callStatus || null,
+        roomId: d.roomId || null,
+      };
+    } catch { return null; }
+  }));
+  return results.filter(Boolean);
+}
+
+// Resolve which running instance a name targets. name = profile (preferred) or bot
+// name. Backward-compatible: a single running instance is used as-is (the name is
+// then just the display name); discovery turning up nothing keeps the current
+// BASE_URL (env default) so existing single-instance setups are unaffected.
+function resolveInstance(name, instances) {
+  if (instances.length === 0) return { keep: true }; // nothing discovered → don't touch BASE_URL
+  if (name) {
+    const n = String(name).trim().toLowerCase();
+    const byProfile = instances.find((i) => (i.profile || "").toLowerCase() === n);
+    const byBot = instances.find((i) => (i.botName || "").toLowerCase() === n);
+    if (byProfile || byBot) return { instance: byProfile || byBot };
+    if (instances.length === 1) return { instance: instances[0] }; // sole instance; name is a display name
+    const list = instances.map((i) => `${i.profile} (:${i.port}${i.botName ? `, ${i.botName}` : ""})`).join(", ");
+    return { error: `No running instance for profile "${name}". Running: ${list}. Launch that profile, or use one of these names.` };
+  }
+  if (instances.length === 1) return { instance: instances[0] };
+  const list = instances.map((i) => `${i.profile} (:${i.port}${i.botName ? `, ${i.botName}` : ""})`).join(", ");
+  return { error: `Multiple app instances running — specify which by profile name: ${list}.` };
+}
+
+// Bind this session's BASE_URL to the instance the name targets. Returns
+// { ok, instance? } or { error }.
+async function routeToInstance(name) {
+  let instances;
+  try { instances = await discoverInstances(); }
+  catch { return { ok: true }; } // discovery failed → keep current BASE_URL, let the join surface a real error
+  const r = resolveInstance(name, instances);
+  if (r.error) return { error: r.error };
+  if (r.keep) return { ok: true };
+  if (r.instance) { BASE_URL = r.instance.baseUrl; return { ok: true, instance: r.instance }; }
+  return { ok: true };
+}
 
 function botSyncPayload(name = BOT_NAME, payload = {}) {
   return {
@@ -1534,6 +1614,22 @@ server.tool(
   }
 );
 
+// --- list_call_instances ---
+server.tool(
+  "list_call_instances",
+  "List the Vibeconferencing app instances (profiles) currently running on this machine — each is a separate bot on its own local-server port. Returns profile name, port, bot name, and call status. join_call's bot_name selects the instance by PROFILE name (so `/join-call <code> Alice` drives the 'Alice' profile's app). Use this to see what you can target, or when join_call reports the name is ambiguous/not found.",
+  {},
+  async () => {
+    const instances = await discoverInstances();
+    if (!instances.length) {
+      return { content: [{ type: "text", text: "No running Vibeconferencing app instances found (probed the local port range). Launch the app for the profile you want to drive." }] };
+    }
+    const lines = instances.map((i) =>
+      `• ${i.profile} — port ${i.port}${i.botName ? `, bot "${i.botName}"` : ""}${i.callStatus ? `, ${i.callStatus}` : ""}${i.roomId ? `, room ${i.roomId}` : ""}${i.baseUrl === BASE_URL ? "  ← current target" : ""}`);
+    return { content: [{ type: "text", text: `Running instances (${instances.length}):\n${lines.join("\n")}\n\njoin_call(bot_name) selects one by profile name.` }] };
+  }
+);
+
 // --- join_call ---
 server.tool(
   "join_call",
@@ -1544,6 +1640,14 @@ server.tool(
   },
   async ({ room_id, bot_name }) => {
     try {
+      // Multi-profile routing (#301): the name selects which running app instance
+      // to drive. Re-bind this session's BASE_URL to it BEFORE resolving the bot
+      // name (so resolveBotName queries the right instance) and the join.
+      const routed = await routeToInstance(bot_name);
+      if (routed.error) return { content: [{ type: "text", text: routed.error }] };
+      const routedNote = routed.instance
+        ? ` (profile "${routed.instance.profile}" on port ${routed.instance.port})`
+        : "";
       const joinedBotName = await resolveBotName(bot_name);
       // If the lock is set but the bot name changed, check whether the
       // previous call is actually still in progress. The local-server is
@@ -1583,7 +1687,7 @@ server.tool(
           content: [{
             type: "text",
             text: [
-              `Joining Meet call ${room_id} as "${joinedBotName}". The app is navigating to the call and will admit itself shortly.`,
+              `Joining Meet call ${room_id} as "${joinedBotName}"${routedNote}. The app is navigating to the call and will admit itself shortly.`,
               ``,
               `**Joining is not complete until you have started the conversation loop.**`,
               ``,

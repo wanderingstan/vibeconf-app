@@ -150,15 +150,23 @@ function initSessionLog({ userDataDir, header = {} } = {}) {
   const origStdoutWrite = process.stdout.write.bind(process.stdout);
   const origStderrWrite = process.stderr.write.bind(process.stderr);
 
+  // Writing to the REAL stdio can throw (EPIPE) when the parent pipe/terminal
+  // that owned it has closed — common for a bot launched from a terminal that's
+  // since been quit. If we let that throw, it becomes an uncaughtException whose
+  // handler logs via console → process.stderr.write → origStderrWrite → EPIPE
+  // again → an infinite loop that pegs the CPU and grows the session log without
+  // bound (seen in the wild: an 11 GB log of repeated EPIPE traces). Swallow the
+  // write error so the tee never throws — the line still reached the file and the
+  // remote queue above.
   process.stdout.write = (chunk, ...rest) => {
     try { logStream.write(typeof chunk === 'string' ? chunk : chunk); } catch {}
     try { _enqueueChunk(chunk); } catch {}
-    return origStdoutWrite(chunk, ...rest);
+    try { return origStdoutWrite(chunk, ...rest); } catch { return true; }
   };
   process.stderr.write = (chunk, ...rest) => {
     try { logStream.write(typeof chunk === 'string' ? chunk : chunk); } catch {}
     try { _enqueueChunk(chunk); } catch {}
-    return origStderrWrite(chunk, ...rest);
+    try { return origStderrWrite(chunk, ...rest); } catch { return true; }
   };
 
   _filePath = filePath;

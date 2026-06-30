@@ -1445,6 +1445,22 @@ async function isSignedInToGoogle(sess) {
   }
 }
 
+// True iff the partition holds a live Slack session cookie — i.e. some Slack
+// workspace is signed in on this profile. Slack's auth token lives in the `d`
+// cookie (value starts `xoxd-`) on domain=.slack.com; its presence is the
+// ground truth for "logged into Slack". We can't name the workspace/user from
+// the cookie alone (that needs the huddle DOM — #283), but we CAN say
+// connected-vs-not, which is all the main panel needs.
+async function isSignedInToSlack(sess) {
+  try {
+    const all = await sess.cookies.get({ domain: '.slack.com' });
+    return all.some((c) => c.name === 'd' && c.value);
+  } catch (err) {
+    console.warn('[electron] isSignedInToSlack check failed:', err.message);
+    return false;
+  }
+}
+
 // #282: append ?authuser=<email> to a Meet URL so Google selects the bot's
 // bound account rather than the partition default (authuser=0). Idempotent —
 // won't clobber an authuser already present. Returns the URL unchanged on any
@@ -3757,6 +3773,14 @@ function setupIPC() {
   ipcMain.handle('get-meet-mode', async () => {
     const signedIn = await isSignedInToGoogle(session.fromPartition(currentMeetPartition));
     return { partition: currentMeetPartition, mode: signedIn ? 'account' : 'guest' };
+  });
+
+  // Is this profile signed into Slack? Cookie-authoritative (the `d` session
+  // cookie). We don't know WHICH workspace/user without the huddle DOM (#283),
+  // so this is just connected-vs-not for the Slack row on the main panel.
+  ipcMain.handle('get-slack-mode', async () => {
+    const signedIn = await isSignedInToSlack(session.fromPartition(currentMeetPartition));
+    return { signedIn };
   });
 
   // Which Google account the bot is ACTUALLY signed in as (not just "signed in"

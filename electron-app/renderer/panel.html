@@ -20,7 +20,9 @@
             <h1>Vibeconferencing Agent</h1>
             <div class="app-meta">
               <span id="appVersion" class="app-version"></span>
-              <span id="appProfile" class="app-profile" style="display:none"></span>
+              <!-- The profile chip used to live here; it duplicated the profile
+                   name now shown in the agent card. Profile + local-server port
+                   moved into the botNameBig header tooltip (#289). -->
             </div>
           </div>
         </div>
@@ -28,63 +30,66 @@
       </div>
       <div class="error-bar" id="errorBar" style="display:none"><span id="errorText"></span><button class="error-close" id="errorClose">&times;</button></div>
 
-      <!-- Stable identity heading + profile switcher. The "⇄" button beside the
-           name opens the switcher dropdown (anchored right under the heading);
-           the dropdown lists every profile incl. the current one (#282). -->
-      <div style="position:relative">
-        <div style="display:flex;align-items:center;justify-content:center;gap:6px;margin:6px 0 2px">
-          <div id="botNameBig" title="This instance's stable identity — its app profile, or 'Default' for the default instance. The name it actually uses in a call appears below it once joined." style="font-family:'Google Sans',Roboto,sans-serif;font-size:26px;font-weight:700;text-align:center;color:#8ab4f8;letter-spacing:0.3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">—</div>
-          <button id="profileMenuBtn" title="Switch profile — each profile is a separate bot identity (its own Google/Slack login), like Chrome profiles." style="width:auto;margin:0;flex:0 0 auto;background:none;border:none;color:#8ab4f8;cursor:pointer;font-size:18px;line-height:1;padding:2px 4px;border-radius:6px">⇄</button>
+      <!-- ── Zone 2: Agent identity (#289 agent-first layout) ────────────────
+           A profile IS the agent: avatar (its virtual-camera look) · name ·
+           ⇄ switcher · voice · connected calling platforms. -->
+      <div class="agent-card">
+        <div class="agent-top">
+          <!-- Avatar tile = the bot's background-as-avatar (its avatarBackgroundSvg
+               + idle emoji), so the panel previews how it looks on camera (#289). -->
+          <div id="agentAvatar" class="agent-avatar"><span id="agentAvatarEmoji" class="agent-avatar-emoji">🙂</span></div>
+          <div class="agent-id">
+            <div class="agent-name-row">
+              <div id="botNameBig" title="This profile's stable identity — its name / personality / logins. The name it actually appears under in a call shows below once joined." class="agent-name">—</div>
+              <button id="profileMenuBtn" class="agent-switch" title="Switch profile — each profile is a separate bot (its own Google/Slack login + personality), like Chrome profiles.">⇄</button>
+              <!-- Profile switcher dropdown (#282). Populated on open from list-profiles. -->
+              <div id="profileMenu" class="profile-menu"></div>
+            </div>
+            <div id="botCallIdentity" class="agent-call-id" title="The name this bot is appearing under in the current call (Google account name in Meet, Slack name in a huddle). Only meaningful while in a call.">not in a call</div>
+            <div class="agent-voice" title="Text-to-speech voice. ElevenLabs when a voice ID is set; otherwise the built-in macOS voice."><span class="agent-voice-icon">🔊</span> <span id="voiceStatus">checking…</span></div>
+          </div>
         </div>
-        <!-- Live "appearing as" line: dim "not in a call" when idle; lights up
-             green with the actual provider display name once in a call. -->
-        <div id="botCallIdentity" title="The name this bot is appearing under in the current call (Google account name in Meet, Slack name in a huddle). Only meaningful while in a call." style="font-family:'Google Sans',Roboto,sans-serif;font-size:12px;text-align:center;margin:0 0 12px;color:#9aa0a6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">not in a call</div>
-        <!-- Profile switcher dropdown (#282). Populated on open from list-profiles. -->
-        <div id="profileMenu" style="display:none;position:absolute;z-index:50;top:100%;left:0;right:0;background:#2a2d31;border:1px solid #5f6368;border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,0.5);padding:6px;font-size:12px;max-height:60vh;overflow:auto"></div>
-      </div>
 
-      <!-- Both identities, always shown explicitly on the main view. The USER
-           login (vibeconferencing.com, for room creation) and the BOT login
-           (Google Meet, controls auto-admit) are easy to confuse, so surface
-           both with their email or a sign-in button. -->
-      <div id="identityBlock" style="margin-bottom:12px;padding:8px 12px;border:1px solid #5f6368;border-radius:8px;background:#3c4043;font-size:12px">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px" title="Your vibeconferencing.com login. Required for whiteboard/room access (creating and coordinating the shared room the bots use).">
-          <span style="line-height:1.5"><strong>User identity:</strong> <span id="userIdStatus">checking…</span></span>
+        <!-- Connected calling platforms (#289). Each is a status row: ● = connected
+             (signed in), ○ = guest/not connected. "Add" connects another account. -->
+        <div class="agent-connections">
+          <div class="conn-label">Platforms</div>
+          <div class="conn-row" title="The bot's Google Meet sign-in — only needed to auto-admit into invite-only meetings. Guest mode works for open meetings.">
+            <span class="conn-dot" id="connMeetDot"></span>
+            <span class="conn-name"><strong>Meet</strong> · <span id="botIdentityStatus">checking…</span></span>
+            <span class="conn-actions">
+              <button id="botSignInMainBtn" class="auth-action-btn" style="display:none">Sign in</button>
+              <!-- Signing OUT of the bot's Google account (→ guest) is a big, rare
+                   action — it lives in Settings, not the primary UI (#289). -->
+            </span>
+          </div>
+          <div class="conn-row" title="The bot's Slack identity for huddles — the signed-in Slack account's display name. (Reading the live name from the huddle is tracked in #283.)">
+            <span class="conn-dot" id="connSlackDot"></span>
+            <span class="conn-name"><strong>Slack</strong> · <span id="botSlackIdentityStatus">—</span></span>
+          </div>
+          <!-- "⊕ Add calling platform" returns once there's more than one
+               platform to add (#289). For now Meet + Slack are both fixed. -->
+        </div>
+
+        <!-- USER (vibeconferencing.com) login — transitional. Headed toward a
+             one-time, app-level sign-in (#289), so it's de-emphasized here. -->
+        <div class="user-id-line" title="Your vibeconferencing.com login — for the shared whiteboard rooms. Headed toward a one-time app-level sign-in.">
+          <span id="userIdStatus">checking…</span>
           <span style="white-space:nowrap">
             <button id="userSignInMainBtn" class="auth-action-btn" style="display:none">Sign in</button>
-            <button id="userSignOutMainBtn" class="auth-action-btn" style="display:none">Log out</button>
+            <!-- Logging OUT of vibeconferencing.com is a big, rare action —
+                 it lives in Settings, not the primary UI (#289). -->
           </span>
-        </div>
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px" title="The bot's Google Meet sign-in. Totally optional — only needed so the bot can auto-admit into invite-only meetings. Guest mode works for open meetings.">
-          <span style="line-height:1.5"><strong>Bot Meet identity:</strong> <span id="botIdentityStatus">checking…</span></span>
-          <span style="white-space:nowrap">
-            <button id="botSignInMainBtn" class="auth-action-btn" style="display:none">Sign in as bot</button>
-            <button id="botSignOutMainBtn" class="auth-action-btn" style="display:none">Use guest</button>
-          </span>
-        </div>
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px" title="The bot's Slack identity for huddles — the signed-in Slack account's display name. (Reading the live name from the huddle is tracked in #283.)">
-          <span style="line-height:1.5"><strong>Bot Slack identity:</strong> <span id="botSlackIdentityStatus">—</span></span>
-        </div>
-        <!-- Bot vitals: read-only capability indicators so the bot's current
-             state is visible at a glance — is the on-device fast model reachable,
-             and is a premium (ElevenLabs) voice set vs the built-in macOS voice. -->
-        <div style="margin-top:6px;padding-top:6px;border-top:1px solid #5f6368">
-          <div style="display:flex;align-items:center;gap:8px;line-height:1.5" title="The on-device fast model (Apple FoundationModels via the OpenAI-compatible wrapper) that powers turn-taking triage and engagement. 'Detected' means the configured endpoint answered just now.">
-            <strong>Fast model:</strong> <span id="fastModelStatus">checking…</span>
-          </div>
-          <div style="display:flex;align-items:center;gap:8px;line-height:1.5" title="Text-to-speech voice. ElevenLabs is used when a voice ID is set; otherwise the bot speaks with the built-in macOS voice.">
-            <strong>Voice:</strong> <span id="voiceStatus">checking…</span>
-          </div>
         </div>
       </div>
 
-      <p class="helper-text">Google Meet calls and Slack huddles in Chrome or Safari will be automatically detected.</p>
+      <!-- ── Zone 3: Join a call ───────────────────────────────────────────── -->
       <div class="field">
-        <label for="meetUrl">Meet/Slack URL</label>
+        <label for="meetUrl">Meet / Slack URL</label>
         <input type="text" id="meetUrl" placeholder="meet.google.com/xxx-xxxx-xxx or app.slack.com/client/…" />
       </div>
       <button id="joinBtn" class="primary" disabled>Join Call</button>
-      <div class="helper-text" style="margin-top:8px">You can also join by typing <code>/join-call</code> in any Claude Code session.</div>
+      <div class="helper-text" style="margin-top:8px">Calls in Chrome/Safari are auto-detected. You can also type <code>/join-call</code> in any Claude Code session.</div>
       <div class="helper-text" style="margin-top:4px"><a href="#" id="defaultMeetBtn" class="text-link">Open default testing meet in browser ↗</a></div>
 
       <div id="connectedSection" style="display:none">
@@ -92,6 +97,11 @@
         <div class="nav-buttons">
           <button id="openTroubleshootingBtn">Troubleshooting</button>
         </div>
+      </div>
+
+      <!-- ── Zone 4: Health (extensible; fast-model is the first tenant) ────── -->
+      <div class="health-zone">
+        <span title="The on-device fast model (Apple FoundationModels via the OpenAI-compatible wrapper) powering turn-taking triage/engagement. 'Detected' = the configured endpoint answered just now."><span class="health-key">⚡ Fast model</span> · <span id="fastModelStatus">checking…</span></span>
       </div>
     </div>
   </div>

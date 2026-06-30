@@ -438,3 +438,86 @@ button:disabled {
   text-decoration: none;
 }
 .text-link:hover { color: #aecbfa; text-decoration: underline; }
+
+/* ── Agent identity card (#289 agent-first layout) ──────────────────────── */
+.agent-card {
+  margin: 6px 0 14px;
+  padding: 12px;
+  border: 1px solid #5f6368;
+  border-radius: 12px;
+  background: #2a2d31;
+}
+.agent-top { display: flex; align-items: center; gap: 12px; }
+
+.agent-avatar {
+  position: relative;
+  flex: 0 0 auto;
+  width: 54px; height: 54px;
+  border-radius: 14px;
+  overflow: hidden;
+  background: linear-gradient(135deg, #3c4043, #26282b);
+  display: flex; align-items: center; justify-content: center;
+}
+.agent-avatar-bg { position: absolute; inset: 0; }
+.agent-avatar-bg svg, .agent-avatar-bg img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.agent-avatar-emoji { position: relative; font-size: 28px; line-height: 1; }
+
+.agent-id { flex: 1 1 auto; min-width: 0; }
+.agent-name-row { position: relative; display: flex; align-items: center; gap: 6px; }
+.agent-name {
+  font-family: 'Google Sans', Roboto, sans-serif;
+  font-size: 22px; font-weight: 700; color: #8ab4f8; letter-spacing: 0.3px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.agent-switch {
+  width: auto; margin: 0; flex: 0 0 auto;
+  background: none; border: none; color: #8ab4f8; cursor: pointer;
+  font-size: 18px; line-height: 1; padding: 2px 4px; border-radius: 6px;
+}
+.agent-switch:hover { background: #3c4043; }
+.agent-call-id {
+  font-size: 12px; color: #9aa0a6; margin-top: 1px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.agent-call-id.in-call { color: #81c995; }
+.agent-voice { font-size: 12px; color: #9aa0a6; margin-top: 4px; display: flex; align-items: center; gap: 4px; }
+.agent-voice-icon { font-size: 12px; }
+
+/* Profile switcher dropdown (anchored under the name row) */
+.profile-menu {
+  display: none;
+  position: absolute; z-index: 50; top: 100%; left: 0; right: 0; margin-top: 4px;
+  background: #2a2d31; border: 1px solid #5f6368; border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.5); padding: 6px; font-size: 12px;
+  max-height: 60vh; overflow: auto;
+}
+
+/* Connected calling platforms */
+.agent-connections { margin-top: 12px; padding-top: 10px; border-top: 1px solid #3c4043; }
+.conn-label { font-size: 10px; letter-spacing: 0.5px; text-transform: uppercase; color: #9aa0a6; margin-bottom: 6px; }
+.conn-row { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 3px 0; }
+.conn-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: #5f6368; }
+.conn-dot.on { background: #81c995; }
+.conn-name { flex: 1 1 auto; min-width: 0; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; }
+.conn-name strong { color: #e8eaed; }
+.conn-actions { flex: 0 0 auto; white-space: nowrap; }
+.conn-add {
+  width: auto; margin: 8px 0 0; padding: 2px 0;
+  background: none; border: none; color: #8ab4f8; cursor: pointer;
+  font-size: 12px; text-align: left;
+}
+.conn-add:hover { color: #aecbfa; }
+
+/* User (vibeconferencing.com) login — de-emphasized, transitional (#289) */
+.user-id-line {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-top: 10px; padding-top: 8px; border-top: 1px solid #3c4043;
+  font-size: 11px; color: #9aa0a6;
+}
+
+/* Health zone */
+.health-zone {
+  margin-top: 14px; padding-top: 10px; border-top: 1px solid #3c4043;
+  font-size: 11px; color: #9aa0a6;
+}
+.health-key { color: #bdc1c6; }

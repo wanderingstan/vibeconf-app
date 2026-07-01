@@ -21,9 +21,40 @@
   'use strict';
   const TAG = '[runway-avatar]';
   let active = null;
+  // The ONE video element the VirtualCamera currently draws. Owner-checked: an instance may only
+  // clear the camera if the pointer is ITS element. Fixes the 2026-07-01 flicker: an old
+  // generation's late Disconnected → _revert() → __vibeSetAvatarVideo(null) was clobbering the
+  // NEW generation's freshly-attached video (face → emoji), while its leaked watchdog kept
+  // logging w=0 alongside the live one (the alternating w=1088/w=0 signature in the logs).
+  let cameraEl = null;
 
   class RunwayAvatar {
-    constructor() { this.room = null; this.videoEl = null; this.connected = false; }
+    constructor() { this.room = null; this.videoEl = null; this.connected = false; this._cameraSet = false; this.onLive = null; }
+
+    // Tear down THIS instance's current video + watchdog (and only its own camera claim).
+    // Called before adopting a re-subscribed track (LiveKit re-fires TrackSubscribed after a
+    // reconnect — previously this overwrote _hb/videoEl and LEAKED the old interval + element).
+    _teardownVideo() {
+      try { if (this._hb) clearInterval(this._hb); } catch (e) {}
+      this._hb = null;
+      if (this.videoEl) {
+        if (cameraEl === this.videoEl) { try { window.__vibeSetAvatarVideo && window.__vibeSetAvatarVideo(null); } catch (e) {} cameraEl = null; }
+        try { this.videoEl.remove(); } catch (e) {}
+      }
+      this.videoEl = null; this._cameraSet = false;
+    }
+
+    // Hand the camera THIS element — only once real frames exist (frame-gated attach). Setting
+    // the pointer at subscribe time (videoWidth=0) made the tile flash emoji on every renewal.
+    _claimCamera(el) {
+      if (this._cameraSet || this.videoEl !== el) return;
+      this._cameraSet = true;
+      cameraEl = el;
+      try { window.__vibeSetAvatarVideo && window.__vibeSetAvatarVideo(el); } catch (e) {}
+      console.log(TAG, 'avatar VIDEO live (' + el.videoWidth + 'x' + el.videoHeight + ') → VirtualCamera');
+      try { this.onLive && this.onLive(); } catch (e) {}
+      this.onLive = null;
+    }
 
     async connect({ url, token }) {
       const LK = window.LivekitClient;
@@ -40,27 +71,33 @@
       room.on(LK.RoomEvent.TrackSubscribed, (track, pub, participant) => {
         console.log(TAG, 'subscribed:', track.kind, pub && pub.trackSid, participant && participant.identity);
         if (track.kind === 'video') {
+          // Re-subscribes happen (LiveKit re-fires TrackSubscribed after a reconnect) — clean up
+          // the previous element/watchdog first instead of leaking them (2026-07-01 flicker fix).
+          this._teardownVideo();
           const el = track.attach();
           el.muted = true; el.playsInline = true; el.autoplay = true;
           // Visible-but-invisible: real size + ~0 opacity so adaptiveStream/decoder keep frames flowing.
           el.style.position = 'fixed'; el.style.left = '0'; el.style.bottom = '0';
           el.style.width = '160px'; el.style.height = '90px'; el.style.opacity = '0.01'; el.style.pointerEvents = 'none';
           (document.body || document.documentElement).appendChild(el);
+          this.videoEl = el;
           for (const ev of ['loadedmetadata', 'canplay', 'playing', 'resize', 'error']) {
-            el.addEventListener(ev, () => console.log(TAG, 'video event:', ev, { rs: el.readyState, w: el.videoWidth, h: el.videoHeight, t: el.currentTime }));
+            el.addEventListener(ev, () => {
+              console.log(TAG, 'video event:', ev, { rs: el.readyState, w: el.videoWidth, h: el.videoHeight, t: el.currentTime });
+              if (el.videoWidth > 0) this._claimCamera(el); // frame-gated attach
+            });
           }
-          // Watchdog: log only on width change (0↔real = the failure/recovery signal), and
-          // self-stop when the track ends so renewals don't leak intervals.
+          // Watchdog: log only on width change (0↔real = the failure/recovery signal), claim the
+          // camera if the event path missed the first frame, and self-stop when the track ends.
           this._hbLast = -1;
           this._hb = setInterval(() => {
             const w = el.videoWidth, ended = track.mediaStreamTrack && track.mediaStreamTrack.readyState === 'ended';
             if (w !== this._hbLast) { console.log(TAG, 'video state w=' + w + ' rs=' + el.readyState + ' track=' + (track.mediaStreamTrack && track.mediaStreamTrack.readyState)); this._hbLast = w; }
+            if (w > 0) this._claimCamera(el);
             if (ended) { clearInterval(this._hb); this._hb = null; }
-          }, 3000);
+          }, 1000);
           const p = el.play && el.play(); if (p && p.catch) p.catch((e) => console.warn(TAG, 'video play failed:', e && e.message));
-          this.videoEl = el;
-          window.__vibeSetAvatarVideo && window.__vibeSetAvatarVideo(el);
-          console.log(TAG, 'avatar VIDEO attached → VirtualCamera');
+          console.log(TAG, 'avatar video subscribed — waiting for first frame before claiming the camera');
         } else if (track.kind === 'audio') {
           console.log(TAG, 'avatar audio track available (left detached for P2a)');
         }
@@ -105,11 +142,11 @@
     }
 
     _revert() {
-      try { if (this._hb) clearInterval(this._hb); } catch (e) {}
-      this._hb = null;
-      try { window.__vibeSetAvatarVideo && window.__vibeSetAvatarVideo(null); } catch (e) {}
-      try { if (this.videoEl) this.videoEl.remove(); } catch (e) {}
-      this.videoEl = null; this.connected = false;
+      // Owner-checked: only clears the camera if the pointer is OUR element (_teardownVideo).
+      // The old unconditional __vibeSetAvatarVideo(null) here was the flicker's second half —
+      // a prior generation's late Disconnected wiped the new generation's live face.
+      this._teardownVideo();
+      this.connected = false;
     }
 
     disconnect() {
@@ -128,9 +165,25 @@
     if (!m || m.source !== 'runway-avatar') return;
     try {
       if (m.type === 'connect') {
-        if (active) active.disconnect();
+        // GAPLESS renewal: keep the previous face drawing until the new session's video has real
+        // frames (onLive), then retire it — instead of disconnect-first, which guaranteed an
+        // emoji flash on every 4-minute rotate. Safety timer retires the old one regardless, so
+        // a new session that never produces frames can't leave two rooms connected (the
+        // 2026-07-01 two-watchdog overlap).
+        const prev = active;
         active = new RunwayAvatar();
-        await active.connect({ url: m.url, token: m.token });
+        let retired = false;
+        const retire = () => { if (!retired) { retired = true; try { prev && prev.disconnect(); } catch (e) {} } };
+        if (prev) { active.onLive = retire; setTimeout(retire, 15000); }
+        try {
+          await active.connect({ url: m.url, token: m.token });
+        } catch (e) {
+          // New session failed — keep the old face alive rather than reverting to emoji.
+          // Handled HERE (not rethrown): the outer catch would disconnect the restored prev.
+          console.error(TAG, 'connect failed:', e && e.message);
+          try { active.disconnect(); } catch (e2) {}
+          if (prev && !retired) { active = prev; } else { active = null; }
+        }
       } else if (m.type === 'disconnect') {
         if (active) active.disconnect();
         active = null;

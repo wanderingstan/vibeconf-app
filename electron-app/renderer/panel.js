@@ -455,15 +455,18 @@ if (profileMenuBtn && profileMenu) {
   });
 }
 
-const debugOverlayToggle = document.getElementById('debugOverlayToggle');
-if (debugOverlayToggle) {
-  api.invoke('get-debug-overlay').then((enabled) => {
-    debugOverlayToggle.checked = !!enabled;
-  }).catch(() => {});
-  debugOverlayToggle.addEventListener('change', () => {
-    api.invoke('set-debug-overlay', debugOverlayToggle.checked).catch(() => {});
-  });
-}
+// Per-category debug overlay (#overlay). Each checkbox id matches its store key,
+// so a bare loop wires them all. Health defaults on; the noisier sections off.
+api.invoke('get-overlay-flags').then((flags) => {
+  for (const key of Object.keys(flags || {})) {
+    const el = document.getElementById(key);
+    if (!el) continue;
+    el.checked = !!flags[key];
+    el.addEventListener('change', () => {
+      api.invoke('set-overlay-flag', key, el.checked).catch(() => {});
+    });
+  }
+}).catch(() => {});
 
 // ---------------------------------------------------------------------------
 // Load saved config

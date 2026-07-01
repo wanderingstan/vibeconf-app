@@ -238,11 +238,13 @@
         <h2>Call State</h2>
         <p class="helper-text" style="margin:0 0 8px">Live view of what the app's detectors believe. Updates while this screen is open.</p>
         <div id="callStateDebug" class="call-state-debug">Not in a call.</div>
-        <label style="display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer">
-          <input type="checkbox" id="debugOverlayToggle" />
-          <span>Show debug overlay on bot's camera</span>
-        </label>
-        <p class="helper-text" style="margin:4px 0 0 24px">Renders this state on the virtual camera so it appears in the bot's Meet tile — useful for diagnosing problems remotely. Visible to everyone in the call while enabled.</p>
+        <div style="margin-top:10px">
+          <div class="helper-text" style="margin:0 0 6px">Show on the bot's camera (rendered on the virtual camera so it appears in the bot's Meet tile — <strong>visible to everyone in the call</strong>):</div>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="overlayHealth" /> <span>Bot health &amp; response time</span></label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:4px"><input type="checkbox" id="overlayCaptions" /> <span>Captions heard</span></label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:4px"><input type="checkbox" id="overlayAgentLog" /> <span>Agent activity log</span></label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:4px"><input type="checkbox" id="overlayExperiments" /> <span>Experiment flags &amp; probes</span></label>
+        </div>
       </div>
 
       <div class="section">

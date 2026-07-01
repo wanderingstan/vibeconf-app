@@ -95,6 +95,7 @@
       // the troubleshooting screen. Lets a non-technical user diagnose
       // problems just by looking at the bot's tile in Meet.
       this.debugOverlayEnabled = debugOverlayEnabledGlobal;
+      this.debugOverlayFlags = debugOverlayFlagsGlobal;
       this.debugInfo = debugInfoLatest;
       // Persistent overrides from agent's set_avatar_emoji calls. null = use
       // default for that state. Seeded from avatarState so a camera created
@@ -394,7 +395,9 @@
       ctx.fillText(emoji, 0, 0);
       ctx.restore();
 
-      if (this.debugOverlayEnabled) this._renderDebugOverlay();
+      // Wrapped: the overlay is diagnostic chrome — a bug in it must never black
+      // out the bot's actual camera frame (which already rendered above).
+      if (this.debugOverlayEnabled) { try { this._renderDebugOverlay(); } catch (e) { /* overlay-only */ } }
     }
 
     _renderDebugOverlay() {
@@ -509,9 +512,26 @@
           '',
         ];
       })();
-      // Right column: banked probes (if any) on top, then the two wide caption
-      // lines (heard/proc), then the agent activity tail beneath them.
-      const rightLines = [...probeLines, heard, proc, '', ...agentLines];
+      // #overlay: each cluster is gated by its category toggle (health / captions
+      // / agentLog / experiments). Sections are joined with a blank separator,
+      // skipping empty ones, so disabling a category leaves no gap.
+      const F = this.debugOverlayFlags || { health: true };
+      const joinSections = (sections) => {
+        const out = [];
+        for (const sec of sections) {
+          if (!sec || !sec.length) continue;
+          if (out.length) out.push('');
+          out.push(...sec);
+        }
+        return out;
+      };
+      // Right column: banked probes (experiments), the wide caption lines
+      // (captions), and the agent activity tail (agentLog).
+      const rightLines = joinSections([
+        F.experiments ? probeLines.filter((l) => l !== '') : null,
+        F.captions ? [heard, proc] : null,
+        F.agentLog ? agentLines : null,
+      ]);
       // EXP — the active experiment/timing knobs (#273), so anyone in the call
       // can read off which flags a given bot is running. Values are the
       // EFFECTIVE settings (store override or schema default), resolved server-
@@ -530,10 +550,12 @@
           `triageAck:${onoff(e.triageAck)}`,
         ];
       })();
-      // Left column = the stats (CALL + LOOP + EXP). Right column = the agent
-      // tail, so it can run taller (newest at the bottom) without pushing the
-      // stats off-frame.
-      const leftLines = [...callLines, '', ...loopLines, '', ...expLines];
+      // Left column: bot health (CALL + LOOP + response time), and the
+      // experiment flags (experiments). Gated per #overlay category.
+      const leftLines = joinSections([
+        F.health ? [...callLines, '', ...loopLines] : null,
+        F.experiments ? expLines : null,
+      ]);
 
       const pad = 16;
       // 27px leading keeps the now-taller left column (CALL+LOOP+EXP, ~25 lines)
@@ -866,6 +888,10 @@
   // on Meet reload — preload runs at document_start, Meet calls getUserMedia
   // later) still takes effect on the camera the moment it's created.
   let debugOverlayEnabledGlobal = false;
+  // Per-category overlay flags (#overlay). Defaults mirror main.js OVERLAY_DEFAULTS
+  // (health on, rest off) so a camera created before the first push still renders
+  // sensibly.
+  let debugOverlayFlagsGlobal = { health: true, captions: false, agentLog: false, experiments: false };
   let debugInfoLatest = null;
 
   // Last-known avatar/call state, kept at module scope for the SAME reason as the
@@ -1337,10 +1363,12 @@
         // first getUserMedia, which is later than preload init).
         if (payload) {
           debugOverlayEnabledGlobal = !!payload.enabled;
+          if (payload.flags) debugOverlayFlagsGlobal = payload.flags;
           for (const cam of cameras.values()) {
             cam.debugOverlayEnabled = debugOverlayEnabledGlobal;
+            cam.debugOverlayFlags = debugOverlayFlagsGlobal;
           }
-          console.log('[bots-in-calls] Debug overlay:', payload.enabled ? 'on' : 'off');
+          console.log('[bots-in-calls] Debug overlay:', payload.enabled ? 'on' : 'off', payload.flags ? JSON.stringify(payload.flags) : '');
         }
         break;
 

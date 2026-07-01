@@ -2481,8 +2481,12 @@ app.whenReady().then(async () => {
     const sanitize = (s) => String(s || '').replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '') || 'x';
     const hostShort = sanitize(require('os').hostname().split('.')[0]);
     const instanceId = `${hostShort}--${sanitize(appProfile || 'default')}`;
+    // Default ON (schema default) when the user hasn't set it — only an explicit
+    // `false` keeps logs local. `=== true` would ignore the schema default for
+    // unset installs, so use `!== false`.
+    const remoteLoggingOn = store?.get('remoteLogging') !== false;
     configureRemoteLog({
-      enabled: store?.get('remoteLogging') === true,
+      enabled: remoteLoggingOn,
       endpointBase: () => getWebsiteUrl(),
       instanceId,
       token: process.env.VIBECONF_LOGS_TOKEN || '',
@@ -2496,7 +2500,7 @@ app.whenReady().then(async () => {
         callStatus: localServer.callStatus || null,
       }),
     });
-    console.log('[electron] Remote logging', store?.get('remoteLogging') === true ? 'ENABLED' : 'available (off)', '— instance:', instanceId);
+    console.log('[electron] Remote logging', remoteLoggingOn ? 'ENABLED' : 'available (off)', '— instance:', instanceId);
   } catch (err) {
     console.warn('[electron] Failed to configure remote logging:', err.message);
   }
@@ -3459,11 +3463,11 @@ async function loadMeetURL(meetUrl) {
       // app restarts and survives a Meet reload.
       const savedSvg = store?.get('avatarBackgroundSvg');
       if (savedSvg) pushAvatarBackground(savedSvg);
-      // Restore debug overlay state across Meet reloads.
-      if (store?.get('debugOverlay')) {
+      // Restore debug overlay state across Meet reloads (per-category #overlay).
+      if (overlayAnyOn()) {
         meetView.webContents.send('extension-message', {
           action: 'set-debug-overlay',
-          payload: { enabled: true },
+          payload: { enabled: true, flags: overlayPayloadFlags() },
         });
         updateDebugOverlayPushInterval(true);
       }
@@ -3494,6 +3498,31 @@ function updateDebugOverlayPushInterval(enabled) {
   };
   push();
   debugOverlayPushTimer = setInterval(push, 1000);
+}
+
+// Debug overlay is split into independent categories (#overlay). Each is a
+// human-only store key (NOT in the agent-facing schema — same prompt-injection
+// guard as the old single toggle). Health defaults ON for early testing; the
+// noisier sections default OFF. The on-camera overlay draws iff any is on.
+const OVERLAY_DEFAULTS = {
+  overlayHealth: true,        // CALL + LOOP + response-time
+  overlayCaptions: false,     // what the bot is hearing (heard/proc)
+  overlayAgentLog: false,     // driving Claude session's activity tail ("log output")
+  overlayExperiments: false,  // EXP flags + banked probes
+};
+function overlayFlags() {
+  const f = {};
+  for (const k of Object.keys(OVERLAY_DEFAULTS)) {
+    const v = store?.get(k);
+    f[k] = v === undefined ? OVERLAY_DEFAULTS[k] : !!v;
+  }
+  return f;
+}
+function overlayAnyOn() { return Object.values(overlayFlags()).some(Boolean); }
+// Short-keyed flags for the page-inject renderer.
+function overlayPayloadFlags() {
+  const f = overlayFlags();
+  return { health: f.overlayHealth, captions: f.overlayCaptions, agentLog: f.overlayAgentLog, experiments: f.overlayExperiments };
 }
 
 // ---------------------------------------------------------------------------
@@ -3686,18 +3715,21 @@ function setupIPC() {
   // the Meet tile. Stored under a non-schema key so it stays invisible to
   // the agent (no MCP set_preference access — would be a prompt-injection
   // vector for leaking state on demand).
-  ipcMain.handle('get-debug-overlay', () => !!(store && store.get('debugOverlay')));
-  ipcMain.handle('set-debug-overlay', (_event, enabled) => {
-    const on = !!enabled;
-    if (store) store.set('debugOverlay', on);
+  // Per-category debug overlay (#overlay). Panel reads all flags, sets one at a
+  // time. The camera draws iff any category is on.
+  ipcMain.handle('get-overlay-flags', () => overlayFlags());
+  ipcMain.handle('set-overlay-flag', (_event, key, enabled) => {
+    if (!(key in OVERLAY_DEFAULTS)) return overlayFlags();
+    if (store) store.set(key, !!enabled);
+    const anyOn = overlayAnyOn();
     if (meetView && !meetView.webContents.isDestroyed()) {
       meetView.webContents.send('extension-message', {
         action: 'set-debug-overlay',
-        payload: { enabled: on },
+        payload: { enabled: anyOn, flags: overlayPayloadFlags() },
       });
     }
-    updateDebugOverlayPushInterval(on);
-    return on;
+    updateDebugOverlayPushInterval(anyOn);
+    return overlayFlags();
   });
 
   // Pop the panel out into its own window (or dock it back) — lets the bot's-eye

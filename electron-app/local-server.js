@@ -59,9 +59,13 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, onInspectDom, onPlayAudio, onFocusRequest, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, onInspectDom, onPlayAudio, onFocusRequest, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.appVersion = appVersion || null;
+    // Release (installed .app/DMG) vs running from source (pnpm dev). Surfaced so
+    // both the human (panel) and an agent (no-room status) can tell which build
+    // is running — people who "just have Claude do everything" can't otherwise.
+    this.buildType = packaged ? 'release' : 'source';
     this.onBotSpeech = onBotSpeech || (() => {});
     this.onStopTts = onStopTts || (() => {});
     this.onWhiteboardUpdate = onWhiteboardUpdate || (() => {});
@@ -2070,6 +2074,8 @@ class LocalServer {
           localServerUrl: this.getLocalServerUrl(),
           localServerPort: this.port,
           localProfile: this.localProfile,
+          appVersion: this.appVersion,
+          buildType: this.buildType, // 'release' (DMG) | 'source' (pnpm dev)
           // #212: the user's persistent panel preference. The MCP reads this to
           // resolve an omitted bot_name to the configured name instead of a
           // frozen env default. currentCallBotName is the active per-call override.

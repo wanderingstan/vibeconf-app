@@ -267,9 +267,19 @@ meetUrlInput.addEventListener('input', updateJoinBtnState);
 // App version
 // ---------------------------------------------------------------------------
 
-api.invoke('get-app-version').then((version) => {
+api.invoke('get-app-version').then((info) => {
   const el = document.getElementById('appVersion');
-  if (el && version) el.textContent = `v${version}`;
+  if (!el || !info) return;
+  // Tolerate both the old string return and the new {version, packaged} shape.
+  const version = typeof info === 'string' ? info : info.version;
+  const packaged = typeof info === 'object' ? info.packaged : true;
+  if (!version) return;
+  // Source builds get a "-dev" suffix so a bare version number always means the
+  // released DMG. Disambiguates "is this the DMG or pnpm dev?" at a glance (#release).
+  el.textContent = `v${version}${packaged ? '' : '-dev'}`;
+  el.title = packaged
+    ? 'Release build (installed .app / DMG).'
+    : 'Running from SOURCE (pnpm dev) — not a released build. A clean version with no “-dev” means the installed DMG.';
 }).catch(() => {});
 
 // Prefill the URL field from whatever the app is already pointed at (e.g. a

@@ -222,6 +222,8 @@ let pendingTriage = null;
 // Local HTTP server for agent communication (replaces remote sync for MCP)
 const localServer = new globalThis.LocalServer({
   appVersion: app.getVersion(),
+  packaged: app.isPackaged, // release (installed .app/DMG) vs running from source
+
   getWhiteboardLoadedUrl: () => {
     try {
       if (whiteboardWindow && !whiteboardWindow.isDestroyed() && !whiteboardWindow.webContents.isDestroyed()) {
@@ -3535,7 +3537,7 @@ function setupIPC() {
     store.set(key, value);
   });
 
-  ipcMain.handle('get-app-version', () => app.getVersion());
+  ipcMain.handle('get-app-version', () => ({ version: app.getVersion(), packaged: app.isPackaged }));
 
   ipcMain.handle('get-app-profile', () => appProfile || null);
   ipcMain.handle('get-local-port', () => localServer.port);

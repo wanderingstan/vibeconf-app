@@ -58,7 +58,12 @@ try {
 // ../extension. OPT-IN — runway-avatar.js stays idle until a {source:'runway-avatar'} message,
 // so this never affects the default emoji bots. Wrapped so a failure can't disturb page-inject.
 try {
-  const extDir = path.join(__dirname, '..', 'extension');
+  // Packaged: extension/ is bundled via extraResources → Resources/extension
+  // (preload runs from inside app.asar, so __dirname/../extension wouldn't be a
+  // real path). Source: it's the repo-root extension/ dir next to electron-app/.
+  const extDir = __dirname.includes('.asar')
+    ? path.join(process.resourcesPath, 'extension')
+    : path.join(__dirname, '..', 'extension');
   (0, eval)(fs.readFileSync(path.join(extDir, 'livekit-client.umd.js'), 'utf-8'));
   (0, eval)(fs.readFileSync(path.join(extDir, 'runway-avatar.js'), 'utf-8'));
   console.log('[electron-meet] P2 runway-avatar.js + livekit-client loaded (idle until connect)');

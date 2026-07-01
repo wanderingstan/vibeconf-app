@@ -1977,6 +1977,10 @@ class LocalServer {
         errors: this.errors,
         permissions: this.permissions,
         captionsOn: this.captionsOn,
+        // Claude responsiveness (resolve→first-speak) — exposed over HTTP so a
+        // headless harness can assert the reaction-time readout, not just the GUI.
+        lastResponseMs: this.lastResponseMs,
+        responsePerf: this._perfStats(),
         workingMemory: this.getWorkingMemory(),
         chatUnread: this.chatUnread,
         roomUrl: this.roomId ? `${(this.getWebsiteUrl() || '').replace(/\/$/, '')}/room/${this.roomId}` : null,
@@ -2076,6 +2080,8 @@ class LocalServer {
           localProfile: this.localProfile,
           appVersion: this.appVersion,
           buildType: this.buildType, // 'release' (DMG) | 'source' (pnpm dev)
+          lastResponseMs: this.lastResponseMs,
+          responsePerf: this._perfStats(),
           // #212: the user's persistent panel preference. The MCP reads this to
           // resolve an omitted bot_name to the configured name instead of a
           // frozen env default. currentCallBotName is the active per-call override.

@@ -47,6 +47,13 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "../extension",
+        "to": "extension",
+        "filter": [
+          "**/*"
+        ]
       }
     ]
   },

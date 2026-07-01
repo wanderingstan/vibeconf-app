@@ -11,7 +11,16 @@
 // with scripts/launch-test-call.command or `pnpm dev -- --profile=… --local-port=…`).
 // Launching and driving are deliberately separate concerns.
 
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 const MCP_VERSIONS = { app: 'test-harness', mcp: '0.1.0' };
+
+// The speech clip the app bundles (same file the troubleshooting "Play Test
+// Audio File" button plays): "Hello everyone. I am an AI assistant joining this
+// meeting. Can you hear me clearly?" Absolute path so the app can read it over
+// the play-audio HTTP path (harness + app share the machine).
+export const TEST_SPEECH_PATH = path.join(fileURLToPath(new URL('.', import.meta.url)), '..', 'electron-app', 'test-speech.mp3');
 
 // Shared event log across all bots — the timeline the report is built from.
 export const events = [];
@@ -60,6 +69,33 @@ export class Bot {
     const ok = !!data?.results?.join?.ok || data?.success !== false;
     log(this.name, 'join', { ms, ok, note: ok ? '' : JSON.stringify(data).slice(0, 120) });
     return ok;
+  }
+
+  // Wait until the bot is actually in the call and it's live before the
+  // conversation starts. A real participant doesn't start talking the instant
+  // they click join — admission + call-UI load take ~8s, and speaking before the
+  // room is up means the opening line is emitted into a void (and a concurrent
+  // listener's first wait_for_speech times out on speech that wasn't heard yet —
+  // a false "heard-nothing" stall). So gate on callStatus === 'in-call' — a
+  // reliable signal reached ~8s after join — then a short settle for Meet's
+  // caption pipeline to come online (captions themselves lag speech by only
+  // ~4-5s once live; this is NOT a 30s cold-start — that earlier reading was just
+  // both bots sitting idle in warm-up while nobody spoke). Capped so a bot that
+  // never reaches in-call still proceeds. Env: VIBECONF_WARMUP_MAX_MS / _SETTLE_MS.
+  async warmUp({ maxMs = Number(process.env.VIBECONF_WARMUP_MAX_MS) || 20000,
+                settleMs = Number(process.env.VIBECONF_WARMUP_SETTLE_MS) || 5000 } = {}) {
+    const t0 = Date.now();
+    let inCall = false;
+    while (Date.now() - t0 < maxMs) {
+      try { inCall = (await this.status()).callStatus === 'in-call'; } catch { /* app not ready yet — retry */ }
+      if (inCall) break;
+      await sleep(1000);
+    }
+    await sleep(settleMs); // let the caption pipeline come online after admission
+    const waited = Date.now() - t0;
+    log(this.name, 'warmUp', { ms: waited, ok: true,
+      note: inCall ? `in-call after ${waited - settleMs}ms (+${settleMs}ms settle)` : `not in-call in ${maxMs}ms — proceeding` });
+    return { inCall, waitedMs: waited };
   }
 
   async speak(text, { emoji, voice } = {}) {
@@ -120,6 +156,20 @@ export class Bot {
     log(this.name, 'stopSharing', { ms, ok: data?.success !== false });
     return data;
   }
+
+  // Play arbitrary audio into the call via the bot's virtual mic — the exact
+  // play-audio HTTP path the play_audio MCP tool uses (url / local path / inline
+  // base64). The app treats it as speaking so it won't talk over it.
+  async playAudio({ url, path: filePath, audioData, emoji } = {}) {
+    const { data, ms } = await this._sync({ meta: { action: 'play-audio', url, path: filePath, audioData, emoji } });
+    const ok = data?.results?.playAudio?.ok === true || data?.success !== false;
+    log(this.name, 'playAudio', { ms, ok, note: url || filePath || '(inline)' });
+    return data;
+  }
+
+  // Play the bundled speech clip (TEST_SPEECH_PATH). Used to prove that arbitrary
+  // played audio reaches the OTHER bots as detectable, transcribable speech.
+  async playTestSpeech() { return this.playAudio({ path: TEST_SPEECH_PATH, emoji: '🔊' }); }
 
   async setBackground(svg) { return this.setPref('avatarBackgroundSvg', svg); }
   async setAvatarEmoji(emoji) {
@@ -311,15 +361,19 @@ export function report() {
     if (speaks[i].bot !== speaks[i - 1].bot && speaks[i].t - speaks[i - 1].t < 1200) overlaps++;
   }
 
+  // ANSI so failures are visually unmissable in the terminal (a plain "⚠" was
+  // easy to scan past). Bold-red for stalls/fails, kept off when not a TTY.
+  const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
+  const red = (s) => (useColor ? `\x1b[1;31m${s}\x1b[0m` : s);
   console.log('\nSIGNALS:');
   console.log(`  wait_for_speech timeouts: ${timeouts.length} (${realStalls.length} real stall${realStalls.length === 1 ? '' : 's'}, rest were quiet-room)`);
-  if (realStalls.length) console.log(`    ⚠ real stalls: ${realStalls.map((e) => `${e.bot}${e.meta?.captionsOn === false ? '(deaf)' : '(heard-nothing)'}`).join(', ')}`);
-  console.log(`  ${fails.length ? '❌' : '✅'} failed steps:          ${fails.length}${fails.length ? ' — ' + fails.map((f) => `${f.bot}/${f.action}`).join(', ') : ''}`);
+  if (realStalls.length) console.log(red(`    🔴 REAL STALLS: ${realStalls.map((e) => `${e.bot}${e.meta?.captionsOn === false ? '(deaf)' : '(heard-nothing)'}`).join(', ')}`));
+  console.log(`  ${fails.length ? red('🔴') : '✅'} failed steps:          ${fails.length ? red(fails.length + ' — ' + fails.map((f) => `${f.bot}/${f.action}`).join(', ')) : 0}`);
   console.log(`  cross-bot speak overlaps (<1.2s): ${overlaps} (informational — not a failure; use a dedicated lockstep scenario to test for real)`);
   console.log('─'.repeat(72));
   // Bottom-line verdict: gates on real stalls + failed steps (matches the exit code).
   const passed = fails.length === 0 && realStalls.length === 0;
-  console.log(passed ? '✅ PASS — all steps green' : `❌ FAIL — ${fails.length} failed step(s), ${realStalls.length} real stall(s)`);
+  console.log(passed ? '✅ PASS — all steps green' : red(`🔴 FAIL — ${fails.length} failed step(s), ${realStalls.length} real stall(s)`));
   console.log('─'.repeat(72));
   // Gate on real stalls + failures only. Overlaps and quiet-room timeouts don't fail.
   return { stalls: realStalls.length, timeouts: timeouts.length, fails: fails.length, overlaps };

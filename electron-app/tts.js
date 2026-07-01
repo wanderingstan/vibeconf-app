@@ -141,7 +141,14 @@ class TTSProvider {
     const fs = require('fs');
 
     const tmpDir = os.tmpdir();
-    const aiffPath = path.join(tmpDir, `vibeconf-tts-${Date.now()}.aiff`);
+    // Unique per PROCESS + call: os.tmpdir() is shared across every bot instance
+    // on the machine, so a name from Date.now() alone collides when two bots
+    // synthesize in the same millisecond (multi-profile #282/#301). Colliding
+    // processes then stomp each other's temp files mid-afconvert → "Command
+    // failed" / ENOENT. pid + random makes the path unique across processes and
+    // within a process.
+    const uniq = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const aiffPath = path.join(tmpDir, `vibeconf-tts-${uniq}.aiff`);
     const wavPath = aiffPath.replace('.aiff', '.wav');
 
     try {

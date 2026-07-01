@@ -222,6 +222,8 @@ let pendingTriage = null;
 // Local HTTP server for agent communication (replaces remote sync for MCP)
 const localServer = new globalThis.LocalServer({
   appVersion: app.getVersion(),
+  packaged: app.isPackaged, // release (installed .app/DMG) vs running from source
+
   getWhiteboardLoadedUrl: () => {
     try {
       if (whiteboardWindow && !whiteboardWindow.isDestroyed() && !whiteboardWindow.webContents.isDestroyed()) {
@@ -296,6 +298,18 @@ const localServer = new globalThis.LocalServer({
       });
     }
   },
+  // #321: forward custom whiteboard CSS to the remote sync so the whiteboard
+  // window (which renders from the remote room page) applies it.
+  onWhiteboardStyle: (css, sender) => {
+    const roomId = localServer.roomId;
+    if (!roomId) return;
+    console.log('[local-server] Whiteboard style from', sender, '·', String(css).length, 'chars');
+    fetch(`${getWebsiteUrl()}/api/sync/${roomId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sender, role: 'bot', ownerName: sender, whiteboardStyle: css }),
+    }).catch(err => console.error('[local-server] Failed to forward whiteboard style:', err.message));
+  },
   onJoinCall: (meetCode, botName) => {
     console.log('[local-server] Join call requested by agent:', meetCode, botName);
     logSessionHeaderUpdate('roomId', meetCode);
@@ -357,6 +371,16 @@ const localServer = new globalThis.LocalServer({
         log: (msg) => console.log(ts(), '[triage-warmup]', msg),
       }).catch(() => {});
     }
+  },
+  onJoinSlack: (url) => {
+    // Programmatic Slack-huddle join (#302): the same runtime provider switch +
+    // auto-join that the panel "Join" button does (the join-detected-slack IPC),
+    // but WITHOUT launching a Claude terminal — the agent calling join_call is
+    // already the driver. activateSlackProvider → setupSlackRoom sets
+    // localServer.roomId to slack-<team>-<channel>.
+    console.log('[local-server] Join Slack huddle requested by agent:', url);
+    activateSlackProvider(url, { autojoin: true });
+    return localServer.roomId || null;
   },
   onLeaveCall: () => {
     console.log('[local-server] Leave call requested by agent');
@@ -1056,6 +1080,8 @@ const localServer = new globalThis.LocalServer({
       });
     } else if (key === 'avatarBackgroundSvg') {
       pushAvatarBackground(value);
+    } else if (key === 'emojiSet') {
+      pushEmojiSet(value);
     } else if (key === 'studioSound') {
       // Toggle Meet's voice filter live (no rejoin needed) when in-call.
       if (localServer.callStatus === 'in-call' && meetView && !meetView.webContents.isDestroyed()) {
@@ -1087,6 +1113,18 @@ sync.updateConfig({
 
 // Resolve external refs in the SVG and broadcast the result to the meet view.
 // Empty/missing value clears the background back to the default gradient.
+// Push the emoji graphics set (#316) to the virtual camera. 'twemoji' = the
+// bundled SVG set; anything else = native OS font.
+function pushEmojiSet(value) {
+  if (!meetView || meetView.webContents.isDestroyed()) return;
+  // Pass the set name through; the renderer validates against its set registry
+  // (unknown → native fallback).
+  meetView.webContents.send('extension-message', {
+    action: 'set-emoji-set',
+    payload: { emojiSet: value || 'native' },
+  });
+}
+
 async function pushAvatarBackground(svgSource) {
   if (!meetView || meetView.webContents.isDestroyed()) return;
   try {
@@ -1446,6 +1484,22 @@ async function isSignedInToGoogle(sess) {
       AUTH.includes(c.name) && c.value);
   } catch (err) {
     console.warn('[electron] isSignedInToGoogle check failed:', err.message);
+    return false;
+  }
+}
+
+// True iff the partition holds a live Slack session cookie — i.e. some Slack
+// workspace is signed in on this profile. Slack's auth token lives in the `d`
+// cookie (value starts `xoxd-`) on domain=.slack.com; its presence is the
+// ground truth for "logged into Slack". We can't name the workspace/user from
+// the cookie alone (that needs the huddle DOM — #283), but we CAN say
+// connected-vs-not, which is all the main panel needs.
+async function isSignedInToSlack(sess) {
+  try {
+    const all = await sess.cookies.get({ domain: '.slack.com' });
+    return all.some((c) => c.name === 'd' && c.value);
+  } catch (err) {
+    console.warn('[electron] isSignedInToSlack check failed:', err.message);
     return false;
   }
 }
@@ -1989,7 +2043,12 @@ function launchClaudeTerminal(meetCode) {
   // Build the claude command with optional --dangerously-skip-permissions
   const dangerousMode = store.get('dangerousMode');
   const dangerousFlag = dangerousMode ? ' --dangerously-skip-permissions' : '';
-  const claudeCmd = `claude${dangerousFlag}${mcpFlags} \\"/join-call ${meetCode} ${botName.replace(/"/g, '')}\\"`;
+  // Optional model override (Settings → "Claude model"). Empty = claude's own
+  // default. Accepts an alias (sonnet / opus / haiku) or a full model id; sanitize
+  // to safe token chars since it's interpolated into the AppleScript/shell command.
+  const claudeModel = String(store.get('claudeModel') || '').trim().replace(/[^A-Za-z0-9._-]/g, '');
+  const modelFlag = claudeModel ? ` --model ${claudeModel}` : '';
+  const claudeCmd = `claude${dangerousFlag}${modelFlag}${mcpFlags} \\"/join-call ${meetCode} ${botName.replace(/"/g, '')}\\"`;
 
   // Open a Terminal window running the command. When Terminal isn't already
   // running, `do script` would spawn TWO windows — the auto-created launch
@@ -2458,8 +2517,12 @@ app.whenReady().then(async () => {
     const sanitize = (s) => String(s || '').replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '') || 'x';
     const hostShort = sanitize(require('os').hostname().split('.')[0]);
     const instanceId = `${hostShort}--${sanitize(appProfile || 'default')}`;
+    // Default ON (schema default) when the user hasn't set it — only an explicit
+    // `false` keeps logs local. `=== true` would ignore the schema default for
+    // unset installs, so use `!== false`.
+    const remoteLoggingOn = store?.get('remoteLogging') !== false;
     configureRemoteLog({
-      enabled: store?.get('remoteLogging') === true,
+      enabled: remoteLoggingOn,
       endpointBase: () => getWebsiteUrl(),
       instanceId,
       token: process.env.VIBECONF_LOGS_TOKEN || '',
@@ -2473,7 +2536,7 @@ app.whenReady().then(async () => {
         callStatus: localServer.callStatus || null,
       }),
     });
-    console.log('[electron] Remote logging', store?.get('remoteLogging') === true ? 'ENABLED' : 'available (off)', '— instance:', instanceId);
+    console.log('[electron] Remote logging', remoteLoggingOn ? 'ENABLED' : 'available (off)', '— instance:', instanceId);
   } catch (err) {
     console.warn('[electron] Failed to configure remote logging:', err.message);
   }
@@ -3447,11 +3510,16 @@ async function loadMeetURL(meetUrl) {
       // app restarts and survives a Meet reload.
       const savedSvg = store?.get('avatarBackgroundSvg');
       if (savedSvg) pushAvatarBackground(savedSvg);
-      // Restore debug overlay state across Meet reloads.
-      if (store?.get('debugOverlay')) {
+      // Push the emoji set across Meet reloads (#316) — the stored value, or the
+      // schema default (fluent3d) when the user hasn't chosen one.
+      const emojiSetDefault = require('./preferences-schema').PREFERENCES.emojiSet?.default;
+      const effEmojiSet = store?.get('emojiSet') ?? emojiSetDefault;
+      if (effEmojiSet && effEmojiSet !== 'native') pushEmojiSet(effEmojiSet);
+      // Restore debug overlay state across Meet reloads (per-category #overlay).
+      if (overlayAnyOn()) {
         meetView.webContents.send('extension-message', {
           action: 'set-debug-overlay',
-          payload: { enabled: true },
+          payload: { enabled: true, flags: overlayPayloadFlags() },
         });
         updateDebugOverlayPushInterval(true);
       }
@@ -3484,6 +3552,31 @@ function updateDebugOverlayPushInterval(enabled) {
   debugOverlayPushTimer = setInterval(push, 1000);
 }
 
+// Debug overlay is split into independent categories (#overlay). Each is a
+// human-only store key (NOT in the agent-facing schema — same prompt-injection
+// guard as the old single toggle). Health defaults ON for early testing; the
+// noisier sections default OFF. The on-camera overlay draws iff any is on.
+const OVERLAY_DEFAULTS = {
+  overlayHealth: true,        // CALL + LOOP + response-time
+  overlayCaptions: false,     // what the bot is hearing (heard/proc)
+  overlayAgentLog: false,     // driving Claude session's activity tail ("log output")
+  overlayExperiments: false,  // EXP flags + banked probes
+};
+function overlayFlags() {
+  const f = {};
+  for (const k of Object.keys(OVERLAY_DEFAULTS)) {
+    const v = store?.get(k);
+    f[k] = v === undefined ? OVERLAY_DEFAULTS[k] : !!v;
+  }
+  return f;
+}
+function overlayAnyOn() { return Object.values(overlayFlags()).some(Boolean); }
+// Short-keyed flags for the page-inject renderer.
+function overlayPayloadFlags() {
+  const f = overlayFlags();
+  return { health: f.overlayHealth, captions: f.overlayCaptions, agentLog: f.overlayAgentLog, experiments: f.overlayExperiments };
+}
+
 // ---------------------------------------------------------------------------
 // IPC routing — replaces chrome.runtime.onMessage
 // ---------------------------------------------------------------------------
@@ -3491,7 +3584,14 @@ function updateDebugOverlayPushInterval(enabled) {
 function setupIPC() {
   // --- Config ---
   ipcMain.handle('get-config', (_event, keys) => {
-    return store.getMultiple(keys);
+    const vals = store.getMultiple(keys);
+    // Fill unset schema prefs with their default so the panel shows the EFFECTIVE
+    // config (e.g. emojiSet defaults to fluent3d even before the user picks it).
+    const P = require('./preferences-schema').PREFERENCES;
+    for (const k of (keys || [])) {
+      if (vals[k] === undefined && P[k] && P[k].default !== undefined) vals[k] = P[k].default;
+    }
+    return vals;
   });
 
   // Bot vitals for the panel: is the on-device fast model reachable? Pings the
@@ -3523,9 +3623,12 @@ function setupIPC() {
 
   ipcMain.handle('set-config', (_event, key, value) => {
     store.set(key, value);
+    // Live-apply the visual prefs the panel can set here (the agent path goes
+    // through applyPref, which already pushes these). #316.
+    if (key === 'emojiSet') pushEmojiSet(value);
   });
 
-  ipcMain.handle('get-app-version', () => app.getVersion());
+  ipcMain.handle('get-app-version', () => ({ version: app.getVersion(), packaged: app.isPackaged }));
 
   ipcMain.handle('get-app-profile', () => appProfile || null);
   ipcMain.handle('get-local-port', () => localServer.port);
@@ -3674,18 +3777,21 @@ function setupIPC() {
   // the Meet tile. Stored under a non-schema key so it stays invisible to
   // the agent (no MCP set_preference access — would be a prompt-injection
   // vector for leaking state on demand).
-  ipcMain.handle('get-debug-overlay', () => !!(store && store.get('debugOverlay')));
-  ipcMain.handle('set-debug-overlay', (_event, enabled) => {
-    const on = !!enabled;
-    if (store) store.set('debugOverlay', on);
+  // Per-category debug overlay (#overlay). Panel reads all flags, sets one at a
+  // time. The camera draws iff any category is on.
+  ipcMain.handle('get-overlay-flags', () => overlayFlags());
+  ipcMain.handle('set-overlay-flag', (_event, key, enabled) => {
+    if (!(key in OVERLAY_DEFAULTS)) return overlayFlags();
+    if (store) store.set(key, !!enabled);
+    const anyOn = overlayAnyOn();
     if (meetView && !meetView.webContents.isDestroyed()) {
       meetView.webContents.send('extension-message', {
         action: 'set-debug-overlay',
-        payload: { enabled: on },
+        payload: { enabled: anyOn, flags: overlayPayloadFlags() },
       });
     }
-    updateDebugOverlayPushInterval(on);
-    return on;
+    updateDebugOverlayPushInterval(anyOn);
+    return overlayFlags();
   });
 
   // Pop the panel out into its own window (or dock it back) — lets the bot's-eye
@@ -3773,6 +3879,14 @@ function setupIPC() {
   ipcMain.handle('get-meet-mode', async () => {
     const signedIn = await isSignedInToGoogle(session.fromPartition(currentMeetPartition));
     return { partition: currentMeetPartition, mode: signedIn ? 'account' : 'guest' };
+  });
+
+  // Is this profile signed into Slack? Cookie-authoritative (the `d` session
+  // cookie). We don't know WHICH workspace/user without the huddle DOM (#283),
+  // so this is just connected-vs-not for the Slack row on the main panel.
+  ipcMain.handle('get-slack-mode', async () => {
+    const signedIn = await isSignedInToSlack(session.fromPartition(currentMeetPartition));
+    return { signedIn };
   });
 
   // Which Google account the bot is ACTUALLY signed in as (not just "signed in"

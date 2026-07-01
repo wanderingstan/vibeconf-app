@@ -30,7 +30,11 @@ import { homedir } from "os";
 
 let ROOM_ID = process.env.VIBECONF_ROOM_ID || "";
 let BOT_NAME = process.env.VIBECONF_BOT_NAME || "Jimmy";
-const BASE_URL = process.env.VIBECONF_BASE_URL || "http://127.0.0.1:7865";
+// The local app instance this session drives. Starts at the env/default port, but
+// join_call RE-BINDS it to the instance matching the requested profile name, so a
+// single agent session can target any running profile regardless of which port
+// the app baked into the MCP config (#301). Reassigned in routeToInstance().
+let BASE_URL = process.env.VIBECONF_BASE_URL || "http://127.0.0.1:7865";
 // Backend (Vercel) base — used for REMOTE session logs shipped by other machines
 // (get_session_log with an `instance` arg / list_log_instances). Distinct from
 // BASE_URL, which is this machine's local Electron app.
@@ -47,6 +51,82 @@ const MCP_VERSIONS = {
   mcp: MCP_VERSION,
   node: process.version,
 };
+
+// ── Multi-profile instance discovery + routing (#301) ────────────────────────
+// Multiple app instances (profiles) can run at once, each on its own local-server
+// port. The agent's MCP config bakes ONE port, so without this a single session
+// could only ever reach one instance. Instead we discover running instances by
+// probing the local port range (each /api/sync/no-room reports its profile, port,
+// and bot name) and, on join_call, RE-BIND this session's BASE_URL to the instance
+// whose PROFILE matches the requested name. (Per the profile==agent direction, the
+// name passed to /join-call is the profile to drive, not a display name.)
+
+function probePorts() {
+  // The env BASE_URL's port is always probed; plus a default range. Override the
+  // range via VIBECONF_PORT_RANGE="7865-7910".
+  const set = new Set();
+  const envPort = Number((BASE_URL.match(/:(\d+)/) || [])[1]);
+  if (envPort) set.add(envPort);
+  const range = process.env.VIBECONF_PORT_RANGE || "7865-7910";
+  const [lo, hi] = range.split("-").map(Number);
+  if (Number.isFinite(lo) && Number.isFinite(hi)) for (let p = lo; p <= hi; p++) set.add(p);
+  return [...set];
+}
+
+// Returns [{ port, baseUrl, profile, botName, callStatus, roomId }] for live instances.
+async function discoverInstances() {
+  const results = await Promise.all(probePorts().map(async (port) => {
+    try {
+      const resp = await fetch(`http://127.0.0.1:${port}/api/sync/no-room`, { signal: AbortSignal.timeout(900) });
+      if (!resp.ok) return null;
+      const d = await resp.json();
+      const s = d.status || {};
+      return {
+        port,
+        baseUrl: `http://127.0.0.1:${port}`,
+        // The default profile reports null — normalize so it's addressable as "default".
+        profile: s.localProfile || "default",
+        botName: s.currentCallBotName || s.configuredBotName || null,
+        callStatus: s.callStatus || null,
+        roomId: d.roomId || null,
+      };
+    } catch { return null; }
+  }));
+  return results.filter(Boolean);
+}
+
+// Resolve which running instance a name targets. name = profile (preferred) or bot
+// name. Backward-compatible: a single running instance is used as-is (the name is
+// then just the display name); discovery turning up nothing keeps the current
+// BASE_URL (env default) so existing single-instance setups are unaffected.
+function resolveInstance(name, instances) {
+  if (instances.length === 0) return { keep: true }; // nothing discovered → don't touch BASE_URL
+  if (name) {
+    const n = String(name).trim().toLowerCase();
+    const byProfile = instances.find((i) => (i.profile || "").toLowerCase() === n);
+    const byBot = instances.find((i) => (i.botName || "").toLowerCase() === n);
+    if (byProfile || byBot) return { instance: byProfile || byBot };
+    if (instances.length === 1) return { instance: instances[0] }; // sole instance; name is a display name
+    const list = instances.map((i) => `${i.profile} (:${i.port}${i.botName ? `, ${i.botName}` : ""})`).join(", ");
+    return { error: `No running instance for profile "${name}". Running: ${list}. Launch that profile, or use one of these names.` };
+  }
+  if (instances.length === 1) return { instance: instances[0] };
+  const list = instances.map((i) => `${i.profile} (:${i.port}${i.botName ? `, ${i.botName}` : ""})`).join(", ");
+  return { error: `Multiple app instances running — specify which by profile name: ${list}.` };
+}
+
+// Bind this session's BASE_URL to the instance the name targets. Returns
+// { ok, instance? } or { error }.
+async function routeToInstance(name) {
+  let instances;
+  try { instances = await discoverInstances(); }
+  catch { return { ok: true }; } // discovery failed → keep current BASE_URL, let the join surface a real error
+  const r = resolveInstance(name, instances);
+  if (r.error) return { error: r.error };
+  if (r.keep) return { ok: true };
+  if (r.instance) { BASE_URL = r.instance.baseUrl; return { ok: true, instance: r.instance }; }
+  return { ok: true };
+}
 
 function botSyncPayload(name = BOT_NAME, payload = {}) {
   return {
@@ -565,6 +645,36 @@ server.tool(
       return { content: [{ type: "text", text: `Voice "${voice}" not found. Call list_voices to see exact available names (built-in voices need the full name, including any "(Premium)"/"(Enhanced)" suffix).` }] };
     } catch (err) {
       return { content: [{ type: "text", text: `Error setting voice: ${err.message}` }] };
+    }
+  }
+);
+
+// --- set_whiteboard_style ---
+server.tool(
+  "set_whiteboard_style",
+  "Restyle the shared whiteboard with custom CSS — colors, fonts, spacing, backgrounds. Use it when someone asks the board to look a certain way (e.g. \"make the whiteboard black-on-white with a curvy font and pastel colors\"): translate the request into CSS and set it here. The CSS is applied SCOPED to the whiteboard automatically, so write bare declarations for the board itself (e.g. `background:#fafaf5; color:#222; font-family:Georgia,serif`) and nested selectors for content (`h1 { font-family:'Comic Sans MS',cursive; color:#c9a }`, `code { background:#ffe0f0 }`, `a { color:#7a5 }`). It persists for the room and only affects the board (not the call UI). Pass an empty string to reset to the default style. Separate from update_whiteboard, which sets the CONTENT.",
+  {
+    css: z.string().describe("CSS for the whiteboard. Bare declarations style the board container; nested selectors (h1{}, p{}, code{}, ul{}, a{}) style the markdown content. No @import or external url() (blocked). Empty string resets to default."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ css, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) {
+      return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    }
+    try {
+      const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(botSyncPayload(BOT_NAME, { whiteboardStyle: String(css || "") })),
+      });
+      const d = await resp.json();
+      if (d.success || d.results?.whiteboardStyle?.ok) {
+        return { content: [{ type: "text", text: css ? "Whiteboard restyled. It updates live on the shared board." : "Whiteboard style reset to default." }] };
+      }
+      return { content: [{ type: "text", text: `Couldn't set whiteboard style: ${d.error || d.results?.whiteboardStyle?.error || "unknown error"}` }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error contacting local server to set whiteboard style: ${err.message}` }] };
     }
   }
 );
@@ -1534,16 +1644,40 @@ server.tool(
   }
 );
 
+// --- list_call_instances ---
+server.tool(
+  "list_call_instances",
+  "List the Vibeconferencing app instances (profiles) currently running on this machine — each is a separate bot on its own local-server port. Returns profile name, port, bot name, and call status. join_call's bot_name selects the instance by PROFILE name (so `/join-call <code> Alice` drives the 'Alice' profile's app). Use this to see what you can target, or when join_call reports the name is ambiguous/not found.",
+  {},
+  async () => {
+    const instances = await discoverInstances();
+    if (!instances.length) {
+      return { content: [{ type: "text", text: "No running Vibeconferencing app instances found (probed the local port range). Launch the app for the profile you want to drive." }] };
+    }
+    const lines = instances.map((i) =>
+      `• ${i.profile} — port ${i.port}${i.botName ? `, bot "${i.botName}"` : ""}${i.callStatus ? `, ${i.callStatus}` : ""}${i.roomId ? `, room ${i.roomId}` : ""}${i.baseUrl === BASE_URL ? "  ← current target" : ""}`);
+    return { content: [{ type: "text", text: `Running instances (${instances.length}):\n${lines.join("\n")}\n\njoin_call(bot_name) selects one by profile name.` }] };
+  }
+);
+
 // --- join_call ---
 server.tool(
   "join_call",
-  "Tell the Vibeconferencing app to join a Google Meet call. Use this when the app is running but idle (not yet in a call). The app will navigate to the Meet URL and join.",
+  "Tell the Vibeconferencing app to join a call — a Google Meet OR a Slack huddle. Use this when the app is running but idle. For Meet, pass the meet code; the app navigates and joins. For Slack, pass the huddle URL (app.slack.com/client/<team>/<channel>); the app switches to the Slack provider and auto-joins the huddle.",
   {
-    room_id: z.string().describe("Meet code (e.g. abc-defg-hij)"),
+    room_id: z.string().describe("Meet code (e.g. abc-defg-hij) OR a Slack huddle URL (https://app.slack.com/client/<team>/<channel>)."),
     bot_name: z.string().optional().describe("Bot display name in Meet. Omit to use the bot name configured for this MCP instance (set via the app's panel or VIBECONF_BOT_NAME env). Only pass this to explicitly override — don't pass a literal default like 'Jimmy', that overrides the user's preference."),
   },
   async ({ room_id, bot_name }) => {
     try {
+      // Multi-profile routing (#301): the name selects which running app instance
+      // to drive. Re-bind this session's BASE_URL to it BEFORE resolving the bot
+      // name (so resolveBotName queries the right instance) and the join.
+      const routed = await routeToInstance(bot_name);
+      if (routed.error) return { content: [{ type: "text", text: routed.error }] };
+      const routedNote = routed.instance
+        ? ` (profile "${routed.instance.profile}" on port ${routed.instance.port})`
+        : "";
       const joinedBotName = await resolveBotName(bot_name);
       // If the lock is set but the bot name changed, check whether the
       // previous call is actually still in progress. The local-server is
@@ -1566,6 +1700,45 @@ server.tool(
           }],
         };
       }
+
+      // Slack huddle? room_id is an app.slack.com/client/<team>/<channel> URL —
+      // route to the Slack provider path instead of Meet navigation (#302). The
+      // app's room id becomes slack-<team>-<channel> (lowercased), which we mirror
+      // so subsequent tool calls (wait_for_speech etc.) target the right room.
+      const slackMatch = String(room_id).match(/app\.slack\.com\/client\/([^/]+)\/([^/?#]+)/i);
+      if (slackMatch) {
+        const slackRoomId = `slack-${slackMatch[1].toLowerCase()}-${slackMatch[2].toLowerCase()}`;
+        const sresp = await fetch(`${BASE_URL}/api/sync/${slackRoomId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(botSyncPayload(joinedBotName, { meta: { action: "join-slack", url: room_id } })),
+        });
+        const sdata = await sresp.json();
+        if (sdata.results?.join?.ok) {
+          ROOM_ID = slackRoomId;
+          BOT_NAME = joinedBotName;
+          botNameLocked = true;
+          lastPollTime = null;
+          return {
+            content: [{
+              type: "text",
+              text: [
+                `Joining the Slack huddle as "${joinedBotName}"${routedNote}. The app is switching to the Slack provider and auto-joining the huddle.`,
+                ``,
+                `**Joining is not complete until you have started the conversation loop.** Use \`${slackRoomId}\` as room_id for all tool calls.`,
+                ``,
+                `1. Once in the huddle, \`speak\` a brief one-sentence greeting so participants hear you're on the line.`,
+                `2. Then loop: \`wait_for_speech\` → optionally \`speak\` / \`send_chat\` → \`wait_for_speech\` — repeat until asked to leave or the call ends.`,
+                `**Do not send a final response to the user while the call is active** — if you stop, the bot sits silent; the local server only responds to your calls.`,
+                ``,
+                `When the call ends or the user asks you to leave, call \`leave_call\`.`,
+              ].join('\n'),
+            }],
+          };
+        }
+        return { content: [{ type: "text", text: `Couldn't join the Slack huddle: ${sdata.results?.join?.error || sdata.error || 'unknown error'}.` }] };
+      }
+
       const resp = await fetch(`${BASE_URL}/api/sync/${room_id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1583,7 +1756,7 @@ server.tool(
           content: [{
             type: "text",
             text: [
-              `Joining Meet call ${room_id} as "${joinedBotName}". The app is navigating to the call and will admit itself shortly.`,
+              `Joining Meet call ${room_id} as "${joinedBotName}"${routedNote}. The app is navigating to the call and will admit itself shortly.`,
               ``,
               `**Joining is not complete until you have started the conversation loop.**`,
               ``,

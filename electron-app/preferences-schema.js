@@ -160,14 +160,27 @@ const PREFERENCES = {
       "'what's my background?' without parsing raw SVG. Surfaced in get_room_info; " +
       "not rendered.",
   },
+  emojiSet: {
+    type: 'string',
+    default: 'fluent3d',
+    enum: ['native', 'twemoji', 'openmoji', 'noto', 'fluent3d'],
+    description:
+      'Which emoji graphics the avatar\'s face uses. "native" = the OS emoji font. ' +
+      '"twemoji" = Twitter Twemoji (flat). "openmoji" = OpenMoji (outlined). "noto" = ' +
+      'Google Noto Emoji. "fluent3d" = Microsoft Fluent 3D (a curated face set — ' +
+      'hand/person emojis fall back to native). All bundled in the app — no network. ' +
+      'Any emoji not in the chosen set falls back to the native glyph. Reskin the ' +
+      'bot\'s face (#316).',
+  },
   remoteLogging: {
     type: 'boolean',
-    default: false,
+    default: true,
     description:
       'Ship this app\'s session log to the backend so it can be read remotely ' +
       'via get_session_log (instance:…) or the logs CLI — useful for debugging ' +
-      'another machine\'s bots without terminal access. Off by default; the log ' +
-      'may contain transcript text, so only enable when you want it shared. ' +
+      'another machine\'s bots without terminal access. ON by default during ' +
+      'early testing (the team relies on these call logs for optimizing/debugging); ' +
+      'the log may contain transcript text. Set false to keep logs local. ' +
       'Takes effect immediately (no restart).',
   },
   websiteUrl: {
@@ -424,6 +437,9 @@ function validate(key, value) {
   }
   if (spec.type === 'string') {
     if (typeof value !== 'string') return { ok: false, error: `Expected string` };
+    if (Array.isArray(spec.enum) && !spec.enum.includes(value)) {
+      return { ok: false, error: `Must be one of: ${spec.enum.join(', ')}` };
+    }
     if (spec.maxLength != null && value.length > spec.maxLength) {
       return { ok: false, error: `String too long (max ${spec.maxLength} chars)` };
     }

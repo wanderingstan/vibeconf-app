@@ -34,6 +34,8 @@ const ttsApiKeyInput = document.getElementById('ttsApiKey');
 const ttsVoiceIdInput = document.getElementById('ttsVoiceId');
 const macosVoiceSelect = document.getElementById('macosVoice');
 const claudeWorkDirInput = document.getElementById('claudeWorkDir');
+const claudeModelInput = document.getElementById('claudeModel');
+const emojiSetInput = document.getElementById('emojiSet');
 const dangerousModeInput = document.getElementById('dangerousMode');
 const ackShortMinInput = document.getElementById('ackShortMin');
 const ackLongMinInput = document.getElementById('ackLongMin');
@@ -69,6 +71,46 @@ document.getElementById('openSettingsBtn').addEventListener('click', () => {
 document.getElementById('backFromSettingsBtn').addEventListener('click', () => showScreen(mainScreen));
 document.getElementById('openTroubleshootingBtn').addEventListener('click', () => showScreen(troubleshootingScreen));
 document.getElementById('backFromTroubleshootingBtn').addEventListener('click', () => showScreen(mainScreen));
+
+// ── #289 panel redesign: agent-card wiring ───────────────────────────────────
+// ("⊕ Add calling platform" was here; removed until there's a 3rd platform to
+// add — Meet + Slack are both fixed for now. #289.)
+
+// Render the agent avatar's background SVG layer (the same `avatarBackgroundSvg`
+// pref the bot can set via MCP). Empty/unset → keep the default CSS gradient.
+const agentAvatarEl = document.getElementById('agentAvatar');
+async function renderAgentAvatar() {
+  if (!agentAvatarEl) return;
+  let svg = '';
+  try {
+    const cfg = await api.invoke('get-config', ['avatarBackgroundSvg']);
+    svg = (cfg && cfg.avatarBackgroundSvg) || '';
+  } catch { /* ignore — fall back to gradient */ }
+  let bg = agentAvatarEl.querySelector('.agent-avatar-bg');
+  if (svg && svg.trim()) {
+    if (!bg) {
+      bg = document.createElement('div');
+      bg.className = 'agent-avatar-bg';
+      agentAvatarEl.insertBefore(bg, agentAvatarEl.firstChild);
+    }
+    bg.innerHTML = svg;
+  } else if (bg) {
+    bg.remove();
+  }
+}
+
+// Connection dots reflect whether each calling platform is signed in. We read the
+// status text the existing identity pollers already maintain (✓ = signed in) so we
+// don't have to re-thread that state through every update path.
+// The Meet dot follows the Meet identity row's ✓ (signed-in) text. The Slack
+// dot is owned by refreshSlackIdentity (cookie-authoritative).
+const connMeetDot = document.getElementById('connMeetDot');
+function syncConnDots() {
+  const meetTxt = (document.getElementById('botIdentityStatus')?.textContent || '').trim();
+  if (connMeetDot) connMeetDot.classList.toggle('on', meetTxt.startsWith('✓'));
+}
+setInterval(syncConnDots, 1500);
+renderAgentAvatar();
 
 // ---------------------------------------------------------------------------
 // Call State debug view — live snapshot of the app's detectors
@@ -110,6 +152,29 @@ function agentLoopHealth(s) {
   return `🔴 stale ${agoLabel(s.lastWaitForSpeechAt)} — agent likely stopped the wait_for_speech loop`;
 }
 
+// Health thresholds for Claude's reaction time (ms). Tune freely — mirrored in
+// the camera overlay's colorFor(). <3s snappy, 3–4s noticeable lag, >4s sluggish.
+const PERF_GREEN_MS = 3000;
+const PERF_YELLOW_MS = 4000;
+function perfDot(ms) {
+  if (ms == null) return '⚪';
+  if (ms < PERF_GREEN_MS) return '🟢';
+  if (ms <= PERF_YELLOW_MS) return '🟡';
+  return '🔴';
+}
+
+// Claude's reaction time (resolve → first speak) — last + rolling avg/p90.
+// This is mostly "how fast is Claude today", independent of our code, so it
+// explains a lot of the day-to-day "the bot feels snappy/sluggish" swing. The
+// dot reflects the LAST value (matches the headline number beside it); avg/p90
+// give the sustained picture.
+function responsePerfLabel(s) {
+  const p = s.responsePerf;
+  if (!p || !p.count) return '⚪ — (no response timed yet)';
+  const secs = (ms) => (ms == null ? '?' : `${(ms / 1000).toFixed(1)}s`);
+  return `${perfDot(p.last)} ${secs(p.last)} (avg ${secs(p.avg)} · p90 ${secs(p.p90)} · n=${p.count})`;
+}
+
 function renderCallState(s) {
   if (!s || !s.roomId) {
     callStateDebug.textContent = 'Not in a call.';
@@ -146,6 +211,7 @@ function renderCallState(s) {
     `Screen rec perm:    ${s.screenRecording || 'unknown'}`,
     `Agent loop:         ${agentLoopHealth(s)}`,
     `Last wait_for_speech: ${agoLabel(s.lastWaitForSpeechAt)}`,
+    `Claude response:    ${responsePerfLabel(s)}`,
     `Last ack:           ${ackLabel(s.lastAckEvent)}`,
     `Queued speech (${queued.length}):`,
     ...queuedLines,
@@ -203,9 +269,19 @@ meetUrlInput.addEventListener('input', updateJoinBtnState);
 // App version
 // ---------------------------------------------------------------------------
 
-api.invoke('get-app-version').then((version) => {
+api.invoke('get-app-version').then((info) => {
   const el = document.getElementById('appVersion');
-  if (el && version) el.textContent = `v${version}`;
+  if (!el || !info) return;
+  // Tolerate both the old string return and the new {version, packaged} shape.
+  const version = typeof info === 'string' ? info : info.version;
+  const packaged = typeof info === 'object' ? info.packaged : true;
+  if (!version) return;
+  // Source builds get a "-dev" suffix so a bare version number always means the
+  // released DMG. Disambiguates "is this the DMG or pnpm dev?" at a glance (#release).
+  el.textContent = `v${version}${packaged ? '' : '-dev'}`;
+  el.title = packaged
+    ? 'Release build (installed .app / DMG).'
+    : 'Running from SOURCE (pnpm dev) — not a released build. A clean version with no “-dev” means the installed DMG.';
 }).catch(() => {});
 
 // Prefill the URL field from whatever the app is already pointed at (e.g. a
@@ -224,12 +300,17 @@ Promise.all([
   api.invoke('get-local-port').catch(() => null),
 ]).then(([profile, port]) => {
   appProfileName = profile || null; // the stable heading identity (#282)
-  const el = document.getElementById('appProfile');
-  if (el && profile) {
-    el.textContent = profile;
-    el.title = `App profile: "${profile}" — isolated userData dir with its own preferences and Google login. Launched with --profile=${profile}.`
-      + (port ? ` · local-server port ${port}` : '');
-    el.style.display = '';
+  // The profile chip is gone (it duplicated the agent-card name). Fold the
+  // profile + local-server port — the "which instance is this" debug detail —
+  // into the profile-name header's tooltip instead (#289).
+  const big = document.getElementById('botNameBig');
+  if (big) {
+    const baseTitle = big.getAttribute('title') || '';
+    const detail = [
+      profile ? `App profile: "${profile}" (--profile=${profile}) — isolated userData dir with its own preferences and Google login.` : 'Default profile.',
+      port ? `local-server port ${port}` : null,
+    ].filter(Boolean).join('\n');
+    big.title = baseTitle + '\n\n' + detail;
   }
   updateBotNameBig();
 }).catch(() => {});
@@ -376,21 +457,24 @@ if (profileMenuBtn && profileMenu) {
   });
 }
 
-const debugOverlayToggle = document.getElementById('debugOverlayToggle');
-if (debugOverlayToggle) {
-  api.invoke('get-debug-overlay').then((enabled) => {
-    debugOverlayToggle.checked = !!enabled;
-  }).catch(() => {});
-  debugOverlayToggle.addEventListener('change', () => {
-    api.invoke('set-debug-overlay', debugOverlayToggle.checked).catch(() => {});
-  });
-}
+// Per-category debug overlay (#overlay). Each checkbox id matches its store key,
+// so a bare loop wires them all. Health defaults on; the noisier sections off.
+api.invoke('get-overlay-flags').then((flags) => {
+  for (const key of Object.keys(flags || {})) {
+    const el = document.getElementById(key);
+    if (!el) continue;
+    el.checked = !!flags[key];
+    el.addEventListener('change', () => {
+      api.invoke('set-overlay-flag', key, el.checked).catch(() => {});
+    });
+  }
+}).catch(() => {});
 
 // ---------------------------------------------------------------------------
 // Load saved config
 // ---------------------------------------------------------------------------
 
-api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'claudeWorkDir', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
+api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'claudeWorkDir', 'claudeModel', 'emojiSet', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
   if (result?.botName) { botNameInput.value = result.botName; currentBotName = result.botName; }
   rememberedMeetName = result?.lastMeetName || null;   // #282 remembered names
   rememberedSlackName = result?.lastSlackName || null;
@@ -408,6 +492,8 @@ api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', '
   populateMacosVoices(result?.macosVoice || 'Samantha');
   try { refreshVoiceStatus(); } catch { /* defined below; ignore if not yet */ }
   if (result?.claudeWorkDir) claudeWorkDirInput.value = result.claudeWorkDir;
+  if (result?.claudeModel) claudeModelInput.value = result.claudeModel;
+  if (emojiSetInput && result?.emojiSet) emojiSetInput.value = result.emojiSet;
   if (result?.dangerousMode) dangerousModeInput.checked = true;
   if (result?.ackShortMin != null) ackShortMinInput.value = result.ackShortMin;
   if (result?.ackLongMin != null) ackLongMinInput.value = result.ackLongMin;
@@ -699,14 +785,11 @@ function updateBotNameBig() {
 function updateCallIdentity() {
   if (!botCallIdentity) return;
   if (!inCall || !callProvider) {
-    // Idle: surface the remembered name so the profile isn't anonymous between
-    // calls (#282). Prefer a real remembered Meet name, then Slack, then the
-    // (not-yet-used) Bot Name as "will appear as", else nothing.
+    // Idle: just "not in a call". The remembered per-platform display names now
+    // live in their own connection rows below (next to the Meet email / Slack
+    // status), so we don't duplicate them under the profile name (#289).
     botCallIdentity.style.color = '#9aa0a6';
-    if (rememberedMeetName) botCallIdentity.textContent = `↩ last in Meet as ${rememberedMeetName}`;
-    else if (rememberedSlackName) botCallIdentity.textContent = `↩ last in Slack as ${rememberedSlackName}`;
-    else if (currentBotName) botCallIdentity.textContent = `will appear as ${currentBotName}`;
-    else botCallIdentity.textContent = 'not in a call';
+    botCallIdentity.textContent = 'not in a call';
     return;
   }
   let appearing;
@@ -764,7 +847,9 @@ async function refreshBotIdentity(mode) {
   botIdentityStatus.style.color = '#81c995';
   try {
     const r = await api.invoke('get-meet-account-email');
-    if (r?.signedIn && r.email) botIdentityStatus.textContent = '✓ ' + r.email;
+    // Show the Meet display name (what appears in the participant list) next to
+    // the account email — the identity lives here in the Meet row now (#289).
+    if (r?.signedIn && r.email) botIdentityStatus.textContent = r.name ? `✓ ${r.name} · ${r.email}` : '✓ ' + r.email;
     else if (r?.signedIn) botIdentityStatus.textContent = '✓ Signed in (couldn\'t read which account)';
     else { botIdentityStatus.textContent = '⚠ Account mode but not signed in yet'; botIdentityStatus.style.color = '#fdd663'; }
     // In-call name: prefer the Google display name, fall back to the email's
@@ -773,7 +858,11 @@ async function refreshBotIdentity(mode) {
     if (r?.name) rememberedMeetName = r.name; // persist for the idle sub-line after the call (#282)
     updateBotNameBig();
     updateCallIdentity(); // refresh "in Meet as …" once the account name resolves
-  } catch { botIdentityStatus.textContent = '✓ Signed in'; }
+  } catch {
+    // Scrape failed but the cookie says signed in — fall back to the remembered
+    // Meet display name if we have one, else a neutral "Signed in".
+    botIdentityStatus.textContent = rememberedMeetName ? `✓ ${rememberedMeetName}` : '✓ Signed in';
+  }
 }
 
 // --- Bot Slack identity on the MAIN view (parity with Bot Meet identity). In a
@@ -781,15 +870,23 @@ async function refreshBotIdentity(mode) {
 // live name from the huddle DOM yet (#283), so this is informational; once a
 // remembered Slack name exists it's shown. No override preference anymore. ---
 const botSlackIdentityStatus = document.getElementById('botSlackIdentityStatus');
-function refreshSlackIdentity() {
+async function refreshSlackIdentity() {
   if (!botSlackIdentityStatus) return;
-  if (rememberedSlackName) {
-    botSlackIdentityStatus.textContent = `💬 ${rememberedSlackName}`;
+  // Cookie-authoritative connected check (get-slack-mode → the `d` session
+  // cookie). We can't read WHICH workspace/user without the huddle DOM (#283),
+  // so: signed in → show the remembered name if we have one, else just
+  // "Signed in"; not signed in → "Not connected". The conn dot follows suit.
+  let signedIn = false;
+  try { signedIn = !!(await api.invoke('get-slack-mode'))?.signedIn; } catch { /* treat as unknown */ }
+  if (signedIn) {
+    botSlackIdentityStatus.textContent = rememberedSlackName ? `✓ ${rememberedSlackName}` : '✓ Signed in';
     botSlackIdentityStatus.style.color = '#81c995';
   } else {
-    botSlackIdentityStatus.textContent = '💬 Uses your Slack account name';
+    botSlackIdentityStatus.textContent = 'Not connected';
     botSlackIdentityStatus.style.color = '#9aa0a6';
   }
+  const dot = document.getElementById('connSlackDot');
+  if (dot) dot.classList.toggle('on', signedIn);
 }
 refreshSlackIdentity();
 
@@ -825,6 +922,8 @@ setInterval(() => {
     }
     // else: stable (guest, or account with email already shown) → just the cheap cookie read above
   }).catch(() => {});
+  // Keep the Slack row honest too — same cheap cookie read (get-slack-mode).
+  refreshSlackIdentity();
 }, 7000);
 
 // --- Bot vitals: fast-model reachability + voice mode -----------------------
@@ -1275,6 +1374,14 @@ document.getElementById('openVoiceSettingsBtn')?.addEventListener('click', (e) =
 
 claudeWorkDirInput.addEventListener('change', () => {
   api.invoke('set-config', 'claudeWorkDir', claudeWorkDirInput.value.trim());
+});
+
+claudeModelInput.addEventListener('change', () => {
+  api.invoke('set-config', 'claudeModel', claudeModelInput.value.trim());
+});
+
+if (emojiSetInput) emojiSetInput.addEventListener('change', () => {
+  api.invoke('set-config', 'emojiSet', emojiSetInput.value);
 });
 
 dangerousModeInput.addEventListener('change', () => {

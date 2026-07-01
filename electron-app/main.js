@@ -1068,6 +1068,8 @@ const localServer = new globalThis.LocalServer({
       });
     } else if (key === 'avatarBackgroundSvg') {
       pushAvatarBackground(value);
+    } else if (key === 'emojiSet') {
+      pushEmojiSet(value);
     } else if (key === 'studioSound') {
       // Toggle Meet's voice filter live (no rejoin needed) when in-call.
       if (localServer.callStatus === 'in-call' && meetView && !meetView.webContents.isDestroyed()) {
@@ -1099,6 +1101,18 @@ sync.updateConfig({
 
 // Resolve external refs in the SVG and broadcast the result to the meet view.
 // Empty/missing value clears the background back to the default gradient.
+// Push the emoji graphics set (#316) to the virtual camera. 'twemoji' = the
+// bundled SVG set; anything else = native OS font.
+function pushEmojiSet(value) {
+  if (!meetView || meetView.webContents.isDestroyed()) return;
+  // Pass the set name through; the renderer validates against its set registry
+  // (unknown → native fallback).
+  meetView.webContents.send('extension-message', {
+    action: 'set-emoji-set',
+    payload: { emojiSet: value || 'native' },
+  });
+}
+
 async function pushAvatarBackground(svgSource) {
   if (!meetView || meetView.webContents.isDestroyed()) return;
   try {
@@ -3468,6 +3482,11 @@ async function loadMeetURL(meetUrl) {
       // app restarts and survives a Meet reload.
       const savedSvg = store?.get('avatarBackgroundSvg');
       if (savedSvg) pushAvatarBackground(savedSvg);
+      // Push the emoji set across Meet reloads (#316) — the stored value, or the
+      // schema default (fluent3d) when the user hasn't chosen one.
+      const emojiSetDefault = require('./preferences-schema').PREFERENCES.emojiSet?.default;
+      const effEmojiSet = store?.get('emojiSet') ?? emojiSetDefault;
+      if (effEmojiSet && effEmojiSet !== 'native') pushEmojiSet(effEmojiSet);
       // Restore debug overlay state across Meet reloads (per-category #overlay).
       if (overlayAnyOn()) {
         meetView.webContents.send('extension-message', {
@@ -3537,7 +3556,14 @@ function overlayPayloadFlags() {
 function setupIPC() {
   // --- Config ---
   ipcMain.handle('get-config', (_event, keys) => {
-    return store.getMultiple(keys);
+    const vals = store.getMultiple(keys);
+    // Fill unset schema prefs with their default so the panel shows the EFFECTIVE
+    // config (e.g. emojiSet defaults to fluent3d even before the user picks it).
+    const P = require('./preferences-schema').PREFERENCES;
+    for (const k of (keys || [])) {
+      if (vals[k] === undefined && P[k] && P[k].default !== undefined) vals[k] = P[k].default;
+    }
+    return vals;
   });
 
   // Bot vitals for the panel: is the on-device fast model reachable? Pings the
@@ -3569,6 +3595,9 @@ function setupIPC() {
 
   ipcMain.handle('set-config', (_event, key, value) => {
     store.set(key, value);
+    // Live-apply the visual prefs the panel can set here (the agent path goes
+    // through applyPref, which already pushes these). #316.
+    if (key === 'emojiSet') pushEmojiSet(value);
   });
 
   ipcMain.handle('get-app-version', () => ({ version: app.getVersion(), packaged: app.isPackaged }));

@@ -1344,7 +1344,14 @@ async function autoJoin(botName) {
     let admitted = false;
     let waitedSeconds = 0;
     let limboSeconds = 0; // consecutive seconds with neither waiting nor in-call UI
-    const LIMBO_GRACE_SECONDS = 15;
+    // Post-admission, Meet shows a LOADING screen (no waiting/join/in-call UI) that
+    // can run 20s+ on a slow join before the in-call toolbar renders. At 15s this
+    // false-failed a bot that was still being admitted — it declared "couldn't
+    // enter", the agent gave up, and the bot then appeared in-call ~7s later. A
+    // false abandonment of a working call is worse than a slower real-failure
+    // detection, so keep generous slack. (A genuine denial hits handleDenialPage
+    // above and fails fast regardless of this grace.)
+    const LIMBO_GRACE_SECONDS = 35;
     let logEvery = 30;
     while (!admitted) {
       await delay(1000);

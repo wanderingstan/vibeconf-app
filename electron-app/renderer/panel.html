@@ -142,6 +142,17 @@
         <div style="font-size:11px;color:#666;margin-top:2px">Model for the launched Claude session (passed as <code>--model</code>). Blank = Claude's default. Use an alias (<code>sonnet</code>, <code>opus</code>, <code>haiku</code>) or a full model id.</div>
       </div>
       <div class="field">
+        <label for="emojiSet">Avatar Emoji Set</label>
+        <select id="emojiSet" style="width:100%;box-sizing:border-box">
+          <option value="native">Native (OS font)</option>
+          <option value="twemoji">Twemoji (flat)</option>
+          <option value="openmoji">OpenMoji (outlined)</option>
+          <option value="noto">Noto (Google)</option>
+          <option value="fluent3d">Fluent 3D (Microsoft)</option>
+        </select>
+        <div style="font-size:11px;color:#666;margin-top:2px">Graphics for the bot's face emoji. Twemoji is a distinct, consistent set shipped with the app (#316).</div>
+      </div>
+      <div class="field">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
           <input type="checkbox" id="dangerousMode" />
           Dangerously bypass permissions

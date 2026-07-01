@@ -35,6 +35,7 @@ const ttsVoiceIdInput = document.getElementById('ttsVoiceId');
 const macosVoiceSelect = document.getElementById('macosVoice');
 const claudeWorkDirInput = document.getElementById('claudeWorkDir');
 const claudeModelInput = document.getElementById('claudeModel');
+const emojiSetInput = document.getElementById('emojiSet');
 const dangerousModeInput = document.getElementById('dangerousMode');
 const ackShortMinInput = document.getElementById('ackShortMin');
 const ackLongMinInput = document.getElementById('ackLongMin');
@@ -473,7 +474,7 @@ api.invoke('get-overlay-flags').then((flags) => {
 // Load saved config
 // ---------------------------------------------------------------------------
 
-api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'claudeWorkDir', 'claudeModel', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
+api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'claudeWorkDir', 'claudeModel', 'emojiSet', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
   if (result?.botName) { botNameInput.value = result.botName; currentBotName = result.botName; }
   rememberedMeetName = result?.lastMeetName || null;   // #282 remembered names
   rememberedSlackName = result?.lastSlackName || null;
@@ -492,6 +493,7 @@ api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', '
   try { refreshVoiceStatus(); } catch { /* defined below; ignore if not yet */ }
   if (result?.claudeWorkDir) claudeWorkDirInput.value = result.claudeWorkDir;
   if (result?.claudeModel) claudeModelInput.value = result.claudeModel;
+  if (emojiSetInput && result?.emojiSet) emojiSetInput.value = result.emojiSet;
   if (result?.dangerousMode) dangerousModeInput.checked = true;
   if (result?.ackShortMin != null) ackShortMinInput.value = result.ackShortMin;
   if (result?.ackLongMin != null) ackLongMinInput.value = result.ackLongMin;
@@ -1376,6 +1378,10 @@ claudeWorkDirInput.addEventListener('change', () => {
 
 claudeModelInput.addEventListener('change', () => {
   api.invoke('set-config', 'claudeModel', claudeModelInput.value.trim());
+});
+
+if (emojiSetInput) emojiSetInput.addEventListener('change', () => {
+  api.invoke('set-config', 'emojiSet', emojiSetInput.value);
 });
 
 dangerousModeInput.addEventListener('change', () => {

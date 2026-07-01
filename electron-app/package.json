@@ -54,6 +54,13 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "emoji",
+        "to": "emoji",
+        "filter": [
+          "**/*"
+        ]
       }
     ]
   },

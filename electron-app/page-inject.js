@@ -96,6 +96,7 @@
       // problems just by looking at the bot's tile in Meet.
       this.debugOverlayEnabled = debugOverlayEnabledGlobal;
       this.debugOverlayFlags = debugOverlayFlagsGlobal;
+      this.emojiSet = avatarState.emojiSet || emojiSetGlobal;
       this.debugInfo = debugInfoLatest;
       // Persistent overrides from agent's set_avatar_emoji calls. null = use
       // default for that state. Seeded from avatarState so a camera created
@@ -319,7 +320,11 @@
           payload: { line: `Avatar → ${emoji} · ${reason}` },
         }, '*');
       }
-      const emojiSize = Math.min(w, h) * 0.65;
+      // Base "zoom" for the face — native glyph AND every image set use this, so
+      // it scales all sets uniformly. 0.77 ≈ +19% over the old 0.65 (Stan: ~840px
+      // → ~1000px). The bob/breathe/speaking transforms multiply on top; at that
+      // peak jaw-open the glyph can just touch the tile edges, which is fine.
+      const emojiSize = Math.min(w, h) * 0.77;
       // Idle liveness (#223). The avatar must never look like a frozen frame
       // on the video feed — a static tile reads as "the bot crashed." Two
       // small continuous motions run in EVERY state:
@@ -392,7 +397,16 @@
         // without the loud jaw motion of the speaking path. (#223)
         ctx.scale(breathe * tickPop, breathe * tickPop);
       }
-      ctx.fillText(emoji, 0, 0);
+      // Twemoji set (#316): draw the bundled SVG centered at the origin (all the
+      // bob/breathe/lip-sync transforms are already applied, so the image is just
+      // as alive as the glyph). Falls back to the native glyph until the image
+      // decodes, or forever if the emoji isn't in the set.
+      const emojiImg = (this.emojiSet && this.emojiSet !== 'native') ? _emojiImage(this.emojiSet, emoji) : null;
+      if (emojiImg) {
+        ctx.drawImage(emojiImg, -emojiSize / 2, -emojiSize / 2, emojiSize, emojiSize);
+      } else {
+        ctx.fillText(emoji, 0, 0);
+      }
       ctx.restore();
 
       // Wrapped: the overlay is diagnostic chrome — a bug in it must never black
@@ -893,6 +907,51 @@
   // sensibly.
   let debugOverlayFlagsGlobal = { health: true, captions: false, agentLog: false, experiments: false };
   let debugInfoLatest = null;
+  let emojiSetGlobal = 'native'; // 'native' | 'twemoji' — pushed from main (#316)
+
+  // Emoji image sets (#316): draw the avatar's emoji from a bundled SVG set
+  // instead of the OS font. The preload exposes __vibeEmojiSvg(relPath) — it has
+  // fs; page-inject (eval'd into the preload global) doesn't reliably — and we
+  // cache a data-URI Image per resolved path. Same data-URI→canvas path the
+  // avatar background uses, so it never taints the captured stream. Any emoji not
+  // in the chosen set → null → native glyph.
+  //
+  // Each set is a filename convention over the emoji's Unicode codepoints. Adding
+  // a set = vendor its SVGs under emoji/<dir>/ and add one entry here.
+  //   twemoji  — lowercase hex, "-", drops FE0F (except in ZWJ sequences)
+  //   openmoji — UPPERCASE hex, "-", fully qualified (keeps FE0F)
+  const _emojiImgCache = new Map(); // relPath -> Image (loaded) | null (loading/failed)
+  function _emojiHex(emoji, { sep, upper, dropFe0f }) {
+    let cps = Array.from(String(emoji)).map((c) => c.codePointAt(0));
+    if (dropFe0f && !cps.includes(0x200d)) cps = cps.filter((cp) => cp !== 0xfe0f);
+    const s = cps.map((cp) => cp.toString(16)).join(sep);
+    return upper ? s.toUpperCase() : s;
+  }
+  // Each set's canonical filename = the emoji's codepoints under one convention.
+  // We normalize name-based sets (Fluent) to this canonical form at VENDOR time,
+  // so every set here is just { dir, ext } and shares one filename rule.
+  const _canon = (e) => _emojiHex(e, { sep: '-', upper: false, dropFe0f: true });
+  const EMOJI_SETS = {
+    twemoji:  { dir: 'twemoji',  file: (e) => _emojiHex(e, { sep: '-', upper: false, dropFe0f: true }) + '.svg' },
+    openmoji: { dir: 'openmoji', file: (e) => _emojiHex(e, { sep: '-', upper: true,  dropFe0f: false }) + '.svg' },
+    noto:     { dir: 'noto',     file: (e) => 'emoji_u' + _emojiHex(e, { sep: '_', upper: false, dropFe0f: true }) + '.svg' },
+    fluent3d: { dir: 'fluent3d', file: (e) => _canon(e) + '.png' },
+  };
+  function _emojiImage(setName, emoji) {
+    const set = EMOJI_SETS[setName];
+    const resolve = (typeof globalThis !== 'undefined') && globalThis.__vibeEmojiDataUri;
+    if (!set || !resolve) return null;
+    const rel = set.dir + '/' + set.file(emoji);
+    if (_emojiImgCache.has(rel)) return _emojiImgCache.get(rel);
+    _emojiImgCache.set(rel, null); // mark seen; native glyph until (if) it decodes
+    const dataUri = resolve(rel);
+    if (!dataUri) return null; // not in the set → native glyph
+    const img = new Image();
+    img.onload = () => { _emojiImgCache.set(rel, img); };
+    img.onerror = () => { _emojiImgCache.set(rel, null); };
+    img.src = dataUri;
+    return null;
+  }
 
   // Last-known avatar/call state, kept at module scope for the SAME reason as the
   // debug-overlay globals: state messages (set-call-status / set-bot-state /
@@ -904,7 +963,7 @@
   const avatarState = {
     state: 'idle', mode: 'active', callStatus: 'idle', hasEngaged: false,
     deaf: false, idleEmojiOverride: null, listeningEmojiOverride: null,
-    yieldingEmojiOverride: null, backgroundImage: null,
+    yieldingEmojiOverride: null, backgroundImage: null, emojiSet: 'native',
   };
 
   // P2: latch the avatar video so a camera created AFTER the track arrives (or recreated on a
@@ -1351,6 +1410,17 @@
             'idle=' + (payload.idle ?? 'unchanged'),
             'listening=' + (payload.listening ?? 'unchanged'),
             'yielding=' + (payload.yielding ?? 'unchanged'));
+        }
+        break;
+
+      case 'set-emoji-set':
+        // Which emoji graphics the avatar draws: 'native' (OS font) or 'twemoji'
+        // (bundled SVG set, #316). Module-scope var seeds cameras created later.
+        if (payload) {
+          emojiSetGlobal = (payload.emojiSet === 'native' || EMOJI_SETS[payload.emojiSet]) ? payload.emojiSet : 'native';
+          avatarState.emojiSet = emojiSetGlobal;
+          for (const cam of cameras.values()) cam.emojiSet = emojiSetGlobal;
+          console.log('[bots-in-calls] Emoji set:', emojiSetGlobal);
         }
         break;
 

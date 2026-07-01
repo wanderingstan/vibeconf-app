@@ -160,6 +160,18 @@ const PREFERENCES = {
       "'what's my background?' without parsing raw SVG. Surfaced in get_room_info; " +
       "not rendered.",
   },
+  emojiSet: {
+    type: 'string',
+    default: 'fluent3d',
+    enum: ['native', 'twemoji', 'openmoji', 'noto', 'fluent3d'],
+    description:
+      'Which emoji graphics the avatar\'s face uses. "native" = the OS emoji font. ' +
+      '"twemoji" = Twitter Twemoji (flat). "openmoji" = OpenMoji (outlined). "noto" = ' +
+      'Google Noto Emoji. "fluent3d" = Microsoft Fluent 3D (a curated face set — ' +
+      'hand/person emojis fall back to native). All bundled in the app — no network. ' +
+      'Any emoji not in the chosen set falls back to the native glyph. Reskin the ' +
+      'bot\'s face (#316).',
+  },
   remoteLogging: {
     type: 'boolean',
     default: true,
@@ -425,6 +437,9 @@ function validate(key, value) {
   }
   if (spec.type === 'string') {
     if (typeof value !== 'string') return { ok: false, error: `Expected string` };
+    if (Array.isArray(spec.enum) && !spec.enum.includes(value)) {
+      return { ok: false, error: `Must be one of: ${spec.enum.join(', ')}` };
+    }
     if (spec.maxLength != null && value.length > spec.maxLength) {
       return { ok: false, error: `String too long (max ${spec.maxLength} chars)` };
     }

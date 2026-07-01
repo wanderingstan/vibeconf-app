@@ -193,9 +193,9 @@ fi
 # all at once. No effect on the headless harness (it drives via HTTP). Windows
 # are CREATED at these coords via --window-* flags, which the app applies at
 # BrowserWindow creation — reliable, unlike moving from outside via System Events
-# (the window server reverts those for some instances). The CI fleet has no agent
-# terminals, so each bot gets a full grid cell. Set VIBECONF_NO_WINDOW_GRID=1 to
-# skip (e.g. a headless nightly run that doesn't care about placement).
+# (the window server reverts those for some instances). Windows keep their natural
+# size and are just PLACED at the grid slot (positioning only, no resize). Set
+# VIBECONF_NO_WINDOW_GRID=1 to skip (e.g. a headless nightly that ignores placement).
 GRID=1
 [[ -n "${VIBECONF_NO_WINDOW_GRID:-}" ]] && GRID=0
 if (( GRID )); then
@@ -209,10 +209,7 @@ if (( GRID )); then
   esac
   CELLW=$(( SCRW / COLS ))
   CELLH=$(( (SCRH - MENUBAR) / ROWS ))
-  MINAPPW=1020   # 640 + PANEL_WIDTH(380): the app's enforced min width
-  APPW=$(( CELLW > MINAPPW ? CELLW : MINAPPW ))
-  APPH=$CELLH
-  echo "  • window grid ${SCRW}×${SCRH}: ${COLS}×${ROWS}, each ~${APPW}×${APPH}"
+  echo "  • window grid ${SCRW}×${SCRH}: ${COLS}×${ROWS} slots — positioning only (natural size, no resize)"
 fi
 
 # Per-run name suffix (MEET ONLY): a SIGKILL'd bot ghosts in the Meet room until
@@ -245,7 +242,10 @@ for i in $(seq 1 $N); do
     row=$(( idx / COLS ))
     wx=$(( col * CELLW ))
     wy=$(( MENUBAR + row * CELLH ))
-    WINFLAGS="--window-x=$wx --window-y=$wy --window-w=$APPW --window-h=$APPH"
+    # Position only — do NOT resize. Passing --window-w/-h made each app fill its
+    # whole grid cell, which is huge/unhelpful on a large display. Omitting them
+    # lets the app open at its natural default size, just placed at the grid slot.
+    WINFLAGS="--window-x=$wx --window-y=$wy"
     echo "  • $name — profile=$profile port=$port  @ ${wx},${wy}"
   else
     echo "  • $name — profile=$profile port=$port"

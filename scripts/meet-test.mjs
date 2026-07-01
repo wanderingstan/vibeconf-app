@@ -39,7 +39,7 @@ const SCRIPTS = {
   // Alice: the "presenter" — whiteboard share + background, plus chat send/read.
   Alice: async (bot) => {
     await bot.join();
-    await sleep(4000); // admission + captions
+    await bot.warmUp(); // wait until captions are live before talking (real-call caption cold-start)
     await bot.speak('Hi, Alice here. Starting the screen-share test now.', { emoji: '🤓' });
     await bot.updateWhiteboard('# Automated Test\n\n```mermaid\ngraph TD\n  A[Harness] --> B[Bots]\n  B --> C[Meet]\n```');
     await bot.shareWhiteboard();
@@ -60,7 +60,7 @@ const SCRIPTS = {
   // Jimmy: the "responder" — speaks, listens, plus chat send/read.
   Jimmy: async (bot) => {
     await bot.join();
-    await sleep(4500);
+    await bot.warmUp(); // wait until captions are live before talking (real-call caption cold-start)
     await bot.speak('Jimmy here too, listening for Alice.');
     const r1 = await bot.waitForSpeech({ wait: 12, silence: 2 });
     if (r1.spoke) await bot.speak('Got it, Alice — I can hear you.');
@@ -76,7 +76,7 @@ const SCRIPTS = {
 // turn-taking/lockstep with the others rather than sitting idle.
 const DEFAULT_SCRIPT = async (bot) => {
   await bot.join();
-  await sleep(5000);
+  await bot.warmUp(); // wait until captions are live before talking (real-call caption cold-start)
   await bot.speak(`${bot.name} here, joining the test.`);
   await bot.waitForSpeech({ wait: 12, silence: 2 });
   await bot.speak(`${bot.name} signing off.`);
@@ -102,6 +102,57 @@ async function chatHandshakeTest(bots) {
   await Promise.all(nonced.map(({ bot }) => Promise.all(
     nonced.filter((o) => o.bot !== bot).map((o) => bot.expectChatContains(o.nonce, { attempts: 8, intervalMs: 1500 })),
   )));
+}
+
+// Clean-room guard: the call must contain ONLY the fleet bots — no stray human
+// (you, sitting in the meet to watch) and no leftover bot from a prior run. An
+// extra participant pollutes captions and turn-taking and quietly invalidates
+// the hearing/stall/play-audio assertions, so assert it explicitly and fail with
+// a clear reason instead of chasing confusing downstream failures. Each bot sees
+// itself + the others, so a clean N-bot call has exactly N participants, all with
+// expected names.
+async function assertCleanRoom(bots) {
+  if (bots.length < 1) return true;
+  console.log('\n— clean-room check (only the expected bots present) —');
+  const expected = new Set(bots.map((b) => b.name.toLowerCase()));
+  // First bot's view (they share the call). Retry briefly so a late-rendering
+  // tile doesn't false-alarm as "missing".
+  let parts = [];
+  for (let i = 0; i < 6; i++) {
+    try { parts = (await bots[0].status()).participants || []; } catch { /* retry */ }
+    if (parts.length >= bots.length) break;
+    await sleep(1000);
+  }
+  const names = parts.map((p) => (p.name || '').trim()).filter(Boolean);
+  const strangers = names.filter((n) => !expected.has(n.toLowerCase()));
+  const ok = strangers.length === 0 && names.length === bots.length;
+  record(bots[0].name, 'cleanRoom', ok,
+    ok ? `only the ${bots.length} expected bot(s): ${names.join(', ')}`
+      : strangers.length ? `UNEXPECTED participant(s): ${strangers.join(', ')} — close stray bots/tabs and don't sit in the call, then rerun`
+        : `saw ${names.length} participant(s), expected ${bots.length}: ${names.join(', ') || '(none detected)'}`);
+  return ok;
+}
+
+// Play-audio detection: proves arbitrary audio (sound effects / a speech clip,
+// via the play_audio path) actually reaches the OTHER participants — bot mic →
+// Meet → captions — not just that the local play call returned ok. One bot plays
+// the bundled speech clip ("Hello everyone. I am an AI assistant joining this
+// meeting. Can you hear me clearly?"); another, parked in wait_for_speech, must
+// HEAR the transcribed speech. Needs 2+ bots.
+async function playAudioTest(bots) {
+  if (bots.length < 2) { console.log('\n(play-audio test needs 2+ bots — skipping)'); return; }
+  const [player, listener] = bots;
+  console.log('\n— play-audio detection test —');
+  const listenP = listener.waitForSpeech({ wait: 25, silence: 2 }); // park to hear the clip
+  await sleep(2500); // ensure the listener is in its long-poll before the clip plays
+  await player.playTestSpeech();
+  const r = await listenP;
+  const heard = (r.transcript || []).map((e) => e.text || '').join(' ').toLowerCase();
+  // Captions mangle wording/punctuation — match any distinctive fragment of the
+  // clip rather than the exact string.
+  const ok = r.spoke && /(assistant|joining this meeting|hear me clearly|can you hear|everyone)/.test(heard);
+  record(listener.name, 'playAudioDetect', ok,
+    ok ? `heard the played clip: "${heard.slice(0, 60)}"` : `did NOT detect played speech (got "${heard.slice(0, 60) || '(nothing)'}")`);
 }
 
 // Coordinated chat-WAKE assertion: in a quiet room, a chat message should
@@ -167,7 +218,9 @@ async function main() {
   console.log(`\nScenario scripts finished in ${Math.round((Date.now() - started) / 1000)}s.`);
 
   // Coordinated phases that need the bots still in the call.
+  await assertCleanRoom(BOTS).catch((err) => console.error('✗ clean-room check error:', err.message));
   await chatHandshakeTest(BOTS).catch((err) => console.error('✗ chat handshake error:', err.message));
+  await playAudioTest(BOTS).catch((err) => console.error('✗ play-audio test error:', err.message));
   await chatWakeTest(BOTS).catch((err) => console.error('✗ chat-wake test error:', err.message));
 
   // Central teardown (scripts no longer leave themselves).

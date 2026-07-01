@@ -1197,6 +1197,10 @@ async function setRunwayFace(seat, on) {
       const { pathToFileURL } = require('url');
       const mod = await import(pathToFileURL(path.join(__dirname, '..', 'scripts', 'runway-session.mjs')).href);
       const prevSession = st.sessionId, prevRoom = st.roomName;
+      // Zombie sweep (2026-06-29 wrong-face incident): kick any stale room for THIS seat before
+      // minting, so a leftover worker from a crashed run can't coexist with the fresh session.
+      // `keep` preserves the active room during renewals (deliberate same-seat overlap).
+      try { const n = await mod.sweepStaleRooms(seat, { keep: prevRoom }); if (n) console.log('[runway] swept', n, 'stale room(s) for', seat); } catch (e) {}
       const s = await mod.createAvatarSession(seat);
       // staleness guard: a newer renewal or an `off` landed while we awaited → abort + clean up.
       if (!st.enabled || st.gen !== gen) {
@@ -1204,7 +1208,8 @@ async function setRunwayFace(seat, on) {
         return;
       }
       meetView.webContents.send('runway-avatar', { type: 'connect', url: s.livekitUrl, token: s.botToken });
-      console.log('[runway] face', prevSession ? 'RENEWED' : 'ON', 'for', seat, '→ room', s.roomName, 'gen', gen);
+      // Log session + avatar ids — the 06-29 post-mortem stalled because neither was on the record.
+      console.log('[runway] face', prevSession ? 'RENEWED' : 'ON', 'for', seat, '→ room', s.roomName, 'gen', gen, 'session', s.sessionId, 'avatar', (mod.AVATARS || {})[seat]);
       st.sessionId = s.sessionId; st.roomName = s.roomName; st.mod = mod;
       if (prevSession) { try { await mod.endAvatarSession({ sessionId: prevSession, roomName: prevRoom }); } catch (e) {} }
       if (st.enabled && st.gen === gen) st.timer = setTimeout(() => setRunwayFace(seat, true), RUNWAY_RENEW_MS);
@@ -2641,7 +2646,18 @@ app.whenReady().then(async () => {
     const _elKey = _grab(path.join(require('os').homedir(), '.seth/vault/credentials.env'), 'ELEVENLABS_API_KEY');
     if (_elKey) { tts.updateConfig({ apiKey: _elKey }); stt.updateConfig({ apiKey: _elKey }); console.log('[tts] ElevenLabs key loaded from vault → real voice'); }
   }
-  if (process.env.VIBECONF_TTS_VOICE) { tts.updateConfig({ voiceId: process.env.VIBECONF_TTS_VOICE }); console.log('[tts] per-seat voice →', process.env.VIBECONF_TTS_VOICE); }
+  // P2: committed per-seat voice map so each seat launches with the RIGHT ElevenLabs voice even
+  // when VIBECONF_TTS_VOICE isn't passed (removes the "wrong voice mid-call" failure mode). The
+  // env var still OVERRIDES. Voice ids confirmed against the EL account 2026-06-29. Emoji-safe:
+  // a no-op for any seat not in the map (and when no EL key is present).
+  const SEAT_VOICES = {
+    sal: 'NnZvIo7Psllz7Lwe2Qki',      // SAL v1 (per SAL: the seat the canon names)
+    solienne: 'MeQDORyKU8nKusZVItqB', // SOLIENNE Runway Voice A (Kristi-approved parity)
+    coltrane: '0PG6ZjFmHr9LpFHm6nj7',  // "Coltrane vB — The Musician"
+  };
+  const _seat = String(process.env.VIBECONF_PROFILE || savedConfig.botName || '').toLowerCase();
+  const _seatVoice = process.env.VIBECONF_TTS_VOICE || SEAT_VOICES[_seat];
+  if (_seatVoice) { tts.updateConfig({ voiceId: _seatVoice }); console.log('[tts] voice →', _seatVoice, process.env.VIBECONF_TTS_VOICE ? '(env override)' : ('(seat-map: ' + _seat + ')')); }
   if (savedConfig.botName) sync.updateConfig({ botName: savedConfig.botName });
   if (savedConfig.syncBaseUrl) sync.updateConfig({ baseUrl: savedConfig.syncBaseUrl });
 

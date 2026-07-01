@@ -649,6 +649,36 @@ server.tool(
   }
 );
 
+// --- set_whiteboard_style ---
+server.tool(
+  "set_whiteboard_style",
+  "Restyle the shared whiteboard with custom CSS — colors, fonts, spacing, backgrounds. Use it when someone asks the board to look a certain way (e.g. \"make the whiteboard black-on-white with a curvy font and pastel colors\"): translate the request into CSS and set it here. The CSS is applied SCOPED to the whiteboard automatically, so write bare declarations for the board itself (e.g. `background:#fafaf5; color:#222; font-family:Georgia,serif`) and nested selectors for content (`h1 { font-family:'Comic Sans MS',cursive; color:#c9a }`, `code { background:#ffe0f0 }`, `a { color:#7a5 }`). It persists for the room and only affects the board (not the call UI). Pass an empty string to reset to the default style. Separate from update_whiteboard, which sets the CONTENT.",
+  {
+    css: z.string().describe("CSS for the whiteboard. Bare declarations style the board container; nested selectors (h1{}, p{}, code{}, ul{}, a{}) style the markdown content. No @import or external url() (blocked). Empty string resets to default."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ css, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) {
+      return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    }
+    try {
+      const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(botSyncPayload(BOT_NAME, { whiteboardStyle: String(css || "") })),
+      });
+      const d = await resp.json();
+      if (d.success || d.results?.whiteboardStyle?.ok) {
+        return { content: [{ type: "text", text: css ? "Whiteboard restyled. It updates live on the shared board." : "Whiteboard style reset to default." }] };
+      }
+      return { content: [{ type: "text", text: `Couldn't set whiteboard style: ${d.error || d.results?.whiteboardStyle?.error || "unknown error"}` }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error contacting local server to set whiteboard style: ${err.message}` }] };
+    }
+  }
+);
+
 // --- update_whiteboard ---
 server.tool(
   "update_whiteboard",

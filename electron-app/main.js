@@ -298,6 +298,18 @@ const localServer = new globalThis.LocalServer({
       });
     }
   },
+  // #321: forward custom whiteboard CSS to the remote sync so the whiteboard
+  // window (which renders from the remote room page) applies it.
+  onWhiteboardStyle: (css, sender) => {
+    const roomId = localServer.roomId;
+    if (!roomId) return;
+    console.log('[local-server] Whiteboard style from', sender, '·', String(css).length, 'chars');
+    fetch(`${getWebsiteUrl()}/api/sync/${roomId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sender, role: 'bot', ownerName: sender, whiteboardStyle: css }),
+    }).catch(err => console.error('[local-server] Failed to forward whiteboard style:', err.message));
+  },
   onJoinCall: (meetCode, botName) => {
     console.log('[local-server] Join call requested by agent:', meetCode, botName);
     logSessionHeaderUpdate('roomId', meetCode);

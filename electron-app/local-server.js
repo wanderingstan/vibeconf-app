@@ -59,7 +59,7 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onWhiteboardUpdate, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, onInspectDom, onPlayAudio, onFocusRequest, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onWhiteboardUpdate, onWhiteboardStyle, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, onInspectDom, onPlayAudio, onFocusRequest, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.appVersion = appVersion || null;
     // Release (installed .app/DMG) vs running from source (pnpm dev). Surfaced so
@@ -69,6 +69,8 @@ class LocalServer {
     this.onBotSpeech = onBotSpeech || (() => {});
     this.onStopTts = onStopTts || (() => {});
     this.onWhiteboardUpdate = onWhiteboardUpdate || (() => {});
+    this.onWhiteboardStyle = onWhiteboardStyle || (() => {}); // #321 relay custom board CSS
+    this.whiteboardCss = '';
     this.onLeaveCall = onLeaveCall || (() => {});
     this.onShareWhiteboard = onShareWhiteboard || (() => {});
     this.onStopSharing = onStopSharing || (() => {});
@@ -2574,6 +2576,14 @@ class LocalServer {
         lastEditor: data.sender,
       };
       this.onWhiteboardUpdate(data.whiteboard.content, data.sender);
+    }
+
+    // Custom whiteboard styling (#321): relay CSS to the remote sync so the
+    // whiteboard window (which renders from the remote) picks it up.
+    if (typeof data.whiteboardStyle === 'string') {
+      this.whiteboardCss = data.whiteboardStyle;
+      results.whiteboardStyle = { ok: true };
+      this.onWhiteboardStyle(data.whiteboardStyle, data.sender);
     }
 
     // Handle join command — tell the app to join a Meet call

@@ -61,6 +61,28 @@ SLACKTEST1_ACCOUNT="${SLACKTEST1_ACCOUNT:-your Slack test account (pick the work
 SLACKTEST2_ACCOUNT="${SLACKTEST2_ACCOUNT:-a second Slack test account (pick the workspace)}"
 SLACK_SETUP_URL="${SLACK_SETUP_URL:-https://app.slack.com/}"
 
+# --- Per-bot emoji sets (#316) ---------------------------------------------
+# Give the fleet bots distinct emoji styles so they're easy to tell apart on
+# camera. The naming convention is uniform across every class — Alice is always
+# index 1, Jimmy is always index 2 — so we set it the same everywhere:
+#   Alice (…-1) = fluent3d   ·   Jimmy (…-2) = noto
+# It's a per-profile electron-store pref (config.json), login-independent, so we
+# write it directly (creating the profile dir if needed). Runs regardless of the
+# --google/--slack flags.
+PROFILE_ROOT="$HOME/Library/Application Support/Vibeconferencing/profiles"
+set_emoji_pref() {  # <profile-name> <set>
+  local dir="$PROFILE_ROOT/$1"
+  node -e 'const fs=require("fs"),p=process.argv[1],s=process.argv[2];let c={};try{c=JSON.parse(fs.readFileSync(p,"utf8"))}catch{};c.emojiSet=s;fs.writeFileSync(p,JSON.stringify(c,null,2)+"\n")' "$dir/config.json" "$2"
+  echo "  • $1 → emojiSet=$2"
+}
+echo "▶ Emoji sets: Alice(-1)=fluent3d, Jimmy(-2)=noto"
+for cls in test-meet-guest test-meet-google test-slack; do
+  mkdir -p "$PROFILE_ROOT/$cls-1" "$PROFILE_ROOT/$cls-2"
+  set_emoji_pref "$cls-1" fluent3d
+  set_emoji_pref "$cls-2" noto
+done
+echo
+
 typeset -a STEPS
 
 # launch <profile> <port> <extra args…> — source uses pnpm dev (the branch code);

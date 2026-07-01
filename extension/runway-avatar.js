@@ -100,6 +100,26 @@
           console.log(TAG, 'avatar video subscribed — waiting for first frame before claiming the camera');
         } else if (track.kind === 'audio') {
           console.log(TAG, 'avatar audio track available (left detached for P2a)');
+          // A4 groundwork: measure the Runway round-trip. Tap the avatar's RETURNED audio with
+          // an analyser (never routed to speakers — no double audio) and log when its energy
+          // rises after silence. Delta vs page-inject's "Queuing TTS audio" timestamp = the
+          // per-utterance lag between local voice and the lip-synced face — the number that
+          // decides latency-comp vs avatar-audio-to-mic (plan A4, codex passthrough-gated).
+          try {
+            const ms = new MediaStream([track.mediaStreamTrack]);
+            this._rttCtx = new AudioContext();
+            const an = this._rttCtx.createAnalyser(); an.fftSize = 256;
+            this._rttCtx.createMediaStreamSource(ms).connect(an); // analyser only, no output
+            const buf = new Uint8Array(an.fftSize);
+            let loud = false;
+            this._rttTimer = setInterval(() => {
+              an.getByteTimeDomainData(buf);
+              let s = 0; for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; s += v * v; }
+              const rms = Math.sqrt(s / buf.length);
+              if (!loud && rms > 0.03) { loud = true; console.log(TAG, 'avatar AUDIO energy rise rms=' + rms.toFixed(3) + ' — diff vs last "Queuing TTS audio" = round-trip'); }
+              else if (loud && rms < 0.01) { loud = false; }
+            }, 100);
+          } catch (e) { console.warn(TAG, 'rtt tap failed:', e && e.message); }
         }
       });
       room.on(LK.RoomEvent.Disconnected, (reason) => {
@@ -146,6 +166,10 @@
       // The old unconditional __vibeSetAvatarVideo(null) here was the flicker's second half —
       // a prior generation's late Disconnected wiped the new generation's live face.
       this._teardownVideo();
+      try { if (this._rttTimer) clearInterval(this._rttTimer); } catch (e) {}
+      this._rttTimer = null;
+      try { if (this._rttCtx) this._rttCtx.close(); } catch (e) {}
+      this._rttCtx = null;
       this.connected = false;
     }
 

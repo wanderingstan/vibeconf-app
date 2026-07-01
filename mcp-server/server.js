@@ -1633,9 +1633,9 @@ server.tool(
 // --- join_call ---
 server.tool(
   "join_call",
-  "Tell the Vibeconferencing app to join a Google Meet call. Use this when the app is running but idle (not yet in a call). The app will navigate to the Meet URL and join.",
+  "Tell the Vibeconferencing app to join a call — a Google Meet OR a Slack huddle. Use this when the app is running but idle. For Meet, pass the meet code; the app navigates and joins. For Slack, pass the huddle URL (app.slack.com/client/<team>/<channel>); the app switches to the Slack provider and auto-joins the huddle.",
   {
-    room_id: z.string().describe("Meet code (e.g. abc-defg-hij)"),
+    room_id: z.string().describe("Meet code (e.g. abc-defg-hij) OR a Slack huddle URL (https://app.slack.com/client/<team>/<channel>)."),
     bot_name: z.string().optional().describe("Bot display name in Meet. Omit to use the bot name configured for this MCP instance (set via the app's panel or VIBECONF_BOT_NAME env). Only pass this to explicitly override — don't pass a literal default like 'Jimmy', that overrides the user's preference."),
   },
   async ({ room_id, bot_name }) => {
@@ -1670,6 +1670,45 @@ server.tool(
           }],
         };
       }
+
+      // Slack huddle? room_id is an app.slack.com/client/<team>/<channel> URL —
+      // route to the Slack provider path instead of Meet navigation (#302). The
+      // app's room id becomes slack-<team>-<channel> (lowercased), which we mirror
+      // so subsequent tool calls (wait_for_speech etc.) target the right room.
+      const slackMatch = String(room_id).match(/app\.slack\.com\/client\/([^/]+)\/([^/?#]+)/i);
+      if (slackMatch) {
+        const slackRoomId = `slack-${slackMatch[1].toLowerCase()}-${slackMatch[2].toLowerCase()}`;
+        const sresp = await fetch(`${BASE_URL}/api/sync/${slackRoomId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(botSyncPayload(joinedBotName, { meta: { action: "join-slack", url: room_id } })),
+        });
+        const sdata = await sresp.json();
+        if (sdata.results?.join?.ok) {
+          ROOM_ID = slackRoomId;
+          BOT_NAME = joinedBotName;
+          botNameLocked = true;
+          lastPollTime = null;
+          return {
+            content: [{
+              type: "text",
+              text: [
+                `Joining the Slack huddle as "${joinedBotName}"${routedNote}. The app is switching to the Slack provider and auto-joining the huddle.`,
+                ``,
+                `**Joining is not complete until you have started the conversation loop.** Use \`${slackRoomId}\` as room_id for all tool calls.`,
+                ``,
+                `1. Once in the huddle, \`speak\` a brief one-sentence greeting so participants hear you're on the line.`,
+                `2. Then loop: \`wait_for_speech\` → optionally \`speak\` / \`send_chat\` → \`wait_for_speech\` — repeat until asked to leave or the call ends.`,
+                `**Do not send a final response to the user while the call is active** — if you stop, the bot sits silent; the local server only responds to your calls.`,
+                ``,
+                `When the call ends or the user asks you to leave, call \`leave_call\`.`,
+              ].join('\n'),
+            }],
+          };
+        }
+        return { content: [{ type: "text", text: `Couldn't join the Slack huddle: ${sdata.results?.join?.error || sdata.error || 'unknown error'}.` }] };
+      }
+
       const resp = await fetch(`${BASE_URL}/api/sync/${room_id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

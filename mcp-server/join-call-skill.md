@@ -12,7 +12,7 @@ Join the user's current Google Meet call as an AI bot participant.
 
 Parse `$ARGUMENTS` for the room. **Accept either a bare meet code (`xxx-xxxx-xxx`) OR a full Meet URL** — most people will paste the call's URL, not a code. If it's a `https://meet.google.com/xxx-xxxx-xxx` URL, **extract the `xxx-xxxx-xxx` code** from it and use that (strip any `?`/`#` query). If found (either form), use it directly and skip detection. Any remaining non-code argument is the bot name.
 
-**Slack huddles:** a Slack huddle has no code, just a URL (`https://app.slack.com/client/<team>/<channel>`). `/join-call` is the Google Meet path — to join a **Slack huddle**, paste its URL into the Vibeconferencing app's "Meet/Slack URL" field and click **Join** (the app switches to the Slack provider, auto-joins the huddle, and launches the agent for you). If the user hands you a Slack huddle URL here, tell them to use the app's Join button rather than `/join-call`.
+**Slack huddles:** a Slack huddle is a URL (`https://app.slack.com/client/<team>/<channel>`), not a meet code. `/join-call` handles these directly — pass the **huddle URL** as `join_call`'s `room_id`. `join_call` detects the Slack URL, switches the app to the Slack provider, and auto-joins the huddle; it returns a `slack-<team>-<channel>` room id to use for the rest of the conversation loop. Then run the same loop as Meet — `wait_for_speech` / `speak` / `send_chat` all work against the Slack provider. (The bot's name in the huddle comes from the signed-in Slack account, not the name arg — but the name arg still selects which profile/instance to drive, per below.)
 
 **The name argument selects which PROFILE to drive.** Multiple Vibeconferencing app instances can run at once — each profile is its own bot (its own name, personality, and logins) on its own local-server port. The name you pass becomes `join_call`'s `bot_name`, and the MCP uses it to **route to the running app instance whose profile matches that name**. So `/join-call <code> Alice` drives the "Alice" profile's app regardless of which port the MCP started on. Call `list_call_instances` to see which profiles are currently running and targetable.
 
@@ -26,6 +26,7 @@ Examples:
 - `/join-call https://meet.google.com/abc-defg-hij Alice` -> code `abc-defg-hij`, drive the "Alice" profile
 - `/join-call abc-defg-hij Alice` -> room code `abc-defg-hij`, drive the "Alice" profile
 - `/join-call Alice` -> auto-detect room, drive the "Alice" profile
+- `/join-call https://app.slack.com/client/T0.../C0... Alice` -> join that **Slack huddle** with the "Alice" profile
 - `/join-call` -> auto-detect room; drives the sole running profile (or asks which, if several)
 
 **If no room code in arguments**, first check if the Vibeconferencing app has already detected a call:

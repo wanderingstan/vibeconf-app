@@ -358,6 +358,16 @@ const localServer = new globalThis.LocalServer({
       }).catch(() => {});
     }
   },
+  onJoinSlack: (url) => {
+    // Programmatic Slack-huddle join (#302): the same runtime provider switch +
+    // auto-join that the panel "Join" button does (the join-detected-slack IPC),
+    // but WITHOUT launching a Claude terminal — the agent calling join_call is
+    // already the driver. activateSlackProvider → setupSlackRoom sets
+    // localServer.roomId to slack-<team>-<channel>.
+    console.log('[local-server] Join Slack huddle requested by agent:', url);
+    activateSlackProvider(url, { autojoin: true });
+    return localServer.roomId || null;
+  },
   onLeaveCall: () => {
     console.log('[local-server] Leave call requested by agent');
     stopAllRunwayFaces('leave-call'); // P2: end Runway sessions + timers when leaving the call

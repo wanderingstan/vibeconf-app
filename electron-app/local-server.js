@@ -2517,9 +2517,25 @@ class LocalServer {
     if (data.transcript && Array.isArray(data.transcript)) {
       // In silent mode, suppress bot speech entirely — don't record or speak.
       // Agent learns its speech was suppressed via results.transcript.reason.
+      // #338: some bot utterances are exempt from the barge-in drop — they're
+      // brief and a little overlap beats the alternative (silence → the room
+      // re-asks → a duplicate answer, the #335 failure). Two exemptions:
+      //   • the turn's OPENING ACK — the first reply to a resolve (_pendingTurnSince),
+      //     capped at ≤40 words so a real ack (the #335 one was 23) is protected but
+      //     a runaway long "first reply" can't steamroll a human. This "I'm on it" is
+      //     the whole signal that keeps the room from re-asking while the bot does
+      //     slow tool work.
+      //   • very short utterances (≤6 words) — backchannels ("Got it.", "On it.")
+      // Substantive mid-turn responses are NOT exempt — they still yield.
+      const _firstReplyToResolve = this._pendingTurnSince != null;
+      const _botText = data.role === 'bot' ? (data.transcript.map((t) => t && t.text ? t.text : '').join(' ').trim()) : '';
+      const _wordCount = _botText ? _botText.split(/\s+/).length : 0;
+      const _bargeExempt = data.role === 'bot' && _wordCount > 0 &&
+        ((_firstReplyToResolve && _wordCount <= 40) || _wordCount <= 6);
+
       if (data.role === 'bot' && this.mode === 'silent') {
         results.transcript = { ok: false, reason: 'mode-silent', sent: 0, entries: [] };
-      } else if (data.role === 'bot' && this.anyoneSpeaking) {
+      } else if (data.role === 'bot' && this.anyoneSpeaking && !_bargeExempt) {
         // Barge-in guard: user started speaking after the agent decided to
         // respond. Drop the response and tell the agent to wait_for_speech
         // again — talking over them is the worst voice-UX failure mode.
@@ -2527,6 +2543,9 @@ class LocalServer {
         this._setBotState('yielding', { reason: 'user-speaking' }, { force: true });
         results.transcript = { ok: false, reason: 'user-speaking', sent: 0, entries: [] };
       } else {
+        if (data.role === 'bot' && this.anyoneSpeaking && _bargeExempt) {
+          console.log(ts(), '🛡️  [barge-in] EXEMPT — played over speech (' + (_firstReplyToResolve ? 'opening ack' : _wordCount + '-word backchannel') + ')');
+        }
         const entries = [];
         for (const t of data.transcript) {
           if (!t.text) continue;

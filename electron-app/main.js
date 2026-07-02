@@ -354,15 +354,16 @@ const localServer = new globalThis.LocalServer({
       currentMeetUrl = meetUrl;
       loadMeetURL(meetUrl);
 
-      // P2: env-gated Runway photoreal face. VIBECONF_RUNWAY=1 + a known seat name (SAL/SOLIENNE)
-      // auto-activates the face ~8s after join (lets the Meet camera initialize). Default OFF —
-      // without the env var this is a no-op and the emoji bot is unchanged. IDEMPOTENT: onJoinCall
-      // fires again on a re-join (the Meet pre-join "limbo" often needs one retry), so only kick
-      // off the face if it isn't already enabled for this seat — else two sessions race and the
-      // browser flaps between connects (dup-identity), dropping the face to emoji.
+      // P2: env-gated Runway photoreal face. VIBECONF_RUNWAY=1 auto-activates the
+      // face for THIS seat ~8s after join (lets the Meet camera initialize). Default
+      // OFF — without the env var this is a no-op and the emoji bot is unchanged.
+      // De-hardcoded: eligibility is the opt-in env var, not a baked-in persona list
+      // (the seat's avatar is resolved downstream). IDEMPOTENT: onJoinCall fires again
+      // on a re-join, so only kick off the face if it isn't already enabled for this
+      // seat — else two sessions race and the browser flaps between connects.
       if (process.env.VIBECONF_RUNWAY) {
         const seat = String(botName || '').toLowerCase();
-        if ((seat === 'sal' || seat === 'solienne' || seat === 'coltrane') && !(_runway[seat] && _runway[seat].enabled)) {
+        if (seat && !(_runway[seat] && _runway[seat].enabled)) {
           setTimeout(() => setRunwayFace(seat, true), 8000);
         }
       }
@@ -1214,12 +1215,15 @@ let panelPopoutWindow = null; // when popped out, the panelView lives here inste
 function loadRunwayEnv() {
   const need = ['LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET', 'RUNWAY_API_KEY'];
   if (need.every((k) => process.env[k])) return;
-  const osx = require('os');
   const grab = (p, k) => { try { return (fs.readFileSync(p, 'utf8').match(new RegExp(`^${k}=("?)([^"\\n]+)\\1`, 'm')) || [])[2]; } catch { return undefined; } };
-  const vault = path.join(osx.homedir(), '.seth/vault/credentials.env');
-  const proto = path.join(osx.homedir(), 'Projects/standalone/spirit-avatar-proto/.env.local');
-  for (const k of ['LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET']) process.env[k] ||= grab(vault, k);
-  process.env.RUNWAY_API_KEY ||= grab(proto, 'RUNWAY_API_KEY') || grab(vault, 'RUNWAY_API_KEY');
+  // De-hardcoded (#297): credential files come from env, not a baked-in personal
+  // path. VIBECONF_CREDENTIALS_FILE = a .env holding LIVEKIT_*/RUNWAY/ELEVENLABS
+  // keys; VIBECONF_RUNWAY_ENV_FILE = optional separate file for RUNWAY_API_KEY.
+  // Unset → skip (emoji bots, and any machine without Runway configured, unaffected).
+  const vault = process.env.VIBECONF_CREDENTIALS_FILE;
+  const proto = process.env.VIBECONF_RUNWAY_ENV_FILE;
+  if (vault) for (const k of ['LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET']) process.env[k] ||= grab(vault, k);
+  process.env.RUNWAY_API_KEY ||= (proto && grab(proto, 'RUNWAY_API_KEY')) || (vault && grab(vault, 'RUNWAY_API_KEY'));
 }
 // P2: per-seat runway session state for auto-renewal. Runway realtime sessions expire after a few
 // minutes (observed ~7m) — the avatar worker leaves the room and the face drops to emoji. So we
@@ -1278,8 +1282,8 @@ async function setRunwayFace(seat, on) {
     console.log('[runway] face OFF for', seat);
   }
 }
-// manual toggle from panel/devtools: ipcRenderer.invoke('runway-face', { seat:'sal', on:true })
-ipcMain.handle('runway-face', (_e, { seat = 'sal', on = true } = {}) => setRunwayFace(seat, on));
+// manual toggle from panel/devtools: ipcRenderer.invoke('runway-face', { seat:'<profile>', on:true })
+ipcMain.handle('runway-face', (_e, { seat = String(process.env.VIBECONF_PROFILE || '').toLowerCase(), on = true } = {}) => setRunwayFace(seat, on));
 
 // P2 loss-recovery: the renderer reports an unexpected room drop (network blip, Runway session
 // death) → re-establish the face for THIS app's seat. Debounced so a burst of disconnect events
@@ -1287,7 +1291,9 @@ ipcMain.handle('runway-face', (_e, { seat = 'sal', on = true } = {}) => setRunwa
 let _runwayReestablishing = false;
 function runwayReestablish(why) {
   const seat = String(process.env.VIBECONF_PROFILE || '').toLowerCase();
-  if ((seat !== 'sal' && seat !== 'solienne' && seat !== 'coltrane') || _runwayReestablishing) return;
+  // De-hardcoded: no persona allowlist — the `enabled` check below is the real
+  // gate (a seat that never had a face on has nothing to recover).
+  if (!seat || _runwayReestablishing) return;
   if (!(_runway[seat] && _runway[seat].enabled)) return; // face wasn't on — nothing to recover
   _runwayReestablishing = true;
   console.log('[runway] re-establishing', seat, '(' + why + ')');
@@ -2705,26 +2711,22 @@ app.whenReady().then(async () => {
   // to the right provider from the first utterance (refreshed on each list call).
   enumerateMacosVoices().then((vs) => { macosVoiceNameSet = new Set(vs.map((v) => v.name)); }).catch(() => {});
 
-  // P2 real voices: if no ElevenLabs key is stored, load it from the vault so the avatars speak in
-  // a real voice instead of robotic macOS `say`. Per-seat voice via VIBECONF_TTS_VOICE (distinct
-  // voices for SAL vs SOLIENNE). Both are no-ops if the key/env aren't present (emoji bots safe).
-  if (!savedConfig.ttsApiKey) {
+  // P2 real voices: if no ElevenLabs key is stored, load it from a credentials file
+  // pointed at by VIBECONF_CREDENTIALS_FILE (de-hardcoded — no baked-in personal
+  // path). No-op if the env/key aren't present (emoji bots unaffected).
+  if (!savedConfig.ttsApiKey && process.env.VIBECONF_CREDENTIALS_FILE) {
     const _grab = (p, k) => { try { return (fs.readFileSync(p, 'utf8').match(new RegExp(`^${k}=("?)([^"\\n]+)\\1`, 'm')) || [])[2]; } catch { return undefined; } };
-    const _elKey = _grab(path.join(require('os').homedir(), '.seth/vault/credentials.env'), 'ELEVENLABS_API_KEY');
-    if (_elKey) { tts.updateConfig({ apiKey: _elKey }); stt.updateConfig({ apiKey: _elKey }); console.log('[tts] ElevenLabs key loaded from vault → real voice'); }
+    const _elKey = _grab(process.env.VIBECONF_CREDENTIALS_FILE, 'ELEVENLABS_API_KEY');
+    if (_elKey) { tts.updateConfig({ apiKey: _elKey }); stt.updateConfig({ apiKey: _elKey }); console.log('[tts] ElevenLabs key loaded from VIBECONF_CREDENTIALS_FILE → real voice'); }
   }
-  // P2: committed per-seat voice map so each seat launches with the RIGHT ElevenLabs voice even
-  // when VIBECONF_TTS_VOICE isn't passed (removes the "wrong voice mid-call" failure mode). The
-  // env var still OVERRIDES. Voice ids confirmed against the EL account 2026-06-29. Emoji-safe:
-  // a no-op for any seat not in the map (and when no EL key is present).
-  const SEAT_VOICES = {
-    sal: 'NnZvIo7Psllz7Lwe2Qki',      // SAL v1 (per SAL: the seat the canon names)
-    solienne: 'MeQDORyKU8nKusZVItqB', // SOLIENNE Runway Voice A (Kristi-approved parity)
-    coltrane: '0PG6ZjFmHr9LpFHm6nj7',  // "Coltrane vB — The Musician"
-  };
-  const _seat = String(process.env.VIBECONF_PROFILE || savedConfig.botName || '').toLowerCase();
-  const _seatVoice = process.env.VIBECONF_TTS_VOICE || SEAT_VOICES[_seat];
-  if (_seatVoice) { tts.updateConfig({ voiceId: _seatVoice }); console.log('[tts] voice →', _seatVoice, process.env.VIBECONF_TTS_VOICE ? '(env override)' : ('(seat-map: ' + _seat + ')')); }
+  // Per-seat voice is config-driven — no hardcoded persona→voice map. It comes from
+  // the profile's config.json (savedConfig.ttsVoiceId, applied above) or the
+  // VIBECONF_TTS_VOICE env override, which wins. De-hardcoded: personas and their
+  // voice ids live in each seat's own config, not in shared source.
+  if (process.env.VIBECONF_TTS_VOICE) {
+    tts.updateConfig({ voiceId: process.env.VIBECONF_TTS_VOICE });
+    console.log('[tts] voice → (VIBECONF_TTS_VOICE override)');
+  }
   if (savedConfig.botName) sync.updateConfig({ botName: savedConfig.botName });
   if (savedConfig.syncBaseUrl) sync.updateConfig({ baseUrl: savedConfig.syncBaseUrl });
 

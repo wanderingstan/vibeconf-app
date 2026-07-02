@@ -499,6 +499,9 @@ server.tool(
     if (tx?.reason === 'mode-silent') {
       return { content: [{ type: "text", text: "Speech suppressed (silent mode)." }] };
     }
+    if (tx?.reason === 'user-speaking-stashed') {
+      return { content: [{ type: "text", text: "Speech held (not dropped) — the user started talking before your reply could play, so it's been STASHED and will auto-replay the moment the floor goes quiet. Do NOT recompose or repeat it. Just call wait_for_speech again and keep listening: if the room simply paused, your queued reply plays itself; if the conversation moved on, the stash is discarded and your next wait_for_speech will surface the new content for a fresh response (you'll see a replayedBargeInStash note if it did go out, so you can build on it rather than repeat it)." }] };
+    }
     if (tx?.reason === 'user-speaking') {
       return { content: [{ type: "text", text: "Speech dropped — the user started speaking before your response could play. Call wait_for_speech to hear what they said and respond to their new message instead of repeating this one." }] };
     }

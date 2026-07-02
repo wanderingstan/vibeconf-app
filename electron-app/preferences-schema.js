@@ -321,6 +321,22 @@ const PREFERENCES = {
       'patiently waited and just said its thing"; lower = more "the bot ' +
       're-thinks every gap." Default 10s.',
   },
+  bargeInStashRedeliverMaxNewWords: {
+    type: 'number',
+    default: 15,
+    min: 0,
+    max: 200,
+    description:
+      'Content-delta gate on replaying a barge-in stash (#239). When the bot ' +
+      'yields mid-thought and the floor reopens, the stashed reply is only ' +
+      'auto-replayed if fewer than this many NEW words were spoken by others ' +
+      'while it was held — otherwise the conversation has moved on, the stash ' +
+      'is discarded, and the slow model re-derives on the caught-up window. ' +
+      'This is the "clock-vs-words" companion to bargeInStashMaxAgeMs: age ' +
+      'guards wall-clock staleness, this guards topical staleness. Higher = ' +
+      'replay even after a lot was said; 0 = only replay if literally nothing ' +
+      'new was said. Default 15. Read live.',
+  },
   captionDropoutGraceMs: {
     type: 'number',
     default: 2000,

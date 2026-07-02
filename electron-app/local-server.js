@@ -1605,10 +1605,26 @@ class LocalServer {
     if (!this.bargeInStash) return null;
     const ageMs = Date.now() - this.bargeInStash.at;
     const maxAgeMs = this._pref('bargeInStashMaxAgeMs');
+    // Wall-clock staleness guard: the floor took too long to reopen.
     if (ageMs > maxAgeMs) {
       console.log(ts(), '🛡️  [barge-in] discarding stash — too stale (' + ageMs + 'ms old, max ' + maxAgeMs + 'ms)');
       this.bargeInStash = null;
       return null;
+    }
+    // Content staleness guard (#239): even inside the age window, if a lot was
+    // SAID while the reply was held, the queued thought is answering a
+    // conversation that has moved on — replaying it would be a non-sequitur.
+    // Discard and let the agent re-derive on the caught-up window instead.
+    // (wordsAtStash is only recorded on the drop-before-playback stash path;
+    // the mid-TTS _performBackOff path leaves it undefined → age-only, as before.)
+    if (this.bargeInStash.wordsAtStash != null) {
+      const newWords = this._tickWordCount(this.getEffectiveBotName()) - this.bargeInStash.wordsAtStash;
+      const maxNewWords = Number(this._pref('bargeInStashRedeliverMaxNewWords'));
+      if (Number.isFinite(maxNewWords) && newWords > maxNewWords) {
+        console.log(ts(), '🛡️  [barge-in] discarding stash — conversation moved on (' + newWords + ' new words > ' + maxNewWords + ') — agent will re-derive');
+        this.bargeInStash = null;
+        return null;
+      }
     }
     const entries = this.bargeInStash.entries;
     console.log(ts(), '🛡️  [barge-in] replaying stash — ' + entries.length + ' entries, ' + ageMs + 'ms old');
@@ -1619,6 +1635,12 @@ class LocalServer {
       this.onBotSpeech(text, voice, emoji);
       texts.push(text);
     }
+    // Advance the responded-through clock so timing-based guards know a real
+    // reply just went out on this silence edge. (Full respondedThrough windowing
+    // is #153; here we mark the moment so the agent's same-resolve response —
+    // guided by the replayedBargeInStash one-shot in _buildResponse — builds on
+    // the replay instead of racing it.)
+    this.lastRespondedAt = Date.now();
     return texts;
   }
 
@@ -2625,11 +2647,37 @@ class LocalServer {
         results.transcript = { ok: false, reason: 'mode-silent', sent: 0, entries: [] };
       } else if (data.role === 'bot' && this.anyoneSpeaking && !_bargeExempt) {
         // Barge-in guard: user started speaking after the agent decided to
-        // respond. Drop the response and tell the agent to wait_for_speech
-        // again — talking over them is the worst voice-UX failure mode.
-        console.log(ts(), '🛡️  [barge-in] Dropped bot speech — user is currently speaking:', data.transcript?.[0]?.text?.slice(0, 60));
-        this._setBotState('yielding', { reason: 'user-speaking' }, { force: true });
-        results.transcript = { ok: false, reason: 'user-speaking', sent: 0, entries: [] };
+        // respond but before the audio could play. Talking over them is the
+        // worst voice-UX failure mode, so we don't play it now. But rather
+        // than DISCARD the composed reply (the old behavior — which forced the
+        // agent into a fresh 15-30s Claude round to re-derive the same answer,
+        // the #239 "raised hand but never speaks / re-thinks everything" bug),
+        // we STASH it exactly like the mid-TTS back-off path (_performBackOff).
+        // The next silence edge auto-replays it via _maybeReplayBargeInStash()
+        // — "the floor opened, I just say what I was going to say" — unless too
+        // much was said in the meantime (content-delta gate), in which case the
+        // stash is dropped and the agent re-derives on the caught-up window.
+        const stashEntries = data.transcript
+          .filter((t) => t && t.text)
+          .map((t) => ({ text: t.text, voice: t.voice, emoji: t.emoji }));
+        if (stashEntries.length > 0) {
+          // Baseline the words-heard-from-others counter so the replay path can
+          // measure how much NEW speech landed while the reply was held.
+          this.bargeInStash = {
+            entries: stashEntries,
+            at: Date.now(),
+            wordsAtStash: this._tickWordCount(this.getEffectiveBotName()),
+          };
+          console.log(ts(), '🛡️  [barge-in] Stashed dropped bot speech for replay (' + stashEntries.length + ' entr' + (stashEntries.length === 1 ? 'y' : 'ies') + '):', data.transcript?.[0]?.text?.slice(0, 60));
+          this._setBotState('yielding', { reason: 'user-speaking' }, { force: true });
+          // Distinct reason so the MCP layer tells the agent to STAND DOWN
+          // (its reply is queued and will auto-replay) rather than re-derive.
+          results.transcript = { ok: false, reason: 'user-speaking-stashed', sent: 0, entries: [] };
+        } else {
+          console.log(ts(), '🛡️  [barge-in] Dropped bot speech — user is currently speaking (nothing to stash):', data.transcript?.[0]?.text?.slice(0, 60));
+          this._setBotState('yielding', { reason: 'user-speaking' }, { force: true });
+          results.transcript = { ok: false, reason: 'user-speaking', sent: 0, entries: [] };
+        }
       } else {
         if (data.role === 'bot' && this.anyoneSpeaking && _bargeExempt) {
           console.log(ts(), '🛡️  [barge-in] EXEMPT — played over speech (' + (_firstReplyToResolve ? 'opening ack' : _wordCount + '-word backchannel') + ')');

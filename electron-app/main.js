@@ -299,16 +299,32 @@ const localServer = new globalThis.LocalServer({
     }
   },
   // #321: forward custom whiteboard CSS to the remote sync so the whiteboard
-  // window (which renders from the remote room page) applies it.
-  onWhiteboardStyle: (css, sender) => {
+  // window (which renders from the remote room page) applies it. The shared
+  // board only re-fetches its style on a content change, so a style-only edit
+  // wouldn't visibly apply to what's already on screen — after the CSS is
+  // persisted we reload the whiteboard window so the current content inherits
+  // the new styling immediately.
+  onWhiteboardStyle: async (css, sender) => {
     const roomId = localServer.roomId;
     if (!roomId) return;
     console.log('[local-server] Whiteboard style from', sender, '·', String(css).length, 'chars');
-    fetch(`${getWebsiteUrl()}/api/sync/${roomId}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sender, role: 'bot', ownerName: sender, whiteboardStyle: css }),
-    }).catch(err => console.error('[local-server] Failed to forward whiteboard style:', err.message));
+    try {
+      await fetch(`${getWebsiteUrl()}/api/sync/${roomId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sender, role: 'bot', ownerName: sender, whiteboardStyle: css }),
+      });
+    } catch (err) {
+      console.error('[local-server] Failed to forward whiteboard style:', err.message);
+      return;
+    }
+    // Style is persisted — refresh the shared board so it inherits it now.
+    reloadWhiteboardWindow('style change');
+  },
+  onReloadWhiteboard: () => {
+    // Explicit reload (reload_whiteboard tool): re-fetch the shared board's
+    // content + style without changing anything. No-op if nothing's shared.
+    return reloadWhiteboardWindow('explicit reload');
   },
   onJoinCall: (meetCode, botName) => {
     console.log('[local-server] Join call requested by agent:', meetCode, botName);
@@ -1057,6 +1073,41 @@ const localServer = new globalThis.LocalServer({
     }
   },
 
+  // Capture the bot's OWN shared screen — i.e. the whiteboard window it's
+  // presenting into the call — as opposed to onCaptureScreenshot which grabs the
+  // Meet view. Ironically the Meet view can't show the bot its own share, so
+  // this captures the source window directly. No-op if nothing is being shared.
+  onCaptureSharedScreenshot: async ({ roomId }) => {
+    if (!whiteboardWindow || whiteboardWindow.isDestroyed() || whiteboardWindow.webContents.isDestroyed()) {
+      return { error: 'Nothing is being shared to capture (the bot is not presenting the whiteboard)' };
+    }
+    try {
+      const image = await whiteboardWindow.webContents.capturePage();
+      const buf = image.toPNG();
+      const dir = path.join(app.getPath('temp'), 'vibeconf-screenshots');
+      await fs.promises.mkdir(dir, { recursive: true });
+
+      const KEEP_PER_ROOM = 10;
+      const prefix = 'shared-' + (roomId || 'no-room') + '-';
+      try {
+        const existing = (await fs.promises.readdir(dir))
+          .filter(f => f.startsWith(prefix) && f.endsWith('.png'))
+          .sort();
+        const toDelete = existing.slice(0, Math.max(0, existing.length - (KEEP_PER_ROOM - 1)));
+        await Promise.all(toDelete.map(f => fs.promises.unlink(path.join(dir, f)).catch(() => {})));
+      } catch { /* dir just created or unreadable — fine */ }
+
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const filePath = path.join(dir, `${prefix}${stamp}.png`);
+      await fs.promises.writeFile(filePath, buf);
+      console.log('[electron] Shared-screen screenshot saved:', filePath, '(' + buf.length + ' bytes)');
+      return { path: filePath };
+    } catch (err) {
+      console.error('[electron] Shared screenshot capture failed:', err);
+      return { error: err.message };
+    }
+  },
+
   onReadChat: async () => noteChatResult(await chatRequest(CALL_COMMANDS.readChat, {})),
   onSendChat: async (text) => noteChatResult(await chatRequest(CALL_COMMANDS.sendChat, { text })),
   getWebsiteUrl: () => getWebsiteUrl(),
@@ -1264,6 +1315,18 @@ let shareGeneration = 0;
 // #189: whether we've already auto-posted the whiteboard URL to Meet chat
 // this call. Reset when the call ends so the next call posts again.
 let whiteboardLinkPostedForCall = false;
+
+// Reload the shared whiteboard window so it re-fetches content + style. Used
+// after a style change (so current content inherits it) and by the explicit
+// reload_whiteboard tool. No-op (reported to the caller) if nothing's shared.
+function reloadWhiteboardWindow(reason) {
+  if (whiteboardWindow && !whiteboardWindow.isDestroyed() && !whiteboardWindow.webContents.isDestroyed()) {
+    console.log('[whiteboard] Reloading shared board —', reason);
+    whiteboardWindow.webContents.reload();
+    return { ok: true };
+  }
+  return { ok: false, error: 'Nothing is being shared to reload' };
+}
 
 function createWhiteboardWindow(roomUrl) {
   // Position off the bottom-right of the screen so macOS doesn't clamp to (0,0)
@@ -2446,6 +2509,10 @@ app.whenReady().then(async () => {
 
   store = new Store(app.getPath('userData'));
 
+  // #326 — start the overlay-independent agent-activity feed for the avatar
+  // head-jostle. Self-guards on meetView, so it's safe to start early.
+  startAgentActivityPush();
+
   // #282: an explicit --meet-account-email pins this profile's bound Google
   // account deterministically (used by the test fleet so each gtest profile is
   // unambiguously alice@/jimmy@). When set, it wins over (and is never clobbered
@@ -3550,6 +3617,30 @@ function updateDebugOverlayPushInterval(enabled) {
   };
   push();
   debugOverlayPushTimer = setInterval(push, 1000);
+}
+
+// #326 — always-on agent-activity push (independent of the debug overlay).
+// Feeds the avatar "head jostle" proof-of-life: whenever the driving Claude
+// session emits a new activity line (tailed continuously into
+// localServer.agentLog), tell the renderer so it can nudge the head. On-change
+// only, so it's cheap — no per-tick traffic while the agent is idle.
+let agentActivityPushTimer = null;
+let _lastAgentActivityLine = null;
+function startAgentActivityPush() {
+  if (agentActivityPushTimer) return;
+  agentActivityPushTimer = setInterval(() => {
+    try {
+      if (!meetView || meetView.webContents.isDestroyed()) return;
+      const log = (localServer && localServer.agentLog) || [];
+      const latest = log.length ? log[log.length - 1] : '';
+      if (!latest || latest === _lastAgentActivityLine) return;
+      _lastAgentActivityLine = latest;
+      meetView.webContents.send('extension-message', {
+        action: 'agent-activity',
+        payload: { latest, len: log.length },
+      });
+    } catch { /* renderer not ready / view gone */ }
+  }, 500);
 }
 
 // Debug overlay is split into independent categories (#overlay). Each is a

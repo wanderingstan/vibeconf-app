@@ -143,6 +143,28 @@ function dismissBlockingModals() {
     }
   }
 
+  // "Ready to present? — This will end your existing presentation." Meet raises
+  // this when a share is triggered while already presenting (a redundant
+  // start_share). Click Cancel to KEEP the existing presentation — tearing it
+  // down would drop the whiteboard the bot is sharing. Swept every ~1s like the
+  // rest, so it clears within a second of appearing mid-call. Matched on the
+  // distinctive "existing presentation" phrase so it never hits a legit
+  // first-share confirmation.
+  const pdlg = document.querySelector(MEET.modals.dialogOrModal);
+  if (pdlg && isVisible(pdlg) &&
+      (pdlg.textContent || '').toLowerCase().includes(MEET.modals.presentTakeoverMarker)) {
+    for (const b of pdlg.querySelectorAll('button, [role="button"]')) {
+      const lbl = (b.textContent || '').trim().toLowerCase();
+      const aria = (b.getAttribute('aria-label') || '').trim().toLowerCase();
+      if ((lbl === MEET.modals.presentTakeoverCancelText ||
+           aria === MEET.modals.presentTakeoverCancelText) && isVisible(b)) {
+        b.click();
+        console.log('[electron-meet] Dismissed "Ready to present?" takeover modal via Cancel (kept existing presentation)');
+        return true;
+      }
+    }
+  }
+
   // No "Got it" found. If a modal dialog is nonetheless sitting open and
   // blocking (and it's not the recording-consent dialog handled elsewhere),
   // dump its DOM (throttled) so we can learn its dismiss button — maybe it uses

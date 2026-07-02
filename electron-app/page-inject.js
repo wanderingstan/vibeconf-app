@@ -62,6 +62,10 @@
       this.ctx = this.canvas.getContext('2d');
       this.frameCount = 0;
       this.speaking = false;
+      // #326 — head-rotation proof-of-life driven by agent log activity. Set
+      // when main.js pushes a new activity line (overlay-independent); the head
+      // snaps to this lean and holds until the next line.
+      this._agentJostleDir = 0;    // hash-derived lean direction, -1..1
       // Seed persistent state from the module-level avatarState, NOT hardcoded
       // defaults. A camera can be created mid-call — e.g. turning the camera on
       // makes the host page re-acquire the video stream, spawning a fresh
@@ -370,6 +374,15 @@
       const tickTilt = tickPulse * 0.16; // ~9° peak head tilt
       const tickPop = 1 + tickPulse * 0.12; // ~12% peak enlarge
 
+      // #326 — head rotation driven by agent log activity (proof-of-life). Each
+      // new activity line (pushed by main.js, overlay-independent) snaps the head
+      // INSTANTLY to a fresh hash-derived angle, and it HOLDS there until the next
+      // line — no ease, no return-to-neutral. Mirrors the instant emoji swaps: the
+      // head just ticks to a new lean as the agent works, and rests wherever the
+      // last line left it when the agent goes quiet. Peak ≈ ±30°.
+      const AGENT_JOSTLE_MAX = 0.52;      // rad, ~30°
+      const agentTilt = (this._agentJostleDir || 0) * AGENT_JOSTLE_MAX;
+
       ctx.save();
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -389,7 +402,7 @@
       // Apply translation + rotation + non-uniform scale around the avatar
       // center. The scaleX/scaleY give the "mouth open" jaw effect.
       ctx.translate(cx + thinkSway, cy + bob - speakBounce);
-      if (speakTilt || tickTilt) ctx.rotate(speakTilt + tickTilt);
+      if (speakTilt || tickTilt || agentTilt) ctx.rotate(speakTilt + tickTilt + agentTilt);
       if (this.speaking) {
         ctx.scale(speakScaleX * tickPop, speakScaleY * tickPop);
       } else {
@@ -1450,6 +1463,22 @@
           debugInfoLatest = payload;
           for (const cam of cameras.values()) {
             cam.debugInfo = payload;
+          }
+        }
+        break;
+
+      case 'agent-activity':
+        // #326 — overlay-independent proof-of-life feed. main.js sends this
+        // only when the driving Claude session's latest activity line changes.
+        // Stamp each camera so the render tick jostles the head, with a hash of
+        // the line picking the lean direction (varies per activity, ± lean).
+        if (payload && payload.latest) {
+          let h = 0;
+          const s = String(payload.latest);
+          for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+          const dir = ((Math.abs(h) % 2000) / 1000) - 1; // -1..1
+          for (const cam of cameras.values()) {
+            cam._agentJostleDir = dir;
           }
         }
         break;

@@ -201,6 +201,14 @@ const MEET = {
     dialogOrModal: '[role="dialog"][aria-modal="true"], [role="dialog"]',
     // The recording dialog's "Join now" affordance (Material dialog ok action).
     recordingOkButton: 'button[data-mdc-dialog-action="ok"]',
+    // "Ready to present? / This will end your existing presentation" — Meet
+    // raises this when a share is triggered while a presentation is already
+    // active (a redundant start_share that slipped past the alreadyPresenting
+    // guard). We match on the distinctive body phrase (so it only ever fires on
+    // the TAKEOVER variant, never a legit first-share confirmation) and click
+    // Cancel to KEEP the current presentation rather than tear down the board.
+    presentTakeoverMarker: 'existing presentation',
+    presentTakeoverCancelText: 'cancel',
   },
 };
 

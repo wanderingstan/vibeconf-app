@@ -679,6 +679,36 @@ server.tool(
   }
 );
 
+// --- reload_whiteboard ---
+server.tool(
+  "reload_whiteboard",
+  "Force the shared whiteboard to refresh WITHOUT changing its content — re-fetches the board's current content + styling and re-renders it. Reach for it if the shared board looks stale or out of sync. No-op if you're not currently sharing the whiteboard. Note: set_whiteboard_style already reloads automatically, so this is mainly a manual escape hatch.",
+  {
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) {
+      return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    }
+    try {
+      const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(botSyncPayload(BOT_NAME, { reloadWhiteboard: true })),
+      });
+      const d = await resp.json();
+      const r = d.results?.reloadWhiteboard;
+      if (r?.ok) {
+        return { content: [{ type: "text", text: "Whiteboard reloaded." }] };
+      }
+      return { content: [{ type: "text", text: r?.error || "Nothing is being shared to reload." }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error contacting local server to reload whiteboard: ${err.message}` }] };
+    }
+  }
+);
+
 // --- update_whiteboard ---
 server.tool(
   "update_whiteboard",
@@ -1186,7 +1216,7 @@ server.tool(
 // --- get_call_screenshot ---
 server.tool(
   "get_call_screenshot",
-  "Capture a screenshot of the current Meet view as the bot sees it — participant tiles, names, mic icons, who's speaking, captions, shared screen content, the surrounding Google Meet chrome — and save it to a temporary file. Returns the absolute path to the PNG. Use this when you need visual context about what's happening in the call. After getting the path, read the file with your normal image-reading tool to actually look at the screenshot.",
+  "Capture a screenshot of the current Meet view as the bot sees it — participant tiles, names, mic icons, who's speaking, captions, ANOTHER participant's shared screen, and the surrounding Google Meet chrome — saved to a temporary file. Returns the absolute path to the PNG. Use this for visual context about what's happening in the call. IMPORTANT: this is the Meet view, so it does NOT show the bot's OWN screen share — Meet never shows you your own presentation. To see what YOU are presenting (your shared whiteboard), use get_shared_screenshot instead. After getting the path, read the file with your normal image-reading tool to look at it.",
   {
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
@@ -1201,6 +1231,27 @@ server.tool(
       return { content: [{ type: "text", text: `Saved screenshot to ${data.path}` }] };
     }
     return { content: [{ type: "text", text: `Error capturing screenshot: ${data?.error || "unknown"}` }] };
+  }
+);
+
+// --- get_shared_screenshot ---
+server.tool(
+  "get_shared_screenshot",
+  "Capture a screenshot of the bot's OWN shared screen — the whiteboard it's currently presenting into the call — and save it to a temporary file. Returns the absolute path to the PNG. Use this to see what participants are actually seeing on your shared screen (get_call_screenshot only shows the Meet view, which can't show you your own share). Fails if you're not currently sharing. After getting the path, read the file with your normal image-reading tool to look at it.",
+  {
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async () => {
+    const resp = await fetch(`${BASE_URL}/api/shared-screenshot`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const data = await resp.json();
+    if (data?.success && data.path) {
+      return { content: [{ type: "text", text: `Saved shared-screen screenshot to ${data.path}` }] };
+    }
+    return { content: [{ type: "text", text: `Error capturing shared screen: ${data?.error || "unknown"}` }] };
   }
 );
 

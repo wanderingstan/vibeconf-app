@@ -59,7 +59,7 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onWhiteboardUpdate, onWhiteboardStyle, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onReadChat, onSendChat, onScrollShare, onInspectDom, onPlayAudio, onFocusRequest, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onInspectDom, onPlayAudio, onFocusRequest, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.appVersion = appVersion || null;
     // Release (installed .app/DMG) vs running from source (pnpm dev). Surfaced so
@@ -70,6 +70,7 @@ class LocalServer {
     this.onStopTts = onStopTts || (() => {});
     this.onWhiteboardUpdate = onWhiteboardUpdate || (() => {});
     this.onWhiteboardStyle = onWhiteboardStyle || (() => {}); // #321 relay custom board CSS
+    this.onReloadWhiteboard = onReloadWhiteboard || (() => ({ ok: false, error: 'reload not wired' })); // #321 follow-up
     this.whiteboardCss = '';
     this.onLeaveCall = onLeaveCall || (() => {});
     this.onShareWhiteboard = onShareWhiteboard || (() => {});
@@ -100,6 +101,7 @@ class LocalServer {
     this.onAvatarEmojiOverride = onAvatarEmojiOverride || (() => {}); // ({idle?, listening?}) — null/undefined for that key means reset
     this.onSetCamera = onSetCamera || (() => {}); // (on: boolean)
     this.onCaptureScreenshot = onCaptureScreenshot || (async () => ({ error: 'not implemented' }));
+    this.onCaptureSharedScreenshot = onCaptureSharedScreenshot || (async () => ({ error: 'not implemented' }));
     this.onReadChat = onReadChat || (async () => ({ ok: false, error: 'not implemented' }));
     this.onSendChat = onSendChat || (async () => ({ ok: false, error: 'not implemented' }));
     this.getWebsiteUrl = getWebsiteUrl || (() => ''); // host where /room/:id renders
@@ -2296,6 +2298,24 @@ class LocalServer {
       return;
     }
 
+    // Capture the bot's own shared screen (the whiteboard window it's presenting).
+    if (url.pathname === '/api/shared-screenshot' && req.method === 'POST') {
+      try {
+        const result = await this.onCaptureSharedScreenshot({ roomId: this.roomId });
+        if (result?.error) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: result.error }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, path: result.path }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+      return;
+    }
+
     if (url.pathname === '/api/preferences' && req.method === 'POST') {
       const body = await this._readBody(req);
       let parsed;
@@ -2584,6 +2604,13 @@ class LocalServer {
       this.whiteboardCss = data.whiteboardStyle;
       results.whiteboardStyle = { ok: true };
       this.onWhiteboardStyle(data.whiteboardStyle, data.sender);
+    }
+
+    // Explicit whiteboard reload (#321 follow-up): re-fetch the shared board's
+    // content + style without changing content. Used by the reload_whiteboard
+    // tool when the bot wants to force a refresh.
+    if (data.reloadWhiteboard === true) {
+      results.reloadWhiteboard = this.onReloadWhiteboard() || { ok: true };
     }
 
     // Handle join command — tell the app to join a Meet call

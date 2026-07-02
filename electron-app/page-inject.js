@@ -744,6 +744,20 @@
         arrayBuffer = bytes.buffer;
       }
       const buf = await this.audioCtx.decodeAudioData(arrayBuffer.slice(0));
+      return this._playBuffer(buf, 0);
+    }
+
+    // #350: resume a previously-decoded buffer from `offset` seconds in — the
+    // audio-level sibling of the fresh-TTS path. Same lip-sync tap + source
+    // bookkeeping; only the start offset differs.
+    async playAudioBuffer(buf, offset) {
+      return this._playBuffer(buf, Math.max(0, offset || 0));
+    }
+
+    // Shared playback core. Tracks the decoded buffer and the wall-clock start
+    // (plus the in-buffer offset it began at) so stopAudio() can report how far
+    // we actually got — the seam #350 resumes from.
+    _playBuffer(buf, offset = 0) {
       const src = this.audioCtx.createBufferSource();
       src.buffer = buf;
       src.connect(this.destination);
@@ -751,25 +765,33 @@
       // Expose the live source so stopAudio() can interrupt it for back-off
       // (#154). onended fires whether playback finished or was stop()'d.
       this._currentSource = src;
+      this._currentBuf = buf;
+      this._currentOffset = offset;                    // where this playback began
+      this._currentStartAt = this.audioCtx.currentTime; // clock at src.start()
       return new Promise((resolve) => {
         src.onended = () => {
           if (this._currentSource === src) this._currentSource = null;
           resolve();
         };
-        src.start();
+        src.start(0, offset);
       });
     }
 
     // Stop the currently-playing TTS source immediately. No-op if nothing is
     // playing. Used by the barge-in / back-off path (#154). The src.stop()
     // call triggers onended → the playAudio promise resolves naturally, so
-    // the playNextTTS state machine cleans up on its own.
+    // the playNextTTS state machine cleans up on its own. Returns how far into
+    // the buffer we got so the caller can retain it for a #350 resume:
+    //   { wasPlaying, buf, playedTo }  (buf null when nothing was playing).
     stopAudio() {
       const src = this._currentSource;
-      if (!src) return false;
+      if (!src) return { wasPlaying: false, buf: null, playedTo: 0 };
+      const buf = this._currentBuf || null;
+      const playedTo = (this._currentOffset || 0) +
+        (this.audioCtx.currentTime - (this._currentStartAt || this.audioCtx.currentTime));
       try { src.stop(); } catch { /* already stopped */ }
       this._currentSource = null;
-      return true;
+      return { wasPlaying: true, buf, playedTo: buf ? Math.min(playedTo, buf.duration) : playedTo };
     }
 
     getTrack(consumer = 'unknown') {
@@ -862,11 +884,19 @@
   // TTS audio queue — prevents overlapping playback
   const ttsQueue = [];
   let ttsPlaying = false;
+  // Emoji of the utterance currently playing — so a mid-playback interruption
+  // can retain it and resume (#350) with the same face.
+  let currentSpeakingEmoji = null;
+  // #350: a mid-TTS utterance that was cut off by a barge-in, retained so the
+  // next silence edge can resume it near the interruption point instead of
+  // dropping it. { buf, playedTo, emoji, at } or null.
+  let interruptedTts = null;
 
   async function playNextTTS() {
     if (ttsPlaying || ttsQueue.length === 0) return;
     ttsPlaying = true;
-    const { audioData, emoji } = ttsQueue.shift();
+    const { audioData, resumeBuf, offset, emoji } = ttsQueue.shift();
+    currentSpeakingEmoji = emoji || null;
     for (const cam of cameras.values()) {
       cam.speaking = true;
       cam.speakingEmojiOverride = emoji || null;
@@ -878,7 +908,13 @@
         console.log('[bots-in-calls] Resuming AudioContext before TTS playback');
         await mic.audioCtx.resume();
       }
-      await mic.playAudio(audioData);
+      // #350: a resume item carries an already-decoded buffer + offset; a fresh
+      // utterance carries encoded audioData.
+      if (resumeBuf) {
+        await mic.playAudioBuffer(resumeBuf, offset);
+      } else {
+        await mic.playAudio(audioData);
+      }
     } catch (err) {
       console.error('[bots-in-calls] TTS playback error:', err);
     }
@@ -1380,6 +1416,9 @@
             'CALL-clone:', callClone?.id, 'enabled:', callClone?.enabled, 'readyState:', callClone?.readyState, 'muted:', callClone?.muted,
             'master readyState:', master?.readyState,
             'destination tracks:', mic.destination.stream.getAudioTracks().length);
+          // A fresh utterance supersedes any retained interrupted one — the
+          // agent has moved on, so don't later resume a stale tail (#350).
+          interruptedTts = null;
           ttsQueue.push({ audioData: payload.audioData, emoji: payload.emoji });
           playNextTTS();
         }
@@ -1391,9 +1430,40 @@
         // playNextTTS state machine cleans up normally, posting tts-ended.
         const droppedQueue = ttsQueue.length;
         ttsQueue.length = 0;
-        const wasPlaying = mic ? mic.stopAudio() : false;
+        const stopped = mic ? mic.stopAudio() : { wasPlaying: false, buf: null, playedTo: 0 };
         const reason = payload?.reason || 'unspecified';
-        console.log('[bots-in-calls] stop-tts reason=' + reason + ' wasPlaying=' + wasPlaying + ' droppedQueue=' + droppedQueue);
+        // #350: retain the cut-off buffer so a quick reopen can resume near the
+        // interruption point instead of restarting the whole sentence. Only if
+        // enough is left to be worth resuming.
+        const MIN_REMAINING_S = 0.5;
+        if (stopped.wasPlaying && stopped.buf &&
+            (stopped.buf.duration - stopped.playedTo) > MIN_REMAINING_S) {
+          interruptedTts = { buf: stopped.buf, playedTo: stopped.playedTo, emoji: currentSpeakingEmoji, at: Date.now() };
+          console.log('[bots-in-calls] stop-tts retained ' +
+            (stopped.buf.duration - stopped.playedTo).toFixed(1) + 's tail for possible resume (#350)');
+        } else {
+          interruptedTts = null;
+        }
+        console.log('[bots-in-calls] stop-tts reason=' + reason + ' wasPlaying=' + stopped.wasPlaying + ' droppedQueue=' + droppedQueue);
+        break;
+      }
+
+      case 'resume-tts': {
+        // #350: floor reopened quickly after a barge-in — resume the retained
+        // utterance a hair before where it was cut (BACKUP) so it doesn't clip
+        // mid-word. local-server owns the decision (age + content-delta gate);
+        // here we just deliver if we still have the buffer.
+        if (!interruptedTts) {
+          console.log('[bots-in-calls] resume-tts — nothing retained, ignoring');
+          break;
+        }
+        const BACKUP_S = 0.4;
+        const resumeAt = Math.max(0, interruptedTts.playedTo - BACKUP_S);
+        console.log('[bots-in-calls] resume-tts — resuming at ' + resumeAt.toFixed(1) +
+          's / ' + interruptedTts.buf.duration.toFixed(1) + 's (#350)');
+        ttsQueue.push({ resumeBuf: interruptedTts.buf, offset: resumeAt, emoji: interruptedTts.emoji });
+        interruptedTts = null;
+        playNextTTS();
         break;
       }
 

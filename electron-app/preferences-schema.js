@@ -337,6 +337,29 @@ const PREFERENCES = {
       'replay even after a lot was said; 0 = only replay if literally nothing ' +
       'new was said. Default 15. Read live.',
   },
+  ttsResumeEnabled: {
+    type: 'boolean',
+    default: true,
+    description:
+      'When the bot is cut off MID-SPEECH by a barge-in and the floor reopens ' +
+      'quickly, resume the interrupted utterance near where it stopped instead ' +
+      'of dropping the half-spoken sentence (#350). Audio-level resume (same ' +
+      'voice, no re-synthesis). Gated by ttsResumeMaxAgeMs + ' +
+      'bargeInStashRedeliverMaxNewWords (only resume if the conversation didn\'t ' +
+      'move on). Set false to always drop on interruption. Read live.',
+  },
+  ttsResumeMaxAgeMs: {
+    type: 'number',
+    default: 5000,
+    min: 0,
+    max: 30_000,
+    description:
+      'How soon (ms) the floor must reopen after a mid-speech interruption for ' +
+      'the bot to resume the cut-off utterance (#350). Past this the retained ' +
+      'audio is considered stale and dropped (the agent moves on). The ' +
+      'wall-clock companion to bargeInStashRedeliverMaxNewWords (topical ' +
+      'staleness). Default 5s. Read live.',
+  },
   captionDropoutGraceMs: {
     type: 'number',
     default: 2000,

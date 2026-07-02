@@ -17,6 +17,21 @@ const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionL
 // byte-identical to the prior literals — same wire.
 const { CALL_EVENTS, CALL_COMMANDS } = require('./call-provider.js');
 
+// Git commit + dirty flag for the session-log header. Works when running from
+// source (dev: __dirname is inside the repo); returns 'n/a' in a packaged app
+// (no .git in the asar) or if git isn't available. Soft-fail, never throws.
+function gitBuildInfo() {
+  try {
+    const { execSync } = require('child_process');
+    const opts = { cwd: __dirname, encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] };
+    const hash = execSync('git rev-parse --short HEAD', opts).trim();
+    const dirty = execSync('git status --porcelain', opts).trim().length > 0;
+    return `${hash}${dirty ? '-dirty' : ''}`;
+  } catch {
+    return 'n/a (packaged or no git)';
+  }
+}
+
 // Short HH:MM:SS.mmm prefix for emoji diagnostic logs.
 function ts() {
   const d = new Date();
@@ -2614,6 +2629,10 @@ app.whenReady().then(async () => {
       userDataDir: app.getPath('userData'),
       header: {
         version: app.getVersion(),
+        // Git commit + dirty status — the version string alone is ambiguous when
+        // running from source (an un-bumped package.json reads e.g. "beta55" even
+        // with newer code). This makes a log unambiguous about exactly what ran.
+        git: gitBuildInfo(),
         platform: process.platform,
         electron: process.versions.electron,
         profile: appProfile || 'default',

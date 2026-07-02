@@ -1243,15 +1243,20 @@ class LocalServer {
       const entries = this._entriesSince(waiter.since, waiter.bot);
       if (entries.length === 0) continue;
 
-      // Passive/silent modes only respond when directly addressed. Apply
-      // a name-mention filter, then fall through to the same silence-based
-      // resolution active mode uses (the bot still has to wait for the
-      // speaker to finish their thought — see #208 for why the old
+      // #343: is the bot directly addressed in these entries? Drives BOTH the
+      // passive/silent name-gate AND — in any mode — a shorter silence threshold
+      // (fast-resolve). A direct "Jimmy…" should get a prompt reply instead of
+      // waiting for a whole-room gap that rarely comes in a lively multi-party
+      // call (the bot otherwise falls back to the word-count tick, 20–30s late).
+      const botNameLower = waiter.bot ? waiter.bot.toLowerCase() : '';
+      const nameMentioned = !!botNameLower && entries.some(e => e.text.toLowerCase().includes(botNameLower));
+
+      // Passive/silent modes only respond when directly addressed; otherwise they
+      // fall through to the same silence-based resolution active mode uses (the
+      // bot still waits for the speaker to finish — see #208 for why the old
       // instant-resolve path was removed).
       if ((this.mode === 'passive' || this.mode === 'silent') && waiter.bot) {
-        const botNameLower = waiter.bot.toLowerCase();
-        const mentioned = entries.some(e => e.text.toLowerCase().includes(botNameLower));
-        if (!mentioned) {
+        if (!nameMentioned) {
           if (waiter.silenceTimer) {
             clearTimeout(waiter.silenceTimer);
             waiter.silenceTimer = null;
@@ -1259,6 +1264,14 @@ class LocalServer {
           continue;
         }
       }
+
+      // Effective silence threshold — shortened when the bot was just addressed
+      // by name, so a direct question resolves promptly rather than waiting for
+      // the full whole-room gap (#343). Live-tunable via nameMentionSilenceSeconds.
+      const _nameSil = Number(this._pref('nameMentionSilenceSeconds'));
+      const effSilence = (nameMentioned && Number.isFinite(_nameSil) && _nameSil >= 0)
+        ? Math.min(waiter.silence, _nameSil)
+        : waiter.silence;
 
       // Use real-time speaking state from DOMSpeakerTracker (not caption timestamps).
       // If someone is actively speaking, don't resolve — cancel any silence timer.
@@ -1274,14 +1287,14 @@ class LocalServer {
       // legacy/bot entries which have no separate lastUpdated.
       const lastEntryActivityTime = lastEntry ? new Date(lastEntry.lastUpdated || lastEntry.timestamp).getTime() : 0;
       const lastEntryAge = lastEntry ? Date.now() - lastEntryActivityTime : Infinity;
-      const captionsGoneQuiet = lastEntryAge >= (waiter.silence + 3) * 1000;
+      const captionsGoneQuiet = lastEntryAge >= (effSilence + 3) * 1000;
 
       if (this.anyoneSpeaking && !captionsGoneQuiet) {
         // Speaker tracker says speaking — schedule a re-check at the point when
         // the caption-quiet fallback would kick in, so we don't depend solely on
         // the tracker flipping false (which sometimes never happens).
         if (!waiter.silenceTimer && lastEntry) {
-          const timeUntilQuiet = (waiter.silence + 3) * 1000 - lastEntryAge;
+          const timeUntilQuiet = (effSilence + 3) * 1000 - lastEntryAge;
           if (timeUntilQuiet > 0) {
             waiter.silenceTimer = setTimeout(() => {
               waiter.silenceTimer = null;
@@ -1305,7 +1318,7 @@ class LocalServer {
       //     the most recent caption activity. Without this fallback a fresh
       //     utterance with a multi-minute-old stopTime would resolve
       //     immediately at speech-onset.
-      const silenceMs = waiter.silence * 1000;
+      const silenceMs = effSilence * 1000;
       const lastEntryTime = lastEntryActivityTime;
       const stopTime = this.lastSpeechStoppedAt || 0;
       const STOP_FRESH_MS = silenceMs * 3; // ~6s with default 2s silence
@@ -1317,7 +1330,7 @@ class LocalServer {
 
       if (elapsed >= silenceMs) {
         // Silence threshold already met — resolve immediately
-        console.log(ts(), '⏱️  [resolve] Silence threshold met (' + Math.round(elapsed) + 'ms ≥ ' + silenceMs + 'ms) — resolving');
+        console.log(ts(), '⏱️  [resolve] Silence threshold met (' + Math.round(elapsed) + 'ms ≥ ' + silenceMs + 'ms' + (effSilence < waiter.silence ? ', name-mention fast-resolve' : '') + ') — resolving');
         this._resolveWaiter(waiter, 'silence');
       } else if (!waiter.silenceTimer) {
         // Start a silence timer for the remaining time

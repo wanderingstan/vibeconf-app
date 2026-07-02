@@ -355,6 +355,19 @@ const PREFERENCES = {
       'lets users compose longer thoughts); lower = snappier. 1.4 has felt ' +
       'good in live calls; 2.0 was the old default.',
   },
+  nameMentionSilenceSeconds: {
+    type: 'number',
+    default: 0.6,
+    min: 0,
+    max: 30,
+    description:
+      'Shorter silence threshold used when the bot is directly addressed by name ' +
+      '(#343). A "Jimmy…" then resolves after this much silence instead of the ' +
+      'full defaultSilenceSeconds, so a direct question gets a prompt reply rather ' +
+      'than waiting for a whole-room gap that rarely comes in a lively call. Only ' +
+      'ever shortens (min with the normal threshold); set >= defaultSilenceSeconds ' +
+      'to effectively disable. Read live.',
+  },
   defaultMaxWaitForSpeechSec: {
     type: 'number',
     default: 55,

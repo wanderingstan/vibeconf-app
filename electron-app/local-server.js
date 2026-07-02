@@ -163,6 +163,7 @@ class LocalServer {
     // activity while we're between speaks means the bot is heads-down doing tool
     // work (🧑‍💻), not just listening (🙂). Detect NEW lines and surface them.
     this._workingQuietTimer = null;
+    this._workingSince = 0; // #339: dwell-clock start for the 🤔→🧑‍💻 escalation
     this._agentTailer = new TranscriptTailer({ onLines: (lines) => {
       const prevLast = this.agentLog.length ? this.agentLog[this.agentLog.length - 1] : null;
       this.agentLog = lines;
@@ -1432,14 +1433,24 @@ class LocalServer {
   // or yielding. A quiet timer eases back to listening/idle once activity stops.
   _onAgentActivity(line) {
     if (this.callStatus !== 'in-call') return;
-    if (['idle', 'listening', 'thinking', 'working'].includes(this.botState)) {
-      this._setBotState(/🔧/.test(line) ? 'working' : 'thinking');
+    if (!['idle', 'listening', 'thinking', 'working'].includes(this.botState)) return;
+    if (this.botState === 'idle' || this.botState === 'listening') {
+      // Start of an engagement — show 🤔 thinking and start the dwell clock.
+      this._workingSince = Date.now();
+      this._setBotState('thinking');
+    } else if (/🔧/.test(line)) {
+      // Already engaged. Escalate 🤔 → 🧑‍💻 only once work has been sustained for
+      // workingStateMinMs, so a quick single-tool turn (the speak call is itself a
+      // tool!) doesn't flash 🧑‍💻. Once working, stay working.
+      const minMs = Number(this._pref('workingStateMinMs')) || 0;
+      if (!this._workingSince) this._workingSince = Date.now();
+      if (Date.now() - this._workingSince >= minMs) this._setBotState('working');
     }
     this._armWorkingQuietTimer();
   }
 
   _armWorkingQuietTimer() {
-    const QUIET_MS = 8000; // activity gone this long → drop the working/thinking face
+    const QUIET_MS = Number(this._pref('workingStateQuietMs')) || 8000; // activity gone this long → drop the face
     if (this._workingQuietTimer) clearTimeout(this._workingQuietTimer);
     this._workingQuietTimer = setTimeout(() => {
       this._workingQuietTimer = null;
@@ -1772,6 +1783,7 @@ class LocalServer {
       // the listening face until the agent's first action. Tool activity then
       // escalates to 🧑‍💻 working; the reply transitions to speaking.
       if (this.callStatus === 'in-call' && (this.botState === 'listening' || this.botState === 'idle')) {
+        this._workingSince = Date.now(); // start the 🤔→🧑‍💻 dwell clock at resolve
         this._setBotState('thinking');
       }
     }

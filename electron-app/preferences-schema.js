@@ -225,6 +225,27 @@ const PREFERENCES = {
       'instantly. Read live, so it can be tuned mid-call (per profile). Raised ' +
       'from 2000 → 3500ms: 2s felt over-eager to yield on real calls. Default 3500ms.',
   },
+  workingStateMinMs: {
+    type: 'number',
+    default: 2500,
+    min: 0,
+    max: 30_000,
+    description:
+      'How long the agent must be continuously working before the avatar escalates ' +
+      'from 🤔 thinking to 🧑‍💻 working (#339). Prevents a flicker on quick turns — the ' +
+      'speak call is itself a tool, so without a dwell every reply would flash 🧑‍💻. ' +
+      'Higher = 🧑‍💻 only for genuinely heads-down work; 0 = show it on the first tool. ' +
+      'Read live.',
+  },
+  workingStateQuietMs: {
+    type: 'number',
+    default: 8000,
+    min: 1000,
+    max: 60_000,
+    description:
+      'How long after the last agent activity before the 🧑‍💻/🤔 face eases back to ' +
+      'listening/idle (#339). Held through a pending turn regardless. Read live.',
+  },
   bargeInAckExempt: {
     type: 'boolean',
     default: true,

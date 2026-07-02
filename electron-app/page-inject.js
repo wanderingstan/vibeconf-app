@@ -32,7 +32,8 @@
     };
 
     static ACTIVITY_EMOJIS = {
-      thinking: '\u{1F914}', // 🤔 thinking face
+      thinking: '\u{1F914}', // 🤔 formulating a reply — still "with" the conversation
+      working:  '\u{1F9D1}\u{200D}\u{1F4BB}', // 🧑‍💻 heads-down running tools — NOT tracking the room
       speaking: '\u{1F604}', // 😄 grinning face — open mouth fits TTS playback
       yielding: '\u{1F64B}', // 🙋 wants to speak, yielding to the room
     };
@@ -73,7 +74,7 @@
       // camera that defaulted to idle/🫥 would never learn it's in-call+engaged
       // and would sit on 🫥 while the bot is actually talking. avatarState holds
       // the last known values so a new camera picks up where the call is.
-      this.state = avatarState.state;   // 'idle' | 'listening' | 'thinking' | 'speaking' | 'yielding'
+      this.state = avatarState.state;   // 'idle' | 'listening' | 'thinking' | 'working' | 'speaking' | 'yielding'
       this.mode = avatarState.mode;     // 'active' | 'passive' | 'silent'
       this.callStatus = avatarState.callStatus; // 'idle' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
       // True once the agent has done anything besides idle. Stays 🫥 until then,
@@ -1267,7 +1268,7 @@
         break;
 
       case 'set-bot-state':
-        // Update avatar state: 'idle' | 'listening' | 'thinking' | 'speaking' | 'yielding'
+        // Update avatar state: 'idle' | 'listening' | 'thinking' | 'working' | 'speaking' | 'yielding'
         if (payload?.state) {
           for (const cam of cameras.values()) {
             // Brief "noted that" pulse on entering thinking — this is what a

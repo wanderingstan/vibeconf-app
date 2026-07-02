@@ -159,7 +159,16 @@ class LocalServer {
     // path here (via the auto-installed hook); we tail it into a ring buffer
     // shown on the debug overlay. Gated by the same `debugOverlay` toggle.
     this.agentLog = [];
-    this._agentTailer = new TranscriptTailer({ onLines: (lines) => { this.agentLog = lines; } });
+    // #339: the same feed also drives the avatar's "working" state — new agent
+    // activity while we're between speaks means the bot is heads-down doing tool
+    // work (🧑‍💻), not just listening (🙂). Detect NEW lines and surface them.
+    this._workingQuietTimer = null;
+    this._agentTailer = new TranscriptTailer({ onLines: (lines) => {
+      const prevLast = this.agentLog.length ? this.agentLog[this.agentLog.length - 1] : null;
+      this.agentLog = lines;
+      const last = lines.length ? lines[lines.length - 1] : null;
+      if (last && last !== prevLast) this._onAgentActivity(last);
+    } });
 
     // Room state (single room — the active call)
     this.roomId = null;
@@ -1416,6 +1425,33 @@ class LocalServer {
     this.onBotStateChange(state, extra);
   }
 
+  // #339: new agent activity → reflect a "working" avatar state so the room can
+  // tell "heads-down doing tool work" from "listening". A tool line (🔧) means
+  // the bot is running tools → 🧑‍💻 working; other activity (reasoning/text) →
+  // 🤔 thinking. Only escalates from resting states — never overrides speaking
+  // or yielding. A quiet timer eases back to listening/idle once activity stops.
+  _onAgentActivity(line) {
+    if (this.callStatus !== 'in-call') return;
+    if (['idle', 'listening', 'thinking', 'working'].includes(this.botState)) {
+      this._setBotState(/🔧/.test(line) ? 'working' : 'thinking');
+    }
+    this._armWorkingQuietTimer();
+  }
+
+  _armWorkingQuietTimer() {
+    const QUIET_MS = 8000; // activity gone this long → drop the working/thinking face
+    if (this._workingQuietTimer) clearTimeout(this._workingQuietTimer);
+    this._workingQuietTimer = setTimeout(() => {
+      this._workingQuietTimer = null;
+      if (this.botState !== 'working' && this.botState !== 'thinking') return;
+      // Still mid-turn (resolved, not yet spoken)? Hold the face and re-check —
+      // a single long tool call can be quiet a while. Once the turn ends (speak
+      // clears _pendingTurnSince) or the agent re-arms listening, we fall through.
+      if (this._pendingTurnSince != null) { this._armWorkingQuietTimer(); return; }
+      this._setBotState(this.waiters.length > 0 ? 'listening' : 'idle', undefined, { force: true });
+    }, QUIET_MS);
+  }
+
   // Barge-in / back-off helpers (#154) -----------------------------------------
 
   _clearBargeIn(reason) {
@@ -1730,7 +1766,15 @@ class LocalServer {
     // (no speech) or background ticks (the floor is still busy and the bot
     // usually stays silent). The latest such resolve wins — if Claude never
     // spoke on the prior one, that turn simply had no audible reply.
-    if (reason === 'silence' || reason === 'mention') this._pendingTurnSince = Date.now();
+    if (reason === 'silence' || reason === 'mention') {
+      this._pendingTurnSince = Date.now();
+      // #339: show "processing your turn" (🤔) immediately rather than staying on
+      // the listening face until the agent's first action. Tool activity then
+      // escalates to 🧑‍💻 working; the reply transitions to speaking.
+      if (this.callStatus === 'in-call' && (this.botState === 'listening' || this.botState === 'idle')) {
+        this._setBotState('thinking');
+      }
+    }
 
     // Auto-replay any fresh barge-in stash on silence resolution — that's
     // the "you had your hand raised, the room went quiet, just speak"

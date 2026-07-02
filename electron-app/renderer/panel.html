@@ -206,6 +206,16 @@
             <span style="color:#9aa0a6">— grab the <strong>“Premium”</strong> or <strong>“Enhanced”</strong> voices; the standard ones sound robotic.</span>
           </div>
         </div>
+        <div class="field">
+          <label for="voiceboxProfile">Voicebox voice (experimental, local)</label>
+          <select id="voiceboxProfile" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit">
+            <option value="">None — Voicebox not in use</option>
+          </select>
+          <div style="font-size:11px;color:#666;margin-top:2px">
+            Uses a locally running <a href="https://voicebox.sh" target="_blank" style="color:#8ab4f8;text-decoration:underline">Voicebox</a> instance for TTS instead of ElevenLabs/macOS. Requires the Voicebox app to be running.
+            <a href="#" id="refreshVoiceboxProfilesBtn" style="color:#8ab4f8;text-decoration:underline">Refresh list</a>
+          </div>
+        </div>
       </div>
 
       <div class="section">

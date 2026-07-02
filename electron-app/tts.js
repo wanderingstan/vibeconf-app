@@ -14,6 +14,9 @@ class TTSProvider {
     this.voiceId = config.voiceId || 'CwhRBWXzGAHq8TQ4Fs17'; // "Roger" (premade, free tier)
     this.modelId = config.modelId || 'eleven_v2_flash'; // fast model
     this.macosVoice = config.macosVoice || 'Samantha'; // macOS say voice
+    this.voiceboxUrl = config.voiceboxUrl || 'http://127.0.0.1:17493'; // local Voicebox server
+    this.voiceboxProfileId = config.voiceboxProfileId || '';
+    this.voiceboxEngine = config.voiceboxEngine || 'kokoro'; // must match what the profile supports
     this._queue = [];
     this._active = false;
   }
@@ -24,6 +27,9 @@ class TTSProvider {
     if (config.voiceId) this.voiceId = config.voiceId;
     if (config.modelId) this.modelId = config.modelId;
     if (config.macosVoice) this.macosVoice = config.macosVoice;
+    if (config.voiceboxUrl) this.voiceboxUrl = config.voiceboxUrl;
+    if (config.voiceboxProfileId) this.voiceboxProfileId = config.voiceboxProfileId;
+    if (config.voiceboxEngine) this.voiceboxEngine = config.voiceboxEngine;
   }
 
   async synthesize(text) {
@@ -65,6 +71,8 @@ class TTSProvider {
         return this._elevenlabs(text);
       case 'macos-say':
         return this._macosSay(text);
+      case 'voicebox':
+        return this._voicebox(text);
       default:
         throw new Error(`Unknown TTS provider: ${provider}`);
     }
@@ -167,6 +175,65 @@ class TTSProvider {
       try { fs.unlinkSync(aiffPath); } catch {}
       try { fs.unlinkSync(wavPath); } catch {}
     }
+  }
+
+  // Voicebox (voicebox.sh) — local TTS server. Generation is async: POST /generate
+  // kicks off a job, we poll /generate/{id}/status until it completes, then fetch
+  // the finished WAV from /audio/{id}. No streaming endpoint exists yet (Voicebox's
+  // own docs list it as "Coming Soon"), so this mirrors the whole-buffer contract
+  // of _elevenlabs/_macosSay rather than attempting partial playback.
+  async _voicebox(text) {
+    if (!this.voiceboxProfileId) {
+      throw new Error('Voicebox profile not configured');
+    }
+
+    const genRes = await fetch(`${this.voiceboxUrl}/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        profile_id: this.voiceboxProfileId,
+        engine: this.voiceboxEngine,
+        text,
+      }),
+    });
+    if (!genRes.ok) {
+      throw new Error(`Voicebox generate error ${genRes.status}: ${await genRes.text().catch(() => '')}`);
+    }
+    const { id, status: initialStatus, error: initialError } = await genRes.json();
+    if (initialStatus === 'failed' || initialError) {
+      throw new Error(`Voicebox generation failed: ${initialError}`);
+    }
+
+    // Poll for completion. The status endpoint returns an SSE-framed single event
+    // ("data: {...}") rather than a plain JSON body.
+    const deadline = Date.now() + 20000;
+    let completed = false;
+    while (Date.now() < deadline) {
+      const raw = await fetch(`${this.voiceboxUrl}/generate/${id}/status`).then((r) => r.text());
+      let data;
+      try {
+        data = JSON.parse(raw.replace(/^data:\s*/, ''));
+      } catch {
+        data = null;
+      }
+      if (data?.status === 'completed') {
+        completed = true;
+        break;
+      }
+      if (data?.status === 'failed') {
+        throw new Error(`Voicebox generation failed: ${data.error}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    if (!completed) {
+      throw new Error('Voicebox generation timed out');
+    }
+
+    const audioRes = await fetch(`${this.voiceboxUrl}/audio/${id}`);
+    if (!audioRes.ok) {
+      throw new Error(`Voicebox audio fetch error ${audioRes.status}`);
+    }
+    return audioRes.arrayBuffer();
   }
 }
 

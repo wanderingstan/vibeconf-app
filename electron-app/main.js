@@ -1877,17 +1877,26 @@ function speakText(text, voice, emoji) {
   // Sanitize markdown out of the spoken string only (#160).
   const spokenText = stripMarkdownForTts(text);
   enqueueAudio(async () => {
-    // Temporarily override voice if specified (works for both macOS and
-    // ElevenLabs). Safe under serialization — no concurrent speak can clobber it.
+    // Temporarily override voice if specified (works for macOS, ElevenLabs, and
+    // Voicebox). Safe under serialization — no concurrent speak can clobber it.
     // Route by identity: a name that matches an installed macOS voice forces the
-    // macOS provider (so it actually plays even with an EL key set); anything
-    // else is treated as an ElevenLabs voice ID. Restored in finally.
+    // macOS provider; a name that matches a Voicebox profile forces voicebox;
+    // anything else is treated as an ElevenLabs voice ID. Restored in finally.
     const originalMacVoice = tts.macosVoice;
     const originalELVoice = tts.voiceId;
+    const originalVoiceboxProfileId = tts.voiceboxProfileId;
+    const originalVoiceboxEngine = tts.voiceboxEngine;
     const originalProvider = tts.provider;
     if (voice) {
       if (macosVoiceNameSet.has(voice)) {
         tts.updateConfig({ provider: 'macos-say', macosVoice: voice });
+      } else if (voiceboxProfileNameSet.has(voice)) {
+        const profile = [...voiceboxProfilesById.values()].find((p) => p.name === voice);
+        tts.updateConfig({
+          provider: 'voicebox',
+          voiceboxProfileId: profile.id,
+          voiceboxEngine: profile.preset_engine || profile.default_engine || 'kokoro',
+        });
       } else {
         tts.updateConfig({ provider: 'elevenlabs', voiceId: voice });
       }
@@ -1933,6 +1942,8 @@ function speakText(text, voice, emoji) {
       if (voice) {
         tts.updateConfig({ macosVoice: originalMacVoice });
         tts.voiceId = originalELVoice;
+        tts.voiceboxProfileId = originalVoiceboxProfileId;
+        tts.voiceboxEngine = originalVoiceboxEngine;
         tts.provider = originalProvider;
       }
     }
@@ -1985,6 +1996,31 @@ async function enumerateMacosVoices() {
       resolve(deduped);
     });
   });
+}
+
+// Voicebox (local TTS server, experimental) profile names/ids, mirroring
+// macosVoiceNameSet above. Lets speak()'s voice-override route a profile name
+// to the voicebox provider. Populated at startup and refreshed on each
+// list-voicebox-profiles IPC call; stays empty if Voicebox isn't running.
+let voiceboxProfileNameSet = new Set();
+let voiceboxProfilesById = new Map();
+
+// Fetch voice profiles from a locally running Voicebox instance's GET /profiles.
+// Best-effort: returns [] (never throws) if Voicebox isn't running or the
+// fetch fails/times out, matching enumerateMacosVoices()'s soft-fail shape.
+async function listVoiceboxProfiles() {
+  const url = `${tts.voiceboxUrl || 'http://127.0.0.1:17493'}/profiles`;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!res.ok) return [];
+    const profiles = await res.json();
+    return Array.isArray(profiles) ? profiles : [];
+  } catch {
+    return [];
+  }
 }
 
 // True while we've degraded from ElevenLabs to the macOS `say` voice (e.g.
@@ -2698,18 +2734,25 @@ app.whenReady().then(async () => {
   }
 
   // Load saved config
-  const savedConfig = store.getMultiple(['ttsApiKey', 'ttsVoiceId', 'botName', 'syncBaseUrl', 'macosVoice', 'ttsProvider']);
+  const savedConfig = store.getMultiple(['ttsApiKey', 'ttsVoiceId', 'botName', 'syncBaseUrl', 'macosVoice', 'ttsProvider', 'voiceboxUrl', 'voiceboxProfileId', 'voiceboxEngine']);
   if (savedConfig.ttsApiKey) {
     tts.updateConfig({ apiKey: savedConfig.ttsApiKey });
     stt.updateConfig({ apiKey: savedConfig.ttsApiKey });
   }
   if (savedConfig.ttsVoiceId) tts.updateConfig({ voiceId: savedConfig.ttsVoiceId });
   if (savedConfig.macosVoice) tts.updateConfig({ macosVoice: savedConfig.macosVoice });
+  if (savedConfig.voiceboxUrl) tts.updateConfig({ voiceboxUrl: savedConfig.voiceboxUrl });
+  if (savedConfig.voiceboxProfileId) tts.updateConfig({ voiceboxProfileId: savedConfig.voiceboxProfileId });
+  if (savedConfig.voiceboxEngine) tts.updateConfig({ voiceboxEngine: savedConfig.voiceboxEngine });
   // Explicit provider override (e.g. bot chose a built-in voice as primary).
   if (savedConfig.ttsProvider) tts.updateConfig({ provider: savedConfig.ttsProvider });
   // Prime the macOS voice-name set so speak()'s voice-override can route a name
   // to the right provider from the first utterance (refreshed on each list call).
   enumerateMacosVoices().then((vs) => { macosVoiceNameSet = new Set(vs.map((v) => v.name)); }).catch(() => {});
+  // Same idea for Voicebox profile names — lets speak()'s voice override route
+  // a profile name to the voicebox provider (best-effort: silently empty if
+  // Voicebox isn't running).
+  listVoiceboxProfiles().then((ps) => { voiceboxProfileNameSet = new Set(ps.map((p) => p.name)); voiceboxProfilesById = new Map(ps.map((p) => [p.id, p])); }).catch(() => {});
 
   // P2 real voices: if no ElevenLabs key is stored, load it from a credentials file
   // pointed at by VIBECONF_CREDENTIALS_FILE (de-hardcoded — no baked-in personal
@@ -4498,11 +4541,39 @@ function setupIPC() {
     if (config.macosVoice) {
       store.set('macosVoice', config.macosVoice);
     }
-    // Explicit provider override ('macos-say' / 'elevenlabs' / 'auto'). Lets the
-    // bot (or user) force the built-in voice as primary even with an EL key set.
+    // Explicit provider override ('macos-say' / 'elevenlabs' / 'voicebox' /
+    // 'auto'). Lets the bot (or user) force the built-in voice as primary even
+    // with an EL key set.
     if (config.provider) {
       store.set('ttsProvider', config.provider);
     }
+    // Voicebox (local TTS server, experimental) — mirrors the macosVoice/
+    // ttsVoiceId persistence above. voiceboxProfileId can be explicitly
+    // cleared to '' (revert to "None"), so persist using 'in' rather than
+    // truthiness, same as apiKey above.
+    if (config.voiceboxUrl) {
+      store.set('voiceboxUrl', config.voiceboxUrl);
+    }
+    if ('voiceboxProfileId' in config) {
+      if (config.voiceboxProfileId) {
+        store.set('voiceboxProfileId', config.voiceboxProfileId);
+      } else {
+        store.delete('voiceboxProfileId');
+      }
+    }
+    if (config.voiceboxEngine) {
+      store.set('voiceboxEngine', config.voiceboxEngine);
+    }
+  });
+
+  // List voice profiles from a locally running Voicebox instance, mirroring
+  // list-macos-voices below. Returns [] (never throws) if Voicebox isn't
+  // running — the renderer falls back to a single "not in use" option.
+  ipcMain.handle('list-voicebox-profiles', async () => {
+    const profiles = await listVoiceboxProfiles();
+    voiceboxProfileNameSet = new Set(profiles.map((p) => p.name));
+    voiceboxProfilesById = new Map(profiles.map((p) => [p.id, p]));
+    return profiles;
   });
 
   // List the installed macOS `say` voices for the preferences dropdown — the

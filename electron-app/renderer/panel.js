@@ -33,6 +33,8 @@ const websiteUrlInput = document.getElementById('websiteUrl');
 const ttsApiKeyInput = document.getElementById('ttsApiKey');
 const ttsVoiceIdInput = document.getElementById('ttsVoiceId');
 const macosVoiceSelect = document.getElementById('macosVoice');
+const voiceboxProfileSelect = document.getElementById('voiceboxProfile');
+const refreshVoiceboxProfilesBtn = document.getElementById('refreshVoiceboxProfilesBtn');
 const claudeWorkDirInput = document.getElementById('claudeWorkDir');
 const claudeModelInput = document.getElementById('claudeModel');
 const emojiSetInput = document.getElementById('emojiSet');
@@ -474,7 +476,7 @@ api.invoke('get-overlay-flags').then((flags) => {
 // Load saved config
 // ---------------------------------------------------------------------------
 
-api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'claudeWorkDir', 'claudeModel', 'emojiSet', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
+api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'claudeWorkDir', 'claudeModel', 'emojiSet', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
   if (result?.botName) { botNameInput.value = result.botName; currentBotName = result.botName; }
   rememberedMeetName = result?.lastMeetName || null;   // #282 remembered names
   rememberedSlackName = result?.lastSlackName || null;
@@ -490,6 +492,7 @@ api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', '
   // Default the dropdown to Samantha when unset, to match tts.js's actual
   // default voice (so the UI reflects what's really used before any pick).
   populateMacosVoices(result?.macosVoice || 'Samantha');
+  populateVoiceboxProfiles(result?.voiceboxProfileId || '');
   try { refreshVoiceStatus(); } catch { /* defined below; ignore if not yet */ }
   if (result?.claudeWorkDir) claudeWorkDirInput.value = result.claudeWorkDir;
   if (result?.claudeModel) claudeModelInput.value = result.claudeModel;
@@ -968,8 +971,17 @@ async function refreshFastModelStatus() {
 
 function refreshVoiceStatus() {
   if (!voiceStatus) return;
+  // Voicebox is an explicit opt-in (a non-empty selection forces provider:
+  // 'voicebox' in main.js), so it takes priority over the ElevenLabs/macOS
+  // auto-selection below when set.
+  const voiceboxProfile = (voiceboxProfileSelect?.value || '').trim();
   const id = (ttsVoiceIdInput?.value || '').trim();
-  if (id) {
+  if (voiceboxProfile) {
+    const label = voiceboxProfileSelect.selectedOptions[0]?.textContent || voiceboxProfile;
+    voiceStatus.textContent = `🔊 Voicebox voice: ${label}`;
+    voiceStatus.style.color = '#81c995';
+    voiceStatus.title = `Voicebox profile: ${label} (experimental, requires the Voicebox app running locally)`;
+  } else if (id) {
     voiceStatus.textContent = '🔊 ElevenLabs voice set';
     voiceStatus.style.color = '#81c995';
     voiceStatus.title = `ElevenLabs voice ID: ${id}`;
@@ -1370,6 +1382,56 @@ macosVoiceSelect?.addEventListener('change', () => {
 document.getElementById('openVoiceSettingsBtn')?.addEventListener('click', (e) => {
   e.preventDefault();
   api.invoke('open-voice-settings').catch(() => {});
+});
+
+// Populate the Voicebox profile dropdown by asking main to hit the local
+// Voicebox server's GET /profiles. `selected` is the currently-saved profile
+// id to pre-select. Voicebox may not be running, so this fails soft into a
+// single "not in use" option, same as populateMacosVoices() failing soft.
+async function populateVoiceboxProfiles(selected) {
+  if (!voiceboxProfileSelect) return;
+  let profiles = [];
+  try { profiles = await api.invoke('list-voicebox-profiles'); } catch { /* ignore */ }
+  voiceboxProfileSelect.innerHTML = '';
+  const noneOpt = document.createElement('option');
+  noneOpt.value = '';
+  noneOpt.textContent = Array.isArray(profiles) && profiles.length > 0
+    ? 'None — Voicebox not in use'
+    : 'None — Voicebox not running or has no profiles';
+  voiceboxProfileSelect.appendChild(noneOpt);
+  if (!Array.isArray(profiles)) return;
+  for (const p of profiles) {
+    const opt = document.createElement('option');
+    opt.value = p.id;
+    opt.textContent = `${p.name} (${p.preset_engine || p.default_engine || 'engine unknown'})`;
+    opt.dataset.engine = p.preset_engine || p.default_engine || '';
+    if (p.id === selected) opt.selected = true;
+    voiceboxProfileSelect.appendChild(opt);
+  }
+}
+
+voiceboxProfileSelect?.addEventListener('change', () => {
+  const opt = voiceboxProfileSelect.selectedOptions[0];
+  const profileId = voiceboxProfileSelect.value;
+  if (!profileId) {
+    // Reverting to "None" doesn't force a provider — leave provider selection
+    // to the existing ElevenLabs/macOS logic (an empty voiceboxProfileId makes
+    // tts.js's _voicebox() throw if ever selected, but nothing routes to it
+    // without a profile id set).
+    api.send('update-tts-config', { voiceboxProfileId: '' });
+    return;
+  }
+  api.send('update-tts-config', {
+    provider: 'voicebox',
+    voiceboxProfileId: profileId,
+    voiceboxEngine: opt?.dataset.engine || 'kokoro',
+  });
+  refreshVoiceStatus();
+});
+
+refreshVoiceboxProfilesBtn?.addEventListener('click', (e) => {
+  e.preventDefault();
+  populateVoiceboxProfiles(voiceboxProfileSelect?.value || '');
 });
 
 claudeWorkDirInput.addEventListener('change', () => {

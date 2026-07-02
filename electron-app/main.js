@@ -428,10 +428,23 @@ const localServer = new globalThis.LocalServer({
     const TAIL_MS = 400; // let the last audio buffer flush into the mic stream
     const deadline = Date.now() + MAX_WAIT_MS;
 
+    // Give Google a clean leave BEFORE we navigate the view away. Clicking the
+    // real "Leave call" button drops our participant tile immediately; skipping
+    // it (the old behavior) just killed the media connection on nav-away and
+    // left a ghost participant for others until Google's timeout reaped it.
+    const LEAVE_CLICK_SETTLE_MS = 1000;
     const performLeave = () => {
-      if (panelView && !panelView.webContents.isDestroyed()) {
-        panelView.webContents.send('leave-requested');
+      if (meetView && !meetView.webContents.isDestroyed()) {
+        meetView.webContents.send('trigger-leave-call');
       }
+      // Let the click register with Google's servers, then do the teardown
+      // (panel → leave-meet → showIdle navigates the view to Meet home). The
+      // teardown is the fallback path if the button wasn't present.
+      setTimeout(() => {
+        if (panelView && !panelView.webContents.isDestroyed()) {
+          panelView.webContents.send('leave-requested');
+        }
+      }, LEAVE_CLICK_SETTLE_MS);
     };
 
     const checkAndLeave = () => {

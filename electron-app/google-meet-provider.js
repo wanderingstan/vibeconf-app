@@ -2247,6 +2247,16 @@ function findStopPresentingButton() {
 // confirm on the first tick without needing a click.
 ipcRenderer.on('trigger-stop-sharing', () => { meetProvider.stopShare(); });
 
+// Explicit "Leave call" click, fired by main BEFORE it navigates the Meet view
+// away on hang-up. Without this, tearing the page out from under the call just
+// kills the media connection and leaves a ghost participant tile for everyone
+// else until Google's server-side timeout reaps it (the bot "didn't leave").
+// Clicking the real button sends Google a clean leave so the tile drops now.
+ipcRenderer.on('trigger-leave-call', () => {
+  const clicked = meetProvider.leave();
+  console.log('[electron-meet] trigger-leave-call → Leave-call button ' + (clicked ? 'clicked' : 'NOT found'));
+});
+
 // ---------------------------------------------------------------------------
 // GoogleMeetProvider — the CallProvider implementation for Google Meet.
 //
@@ -2275,12 +2285,18 @@ class GoogleMeetProvider extends CallProvider {
 
   async join(botName) { return autoJoin(botName ?? BOT_NAME); }
 
-  async leave() {
-    // Leaving is driven from main (leave-meet → the Meet view is closed); the
-    // in-call "Leave call" button is the provider-side affordance. Not yet
-    // wired to an IPC command — present for interface completeness.
-    const btn = findByAriaLabel(MEET.join.leaveCallLabel);
-    if (btn) btn.click();
+  // Click Meet's in-call "Leave call" button so Google registers a clean leave
+  // and drops our participant tile immediately. Wired to the 'trigger-leave-call'
+  // IPC (fired by main on hang-up, before it navigates the view away). Returns
+  // true if a button was found and clicked. Synchronous so the IPC handler can
+  // log the outcome; navigating away is still the fallback if no button is here.
+  leave() {
+    const btn =
+      findByAriaLabel(MEET.join.leaveCallLabel) ||
+      document.querySelector(MEET.join.leaveCallTooltip);
+    if (!btn) return false;
+    try { btn.click(); } catch { return false; }
+    return true;
   }
 
   // Fire-and-forget (matches the original handlers, which didn't await).

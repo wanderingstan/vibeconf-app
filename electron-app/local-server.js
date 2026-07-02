@@ -2530,8 +2530,13 @@ class LocalServer {
       const _firstReplyToResolve = this._pendingTurnSince != null;
       const _botText = data.role === 'bot' ? (data.transcript.map((t) => t && t.text ? t.text : '').join(' ').trim()) : '';
       const _wordCount = _botText ? _botText.split(/\s+/).length : 0;
-      const _bargeExempt = data.role === 'bot' && _wordCount > 0 &&
-        ((_firstReplyToResolve && _wordCount <= 40) || _wordCount <= 6);
+      // All three knobs read live (tunable mid-call via set_preference).
+      const _exemptPref = this._pref('bargeInAckExempt');
+      const _ackExemptOn = _exemptPref !== false && _exemptPref !== 'false';
+      const _ackMax = Number(this._pref('bargeInAckMaxWords')) || 0;
+      const _bcMax = Number(this._pref('bargeInBackchannelMaxWords')) || 0;
+      const _bargeExempt = data.role === 'bot' && _ackExemptOn && _wordCount > 0 &&
+        ((_firstReplyToResolve && _wordCount <= _ackMax) || (_bcMax > 0 && _wordCount <= _bcMax));
 
       if (data.role === 'bot' && this.mode === 'silent') {
         results.transcript = { ok: false, reason: 'mode-silent', sent: 0, entries: [] };

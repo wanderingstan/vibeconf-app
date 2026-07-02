@@ -225,6 +225,37 @@ const PREFERENCES = {
       'instantly. Read live, so it can be tuned mid-call (per profile). Raised ' +
       'from 2000 → 3500ms: 2s felt over-eager to yield on real calls. Default 3500ms.',
   },
+  bargeInAckExempt: {
+    type: 'boolean',
+    default: true,
+    description:
+      'When on, the bot\'s OPENING ACK (its first short reply to a turn) and very ' +
+      'short backchannels are EXEMPT from the barge-in drop — they play even if a ' +
+      'human is still talking. Keeps the room from thinking the bot went silent while ' +
+      'it does slow tool work (root cause of the #335 double-response). Turn OFF if it ' +
+      'feels like the bot talks over people. Read live — tunable mid-call. Length caps: ' +
+      'bargeInAckMaxWords / bargeInBackchannelMaxWords.',
+  },
+  bargeInAckMaxWords: {
+    type: 'number',
+    default: 40,
+    min: 0,
+    max: 200,
+    description:
+      'Max words for the OPENING ACK to stay barge-in-exempt (see bargeInAckExempt). ' +
+      'Protects a real ack (a sentence or two) while letting a runaway-long first reply ' +
+      'still yield to a human. Read live.',
+  },
+  bargeInBackchannelMaxWords: {
+    type: 'number',
+    default: 6,
+    min: 0,
+    max: 50,
+    description:
+      'Max words for ANY bot utterance to count as a barge-in-exempt backchannel ' +
+      '("Got it.", "On it.") — it plays over a human because it is brief. Set 0 to ' +
+      'disable backchannel exemption (the opening-ack exemption still applies). Read live.',
+  },
   thinkingHoldMs: {
     type: 'number',
     default: 8000,

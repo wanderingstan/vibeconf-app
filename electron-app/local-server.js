@@ -1250,6 +1250,13 @@ class LocalServer {
       // call (the bot otherwise falls back to the word-count tick, 20–30s late).
       const botNameLower = waiter.bot ? waiter.bot.toLowerCase() : '';
       const nameMentioned = !!botNameLower && entries.some(e => e.text.toLowerCase().includes(botNameLower));
+      // Fast-resolve only when the name lands at the END of the latest utterance —
+      // a genuine hand-off ("…what do you think, Jimmy?"), NOT a name-drop mid-
+      // sentence ("Hey Jimmy, how's it going?") which would cut the speaker off
+      // (2026-07-02 live test: it resolved on "Hey Jimmy" and missed the rest).
+      const _latestText = entries.length ? String(entries[entries.length - 1].text || '').toLowerCase() : '';
+      const nameAtEnd = !!botNameLower && _latestText.length > 0
+        && _latestText.slice(-(botNameLower.length + 20)).includes(botNameLower);
 
       // Passive/silent modes only respond when directly addressed; otherwise they
       // fall through to the same silence-based resolution active mode uses (the
@@ -1269,7 +1276,7 @@ class LocalServer {
       // by name, so a direct question resolves promptly rather than waiting for
       // the full whole-room gap (#343). Live-tunable via nameMentionSilenceSeconds.
       const _nameSil = Number(this._pref('nameMentionSilenceSeconds'));
-      const effSilence = (nameMentioned && Number.isFinite(_nameSil) && _nameSil >= 0)
+      const effSilence = (nameAtEnd && Number.isFinite(_nameSil) && _nameSil >= 0)
         ? Math.min(waiter.silence, _nameSil)
         : waiter.silence;
 

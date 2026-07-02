@@ -357,16 +357,17 @@ const PREFERENCES = {
   },
   nameMentionSilenceSeconds: {
     type: 'number',
-    default: 0.6,
+    default: 1.0,
     min: 0,
     max: 30,
     description:
-      'Shorter silence threshold used when the bot is directly addressed by name ' +
-      '(#343). A "Jimmy…" then resolves after this much silence instead of the ' +
-      'full defaultSilenceSeconds, so a direct question gets a prompt reply rather ' +
-      'than waiting for a whole-room gap that rarely comes in a lively call. Only ' +
-      'ever shortens (min with the normal threshold); set >= defaultSilenceSeconds ' +
-      'to effectively disable. Read live.',
+      'Shorter silence threshold used when the bot is addressed by name AT THE END ' +
+      'of an utterance — a hand-off like "…what do you think, Jimmy?" (#343). It then ' +
+      'resolves after this much silence instead of the full defaultSilenceSeconds, ' +
+      'for a prompter reply. Only applies when the name is at the END (not mid-' +
+      'sentence, which would cut the speaker off), and only ever shortens. Kept at ' +
+      '1.0 (not lower) so a brief pause right after saying the name — "Hey Jimmy… ' +
+      'how are you" — does not trip it. Set >= defaultSilenceSeconds to disable. Read live.',
   },
   defaultMaxWaitForSpeechSec: {
     type: 'number',

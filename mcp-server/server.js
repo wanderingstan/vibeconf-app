@@ -559,18 +559,53 @@ function listMacosVoices() {
   return deduped;
 }
 
+// #340: standard macOS voices are mostly robotic — keep only a couple tolerable
+// ones up-top; the rest are demoted to "Other". MUST match the panel's
+// WHITELISTED_MACOS_STANDARD (electron-app/renderer/panel.js) so the agent's
+// list and the settings picker agree.
+const WHITELISTED_MACOS_STANDARD = ['Samantha', 'Karen'];
+const isWhitelistedStandard = (name) => WHITELISTED_MACOS_STANDARD.some((w) => name === w || name.startsWith(w + ' '));
+
+// Voicebox local-TTS profiles (#340) — mirror the app's list-voicebox-profiles so
+// the agent sees the same voices the settings picker does. Best-effort: returns
+// [] if Voicebox isn't running.
+async function listVoiceboxProfiles() {
+  const config = readConfig();
+  const url = `${config.voiceboxUrl || 'http://127.0.0.1:17493'}/profiles`;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2500);
+    const resp = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!resp.ok) return [];
+    const profiles = await resp.json();
+    return Array.isArray(profiles) ? profiles : [];
+  } catch { return []; }
+}
+
 // --- list_voices ---
 server.tool(
   "list_voices",
-  "List available text-to-speech voices — both ElevenLabs (if an API key is configured) and the built-in macOS voices. To use a built-in voice call set_voice with its EXACT name (e.g. 'Ava (Premium)'). The Premium/Enhanced macOS voices are far higher quality than the plain ones — prefer those.",
+  "List available text-to-speech voices across all providers — Voicebox (if its local server is running), ElevenLabs (if an API key is configured), and the built-in macOS voices — matching what the settings picker shows. To use one, call set_voice with its EXACT name (e.g. 'Ava (Premium)') or id. Prefer Voicebox/ElevenLabs or the Premium/Enhanced macOS voices; the plain 'Other' macOS ones sound robotic.",
   {},
   async () => {
     const config = readConfig();
     const sections = [];
 
     // Current voice, derived from the active provider.
-    const usingMac = config.ttsProvider === 'macos-say' || !isElevenLabsActive();
-    sections.push(`Current voice: ${usingMac ? `${config.macosVoice || 'Samantha'} (built-in macOS)` : 'ElevenLabs (see below)'}`);
+    const usingVb = config.ttsProvider === 'voicebox' && config.voiceboxProfileId;
+    const usingMac = !usingVb && (config.ttsProvider === 'macos-say' || !isElevenLabsActive());
+    sections.push(`Current voice: ${usingVb ? `Voicebox profile ${config.voiceboxProfileId}` : usingMac ? `${config.macosVoice || 'Samantha'} (built-in macOS)` : 'ElevenLabs (see below)'}`);
+
+    // Voicebox (local TTS) — listed first when the server is up (#340), matching
+    // the settings picker's ordering.
+    try {
+      const vb = await listVoiceboxProfiles();
+      if (vb.length) {
+        const lines = vb.map((p) => `${p.name} [id: ${p.id}]${(p.preset_engine || p.default_engine) ? ` (${p.preset_engine || p.default_engine})` : ''}`);
+        sections.push(`=== Voicebox voices (local) ===\n${lines.join('\n')}\nTo use one, call set_voice with its name or id.`);
+      }
+    } catch { /* voicebox not running — skip */ }
 
     if (isElevenLabsActive()) {
       try {
@@ -593,11 +628,14 @@ server.tool(
       const fmt = (v) => `${v.name} (${v.locale})`;
       const premium = mac.filter(v => v.tier === 0).map(fmt);
       const enhanced = mac.filter(v => v.tier === 1).map(fmt);
-      const stdEn = mac.filter(v => v.tier === 2 && v.locale.startsWith('en')).map(v => v.name);
+      const stdEn = mac.filter(v => v.tier === 2 && v.locale.startsWith('en'));
+      const stdWhitelisted = stdEn.filter(v => isWhitelistedStandard(v.name)).map(v => v.name);
+      const stdOther = stdEn.filter(v => !isWhitelistedStandard(v.name)).map(v => v.name);
       const lines = ['=== Built-in macOS voices ==='];
       lines.push('★ HIGH QUALITY (recommended) — Premium: ' + (premium.length ? premium.join(', ') : '(none installed)'));
       lines.push('★ HIGH QUALITY — Enhanced: ' + (enhanced.length ? enhanced.join(', ') : '(none installed)'));
-      lines.push(`Standard English (lower quality): ${stdEn.join(', ')}`);
+      if (stdWhitelisted.length) lines.push(`Decent standard: ${stdWhitelisted.join(', ')}`);
+      if (stdOther.length) lines.push(`Other (lower quality): ${stdOther.join(', ')}`);
       lines.push('To use one, call set_voice with the EXACT name including any "(Premium)"/"(Enhanced)" suffix.');
       sections.push(lines.join('\n'));
     }
@@ -609,7 +647,7 @@ server.tool(
 // --- set_voice ---
 server.tool(
   "set_voice",
-  "Change the bot's text-to-speech voice. Use list_voices to see options. Pass the EXACT voice name — a built-in macOS voice (e.g. 'Ava (Premium)') OR an ElevenLabs voice name/ID. A built-in voice is matched first and, when chosen, becomes the active voice even if an ElevenLabs key is set. Saved across sessions; use the speak `voice` parameter for immediate effect this turn.",
+  "Change the bot's text-to-speech voice. Use list_voices to see options. Pass the EXACT voice name — a built-in macOS voice (e.g. 'Ava (Premium)'), an ElevenLabs voice name/ID, or a Voicebox profile name/id. Matched in that order; the chosen voice becomes primary (its provider is forced, so e.g. a built-in voice wins even with an ElevenLabs key set). Saved across sessions; use the speak `voice` parameter for immediate effect this turn.",
   {
     voice: z.string().describe("Exact voice name. Built-in macOS (e.g. 'Ava (Premium)', 'Samantha') or ElevenLabs voice name/ID."),
   },
@@ -626,6 +664,17 @@ server.tool(
         config.ttsProvider = 'macos-say'; // force the built-in voice as primary
         writeConfig(config);
         return { content: [{ type: "text", text: `Voice changed to the built-in macOS voice "${macMatch.name}". It's now your primary voice (ElevenLabs disabled until you switch back). Pass voice:"${macMatch.name}" to speak for immediate effect; the saved default applies on app restart.` }] };
+      }
+
+      // Then a Voicebox profile (by name or id) — local TTS, forces provider (#340).
+      const vb = await listVoiceboxProfiles();
+      const vbMatch = vb.find(p => (p.name || '').toLowerCase() === voice.toLowerCase() || p.id === voice);
+      if (vbMatch) {
+        config.voiceboxProfileId = vbMatch.id;
+        config.voiceboxEngine = vbMatch.preset_engine || vbMatch.default_engine || 'kokoro';
+        config.ttsProvider = 'voicebox';
+        writeConfig(config);
+        return { content: [{ type: "text", text: `Voice changed to Voicebox profile "${vbMatch.name}". It's now your primary voice; the saved default applies on app restart.` }] };
       }
 
       // Else try ElevenLabs by name or ID.

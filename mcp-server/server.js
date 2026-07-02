@@ -563,6 +563,8 @@ function listMacosVoices() {
 // ones up-top; the rest are demoted to "Other". MUST match the panel's
 // WHITELISTED_MACOS_STANDARD (electron-app/renderer/panel.js) so the agent's
 // list and the settings picker agree.
+// TODO(#342): single-source this + the merge logic behind one /api/voices endpoint
+// so panel.js and this file stop duplicating the list.
 const WHITELISTED_MACOS_STANDARD = ['Samantha', 'Karen'];
 const isWhitelistedStandard = (name) => WHITELISTED_MACOS_STANDARD.some((w) => name === w || name.startsWith(w + ' '));
 

@@ -1339,6 +1339,8 @@ ttsVoiceIdInput.addEventListener('change', () => {
 
 // #340: standard macOS voices are mostly robotic — keep only a couple tolerable
 // ones ("Samantha", "Karen") in the main group; the rest drop to "Other".
+// DUPLICATED in mcp-server/server.js (the agent's list_voices) — keep in sync.
+// TODO(#342): single-source this + the merge logic behind one /api/voices endpoint.
 const WHITELISTED_MACOS_STANDARD = ['Samantha', 'Karen'];
 
 // Unified voice picker: merge macOS + ElevenLabs + Voicebox into one dropdown,

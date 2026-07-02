@@ -1159,21 +1159,27 @@ class LocalServer {
         this._logRawCaption(inc.turnId, inc.speaker, inc.text, isBottommost);
         if (!isBottommost) this._logHeard(inc.speaker, inc.text); // arrived already final
       } else {
-        let entryChanged = false;
+        // #268: separate a real TEXT change (new content the agent hasn't seen)
+        // from a settle-flag flip (same text, just finalized). Only a text change
+        // may bump lastUpdated — that's what _entriesSince(since) filters on, so
+        // an OLD turn settling late (a new turn appearing below it) must NOT
+        // re-qualify as "new since the waiter" and get re-delivered. That stale
+        // re-surfacing is what made the bot answer a minutes-old request and miss
+        // the live one. A settle still flags `changed` so silence-resolve runs.
+        let textChanged = false;
+        let settledNow = false;
         if (existing.text !== inc.text) {
           existing.text = inc.text;
-          entryChanged = true;
+          textChanged = true;
           this._logRawCaption(inc.turnId, inc.speaker, inc.text, isBottommost);
         }
         if (!existing.settled && !isBottommost) {
           existing.settled = true;
-          entryChanged = true;
+          settledNow = true;
           this._logHeard(existing.speaker, existing.text); // just settled — log final text
         }
-        if (entryChanged) {
-          existing.lastUpdated = now;
-          changed = true;
-        }
+        if (textChanged) existing.lastUpdated = now; // ONLY text growth re-surfaces to waiters
+        if (textChanged || settledNow) changed = true;
       }
     }
 
@@ -1181,7 +1187,8 @@ class LocalServer {
     for (const [turnId, turn] of this.turns) {
       if (!incomingIds.has(turnId) && !turn.settled) {
         turn.settled = true;
-        turn.lastUpdated = now;
+        // #268: do NOT bump lastUpdated — finalizing a vanished turn adds no new
+        // content, so it must not re-surface to waiters as fresh speech.
         changed = true;
         this._logHeard(turn.speaker, turn.text);
       }

@@ -188,34 +188,28 @@
       <div class="section">
         <h2>Text-to-Speech</h2>
         <div class="field">
-          <label for="ttsApiKey">ElevenLabs API Key</label>
-          <input type="password" id="ttsApiKey" placeholder="sk_..." />
-        </div>
-        <div class="field">
-          <label for="ttsVoiceId">ElevenLabs Voice ID</label>
-          <input type="text" id="ttsVoiceId" placeholder="CwhRBWXzGAHq8TQ4Fs17" />
-        </div>
-        <div class="field">
-          <label for="macosVoice">Built-in macOS voice</label>
-          <select id="macosVoice" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit">
+          <label for="unifiedVoice">Voice</label>
+          <select id="unifiedVoice" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit">
             <option value="">Loading voices…</option>
           </select>
           <div style="font-size:11px;color:#666;margin-top:2px">
-            Used when no ElevenLabs key is set, and as the fallback voice if ElevenLabs is unavailable (e.g. quota exhausted).
-            <a href="#" id="openVoiceSettingsBtn" style="color:#8ab4f8;text-decoration:underline">Download more voices…</a>
-            <span style="color:#9aa0a6">— grab the <strong>“Premium”</strong> or <strong>“Enhanced”</strong> voices; the standard ones sound robotic.</span>
+            Every voice available right now, best first. ElevenLabs voices appear once a key is set below; Voicebox voices when its local app is running.
+            <a href="#" id="refreshVoicesBtn" style="color:#8ab4f8;text-decoration:underline">Refresh voices</a> ·
+            <a href="#" id="openVoiceSettingsBtn" style="color:#8ab4f8;text-decoration:underline">Download more macOS voices…</a>
           </div>
         </div>
         <div class="field">
-          <label for="voiceboxProfile">Voicebox voice (experimental, local)</label>
-          <select id="voiceboxProfile" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit">
-            <option value="">None — Voicebox not in use</option>
-          </select>
-          <div style="font-size:11px;color:#666;margin-top:2px">
-            Uses a locally running <a href="https://voicebox.sh" target="_blank" style="color:#8ab4f8;text-decoration:underline">Voicebox</a> instance for TTS instead of ElevenLabs/macOS. Requires the Voicebox app to be running.
-            <a href="#" id="refreshVoiceboxProfilesBtn" style="color:#8ab4f8;text-decoration:underline">Refresh list</a>
-          </div>
+          <label for="ttsApiKey">ElevenLabs API Key</label>
+          <input type="password" id="ttsApiKey" placeholder="sk_..." />
+          <div style="font-size:11px;color:#666;margin-top:2px">Unlocks your ElevenLabs voices in the picker above.</div>
         </div>
+        <details style="margin:2px 0 8px">
+          <summary style="font-size:11px;color:#9aa0a6;cursor:pointer">Advanced: custom ElevenLabs Voice ID</summary>
+          <div class="field" style="margin-top:6px">
+            <input type="text" id="ttsVoiceId" placeholder="CwhRBWXzGAHq8TQ4Fs17" />
+            <div style="font-size:11px;color:#666;margin-top:2px">For a cloned/private voice not shown in the picker. When set, it overrides the ElevenLabs voice chosen above.</div>
+          </div>
+        </details>
       </div>
 
       <div class="section">

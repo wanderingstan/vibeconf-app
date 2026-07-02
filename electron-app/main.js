@@ -2023,6 +2023,31 @@ async function listVoiceboxProfiles() {
   }
 }
 
+// Fetch the account's ElevenLabs voices (GET /v1/voices) for the unified voice
+// picker (#340). Best-effort: returns [] (never throws) if no key is available
+// or the request fails/times out — matching enumerateMacosVoices()'s soft-fail.
+// `category` ('premade' / 'cloned' / 'professional' / 'generated') lets the UI
+// surface custom/cloned voices distinctly if it wants.
+async function listElevenLabsVoices(apiKey) {
+  const key = apiKey || store?.get('ttsApiKey');
+  if (!key) return [];
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const res = await fetch('https://api.elevenlabs.io/v1/voices', {
+      headers: { 'xi-api-key': key },
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    if (!res.ok) return [];
+    const data = await res.json();
+    const voices = Array.isArray(data?.voices) ? data.voices : [];
+    return voices.map((v) => ({ id: v.voice_id, name: v.name || v.voice_id, category: v.category || '' }));
+  } catch {
+    return [];
+  }
+}
+
 // True while we've degraded from ElevenLabs to the macOS `say` voice (e.g.
 // quota exhausted). Gates the one-shot "your voice changed" notice to the agent
 // so it fires once on degrade and once on recovery, not on every utterance.
@@ -4584,6 +4609,13 @@ function setupIPC() {
     const voices = await enumerateMacosVoices();
     macosVoiceNameSet = new Set(voices.map((v) => v.name));
     return voices;
+  });
+
+  // List the account's ElevenLabs voices for the unified voice picker (#340).
+  // Optional apiKey arg lets the panel fetch with a just-typed key before it's
+  // saved; falls back to the stored key. Returns [{ id, name, category }] or [].
+  ipcMain.handle('list-elevenlabs-voices', async (_event, apiKey) => {
+    return listElevenLabsVoices(apiKey);
   });
 
   // Speak a short sample in the given macOS voice through the LOCAL speakers

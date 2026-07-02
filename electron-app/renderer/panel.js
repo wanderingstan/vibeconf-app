@@ -32,9 +32,8 @@ const botNameInput = document.getElementById('botName');
 const websiteUrlInput = document.getElementById('websiteUrl');
 const ttsApiKeyInput = document.getElementById('ttsApiKey');
 const ttsVoiceIdInput = document.getElementById('ttsVoiceId');
-const macosVoiceSelect = document.getElementById('macosVoice');
-const voiceboxProfileSelect = document.getElementById('voiceboxProfile');
-const refreshVoiceboxProfilesBtn = document.getElementById('refreshVoiceboxProfilesBtn');
+const unifiedVoiceSelect = document.getElementById('unifiedVoice'); // #340 merged picker
+const refreshVoicesBtn = document.getElementById('refreshVoicesBtn');
 const claudeWorkDirInput = document.getElementById('claudeWorkDir');
 const claudeModelInput = document.getElementById('claudeModel');
 const emojiSetInput = document.getElementById('emojiSet');
@@ -476,7 +475,7 @@ api.invoke('get-overlay-flags').then((flags) => {
 // Load saved config
 // ---------------------------------------------------------------------------
 
-api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'claudeWorkDir', 'claudeModel', 'emojiSet', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
+api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'ttsProvider', 'claudeWorkDir', 'claudeModel', 'emojiSet', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
   if (result?.botName) { botNameInput.value = result.botName; currentBotName = result.botName; }
   rememberedMeetName = result?.lastMeetName || null;   // #282 remembered names
   rememberedSlackName = result?.lastSlackName || null;
@@ -489,10 +488,9 @@ api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', '
   if (effectiveUrl) { websiteUrlInput.value = effectiveUrl; syncBaseUrl = effectiveUrl; }
   if (result?.ttsApiKey) ttsApiKeyInput.value = result.ttsApiKey;
   if (result?.ttsVoiceId) ttsVoiceIdInput.value = result.ttsVoiceId;
-  // Default the dropdown to Samantha when unset, to match tts.js's actual
-  // default voice (so the UI reflects what's really used before any pick).
-  populateMacosVoices(result?.macosVoice || 'Samantha');
-  populateVoiceboxProfiles(result?.voiceboxProfileId || '');
+  // #340: one unified picker merging macOS + ElevenLabs + Voicebox. Pre-selects
+  // from the saved provider/voice; defaults to Samantha (tts.js's real default).
+  populateUnifiedVoices(result);
   try { refreshVoiceStatus(); } catch { /* defined below; ignore if not yet */ }
   if (result?.claudeWorkDir) claudeWorkDirInput.value = result.claudeWorkDir;
   if (result?.claudeModel) claudeModelInput.value = result.claudeModel;
@@ -971,25 +969,26 @@ async function refreshFastModelStatus() {
 
 function refreshVoiceStatus() {
   if (!voiceStatus) return;
-  // Voicebox is an explicit opt-in (a non-empty selection forces provider:
-  // 'voicebox' in main.js), so it takes priority over the ElevenLabs/macOS
-  // auto-selection below when set.
-  const voiceboxProfile = (voiceboxProfileSelect?.value || '').trim();
-  const id = (ttsVoiceIdInput?.value || '').trim();
-  if (voiceboxProfile) {
-    const label = voiceboxProfileSelect.selectedOptions[0]?.textContent || voiceboxProfile;
-    voiceStatus.textContent = `🔊 Voicebox voice: ${label}`;
+  // Reflect the unified picker's current selection (its value encodes provider).
+  const val = (unifiedVoiceSelect?.value || '');
+  const label = unifiedVoiceSelect?.selectedOptions?.[0]?.textContent || '';
+  const customId = (ttsVoiceIdInput?.value || '').trim();
+  if (val.startsWith('vb:')) {
+    voiceStatus.textContent = `🔊 Voicebox: ${label}`;
     voiceStatus.style.color = '#81c995';
-    voiceStatus.title = `Voicebox profile: ${label} (experimental, requires the Voicebox app running locally)`;
-  } else if (id) {
-    voiceStatus.textContent = '🔊 ElevenLabs voice set';
+    voiceStatus.title = `Voicebox voice: ${label} (local, experimental)`;
+  } else if (val.startsWith('el:')) {
+    voiceStatus.textContent = `🔊 ElevenLabs: ${label}`;
     voiceStatus.style.color = '#81c995';
-    voiceStatus.title = `ElevenLabs voice ID: ${id}`;
+    voiceStatus.title = `ElevenLabs voice: ${label}`;
+  } else if (customId) {
+    voiceStatus.textContent = '🔊 ElevenLabs voice (custom ID)';
+    voiceStatus.style.color = '#81c995';
+    voiceStatus.title = `ElevenLabs custom voice ID: ${customId}`;
   } else {
-    const macVoice = (macosVoiceSelect?.value || '').trim();
-    voiceStatus.textContent = macVoice ? `🔈 Built-in macOS voice: ${macVoice}` : '🔈 Built-in macOS voice';
+    voiceStatus.textContent = label ? `🔈 ${label}` : '🔈 Built-in macOS voice';
     voiceStatus.style.color = '#9aa0a6';
-    voiceStatus.title = 'No ElevenLabs voice ID set — using the built-in macOS voice.';
+    voiceStatus.title = 'Built-in macOS voice.';
   }
 }
 
@@ -1326,112 +1325,121 @@ websiteUrlInput.addEventListener('change', () => {
 
 ttsApiKeyInput.addEventListener('change', () => {
   api.send('update-tts-config', { apiKey: ttsApiKeyInput.value.trim() });
+  // A key was added/changed/cleared — re-fetch so ElevenLabs voices show up (or
+  // drop out) in the unified picker without a restart (#340).
+  populateUnifiedVoices();
 });
 
 ttsVoiceIdInput.addEventListener('change', () => {
-  api.send('update-tts-config', { voiceId: ttsVoiceIdInput.value.trim() });
+  const id = ttsVoiceIdInput.value.trim();
+  // A custom/cloned voice id (advanced) forces ElevenLabs so it actually routes.
+  api.send('update-tts-config', id ? { provider: 'elevenlabs', voiceId: id } : { voiceId: '' });
   refreshVoiceStatus();
 });
 
-// Populate the built-in macOS voice dropdown from `say -v '?'` (via main).
-// `selected` is the currently-saved voice name to pre-select.
-async function populateMacosVoices(selected) {
-  if (!macosVoiceSelect) return;
-  let voices = [];
-  try { voices = await api.invoke('list-macos-voices'); } catch { /* ignore */ }
-  if (!Array.isArray(voices) || voices.length === 0) {
-    // Not on macOS, or enumeration failed — keep a single sane default.
-    macosVoiceSelect.innerHTML = '<option value="">Samantha (default)</option>';
-    return;
+// #340: standard macOS voices are mostly robotic — keep only a couple tolerable
+// ones ("Samantha", "Karen") in the main group; the rest drop to "Other".
+const WHITELISTED_MACOS_STANDARD = ['Samantha', 'Karen'];
+
+// Unified voice picker: merge macOS + ElevenLabs + Voicebox into one dropdown,
+// grouped Voicebox → ElevenLabs → macOS(good) → Other, so the best voices are up
+// top. Option value encodes the provider: "vb:<id>" / "el:<id>" / "mac:<name>".
+// Pass the saved config on initial load to pre-select; call with no arg to
+// refresh in place (preserves the current selection).
+async function populateUnifiedVoices(config) {
+  const sel = unifiedVoiceSelect;
+  if (!sel) return;
+  const apiKey = (ttsApiKeyInput?.value || config?.ttsApiKey || '').trim();
+  const [macos, voicebox, eleven] = await Promise.all([
+    api.invoke('list-macos-voices').catch(() => []),
+    api.invoke('list-voicebox-profiles').catch(() => []),
+    apiKey ? api.invoke('list-elevenlabs-voices', apiKey).catch(() => []) : Promise.resolve([]),
+  ]);
+
+  // Desired selection: derive from saved config on initial load, else keep current.
+  let selectedValue = sel.value;
+  if (config) {
+    const provider = config.ttsProvider || '';
+    const vb = config.voiceboxProfileId || '';
+    const elId = config.ttsVoiceId || '';
+    const mac = config.macosVoice || 'Samantha';
+    if (provider === 'voicebox' && vb) selectedValue = 'vb:' + vb;
+    else if (provider === 'elevenlabs' && elId) selectedValue = 'el:' + elId;
+    else if (provider === 'macos-say') selectedValue = 'mac:' + mac;
+    else if (vb) selectedValue = 'vb:' + vb;                 // no explicit provider — infer
+    else if (elId && apiKey) selectedValue = 'el:' + elId;
+    else selectedValue = 'mac:' + mac;
   }
-  macosVoiceSelect.innerHTML = '';
-  // Group by quality tier (the list arrives pre-sorted Premium→Enhanced→plain)
-  // so the good downloadable voices are clearly separated from the poor ones.
-  const tierOf = (name) => (/\(Premium\)/i.test(name) ? 'Premium' : /\(Enhanced\)/i.test(name) ? 'Enhanced' : 'Standard');
-  const groups = {};
-  for (const v of voices) {
-    const t = tierOf(v.name);
-    if (!groups[t]) {
-      const og = document.createElement('optgroup');
-      og.label = t === 'Standard' ? 'Standard (lower quality)' : `${t} (high quality)`;
-      groups[t] = og;
-      macosVoiceSelect.appendChild(og);
+
+  sel.innerHTML = '';
+  const addGroup = (label, items) => {
+    if (!items.length) return;
+    const og = document.createElement('optgroup');
+    og.label = label;
+    for (const it of items) {
+      const opt = document.createElement('option');
+      opt.value = it.value;
+      opt.textContent = it.text;
+      if (it.engine) opt.dataset.engine = it.engine;
+      if (it.value === selectedValue) opt.selected = true;
+      og.appendChild(opt);
     }
-    const opt = document.createElement('option');
-    opt.value = v.name;
-    opt.textContent = `${v.name} (${v.locale})`;
-    if (v.name === selected) opt.selected = true;
-    groups[t].appendChild(opt);
+    sel.appendChild(og);
+  };
+
+  addGroup('Voicebox (local)', (Array.isArray(voicebox) ? voicebox : []).map((p) => ({
+    value: 'vb:' + p.id,
+    text: `${p.name} (${p.preset_engine || p.default_engine || 'engine'})`,
+    engine: p.preset_engine || p.default_engine || '',
+  })));
+  addGroup('ElevenLabs', (Array.isArray(eleven) ? eleven : []).map((v) => ({
+    value: 'el:' + v.id,
+    text: v.category && v.category !== 'premade' ? `${v.name} · ${v.category}` : v.name,
+  })));
+  const macList = Array.isArray(macos) ? macos : [];
+  const tierOf = (name) => (/\(Premium\)/i.test(name) ? 0 : /\(Enhanced\)/i.test(name) ? 1 : 2);
+  const whitelisted = (name) => WHITELISTED_MACOS_STANDARD.some((w) => name === w || name.startsWith(w + ' '));
+  addGroup('Built-in (macOS)', macList
+    .filter((v) => tierOf(v.name) < 2 || whitelisted(v.name))
+    .map((v) => ({ value: 'mac:' + v.name, text: `${v.name} (${v.locale})` })));
+  addGroup('Other built-in (lower quality)', macList
+    .filter((v) => tierOf(v.name) === 2 && !whitelisted(v.name))
+    .map((v) => ({ value: 'mac:' + v.name, text: `${v.name} (${v.locale})` })));
+
+  if (!sel.options.length) {
+    sel.innerHTML = '<option value="mac:Samantha">Samantha (default)</option>';
   }
-  // If the saved voice wasn't in the list (e.g. uninstalled), default to the
-  // first English voice so the dropdown reflects what will actually be used.
-  if (selected && !voices.some((v) => v.name === selected)) {
-    macosVoiceSelect.selectedIndex = 0;
-  }
+  refreshVoiceStatus();
 }
 
-macosVoiceSelect?.addEventListener('change', () => {
-  const name = macosVoiceSelect.value;
-  if (!name) return;
-  api.send('update-tts-config', { macosVoice: name });
+unifiedVoiceSelect?.addEventListener('change', () => {
+  const val = unifiedVoiceSelect.value || '';
+  const sep = val.indexOf(':');
+  const kind = val.slice(0, sep);
+  const id = val.slice(sep + 1);
+  if (kind === 'vb') {
+    const engine = unifiedVoiceSelect.selectedOptions[0]?.dataset.engine || 'kokoro';
+    api.send('update-tts-config', { provider: 'voicebox', voiceboxProfileId: id, voiceboxEngine: engine });
+  } else if (kind === 'el') {
+    // Picking a listed EL voice clears any custom-ID override so they don't fight.
+    api.send('update-tts-config', { provider: 'elevenlabs', voiceId: id, voiceboxProfileId: '' });
+    if (ttsVoiceIdInput) ttsVoiceIdInput.value = id;
+  } else if (kind === 'mac') {
+    // Force the built-in provider so an ElevenLabs key doesn't override the pick.
+    api.send('update-tts-config', { provider: 'macos-say', macosVoice: id, voiceboxProfileId: '' });
+    api.invoke('preview-macos-voice', id).catch(() => {});
+  }
   refreshVoiceStatus();
-  // Audition the chosen voice on the local speakers.
-  api.invoke('preview-macos-voice', name).catch(() => {});
+});
+
+refreshVoicesBtn?.addEventListener('click', (e) => {
+  e.preventDefault();
+  populateUnifiedVoices(); // refresh in place, preserving the current selection
 });
 
 document.getElementById('openVoiceSettingsBtn')?.addEventListener('click', (e) => {
   e.preventDefault();
   api.invoke('open-voice-settings').catch(() => {});
-});
-
-// Populate the Voicebox profile dropdown by asking main to hit the local
-// Voicebox server's GET /profiles. `selected` is the currently-saved profile
-// id to pre-select. Voicebox may not be running, so this fails soft into a
-// single "not in use" option, same as populateMacosVoices() failing soft.
-async function populateVoiceboxProfiles(selected) {
-  if (!voiceboxProfileSelect) return;
-  let profiles = [];
-  try { profiles = await api.invoke('list-voicebox-profiles'); } catch { /* ignore */ }
-  voiceboxProfileSelect.innerHTML = '';
-  const noneOpt = document.createElement('option');
-  noneOpt.value = '';
-  noneOpt.textContent = Array.isArray(profiles) && profiles.length > 0
-    ? 'None — Voicebox not in use'
-    : 'None — Voicebox not running or has no profiles';
-  voiceboxProfileSelect.appendChild(noneOpt);
-  if (!Array.isArray(profiles)) return;
-  for (const p of profiles) {
-    const opt = document.createElement('option');
-    opt.value = p.id;
-    opt.textContent = `${p.name} (${p.preset_engine || p.default_engine || 'engine unknown'})`;
-    opt.dataset.engine = p.preset_engine || p.default_engine || '';
-    if (p.id === selected) opt.selected = true;
-    voiceboxProfileSelect.appendChild(opt);
-  }
-}
-
-voiceboxProfileSelect?.addEventListener('change', () => {
-  const opt = voiceboxProfileSelect.selectedOptions[0];
-  const profileId = voiceboxProfileSelect.value;
-  if (!profileId) {
-    // Reverting to "None" doesn't force a provider — leave provider selection
-    // to the existing ElevenLabs/macOS logic (an empty voiceboxProfileId makes
-    // tts.js's _voicebox() throw if ever selected, but nothing routes to it
-    // without a profile id set).
-    api.send('update-tts-config', { voiceboxProfileId: '' });
-    return;
-  }
-  api.send('update-tts-config', {
-    provider: 'voicebox',
-    voiceboxProfileId: profileId,
-    voiceboxEngine: opt?.dataset.engine || 'kokoro',
-  });
-  refreshVoiceStatus();
-});
-
-refreshVoiceboxProfilesBtn?.addEventListener('click', (e) => {
-  e.preventDefault();
-  populateVoiceboxProfiles(voiceboxProfileSelect?.value || '');
 });
 
 claudeWorkDirInput.addEventListener('change', () => {

@@ -59,6 +59,7 @@ export function analyzeLog(raw, file = '<input>') {
   const perfSamples = []; // measured Claude reaction times (ms) from the ⚡ [perf] marker
   const thinks = [];
   const bargeDrops = [];
+  const bargeReplays = []; // #239: stashes that auto-replayed on a silence edge
   const heardNames = new Set();
   const silenceNames = new Set();
   const emojiCount = new Map();
@@ -111,7 +112,14 @@ export function analyzeLog(raw, file = '<input>') {
       perfSamples.push(+m[1]);
       continue;
     }
-    if (/\[barge-in\] Dropped bot speech/.test(line)) { bargeDrops.push({ ts }); continue; }
+    // A barge-in that took the floor from the bot. Two variants both count as a
+    // yield: the reply was discarded ("Dropped bot speech") or, post-#239,
+    // stashed for auto-replay ("Stashed dropped bot speech").
+    if (/\[barge-in\] (Stashed d|D)ropped bot speech/.test(line)) {
+      bargeDrops.push({ ts, stashed: /Stashed dropped bot speech/.test(line) });
+      continue;
+    }
+    if (/\[barge-in\] replaying stash/.test(line)) { bargeReplays.push({ ts }); continue; }
     if ((m = line.match(/\[heard\]\s+([^:]+):/))) { heardNames.add(m[1].trim()); continue; }
     if ((m = line.match(/\[silence\] User\(s\) stopped speaking:\s+(.+)$/))) {
       for (const n of m[1].split(',').map((s) => s.trim()).filter(Boolean)) silenceNames.add(n);
@@ -204,7 +212,7 @@ export function analyzeLog(raw, file = '<input>') {
         maxMs: perfSamples.length ? Math.max(...perfSamples) : null,
       },
     },
-    turnTaking: { botYieldedToHuman: bargeDrops.length, silenceResolutions: resolves.length, thinkingTurns: thinks.length },
+    turnTaking: { botYieldedToHuman: bargeDrops.length, bargeStashed: bargeDrops.filter((d) => d.stashed).length, stashReplays: bargeReplays.length, silenceResolutions: resolves.length, thinkingTurns: thinks.length },
     emojis: emojisSorted.map(([e, n]) => ({ emoji: e, count: n })),
     errors: { total: errors.length, real: realErrors.length, transient: errors.length - realErrors.length, sample: realErrors.slice(0, 5).map((e) => e.text) },
     engagement: { backgroundTicks: ticks, acksTriggered: ackTrig, acksSkipped: ackSkip, whiteboardUpdates: wbUpdates, chatOps, captionStalls },
@@ -264,7 +272,9 @@ export function renderReport(r) {
   L.push(`  wait_for_speech dur      mean ${ms(r.latency.waitForSpeechMeanMs)}  (total listen time/turn, incl. quiet)`);
   L.push('');
   L.push('TURN-TAKING');
-  L.push(`  bot yielded to a human   ${r.turnTaking.botYieldedToHuman}  (barge-in: dropped its own speech)`);
+  L.push(`  bot yielded to a human   ${r.turnTaking.botYieldedToHuman}  (barge-in: gave up the floor)`);
+  L.push(`    ├ reply stashed         ${r.turnTaking.bargeStashed}  (#239: held for auto-replay, not discarded)`);
+  L.push(`    └ stash replayed        ${r.turnTaking.stashReplays}  (queued reply spoken on the next silence)`);
   L.push(`  silence resolutions      ${r.turnTaking.silenceResolutions}`);
   L.push('');
   L.push('EMOJIS  (bot, by frequency)');

@@ -96,6 +96,22 @@ test('latency: measured Claude reaction time (from the [perf] marker)', () => {
 test('turn-taking: barge-in yields + silence resolutions', () => {
   assert.equal(r.turnTaking.botYieldedToHuman, 1);
   assert.equal(r.turnTaking.silenceResolutions, 2);
+  // The fixture's single yield discarded its reply (old-style drop), so nothing
+  // was stashed or replayed.
+  assert.equal(r.turnTaking.bargeStashed, 0);
+  assert.equal(r.turnTaking.stashReplays, 0);
+});
+
+test('turn-taking: #239 stashed-drop + replay are counted as yields', () => {
+  const s = analyzeLog([
+    '00:00:12.000 🛡️  [barge-in] Stashed dropped bot speech for replay (1 entry): here is my point',
+    '00:00:14.000 🛡️  [barge-in] replaying stash — 1 entries, 1200ms old',
+    '00:00:20.000 🛡️  [barge-in] Dropped bot speech — user is currently speaking (nothing to stash): never mind',
+  ].join('\n'), 'stash.log');
+  // Both the stashed drop and the plain drop count as the bot yielding.
+  assert.equal(s.turnTaking.botYieldedToHuman, 2);
+  assert.equal(s.turnTaking.bargeStashed, 1);
+  assert.equal(s.turnTaking.stashReplays, 1);
 });
 
 test('emojis sorted by frequency', () => {

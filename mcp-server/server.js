@@ -478,9 +478,10 @@ server.tool(
     text: z.string().describe("What to say in the call. Will be spoken via TTS."),
     voice: z.string().optional().describe("Override TTS voice for this message (e.g. 'Daniel', 'Karen'). Uses default voice if not specified."),
     emoji: z.string().optional().describe("Single emoji to display on the avatar while speaking this response. Match the tone of what you're saying — e.g. 😂 for funny, 😟 for sympathetic, 😎 confident, 🤓 technical. Falls back to 😄 if not specified."),
+    urgency: z.number().min(0).max(1).optional().describe("How much the room needs to hear THIS, right now — 0.0 to 1.0. Anchors: 0.0 = pure filler, only worth saying into dead silence; 0.3 = mildly useful aside; 0.6 = a solid, worth-saying contribution; 0.9 = a direct answer to a question you were just asked; 1.0 = critical/time-sensitive ('the build is broken', 'we're almost out of time'). Score the message you're sending, honestly — most turns are NOT 0.9+. Used to decide whether to speak over a busy floor or wait for a gap. Omit if you truly can't judge."),
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
-  async ({ text, voice, emoji, room_id }) => {
+  async ({ text, voice, emoji, urgency, room_id }) => {
     const roomId = room_id || ROOM_ID;
     if (!roomId) {
       return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
@@ -490,7 +491,7 @@ server.tool(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
-        transcript: [{ text, ...(voice ? { voice } : {}), ...(emoji ? { emoji } : {}) }],
+        transcript: [{ text, ...(voice ? { voice } : {}), ...(emoji ? { emoji } : {}), ...(urgency != null ? { urgency } : {}) }],
       })),
     });
 

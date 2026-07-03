@@ -210,6 +210,14 @@ class LocalServer {
 
     // Real-time speaking state (from DOMSpeakerTracker, not captions)
     this.anyoneSpeaking = false;       // true if any participant is currently speaking
+    // #343: how many participants (excl. self) are speaking RIGHT NOW. The old
+    // `anyoneSpeaking` boolean collapses this away, but the count is the raw
+    // interruptibility signal — 1 speaker is far more interruptible than 2-3 in
+    // crosstalk. `_peakSpeakersSinceQuiet` tracks the busiest moment while the
+    // bot waited, reset once it gets a turn; logged at resolve to validate the
+    // premise that the bot chokes specifically when the floor is ≥2-deep.
+    this.activeSpeakerCount = 0;
+    this._peakSpeakersSinceQuiet = 0;
     this.lastSpeechStoppedAt = null;   // timestamp (ms) when last person stopped speaking
 
     // Two-tier "workingMemory" (docs/two-tier-design.md). The bot's private
@@ -364,6 +372,8 @@ class LocalServer {
     this.someoneElsePresenting = false;
     this.presenterName = null;
     this.anyoneSpeaking = false;
+    this.activeSpeakerCount = 0;
+    this._peakSpeakersSinceQuiet = 0;
     this.lastSpeechStoppedAt = null;
     this.captionsOn = null;
     this.lastRespondedSpeaker = null;
@@ -398,6 +408,8 @@ class LocalServer {
     this.someoneElsePresenting = false;
     this.presenterName = null;
     this.anyoneSpeaking = false;
+    this.activeSpeakerCount = 0;
+    this._peakSpeakersSinceQuiet = 0;
     this.lastSpeechStoppedAt = null;
     this.captionsOn = null;
     this.lastRespondedSpeaker = null;
@@ -815,6 +827,10 @@ class LocalServer {
       localProfile: this.localProfile,
       botState: this.botState,
       anyoneSpeaking: this.anyoneSpeaking,
+      // #343: concurrent-speaker count (interruptibility signal) + the busiest
+      // moment reached while the bot has been waiting for a turn.
+      activeSpeakerCount: this.activeSpeakerCount,
+      peakSpeakersSinceQuiet: this._peakSpeakersSinceQuiet,
       captionsOn: this.captionsOn,
       // Claude responsiveness (resolve → first speak) — the "is the bot snappy
       // today" signal, surfaced live on the panel + camera overlay.
@@ -937,13 +953,22 @@ class LocalServer {
     // Exclude self (the bot's own tile) — its audio meter pulses while TTS plays
     // and would otherwise keep anyoneSpeaking flipping true, cancelling the
     // silence timer. Fall back to the legacy 'You' name check for older payloads.
-    this.anyoneSpeaking = this.participants.some(p => p.speaking && !p.isSelf && p.name !== 'You');
+    // #343: count concurrent non-self speakers, not just "any". anyoneSpeaking
+    // stays the load-bearing boolean everywhere else; activeSpeakerCount is the
+    // new interruptibility signal, and we track the peak reached while the bot
+    // waits (reset when it resolves a turn).
+    const speakingNow = this.participants.filter(p => p.speaking && !p.isSelf && p.name !== 'You');
+    this.activeSpeakerCount = speakingNow.length;
+    this.anyoneSpeaking = this.activeSpeakerCount > 0;
+    if (this.activeSpeakerCount > this._peakSpeakersSinceQuiet) {
+      this._peakSpeakersSinceQuiet = this.activeSpeakerCount;
+    }
 
     if (wasSpeaking && !this.anyoneSpeaking) {
       // Speech just stopped — record when and check waiters
       this.lastSpeechStoppedAt = Date.now();
       const speakers = this.participants.filter(p => !p.isSelf && p.name !== 'You').map(p => p.name).join(', ') || '(unknown)';
-      console.log(ts(), '🛑 [silence] User(s) stopped speaking:', speakers);
+      console.log(ts(), '🛑 [silence] User(s) stopped speaking:', speakers, '(peak ' + this._peakSpeakersSinceQuiet + ' concurrent)');
       if (this.botState === 'yielding') {
         this._setBotState(this.waiters.length > 0 ? 'listening' : 'idle', undefined, { force: true });
       }
@@ -1867,7 +1892,12 @@ class LocalServer {
     clearTimeout(waiter.silenceTimer);
     clearTimeout(waiter.tickTimer);
     const waitedMs = waiter.startTime ? Date.now() - waiter.startTime : 0;
-    console.log(ts(), '✅ [resolve] wait_for_speech resolved — reason=' + reason + ', waited=' + waitedMs + 'ms');
+    // #343: peak concurrent speakers during this wait — the interruptibility
+    // evidence. A high peak on a late (tick) resolve is the choke case: the
+    // floor was ≥2-deep so the bot never found a whole-room gap.
+    const peakSpeakers = this._peakSpeakersSinceQuiet;
+    console.log(ts(), '✅ [resolve] wait_for_speech resolved — reason=' + reason + ', waited=' + waitedMs + 'ms, peakSpeakers=' + peakSpeakers);
+    this._peakSpeakersSinceQuiet = this.activeSpeakerCount; // reset for the next turn
 
     // Start the responsiveness clock for turns Claude is expected to answer (a
     // real utterance handed over: silence gap or a direct mention). NOT timeouts
@@ -2698,6 +2728,17 @@ class LocalServer {
       const _bargeExempt = data.role === 'bot' && _ackExemptOn && _wordCount > 0 &&
         ((_firstReplyToResolve && _wordCount <= _ackMax) || (_bcMax > 0 && _wordCount <= _bcMax));
 
+      // #343: log the slow model's self-scored urgency against the live floor
+      // state (concurrent speakers + peak-while-waiting), for EVERY bot speak
+      // attempt regardless of the barge-in outcome below. This is the raw scatter
+      // — urgency vs interruptibility — we fit the speak/wait gate from later.
+      // Log-only for now; nothing gates on it yet.
+      if (data.role === 'bot' && _wordCount > 0) {
+        const _urg = data.transcript.map((t) => t && t.urgency).find((u) => typeof u === 'number');
+        const _urgStr = typeof _urg === 'number' ? _urg.toFixed(2) : 'n/a';
+        console.log(ts(), `🎯 [urgency] u=${_urgStr} floor=${this.activeSpeakerCount} (peak ${this._peakSpeakersSinceQuiet}) words=${_wordCount}${_firstReplyToResolve ? ' first-reply' : ''}`);
+      }
+
       if (data.role === 'bot' && this.mode === 'silent') {
         results.transcript = { ok: false, reason: 'mode-silent', sent: 0, entries: [] };
       } else if (data.role === 'bot' && this.anyoneSpeaking && !_bargeExempt) {
@@ -2714,7 +2755,7 @@ class LocalServer {
         // stash is dropped and the agent re-derives on the caught-up window.
         const stashEntries = data.transcript
           .filter((t) => t && t.text)
-          .map((t) => ({ text: t.text, voice: t.voice, emoji: t.emoji }));
+          .map((t) => ({ text: t.text, voice: t.voice, emoji: t.emoji, urgency: t.urgency }));
         if (stashEntries.length > 0) {
           // Baseline the words-heard-from-others counter so the replay path can
           // measure how much NEW speech landed while the reply was held.
@@ -2751,6 +2792,7 @@ class LocalServer {
             timestamp: now,
           };
           if (t.voice) entry.voice = t.voice;
+          if (typeof t.urgency === 'number') entry.urgency = t.urgency; // #343: self-scored, for the analyzer
           this.transcripts.push(entry);
           entries.push(entry);
 

@@ -16,7 +16,7 @@
 // against what the slow session actually does before wiring it to anything.
 //
 // Same local OpenAI-compatible endpoint + non-reasoning model + json_schema as
-// comprehend.js / phrase.js.
+// comprehend.js.
 
 function stripThink(raw) {
   return String(raw || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();

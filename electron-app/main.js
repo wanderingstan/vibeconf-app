@@ -281,6 +281,18 @@ const localServer = new globalThis.LocalServer({
       });
     }
   },
+  // #350: resume an utterance that a barge-in cut off mid-playback. Fired by
+  // local-server on the next silence edge (gated by age + content-delta); the
+  // renderer resumes the retained buffer near the interruption point.
+  onResumeTts: () => {
+    console.log('[local-server] resume-tts (#350)');
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('extension-message', {
+        action: 'resume-tts',
+        payload: {},
+      });
+    }
+  },
   onWhiteboardUpdate: (content, sender) => {
     console.log('[local-server] Whiteboard update from', sender, ':', content.slice(0, 80));
     const roomId = localServer.roomId;

@@ -59,7 +59,7 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onInspectDom, onPlayAudio, onFocusRequest, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onInspectDom, onPlayAudio, onFocusRequest, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref } = {}) {
     this.port = port || DEFAULT_PORT;
     this.appVersion = appVersion || null;
     // Release (installed .app/DMG) vs running from source (pnpm dev). Surfaced so
@@ -68,6 +68,12 @@ class LocalServer {
     this.buildType = packaged ? 'release' : 'source';
     this.onBotSpeech = onBotSpeech || (() => {});
     this.onStopTts = onStopTts || (() => {});
+    this.onResumeTts = onResumeTts || (() => {}); // #350: resume a cut-off utterance
+    // #350: when a barge-in cuts the bot off mid-TTS, we mark the moment + a
+    // words-heard baseline so the next silence edge can decide whether to
+    // resume the retained audio (fresh enough + conversation didn't move on).
+    this._ttsInterruptedAt = 0;
+    this._ttsInterruptWordsBaseline = 0;
     this.onWhiteboardUpdate = onWhiteboardUpdate || (() => {});
     this.onWhiteboardStyle = onWhiteboardStyle || (() => {}); // #321 relay custom board CSS
     this.onReloadWhiteboard = onReloadWhiteboard || (() => ({ ok: false, error: 'reload not wired' })); // #321 follow-up
@@ -1561,6 +1567,13 @@ class LocalServer {
   }
 
   _performBackOff(reason) {
+    // #350: if we were actually mid-utterance, mark the cut (+ a words baseline)
+    // so the next silence edge can resume the retained audio near where it
+    // stopped. Captured BEFORE onStopTts/_setBotState flip us out of 'speaking'.
+    if (this.botState === 'speaking') {
+      this._ttsInterruptedAt = Date.now();
+      this._ttsInterruptWordsBaseline = this._tickWordCount(this.getEffectiveBotName());
+    }
     try {
       this.onStopTts(reason);
     } catch (err) {
@@ -1595,6 +1608,41 @@ class LocalServer {
     }
     const spec = prefsSchema.PREFERENCES[key];
     return spec ? spec.default : undefined;
+  }
+
+  // #350: if the bot was cut off mid-utterance and the floor just reopened,
+  // ask the renderer to resume the retained audio near the interruption point
+  // — rather than dropping the half-spoken sentence. Gated the same way as the
+  // #239 stash replay: fresh enough (ttsResumeMaxAgeMs) AND the conversation
+  // didn't move on (bargeInStashRedeliverMaxNewWords). One-shot regardless of
+  // outcome. Returns true iff a resume was fired.
+  _maybeResumeInterruptedTts() {
+    if (!this._ttsInterruptedAt) return false;
+    const at = this._ttsInterruptedAt;
+    const baseline = this._ttsInterruptWordsBaseline;
+    this._ttsInterruptedAt = 0; // consume — one attempt per interruption
+    if (this._pref('ttsResumeEnabled') === false) return false;
+    const ageMs = Date.now() - at;
+    const maxAgeMs = Number(this._pref('ttsResumeMaxAgeMs'));
+    if (Number.isFinite(maxAgeMs) && ageMs > maxAgeMs) {
+      console.log(ts(), '🔊 [tts-resume] skip — too stale (' + ageMs + 'ms > ' + maxAgeMs + 'ms)');
+      return false;
+    }
+    const newWords = this._tickWordCount(this.getEffectiveBotName()) - baseline;
+    const maxNewWords = Number(this._pref('bargeInStashRedeliverMaxNewWords'));
+    if (Number.isFinite(maxNewWords) && newWords > maxNewWords) {
+      console.log(ts(), '🔊 [tts-resume] skip — conversation moved on (' + newWords + ' new words > ' + maxNewWords + ')');
+      return false;
+    }
+    console.log(ts(), '🔊 [tts-resume] resuming interrupted utterance (' + ageMs + 'ms old, ' + newWords + ' new words)');
+    this._setBotState('speaking');
+    try {
+      this.onResumeTts();
+    } catch (err) {
+      console.warn(ts(), '[tts-resume] onResumeTts failed:', err.message);
+      return false;
+    }
+    return true;
   }
 
   // Attempt to replay any fresh barge-in stash before the waiter returns
@@ -1843,8 +1891,15 @@ class LocalServer {
     // natural conversational gap. A background_tick is explicitly NOT a gap —
     // the floor is still busy — so never replay the stash on a tick.
     if (reason === 'silence') {
-      const replayed = this._maybeReplayBargeInStash();
-      if (replayed) this._lastReplayedStash = replayed;
+      // #350: an utterance cut off mid-playback takes precedence over a
+      // never-played stash (#239) on this edge — it's the thing the room
+      // actually heard the bot start saying. If we resume it, don't also
+      // replay a stash (that'd be two audios).
+      const resumed = this._maybeResumeInterruptedTts();
+      if (!resumed) {
+        const replayed = this._maybeReplayBargeInStash();
+        if (replayed) this._lastReplayedStash = replayed;
+      }
     }
 
     const response = this._buildResponse(waiter.since, waiter.bot, waiter.startTime);

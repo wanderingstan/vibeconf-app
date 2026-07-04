@@ -435,7 +435,21 @@ function renderProfileMenu(data) {
     sub.textContent = p.meetAccountEmail || p.lastMeetName || p.lastSlackName || p.botName || '— no account bound —';
     sub.style.cssText = 'color:#9aa0a6;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
     label.appendChild(top); label.appendChild(sub);
-    row.appendChild(mark); row.appendChild(label);
+    // Avatar thumbnail: the profile's captured virtual-camera snapshot when it
+    // has one, else a neutral monogram circle so every row aligns. Mirrors the
+    // main agent avatar (profileIcon), now per-profile in the switcher.
+    const avatar = document.createElement('div');
+    avatar.style.cssText = 'width:24px;height:24px;flex:0 0 auto;border-radius:50%;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#3c4043;color:#9aa0a6;font-size:11px;font-weight:600';
+    if (p.profileIcon) {
+      const img = document.createElement('img');
+      img.src = p.profileIcon;
+      img.alt = '';
+      img.style.cssText = 'width:100%;height:100%;object-fit:cover';
+      avatar.appendChild(img);
+    } else {
+      avatar.textContent = (displayName || '?').trim().charAt(0).toUpperCase() || '?';
+    }
+    row.appendChild(mark); row.appendChild(avatar); row.appendChild(label);
     profileMenu.appendChild(row);
   }
   const add = document.createElement('div');

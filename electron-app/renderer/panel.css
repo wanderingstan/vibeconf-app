@@ -481,7 +481,6 @@ button:disabled {
 }
 .agent-call-id.in-call { color: #81c995; }
 .agent-voice { font-size: 12px; color: #9aa0a6; margin-top: 4px; display: flex; align-items: center; gap: 4px; }
-.agent-voice-icon { font-size: 12px; }
 
 /* Profile switcher dropdown (anchored under the name row) */
 .profile-menu {

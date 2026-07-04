@@ -223,6 +223,7 @@ export class Bot {
       callStatus: data?.status?.callStatus,
       captionsOn: data?.status?.captionsOn,
       botState: data?.status?.botState,
+      anyoneSpeaking: data?.status?.anyoneSpeaking,
       sharing: data?.status?.sharing,
       participants: data?.status?.participants || data?.participants || [],
     };
@@ -245,6 +246,28 @@ export class Bot {
     const resp = await fetch(`${this.base}/api/sync/no-room`);
     const data = await resp.json().catch(() => ({}));
     return { meetUrls: data?.detectedMeetUrls || [], slackHuddleUrl: data?.detectedSlackHuddleUrl || null };
+  }
+
+  // --- judging inputs (for the real-agent fuzzing test / LLM judge) ---
+
+  // The full call transcript from this bot's perspective, flattened to
+  // "[name] text" lines. Used to grade what was said/heard.
+  async transcriptText() {
+    const resp = await fetch(`${this.base}/api/sync/${this.room}`);
+    const data = await resp.json().catch(() => ({}));
+    const entries = data?.transcript?.entries || [];
+    return entries
+      .map((e) => `[${e.participantName || e.role || '?'}] ${e.text || ''}`.trim())
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  // The tail of this bot's session log (agent + app behavior) for post-mortem
+  // judging — loops, errors, tool calls, clean leave.
+  async sessionLog(lines = 4000) {
+    const resp = await fetch(`${this.base}/api/session-log?lines=${lines}`);
+    const data = await resp.json().catch(() => ({}));
+    return data?.content || '';
   }
 
   // --- chat (Meet text chat) ---

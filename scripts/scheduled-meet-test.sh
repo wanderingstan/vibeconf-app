@@ -13,7 +13,9 @@ RESULTS="$HOME/vibeconf-test-results"
 mkdir -p "$RESULTS"
 
 # launchd gives a minimal PATH even under -l on some setups; belt-and-suspenders.
-export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/share/pnpm:$HOME/.nvm/versions/node/current/bin:$PATH"
+# $HOME/.local/bin is where `claude` lives — needed by the agent-fuzz step, which
+# spawns the CLI (without it the 3am run hit `spawn claude ENOENT`).
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.local/share/pnpm:$HOME/.nvm/versions/node/current/bin:$PATH"
 
 STAMP="$(date +%Y-%m-%dT%H-%M-%S)"
 LOG="$RESULTS/run-$STAMP.log"

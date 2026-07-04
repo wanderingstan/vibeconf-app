@@ -98,6 +98,27 @@ async function renderAgentAvatar() {
   } else if (bg) {
     bg.remove();
   }
+
+  // Prefer a real snapshot of the virtual-camera feed (captured while in a call,
+  // main-side) over the reconstructed background+emoji — it matches what
+  // participants actually see, including Runway faces. Falls back to the
+  // generated look when `profileIcon` is unset.
+  try {
+    const c = await api.invoke('get-config', ['profileIcon']);
+    const dataUrl = c && c.profileIcon;
+    let photo = agentAvatarEl.querySelector('.agent-avatar-photo');
+    if (dataUrl) {
+      if (!photo) {
+        photo = document.createElement('img');
+        photo.className = 'agent-avatar-photo';
+        photo.alt = '';
+        agentAvatarEl.appendChild(photo);
+      }
+      if (photo.getAttribute('src') !== dataUrl) photo.src = dataUrl;
+    } else if (photo) {
+      photo.remove();
+    }
+  } catch { /* keep the generated look */ }
 }
 
 // Connection dots reflect whether each calling platform is signed in. We read the
@@ -112,6 +133,9 @@ function syncConnDots() {
 }
 setInterval(syncConnDots, 1500);
 renderAgentAvatar();
+// Re-render periodically so a freshly-captured profileIcon (or a background/emoji
+// change) shows without a panel reload. Cheap; the icon rarely changes.
+setInterval(renderAgentAvatar, 60 * 1000);
 
 // ---------------------------------------------------------------------------
 // Call State debug view — live snapshot of the app's detectors
@@ -411,7 +435,24 @@ function renderProfileMenu(data) {
     sub.textContent = p.meetAccountEmail || p.lastMeetName || p.lastSlackName || p.botName || '— no account bound —';
     sub.style.cssText = 'color:#9aa0a6;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
     label.appendChild(top); label.appendChild(sub);
-    row.appendChild(mark); row.appendChild(label);
+    // Avatar thumbnail: the profile's captured virtual-camera snapshot when it
+    // has one, else a neutral monogram circle so every row aligns. Mirrors the
+    // main agent avatar (profileIcon), now per-profile in the switcher.
+    const avatar = document.createElement('div');
+    // Rounded SQUARE (not a circle) to match the main agent avatar and show more
+    // of the background — the most customizable part of the icon (emojis all read
+    // about the same). 6px ≈ the main avatar's 14px/54px proportion at 24px.
+    avatar.style.cssText = 'width:24px;height:24px;flex:0 0 auto;border-radius:6px;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#3c4043;color:#9aa0a6;font-size:11px;font-weight:600';
+    if (p.profileIcon) {
+      const img = document.createElement('img');
+      img.src = p.profileIcon;
+      img.alt = '';
+      img.style.cssText = 'width:100%;height:100%;object-fit:cover';
+      avatar.appendChild(img);
+    } else {
+      avatar.textContent = (displayName || '?').trim().charAt(0).toUpperCase() || '?';
+    }
+    row.appendChild(mark); row.appendChild(avatar); row.appendChild(label);
     profileMenu.appendChild(row);
   }
   const add = document.createElement('div');
@@ -436,7 +477,7 @@ function renderProfileMenu(data) {
 
   // Reveal the session-log folder — quick path to past calls' logs (#292).
   const logs = document.createElement('div');
-  logs.textContent = '📋 Open logs folder';
+  logs.textContent = '📋 Open call logs folder';
   logs.style.cssText = 'padding:6px 8px;color:#9aa0a6;cursor:pointer';
   logs.onmouseenter = () => { logs.style.background = '#3c4043'; };
   logs.onmouseleave = () => { logs.style.background = ''; };
@@ -444,17 +485,39 @@ function renderProfileMenu(data) {
   profileMenu.appendChild(logs);
 }
 
+// Cache the profile-switcher data so the menu opens INSTANTLY on click. With
+// ~12 profiles, list-profiles reads every profile's config + icon and probes
+// each running port, which made the first (cold) open lag. Prefetch at app load,
+// render from cache on click, and refresh in the background so running-status /
+// freshly-captured icons stay current.
+let cachedProfiles = null;
+async function refreshProfilesCache() {
+  try {
+    cachedProfiles = await api.invoke('list-profiles');
+    if (profileMenu && profileMenu.style.display === 'block') renderProfileMenu(cachedProfiles);
+  } catch {
+    if (!cachedProfiles && profileMenu && profileMenu.style.display === 'block') {
+      profileMenu.innerHTML = '<div style="padding:6px 8px;color:#f28b82">Failed to load profiles</div>';
+    }
+  }
+}
+
 if (profileMenuBtn && profileMenu) {
-  profileMenuBtn.addEventListener('click', async (e) => {
+  refreshProfilesCache(); // warm the cache at load so the first open is instant
+  profileMenuBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    if (profileMenu.style.display !== 'none') { closeProfileMenu(); return; }
+    // Test the actually-open state (=== 'block'), NOT "!== 'none'": the menu
+    // starts hidden via the CSS class, so the INLINE style.display is '' on the
+    // first click — "!== 'none'" was true, so the first click closed-then-returned
+    // (a no-op) and only the second click opened it.
+    if (profileMenu.style.display === 'block') { closeProfileMenu(); return; }
     profileMenu.style.display = 'block';
-    profileMenu.innerHTML = '<div style="padding:6px 8px;color:#9aa0a6">Loading…</div>';
-    try { renderProfileMenu(await api.invoke('list-profiles')); }
-    catch { profileMenu.innerHTML = '<div style="padding:6px 8px;color:#f28b82">Failed to load profiles</div>'; }
+    if (cachedProfiles) renderProfileMenu(cachedProfiles);           // instant from cache
+    else profileMenu.innerHTML = '<div style="padding:6px 8px;color:#9aa0a6">Loading…</div>';
+    refreshProfilesCache();                                          // refresh in the background (re-renders if still open)
   });
   document.addEventListener('click', (e) => {
-    if (profileMenu.style.display !== 'none' && !profileMenu.contains(e.target) && e.target !== profileMenuBtn) closeProfileMenu();
+    if (profileMenu.style.display === 'block' && !profileMenu.contains(e.target) && e.target !== profileMenuBtn) closeProfileMenu();
   });
 }
 

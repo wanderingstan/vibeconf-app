@@ -1031,6 +1031,41 @@
     return cameras.get(key);
   }
 
+  // Snapshot the live virtual-camera feed for the panel's profile icon. Main pulls
+  // this on a staleness timer via executeJavaScript. Returns a small square PNG
+  // data URL of the ACTUAL feed — emoji face OR Runway avatar — so the icon always
+  // matches what participants see (no more reconstructing from background+emoji).
+  // Only snapshots a GOOD resting frame:
+  //   - emoji face: the smiling 🙂 active-listening face SPECIFICALLY. state can
+  //     be 'listening' while the RENDERED emoji is 😐 (HEARING, someone else is
+  //     talking) or 😔 (idle/pensive) — those make an unflattering icon, so we
+  //     gate on the actual displayed emoji (cam._lastLoggedEmoji, set in _render)
+  //     rather than reconstructing the priority logic here.
+  //   - Runway face: a real video, so the emoji gate doesn't apply — snapshot any
+  //     resting frame (idle/listening), skipping speaking/thinking/yielding.
+  // Anything else (thinking/speaking/working, non-face emoji, non-active mode) → null.
+  window.__vibeconfCaptureAvatarIcon = (size) => {
+    try {
+      size = size || 128;
+      let cam = null;
+      for (const c of cameras.values()) { if (c && c.canvas && c.canvas.width) cam = c; }
+      if (!cam) return null;
+      const runwayLive = cam.avatarVideo && cam.avatarVideo.readyState >= 2 && cam.avatarVideo.videoWidth > 0;
+      if (runwayLive) {
+        if (cam.state !== 'idle' && cam.state !== 'listening') return null; // resting Runway frame only
+      } else if (cam._lastLoggedEmoji !== VirtualCamera.MODE_EMOJIS.active) {
+        return null; // emoji face: only the smiling 🙂 active-listening face
+      }
+      const src = cam.canvas;
+      const side = Math.min(src.width, src.height);         // center square of the 16:9 feed
+      const sx = (src.width - side) / 2, sy = (src.height - side) / 2;
+      const off = document.createElement('canvas');
+      off.width = size; off.height = size;
+      off.getContext('2d').drawImage(src, sx, sy, side, side, 0, 0, size, size);
+      return off.toDataURL('image/png');
+    } catch (e) { return null; }
+  };
+
   // P2 bridge — lets runway-avatar.js (separate page script) drive the Runway face: set the
   // avatar <video> on every VirtualCamera (+ latch it for cameras created later), and read the
   // bot's TTS mic track to publish to Runway (rebuild-aware getTrack(), survives the Slack

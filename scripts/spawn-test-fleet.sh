@@ -60,6 +60,9 @@ SLACK=0
 SLACK_URL=""
 GOOGLE=0
 DEVTOOLS=0
+WITH_AGENTS=0            # --with-agents: attach a real Claude agent per bot (#267 item 5)
+FUZZ_ROOM=""            # --room=CODE   passed to spawn-agents.mjs
+FUZZ_MISSION=""         # --mission=KEY passed to spawn-agents.mjs
 for a in "$@"; do
   case "$a" in
     --kill)        KILL=1 ;;
@@ -69,8 +72,11 @@ for a in "$@"; do
     --slack-url=*) SLACK_URL="${a#--slack-url=}" ;;
     --google)      GOOGLE=1 ;;
     --devtools)    DEVTOOLS=1 ;;
+    --with-agents) WITH_AGENTS=1 ;;
+    --room=*)      FUZZ_ROOM="${a#--room=}" ;;
+    --mission=*)   FUZZ_MISSION="${a#--mission=}" ;;
     <->)           N="$a" ;;   # zsh: <-> matches an integer
-    *) echo "usage: $0 [count] [--dmg|--built] [--slack --slack-url=URL] [--google] [--devtools] [--kill]"; exit 1 ;;
+    *) echo "usage: $0 [count] [--dmg|--built] [--slack --slack-url=URL] [--google] [--devtools] [--with-agents --room=CODE --mission=KEY] [--kill]"; exit 1 ;;
   esac
 done
 if (( N < 1 || N > 4 )); then echo "count must be 1–4"; exit 1; fi
@@ -106,6 +112,8 @@ GTEST_EMAIL_DOMAIN="${GTEST_EMAIL_DOMAIN:-spiritprotocol.io}"
 # --kill: stop instances on the test ports (works regardless of how they launched).
 if (( KILL )); then
   echo "▶ Stopping test fleet…"
+  # Reap any attached real agents first (#267 item 5), before the bodies go down.
+  if (( WITH_AGENTS )); then node "${0:A:h}/spawn-agents.mjs" --kill 2>/dev/null || true; fi
   # GRACEFUL LEAVE first: tell each live bot to LEAVE its call so its tile/presence
   # is dropped right away, instead of ghosting until the ~10min presence TTL. Stale
   # same-named bots from a prior run collide with the next run's bots and produce
@@ -288,3 +296,18 @@ else
 fi
 echo ""
 echo "  Stop it with: $0 $N --kill"
+
+# --with-agents (#267 item 5): now that the bot BODIES are up, attach a real
+# Claude agent to each (agent-LESS by default). The agents join + run a mission;
+# scripts/agent-fuzz-test.mjs waits, collects transcript+log, and LLM-judges.
+if (( WITH_AGENTS )); then
+  echo ""
+  echo "▶ Attaching real agents (--with-agents)…"
+  # Build the optional --mission as a proper word array — a ${VAR:+--mission "$VAR"}
+  # expansion collapses into ONE arg in zsh, so spawn-agents never sees the flag.
+  # (if-form, not `&&` — under `set -e` a false `&&` would exit the script.)
+  mission_arg=()
+  if [[ -n "$FUZZ_MISSION" ]]; then mission_arg=(--mission "$FUZZ_MISSION"); fi
+  node "${0:A:h}/spawn-agents.mjs" --bots "$BOTS_ARG" \
+    --room "${FUZZ_ROOM:-paz-sqoa-npe}" "${mission_arg[@]}"
+fi

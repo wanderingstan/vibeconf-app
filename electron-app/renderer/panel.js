@@ -474,7 +474,7 @@ function renderProfileMenu(data) {
 
   // Reveal the session-log folder — quick path to past calls' logs (#292).
   const logs = document.createElement('div');
-  logs.textContent = '📋 Open logs folder';
+  logs.textContent = '📋 Open call logs folder';
   logs.style.cssText = 'padding:6px 8px;color:#9aa0a6;cursor:pointer';
   logs.onmouseenter = () => { logs.style.background = '#3c4043'; };
   logs.onmouseleave = () => { logs.style.background = ''; };
@@ -482,14 +482,32 @@ function renderProfileMenu(data) {
   profileMenu.appendChild(logs);
 }
 
+// Cache the profile-switcher data so the menu opens INSTANTLY on click. With
+// ~12 profiles, list-profiles reads every profile's config + icon and probes
+// each running port, which made the first (cold) open lag. Prefetch at app load,
+// render from cache on click, and refresh in the background so running-status /
+// freshly-captured icons stay current.
+let cachedProfiles = null;
+async function refreshProfilesCache() {
+  try {
+    cachedProfiles = await api.invoke('list-profiles');
+    if (profileMenu && profileMenu.style.display === 'block') renderProfileMenu(cachedProfiles);
+  } catch {
+    if (!cachedProfiles && profileMenu && profileMenu.style.display === 'block') {
+      profileMenu.innerHTML = '<div style="padding:6px 8px;color:#f28b82">Failed to load profiles</div>';
+    }
+  }
+}
+
 if (profileMenuBtn && profileMenu) {
-  profileMenuBtn.addEventListener('click', async (e) => {
+  refreshProfilesCache(); // warm the cache at load so the first open is instant
+  profileMenuBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     if (profileMenu.style.display !== 'none') { closeProfileMenu(); return; }
     profileMenu.style.display = 'block';
-    profileMenu.innerHTML = '<div style="padding:6px 8px;color:#9aa0a6">Loading…</div>';
-    try { renderProfileMenu(await api.invoke('list-profiles')); }
-    catch { profileMenu.innerHTML = '<div style="padding:6px 8px;color:#f28b82">Failed to load profiles</div>'; }
+    if (cachedProfiles) renderProfileMenu(cachedProfiles);           // instant from cache
+    else profileMenu.innerHTML = '<div style="padding:6px 8px;color:#9aa0a6">Loading…</div>';
+    refreshProfilesCache();                                          // refresh in the background (re-renders if still open)
   });
   document.addEventListener('click', (e) => {
     if (profileMenu.style.display !== 'none' && !profileMenu.contains(e.target) && e.target !== profileMenuBtn) closeProfileMenu();

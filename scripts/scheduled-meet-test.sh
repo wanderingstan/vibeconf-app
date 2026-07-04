@@ -42,6 +42,18 @@ overlaps=$(grep -oE 'cross-bot speak overlaps \(<1.2s\): [0-9]+' "$LOG" | tail -
 printf '{"ts":"%s","exit":%s,"stalls":"%s","fails":"%s","overlaps":"%s","log":"%s"}\n' \
   "$STAMP" "$CODE" "$stalls" "$fails" "$overlaps" "$(basename "$LOG")" >> "$RESULTS/results.jsonl"
 
+# --- EXPERIMENTAL: real-agent fuzzing test (#267 item 5) — NEW, take with a grain
+# of salt. Real Claude agents run the 'smoke' mission and an LLM judge grades it.
+# Best-effort and DECOUPLED from the primary signal above: the `|| true` means it
+# NEVER changes this run's exit code, and it writes its OWN verdict line to
+# $RESULTS/agent-fuzz/results.jsonl (so the deterministic dmg result stays clean).
+# It self-spawns + tears down its own source-mode fleet. Costs tokens (real agents)
+# and depends on the same display-on + unlocked conditions as any live test. Delete
+# this block to disable. ---
+echo "" | tee -a "$LOG"
+echo "=== real-agent fuzz test (experimental, grain of salt) $STAMP ===" | tee -a "$LOG"
+node scripts/agent-fuzz-test.mjs --mission smoke --duration 170 2>&1 | tee -a "$LOG" || true
+
 # Keep only the last 30 full logs (history line in results.jsonl is permanent).
 ls -1t "$RESULTS"/run-*.log 2>/dev/null | tail -n +31 | xargs rm -f 2>/dev/null || true
 

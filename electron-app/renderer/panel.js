@@ -503,14 +503,18 @@ if (profileMenuBtn && profileMenu) {
   refreshProfilesCache(); // warm the cache at load so the first open is instant
   profileMenuBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    if (profileMenu.style.display !== 'none') { closeProfileMenu(); return; }
+    // Test the actually-open state (=== 'block'), NOT "!== 'none'": the menu
+    // starts hidden via the CSS class, so the INLINE style.display is '' on the
+    // first click — "!== 'none'" was true, so the first click closed-then-returned
+    // (a no-op) and only the second click opened it.
+    if (profileMenu.style.display === 'block') { closeProfileMenu(); return; }
     profileMenu.style.display = 'block';
     if (cachedProfiles) renderProfileMenu(cachedProfiles);           // instant from cache
     else profileMenu.innerHTML = '<div style="padding:6px 8px;color:#9aa0a6">Loading…</div>';
     refreshProfilesCache();                                          // refresh in the background (re-renders if still open)
   });
   document.addEventListener('click', (e) => {
-    if (profileMenu.style.display !== 'none' && !profileMenu.contains(e.target) && e.target !== profileMenuBtn) closeProfileMenu();
+    if (profileMenu.style.display === 'block' && !profileMenu.contains(e.target) && e.target !== profileMenuBtn) closeProfileMenu();
   });
 }
 

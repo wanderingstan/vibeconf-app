@@ -1031,6 +1031,29 @@
     return cameras.get(key);
   }
 
+  // Snapshot the live virtual-camera feed for the panel's profile icon. Main pulls
+  // this on a staleness timer via executeJavaScript. Returns a small square PNG
+  // data URL of the ACTUAL feed — emoji face OR Runway avatar — so the icon always
+  // matches what participants see (no more reconstructing from background+emoji).
+  // Only snapshots a RESTING face (idle/listening): skips speaking/thinking frames
+  // and transient non-face emoji (e.g. a 🔊 set via set_avatar_emoji). Else null.
+  window.__vibeconfCaptureAvatarIcon = (size) => {
+    try {
+      size = size || 128;
+      let cam = null;
+      for (const c of cameras.values()) { if (c && c.canvas && c.canvas.width) cam = c; }
+      if (!cam) return null;
+      if (cam.state !== 'idle' && cam.state !== 'listening') return null; // resting face only
+      const src = cam.canvas;
+      const side = Math.min(src.width, src.height);         // center square of the 16:9 feed
+      const sx = (src.width - side) / 2, sy = (src.height - side) / 2;
+      const off = document.createElement('canvas');
+      off.width = size; off.height = size;
+      off.getContext('2d').drawImage(src, sx, sy, side, side, 0, 0, size, size);
+      return off.toDataURL('image/png');
+    } catch (e) { return null; }
+  };
+
   // P2 bridge — lets runway-avatar.js (separate page script) drive the Runway face: set the
   // avatar <video> on every VirtualCamera (+ latch it for cameras created later), and read the
   // bot's TTS mic track to publish to Runway (rebuild-aware getTrack(), survives the Slack

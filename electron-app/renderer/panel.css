@@ -461,6 +461,9 @@ button:disabled {
 .agent-avatar-bg { position: absolute; inset: 0; }
 .agent-avatar-bg svg, .agent-avatar-bg img { width: 100%; height: 100%; display: block; object-fit: cover; }
 .agent-avatar-emoji { position: relative; font-size: 28px; line-height: 1; }
+/* Real virtual-camera snapshot (profileIcon). Covers the generated bg+emoji when
+   present; the container's overflow:hidden + border-radius clip it to shape. */
+.agent-avatar-photo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 2; }
 
 .agent-id { flex: 1 1 auto; min-width: 0; }
 .agent-name-row { position: relative; display: flex; align-items: center; gap: 6px; }

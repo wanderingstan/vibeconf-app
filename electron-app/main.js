@@ -1172,8 +1172,12 @@ const localServer = new globalThis.LocalServer({
       });
     } else if (key === 'avatarBackgroundSvg') {
       pushAvatarBackground(value);
+      // Appearance changed → the cached camera snapshot is now wrong. Drop it so
+      // the panel falls back to the generated look and recaptures on the next call.
+      try { store.delete('profileIcon'); store.set('profileIconAt', 0); } catch { /* ignore */ }
     } else if (key === 'emojiSet') {
       pushEmojiSet(value);
+      try { store.delete('profileIcon'); store.set('profileIconAt', 0); } catch { /* ignore */ }
     } else if (key === 'studioSound') {
       // Toggle Meet's voice filter live (no rejoin needed) when in-call.
       if (localServer.callStatus === 'in-call' && meetView && !meetView.webContents.isDestroyed()) {
@@ -3799,6 +3803,32 @@ function setupIPC() {
     return vals;
   });
 
+  // Profile icon from the real camera feed. The panel used to reconstruct the icon
+  // from background+emoji, which drifts from the actual avatar (different emoji
+  // sets, and Runway faces). Instead: while in a call, pull a small snapshot of the
+  // live virtual-camera canvas (page-inject's __vibeconfCaptureAvatarIcon, which
+  // only returns a RESTING face) and cache it as `profileIcon`. Staleness-gated —
+  // refresh at most every few hours; the per-minute check no-ops until the cached
+  // icon is old AND the bot is caught in a resting frame. Best-effort; the panel
+  // falls back to the generated look when `profileIcon` is unset.
+  const PROFILE_ICON_MAX_AGE_MS = 4 * 60 * 60 * 1000; // ~4h
+  async function maybeCaptureProfileIcon() {
+    try {
+      if (!meetView || meetView.webContents.isDestroyed()) return;
+      const at = Number(store.get('profileIconAt')) || 0;
+      if (store.get('profileIcon') && (Date.now() - at) < PROFILE_ICON_MAX_AGE_MS) return; // still fresh
+      const dataUrl = await meetView.webContents
+        .executeJavaScript('window.__vibeconfCaptureAvatarIcon ? window.__vibeconfCaptureAvatarIcon(128) : null')
+        .catch(() => null);
+      if (typeof dataUrl === 'string' && dataUrl.startsWith('data:image')) {
+        store.set('profileIcon', dataUrl);
+        store.set('profileIconAt', Date.now());
+        console.log('[profile-icon] captured a fresh avatar snapshot from the camera feed');
+      }
+    } catch { /* best-effort — never disrupt the call */ }
+  }
+  setInterval(maybeCaptureProfileIcon, 60 * 1000);
+
   // Bot vitals for the panel: is the on-device fast model reachable? Pings the
   // configured ack endpoint (Apple wrapper / any openai-compat) GET /v1/models
   // with a short timeout. Read-only; never throws. The panel polls this.
@@ -3831,6 +3861,11 @@ function setupIPC() {
     // Live-apply the visual prefs the panel can set here (the agent path goes
     // through applyPref, which already pushes these). #316.
     if (key === 'emojiSet') pushEmojiSet(value);
+    // Appearance change from the panel → invalidate the cached camera-snapshot icon
+    // so it regenerates (matches the applyPref/agent path above).
+    if (key === 'emojiSet' || key === 'avatarBackgroundSvg') {
+      try { store.delete('profileIcon'); store.set('profileIconAt', 0); } catch { /* ignore */ }
+    }
   });
 
   ipcMain.handle('get-app-version', () => ({ version: app.getVersion(), packaged: app.isPackaged }));

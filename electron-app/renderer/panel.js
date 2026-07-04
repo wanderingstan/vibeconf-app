@@ -98,6 +98,27 @@ async function renderAgentAvatar() {
   } else if (bg) {
     bg.remove();
   }
+
+  // Prefer a real snapshot of the virtual-camera feed (captured while in a call,
+  // main-side) over the reconstructed background+emoji — it matches what
+  // participants actually see, including Runway faces. Falls back to the
+  // generated look when `profileIcon` is unset.
+  try {
+    const c = await api.invoke('get-config', ['profileIcon']);
+    const dataUrl = c && c.profileIcon;
+    let photo = agentAvatarEl.querySelector('.agent-avatar-photo');
+    if (dataUrl) {
+      if (!photo) {
+        photo = document.createElement('img');
+        photo.className = 'agent-avatar-photo';
+        photo.alt = '';
+        agentAvatarEl.appendChild(photo);
+      }
+      if (photo.getAttribute('src') !== dataUrl) photo.src = dataUrl;
+    } else if (photo) {
+      photo.remove();
+    }
+  } catch { /* keep the generated look */ }
 }
 
 // Connection dots reflect whether each calling platform is signed in. We read the
@@ -112,6 +133,9 @@ function syncConnDots() {
 }
 setInterval(syncConnDots, 1500);
 renderAgentAvatar();
+// Re-render periodically so a freshly-captured profileIcon (or a background/emoji
+// change) shows without a panel reload. Cheap; the icon rarely changes.
+setInterval(renderAgentAvatar, 60 * 1000);
 
 // ---------------------------------------------------------------------------
 // Call State debug view — live snapshot of the app's detectors

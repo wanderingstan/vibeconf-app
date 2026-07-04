@@ -439,7 +439,10 @@ function renderProfileMenu(data) {
     // has one, else a neutral monogram circle so every row aligns. Mirrors the
     // main agent avatar (profileIcon), now per-profile in the switcher.
     const avatar = document.createElement('div');
-    avatar.style.cssText = 'width:24px;height:24px;flex:0 0 auto;border-radius:50%;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#3c4043;color:#9aa0a6;font-size:11px;font-weight:600';
+    // Rounded SQUARE (not a circle) to match the main agent avatar and show more
+    // of the background — the most customizable part of the icon (emojis all read
+    // about the same). 6px ≈ the main avatar's 14px/54px proportion at 24px.
+    avatar.style.cssText = 'width:24px;height:24px;flex:0 0 auto;border-radius:6px;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#3c4043;color:#9aa0a6;font-size:11px;font-weight:600';
     if (p.profileIcon) {
       const img = document.createElement('img');
       img.src = p.profileIcon;

@@ -143,6 +143,17 @@ async function playAudioTest(bots) {
   if (bots.length < 2) { console.log('\n(play-audio test needs 2+ bots — skipping)'); return; }
   const [player, listener] = bots;
   console.log('\n— play-audio detection test —');
+  // Drain stale captions first. Trailing TTS/captions from the prior scenario
+  // (e.g. "diagram is on the board") keep resolving the listener's wait_for_speech
+  // INSTANTLY, so the probe "hears" that old line instead of the played clip and
+  // fails. Mirror chatWakeTest: LOOP wait_for_speech until one TIMES OUT (no speech
+  // in the window = confirmed quiet) before parking for the real clip.
+  let quiet = false;
+  for (let i = 0; i < 8 && !quiet; i++) {
+    const d = await listener.waitForSpeech({ wait: 6, silence: 2 });
+    quiet = d.timedOut; // a timeout means nobody spoke in the window
+  }
+  if (!quiet) { record(listener.name, 'playAudioDetect', false, 'could not reach a quiet room to run the play-audio probe'); return; }
   const listenP = listener.waitForSpeech({ wait: 25, silence: 2 }); // park to hear the clip
   await sleep(2500); // ensure the listener is in its long-poll before the clip plays
   await player.playTestSpeech();

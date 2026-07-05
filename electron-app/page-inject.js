@@ -400,9 +400,24 @@
         ctx.shadowBlur = 20;
       }
 
+      // Not-yet-connected "arrival" rise: while the emoji is 🫥 (no call yet /
+      // joining / waiting / agent not engaged), start with the glyph peeking up
+      // from the bottom edge — only its top half showing, Kilroy-style — and
+      // ease it up to center over ~2.8s, so the avatar reads as "the bot is on
+      // its way in." Combined with the 50% ghost opacity. Pops straight to center
+      // the instant the agent engages (emoji is no longer 🫥).
+      let ghostRise = 0;
+      if (emoji === '\u{1FAE5}') {
+        if (!this._ghostSince) this._ghostSince = Date.now();
+        const p = Math.min(1, (Date.now() - this._ghostSince) / 2800);
+        const eased = 1 - Math.pow(1 - p, 3); // easeOutCubic — quick lift, gentle settle
+        ghostRise = (1 - eased) * (h - cy);    // center starts at the bottom edge, settles at center
+      } else {
+        this._ghostSince = 0;
+      }
       // Apply translation + rotation + non-uniform scale around the avatar
       // center. The scaleX/scaleY give the "mouth open" jaw effect.
-      ctx.translate(cx + thinkSway, cy + bob - speakBounce);
+      ctx.translate(cx + thinkSway, cy + bob - speakBounce + ghostRise);
       if (speakTilt || tickTilt || agentTilt) ctx.rotate(speakTilt + tickTilt + agentTilt);
       if (this.speaking) {
         ctx.scale(speakScaleX * tickPop, speakScaleY * tickPop);

@@ -5,8 +5,15 @@ const fs = require('fs');
 const path = require('path');
 
 class Store {
-  constructor(configDir) {
+  // `fresh: true` makes the store safe for a file SHARED across processes
+  // (#366: the app-level config in BASE_USER_DATA, which every running
+  // profile instance reads and writes): reads reload from disk, and writes
+  // are read-merge-write so one instance's set can't clobber keys another
+  // instance wrote since our last load. The default (cached) mode is right
+  // for a per-profile config.json that only this process owns.
+  constructor(configDir, { fresh = false } = {}) {
     this.filePath = path.join(configDir, 'config.json');
+    this.fresh = fresh;
     this.data = {};
     this._load();
   }
@@ -32,20 +39,24 @@ class Store {
   }
 
   get(key) {
+    if (this.fresh) this._load();
     return key ? this.data[key] : { ...this.data };
   }
 
   set(key, value) {
+    if (this.fresh) this._load();
     this.data[key] = value;
     this._save();
   }
 
   delete(key) {
+    if (this.fresh) this._load();
     delete this.data[key];
     this._save();
   }
 
   getMultiple(keys) {
+    if (this.fresh) this._load();
     const result = {};
     for (const key of keys) {
       if (key in this.data) result[key] = this.data[key];

@@ -7,6 +7,7 @@ const path = require('path');
 const fs = require('fs');
 const vm = require('vm');
 const Store = require('./store.js');
+const { ScopedStore, migrateAppLevelKeys } = require('./config-scope.js');
 const profileManager = require('./profile-manager.js');
 const { resolveSvg } = require('./svg-resolver.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
@@ -1467,6 +1468,43 @@ async function checkAuth() {
   });
 }
 
+// #366: one login for all profiles. The vibeconferencing.com auth is a
+// vc_session cookie in this instance's defaultSession (per-profile on disk),
+// so sharing it means mirroring through the app-level store: on launch,
+//   • if THIS profile is logged in → copy its token up to the shared store
+//     (heals existing installs: the profile that's already signed in donates
+//     the login), keeping the store current when the site refreshes the token;
+//   • if not, but the shared store has a token (some other profile logged
+//     in) → seed it into this session's cookie jar.
+// Best-effort: auth still works exactly as before if this fails.
+async function syncSharedLoginCookie() {
+  try {
+    const baseUrl = getWebsiteUrl();
+    const cookies = await session.defaultSession.cookies.get({ url: baseUrl, name: 'vc_session' });
+    const shared = store.get('vcSessionToken');
+    if (cookies.length > 0) {
+      if (cookies[0].value !== shared) store.set('vcSessionToken', cookies[0].value);
+    } else if (shared) {
+      await session.defaultSession.cookies.set({
+        url: baseUrl,
+        name: 'vc_session',
+        value: shared,
+        path: '/',
+        httpOnly: true,
+        secure: baseUrl.startsWith('https'),
+        sameSite: 'lax',
+        // Matches the login flow's 30-day cookie. If the server has since
+        // invalidated the token, checkAuth simply reports unauthenticated —
+        // same as an expired login today.
+        expirationDate: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60,
+      });
+      console.log('[auth] Seeded vibeconferencing.com login from the shared app config (#366)');
+    }
+  } catch (err) {
+    console.warn('[auth] Shared-login sync failed (non-fatal):', err?.message);
+  }
+}
+
 // Open Google OAuth in the system browser
 // Google blocks embedded webviews, so we must use the real browser.
 // We start a local HTTP server to catch the session cookie after login.
@@ -1485,6 +1523,9 @@ function openGoogleLogin() {
       const token = url.searchParams.get('token');
       if (token) {
         console.log('[electron] Received auth token, length:', token.length);
+        // #366: mirror the login to the shared app-level store so every other
+        // profile inherits it (seeded into their session on next launch).
+        try { store?.set('vcSessionToken', token); } catch { /* non-fatal */ }
         // Set the cookie in Electron's session for the server URL
         session.defaultSession.cookies.set({
           url: baseUrl,
@@ -2730,7 +2771,28 @@ app.whenReady().then(async () => {
   // route host resolution through it. Harmless for Meet/everything else.
   try { app.configureHostResolver({ secureDnsMode: 'off' }); console.log('[runway] host resolver → secureDnsMode off (plain system DNS)'); } catch (e) { console.warn('[runway] configureHostResolver failed:', e && e.message); }
 
-  store = new Store(app.getPath('userData'));
+  // #366 preference scoping: app-level keys (ElevenLabs key, website login,
+  // URL overrides, dangerousMode — see config-scope.js) live in the BASE
+  // userData config.json shared by all profiles; everything else stays in
+  // this profile's own config.json. The shared store is `fresh` because
+  // several profile instances (the fleet, Jimmy+Samantha) read/write that
+  // one file concurrently. The default instance's config.json IS the shared
+  // file, so it uses the fresh store for both scopes.
+  {
+    const appLevelStore = new Store(BASE_USER_DATA, { fresh: true });
+    if (appProfile) {
+      const profileStore = new Store(app.getPath('userData'));
+      migrateAppLevelKeys(appLevelStore, profileStore);
+      store = new ScopedStore(appLevelStore, profileStore);
+    } else {
+      store = new ScopedStore(appLevelStore, appLevelStore);
+    }
+  }
+
+  // #366: inherit (or donate) the shared vibeconferencing.com login before
+  // anything checks auth. Awaited — cheap, and the panel's first auth check
+  // should see the seeded cookie.
+  await syncSharedLoginCookie();
 
   // #326 — start the overlay-independent agent-activity feed for the avatar
   // head-jostle. Self-guards on meetView, so it's safe to start early.
@@ -4216,6 +4278,10 @@ function setupIPC() {
   ipcMain.handle('logout', async () => {
     const baseUrl = getWebsiteUrl();
     await session.defaultSession.cookies.remove(baseUrl, 'vc_session');
+    // #366: drop the shared app-level login too, so other profiles don't
+    // re-seed it on their next launch. (Profiles already running keep their
+    // session cookie until they restart — logout is per-machine, not push.)
+    try { store?.delete('vcSessionToken'); } catch { /* non-fatal */ }
     if (panelView && !panelView.webContents.isDestroyed()) {
       panelView.webContents.send('auth-changed');
     }

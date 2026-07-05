@@ -71,9 +71,11 @@
                platform to add (#289). For now Meet + Slack are both fixed. -->
         </div>
 
-        <!-- USER (vibeconferencing.com) login — transitional. Headed toward a
-             one-time, app-level sign-in (#289), so it's de-emphasized here. -->
-        <div class="user-id-line" title="Your vibeconferencing.com login — for the shared whiteboard rooms. Headed toward a one-time app-level sign-in.">
+        <!-- USER (vibeconferencing.com) login — app-level since #366: one
+             sign-in covers every profile (mirrored via the shared config and
+             seeded on each profile's launch). Full UX home is still #289, so
+             it's de-emphasized here. -->
+        <div class="user-id-line" title="Your vibeconferencing.com login — for the shared whiteboard rooms. Signing in once covers all profiles.">
           <span id="userIdStatus">checking…</span>
           <span style="white-space:nowrap">
             <button id="userSignInMainBtn" class="auth-action-btn" style="display:none">Sign in</button>
@@ -201,7 +203,7 @@
         <div class="field">
           <label for="ttsApiKey">ElevenLabs API Key</label>
           <input type="password" id="ttsApiKey" placeholder="sk_..." />
-          <div style="font-size:11px;color:#666;margin-top:2px">Unlocks your ElevenLabs voices in the picker above.</div>
+          <div style="font-size:11px;color:#666;margin-top:2px">Unlocks your ElevenLabs voices in the picker above. Shared across all profiles — set it once.</div>
         </div>
         <details style="margin:2px 0 8px">
           <summary style="font-size:11px;color:#9aa0a6;cursor:pointer">Advanced: custom ElevenLabs Voice ID</summary>

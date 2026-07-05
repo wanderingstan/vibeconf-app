@@ -202,7 +202,8 @@ const PREFERENCES = {
       'Empty = use the production default (https://vibeconferencing.com). ' +
       'Set to a Vercel preview like https://vibeconferencing-git-BRANCH-lets-vibe.vercel.app ' +
       'to test against a feature branch. Takes precedence over syncBaseUrl. ' +
-      'Must be a full http:// or https:// URL with no trailing slash.',
+      'Must be a full http:// or https:// URL with no trailing slash. ' +
+      'APP-LEVEL (#366): shared by all profiles on this machine.',
     requiresRestart: true,
   },
   syncBaseUrl: {
@@ -212,7 +213,8 @@ const PREFERENCES = {
     description:
       'Legacy override for the sync/website host. Prefer websiteUrl for new setups. ' +
       'Empty = no override. Acts as a fallback websiteUrl when websiteUrl is unset. ' +
-      'Must be a full http:// or https:// URL with no trailing slash.',
+      'Must be a full http:// or https:// URL with no trailing slash. ' +
+      'APP-LEVEL (#366): shared by all profiles on this machine.',
     requiresRestart: true,
   },
 
@@ -619,11 +621,15 @@ function validate(key, value) {
 }
 
 function describe(store) {
+  const { isAppLevel } = require('./config-scope.js');
   const get = typeof store === 'function' ? store : (k) => store?.get?.(k);
   return Object.entries(PREFERENCES).map(([key, spec]) => {
     const current = get(key);
     return {
       key,
+      // 'app' = shared across all profiles on this machine (#366);
+      // 'profile' = scoped to the running profile.
+      scope: isAppLevel(key) ? 'app' : 'profile',
       type: spec.type,
       value: current !== undefined ? current : spec.default,
       default: spec.default,

@@ -416,6 +416,12 @@
       // as alive as the glyph). Falls back to the native glyph until the image
       // decodes, or forever if the emoji isn't in the set.
       const emojiImg = (this.emojiSet && this.emojiSet !== 'native') ? _emojiImage(this.emojiSet, emoji) : null;
+      // 🫥 "not fully there" (no call yet / joining / waiting / left / agent not
+      // engaged — all resolve to this glyph): render at half opacity so it reads
+      // as a faint ghost. The non-native emoji sets are solid in the middle
+      // (unlike Apple's hollow 🫥), so transparency is what signals "not connected".
+      // Scoped by the enclosing ctx.save()/restore().
+      if (emoji === '\u{1FAE5}') ctx.globalAlpha = 0.5;
       if (emojiImg) {
         ctx.drawImage(emojiImg, -emojiSize / 2, -emojiSize / 2, emojiSize, emojiSize);
       } else {

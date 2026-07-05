@@ -15,6 +15,7 @@ const require = createRequire(import.meta.url);
 const Store = require('../electron-app/store.js');
 const {
   APP_LEVEL_KEYS,
+  MIGRATE_KEYS,
   isAppLevel,
   ScopedStore,
   migrateAppLevelKeys,
@@ -24,7 +25,7 @@ const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'vibeconf-scope-'));
 const readConfig = (dir) => JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf-8'));
 
 test('scope map: the decided app-level keys, everything else per-profile', () => {
-  for (const k of ['ttsApiKey', 'vcSessionToken', 'syncBaseUrl', 'websiteUrl', 'dangerousMode']) {
+  for (const k of ['ttsApiKey', 'vcSessionToken', 'vcSessionLoggedOutToken', 'syncBaseUrl', 'websiteUrl', 'dangerousMode']) {
     assert.equal(isAppLevel(k), true, `${k} should be app-level`);
   }
   for (const k of ['botName', 'ttsVoiceId', 'meetAccountEmail', 'bargeInGraceMs', 'claudeModel', 'remoteLogging', 'profileIcon']) {
@@ -71,23 +72,37 @@ test('set-once in one profile is visible from a second profile instance', () => 
   assert.equal(b.get('ttsApiKey'), 'sk_once');
 });
 
-test('migration copies app-level keys up and clears the profile copy after confirming', () => {
+test('migration copies ONLY the migratable keys up (ttsApiKey), never dangerousMode / URL overrides', () => {
   const base = tmpDir();
   const prof = tmpDir();
   fs.writeFileSync(
     path.join(prof, 'config.json'),
-    JSON.stringify({ ttsApiKey: 'sk_migrate_me', botName: 'Jimmy', dangerousMode: true }),
+    JSON.stringify({
+      ttsApiKey: 'sk_migrate_me',
+      botName: 'Jimmy',
+      dangerousMode: true, // must NOT be promoted (machine-wide --dangerously-skip-permissions)
+      websiteUrl: 'https://stale-preview.vercel.app', // must NOT be promoted (points machine at a dead host)
+    }),
   );
   const appStore = new Store(base, { fresh: true });
   const profileStore = new Store(prof);
   migrateAppLevelKeys(appStore, profileStore, () => {});
 
   assert.equal(readConfig(base).ttsApiKey, 'sk_migrate_me');
-  assert.equal(readConfig(base).dangerousMode, true);
-  // Profile copy healed away; identity stays.
+  assert.equal(readConfig(base).dangerousMode, undefined);
+  assert.equal(readConfig(base).websiteUrl, undefined);
+  // Migrated profile copy healed away; identity and non-migratable copies stay on disk.
   assert.equal(readConfig(prof).ttsApiKey, undefined);
-  assert.equal(readConfig(prof).dangerousMode, undefined);
   assert.equal(readConfig(prof).botName, 'Jimmy');
+  // …but the leftover app-level copies are ignored by routing: effective
+  // values come from the (unset) app store, not the profile file.
+  const scoped = new ScopedStore(appStore, profileStore);
+  assert.equal(scoped.get('dangerousMode'), undefined);
+  assert.equal(scoped.get('websiteUrl'), undefined);
+});
+
+test('MIGRATE_KEYS is exactly [ttsApiKey] (guard against accidental auto-promotion)', () => {
+  assert.deepEqual(MIGRATE_KEYS, ['ttsApiKey']);
 });
 
 test('migration never clobbers an existing app-level value; differing profile copy is kept but unreachable', () => {
@@ -146,6 +161,19 @@ test('whole-config get(): merged view with app-level winning over stale profile 
 test('APP_LEVEL_KEYS is exactly the decided set (guard against accidental promotion)', () => {
   assert.deepEqual(
     [...APP_LEVEL_KEYS].sort(),
-    ['dangerousMode', 'syncBaseUrl', 'ttsApiKey', 'vcSessionToken', 'websiteUrl'],
+    ['dangerousMode', 'syncBaseUrl', 'ttsApiKey', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
   );
+});
+
+test('fresh store: atomic save leaves no temp file and survives a garbage config (keeps last-known-good)', () => {
+  const dir = tmpDir();
+  const s = new Store(dir, { fresh: true });
+  s.set('ttsApiKey', 'sk_good');
+  // Simulate a torn/corrupt file written by another process.
+  fs.writeFileSync(path.join(dir, 'config.json'), '{"ttsApiKey": "sk_go'); // truncated JSON
+  assert.equal(s.get('ttsApiKey'), 'sk_good'); // kept last-known-good, no reset to {}
+  // A subsequent write persists the good data, not an empty object.
+  s.set('websiteUrl', 'https://x.example');
+  assert.deepEqual(readConfig(dir), { ttsApiKey: 'sk_good', websiteUrl: 'https://x.example' });
+  assert.deepEqual(fs.readdirSync(dir).filter((f) => f.endsWith('.tmp')), []);
 });

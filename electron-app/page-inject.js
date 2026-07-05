@@ -774,9 +774,23 @@
       this._currentBuf = buf;
       this._currentOffset = offset;                    // where this playback began
       this._currentStartAt = this.audioCtx.currentTime; // clock at src.start()
+      // Echo diagnosis: count how many TTS sources are wired to the mic
+      // destination at once. Normal playback is strictly serialized → this must
+      // stay 1. If it EVER logs >1, we have a genuine digital double-play (two
+      // bot voices into Meet); if it stays 1 while a double is heard, the echo is
+      // acoustic (speaker → mic re-injection), not our code.
+      const srcId = (this._srcSeq = (this._srcSeq || 0) + 1);
+      this._liveSources = (this._liveSources || 0) + 1;
+      if (this._liveSources > 1) {
+        console.warn('[tts-audio] ⚠️ DIGITAL DOUBLE-PLAY — ' + this._liveSources +
+          ' TTS sources live on the mic at once (src #' + srcId + ', ' + buf.duration.toFixed(1) + 's)');
+      } else {
+        console.log('[tts-audio] play src #' + srcId + ' (' + buf.duration.toFixed(1) + 's, offset ' + offset.toFixed(1) + 's) — live=' + this._liveSources);
+      }
       return new Promise((resolve) => {
         src.onended = () => {
           if (this._currentSource === src) this._currentSource = null;
+          this._liveSources = Math.max(0, (this._liveSources || 1) - 1);
           resolve();
         };
         src.start(0, offset);

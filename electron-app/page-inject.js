@@ -400,20 +400,27 @@
         ctx.shadowBlur = 20;
       }
 
-      // Not-yet-connected "arrival" rise: while the emoji is 🫥 (no call yet /
-      // joining / waiting / agent not engaged), start with the glyph peeking up
-      // from the bottom edge — only its top half showing, Kilroy-style — and
-      // ease it up to center over ~2.8s, so the avatar reads as "the bot is on
-      // its way in." Combined with the 50% ghost opacity. Pops straight to center
-      // the instant the agent engages (emoji is no longer 🫥).
+      // Not-yet-connected "arrival" rise (Kilroy-style), while the emoji is 🫥.
+      // The glyph peeks up from the bottom edge — only its top half showing —
+      // combined with the 50% ghost opacity. Pops straight to center the instant
+      // the agent engages (emoji is no longer 🫥). Trigger + timing below.
+      // Hold peeking at the bottom while joining/waiting; only START the rise once
+      // the bot has SUCCESSFULLY ENTERED the call (callStatus 'in-call'), easing up
+      // to center over ~5.6s. So the rise reads as "arriving in the room," not
+      // "still trying to get in."
       let ghostRise = 0;
       if (emoji === '\u{1FAE5}') {
-        if (!this._ghostSince) this._ghostSince = Date.now();
-        const p = Math.min(1, (Date.now() - this._ghostSince) / 2800);
-        const eased = 1 - Math.pow(1 - p, 3); // easeOutCubic — quick lift, gentle settle
-        ghostRise = (1 - eased) * (h - cy);    // center starts at the bottom edge, settles at center
+        if (this.callStatus === 'in-call') {
+          if (!this._riseSince) this._riseSince = Date.now(); // stamp on entry
+          const p = Math.min(1, (Date.now() - this._riseSince) / 5600);
+          const eased = 1 - Math.pow(1 - p, 3); // easeOutCubic — quick lift, gentle settle
+          ghostRise = (1 - eased) * (h - cy);
+        } else {
+          ghostRise = h - cy;   // not admitted yet — hold peeking at the bottom edge
+          this._riseSince = 0;  // reset so the rise starts fresh the moment we enter
+        }
       } else {
-        this._ghostSince = 0;
+        this._riseSince = 0;
       }
       // Apply translation + rotation + non-uniform scale around the avatar
       // center. The scaleX/scaleY give the "mouth open" jaw effect.

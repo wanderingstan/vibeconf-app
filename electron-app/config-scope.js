@@ -19,10 +19,22 @@
 const APP_LEVEL_KEYS = new Set([
   'ttsApiKey', // ElevenLabs secret — one key per machine (#140 tracks storage security)
   'vcSessionToken', // vibeconferencing.com login (mirror of the vc_session cookie)
+  'vcSessionLoggedOutToken', // logout tombstone — profiles must not re-donate this token
   'syncBaseUrl', // legacy website/sync host override
   'websiteUrl', // website host override (preview deploys etc.)
   'dangerousMode', // machine-level trust decision
 ]);
+
+// The subset of app-level keys the launch migration may auto-promote from a
+// per-profile config into the shared store. Deliberately ONLY the ElevenLabs
+// key: it's the same secret no matter where it was entered, so promotion is
+// pure convenience. The others must NOT inherit whatever one profile happened
+// to have — promoting a test profile's dangerousMode would silently enable
+// --dangerously-skip-permissions machine-wide, and promoting a profile's
+// stale websiteUrl/syncBaseUrl preview override would point every profile at
+// a dead host. Those start unset at app level and are set deliberately;
+// old per-profile copies are simply ignored by the routing.
+const MIGRATE_KEYS = ['ttsApiKey'];
 
 const isAppLevel = (key) => APP_LEVEL_KEYS.has(key);
 
@@ -43,12 +55,13 @@ class ScopedStore {
 
   get(key) {
     if (key) return this._storeFor(key).get(key);
-    // Whole-config read: merged view, app-level values win over any stale
-    // per-profile leftovers.
+    // Whole-config read (Store-parity; no production caller today): merged
+    // view from ONE snapshot of each store, app-level values winning over any
+    // stale per-profile leftovers.
     const merged = { ...this.profileStore.get() };
+    const app = this.appStore.get();
     for (const k of APP_LEVEL_KEYS) {
-      const v = this.appStore.get(k);
-      if (v !== undefined) merged[k] = v;
+      if (app[k] !== undefined) merged[k] = app[k];
       else delete merged[k]; // stale per-profile copy of an app key: not real
     }
     return merged;
@@ -73,10 +86,13 @@ class ScopedStore {
   }
 }
 
-// One-time heal for existing installs (#366): any app-level key found in a
-// per-profile config.json is copied UP to the shared app store (so e.g. an
+// One-time heal for existing installs (#366): MIGRATE_KEYS found in a
+// per-profile config.json are copied UP to the shared app store (so an
 // already-entered ElevenLabs key starts working in every profile without
 // re-entry). Conservative by design:
+//   • only MIGRATE_KEYS are promoted (see the note above — promoting
+//     dangerousMode or URL overrides from one profile would be an unasked-for
+//     machine-wide behavior change);
 //   • the app store is only written when it doesn't already have the key —
 //     an existing app-level value is never clobbered by a profile's copy;
 //   • the per-profile copy is deleted ONLY after reading the app store back
@@ -86,7 +102,7 @@ class ScopedStore {
 // subsequent runs are no-ops.
 function migrateAppLevelKeys(appStore, profileStore, log = console.log) {
   if (appStore === profileStore) return; // default instance: nothing to split
-  for (const key of APP_LEVEL_KEYS) {
+  for (const key of MIGRATE_KEYS) {
     try {
       const profileValue = profileStore.get(key);
       if (profileValue === undefined) continue;
@@ -106,4 +122,4 @@ function migrateAppLevelKeys(appStore, profileStore, log = console.log) {
   }
 }
 
-module.exports = { APP_LEVEL_KEYS, isAppLevel, ScopedStore, migrateAppLevelKeys };
+module.exports = { APP_LEVEL_KEYS, MIGRATE_KEYS, isAppLevel, ScopedStore, migrateAppLevelKeys };

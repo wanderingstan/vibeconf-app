@@ -1468,36 +1468,65 @@ async function checkAuth() {
   });
 }
 
+// The one place the vc_session cookie shape is defined — used by the login
+// flow and by the #366 shared-login seeding, so an inherited login can never
+// silently diverge from a direct one.
+function setVcSessionCookie(baseUrl, token) {
+  return session.defaultSession.cookies.set({
+    url: baseUrl,
+    name: 'vc_session',
+    value: token,
+    path: '/',
+    httpOnly: true,
+    secure: baseUrl.startsWith('https'),
+    sameSite: 'lax',
+    // 30-day cookie. If the server has since invalidated the token, checkAuth
+    // simply reports unauthenticated — same as an expired login today.
+    expirationDate: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60,
+  });
+}
+
 // #366: one login for all profiles. The vibeconferencing.com auth is a
 // vc_session cookie in this instance's defaultSession (per-profile on disk),
-// so sharing it means mirroring through the app-level store: on launch,
-//   • if THIS profile is logged in → copy its token up to the shared store
-//     (heals existing installs: the profile that's already signed in donates
-//     the login), keeping the store current when the site refreshes the token;
-//   • if not, but the shared store has a token (some other profile logged
-//     in) → seed it into this session's cookie jar.
-// Best-effort: auth still works exactly as before if this fails.
+// so sharing it means mirroring through the app-level store on every launch:
+//   • logout tombstone first: if THIS profile still holds a token the user
+//     explicitly logged out of (vcSessionLoggedOutToken), drop it instead of
+//     re-donating it — otherwise any other profile's surviving cookie jar
+//     would silently undo the logout on its next launch;
+//   • cookie matches the shared token → nothing to do;
+//   • cookie differs → VALIDATE it against /api/auth/me before donating, so
+//     a stale invalidated cookie from a long-unused profile can't clobber a
+//     fresh login another profile just donated. Invalid + shared token
+//     available → replace our cookie with the shared one;
+//   • no cookie but a shared token exists → seed it into our cookie jar.
+// Best-effort: auth still works exactly as before if any step fails.
 async function syncSharedLoginCookie() {
   try {
     const baseUrl = getWebsiteUrl();
     const cookies = await session.defaultSession.cookies.get({ url: baseUrl, name: 'vc_session' });
+    const local = cookies.length > 0 ? cookies[0].value : null;
     const shared = store.get('vcSessionToken');
-    if (cookies.length > 0) {
-      if (cookies[0].value !== shared) store.set('vcSessionToken', cookies[0].value);
-    } else if (shared) {
-      await session.defaultSession.cookies.set({
-        url: baseUrl,
-        name: 'vc_session',
-        value: shared,
-        path: '/',
-        httpOnly: true,
-        secure: baseUrl.startsWith('https'),
-        sameSite: 'lax',
-        // Matches the login flow's 30-day cookie. If the server has since
-        // invalidated the token, checkAuth simply reports unauthenticated —
-        // same as an expired login today.
-        expirationDate: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60,
-      });
+    const tombstone = store.get('vcSessionLoggedOutToken');
+
+    if (local && tombstone && local === tombstone) {
+      await session.defaultSession.cookies.remove(baseUrl, 'vc_session');
+      console.log('[auth] Dropped logged-out vibeconferencing.com token (logout tombstone, #366)');
+      if (shared && shared !== tombstone) await setVcSessionCookie(baseUrl, shared);
+      return;
+    }
+    if (local) {
+      if (local === shared) return;
+      const me = await checkAuth(); // uses our local cookie
+      if (me?.authenticated) {
+        store.set('vcSessionToken', local); // donate the (verified) login up
+      } else if (shared) {
+        await session.defaultSession.cookies.remove(baseUrl, 'vc_session');
+        await setVcSessionCookie(baseUrl, shared);
+        console.log('[auth] Replaced stale local login with the shared one (#366)');
+      }
+      // Neither valid locally nor shared → leave it; the normal auth UI applies.
+    } else if (shared && shared !== tombstone) {
+      await setVcSessionCookie(baseUrl, shared);
       console.log('[auth] Seeded vibeconferencing.com login from the shared app config (#366)');
     }
   } catch (err) {
@@ -1524,19 +1553,14 @@ function openGoogleLogin() {
       if (token) {
         console.log('[electron] Received auth token, length:', token.length);
         // #366: mirror the login to the shared app-level store so every other
-        // profile inherits it (seeded into their session on next launch).
-        try { store?.set('vcSessionToken', token); } catch { /* non-fatal */ }
+        // profile inherits it (seeded into their session on next launch), and
+        // clear any logout tombstone — a fresh login supersedes it.
+        try {
+          store?.set('vcSessionToken', token);
+          store?.delete('vcSessionLoggedOutToken');
+        } catch { /* non-fatal */ }
         // Set the cookie in Electron's session for the server URL
-        session.defaultSession.cookies.set({
-          url: baseUrl,
-          name: 'vc_session',
-          value: token,
-          path: '/',
-          httpOnly: true,
-          secure: baseUrl.startsWith('https'),
-          sameSite: 'lax',
-          expirationDate: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60,
-        }).then(() => {
+        setVcSessionCookie(baseUrl, token).then(() => {
           console.log('[electron] Session cookie set successfully for', baseUrl);
           // Verify the cookie was set
           return session.defaultSession.cookies.get({ url: baseUrl, name: 'vc_session' });
@@ -4277,11 +4301,20 @@ function setupIPC() {
 
   ipcMain.handle('logout', async () => {
     const baseUrl = getWebsiteUrl();
+    // #366: read the token being logged out BEFORE removing it, and leave it
+    // behind as a tombstone. Other profiles' cookie jars still hold this
+    // token on disk; without the tombstone, their next launch would find it,
+    // re-donate it to the shared store, and silently undo the logout. With
+    // it, syncSharedLoginCookie drops the token instead of donating it.
+    // (Profiles already RUNNING keep their session until restart — logout is
+    // per-machine at launch boundaries, not push.)
+    try {
+      const cookies = await session.defaultSession.cookies.get({ url: baseUrl, name: 'vc_session' });
+      const dying = store?.get('vcSessionToken') || (cookies.length > 0 ? cookies[0].value : null);
+      if (dying) store?.set('vcSessionLoggedOutToken', dying);
+      store?.delete('vcSessionToken');
+    } catch { /* non-fatal */ }
     await session.defaultSession.cookies.remove(baseUrl, 'vc_session');
-    // #366: drop the shared app-level login too, so other profiles don't
-    // re-seed it on their next launch. (Profiles already running keep their
-    // session cookie until they restart — logout is per-machine, not push.)
-    try { store?.delete('vcSessionToken'); } catch { /* non-fatal */ }
     if (panelView && !panelView.webContents.isDestroyed()) {
       panelView.webContents.send('auth-changed');
     }

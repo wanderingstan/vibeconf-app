@@ -3108,74 +3108,56 @@ app.whenReady().then(async () => {
     const { execFile } = require('child_process');
     let pollInFlight = false;
 
-    // Note: Firefox is not supported — it has no AppleScript tab API
+    // Note: Firefox is not supported — it has no AppleScript tab API.
+    //
+    // PERF (Stan, 2026-07-05 — polls timed out on EVERY tick, so detection
+    // silently never fired). Two independent fixes, both needed:
+    //   1. NO System Events. The old `tell application "System Events" …
+    //      exists process` preamble alone measured 16.8s on a busy machine —
+    //      the whole 8s budget gone before touching a browser. The
+    //      `application "X" is running` form asks launchd directly (fast) and,
+    //      critically, does NOT launch the app the way a bare `tell
+    //      application` would.
+    //   2. BATCHED tab reads: `URL of tabs of w` is one Apple Event per
+    //      window vs two per TAB. ~48 tabs measured 0.25s batched vs 8s+
+    //      per-tab.
+    // Per-window try blocks skip a misbehaving window without aborting the
+    // whole scan; the per-item try skips tabs whose URL is `missing value`
+    // (empty Safari tabs).
+    const browserScanBlock = (appName) => `
+if application "${appName}" is running then
+  try
+    tell application "${appName}"
+      repeat with w in windows
+        try
+          set tabURLs to URL of tabs of w
+          set tabTitles to title of tabs of w
+          repeat with i from 1 to count of tabURLs
+            try
+              set tabURL to (item i of tabURLs) as text
+              set tabTitle to ""
+              try
+                set tabTitle to (item i of tabTitles) as text
+              end try
+              if tabURL starts with "https://meet.google.com/" then
+                set allURLs to allURLs & "MEET:" & tabURL & linefeed
+              else if tabURL starts with "https://app.slack.com/client/" then
+                set allURLs to allURLs & "SLACK:" & tabURL & "|||" & tabTitle & linefeed
+              else if tabURL is "about:blank" then
+                set allURLs to allURLs & "BLANK:" & tabTitle & linefeed
+              end if
+            end try
+          end repeat
+        end try
+      end repeat
+    end tell
+  end try
+end if`;
     const appleScript = `
 set allURLs to ""
-tell application "System Events"
-  set chromeRunning to exists process "Google Chrome"
-  set safariRunning to exists process "Safari"
-  set braveRunning to exists process "Brave Browser"
-end tell
-if chromeRunning then
-  tell application "Google Chrome"
-    repeat with w in windows
-      repeat with t in tabs of w
-        set tabURL to URL of t
-        set tabTitle to ""
-        try
-          set tabTitle to title of t
-        end try
-        if tabURL starts with "https://meet.google.com/" then
-          set allURLs to allURLs & "MEET:" & tabURL & linefeed
-        else if tabURL starts with "https://app.slack.com/client/" then
-          set allURLs to allURLs & "SLACK:" & tabURL & "|||" & tabTitle & linefeed
-        else if tabURL is "about:blank" then
-          set allURLs to allURLs & "BLANK:" & tabTitle & linefeed
-        end if
-      end repeat
-    end repeat
-  end tell
-end if
-if safariRunning then
-  tell application "Safari"
-    repeat with w in windows
-      repeat with t in tabs of w
-        set tabURL to URL of t
-        set tabTitle to ""
-        try
-          set tabTitle to title of t
-        end try
-        if tabURL starts with "https://meet.google.com/" then
-          set allURLs to allURLs & "MEET:" & tabURL & linefeed
-        else if tabURL starts with "https://app.slack.com/client/" then
-          set allURLs to allURLs & "SLACK:" & tabURL & "|||" & tabTitle & linefeed
-        else if tabURL is "about:blank" then
-          set allURLs to allURLs & "BLANK:" & tabTitle & linefeed
-        end if
-      end repeat
-    end repeat
-  end tell
-end if
-if braveRunning then
-  tell application "Brave Browser"
-    repeat with w in windows
-      repeat with t in tabs of w
-        set tabURL to URL of t
-        set tabTitle to ""
-        try
-          set tabTitle to title of t
-        end try
-        if tabURL starts with "https://meet.google.com/" then
-          set allURLs to allURLs & "MEET:" & tabURL & linefeed
-        else if tabURL starts with "https://app.slack.com/client/" then
-          set allURLs to allURLs & "SLACK:" & tabURL & "|||" & tabTitle & linefeed
-        else if tabURL is "about:blank" then
-          set allURLs to allURLs & "BLANK:" & tabTitle & linefeed
-        end if
-      end repeat
-    end repeat
-  end tell
-end if
+${browserScanBlock('Google Chrome')}
+${browserScanBlock('Safari')}
+${browserScanBlock('Brave Browser')}
 allURLs`;
 
     console.log('[electron] Meet/Slack detection started');

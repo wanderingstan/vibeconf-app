@@ -218,6 +218,15 @@ class LocalServer {
     // premise that the bot chokes specifically when the floor is ≥2-deep.
     this.activeSpeakerCount = 0;
     this._peakSpeakersSinceQuiet = 0;
+    // #368: is the bot actually EMITTING AUDIO right now (speaking aloud), as
+    // opposed to botState==='speaking' meaning "the agent is inside a speak()
+    // call." Set true when playback starts, cleared on tts-ended (queue drain) /
+    // back-off / call reset. While true, botState is held at 'speaking' against
+    // the agent loop's premature thinking/listening transitions — so barge-in
+    // (and the probe gate) see 'speaking' for the FULL audio, not just the sliver
+    // the agent spends in the speak() call. This is what makes bot==='speaking'
+    // mean "speaking aloud."
+    this.speakingAloud = false;
     this.lastSpeechStoppedAt = null;   // timestamp (ms) when last person stopped speaking
 
     // Two-tier "workingMemory" (docs/two-tier-design.md). The bot's private
@@ -374,6 +383,7 @@ class LocalServer {
     this.anyoneSpeaking = false;
     this.activeSpeakerCount = 0;
     this._peakSpeakersSinceQuiet = 0;
+    this.speakingAloud = false;
     this.lastSpeechStoppedAt = null;
     this.captionsOn = null;
     this.lastRespondedSpeaker = null;
@@ -410,6 +420,7 @@ class LocalServer {
     this.anyoneSpeaking = false;
     this.activeSpeakerCount = 0;
     this._peakSpeakersSinceQuiet = 0;
+    this.speakingAloud = false;
     this.lastSpeechStoppedAt = null;
     this.captionsOn = null;
     this.lastRespondedSpeaker = null;
@@ -1438,9 +1449,16 @@ class LocalServer {
     // interrupter is still talking. A follow-up wait_for_speech call should
     // not make the avatar look merely idle/listening again.
     if (!force && this.botState === 'yielding' && state === 'listening' && this.anyoneSpeaking) return;
-    // Don't downgrade speaking to listening just because a new
-    // wait_for_speech showed up — the avatar should stay 😄 until that
-    // turn naturally completes (tts-ended fires with force=true).
+    // #368: while the bot is actually emitting audio (speakingAloud), 'speaking'
+    // means "speaking aloud" — hold it there against the agent loop's premature
+    // transitions (thinking/working/listening/idle). The agent finishing a long
+    // speak() and looping back to wait_for_speech must NOT flip botState off
+    // 'speaking' while ~2 minutes of audio still play, or barge-in (which arms
+    // only in 'speaking') can't fire. Only FORCED transitions (tts-ended queue
+    // drain, back-off/stop-tts) leave 'speaking' mid-audio. Cleared below on exit.
+    if (!force && this.botState === 'speaking' && this.speakingAloud && state !== 'speaking') return;
+    // Fallback (no audio yet, e.g. the synth gap before playback): keep the
+    // original protection against a new wait_for_speech downgrading speaking→listening.
     if (!force && this.botState === 'speaking' && state === 'listening') return;
     // Thinking gets the same protection but only for thinkingHoldMs — long
     // enough that the ack doesn't visibly flicker to 🙂 mid-acknowledgment
@@ -1470,9 +1488,16 @@ class LocalServer {
       clearTimeout(this._thinkingHoldTimer);
       this._thinkingHoldTimer = null;
     }
+    // #368: entering 'speaking' always corresponds to audio starting (real
+    // speak, probe, or #350 resume all enter here only when they play). Mark the
+    // bot as speaking aloud; the guard above then holds this state until a forced
+    // exit (tts-ended / back-off).
+    if (state === 'speaking') this.speakingAloud = true;
     // Leaving 'speaking' — TTS ended naturally or got cut off. Cancel any
-    // armed barge-in timer so we don't fire stop-tts against a silent bot.
+    // armed barge-in timer so we don't fire stop-tts against a silent bot, and
+    // clear the speaking-aloud latch (#368). Only forced transitions reach here.
     if (prev === 'speaking' && state !== 'speaking') {
+      this.speakingAloud = false;
       this._clearBargeIn('bot stopped speaking');
     }
     // Entering 'speaking' — if someone is already mid-utterance, arm

@@ -4438,6 +4438,11 @@ function setupIPC() {
   });
 
   ipcMain.on(CALL_EVENTS.ttsEnded, () => {
+    // #368: tts-ended = the audio queue fully drained, i.e. the bot is no longer
+    // speaking aloud. This is the authoritative release for the speaking-aloud
+    // latch — clear it FIRST, before any early-return below, so botState can
+    // never get trapped in 'speaking' if the audio ends via an unusual path.
+    localServer.speakingAloud = false;
     // If only the ack just finished, stay in 'thinking' — the agent is still
     // generating the real response and will clear the flag when it speaks.
     if (ackTtsPending) {

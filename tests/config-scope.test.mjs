@@ -161,7 +161,7 @@ test('whole-config get(): merged view with app-level winning over stale profile 
 test('APP_LEVEL_KEYS is exactly the decided set (guard against accidental promotion)', () => {
   assert.deepEqual(
     [...APP_LEVEL_KEYS].sort(),
-    ['dangerousMode', 'syncBaseUrl', 'ttsApiKey', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
+    ['claudeIntegrationRemoved', 'dangerousMode', 'syncBaseUrl', 'ttsApiKey', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
   );
 });
 

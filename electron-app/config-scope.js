@@ -23,6 +23,7 @@ const APP_LEVEL_KEYS = new Set([
   'syncBaseUrl', // legacy website/sync host override
   'websiteUrl', // website host override (preview deploys etc.)
   'dangerousMode', // machine-level trust decision
+  'claudeIntegrationRemoved', // "leave no trace" opt-out — ~/.claude is machine-global
 ]);
 
 // The subset of app-level keys the launch migration may auto-promote from a

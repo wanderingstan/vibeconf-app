@@ -2926,6 +2926,12 @@ app.whenReady().then(async () => {
   // MCP config from the primary app instance.
   if (appProfile) {
     console.log('[electron] Skipping Claude integration for app profile:', appProfile);
+  } else if (store.get('claudeIntegrationRemoved') === true) {
+    // "Leave no trace": the user explicitly uninstalled the Claude integration
+    // (menu → Uninstall Claude Integration). Without this gate the next launch
+    // would silently re-write ~/.claude.json / the skill / the hook, undoing
+    // the uninstall. Re-enable via menu → Install Claude Integration.
+    console.log('[electron] Claude integration NOT installed (user uninstalled it — leave-no-trace flag set)');
   } else {
     ensureClaudeIntegration(localPort);
   }
@@ -3643,6 +3649,9 @@ function createMainWindow() {
         },
         { type: 'separator' },
         {
+          // "Leave no trace" (F&F): remove EVERYTHING the app wrote into the
+          // user's Claude Code setup, and remember the choice so the next
+          // launch doesn't silently re-install it.
           label: 'Uninstall Claude Integration...',
           click: () => {
             const { dialog } = require('electron');
@@ -3651,16 +3660,35 @@ function createMainWindow() {
               buttons: ['Cancel', 'Uninstall'],
               defaultId: 0,
               title: 'Uninstall Claude Integration',
-              message: 'Remove the /join-call skill and MCP server config from Claude Code?',
-              detail: 'This removes the vibeconferencing MCP server from ~/.claude.json and the join-call skill from ~/.claude/skills/. The app itself is not affected.',
+              message: 'Remove everything Vibeconferencing added to Claude Code?',
+              detail:
+                'Removes all of it — leave no trace:\n' +
+                '• the vibeconferencing MCP server from ~/.claude.json\n' +
+                '• the join-call skill from ~/.claude/skills/\n' +
+                '• the agent-activity hook from ~/.claude/settings.json (and its script)\n\n' +
+                'It will NOT be reinstalled on the next launch. The app itself keeps working; ' +
+                'use "Install Claude Integration" to bring it back.',
             }).then(({ response }) => {
               if (response === 1) {
                 uninstallClaudeIntegration();
+                try { store?.set('claudeIntegrationRemoved', true); } catch { /* non-fatal */ }
                 dialog.showMessageBox(mainWindow, {
                   type: 'info',
-                  message: 'Claude integration removed. Restart Claude Code to apply.',
+                  message: 'Claude integration removed — no trace left. Restart Claude Code to apply.',
                 });
               }
+            });
+          },
+        },
+        {
+          label: 'Install Claude Integration',
+          click: () => {
+            const { dialog } = require('electron');
+            try { store?.delete('claudeIntegrationRemoved'); } catch { /* non-fatal */ }
+            ensureClaudeIntegration(localServer.port);
+            dialog.showMessageBox(mainWindow, {
+              type: 'info',
+              message: 'Claude integration installed. Restart Claude Code to pick it up.',
             });
           },
         },

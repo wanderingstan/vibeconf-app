@@ -214,7 +214,7 @@ const PREFERENCES = {
 
   bargeInGraceMs: {
     type: 'number',
-    default: 3500,
+    default: 2500,
     min: 0,
     max: 10_000,
     description:
@@ -222,8 +222,39 @@ const PREFERENCES = {
       'actually stopping its TTS. Tunes the bot\'s "patience" — higher means ' +
       'a brief overlap (a cough, a "yeah" backchannel, a false start) is ridden ' +
       'out as natural conversation; lower means the bot drops out almost ' +
-      'instantly. Read live, so it can be tuned mid-call (per profile). Raised ' +
-      'from 2000 → 3500ms: 2s felt over-eager to yield on real calls. Default 3500ms.',
+      'instantly. Read live, so it can be tuned mid-call (per profile). Used as ' +
+      'the FIXED grace when bargeInUrgencyScaling is off; when scaling is on this ' +
+      'is ignored in favor of the min/max range below. Default 2500ms.',
+  },
+  bargeInUrgencyScaling: {
+    type: 'boolean',
+    default: true,
+    description:
+      'Scale the barge-in grace (and how tolerant the resume is of interruption ' +
+      'words) by the URGENCY the bot self-scored for the utterance it is currently ' +
+      'speaking. A house-on-fire reply (urgency≈1) holds the floor for the full ' +
+      'bargeInGraceMaxMs; pure filler (urgency≈0) cedes it almost instantly at ' +
+      'bargeInGraceMinMs. Unscored utterances default to the midpoint. Experimental ' +
+      '(#367) — urgency calibration is still being collected; toggle off mid-call ' +
+      'if it feels wrong.',
+  },
+  bargeInGraceMinMs: {
+    type: 'number',
+    default: 700,
+    min: 0,
+    max: 10_000,
+    description:
+      'When bargeInUrgencyScaling is on: the grace for a zero-urgency (filler) ' +
+      'utterance — the bot yields the floor almost immediately. Default 700ms.',
+  },
+  bargeInGraceMaxMs: {
+    type: 'number',
+    default: 3500,
+    min: 0,
+    max: 10_000,
+    description:
+      'When bargeInUrgencyScaling is on: the grace for a max-urgency utterance — ' +
+      'the bot fights hardest to be heard. Default 3500ms.',
   },
   workingStateMinMs: {
     type: 'number',

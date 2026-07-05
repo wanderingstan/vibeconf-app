@@ -74,6 +74,12 @@ class LocalServer {
     // resume the retained audio (fresh enough + conversation didn't move on).
     this._ttsInterruptedAt = 0;
     this._ttsInterruptWordsBaseline = 0;
+    // #367: urgency the agent self-scored for the utterance the bot is CURRENTLY
+    // speaking (null when unscored). Drives urgency-scaled barge-in grace — a
+    // high-urgency reply holds the floor longer — and how tolerant the resume is
+    // of interruption words. _ttsInterruptUrgency snapshots it at back-off.
+    this._currentUrgency = null;
+    this._ttsInterruptUrgency = null;
     this.onWhiteboardUpdate = onWhiteboardUpdate || (() => {});
     this.onWhiteboardStyle = onWhiteboardStyle || (() => {}); // #321 relay custom board CSS
     this.onReloadWhiteboard = onReloadWhiteboard || (() => ({ ok: false, error: 'reload not wired' })); // #321 follow-up
@@ -391,6 +397,7 @@ class LocalServer {
     this._peakSpeakersSinceQuiet = 0;
     this.speakingAloud = false;
     this.lastSpokeAloudAt = 0;
+    this._currentUrgency = null;
     this.lastSpeechStoppedAt = null;
     this.captionsOn = null;
     this.lastRespondedSpeaker = null;
@@ -429,6 +436,7 @@ class LocalServer {
     this._peakSpeakersSinceQuiet = 0;
     this.speakingAloud = false;
     this.lastSpokeAloudAt = 0;
+    this._currentUrgency = null;
     this.lastSpeechStoppedAt = null;
     this.captionsOn = null;
     this.lastRespondedSpeaker = null;
@@ -701,6 +709,9 @@ class LocalServer {
   _speakWithBotJitter(t) {
     const speakNow = () => {
       if (this.callStatus !== 'in-call') return; // call ended during the jitter
+      // #367: remember this utterance's self-scored urgency so _armBargeIn can
+      // scale the grace by how badly the bot wanted to be heard.
+      this._currentUrgency = (typeof t.urgency === 'number') ? t.urgency : null;
       this._setBotState('speaking', { emoji: t.emoji });
       this.onBotSpeech(t.text, t.voice, t.emoji);
     };
@@ -721,8 +732,9 @@ class LocalServer {
       'queued bot speech entries (now playing)');
     const queue = this.pendingBotSpeech;
     this.pendingBotSpeech = [];
-    for (const { text, voice, emoji } of queue) {
+    for (const { text, voice, emoji, urgency } of queue) {
       console.log('[local-server] Playing queued speech:', text.slice(0, 60));
+      this._currentUrgency = (typeof urgency === 'number') ? urgency : null; // #367
       this._setBotState('speaking', { emoji });
       this.onBotSpeech(text, voice, emoji);
     }
@@ -1565,10 +1577,29 @@ class LocalServer {
     }
   }
 
+  // #367: grace = how long the bot rides out an interruption before yielding.
+  // When urgency scaling is on, a high-urgency utterance (self-scored) holds the
+  // floor for longer (up to bargeInGraceMaxMs), pure filler cedes it almost at
+  // once (bargeInGraceMinMs), and an unscored utterance sits at the midpoint.
+  // Off → the fixed bargeInGraceMs.
+  _graceForCurrentUtterance() {
+    if (this._pref('bargeInUrgencyScaling') === false) {
+      return Number(this._pref('bargeInGraceMs')) || 0;
+    }
+    const min = Number(this._pref('bargeInGraceMinMs'));
+    const max = Number(this._pref('bargeInGraceMaxMs'));
+    const u = (typeof this._currentUrgency === 'number')
+      ? Math.max(0, Math.min(1, this._currentUrgency))
+      : 0.5; // unscored → midpoint
+    return { ms: Math.round(min + u * (max - min)), u, scaled: true };
+  }
+
   _armBargeIn() {
     if (this._bargeInTimer || this.botState !== 'speaking') return;
-    const graceMs = this._pref('bargeInGraceMs');
-    console.log(ts(), '🛡️  [barge-in] armed — grace ' + graceMs + 'ms');
+    const g = this._graceForCurrentUtterance();
+    const graceMs = typeof g === 'number' ? g : g.ms;
+    const detail = typeof g === 'number' ? '' : ` (urgency ${g.u.toFixed(2)}-scaled)`;
+    console.log(ts(), '🛡️  [barge-in] armed — grace ' + graceMs + 'ms' + detail);
     this._bargeInTimer = setTimeout(() => {
       this._bargeInTimer = null;
       this._evaluateBargeIn();
@@ -1632,6 +1663,7 @@ class LocalServer {
     if (this.botState === 'speaking') {
       this._ttsInterruptedAt = Date.now();
       this._ttsInterruptWordsBaseline = this._tickWordCount(this.getEffectiveBotName());
+      this._ttsInterruptUrgency = this._currentUrgency; // #367: for urgency-scaled resume tolerance
     }
     try {
       this.onStopTts(reason);
@@ -1688,7 +1720,15 @@ class LocalServer {
       return false;
     }
     const newWords = this._tickWordCount(this.getEffectiveBotName()) - baseline;
-    const maxNewWords = Number(this._pref('bargeInStashRedeliverMaxNewWords'));
+    let maxNewWords = Number(this._pref('bargeInStashRedeliverMaxNewWords'));
+    // #367: a higher-urgency utterance tolerates more interruption words before
+    // giving up on resuming — it really wanted to finish. Scale the base by
+    // (0.5 + urgency): filler ~0.5×, midpoint 1×, house-on-fire 1.5×. Keeps the
+    // grace and resume knobs moving together instead of fighting.
+    if (this._pref('bargeInUrgencyScaling') !== false && typeof this._ttsInterruptUrgency === 'number') {
+      const u = Math.max(0, Math.min(1, this._ttsInterruptUrgency));
+      maxNewWords = Math.round(maxNewWords * (0.5 + u));
+    }
     if (Number.isFinite(maxNewWords) && newWords > maxNewWords) {
       console.log(ts(), '🔊 [tts-resume] skip — conversation moved on (' + newWords + ' new words > ' + maxNewWords + ')');
       return false;
@@ -2859,9 +2899,9 @@ class LocalServer {
             }
             if (this.callStatus !== 'in-call') {
               console.log('[local-server] Queueing bot speech until in-call:', t.text.slice(0, 40));
-              this.pendingBotSpeech.push({ text: t.text, voice: t.voice, emoji: t.emoji });
+              this.pendingBotSpeech.push({ text: t.text, voice: t.voice, emoji: t.emoji, urgency: t.urgency });
             } else {
-              this._speakWithBotJitter({ text: t.text, voice: t.voice, emoji: t.emoji });
+              this._speakWithBotJitter({ text: t.text, voice: t.voice, emoji: t.emoji, urgency: t.urgency });
             }
           }
         }

@@ -71,9 +71,11 @@
                platform to add (#289). For now Meet + Slack are both fixed. -->
         </div>
 
-        <!-- USER (vibeconferencing.com) login — transitional. Headed toward a
-             one-time, app-level sign-in (#289), so it's de-emphasized here. -->
-        <div class="user-id-line" title="Your vibeconferencing.com login — for the shared whiteboard rooms. Headed toward a one-time app-level sign-in.">
+        <!-- USER (vibeconferencing.com) login — app-level since #366: one
+             sign-in covers every profile (mirrored via the shared config and
+             seeded on each profile's launch). Full UX home is still #289, so
+             it's de-emphasized here. -->
+        <div class="user-id-line" title="Your vibeconferencing.com login — for the shared whiteboard rooms. Signing in once covers all profiles.">
           <span id="userIdStatus">checking…</span>
           <span style="white-space:nowrap">
             <button id="userSignInMainBtn" class="auth-action-btn" style="display:none">Sign in</button>
@@ -120,26 +122,23 @@
         <button id="loginBtn" class="primary" style="display:none">Sign in with Google</button>
       </div>
 
+      <!-- The three prefs most users actually touch — name, voice, face —
+           live together at the top (Stan, 2026-07-05). -->
       <div class="field">
         <label for="botName">Bot Name (Meet)</label>
         <input type="text" id="botName" value="Jimmy" />
         <div class="helper-text">The bot's name on <strong>Google Meet</strong> — used when it joins as a guest. When signed in, it uses its Google account name instead. On Slack, it joins as its signed-in Slack account name.</div>
       </div>
-
       <div class="field">
-        <label for="websiteUrl">Website URL</label>
-        <input type="text" id="websiteUrl" placeholder="https://vibeconferencing.com" />
-        <div style="font-size:11px;color:#666;margin-top:2px">Leave blank for the production default (vibeconferencing.com). Set to a Vercel preview URL to test against a feature branch.</div>
-      </div>
-      <div class="field">
-        <label for="claudeWorkDir">Claude Working Directory</label>
-        <input type="text" id="claudeWorkDir" placeholder="/tmp" />
-        <div style="font-size:11px;color:#666;margin-top:2px">Directory where Claude sessions start. Default: /tmp</div>
-      </div>
-      <div class="field">
-        <label for="claudeModel">Claude Model</label>
-        <input type="text" id="claudeModel" placeholder="sonnet" />
-        <div style="font-size:11px;color:#666;margin-top:2px">Model for the launched Claude session (passed as <code>--model</code>). Blank = Claude's default. Use an alias (<code>sonnet</code>, <code>opus</code>, <code>haiku</code>) or a full model id.</div>
+        <label for="unifiedVoice">Voice</label>
+        <select id="unifiedVoice" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit">
+          <option value="">Loading voices…</option>
+        </select>
+        <div style="font-size:11px;color:#666;margin-top:2px">
+          Every voice available right now, best first. ElevenLabs voices appear once a key is set in Text-to-Speech below; Voicebox voices when its local app is running.
+          <a href="#" id="refreshVoicesBtn" style="color:#8ab4f8;text-decoration:underline">Refresh voices</a> ·
+          <a href="#" id="openVoiceSettingsBtn" style="color:#8ab4f8;text-decoration:underline">Download more macOS voices…</a>
+        </div>
       </div>
       <div class="field">
         <label for="emojiSet">Avatar Emoji Set</label>
@@ -152,12 +151,26 @@
         </select>
         <div style="font-size:11px;color:#666;margin-top:2px">Graphics for the bot's face emoji. Twemoji is a distinct, consistent set shipped with the app (#316).</div>
       </div>
-      <div class="field">
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-          <input type="checkbox" id="dangerousMode" />
-          Dangerously bypass permissions
-        </label>
-        <div style="font-size:11px;color:#c00;margin-top:2px">Launches Claude with --dangerously-skip-permissions. Use with caution.</div>
+
+      <div class="section">
+        <h2>Launched Claude</h2>
+        <div class="field">
+          <label for="claudeModel">Claude Model</label>
+          <input type="text" id="claudeModel" placeholder="sonnet" />
+          <div style="font-size:11px;color:#666;margin-top:2px">Model for the launched Claude session (passed as <code>--model</code>). Blank = Claude's default. Use an alias (<code>sonnet</code>, <code>opus</code>, <code>haiku</code>) or a full model id.</div>
+        </div>
+        <div class="field">
+          <label for="claudeWorkDir">Claude Working Directory</label>
+          <input type="text" id="claudeWorkDir" placeholder="/tmp" />
+          <div style="font-size:11px;color:#666;margin-top:2px">Directory where Claude sessions start. Default: /tmp</div>
+        </div>
+        <div class="field">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="dangerousMode" />
+            Dangerously bypass permissions
+          </label>
+          <div style="font-size:11px;color:#c00;margin-top:2px">Launches Claude with --dangerously-skip-permissions. Use with caution. Applies to all profiles on this machine.</div>
+        </div>
       </div>
 
       <div class="section">
@@ -181,27 +194,20 @@
           launches in this profile. This opens Slack in the bot's view; log in and
           pick the workspace, then come back.
         </p>
-        <button id="slackSignInBtn">Sign into Slack</button>
-        <button id="slackSignOutBtn">Sign out of Slack</button>
+        <button id="slackSignInBtn">Sign into Slack as bot</button>
+        <!-- Shown only while actually signed in (refreshSlackIdentity toggles
+             it) — matches the Meet identity section's sign-out behavior. -->
+        <button id="slackSignOutBtn" style="display:none">Sign out of Slack</button>
       </div>
 
       <div class="section">
         <h2>Text-to-Speech</h2>
-        <div class="field">
-          <label for="unifiedVoice">Voice</label>
-          <select id="unifiedVoice" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit">
-            <option value="">Loading voices…</option>
-          </select>
-          <div style="font-size:11px;color:#666;margin-top:2px">
-            Every voice available right now, best first. ElevenLabs voices appear once a key is set below; Voicebox voices when its local app is running.
-            <a href="#" id="refreshVoicesBtn" style="color:#8ab4f8;text-decoration:underline">Refresh voices</a> ·
-            <a href="#" id="openVoiceSettingsBtn" style="color:#8ab4f8;text-decoration:underline">Download more macOS voices…</a>
-          </div>
-        </div>
+        <!-- The Voice picker itself lives up top with Bot Name / Avatar Emoji
+             Set — the three prefs most users touch. -->
         <div class="field">
           <label for="ttsApiKey">ElevenLabs API Key</label>
           <input type="password" id="ttsApiKey" placeholder="sk_..." />
-          <div style="font-size:11px;color:#666;margin-top:2px">Unlocks your ElevenLabs voices in the picker above.</div>
+          <div style="font-size:11px;color:#666;margin-top:2px">Unlocks your ElevenLabs voices in the picker above. Shared across all profiles — set it once.</div>
         </div>
         <details style="margin:2px 0 8px">
           <summary style="font-size:11px;color:#9aa0a6;cursor:pointer">Advanced: custom ElevenLabs Voice ID</summary>
@@ -332,6 +338,16 @@
           <div id="curlCommand" class="audio-status" style="font-family:monospace;font-size:10px;white-space:pre-wrap;word-break:break-all"></div>
         </div>
         <button id="copyCurlBtn" disabled>Copy Curl Command</button>
+      </div>
+
+      <!-- Debugging override — deliberately last; almost nobody should touch it. -->
+      <div class="section">
+        <h2>Debug Override</h2>
+        <div class="field">
+          <label for="websiteUrl">Website URL</label>
+          <input type="text" id="websiteUrl" placeholder="https://vibeconferencing.com" />
+          <div style="font-size:11px;color:#666;margin-top:2px">Leave blank for the production default (vibeconferencing.com). Set to a Vercel preview URL to test against a feature branch. Applies to all profiles on this machine.</div>
+        </div>
       </div>
     </div>
   </div>

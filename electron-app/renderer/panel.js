@@ -951,6 +951,9 @@ async function refreshSlackIdentity() {
   }
   const dot = document.getElementById('connSlackDot');
   if (dot) dot.classList.toggle('on', signedIn);
+  // Sign-out only makes sense while signed in — hidden otherwise, matching
+  // the Meet identity section's sign-out behavior.
+  if (slackSignOutBtn) slackSignOutBtn.style.display = signedIn ? '' : 'none';
 }
 refreshSlackIdentity();
 
@@ -1161,8 +1164,9 @@ meetSignOutBtn?.addEventListener('click', async () => {
   }, 1500);
 });
 
-// Slack identity (#285): open Slack in the bot's view to log in / out. No state
-// toggle — Slack signed-in state isn't read yet (#283), so both buttons show.
+// Slack identity (#285): open Slack in the bot's view to log in / out. The
+// sign-out button only shows while signed in (refreshSlackIdentity's cookie
+// check toggles it — same behavior as the Meet identity section).
 slackSignInBtn?.addEventListener('click', async () => {
   slackSignInBtn.disabled = true;
   slackSignInBtn.textContent = 'Opening Slack…';
@@ -1173,7 +1177,8 @@ slackSignInBtn?.addEventListener('click', async () => {
   }
   setTimeout(() => {
     slackSignInBtn.disabled = false;
-    slackSignInBtn.textContent = 'Sign into Slack';
+    slackSignInBtn.textContent = 'Sign into Slack as bot';
+    refreshSlackIdentity();
   }, 1500);
 });
 
@@ -1188,6 +1193,7 @@ slackSignOutBtn?.addEventListener('click', async () => {
   setTimeout(() => {
     slackSignOutBtn.disabled = false;
     slackSignOutBtn.textContent = 'Sign out of Slack';
+    refreshSlackIdentity();
   }, 1500);
 });
 

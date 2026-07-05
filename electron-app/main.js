@@ -7,6 +7,7 @@ const path = require('path');
 const fs = require('fs');
 const vm = require('vm');
 const Store = require('./store.js');
+const { ScopedStore, migrateAppLevelKeys } = require('./config-scope.js');
 const profileManager = require('./profile-manager.js');
 const { resolveSvg } = require('./svg-resolver.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
@@ -1467,6 +1468,72 @@ async function checkAuth() {
   });
 }
 
+// The one place the vc_session cookie shape is defined — used by the login
+// flow and by the #366 shared-login seeding, so an inherited login can never
+// silently diverge from a direct one.
+function setVcSessionCookie(baseUrl, token) {
+  return session.defaultSession.cookies.set({
+    url: baseUrl,
+    name: 'vc_session',
+    value: token,
+    path: '/',
+    httpOnly: true,
+    secure: baseUrl.startsWith('https'),
+    sameSite: 'lax',
+    // 30-day cookie. If the server has since invalidated the token, checkAuth
+    // simply reports unauthenticated — same as an expired login today.
+    expirationDate: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60,
+  });
+}
+
+// #366: one login for all profiles. The vibeconferencing.com auth is a
+// vc_session cookie in this instance's defaultSession (per-profile on disk),
+// so sharing it means mirroring through the app-level store on every launch:
+//   • logout tombstone first: if THIS profile still holds a token the user
+//     explicitly logged out of (vcSessionLoggedOutToken), drop it instead of
+//     re-donating it — otherwise any other profile's surviving cookie jar
+//     would silently undo the logout on its next launch;
+//   • cookie matches the shared token → nothing to do;
+//   • cookie differs → VALIDATE it against /api/auth/me before donating, so
+//     a stale invalidated cookie from a long-unused profile can't clobber a
+//     fresh login another profile just donated. Invalid + shared token
+//     available → replace our cookie with the shared one;
+//   • no cookie but a shared token exists → seed it into our cookie jar.
+// Best-effort: auth still works exactly as before if any step fails.
+async function syncSharedLoginCookie() {
+  try {
+    const baseUrl = getWebsiteUrl();
+    const cookies = await session.defaultSession.cookies.get({ url: baseUrl, name: 'vc_session' });
+    const local = cookies.length > 0 ? cookies[0].value : null;
+    const shared = store.get('vcSessionToken');
+    const tombstone = store.get('vcSessionLoggedOutToken');
+
+    if (local && tombstone && local === tombstone) {
+      await session.defaultSession.cookies.remove(baseUrl, 'vc_session');
+      console.log('[auth] Dropped logged-out vibeconferencing.com token (logout tombstone, #366)');
+      if (shared && shared !== tombstone) await setVcSessionCookie(baseUrl, shared);
+      return;
+    }
+    if (local) {
+      if (local === shared) return;
+      const me = await checkAuth(); // uses our local cookie
+      if (me?.authenticated) {
+        store.set('vcSessionToken', local); // donate the (verified) login up
+      } else if (shared) {
+        await session.defaultSession.cookies.remove(baseUrl, 'vc_session');
+        await setVcSessionCookie(baseUrl, shared);
+        console.log('[auth] Replaced stale local login with the shared one (#366)');
+      }
+      // Neither valid locally nor shared → leave it; the normal auth UI applies.
+    } else if (shared && shared !== tombstone) {
+      await setVcSessionCookie(baseUrl, shared);
+      console.log('[auth] Seeded vibeconferencing.com login from the shared app config (#366)');
+    }
+  } catch (err) {
+    console.warn('[auth] Shared-login sync failed (non-fatal):', err?.message);
+  }
+}
+
 // Open Google OAuth in the system browser
 // Google blocks embedded webviews, so we must use the real browser.
 // We start a local HTTP server to catch the session cookie after login.
@@ -1485,17 +1552,15 @@ function openGoogleLogin() {
       const token = url.searchParams.get('token');
       if (token) {
         console.log('[electron] Received auth token, length:', token.length);
+        // #366: mirror the login to the shared app-level store so every other
+        // profile inherits it (seeded into their session on next launch), and
+        // clear any logout tombstone — a fresh login supersedes it.
+        try {
+          store?.set('vcSessionToken', token);
+          store?.delete('vcSessionLoggedOutToken');
+        } catch { /* non-fatal */ }
         // Set the cookie in Electron's session for the server URL
-        session.defaultSession.cookies.set({
-          url: baseUrl,
-          name: 'vc_session',
-          value: token,
-          path: '/',
-          httpOnly: true,
-          secure: baseUrl.startsWith('https'),
-          sameSite: 'lax',
-          expirationDate: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60,
-        }).then(() => {
+        setVcSessionCookie(baseUrl, token).then(() => {
           console.log('[electron] Session cookie set successfully for', baseUrl);
           // Verify the cookie was set
           return session.defaultSession.cookies.get({ url: baseUrl, name: 'vc_session' });
@@ -2730,7 +2795,28 @@ app.whenReady().then(async () => {
   // route host resolution through it. Harmless for Meet/everything else.
   try { app.configureHostResolver({ secureDnsMode: 'off' }); console.log('[runway] host resolver → secureDnsMode off (plain system DNS)'); } catch (e) { console.warn('[runway] configureHostResolver failed:', e && e.message); }
 
-  store = new Store(app.getPath('userData'));
+  // #366 preference scoping: app-level keys (ElevenLabs key, website login,
+  // URL overrides, dangerousMode — see config-scope.js) live in the BASE
+  // userData config.json shared by all profiles; everything else stays in
+  // this profile's own config.json. The shared store is `fresh` because
+  // several profile instances (the fleet, Jimmy+Samantha) read/write that
+  // one file concurrently. The default instance's config.json IS the shared
+  // file, so it uses the fresh store for both scopes.
+  {
+    const appLevelStore = new Store(BASE_USER_DATA, { fresh: true });
+    if (appProfile) {
+      const profileStore = new Store(app.getPath('userData'));
+      migrateAppLevelKeys(appLevelStore, profileStore);
+      store = new ScopedStore(appLevelStore, profileStore);
+    } else {
+      store = new ScopedStore(appLevelStore, appLevelStore);
+    }
+  }
+
+  // #366: inherit (or donate) the shared vibeconferencing.com login before
+  // anything checks auth. Awaited — cheap, and the panel's first auth check
+  // should see the seeded cookie.
+  await syncSharedLoginCookie();
 
   // #326 — start the overlay-independent agent-activity feed for the avatar
   // head-jostle. Self-guards on meetView, so it's safe to start early.
@@ -2840,6 +2926,12 @@ app.whenReady().then(async () => {
   // MCP config from the primary app instance.
   if (appProfile) {
     console.log('[electron] Skipping Claude integration for app profile:', appProfile);
+  } else if (store.get('claudeIntegrationRemoved') === true) {
+    // "Leave no trace": the user explicitly uninstalled the Claude integration
+    // (menu → Uninstall Claude Integration). Without this gate the next launch
+    // would silently re-write ~/.claude.json / the skill / the hook, undoing
+    // the uninstall. Re-enable via menu → Install Claude Integration.
+    console.log('[electron] Claude integration NOT installed (user uninstalled it — leave-no-trace flag set)');
   } else {
     ensureClaudeIntegration(localPort);
   }
@@ -3557,6 +3649,9 @@ function createMainWindow() {
         },
         { type: 'separator' },
         {
+          // "Leave no trace" (F&F): remove EVERYTHING the app wrote into the
+          // user's Claude Code setup, and remember the choice so the next
+          // launch doesn't silently re-install it.
           label: 'Uninstall Claude Integration...',
           click: () => {
             const { dialog } = require('electron');
@@ -3565,16 +3660,35 @@ function createMainWindow() {
               buttons: ['Cancel', 'Uninstall'],
               defaultId: 0,
               title: 'Uninstall Claude Integration',
-              message: 'Remove the /join-call skill and MCP server config from Claude Code?',
-              detail: 'This removes the vibeconferencing MCP server from ~/.claude.json and the join-call skill from ~/.claude/skills/. The app itself is not affected.',
+              message: 'Remove everything Vibeconferencing added to Claude Code?',
+              detail:
+                'Removes all of it — leave no trace:\n' +
+                '• the vibeconferencing MCP server from ~/.claude.json\n' +
+                '• the join-call skill from ~/.claude/skills/\n' +
+                '• the agent-activity hook from ~/.claude/settings.json (and its script)\n\n' +
+                'It will NOT be reinstalled on the next launch. The app itself keeps working; ' +
+                'use "Install Claude Integration" to bring it back.',
             }).then(({ response }) => {
               if (response === 1) {
                 uninstallClaudeIntegration();
+                try { store?.set('claudeIntegrationRemoved', true); } catch { /* non-fatal */ }
                 dialog.showMessageBox(mainWindow, {
                   type: 'info',
-                  message: 'Claude integration removed. Restart Claude Code to apply.',
+                  message: 'Claude integration removed — no trace left. Restart Claude Code to apply.',
                 });
               }
+            });
+          },
+        },
+        {
+          label: 'Install Claude Integration',
+          click: () => {
+            const { dialog } = require('electron');
+            try { store?.delete('claudeIntegrationRemoved'); } catch { /* non-fatal */ }
+            ensureClaudeIntegration(localServer.port);
+            dialog.showMessageBox(mainWindow, {
+              type: 'info',
+              message: 'Claude integration installed. Restart Claude Code to pick it up.',
             });
           },
         },
@@ -4215,6 +4329,19 @@ function setupIPC() {
 
   ipcMain.handle('logout', async () => {
     const baseUrl = getWebsiteUrl();
+    // #366: read the token being logged out BEFORE removing it, and leave it
+    // behind as a tombstone. Other profiles' cookie jars still hold this
+    // token on disk; without the tombstone, their next launch would find it,
+    // re-donate it to the shared store, and silently undo the logout. With
+    // it, syncSharedLoginCookie drops the token instead of donating it.
+    // (Profiles already RUNNING keep their session until restart — logout is
+    // per-machine at launch boundaries, not push.)
+    try {
+      const cookies = await session.defaultSession.cookies.get({ url: baseUrl, name: 'vc_session' });
+      const dying = store?.get('vcSessionToken') || (cookies.length > 0 ? cookies[0].value : null);
+      if (dying) store?.set('vcSessionLoggedOutToken', dying);
+      store?.delete('vcSessionToken');
+    } catch { /* non-fatal */ }
     await session.defaultSession.cookies.remove(baseUrl, 'vc_session');
     if (panelView && !panelView.webContents.isDestroyed()) {
       panelView.webContents.send('auth-changed');

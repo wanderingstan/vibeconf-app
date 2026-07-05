@@ -4550,6 +4550,18 @@ function setupIPC() {
       console.log(`[electron] caption stall (${secs}s) but no remote speaker active — quiet/self-speaking, NOT deaf; ignoring`);
       return;
     }
+    // #368 follow-up: a long bot MONOLOGUE also produces a 0-remote-caption gap
+    // (self-captions are filtered). If the bot was speaking aloud during the stall
+    // window — currently, or it stopped less than ageMs ago so the gap overlaps its
+    // own speech — the gap is explained by the bot talking, not deafness. Without
+    // this, the instant a human starts to interrupt a long answer (anyoneSpeaking
+    // flips true) the accumulated monologue-gap gets misread as deaf → a 🙉 flash.
+    const gapOverlapsBotSpeech = localServer.speakingAloud
+      || (Date.now() - (localServer.lastSpokeAloudAt || 0) < (info?.ageMs || 0));
+    if (gapOverlapsBotSpeech) {
+      console.log(`[electron] caption stall (${secs}s) but the bot was speaking aloud during the gap (self-captions excluded) — NOT deaf; ignoring`);
+      return;
+    }
     console.log(`[electron] caption stall (${secs}s, ${info?.nodes ?? '?'} nodes) while a remote is speaking — bot is deaf; escalating + self-healing`);
     localServer.setCaptionsOn(false);
     if (panelView && !panelView.webContents.isDestroyed()) {

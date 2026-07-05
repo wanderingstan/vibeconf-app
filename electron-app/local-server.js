@@ -227,6 +227,12 @@ class LocalServer {
     // the agent spends in the speak() call. This is what makes bot==='speaking'
     // mean "speaking aloud."
     this.speakingAloud = false;
+    // #368 follow-up: when the bot last STOPPED speaking aloud. A long bot
+    // monologue produces a 0-remote-caption gap (self-captions are filtered), so
+    // the caption-stall/deaf detector must not read that gap as deafness. This
+    // lets the stall handler tell "gap explained by the bot's own speech" from
+    // real deafness even a moment after the bot finishes.
+    this.lastSpokeAloudAt = 0;
     this.lastSpeechStoppedAt = null;   // timestamp (ms) when last person stopped speaking
 
     // Two-tier "workingMemory" (docs/two-tier-design.md). The bot's private
@@ -384,6 +390,7 @@ class LocalServer {
     this.activeSpeakerCount = 0;
     this._peakSpeakersSinceQuiet = 0;
     this.speakingAloud = false;
+    this.lastSpokeAloudAt = 0;
     this.lastSpeechStoppedAt = null;
     this.captionsOn = null;
     this.lastRespondedSpeaker = null;
@@ -421,6 +428,7 @@ class LocalServer {
     this.activeSpeakerCount = 0;
     this._peakSpeakersSinceQuiet = 0;
     this.speakingAloud = false;
+    this.lastSpokeAloudAt = 0;
     this.lastSpeechStoppedAt = null;
     this.captionsOn = null;
     this.lastRespondedSpeaker = null;
@@ -1498,6 +1506,7 @@ class LocalServer {
     // clear the speaking-aloud latch (#368). Only forced transitions reach here.
     if (prev === 'speaking' && state !== 'speaking') {
       this.speakingAloud = false;
+      this.lastSpokeAloudAt = Date.now(); // #368: for the deaf detector's "gap was my own monologue" check
       this._clearBargeIn('bot stopped speaking');
     }
     // Entering 'speaking' — if someone is already mid-utterance, arm

@@ -890,6 +890,12 @@ const localServer = new globalThis.LocalServer({
         payload: { status },
       });
     }
+    // #275: the bot just entered — bring the user's browser tab for this call to
+    // the front (best-effort; no-op if there isn't one). Fires from any join path
+    // and any provider (Meet / Slack / future).
+    if (status === 'in-call') {
+      focusBrowserCallTab(localServer.roomId);
+    }
     // Studio sound: if disabled by pref, turn off Meet's voice filter once in-call
     // so non-voice audio (SFX/music via play_audio) passes through. Delay lets the
     // in-call toolbar (More options ⋮) finish rendering. Default leaves it ON.
@@ -1883,6 +1889,112 @@ function stripMarkdownForTts(text) {
   out = out.replace(/[ \t]{2,}/g, ' ');
   out = out.replace(/\n{3,}/g, '\n\n');
   return out.trim();
+}
+
+// #275: after the bot joins, bring the user's browser tab hosting THIS call to
+// the front so they land on it — whether they clicked Join or used /join-call
+// from the CLI. Provider-agnostic: derives the URL fragment that identifies the
+// call's tab per calling provider (Meet today, Slack huddles today; Zoom/Teams
+// slot in the same way). Best-effort: searches the running browsers
+// (Chrome/Brave/Safari) for a tab whose URL contains that fragment and raises it;
+// a silent no-op if there's no such tab (they may only have the app open, or the
+// huddle is in the native Slack app) or AppleScript is unavailable. Off when
+// focusCallTabOnJoin is disabled.
+function _callTabUrlFragment(callId) {
+  if (!callId) return null;
+  // Slack huddle room ids are "slack-<team>-<channel>" (team/channel ids have no
+  // dashes) → app.slack.com/client/<team>/<channel>.
+  if (/^slack-/.test(callId)) {
+    const parts = String(callId).split('-'); // ['slack', team, channel]
+    if (parts.length >= 3 && /^[A-Za-z0-9]+$/.test(parts[1]) && /^[A-Za-z0-9]+$/.test(parts[2])) {
+      return 'app.slack.com/client/' + parts[1] + '/' + parts[2];
+    }
+    return null;
+  }
+  // Default: a Google Meet code → meet.google.com/<code>.
+  // (Future: zoom.us/j/<id>, teams.microsoft.com/... — add branches here.)
+  const code = String(callId).replace(/[^a-zA-Z0-9-]/g, '');
+  return code ? 'meet.google.com/' + code : null;
+}
+
+function focusBrowserCallTab(callId) {
+  try {
+    if (store && store.get('focusCallTabOnJoin') === false) return;
+    const frag = _callTabUrlFragment(callId);
+    if (!frag) return;
+    const { execFile } = require('child_process');
+    // Chrome/Brave select a tab by index (set active tab index); Safari by object
+    // (set current tab). Each browser guarded by a running check so we never
+    // launch a closed browser just to look.
+    const script = `
+set frag to "${frag}"
+tell application "System Events"
+  set chromeRunning to exists process "Google Chrome"
+  set braveRunning to exists process "Brave Browser"
+  set safariRunning to exists process "Safari"
+end tell
+if chromeRunning then
+  tell application "Google Chrome"
+    repeat with w in windows
+      set i to 0
+      repeat with t in tabs of w
+        set i to i + 1
+        if URL of t contains frag then
+          set active tab index of w to i
+          set index of w to 1
+          activate
+          return "chrome"
+        end if
+      end repeat
+    end repeat
+  end tell
+end if
+if braveRunning then
+  tell application "Brave Browser"
+    repeat with w in windows
+      set i to 0
+      repeat with t in tabs of w
+        set i to i + 1
+        if URL of t contains frag then
+          set active tab index of w to i
+          set index of w to 1
+          activate
+          return "brave"
+        end if
+      end repeat
+    end repeat
+  end tell
+end if
+if safariRunning then
+  tell application "Safari"
+    repeat with w in windows
+      repeat with t in tabs of w
+        if URL of t contains frag then
+          set current tab of w to t
+          set index of w to 1
+          activate
+          return "safari"
+        end if
+      end repeat
+    end repeat
+  end tell
+end if
+return "none"`;
+    execFile('osascript', ['-e', script], { timeout: 5000 }, (err, stdout) => {
+      if (err) {
+        console.log('[electron] focus-call-tab: AppleScript failed (' + (err.message || '').slice(0, 60) + ') — skipping');
+        return;
+      }
+      const result = (stdout || '').trim();
+      if (result && result !== 'none') {
+        console.log('[electron] focus-call-tab: brought the call tab to front in ' + result);
+      } else {
+        console.log('[electron] focus-call-tab: no browser tab found for ' + frag + ' — nothing to focus (fine)');
+      }
+    });
+  } catch (e) {
+    console.log('[electron] focus-call-tab: error', e && e.message);
+  }
 }
 
 // Unmute the mic and send the audio to the renderer's TTS queue. Resolves AFTER

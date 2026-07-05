@@ -107,6 +107,16 @@ const PREFERENCES = {
       'sound effects / music played via play_audio pass through the mic. Costs a ' +
       'bit of voice enhancement. Availability depends on the Meet account tier.',
   },
+  focusCallTabOnJoin: {
+    type: 'boolean',
+    default: true,
+    description:
+      'After the bot joins a call, bring the user\'s browser tab hosting that ' +
+      'call to the front (Chrome/Brave/Safari), so they land on the call — from ' +
+      'either the Join button or /join-call in the CLI. Provider-agnostic (Meet, ' +
+      'Slack huddles; Zoom/Teams later). Best-effort: a silent no-op if there is ' +
+      'no such tab. Set FALSE to stop the app stealing window focus on join.',
+  },
   triageAck: {
     type: 'boolean',
     default: false,

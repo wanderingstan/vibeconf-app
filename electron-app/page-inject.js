@@ -401,9 +401,9 @@
       }
 
       // Not-yet-connected "arrival" rise (Kilroy-style), while the emoji is 🫥.
-      // The glyph peeks up from the bottom edge — only its top half showing —
-      // combined with the 50% ghost opacity. Pops straight to center the instant
-      // the agent engages (emoji is no longer 🫥). Trigger + timing below.
+      // The glyph peeks up from the bottom edge — only its top half showing — then
+      // rises into place. Pops straight to center the instant the agent engages
+      // (emoji is no longer 🫥). Trigger + timing below.
       // Hold peeking at the bottom while joining/waiting; only START the rise once
       // the bot has SUCCESSFULLY ENTERED the call (callStatus 'in-call'), easing up
       // to center over ~5.6s. So the rise reads as "arriving in the room," not
@@ -412,7 +412,9 @@
       if (emoji === '\u{1FAE5}') {
         if (this.callStatus === 'in-call') {
           if (!this._riseSince) this._riseSince = Date.now(); // stamp on entry
-          const p = Math.min(1, (Date.now() - this._riseSince) / 5600);
+          // Hold at the bottom for ~1s after entering, THEN ease up over ~5.6s —
+          // a beat of "just arrived" before it rises into place.
+          const p = Math.max(0, Math.min(1, (Date.now() - this._riseSince - 1000) / 5600));
           const eased = 1 - Math.pow(1 - p, 3); // easeOutCubic — quick lift, gentle settle
           ghostRise = (1 - eased) * (h - cy);
         } else {
@@ -438,12 +440,6 @@
       // as alive as the glyph). Falls back to the native glyph until the image
       // decodes, or forever if the emoji isn't in the set.
       const emojiImg = (this.emojiSet && this.emojiSet !== 'native') ? _emojiImage(this.emojiSet, emoji) : null;
-      // 🫥 "not fully there" (no call yet / joining / waiting / left / agent not
-      // engaged — all resolve to this glyph): render at half opacity so it reads
-      // as a faint ghost. The non-native emoji sets are solid in the middle
-      // (unlike Apple's hollow 🫥), so transparency is what signals "not connected".
-      // Scoped by the enclosing ctx.save()/restore().
-      if (emoji === '\u{1FAE5}') ctx.globalAlpha = 0.5;
       if (emojiImg) {
         ctx.drawImage(emojiImg, -emojiSize / 2, -emojiSize / 2, emojiSize, emojiSize);
       } else {

@@ -4,9 +4,22 @@
 
 const http = require('http');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { URL } = require('url');
+
+// #356: per-process control-token support. The control API binds 127.0.0.1, but
+// that is NOT a security boundary against the user's own browser: any webpage can
+// fetch() 127.0.0.1:<port> and, under the old wildcard CORS, READ the response
+// (session logs / transcripts / working memory) or drive the bot. Defense is a
+// random per-launch bearer token written to a 0600 file that only same-user local
+// processes (our MCP server) can read — a browser page can't read local files, so
+// it can't obtain the token. ENFORCEMENT is gated behind VIBECONF_REQUIRE_TOKEN so
+// this lands dark (zero behavior change) until the MCP client side is wired +
+// validated live; the token file is always written so the client can read it.
+const AUTH_TOKEN_DIR = path.join(os.homedir(), '.vibeconferencing', 'local-tokens');
+function localTokenPath(port) { return path.join(AUTH_TOKEN_DIR, `${port}.token`); }
 const prefsSchema = require('./preferences-schema.js');
 const { getRecentSessionLog, getSessionLogPath } = require('./session-log.js');
 const { TranscriptTailer } = require('./agent-transcript.js');
@@ -2266,6 +2279,8 @@ class LocalServer {
   // -------------------------------------------------------------------------
 
   start() {
+    // #356: mint a per-launch control token before we accept any request.
+    if (!this.authToken) this.authToken = crypto.randomBytes(24).toString('hex');
     return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => {
         this._handleRequest(req, res).catch(err => {
@@ -2274,6 +2289,10 @@ class LocalServer {
           res.end(JSON.stringify({ success: false, error: err.message }));
         });
       });
+
+      // Fires on the initial bind AND any EADDRINUSE-retry bind, so the token file
+      // always tracks the port we actually ended up on.
+      this.server.on('listening', () => this._writeAuthToken());
 
       this.server.listen(this.port, '127.0.0.1', () => {
         console.log(`[local-server] Listening on http://127.0.0.1:${this.port}`);
@@ -2292,8 +2311,20 @@ class LocalServer {
     });
   }
 
+  // #356: write the control token to a 0600 file only the local user can read.
+  // Best-effort — never let a filesystem hiccup take down the control server.
+  _writeAuthToken() {
+    try {
+      fs.mkdirSync(AUTH_TOKEN_DIR, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(localTokenPath(this.port), this.authToken, { mode: 0o600 });
+    } catch (err) {
+      console.warn('[local-server] could not write control-token file:', err.message);
+    }
+  }
+
   stop() {
     this.resolveAllWaiters();
+    try { fs.unlinkSync(localTokenPath(this.port)); } catch { /* already gone */ }
     if (this.server) {
       this.server.close();
       this.server = null;
@@ -2301,15 +2332,61 @@ class LocalServer {
   }
 
   async _handleRequest(req, res) {
-    // CORS headers for local requests
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    // #356: enforcement is gated so this change lands dark. Off (default) →
+    // behavior is byte-for-byte the legacy wildcard-CORS, no-auth server. On →
+    // wildcard CORS is withdrawn and sensitive routes require the bearer token.
+    const requireAuth = !!process.env.VIBECONF_REQUIRE_TOKEN;
+    const reqPath = (() => { try { return new URL(req.url, `http://127.0.0.1:${this.port}`).pathname; } catch { return req.url || ''; } })();
+
+    // CORS headers for local requests.
+    if (requireAuth) {
+      // Do NOT hand a browser a wildcard once locked down. Our MCP client is a
+      // same-user Node process and sends no Origin (CORS N/A). App webviews that
+      // legitimately need cross-origin reads can be allowlisted via env.
+      const origin = req.headers.origin;
+      const allowed = (process.env.VIBECONF_ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
+      if (origin && allowed.includes(origin)) res.setHeader('Access-Control-Allow-Origin', origin);
+    } else {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
       res.end();
       return;
+    }
+
+    // #356: bearer-token gate. Open routes stay reachable so instance discovery
+    // and opaque-token asset serving keep working: GET /api/sync/no-room is the
+    // MCP's discovery ping (returns only coarse status), and /asset/<token> already
+    // carries its own per-asset capability token in the path (#157).
+    if (requireAuth) {
+      const isOpen = (req.method === 'GET' && reqPath === '/api/sync/no-room') || reqPath.startsWith('/asset/');
+      if (!isOpen) {
+        const auth = req.headers['authorization'] || '';
+        const presented = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+        // Constant-time compare to avoid leaking the token via timing.
+        const ok = presented.length === this.authToken.length &&
+          crypto.timingSafeEqual(Buffer.from(presented), Buffer.from(this.authToken));
+        if (!ok) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: 'unauthorized' }));
+          return;
+        }
+        // Force JSON on writes: a cross-site form/simple-request can only send a
+        // handful of content-types, none of them application/json — requiring it
+        // makes every mutating call trip a CORS preflight (which we now gate).
+        if (req.method === 'POST') {
+          const ct = (req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+          if (ct !== 'application/json') {
+            res.writeHead(415, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: 'content-type must be application/json' }));
+            return;
+          }
+        }
+      }
     }
 
     const url = new URL(req.url, `http://127.0.0.1:${this.port}`);

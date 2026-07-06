@@ -40,6 +40,32 @@ let BASE_URL = process.env.VIBECONF_BASE_URL || "http://127.0.0.1:7865";
 // BASE_URL, which is this machine's local Electron app.
 const WEBSITE_URL = (process.env.VIBECONF_WEBSITE_URL || "https://vibeconferencing.com").replace(/\/$/, "");
 const LOGS_TOKEN = process.env.VIBECONF_LOGS_TOKEN || "";
+
+// #356: attach the local control token to calls aimed at a 127.0.0.1 app instance.
+// The Electron app writes a per-launch bearer token to
+// ~/.vibeconferencing/local-tokens/<port>.token (0600). We read it per-request and
+// send `Authorization: Bearer <token>`; a browser page can't read that file, so it
+// can't forge the header. Remote (WEBSITE_URL) calls pass straight through
+// unchanged. A missing token file just sends no header — harmless while the app's
+// VIBECONF_REQUIRE_TOKEN enforcement is off, and it starts working the moment the
+// app is launched with enforcement on. All local vfetch() calls below go through
+// vfetch() so this is a single choke point.
+const _nativeFetch = globalThis.fetch;
+function _localToken(port) {
+  try {
+    return readFileSync(join(homedir(), ".vibeconferencing", "local-tokens", `${port}.token`), "utf8").trim() || null;
+  } catch { return null; }
+}
+function vfetch(url, opts = {}) {
+  try {
+    const u = new URL(typeof url === "string" ? url : url.url);
+    if (u.hostname === "127.0.0.1" || u.hostname === "localhost") {
+      const tok = _localToken(u.port || "80");
+      if (tok) opts = { ...opts, headers: { ...(opts.headers || {}), Authorization: `Bearer ${tok}` } };
+    }
+  } catch { /* non-URL input — pass through untouched */ }
+  return _nativeFetch(url, opts);
+}
 const MCP_VERSION = (() => {
   try {
     return JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf-8')).version;
@@ -77,7 +103,7 @@ function probePorts() {
 async function discoverInstances() {
   const results = await Promise.all(probePorts().map(async (port) => {
     try {
-      const resp = await fetch(`http://127.0.0.1:${port}/api/sync/no-room`, { signal: AbortSignal.timeout(900) });
+      const resp = await vfetch(`http://127.0.0.1:${port}/api/sync/no-room`, { signal: AbortSignal.timeout(900) });
       if (!resp.ok) return null;
       const d = await resp.json();
       const s = d.status || {};
@@ -160,7 +186,7 @@ let cachedConfiguredName; // undefined = not fetched, null = unavailable
 async function fetchConfiguredBotName() {
   if (cachedConfiguredName !== undefined) return cachedConfiguredName;
   try {
-    const resp = await fetch(`${BASE_URL}/api/sync/no-room`);
+    const resp = await vfetch(`${BASE_URL}/api/sync/no-room`);
     const data = await resp.json();
     cachedConfiguredName = String(data?.status?.configuredBotName || '').trim() || null;
   } catch {
@@ -184,7 +210,7 @@ const server = new McpServer({
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function getRoomStatus(roomId) {
-  const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`);
+  const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`);
   return resp.json();
 }
 
@@ -229,7 +255,7 @@ server.tool(
     const url = isRemote
       ? `${WEBSITE_URL}/api/logs/${encodeURIComponent(instance)}${params.toString() ? '?' + params.toString() : ''}`
       : `${BASE_URL}/api/session-log${params.toString() ? '?' + params.toString() : ''}`;
-    const resp = await fetch(url, isRemote && LOGS_TOKEN ? { headers: { 'x-vibe-logs-token': LOGS_TOKEN } } : undefined);
+    const resp = await vfetch(url, isRemote && LOGS_TOKEN ? { headers: { 'x-vibe-logs-token': LOGS_TOKEN } } : undefined);
     const data = await resp.json();
     if (!data.success) {
       return { content: [{ type: "text", text: `Error: ${data.error || "Unknown error"}` }] };
@@ -251,7 +277,7 @@ server.tool(
   "List remote Vibeconferencing instances that are shipping their session logs to the backend (machines/bots with the remoteLogging pref on). Returns each instance's ID, app version, profile, current room, and how long ago it was last seen. Use the returned instanceId with get_session_log({ instance }) to read that bot's log — handy for debugging another person's bots (e.g. Seth's) without terminal access to their machine.",
   {},
   async () => {
-    const resp = await fetch(`${WEBSITE_URL}/api/logs`, LOGS_TOKEN ? { headers: { 'x-vibe-logs-token': LOGS_TOKEN } } : undefined);
+    const resp = await vfetch(`${WEBSITE_URL}/api/logs`, LOGS_TOKEN ? { headers: { 'x-vibe-logs-token': LOGS_TOKEN } } : undefined);
     const data = await resp.json();
     if (!data.success) return { content: [{ type: "text", text: `Error: ${data.error || "Unknown error"}` }] };
     const insts = data.instances || [];
@@ -279,7 +305,7 @@ server.tool(
     }
 
     const sinceParam = since ? `?since=${since}` : "";
-    const resp = await fetch(`${BASE_URL}/api/sync/${roomId}${sinceParam}`);
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}${sinceParam}`);
     const data = await resp.json();
 
     if (!data.success) {
@@ -340,7 +366,7 @@ server.tool(
 
     // Get baseline timestamp if we don't have one
     if (!lastPollTime) {
-      const baseline = await fetch(`${BASE_URL}/api/sync/${roomId}`);
+      const baseline = await vfetch(`${BASE_URL}/api/sync/${roomId}`);
       const baseData = await baseline.json();
       lastPollTime = baseData.asOf;
     }
@@ -348,7 +374,7 @@ server.tool(
     // Single server-side long-poll request
     const url = `${BASE_URL}/api/sync/${roomId}?since=${lastPollTime}&wait=${waitSec}${silenceParam}&bot=${encodeURIComponent(BOT_NAME)}`;
     const startTime = Date.now();
-    const resp = await fetch(url);
+    const resp = await vfetch(url);
     const data = await resp.json();
 
     lastPollTime = data.asOf;
@@ -487,7 +513,7 @@ server.tool(
       return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
     }
 
-    const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
@@ -581,7 +607,7 @@ async function listVoiceboxProfiles() {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 2500);
-    const resp = await fetch(url, { signal: controller.signal });
+    const resp = await vfetch(url, { signal: controller.signal });
     clearTimeout(timeout);
     if (!resp.ok) return [];
     const profiles = await resp.json();
@@ -615,7 +641,7 @@ server.tool(
 
     if (isElevenLabsActive()) {
       try {
-        const resp = await fetch('https://api.elevenlabs.io/v1/voices', { headers: { 'xi-api-key': config.ttsApiKey } });
+        const resp = await vfetch('https://api.elevenlabs.io/v1/voices', { headers: { 'xi-api-key': config.ttsApiKey } });
         if (!resp.ok) throw new Error(`API error ${resp.status}`);
         const data = await resp.json();
         const voices = data.voices.map(v =>
@@ -685,7 +711,7 @@ server.tool(
 
       // Else try ElevenLabs by name or ID.
       if (isElevenLabsActive()) {
-        const resp = await fetch('https://api.elevenlabs.io/v1/voices', { headers: { 'xi-api-key': config.ttsApiKey } });
+        const resp = await vfetch('https://api.elevenlabs.io/v1/voices', { headers: { 'xi-api-key': config.ttsApiKey } });
         if (!resp.ok) throw new Error(`API error ${resp.status}`);
         const data = await resp.json();
         const match = data.voices.find(v => v.name.toLowerCase() === voice.toLowerCase() || v.voice_id === voice);
@@ -718,7 +744,7 @@ server.tool(
       return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
     }
     try {
-      const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+      const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(botSyncPayload(BOT_NAME, { whiteboardStyle: String(css || "") })),
@@ -747,7 +773,7 @@ server.tool(
       return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
     }
     try {
-      const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+      const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(botSyncPayload(BOT_NAME, { reloadWhiteboard: true })),
@@ -789,7 +815,7 @@ server.tool(
     // composes with content, not with url.
     if (image_path) {
       try {
-        const regResp = await fetch(`${BASE_URL}/api/whiteboard-asset`, {
+        const regResp = await vfetch(`${BASE_URL}/api/whiteboard-asset`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ path: image_path }),
@@ -807,7 +833,7 @@ server.tool(
 
     // Load arbitrary URL mode
     if (url) {
-      const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+      const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(botSyncPayload(BOT_NAME, {
@@ -823,7 +849,7 @@ server.tool(
     }
 
     // Markdown content mode
-    const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
@@ -857,7 +883,7 @@ server.tool(
     if (!roomId) return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
     if (!url && !path && !data) return { content: [{ type: "text", text: "Error: provide one of url, path, or data." }] };
     try {
-      const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+      const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(botSyncPayload(BOT_NAME, { meta: { action: "play-audio", url, path, audioData: data, emoji } })),
@@ -914,7 +940,7 @@ server.tool(
       return { content: [{ type: "text", text: `Unknown sound "${name}". ${near.length ? `Did you mean: ${near.join(', ')}? ` : ''}See play_sound's description for the full list.` }] };
     }
     try {
-      const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+      const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(botSyncPayload(BOT_NAME, { meta: { action: "play-sound", name, emoji } })),
@@ -941,7 +967,7 @@ server.tool(
     // Prefer the app's active room when it's in a call — authoritative over a
     // stale env/arg, mirroring get_room_info.
     try {
-      const probe = await fetch(`${BASE_URL}/api/sync/no-room`);
+      const probe = await vfetch(`${BASE_URL}/api/sync/no-room`);
       const probeData = await probe.json();
       const activeStatuses = ["in-call", "joining", "waiting-to-be-admitted"];
       if (probeData.roomId && activeStatuses.includes(probeData.status?.callStatus)) {
@@ -955,7 +981,7 @@ server.tool(
       return { content: [{ type: "text", text: "Not in a call and no room_id provided — nothing to read." }] };
     }
 
-    const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`);
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`);
     const data = await resp.json();
     if (!data.success) {
       return { content: [{ type: "text", text: `Error: ${data.error || "Unknown error"}` }] };
@@ -983,7 +1009,7 @@ server.tool(
       return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
     }
 
-    const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
@@ -1022,7 +1048,7 @@ async function startShareHandler({ room_id, share_type }) {
     // share. Without it, getDisplayMedia silently fails and the user hears
     // the bot claim it shared something that isn't actually visible.
     try {
-      const preflight = await fetch(`${BASE_URL}/api/sync/${roomId}`);
+      const preflight = await vfetch(`${BASE_URL}/api/sync/${roomId}`);
       const preflightData = await preflight.json();
       const screenPerm = preflightData.status?.permissions?.screenRecording;
       if (screenPerm && screenPerm !== 'granted' && screenPerm !== 'unknown') {
@@ -1038,7 +1064,7 @@ async function startShareHandler({ room_id, share_type }) {
     // drop must not get mis-reported as the cause of THIS attempt failing).
     const attemptStartedAt = new Date().toISOString();
 
-    const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
@@ -1113,7 +1139,7 @@ server.tool(
       return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
     }
 
-    const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
@@ -1148,7 +1174,7 @@ server.tool(
     if (!roomId) {
       return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
     }
-    const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
@@ -1182,7 +1208,7 @@ server.tool(
     }
     const tgt = target || "meet";
     const sel = selector || "body";
-    const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
@@ -1220,7 +1246,7 @@ server.tool(
       return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
     }
 
-    const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
@@ -1251,7 +1277,7 @@ server.tool(
       return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
     }
 
-    const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
@@ -1276,7 +1302,7 @@ server.tool(
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
   async () => {
-    const resp = await fetch(`${BASE_URL}/api/call-screenshot`, {
+    const resp = await vfetch(`${BASE_URL}/api/call-screenshot`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: "{}",
@@ -1297,7 +1323,7 @@ server.tool(
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
   async () => {
-    const resp = await fetch(`${BASE_URL}/api/shared-screenshot`, {
+    const resp = await vfetch(`${BASE_URL}/api/shared-screenshot`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: "{}",
@@ -1318,7 +1344,7 @@ server.tool(
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
   async () => {
-    const resp = await fetch(`${BASE_URL}/api/chat`, {
+    const resp = await vfetch(`${BASE_URL}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "read" }),
@@ -1348,7 +1374,7 @@ server.tool(
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
   async ({ text }) => {
-    const resp = await fetch(`${BASE_URL}/api/chat`, {
+    const resp = await vfetch(`${BASE_URL}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "send", text }),
@@ -1386,7 +1412,7 @@ server.tool(
     if (Object.keys(payload).length === 0) {
       return { content: [{ type: "text", text: "No emoji values provided. Pass 'idle', 'listening', and/or 'yielding'." }] };
     }
-    const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`, {
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
@@ -1413,7 +1439,7 @@ server.tool(
   {},
   async () => {
     try {
-      const resp = await fetch(`${BASE_URL}/api/preferences`);
+      const resp = await vfetch(`${BASE_URL}/api/preferences`);
       const data = await resp.json();
       if (!data?.success) {
         return { content: [{ type: "text", text: `Error: ${data?.error || 'Could not fetch preferences'}` }] };
@@ -1446,7 +1472,7 @@ server.tool(
   },
   async ({ key, value }) => {
     try {
-      const resp = await fetch(`${BASE_URL}/api/preferences`, {
+      const resp = await vfetch(`${BASE_URL}/api/preferences`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ key, value }),
@@ -1474,7 +1500,7 @@ server.tool(
   {},
   async () => {
     try {
-      const resp = await fetch(`${BASE_URL}/api/working-memory`);
+      const resp = await vfetch(`${BASE_URL}/api/working-memory`);
       const data = await resp.json();
       if (!data?.success) {
         return { content: [{ type: "text", text: `Error: ${data?.error || 'Could not fetch working memory'}` }] };
@@ -1512,7 +1538,7 @@ server.tool(
       return { content: [{ type: "text", text: "Provide understanding, stance, people, and/or engagement." }] };
     }
     try {
-      const resp = await fetch(`${BASE_URL}/api/working-memory`, {
+      const resp = await vfetch(`${BASE_URL}/api/working-memory`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ understanding, stance, people, engagement, updatedBy: BOT_NAME }),
@@ -1549,7 +1575,7 @@ server.tool(
       return { content: [{ type: "text", text: "Provide a non-empty interjection." }] };
     }
     try {
-      const resp = await fetch(`${BASE_URL}/api/bank-probe`, {
+      const resp = await vfetch(`${BASE_URL}/api/bank-probe`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
@@ -1579,7 +1605,7 @@ server.tool(
     let roomId = room_id || ROOM_ID;
     let noteMismatch = null;
     try {
-      const resp = await fetch(`${BASE_URL}/api/sync/no-room`);
+      const resp = await vfetch(`${BASE_URL}/api/sync/no-room`);
       const data = await resp.json();
       const activeStatuses = ['in-call', 'joining', 'waiting-to-be-admitted'];
       if (data.roomId && activeStatuses.includes(data.status?.callStatus)) {
@@ -1608,7 +1634,7 @@ server.tool(
       return { content: [{ type: "text", text: "Not in a call. No Google Meet URLs detected in browser tabs." }] };
     }
 
-    const resp = await fetch(`${BASE_URL}/api/sync/${roomId}`);
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`);
     const data = await resp.json();
 
     if (!data.success) {
@@ -1792,7 +1818,7 @@ server.tool(
       // requiring a push channel.
       if (botNameLocked && joinedBotName !== BOT_NAME) {
         try {
-          const statusResp = await fetch(`${BASE_URL}/api/sync/${ROOM_ID || 'no-room'}`);
+          const statusResp = await vfetch(`${BASE_URL}/api/sync/${ROOM_ID || 'no-room'}`);
           const statusData = await statusResp.json();
           const cs = statusData?.status?.callStatus;
           if (cs && cs !== 'in-call') botNameLocked = false;
@@ -1814,7 +1840,7 @@ server.tool(
       const slackMatch = String(room_id).match(/app\.slack\.com\/client\/([^/]+)\/([^/?#]+)/i);
       if (slackMatch) {
         const slackRoomId = `slack-${slackMatch[1].toLowerCase()}-${slackMatch[2].toLowerCase()}`;
-        const sresp = await fetch(`${BASE_URL}/api/sync/${slackRoomId}`, {
+        const sresp = await vfetch(`${BASE_URL}/api/sync/${slackRoomId}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(botSyncPayload(joinedBotName, { meta: { action: "join-slack", url: room_id } })),
@@ -1845,7 +1871,7 @@ server.tool(
         return { content: [{ type: "text", text: `Couldn't join the Slack huddle: ${sdata.results?.join?.error || sdata.error || 'unknown error'}.` }] };
       }
 
-      const resp = await fetch(`${BASE_URL}/api/sync/${room_id}`, {
+      const resp = await vfetch(`${BASE_URL}/api/sync/${room_id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(botSyncPayload(joinedBotName, {

@@ -258,6 +258,14 @@ for i in $(seq 1 $N); do
   else
     echo "  • $name — profile=$profile port=$port"
   fi
+  # Pin the free macOS voice in the test profile's config. #366 made
+  # ttsApiKey APP-LEVEL (shared across profiles), so without this pin the
+  # test bots would inherit the real ElevenLabs key and burn quota on every
+  # scripted utterance (pre-#366 they had no key and fell back to `say`
+  # implicitly). Idempotent merge — preserves whatever else is in the config.
+  PROFDIR="$HOME/Library/Application Support/Vibeconferencing/profiles/$profile"
+  mkdir -p "$PROFDIR"
+  node -e 'const fs=require("fs");const p=process.argv[1]+"/config.json";let c={};try{c=JSON.parse(fs.readFileSync(p,"utf8"))}catch{}if(c.ttsProvider!=="macos-say"){c.ttsProvider="macos-say";fs.writeFileSync(p,JSON.stringify(c,null,2));}' "$PROFDIR"
   if (( PKG )); then
     # open -n = new instance (profiles bypass the single-instance lock). It
     # returns immediately and runs detached; we wait/kill by port below, and the

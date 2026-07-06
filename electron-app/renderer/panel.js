@@ -538,6 +538,19 @@ api.invoke('get-overlay-flags').then((flags) => {
 // Load saved config
 // ---------------------------------------------------------------------------
 
+// #381: onboarding banner — the ElevenLabs key is machine-wide and now lives in
+// App Settings, so surface a deep-link when voice is off instead of burying the
+// field. The key can be set in the separate App Settings window, so re-check when
+// this window regains focus.
+const appSettingsBanner = document.getElementById('appSettingsBanner');
+function updateAppSettingsBanner(hasKey) {
+  if (appSettingsBanner) appSettingsBanner.style.display = hasKey ? 'none' : 'flex';
+}
+document.getElementById('openAppSettingsFromBanner')?.addEventListener('click', () => api.invoke('open-app-settings'));
+window.addEventListener('focus', () => {
+  api.invoke('get-config', ['ttsApiKey']).then((c) => updateAppSettingsBanner(!!c?.ttsApiKey)).catch(() => {});
+});
+
 api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'ttsProvider', 'claudeWorkDir', 'claudeModel', 'emojiSet', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
   if (result?.botName) { botNameInput.value = result.botName; currentBotName = result.botName; }
   rememberedMeetName = result?.lastMeetName || null;   // #282 remembered names
@@ -549,7 +562,9 @@ api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', '
   // older configs still see their existing override populated in the field.
   const effectiveUrl = result?.websiteUrl || result?.syncBaseUrl || '';
   if (effectiveUrl) { websiteUrlInput.value = effectiveUrl; syncBaseUrl = effectiveUrl; }
-  if (result?.ttsApiKey) ttsApiKeyInput.value = result.ttsApiKey;
+  // #366/#381: the ElevenLabs key field moved to App Settings — no input here to
+  // fill. The onboarding banner still reflects whether a key is configured.
+  updateAppSettingsBanner(!!result?.ttsApiKey); // #381 onboarding banner
   if (result?.ttsVoiceId) ttsVoiceIdInput.value = result.ttsVoiceId;
   // #340: one unified picker merging macOS + ElevenLabs + Voicebox. Pre-selects
   // from the saved provider/voice; defaults to Samantha (tts.js's real default).
@@ -568,11 +583,9 @@ api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', '
   checkAuthStatus();
 });
 
-const authStatus = document.getElementById('authStatus');
-const loginBtn = document.getElementById('loginBtn');
-const logoutBtn = document.getElementById('logoutBtn');
-
-// User (vibeconferencing.com) identity row on the MAIN view — always shown.
+// #366/#381: the user (vibeconferencing.com) login moved OUT of the profile
+// Settings pane — it's app-level, so it lives in App Settings (⌘,). It also
+// stays on the MAIN view's user row (always shown), which this handler drives.
 const userIdStatus = document.getElementById('userIdStatus');
 const userSignInMainBtn = document.getElementById('userSignInMainBtn');
 const userSignOutMainBtn = document.getElementById('userSignOutMainBtn');
@@ -590,24 +603,11 @@ async function checkAuthStatus() {
   try {
     const data = await api.invoke('check-auth');
     if (data?.authenticated) {
-      const who = data.user?.email || data.user?.name || 'signed in';
-      authStatus.textContent = `Logged in as ${data.user?.name || who}`;
-      authStatus.style.color = '#81c995';
-      loginBtn.style.display = 'none';
-      logoutBtn.style.display = 'inline-block';
-      setUserRow(true, who);
+      setUserRow(true, data.user?.email || data.user?.name || 'signed in');
     } else {
-      authStatus.textContent = 'Not logged in';
-      authStatus.style.color = '#f28b82';
-      loginBtn.style.display = 'block';
-      logoutBtn.style.display = 'none';
       setUserRow(false);
     }
   } catch {
-    authStatus.textContent = 'Auth check failed';
-    authStatus.style.color = '#f28b82';
-    loginBtn.style.display = 'block';
-    logoutBtn.style.display = 'none';
     setUserRow(false);
   }
 }
@@ -620,21 +620,6 @@ userSignInMainBtn?.addEventListener('click', async () => {
 });
 userSignOutMainBtn?.addEventListener('click', async () => {
   try { await api.invoke('logout'); } catch { /* ignore */ }
-  checkAuthStatus();
-});
-
-loginBtn.addEventListener('click', async () => {
-  loginBtn.textContent = 'Opening Google sign-in...';
-  loginBtn.disabled = true;
-  await api.invoke('login');
-  setTimeout(() => {
-    loginBtn.textContent = 'Sign in with Google';
-    loginBtn.disabled = false;
-  }, 3000);
-});
-
-logoutBtn.addEventListener('click', async () => {
-  await api.invoke('logout');
   checkAuthStatus();
 });
 
@@ -821,6 +806,10 @@ function applyMeetMode(mode) {
     meetSignInBtn.style.display = '';
     meetSignOutBtn.style.display = 'none';
   }
+  // Bot Name only matters as a GUEST — a signed-in bot uses its Google account
+  // name — so show the field only in guest mode (it lives in this section now).
+  const botNameField = document.getElementById('botNameField');
+  if (botNameField) botNameField.style.display = (mode === 'account') ? 'none' : '';
   refreshAccountEmail(mode);
   refreshBotIdentity(mode); // keep the main-view identity row in sync
   updateBotNameBig();
@@ -1392,12 +1381,9 @@ websiteUrlInput.addEventListener('change', () => {
   api.send('update-sync-config', { baseUrl: syncBaseUrl });
 });
 
-ttsApiKeyInput.addEventListener('change', () => {
-  api.send('update-tts-config', { apiKey: ttsApiKeyInput.value.trim() });
-  // A key was added/changed/cleared — re-fetch so ElevenLabs voices show up (or
-  // drop out) in the unified picker without a restart (#340).
-  populateUnifiedVoices();
-});
+// #366/#381: the ElevenLabs API-key field moved to App Settings, so there's no
+// change listener here. When the key changes there, App Settings re-fetches; the
+// panel picks up EL voices on its next populateUnifiedVoices() (open / refresh).
 
 ttsVoiceIdInput.addEventListener('change', () => {
   const id = ttsVoiceIdInput.value.trim();
@@ -1483,22 +1469,44 @@ async function populateUnifiedVoices(config) {
   refreshVoiceStatus();
 }
 
+// Audition a voice through the LOCAL speakers when it's picked — main synthesizes
+// a short sample and returns a data URL we play here (mirrors the macOS `say`
+// preview for ElevenLabs + Voicebox). Best-effort; stays quiet on failure.
+let _voiceSampleAudio = null;
+async function previewVoiceSample(opts) {
+  try {
+    if (_voiceSampleAudio) { try { _voiceSampleAudio.pause(); } catch { /* ignore */ } _voiceSampleAudio = null; }
+    const r = await api.invoke('synth-voice-sample', opts);
+    if (r?.ok && r.dataUrl) {
+      _voiceSampleAudio = new Audio(r.dataUrl);
+      _voiceSampleAudio.play().catch(() => {});
+    }
+  } catch { /* ignore — preview is best-effort */ }
+}
+
 unifiedVoiceSelect?.addEventListener('change', () => {
   const val = unifiedVoiceSelect.value || '';
   const sep = val.indexOf(':');
   const kind = val.slice(0, sep);
   const id = val.slice(sep + 1);
+  // The spoken name = the dropdown label minus the "· premade" / "(Enhanced)" /
+  // "(kokoro)" suffixes, so every provider says "Hello, my name is <name>."
+  const label = unifiedVoiceSelect.selectedOptions[0]?.textContent || '';
+  const name = label.replace(/\s*[·(].*$/, '').trim();
+  const text = `Hello, my name is ${name || 'your voice assistant'}.`;
   if (kind === 'vb') {
     const engine = unifiedVoiceSelect.selectedOptions[0]?.dataset.engine || 'kokoro';
     api.send('update-tts-config', { provider: 'voicebox', voiceboxProfileId: id, voiceboxEngine: engine });
+    previewVoiceSample({ provider: 'voicebox', voiceboxProfileId: id, voiceboxEngine: engine, text });
   } else if (kind === 'el') {
     // Picking a listed EL voice clears any custom-ID override so they don't fight.
     api.send('update-tts-config', { provider: 'elevenlabs', voiceId: id, voiceboxProfileId: '' });
     if (ttsVoiceIdInput) ttsVoiceIdInput.value = id;
+    previewVoiceSample({ provider: 'elevenlabs', voiceId: id, text });
   } else if (kind === 'mac') {
     // Force the built-in provider so an ElevenLabs key doesn't override the pick.
     api.send('update-tts-config', { provider: 'macos-say', macosVoice: id, voiceboxProfileId: '' });
-    api.invoke('preview-macos-voice', id).catch(() => {});
+    previewVoiceSample({ provider: 'macos-say', macosVoice: id, text });
   }
   refreshVoiceStatus();
 });

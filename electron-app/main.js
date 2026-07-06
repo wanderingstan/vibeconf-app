@@ -1268,6 +1268,33 @@ let mainWindow = null;   // single window that holds both views
 let panelView = null;     // left sidebar BrowserView
 let meetView = null;      // right Meet BrowserView
 let panelPopoutWindow = null; // when popped out, the panelView lives here instead
+let appSettingsWindow = null; // #381: machine-wide App Settings (⌘,), a singleton
+
+// #381: open (or focus) the App Settings window — machine-wide config shared by
+// every profile on this Mac. A singleton on purpose: one window no matter how
+// many profile windows are open, reinforcing "there's one machine config".
+// Since window ↔ profile now correlate (#379), app-level config lives here rather
+// than inside any one profile's panel.
+function openAppSettings() {
+  if (appSettingsWindow && !appSettingsWindow.isDestroyed()) {
+    appSettingsWindow.show();
+    appSettingsWindow.focus();
+    return;
+  }
+  appSettingsWindow = new BrowserWindow({
+    width: 460,
+    height: 560,
+    title: 'App Settings',
+    icon: path.join(__dirname, 'icon.png'),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-app-settings.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  appSettingsWindow.loadFile(path.join(__dirname, 'renderer', 'app-settings.html'));
+  appSettingsWindow.on('closed', () => { appSettingsWindow = null; });
+}
 
 // ── P2: Runway photoreal face (opt-in) ──────────────────────────────────────
 // Provision a puppet-mode avatar session (scripts/runway-session.mjs) and tell the Meet page to
@@ -2228,10 +2255,6 @@ function speakText(text, voice, emoji) {
     }
   });
 }
-
-// The in-flight `say` child for voice-preview auditions (preferences). Killed
-// before starting a new one so rapid dropdown changes don't overlap.
-let _voicePreviewChild = null;
 
 // Installed macOS `say` voice names (populated at startup). Lets the speak()
 // voice-override route a name to the right provider — a macOS voice name forces
@@ -3672,8 +3695,16 @@ function createMainWindow() {
         { role: 'about' },
         { type: 'separator' },
         {
-          label: 'Settings...',
+          // #381: ⌘, opens machine-wide App Settings (macOS-native Preferences
+          // convention). Per-profile settings moved to their own item below +
+          // the panel's gear button.
+          label: 'App Settings…',
           accelerator: 'CmdOrCtrl+,',
+          click: () => openAppSettings(),
+        },
+        {
+          label: 'Profile Settings…',
+          accelerator: 'CmdOrCtrl+Shift+,',
           click: () => {
             if (panelView && !panelView.webContents.isDestroyed()) {
               panelView.webContents.send('show-settings');
@@ -4062,6 +4093,29 @@ function overlayPayloadFlags() {
 
 function setupIPC() {
   // --- Config ---
+  // #381: open the machine-wide App Settings window (used by the panel's
+  // "voice is off" onboarding banner, and available via ⌘,).
+  ipcMain.handle('open-app-settings', () => { openAppSettings(); return { ok: true }; });
+
+  // #381: the app-level (scope:'app') schema prefs, for App Settings' schema-driven
+  // section. Only prefs in BOTH the user-facing schema AND config-scope's app-level
+  // set — so future app-level prefs appear automatically, and internal keys
+  // (session tokens etc., not in the schema) are naturally excluded.
+  ipcMain.handle('get-app-settings-schema', () => {
+    const P = require('./preferences-schema').PREFERENCES;
+    const { isAppLevel } = require('./config-scope.js');
+    return Object.entries(P)
+      .filter(([k, def]) => isAppLevel(k) && def && typeof def === 'object' && 'type' in def)
+      .map(([k, def]) => ({
+        key: k,
+        type: def.type,
+        enum: def.enum || null,
+        default: def.default,
+        description: def.description || '',
+        requiresRestart: !!def.requiresRestart,
+      }));
+  });
+
   ipcMain.handle('get-config', (_event, keys) => {
     const vals = store.getMultiple(keys);
     // Fill unset schema prefs with their default so the panel shows the EFFECTIVE
@@ -4997,19 +5051,33 @@ function setupIPC() {
     return listElevenLabsVoices(apiKey);
   });
 
-  // Speak a short sample in the given macOS voice through the LOCAL speakers
-  // (not the call's virtual mic) so the user can audition a voice when they
-  // pick it in preferences. `say` with no -o plays on the default output.
-  // Cancels any in-flight preview so rapid changes don't overlap.
-  ipcMain.handle('preview-macos-voice', (_event, name) => {
-    if (process.platform !== 'darwin' || !name || typeof name !== 'string') return false;
-    const { execFile } = require('child_process');
-    try { if (_voicePreviewChild) _voicePreviewChild.kill(); } catch {}
-    // Strip the "(Premium)"/"(Enhanced)" quality suffix for the spoken phrase
-    // (keep the full name for `say -v`, which needs the exact identifier).
-    const spoken = name.replace(/\s*\([^)]*\)\s*$/, '').trim() || name;
-    _voicePreviewChild = execFile('say', ['-v', name, `Hello, my name is ${spoken}`], { timeout: 10000 }, () => {});
-    return true;
+  // Audition a voice when it's picked in the preferences dropdown — ONE path for
+  // every provider (macOS `say`, ElevenLabs, Voicebox). Synthesize a short sample
+  // in the SELECTED voice (a throwaway TTSProvider, independent of the saved
+  // config) and hand it back as a data URL; the panel plays it via an Audio
+  // element through the LOCAL speakers (never the call mic). The sample text
+  // (with the voice's name) is composed by the panel so it's identical across
+  // providers. Best-effort — returns { ok:false } on failure (no EL key, Voicebox
+  // not running, etc.) and the panel just stays quiet.
+  ipcMain.handle('synth-voice-sample', async (_event, opts = {}) => {
+    try {
+      const preview = new globalThis.TTSProvider({
+        provider: opts.provider,
+        apiKey: store.get('ttsApiKey') || '', // app-level ElevenLabs key
+        ...(opts.voiceId ? { voiceId: opts.voiceId } : {}),
+        ...(opts.macosVoice ? { macosVoice: opts.macosVoice } : {}),
+        voiceboxProfileId: opts.voiceboxProfileId || '',
+        voiceboxEngine: opts.voiceboxEngine || 'kokoro',
+      });
+      const buf = await preview.synthesize(opts.text || 'Hi, this is how I sound.');
+      if (!buf) return { ok: false, error: 'no audio' };
+      // ElevenLabs returns mp3; macOS `say` (afconvert) and Voicebox return WAV.
+      const mime = opts.provider === 'elevenlabs' ? 'audio/mpeg' : 'audio/wav';
+      return { ok: true, dataUrl: `data:${mime};base64,${Buffer.from(buf).toString('base64')}` };
+    } catch (e) {
+      console.warn('[voice-preview] synth failed:', e && e.message);
+      return { ok: false, error: e && e.message };
+    }
   });
 
   // Open the macOS pane where users download additional system voices:

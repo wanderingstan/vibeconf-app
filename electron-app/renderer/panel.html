@@ -30,6 +30,14 @@
       </div>
       <div class="error-bar" id="errorBar" style="display:none"><span id="errorText"></span><button class="error-close" id="errorClose">&times;</button></div>
 
+      <!-- #381: onboarding — voice needs a machine-wide ElevenLabs key, which now
+           lives in App Settings (⌘,). Shown only when no key is set; deep-links
+           there rather than burying the field. -->
+      <div id="appSettingsBanner" style="display:none;margin:8px 12px;padding:8px 10px;background:#3a2f1c;border:1px solid #8a6d3b;border-radius:8px;color:#f0d9a8;font-size:12px;align-items:center;justify-content:space-between;gap:8px">
+        <span>🔊 Voice is off — no ElevenLabs key set.</span>
+        <button id="openAppSettingsFromBanner" style="background:#8ab4f8;border:none;color:#202124;border-radius:14px;padding:5px 12px;font-weight:600;cursor:pointer;white-space:nowrap">Set it up →</button>
+      </div>
+
       <!-- ── Zone 2: Agent identity (#289 agent-first layout) ────────────────
            A profile IS the agent: avatar (its virtual-camera look) · name ·
            ⇄ switcher · voice · connected calling platforms. -->
@@ -114,35 +122,23 @@
       <button id="backFromSettingsBtn" class="back-btn">&larr; Back</button>
       <h1>Settings</h1>
 
-      <div class="auth-section">
-        <div class="auth-row">
-          <span id="authStatus" class="auth-status">Checking login...</span>
-          <button id="logoutBtn" class="auth-action-btn" style="display:none">Log out</button>
-        </div>
-        <button id="loginBtn" class="primary" style="display:none">Sign in with Google</button>
-      </div>
-
-      <!-- The three prefs most users actually touch — name, voice, face —
-           live together at the top (Stan, 2026-07-05). -->
-      <div class="field">
-        <label for="botName">Bot Name (Meet)</label>
-        <input type="text" id="botName" value="Jimmy" />
-        <div class="helper-text">The bot's name on <strong>Google Meet</strong> — used when it joins as a guest. When signed in, it uses its Google account name instead. On Slack, it joins as its signed-in Slack account name.</div>
-      </div>
+      <!-- Voice + face first — the per-profile prefs most users touch. The user
+           (vibeconferencing.com) login moved to App Settings (⌘,) since #366/#381;
+           Bot Name moved into Bot Google Identity below (only matters as a guest). -->
       <div class="field">
         <label for="unifiedVoice">Voice</label>
         <select id="unifiedVoice" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit">
           <option value="">Loading voices…</option>
         </select>
         <div style="font-size:11px;color:#666;margin-top:2px">
-          Every voice available right now, best first. ElevenLabs voices appear once a key is set in Text-to-Speech below; Voicebox voices when its local app is running.
+          Every voice available right now, best first. ElevenLabs voices appear once a key is set in <strong>App Settings</strong> (⌘,); Voicebox voices when its local app is running.
           <a href="#" id="refreshVoicesBtn" style="color:#8ab4f8;text-decoration:underline">Refresh voices</a> ·
           <a href="#" id="openVoiceSettingsBtn" style="color:#8ab4f8;text-decoration:underline">Download more macOS voices…</a>
         </div>
       </div>
       <div class="field">
         <label for="emojiSet">Avatar Emoji Set</label>
-        <select id="emojiSet" style="width:100%;box-sizing:border-box">
+        <select id="emojiSet" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit">
           <option value="native">Native (OS font)</option>
           <option value="twemoji">Twemoji (flat)</option>
           <option value="openmoji">OpenMoji (outlined)</option>
@@ -150,6 +146,38 @@
           <option value="fluent3d">Fluent 3D (Microsoft)</option>
         </select>
         <div style="font-size:11px;color:#666;margin-top:2px">Graphics for the bot's face emoji. Twemoji is a distinct, consistent set shipped with the app (#316).</div>
+      </div>
+
+      <div class="section">
+        <h2>Bot Google Identity</h2>
+        <p class="helper-text" style="margin:0 0 8px">
+          Currently: <strong><span id="meetModeIndicator">guest</span></strong>.
+          In <strong>guest</strong> mode the bot joins Meet under the name below.
+          In <strong>account</strong> mode the bot is signed into Google and inherits that account's name.
+          The choice persists across launches.
+        </p>
+        <!-- Bot Name only matters as a GUEST — a signed-in bot uses its Google
+             account name — so panel.js hides #botNameField in account mode. -->
+        <div class="field" id="botNameField">
+          <label for="botName">Bot Name (Meet, guest)</label>
+          <input type="text" id="botName" value="Jimmy" />
+          <div class="helper-text">The name the bot joins Google Meet under when it joins as a guest.</div>
+        </div>
+        <div id="meetAccountEmail" class="account-email" style="display:none"></div>
+        <button id="meetSignInBtn">Sign in to Google as bot</button>
+        <button id="meetSignOutBtn" style="display:none">Sign out (use as guest)</button>
+      </div>
+
+      <div class="section">
+        <h2>Bot Slack Identity</h2>
+        <p class="helper-text" style="margin:0 0 8px">
+          For Slack huddles the bot joins as its signed-in <strong>Slack account</strong>
+          (there's no guest path). Sign in once here — the login persists across
+          launches in this profile. This opens Slack in the bot's view; log in and
+          pick the workspace, then come back.
+        </p>
+        <button id="slackSignInBtn">Sign into Slack as bot</button>
+        <button id="slackSignOutBtn" style="display:none">Sign out of Slack</button>
       </div>
 
       <div class="section">
@@ -174,41 +202,11 @@
       </div>
 
       <div class="section">
-        <h2>Bot Google Identity</h2>
-        <p class="helper-text" style="margin:0 0 8px">
-          Currently: <strong><span id="meetModeIndicator">guest</span></strong>.
-          In <strong>guest</strong> mode the bot's persona name (above) is typed into Meet's pre-join.
-          In <strong>account</strong> mode the bot is signed into Google and inherits that account's name.
-          The choice persists across launches.
-        </p>
-        <div id="meetAccountEmail" class="account-email" style="display:none"></div>
-        <button id="meetSignInBtn">Sign in to Google as bot</button>
-        <button id="meetSignOutBtn" style="display:none">Sign out (use as guest)</button>
-      </div>
-
-      <div class="section">
-        <h2>Bot Slack Identity</h2>
-        <p class="helper-text" style="margin:0 0 8px">
-          For Slack huddles the bot joins as its signed-in <strong>Slack account</strong>
-          (there's no guest path). Sign in once here — the login persists across
-          launches in this profile. This opens Slack in the bot's view; log in and
-          pick the workspace, then come back.
-        </p>
-        <button id="slackSignInBtn">Sign into Slack as bot</button>
-        <!-- Shown only while actually signed in (refreshSlackIdentity toggles
-             it) — matches the Meet identity section's sign-out behavior. -->
-        <button id="slackSignOutBtn" style="display:none">Sign out of Slack</button>
-      </div>
-
-      <div class="section">
         <h2>Text-to-Speech</h2>
-        <!-- The Voice picker itself lives up top with Bot Name / Avatar Emoji
-             Set — the three prefs most users touch. -->
-        <div class="field">
-          <label for="ttsApiKey">ElevenLabs API Key</label>
-          <input type="password" id="ttsApiKey" placeholder="sk_..." />
-          <div style="font-size:11px;color:#666;margin-top:2px">Unlocks your ElevenLabs voices in the picker above. Shared across all profiles — set it once.</div>
-        </div>
+        <!-- The Voice picker lives up top; the machine-wide ElevenLabs API KEY
+             moved to App Settings (⌘,) since #366/#381. Only the per-profile
+             custom Voice ID override stays here. -->
+        <div class="helper-text" style="margin:0 0 8px">The ElevenLabs API key is machine-wide — set it in <strong>App Settings</strong> (⌘,).</div>
         <details style="margin:2px 0 8px">
           <summary style="font-size:11px;color:#9aa0a6;cursor:pointer">Advanced: custom ElevenLabs Voice ID</summary>
           <div class="field" style="margin-top:6px">

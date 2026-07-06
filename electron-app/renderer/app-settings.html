@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>App Settings</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#202124; color:#e8eaed; margin:0; }
+    .as-header { padding:14px 16px; border-bottom:1px solid #3c4043; }
+    .as-header h1 { font-size:15px; margin:0; }
+    .as-header .sub { color:#9aa0a6; font-size:12px; margin-top:3px; line-height:1.4; }
+    .as-section { padding:14px 16px; border-bottom:1px solid #2a2d31; }
+    .as-section h2 { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:#9aa0a6; margin:0 0 8px; }
+    label { display:block; font-size:12px; color:#c8ccd0; margin:8px 0 4px; }
+    input[type=text], input[type=password], select {
+      width:100%; box-sizing:border-box; background:#2a2d31; border:1px solid #5f6368;
+      border-radius:6px; color:#e8eaed; padding:8px; font-size:13px; outline:none;
+    }
+    input[type=text]:focus, input[type=password]:focus, select:focus { border-color:#8ab4f8; }
+    .desc { color:#9aa0a6; font-size:11px; margin-top:4px; line-height:1.4; }
+    .row-check { display:flex; align-items:center; gap:8px; margin-top:8px; }
+    .row-check label { margin:0; }
+  </style>
+</head>
+<body>
+  <div class="as-header">
+    <h1>App Settings</h1>
+    <div class="sub">These apply to <strong>every bot on this Mac</strong> (all profiles). Per-bot settings — voice choice, identity, personality — live in each profile's own window.</div>
+  </div>
+
+  <!-- #366/#381: the vibeconferencing.com user login is app-level (one sign-in
+       covers every profile), moved here out of the profile Settings pane. -->
+  <div class="as-section">
+    <h2>You (vibeconferencing.com)</h2>
+    <div id="userStatus" class="desc">Checking login…</div>
+    <div style="margin-top:8px;display:flex;gap:8px">
+      <button type="button" id="userSignInBtn" style="display:none;background:#8ab4f8;color:#202124;border:none;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer">Sign in with Google</button>
+      <button type="button" id="userSignOutBtn" style="display:none;background:#2a2d31;color:#e8eaed;border:1px solid #5f6368;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer">Log out</button>
+    </div>
+    <div class="desc">Your login for the shared whiteboard rooms. One sign-in covers every profile on this Mac.</div>
+  </div>
+
+  <div class="as-section">
+    <h2>Voice (ElevenLabs)</h2>
+    <label for="ttsApiKey">API key</label>
+    <input type="password" id="ttsApiKey" placeholder="sk_..." autocomplete="off" spellcheck="false" />
+    <div class="desc">The machine-wide ElevenLabs secret used for text-to-speech. Without it, bots fall back to the built-in macOS voice.</div>
+  </div>
+
+  <!-- Schema-driven (#381): every app-level (scope:'app') schema pref renders here,
+       so future app-level prefs appear automatically without touching this file. -->
+  <div class="as-section" id="schemaSection">
+    <h2>Advanced</h2>
+    <div id="schemaFields"></div>
+  </div>
+
+  <script src="app-settings.js"></script>
+</body>
+</html>

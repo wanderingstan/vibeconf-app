@@ -193,6 +193,12 @@ require('./local-server.js');
 // (which routes to a push notification if the app isn't focused). Defined
 // near the top so they're active before any setup code runs.
 process.on('uncaughtException', (err) => {
+  // A dead stdout/stderr pipe (terminal closed) delivers EPIPE here via the
+  // stream's async 'error' event. Logging it writes to the same dead pipe →
+  // another EPIPE → an unbounded loop that once wrote a 26 GB session log.
+  // session-log.js installs no-op stream error handlers; this is the second
+  // line of defense. Drop silently — there is nowhere to report a dead pipe.
+  if (err?.code === 'EPIPE' && err?.syscall === 'write') return;
   console.error('[electron] uncaughtException:', err);
   try { broadcastError('Unexpected error: ' + (err?.message || String(err)).slice(0, 200)); } catch {}
 });

@@ -6,7 +6,11 @@
 const fs = require('fs');
 const path = require('path');
 
-const MAX_RETAINED_SESSIONS = 50;
+// Keep plenty of history — session logs are the raw material for post-hoc
+// analysis (latency audits, turn-taking research) and we're hungry for data,
+// not short on disk (Stan, 2026-07-05). Runaway logs are the real disk risk
+// and are handled at the write path (EPIPE guards below), not by retention.
+const MAX_RETAINED_SESSIONS = 100;
 
 let _filePath = null;
 let _logStream = null;
@@ -158,6 +162,15 @@ function initSessionLog({ userDataDir, header = {} } = {}) {
   // bound (seen in the wild: an 11 GB log of repeated EPIPE traces). Swallow the
   // write error so the tee never throws — the line still reached the file and the
   // remote queue above.
+  //
+  // The try/catch alone is NOT enough: a socket EPIPE is usually delivered
+  // ASYNCHRONOUSLY as an 'error' EVENT on the stream (the write() call itself
+  // returns fine), so it bypasses the catch, becomes an uncaughtException, and
+  // the loop happens anyway — that's how a beta56 instance still wrote a 26 GB
+  // log of EPIPE traces (2026-07-05) despite the guard below. Swallow the
+  // async path too by installing no-op error handlers on both streams.
+  try { process.stdout.on('error', () => {}); } catch {}
+  try { process.stderr.on('error', () => {}); } catch {}
   process.stdout.write = (chunk, ...rest) => {
     try { logStream.write(typeof chunk === 'string' ? chunk : chunk); } catch {}
     try { _enqueueChunk(chunk); } catch {}

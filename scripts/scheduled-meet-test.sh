@@ -56,6 +56,19 @@ echo "" | tee -a "$LOG"
 echo "=== real-agent fuzz test (experimental, grain of salt) $STAMP ===" | tee -a "$LOG"
 node scripts/agent-fuzz-test.mjs --mission smoke --duration 170 2>&1 | tee -a "$LOG" || true
 
+# --- Codex MCP wire smoke (#373) — deterministic + tokenless (agent-less fleet
+# body + stdio MCP handshake/tools/get_room_info; no GUI interaction beyond app
+# launch, so low flake risk). Decoupled from the primary exit like the fuzz
+# block for its first nights; writes its own verdict line. PROMOTE into the
+# primary exit code once it has a green streak. ---
+echo "" | tee -a "$LOG"
+echo "=== codex MCP smoke (#373) $STAMP ===" | tee -a "$LOG"
+pnpm test:codex:ci 2>&1 | tee -a "$LOG"
+CODEX_CODE=${pipestatus[1]:-$?}
+printf '{"ts":"%s","exit":%s,"log":"%s"}\n' "$STAMP" "$CODEX_CODE" "$(basename "$LOG")" \
+  >> "$RESULTS/codex-smoke-results.jsonl"
+echo "=== codex smoke exit: $CODEX_CODE (recorded, not gating) ===" | tee -a "$LOG"
+
 # Keep only the last 30 full logs (history line in results.jsonl is permanent).
 ls -1t "$RESULTS"/run-*.log 2>/dev/null | tail -n +31 | xargs rm -f 2>/dev/null || true
 

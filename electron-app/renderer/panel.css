@@ -478,6 +478,12 @@ button:disabled {
   font-size: 18px; line-height: 1; padding: 2px 4px; border-radius: 6px;
 }
 .agent-switch:hover { background: #3c4043; }
+/* #379: the switcher SWITCHES the current window (replaces this bot), which only
+   makes sense pre-call. Hide it in-call so nobody expects to hot-swap the bot
+   mid-call; the additive "New Profile Window…" (menu bar) stays available. Gated
+   on a single body flag so the broader pre-call/in-call UI split (#289) can reuse
+   it for other pre-call-only controls. */
+body[data-call-state="in-call"] #profileMenuBtn { display: none; }
 .agent-call-id {
   font-size: 12px; color: #9aa0a6; margin-top: 1px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

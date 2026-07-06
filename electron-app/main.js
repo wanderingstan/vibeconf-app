@@ -3695,10 +3695,10 @@ function createMainWindow() {
         { role: 'about' },
         { type: 'separator' },
         {
-          // #381: ⌘, opens machine-wide App Settings (macOS-native Preferences
-          // convention). Per-profile settings moved to their own item below +
-          // the panel's gear button.
-          label: 'App Settings…',
+          // #381: ⌘, opens machine-wide Settings (macOS-native Preferences→Settings
+          // convention). Per-profile settings are their own item below + the
+          // panel's gear button.
+          label: 'Settings…',
           accelerator: 'CmdOrCtrl+,',
           click: () => openAppSettings(),
         },
@@ -3708,17 +3708,6 @@ function createMainWindow() {
           click: () => {
             if (panelView && !panelView.webContents.isDestroyed()) {
               panelView.webContents.send('show-settings');
-            }
-          },
-        },
-        {
-          // Advanced (#282 follow-up): drive the bot's own webview to any URL to
-          // set up Slack/Google account state inside its partition.
-          label: 'Navigate Webview…',
-          accelerator: 'CmdOrCtrl+Shift+L',
-          click: () => {
-            if (panelView && !panelView.webContents.isDestroyed()) {
-              panelView.webContents.send('navigate-webview-prompt');
             }
           },
         },
@@ -3773,6 +3762,50 @@ function createMainWindow() {
         { role: 'unhide' },
         { type: 'separator' },
         { role: 'quit' },
+      ],
+    },
+    {
+      label: 'File',
+      submenu: [
+        {
+          // #379: create a brand-new profile and open it in its own window. The
+          // name prompt happens in the panel (inline dialog); a never-seen name
+          // creates the profile. Distinct from "New Window", which opens the
+          // Default profile without creating anything.
+          label: 'New Profile…',
+          accelerator: 'CmdOrCtrl+Shift+N',
+          click: () => {
+            if (panelView && !panelView.webContents.isDestroyed()) {
+              panelView.webContents.send('new-profile-prompt');
+            }
+          },
+        },
+        {
+          // Open another app window on the Default profile — a fresh window with no
+          // profile picker/prompt. Additive multi-profile path: lives here (out of
+          // the panel) so it stays available even in-call — where the in-panel
+          // switcher is hidden — because opening a SEPARATE window never touches
+          // the current call.
+          label: 'New Window',
+          accelerator: 'CmdOrCtrl+N',
+          click: () => {
+            if (panelView && !panelView.webContents.isDestroyed()) {
+              panelView.webContents.send('new-window');
+            }
+          },
+        },
+        { type: 'separator' },
+        {
+          // Advanced (#282 follow-up): drive the bot's own webview to any URL to
+          // set up Slack/Google account state inside its partition.
+          label: 'Navigate Webview…',
+          accelerator: 'CmdOrCtrl+Shift+L',
+          click: () => {
+            if (panelView && !panelView.webContents.isDestroyed()) {
+              panelView.webContents.send('navigate-webview-prompt');
+            }
+          },
+        },
       ],
     },
     {
@@ -4281,24 +4314,30 @@ function setupIPC() {
   // Launch (or focus, if already running) the instance for a profile. Creating
   // a new profile is just launching a never-seen name — the dir is created by
   // that instance at startup.
-  ipcMain.handle('switch-profile', async (_event, name) => {
+  // Launch the target profile's instance, or focus it if already running. Does
+  // NOT touch the current window — callers decide: switch-profile closes the
+  // current window afterward (switch in place, #379); open-profile-window leaves
+  // it open (the additive "new window" path). Returns `runningKey` so a switch
+  // caller can poll for the target coming up before it closes itself.
+  async function launchOrFocusProfile(name) {
     const isDefault = name === DEFAULT_PROFILE_KEY;
     if (!isDefault && !profileManager.isValidProfileName(name)) {
       return { ok: false, error: 'Invalid profile name (letters, numbers, . _ - only)' };
     }
+    const runningKey = isDefault ? DEFAULT_PROFILE_KEY : name;
+
     // Already the current window?
     if ((isDefault && !appProfile) || (!isDefault && name === appProfile)) {
-      return { ok: true, focused: true, alreadyCurrent: true };
+      return { ok: true, focused: true, alreadyCurrent: true, runningKey };
     }
 
     // Already running? Focus it instead of spawning a duplicate.
     const running = await scanRunningInstances();
-    const runningKey = isDefault ? DEFAULT_PROFILE_KEY : name;
     if (running[runningKey]) {
       const port = running[runningKey];
       try {
         await fetch(`http://127.0.0.1:${port}/api/focus`, { method: 'POST' });
-        return { ok: true, focused: true, port };
+        return { ok: true, focused: true, port, runningKey };
       } catch (err) {
         return { ok: false, error: `Profile running on ${port} but focus failed: ${err.message}` };
       }
@@ -4314,6 +4353,16 @@ function setupIPC() {
       args = [`--profile=${name}`, `--local-port=${port}`];
     }
 
+    // #379: open the new profile window where THIS one is, not centered. The main
+    // window already honors --window-x/y/w/h (createMainWindow, used by the test
+    // launcher), so just forward the current window's bounds. Default + named.
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        const b = mainWindow.getBounds();
+        args = [...args, `--window-x=${b.x}`, `--window-y=${b.y}`, `--window-w=${b.width}`, `--window-h=${b.height}`];
+      }
+    } catch { /* ignore — fall back to Electron's default centering */ }
+
     const { execFile } = require('child_process');
     try {
       if (app.isPackaged) {
@@ -4322,18 +4371,73 @@ function setupIPC() {
         const appBundle = exe.replace(/\/Contents\/MacOS\/[^/]+$/, '');
         const openArgs = args.length ? ['-n', appBundle, '--args', ...args] : ['-n', appBundle];
         execFile('open', openArgs, (err) => {
-          if (err) console.error('[electron] switch-profile launch failed:', err.message);
+          if (err) console.error('[electron] profile launch failed:', err.message);
         });
       } else {
         // Dev: relaunch this Electron binary with the same app dir + profile args.
         execFile(process.execPath, [app.getAppPath(), ...args], { detached: true, stdio: 'ignore' })
-          .on('error', (err) => console.error('[electron] switch-profile dev launch failed:', err.message));
+          .on('error', (err) => console.error('[electron] profile dev launch failed:', err.message));
       }
       console.log('[electron] Launching profile', isDefault ? '(default)' : name, port ? 'on port ' + port : '', app.isPackaged ? '(packaged)' : '(dev)');
-      return { ok: true, launched: true, port };
+      return { ok: true, launched: true, port, runningKey };
     } catch (err) {
       return { ok: false, error: err.message };
     }
+  }
+
+  // #379: SWITCH IN PLACE. Launch/focus the target, then close THIS window so we
+  // end on a single window. (The pre-#379 behavior left both windows open, which
+  // accumulated windows and made a terminal join_call ambiguous — "which
+  // instance?".) Only ever invoked from the idle state — the in-panel switcher is
+  // hidden in-call — so there is no live call to tear down here.
+  ipcMain.handle('switch-profile', async (_event, name) => {
+    const r = await launchOrFocusProfile(name);
+    if (!r.ok || r.alreadyCurrent) return r;
+
+    // If we just launched, wait for the new instance to actually bind before
+    // closing ours — a failed/slow launch must never leave zero windows. (Focus
+    // case: the target is already up, skip the wait.)
+    if (r.launched) {
+      const deadline = Date.now() + 8000;
+      let up = false;
+      while (Date.now() < deadline) {
+        const running = await scanRunningInstances();
+        if (running[r.runningKey]) { up = true; break; }
+        await new Promise((res) => setTimeout(res, 250));
+      }
+      if (!up) return { ok: false, error: 'New profile window did not come up in time — staying here.' };
+    }
+    // Target is up. Each profile is its own process, so closing this instance IS
+    // the switch. Quit shortly after the IPC resolves so the renderer settles.
+    setTimeout(() => app.quit(), 200);
+    return { ok: true, switched: true, port: r.port };
+  });
+
+  // #379: ADDITIVE "open in a new window" — launch/focus the target but LEAVE the
+  // current window open. The advanced, less-discoverable path (⌥-click a profile
+  // in the switcher, or File ▸ New Profile…). Because it opens a SEPARATE window
+  // and never touches the current call, it's safe to use mid-call.
+  ipcMain.handle('open-profile-window', async (_event, name) => {
+    return await launchOrFocusProfile(name);
+  });
+
+  // File ▸ New Window — open a genuinely NEW window with no picker/prompt. The app
+  // is one-window-per-profile (one locked userData dir + one fixed port each; see
+  // #393), so a "new window" MUST be a profile that isn't already running: open
+  // Default if it's free, else the first idle existing profile. If every profile
+  // is already up, there's nothing new to open — the panel reports 'all-running'.
+  ipcMain.handle('open-next-available-window', async () => {
+    const running = await scanRunningInstances();
+    // Always mark THIS instance's profile as running. The scan is a best-effort
+    // HTTP sweep with a 350ms per-port timeout, so under load it can miss our own
+    // server — which would make New Window re-target our own profile (Default gets
+    // reopened, or a named window needlessly opens Default first). We know our own
+    // identity for certain, so seed it deterministically.
+    running[appProfile || DEFAULT_PROFILE_KEY] = localServer.port;
+    const candidates = [DEFAULT_PROFILE_KEY, ...profileManager.listProfiles(PROFILES_ROOT).map((p) => p.name)];
+    const target = candidates.find((name) => !running[name]);
+    if (!target) return { ok: false, error: 'all-running' };
+    return await launchOrFocusProfile(target);
   });
 
   // Debug overlay — renders the troubleshooting snapshot onto the bot's

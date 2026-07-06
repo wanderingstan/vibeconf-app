@@ -395,6 +395,43 @@ async function doSwitchProfile(name) {
   } catch (e) { window.alert('Could not switch profile: ' + e.message); }
 }
 
+// #379: additive path — open a profile in a SEPARATE new window, leaving THIS
+// window (and any call it's in) untouched. Reached via ⌥-click in the switcher
+// and File ▸ New Profile… (the latter works even in-call).
+async function doOpenProfileWindow(name) {
+  closeProfileMenu();
+  const n = (name || '').trim();
+  if (!n) return;
+  try {
+    const r = await api.invoke('open-profile-window', n);
+    if (r && r.ok === false) window.alert('Could not open profile window: ' + (r.error || 'unknown'));
+  } catch (e) { window.alert('Could not open profile window: ' + e.message); }
+}
+
+// Menu-bar "New Profile…" → prompt for a NEW profile name (a never-seen name
+// creates the profile), then open it additively in its own window. This is the
+// CREATE path — distinct from "New Window", which opens the Default profile.
+api.on('new-profile-prompt', async () => {
+  const name = await inlinePrompt({
+    title: 'New profile name (letters, numbers, . _ - only):',
+    placeholder: 'e.g. alice',
+    okLabel: 'Create',
+  });
+  if (name) doOpenProfileWindow(name);
+});
+
+// Menu-bar "New Window" → open the next profile that isn't already running (the
+// app is one-window-per-profile — same bot in two calls is #393). No prompt.
+api.on('new-window', async () => {
+  try {
+    const r = await api.invoke('open-next-available-window');
+    if (r && r.ok === false) {
+      if (r.error === 'all-running') window.alert('Every profile is already open in a window.');
+      else window.alert('Could not open window: ' + (r.error || 'unknown'));
+    }
+  } catch (e) { window.alert('Could not open window: ' + e.message); }
+});
+
 function renderProfileMenu(data) {
   if (!profileMenu) return;
   profileMenu.innerHTML = '';
@@ -412,7 +449,9 @@ function renderProfileMenu(data) {
     if (!p.isCurrent) {
       row.onmouseenter = () => { row.style.background = '#3c4043'; };
       row.onmouseleave = () => { row.style.background = ''; };
-      row.onclick = () => doSwitchProfile(p.name);
+      // Default click SWITCHES this window to that profile (#379). ⌥-click opens
+      // it in a SEPARATE new window instead (additive, advanced).
+      row.onclick = (e) => (e.altKey ? doOpenProfileWindow(p.name) : doSwitchProfile(p.name));
     }
     // Left marker: ✓ for the current profile (so "Default" reads clearly as a
     // profile and the active one is obvious), else a running/not-running dot.
@@ -458,12 +497,19 @@ function renderProfileMenu(data) {
   const add = document.createElement('div');
   add.textContent = '＋ New profile…';
   add.style.cssText = 'padding:6px 8px;margin-top:4px;border-top:1px solid #5f6368;color:#8ab4f8;cursor:pointer';
-  add.onclick = async () => {
+  add.onclick = async (e) => {
+    const additive = e.altKey; // ⌥ → open the new profile in a separate window
     closeProfileMenu();
     const name = await inlinePrompt({ title: 'New profile name (letters, numbers, . _ - only):', placeholder: 'e.g. alice', okLabel: 'Create' });
-    if (name) doSwitchProfile(name);
+    if (name) (additive ? doOpenProfileWindow(name) : doSwitchProfile(name));
   };
   profileMenu.appendChild(add);
+
+  // #379: discoverability hint for the additive path.
+  const hint = document.createElement('div');
+  hint.textContent = '⌥-click a profile to open it in a new window instead';
+  hint.style.cssText = 'padding:4px 8px 2px;color:#5f6368;font-size:10px';
+  profileMenu.appendChild(hint);
 
   // Debugging help: reveal the profiles folder so the user can delete/rename
   // profile dirs directly (#282).
@@ -668,6 +714,11 @@ document.getElementById('errorClose').addEventListener('click', () => {
 
 function enterCallState(meetCode) {
   inCall = true;
+  // #379: mark the panel in-call so CSS can hide pre-call-only controls (the
+  // profile switcher). A single body flag keeps room for the broader pre-call vs
+  // in-call UI split (#289). Also close the switcher if it happened to be open.
+  document.body.dataset.callState = 'in-call';
+  closeProfileMenu();
   updateCallIdentity(); // light up the "appearing as" sub-line (#282)
   connectedSection.style.display = 'block';
   joinBtn.style.display = 'none';
@@ -685,6 +736,7 @@ function enterCallState(meetCode) {
 function exitCallState() {
   inCall = false;
   callProvider = null;
+  document.body.dataset.callState = 'idle'; // #379: pre-call controls return
   updateCallIdentity(); // back to "not in a call" (#282)
   connectedSection.style.display = 'none';
   joinBtn.style.display = '';

@@ -2912,6 +2912,10 @@ app.whenReady().then(async () => {
       endpointBase: () => getWebsiteUrl(),
       instanceId,
       token: process.env.VIBECONF_LOGS_TOKEN || '',
+      // #386: send the vibeconferencing.com login (app-level vcSessionToken, the
+      // vc_session JWT mirror) so the backend authorizes log writes by USER — no
+      // bundled secret. Read fresh each flush so login/logout takes effect live.
+      sessionToken: () => (store && store.get('vcSessionToken')) || '',
       meta: () => ({
         version: app.getVersion(),
         platform: process.platform,

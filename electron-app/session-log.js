@@ -51,6 +51,9 @@ async function _flushRemote() {
   try {
     const headers = { 'Content-Type': 'application/json' };
     if (_remote.token) headers['x-vibe-logs-token'] = _remote.token;
+    // #386: authorize the write by the logged-in user's session when available.
+    const _sess = _remote.sessionToken ? _remote.sessionToken() : '';
+    if (_sess) headers['Cookie'] = 'vc_session=' + _sess;
     const resp = await fetch(`${base}/api/logs/${encodeURIComponent(_remote.instanceId)}`, {
       method: 'POST',
       headers,
@@ -79,12 +82,16 @@ function _ensureFlushTimer(intervalMs = 3000) {
 // Configure (or reconfigure) remote shipping. Safe to call before or after the
 // log file is opened. `endpointBase` and `meta` are getters so the live
 // website URL / current room are read at flush time, not frozen here.
-function configureRemoteLog({ enabled = false, endpointBase, instanceId, token = '', meta, intervalMs } = {}) {
+function configureRemoteLog({ enabled = false, endpointBase, instanceId, token = '', sessionToken, meta, intervalMs } = {}) {
   _remote = {
     enabled: !!enabled,
     endpointBase: endpointBase || (() => ''),
     instanceId: instanceId || 'unknown',
     token: token || '',
+    // #386: the vibeconferencing.com session (vc_session JWT). A getter so it's
+    // read fresh each flush (login/logout changes it). Sent as a cookie so the
+    // backend authorizes writes by USER, no bundled secret needed.
+    sessionToken: sessionToken || (() => ''),
     meta: meta || (() => ({})),
   };
   if (_remote.enabled) _ensureFlushTimer(intervalMs);

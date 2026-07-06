@@ -1435,7 +1435,11 @@ function createWhiteboardWindow(roomUrl) {
     y: sh + 100,
     title: 'Vibeconferencing Whiteboard',
     skipTaskbar: true,
-    webPreferences: { contextIsolation: true, nodeIntegration: false },
+    // Share the bot's identity partition (same as meetView) so this shared-screen
+    // surface inherits ALL the bot's credentials — Google, Slack, and cached HTTP
+    // Basic-Auth. Without this it landed on Electron's default session, so a site
+    // you'd logged into in the Meet webview showed up logged-OUT when shared.
+    webPreferences: { contextIsolation: true, nodeIntegration: false, partition: SESSION_PARTITION },
   });
   // Pin the BrowserWindow title so the loaded page can't overwrite it. The
   // share-handler matches the desktopCapturer source by this exact title to
@@ -2261,6 +2265,11 @@ function speakText(text, voice, emoji) {
 // the macOS provider even when an ElevenLabs key is set, instead of being
 // mis-sent to ElevenLabs as a (nonexistent) voice ID.
 let macosVoiceNameSet = new Set();
+
+// In-flight HTTP Basic/Digest auth challenges for the bot webview: id → Electron
+// login callback, awaiting the operator's credentials from the panel dialog.
+const pendingBasicAuth = new Map();
+let basicAuthSeq = 0;
 
 // Enumerate installed macOS `say` voices → [{ name, locale, sample }], quality
 // first (Premium > Enhanced > plain), then English, then name. Shared by the
@@ -4686,6 +4695,41 @@ function setupIPC() {
       return { ok: true, url };
     }
     return { ok: false, error: 'no webview' };
+  });
+
+  // HTTP Basic/Digest auth for the bot's webview. Electron cancels auth
+  // challenges by default — a site behind Basic Auth (e.g. navigated to via
+  // Navigate Webview…) just returns a bare 401 "access denied" with no prompt.
+  // Handle the `login` event: for a real (non-proxy) Basic/Digest challenge on
+  // OUR meetView, ask the operator once for credentials, then hand them to
+  // Chromium. Chromium caches accepted credentials per origin for the session's
+  // partition, so the site stays authenticated afterwards — including when the
+  // bot shares its screen. Google/Slack sign-in is OAuth (never triggers a Basic
+  // challenge), so this only ever fires for genuinely Basic-protected sites.
+  app.on('login', (event, webContents, _details, authInfo, callback) => {
+    if (authInfo.isProxy) return; // proxy auth: leave Electron's default behavior
+    if (!/^(basic|digest)$/i.test(authInfo.scheme || '')) return; // NTLM/Negotiate: default
+    // Only the bot's own surfaces — the Meet webview and the shared-screen window.
+    // Both sit on SESSION_PARTITION, so credentials the operator enters here cache
+    // once and are reused across both (log in in one, it's live in the other).
+    const isMeet = meetView && !meetView.webContents.isDestroyed() && webContents === meetView.webContents;
+    const isShared = whiteboardWindow && !whiteboardWindow.isDestroyed()
+      && !whiteboardWindow.webContents.isDestroyed() && webContents === whiteboardWindow.webContents;
+    if (!isMeet && !isShared) return;
+    event.preventDefault();
+    if (!panelView || panelView.webContents.isDestroyed()) { callback(); return; } // no UI → cancel (401)
+    const id = ++basicAuthSeq;
+    pendingBasicAuth.set(id, callback);
+    panelView.webContents.send('basic-auth-prompt', {
+      id, host: authInfo.host || '', realm: authInfo.realm || '',
+    });
+  });
+  // Panel returns the operator's input (or a cancel). Empty user → cancel → 401.
+  ipcMain.on('basic-auth-result', (_event, { id, user, password } = {}) => {
+    const cb = pendingBasicAuth.get(id);
+    if (!cb) return;
+    pendingBasicAuth.delete(id);
+    if (user) cb(user, password || ''); else cb();
   });
 
   // Sign the bot out: remove ONLY Google's auth cookies (the master-auth set,

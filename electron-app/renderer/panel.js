@@ -385,6 +385,63 @@ function inlinePrompt({ title, placeholder = '', initial = '', okLabel = 'OK' })
   });
 }
 
+// Two-field (username + masked password) dialog for an HTTP Basic/Digest auth
+// challenge the bot webview hit. Resolves {user, password} on submit, or null on
+// cancel. Styled to match inlinePrompt.
+function basicAuthPrompt({ host = '', realm = '' }) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:200;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#2a2d31;border:1px solid #5f6368;border-radius:10px;padding:16px;width:min(360px,86vw);box-shadow:0 10px 40px rgba(0,0,0,0.6)';
+    const t = document.createElement('div');
+    t.textContent = `Sign in to ${host || 'this site'}`;
+    t.style.cssText = 'color:#e8eaed;font-size:13px;margin-bottom:4px';
+    const sub = document.createElement('div');
+    sub.textContent = realm ? `This site is password-protected (${realm}). It stays signed in for the rest of the session.` : 'This site is password-protected. It stays signed in for the rest of the session.';
+    sub.style.cssText = 'color:#9aa0a6;font-size:11px;margin-bottom:10px;line-height:1.4';
+    const mkInput = (type, ph) => {
+      const el = document.createElement('input');
+      el.type = type; el.placeholder = ph;
+      el.style.cssText = 'width:100%;box-sizing:border-box;background:#202124;border:1px solid #5f6368;border-radius:6px;color:#e8eaed;padding:8px;font-size:13px;outline:none;margin-bottom:8px';
+      return el;
+    };
+    const userIn = mkInput('text', 'Username');
+    const passIn = mkInput('password', 'Password');
+    const btns = document.createElement('div');
+    btns.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:4px';
+    const cancel = document.createElement('button');
+    cancel.textContent = 'Cancel';
+    cancel.style.cssText = 'background:none;border:1px solid #5f6368;color:#9aa0a6;border-radius:18px;padding:6px 14px;cursor:pointer';
+    const ok = document.createElement('button');
+    ok.textContent = 'Sign in';
+    ok.style.cssText = 'background:#8ab4f8;border:none;color:#202124;border-radius:18px;padding:6px 14px;font-weight:600;cursor:pointer';
+    const close = (val) => { overlay.remove(); resolve(val); };
+    const submit = () => { const u = userIn.value.trim(); close(u ? { user: u, password: passIn.value } : null); };
+    cancel.onclick = () => close(null);
+    ok.onclick = submit;
+    const onKey = (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); submit(); }
+      else if (e.key === 'Escape') { e.preventDefault(); close(null); }
+    };
+    userIn.addEventListener('keydown', onKey);
+    passIn.addEventListener('keydown', onKey);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
+    btns.appendChild(cancel); btns.appendChild(ok);
+    box.appendChild(t); box.appendChild(sub); box.appendChild(userIn); box.appendChild(passIn); box.appendChild(btns);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    userIn.focus();
+  });
+}
+
+// The bot webview hit an HTTP Basic/Digest challenge — prompt the operator and
+// hand the result back to main (which calls Electron's login callback).
+api.on('basic-auth-prompt', async ({ id, host, realm }) => {
+  const creds = await basicAuthPrompt({ host, realm });
+  api.send('basic-auth-result', { id, user: creds?.user || '', password: creds?.password || '' });
+});
+
 async function doSwitchProfile(name) {
   closeProfileMenu();
   const n = (name || '').trim();

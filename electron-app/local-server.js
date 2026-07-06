@@ -1036,6 +1036,7 @@ class LocalServer {
         if (waiter.silenceTimer) {
           clearTimeout(waiter.silenceTimer);
           waiter.silenceTimer = null;
+          waiter.silenceTimerAt = null;
         }
       }
       // Speaker resumed — cancel any pending soft-opening probe (no opening).
@@ -1378,8 +1379,13 @@ class LocalServer {
         if (!waiter.silenceTimer && lastEntry) {
           const timeUntilQuiet = (effSilence + 3) * 1000 - lastEntryAge;
           if (timeUntilQuiet > 0) {
+            // Track the deadline so the threshold branch below can RE-ARM
+            // over this long fallback horizon once the speaker actually
+            // stops (#372 — see the re-arm comment there).
+            waiter.silenceTimerAt = Date.now() + timeUntilQuiet + 50;
             waiter.silenceTimer = setTimeout(() => {
               waiter.silenceTimer = null;
+              waiter.silenceTimerAt = null;
               this._checkWaiters();
             }, timeUntilQuiet + 50);
           }
@@ -1414,14 +1420,32 @@ class LocalServer {
         // Silence threshold already met — resolve immediately
         console.log(ts(), '⏱️  [resolve] Silence threshold met (' + Math.round(elapsed) + 'ms ≥ ' + silenceMs + 'ms' + (effSilence < waiter.silence ? ', name-mention fast-resolve' : '') + ') — resolving');
         this._resolveWaiter(waiter, 'silence');
-      } else if (!waiter.silenceTimer) {
-        // Start a silence timer for the remaining time
-        const remaining = silenceMs - elapsed;
-        waiter.silenceTimer = setTimeout(() => {
-          waiter.silenceTimer = null;
-          // Re-check: someone may have started speaking during the wait
-          this._checkWaiters();
-        }, remaining + 50);
+      } else {
+        // Arm (or RE-ARM) the silence timer for the true remaining time.
+        //
+        // #372: this used to be `else if (!waiter.silenceTimer)`, which let a
+        // STALE timer block the correct one: while the speaker was still
+        // talking, the anyoneSpeaking branch above arms a timer for the
+        // caption-quiet fallback horizon (threshold + 3s). When the speaker
+        // then stopped, this branch computed the right (shorter) remaining,
+        // but the no-re-arm guard skipped it — so the gate only fired when
+        // the stale fallback timer woke. Measured cost over 80 logged cycles:
+        // +708ms avg / +1704ms p90 / +2501ms max of dead air per reply.
+        // Re-arm whenever the correct deadline is meaningfully EARLIER than
+        // the scheduled one (25ms slop avoids churn from back-to-back
+        // caption events); never re-arm later — that would extend the wait.
+        const remaining = silenceMs - elapsed + 50;
+        const fireAt = Date.now() + remaining;
+        if (!waiter.silenceTimer || fireAt < (waiter.silenceTimerAt || Infinity) - 25) {
+          if (waiter.silenceTimer) clearTimeout(waiter.silenceTimer);
+          waiter.silenceTimerAt = fireAt;
+          waiter.silenceTimer = setTimeout(() => {
+            waiter.silenceTimer = null;
+            waiter.silenceTimerAt = null;
+            // Re-check: someone may have started speaking during the wait
+            this._checkWaiters();
+          }, remaining);
+        }
       }
     }
   }

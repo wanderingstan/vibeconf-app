@@ -922,6 +922,13 @@
   // TTS audio queue — prevents overlapping playback
   const ttsQueue = [];
   let ttsPlaying = false;
+  // #372 sentence-chunked TTS: when a play-tts arrives flagged expectMore,
+  // another chunk of the SAME utterance is being synthesized main-side. If
+  // the queue drains before it lands, HOLD the speaking state (no tts-ended,
+  // face stays) until this deadline; the final chunk (expectMore=false)
+  // clears it. The deadline caps the hold so a failed chunk-2 synth can't
+  // leave the bot stuck "speaking" forever.
+  let ttsExpectMoreUntil = 0;
   // Emoji of the utterance currently playing — so a mid-playback interruption
   // can retain it and resume (#350) with the same face.
   let currentSpeakingEmoji = null;
@@ -957,16 +964,29 @@
       console.error('[bots-in-calls] TTS playback error:', err);
     }
     ttsPlaying = false;
-    if (ttsQueue.length === 0) {
-      for (const cam of cameras.values()) {
-        cam.speaking = false;
-        cam.speakingEmojiOverride = null;
-      }
-      setTimeout(() => { transcription.botSpeaking = false; }, 1500);
-      window.postMessage({ __botsInCalls: true, action: 'tts-ended' }, '*');
-    } else {
-      playNextTTS();
+    _ttsMaybeFinish();
+  }
+
+  // Queue drained (or a hold lapsed): either play the next clip, keep holding
+  // for a promised chunk (#372), or finish the utterance (tts-ended).
+  function _ttsMaybeFinish() {
+    if (ttsPlaying) return;
+    if (ttsQueue.length > 0) { playNextTTS(); return; }
+    if (Date.now() < ttsExpectMoreUntil) {
+      // A chunked utterance promised another clip — hold the speaking state
+      // across the seam instead of emitting a premature tts-ended (which
+      // would flicker the face and drop botState out of 'speaking' between
+      // sentences). Re-check shortly; an arriving chunk resumes playback via
+      // its own playNextTTS call.
+      setTimeout(_ttsMaybeFinish, 200);
+      return;
     }
+    for (const cam of cameras.values()) {
+      cam.speaking = false;
+      cam.speakingEmojiOverride = null;
+    }
+    setTimeout(() => { transcription.botSpeaking = false; }, 1500);
+    window.postMessage({ __botsInCalls: true, action: 'tts-ended' }, '*');
   }
 
   // Parse width/height from Meet's video constraints
@@ -1492,6 +1512,10 @@
           // A fresh utterance supersedes any retained interrupted one — the
           // agent has moved on, so don't later resume a stale tail (#350).
           interruptedTts = null;
+          // #372: expectMore=true promises another chunk of this utterance —
+          // hold the speaking state if the queue drains before it arrives
+          // (window refreshed per chunk; final chunk clears it).
+          ttsExpectMoreUntil = payload.expectMore ? Date.now() + 8000 : 0;
           ttsQueue.push({ audioData: payload.audioData, emoji: payload.emoji });
           playNextTTS();
         }
@@ -1503,6 +1527,9 @@
         // playNextTTS state machine cleans up normally, posting tts-ended.
         const droppedQueue = ttsQueue.length;
         ttsQueue.length = 0;
+        // #372: a barge-in cancels any promised follow-up chunk — don't hold
+        // the speaking state for audio that will never be welcome.
+        ttsExpectMoreUntil = 0;
         const stopped = mic ? mic.stopAudio() : { wasPlaying: false, buf: null, playedTo: 0 };
         const reason = payload?.reason || 'unspecified';
         // #350: retain the cut-off buffer so a quick reopen can resume near the

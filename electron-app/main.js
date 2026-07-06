@@ -281,6 +281,10 @@ const localServer = new globalThis.LocalServer({
   // meet view is gone.
   onStopTts: (reason) => {
     console.log('[local-server] stop-tts:', reason || 'unspecified');
+    // #372: invalidate any in-flight chunked utterance — a chunk still being
+    // synthesized must NOT be sent after the barge-in stopped its siblings
+    // (it would speak a stale mid-utterance tail over the interrupter).
+    ttsStopGeneration++;
     if (meetView && !meetView.webContents.isDestroyed()) {
       meetView.webContents.send('extension-message', {
         action: 'stop-tts',
@@ -2071,20 +2075,35 @@ return "none"`;
 // Unmute the mic and send the audio to the renderer's TTS queue. Resolves AFTER
 // the play-tts is sent (post the 300ms unmute settle), so callers can chain to
 // preserve send order.
-function sendPlayTts(base64Audio, emoji) {
+function sendPlayTts(base64Audio, emoji, { unmutedAt, expectMore } = {}) {
   return new Promise((resolve) => {
     if (!meetView || meetView.webContents.isDestroyed()) {
       console.error('[electron] Meet view not available for audio playback');
       return resolve();
     }
-    sendExtMsg({ action: CALL_COMMANDS.ACTIONS.unmuteMic });
+    // #372: when the caller already unmuted (speakText does it BEFORE
+    // synthesis so the 300ms settle overlaps the synth time), only wait out
+    // whatever remains of the settle — usually 0ms. Callers that didn't
+    // pre-unmute get the original unmute-then-settle behavior.
+    let settleMs = 300;
+    if (unmutedAt) {
+      settleMs = Math.max(0, 300 - (Date.now() - unmutedAt));
+    } else {
+      sendExtMsg({ action: CALL_COMMANDS.ACTIONS.unmuteMic });
+    }
     setTimeout(() => {
-      sendExtMsg({ action: CALL_COMMANDS.ACTIONS.playTts, payload: { audioData: base64Audio, emoji } });
+      // expectMore (#372 sentence-chunked TTS): tells the renderer another
+      // chunk of the SAME utterance is coming, so it must not emit tts-ended
+      // (and drop the speaking state) if the queue momentarily drains.
+      sendExtMsg({ action: CALL_COMMANDS.ACTIONS.playTts, payload: { audioData: base64Audio, emoji, expectMore: !!expectMore } });
       console.log('[electron] Sent play-tts to Meet view', emoji ? `(emoji: ${emoji})` : '');
       resolve();
-    }, 300);
+    }, settleMs);
   });
 }
+
+// #372: sentence-chunked TTS split — pure helper, unit-tested.
+const { splitForTts } = require('./tts-chunking.js');
 
 // Serialize audio PRODUCTION (TTS synth + play_audio fetch/read) so play-tts
 // messages reach the renderer in REQUEST order. Without this, a fast play_audio
@@ -2099,6 +2118,11 @@ function enqueueAudio(produceAndSend) {
   _audioChain = _audioChain.then(produceAndSend).catch((e) => console.error('[electron] audio-chain item failed:', e?.message));
   return _audioChain;
 }
+
+// #372: bumped by onStopTts (barge-in). A chunked speakText captures the
+// value at start and stops sending further chunks once it changes, so a
+// slow chunk-2 synth can't play a stale tail after an interruption.
+let ttsStopGeneration = 0;
 
 function speakText(text, voice, emoji) {
   // Sanitize markdown out of the spoken string only (#160).
@@ -2128,42 +2152,70 @@ function speakText(text, voice, emoji) {
         tts.updateConfig({ provider: 'elevenlabs', voiceId: voice });
       }
     }
+    // #372: start the mic-unmute NOW so its 300ms settle runs concurrently
+    // with synthesis instead of after it (the mic is the virtual TTS device —
+    // unmuted-with-no-audio is just silence, so opening it early is safe).
+    let unmutedAt = null;
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      sendExtMsg({ action: CALL_COMMANDS.ACTIONS.unmuteMic });
+      unmutedAt = Date.now();
+    }
+    // #372: sentence-chunked synthesis — play the first sentence while the
+    // rest synthesizes, so first-audio latency stops scaling with reply
+    // length. Chunk 1 carries the emoji + `expectMore` (the renderer holds
+    // the speaking state across the seam); the final chunk clears it.
+    const parts = splitForTts(spokenText);
+    const genAtStart = ttsStopGeneration;
     try {
-      const audioBuffer = await tts.synthesize(spokenText);
-      if (!audioBuffer) { console.error('[electron] TTS returned null/empty buffer'); return; }
-      const base64Audio = Buffer.from(audioBuffer).toString('base64');
-      console.log('[electron] TTS synthesized:', text.slice(0, 40), '→', base64Audio.length, 'bytes base64');
-      await sendPlayTts(base64Audio, emoji);
-      // ElevenLabs is back — if we'd previously degraded to the macOS voice,
-      // tell the agent its normal voice is restored (rides status.errors → the
-      // agent sees it on its next wait_for_speech lull).
-      if (ttsVoiceFallbackActive) {
-        ttsVoiceFallbackActive = false;
-        localServer.addError('Voice restored — ElevenLabs is working again; back to your normal voice.');
-      }
-    } catch (err) {
-      console.error('[electron] TTS error:', err.message);
-      broadcastError('TTS: ' + err.message.slice(0, 120));
-      // Don't go silent on an ElevenLabs failure (esp. quota_exceeded mid-call):
-      // fall back to the macOS `say` voice so the bot keeps talking, just in a
-      // plainer voice. Only the audio degrades — the words still land.
-      try {
-        const fallbackBuffer = await tts.sayFallback(spokenText);
-        if (fallbackBuffer) {
-          const base64Audio = Buffer.from(fallbackBuffer).toString('base64');
-          console.log('[electron] TTS fell back to macOS say:', text.slice(0, 40), '→', base64Audio.length, 'bytes base64');
-          await sendPlayTts(base64Audio, emoji);
-          // Tell the agent ONCE that its voice changed, so it knows it now
-          // sounds different (and can mention it / not be surprised). Rides the
-          // status.errors channel the agent already reads on each lull.
-          if (!ttsVoiceFallbackActive) {
-            ttsVoiceFallbackActive = true;
-            const why = err.code === 'quota_exceeded' ? 'ElevenLabs quota exhausted' : `ElevenLabs unavailable (${(err.message || '').slice(0, 60)})`;
-            localServer.addError(`Voice changed: ${why} — now speaking in the macOS fallback voice, which sounds noticeably different. Your words still play; you may briefly acknowledge the voice change if it fits.`);
+      for (let i = 0; i < parts.length; i++) {
+        if (i > 0 && ttsStopGeneration !== genAtStart) {
+          console.log('[electron] TTS chunk ' + (i + 1) + '/' + parts.length + ' dropped — barge-in stopped this utterance (#372)');
+          break;
+        }
+        const expectMore = i < parts.length - 1;
+        const chunkEmoji = i === 0 ? emoji : undefined;
+        const chunkTag = parts.length > 1 ? ` (chunk ${i + 1}/${parts.length})` : '';
+        try {
+          const audioBuffer = await tts.synthesize(parts[i]);
+          if (!audioBuffer) { console.error('[electron] TTS returned null/empty buffer' + chunkTag); continue; }
+          const base64Audio = Buffer.from(audioBuffer).toString('base64');
+          console.log('[electron] TTS synthesized:', parts[i].slice(0, 40), '→', base64Audio.length, 'bytes base64' + chunkTag);
+          await sendPlayTts(base64Audio, chunkEmoji, { unmutedAt, expectMore });
+          // ElevenLabs is back — if we'd previously degraded to the macOS voice,
+          // tell the agent its normal voice is restored (rides status.errors →
+          // the agent sees it on its next wait_for_speech lull).
+          if (ttsVoiceFallbackActive) {
+            ttsVoiceFallbackActive = false;
+            localServer.addError('Voice restored — ElevenLabs is working again; back to your normal voice.');
+          }
+        } catch (err) {
+          console.error('[electron] TTS error' + chunkTag + ':', err.message);
+          broadcastError('TTS: ' + err.message.slice(0, 120));
+          // Don't go silent on an ElevenLabs failure (esp. quota_exceeded
+          // mid-call): fall back to the macOS `say` voice for THIS chunk so
+          // the bot keeps talking (per-chunk so an already-played chunk 1 is
+          // never repeated). If the fallback also fails mid-utterance, the
+          // renderer's expectMore grace window lapses and emits tts-ended on
+          // its own — no stuck speaking state.
+          try {
+            const fallbackBuffer = await tts.sayFallback(parts[i]);
+            if (fallbackBuffer) {
+              const base64Audio = Buffer.from(fallbackBuffer).toString('base64');
+              console.log('[electron] TTS fell back to macOS say:', parts[i].slice(0, 40), '→', base64Audio.length, 'bytes base64' + chunkTag);
+              await sendPlayTts(base64Audio, chunkEmoji, { unmutedAt, expectMore });
+              // Tell the agent ONCE that its voice changed, so it knows it now
+              // sounds different (and can mention it / not be surprised). Rides
+              // the status.errors channel the agent already reads on each lull.
+              if (!ttsVoiceFallbackActive) {
+                ttsVoiceFallbackActive = true;
+                const why = err.code === 'quota_exceeded' ? 'ElevenLabs quota exhausted' : `ElevenLabs unavailable (${(err.message || '').slice(0, 60)})`;
+                localServer.addError(`Voice changed: ${why} — now speaking in the macOS fallback voice, which sounds noticeably different. Your words still play; you may briefly acknowledge the voice change if it fits.`);
+              }
+            }
+          } catch (fbErr) {
+            console.error('[electron] TTS macOS fallback also failed' + chunkTag + ':', fbErr.message);
           }
         }
-      } catch (fbErr) {
-        console.error('[electron] TTS macOS fallback also failed:', fbErr.message);
       }
     } finally {
       if (voice) {

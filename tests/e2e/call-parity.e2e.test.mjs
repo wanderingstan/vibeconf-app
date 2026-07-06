@@ -50,7 +50,11 @@ if (SLACK_URL) {
 }
 
 function runSpawn(args) {
-  execFileSync('zsh', [SPAWN, ...args], { cwd: REPO, stdio: 'inherit', timeout: 90_000 });
+  // Bringing up 2 dev-mode (pnpm dev, from source) fleet instances and waiting
+  // for their local servers measures ~120s on a loaded machine — the old 90s cap
+  // killed the spawn mid-startup and cancelled every subtest before it ran. Give
+  // generous headroom so the timeout only ever fires on a genuinely stuck spawn.
+  execFileSync('zsh', [SPAWN, ...args], { cwd: REPO, stdio: 'inherit', timeout: 240_000 });
 }
 
 async function waitForInCall(bot, timeoutMs = 40_000) {
@@ -75,7 +79,10 @@ for (const p of PROVIDERS) {
         const inCall = await waitForInCall(b);
         assert.ok(inCall, `${b.name} should reach in-call on ${p.name}`);
       }
-    }, { timeout: 90_000 });
+      // Budget must cover the full bring-up: ~120s dev-mode fleet spawn +
+      // join + up to 2×40s waitForInCall. The old 90s hook cap was shorter than
+      // the spawn alone, so the hook always failed before the first assertion.
+    }, { timeout: 300_000 });
 
     after(() => { runSpawn(p.killArgs); }, { timeout: 30_000 });
 

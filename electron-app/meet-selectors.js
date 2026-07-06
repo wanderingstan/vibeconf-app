@@ -183,7 +183,19 @@ const MEET = {
     denialCantJoin: "You can't join this video call",
     denialRemoved: 'You have been removed from the meeting',
     // "Waiting to be admitted" body text.
-    waitingTexts: ['wait until', 'asking to be let in', 'Please wait'],
+    // #330/#376: matched case-INSENSITIVELY (see google-meet-provider.js), so
+    // keep these lowercase. Cover Google Meet's lobby-banner variants: "Asking to
+    // be let in", "Please wait until the host lets you in", "You'll join the call
+    // when someone lets you in", etc.
+    waitingTexts: [
+      'wait until',
+      'asking to be let in',
+      'please wait',
+      "you'll join the call when",
+      'someone lets you in',
+      'lets you in',
+      'let you in',
+    ],
   },
 
   // -------------------------------------------------------------------------

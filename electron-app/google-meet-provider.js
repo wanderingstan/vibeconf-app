@@ -1389,13 +1389,25 @@ async function autoJoin(botName) {
       if (dismissBlockingModals()) continue;
 
       const bodyText = document.body.innerText;
-      const waitingText = MEET.join.waitingTexts.some((t) => bodyText.includes(t));
+      // #330/#376: case-INSENSITIVE — the lobby banner is "Asking to be let in"
+      // (capital A) etc., which a case-sensitive match against the lowercase
+      // needles missed, so the guard let the seat declare in-call on the lobby.
+      const bodyLower = bodyText.toLowerCase();
+      const waitingText = MEET.join.waitingTexts.some((t) => bodyLower.includes(t));
       const hasJoinUI = !!findByText(MEET.join.joinTextAsk) || !!findByText(MEET.join.joinTextNow) || !!findByText(MEET.join.joinTextAnyway) || !!findByText(MEET.join.joinTextSwitch);
       const inCallUI =
         findByAriaLabel(MEET.join.leaveCallLabel) ||
         findByAriaLabel(MEET.captions.enableLabelEn) ||
         findByAriaLabel(MEET.captions.disableLabelEn) ||
         document.querySelector(MEET.join.leaveCallTooltip);
+      // #330/#376: the WAITING ROOM shows a Leave-call control too (so `inCallUI`
+      // is truthy there), but NOT the People / Chat toolbar buttons — those only
+      // exist once genuinely admitted (confirmed live: 0 People/Chat buttons in
+      // the lobby, Leave present). The banner text isn't in document.body.innerText
+      // (shadow DOM), so text detection missed the lobby; require a real toolbar
+      // button as positive proof of admission instead.
+      const inCallToolbar = !!document.querySelector(MEET.people.buttonFallback) ||
+        !!document.querySelector(MEET.chat.toggle);
 
       // Explicit denial/removal pages — Meet shows one when the host blocks
       // entry or the call is inaccessible. Fail fast (with #238 reload-retry)
@@ -1403,7 +1415,13 @@ async function autoJoin(botName) {
       // loop above via handleDenialPage (#263).
       if (await handleDenialPage(bodyText, 'admission')) return;
 
-      if (inCallUI && !hasJoinUI) {
+      // #330: the waiting room can expose a "Leave call"-labelled control (and no
+      // join UI), so `inCallUI && !hasJoinUI` alone once declared admission on the
+      // LOBBY — the seat then played TTS to nobody and reported healthy. Require
+      // the waiting-room text to be ABSENT too. This can only DELAY admission by a
+      // loop (~1s) while the lobby banner lingers; once truly in-call the banner is
+      // gone, so it never blocks a real join.
+      if (inCallUI && inCallToolbar && !hasJoinUI && !waitingText) {
         admitted = true;
         try { sessionStorage.removeItem('vibeconf-denial-retries'); } catch { /* ignore */ } // #238: reset on success
         sendStatus('Participating in Meet');
@@ -2395,6 +2413,15 @@ function enterInCallState() {
   const leaveBtn = findByAriaLabel(MEET.join.leaveCallLabel) ||
     document.querySelector(MEET.join.leaveCallTooltip);
   if (!leaveBtn) return; // not actually in the call yet
+  // #330/#376: the "Leave call" control is ALSO on the WAITING ROOM, so leaveBtn
+  // alone once made this watcher declare in-call on the lobby (TTS to nobody,
+  // reported healthy). The lobby mini-toolbar has NO People/Chat buttons — those
+  // appear only once genuinely admitted (confirmed live). Require one as positive
+  // proof; no-op (retries next 1.5s tick) until then. The waiting-room BANNER isn't
+  // in document.body.innerText (shadow DOM), so text detection alone missed it.
+  const inCallToolbar = document.querySelector(MEET.people.buttonFallback) ||
+    document.querySelector(MEET.chat.toggle);
+  if (!inCallToolbar) return; // lobby: Leave present but no People/Chat toolbar
   inCallSetupDone = true;
   if (inCallWatcher) { clearInterval(inCallWatcher); inCallWatcher = null; }
   console.log('[electron-meet] In-call toolbar detected — entering in-call state');

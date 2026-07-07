@@ -251,10 +251,22 @@ function createSlackSurface(mainWindow, opts = {}) {
   if (url) view.webContents.loadURL(url);
 
   // During login/SSO the main view can hit Slack's "Opening Slack…" interstitial
-  // (native-app handoff). Keep clicking its "use Slack in your browser" link so
-  // the flow proceeds without a human — important for in-app Slack login (#285)
+  // (native-app handoff) that offers a "use Slack in your browser" link. Click it
+  // so the flow proceeds without a human — needed for in-app Slack login (#285)
   // and first-time profile setup (#287). Harmless when the link never appears.
-  clickButtonByTextRepeating(view.webContents, 'Slack in your browser', '"use Slack in your browser" interstitial (main view)');
+  //
+  // Re-arm on EVERY document load, not once: clickButtonByTextRepeating injects a
+  // setInterval into the CURRENT document, but a login is a chain of full-page
+  // navigations (email → SSO → redirect → "Opening Slack…"), and each navigation
+  // tears down the JS realm and kills that injected interval. Firing it only at
+  // surface creation meant that by the time the interstitial's OWN document loaded
+  // — often minutes into a human login, well past the old 120s self-expiry too —
+  // no clicker was running in it, so it never fired (#287). did-finish-load gives
+  // each new page (including the interstitial, whenever it shows up) a fresh,
+  // short-lived clicker.
+  view.webContents.on('did-finish-load', () => {
+    clickButtonByTextRepeating(view.webContents, 'Slack in your browser', '"use Slack in your browser" interstitial (main view)', { tries: 40 });
+  });
 
   // Toggle between the huddle overlay and the app/panel underneath. The huddle
   // is a child window laid OVER the app (always on top of it), so to reach the

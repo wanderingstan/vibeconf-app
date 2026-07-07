@@ -975,6 +975,7 @@ async function refreshBotIdentity(mode) {
 // live name from the huddle DOM yet (#283), so this is informational; once a
 // remembered Slack name exists it's shown. No override preference anymore. ---
 const botSlackIdentityStatus = document.getElementById('botSlackIdentityStatus');
+const slackSignInMainBtn = document.getElementById('slackSignInMainBtn');
 async function refreshSlackIdentity() {
   if (!botSlackIdentityStatus) return;
   // Cookie-authoritative connected check (get-slack-mode → the `d` session
@@ -992,11 +993,32 @@ async function refreshSlackIdentity() {
   }
   const dot = document.getElementById('connSlackDot');
   if (dot) dot.classList.toggle('on', signedIn);
+  // Main-view "Sign in" — shown only when NOT connected, matching Meet's
+  // botSignInMainBtn and the vibeconferencing.com userSignInMainBtn (#289).
+  if (slackSignInMainBtn) slackSignInMainBtn.style.display = signedIn ? 'none' : 'inline-block';
   // Sign-out only makes sense while signed in — hidden otherwise, matching
   // the Meet identity section's sign-out behavior.
   if (slackSignOutBtn) slackSignOutBtn.style.display = signedIn ? '' : 'none';
 }
 refreshSlackIdentity();
+
+// Main-view Slack sign-in — parity with the Meet + vibeconferencing.com sign-in
+// buttons on the profile box. Same slack-sign-in IPC as the Settings "Sign into
+// Slack as bot" button.
+slackSignInMainBtn?.addEventListener('click', async () => {
+  slackSignInMainBtn.disabled = true;
+  slackSignInMainBtn.textContent = 'Opening Slack…';
+  try {
+    await api.invoke('slack-sign-in');
+  } catch (err) {
+    showError('Slack sign-in failed: ' + err.message);
+  }
+  setTimeout(() => {
+    slackSignInMainBtn.disabled = false;
+    slackSignInMainBtn.textContent = 'Sign in';
+    refreshSlackIdentity();
+  }, 1500);
+});
 
 botSignInMainBtn?.addEventListener('click', async () => {
   botSignInMainBtn.disabled = true;

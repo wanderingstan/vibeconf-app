@@ -44,6 +44,37 @@ overlaps=$(grep -oE 'cross-bot speak overlaps \(<1.2s\): [0-9]+' "$LOG" | tail -
 printf '{"ts":"%s","exit":%s,"stalls":"%s","fails":"%s","overlaps":"%s","log":"%s"}\n' \
   "$STAMP" "$CODE" "$stalls" "$fails" "$overlaps" "$(basename "$LOG")" >> "$RESULTS/results.jsonl"
 
+# --- main-source meet regression run (test:meet:ci) — same two-bot meet-test, but
+# against the SOURCE checkout on `main` instead of the installed DMG. The DMG run
+# above validates the SHIPPED artifact; this catches a regression the moment it
+# lands on main, before it's ever cut into a build (the installed beta always lags
+# main, so they diverge between releases). Non-gating for now — own results file,
+# does NOT touch $CODE — promote into the primary exit once trusted. ---
+echo "" | tee -a "$LOG"
+echo "=== main-source meet regression (test:meet:ci) $STAMP ===" | tee -a "$LOG"
+pnpm test:meet:ci 2>&1 | tee -a "$LOG"
+MAIN_CODE=${pipestatus[1]:-$?}
+mstalls=$(grep -oE '\([0-9]+ real stall' "$LOG" | tail -1 | grep -oE '[0-9]+' || echo "?")
+mfails=$(grep -oE 'failed steps: +[0-9]+' "$LOG" | tail -1 | grep -oE '[0-9]+$' || echo "?")
+printf '{"ts":"%s","exit":%s,"stalls":"%s","fails":"%s","branch":"main","log":"%s"}\n' \
+  "$STAMP" "$MAIN_CODE" "$mstalls" "$mfails" "$(basename "$LOG")" >> "$RESULTS/results-main.jsonl"
+echo "=== main-source meet exit: $MAIN_CODE (recorded, not gating) ===" | tee -a "$LOG"
+
+# --- Slack backend test (test:slack:ci) — the huddle-fleet analog of the meet test
+# (#265). Drives the two SIGNED-IN test-slack profiles through join/speak/hear/chat/
+# whiteboard in a real Slack huddle. Non-gating — own results file. Depends on the
+# one-time Slack login persisting (scripts/setup-test-profiles.sh --slack); if the
+# session lapses this line goes red until it's re-done (that red IS the signal). ---
+echo "" | tee -a "$LOG"
+echo "=== Slack backend test (#265) $STAMP ===" | tee -a "$LOG"
+pnpm test:slack:ci 2>&1 | tee -a "$LOG"
+SLACK_CODE=${pipestatus[1]:-$?}
+sstalls=$(grep -oE '\([0-9]+ real stall' "$LOG" | tail -1 | grep -oE '[0-9]+' || echo "?")
+sfails=$(grep -oE 'failed steps: +[0-9]+' "$LOG" | tail -1 | grep -oE '[0-9]+$' || echo "?")
+printf '{"ts":"%s","exit":%s,"stalls":"%s","fails":"%s","log":"%s"}\n' \
+  "$STAMP" "$SLACK_CODE" "$sstalls" "$sfails" "$(basename "$LOG")" >> "$RESULTS/slack-results.jsonl"
+echo "=== Slack test exit: $SLACK_CODE (recorded, not gating) ===" | tee -a "$LOG"
+
 # --- EXPERIMENTAL: real-agent fuzzing test (#267 item 5) — NEW, take with a grain
 # of salt. Real Claude agents run the 'smoke' mission and an LLM judge grades it.
 # Best-effort and DECOUPLED from the primary signal above: the `|| true` means it
@@ -68,6 +99,14 @@ CODEX_CODE=${pipestatus[1]:-$?}
 printf '{"ts":"%s","exit":%s,"log":"%s"}\n' "$STAMP" "$CODEX_CODE" "$(basename "$LOG")" \
   >> "$RESULTS/codex-smoke-results.jsonl"
 echo "=== codex smoke exit: $CODEX_CODE (recorded, not gating) ===" | tee -a "$LOG"
+
+# --- Telegram digest — post a one-message summary of tonight's results to Stan's
+# DM. This cron isn't a Claude session, so notify-nightly.mjs hits the Bot API
+# directly with the existing bot token (~/.claude/channels/telegram/.env). Green
+# digests are sent silently; a red run pings. Best-effort — the script always exits
+# 0, so it never touches the gating $CODE. Disable with VIBECONF_NOTIFY=0. ---
+echo "" | tee -a "$LOG"
+node scripts/notify-nightly.mjs 2>&1 | tee -a "$LOG" || true
 
 # Keep only the last 30 full logs (history line in results.jsonl is permanent).
 ls -1t "$RESULTS"/run-*.log 2>/dev/null | tail -n +31 | xargs rm -f 2>/dev/null || true

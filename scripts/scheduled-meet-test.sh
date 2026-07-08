@@ -22,6 +22,45 @@ LOG="$RESULTS/run-$STAMP.log"
 
 cd "$REPO" || { echo "repo not found: $REPO"; exit 3; }
 
+# --- optional screen recording of each live-call lane. OFF by default; set
+# VIBECONF_RECORD=1 to enable. Records the screen while a lane runs and keeps the
+# .mov per policy — VIBECONF_RECORD_KEEP=fails (default) keeps only FAILING runs'
+# videos, =all keeps every run; the newest VIBECONF_RECORD_MAX (default 5) are kept
+# and older ones pruned. Files: $RESULTS/recordings/<lane>-<STAMP>.mov. Useful for
+# the unattended 3am run — see what a flaky lane actually did on screen (e.g. the
+# Slack 2nd-bot huddle-join, #412). NOTE: screencapture needs Screen Recording
+# permission in the launchd context; if the first recorded nightly yields a tiny/
+# black .mov, grant Screen Recording to the agent's shell (Terminal/zsh). ---
+REC="${VIBECONF_RECORD:-0}"
+REC_DIR="$RESULTS/recordings"
+REC_KEEP="${VIBECONF_RECORD_KEEP:-fails}"
+REC_MAX="${VIBECONF_RECORD_MAX:-5}"
+
+rec_run() {  # rec_run <lane> -- <cmd...> : run cmd (tee'd to $LOG), return its exit,
+             # recording the screen and keeping the .mov per policy.
+  local lane="$1"; shift
+  [[ "${1:-}" == "--" ]] && shift
+  if [[ "$REC" != "1" ]]; then
+    "$@" 2>&1 | tee -a "$LOG"
+    return ${pipestatus[1]:-$?}
+  fi
+  mkdir -p "$REC_DIR"
+  local mov="$REC_DIR/${lane}-${STAMP}.mov"
+  screencapture -v -k "$mov" >/dev/null 2>&1 &
+  local rpid=$!
+  "$@" 2>&1 | tee -a "$LOG"
+  local code=${pipestatus[1]:-$?}
+  kill -INT "$rpid" 2>/dev/null; wait "$rpid" 2>/dev/null
+  if [[ "$REC_KEEP" == "all" || ( "$REC_KEEP" == "fails" && "$code" != "0" ) ]]; then
+    echo "=== 📹 recording kept: $mov ($(du -h "$mov" 2>/dev/null | cut -f1)) ===" | tee -a "$LOG"
+  else
+    rm -f "$mov"
+  fi
+  # Prune: keep only the newest REC_MAX recordings.
+  ls -1t "$REC_DIR"/*.mov 2>/dev/null | tail -n +$((REC_MAX + 1)) | xargs rm -f 2>/dev/null || true
+  return $code
+}
+
 echo "=== meet-test scheduled run $STAMP ===" | tee "$LOG"
 echo "node: $(command -v node) $(node -v 2>/dev/null)" | tee -a "$LOG"
 echo "pnpm: $(command -v pnpm) $(pnpm -v 2>/dev/null)" | tee -a "$LOG"
@@ -30,8 +69,8 @@ echo "" | tee -a "$LOG"
 # Run the one-shot DMG target — the scheduled run on the always-on Mac mini
 # drives the PACKAGED app so it tests the exact artifact an average user runs
 # (no source-vs-package fidelity gap). Capture everything, preserve exit code.
-pnpm test:meet:dmg 2>&1 | tee -a "$LOG"
-CODE=${pipestatus[1]:-$?}   # zsh: exit code of pnpm, not tee
+rec_run dmg-meet -- pnpm test:meet:dmg
+CODE=$?   # exit code of the lane (recorded if VIBECONF_RECORD=1)
 
 echo "" | tee -a "$LOG"
 echo "=== exit code: $CODE ===" | tee -a "$LOG"
@@ -52,8 +91,8 @@ printf '{"ts":"%s","exit":%s,"stalls":"%s","fails":"%s","overlaps":"%s","log":"%
 # does NOT touch $CODE — promote into the primary exit once trusted. ---
 echo "" | tee -a "$LOG"
 echo "=== main-source meet regression (test:meet:ci) $STAMP ===" | tee -a "$LOG"
-pnpm test:meet:ci 2>&1 | tee -a "$LOG"
-MAIN_CODE=${pipestatus[1]:-$?}
+rec_run main-meet -- pnpm test:meet:ci
+MAIN_CODE=$?
 mstalls=$(grep -oE '\([0-9]+ real stall' "$LOG" | tail -1 | grep -oE '[0-9]+' || echo "?")
 mfails=$(grep -oE 'failed steps: +[0-9]+' "$LOG" | tail -1 | grep -oE '[0-9]+$' || echo "?")
 printf '{"ts":"%s","exit":%s,"stalls":"%s","fails":"%s","branch":"main","log":"%s"}\n' \
@@ -67,8 +106,8 @@ echo "=== main-source meet exit: $MAIN_CODE (recorded, not gating) ===" | tee -a
 # session lapses this line goes red until it's re-done (that red IS the signal). ---
 echo "" | tee -a "$LOG"
 echo "=== Slack backend test (#265) $STAMP ===" | tee -a "$LOG"
-pnpm test:slack:ci 2>&1 | tee -a "$LOG"
-SLACK_CODE=${pipestatus[1]:-$?}
+rec_run slack -- pnpm test:slack:ci
+SLACK_CODE=$?
 sstalls=$(grep -oE '\([0-9]+ real stall' "$LOG" | tail -1 | grep -oE '[0-9]+' || echo "?")
 sfails=$(grep -oE 'failed steps: +[0-9]+' "$LOG" | tail -1 | grep -oE '[0-9]+$' || echo "?")
 printf '{"ts":"%s","exit":%s,"stalls":"%s","fails":"%s","log":"%s"}\n' \

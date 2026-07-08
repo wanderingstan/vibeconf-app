@@ -42,7 +42,13 @@ const nonce = (b) => `slackchat-${b.name}-${stamp}`;
 // click Huddle → lobby → start → popup). Driving before in-call sends commands to
 // a not-yet-live huddle popup. Wait for each bot to report in-call first — the
 // agent-facing analogue of meet-test's join() barrier.
-async function waitForInCall(bot, timeoutMs = 35000) {
+//
+// 60s (was 35s): a Slack huddle is materially slower to establish than a Meet join
+// — clicking Start Huddle in the preview can take 30s+ to flip to in-call under
+// load (seen on the 2026-07-08 nightly: huddle preview reached + Start clicked, but
+// in-call at ~35s hadn't landed). The huddle DID establish on an immediate re-run,
+// so this is start-latency, not a hard failure — a longer window absorbs it.
+async function waitForInCall(bot, timeoutMs = 60000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try { if ((await bot.status()).callStatus === 'in-call') return true; } catch { /* retry */ }
@@ -57,7 +63,7 @@ async function run() {
   // 0) Barrier: wait for the auto-join to land before driving anything.
   for (const bot of BOTS) {
     const ok = await waitForInCall(bot);
-    record(bot.name, 'inCall', ok, ok ? '' : 'not in-call after 35s — auto-join failed?');
+    record(bot.name, 'inCall', ok, ok ? '' : 'not in-call after 60s — huddle never established?');
     if (!ok) return; // nothing else will work; bail so the failure is clear
   }
 
@@ -68,15 +74,19 @@ async function run() {
   // 2) Chat send (→ huddle popup SlackProvider.sendChat).
   await a.sendChat(nonce(a));
   if (b) await b.sendChat(nonce(b));
-  await sleep(2500); // let the Thread render + propagate
+  await sleep(3500); // let the Thread render + propagate (Slack chat delivery lags)
 
   // 3) Chat read-back (→ SlackProvider.readChat). Each bot should see its own +
   //    the other's message. Single-bot run just round-trips its own.
+  // Slack huddle chat delivery lags more than Meet, so give the assertion a wider
+  // window (8×2s ≈ 16s vs the 5×1.5s default) — the 2026-07-08 nightly re-run
+  // failed expectChatContains because the peer's message hadn't propagated yet.
+  const CHAT_WAIT = { attempts: 8, intervalMs: 2000 };
   await a.readChat();
-  await a.expectChatContains(b ? nonce(b) : nonce(a));
+  await a.expectChatContains(b ? nonce(b) : nonce(a), CHAT_WAIT);
   if (b) {
     await b.readChat();
-    await b.expectChatContains(nonce(a));
+    await b.expectChatContains(nonce(a), CHAT_WAIT);
   }
 
   // 4) Listen — a hears the other (captions). Only meaningful with a 2nd talker.

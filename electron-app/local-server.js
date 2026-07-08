@@ -210,6 +210,17 @@ class LocalServer {
                                  // Snapshot of Meet caption children. Upserted by updateTurns.
                                  // settled=true once the child is no longer bottommost.
     this.maxTurns = 200;         // Bound the map to recent turns
+    // #402: caption-replay defense. The scraper keys turn identity on DOM
+    // child nodes (WeakMap); when Meet re-renders the caption container
+    // (observed ~27 min into the Kate call), every historical turn arrives
+    // with a FRESH scraper turnId and would be re-ingested as new speech —
+    // wait_for_speech then re-delivered the whole call (up to 142 entries /
+    // ~2100 words per resolve) and the barge-in/resume machinery lost every
+    // race. Defense: recognize an unknown incoming turnId whose content
+    // fingerprint matches a turn we already hold, and ALIAS it to the
+    // existing turn instead of inserting a duplicate.
+    this._turnAlias = new Map(); // scraper turnId -> canonical turnId (post re-render)
+    this._turnFps = new Map();   // fingerprint -> [canonical turnId, ...] in insertion order
     this.whiteboard = { content: '', version: 0, lastModified: null, lastEditor: null };
     this.members = [];
     this.maxTranscripts = 500;
@@ -398,6 +409,8 @@ class LocalServer {
     this.roomId = roomId;
     this.transcripts = [];
     this.turns = new Map();
+    this._turnAlias = new Map();
+    this._turnFps = new Map();
     this.whiteboard = { content: '', version: 0, lastModified: null, lastEditor: null };
     this.members = [];
     this.sharing = false;
@@ -439,6 +452,8 @@ class LocalServer {
     this.currentUrl = null;
     this.transcripts = [];
     this.turns = new Map();
+    this._turnAlias = new Map();
+    this._turnFps = new Map();
     this.members = [];
     this.sharing = false;
     this.participants = [];
@@ -1194,6 +1209,22 @@ class LocalServer {
     return { ok: true, turnId };
   }
 
+  // #402: content fingerprint for caption-replay detection. Normalized so
+  // Meet's cosmetic re-render differences (spacing/punctuation) don't defeat
+  // the match. NOT unique across a call — two "Yeah." turns by the same
+  // speaker share a fingerprint — so _turnFps maps fp → an insertion-ordered
+  // LIST of turnIds, consumed in order during a replay batch (a re-rendered
+  // snapshot arrives in DOM order = original insertion order).
+  _turnFp(speaker, text) {
+    return String(speaker) + '|' + String(text).toLowerCase().replace(/[^a-z0-9']+/g, '');
+  }
+
+  _recordTurnFp(speaker, text, turnId) {
+    const fp = this._turnFp(speaker, text);
+    const list = this._turnFps.get(fp) || [];
+    if (!list.includes(turnId)) { list.push(turnId); this._turnFps.set(fp, list); }
+  }
+
   updateTurns(incoming) {
     if (!this.roomId || !Array.isArray(incoming) || incoming.length === 0) return;
     // If caption turns with text are arriving, captions are definitionally ON —
@@ -1206,12 +1237,26 @@ class LocalServer {
     }
     const now = Date.now();
     const incomingIds = new Set();
+    const claimedThisBatch = new Set(); // canonical ids already matched in this snapshot
+    let newAliases = 0;
     let changed = false;
+
+    // #402: replay signature. A container re-render REPLAYS history: many
+    // never-seen turnIds arrive in a single snapshot. Genuine new speech
+    // trickles in one turn at a time (the ~300ms poll can't miss that much).
+    // Fingerprint recovery only arms in replay mode — otherwise a genuinely
+    // REPEATED utterance ("Yeah." said again minutes later) would fp-match
+    // its earlier twin and be silently swallowed as a duplicate.
+    const unknownCount = incoming.reduce((n, t) => {
+      if (!t || typeof t.turnId !== 'number') return n;
+      const eff = this._turnAlias.get(t.turnId) ?? t.turnId;
+      return n + (this.turns.has(eff) ? 0 : 1);
+    }, 0);
+    const replayMode = unknownCount >= 3;
 
     for (let i = 0; i < incoming.length; i++) {
       const inc = incoming[i];
       if (!inc || typeof inc.turnId !== 'number') continue;
-      incomingIds.add(inc.turnId);
       // Trust the scraper's explicit isBottommost flag — it's computed BEFORE
       // 'You' turns are filtered out (the bot's own TTS), so a non-final turn
       // by another speaker that has a "You" caption below it will correctly
@@ -1220,10 +1265,50 @@ class LocalServer {
       const isBottommost = typeof inc.isBottommost === 'boolean'
         ? inc.isBottommost
         : (i === incoming.length - 1);
-      const existing = this.turns.get(inc.turnId);
+
+      // #402: resolve the scraper's turnId to our canonical id. A previously
+      // established alias routes directly; in replay mode an UNKNOWN id gets
+      // a fingerprint lookup against turns we already hold — a hit means the
+      // container re-rendered and this is a REPLAY of a turn we've already
+      // ingested, so alias instead of inserting a duplicate.
+      let effId = this._turnAlias.get(inc.turnId) ?? inc.turnId;
+      if (replayMode && !this.turns.has(effId)) {
+        const fp = this._turnFp(inc.speaker, inc.text);
+        let match = (this._turnFps.get(fp) || []).find(
+          (id) => this.turns.has(id) && !claimedThisBatch.has(id)
+        );
+        if (match === undefined) {
+          // The LIVE turn may have grown since the re-render (its replay text
+          // is a superset of what we stored, or vice versa). Check only the
+          // most recent turn by this speaker — prefix relation ⇒ same turn.
+          const normInc = this._turnFp(inc.speaker, inc.text);
+          let recent = null;
+          for (const [id, t] of this.turns) {
+            if (t.speaker === inc.speaker && !claimedThisBatch.has(id) &&
+                (!recent || t.firstSeen >= recent.t.firstSeen)) recent = { id, t };
+          }
+          if (recent) {
+            const normOld = this._turnFp(recent.t.speaker, recent.t.text);
+            const [a, b] = [normInc, normOld];
+            const minLen = Math.min(a.length, b.length);
+            if (minLen > recent.t.speaker.length + 12 && (a.startsWith(b) || b.startsWith(a))) {
+              match = recent.id;
+            }
+          }
+        }
+        if (match !== undefined) {
+          this._turnAlias.set(inc.turnId, match);
+          effId = match;
+          newAliases++;
+        }
+      }
+      incomingIds.add(effId);
+      claimedThisBatch.add(effId);
+
+      const existing = this.turns.get(effId);
       if (!existing) {
-        this.turns.set(inc.turnId, {
-          id: `${this.roomId}-turn-${inc.turnId}`,
+        this.turns.set(effId, {
+          id: `${this.roomId}-turn-${effId}`,
           speaker: inc.speaker,
           text: inc.text,
           firstSeen: now,
@@ -1231,8 +1316,9 @@ class LocalServer {
           settled: !isBottommost,
           source: 'caption',
         });
+        this._recordTurnFp(inc.speaker, inc.text, effId);
         changed = true;
-        this._logRawCaption(inc.turnId, inc.speaker, inc.text, isBottommost);
+        this._logRawCaption(effId, inc.speaker, inc.text, isBottommost);
         if (!isBottommost) this._logHeard(inc.speaker, inc.text); // arrived already final
       } else {
         // #268: separate a real TEXT change (new content the agent hasn't seen)
@@ -1247,7 +1333,10 @@ class LocalServer {
         if (existing.text !== inc.text) {
           existing.text = inc.text;
           textChanged = true;
-          this._logRawCaption(inc.turnId, inc.speaker, inc.text, isBottommost);
+          // #402: index the new text too, so a later replay of the grown
+          // version fingerprint-matches this same turn.
+          this._recordTurnFp(existing.speaker, inc.text, effId);
+          this._logRawCaption(effId, inc.speaker, inc.text, isBottommost);
         }
         if (!existing.settled && !isBottommost) {
           existing.settled = true;
@@ -1257,6 +1346,14 @@ class LocalServer {
         if (textChanged) existing.lastUpdated = now; // ONLY text growth re-surfaces to waiters
         if (textChanged || settledNow) changed = true;
       }
+    }
+
+    // #402: a burst of fresh aliases = the caption container re-rendered and
+    // replayed history. Loud, parseable marker (the ground-truth analyzer and
+    // future audits key off it); the replay itself was absorbed above.
+    if (newAliases >= 5) {
+      console.log(ts(), '⚠️  [caption-replay] container re-render detected — remapped ' + newAliases +
+        ' replayed turn(s) to existing entries (#402)');
     }
 
     // Turns that disappeared from the DOM entirely are also settled.

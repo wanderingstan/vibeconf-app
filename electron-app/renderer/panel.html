@@ -74,6 +74,11 @@
           <div class="conn-row" title="The bot's Slack identity for huddles — the signed-in Slack account's display name. (Reading the live name from the huddle is tracked in #283.)">
             <span class="conn-dot" id="connSlackDot"></span>
             <span class="conn-name"><strong>Slack</strong> · <span id="botSlackIdentityStatus">—</span></span>
+            <span class="conn-actions">
+              <button id="slackSignInMainBtn" class="auth-action-btn" style="display:none">Sign in</button>
+              <!-- Signing OUT of Slack is a big, rare action — it lives in Settings,
+                   not the primary UI (#289), matching Meet + vibeconferencing.com. -->
+            </span>
           </div>
           <!-- "⊕ Add calling platform" returns once there's more than one
                platform to add (#289). For now Meet + Slack are both fixed. -->

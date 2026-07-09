@@ -155,7 +155,13 @@ const MEET = {
     // it, transiently), so a lingering one is always a stuck flow — the modal
     // sweeper closes it as a safety net. DOM captured live in the 2026-07-08
     // stuck-dialog incident.
-    settingsDialog: '[role="dialog"][aria-label="Settings" i]',
+    // Meet titles this dialog differently depending on which pane it lands on:
+    // "Settings" on the main pane, but "Video settings" / "Audio settings" when it
+    // opens straight to a sub-pane (seen live in Seth's 2026-07-09 log). An exact
+    // aria-label match missed those, so the safety-net close below could not even
+    // see the dialog it was meant to rescue. The leading-space in the suffix match
+    // keeps it from matching a hypothetical "Foosettings".
+    settingsDialog: '[role="dialog"][aria-label="Settings" i], [role="dialog"][aria-label$=" settings" i]',
     settingsCloseAction: '[data-mdc-dialog-action="close"]',
   },
 

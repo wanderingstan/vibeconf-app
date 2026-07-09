@@ -9,6 +9,7 @@ const vm = require('vm');
 const Store = require('./store.js');
 const { ScopedStore, migrateAppLevelKeys } = require('./config-scope.js');
 const profileManager = require('./profile-manager.js');
+const { MEET } = require('./meet-selectors.js'); // pure data — safe in the main process
 const { resolveSvg } = require('./svg-resolver.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
 // The call-provider contract. main.js is the consumer side: it subscribes to
@@ -2199,8 +2200,11 @@ function speakText(text, voice, emoji) {
     const genAtStart = ttsStopGeneration;
     try {
       for (let i = 0; i < parts.length; i++) {
-        if (i > 0 && ttsStopGeneration !== genAtStart) {
-          console.log('[electron] TTS chunk ' + (i + 1) + '/' + parts.length + ' dropped — barge-in stopped this utterance (#372)');
+        // #390/#372: a barge-in bumps ttsStopGeneration. Checked for EVERY
+        // chunk (not just 2+): an utterance interrupted before its audio ever
+        // started must not play at all.
+        if (ttsStopGeneration !== genAtStart) {
+          console.log('[electron] TTS chunk ' + (i + 1) + '/' + parts.length + ' dropped — barge-in stopped this utterance (#390)');
           break;
         }
         const expectMore = i < parts.length - 1;
@@ -2209,6 +2213,15 @@ function speakText(text, voice, emoji) {
         try {
           const audioBuffer = await tts.synthesize(parts[i]);
           if (!audioBuffer) { console.error('[electron] TTS returned null/empty buffer' + chunkTag); continue; }
+          // #390: the barge-in may have arrived DURING the synthesis await —
+          // the Kate-era failure was exactly this (18s ElevenLabs synth, human
+          // spoke at +9s, bot 'yielded', welcome played anyway at +18s).
+          // Re-check before sending; the server-side stash already holds the
+          // TEXT for #239 replay, so dropping the audio loses nothing.
+          if (ttsStopGeneration !== genAtStart) {
+            console.log('[electron] TTS synthesized but dropped — interrupted during synthesis (#390):', parts[i].slice(0, 40));
+            break;
+          }
           const base64Audio = Buffer.from(audioBuffer).toString('base64');
           console.log('[electron] TTS synthesized:', parts[i].slice(0, 40), '→', base64Audio.length, 'bytes base64' + chunkTag);
           await sendPlayTts(base64Audio, chunkEmoji, { unmutedAt, expectMore });
@@ -2231,6 +2244,12 @@ function speakText(text, voice, emoji) {
           try {
             const fallbackBuffer = await tts.sayFallback(parts[i]);
             if (fallbackBuffer) {
+              // #390: same interrupted-during-synthesis re-check as the
+              // primary path — the fallback synth also takes real time.
+              if (ttsStopGeneration !== genAtStart) {
+                console.log('[electron] TTS fallback synthesized but dropped — interrupted during synthesis (#390):', parts[i].slice(0, 40));
+                break;
+              }
               const base64Audio = Buffer.from(fallbackBuffer).toString('base64');
               console.log('[electron] TTS fell back to macOS say:', parts[i].slice(0, 40), '→', base64Audio.length, 'bytes base64' + chunkTag);
               await sendPlayTts(base64Audio, chunkEmoji, { unmutedAt, expectMore });
@@ -4612,10 +4631,23 @@ function setupIPC() {
         // It renders asynchronously after page load, so the one-shot fetch at
         // panel load missed it — retry a few times. Confirmed not in an iframe.
         // We grab both the email AND the display name (for the big panel label).
+        // #401: a meeting page's DOM contains OTHER PARTICIPANTS' emails in
+        // aria-labels (host/participant tooltips, info panel). The old
+        // any-aria-label fallback harvested the meeting ORGANIZER's address in
+        // the Kate call and bound it as the bot's identity. Rules now:
+        //   • chip-sourced emails (the OneGoogle "Google Account: …" label)
+        //     are identity-quality;
+        //   • the broad fallback runs ONLY off meeting pages, and its result
+        //     is display-only — never bound.
+        const inMeetingPage = MEET.url.meetingCodePath.test((() => {
+          try { return new URL(meetView.webContents.getURL()).pathname; } catch { return ''; }
+        })());
+        const inCall = localServer.callStatus === 'in-call';
         const SCAN = `(() => {
           const RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}/g;
           const NAME_RE = /Google Account:\\s*(.+?)\\s*\\(/i;
-          const out = new Set();
+          const chip = new Set();
+          const other = new Set();
           let name = null;
           // Search the top doc + any SAME-ORIGIN iframes (the Google bar is
           // usually inline, but be safe). Cross-origin iframes throw → skipped.
@@ -4623,39 +4655,49 @@ function setupIPC() {
           for (const f of document.querySelectorAll('iframe')) {
             try { if (f.contentDocument) docs.push(f.contentDocument); } catch (e) { /* cross-origin */ }
           }
-          const scan = (sel) => { for (const d of docs) {
+          const scan = (sel, into) => { for (const d of docs) {
             for (const el of d.querySelectorAll(sel)) {
               const al = el.getAttribute('aria-label') || '';
-              ((al.match(RE)) || []).forEach((x) => out.add(x));
+              ((al.match(RE)) || []).forEach((x) => into.add(x));
               if (!name) { const m = al.match(NAME_RE); if (m) name = m[1].trim(); }
             }
           } };
-          scan('[aria-label*="Google Account" i]');
-          if (!out.size) scan('[aria-label]'); // fallback: any aria-label
-          return { emails: [...out], name };
+          scan('[aria-label*="Google Account" i]', chip);
+          if (!chip.size && ${inMeetingPage ? 'false' : 'true'}) scan('[aria-label]', other); // display-only fallback, never on meeting pages (#401)
+          return { chipEmails: [...chip], otherEmails: [...other], name };
         })()`;
+        let chipEmail = null;
         for (let attempt = 0; attempt < 5 && !email; attempt++) {
           if (attempt) await new Promise((r) => setTimeout(r, 400));
           try {
             const found = await meetView.webContents.executeJavaScript(SCAN, true);
-            allEmails = Array.isArray(found?.emails) ? found.emails : [];
+            const real = (arr) => (Array.isArray(arr) ? arr : []).filter((e) => !/noreply|no-reply|example\.com/i.test(e));
+            const chips = real(found?.chipEmails);
+            const others = real(found?.otherEmails);
+            allEmails = [...chips, ...others];
             if (found?.name) name = found.name;
-            email = allEmails.find((e) => !/noreply|no-reply|example\.com/i.test(e)) || allEmails[0] || null;
+            chipEmail = chips[0] || null;
+            email = chipEmail || others[0] || null;
           } catch { /* page mid-navigation; retry */ }
         }
-        console.log('[electron] account-email:', email || '(none yet)', 'name=' + JSON.stringify(name), 'all=' + JSON.stringify(allEmails));
+        console.log('[electron] account-email:', email || '(none yet)',
+          'name=' + JSON.stringify(name), 'chip=' + JSON.stringify(chipEmail),
+          'all=' + JSON.stringify(allEmails), inCall ? '(in-call: no binding)' : '');
+
+        // #282/#401: bind this profile to the detected account so joins pin
+        // authuser to it. An explicit --meet-account-email always wins and is
+        // never overwritten. Binding now requires ALL of:
+        //   • a CHIP-sourced email (the account switcher's own label — the
+        //     NAME_RE context — not a bare email found somewhere in the page),
+        //   • not currently in a call (identity is established at sign-in /
+        //     pre-join; mid-call the DOM is full of other people).
+        if (chipEmail && !inCall && store && !meetAccountEmailPinned && store.get('meetAccountEmail') !== chipEmail) {
+          store.set('meetAccountEmail', chipEmail);
+          console.log('[electron] Bound profile Meet account →', chipEmail);
+        }
       }
     } catch (err) {
       console.warn('[electron] get-meet-account-email DOM read failed:', err.message);
-    }
-
-    // #282: bind this profile to the detected account so joins pin authuser to
-    // it. An explicit --meet-account-email (meetAccountEmailPinned) always wins
-    // and is never overwritten by a scrape. Otherwise capture the first real
-    // email we see and persist it.
-    if (email && store && !meetAccountEmailPinned && store.get('meetAccountEmail') !== email) {
-      store.set('meetAccountEmail', email);
-      console.log('[electron] Bound profile Meet account →', email);
     }
     // Remember the last Meet display name for this profile (the signed-in Google
     // name). Stable, so the profile selector + idle sub-line can show it without
@@ -4876,6 +4918,12 @@ function setupIPC() {
         if (panelView && !panelView.webContents.isDestroyed()) {
           panelView.webContents.send('call-failed', { message: status });
         }
+      } else if (status.startsWith('Notice:')) {
+        // #404: agent-visible notices from the call view (time-limit warning,
+        // unhandled-dialog surfacing). Rides status.errors, which the agent
+        // reads on its next wait_for_speech lull — same channel as the
+        // voice-change notices. Not a call-state change.
+        localServer.addError(status.slice('Notice:'.length).trim());
       } else if (status.includes('Waiting') || status.includes('Ask to join')) {
         localServer.setCallStatus('waiting-to-be-admitted');
       } else if (status.includes('Participating') || status.includes('In call')) {

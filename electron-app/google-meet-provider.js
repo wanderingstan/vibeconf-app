@@ -165,11 +165,46 @@ function dismissBlockingModals() {
     }
   }
 
+  // #404: Meet's free-tier time-limit warning ("Your call ends in N minutes /
+  // Free group calls have a limit of 1 hour"). Dismiss it AND tell the agent —
+  // it should know the clock is running so it can wrap up or suggest a fresh
+  // meeting link. Notified once per distinct minute count (Meet shows later
+  // warnings as the cutoff approaches).
+  {
+    const cdlg = document.querySelector(MEET.modals.anyDialog);
+    if (cdlg && isVisible(cdlg)) {
+      const title = (cdlg.getAttribute('aria-label') || '').trim() ||
+        (cdlg.querySelector('[role="heading"]')?.textContent || '').trim();
+      const m = MEET.modals.callEndsRe.exec(title) || MEET.modals.callEndsRe.exec(cdlg.textContent || '');
+      if (m) {
+        const minutes = m[1];
+        if (!_callEndsNotified.has(minutes)) {
+          _callEndsNotified.add(minutes);
+          try {
+            sendStatus('Notice: Meet says this call ends in ~' + minutes + ' minutes (free-tier group-call limit). ' +
+              'Consider wrapping up, or suggest starting a fresh meeting link to continue.');
+          } catch { /* status bar not ready */ }
+        }
+        const dismissBtn = [...cdlg.querySelectorAll('button, [role="button"]')].find((b) =>
+          (b.textContent || '').trim().toLowerCase() === MEET.modals.dismissText && isVisible(b));
+        if (dismissBtn) {
+          dismissBtn.click();
+          console.log('[electron-meet] Dismissed "call ends in ' + minutes + ' minutes" warning (#404)');
+          return true;
+        }
+        return false; // recognized but no Dismiss button (auto-hide variant) — skip the unknown-modal dump
+      }
+    }
+  }
+
   // No "Got it" found. If a modal dialog is nonetheless sitting open and
   // blocking (and it's not the recording-consent dialog handled elsewhere),
   // dump its DOM (throttled) so we can learn its dismiss button — maybe it uses
   // a different label we should add. This is how we finally capture the rare
-  // ones we can't reproduce on demand.
+  // ones we can't reproduce on demand. ALSO surface it to the agent/operator
+  // (once per distinct title per session): even without knowing which button
+  // to click, they should learn about an unhandled — possibly blocking —
+  // dialog live, not in a post-mortem.
   const dlg = document.querySelector(MEET.modals.anyDialog);
   if (dlg && isVisible(dlg) && Date.now() - _lastModalDumpAt > 15000) {
     const txt = (dlg.textContent || '').toLowerCase();
@@ -178,10 +213,26 @@ function dismissBlockingModals() {
       _lastModalDumpAt = Date.now();
       console.warn('[electron-meet] Modal dialog open with no "Got it" button — DOM sample so we can handle it:\n' +
         (dlg.outerHTML || '').slice(0, 2500));
+      const title = ((dlg.getAttribute('aria-label') || '').trim() ||
+        (dlg.querySelector('[role="heading"]')?.textContent || '').trim() ||
+        (dlg.textContent || '').trim().slice(0, 80)) || '(untitled)';
+      if (!_unknownModalNotified.has(title)) {
+        _unknownModalNotified.add(title);
+        const buttons = [...dlg.querySelectorAll('button, [role="button"]')]
+          .map((b) => (b.getAttribute('aria-label') || b.textContent || '').trim())
+          .filter(Boolean).slice(0, 6);
+        try {
+          sendStatus('Notice: an unhandled Meet dialog appeared: "' + title.slice(0, 120) + '"' +
+            (buttons.length ? ' (buttons: ' + buttons.join(' / ') + ')' : '') +
+            '. It may be blocking the call UI; a DOM sample was logged for the dev team.');
+        } catch { /* status bar not ready */ }
+      }
     }
   }
   return false;
 }
+const _callEndsNotified = new Set();     // minute counts already announced (#404)
+const _unknownModalNotified = new Set(); // unknown-dialog titles already surfaced to the agent
 
 // Auto-accept Meet's AI-recording disclosure dialog that blocks admission (#130).
 // Premium Meet calls show a modal — "This video call is being recorded and

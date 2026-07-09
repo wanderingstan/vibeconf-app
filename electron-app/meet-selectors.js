@@ -221,6 +221,13 @@ const MEET = {
     // Cancel to KEEP the current presentation rather than tear down the board.
     presentTakeoverMarker: 'existing presentation',
     presentTakeoverCancelText: 'cancel',
+    // #404: Meet's free-tier time-limit warning — a toast-style dialog
+    // (role=dialog, data-is-auto-hide) with aria-label/heading "Your call ends
+    // in N minutes" and body "Free group calls have a limit of 1 hour". DOM
+    // captured live in the 2026-07-07 Kate call. Matched generically on the
+    // minutes phrase so the later/final warnings (5 min, 1 min) hit too.
+    callEndsRe: /call ends in (\d+) minute/i,
+    dismissText: 'dismiss', // its only button (lowercased compare)
   },
 };
 

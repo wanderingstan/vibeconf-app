@@ -44,6 +44,10 @@ const DEFAULT_PORT = 7865;
 // accumulated to surface the slow model (#245). This is just the sampling
 // granularity — the actual trigger is content (chars), not time.
 const BACKGROUND_TICK_POLL_MS = 2500;
+// How long the 👀 tick glance stays on the avatar before easing back to the
+// resting face. Long enough to be seen, short enough that it can't be mistaken
+// for a state the bot is stuck in.
+const TICK_FACE_MS = 4000;
 
 // Short HH:MM:SS.mmm timestamp for emoji diagnostic logs — lets us cross-
 // reference log lines with actual conversation moments. Keep it local so
@@ -107,7 +111,7 @@ class LocalServer {
     this.onPlayAudio = onPlayAudio || (() => {});
     this.onFocusRequest = onFocusRequest || (() => {}); // raise this instance's window (profile switcher)
     this.onInspectDom = onInspectDom || (async () => ({ ok: false, error: 'not implemented' }));
-    this.onBotStateChange = onBotStateChange || (() => {}); // 'idle' | 'listening' | 'thinking' | 'speaking' | 'yielding'
+    this.onBotStateChange = onBotStateChange || (() => {}); // 'idle' | 'listening' | 'ticking' | 'thinking' | 'speaking' | 'yielding'
     this.onModeChange = onModeChange || (() => {});        // 'active' | 'passive' | 'silent'
     this.onCallStatusChange = onCallStatusChange || (() => {}); // 'idle' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
     this.onAnyoneSpeakingChange = onAnyoneSpeakingChange || (() => {}); // boolean
@@ -301,6 +305,7 @@ class LocalServer {
     this.probeBank = [];
     this.lastProbeAt = 0;
     this._probeTimer = null;
+    this._tickFaceTimer = null;
     // Fires one full silence-gate after the floor goes quiet while a barge-in
     // stash is pending. Deliberately independent of this.waiters — see
     // _maybeReplayStashOnOpening.
@@ -1648,6 +1653,9 @@ class LocalServer {
     // interrupter is still talking. A follow-up wait_for_speech call should
     // not make the avatar look merely idle/listening again.
     if (!force && this.botState === 'yielding' && state === 'listening' && this.anyoneSpeaking) return;
+    // A raised hand outranks a glance: a background tick must not lower 🙋 while
+    // a composed reply is still queued for the next opening.
+    if (!force && this.botState === 'yielding' && state === 'ticking') return;
     // #368: while the bot is actually emitting audio (speakingAloud), 'speaking'
     // means "speaking aloud" — hold it there against the agent loop's premature
     // transitions (thinking/working/listening/idle). The agent finishing a long
@@ -1716,8 +1724,8 @@ class LocalServer {
   // or yielding. A quiet timer eases back to listening/idle once activity stops.
   _onAgentActivity(line) {
     if (this.callStatus !== 'in-call') return;
-    if (!['idle', 'listening', 'thinking', 'working'].includes(this.botState)) return;
-    if (this.botState === 'idle' || this.botState === 'listening') {
+    if (!['idle', 'listening', 'ticking', 'thinking', 'working'].includes(this.botState)) return;
+    if (this.botState === 'idle' || this.botState === 'listening' || this.botState === 'ticking') {
       // Start of an engagement — show 🤔 thinking and start the dwell clock.
       this._workingSince = Date.now();
       this._setBotState('thinking');
@@ -1730,6 +1738,19 @@ class LocalServer {
       if (Date.now() - this._workingSince >= minMs) this._setBotState('working');
     }
     this._armWorkingQuietTimer();
+  }
+
+  // 👀 is a glance, not a state the bot lives in. The agent reads the tick and
+  // loops back to wait_for_speech without speaking, and that re-arm normally
+  // clears the face. This is the backstop for an agent that takes its time (or
+  // wanders off into tool work): the glance expires on its own.
+  _armTickFaceTimer() {
+    clearTimeout(this._tickFaceTimer);
+    this._tickFaceTimer = setTimeout(() => {
+      this._tickFaceTimer = null;
+      if (this.botState !== 'ticking') return; // something realer took over
+      this._setBotState(this.waiters.length > 0 ? 'listening' : 'idle', undefined, { force: true });
+    }, TICK_FACE_MS);
   }
 
   _armWorkingQuietTimer() {
@@ -2286,6 +2307,18 @@ class LocalServer {
         && !newSpeechSinceResponse;
       if (isExactPhantom) {
         console.log(ts(), '👻 [phantom] Skipping thinking — transcript identical to last responded turn (' + wordCount + ' words)');
+      } else if (reason === 'background_tick') {
+        // A tick is NOT a turn. It fires on a word-count delta while the speaker
+        // is still mid-sentence, so it hands the slow model a snapshot, not a
+        // finished thought. Wearing 🤔 and overwriting lastProcessingText made it
+        // look — on the avatar and on the debug overlay's `proc:` line — exactly
+        // like the bot had committed to answering half a sentence. It hadn't.
+        //
+        // Give it its own face (👀 "reading along") and leave lastProcessingText
+        // alone: that field means "what shipped to the slow model as a TURN".
+        console.log(ts(), '👀 [tick] Catching up — ' + wordCount + ' words, not a turn: "' + joinedText.slice(0, 120) + (joinedText.length > 120 ? '…' : '') + '"');
+        this._setBotState('ticking', { wordCount, backgroundTick: true });
+        this._armTickFaceTimer();
       } else {
         // Always fire the change callback with the new wordCount — even if state
         // is already 'thinking' from a previous turn — so the ack handler runs.
@@ -2312,9 +2345,9 @@ class LocalServer {
         }
         // Pass joinedText so the ack handler can do addressivity matching
         // (#155). wordCount stays the primary threshold; text is supplemental.
-        // backgroundTick flags a "bank and loop, do NOT speak" wake so the ack
-        // handler skips the spoken filler (a tick must not interrupt a speaker).
-        this.onBotStateChange('thinking', { wordCount, text: joinedText, backgroundTick: reason === 'background_tick' });
+        // Ticks never reach here — they take the 'ticking' branch above — so
+        // this is always a real turn and both the ack and triage may fire.
+        this.onBotStateChange('thinking', { wordCount, text: joinedText, backgroundTick: false });
 
         // Two-tier shadow harness (now: triage classifier). Feed it the SINGLE
         // most-recent turn WITH its speaker label — not joinedText, which is the
@@ -2323,21 +2356,17 @@ class LocalServer {
         // classifier garbage to judge ("…Request Samantha, can you" = Samantha's
         // turn + the cut-off start of Stan's next turn). The classifier is ~perfect
         // on clean input (offline 19/19); recentTranscript still carries context.
-        // Skip on a background_tick — the floor is still busy; triage firing an
-        // instant ack there would interrupt the speaker mid-utterance.
-        if (reason !== 'background_tick') {
-          const lastTurn = deduped[deduped.length - 1];
-          const lastUtteranceLabeled = lastTurn && lastTurn.text
-            ? `${lastTurn.participantName || 'someone'}: ${lastTurn.text.trim()}`
-            : joinedText;
-          Promise.resolve(this.onTriageAck({
-            lastUtterance: lastUtteranceLabeled,
-            workingMemory: this.getWorkingMemory(),
-            recentTranscript: this._recentTranscriptText(12),
-            roster: this._rosterText(),
-            mode: this.mode,
-          })).catch(() => {});
-        }
+        const lastTurn = deduped[deduped.length - 1];
+        const lastUtteranceLabeled = lastTurn && lastTurn.text
+          ? `${lastTurn.participantName || 'someone'}: ${lastTurn.text.trim()}`
+          : joinedText;
+        Promise.resolve(this.onTriageAck({
+          lastUtterance: lastUtteranceLabeled,
+          workingMemory: this.getWorkingMemory(),
+          recentTranscript: this._recentTranscriptText(12),
+          roster: this._rosterText(),
+          mode: this.mode,
+        })).catch(() => {});
       }
     }
 
@@ -2964,7 +2993,7 @@ class LocalServer {
     // the floor back. User-speech-driven thinking already transitioned
     // through speaking by the time wait_for_speech is called, so it isn't
     // affected.
-    if (this.botState === 'thinking') {
+    if (this.botState === 'thinking' || this.botState === 'ticking') {
       this._setBotState('listening', undefined, { force: true });
     }
 

@@ -32,6 +32,13 @@
     };
 
     static ACTIVITY_EMOJIS = {
+      // 👀 reading along. A background tick (#245) surfaces the slow model
+      // mid-conversation so it can keep up and bank a probe — it is NOT
+      // answering, and must not wear the 🤔 reply face. The tick fires on a
+      // word-count delta while someone is still mid-sentence, so 🤔 there read
+      // as "I've decided to answer your half-sentence" (see #432 / the
+      // 09:01:32 "Everything else." incident).
+      ticking:  '\u{1F440}',
       thinking: '\u{1F914}', // 🤔 formulating a reply — still "with" the conversation
       working:  '\u{1F9D1}\u{200D}\u{1F4BB}', // 🧑‍💻 heads-down running tools — NOT tracking the room
       speaking: '\u{1F604}', // 😄 grinning face — open mouth fits TTS playback
@@ -74,7 +81,7 @@
       // camera that defaulted to idle/🫥 would never learn it's in-call+engaged
       // and would sit on 🫥 while the bot is actually talking. avatarState holds
       // the last known values so a new camera picks up where the call is.
-      this.state = avatarState.state;   // 'idle' | 'listening' | 'thinking' | 'working' | 'speaking' | 'yielding'
+      this.state = avatarState.state;   // 'idle' | 'listening' | 'ticking' | 'thinking' | 'working' | 'speaking' | 'yielding'
       this.mode = avatarState.mode;     // 'active' | 'passive' | 'silent'
       this.callStatus = avatarState.callStatus; // 'idle' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
       // True once the agent has done anything besides idle. Stays 🫥 until then,
@@ -260,6 +267,9 @@
       //      which reads as "done? oh wait still thinking? speaking now"
       //      instead of one continuous "responding."
       //   4. Activity state yielding → 🙋 (has something to say, deferring)
+      //      Activity state ticking  → 👀 (reading along, NOT answering). Wins
+      //      over `hearing` below, so the glance is visible while someone is
+      //      talking — which is the only moment a tick can occur.
       //   5. Audio is playing (this.speaking) and state isn't 'thinking' →
       //      😄. Covers the real response (state='speaking') and any TTS
       //      that runs outside the response loop.

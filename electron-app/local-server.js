@@ -44,7 +44,7 @@ const DEFAULT_PORT = 7865;
 // accumulated to surface the slow model (#245). This is just the sampling
 // granularity — the actual trigger is content (chars), not time.
 const BACKGROUND_TICK_POLL_MS = 2500;
-// How long the 👀 tick glance stays on the avatar before easing back to the
+// How long the 😑 tick blink stays on the avatar before easing back to the
 // resting face. Long enough to be seen, short enough that it can't be mistaken
 // for a state the bot is stuck in.
 const TICK_FACE_MS = 4000;
@@ -1740,7 +1740,7 @@ class LocalServer {
     this._armWorkingQuietTimer();
   }
 
-  // 👀 is a glance, not a state the bot lives in. The agent reads the tick and
+  // 😑 is a blink, not a state the bot lives in. The agent reads the tick and
   // loops back to wait_for_speech without speaking, and that re-arm normally
   // clears the face. This is the backstop for an agent that takes its time (or
   // wanders off into tool work): the glance expires on its own.
@@ -2357,9 +2357,9 @@ class LocalServer {
         // look — on the avatar and on the debug overlay's `proc:` line — exactly
         // like the bot had committed to answering half a sentence. It hadn't.
         //
-        // Give it its own face (👀 "reading along") and leave lastProcessingText
+        // Give it its own face (😑 "reading along") and leave lastProcessingText
         // alone: that field means "what shipped to the slow model as a TURN".
-        console.log(ts(), '👀 [tick] Catching up — ' + wordCount + ' words, not a turn: "' + joinedText.slice(0, 120) + (joinedText.length > 120 ? '…' : '') + '"');
+        console.log(ts(), '😑 [tick] Catching up — ' + wordCount + ' words, not a turn: "' + joinedText.slice(0, 120) + (joinedText.length > 120 ? '…' : '') + '"');
         this._setBotState('ticking', { wordCount, backgroundTick: true });
         this._armTickFaceTimer();
       } else {

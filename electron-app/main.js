@@ -242,6 +242,18 @@ let ackTtsPending = false;
 // ms, at }. Null when none pending.
 let pendingTriage = null;
 
+// True once the triage gate has failed to reach (or parse) the local fast model.
+// While set, the regex-addressivity ack path below un-suppresses itself, so a
+// down endpoint degrades the ack GATE to regex instead of deleting acks
+// entirely. Cleared on the next successful verdict.
+//
+// One-turn lag by construction: triage is invoked AFTER the 'thinking'
+// transition that drives the regex path, so the first failure costs one ack.
+// Every turn after it falls back. Correcting that would mean blocking the
+// thinking transition on a model call, which is exactly what the fast tier
+// exists to avoid.
+let triageEndpointDown = false;
+
 // Local HTTP server for agent communication (replaces remote sync for MCP)
 const localServer = new globalThis.LocalServer({
   appVersion: app.getVersion(),
@@ -742,12 +754,17 @@ const localServer = new globalThis.LocalServer({
 
     // Play acknowledgment sounds when entering 'thinking' state.
     // Only in active mode — passive/silent shouldn't blurt "mm-hmm" unprompted.
-    // When triage is enabled (triageAck), the ack is gated by the smart
-    // triage verdict in onTriageAck instead of this regex-addressivity path —
-    // skip here to avoid a double ack.
+    // When triage is enabled (triageAck) AND reachable, the ack is gated by the
+    // smart triage verdict in onTriageAck instead of this regex-addressivity
+    // path — skip here to avoid a double ack. But when the local fast model is
+    // down, triage returns no verdict and would ack nothing at all, so this
+    // path takes back over: a dead endpoint degrades the gate to regex, it does
+    // not silence the bot. (Same principle as ackProvider's llm→builtin fall
+    // back for the PHRASE, and the probe gate's model→lexical fall back.)
     // A background_tick is a silent "think, don't speak" wake (#245) — never
     // fire a spoken ack there, or the bot interrupts whoever still has the floor.
-    if (state === 'thinking' && localServer.mode === 'active' && !store?.get('triageAck') && !extra?.backgroundTick) {
+    const triageGateActive = !!store?.get('triageAck') && !triageEndpointDown;
+    if (state === 'thinking' && localServer.mode === 'active' && !triageGateActive && !extra?.backgroundTick) {
       const wordCount = extra?.wordCount || 0;
       const text = (extra?.text || '').toLowerCase();
 
@@ -1017,7 +1034,19 @@ const localServer = new globalThis.LocalServer({
       config: { endpoint: config.endpoint, apiKey: config.apiKey, model: config.model, timeoutMs: 5000 },
       log: (m) => console.log(ts(), '🚦 [triage]', m),
     });
-    if (!result) { console.log(ts(), '🚦 [triage] no verdict (parse/endpoint failure)'); return; }
+    if (!result) {
+      // The gate is unavailable. Don't silently stop acking — hand the decision
+      // back to the regex-addressivity path, which needs no model at all.
+      if (!triageEndpointDown) {
+        console.log(ts(), '🚦 [triage] no verdict (parse/endpoint failure) — falling back to the regex ack gate');
+      }
+      triageEndpointDown = true;
+      return;
+    }
+    if (triageEndpointDown) {
+      console.log(ts(), '🚦 [triage] endpoint recovered — resuming triage-gated acks');
+      triageEndpointDown = false;
+    }
     // Log the EXACT utterance triage classified — the offline harness proved the
     // classifier is ~perfect on clean input, so any live miss is a stale/wrong
     // input or an eval-pairing artifact. This makes that diagnosable against [heard].

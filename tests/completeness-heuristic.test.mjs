@@ -4,9 +4,16 @@
 // silently dead (observed: a 30-minute call where probeFiring was ON, two
 // probes were banked, and neither ever fired).
 //
-// The bar: conservative. A wrong "complete" makes the bot talk over someone;
-// a wrong "not complete" just costs a probe. So partials must never slip
-// through, and we accept some finished thoughts being judged unfinished.
+// The gate ANDs two signals, both calibrated against 388 hand-labelled caption
+// states from six session logs. Measured in the regime it runs in (after the
+// room has been quiet for probeSilenceMs):
+//
+//     bare terminal punctuation ....... 46% precision / 92% recall
+//     dangling-word test only ......... 41% / 83%
+//     BOTH (what ships) ............... 49% / 79%
+//
+// The bar is conservative. A wrong "complete" makes the bot talk over someone;
+// a wrong "not complete" just costs a probe.
 //
 // Run: node --test tests/   (or `pnpm test:unit`)
 
@@ -19,66 +26,69 @@ const { heuristicComplete } = require('../electron-app/completeness.js');
 
 const isComplete = (s) => heuristicComplete(s).complete;
 
-test('dangling final words are never a real opening', () => {
-  // These come straight from the system prompt's own partial examples.
-  const partials = [
-    'jimmy can you',
-    'i think the most important part is to',
-    'and then after that we need to',
-    'we should put a diagram on the',
-    'what do you',
-    'the part is to',
-    'so i was thinking that we could just',
-    'it depends on whether',
-  ];
-  for (const p of partials) {
-    assert.equal(isComplete(p), false, `must not fire on: "${p}"`);
-  }
-  // Known blind spot: a truncated word ("share the white…") reads as a finished
-  // noun to a lexical gate. Only the model catches that. Documented, not fixed —
-  // the cost is one ill-timed 2-word probe, and only when the model is down.
-  assert.equal(isComplete('share the white'), true);
+test('a terminator is REQUIRED — an unterminated clause is never an opening', () => {
+  // Meet punctuates. The absence of a terminator where the source normally puts
+  // one is real evidence the speaker is still going. Firing without one scored
+  // 0-for-7 on the labelled set: every case was an early-turn fragment.
+  assert.equal(isComplete('the demo went really well'), false);
+  assert.equal(isComplete('what should we work on next'), false);
+  assert.equal(isComplete('this is,'), false);
+  assert.equal(isComplete("that's,"), false);
 });
 
-test('finished sentences and questions fire even without punctuation', () => {
-  const completes = [
-    'jimmy can you share the whiteboard',
-    'what do you think jimmy',
-    'the demo went really well',
-    'what should we work on next',
-    'thanks that is really helpful',
-    'lets keep testing and see how it holds up',
-  ];
-  for (const c of completes) {
-    assert.equal(isComplete(c), true, `should fire on: "${c}"`);
+test('a terminator is NOT SUFFICIENT — Meet posts speculative periods', () => {
+  // The live regression: Meet emitted "...Everything else." and then revised it
+  // to "...everything else kind of crowds the screen." A bare period would have
+  // fired here; the dangling test is what holds the line.
+  assert.equal(isComplete('it should be reduced to just the response time. Everything else kind of.'), false,
+    '"kind of" is dangling even with a period after it');
+  assert.equal(isComplete("sorry, he's a little."), true, 'no dangling word — the gate cannot catch this one');
+  assert.equal(isComplete('and then after that we need to.'), false);
+  assert.equal(isComplete('i think the most important part is to.'), false);
+});
+
+test('terminated, non-dangling sentences fire', () => {
+  for (const s of [
+    'jimmy can you share the whiteboard?',
+    'what do you think jimmy?',
+    'the demo went really well.',
+    'lets keep testing and see how it holds up.',
+    'thanks that is really helpful.',
+  ]) {
+    assert.equal(isComplete(s), true, `should fire on: "${s}"`);
   }
 });
 
-test('terminal punctuation is the strongest signal and short-circuits', () => {
-  assert.equal(isComplete('Go ahead.'), true);
+test('terminated one-word answers clear the word-count floor', () => {
   assert.equal(isComplete('Really?'), true);
+  assert.equal(isComplete('Exactly.'), true);
   assert.equal(isComplete('Stop!'), true);
   assert.equal(isComplete('"Exactly."'), true);
-  // Even a normally-dangling word is complete once Meet emits a terminator.
-  assert.equal(isComplete('I know why.'), true);
-});
-
-test('too-short utterances are not openings', () => {
+  // But an unterminated one-worder does not.
   assert.equal(isComplete('yeah'), false);
   assert.equal(isComplete('ok sure'), false);
-  // Three words clears the floor.
-  assert.equal(isComplete('that makes sense'), true);
 });
 
-test('the fallback is conservative: it never fires on an obvious mid-phrase', () => {
-  // Every auxiliary/preposition/conjunction ending must be treated as unfinished.
+test('every dangling tail is caught, terminator or not', () => {
   for (const tail of ['and', 'but', 'because', 'to', 'the', 'a', 'is', 'was', 'could', 'what', 'i', 'gonna']) {
-    assert.equal(isComplete(`we were talking about this ${tail}`), false, `tail "${tail}" must be partial`);
+    assert.equal(isComplete(`we were talking about this ${tail}.`), false, `tail "${tail}" must be partial`);
   }
+});
+
+test('a non-punctuating source is diagnosable, not silently gated out', () => {
+  // If a caption source never emits terminators this gate can never fire. That
+  // is an acceptable failure (a quieter bot), but it must be visible in the log
+  // rather than read as "the room is never at a boundary."
+  const r = heuristicComplete('we were just talking about the latency numbers');
+  assert.equal(r.complete, false);
+  assert.match(r.reason, /no punctuation at all \(source may not punctuate\)/);
+
+  const r2 = heuristicComplete('one sentence ended. and this one has not');
+  assert.match(r2.reason, /no terminator at the end/, 'punctuating source, missing terminator — different reason');
 });
 
 test('result shape carries the heuristic flag and a debuggable reason', () => {
-  const r = heuristicComplete('what do you');
+  const r = heuristicComplete('what do you.');
   assert.equal(r.complete, false);
   assert.equal(r.heuristic, true);
   assert.match(r.reason, /dangling final word "you"/);
@@ -89,4 +99,12 @@ test('empty and garbage input never fire', () => {
   for (const bad of ['', '   ', null, undefined, '...', '???']) {
     assert.equal(heuristicComplete(bad).complete, false, `must not fire on ${JSON.stringify(bad)}`);
   }
+});
+
+test('known blind spot: a truncated word reads as a finished noun', () => {
+  // "share the white…" (about to be "whiteboard"). Only the model catches this.
+  // Documented, not fixed — the cost is one ill-timed 2-word probe, and only
+  // while the model is down. Needs a terminator to fire at all, which makes it
+  // rarer than it was.
+  assert.equal(isComplete('share the white.'), true);
 });

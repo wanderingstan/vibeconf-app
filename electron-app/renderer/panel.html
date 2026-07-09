@@ -26,7 +26,8 @@
             </div>
           </div>
         </div>
-        <button id="openSettingsBtn" class="icon-btn" title="Settings">&#9881;</button>
+        <!-- Settings gear moved into the Bot card (it opens THIS bot's settings);
+             machine-wide config lives in App Settings (⌘,). -->
       </div>
       <div class="error-bar" id="errorBar" style="display:none"><span id="errorText"></span><button class="error-close" id="errorClose">&times;</button></div>
 
@@ -38,9 +39,10 @@
         <button id="openAppSettingsFromBanner" style="background:#8ab4f8;border:none;color:#202124;border-radius:14px;padding:5px 12px;font-weight:600;cursor:pointer;white-space:nowrap">Set it up →</button>
       </div>
 
-      <!-- ── Zone 2: Agent identity (#289 agent-first layout) ────────────────
-           A profile IS the agent: avatar (its virtual-camera look) · name ·
-           ⇄ switcher · voice · connected calling platforms. -->
+      <!-- ══ ZONE 1: BOT ═══════════════════════════════════════════════════
+           Who this bot is: avatar · name · ⇄ switch · ⚙ its settings · voice ·
+           connected calling identities. (Call state + your login moved out to
+           their own zones below.) -->
       <div class="agent-card">
         <div class="agent-top">
           <!-- Avatar tile = the bot's background-as-avatar (its avatarBackgroundSvg
@@ -48,12 +50,14 @@
           <div id="agentAvatar" class="agent-avatar"><span id="agentAvatarEmoji" class="agent-avatar-emoji">🙂</span></div>
           <div class="agent-id">
             <div class="agent-name-row">
-              <div id="botNameBig" title="This profile's stable identity — its name / personality / logins. The name it actually appears under in a call shows below once joined." class="agent-name">—</div>
-              <button id="profileMenuBtn" class="agent-switch" title="Switch profile — replaces this window with another bot (its own Google/Slack login + personality). ⌥-click a profile to open it in a separate window instead. Hidden during a call.">⇄</button>
-              <!-- Profile switcher dropdown (#282). Populated on open from list-profiles. -->
+              <div id="botNameBig" title="This bot's stable identity — its name / personality / logins. The name it actually appears under in a call shows in the Call section below once joined." class="agent-name">—</div>
+              <button id="profileMenuBtn" class="agent-switch" title="Switch bot — replaces this window with another bot (its own Google/Slack login + personality). ⌥-click a bot to open it in a separate window instead. Hidden during a call.">⇄</button>
+              <!-- Settings gear — opens THIS bot's settings (voice, behavior).
+                   Machine-wide config is App Settings (⌘,). -->
+              <button id="openSettingsBtn" class="agent-gear" title="This bot's settings (voice, acknowledgments, behavior). Machine-wide settings are in App Settings, ⌘,.">&#9881;</button>
+              <!-- Bot switcher dropdown (#282). Populated on open from list-profiles. -->
               <div id="profileMenu" class="profile-menu"></div>
             </div>
-            <div id="botCallIdentity" class="agent-call-id" title="The name this bot is appearing under in the current call (Google account name in Meet, Slack name in a huddle). Only meaningful while in a call.">not in a call</div>
             <div class="agent-voice" title="Text-to-speech voice. ElevenLabs when a voice ID is set; otherwise the built-in macOS voice."><span id="voiceStatus">checking…</span></div>
           </div>
         </div>
@@ -83,12 +87,41 @@
           <!-- "⊕ Add calling platform" returns once there's more than one
                platform to add (#289). For now Meet + Slack are both fixed. -->
         </div>
+      </div>
 
-        <!-- USER (vibeconferencing.com) login — app-level since #366: one
-             sign-in covers every profile (mirrored via the shared config and
-             seeded on each profile's launch). Full UX home is still #289, so
-             it's de-emphasized here. -->
-        <div class="user-id-line" title="Your vibeconferencing.com login — for the shared whiteboard rooms. Signing in once covers all profiles.">
+      <!-- ══ ZONE 2: CALL ══════════════════════════════════════════════════
+           Call state + the tools to get into / out of one. -->
+      <div class="call-card">
+        <!-- Live call status. "not in a call" until joined, then the name the bot
+             is appearing under (moved here from under the bot name — it's call
+             STATE, not bot identity). -->
+        <div id="botCallIdentity" class="agent-call-id" title="The name this bot is appearing under in the current call (Google account name in Meet, Slack name in a huddle). Only meaningful while in a call.">not in a call</div>
+
+        <div class="field">
+          <label for="meetUrl">Meet / Slack URL</label>
+          <input type="text" id="meetUrl" placeholder="meet.google.com/xxx-xxxx-xxx or app.slack.com/client/…" />
+        </div>
+        <button id="joinBtn" class="primary" disabled>Join Call</button>
+        <div class="helper-text" style="margin-top:8px">Calls in Chrome/Safari are auto-detected. You can also type <code>/join-call</code> in any Claude Code session.</div>
+        <div class="helper-text" style="margin-top:4px"><a href="#" id="defaultMeetBtn" class="text-link">Open default testing meet in browser ↗</a></div>
+
+        <div id="connectedSection" style="display:none">
+          <button id="leaveCallBtn" style="margin-top:8px;background:#d93025;color:#fff;border:none;padding:8px 16px;border-radius:20px;cursor:pointer">Leave Call</button>
+          <div class="nav-buttons">
+            <button id="openTroubleshootingBtn">Troubleshooting</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ ZONE 3: MISC ══════════════════════════════════════════════════
+           De-emphasized, transitional status. Both of these may go away — the
+           login when we require it, the fast-model line when it's no longer
+           user-facing. -->
+      <div class="misc-zone">
+        <!-- YOUR (vibeconferencing.com) login — app-level since #366: one sign-in
+             covers every bot (mirrored via the shared config, seeded per bot on
+             launch). -->
+        <div class="user-id-line" title="Your vibeconferencing.com login — for the shared whiteboard rooms. Signing in once covers all bots.">
           <span id="userIdStatus">checking…</span>
           <span style="white-space:nowrap">
             <button id="userSignInMainBtn" class="auth-action-btn" style="display:none">Sign in</button>
@@ -96,27 +129,10 @@
                  it lives in Settings, not the primary UI (#289). -->
           </span>
         </div>
-      </div>
 
-      <!-- ── Zone 3: Join a call ───────────────────────────────────────────── -->
-      <div class="field">
-        <label for="meetUrl">Meet / Slack URL</label>
-        <input type="text" id="meetUrl" placeholder="meet.google.com/xxx-xxxx-xxx or app.slack.com/client/…" />
-      </div>
-      <button id="joinBtn" class="primary" disabled>Join Call</button>
-      <div class="helper-text" style="margin-top:8px">Calls in Chrome/Safari are auto-detected. You can also type <code>/join-call</code> in any Claude Code session.</div>
-      <div class="helper-text" style="margin-top:4px"><a href="#" id="defaultMeetBtn" class="text-link">Open default testing meet in browser ↗</a></div>
-
-      <div id="connectedSection" style="display:none">
-        <button id="leaveCallBtn" style="margin-top:8px;background:#d93025;color:#fff;border:none;padding:8px 16px;border-radius:20px;cursor:pointer">Leave Call</button>
-        <div class="nav-buttons">
-          <button id="openTroubleshootingBtn">Troubleshooting</button>
+        <div class="health-zone">
+          <span title="The on-device fast model (Apple FoundationModels via the OpenAI-compatible wrapper) powering turn-taking triage/engagement. 'Detected' = the configured endpoint answered just now."><span class="health-key">⚡ Fast model</span> · <span id="fastModelStatus">checking…</span></span>
         </div>
-      </div>
-
-      <!-- ── Zone 4: Health (extensible; fast-model is the first tenant) ────── -->
-      <div class="health-zone">
-        <span title="The on-device fast model (Apple FoundationModels via the OpenAI-compatible wrapper) powering turn-taking triage/engagement. 'Detected' = the configured endpoint answered just now."><span class="health-key">⚡ Fast model</span> · <span id="fastModelStatus">checking…</span></span>
       </div>
     </div>
   </div>
@@ -202,7 +218,7 @@
             <input type="checkbox" id="dangerousMode" />
             Dangerously bypass permissions
           </label>
-          <div style="font-size:11px;color:#c00;margin-top:2px">Launches Claude with --dangerously-skip-permissions. Use with caution. Applies to all profiles on this machine.</div>
+          <div style="font-size:11px;color:#c00;margin-top:2px">Launches Claude with --dangerously-skip-permissions. Use with caution. Applies to all bots on this machine.</div>
         </div>
       </div>
 
@@ -349,7 +365,7 @@
         <div class="field">
           <label for="websiteUrl">Website URL</label>
           <input type="text" id="websiteUrl" placeholder="https://vibeconferencing.com" />
-          <div style="font-size:11px;color:#666;margin-top:2px">Leave blank for the production default (vibeconferencing.com). Set to a Vercel preview URL to test against a feature branch. Applies to all profiles on this machine.</div>
+          <div style="font-size:11px;color:#666;margin-top:2px">Leave blank for the production default (vibeconferencing.com). Set to a Vercel preview URL to test against a feature branch. Applies to all bots on this machine.</div>
         </div>
       </div>
     </div>

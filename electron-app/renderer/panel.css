@@ -478,6 +478,14 @@ button:disabled {
   font-size: 18px; line-height: 1; padding: 2px 4px; border-radius: 6px;
 }
 .agent-switch:hover { background: #3c4043; }
+/* Bot settings gear — sits next to the ⇄ switcher in the name row, same
+   ghost-icon treatment. Stays visible in-call (unlike the switcher). */
+.agent-gear {
+  width: auto; margin: 0; flex: 0 0 auto;
+  background: none; border: none; color: #9aa0a6; cursor: pointer;
+  font-size: 16px; line-height: 1; padding: 2px 4px; border-radius: 6px;
+}
+.agent-gear:hover { background: #3c4043; color: #e8eaed; }
 /* #379: the switcher SWITCHES the current window (replaces this bot), which only
    makes sense pre-call. Hide it in-call so nobody expects to hot-swap the bot
    mid-call; the additive "New Profile Window…" (menu bar) stays available. Gated
@@ -485,10 +493,29 @@ button:disabled {
    it for other pre-call-only controls. */
 body[data-call-state="in-call"] #profileMenuBtn { display: none; }
 .agent-call-id {
-  font-size: 12px; color: #9aa0a6; margin-top: 1px;
+  font-size: 12px; color: #9aa0a6;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .agent-call-id.in-call { color: #81c995; }
+
+/* ── Call zone ── the call status line + join/leave tools, grouped as a card
+   to read as its own section distinct from the Bot card above. */
+.call-card {
+  margin: 0 0 14px;
+  padding: 12px;
+  border: 1px solid #5f6368;
+  border-radius: 12px;
+  background: #2a2d31;
+}
+.call-card .agent-call-id { margin-bottom: 10px; }
+/* The first field inside the call card shouldn't add extra top gap. */
+.call-card .field { margin-top: 0; }
+
+/* ── Misc zone ── de-emphasized transitional footer (login + fast model). */
+.misc-zone { margin-top: 4px; }
+/* These already carry their own top-border dividers; drop the first one's so
+   the zone doesn't start with a doubled rule. */
+.misc-zone .user-id-line { margin-top: 0; }
 .agent-voice { font-size: 12px; color: #9aa0a6; margin-top: 4px; display: flex; align-items: center; gap: 4px; }
 
 /* Profile switcher dropdown (anchored under the name row) */

@@ -5121,11 +5121,6 @@ function setupIPC() {
   // path as captions-off so the 🙉 emoji flips and the wait_for_speech timeout
   // warns the agent. Auto-clears: the next real caption flips captionsOn back
   // ON (local-server self-corrects on incoming text).
-  //
-  // #424 thresholds for the AMBIGUOUS case (stall we can't confirm as deafness):
-  // be honest on the avatar first, then try the cheap idempotent caption toggle.
-  const IMPAIRED_STALL_MS = 20_000;      // wear 🥴 — "something's wrong, I may not be hearing you"
-  const FORCE_RECOVER_STALL_MS = 45_000; // toggle captions off/on regardless of the (possibly frozen) tracker
   ipcMain.on(CALL_EVENTS.captionStall, (_event, info) => {
     const secs = Math.round((info?.ageMs || 0) / 1000);
 
@@ -5148,19 +5143,22 @@ function setupIPC() {
     // captions), so it's the right discriminator. (Live 2026-06-23: a silent
     // room got flagged deaf and the bot announced "I've gone deaf" — #259.)
     if (!localServer.anyoneSpeaking) {
-      // #424: do NOT just ignore. `anyoneSpeaking` comes from the tile-mutation
-      // speaker tracker, which dies in exactly the scenario this guard is meant
-      // to catch — an occluded/throttled renderer freezes captions AND tile
-      // mutations together (2026-07-09: mut=0 on every tile for 85s, recovery
-      // ran zero times, bot wore a happy face throughout). We can't CONFIRM
-      // deafness here, but we can be honest that something is wrong and try the
-      // cheap, idempotent fix.
-      console.log(`[electron] caption stall (${secs}s) — cannot confirm a remote speaker (tracker may be frozen)`);
-      if ((info?.ageMs || 0) >= IMPAIRED_STALL_MS) setImpaired(true, `no captions for ${secs}s`);
-      if ((info?.ageMs || 0) >= FORCE_RECOVER_STALL_MS && meetView && !meetView.webContents.isDestroyed()) {
-        console.warn(`[electron] caption stall ${secs}s ≥ ${FORCE_RECOVER_STALL_MS / 1000}s — attempting caption recovery anyway (#424)`);
-        sendCallCmd(CALL_COMMANDS.recoverCaptions);
-      }
+      // No remote speaker: we CANNOT distinguish "the room is simply quiet"
+      // from "we've gone deaf and the tracker is frozen too" — both look like
+      // "no captions lately". Observe, don't act.
+      //
+      // An earlier cut of #424 raised 🥴 at 20s and force-toggled captions at
+      // 45s here. Caught live 2026-07-09: with the room merely quiet while the
+      // bot worked, the stall climbed 29s → 64s → 94s, the bot wore an alarming
+      // impaired face, and it re-toggled the room's captions every 30s — trying
+      // to fix a problem that did not exist. Acting on ambiguous evidence was
+      // worse than the (now-fixed) root cause: `backgroundThrottling: false`
+      // removes the freeze this branch was speculating about.
+      //
+      // Log loudly so post-mortems can still see it. To raise 🥴 here we need
+      // POSITIVE evidence of a degraded renderer (a freeze detector, or the
+      // audio-RMS signal from #387) — not the absence of captions. See #424.
+      console.log(`[electron] caption stall (${secs}s) with no remote speaker — quiet room or (rarely) a frozen tracker; NOT acting (see #424)`);
       return;
     }
     // (The bot-monologue guard that used to live here now runs FIRST — see the

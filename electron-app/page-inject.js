@@ -17,6 +17,22 @@
     fps: 30,
   };
 
+  // #428: draw `img` to fill a w×h canvas WITHOUT distorting it — CSS
+  // `object-fit: cover` semantics. Scale by the larger axis ratio so the image
+  // always covers the canvas, then center it so the overflow is cropped evenly
+  // on both sides. Aspect-agnostic in both directions: a square source on a
+  // 16:9 canvas crops top/bottom evenly; a 16:9 source on a future portrait
+  // canvas would crop left/right evenly. Never letterboxes (no empty bars).
+  function drawCover(ctx, img, w, h) {
+    const sw = img.naturalWidth || img.width;
+    const sh = img.naturalHeight || img.height;
+    if (!sw || !sh) return; // nothing sane to scale by; skip rather than divide by 0
+    const scale = Math.max(w / sw, h / sh);
+    const dw = sw * scale;
+    const dh = sh * scale;
+    ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
+  }
+
   // ---------------------------------------------------------------------------
   // VirtualCamera — renders a bot avatar to a <canvas> and exposes a MediaStream
   // ---------------------------------------------------------------------------
@@ -222,9 +238,13 @@
       // --- Background: custom SVG (if loaded) or animated gradient fallback ---
       const t = this.frameCount * 0.02;
       if (this.backgroundImage && this.backgroundImage.complete && this.backgroundImage.naturalWidth > 0) {
-        // Cover-fit the SVG to the canvas. The rasterized image already has
-        // any external refs inlined (server-side resolver), so no taint risk.
-        ctx.drawImage(this.backgroundImage, 0, 0, w, h);
+        // #428: TRUE cover-fit. This comment used to say "cover" while the code
+        // did `drawImage(img, 0, 0, w, h)` — a full stretch. Backgrounds are
+        // commonly authored square (viewBox="0 0 400 400") while the camera is
+        // 16:9, so a circular sun rendered as a 1.78:1 squashed oval. The
+        // rasterized image already has any external refs inlined (server-side
+        // resolver), so no taint risk.
+        drawCover(ctx, this.backgroundImage, w, h);
       } else {
         // Default animated gradient — bright enough to avoid Chrome's
         // "camera blocked" heuristic, with subtle particle motion.

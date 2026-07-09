@@ -301,6 +301,10 @@ class LocalServer {
     this.probeBank = [];
     this.lastProbeAt = 0;
     this._probeTimer = null;
+    // Fires one full silence-gate after the floor goes quiet while a barge-in
+    // stash is pending. Deliberately independent of this.waiters — see
+    // _maybeReplayStashOnOpening.
+    this._stashOpeningTimer = null;
 
     // Speech the bot was about to say when a human interrupted (barge-in).
     // Held for the bargeInStashMaxAgeMs pref window, then auto-replayed on the next
@@ -1028,7 +1032,11 @@ class LocalServer {
       this.lastSpeechStoppedAt = Date.now();
       const speakers = this.participants.filter(p => !p.isSelf && p.name !== 'You').map(p => p.name).join(', ') || '(unknown)';
       console.log(ts(), '🛑 [silence] User(s) stopped speaking:', speakers, '(peak ' + this._peakSpeakersSinceQuiet + ' concurrent)');
-      if (this.botState === 'yielding') {
+      // Keep the raised hand up while a stash is still waiting for its opening.
+      // Dropping to listening/idle the instant the interrupter stops made the
+      // bot look like it had abandoned the thought — while in fact it was
+      // holding one. The stash-opening timer below is what lowers the hand.
+      if (this.botState === 'yielding' && !this.bargeInStash) {
         this._setBotState(this.waiters.length > 0 ? 'listening' : 'idle', undefined, { force: true });
       }
       this._checkWaiters();
@@ -1036,11 +1044,21 @@ class LocalServer {
       // The interrupter went silent before our grace timer fired — drop
       // the back-off monitor (#154).
       this._clearBargeIn('interrupter went silent');
-      // Active listening (#245): arm a SOFT-opening probe on a brief quiet —
-      // shorter than the full turn-silence gate. If the room is still quiet
-      // after probeSilenceMs, _maybeProbeOpening runs the completeness gate.
-      // No-op unless probeFiring is on (checked inside).
-      if (this._pref('probeFiring')) {
+      // A held reply outranks a probe: if the bot already composed a real
+      // thought, the first opening belongs to that, not to a filler phrase.
+      // Wait the FULL turn-silence gate before replaying — the same bar a
+      // human turn has to clear — rather than the probe's shorter soft gap.
+      // Crucially this timer does not care whether an agent is parked in
+      // wait_for_speech: the floor opening is a property of the room, not of
+      // the agent's poll cycle (see _maybeReplayStashOnOpening).
+      if (this.bargeInStash) {
+        clearTimeout(this._stashOpeningTimer);
+        const ms = Math.round((Number(this._pref('defaultSilenceSeconds')) || 1.4) * 1000);
+        this._stashOpeningTimer = setTimeout(() => this._maybeReplayStashOnOpening(), ms);
+      } else if (this._pref('probeFiring')) {
+        // Active listening (#245): arm a SOFT-opening probe on a brief quiet —
+        // shorter than the full turn-silence gate. If the room is still quiet
+        // after probeSilenceMs, _maybeProbeOpening runs the completeness gate.
         clearTimeout(this._probeTimer);
         const ms = Number(this._pref('probeSilenceMs')) || 700;
         this._probeTimer = setTimeout(() => this._maybeProbeOpening(), ms);
@@ -1057,6 +1075,11 @@ class LocalServer {
       // Speaker resumed — cancel any pending soft-opening probe (no opening).
       clearTimeout(this._probeTimer);
       this._probeTimer = null;
+      // Same for a pending stash replay: the floor closed again. The stash
+      // itself survives (it re-arms on the next stop) until it ages out or
+      // the conversation moves past it.
+      clearTimeout(this._stashOpeningTimer);
+      this._stashOpeningTimer = null;
       this.onAnyoneSpeakingChange(true);
       // If the bot is mid-utterance when someone else starts speaking, arm
       // the back-off monitor (#154). _armBargeIn is a no-op if not in the
@@ -1834,6 +1857,10 @@ class LocalServer {
     // model regenerates fresh.
     if (this.pendingBotSpeech.length > 0) {
       console.log(ts(), '🛡️  [barge-in] stashing', this.pendingBotSpeech.length, 'queued bot speech entries for possible replay');
+      if (this.bargeInStash) {
+        console.log(ts(), '🛡️  [barge-in] overwriting an unplayed stash (' +
+          (Date.now() - this.bargeInStash.at) + 'ms old) — the floor never opened for it');
+      }
       this.bargeInStash = {
         entries: [...this.pendingBotSpeech],
         at: Date.now(),
@@ -1947,6 +1974,44 @@ class LocalServer {
     return texts;
   }
 
+  // The floor opened and the bot is holding a composed reply. Say it.
+  //
+  // This exists because replaying only at wait_for_speech resolution meant the
+  // stash almost never played: a resolution requires an agent parked in a
+  // long-poll, and the agent spends much of a call outside one (composing,
+  // running tools). Measured on a real 30-minute call: 13 stashes, 0 replays.
+  // The opening is a property of the ROOM, so it is detected here from the
+  // speech-stop edge and honoured regardless of this.waiters.
+  //
+  // The freshness/relevance guards still live in _maybeReplayBargeInStash, and
+  // _lastReplayedStash still surfaces to the agent on its next resolve, so the
+  // agent learns its queued thought went out and builds on it instead of
+  // repeating it.
+  _maybeReplayStashOnOpening() {
+    this._stashOpeningTimer = null;
+    if (!this.bargeInStash) return;
+    if (this.callStatus !== 'in-call') return;
+    // Silent mode is "act but never speak" — a replay is speech.
+    if (this.mode === 'silent') return;
+    // The floor closed again, or the bot is already talking.
+    if (this.anyoneSpeaking || this.botState === 'speaking') return;
+
+    // Same precedence as the resolve-time path: an utterance the room actually
+    // heard the bot START saying (#350) outranks one it never heard at all.
+    // Both consumers are one-shot, so the later resolve-time call is a no-op.
+    const resumed = this._maybeResumeInterruptedTts();
+    if (resumed) return;
+    const replayed = this._maybeReplayBargeInStash();
+    if (replayed) {
+      this._lastReplayedStash = replayed;
+      console.log(ts(), '🛡️  [barge-in] stash replayed at a floor opening (no waiter needed)');
+    } else if (this.botState === 'yielding') {
+      // Guards rejected it (stale / conversation moved on) and it's gone.
+      // Lower the hand — nothing is queued anymore.
+      this._setBotState(this.waiters.length > 0 ? 'listening' : 'idle', undefined, { force: true });
+    }
+  }
+
   // Total words heard from others (not the bot itself) across all caption turns.
   // since=null = no time filter — this is a running TOTAL, snapshotted as a
   // per-waiter baseline so the tick can measure a true DELTA (see below).
@@ -2046,6 +2111,8 @@ class LocalServer {
     if (!this._pref('probeFiring')) return;
     if (this.mode !== 'active' || this.callStatus !== 'in-call') return;
     if (this.anyoneSpeaking || this.botState === 'speaking') return;
+    // A held reply beats a filler. The stash-opening timer owns this gap.
+    if (this.bargeInStash) return;
     if (this.waiters.length === 0) return; // slow model isn't listening
     const minInterval = Number(this._pref('probeMinIntervalMs')) || 0;
     if (minInterval > 0 && Date.now() - this.lastProbeAt < minInterval) return;
@@ -2076,6 +2143,8 @@ class LocalServer {
     if (!this._pref('probeFiring')) return null;
     if (this.mode !== 'active' || this.callStatus !== 'in-call') return null;
     if (this.anyoneSpeaking || this.botState === 'speaking') return null;
+    // Re-check: a stash may have landed during the ~0.6s gate call.
+    if (this.bargeInStash) return null;
     const minInterval = Number(this._pref('probeMinIntervalMs')) || 0;
     if (minInterval > 0 && Date.now() - this.lastProbeAt < minInterval) return null;
     let text = this._consumeFreshProbe();
@@ -3051,6 +3120,15 @@ class LocalServer {
           .filter((t) => t && t.text)
           .map((t) => ({ text: t.text, voice: t.voice, emoji: t.emoji, urgency: t.urgency }));
         if (stashEntries.length > 0) {
+          // A second stash before the first ever got its opening means the
+          // earlier thought is being discarded. That used to happen silently —
+          // the single biggest reason stashes "disappeared" without a log line.
+          if (this.bargeInStash) {
+            const lostAgeMs = Date.now() - this.bargeInStash.at;
+            console.log(ts(), '🛡️  [barge-in] overwriting an unplayed stash (' + lostAgeMs + 'ms old, ' +
+              this.bargeInStash.entries.length + ' entr' + (this.bargeInStash.entries.length === 1 ? 'y' : 'ies') +
+              ') — the floor never opened for it:', JSON.stringify((this.bargeInStash.entries[0]?.text || '').slice(0, 60)));
+          }
           // Baseline the words-heard-from-others counter so the replay path can
           // measure how much NEW speech landed while the reply was held.
           this.bargeInStash = {

@@ -145,6 +145,67 @@ async function judgeComplete({ text, config, log }) {
   }
 }
 
+// Endpoint-free fallback for judgeComplete. When the on-device model is not
+// running (nothing listening on ackEndpoint), judgeComplete returns null and the
+// probe gate used to skip — which silently disabled active listening entirely
+// for anyone without the local server up. A dead port should degrade the gate,
+// not delete it.
+//
+// The model's whole job is the DANGLING-final-word test described in the system
+// prompt above, and that test is mostly lexical: a thought is unfinished when it
+// ends on a word that grammatically demands a next one. Encode exactly that. It
+// is strictly worse than the model (no semantics, no long-range grammar), so it
+// is used only as a fallback and is deliberately CONSERVATIVE — when unsure it
+// answers "not complete", which costs us a missed probe rather than an
+// interruption.
+//
+// Returns { complete, reason, ms, heuristic: true }.
+const DANGLING_FINAL_WORDS = new Set([
+  // articles / determiners
+  'a', 'an', 'the', 'this', 'that', 'these', 'those', 'my', 'your', 'our', 'their', 'his', 'her', 'its',
+  // prepositions
+  'of', 'to', 'in', 'on', 'at', 'by', 'for', 'with', 'from', 'into', 'onto', 'about',
+  'over', 'under', 'between', 'through', 'during', 'against', 'toward', 'towards', 'upon',
+  // conjunctions / connectors
+  'and', 'or', 'but', 'so', 'because', 'if', 'when', 'while', 'as', 'than', 'then',
+  'though', 'although', 'unless', 'until', 'whether', 'plus',
+  // auxiliaries / modals
+  'is', 'am', 'are', 'was', 'were', 'be', 'been', 'being', 'do', 'does', 'did',
+  'have', 'has', 'had', 'can', 'could', 'will', 'would', 'shall', 'should',
+  'may', 'might', 'must', 'gonna', 'wanna',
+  // pronouns / wh-words that demand a predicate
+  'i', 'you', 'he', 'she', 'we', 'they', 'it',
+  'what', 'which', 'who', 'whom', 'whose', 'where', 'why', 'how',
+  // very common dangling verbs/adverbs
+  'like', 'just', 'very', 'really', 'more', 'most', 'some', 'any', 'not', 'no',
+]);
+
+const MIN_HEURISTIC_WORDS = 3;
+
+function heuristicComplete(text) {
+  const started = Date.now();
+  const clean = String(text || '').trim();
+  const words = clean.toLowerCase().replace(/[^a-z0-9'\s]/g, ' ').split(/\s+/).filter(Boolean);
+  // No actual words means no thought — "..." and "???" are not openings.
+  if (words.length === 0) {
+    return { complete: false, reason: 'heuristic: no words', ms: Date.now() - started, heuristic: true };
+  }
+  // Real punctuation is rare in live captions, but when Meet does emit a
+  // terminator it is the strongest possible signal — take it, even for a
+  // one-word answer ("Really?") that the word-count floor would reject.
+  if (/[.!?]["')\]]?$/.test(clean)) {
+    return { complete: true, reason: 'heuristic: terminal punctuation', ms: Date.now() - started, heuristic: true };
+  }
+  if (words.length < MIN_HEURISTIC_WORDS) {
+    return { complete: false, reason: `heuristic: only ${words.length} words`, ms: Date.now() - started, heuristic: true };
+  }
+  const last = words[words.length - 1];
+  if (DANGLING_FINAL_WORDS.has(last)) {
+    return { complete: false, reason: `heuristic: dangling final word "${last}"`, ms: Date.now() - started, heuristic: true };
+  }
+  return { complete: true, reason: `heuristic: ends on "${last}"`, ms: Date.now() - started, heuristic: true };
+}
+
 // Parse a log file's [caption-raw] lines into per-turn progressions.
 // Line format (from local-server._logRawCaption):
 //   ...📝 [caption-raw] t<turnId> LIVE|settled <speaker>: "<json-encoded text>"
@@ -168,4 +229,4 @@ function parseCaptionLog(content) {
   return order.map((id) => turns.get(id));
 }
 
-module.exports = { judgeComplete, parseCaptionLog, buildSystem, buildUser };
+module.exports = { judgeComplete, heuristicComplete, parseCaptionLog, buildSystem, buildUser };

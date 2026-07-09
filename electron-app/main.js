@@ -1062,17 +1062,25 @@ const localServer = new globalThis.LocalServer({
   onProbeOpening: async ({ lastUtterance, recentTranscript, roster }) => {
     if (!store?.get('probeFiring')) return;
     const config = require('./ack').getLocalModelConfig(store);
-    const { judgeComplete } = require('./completeness');
+    const { judgeComplete, heuristicComplete } = require('./completeness');
     // Judge the raw last utterance (strip the "Speaker: " label the gate added).
     const text = (lastUtterance || '').replace(/^[^:]+:\s*/, '').trim();
     if (!text) return;
-    const verdict = await judgeComplete({
+    let verdict = await judgeComplete({
       text,
       config: { endpoint: config.endpoint, apiKey: config.apiKey, model: config.model, timeoutMs: 4000 },
       log: (m) => console.log(ts(), '🎣 [probe-gate]', m),
     });
-    if (!verdict) { console.log(ts(), '🎣 [probe-gate] no verdict (endpoint/parse failure) — skip'); return; }
-    console.log(ts(), `🎣 [probe-gate] complete=${verdict.complete} (${verdict.ms}ms) — ${verdict.reason} | on: "${text.slice(0, 100)}"`);
+    // The on-device model is optional infrastructure — plenty of installs have
+    // nothing listening on ackEndpoint. Skipping here meant one dead port
+    // silently switched active listening off with no user-visible sign. Degrade
+    // to the lexical gate instead; it is conservative, so the failure mode is a
+    // quieter bot, never one that talks over people.
+    if (!verdict) {
+      verdict = heuristicComplete(text);
+      console.log(ts(), '🎣 [probe-gate] model unavailable — falling back to the lexical gate');
+    }
+    console.log(ts(), `🎣 [probe-gate] complete=${verdict.complete} (${verdict.ms}ms${verdict.heuristic ? ', heuristic' : ''}) — ${verdict.reason} | on: "${text.slice(0, 100)}"`);
     if (!verdict.complete) return; // not a real opening — they're mid-thought
     const spoken = localServer.fireProbe();
     if (spoken) console.log(ts(), `🎣 [probe] spoke: ${JSON.stringify(spoken)}`);

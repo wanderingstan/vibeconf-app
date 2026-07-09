@@ -353,16 +353,20 @@ const PREFERENCES = {
   },
   bargeInStashMaxAgeMs: {
     type: 'number',
-    default: 10_000,
+    default: 45_000,
     min: 0,
-    max: 60_000,
+    max: 120_000,
     description:
       'When the bot yields mid-thought to a human, its queued speech is ' +
       'stashed and auto-replayed on the next silence gap if still fresh. ' +
       'This is how fresh (ms) the stash must be to replay; older than this ' +
       'and the slow model regenerates from scratch. Higher = more "the bot ' +
       'patiently waited and just said its thing"; lower = more "the bot ' +
-      're-thinks every gap." Default 10s.',
+      're-thinks every gap." Was 10s, which in practice never fired: a live ' +
+      'two-person call holds the floor far longer (one call: 13 stashes, 0 ' +
+      'replays, holds of 37s/77s/80s). Relevance is guarded by ' +
+      'bargeInStashRedeliverMaxNewWords, not by the clock, so the age bar can ' +
+      'afford to be generous. Default 45s.',
   },
   bargeInStashRedeliverMaxNewWords: {
     type: 'number',

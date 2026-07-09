@@ -92,6 +92,13 @@
       // the Meet itself see that the bot can't hear them and can re-enable
       // captions. Takes priority over everything except the not-on-line emoji.
       this.deaf = avatarState.deaf;
+      // #424: generic "something is wrong" flag — the bot believes it is in a
+      // degraded state it can't fully diagnose (captions ON but no new text
+      // for a long stretch, renderer freeze, etc). Distinct from `deaf`
+      // (captions confirmed OFF — a known, specific cause). Shows 🥴 so the
+      // room and the operator can SEE that the bot is impaired instead of it
+      // sitting there wearing a happy listening face while hearing nothing.
+      this.impaired = avatarState.impaired;
       // Per-response speaking emoji (set by speak's emoji param). Cleared
       // when the TTS queue drains. Falls through to ACTIVITY_EMOJIS.speaking.
       this.speakingEmojiOverride = null;
@@ -299,9 +306,13 @@
       // Deaf takes priority over everything except not-on-line — the whole
       // point is making "can't hear you" visible while otherwise in-call.
       const deafEmoji = this.deaf ? '\u{1F649}' : null; // 🙉
+      // #424: impaired ranks just under deaf — deaf is a KNOWN cause (captions
+      // off), impaired is "something's wrong and I may not be hearing you".
+      const impairedEmoji = this.impaired ? '\u{1F974}' : null; // 🥴
       const emoji =
         notOnLine
         || deafEmoji
+        || impairedEmoji
         || audioPlaying
         || activityEmoji
         || hearing
@@ -1070,7 +1081,7 @@
   // handlers update both every live camera AND this object.
   const avatarState = {
     state: 'idle', mode: 'active', callStatus: 'idle', hasEngaged: false,
-    deaf: false, idleEmojiOverride: null, listeningEmojiOverride: null,
+    deaf: false, impaired: false, idleEmojiOverride: null, listeningEmojiOverride: null,
     yieldingEmojiOverride: null, backgroundImage: null, emojiSet: 'native',
   };
 
@@ -1566,6 +1577,18 @@
         playNextTTS();
         break;
       }
+
+      case 'set-impaired':
+        // #424: generic degraded-state flag → avatar shows 🥴. Raised when the
+        // bot suspects it isn't hearing (captions ON but stale, renderer
+        // freeze). payload.reason is logged for the operator.
+        if (payload) {
+          const on = !!payload.impaired;
+          for (const cam of cameras.values()) cam.impaired = on;
+          avatarState.impaired = on; // seed future cameras
+          console.log('[bots-in-calls] impaired =', on, payload.reason ? '(' + payload.reason + ')' : '');
+        }
+        break;
 
       case 'set-deaf':
         // Captions on/off from the scraper's CC-button watcher.

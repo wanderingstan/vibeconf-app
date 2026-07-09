@@ -2487,11 +2487,13 @@ window.addEventListener('DOMContentLoaded', () => {
     const el = document.getElementById('vibeconf-status');
     if (el) {
       const href = window.location.href;
+      // No "Bot's view" prefix — the banner already shows a static "Bot View —"
+      // label, so prefixing here produced a doubled "Bot View — Bot's view —".
       el.textContent = MEET.url.signInPage.test(href)
-        ? "Bot's view — sign the bot in to Google here"
+        ? "Sign the bot in to Google here"
         : MEET.url.meetingCodePath.test(window.location.pathname)
-          ? "Bot's view of Google Meet"
-          : "Bot's view — Google Meet home (not in a call)";
+          ? "Google Meet"
+          : "Google Meet home (not in a call)";
     }
   } catch { /* body not ready */ }
 

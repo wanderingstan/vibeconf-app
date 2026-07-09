@@ -2033,6 +2033,26 @@ class LocalServer {
     }
   }
 
+  // How long the room has been quiet, judged from the freshest of `entries`.
+  //
+  // Two traps this exists to avoid, both of which shipped:
+  //   • `timestamp` is firstSeen — when a turn STARTED. A still-growing turn
+  //     keeps its firstSeen and advances `lastUpdated`, so measuring from
+  //     timestamp makes any long utterance look ancient while it's still being
+  //     spoken. Always prefer lastUpdated. (Bot-speech entries have no
+  //     lastUpdated; timestamp is correct for them.)
+  //   • entries are sorted by firstSeen, so entries[last] is the turn that
+  //     STARTED most recently, not the one that CHANGED most recently. Take the
+  //     max rather than the tail.
+  _quietMsSince(entries) {
+    let freshest = 0;
+    for (const e of entries) {
+      const t = new Date(e.lastUpdated || e.timestamp).getTime();
+      if (t > freshest) freshest = t;
+    }
+    return freshest ? Date.now() - freshest : Infinity;
+  }
+
   // Total words heard from others (not the bot itself) across all caption turns.
   // since=null = no time filter — this is a running TOTAL, snapshotted as a
   // per-waiter baseline so the tick can measure a true DELTA (see below).
@@ -2997,16 +3017,34 @@ class LocalServer {
       this._setBotState('listening', undefined, { force: true });
     }
 
-    // Check if there are already entries that satisfy the silence condition
+    // Check if there are already entries that satisfy the silence condition —
+    // speech that finished while the agent was away composing or running tools.
+    //
+    // Measure the gap from the speaker's LAST WORD, not their first. `timestamp`
+    // is firstSeen (when the turn started); a turn that is still growing keeps
+    // its firstSeen and advances `lastUpdated`. Using timestamp here meant any
+    // utterance longer than the silence bar returned INSTANTLY, mid-sentence,
+    // handing the agent a half-finished caption — the "it processed my speech
+    // while I was still talking" bug. Entries are sorted by firstSeen, so the
+    // freshest one isn't necessarily last; take the max explicitly.
     const existing = this._entriesSince(since, bot);
-    if (existing.length > 0) {
-      const lastEntry = existing[existing.length - 1];
-      const lastTime = new Date(lastEntry.timestamp).getTime();
-      if (Date.now() - lastTime >= clampedSilence * 1000) {
+    if (existing.length > 0 && !this.anyoneSpeaking) {
+      const quietMs = this._quietMsSince(existing);
+      if (quietMs >= clampedSilence * 1000) {
+        // This path returns without ever creating a waiter, so none of the
+        // [resolve] lines fire. Its silence made a delivered turn look lost.
+        console.log(ts(), '⚡ [resolve] wait_for_speech returned immediately — ' + existing.length +
+          ' entr' + (existing.length === 1 ? 'y' : 'ies') + ' already past the silence bar (' +
+          Math.round(quietMs) + 'ms quiet ≥ ' + Math.round(clampedSilence * 1000) + 'ms), no waiter registered');
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(this._buildResponse(since, bot, Date.now())));
         return;
       }
+      console.log(ts(), '⏳ [resolve] undelivered speech is only ' + Math.round(quietMs) +
+        'ms old (< ' + Math.round(clampedSilence * 1000) + 'ms) — waiting for the speaker to finish');
+    } else if (existing.length > 0) {
+      console.log(ts(), '⏳ [resolve] ' + existing.length + ' undelivered entr' +
+        (existing.length === 1 ? 'y' : 'ies') + ', but someone is speaking right now — waiting');
     }
 
     const startTime = Date.now();

@@ -44,6 +44,10 @@ const DEFAULT_PORT = 7865;
 // accumulated to surface the slow model (#245). This is just the sampling
 // granularity — the actual trigger is content (chars), not time.
 const BACKGROUND_TICK_POLL_MS = 2500;
+// How long the 👀 tick glance stays on the avatar before easing back to the
+// resting face. Long enough to be seen, short enough that it can't be mistaken
+// for a state the bot is stuck in.
+const TICK_FACE_MS = 4000;
 
 // Short HH:MM:SS.mmm timestamp for emoji diagnostic logs — lets us cross-
 // reference log lines with actual conversation moments. Keep it local so
@@ -107,7 +111,7 @@ class LocalServer {
     this.onPlayAudio = onPlayAudio || (() => {});
     this.onFocusRequest = onFocusRequest || (() => {}); // raise this instance's window (profile switcher)
     this.onInspectDom = onInspectDom || (async () => ({ ok: false, error: 'not implemented' }));
-    this.onBotStateChange = onBotStateChange || (() => {}); // 'idle' | 'listening' | 'thinking' | 'speaking' | 'yielding'
+    this.onBotStateChange = onBotStateChange || (() => {}); // 'idle' | 'listening' | 'ticking' | 'thinking' | 'speaking' | 'yielding'
     this.onModeChange = onModeChange || (() => {});        // 'active' | 'passive' | 'silent'
     this.onCallStatusChange = onCallStatusChange || (() => {}); // 'idle' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
     this.onAnyoneSpeakingChange = onAnyoneSpeakingChange || (() => {}); // boolean
@@ -301,6 +305,11 @@ class LocalServer {
     this.probeBank = [];
     this.lastProbeAt = 0;
     this._probeTimer = null;
+    this._tickFaceTimer = null;
+    // Fires one full silence-gate after the floor goes quiet while a barge-in
+    // stash is pending. Deliberately independent of this.waiters — see
+    // _maybeReplayStashOnOpening.
+    this._stashOpeningTimer = null;
 
     // Speech the bot was about to say when a human interrupted (barge-in).
     // Held for the bargeInStashMaxAgeMs pref window, then auto-replayed on the next
@@ -1028,7 +1037,11 @@ class LocalServer {
       this.lastSpeechStoppedAt = Date.now();
       const speakers = this.participants.filter(p => !p.isSelf && p.name !== 'You').map(p => p.name).join(', ') || '(unknown)';
       console.log(ts(), '🛑 [silence] User(s) stopped speaking:', speakers, '(peak ' + this._peakSpeakersSinceQuiet + ' concurrent)');
-      if (this.botState === 'yielding') {
+      // Keep the raised hand up while a stash is still waiting for its opening.
+      // Dropping to listening/idle the instant the interrupter stops made the
+      // bot look like it had abandoned the thought — while in fact it was
+      // holding one. The stash-opening timer below is what lowers the hand.
+      if (this.botState === 'yielding' && !this.bargeInStash) {
         this._setBotState(this.waiters.length > 0 ? 'listening' : 'idle', undefined, { force: true });
       }
       this._checkWaiters();
@@ -1036,11 +1049,21 @@ class LocalServer {
       // The interrupter went silent before our grace timer fired — drop
       // the back-off monitor (#154).
       this._clearBargeIn('interrupter went silent');
-      // Active listening (#245): arm a SOFT-opening probe on a brief quiet —
-      // shorter than the full turn-silence gate. If the room is still quiet
-      // after probeSilenceMs, _maybeProbeOpening runs the completeness gate.
-      // No-op unless probeFiring is on (checked inside).
-      if (this._pref('probeFiring')) {
+      // A held reply outranks a probe: if the bot already composed a real
+      // thought, the first opening belongs to that, not to a filler phrase.
+      // Wait the FULL turn-silence gate before replaying — the same bar a
+      // human turn has to clear — rather than the probe's shorter soft gap.
+      // Crucially this timer does not care whether an agent is parked in
+      // wait_for_speech: the floor opening is a property of the room, not of
+      // the agent's poll cycle (see _maybeReplayStashOnOpening).
+      if (this.bargeInStash) {
+        clearTimeout(this._stashOpeningTimer);
+        const ms = Math.round((Number(this._pref('defaultSilenceSeconds')) || 1.4) * 1000);
+        this._stashOpeningTimer = setTimeout(() => this._maybeReplayStashOnOpening(), ms);
+      } else if (this._pref('probeFiring')) {
+        // Active listening (#245): arm a SOFT-opening probe on a brief quiet —
+        // shorter than the full turn-silence gate. If the room is still quiet
+        // after probeSilenceMs, _maybeProbeOpening runs the completeness gate.
         clearTimeout(this._probeTimer);
         const ms = Number(this._pref('probeSilenceMs')) || 700;
         this._probeTimer = setTimeout(() => this._maybeProbeOpening(), ms);
@@ -1057,6 +1080,11 @@ class LocalServer {
       // Speaker resumed — cancel any pending soft-opening probe (no opening).
       clearTimeout(this._probeTimer);
       this._probeTimer = null;
+      // Same for a pending stash replay: the floor closed again. The stash
+      // itself survives (it re-arms on the next stop) until it ages out or
+      // the conversation moves past it.
+      clearTimeout(this._stashOpeningTimer);
+      this._stashOpeningTimer = null;
       this.onAnyoneSpeakingChange(true);
       // If the bot is mid-utterance when someone else starts speaking, arm
       // the back-off monitor (#154). _armBargeIn is a no-op if not in the
@@ -1625,6 +1653,9 @@ class LocalServer {
     // interrupter is still talking. A follow-up wait_for_speech call should
     // not make the avatar look merely idle/listening again.
     if (!force && this.botState === 'yielding' && state === 'listening' && this.anyoneSpeaking) return;
+    // A raised hand outranks a glance: a background tick must not lower 🙋 while
+    // a composed reply is still queued for the next opening.
+    if (!force && this.botState === 'yielding' && state === 'ticking') return;
     // #368: while the bot is actually emitting audio (speakingAloud), 'speaking'
     // means "speaking aloud" — hold it there against the agent loop's premature
     // transitions (thinking/working/listening/idle). The agent finishing a long
@@ -1693,8 +1724,8 @@ class LocalServer {
   // or yielding. A quiet timer eases back to listening/idle once activity stops.
   _onAgentActivity(line) {
     if (this.callStatus !== 'in-call') return;
-    if (!['idle', 'listening', 'thinking', 'working'].includes(this.botState)) return;
-    if (this.botState === 'idle' || this.botState === 'listening') {
+    if (!['idle', 'listening', 'ticking', 'thinking', 'working'].includes(this.botState)) return;
+    if (this.botState === 'idle' || this.botState === 'listening' || this.botState === 'ticking') {
       // Start of an engagement — show 🤔 thinking and start the dwell clock.
       this._workingSince = Date.now();
       this._setBotState('thinking');
@@ -1707,6 +1738,19 @@ class LocalServer {
       if (Date.now() - this._workingSince >= minMs) this._setBotState('working');
     }
     this._armWorkingQuietTimer();
+  }
+
+  // 👀 is a glance, not a state the bot lives in. The agent reads the tick and
+  // loops back to wait_for_speech without speaking, and that re-arm normally
+  // clears the face. This is the backstop for an agent that takes its time (or
+  // wanders off into tool work): the glance expires on its own.
+  _armTickFaceTimer() {
+    clearTimeout(this._tickFaceTimer);
+    this._tickFaceTimer = setTimeout(() => {
+      this._tickFaceTimer = null;
+      if (this.botState !== 'ticking') return; // something realer took over
+      this._setBotState(this.waiters.length > 0 ? 'listening' : 'idle', undefined, { force: true });
+    }, TICK_FACE_MS);
   }
 
   _armWorkingQuietTimer() {
@@ -1834,6 +1878,10 @@ class LocalServer {
     // model regenerates fresh.
     if (this.pendingBotSpeech.length > 0) {
       console.log(ts(), '🛡️  [barge-in] stashing', this.pendingBotSpeech.length, 'queued bot speech entries for possible replay');
+      if (this.bargeInStash) {
+        console.log(ts(), '🛡️  [barge-in] overwriting an unplayed stash (' +
+          (Date.now() - this.bargeInStash.at) + 'ms old) — the floor never opened for it');
+      }
       this.bargeInStash = {
         entries: [...this.pendingBotSpeech],
         at: Date.now(),
@@ -1947,6 +1995,64 @@ class LocalServer {
     return texts;
   }
 
+  // The floor opened and the bot is holding a composed reply. Say it.
+  //
+  // This exists because replaying only at wait_for_speech resolution meant the
+  // stash almost never played: a resolution requires an agent parked in a
+  // long-poll, and the agent spends much of a call outside one (composing,
+  // running tools). Measured on a real 30-minute call: 13 stashes, 0 replays.
+  // The opening is a property of the ROOM, so it is detected here from the
+  // speech-stop edge and honoured regardless of this.waiters.
+  //
+  // The freshness/relevance guards still live in _maybeReplayBargeInStash, and
+  // _lastReplayedStash still surfaces to the agent on its next resolve, so the
+  // agent learns its queued thought went out and builds on it instead of
+  // repeating it.
+  _maybeReplayStashOnOpening() {
+    this._stashOpeningTimer = null;
+    if (!this.bargeInStash) return;
+    if (this.callStatus !== 'in-call') return;
+    // Silent mode is "act but never speak" — a replay is speech.
+    if (this.mode === 'silent') return;
+    // The floor closed again, or the bot is already talking.
+    if (this.anyoneSpeaking || this.botState === 'speaking') return;
+
+    // Same precedence as the resolve-time path: an utterance the room actually
+    // heard the bot START saying (#350) outranks one it never heard at all.
+    // Both consumers are one-shot, so the later resolve-time call is a no-op.
+    const resumed = this._maybeResumeInterruptedTts();
+    if (resumed) return;
+    const replayed = this._maybeReplayBargeInStash();
+    if (replayed) {
+      this._lastReplayedStash = replayed;
+      console.log(ts(), '🛡️  [barge-in] stash replayed at a floor opening (no waiter needed)');
+    } else if (this.botState === 'yielding') {
+      // Guards rejected it (stale / conversation moved on) and it's gone.
+      // Lower the hand — nothing is queued anymore.
+      this._setBotState(this.waiters.length > 0 ? 'listening' : 'idle', undefined, { force: true });
+    }
+  }
+
+  // How long the room has been quiet, judged from the freshest of `entries`.
+  //
+  // Two traps this exists to avoid, both of which shipped:
+  //   • `timestamp` is firstSeen — when a turn STARTED. A still-growing turn
+  //     keeps its firstSeen and advances `lastUpdated`, so measuring from
+  //     timestamp makes any long utterance look ancient while it's still being
+  //     spoken. Always prefer lastUpdated. (Bot-speech entries have no
+  //     lastUpdated; timestamp is correct for them.)
+  //   • entries are sorted by firstSeen, so entries[last] is the turn that
+  //     STARTED most recently, not the one that CHANGED most recently. Take the
+  //     max rather than the tail.
+  _quietMsSince(entries) {
+    let freshest = 0;
+    for (const e of entries) {
+      const t = new Date(e.lastUpdated || e.timestamp).getTime();
+      if (t > freshest) freshest = t;
+    }
+    return freshest ? Date.now() - freshest : Infinity;
+  }
+
   // Total words heard from others (not the bot itself) across all caption turns.
   // since=null = no time filter — this is a running TOTAL, snapshotted as a
   // per-waiter baseline so the tick can measure a true DELTA (see below).
@@ -2037,6 +2143,16 @@ class LocalServer {
     return null;
   }
 
+  // Everyone in the call except this bot itself. Deliberately does NOT exclude
+  // other bots: for turn-taking purposes a second bot is a conversational
+  // partner like any other. (The ack path's isOneOnOne (#155) excludes bots
+  // because it answers a different question — "is this turn aimed at me".)
+  _otherParticipantCount() {
+    return (this.participants || []).filter(
+      (p) => !p.isSelf && p.name && p.name !== 'You'
+    ).length;
+  }
+
   // Brief-silence soft-opening hook. Armed in the speech-stop branch only when
   // probeFiring is on; if the room is still quiet after probeSilenceMs, surface
   // an opening to main.js (which runs the Apple completeness gate). All cheap
@@ -2046,7 +2162,20 @@ class LocalServer {
     if (!this._pref('probeFiring')) return;
     if (this.mode !== 'active' || this.callStatus !== 'in-call') return;
     if (this.anyoneSpeaking || this.botState === 'speaking') return;
+    // A held reply beats a filler. The stash-opening timer owns this gap.
+    if (this.bargeInStash) return;
     if (this.waiters.length === 0) return; // slow model isn't listening
+    // A probe exists to fill a gap in a conversation between OTHERS. With only
+    // one other participant there is no such conversation: every turn is aimed at
+    // the bot, and a real turn resolution is ~700ms behind the soft opening.
+    // Probing there stacks three utterances onto one sentence — observed live:
+    //     14:12:00.873  🎣 [probe] firing (generic): "Huh."
+    //     14:12:01.623  👂 [ack] Playing acknowledgement: "Okay."   (me-1on1)
+    //     14:12:0x       ...and then the actual reply.
+    // The name-mention guard below cannot catch this: with one other participant
+    // nobody needs to say the bot's name to be talking to it. A second BOT counts
+    // as a partner here — two bots alone are a 1:1 too, and equally probe-free.
+    if (this._otherParticipantCount() < 2) return;
     const minInterval = Number(this._pref('probeMinIntervalMs')) || 0;
     if (minInterval > 0 && Date.now() - this.lastProbeAt < minInterval) return;
     // Don't probe when the bot is directly addressed by name — that turn wants a
@@ -2076,6 +2205,10 @@ class LocalServer {
     if (!this._pref('probeFiring')) return null;
     if (this.mode !== 'active' || this.callStatus !== 'in-call') return null;
     if (this.anyoneSpeaking || this.botState === 'speaking') return null;
+    // Re-check: a stash may have landed, or someone may have left (dropping the
+    // room to a 1:1), during the ~0.6s gate call.
+    if (this.bargeInStash) return null;
+    if (this._otherParticipantCount() < 2) return null;
     const minInterval = Number(this._pref('probeMinIntervalMs')) || 0;
     if (minInterval > 0 && Date.now() - this.lastProbeAt < minInterval) return null;
     let text = this._consumeFreshProbe();
@@ -2217,6 +2350,18 @@ class LocalServer {
         && !newSpeechSinceResponse;
       if (isExactPhantom) {
         console.log(ts(), '👻 [phantom] Skipping thinking — transcript identical to last responded turn (' + wordCount + ' words)');
+      } else if (reason === 'background_tick') {
+        // A tick is NOT a turn. It fires on a word-count delta while the speaker
+        // is still mid-sentence, so it hands the slow model a snapshot, not a
+        // finished thought. Wearing 🤔 and overwriting lastProcessingText made it
+        // look — on the avatar and on the debug overlay's `proc:` line — exactly
+        // like the bot had committed to answering half a sentence. It hadn't.
+        //
+        // Give it its own face (👀 "reading along") and leave lastProcessingText
+        // alone: that field means "what shipped to the slow model as a TURN".
+        console.log(ts(), '👀 [tick] Catching up — ' + wordCount + ' words, not a turn: "' + joinedText.slice(0, 120) + (joinedText.length > 120 ? '…' : '') + '"');
+        this._setBotState('ticking', { wordCount, backgroundTick: true });
+        this._armTickFaceTimer();
       } else {
         // Always fire the change callback with the new wordCount — even if state
         // is already 'thinking' from a previous turn — so the ack handler runs.
@@ -2243,9 +2388,9 @@ class LocalServer {
         }
         // Pass joinedText so the ack handler can do addressivity matching
         // (#155). wordCount stays the primary threshold; text is supplemental.
-        // backgroundTick flags a "bank and loop, do NOT speak" wake so the ack
-        // handler skips the spoken filler (a tick must not interrupt a speaker).
-        this.onBotStateChange('thinking', { wordCount, text: joinedText, backgroundTick: reason === 'background_tick' });
+        // Ticks never reach here — they take the 'ticking' branch above — so
+        // this is always a real turn and both the ack and triage may fire.
+        this.onBotStateChange('thinking', { wordCount, text: joinedText, backgroundTick: false });
 
         // Two-tier shadow harness (now: triage classifier). Feed it the SINGLE
         // most-recent turn WITH its speaker label — not joinedText, which is the
@@ -2254,21 +2399,17 @@ class LocalServer {
         // classifier garbage to judge ("…Request Samantha, can you" = Samantha's
         // turn + the cut-off start of Stan's next turn). The classifier is ~perfect
         // on clean input (offline 19/19); recentTranscript still carries context.
-        // Skip on a background_tick — the floor is still busy; triage firing an
-        // instant ack there would interrupt the speaker mid-utterance.
-        if (reason !== 'background_tick') {
-          const lastTurn = deduped[deduped.length - 1];
-          const lastUtteranceLabeled = lastTurn && lastTurn.text
-            ? `${lastTurn.participantName || 'someone'}: ${lastTurn.text.trim()}`
-            : joinedText;
-          Promise.resolve(this.onTriageAck({
-            lastUtterance: lastUtteranceLabeled,
-            workingMemory: this.getWorkingMemory(),
-            recentTranscript: this._recentTranscriptText(12),
-            roster: this._rosterText(),
-            mode: this.mode,
-          })).catch(() => {});
-        }
+        const lastTurn = deduped[deduped.length - 1];
+        const lastUtteranceLabeled = lastTurn && lastTurn.text
+          ? `${lastTurn.participantName || 'someone'}: ${lastTurn.text.trim()}`
+          : joinedText;
+        Promise.resolve(this.onTriageAck({
+          lastUtterance: lastUtteranceLabeled,
+          workingMemory: this.getWorkingMemory(),
+          recentTranscript: this._recentTranscriptText(12),
+          roster: this._rosterText(),
+          mode: this.mode,
+        })).catch(() => {});
       }
     }
 
@@ -2895,20 +3036,38 @@ class LocalServer {
     // the floor back. User-speech-driven thinking already transitioned
     // through speaking by the time wait_for_speech is called, so it isn't
     // affected.
-    if (this.botState === 'thinking') {
+    if (this.botState === 'thinking' || this.botState === 'ticking') {
       this._setBotState('listening', undefined, { force: true });
     }
 
-    // Check if there are already entries that satisfy the silence condition
+    // Check if there are already entries that satisfy the silence condition —
+    // speech that finished while the agent was away composing or running tools.
+    //
+    // Measure the gap from the speaker's LAST WORD, not their first. `timestamp`
+    // is firstSeen (when the turn started); a turn that is still growing keeps
+    // its firstSeen and advances `lastUpdated`. Using timestamp here meant any
+    // utterance longer than the silence bar returned INSTANTLY, mid-sentence,
+    // handing the agent a half-finished caption — the "it processed my speech
+    // while I was still talking" bug. Entries are sorted by firstSeen, so the
+    // freshest one isn't necessarily last; take the max explicitly.
     const existing = this._entriesSince(since, bot);
-    if (existing.length > 0) {
-      const lastEntry = existing[existing.length - 1];
-      const lastTime = new Date(lastEntry.timestamp).getTime();
-      if (Date.now() - lastTime >= clampedSilence * 1000) {
+    if (existing.length > 0 && !this.anyoneSpeaking) {
+      const quietMs = this._quietMsSince(existing);
+      if (quietMs >= clampedSilence * 1000) {
+        // This path returns without ever creating a waiter, so none of the
+        // [resolve] lines fire. Its silence made a delivered turn look lost.
+        console.log(ts(), '⚡ [resolve] wait_for_speech returned immediately — ' + existing.length +
+          ' entr' + (existing.length === 1 ? 'y' : 'ies') + ' already past the silence bar (' +
+          Math.round(quietMs) + 'ms quiet ≥ ' + Math.round(clampedSilence * 1000) + 'ms), no waiter registered');
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(this._buildResponse(since, bot, Date.now())));
         return;
       }
+      console.log(ts(), '⏳ [resolve] undelivered speech is only ' + Math.round(quietMs) +
+        'ms old (< ' + Math.round(clampedSilence * 1000) + 'ms) — waiting for the speaker to finish');
+    } else if (existing.length > 0) {
+      console.log(ts(), '⏳ [resolve] ' + existing.length + ' undelivered entr' +
+        (existing.length === 1 ? 'y' : 'ies') + ', but someone is speaking right now — waiting');
     }
 
     const startTime = Date.now();
@@ -3051,6 +3210,15 @@ class LocalServer {
           .filter((t) => t && t.text)
           .map((t) => ({ text: t.text, voice: t.voice, emoji: t.emoji, urgency: t.urgency }));
         if (stashEntries.length > 0) {
+          // A second stash before the first ever got its opening means the
+          // earlier thought is being discarded. That used to happen silently —
+          // the single biggest reason stashes "disappeared" without a log line.
+          if (this.bargeInStash) {
+            const lostAgeMs = Date.now() - this.bargeInStash.at;
+            console.log(ts(), '🛡️  [barge-in] overwriting an unplayed stash (' + lostAgeMs + 'ms old, ' +
+              this.bargeInStash.entries.length + ' entr' + (this.bargeInStash.entries.length === 1 ? 'y' : 'ies') +
+              ') — the floor never opened for it:', JSON.stringify((this.bargeInStash.entries[0]?.text || '').slice(0, 60)));
+          }
           // Baseline the words-heard-from-others counter so the replay path can
           // measure how much NEW speech landed while the reply was held.
           this.bargeInStash = {

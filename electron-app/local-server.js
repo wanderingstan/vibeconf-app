@@ -1078,6 +1078,28 @@ class LocalServer {
     }, this.autoLeaveGraceMs);
   }
 
+  // #417: the call ended out from under us (Meet collapsed the in-call UI —
+  // everyone left / the tab fell out of the call). The renderer detects the
+  // sustained absence of in-call controls and signals this. Exit cleanly like
+  // the auto-leave path — resolve waiters with a terminal autoLeft so the
+  // agent's wait_for_speech loop stops (instead of ghost-polling captions for
+  // minutes) — but do NOT speak a sign-off: there's no one left to hear it.
+  handleCallEnded(reason = 'call ended') {
+    if (this._autoLeaveTriggered || this.callStatus !== 'in-call') return;
+    this._autoLeaveTriggered = true;
+    console.log(ts(), '👋 [call-ended] firing —', reason, '— resolving waiters + leaving');
+    for (const w of [...this.waiters]) {
+      if (w.resolved) continue;
+      w.resolved = true;
+      clearTimeout(w.timer);
+      clearTimeout(w.silenceTimer);
+      clearTimeout(w.tickTimer);
+      w.resolve({ success: true, autoLeft: true, asOf: new Date().toISOString(), transcript: { entries: [] } });
+    }
+    this.waiters = [];
+    try { this.onLeaveCall(); } catch (err) { console.warn(ts(), '[call-ended] onLeaveCall failed:', err.message); }
+  }
+
   _triggerAutoLeave() {
     if (this._autoLeaveTriggered || this.callStatus !== 'in-call') return;
     this._autoLeaveTriggered = true;

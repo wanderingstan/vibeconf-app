@@ -4924,6 +4924,12 @@ function setupIPC() {
         // reads on its next wait_for_speech lull — same channel as the
         // voice-change notices. Not a call-state change.
         localServer.addError(status.slice('Notice:'.length).trim());
+      } else if (status.startsWith('Call ended')) {
+        // #417: the renderer detected the in-call UI collapsing (everyone left
+        // / the tab fell out of the call). Exit cleanly — resolve the agent's
+        // waiters with the terminal autoLeft and tear the call down — instead
+        // of ghost-polling captions for minutes.
+        localServer.handleCallEnded(status);
       } else if (status.includes('Waiting') || status.includes('Ask to join')) {
         localServer.setCallStatus('waiting-to-be-admitted');
       } else if (status.includes('Participating') || status.includes('In call')) {

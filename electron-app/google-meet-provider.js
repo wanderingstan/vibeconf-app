@@ -115,6 +115,21 @@ function findByAriaLabel(label) {
   return document.querySelector(MEET.ariaLabelSelector(label));
 }
 
+// The last-resort aria-label match for the JOIN button. `joinLabel` is "Join",
+// and ariaLabelSelector is a SUBSTRING match, so a naive query also returns
+// Meet's "Other ways to join" expander — clicking it opens a submenu and the
+// bot never joins. Return the first substring match that is NOT one of the
+// known decoys.
+function findByJoinAriaLabel() {
+  const decoy = MEET.join.joinAriaDecoyRe;
+  for (const el of document.querySelectorAll(MEET.ariaLabelSelector(MEET.join.joinLabel))) {
+    const label = (el.getAttribute('aria-label') || '').trim();
+    if (decoy.test(label)) continue;
+    return el;
+  }
+  return null;
+}
+
 // Auto-dismiss Meet's one-time onboarding/info modals that block the bot's join
 // flow and button detection (#227, #240). Meet shows a whole FAMILY of these —
 // "Others may see your video differently", "Your screen may not appear to others
@@ -1420,17 +1435,26 @@ async function autoJoin(botName) {
         gotIt.click();
         continue;
       }
+      // ORDER MATTERS. All EXACT-TEXT matchers run before the fuzzy aria-label
+      // ones, because findByAriaLabel builds a SUBSTRING selector
+      // (aria-label*="Join" i) and `joinLabel` is just "Join" — which also
+      // matches Meet's "Other ways to join" EXPANDER. That greedy match used to
+      // sit above the "Switch here" check, so on the lingering-presence pre-join
+      // screen the bot clicked the expander and NEVER joined (2026-07-09:
+      // `Clicking join: Other ways to joinexpand_more`, in-call never reached).
+      //
+      // "Switch here" replaces Join now when this Google account already has a
+      // lingering presence in the meeting (another tab/device/old session, e.g.
+      // a ghost from a hard-killed instance). It joins directly. The button has
+      // no aria-label, but its text is reliable; findByText returns the
+      // clickable <button> ancestor.
       const joinBtn =
         findByText(MEET.join.joinTextAsk) ||
         findByText(MEET.join.joinTextNow) ||
         findByText(MEET.join.joinTextAnyway) || // future-scheduled meeting ("Join anyway")
+        findByText(MEET.join.joinTextSwitch) || // lingering presence — must beat the fuzzy aria match
         findByAriaLabel(MEET.join.joinTextAsk) ||
-        findByAriaLabel(MEET.join.joinLabel) ||
-        // "Switch here" replaces Join now when this Google account already has a
-        // lingering presence in the meeting (another tab/device/old session). It
-        // joins directly. The button has no aria-label, but its "Switch here"
-        // text is reliable; findByText returns the clickable <button> ancestor.
-        findByText(MEET.join.joinTextSwitch);
+        findByJoinAriaLabel();
 
       if (joinBtn) {
         const btnText = joinBtn.textContent.trim();

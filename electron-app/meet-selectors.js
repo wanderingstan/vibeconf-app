@@ -179,6 +179,12 @@ const MEET = {
     joinTextAnyway: 'Join anyway',
     joinTextSwitch: 'Switch here', // direct-join when the account has a lingering presence
     joinLabel: 'Join',
+    // The aria-label match for joinLabel is a SUBSTRING match, so it also hits
+    // controls that merely CONTAIN "join". These decoys must never be clicked
+    // as the join button — "Other ways to join" is an expander that opens a
+    // submenu, and clicking it left the bot stuck on the pre-join screen when
+    // its own account had a lingering presence (the "Switch here" case).
+    joinAriaDecoyRe: /other ways to join|join by phone|join and use|joining info/i,
     // Dialogs to dismiss before the join button on the pre-join screen.
     dismissTexts: ['Got it', 'Dismiss', 'OK', 'Allow', 'Close', 'No thanks', 'Not now'],
     gotItText: 'Got it',

@@ -1035,22 +1035,32 @@ function ensureStatusBar() {
   const style = document.createElement('style');
   style.textContent = `
     #vibeconf-status-bar {
-      position: fixed; top: 0; left: 0; right: 0; height: 56px;
+      position: fixed; top: 0; left: 0; right: 0;
+      /* Auto-grow for long messages instead of clipping them off the right
+         edge (a full-sentence #404 notice ran past the viewport — unreadable). */
+      min-height: 56px;
       /* Partially transparent so any Google buttons beneath stay visible... */
-      background: rgba(138, 180, 248, 0.78); color: #ffffff;
+      background: rgba(138, 180, 248, 0.82); color: #ffffff;
       /* ...and click-through so they stay USABLE for debugging — the banner
          never intercepts pointer events (#bot-view banner is purely a label). */
       pointer-events: none;
       text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
-      font-family: 'Google Sans', 'Roboto', sans-serif; font-size: 26px;
+      font-family: 'Google Sans', 'Roboto', sans-serif; font-size: 22px;
       font-weight: 500;
-      display: flex; align-items: center; padding: 0 24px;
+      display: flex; align-items: baseline; padding: 8px 24px; box-sizing: border-box;
       z-index: 999999; user-select: none;
-      letter-spacing: 0.5px;
+      letter-spacing: 0.3px;
     }
-    #vibeconf-status-bar .icon { margin-right: 14px; font-size: 28px; }
-    #vibeconf-status-bar .label { color: #e8f0fe; margin-right: 12px; }
-    #vibeconf-status-bar .status { color: #ffffff; }
+    #vibeconf-status-bar .icon { margin-right: 14px; font-size: 26px; flex: none; }
+    #vibeconf-status-bar .label { color: #e8f0fe; margin-right: 12px; flex: none; white-space: nowrap; }
+    /* The status text takes the remaining width and WRAPS (up to a few lines)
+       so the whole message is readable rather than truncated. */
+    #vibeconf-status-bar .status {
+      color: #ffffff; flex: 1; min-width: 0;
+      font-size: 17px; line-height: 1.3;
+      white-space: normal; overflow-wrap: anywhere;
+      display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden;
+    }
     #vibeconf-status-bar .status.error { color: #fce8e6; font-weight: 700; }
     #vibeconf-status-bar .status.active { color: #ffffff; }
     body { padding-top: 56px !important; }
@@ -2477,11 +2487,13 @@ window.addEventListener('DOMContentLoaded', () => {
     const el = document.getElementById('vibeconf-status');
     if (el) {
       const href = window.location.href;
+      // No "Bot's view" prefix — the banner already shows a static "Bot View —"
+      // label, so prefixing here produced a doubled "Bot View — Bot's view —".
       el.textContent = MEET.url.signInPage.test(href)
-        ? "Bot's view — sign the bot in to Google here"
+        ? "Sign the bot in to Google here"
         : MEET.url.meetingCodePath.test(window.location.pathname)
-          ? "Bot's view of Google Meet"
-          : "Bot's view — Google Meet home (not in a call)";
+          ? "Google Meet"
+          : "Google Meet home (not in a call)";
     }
   } catch { /* body not ready */ }
 

@@ -154,6 +154,11 @@ const PREFERENCES = {
     maxLength: 1_000_000,
     description:
       "SVG source for the avatar background. Empty = default animated gradient. " +
+      "The camera is 16:9 (1280x720), so author LANDSCAPE — e.g. " +
+      "viewBox=\"0 0 1280 720\". The image is cover-fitted (scaled to fill, " +
+      "aspect preserved, overflow center-cropped), so a square SVG is not " +
+      "distorted but its top and bottom WILL be cropped — keep anything " +
+      "important near the vertical center. " +
       "The SVG can include <image href='file:///...' or 'https://...'> — the app " +
       "auto-resolves external references into data URIs so you don't need to " +
       "base64-encode anything. SVG/CSS animations don't tick (rasterized once); " +

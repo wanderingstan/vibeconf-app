@@ -108,6 +108,11 @@ async function renderAgentAvatar() {
       agentAvatarEl.insertBefore(bg, agentAvatarEl.firstChild);
     }
     bg.innerHTML = svg;
+    // The tile is square; backgrounds are authored 16:9. `object-fit: cover` in
+    // the stylesheet does nothing to an INLINE <svg> — only to replaced elements
+    // — so the SVG was letterboxing on its default preserveAspectRatio ("meet").
+    // Force the SVG-native spelling of cover. (See renderer/svg-cover.js.)
+    coverFitFirstSvg(bg);
   } else if (bg) {
     bg.remove();
   }

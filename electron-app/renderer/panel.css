@@ -459,7 +459,11 @@ button:disabled {
   display: flex; align-items: center; justify-content: center;
 }
 .agent-avatar-bg { position: absolute; inset: 0; }
-.agent-avatar-bg svg, .agent-avatar-bg img { width: 100%; height: 100%; display: block; object-fit: cover; }
+/* object-fit only affects REPLACED elements, so it works on <img> and does
+   nothing at all on an inline <svg>. The svg gets cover-fitted in JS instead,
+   via preserveAspectRatio="xMidYMid slice" — see renderer/svg-cover.js. */
+.agent-avatar-bg img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.agent-avatar-bg svg { width: 100%; height: 100%; display: block; }
 .agent-avatar-emoji { position: relative; font-size: 28px; line-height: 1; }
 /* Real virtual-camera snapshot (profileIcon). Covers the generated bg+emoji when
    present; the container's overflow:hidden + border-radius clip it to shape. */

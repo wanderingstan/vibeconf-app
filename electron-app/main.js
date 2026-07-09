@@ -1229,6 +1229,34 @@ sync.updateConfig({
 // Empty/missing value clears the background back to the default gradient.
 // Push the emoji graphics set (#316) to the virtual camera. 'twemoji' = the
 // bundled SVG set; anything else = native OS font.
+// #424: raise/clear the generic "something is wrong" avatar state (🥴). Unlike
+// `deaf` (captions confirmed OFF — a known cause), this covers degraded states
+// we can't fully diagnose: captions ON but no new text for a long stretch, a
+// throttled/frozen renderer, etc. Making it VISIBLE beats the bot sitting there
+// wearing a happy listening face while it hears nothing. Notifies the agent
+// once per episode so it can say something rather than appear to ignore people.
+let _impaired = false;
+function setImpaired(on, reason = '') {
+  on = !!on;
+  if (on === _impaired) return;
+  _impaired = on;
+  if (meetView && !meetView.webContents.isDestroyed()) {
+    meetView.webContents.send('extension-message', {
+      action: 'set-impaired',
+      payload: { impaired: on, reason },
+    });
+  }
+  if (on) {
+    console.warn('[electron] 🥴 impaired —', reason);
+    try {
+      localServer.addError(`You may not be hearing the room right now (${reason}). ` +
+        `If people seem to be waiting on you, say so and ask them to repeat.`);
+    } catch { /* non-fatal */ }
+  } else {
+    console.log('[electron] 🥴 impaired cleared — captions flowing again');
+  }
+}
+
 function pushEmojiSet(value) {
   if (!meetView || meetView.webContents.isDestroyed()) return;
   // Pass the set name through; the renderer validates against its set registry
@@ -1440,7 +1468,11 @@ function createWhiteboardWindow(roomUrl) {
     // surface inherits ALL the bot's credentials — Google, Slack, and cached HTTP
     // Basic-Auth. Without this it landed on Electron's default session, so a site
     // you'd logged into in the Meet webview showed up logged-OUT when shared.
-    webPreferences: { contextIsolation: true, nodeIntegration: false, partition: SESSION_PARTITION },
+    // #424: never throttle — this window is positioned OFF-SCREEN by design and
+    // is captured as the bot's shared screen. Chromium would otherwise throttle
+    // its timers/rAF (it is permanently occluded), freezing whiteboard/page
+    // animations in what participants see.
+    webPreferences: { contextIsolation: true, nodeIntegration: false, partition: SESSION_PARTITION, backgroundThrottling: false },
   });
   // Pin the BrowserWindow title so the loaded page can't overwrite it. The
   // share-handler matches the desktopCapturer source by this exact title to
@@ -3504,6 +3536,15 @@ function createMeetView(partition) {
       contextIsolation: false,
       sandbox: false,
       partition,
+      // #424 CRITICAL: the bot is a headless worker — its view must keep
+      // running whether or not the window is visible. Chromium's default
+      // (backgroundThrottling: true) throttles timers / rAF / rendering when
+      // the window is occluded, which FROZE the caption DOM and every tile's
+      // mutation counter (mut=0 across all tiles, incl. self) for 85s in the
+      // 2026-07-09 call — the bot went silently deaf while showing a happy
+      // face, then flushed the whole backlog at once on wake. This is not an
+      // optimization we can afford: never throttle the call view.
+      backgroundThrottling: false,
     },
   });
   view.webContents.setAudioMuted(true);
@@ -3933,6 +3974,7 @@ function showIdle() {
   if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
     whiteboardWindow.close();
   }
+  setImpaired(false); // #424: don't carry a 🥴 into the next call
   console.log('[electron] Returned to idle state');
 }
 
@@ -5049,6 +5091,8 @@ function setupIPC() {
   ipcMain.on(CALL_EVENTS.captionTurns, (_event, payload) => {
     const turns = payload?.turns;
     if (!Array.isArray(turns)) return;
+    // #424: real caption text is proof we're hearing again — drop the 🥴.
+    if (turns.some((t) => t && String(t.text || '').trim())) setImpaired(false);
     localServer.updateTurns(turns);
     // Mirror the live caption state into the troubleshooting panel — the
     // "bot's-eye view" of exactly what captions the bot is receiving, so you
@@ -5077,6 +5121,11 @@ function setupIPC() {
   // path as captions-off so the 🙉 emoji flips and the wait_for_speech timeout
   // warns the agent. Auto-clears: the next real caption flips captionsOn back
   // ON (local-server self-corrects on incoming text).
+  //
+  // #424 thresholds for the AMBIGUOUS case (stall we can't confirm as deafness):
+  // be honest on the avatar first, then try the cheap idempotent caption toggle.
+  const IMPAIRED_STALL_MS = 20_000;      // wear 🥴 — "something's wrong, I may not be hearing you"
+  const FORCE_RECOVER_STALL_MS = 45_000; // toggle captions off/on regardless of the (possibly frozen) tracker
   ipcMain.on(CALL_EVENTS.captionStall, (_event, info) => {
     const secs = Math.round((info?.ageMs || 0) / 1000);
     // ONLY real deafness: captions frozen WHILE a remote participant is actually
@@ -5086,7 +5135,19 @@ function setupIPC() {
     // so it's the right discriminator. (Live 2026-06-23: a silent room got
     // flagged deaf and the bot announced "I've gone deaf" — #259.)
     if (!localServer.anyoneSpeaking) {
-      console.log(`[electron] caption stall (${secs}s) but no remote speaker active — quiet/self-speaking, NOT deaf; ignoring`);
+      // #424: do NOT just ignore. `anyoneSpeaking` comes from the tile-mutation
+      // speaker tracker, which dies in exactly the scenario this guard is meant
+      // to catch — an occluded/throttled renderer freezes captions AND tile
+      // mutations together (2026-07-09: mut=0 on every tile for 85s, recovery
+      // ran zero times, bot wore a happy face throughout). We can't CONFIRM
+      // deafness here, but we can be honest that something is wrong and try the
+      // cheap, idempotent fix.
+      console.log(`[electron] caption stall (${secs}s) — cannot confirm a remote speaker (tracker may be frozen)`);
+      if ((info?.ageMs || 0) >= IMPAIRED_STALL_MS) setImpaired(true, `no captions for ${secs}s`);
+      if ((info?.ageMs || 0) >= FORCE_RECOVER_STALL_MS && meetView && !meetView.webContents.isDestroyed()) {
+        console.warn(`[electron] caption stall ${secs}s ≥ ${FORCE_RECOVER_STALL_MS / 1000}s — attempting caption recovery anyway (#424)`);
+        sendCallCmd(CALL_COMMANDS.recoverCaptions);
+      }
       return;
     }
     // #368 follow-up: a long bot MONOLOGUE also produces a 0-remote-caption gap

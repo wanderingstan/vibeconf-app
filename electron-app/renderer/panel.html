@@ -17,17 +17,19 @@
             <circle cx="24" cy="24" r="7.5" fill="#3ECFCF"/>
           </svg>
           <div class="header-title-text">
-            <h1>Vibeconferencing Agent</h1>
+            <h1>Vibeconferencing</h1>
             <div class="app-meta">
               <span id="appVersion" class="app-version"></span>
-              <!-- The profile chip used to live here; it duplicated the profile
-                   name now shown in the agent card. Profile + local-server port
-                   moved into the botNameBig header tooltip (#289). -->
             </div>
           </div>
         </div>
-        <!-- Settings gear moved into the Bot card (it opens THIS bot's settings);
-             machine-wide config lives in App Settings (⌘,). -->
+        <!-- YOUR (vibeconferencing.com) login — app-level since #366: one sign-in
+             covers every bot. Small, right-aligned in the header (next to the
+             version), where the settings gear used to sit. -->
+        <div class="header-login" title="Your vibeconferencing.com login — for the shared whiteboard rooms. Signing in once covers all bots.">
+          <span id="userIdStatus">checking…</span>
+          <button id="userSignInMainBtn" class="auth-action-btn" style="display:none">Sign in</button>
+        </div>
       </div>
       <div class="error-bar" id="errorBar" style="display:none"><span id="errorText"></span><button class="error-close" id="errorClose">&times;</button></div>
 
@@ -90,46 +92,38 @@
       </div>
 
       <!-- ══ ZONE 2: CALL ══════════════════════════════════════════════════
-           Call state + the tools to get into / out of one. -->
+           Two entirely distinct views, toggled by the SAME body[data-call-state]
+           flag that shows/hides the Leave + Troubleshooting controls. -->
       <div class="call-card">
-        <!-- Live call status. "not in a call" until joined, then the name the bot
-             is appearing under (moved here from under the bot name — it's call
-             STATE, not bot identity). -->
-        <div id="botCallIdentity" class="agent-call-id" title="The name this bot is appearing under in the current call (Google account name in Meet, Slack name in a huddle). Only meaningful while in a call.">not in a call</div>
-
-        <div class="field">
-          <label for="meetUrl">Meet / Slack URL</label>
-          <input type="text" id="meetUrl" placeholder="meet.google.com/xxx-xxxx-xxx or app.slack.com/client/…" />
+        <!-- PRE-CALL: enter a call. (No "not in a call" status — the whole
+             view already implies it.) -->
+        <div class="call-precall">
+          <div class="field">
+            <label for="meetUrl">Meet / Slack URL</label>
+            <input type="text" id="meetUrl" placeholder="meet.google.com/xxx-xxxx-xxx or app.slack.com/client/…" />
+          </div>
+          <button id="joinBtn" class="primary" disabled>Join Call</button>
+          <div class="helper-text" style="margin-top:8px">Calls in Chrome/Safari are auto-detected. You can also type <code>/join-call</code> in any Claude Code session.</div>
+          <div class="helper-text" style="margin-top:4px"><a href="#" id="defaultMeetBtn" class="text-link">Open default testing meet in browser ↗</a></div>
         </div>
-        <button id="joinBtn" class="primary" disabled>Join Call</button>
-        <div class="helper-text" style="margin-top:8px">Calls in Chrome/Safari are auto-detected. You can also type <code>/join-call</code> in any Claude Code session.</div>
-        <div class="helper-text" style="margin-top:4px"><a href="#" id="defaultMeetBtn" class="text-link">Open default testing meet in browser ↗</a></div>
 
-        <div id="connectedSection" style="display:none">
-          <button id="leaveCallBtn" style="margin-top:8px;background:#d93025;color:#fff;border:none;padding:8px 16px;border-radius:20px;cursor:pointer">Leave Call</button>
-          <div class="nav-buttons">
-            <button id="openTroubleshootingBtn">Troubleshooting</button>
+        <!-- IN-CALL: the live call — identity + leave / troubleshooting. -->
+        <div class="call-incall">
+          <div id="botCallIdentity" class="agent-call-id" title="The name this bot is appearing under in the current call (Google account name in Meet, Slack name in a huddle).">in a call</div>
+          <div id="connectedSection">
+            <button id="leaveCallBtn" style="margin-top:8px;background:#d93025;color:#fff;border:none;padding:8px 16px;border-radius:20px;cursor:pointer">Leave Call</button>
+            <div class="nav-buttons">
+              <button id="openTroubleshootingBtn">Troubleshooting</button>
+            </div>
           </div>
         </div>
       </div>
 
       <!-- ══ ZONE 3: MISC ══════════════════════════════════════════════════
-           De-emphasized, transitional status. Both of these may go away — the
-           login when we require it, the fast-model line when it's no longer
-           user-facing. -->
+           De-emphasized, transitional status (the login moved up to the header;
+           this footer may go away once the fast-model line is no longer
+           user-facing). -->
       <div class="misc-zone">
-        <!-- YOUR (vibeconferencing.com) login — app-level since #366: one sign-in
-             covers every bot (mirrored via the shared config, seeded per bot on
-             launch). -->
-        <div class="user-id-line" title="Your vibeconferencing.com login — for the shared whiteboard rooms. Signing in once covers all bots.">
-          <span id="userIdStatus">checking…</span>
-          <span style="white-space:nowrap">
-            <button id="userSignInMainBtn" class="auth-action-btn" style="display:none">Sign in</button>
-            <!-- Logging OUT of vibeconferencing.com is a big, rare action —
-                 it lives in Settings, not the primary UI (#289). -->
-          </span>
-        </div>
-
         <div class="health-zone">
           <span title="The on-device fast model (Apple FoundationModels via the OpenAI-compatible wrapper) powering turn-taking triage/engagement. 'Detected' = the configured endpoint answered just now."><span class="health-key">⚡ Fast model</span> · <span id="fastModelStatus">checking…</span></span>
         </div>

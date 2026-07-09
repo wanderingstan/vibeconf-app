@@ -498,8 +498,10 @@ body[data-call-state="in-call"] #profileMenuBtn { display: none; }
 }
 .agent-call-id.in-call { color: #81c995; }
 
-/* ── Call zone ── the call status line + join/leave tools, grouped as a card
-   to read as its own section distinct from the Bot card above. */
+/* ── Call zone ── join/leave tools, grouped as a card distinct from the Bot
+   card above. Two entirely separate views (pre-call / in-call) driven by the
+   SAME body[data-call-state] flag that gates the Leave/Troubleshooting
+   controls — never both at once. */
 .call-card {
   margin: 0 0 14px;
   padding: 12px;
@@ -507,15 +509,23 @@ body[data-call-state="in-call"] #profileMenuBtn { display: none; }
   border-radius: 12px;
   background: #2a2d31;
 }
-.call-card .agent-call-id { margin-bottom: 10px; }
-/* The first field inside the call card shouldn't add extra top gap. */
-.call-card .field { margin-top: 0; }
+.call-precall .field { margin-top: 0; } /* first field, no extra top gap */
+.call-incall { display: none; }         /* pre-call by default */
+body[data-call-state="in-call"] .call-precall { display: none; }
+body[data-call-state="in-call"] .call-incall { display: block; }
+.call-incall .agent-call-id { margin-bottom: 8px; color: #81c995; }
 
-/* ── Misc zone ── de-emphasized transitional footer (login + fast model). */
+/* ── Misc zone ── de-emphasized transitional footer (just the fast-model line
+   now; the login moved up to the header). */
 .misc-zone { margin-top: 4px; }
-/* These already carry their own top-border dividers; drop the first one's so
-   the zone doesn't start with a doubled rule. */
-.misc-zone .user-id-line { margin-top: 0; }
+
+/* ── Header login ── your vibeconferencing.com sign-in, small + right-aligned
+   in the header where the settings gear used to sit. */
+.header-login {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; color: #9aa0a6; white-space: nowrap;
+}
 .agent-voice { font-size: 12px; color: #9aa0a6; margin-top: 4px; display: flex; align-items: center; gap: 4px; }
 
 /* Profile switcher dropdown (anchored under the name row) */

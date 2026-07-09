@@ -5128,12 +5128,25 @@ function setupIPC() {
   const FORCE_RECOVER_STALL_MS = 45_000; // toggle captions off/on regardless of the (possibly frozen) tracker
   ipcMain.on(CALL_EVENTS.captionStall, (_event, info) => {
     const secs = Math.round((info?.ageMs || 0) / 1000);
+
+    // #368 / #424: a long bot MONOLOGUE also produces a 0-remote-caption gap
+    // (the bot's own captions are filtered out), so such a gap is explained by
+    // the bot talking, not by deafness. This MUST be evaluated FIRST — it holds
+    // whether or not a remote is speaking. Caught live 2026-07-09: the 🥴
+    // impaired face lit up while the bot was mid-answer, because the ambiguous
+    // branch below ran first and nobody else happened to be talking.
+    const gapOverlapsBotSpeech = localServer.speakingAloud
+      || (Date.now() - (localServer.lastSpokeAloudAt || 0) < (info?.ageMs || 0));
+    if (gapOverlapsBotSpeech) {
+      console.log(`[electron] caption stall (${secs}s) explained by the bot's own speech (self-captions excluded) — NOT deaf/impaired; ignoring`);
+      return;
+    }
+
     // ONLY real deafness: captions frozen WHILE a remote participant is actually
-    // speaking. "No new captions" is also true when the room is quiet/muted or
-    // when the bot itself is speaking (its own captions are excluded) — neither
-    // is deafness. anyoneSpeaking is speaker-TILE based (independent of captions),
-    // so it's the right discriminator. (Live 2026-06-23: a silent room got
-    // flagged deaf and the bot announced "I've gone deaf" — #259.)
+    // speaking. "No new captions" is also true when the room is quiet/muted —
+    // that is not deafness. anyoneSpeaking is speaker-TILE based (independent of
+    // captions), so it's the right discriminator. (Live 2026-06-23: a silent
+    // room got flagged deaf and the bot announced "I've gone deaf" — #259.)
     if (!localServer.anyoneSpeaking) {
       // #424: do NOT just ignore. `anyoneSpeaking` comes from the tile-mutation
       // speaker tracker, which dies in exactly the scenario this guard is meant
@@ -5150,18 +5163,9 @@ function setupIPC() {
       }
       return;
     }
-    // #368 follow-up: a long bot MONOLOGUE also produces a 0-remote-caption gap
-    // (self-captions are filtered). If the bot was speaking aloud during the stall
-    // window — currently, or it stopped less than ageMs ago so the gap overlaps its
-    // own speech — the gap is explained by the bot talking, not deafness. Without
-    // this, the instant a human starts to interrupt a long answer (anyoneSpeaking
-    // flips true) the accumulated monologue-gap gets misread as deaf → a 🙉 flash.
-    const gapOverlapsBotSpeech = localServer.speakingAloud
-      || (Date.now() - (localServer.lastSpokeAloudAt || 0) < (info?.ageMs || 0));
-    if (gapOverlapsBotSpeech) {
-      console.log(`[electron] caption stall (${secs}s) but the bot was speaking aloud during the gap (self-captions excluded) — NOT deaf; ignoring`);
-      return;
-    }
+    // (The bot-monologue guard that used to live here now runs FIRST — see the
+    // top of this handler. It has to precede the ambiguous branch above, which
+    // would otherwise raise 🥴 during any long bot answer.)
     console.log(`[electron] caption stall (${secs}s, ${info?.nodes ?? '?'} nodes) while a remote is speaking — bot is deaf; escalating + self-healing`);
     localServer.setCaptionsOn(false);
     if (panelView && !panelView.webContents.isDestroyed()) {

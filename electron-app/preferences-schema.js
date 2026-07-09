@@ -519,7 +519,11 @@ const PREFERENCES = {
       'the freshest banked probe (bank_probe, deposited by the slow model on ' +
       'background ticks) or a probeGenericPhrases fallback. This is the "active ' +
       'listening" behavior: cheap probes that fill gaps and buy the slow model ' +
-      'time. Needs an openai-compat endpoint (ackEndpoint/ackModel) for the gate.',
+      'time. Requires at least TWO other participants: a probe fills a gap in a ' +
+      'conversation between others, and with only one counterpart every turn is ' +
+      'aimed at the bot, so a probe just stacks a filler in front of the ack and ' +
+      'the real reply. Uses the ackEndpoint/ackModel gate when reachable, and a ' +
+      'conservative lexical gate (completeness.heuristicComplete) when it is not.',
   },
   probeSilenceMs: {
     type: 'number',

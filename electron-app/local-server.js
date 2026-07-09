@@ -2143,6 +2143,16 @@ class LocalServer {
     return null;
   }
 
+  // Everyone in the call except this bot itself. Deliberately does NOT exclude
+  // other bots: for turn-taking purposes a second bot is a conversational
+  // partner like any other. (The ack path's isOneOnOne (#155) excludes bots
+  // because it answers a different question — "is this turn aimed at me".)
+  _otherParticipantCount() {
+    return (this.participants || []).filter(
+      (p) => !p.isSelf && p.name && p.name !== 'You'
+    ).length;
+  }
+
   // Brief-silence soft-opening hook. Armed in the speech-stop branch only when
   // probeFiring is on; if the room is still quiet after probeSilenceMs, surface
   // an opening to main.js (which runs the Apple completeness gate). All cheap
@@ -2155,6 +2165,17 @@ class LocalServer {
     // A held reply beats a filler. The stash-opening timer owns this gap.
     if (this.bargeInStash) return;
     if (this.waiters.length === 0) return; // slow model isn't listening
+    // A probe exists to fill a gap in a conversation between OTHERS. With only
+    // one other participant there is no such conversation: every turn is aimed at
+    // the bot, and a real turn resolution is ~700ms behind the soft opening.
+    // Probing there stacks three utterances onto one sentence — observed live:
+    //     14:12:00.873  🎣 [probe] firing (generic): "Huh."
+    //     14:12:01.623  👂 [ack] Playing acknowledgement: "Okay."   (me-1on1)
+    //     14:12:0x       ...and then the actual reply.
+    // The name-mention guard below cannot catch this: with one other participant
+    // nobody needs to say the bot's name to be talking to it. A second BOT counts
+    // as a partner here — two bots alone are a 1:1 too, and equally probe-free.
+    if (this._otherParticipantCount() < 2) return;
     const minInterval = Number(this._pref('probeMinIntervalMs')) || 0;
     if (minInterval > 0 && Date.now() - this.lastProbeAt < minInterval) return;
     // Don't probe when the bot is directly addressed by name — that turn wants a
@@ -2184,8 +2205,10 @@ class LocalServer {
     if (!this._pref('probeFiring')) return null;
     if (this.mode !== 'active' || this.callStatus !== 'in-call') return null;
     if (this.anyoneSpeaking || this.botState === 'speaking') return null;
-    // Re-check: a stash may have landed during the ~0.6s gate call.
+    // Re-check: a stash may have landed, or someone may have left (dropping the
+    // room to a 1:1), during the ~0.6s gate call.
     if (this.bargeInStash) return null;
+    if (this._otherParticipantCount() < 2) return null;
     const minInterval = Number(this._pref('probeMinIntervalMs')) || 0;
     if (minInterval > 0 && Date.now() - this.lastProbeAt < minInterval) return null;
     let text = this._consumeFreshProbe();

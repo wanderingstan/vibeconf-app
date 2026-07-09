@@ -150,6 +150,13 @@ const MEET = {
     settingsText: 'settings', // menu item whose text starts with "Settings"
     closeDialogLabel: 'Close dialog',
     closeDialogSelector: '[role="dialog"] [aria-label*="Close" i]',
+    // #416: the Settings dialog itself + its Material close action. The bot's
+    // Meet view never WANTS a Settings dialog open (only setStudioSound opens
+    // it, transiently), so a lingering one is always a stuck flow — the modal
+    // sweeper closes it as a safety net. DOM captured live in the 2026-07-08
+    // stuck-dialog incident.
+    settingsDialog: '[role="dialog"][aria-label="Settings" i]',
+    settingsCloseAction: '[data-mdc-dialog-action="close"]',
   },
 
   // -------------------------------------------------------------------------

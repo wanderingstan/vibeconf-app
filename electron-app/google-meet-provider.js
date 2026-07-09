@@ -165,6 +165,26 @@ function dismissBlockingModals() {
     }
   }
 
+  // #416: safety net for a STUCK Settings dialog. setStudioSound opens Meet's
+  // Settings dialog (⋮ → Settings → Audio) transiently; if its close step
+  // fails — e.g. Studio Sound is unavailable on the account so the toggle is
+  // never found and the flow races — the modal is left OPEN, blocking the
+  // caption region so the bot goes deaf/laggy for minutes (2026-07-08
+  // incident). The bot's Meet view has no human to close it. Since the bot
+  // NEVER wants a Settings dialog open, closing any lingering one is always
+  // safe and self-heals the stuck flow within a sweep (~1s).
+  const settingsDlg = document.querySelector(MEET.studioSound.settingsDialog);
+  if (settingsDlg && isVisible(settingsDlg) && !_studioSoundInProgress) {
+    const close = settingsDlg.querySelector(MEET.studioSound.settingsCloseAction) ||
+      [...settingsDlg.querySelectorAll('button, [role="button"]')].find((b) =>
+        (b.getAttribute('aria-label') || '').trim().toLowerCase() === MEET.studioSound.closeDialogLabel.toLowerCase());
+    if (close && isVisible(close)) {
+      close.click();
+      console.log('[electron-meet] Safety-net closed a lingering Settings dialog (stuck studio-sound flow, #416)');
+      return true;
+    }
+  }
+
   // #404: Meet's free-tier time-limit warning ("Your call ends in N minutes /
   // Free group calls have a limit of 1 hour"). Dismiss it AND tell the agent —
   // it should know the clock is running so it can wrap up or suggest a fresh
@@ -2212,6 +2232,12 @@ async function clickPresentNow(shareType) {
 // More options (⋮) → Settings → Audio → toggle "Studio sound" → Close. (Steps
 // confirmed live by Stan.) Best-effort with short waits, since menus/dialogs
 // animate in.
+// #416: true while setStudioSound is deliberately driving the Settings dialog,
+// so the modal sweeper's safety-net close (dismissBlockingModals) doesn't yank
+// the dialog out from under it mid-flow. The sweeper only closes a Settings
+// dialog that is NOT ours-in-progress = an abandoned/stuck one.
+let _studioSoundInProgress = false;
+
 async function setStudioSound(enabled) {
   const waitFor = async (fn, ms = 5000) => {
     const t0 = Date.now();
@@ -2224,6 +2250,7 @@ async function setStudioSound(enabled) {
     // a clickable item whose own text is exactly "Audio" (the settings left-nav)
     Array.from(document.querySelectorAll('[role="tab"], [role="menuitemradio"], button, [role="button"], [tabindex]'))
       .find((el) => el.textContent && el.textContent.trim().toLowerCase() === MEET.studioSound.audioTabText && isVisible(el)) || null;
+  _studioSoundInProgress = true; // #416: suppress the sweeper's safety-net close while we drive the dialog
   try {
     // 1) Open the toolbar ⋮ menu. EXACT aria-label match — a substring match also
     //    hits the per-participant "More options for <name>" tile buttons (which
@@ -2267,14 +2294,29 @@ async function setStudioSound(enabled) {
       else { console.log('[studio-sound] step4: Studio sound already', enabled); }
     }
 
-    // 5) Close the dialog.
-    const close = await waitFor(() =>
-      findByAriaLabel(MEET.studioSound.closeDialogLabel) || document.querySelector(MEET.studioSound.closeDialogSelector), 2000);
-    if (close) { close.click(); console.log('[studio-sound] step5: closed dialog'); }
+    // 5) Close the dialog — VERIFY it actually closed and retry (#416). A single
+    //    best-effort click could miss (Material button race / re-render), leaving
+    //    Settings open to block the caption region for minutes. Retry until the
+    //    dialog is gone, preferring the Material close action captured live.
+    const dialogGone = () => !document.querySelector(MEET.studioSound.settingsDialog);
+    for (let attempt = 0; attempt < 5 && !dialogGone(); attempt++) {
+      const close = await waitFor(() =>
+        document.querySelector(MEET.studioSound.settingsCloseAction) ||
+        findByAriaLabel(MEET.studioSound.closeDialogLabel) ||
+        document.querySelector(MEET.studioSound.closeDialogSelector), 1500);
+      if (close) { close.click(); console.log('[studio-sound] step5: close click (attempt', attempt + 1, ')'); }
+      await delay(250);
+    }
+    if (!dialogGone()) {
+      // The sweeper's safety net will finish the job once we drop the guard.
+      console.warn('[studio-sound] step5: Settings dialog still open after retries — leaving it to the modal sweeper (#416)');
+    }
     return !!sw;
   } catch (e) {
     console.warn('[studio-sound] error:', e.message);
     return false;
+  } finally {
+    _studioSoundInProgress = false; // #416: re-arm the sweeper's safety net
   }
 }
 

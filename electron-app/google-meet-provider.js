@@ -1161,8 +1161,14 @@ function ensureStatusBar() {
       /* Partially transparent so any Google buttons beneath stay visible... */
       background: rgba(138, 180, 248, 0.82); color: #ffffff;
       /* ...and click-through so they stay USABLE for debugging — the banner
-         never intercepts pointer events (#bot-view banner is purely a label). */
+         never intercepts pointer events (#bot-view banner is purely a label).
+         KEEP THIS even though the banner now auto-fades on hover: an element at
+         opacity:0 still receives pointer events, so dropping this would turn the
+         faded banner into an invisible click-eater over Meet's top UI. */
       pointer-events: none;
+      /* Fades out when the cursor is over it (see the mousemove handler below),
+         so it never hides the Meet UI a human is trying to look at. */
+      transition: opacity 0.15s ease;
       text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
       font-family: 'Google Sans', 'Roboto', sans-serif; font-size: 22px;
       font-weight: 500;
@@ -1186,6 +1192,29 @@ function ensureStatusBar() {
   `;
   document.head.appendChild(style);
   document.body.prepend(bar);
+
+  // Fade the banner out while the cursor is over it, so it never gets in the
+  // way of the Meet UI underneath when a human pokes at the bot's view.
+  //
+  // The banner is `pointer-events: none` (deliberately click-through), which
+  // means it can NEVER receive mouseenter/mouseleave itself — so track the
+  // cursor at the document level and compare against the banner's LIVE rect
+  // (its height varies: long status messages wrap to several lines).
+  // Capture-phase + passive so Meet's own handlers can't swallow the event and
+  // we never delay scrolling.
+  let barHidden = false;
+  const setBarHidden = (hide) => {
+    if (hide === barHidden) return;
+    barHidden = hide;
+    bar.style.opacity = hide ? '0' : '1';
+  };
+  document.addEventListener('mousemove', (e) => {
+    // Full-width banner, so vertical position alone decides.
+    setBarHidden(e.clientY <= bar.getBoundingClientRect().bottom);
+  }, { capture: true, passive: true });
+  // Cursor left the window entirely (possibly while over the banner) — restore,
+  // else it could stay invisible until the next mousemove inside the page.
+  document.addEventListener('mouseleave', () => setBarHidden(false), { capture: true, passive: true });
 }
 
 function sendStatus(status) {

@@ -3731,7 +3731,7 @@ function createMainWindow() {
           click: () => openAppSettings(),
         },
         {
-          label: 'Profile Settings…',
+          label: 'Bot Settings…',
           accelerator: 'CmdOrCtrl+Shift+,',
           click: () => {
             if (panelView && !panelView.webContents.isDestroyed()) {
@@ -3800,7 +3800,7 @@ function createMainWindow() {
           // name prompt happens in the panel (inline dialog); a never-seen name
           // creates the profile. Distinct from "New Window", which opens the
           // Default profile without creating anything.
-          label: 'New Profile…',
+          label: 'New Bot…',
           accelerator: 'CmdOrCtrl+Shift+N',
           click: () => {
             if (panelView && !panelView.webContents.isDestroyed()) {

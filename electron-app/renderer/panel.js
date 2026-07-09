@@ -6,6 +6,19 @@ const api = window.electronAPI;
 const joinBtn = document.getElementById('joinBtn');
 const meetUrlInput = document.getElementById('meetUrl');
 const connectedSection = document.getElementById('connectedSection');
+const callUrlDisplay = document.getElementById('callUrlDisplay');
+const copyCallUrlBtn = document.getElementById('copyCallUrlBtn');
+// Copy the current call's URL for inviting others (#panel-cleanup).
+copyCallUrlBtn?.addEventListener('click', async () => {
+  const url = (callUrlDisplay && callUrlDisplay.textContent || '').trim();
+  if (!url) return;
+  try {
+    await navigator.clipboard.writeText(url);
+    const prev = copyCallUrlBtn.textContent;
+    copyCallUrlBtn.textContent = '✓';
+    setTimeout(() => { copyCallUrlBtn.textContent = prev; }, 1200);
+  } catch { /* clipboard unavailable */ }
+});
 const meetCodeInput = document.getElementById('meetCode');
 const roomIdField = document.getElementById('roomIdField');
 const roomLink = document.getElementById('roomLink');
@@ -332,7 +345,7 @@ Promise.all([
   if (big) {
     const baseTitle = big.getAttribute('title') || '';
     const detail = [
-      profile ? `App profile: "${profile}" (--profile=${profile}) — isolated userData dir with its own preferences and Google login.` : 'Default profile.',
+      profile ? `Bot: "${profile}" (launched with --profile=${profile}) — isolated storage with its own preferences and Google login.` : 'Default bot.',
       port ? `local-server port ${port}` : null,
     ].filter(Boolean).join('\n');
     big.title = baseTitle + '\n\n' + detail;
@@ -448,8 +461,8 @@ async function doSwitchProfile(name) {
   if (!n) return;
   try {
     const r = await api.invoke('switch-profile', n);
-    if (r && r.ok === false) window.alert('Could not switch profile: ' + (r.error || 'unknown'));
-  } catch (e) { window.alert('Could not switch profile: ' + e.message); }
+    if (r && r.ok === false) window.alert('Could not switch bot: ' + (r.error || 'unknown'));
+  } catch (e) { window.alert('Could not switch bot: ' + e.message); }
 }
 
 // #379: additive path — open a profile in a SEPARATE new window, leaving THIS
@@ -461,8 +474,8 @@ async function doOpenProfileWindow(name) {
   if (!n) return;
   try {
     const r = await api.invoke('open-profile-window', n);
-    if (r && r.ok === false) window.alert('Could not open profile window: ' + (r.error || 'unknown'));
-  } catch (e) { window.alert('Could not open profile window: ' + e.message); }
+    if (r && r.ok === false) window.alert('Could not open bot window: ' + (r.error || 'unknown'));
+  } catch (e) { window.alert('Could not open bot window: ' + e.message); }
 }
 
 // Menu-bar "New Profile…" → prompt for a NEW profile name (a never-seen name
@@ -470,7 +483,7 @@ async function doOpenProfileWindow(name) {
 // CREATE path — distinct from "New Window", which opens the Default profile.
 api.on('new-profile-prompt', async () => {
   const name = await inlinePrompt({
-    title: 'New profile name (letters, numbers, . _ - only):',
+    title: 'New bot name (letters, numbers, . _ - only):',
     placeholder: 'e.g. alice',
     okLabel: 'Create',
   });
@@ -483,7 +496,7 @@ api.on('new-window', async () => {
   try {
     const r = await api.invoke('open-next-available-window');
     if (r && r.ok === false) {
-      if (r.error === 'all-running') window.alert('Every profile is already open in a window.');
+      if (r.error === 'all-running') window.alert('Every bot is already open in a window.');
       else window.alert('Could not open window: ' + (r.error || 'unknown'));
     }
   } catch (e) { window.alert('Could not open window: ' + e.message); }
@@ -495,7 +508,7 @@ function renderProfileMenu(data) {
   const profiles = (data && data.profiles) || [];
   if (!profiles.length) {
     const empty = document.createElement('div');
-    empty.textContent = 'No saved profiles yet.';
+    empty.textContent = 'No saved bots yet.';
     empty.style.cssText = 'padding:6px 8px;color:#9aa0a6';
     profileMenu.appendChild(empty);
   }
@@ -515,7 +528,7 @@ function renderProfileMenu(data) {
     const mark = document.createElement('span');
     mark.style.cssText = 'width:14px;flex:0 0 auto;text-align:center';
     if (p.isCurrent) {
-      mark.textContent = '✓'; mark.style.color = '#8ab4f8'; mark.title = 'current profile (this window)';
+      mark.textContent = '✓'; mark.style.color = '#8ab4f8'; mark.title = 'current bot (this window)';
     } else {
       mark.textContent = '●'; mark.style.color = p.running ? '#81c995' : '#5f6368';
       mark.title = p.running ? `running on port ${p.port}` : 'not running';
@@ -552,12 +565,12 @@ function renderProfileMenu(data) {
     profileMenu.appendChild(row);
   }
   const add = document.createElement('div');
-  add.textContent = '＋ New profile…';
+  add.textContent = '＋ New bot…';
   add.style.cssText = 'padding:6px 8px;margin-top:4px;border-top:1px solid #5f6368;color:#8ab4f8;cursor:pointer';
   add.onclick = async (e) => {
     const additive = e.altKey; // ⌥ → open the new profile in a separate window
     closeProfileMenu();
-    const name = await inlinePrompt({ title: 'New profile name (letters, numbers, . _ - only):', placeholder: 'e.g. alice', okLabel: 'Create' });
+    const name = await inlinePrompt({ title: 'New bot name (letters, numbers, . _ - only):', placeholder: 'e.g. alice', okLabel: 'Create' });
     if (name) (additive ? doOpenProfileWindow(name) : doSwitchProfile(name));
   };
   profileMenu.appendChild(add);
@@ -695,7 +708,7 @@ const userSignOutMainBtn = document.getElementById('userSignOutMainBtn');
 
 function setUserRow(signedIn, who) {
   if (userIdStatus) {
-    userIdStatus.textContent = signedIn ? `✓ ${who}` : '⚠ not signed in';
+    userIdStatus.textContent = signedIn ? who : '⚠ not signed in';
     userIdStatus.style.color = signedIn ? '#81c995' : '#fdd663';
   }
   if (userSignInMainBtn) userSignInMainBtn.style.display = signedIn ? 'none' : 'inline-block';
@@ -779,6 +792,14 @@ function enterCallState(meetCode) {
   updateCallIdentity(); // light up the "appearing as" sub-line (#282)
   connectedSection.style.display = 'block';
   joinBtn.style.display = 'none';
+
+  // Show which call the bot is actually in (read-only) — for confirming the
+  // right room and copying the invite link. Prefer the joined URL; fall back
+  // to reconstructing a Meet URL from the code.
+  if (callUrlDisplay) {
+    const joined = (meetUrlInput && meetUrlInput.value.trim()) || '';
+    callUrlDisplay.textContent = joined || (meetCode ? `https://meet.google.com/${meetCode}` : '');
+  }
 
   // Update troubleshooting section
   meetCodeInput.value = meetCode;

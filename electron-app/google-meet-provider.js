@@ -963,6 +963,10 @@ function installCallHealthTick() {
   let last = {};
   let lastMicReported = 'unknown';
   let lastParticipantsKey = '';
+  // #417 call-ended detection state (see the block near the end of tick()).
+  let _everInCall = false;     // have we ever confirmed admission (seen Leave)?
+  let _leaveGoneTicks = 0;     // consecutive ticks with no in-call ground truth
+  let _callEndedFired = false; // fire the clean-end signal at most once
 
   const tick = () => {
     // Dismiss any blocking Meet onboarding modal before probing the DOM —
@@ -1055,6 +1059,35 @@ function installCallHealthTick() {
       if (key !== lastParticipantsKey) {
         lastParticipantsKey = key;
         meetProvider.emit(CALL_EVENTS.participantsUpdated, next.participants);
+      }
+    }
+
+    // --- Call-ended detection (#417) ---
+    // After the call ends (everyone leaves / the tab falls out of the call),
+    // Meet collapses its in-call UI: the "Leave call" button vanishes and the
+    // toolbar shrinks. The app used to keep reporting in-call and retried
+    // captions for MINUTES (2026-07-08: ~9 min of "_enableCaptions: no captions
+    // button in DOM"), a ghost state — wait_for_speech just timed out forever.
+    // Once we've CONFIRMED admission (seen the Leave button), a SUSTAINED
+    // absence of the in-call ground truth — and NOT because we're back on a
+    // join/waiting screen — means the call is over. Fire a clean end so the
+    // agent's loop exits (main maps this to the auto-left path).
+    {
+      const hasLeave = !!(findByAriaLabel(MEET.join.leaveCallLabel) || document.querySelector(MEET.join.leaveCallTooltip));
+      const bodyLower = (document.body.innerText || '').toLowerCase();
+      const onJoinOrWaiting = MEET.join.waitingTexts.some((t) => bodyLower.includes(t)) ||
+        !!findByText(MEET.join.joinTextNow) || !!findByText(MEET.join.joinTextAsk) ||
+        !!findByText(MEET.join.joinTextAnyway);
+      if (hasLeave) { _everInCall = true; _leaveGoneTicks = 0; }
+      else if (_everInCall && !onJoinOrWaiting) { _leaveGoneTicks++; }
+      else { _leaveGoneTicks = 0; }
+      // ~12 consecutive 1s ticks without the Leave button (and not on a
+      // join/waiting screen) — long enough to ride out a mid-call re-render,
+      // short enough to end the ghost promptly. Fire once.
+      if (_leaveGoneTicks >= 12 && !_callEndedFired) {
+        _callEndedFired = true;
+        console.warn('[electron-meet] Call ended — in-call UI gone for ' + _leaveGoneTicks + 's (collapsed toolbar / everyone left). Signaling clean leave (#417)');
+        sendStatus('Call ended: the meeting is over (in-call controls disappeared).');
       }
     }
 

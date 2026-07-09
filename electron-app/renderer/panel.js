@@ -6,6 +6,19 @@ const api = window.electronAPI;
 const joinBtn = document.getElementById('joinBtn');
 const meetUrlInput = document.getElementById('meetUrl');
 const connectedSection = document.getElementById('connectedSection');
+const callUrlDisplay = document.getElementById('callUrlDisplay');
+const copyCallUrlBtn = document.getElementById('copyCallUrlBtn');
+// Copy the current call's URL for inviting others (#panel-cleanup).
+copyCallUrlBtn?.addEventListener('click', async () => {
+  const url = (callUrlDisplay && callUrlDisplay.textContent || '').trim();
+  if (!url) return;
+  try {
+    await navigator.clipboard.writeText(url);
+    const prev = copyCallUrlBtn.textContent;
+    copyCallUrlBtn.textContent = '✓';
+    setTimeout(() => { copyCallUrlBtn.textContent = prev; }, 1200);
+  } catch { /* clipboard unavailable */ }
+});
 const meetCodeInput = document.getElementById('meetCode');
 const roomIdField = document.getElementById('roomIdField');
 const roomLink = document.getElementById('roomLink');
@@ -695,7 +708,7 @@ const userSignOutMainBtn = document.getElementById('userSignOutMainBtn');
 
 function setUserRow(signedIn, who) {
   if (userIdStatus) {
-    userIdStatus.textContent = signedIn ? `✓ ${who}` : '⚠ not signed in';
+    userIdStatus.textContent = signedIn ? who : '⚠ not signed in';
     userIdStatus.style.color = signedIn ? '#81c995' : '#fdd663';
   }
   if (userSignInMainBtn) userSignInMainBtn.style.display = signedIn ? 'none' : 'inline-block';
@@ -779,6 +792,14 @@ function enterCallState(meetCode) {
   updateCallIdentity(); // light up the "appearing as" sub-line (#282)
   connectedSection.style.display = 'block';
   joinBtn.style.display = 'none';
+
+  // Show which call the bot is actually in (read-only) — for confirming the
+  // right room and copying the invite link. Prefer the joined URL; fall back
+  // to reconstructing a Meet URL from the code.
+  if (callUrlDisplay) {
+    const joined = (meetUrlInput && meetUrlInput.value.trim()) || '';
+    callUrlDisplay.textContent = joined || (meetCode ? `https://meet.google.com/${meetCode}` : '');
+  }
 
   // Update troubleshooting section
   meetCodeInput.value = meetCode;

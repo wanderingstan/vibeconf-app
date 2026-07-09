@@ -41,10 +41,45 @@
         <button id="openAppSettingsFromBanner" style="background:#8ab4f8;border:none;color:#202124;border-radius:14px;padding:5px 12px;font-weight:600;cursor:pointer;white-space:nowrap">Set it up →</button>
       </div>
 
-      <!-- ══ ZONE 1: BOT ═══════════════════════════════════════════════════
-           Who this bot is: avatar · name · ⇄ switch · ⚙ its settings · voice ·
-           connected calling identities. (Call state + your login moved out to
-           their own zones below.) -->
+      <!-- ══ ZONE 1: CALL ══════════════════════════════════════════════════
+           The frequent action, so it leads. Two entirely distinct views,
+           toggled by the SAME body[data-call-state] flag that shows/hides the
+           Leave + Troubleshooting controls. -->
+      <div class="call-card">
+        <!-- PRE-CALL: enter a call. (No "not in a call" status — the whole
+             view already implies it.) -->
+        <div class="call-precall">
+          <div class="field">
+            <label for="meetUrl">Meet / Slack URL</label>
+            <input type="text" id="meetUrl" placeholder="meet.google.com/xxx-xxxx-xxx or app.slack.com/client/…" />
+          </div>
+          <button id="joinBtn" class="primary" disabled>Join Call</button>
+          <div class="helper-text" style="margin-top:8px">Calls in Chrome/Safari are auto-detected. You can also type <code>/join-call</code> in any Claude Code session.</div>
+          <div class="helper-text" style="margin-top:4px"><a href="#" id="defaultMeetBtn" class="text-link">Open default testing meet in browser ↗</a></div>
+        </div>
+
+        <!-- IN-CALL: the live call — identity + which call + leave / troubleshooting. -->
+        <div class="call-incall">
+          <div id="botCallIdentity" class="agent-call-id" title="The name this bot is appearing under in the current call (Google account name in Meet, Slack name in a huddle).">in a call</div>
+          <!-- The current call's URL (read-only) — to confirm which call the bot is
+               in and to copy/share the invite link. -->
+          <div class="call-url-row" title="The call this bot is currently in.">
+            <span id="callUrlDisplay" class="call-url"></span>
+            <button id="copyCallUrlBtn" class="call-url-copy" title="Copy call link">⧉</button>
+          </div>
+          <div id="connectedSection">
+            <button id="leaveCallBtn" style="margin-top:8px;background:#d93025;color:#fff;border:none;padding:8px 16px;border-radius:20px;cursor:pointer">Leave Call</button>
+            <div class="nav-buttons">
+              <button id="openTroubleshootingBtn">Troubleshooting</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ ZONE 2: BOT ═══════════════════════════════════════════════════
+           Who this bot is: avatar · name · ⚙ its settings · voice · connected
+           calling identities. (Switched below the Call zone — the bot changes
+           far less often than you join calls.) -->
       <div class="agent-card">
         <div class="agent-top">
           <!-- Avatar tile = the bot's background-as-avatar (its avatarBackgroundSvg
@@ -52,12 +87,15 @@
           <div id="agentAvatar" class="agent-avatar"><span id="agentAvatarEmoji" class="agent-avatar-emoji">🙂</span></div>
           <div class="agent-id">
             <div class="agent-name-row">
-              <div id="botNameBig" title="This bot's stable identity — its name / personality / logins. The name it actually appears under in a call shows in the Call section below once joined." class="agent-name">—</div>
-              <button id="profileMenuBtn" class="agent-switch" title="Switch bot — replaces this window with another bot (its own Google/Slack login + personality). ⌥-click a bot to open it in a separate window instead. Hidden during a call.">⇄</button>
+              <div id="botNameBig" title="This bot's stable identity — its name / personality / logins. The name it actually appears under in a call shows in the Call section above once joined." class="agent-name">—</div>
+              <!-- TEMP: switcher stays here + functional until the external
+                   switcher design is chosen (kept so nothing breaks). -->
+              <button id="profileMenuBtn" class="agent-switch" title="Switch bot — replaces this window with another bot. ⌥-click a bot to open it in a separate window instead. Hidden during a call.">⇄</button>
               <!-- Settings gear — opens THIS bot's settings (voice, behavior).
                    Machine-wide config is App Settings (⌘,). -->
               <button id="openSettingsBtn" class="agent-gear" title="This bot's settings (voice, acknowledgments, behavior). Machine-wide settings are in App Settings, ⌘,.">&#9881;</button>
-              <!-- Bot switcher dropdown (#282). Populated on open from list-profiles. -->
+              <!-- Bot switcher dropdown (#282). Anchored under the bot-switcher
+                   control (moved out of the card — see .bot-switcher). -->
               <div id="profileMenu" class="profile-menu"></div>
             </div>
             <div class="agent-voice" title="Text-to-speech voice. ElevenLabs when a voice ID is set; otherwise the built-in macOS voice."><span id="voiceStatus">checking…</span></div>
@@ -88,34 +126,6 @@
           </div>
           <!-- "⊕ Add calling platform" returns once there's more than one
                platform to add (#289). For now Meet + Slack are both fixed. -->
-        </div>
-      </div>
-
-      <!-- ══ ZONE 2: CALL ══════════════════════════════════════════════════
-           Two entirely distinct views, toggled by the SAME body[data-call-state]
-           flag that shows/hides the Leave + Troubleshooting controls. -->
-      <div class="call-card">
-        <!-- PRE-CALL: enter a call. (No "not in a call" status — the whole
-             view already implies it.) -->
-        <div class="call-precall">
-          <div class="field">
-            <label for="meetUrl">Meet / Slack URL</label>
-            <input type="text" id="meetUrl" placeholder="meet.google.com/xxx-xxxx-xxx or app.slack.com/client/…" />
-          </div>
-          <button id="joinBtn" class="primary" disabled>Join Call</button>
-          <div class="helper-text" style="margin-top:8px">Calls in Chrome/Safari are auto-detected. You can also type <code>/join-call</code> in any Claude Code session.</div>
-          <div class="helper-text" style="margin-top:4px"><a href="#" id="defaultMeetBtn" class="text-link">Open default testing meet in browser ↗</a></div>
-        </div>
-
-        <!-- IN-CALL: the live call — identity + leave / troubleshooting. -->
-        <div class="call-incall">
-          <div id="botCallIdentity" class="agent-call-id" title="The name this bot is appearing under in the current call (Google account name in Meet, Slack name in a huddle).">in a call</div>
-          <div id="connectedSection">
-            <button id="leaveCallBtn" style="margin-top:8px;background:#d93025;color:#fff;border:none;padding:8px 16px;border-radius:20px;cursor:pointer">Leave Call</button>
-            <div class="nav-buttons">
-              <button id="openTroubleshootingBtn">Troubleshooting</button>
-            </div>
-          </div>
         </div>
       </div>
 

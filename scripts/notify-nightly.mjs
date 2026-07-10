@@ -15,6 +15,7 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { execSync } from 'child_process';
 
 const RESULTS = process.env.VIBECONF_RESULTS_DIR || join(homedir(), 'vibeconf-test-results');
 const CHAT = process.env.VIBECONF_NOTIFY_CHAT || '6785998012'; // Stan's DM
@@ -32,6 +33,29 @@ function botToken() {
     return m ? m[1].trim().replace(/^["']|["']$/g, '') : null;
   } catch { return null; }
 }
+
+function sh(cmd) {
+  try { return execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
+  catch { return ''; }
+}
+// The installed DMG's version — the artifact the DMG-meet lane tests.
+function dmgVersion() {
+  return sh('defaults read /Applications/Vibeconferencing.app/Contents/Info.plist CFBundleShortVersionString') || null;
+}
+// The checked-out main commit — what every SOURCE lane (main meet, Slack, codex,
+// agent-fuzz) actually ran against. So a DMG-lane fail vs a source-lane fail points
+// at the version vs the commit at a glance.
+function mainCommit() {
+  const repo = process.env.VIBECONF_REPO || join(homedir(), 'Developer/vibeconferencing');
+  const line = sh(`git -C "${repo}" log -1 "--format=%h|%cr|%s"`);
+  if (!line) return null;
+  const [hash, age, ...rest] = line.split('|');
+  const subj = rest.join('|').slice(0, 60);
+  return `${hash} · ${age}${subj ? ' · ' + subj : ''}`;
+}
+// Telegram HTML parse_mode: only these three chars need escaping (a commit subject
+// could contain them). Emojis/status text never do.
+const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 const icon = (ok) => (ok ? '✅' : '🔴');
 
@@ -65,7 +89,14 @@ const lines = [
 ];
 const anyRed = lines.some((l) => l.startsWith('🔴'));
 const stamp = dmg?.ts || main?.ts || slack?.ts || '(unknown)';
-const text = [`${anyRed ? '🔴' : '🌙'} Nightly ${stamp}`, ...lines].join('\n');
+
+// Bold title (Telegram HTML), then two context lines: the DMG version (DMG-meet
+// lane) and the main commit (all source lanes).
+const header = `<b>${esc(`${anyRed ? '🔴' : '🌙'} Nightly ${stamp}`)}</b>`;
+const ctx = [];
+const dver = dmgVersion(); if (dver) ctx.push(`🖥 DMG ${esc(dver)}`);
+const mc = mainCommit(); if (mc) ctx.push(`🔧 main ${esc(mc)}`);
+const text = [header, ...ctx, ...lines.map(esc)].join('\n');
 
 if (process.env.VIBECONF_NOTIFY === '0') { console.log('[notify] disabled'); process.exit(0); }
 if (process.env.VIBECONF_NOTIFY_DRYRUN === '1') { console.log('[notify] DRY-RUN — would send:\n' + text); process.exit(0); }
@@ -77,7 +108,7 @@ try {
   const resp = await fetch(`https://api.telegram.org/bot${tok}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: CHAT, text, disable_notification: !anyRed }),
+    body: JSON.stringify({ chat_id: CHAT, text, parse_mode: 'HTML', disable_notification: !anyRed }),
     signal: AbortSignal.timeout(20000),
   });
   console.log(resp.ok ? '[notify] telegram sent' : `[notify] telegram failed: ${resp.status} ${await resp.text().catch(() => '')}`);

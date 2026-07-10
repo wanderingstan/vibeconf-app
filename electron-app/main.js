@@ -1341,6 +1341,85 @@ let appSettingsWindow = null; // #381: machine-wide App Settings (⌘,), a singl
 // many profile windows are open, reinforcing "there's one machine config".
 // Since window ↔ profile now correlate (#379), app-level config lives here rather
 // than inside any one profile's panel.
+// "Check for Updates…" (App menu). Talks to the GitHub releases API rather than
+// electron-updater: our releases carry no latest-mac.yml, and every one of them
+// is a PRERELEASE, which /releases/latest excludes by design. The version math
+// lives in updates.js so it can be tested without a desktop.
+//
+// We hand the DMG to the user rather than swapping the app out from under them.
+// The running instance may be mid-call, and a self-replacing installer is a much
+// bigger promise than "there's a newer build, want it?".
+let _updateCheckInFlight = false;
+async function checkForUpdates({ silentWhenCurrent = true } = {}) {
+  if (_updateCheckInFlight) return;
+  _updateCheckInFlight = true;
+  const { dialog, shell } = require('electron');
+  const updates = require('./updates');
+  const current = app.getVersion();
+  try {
+    const releases = await updates.fetchReleases();
+    const latest = updates.pickUpdate(releases, current);
+
+    if (!latest) {
+      console.log(ts(), `[updates] ${current} is current (${releases.length} releases checked)`);
+      if (!silentWhenCurrent) {
+        await dialog.showMessageBox(mainWindow, {
+          type: 'info',
+          message: 'You’re up to date.',
+          detail: `Vibeconferencing ${current} is the latest version.`,
+          buttons: ['OK'],
+        });
+      }
+      return;
+    }
+
+    const asset = updates.pickDmgAsset(latest);
+    console.log(ts(), `[updates] ${current} → ${latest.tag_name} available` + (asset ? ` (${asset.name})` : ' (no matching .dmg)'));
+
+    // Without a DMG for this architecture there is nothing to download; send
+    // them to the release page instead of failing silently.
+    const buttons = asset ? ['Download', 'Release Notes', 'Later'] : ['Release Notes', 'Later'];
+    const { response } = await dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      message: `Vibeconferencing ${latest.tag_name.replace(/^v/, '')} is available.`,
+      detail: `You have ${current}.` + (asset
+        ? `\n\nDownloading puts the installer in your Downloads folder. Quit the app before installing.`
+        : `\n\nNo installer for this Mac (${process.arch}) in that release.`),
+      buttons,
+      defaultId: 0,
+      cancelId: buttons.length - 1,
+    });
+    const choice = buttons[response];
+
+    if (choice === 'Release Notes') { shell.openExternal(latest.html_url); return; }
+    if (choice !== 'Download') return;
+
+    console.log(ts(), `[updates] downloading ${asset.name} (${Math.round((asset.size || 0) / 1048576)}MB)…`);
+    let lastLogged = 0;
+    const file = await updates.downloadAsset(asset, {
+      onProgress: (frac) => {
+        const pct = Math.floor(frac * 100);
+        if (pct >= lastLogged + 10) { lastLogged = pct; console.log(ts(), `[updates] ${pct}%`); }
+      },
+    });
+    console.log(ts(), `[updates] saved ${file}`);
+    shell.showItemInFolder(file);
+  } catch (err) {
+    console.warn(ts(), '[updates] check failed:', err.message);
+    const { response } = await dialog.showMessageBox(mainWindow, {
+      type: 'error',
+      message: 'Could not check for updates.',
+      detail: `${err.message}\n\nYou can always download the latest build from the Releases page.`,
+      buttons: ['Open Releases Page', 'OK'],
+      defaultId: 1,
+      cancelId: 1,
+    });
+    if (response === 0) shell.openExternal(`https://github.com/${process.env.VIBECONF_UPDATE_REPO || 'wanderingstan/vibeconferencing'}/releases`);
+  } finally {
+    _updateCheckInFlight = false;
+  }
+}
+
 function openAppSettings() {
   if (appSettingsWindow && !appSettingsWindow.isDestroyed()) {
     appSettingsWindow.show();
@@ -3799,6 +3878,10 @@ function createMainWindow() {
       label: app.name,
       submenu: [
         { role: 'about' },
+        {
+          label: 'Check for Updates…',
+          click: () => checkForUpdates({ silentWhenCurrent: false }),
+        },
         { type: 'separator' },
         {
           // #381: ⌘, opens machine-wide Settings (macOS-native Preferences→Settings

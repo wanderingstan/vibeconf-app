@@ -48,13 +48,19 @@
     };
 
     static ACTIVITY_EMOJIS = {
-      // 👀 reading along. A background tick (#245) surfaces the slow model
+      // 😑 reading along. A background tick (#245) surfaces the slow model
       // mid-conversation so it can keep up and bank a probe — it is NOT
       // answering, and must not wear the 🤔 reply face. The tick fires on a
       // word-count delta while someone is still mid-sentence, so 🤔 there read
       // as "I've decided to answer your half-sentence" (see #432 / the
       // 09:01:32 "Everything else." incident).
-      ticking:  '\u{1F440}',
+      //
+      // Expressionless, NOT 👀. A tick can only happen while someone is
+      // speaking, which means the face it replaces is always 😐 HEARING_EMOJI.
+      // 😐 → 😑 is the same face closing its eyes: it reads as a blink, so the
+      // avatar stays a listener paying attention rather than becoming a
+      // different object for a few seconds.
+      ticking:  '\u{1F611}',
       thinking: '\u{1F914}', // 🤔 formulating a reply — still "with" the conversation
       working:  '\u{1F9D1}\u{200D}\u{1F4BB}', // 🧑‍💻 heads-down running tools — NOT tracking the room
       speaking: '\u{1F604}', // 😄 grinning face — open mouth fits TTS playback
@@ -294,7 +300,7 @@
       //      which reads as "done? oh wait still thinking? speaking now"
       //      instead of one continuous "responding."
       //   4. Activity state yielding → 🙋 (has something to say, deferring)
-      //      Activity state ticking  → 👀 (reading along, NOT answering). Wins
+      //      Activity state ticking  → 😑 (reading along, NOT answering). Wins
       //      over `hearing` below, so the glance is visible while someone is
       //      talking — which is the only moment a tick can occur.
       //   5. Audio is playing (this.speaking) and state isn't 'thinking' →

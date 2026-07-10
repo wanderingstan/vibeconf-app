@@ -14,6 +14,11 @@ const { ipcRenderer } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
+// Shim navigator.userAgentData (UA Client Hints) to match the spoofed Chrome UA
+// BEFORE Slack's scripts run, so its sign-in browser gate doesn't see the real
+// Chromium version (Electron leaks it via Client Hints even with setUserAgent).
+require('./slack-ua').installClientHintsShim();
+
 // Timestamp console lines so [slack-main] / page-inject logs interleave cleanly
 // in the main-process stdout (same wrapper preload-meet.js uses).
 (function installTimestampedConsole() {

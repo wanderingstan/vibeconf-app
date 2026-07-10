@@ -3903,12 +3903,21 @@ function createMainWindow() {
         { type: 'separator' },
         {
           // Advanced (#282 follow-up): drive the bot's own webview to any URL to
-          // set up Slack/Google account state inside its partition.
+          // set up Slack/Google account state inside its partition. Pre-fills the
+          // prompt with the view's CURRENT URL so you can see where it landed
+          // (redirects/blank pages) and edit from there.
           label: 'Navigate Webview…',
           accelerator: 'CmdOrCtrl+Shift+L',
           click: () => {
             if (panelView && !panelView.webContents.isDestroyed()) {
-              panelView.webContents.send('navigate-webview-prompt');
+              let currentUrl = '';
+              try { if (meetView && !meetView.webContents.isDestroyed()) currentUrl = meetView.webContents.getURL(); } catch { /* ignore */ }
+              // Focus the panel view first — otherwise the prompt input's .focus()
+              // in the renderer doesn't grab the keyboard (the panel BrowserView
+              // isn't the focused frame), so you'd have to click it before typing.
+              try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.focus(); } catch { /* ignore */ }
+              try { panelView.webContents.focus(); } catch { /* ignore */ }
+              panelView.webContents.send('navigate-webview-prompt', { currentUrl });
             }
           },
         },

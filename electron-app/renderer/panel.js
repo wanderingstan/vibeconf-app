@@ -1219,10 +1219,14 @@ api.on('meet-mode-changed', () => {
 // Advanced: "Navigate Webview…" (⌘⇧L) → prompt for a URL and drive the bot's
 // embedded view there, so the operator can set up Slack/Google account state in
 // the bot's own partition (#282).
-api.on('navigate-webview-prompt', async () => {
+api.on('navigate-webview-prompt', async (data) => {
+  // Pre-fill the CURRENT webview URL (passed from main) so you can see where the
+  // view actually landed — handy for debugging redirects/blank pages — and edit
+  // from there. Falls back to https:// when there's no current URL.
+  const current = (data && data.currentUrl) || '';
   const url = await inlinePrompt({
     title: 'Navigate the bot webview to URL (advanced — Slack/Google account setup):',
-    initial: 'https://', okLabel: 'Go',
+    initial: current || 'https://', okLabel: 'Go',
   });
   if (!url) return;
   api.invoke('navigate-webview', url).then((r) => {

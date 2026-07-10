@@ -26,6 +26,9 @@
 // in-popup "Captions" tab keeps captions on THIS surface — try both.
 
 const { ipcRenderer } = require('electron');
+// Match navigator.userAgentData to the spoofed Chrome UA before Slack's scripts run
+// (same Client-Hints gate as the main surface).
+require('./slack-ua').installClientHintsShim();
 const { SlackProvider } = require('./slack-provider');
 const { CALL_EVENTS, CALL_COMMANDS } = require('./call-provider');
 const { SLACK } = require('./slack-selectors');

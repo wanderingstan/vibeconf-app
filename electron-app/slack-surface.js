@@ -12,13 +12,15 @@
 const { BrowserView, session, globalShortcut, shell } = require('electron');
 const path = require('path');
 const { SLACK } = require('./slack-selectors');
+const slackUa = require('./slack-ua');
 
-// Slack sniffs the UA and rejects Electron (and older Chrome) — "your browser is
-// not supported". Spoof a CURRENT desktop Chrome, set explicitly on the
-// webContents (overrides the session UA and guarantees it reaches the page).
-// Isolated to the Slack surface so Meet's CHROME_UA is untouched. Bump the
-// version when Slack tightens its cutoff.
-const SLACK_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
+// Slack sniffs the browser and rejects Electron (and older Chrome) — "your browser
+// is not supported". The UA string alone isn't enough: Slack's sign-in page also
+// checks UA Client Hints (navigator.userAgentData + Sec-CH-UA* headers), which leak
+// the real Chromium version. slack-ua.js is the single source of truth spoofing a
+// current Chrome across the string, the headers, and userAgentData (bump CHROME
+// there when Slack tightens its cutoff). Isolated to the Slack surface.
+const SLACK_UA = slackUa.UA;
 
 // Poll for `selector` in a webContents and click it once it appears (Slack is a
 // SPA, so toolbar/lobby buttons render well after load). Runs in-page via
@@ -71,8 +73,16 @@ function createSlackSurface(mainWindow, opts = {}) {
 
   // Spoof Chrome at the SESSION level so EVERY window in this partition — main,
   // workspace ("Redirecting…"), huddle popup — inherits it and stays in the one
-  // authenticated session. (Slack rejects Electron / old Chrome.)
-  if (partition) { try { session.fromPartition(partition).setUserAgent(userAgent); } catch { /* ignore */ } }
+  // authenticated session. (Slack rejects Electron / old Chrome.) The UA string is
+  // half of it; installHeaderSpoof also rewrites the Sec-CH-UA* Client-Hint headers
+  // to match (navigator.userAgentData is shimmed in the Slack preloads).
+  if (partition) {
+    try {
+      const sess = session.fromPartition(partition);
+      sess.setUserAgent(userAgent);
+      slackUa.installHeaderSpoof(sess);
+    } catch { /* ignore */ }
+  }
 
   const view = new BrowserView({
     webPreferences: {

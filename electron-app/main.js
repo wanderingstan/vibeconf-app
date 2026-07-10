@@ -2651,11 +2651,14 @@ function launchClaudeTerminal(meetCode) {
   // Build the claude command with optional --dangerously-skip-permissions
   const dangerousMode = store.get('dangerousMode');
   const dangerousFlag = dangerousMode ? ' --dangerously-skip-permissions' : '';
-  // Optional model override (Settings → "Claude model"). Empty = claude's own
-  // default. Accepts an alias (sonnet / opus / haiku) or a full model id; sanitize
-  // to safe token chars since it's interpolated into the AppleScript/shell command.
-  const claudeModel = String(store.get('claudeModel') || '').trim().replace(/[^A-Za-z0-9._-]/g, '');
-  const modelFlag = claudeModel ? ` --model ${claudeModel}` : '';
+  // Model for the launched session (Settings → "Claude Model"). Empty now means
+  // sonnet rather than "no flag, let the CLI pick" — sonnet is the right default
+  // for this workload, and an implicit default that can shift under us is worse
+  // than an explicit one. Accepts an alias (sonnet / opus / haiku) or a full model
+  // id; sanitized in claude-model.js, since this is interpolated into an
+  // AppleScript-wrapped shell command. See tests/claude-model.test.mjs.
+  const { claudeModelFlag } = require('./claude-model.js');
+  const modelFlag = claudeModelFlag(store.get('claudeModel'));
   const claudeCmd = `claude${dangerousFlag}${modelFlag}${mcpFlags} \\"/join-call ${meetCode} ${botName.replace(/"/g, '')}\\"`;
 
   // Open a Terminal window running the command. When Terminal isn't already

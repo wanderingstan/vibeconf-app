@@ -354,6 +354,19 @@
       // Electron stdout that we tail with `cmux read-screen`.
       if (emoji !== this._lastLoggedEmoji) {
         this._lastLoggedEmoji = emoji;
+        // The profile icon can only be captured from the resting 🙂 face
+        // (__vibeconfCaptureAvatarIcon returns null for every other one). That
+        // face is on screen ~19% of a call, so the old 60s poll had roughly a
+        // one-in-five chance of landing on it: the snapshot succeeded 5 times
+        // across 36 logged sessions. Tell main the instant we settle onto it.
+        // Throttled — a flicker between 🙂 and 😐 must not spam IPC.
+        if (emoji === VirtualCamera.MODE_EMOJIS.active) {
+          const _now = Date.now();
+          if (_now - (VirtualCamera._lastRestingPingAt || 0) > 3000) {
+            VirtualCamera._lastRestingPingAt = _now;
+            window.postMessage({ __botsInCalls: true, action: 'avatar-resting' }, '*');
+          }
+        }
         const reason = notOnLine ? `callStatus=${this.callStatus} hasEngaged=${this.hasEngaged}` :
           audioPlaying ? `audio playing (state=${this.state}${this.speakingEmojiOverride ? ' override' : ''})` :
           activityEmoji ? `state=${this.state}${this.state === 'yielding' && this.yieldingEmojiOverride ? ' (yielding override)' : ''}` :

@@ -4371,11 +4371,14 @@ function setupIPC() {
   // icon is old AND the bot is caught in a resting frame. Best-effort; the panel
   // falls back to the generated look when `profileIcon` is unset.
   const PROFILE_ICON_MAX_AGE_MS = 4 * 60 * 60 * 1000; // ~4h
+  function profileIconIsFresh() {
+    const at = Number(store.get('profileIconAt')) || 0;
+    return !!store.get('profileIcon') && (Date.now() - at) < PROFILE_ICON_MAX_AGE_MS;
+  }
   async function maybeCaptureProfileIcon() {
     try {
-      if (!meetView || meetView.webContents.isDestroyed()) return;
-      const at = Number(store.get('profileIconAt')) || 0;
-      if (store.get('profileIcon') && (Date.now() - at) < PROFILE_ICON_MAX_AGE_MS) return; // still fresh
+      if (!meetView || meetView.webContents.isDestroyed()) return false;
+      if (profileIconIsFresh()) return false;
       const dataUrl = await meetView.webContents
         .executeJavaScript('window.__vibeconfCaptureAvatarIcon ? window.__vibeconfCaptureAvatarIcon(128) : null')
         .catch(() => null);
@@ -4383,10 +4386,38 @@ function setupIPC() {
         store.set('profileIcon', dataUrl);
         store.set('profileIconAt', Date.now());
         console.log('[profile-icon] captured a fresh avatar snapshot from the camera feed');
+        return true;
       }
     } catch { /* best-effort — never disrupt the call */ }
+    return false;
   }
-  setInterval(maybeCaptureProfileIcon, 60 * 1000);
+
+  // __vibeconfCaptureAvatarIcon only returns a frame when the camera is showing
+  // the resting 🙂 face. Measured across a 45-minute call, that face is on screen
+  // ~19% of the time — so the old fixed 60s poll was a one-in-five lottery, and it
+  // had won 5 times across 36 logged sessions. Capture on the EDGE instead: the
+  // renderer pings us the moment it settles onto 🙂.
+  ipcMain.on(CALL_EVENTS.avatarResting, () => {
+    if (profileIconIsFresh()) return; // nothing wanted — don't touch the renderer
+    maybeCaptureProfileIcon();
+  });
+
+  // Backstop for the edge we can miss: if the avatar was ALREADY 🙂 when the call
+  // started, no transition ever fires. Poll hard while there's no icon, then idle
+  // once one is cached — a fresh icon needs no work at all until it ages out.
+  const ICON_POLL_WANTED_MS = 5 * 1000;
+  const ICON_POLL_IDLE_MS = 5 * 60 * 1000;
+  let _iconPollTimer = null;
+  function scheduleProfileIconPoll() {
+    clearTimeout(_iconPollTimer);
+    const delay = profileIconIsFresh() ? ICON_POLL_IDLE_MS : ICON_POLL_WANTED_MS;
+    _iconPollTimer = setTimeout(async () => {
+      await maybeCaptureProfileIcon();
+      scheduleProfileIconPoll();
+    }, delay);
+    if (_iconPollTimer.unref) _iconPollTimer.unref();
+  }
+  scheduleProfileIconPoll();
 
   // Bot vitals for the panel: is the on-device fast model reachable? Pings the
   // configured ack endpoint (Apple wrapper / any openai-compat) GET /v1/models

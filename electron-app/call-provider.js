@@ -72,6 +72,10 @@ const CALL_EVENTS = {
   ttsEnded: 'tts-ended',
   botJoinedCall: 'bot-joined-call',
   statusUpdate: 'meet-status-update',
+  // The avatar just settled onto its resting (active-listening) face. The only
+  // frame the profile-icon snapshot is allowed to capture — so main takes the
+  // picture on this edge rather than hoping a poll lands on it.
+  avatarResting: 'avatar-resting',
 };
 
 // Bootstrap values a provider pulls FROM the app at startup (ipcRenderer.invoke

@@ -2199,6 +2199,12 @@ window.addEventListener('message', (event) => {
     if (name) meetProvider.emit(CALL_EVENTS.speakingChanged, { name, speaking });
   }
 
+  if (event.data.action === 'avatar-resting') {
+    // The camera just settled onto the resting 🙂 face — the only frame the
+    // profile-icon snapshot may be taken from. Main decides whether it wants one.
+    meetProvider.emit(CALL_EVENTS.avatarResting);
+  }
+
   if (event.data.action === 'tts-ended') {
     // After speaking, restore mic to its mode-appropriate state. Active mode
     // wants the mic open so the bot can be heard; passive/silent want it muted

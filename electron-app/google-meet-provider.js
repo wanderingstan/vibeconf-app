@@ -240,8 +240,20 @@ function dismissBlockingModals() {
   // (once per distinct title per session): even without knowing which button
   // to click, they should learn about an unhandled — possibly blocking —
   // dialog live, not in a post-mortem.
+  // …but not while WE are driving a dialog. setStudioSound opens Meet's Settings
+  // deliberately and walks it for several seconds; this sweeper runs every ~1s, so
+  // it would see our own dialog, fail to recognise it, and tell the agent (and the
+  // header banner) that an "unhandled Meet dialog" is blocking the call. It isn't:
+  // we opened it. Reported live by Stan, 2026-07-09:
+  //
+  //   Notice: an unhandled Meet dialog appeared: "Settings" (buttons: Close dialog
+  //   / Audio / Video / General / Captions / Meeting records)
+  //
+  // Guarding on the flag rather than on the dialog's title is deliberate — the
+  // title varies ("Settings", "Video settings"), and while the flag is up ANY open
+  // dialog belongs to us.
   const dlg = document.querySelector(MEET.modals.anyDialog);
-  if (dlg && isVisible(dlg) && Date.now() - _lastModalDumpAt > 15000) {
+  if (dlg && isVisible(dlg) && !_studioSoundInProgress && Date.now() - _lastModalDumpAt > 15000) {
     const txt = (dlg.textContent || '').toLowerCase();
     const isRecordingConsent = txt.includes('being recorded') || txt.includes('taking notes');
     if (!isRecordingConsent) {

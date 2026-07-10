@@ -8,6 +8,19 @@
 # the user's full PATH (node/pnpm). See scripts/SCHEDULING.md to install.
 
 set -u
+
+# The self-update step below `git pull`s this very checkout, which can rewrite this
+# script while zsh is still reading it — corrupting the running shell. Re-exec from
+# a stable /tmp copy first so a pull can't touch the code we're executing. Guarded
+# so we only copy once. Disable the whole self-update with VIBECONF_NO_SELFUPDATE=1.
+if [[ "${VIBECONF_NO_SELFUPDATE:-0}" != "1" && "${VIBECONF_SELF_COPY:-0}" != "1" ]]; then
+  _copy="$(mktemp -t scheduled-meet-test 2>/dev/null)" || _copy=""
+  if [[ -n "$_copy" ]] && cp "$0" "$_copy" 2>/dev/null; then
+    export VIBECONF_SELF_COPY=1
+    exec /bin/zsh "$_copy" "$@"
+  fi
+fi
+
 REPO="/Users/wanderingstan/Developer/vibeconferencing"
 RESULTS="$HOME/vibeconf-test-results"
 mkdir -p "$RESULTS"
@@ -65,6 +78,58 @@ echo "=== meet-test scheduled run $STAMP ===" | tee "$LOG"
 echo "node: $(command -v node) $(node -v 2>/dev/null)" | tee -a "$LOG"
 echo "pnpm: $(command -v pnpm) $(pnpm -v 2>/dev/null)" | tee -a "$LOG"
 echo "" | tee -a "$LOG"
+
+# --- Self-update the artifacts before testing (Stan): pull latest `main` so the
+# SOURCE lanes test HEAD, and install the latest published DMG so the DMG-meet lane
+# tests the current build. Both best-effort — any failure logs and the run
+# continues on whatever's already present (never touches the gating exit). Skip all
+# of it with VIBECONF_NO_SELFUPDATE=1. ---
+if [[ "${VIBECONF_NO_SELFUPDATE:-0}" != "1" ]]; then
+  echo "=== self-update: main ===" | tee -a "$LOG"
+  git -C "$REPO" fetch origin -q 2>&1 | tee -a "$LOG"
+  _before=$(git -C "$REPO" rev-parse HEAD 2>/dev/null)
+  git -C "$REPO" pull --ff-only origin main 2>&1 | tee -a "$LOG" || echo "  (pull failed — staying on current checkout)" | tee -a "$LOG"
+  _after=$(git -C "$REPO" rev-parse HEAD 2>/dev/null)
+  if [[ -n "$_before" && "$_before" != "$_after" ]]; then
+    # Deps: install only if a lockfile actually changed in the pulled range (root
+    # and electron-app are separate — not a workspace).
+    _changed=$(git -C "$REPO" diff --name-only "$_before" "$_after" 2>/dev/null)
+    echo "$_changed" | grep -q '^pnpm-lock.yaml$' && { echo "  root deps changed — pnpm install" | tee -a "$LOG"; (cd "$REPO" && pnpm install) 2>&1 | tee -a "$LOG" || true; }
+    echo "$_changed" | grep -q '^electron-app/pnpm-lock.yaml$' && { echo "  electron-app deps changed — pnpm install" | tee -a "$LOG"; (cd "$REPO/electron-app" && pnpm install) 2>&1 | tee -a "$LOG" || true; }
+  fi
+
+  echo "=== self-update: DMG ===" | tee -a "$LOG"
+  _app="/Applications/Vibeconferencing.app"
+  _installed=$(defaults read "$_app/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null)
+  _tag=$(gh release list --repo wanderingstan/vibeconferencing --limit 1 --json tagName -q '.[0].tagName' 2>/dev/null)
+  _latest="${_tag#v}"
+  echo "  installed=$_installed latest=$_latest" | tee -a "$LOG"
+  if [[ -n "$_latest" && "$_installed" != "$_latest" ]]; then
+    _dmg="/tmp/vibeconf-$_tag.dmg"; rm -f "$_dmg"
+    if gh release download "$_tag" --repo wanderingstan/vibeconferencing --pattern '*arm64.dmg' --output "$_dmg" 2>&1 | tee -a "$LOG" && [[ -f "$_dmg" ]]; then
+      # Version-gated, so the always-on production app is only restarted on nights a
+      # new build actually drops. Quit it → replace the bundle → relaunch it.
+      osascript -e 'quit app "Vibeconferencing"' 2>/dev/null; sleep 3
+      pkill -f "$_app/Contents/MacOS/Vibeconferencing" 2>/dev/null; sleep 1
+      _mp=$(hdiutil attach "$_dmg" -nobrowse -noverify 2>/dev/null | grep -o '/Volumes/[^"]*' | tail -1)
+      if [[ -n "$_mp" && -d "$_mp/Vibeconferencing.app" ]]; then
+        rm -rf "$_app" && cp -R "$_mp/Vibeconferencing.app" /Applications/ && echo "  installed $_latest ✓" | tee -a "$LOG"
+        xattr -dr com.apple.quarantine "$_app" 2>/dev/null
+        hdiutil detach "$_mp" -quiet 2>/dev/null
+      else
+        echo "  ✗ mount/copy failed — keeping $_installed" | tee -a "$LOG"
+        [[ -n "$_mp" ]] && hdiutil detach "$_mp" -quiet 2>/dev/null
+      fi
+      open -a "$_app" 2>/dev/null || true  # relaunch the production (default-profile) instance
+      rm -f "$_dmg"
+    else
+      echo "  ✗ DMG download failed — keeping $_installed" | tee -a "$LOG"
+    fi
+  else
+    echo "  already current — no install (production app untouched)" | tee -a "$LOG"
+  fi
+  echo "" | tee -a "$LOG"
+fi
 
 # Run the one-shot DMG target — the scheduled run on the always-on Mac mini
 # drives the PACKAGED app so it tests the exact artifact an average user runs

@@ -47,7 +47,7 @@ function resolveWith(s, reason, text = 'it should be reduced to just the respons
   s._resolveWaiter(waiter, reason);
 }
 
-test('a tick shows 👀 ticking, never the 🤔 reply face', () => {
+test('a tick shows 😑 ticking, never the 🤔 reply face', () => {
   const s = makeServer();
   resolveWith(s, 'background_tick');
   assert.equal(s.botState, 'ticking');

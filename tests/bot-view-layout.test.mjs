@@ -47,14 +47,27 @@ test('thumbnail: narrow column, panel on top, Meet 16:9 below', () => {
   // The zoom compensates the column width down to the target virtual width.
   assert.ok(Math.abs(l.meetZoom - 380 / 1173) < 1e-9);
   assert.equal(l.clamped, false, '380px is well above the zoom floor');
+  assert.equal(l.placeholderBounds, null, 'no placeholder while docked');
 });
 
-test('popped: Meet leaves the main window, which becomes a panel-only column', () => {
+test('popped: Meet leaves the main window; a placeholder fills the region it left', () => {
   const l = L.computeLayout('popped', { width: 380, height: 900 }, { panelWidth: 380 });
   assert.equal(l.meetInOwnWindow, true);
-  assert.equal(l.meetBounds, null, 'no Meet bounds in the main window');
-  assert.deepEqual(l.panelBounds, { x: 0, y: 0, width: 380, height: 900 });
+  assert.equal(l.meetBounds, null, 'no Meet in the main window');
+  // The column keeps its shape: panel on top, 16:9 region below — now a placeholder.
+  const region = { x: 0, y: 900 - 214, width: 380, height: 214 };
+  assert.deepEqual(l.placeholderBounds, region, 'placeholder occupies the freed region, not an empty rectangle');
+  assert.deepEqual(l.panelBounds, { x: 0, y: 0, width: 380, height: 900 - 214 });
   assert.equal(l.meetZoom, L.POPPED_ZOOM, 'the floating window shows Meet at today\'s zoom');
+});
+
+test('the column keeps the SAME shape across the toggle — only the region occupant changes', () => {
+  const thumb = L.computeLayout('thumbnail', { width: 380, height: 900 }, { panelWidth: 380 });
+  const popped = L.computeLayout('popped', { width: 380, height: 900 }, { panelWidth: 380 });
+  assert.deepEqual(thumb.panelBounds, popped.panelBounds, 'panel bounds identical, so nothing reshuffles');
+  assert.deepEqual(thumb.meetBounds, popped.placeholderBounds, 'thumbnail Meet region == popped placeholder region');
+  assert.equal(thumb.placeholderBounds, null);
+  assert.equal(popped.meetBounds, null);
 });
 
 test('the main window is always a narrow column, in both states', () => {
@@ -77,7 +90,7 @@ test('degenerate sizes never produce negative bounds', () => {
   for (const size of [{ width: 0, height: 0 }, { width: 100, height: 50 }, {}]) {
     for (const state of L.STATES) {
       const l = L.computeLayout(state, size, { panelWidth: 380 });
-      for (const b of [l.panelBounds, l.meetBounds]) {
+      for (const b of [l.panelBounds, l.meetBounds, l.placeholderBounds]) {
         if (!b) continue;
         assert.ok(b.width >= 0 && b.height >= 0, `${state} @ ${JSON.stringify(size)} → non-negative bounds`);
       }

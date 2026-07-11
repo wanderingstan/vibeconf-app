@@ -1170,8 +1170,14 @@ function ensureStatusBar() {
       /* Auto-grow for long messages instead of clipping them off the right
          edge (a full-sentence #404 notice ran past the viewport — unreadable). */
       min-height: 56px;
-      /* Partially transparent so any Google buttons beneath stay visible... */
-      background: rgba(138, 180, 248, 0.82); color: #ffffff;
+      /* Vertical fade: fully OPAQUE at the top edge → the banner's usual 0.82
+         at the bottom, so it's solid where it meets the top of the window and
+         softens into the Meet content below (partial transparency there keeps
+         the Google UI beneath at least partly visible for debugging). */
+      background: linear-gradient(to bottom,
+        rgba(138, 180, 248, 1) 0%,
+        rgba(138, 180, 248, 0.82) 100%);
+      color: #ffffff;
       /* ...and click-through so they stay USABLE for debugging — the banner
          never intercepts pointer events (#bot-view banner is purely a label).
          KEEP THIS even though the banner now auto-fades on hover: an element at

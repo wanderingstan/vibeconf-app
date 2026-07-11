@@ -1334,6 +1334,12 @@ let mainWindow = null;   // single window that holds both views
 let panelView = null;     // left sidebar BrowserView
 let meetView = null;      // right Meet BrowserView
 let panelPopoutWindow = null; // when popped out, the panelView lives here instead
+// Bot-view thumbnail column (feat/bot-view-thumbnail-column). The app is a narrow
+// column; the Meet view is either a shrunk thumbnail below the panel ('thumbnail')
+// or floated into its own large window ('popped'). One button toggles them. See
+// electron-app/bot-view-layout.js for the pure geometry/zoom.
+let botViewState = 'thumbnail';
+let meetPopoutWindow = null; // when 'popped', the meetView lives here instead
 let appSettingsWindow = null; // #381: machine-wide App Settings (⌘,), a singleton
 
 // #381: open (or focus) the App Settings window — machine-wide config shared by
@@ -3668,7 +3674,12 @@ function createMeetView(partition) {
   });
   view.webContents.setAudioMuted(true);
   view.webContents.on('dom-ready', () => {
-    if (!view.webContents.isDestroyed()) view.webContents.setZoomFactor(0.75);
+    // Re-assert the state-appropriate zoom. A real document reload (manual refresh
+    // / the mid-call reload path) resets setZoomFactor, and dom-ready fires on
+    // exactly those — so the thumbnail doesn't snap back to full size on a reload.
+    if (view.webContents.isDestroyed()) return;
+    if (view === meetView) applyMeetZoom();
+    else view.webContents.setZoomFactor(botViewLayout.POPPED_ZOOM);
   });
   if (cliArgs && cliArgs['devtools']) {
     view.webContents.openDevTools({ mode: 'detach' });
@@ -3679,18 +3690,107 @@ function createMeetView(partition) {
 // Position panelView (fixed width on the left) and meetView (rest of the
 // window). Module-level so both createMainWindow and swap-time relayouts
 // share the same logic.
+const botViewLayout = require('./bot-view-layout.js');
+
+// Re-assert the Meet zoom for the current state. setZoomFactor is per-webContents
+// and survives Meet's SPA routing, but a REAL document reload resets it — so this
+// is also called from createMeetView's dom-ready hook, not just on state change.
+function applyMeetZoom() {
+  if (!meetView || meetView.webContents.isDestroyed()) return;
+  const l = botViewLayout.computeLayout(botViewState, { width: PANEL_WIDTH, height: 0 }, { panelWidth: PANEL_WIDTH });
+  try { meetView.webContents.setZoomFactor(l.meetZoom); } catch { /* view gone */ }
+}
+
 function layoutViews() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   const [width, height] = mainWindow.getContentSize();
-  // When the panel is popped out into its own window, it's no longer a child of
-  // mainWindow — Meet takes the full width and the popout window lays itself out.
-  const poppedOut = !!panelPopoutWindow;
-  const panelW = poppedOut ? 0 : PANEL_WIDTH;
-  if (!poppedOut && panelView && !panelView.webContents.isDestroyed()) {
-    panelView.setBounds({ x: 0, y: 0, width: PANEL_WIDTH, height });
+
+  // The panel-popout (an older, independent feature) removes the panel from the
+  // main window. When that's active, fall back to the legacy full-width Meet
+  // layout so the two features don't fight; the thumbnail column assumes the
+  // panel is docked.
+  if (panelPopoutWindow) {
+    if (meetView && !meetView.webContents.isDestroyed() && !meetPopoutWindow) {
+      meetView.setBounds({ x: 0, y: 0, width, height });
+    }
+    return;
+  }
+
+  const l = botViewLayout.computeLayout(botViewState, { width, height }, { panelWidth: PANEL_WIDTH });
+  if (l.panelBounds && panelView && !panelView.webContents.isDestroyed()) {
+    panelView.setBounds(l.panelBounds);
   }
   if (meetView && !meetView.webContents.isDestroyed()) {
-    meetView.setBounds({ x: panelW, y: 0, width: width - panelW, height });
+    if (l.meetBounds) meetView.setBounds(l.meetBounds);
+    // The zoom is stateful (per-webContents), so set it here too — a resize while
+    // in 'thumbnail' keeps the same 380px column, so the zoom is stable, but this
+    // keeps it correct if PANEL_WIDTH ever changes.
+    applyMeetZoom();
+  }
+}
+
+// Toggle the Meet view between the docked thumbnail and its own large window.
+// Mirrors setPanelPoppedOut: the SAME meetView BrowserView is reparented, so its
+// webContents — the live call, caption scraper, virtual camera — survives the move
+// untouched.
+function setBotViewState(state) {
+  if (!botViewLayout.STATES.includes(state)) state = 'thumbnail';
+  botViewState = state;
+
+  if (state === 'popped' && !meetPopoutWindow) {
+    if (meetView && !meetView.webContents.isDestroyed() && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.removeBrowserView(meetView);
+    }
+    const win = new BrowserWindow({
+      width: 900, height: 620,
+      title: "Vibeconferencing — Bot's view",
+      icon: path.join(__dirname, 'icon.png'),
+      parent: mainWindow || undefined,
+      webPreferences: { nodeIntegration: false, contextIsolation: true },
+    });
+    meetPopoutWindow = win;
+    if (meetView && !meetView.webContents.isDestroyed()) win.addBrowserView(meetView);
+    const fit = () => {
+      if (win.isDestroyed() || !meetView || meetView.webContents.isDestroyed()) return;
+      const [w, h] = win.getContentSize();
+      meetView.setBounds({ x: 0, y: 0, width: w, height: h });
+      try { meetView.webContents.setZoomFactor(botViewLayout.POPPED_ZOOM); } catch { /* gone */ }
+    };
+    fit();
+    win.on('resize', fit);
+    // Survive teardown: detach the view before the window dies so the call lives,
+    // then re-dock. Covers both the toggle and the user closing the window.
+    win.on('close', () => { try { win.removeBrowserView(meetView); } catch { /* gone */ } });
+    win.on('closed', () => {
+      meetPopoutWindow = null;
+      botViewState = 'thumbnail';
+      if (meetView && !meetView.webContents.isDestroyed() && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.addBrowserView(meetView);
+      }
+      applyMeetZoom();
+      layoutViews();
+      broadcastBotViewState();
+    });
+    broadcastBotViewState();
+    return true;
+  }
+
+  if (state === 'thumbnail' && meetPopoutWindow) {
+    // Dock back by closing the window; the closed handler re-attaches + relayouts.
+    meetPopoutWindow.close();
+    return true;
+  }
+
+  // No reparent needed (already in the target arrangement) — just re-zoom/relayout.
+  applyMeetZoom();
+  layoutViews();
+  broadcastBotViewState();
+  return true;
+}
+
+function broadcastBotViewState() {
+  if (panelView && !panelView.webContents.isDestroyed()) {
+    panelView.webContents.send('bot-view-changed', { state: botViewState });
   }
 }
 
@@ -3845,16 +3945,16 @@ function createMainWindow() {
   const winW = cliArgs['window-w'] != null ? parseInt(cliArgs['window-w'], 10) : null;
   const winH = cliArgs['window-h'] != null ? parseInt(cliArgs['window-h'], 10) : null;
   mainWindow = new BrowserWindow({
-    // Meet view = width - PANEL_WIDTH. Sized to fit a laptop screen comfortably.
-    // (An earlier extra-large window chased a toolbar-collapse theory that turned
-    // out not to be the real cause — the recurring "<button> not found" issues
-    // were click/timing/selector bugs, since fixed. We keep the Meet view a touch
-    // wider than the old 800px for a little toolbar margin, no more.)
-    width: Number.isFinite(winW) ? winW : 880 + PANEL_WIDTH,
-    height: Number.isFinite(winH) ? winH : 600,
+    // The app launches as a NARROW COLUMN (panel on top, shrunk Meet thumbnail
+    // below) so it never looks like the user's own Meet window — Seth and new
+    // users kept confusing the two. The Meet view is a scaled-down thumbnail (see
+    // bot-view-layout.js); a button pops it out to its own large window. Explicit
+    // CLI sizes (the multi-bot test launcher tiles with --window-w/-h) still win.
+    width: Number.isFinite(winW) ? winW : PANEL_WIDTH,
+    height: Number.isFinite(winH) ? winH : 820,
     ...(Number.isFinite(winX) ? { x: winX } : {}),
     ...(Number.isFinite(winY) ? { y: winY } : {}),
-    minWidth: 640 + PANEL_WIDTH,
+    minWidth: PANEL_WIDTH,
     minHeight: 460,
     title: 'Vibeconferencing',
     icon: path.join(__dirname, 'icon.png'),
@@ -4702,6 +4802,13 @@ function setupIPC() {
     return { poppedOut: !!panelPopoutWindow };
   });
   ipcMain.handle('get-panel-popout', () => ({ poppedOut: !!panelPopoutWindow }));
+
+  // Bot-view toggle: thumbnail column ↔ Meet in its own large window.
+  ipcMain.handle('toggle-bot-view', () => {
+    setBotViewState(botViewLayout.nextState(botViewState));
+    return { state: botViewState };
+  });
+  ipcMain.handle('get-bot-view', () => ({ state: botViewState }));
 
 
   // --- Auth check ---

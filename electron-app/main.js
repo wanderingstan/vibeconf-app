@@ -5075,8 +5075,12 @@ function setupIPC() {
   // Slack), without switching providers. Triggered by the "Navigate Webview…"
   // menu item (⌘⇧L) → panel prompt. Not exposed to the agent (operator-only).
   ipcMain.handle('navigate-webview', (_event, rawUrl) => {
-    const url = String(rawUrl || '').trim();
-    if (!/^https?:\/\//i.test(url)) return { ok: false, error: 'URL must start with http(s)://' };
+    // Prepend https:// when the user typed a bare host (a different explicit
+    // scheme is still refused). See nav-url.js.
+    const { normalizeNavUrl } = require('./nav-url.js');
+    const norm = normalizeNavUrl(rawUrl);
+    if (!norm.ok) return { ok: false, error: norm.error };
+    const url = norm.url;
     if (!meetView || meetView.webContents.isDestroyed()) {
       activateMeetProvider();
     }

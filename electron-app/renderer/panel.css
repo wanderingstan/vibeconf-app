@@ -553,7 +553,10 @@ body[data-call-state="in-call"] .call-incall { display: block; }
   justify-content: space-between;
   gap: 8px;
   padding: 7px 12px;
-  background: rgba(138, 180, 248, 0.92);
+  /* Solid accent blue — must match the injected in-view banner
+     (#vibeconf-status-bar) directly below it so the two read as one surface
+     with no seam. Keep these two colours identical if either changes. */
+  background: #8ab4f8;
   border-radius: 10px 10px 0 0;
 }
 /* Keep panel content from hiding behind the fixed bar. */

@@ -59,36 +59,43 @@ function meetZoomForWidth(deviceWidth, targetCss = MEET_TARGET_CSS_WIDTH) {
 //
 //   { panelBounds, meetBounds, meetZoom, meetInOwnWindow, clamped }
 //
-// panelBounds / meetBounds are {x,y,width,height} in the MAIN window's content
-// coordinates, or null when that view isn't in the main window. meetInOwnWindow
-// is true only for 'popped'. The caller sets the window's outer size from
-// windowSizeFor() below.
+// { panelBounds, meetBounds, placeholderBounds, meetZoom, meetInOwnWindow, clamped }
+//
+// panelBounds / meetBounds / placeholderBounds are {x,y,width,height} in the MAIN
+// window's content coordinates, or null when that view isn't in the main window.
+// The column KEEPS THE SAME SHAPE in both states — panel on top, a 16:9 region
+// below — so it never reshuffles when you toggle. Only the region's occupant
+// changes: the Meet thumbnail when docked, a "popped out" placeholder when Meet
+// has floated into its own window. meetInOwnWindow is true only for 'popped'.
 function computeLayout(state, contentSize, opts = {}) {
   const panelWidth = opts.panelWidth || 380;
-  const width = Math.max(0, (contentSize && contentSize.width) || 0);
   const height = Math.max(0, (contentSize && contentSize.height) || 0);
 
+  // Same geometry for both states: panel on top, a 16:9 region at the bottom.
+  const { zoom, clamped } = meetZoomForWidth(panelWidth);
+  const regionHeight = Math.round(panelWidth * 9 / 16);
+  const panelHeight = Math.max(0, height - regionHeight);
+  const region = { x: 0, y: panelHeight, width: panelWidth, height: regionHeight };
+  const panelBounds = { x: 0, y: 0, width: panelWidth, height: panelHeight };
+
   if (state === 'popped') {
-    // Meet floats in its own window (main.js owns that window's zoom = POPPED_ZOOM
-    // and size). The main window is just the panel column.
+    // Meet floats in its own window (main.js owns that window's zoom + size). The
+    // region below the panel shows a placeholder instead of an empty rectangle.
     return {
-      panelBounds: { x: 0, y: 0, width: panelWidth, height },
+      panelBounds,
       meetBounds: null,
+      placeholderBounds: region,
       meetZoom: POPPED_ZOOM, // applied in the popped window
       meetInOwnWindow: true,
       clamped: false,
     };
   }
 
-  // thumbnail (default): narrow column, panel on top, Meet miniature below.
-  // The Meet region is a 16:9 box at the column's width, so the whole virtual
-  // viewport is visible; the panel takes the rest of the column height.
-  const { zoom, clamped } = meetZoomForWidth(panelWidth);
-  const meetHeight = Math.round(panelWidth * 9 / 16);
-  const panelHeight = Math.max(0, height - meetHeight);
+  // thumbnail (default): the region holds the shrunk Meet view.
   return {
-    panelBounds: { x: 0, y: 0, width: panelWidth, height: panelHeight },
-    meetBounds: { x: 0, y: panelHeight, width: panelWidth, height: meetHeight },
+    panelBounds,
+    meetBounds: region,
+    placeholderBounds: null,
     meetZoom: zoom,
     meetInOwnWindow: false,
     clamped,

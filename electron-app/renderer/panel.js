@@ -1286,6 +1286,29 @@ if (popoutPanelBtn) {
 // Main tells us when the state changes (incl. user closing the popout window).
 api.on('panel-popout-changed', ({ poppedOut }) => applyPopoutLabel(!!poppedOut));
 
+// Bot-view toggle: the Meet thumbnail docked below the panel ↔ its own large
+// window. Label flips so the button always names what a click will DO.
+const botViewToggleBtn = document.getElementById('botViewToggleBtn');
+function applyBotViewLabel(state) {
+  if (!botViewToggleBtn) return;
+  const popped = state === 'popped';
+  botViewToggleBtn.textContent = popped ? '⧉ Dock' : '⧉ Pop out';
+  botViewToggleBtn.title = popped
+    ? "Dock the bot's view back as a thumbnail below this panel"
+    : "Pop the bot's view out into its own large window";
+}
+if (botViewToggleBtn) {
+  botViewToggleBtn.addEventListener('click', async () => {
+    try {
+      const res = await api.invoke('toggle-bot-view');
+      applyBotViewLabel(res?.state);
+    } catch { /* ignore */ }
+  });
+  api.invoke('get-bot-view').then((r) => applyBotViewLabel(r?.state)).catch(() => {});
+}
+// Main tells us when it changes (incl. the user closing the popped-out window).
+api.on('bot-view-changed', ({ state }) => applyBotViewLabel(state));
+
 meetSignInBtn?.addEventListener('click', async () => {
   meetSignInBtn.disabled = true;
   meetSignInBtn.textContent = 'Switching to Google sign-in...';

@@ -537,6 +537,51 @@ body[data-call-state="in-call"] .call-incall { display: block; }
    now; the login moved up to the header). */
 .misc-zone { margin-top: 4px; }
 
+/* Bot-view bar — labels + toggles the Meet thumbnail docked directly below the
+   panel. Pinned to the very bottom of the panel view so it abuts the webview, and
+   painted in the same blue as the in-call header banner (#vibeconf-status-bar,
+   rgba(138,180,248,0.82)) so the bar and the view below read as one surface. The
+   rounded top corners echo the window's own rounded corners. */
+.botview-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 12px;
+  background: rgba(138, 180, 248, 0.92);
+  border-radius: 10px 10px 0 0;
+}
+/* Keep panel content from hiding behind the fixed bar. */
+.container { padding-bottom: 44px; }
+.botview-label {
+  font-size: 12px;
+  color: #ffffff;
+  font-weight: 600;
+  white-space: nowrap;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.18);
+}
+/* Toggle button, restyled for the blue bar: translucent white, high contrast. */
+.botview-toggle {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.botview-toggle:hover { background: rgba(255, 255, 255, 0.28); }
+
 /* ── Header login ── your vibeconferencing.com sign-in, small + right-aligned
    in the header where the settings gear used to sit. */
 .header-login {

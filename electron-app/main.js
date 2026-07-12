@@ -1834,6 +1834,16 @@ const SESSION_PARTITION = 'persist:session';
 // is gated off here in preload-meet (only meeting-code URLs trigger it).
 const MEET_HOME_URL = 'https://meet.google.com/';
 
+// Idle placeholder for the bot's view when NOT in a call — a page we control on
+// vibeconferencing.com (a branded landing / announcements page) instead of the
+// Google Meet home. Uses getWebsiteUrl() so staging / a local dev site / an env
+// override all resolve correctly. Google-login detection does NOT depend on this
+// page: signed-in state is read from the cookie jar (isSignedInToGoogle) and the
+// bot's remembered identity is cached in store (meetAccountEmail / lastMeetName).
+function getIdleUrl() {
+  return `${(getWebsiteUrl() || 'https://vibeconferencing.com').replace(/\/+$/, '')}/bot-view`;
+}
+
 // Track whether configureMeetSession has been applied to the partition so we
 // don't double-register handlers (which would call callback() twice and crash
 // getDisplayMedia / permission flows).
@@ -4225,7 +4235,7 @@ function createMainWindow() {
 
   // Load idle placeholder in the Meet view. In Slack mode the surface already
   // loaded app.slack.com (or the channel deep-link) in createSlackSurface.
-  if (!slackMode) meetView.webContents.loadURL(MEET_HOME_URL);
+  if (!slackMode) meetView.webContents.loadURL(getIdleUrl());
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -4237,7 +4247,7 @@ function createMainWindow() {
 
 function showIdle() {
   if (!meetView || meetView.webContents.isDestroyed()) return;
-  meetView.webContents.loadURL(MEET_HOME_URL);
+  meetView.webContents.loadURL(getIdleUrl());
   sync.stopPolling();
   // Close whiteboard window if open
   if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {

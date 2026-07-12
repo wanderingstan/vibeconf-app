@@ -32,6 +32,20 @@ ipcRenderer.on('extension-message', (_event, message) => {
     meetProvider.setCameraOn(true);
   } else if (message.action === 'camera-off') {
     meetProvider.setCameraOn(false);
+  } else if (message.action === 'set-banner-prefix-visible') {
+    // The banner stays (it shows status + errors), but its "🤖 Bot's view —"
+    // PREFIX is redundant in the thumbnail column — the panel bar right above it
+    // already says that. So main hides just the icon+label there and shows them
+    // only when the view is popped into its own window. The status text is
+    // untouched, so errors are always visible.
+    try {
+      const show = !!(message.payload && message.payload.visible);
+      const disp = show ? '' : 'none';
+      const icon = document.querySelector('#vibeconf-status-bar .icon');
+      const label = document.querySelector('#vibeconf-status-bar .label');
+      if (icon) icon.style.display = disp;
+      if (label) label.style.display = disp;
+    } catch { /* body not ready — ensureStatusBar re-applies on next inject */ }
   } else if (message.action === 'play-speech-test') {
     // Resolve test audio — main process sends the base64 directly
     window.postMessage({
@@ -1189,6 +1203,9 @@ function ensureStatusBar() {
          so it never hides the Meet UI a human is trying to look at. */
       transition: opacity 0.15s ease;
       text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+      /* Drop shadow along the bottom edge so the banner reads as FLOATING above
+         the real Meet/huddle content beneath it, rather than being part of it. */
+      box-shadow: 0 6px 14px rgba(0, 0, 0, 0.38);
       font-family: 'Google Sans', 'Roboto', sans-serif; font-size: 22px;
       font-weight: 500;
       display: flex; align-items: baseline; padding: 8px 24px; box-sizing: border-box;

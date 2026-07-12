@@ -3688,7 +3688,7 @@ function createMeetView(partition) {
     // / the mid-call reload path) resets setZoomFactor, and dom-ready fires on
     // exactly those — so the thumbnail doesn't snap back to full size on a reload.
     if (view.webContents.isDestroyed()) return;
-    if (view === meetView) applyMeetZoom();
+    if (view === meetView) { applyMeetZoom(); sendBannerVisibility(); }
     else view.webContents.setZoomFactor(botViewLayout.POPPED_ZOOM);
   });
   if (cliArgs && cliArgs['devtools']) {
@@ -3839,6 +3839,21 @@ function broadcastBotViewState() {
   if (panelView && !panelView.webContents.isDestroyed()) {
     panelView.webContents.send('bot-view-changed', { state: botViewState });
   }
+  sendBannerVisibility();
+}
+
+// The injected banner stays (it shows status + errors), but its "🤖 Bot's view —"
+// prefix is shown only when the view is POPPED; in the thumbnail column the panel
+// bar already labels it, so the prefix is redundant there. Also called from
+// createMeetView's dom-ready so a page reload re-applies it without a flash.
+function sendBannerVisibility() {
+  if (!meetView || meetView.webContents.isDestroyed()) return;
+  try {
+    meetView.webContents.send('extension-message', {
+      action: 'set-banner-prefix-visible',
+      payload: { visible: botViewState === 'popped' },
+    });
+  } catch { /* view gone */ }
 }
 
 // Pop the panel out into its own resizable window (or dock it back). Re-parents

@@ -1161,7 +1161,7 @@ function ensureStatusBar() {
   if (document.getElementById('vibeconf-status-bar')) return;
   const bar = document.createElement('div');
   bar.id = 'vibeconf-status-bar';
-  bar.innerHTML = '<span class="icon">🤖</span><span class="label">Bot View —</span><span class="status" id="vibeconf-status">Initializing...</span>';
+  bar.innerHTML = '<span class="icon">🤖</span><span class="label">Bot\'s view —</span><span class="status" id="vibeconf-status">Initializing...</span>';
 
   const style = document.createElement('style');
   style.textContent = `
@@ -2691,13 +2691,17 @@ window.addEventListener('DOMContentLoaded', () => {
     const el = document.getElementById('vibeconf-status');
     if (el) {
       const href = window.location.href;
-      // No "Bot's view" prefix — the banner already shows a static "Bot View —"
-      // label, so prefixing here produced a doubled "Bot View — Bot's view —".
+      // No "Bot's view" prefix — the banner already shows a static "Bot's view —"
+      // label, so prefixing here produced a doubled "Bot's view — Bot's view —".
       el.textContent = MEET.url.signInPage.test(href)
         ? "Sign the bot in to Google here"
         : MEET.url.meetingCodePath.test(window.location.pathname)
           ? "Google Meet"
-          : "Google Meet home (not in a call)";
+          : href.includes(MEET.url.host)
+            ? "Google Meet home (not in a call)"
+            // The idle landing page (vibeconferencing.com/bot-view) or any other
+            // non-Meet page: don't claim it's Google Meet home.
+            : "Not in a call";
     }
   } catch { /* body not ready */ }
 

@@ -131,3 +131,92 @@ test('integration: idempotent, and never clobbers user-edited settings', () => {
     assert.deepEqual(JSON.parse(readFileSync(sp, 'utf8')).permissions.allow, ['Bash(ls)'], 'user settings preserved');
   } finally { rmSync(home, { recursive: true, force: true }); rmSync(userData, { recursive: true, force: true }); }
 });
+
+// --- perProfileSubset + the config→agent migration -----------------------------
+// The bot's per-profile config moved into <agentDir>/config.json (a clean
+// "this is the bot" file). App-level keys stay in the shared base config.json.
+// These pin the filter and drive the real Store + ScopedStore through the exact
+// migration main.js runs, for both a NAMED profile (separate old file) and the
+// DEFAULT profile (old file IS the base config).
+
+import { createRequire as _cr2 } from 'node:module';
+const require2 = _cr2(import.meta.url);
+const Store = require2('../electron-app/store.js');
+const { APP_LEVEL_KEYS, ScopedStore, migrateAppLevelKeys } = require2('../electron-app/config-scope.js');
+const { perProfileSubset } = require2('../electron-app/agent-workdir.js');
+
+test('perProfileSubset drops app-level keys, keeps the rest, does not mutate', () => {
+  const cfg = { botName: 'Jimmy', ttsVoiceId: 'v1', dangerousMode: true, ttsApiKey: 'sk', websiteUrl: 'x' };
+  const out = perProfileSubset(cfg, APP_LEVEL_KEYS);
+  assert.deepEqual(out, { botName: 'Jimmy', ttsVoiceId: 'v1' });
+  assert.equal(cfg.dangerousMode, true, 'input untouched');
+  assert.deepEqual(perProfileSubset(null, APP_LEVEL_KEYS), {});
+});
+
+// Replicates the store-init migration in main.js against temp dirs.
+function initStore({ base, userData }) {
+  const appLevelStore = new Store(base, { fresh: true });
+  const agentDir = agentDirFor(userData);
+  const newCfg = join(agentDir, 'config.json');
+  const oldCfg = join(userData, 'config.json');
+  mkdirSync(agentDir, { recursive: true });
+  if (!existsSync(newCfg) && existsSync(oldCfg)) {
+    if (userData !== base) migrateAppLevelKeys(appLevelStore, new Store(userData));
+    const old = JSON.parse(readFileSync(oldCfg, 'utf-8'));
+    writeFileSync(newCfg, JSON.stringify(perProfileSubset(old, APP_LEVEL_KEYS), null, 2) + '\n');
+  }
+  const profileStore = (agentDir === base) ? appLevelStore : new Store(agentDir);
+  migrateAppLevelKeys(appLevelStore, profileStore);
+  return { store: new ScopedStore(appLevelStore, profileStore), agentDir, newCfg, oldCfg };
+}
+
+test('named profile: per-profile config → clean agent/config.json; app-level stays in base', () => {
+  const base = mkdtempSync(join(tmpdir(), 'awbase-'));
+  const userData = mkdtempSync(join(tmpdir(), 'awpr-'));
+  writeFileSync(join(base, 'config.json'), JSON.stringify({ dangerousMode: true }));
+  // A named profile's config holds per-profile keys, and (edge) an un-promoted ttsApiKey.
+  writeFileSync(join(userData, 'config.json'), JSON.stringify({ botName: 'Samantha', ttsVoiceId: 'v9', ttsApiKey: 'sk-old' }));
+  try {
+    const { store, newCfg } = initStore({ base, userData });
+    const agentCfg = JSON.parse(readFileSync(newCfg, 'utf-8'));
+    assert.deepEqual(agentCfg, { botName: 'Samantha', ttsVoiceId: 'v9' }, 'agent config is the clean per-profile subset');
+    // Routing: per-profile from agent, app-level from base.
+    assert.equal(store.get('botName'), 'Samantha');
+    assert.equal(store.get('dangerousMode'), true);
+    // The un-promoted ttsApiKey was carried UP to base before filtering — not lost.
+    assert.equal(store.get('ttsApiKey'), 'sk-old');
+  } finally { rmSync(base, { recursive: true, force: true }); rmSync(userData, { recursive: true, force: true }); }
+});
+
+test('default profile: old config IS base; agent gets per-profile only, base untouched', () => {
+  const base = mkdtempSync(join(tmpdir(), 'awbase-'));
+  // Default: everything is in the base config.json (app-level + per-profile).
+  const baseCfg = { dangerousMode: true, websiteUrl: 'https://x', botName: 'Jimmy', ttsVoiceId: 'v1' };
+  writeFileSync(join(base, 'config.json'), JSON.stringify(baseCfg));
+  try {
+    const { store, newCfg } = initStore({ base, userData: base });
+    const agentCfg = JSON.parse(readFileSync(newCfg, 'utf-8'));
+    assert.deepEqual(agentCfg, { botName: 'Jimmy', ttsVoiceId: 'v1' }, 'no app-level keys leak into the agent config');
+    // Base config.json is untouched — still holds everything (safety net + app-level source).
+    assert.deepEqual(JSON.parse(readFileSync(join(base, 'config.json'), 'utf-8')), baseCfg);
+    // Routing still correct.
+    assert.equal(store.get('botName'), 'Jimmy');
+    assert.equal(store.get('dangerousMode'), true);
+  } finally { rmSync(base, { recursive: true, force: true }); }
+});
+
+test('migration is idempotent and a fresh install starts in the agent dir', () => {
+  const base = mkdtempSync(join(tmpdir(), 'awbase-'));
+  const userData = mkdtempSync(join(tmpdir(), 'awpr-'));
+  try {
+    // Fresh: no configs anywhere. First run creates the agent store; writes land there.
+    const first = initStore({ base, userData });
+    first.store.set('botName', 'Newbie');
+    assert.equal(JSON.parse(readFileSync(first.newCfg, 'utf-8')).botName, 'Newbie', 'fresh writes go to agent/config.json');
+
+    // Second run must NOT re-migrate over the now-populated agent config.
+    writeFileSync(join(userData, 'config.json'), JSON.stringify({ botName: 'StaleOld' }));
+    const second = initStore({ base, userData });
+    assert.equal(second.store.get('botName'), 'Newbie', 'existing agent config wins; no re-migration');
+  } finally { rmSync(base, { recursive: true, force: true }); rmSync(userData, { recursive: true, force: true }); }
+});

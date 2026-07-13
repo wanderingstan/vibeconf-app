@@ -7,7 +7,7 @@ const path = require('path');
 const fs = require('fs');
 const vm = require('vm');
 const Store = require('./store.js');
-const { ScopedStore, migrateAppLevelKeys } = require('./config-scope.js');
+const { APP_LEVEL_KEYS, ScopedStore, migrateAppLevelKeys } = require('./config-scope.js');
 const profileManager = require('./profile-manager.js');
 const { MEET } = require('./meet-selectors.js'); // pure data — safe in the main process
 const { resolveSvg } = require('./svg-resolver.js');
@@ -3112,15 +3112,56 @@ app.whenReady().then(async () => {
   // several profile instances (the fleet, Jimmy+Samantha) read/write that
   // one file concurrently. The default instance's config.json IS the shared
   // file, so it uses the fresh store for both scopes.
+  //
+  // #305 follow-on: the per-profile config now lives in the bot's agent dir
+  // (<userData>/agent/config.json), NOT loose in <userData>. That makes the agent
+  // dir the single, clean home for everything that defines the bot — config.json
+  // (voice, name, avatar, model, ack phrases) alongside CLAUDE.md (#291) and the
+  // tool allowlist. App-level keys stay in the shared BASE config.json.
   {
     const appLevelStore = new Store(BASE_USER_DATA, { fresh: true });
-    if (appProfile) {
-      const profileStore = new Store(app.getPath('userData'));
-      migrateAppLevelKeys(appLevelStore, profileStore);
-      store = new ScopedStore(appLevelStore, profileStore);
-    } else {
-      store = new ScopedStore(appLevelStore, appLevelStore);
+    const aw = require('./agent-workdir.js');
+    const oldConfigDir = app.getPath('userData');
+    const agentDir = aw.agentDirFor(oldConfigDir);
+    const newCfgPath = path.join(agentDir, 'config.json');
+    const oldCfgPath = path.join(oldConfigDir, 'config.json');
+    let useAgentDir = true;
+    try {
+      fs.mkdirSync(agentDir, { recursive: true });
+      // One-time migration: copy the existing per-profile config into the agent
+      // dir, filtered to just the per-profile keys. NON-DESTRUCTIVE — the old file
+      // is left untouched as a safety net (its per-profile keys simply stop being
+      // read once the ScopedStore points at the agent copy).
+      if (!fs.existsSync(newCfgPath) && fs.existsSync(oldCfgPath)) {
+        // For a NAMED profile the old config may still hold an un-promoted
+        // ttsApiKey (an app-level key we're about to filter out) — promote it up
+        // first so filtering can't lose it. Skipped for the default profile,
+        // whose old config IS the base config.json (app-level keys stay there and
+        // must not be deleted).
+        if (oldConfigDir !== BASE_USER_DATA) {
+          migrateAppLevelKeys(appLevelStore, new Store(oldConfigDir));
+        }
+        const old = JSON.parse(fs.readFileSync(oldCfgPath, 'utf-8'));
+        fs.writeFileSync(newCfgPath, JSON.stringify(aw.perProfileSubset(old, APP_LEVEL_KEYS), null, 2) + '\n');
+        console.log('[config] Migrated per-profile config into', newCfgPath);
+      }
+    } catch (err) {
+      console.warn('[config] agent-dir config migration failed:', err.message);
+      // If there WAS an old config but we failed to bring it over, keep reading
+      // the old location so the bot doesn't lose its prefs. A fresh install (no
+      // old config) still starts cleanly in the agent dir.
+      if (fs.existsSync(oldCfgPath) && !fs.existsSync(newCfgPath)) {
+        useAgentDir = false;
+        console.warn('[config] falling back to the old config location:', oldConfigDir);
+      }
     }
+    const profileConfigDir = useAgentDir ? agentDir : oldConfigDir;
+    // If the resolved dir IS the base (only the default profile falling back),
+    // reuse the SAME Store instance so migrateAppLevelKeys's identity guard holds
+    // and it can't delete an app-level key from the shared file.
+    const profileStore = (profileConfigDir === BASE_USER_DATA) ? appLevelStore : new Store(profileConfigDir);
+    migrateAppLevelKeys(appLevelStore, profileStore);
+    store = new ScopedStore(appLevelStore, profileStore);
   }
 
   // #366: inherit (or donate) the shared vibeconferencing.com login before

@@ -56,4 +56,20 @@ function isProjectTrusted(claudeJson, dir) {
     && claudeJson.projects[dir].hasTrustDialogAccepted);
 }
 
-module.exports = { agentDirFor, defaultBotSettings, withTrustedProject, isProjectTrusted };
+// The per-profile view of a config object: everything EXCEPT the app-level keys
+// (which live authoritatively in the shared base config.json — see
+// config-scope.js). Used when migrating a bot's config into <agentDir>/config.json
+// so that file is a CLEAN "this is the bot" definition — voice, name, avatar,
+// model, ack phrases — with no machine-wide auth/plumbing keys mixed in. Pure;
+// does not mutate the input.
+function perProfileSubset(config, appLevelKeys) {
+  const src = (config && typeof config === 'object') ? config : {};
+  const skip = appLevelKeys instanceof Set ? appLevelKeys : new Set(appLevelKeys || []);
+  const out = {};
+  for (const k of Object.keys(src)) if (!skip.has(k)) out[k] = src[k];
+  return out;
+}
+
+module.exports = {
+  agentDirFor, defaultBotSettings, withTrustedProject, isProjectTrusted, perProfileSubset,
+};

@@ -2611,9 +2611,43 @@ function broadcastError(message) {
 // otherwise repeated testing leaves a pile of orphaned windows.
 let claudeTerminalWindowIds = [];
 
+// #305: make sure this profile has a dedicated, TRUSTED working dir and return
+// its path. Creates …/<userData>/agent/, seeds .claude/settings.local.json with
+// the bot's tool allowlist (only if absent — never clobber user edits), and marks
+// the dir trusted in ~/.claude.json (the same file we already edit for the MCP
+// server), so Claude Code honors the allowlist instead of dropping it as an
+// untrusted /tmp workspace. Idempotent + best-effort: any failure falls back to
+// the returned path, and the launch still proceeds.
+function ensureAgentWorkdir() {
+  const aw = require('./agent-workdir.js');
+  const agentDir = aw.agentDirFor(app.getPath('userData'));
+  try {
+    fs.mkdirSync(path.join(agentDir, '.claude'), { recursive: true });
+    const settingsPath = path.join(agentDir, '.claude', 'settings.local.json');
+    if (!fs.existsSync(settingsPath)) {
+      fs.writeFileSync(settingsPath, JSON.stringify(aw.defaultBotSettings(), null, 2) + '\n');
+      console.log('[electron] Seeded bot allowlist at', settingsPath);
+    }
+    // Mark the dir trusted in ~/.claude.json (only writing if it isn't already).
+    const home = process.env.HOME || process.env.USERPROFILE;
+    const claudeJsonPath = path.join(home, '.claude.json');
+    let claudeJson = {};
+    try { claudeJson = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf-8')); } catch { /* fresh */ }
+    if (!aw.isProjectTrusted(claudeJson, agentDir)) {
+      fs.writeFileSync(claudeJsonPath, JSON.stringify(aw.withTrustedProject(claudeJson, agentDir), null, 2) + '\n');
+      console.log('[electron] Marked agent workdir trusted in ~/.claude.json:', agentDir);
+    }
+  } catch (err) {
+    console.warn('[electron] ensureAgentWorkdir failed (continuing):', err.message);
+  }
+  return agentDir;
+}
+
 function launchClaudeTerminal(meetCode) {
   const { execFile } = require('child_process');
-  const claudeDir = store.get('claudeWorkDir') || '/tmp';
+  // #305: default to this profile's trusted agent dir instead of the untrusted
+  // /tmp. An explicit Settings → "Claude Working Directory" still wins.
+  const claudeDir = store.get('claudeWorkDir') || ensureAgentWorkdir();
   // Use the bot's name (getActiveBotName) so the spawned /join-call <code> <name>
   // + MCP env align with the call we're in. (Slack's real account name is read
   // separately — #283; until then this is the Meet/Bot Name.)

@@ -4668,6 +4668,26 @@ function setupIPC() {
     return { ok: !err, path: PROFILES_ROOT, error: err || undefined };
   });
 
+  // #305: the bot's EFFECTIVE working dir — the Settings override if set, else the
+  // auto-managed trusted per-profile agent dir. Path only (no side effects), for
+  // the panel to display.
+  ipcMain.handle('get-agent-workdir', () => {
+    const override = (store.get('claudeWorkDir') || '').trim();
+    const auto = require('./agent-workdir.js').agentDirFor(app.getPath('userData'));
+    return { path: override || auto, isOverride: !!override, autoPath: auto };
+  });
+
+  // Reveal the bot's working dir in Finder. If it's the auto dir, ensure it exists
+  // (creates + seeds + trusts) so the folder opens rather than 404s.
+  ipcMain.handle('open-agent-workdir', async () => {
+    const override = (store.get('claudeWorkDir') || '').trim();
+    const dir = override || ensureAgentWorkdir();
+    try { fs.mkdirSync(dir, { recursive: true }); } catch { /* exists / override path */ }
+    const err = await shell.openPath(dir);
+    if (err) console.warn('[electron] open-agent-workdir failed:', err);
+    return { ok: !err, path: dir, error: err || undefined };
+  });
+
   // Reveal this instance's session-log folder in Finder — where past calls'
   // logs live (named by session timestamp; each call is a `[call] id=…` block
   // inside). Honors the per-profile userData path (#292).

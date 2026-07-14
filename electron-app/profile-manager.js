@@ -24,11 +24,13 @@ function safeReadJSON(file) {
   return null;
 }
 
-// Read the identity fields from a userData dir's config.json (read-only; safe
-// even while that instance runs). Works for both a named profile dir and the
-// base userData dir (the default instance).
+// Read the identity fields from a profile's config (read-only; safe even while
+// that instance runs). Since #305 the per-profile config lives in the bot's
+// agent dir (<dir>/agent/config.json); older profiles kept it loose at
+// <dir>/config.json, so fall back to that.
 function readConfigFields(dir) {
-  const cfg = safeReadJSON(path.join(dir, 'config.json')) || {};
+  const cfg = safeReadJSON(path.join(dir, 'agent', 'config.json'))
+    || safeReadJSON(path.join(dir, 'config.json')) || {};
   return {
     botName: cfg.botName || null,
     meetAccountEmail: cfg.meetAccountEmail || null,
@@ -100,6 +102,18 @@ function isValidProfileName(name) {
   return typeof name === 'string' && /^[A-Za-z0-9_.-]+$/.test(name);
 }
 
+// The default profile's on-disk name — the profile the app opens when launched
+// with no --profile flag. `pointer` is the app-level `defaultProfile` config
+// value; when unset it falls back to 'default'. Matched case-insensitively to an
+// existing dir so a legacy 'Default' dir is reused rather than shadowed by a
+// colliding 'default' on a case-insensitive filesystem (macOS).
+function resolveDefaultProfileName(profilesRoot, pointer) {
+  const want = (pointer && String(pointer).trim()) || 'default';
+  const existing = listProfileNames(profilesRoot)
+    .find((n) => n.toLowerCase() === want.toLowerCase());
+  return existing || want;
+}
+
 module.exports = {
   listProfiles,
   listProfileNames,
@@ -108,6 +122,7 @@ module.exports = {
   portForProfile,
   loadPortRegistry,
   isValidProfileName,
+  resolveDefaultProfileName,
   PROFILE_PORT_BASE,
   PROFILE_PORT_MAX,
 };

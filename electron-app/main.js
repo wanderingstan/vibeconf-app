@@ -2109,13 +2109,38 @@ function requestedLocalPort() {
 // and share a registry there, regardless of which profile THIS instance is.
 const BASE_USER_DATA = app.getPath('userData');
 const PROFILES_ROOT = path.join(BASE_USER_DATA, 'profiles');
+// The default/fallback local-server port — the default instance listens here, the
+// global Claude MCP config points here, and it's the fallback target discovery
+// falls back to. Named profiles get stable registry ports instead.
+const DEFAULT_PORT = 7865;
 
-const appProfile = requestedProfileName();
-if (appProfile) {
+// Every bot — including the default — lives under profiles/<name>. There's no
+// more special "default lives loose in BASE_USER_DATA" case: BASE now holds only
+// the shared app-level config.json and the port registry. The default is simply
+// the profile the app opens when launched with no --profile flag; an app-level
+// `defaultProfile` pointer names it (falling back to 'default').
+//
+// Two identities come out of this:
+//   • appProfile        — the concrete profile THIS instance is (always a real
+//                         name now, e.g. 'default' or 'bot2'); drives userData,
+//                         the registry, and the switcher UI.
+//   • isDefaultInstance — whether this is the privileged default instance (the
+//                         no-flag launch, or an explicit --profile=<default>).
+//                         Gates the single-instance lock, the global Claude
+//                         integration, and using Claude's global MCP config —
+//                         behaviors that must stay unique to one seat.
+const explicitProfile = requestedProfileName();
+const DEFAULT_PROFILE_NAME = profileManager.resolveDefaultProfileName(
+  PROFILES_ROOT, new Store(BASE_USER_DATA, { fresh: true }).get('defaultProfile'));
+const appProfile = explicitProfile || DEFAULT_PROFILE_NAME;
+const isDefaultInstance = !explicitProfile
+  || explicitProfile.toLowerCase() === DEFAULT_PROFILE_NAME.toLowerCase();
+{
   const profileUserData = path.join(PROFILES_ROOT, appProfile);
   app.setPath('userData', profileUserData);
   localServer.localProfile = appProfile;
-  console.log('[electron] Using app profile:', appProfile, 'userData:', profileUserData);
+  console.log('[electron] Profile:', appProfile, isDefaultInstance ? '(default)' : '(named)',
+    'userData:', profileUserData);
 }
 
 // Automated test instances (profile test*, or VIBECONF_NO_NOTIFICATIONS) must not
@@ -2653,14 +2678,14 @@ function launchClaudeTerminal(meetCode) {
   // separately — #283; until then this is the Meet/Bot Name.)
   const botName = getActiveBotName() || store.get('botName') || 'Jimmy';
 
-  // Profile instances (second bot, e.g. Samantha): the auto-launch runs `claude`
-  // from a generic cwd (/tmp), which would pick up the USER-SCOPED ~/.claude.json
-  // vibeconferencing server (port 7865 = the PRIMARY app) and talk to the wrong
-  // bot. Write a profile-specific MCP config pointing at THIS app's port and pass
-  // --mcp-config + --strict-mcp-config so the spawned session targets this app
-  // only. The default (non-profile) instance keeps using the global config.
+  // Named profile instances (second bot, e.g. Samantha): the auto-launch runs
+  // `claude` which would otherwise pick up the USER-SCOPED ~/.claude.json
+  // vibeconferencing server (the fallback port = the PRIMARY app) and talk to the
+  // wrong bot. Write a profile-specific MCP config pointing at THIS app's port and
+  // pass --mcp-config + --strict-mcp-config so the spawned session targets this
+  // app only. The default instance keeps using the global config.
   let mcpFlags = '';
-  if (appProfile) {
+  if (!isDefaultInstance) {
     try {
       const mcpServerPath = app.isPackaged
         ? path.join(process.resourcesPath, 'mcp-server', 'server.js')
@@ -2870,7 +2895,7 @@ function updateSpeakingState(name, speaking) {
 // Single instance for the default profile. Named profiles are intentional
 // separate bot seats, so they bypass the global lock and rely on profile +
 // local-port separation instead.
-if (!appProfile) {
+if (isDefaultInstance) {
   const gotTheLock = app.requestSingleInstanceLock();
   if (!gotTheLock) {
     console.log('[electron] Another instance is running, quitting.');
@@ -2986,7 +3011,7 @@ function removeAgentActivityHook() {
   try { fs.rmSync(hookPath, { force: true }); } catch { /* ignore */ }
 }
 
-function ensureClaudeIntegration(localPort) {
+function ensureClaudeIntegration() {
   const home = process.env.HOME || process.env.USERPROFILE;
   const claudeDir = path.join(home, '.claude');
   const claudeJsonPath = path.join(home, '.claude.json');
@@ -3012,7 +3037,11 @@ function ensureClaudeIntegration(localPort) {
 
   if (!claudeJson.mcpServers) claudeJson.mcpServers = {};
 
-  const localBaseUrl = `http://127.0.0.1:${localPort || 7865}`;
+  // Always pin the global config at the stable fallback port, NOT the writing
+  // instance's own port — this entry is app-level and must point bare-terminal
+  // `claude` at a fixed target regardless of who installs it. (On join_call the
+  // MCP server re-binds by profile name anyway; this is just the default target.)
+  const localBaseUrl = `http://127.0.0.1:${DEFAULT_PORT}`;
   const configuredBotName = store.get('botName') || 'Jimmy';
   const currentMcp = claudeJson.mcpServers.vibeconferencing;
   const needsUpdate = !currentMcp ||
@@ -3112,58 +3141,56 @@ app.whenReady().then(async () => {
   // #366 preference scoping: app-level keys (ElevenLabs key, website login,
   // URL overrides, dangerousMode — see config-scope.js) live in the BASE
   // userData config.json shared by all profiles; everything else stays in
-  // this profile's own config.json. The shared store is `fresh` because
-  // several profile instances (the fleet, Jimmy+Samantha) read/write that
-  // one file concurrently. The default instance's config.json IS the shared
-  // file, so it uses the fresh store for both scopes.
+  // this profile's own agent dir. The shared store is `fresh` because several
+  // profile instances (the fleet, Jimmy+Samantha) read/write that one file
+  // concurrently.
   //
-  // #305 follow-on: the per-profile config now lives in the bot's agent dir
+  // #305 follow-on: the per-profile config lives in the bot's agent dir
   // (<userData>/agent/config.json), NOT loose in <userData>. That makes the agent
   // dir the single, clean home for everything that defines the bot — config.json
   // (voice, name, avatar, model, ack phrases) alongside CLAUDE.md (#291) and the
   // tool allowlist. App-level keys stay in the shared BASE config.json.
+  //
+  // Uniform across ALL profiles now (the default included) — the default lives
+  // under profiles/<name> like every other bot, so <userData> is never BASE and
+  // there is no special-casing here.
   {
     const appLevelStore = new Store(BASE_USER_DATA, { fresh: true });
+    // Persist the default-profile pointer so it's an explicit, editable value
+    // ("which profile is the default"), not just an implicit fallback.
+    if (isDefaultInstance && !appLevelStore.get('defaultProfile')) {
+      appLevelStore.set('defaultProfile', DEFAULT_PROFILE_NAME);
+    }
     const aw = require('./agent-workdir.js');
-    const oldConfigDir = app.getPath('userData');
-    const agentDir = aw.agentDirFor(oldConfigDir);
+    const profileDir = app.getPath('userData');   // = profiles/<appProfile>
+    const agentDir = aw.agentDirFor(profileDir);
     const newCfgPath = path.join(agentDir, 'config.json');
-    const oldCfgPath = path.join(oldConfigDir, 'config.json');
-    let useAgentDir = true;
+    const oldCfgPath = path.join(profileDir, 'config.json');
+    let profileConfigDir = agentDir;
     try {
       fs.mkdirSync(agentDir, { recursive: true });
-      // One-time migration: copy the existing per-profile config into the agent
-      // dir, filtered to just the per-profile keys. NON-DESTRUCTIVE — the old file
-      // is left untouched as a safety net (its per-profile keys simply stop being
-      // read once the ScopedStore points at the agent copy).
+      // One-time, non-destructive migration of a legacy loose config.json (older
+      // profiles kept config at <profileDir>/config.json) into the agent dir,
+      // filtered to just the per-profile keys. The old file is left as a safety
+      // net. Promote any un-promoted ttsApiKey up first so filtering can't lose it
+      // (profileDir is never BASE, so this Store is always a distinct file).
       if (!fs.existsSync(newCfgPath) && fs.existsSync(oldCfgPath)) {
-        // For a NAMED profile the old config may still hold an un-promoted
-        // ttsApiKey (an app-level key we're about to filter out) — promote it up
-        // first so filtering can't lose it. Skipped for the default profile,
-        // whose old config IS the base config.json (app-level keys stay there and
-        // must not be deleted).
-        if (oldConfigDir !== BASE_USER_DATA) {
-          migrateAppLevelKeys(appLevelStore, new Store(oldConfigDir));
-        }
+        migrateAppLevelKeys(appLevelStore, new Store(profileDir));
         const old = JSON.parse(fs.readFileSync(oldCfgPath, 'utf-8'));
         fs.writeFileSync(newCfgPath, JSON.stringify(aw.perProfileSubset(old, APP_LEVEL_KEYS), null, 2) + '\n');
         console.log('[config] Migrated per-profile config into', newCfgPath);
       }
     } catch (err) {
       console.warn('[config] agent-dir config migration failed:', err.message);
-      // If there WAS an old config but we failed to bring it over, keep reading
-      // the old location so the bot doesn't lose its prefs. A fresh install (no
-      // old config) still starts cleanly in the agent dir.
+      // If there WAS a loose config we failed to bring over, keep reading it so
+      // the bot doesn't lose its prefs. A fresh install starts cleanly in the
+      // agent dir.
       if (fs.existsSync(oldCfgPath) && !fs.existsSync(newCfgPath)) {
-        useAgentDir = false;
-        console.warn('[config] falling back to the old config location:', oldConfigDir);
+        profileConfigDir = profileDir;
+        console.warn('[config] falling back to the loose config location:', profileDir);
       }
     }
-    const profileConfigDir = useAgentDir ? agentDir : oldConfigDir;
-    // If the resolved dir IS the base (only the default profile falling back),
-    // reuse the SAME Store instance so migrateAppLevelKeys's identity guard holds
-    // and it can't delete an app-level key from the shared file.
-    const profileStore = (profileConfigDir === BASE_USER_DATA) ? appLevelStore : new Store(profileConfigDir);
+    const profileStore = new Store(profileConfigDir);
     migrateAppLevelKeys(appLevelStore, profileStore);
     store = new ScopedStore(appLevelStore, profileStore);
   }
@@ -3243,7 +3270,7 @@ app.whenReady().then(async () => {
     localServer.port = explicitLocalPort;
     console.log('[electron] Requested local server port:', explicitLocalPort);
   }
-  const localPort = await localServer.start();
+  await localServer.start();
 
   // Remote log shipping (opt-in via `remoteLogging` pref). Build a stable
   // instanceId from hostname + profile so the same bot is recognizable across
@@ -3280,11 +3307,14 @@ app.whenReady().then(async () => {
     console.warn('[electron] Failed to configure remote logging:', err.message);
   }
 
-  // Check/install Claude integration. Profiled instances are intended for
-  // non-default agents (for example Codex) and must not steal Claude's global
-  // MCP config from the primary app instance.
-  if (appProfile) {
-    console.log('[electron] Skipping Claude integration for app profile:', appProfile);
+  // Check/install the machine-global Claude integration (~/.claude.json MCP entry,
+  // the /join-call skill, the agent-activity hook). This content is app-level, not
+  // profile-level — it always points bare-terminal `claude` at the fallback port
+  // (DEFAULT_PORT). We run it from the single default instance purely as a
+  // single-writer election so N running profiles don't race on the same global
+  // files; named instances skip it (and self-pin their own --mcp-config instead).
+  if (!isDefaultInstance) {
+    console.log('[electron] Skipping global Claude integration for named profile:', appProfile);
   } else if (store.get('claudeIntegrationRemoved') === true) {
     // "Leave no trace": the user explicitly uninstalled the Claude integration
     // (menu → Uninstall Claude Integration). Without this gate the next launch
@@ -3292,7 +3322,7 @@ app.whenReady().then(async () => {
     // the uninstall. Re-enable via menu → Install Claude Integration.
     console.log('[electron] Claude integration NOT installed (user uninstalled it — leave-no-trace flag set)');
   } else {
-    ensureClaudeIntegration(localPort);
+    ensureClaudeIntegration();
   }
 
   // Request microphone permission (needed for audio pipeline even with virtual mic)
@@ -4182,7 +4212,7 @@ function createMainWindow() {
           click: () => {
             const { dialog } = require('electron');
             try { store?.delete('claudeIntegrationRemoved'); } catch { /* non-fatal */ }
-            ensureClaudeIntegration(localServer.port);
+            ensureClaudeIntegration();
             dialog.showMessageBox(mainWindow, {
               type: 'info',
               message: 'Claude integration installed. Restart Claude Code to pick it up.',
@@ -4701,7 +4731,9 @@ function setupIPC() {
 
   ipcMain.handle('get-app-version', () => ({ version: app.getVersion(), packaged: app.isPackaged }));
 
-  ipcMain.handle('get-app-profile', () => appProfile || null);
+  // null for the default instance (the panel shows "Default bot."); the concrete
+  // name only for named --profile instances.
+  ipcMain.handle('get-app-profile', () => (isDefaultInstance ? null : appProfile));
   ipcMain.handle('get-local-port', () => localServer.port);
 
   // Reveal the profiles folder in Finder so the user can delete/rename profile
@@ -4745,17 +4777,18 @@ function setupIPC() {
   });
 
   // --- Profile switcher (#282): Chrome-style list + launch/focus ------------
-  // A profile = a sibling userData dir under <base>/profiles, each its own
-  // identity. You can't rehome a RUNNING instance (userData is fixed before
-  // app-ready), so "switch" launches or focuses the instance for that profile.
-  // The default (no --profile) instance is represented by this sentinel.
-  const DEFAULT_PROFILE_KEY = '(default)';
+  // A profile = a userData dir under <base>/profiles, each its own identity —
+  // including the default, which lives at profiles/<DEFAULT_PROFILE_NAME> like
+  // every other bot. You can't rehome a RUNNING instance (userData is fixed
+  // before app-ready), so "switch" launches or focuses the instance for that
+  // profile. The default is just the profile matched by the pointer.
+  const isDefaultName = (n) => String(n || '').toLowerCase() === DEFAULT_PROFILE_NAME.toLowerCase();
 
   // Ping ports where instances may live and read each one's localProfile from
   // /api/sync/no-room, so we detect running profiles regardless of how they
   // were launched (switcher, fleet, or default). Returns { profileName: port }.
   async function scanRunningInstances() {
-    const ports = [7865]; // default instance
+    const ports = [DEFAULT_PORT]; // default instance
     for (let p = profileManager.PROFILE_PORT_BASE; p <= profileManager.PROFILE_PORT_MAX; p++) ports.push(p);
     for (let p = 7901; p <= 7916; p++) ports.push(p); // test fleet range
     const running = {};
@@ -4767,9 +4800,11 @@ function setupIPC() {
         clearTimeout(t);
         if (!r.ok) return;
         const j = await r.json();
-        const name = j?.status?.localProfile;
+        // Every instance now reports a concrete localProfile (the default reports
+        // its resolved name). Fall back to the default name only for an old build
+        // on the fallback port that reports nothing.
+        const name = j?.status?.localProfile || (port === DEFAULT_PORT ? DEFAULT_PROFILE_NAME : null);
         if (name) running[name] = port;
-        else if (port === 7865) running[DEFAULT_PROFILE_KEY] = port;
       } catch { /* not listening */ }
     }));
     return running;
@@ -4779,29 +4814,25 @@ function setupIPC() {
     const named = profileManager.listProfiles(PROFILES_ROOT);
     const reg = profileManager.loadPortRegistry(BASE_USER_DATA);
     const running = await scanRunningInstances();
-    // The default (no-profile) instance is a real profile too — its config lives
-    // directly in BASE_USER_DATA. Surface it as "Default" so users see it's a
-    // profile (#282). Its running port is the default 7865.
-    const defaultEntry = {
-      name: DEFAULT_PROFILE_KEY,
-      isDefault: true,
-      ...profileManager.readConfigFields(BASE_USER_DATA),
-      port: running[DEFAULT_PROFILE_KEY] || 7865,
-      running: !!running[DEFAULT_PROFILE_KEY],
-      isCurrent: !appProfile,
-    };
+    // The default is a real profile dir under profiles/ now, so it comes straight
+    // out of listProfiles — no synthesized entry. Guarantee it always appears even
+    // on a machine where the default was never launched (so the switcher can still
+    // offer it).
+    if (!named.some((p) => isDefaultName(p.name))) {
+      named.unshift({ name: DEFAULT_PROFILE_NAME, ...profileManager.readConfigFields(path.join(PROFILES_ROOT, DEFAULT_PROFILE_NAME)) });
+    }
     return {
-      current: appProfile || DEFAULT_PROFILE_KEY,
-      profiles: [
-        defaultEntry,
-        ...named.map((p) => ({
+      current: appProfile,
+      profiles: named.map((p) => {
+        const def = isDefaultName(p.name);
+        return {
           ...p,
-          isDefault: false,
-          port: running[p.name] || reg[p.name] || null,
+          isDefault: def,
+          port: running[p.name] || (def ? DEFAULT_PORT : reg[p.name]) || null,
           running: !!running[p.name],
           isCurrent: p.name === appProfile,
-        })),
-      ],
+        };
+      }),
     };
   });
 
@@ -4814,14 +4845,14 @@ function setupIPC() {
   // it open (the additive "new window" path). Returns `runningKey` so a switch
   // caller can poll for the target coming up before it closes itself.
   async function launchOrFocusProfile(name) {
-    const isDefault = name === DEFAULT_PROFILE_KEY;
-    if (!isDefault && !profileManager.isValidProfileName(name)) {
+    const isDefault = isDefaultName(name);
+    if (!profileManager.isValidProfileName(name)) {
       return { ok: false, error: 'Invalid profile name (letters, numbers, . _ - only)' };
     }
-    const runningKey = isDefault ? DEFAULT_PROFILE_KEY : name;
+    const runningKey = name;
 
     // Already the current window?
-    if ((isDefault && !appProfile) || (!isDefault && name === appProfile)) {
+    if (name === appProfile) {
       return { ok: true, focused: true, alreadyCurrent: true, runningKey };
     }
 
@@ -4927,8 +4958,11 @@ function setupIPC() {
     // server — which would make New Window re-target our own profile (Default gets
     // reopened, or a named window needlessly opens Default first). We know our own
     // identity for certain, so seed it deterministically.
-    running[appProfile || DEFAULT_PROFILE_KEY] = localServer.port;
-    const candidates = [DEFAULT_PROFILE_KEY, ...profileManager.listProfiles(PROFILES_ROOT).map((p) => p.name)];
+    running[appProfile] = localServer.port;
+    // listProfiles now includes the default; make sure it's a candidate even if
+    // its dir doesn't exist yet, and try it first (New Window prefers the default).
+    const names = profileManager.listProfiles(PROFILES_ROOT).map((p) => p.name);
+    const candidates = names.some(isDefaultName) ? names : [DEFAULT_PROFILE_NAME, ...names];
     const target = candidates.find((name) => !running[name]);
     if (!target) return { ok: false, error: 'all-running' };
     return await launchOrFocusProfile(target);

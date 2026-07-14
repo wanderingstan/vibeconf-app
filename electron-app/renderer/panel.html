@@ -222,6 +222,15 @@
           </div>
         </div>
         <div class="field">
+          <label for="agentClaudeMd">Personality (CLAUDE.md)</label>
+          <div style="font-size:11px;color:#666;margin:0 0 6px">The bot's standing instructions, loaded at the start of every call. This is the <code>CLAUDE.md</code> in its working folder — edit freely.</div>
+          <textarea id="agentClaudeMd" rows="12" spellcheck="false" placeholder="(loading…)" style="width:100%;box-sizing:border-box;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.45;resize:vertical"></textarea>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
+            <button id="saveAgentClaudeMdBtn" class="popout-btn">Save personality</button>
+            <span id="agentClaudeMdStatus" style="font-size:11px;color:#81c995"></span>
+          </div>
+        </div>
+        <div class="field">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
             <input type="checkbox" id="dangerousMode" />
             Dangerously bypass permissions

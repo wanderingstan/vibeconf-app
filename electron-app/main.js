@@ -2653,6 +2653,13 @@ function ensureAgentWorkdir() {
       fs.writeFileSync(settingsPath, JSON.stringify(aw.defaultBotSettings(), null, 2) + '\n');
       console.log('[electron] Seeded bot allowlist at', settingsPath);
     }
+    // Seed the bot's personality CLAUDE.md (#305/#291) — auto-loaded as standing
+    // instructions since the session starts in this dir. Only if absent.
+    const claudeMdPath = path.join(agentDir, 'CLAUDE.md');
+    if (!fs.existsSync(claudeMdPath)) {
+      fs.writeFileSync(claudeMdPath, aw.defaultClaudeMd());
+      console.log('[electron] Seeded bot personality CLAUDE.md at', claudeMdPath);
+    }
     // Mark the dir trusted in ~/.claude.json (only writing if it isn't already).
     const home = process.env.HOME || process.env.USERPROFILE;
     const claudeJsonPath = path.join(home, '.claude.json');
@@ -4763,6 +4770,39 @@ function setupIPC() {
     const err = await shell.openPath(dir);
     if (err) console.warn('[electron] open-agent-workdir failed:', err);
     return { ok: !err, path: dir, error: err || undefined };
+  });
+
+  // #305/#291: the bot's personality CLAUDE.md, editable from Settings. Reads the
+  // CLAUDE.md in the EFFECTIVE working dir (override or auto agent dir). If none
+  // exists yet, returns the default starter template so the editor is pre-filled
+  // with something the user can save. `exists` distinguishes on-disk vs starter.
+  ipcMain.handle('get-agent-claudemd', () => {
+    const aw = require('./agent-workdir.js');
+    const override = (store.get('claudeWorkDir') || '').trim();
+    const dir = override || aw.agentDirFor(app.getPath('userData'));
+    const file = path.join(dir, 'CLAUDE.md');
+    try {
+      return { path: file, content: fs.readFileSync(file, 'utf-8'), exists: true };
+    } catch {
+      return { path: file, content: aw.defaultClaudeMd(), exists: false };
+    }
+  });
+
+  // Save the bot's personality CLAUDE.md. Ensures the dir exists first (the auto
+  // dir is created/trusted via ensureAgentWorkdir; an override path is just
+  // mkdir'd). Writing an empty string is allowed — it clears the personality.
+  ipcMain.handle('save-agent-claudemd', (_e, content) => {
+    const override = (store.get('claudeWorkDir') || '').trim();
+    const dir = override || ensureAgentWorkdir();
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, 'CLAUDE.md');
+      fs.writeFileSync(file, String(content == null ? '' : content));
+      return { ok: true, path: file };
+    } catch (err) {
+      console.warn('[electron] save-agent-claudemd failed:', err.message);
+      return { ok: false, error: err.message };
+    }
   });
 
   // Reveal this instance's session-log folder in Finder — where past calls'

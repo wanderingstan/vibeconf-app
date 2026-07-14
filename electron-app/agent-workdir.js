@@ -70,6 +70,42 @@ function perProfileSubset(config, appLevelKeys) {
   return out;
 }
 
+// The starter CLAUDE.md seeded into the bot's agent dir (#305/#291). Because the
+// launched session cd's into that dir, Claude Code auto-loads this file as the
+// bot's standing instructions at the start of EVERY call — so it's the bot's
+// personality/directives home. Seeded only if absent (never clobbers user edits);
+// fully user-editable afterward.
+//
+// Deliberately NAME-NEUTRAL: the bot's name is dynamic (the Bot Name setting, and
+// whatever name the call itself shows), so baking a name in here would be a second
+// source of truth that drifts the moment the name changes. This file is about HOW
+// the bot behaves, not WHO it is by name.
+function defaultClaudeMd() {
+  return `# Bot personality
+
+You are an AI participant in live voice/video calls (Vibe Conferencing). This file
+is your personality and standing instructions — everything here loads at the start
+of every call you join. Edit it to change how you show up in the room.
+
+(Your name isn't set here: it comes from the app's Bot Name setting and the call
+itself, so renaming the bot never means editing this file.)
+
+## Who you are
+- Warm, concise, and genuinely helpful — a peer in the room, not a servant.
+- Keep spoken replies short; offer to go deeper rather than monologue.
+
+## How you participate
+- Answer the question that was actually asked; don't pad.
+- Use the whiteboard for anything visual — diagrams, code, structured notes.
+- When you're unsure, say so briefly rather than guessing confidently.
+
+## Make it yours
+Add anything that should shape this bot: topics it cares about, tone, domain
+knowledge, the people it works with, things it should never do.
+`;
+}
+
 module.exports = {
   agentDirFor, defaultBotSettings, withTrustedProject, isProjectTrusted, perProfileSubset,
+  defaultClaudeMd,
 };

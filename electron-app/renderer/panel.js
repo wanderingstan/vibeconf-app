@@ -1722,9 +1722,35 @@ async function refreshAgentWorkdir() {
 refreshAgentWorkdir();
 openAgentWorkdirBtn?.addEventListener('click', () => api.invoke('open-agent-workdir').catch(() => {}));
 
+// #305/#291: the bot's personality CLAUDE.md editor. Load the current file (or the
+// starter template if none), save on click. Reloads when the working dir changes.
+const agentClaudeMdEl = document.getElementById('agentClaudeMd');
+const saveAgentClaudeMdBtn = document.getElementById('saveAgentClaudeMdBtn');
+const agentClaudeMdStatus = document.getElementById('agentClaudeMdStatus');
+async function refreshAgentClaudeMd() {
+  if (!agentClaudeMdEl) return;
+  try {
+    const r = await api.invoke('get-agent-claudemd');
+    agentClaudeMdEl.value = r?.content ?? '';
+    if (agentClaudeMdStatus) agentClaudeMdStatus.textContent = r?.exists ? '' : 'starter template — Save to create';
+  } catch { agentClaudeMdEl.placeholder = '(could not load CLAUDE.md)'; }
+}
+refreshAgentClaudeMd();
+saveAgentClaudeMdBtn?.addEventListener('click', async () => {
+  if (!agentClaudeMdEl) return;
+  if (agentClaudeMdStatus) { agentClaudeMdStatus.style.color = '#81c995'; agentClaudeMdStatus.textContent = 'Saving…'; }
+  const r = await api.invoke('save-agent-claudemd', agentClaudeMdEl.value).catch(() => ({ ok: false }));
+  if (agentClaudeMdStatus) {
+    agentClaudeMdStatus.style.color = r?.ok ? '#81c995' : '#f28b82';
+    agentClaudeMdStatus.textContent = r?.ok ? 'Saved ✓' : 'Save failed';
+    if (r?.ok) setTimeout(() => { agentClaudeMdStatus.textContent = ''; }, 2500);
+  }
+});
+
 claudeWorkDirInput.addEventListener('change', () => {
   api.invoke('set-config', 'claudeWorkDir', claudeWorkDirInput.value.trim());
   refreshAgentWorkdir();
+  refreshAgentClaudeMd();
 });
 
 claudeModelInput.addEventListener('change', () => {

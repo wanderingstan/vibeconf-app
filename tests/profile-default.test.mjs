@@ -23,11 +23,11 @@ function withProfilesRoot(fn) {
   try { return fn(root); } finally { rmSync(base, { recursive: true, force: true }); }
 }
 
-test('resolveDefaultProfileName: unset pointer falls back to "default"', () => {
+test('resolveDefaultProfileName: unset pointer falls back to "Default" (Chromium convention)', () => {
   withProfilesRoot((root) => {
-    assert.equal(pm.resolveDefaultProfileName(root, undefined), 'default');
-    assert.equal(pm.resolveDefaultProfileName(root, ''), 'default');
-    assert.equal(pm.resolveDefaultProfileName(root, '   '), 'default');
+    assert.equal(pm.resolveDefaultProfileName(root, undefined), 'Default');
+    assert.equal(pm.resolveDefaultProfileName(root, ''), 'Default');
+    assert.equal(pm.resolveDefaultProfileName(root, '   '), 'Default');
   });
 });
 
@@ -38,12 +38,21 @@ test('resolveDefaultProfileName: an explicit pointer names the profile', () => {
 });
 
 test('resolveDefaultProfileName: reuses an existing dir case-insensitively', () => {
-  // A legacy 'Default' dir must be reused, not shadowed by a colliding 'default'
+  // An existing 'Default' dir must be reused, not shadowed by a colliding name
   // on a case-insensitive filesystem.
   withProfilesRoot((root) => {
     mkdirSync(join(root, 'Default'));
     assert.equal(pm.resolveDefaultProfileName(root, 'default'), 'Default');
     assert.equal(pm.resolveDefaultProfileName(root, undefined), 'Default');
+  });
+});
+
+test('resolveDefaultProfileName: a lowercase "default" dir is reused too', () => {
+  // The capitalized fallback must still find a lowercase dir rather than create a
+  // second colliding entry.
+  withProfilesRoot((root) => {
+    mkdirSync(join(root, 'default'));
+    assert.equal(pm.resolveDefaultProfileName(root, undefined), 'default');
   });
 });
 

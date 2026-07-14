@@ -2718,7 +2718,11 @@ function launchClaudeTerminal(meetCode) {
   // Set VIBECONF_LOCAL_PORT for the spawned session so the agent-activity hook
   // (a child process of claude) reports this bot's transcript to THIS app's
   // local server — not the default 7865 (correct for profile bots on 7866+).
-  const cmd = `cd ${claudeDir.replace(/"/g, '\\"')} && VIBECONF_LOCAL_PORT=${localServer.port} ${claudeCmd}`;
+  // Quote the working dir — the #305 agent dir lives under "Application Support",
+  // which has spaces (the old /tmp default didn't, so this never mattered before).
+  // See launch-command.js for the AppleScript+shell double-quoting.
+  const { buildTerminalCommand } = require('./launch-command.js');
+  const cmd = buildTerminalCommand({ workdir: claudeDir, port: localServer.port, innerCmd: claudeCmd });
   const script = `tell application "Terminal"
   if not running then
     do script "${cmd}" in window 1

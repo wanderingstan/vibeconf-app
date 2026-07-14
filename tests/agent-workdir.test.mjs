@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { agentDirFor, defaultBotSettings, withTrustedProject, isProjectTrusted } =
+const { agentDirFor, defaultBotSettings, withTrustedProject, isProjectTrusted, defaultClaudeMd } =
   require('../electron-app/agent-workdir.js');
 
 test('the agent dir is <userData>/agent, per profile', () => {
@@ -219,4 +219,17 @@ test('migration is idempotent and a fresh install starts in the agent dir', () =
     const second = initStore({ base, userData });
     assert.equal(second.store.get('botName'), 'Newbie', 'existing agent config wins; no re-migration');
   } finally { rmSync(base, { recursive: true, force: true }); rmSync(userData, { recursive: true, force: true }); }
+});
+
+test('defaultClaudeMd is name-neutral (no baked-in identity to drift)', () => {
+  const md = defaultClaudeMd();
+  assert.match(md, /## /, 'has section headings');
+  assert.match(md, /personality/i, 'describes itself as the personality file');
+  // Must NOT hardcode any known bot name — the name is dynamic (Bot Name setting /
+  // call display name), so it can't live here.
+  for (const name of ['Jimmy', 'Samantha', 'Coltrane']) {
+    assert.doesNotMatch(md, new RegExp(name), `no baked-in "${name}"`);
+  }
+  // And it should say so, so a user editing it doesn't re-introduce one.
+  assert.match(md, /name/i);
 });

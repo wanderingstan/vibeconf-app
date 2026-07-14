@@ -2118,7 +2118,7 @@ const DEFAULT_PORT = 7865;
 // more special "default lives loose in BASE_USER_DATA" case: BASE now holds only
 // the shared app-level config.json and the port registry. The default is simply
 // the profile the app opens when launched with no --profile flag; an app-level
-// `defaultProfile` pointer names it (falling back to 'default').
+// `defaultProfile` pointer names it (falling back to 'Default', Chromium's convention).
 //
 // Two identities come out of this:
 //   • appProfile        — the concrete profile THIS instance is (always a real

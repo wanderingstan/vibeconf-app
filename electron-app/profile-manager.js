@@ -104,11 +104,13 @@ function isValidProfileName(name) {
 
 // The default profile's on-disk name — the profile the app opens when launched
 // with no --profile flag. `pointer` is the app-level `defaultProfile` config
-// value; when unset it falls back to 'default'. Matched case-insensitively to an
-// existing dir so a legacy 'Default' dir is reused rather than shadowed by a
-// colliding 'default' on a case-insensitive filesystem (macOS).
+// value; when unset it falls back to 'Default', matching Chromium's own
+// convention (the primary profile dir is 'Default'; extras are 'Profile 1'…).
+// Matched case-insensitively to an existing dir so a 'default'/'Default' dir is
+// reused rather than shadowed by a colliding name on a case-insensitive
+// filesystem (macOS).
 function resolveDefaultProfileName(profilesRoot, pointer) {
-  const want = (pointer && String(pointer).trim()) || 'default';
+  const want = (pointer && String(pointer).trim()) || 'Default';
   const existing = listProfileNames(profilesRoot)
     .find((n) => n.toLowerCase() === want.toLowerCase());
   return existing || want;

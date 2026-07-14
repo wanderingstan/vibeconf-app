@@ -214,8 +214,12 @@
         </div>
         <div class="field">
           <label for="claudeWorkDir">Claude Working Directory</label>
-          <input type="text" id="claudeWorkDir" placeholder="/tmp" />
-          <div style="font-size:11px;color:#666;margin-top:2px">Directory where Claude sessions start. Default: /tmp</div>
+          <input type="text" id="claudeWorkDir" placeholder="(auto — this bot's trusted folder)" />
+          <div style="font-size:11px;color:#666;margin-top:2px">Where the bot's Claude session starts. Leave blank to use this bot's own trusted folder (recommended); set a path to override.</div>
+          <div class="workdir-row" style="display:flex;align-items:center;gap:8px;margin-top:6px">
+            <code id="agentWorkdirPath" class="workdir-path" title="The folder the bot's session actually starts in">…</code>
+            <button id="openAgentWorkdirBtn" class="popout-btn" title="Reveal the bot's working folder in Finder">Open in Finder</button>
+          </div>
         </div>
         <div class="field">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer">

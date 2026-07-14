@@ -1705,8 +1705,26 @@ document.getElementById('openVoiceSettingsBtn')?.addEventListener('click', (e) =
   api.invoke('open-voice-settings').catch(() => {});
 });
 
+// #305: show the EFFECTIVE working dir (the override if set, else the bot's auto
+// trusted folder). Refresh on load and whenever the override field changes.
+const agentWorkdirPathEl = document.getElementById('agentWorkdirPath');
+const openAgentWorkdirBtn = document.getElementById('openAgentWorkdirBtn');
+async function refreshAgentWorkdir() {
+  if (!agentWorkdirPathEl) return;
+  try {
+    const r = await api.invoke('get-agent-workdir');
+    agentWorkdirPathEl.textContent = r?.path || '—';
+    agentWorkdirPathEl.title = r?.isOverride
+      ? `Override (Claude Working Directory): ${r.path}`
+      : `This bot's own trusted folder: ${r?.path || ''}`;
+  } catch { agentWorkdirPathEl.textContent = '—'; }
+}
+refreshAgentWorkdir();
+openAgentWorkdirBtn?.addEventListener('click', () => api.invoke('open-agent-workdir').catch(() => {}));
+
 claudeWorkDirInput.addEventListener('change', () => {
   api.invoke('set-config', 'claudeWorkDir', claudeWorkDirInput.value.trim());
+  refreshAgentWorkdir();
 });
 
 claudeModelInput.addEventListener('change', () => {

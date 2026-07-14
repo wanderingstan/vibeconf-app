@@ -537,6 +537,24 @@ body[data-call-state="in-call"] .call-incall { display: block; }
    now; the login moved up to the header). */
 .misc-zone { margin-top: 4px; }
 
+/* #305 — the bot's effective working dir under the Claude Working Directory field. */
+.workdir-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: #9aa0a6;
+  background: #303134;
+  border: 1px solid #3c4043;
+  border-radius: 6px;
+  padding: 4px 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* keep the tail (the actual folder) visible when truncated */
+  text-align: left;
+}
+
 /* Bot-view bar — labels + toggles the Meet thumbnail docked directly below the
    panel. Pinned to the very bottom of the panel view so it abuts the webview, and
    painted in the same blue as the in-call header banner (#vibeconf-status-bar,

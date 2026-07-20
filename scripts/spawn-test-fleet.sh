@@ -1,0 +1,321 @@
+#!/bin/zsh
+# spawn-test-fleet.sh — boot N bot app instances for AUTOMATED testing, with NO
+# Claude agents (the meet-test.mjs harness is the brain). Each instance runs in a
+# DEDICATED, ISOLATED test profile so runs don't pollute — or get polluted by —
+# the real Jimmy/Samantha environments.
+#
+#   profile   = test-meet-guest-1, …  (isolated userData: …/profiles/<name>;
+#               class prefix is test-meet-guest / test-meet-google / test-slack)
+#   port      = 7901, 7902, …     (distinct range from real bots 7865/7866)
+#   bot-name  = Alice, Jimmy, Cosmo, …  (Meet display name; the harness keys
+#               scenarios on this — profile is just the sandbox, name is identity)
+#
+# Profile instances skip the Claude-terminal integration automatically, so this
+# only launches the apps. Drive them with: node scripts/meet-test.mjs
+#
+# Usage:
+#   scripts/spawn-test-fleet.sh            # 2 bots from SOURCE (Alice, Jimmy)
+#   scripts/spawn-test-fleet.sh 3          # 3 bots (adds Cosmo)
+#   scripts/spawn-test-fleet.sh 2 --dmg    # drive the INSTALLED app (/Applications)
+#   scripts/spawn-test-fleet.sh 2 --built  # drive the freshly-BUILT app (dist/)
+#   scripts/spawn-test-fleet.sh 2 --kill   # stop a previously-spawned fleet
+#
+# Three sources, all agent-less:
+#   (default) SOURCE   — pnpm dev; active development.
+#   --dmg     INSTALLED — /Applications/Vibeconferencing.app; the exact artifact
+#                         an average user runs. The scheduled mini run uses --dmg.
+#   --built   BUILT    — the newest electron-builder output under
+#                         electron-app/dist/mac*/Vibeconferencing.app, i.e. the
+#                         DMG you just built BEFORE installing it. Use this to
+#                         test a fresh build without clobbering the installed app.
+# --dmg and --built both exercise the real packaged artifact (asar, build.files);
+# they differ only in WHICH copy — installed vs just-built.
+#
+# Prints the --bots string to hand to meet-test.mjs.
+#
+# NOTE on Google sign-in: NOT needed for the default test meet (paz-sqoa-npe) —
+# it's open for anyone to join as a guest, no account and no host admission. So a
+# fresh, logged-out test profile joins it unattended. That's exactly why it's the
+# default: the most open/unrestricted place to test. (Sign-in only matters for
+# RESTRICTED meets — e.g. a cross-org host that requires auto-admit; for those,
+# sign each profile into Google once via Settings → "Sign in to Google as bot",
+# which now persists post-beta21.)
+
+set -e
+# Dir-agnostic: default to this script's own repo (scripts/ -> repo root via
+# zsh ${0:A:h:h}), so it works from any worktree/clone. Override with
+# VIBECONF_REPO to point at a specific checkout.
+REPO="${VIBECONF_REPO:-${0:A:h:h}}"
+ELECTRON="$REPO/electron-app"
+NAMES=(Alice Jimmy Cosmo Dizzy)           # display names by index (Alice=-1, Jimmy=-2)
+BASE_PORT=7901
+
+# Flag parsing (position-independent): a numeric arg = count; --kill / --dmg /
+# --built flags.
+N=2
+KILL=0
+DMG=0
+BUILT=0
+SLACK=0
+SLACK_URL=""
+GOOGLE=0
+DEVTOOLS=0
+WITH_AGENTS=0            # --with-agents: attach a real Claude agent per bot (#267 item 5)
+FUZZ_ROOM=""            # --room=CODE   passed to spawn-agents.mjs
+FUZZ_MISSION=""         # --mission=KEY passed to spawn-agents.mjs
+for a in "$@"; do
+  case "$a" in
+    --kill)        KILL=1 ;;
+    --dmg)         DMG=1 ;;
+    --built)       BUILT=1 ;;
+    --slack)       SLACK=1 ;;
+    --slack-url=*) SLACK_URL="${a#--slack-url=}" ;;
+    --google)      GOOGLE=1 ;;
+    --devtools)    DEVTOOLS=1 ;;
+    --with-agents) WITH_AGENTS=1 ;;
+    --room=*)      FUZZ_ROOM="${a#--room=}" ;;
+    --mission=*)   FUZZ_MISSION="${a#--mission=}" ;;
+    <->)           N="$a" ;;   # zsh: <-> matches an integer
+    *) echo "usage: $0 [count] [--dmg|--built] [--slack --slack-url=URL] [--google] [--devtools] [--with-agents --room=CODE --mission=KEY] [--kill]"; exit 1 ;;
+  esac
+done
+if (( N < 1 || N > 4 )); then echo "count must be 1–4"; exit 1; fi
+
+# Each identity gets its OWN profile namespace so they don't clobber each other
+# and `--kill` reaps the right ones. The names share a `test-` prefix so all test
+# profiles sort together and guest-vs-google is obvious (#282):
+#   guest Meet (default)    = test-meet-guest-1..   (logged OUT — tests the guest join path)
+#   Google-signed-in Meet   = test-meet-google-1..  (--google; signed INTO a bot Google account
+#                                                    ONCE via Settings → "Sign in as bot";
+#                                                    needed for invite-only / Workspace meets)
+#   Slack                   = test-slack-1..        (--slack; signed into a Slack account once)
+# Keeping the guest class login-free means we KEEP testing the non-Google guest
+# path even after adding signed-in profiles for the Workspace/history-on target.
+if   (( SLACK ));  then PROFILE_BASE="test-slack"
+elif (( GOOGLE )); then PROFILE_BASE="test-meet-google"
+else                   PROFILE_BASE="test-meet-guest"
+fi
+
+# Bot names are Alice (-1), Jimmy (-2) across ALL classes. For --google these
+# match the Google accounts signed into the google profiles (test-meet-google-1
+# = alice@spiritprotocol.io, test-meet-google-2 = jimmy@spiritprotocol.io); the
+# --meet-account-email pin below is derived from the same names.
+
+# For --google, deterministically PIN each profile's Google account (#282) so
+# joins use authuser=<email> and can't fall back to a stray default account. The
+# email is <lowercase-bot-name>@$GTEST_EMAIL_DOMAIN — matching the accounts you
+# sign the google profiles into. Override the domain via env if your bot accounts
+# live elsewhere. (Pinning only SELECTS the account; you still sign each profile
+# in once — the single partition starts fresh.)
+GTEST_EMAIL_DOMAIN="${GTEST_EMAIL_DOMAIN:-spiritprotocol.io}"
+
+# --kill: stop instances on the test ports (works regardless of how they launched).
+if (( KILL )); then
+  echo "▶ Stopping test fleet…"
+  # Reap any attached real agents first (#267 item 5), before the bodies go down.
+  if (( WITH_AGENTS )); then node "${0:A:h}/spawn-agents.mjs" --kill 2>/dev/null || true; fi
+  # GRACEFUL LEAVE first: tell each live bot to LEAVE its call so its tile/presence
+  # is dropped right away, instead of ghosting until the ~10min presence TTL. Stale
+  # same-named bots from a prior run collide with the next run's bots and produce
+  # flaky chat/caption failures (Stan spotted prior-run Jimmy/Samantha still in the
+  # meet). The 'leave' action fires onLeaveCall regardless of room, so any valid
+  # slug path works. Then settle briefly so Meet/Slack processes the hangup before
+  # we SIGKILL the process out from under it.
+  left=0
+  for i in $(seq 1 $N); do
+    port=$((BASE_PORT + i - 1))
+    if curl -sf -X POST "http://127.0.0.1:$port/api/sync/fleet-leave" \
+         -H 'Content-Type: application/json' -d '{"sender":"fleet-kill","meta":{"action":"leave"}}' >/dev/null 2>&1; then
+      echo "  • sent leave to bot on $port"; left=1
+    fi
+  done
+  if (( left )); then echo "  • settling 3s for call hangup…"; sleep 3; fi
+  for i in $(seq 1 $N); do
+    port=$((BASE_PORT + i - 1))
+    profile="${PROFILE_BASE}-$i"
+    # -sTCP:LISTEN: match ONLY the bot's listening socket, not clients holding an
+    # open connection to it. Without this, an in-process driver (node:test's
+    # call-parity matrix runs --kill from an after() hook while still holding
+    # keep-alive connections to 7901/7902) is itself returned here and gets
+    # SIGKILLed — the test runner kills itself mid-suite (file reported SIGTERM,
+    # Slack block never ran). The standalone :ci scripts dodge it only because the
+    # driver has already exited before --kill runs.
+    pid=$(lsof -ti tcp:$port -sTCP:LISTEN 2>/dev/null || true)
+    if [[ -n "$pid" ]]; then echo "  • killing pid $pid on $port"; kill "$pid" 2>/dev/null || true; fi
+    # Port-only kill misses GUI Electron mains that aren't currently holding the
+    # port — those linger as ghost participants and pile up across repeated runs,
+    # causing room contention (the false chat/caption failures). Also reap by the
+    # isolated --profile flag so every test instance dies regardless of port
+    # state. The pattern omits the leading dashes (BSD pkill treats a pattern
+    # starting with "-" as an option); "profile=test-meet-guest-1" still uniquely
+    # matches the full argv and never matches the real bots (default on 7865/66).
+    if pkill -f "profile=$profile" 2>/dev/null; then echo "  • reaped lingering profile=$profile process(es)"; fi
+  done
+  echo "✓ done"
+  exit 0
+fi
+
+# Slack launch args: --provider=slack + the channel to auto-join. Each test-slack-N
+# profile must be signed into a (distinct) Slack account ONCE first — there's no
+# guest path. Do that one-time login via scripts/setup-test-profiles.sh --slack,
+# or manually, e.g.:
+#   cd electron-app && pnpm dev -- --provider=slack --profile=test-slack-1 \
+#     --slack-url=https://app.slack.com/client/<team>/<channel>   # then log in, close
+EXTRA_ARGS=""
+if (( SLACK )); then
+  [[ -n "$SLACK_URL" ]] || { echo "✗ --slack needs --slack-url=https://app.slack.com/client/<team>/<channel>"; exit 1; }
+  EXTRA_ARGS="--provider=slack --slack-url=$SLACK_URL"
+fi
+# Open detached DevTools on each spawned app (handy for live DOM debugging).
+(( DEVTOOLS )) && EXTRA_ARGS="$EXTRA_ARGS --devtools=true"
+
+# Packaged-app modes exercise the real artifact (asar, build.files) — no
+# source-vs-package fidelity gap. --dmg = the INSTALLED app (/Applications); the
+# exact thing users run. --built = the freshly-BUILT app under electron-app/dist
+# (this checkout's latest electron-builder output), so you can test a build
+# WITHOUT installing it over the current /Applications copy. Default = source.
+if (( DMG && BUILT )); then
+  echo "✗ choose one of --dmg (installed) or --built (dist/), not both"; exit 1
+fi
+PKG=0          # 1 = launch a packaged .app by path (dmg or built); 0 = source
+APP=""
+if (( DMG )); then
+  APP="/Applications/Vibeconferencing.app"
+  [[ -d "$APP" ]] || { echo "✗ Installed app not found at $APP — install the DMG first (or use --built / drop the flag for source)"; exit 1; }
+  PKG=1
+  echo "▶ Spawning $N test bot(s) from the INSTALLED app (--dmg): $APP"
+elif (( BUILT )); then
+  # Newest electron-builder output for THIS checkout: dist/mac*/Vibeconferencing.app
+  # (mac-arm64 / mac / mac-universal). (N)=nullglob so no match → empty (no error
+  # under set -e); om = order by mtime, newest first → [1] is the latest build.
+  built=("$ELECTRON"/dist/mac*/Vibeconferencing.app(Nom))
+  APP="${built[1]}"
+  [[ -n "$APP" && -d "$APP" ]] || { echo "✗ No built app under $ELECTRON/dist/mac*/ — run 'pnpm dist:fast' in electron-app first (or use --dmg / drop the flag for source)"; exit 1; }
+  PKG=1
+  echo "▶ Spawning $N test bot(s) from the BUILT app (--built): $APP"
+else
+  echo "▶ Spawning $N test bot(s) from SOURCE — agent-less, isolated profiles"
+fi
+
+# ── Window grid: tile the spawned app windows so a watching human can see them
+# all at once. No effect on the headless harness (it drives via HTTP). Windows
+# are CREATED at these coords via --window-* flags, which the app applies at
+# BrowserWindow creation — reliable, unlike moving from outside via System Events
+# (the window server reverts those for some instances). Windows keep their natural
+# size and are just PLACED at the grid slot (positioning only, no resize). Set
+# VIBECONF_NO_WINDOW_GRID=1 to skip (e.g. a headless nightly that ignores placement).
+GRID=1
+[[ -n "${VIBECONF_NO_WINDOW_GRID:-}" ]] && GRID=0
+if (( GRID )); then
+  read -r SCRW SCRH <<< "$(osascript -e 'tell application "Finder" to get bounds of window of desktop' 2>/dev/null | awk -F', ' '{print $3, $4}')"
+  SCRW=${SCRW:-1512}; SCRH=${SCRH:-982}
+  MENUBAR=28
+  case $N in
+    1) COLS=1; ROWS=1 ;;
+    2) COLS=1; ROWS=2 ;;   # 2 bots: stacked full-width rows — cleanest on a laptop
+    *) COLS=2; ROWS=2 ;;   # 3–4 bots: 2×2 grid
+  esac
+  CELLW=$(( SCRW / COLS ))
+  CELLH=$(( (SCRH - MENUBAR) / ROWS ))
+  echo "  • window grid ${SCRW}×${SCRH}: ${COLS}×${ROWS} slots — positioning only (natural size, no resize)"
+fi
+
+# Per-run name suffix (MEET ONLY): a SIGKILL'd bot ghosts in the Meet room until
+# the ~10min presence TTL, so a fresh run reusing the same names collides with the
+# ghost. A unique per-run suffix (e.g. Jimmy-r4af) sidesteps the collision; the
+# graceful-leave above is the primary fix, this is belt-and-suspenders for when a
+# bot crashed and never left. meet-test resolves its per-name scenario by the BASE
+# name (before the last '-'), so the suffixed name still runs the right script.
+# Slack identity comes from the signed-in ACCOUNT, not --bot-name, so a suffix
+# there would only desync addressivity — skip it. Disable with VIBECONF_NO_RUN_TAG=1.
+RUN_TAG=""
+if (( ! SLACK )) && [[ -z "${VIBECONF_NO_RUN_TAG:-}" ]]; then
+  RUN_TAG=$(printf 'r%x' $RANDOM)   # 15 bits → ~32k values, unique enough within a TTL window
+  echo "  • per-run name suffix: -$RUN_TAG (set VIBECONF_NO_RUN_TAG=1 to disable)"
+fi
+
+BOTS_ARG=""
+for i in $(seq 1 $N); do
+  profile="${PROFILE_BASE}-$i"
+  port=$((BASE_PORT + i - 1))
+  name="${NAMES[$i]}${RUN_TAG:+-$RUN_TAG}"
+  # #282: pin this profile's Google account for --google runs (base name, not the
+  # run-tagged display name). ${(L)...} is zsh lowercasing.
+  ACCT_FLAG=""
+  (( GOOGLE )) && ACCT_FLAG="--meet-account-email=${(L)NAMES[$i]}@${GTEST_EMAIL_DOMAIN}"
+  WINFLAGS=""
+  if (( GRID )); then
+    idx=$(( i - 1 ))
+    col=$(( idx % COLS ))
+    row=$(( idx / COLS ))
+    wx=$(( col * CELLW ))
+    wy=$(( MENUBAR + row * CELLH ))
+    # Position only — do NOT resize. Passing --window-w/-h made each app fill its
+    # whole grid cell, which is huge/unhelpful on a large display. Omitting them
+    # lets the app open at its natural default size, just placed at the grid slot.
+    WINFLAGS="--window-x=$wx --window-y=$wy"
+    echo "  • $name — profile=$profile port=$port  @ ${wx},${wy}"
+  else
+    echo "  • $name — profile=$profile port=$port"
+  fi
+  # Pin the free macOS voice in the test profile's config. #366 made
+  # ttsApiKey APP-LEVEL (shared across profiles), so without this pin the
+  # test bots would inherit the real ElevenLabs key and burn quota on every
+  # scripted utterance (pre-#366 they had no key and fell back to `say`
+  # implicitly). Idempotent merge — preserves whatever else is in the config.
+  PROFDIR="$HOME/Library/Application Support/Vibeconferencing/profiles/$profile"
+  mkdir -p "$PROFDIR"
+  node -e 'const fs=require("fs");const p=process.argv[1]+"/config.json";let c={};try{c=JSON.parse(fs.readFileSync(p,"utf8"))}catch{}if(c.ttsProvider!=="macos-say"){c.ttsProvider="macos-say";fs.writeFileSync(p,JSON.stringify(c,null,2));}' "$PROFDIR"
+  if (( PKG )); then
+    # open -n = new instance (profiles bypass the single-instance lock). It
+    # returns immediately and runs detached; we wait/kill by port below, and the
+    # app writes its own session log under the profile's userData
+    # (…/profiles/testN/logs), so no stdout redirect needed. Launch by explicit
+    # bundle PATH ("$APP") so we run exactly the chosen copy (installed vs built),
+    # not whatever LaunchServices resolves the app NAME to.
+    # ${=WINFLAGS}: zsh word-splits the flags into separate argv entries.
+    open -n "$APP" --args --profile="$profile" --local-port="$port" --bot-name="$name" ${=ACCT_FLAG} ${=WINFLAGS} ${=EXTRA_ARGS}
+  else
+    nohup zsh -c "cd '$ELECTRON' && pnpm dev -- --profile=$profile --local-port=$port --bot-name=$name $ACCT_FLAG $WINFLAGS $EXTRA_ARGS" \
+      >"/tmp/vibeconf-$profile.log" 2>&1 &
+  fi
+  BOTS_ARG+="${BOTS_ARG:+,}$name:$port"
+done
+
+# Wait for every local-server to come up.
+echo "▶ Waiting for local-servers…"
+for i in $(seq 1 $N); do
+  port=$((BASE_PORT + i - 1))
+  for attempt in $(seq 1 40); do
+    if curl -sf "http://127.0.0.1:$port/api/sync/no-room" >/dev/null 2>&1; then
+      echo "  ✓ port $port up"; break
+    fi
+    if (( attempt == 40 )); then echo "  ✗ port $port never came up — see /tmp/vibeconf-test$i.log"; fi
+    sleep 1
+  done
+done
+
+echo ""
+echo "✓ Fleet up. Drive it with:"
+if (( SLACK )); then
+  echo "    node scripts/slack-test.mjs --bots $BOTS_ARG --slack-url=$SLACK_URL"
+else
+  echo "    node scripts/meet-test.mjs --bots $BOTS_ARG"
+fi
+echo ""
+echo "  Stop it with: $0 $N --kill"
+
+# --with-agents (#267 item 5): now that the bot BODIES are up, attach a real
+# Claude agent to each (agent-LESS by default). The agents join + run a mission;
+# scripts/agent-fuzz-test.mjs waits, collects transcript+log, and LLM-judges.
+if (( WITH_AGENTS )); then
+  echo ""
+  echo "▶ Attaching real agents (--with-agents)…"
+  # Build the optional --mission as a proper word array — a ${VAR:+--mission "$VAR"}
+  # expansion collapses into ONE arg in zsh, so spawn-agents never sees the flag.
+  # (if-form, not `&&` — under `set -e` a false `&&` would exit the script.)
+  mission_arg=()
+  if [[ -n "$FUZZ_MISSION" ]]; then mission_arg=(--mission "$FUZZ_MISSION"); fi
+  node "${0:A:h}/spawn-agents.mjs" --bots "$BOTS_ARG" \
+    --room "${FUZZ_ROOM:-paz-sqoa-npe}" "${mission_arg[@]}"
+fi

@@ -217,19 +217,26 @@ function withoutToken(fn) {
   });
 }
 
-test('no token → an explicit error, never a silent "up to date"', async () => {
+test('no token is fine — the public repo needs no auth (token optional)', async () => {
   await withoutToken(async () => {
     assert.equal(githubToken(), null);
-    await assert.rejects(() => fetchReleases({ fetchImpl: () => { throw new Error('must not be called'); } }),
+    // Default requireToken is false now (public repo): fetchReleases works anonymously.
+    const releases = await fetchReleases({
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => [{ tag_name: 'v0.7.0-beta1' }] }),
+    });
+    assert.equal(releases.length, 1);
+    // The strict opt-in path still errors when a caller explicitly requires a token.
+    await assert.rejects(
+      () => fetchReleases({ requireToken: true, fetchImpl: () => { throw new Error('must not be called'); } }),
       (e) => e instanceof NoTokenError);
   });
 });
 
-test('a 404 from GitHub is reported as an auth problem, not an empty repo', async () => {
+test('a 404 from GitHub is reported as not-found', async () => {
   const fetchImpl = async () => ({ ok: false, status: 404, json: async () => [] });
   await assert.rejects(
     () => fetchReleases({ fetchImpl, requireToken: false }),
-    /404 — the token is missing, expired, or lacks read access/
+    /404 — the releases endpoint or repo could not be found/
   );
 });
 

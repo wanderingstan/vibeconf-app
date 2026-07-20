@@ -16,16 +16,13 @@ const os = require('os');
 const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
 
-const REPO = process.env.VIBECONF_UPDATE_REPO || 'wanderingstan/vibeconferencing';
+const REPO = process.env.VIBECONF_UPDATE_REPO || 'wanderingstan/vibeconf-app';
 const RELEASES_URL = `https://api.github.com/repos/${REPO}/releases?per_page=30`;
 
-// The repo is PRIVATE. Both the releases API and browser_download_url return 404
-// to an anonymous client — not 401, so a naive implementation reads "no releases"
-// and cheerfully reports "you're up to date" forever. A token is therefore
-// mandatory today, and its absence must be an explicit, visible failure.
-//
-// (The durable fix is publishing a manifest + DMG from vibeconferencing.com, so
-// friends don't each need a GitHub token. Until then: env var.)
+// The app repo (vibeconf-app) is PUBLIC, so the releases API and the assets'
+// browser_download_url both work for an anonymous client — no GitHub token
+// required. A token is still honored if present (VIBECONF_GITHUB_TOKEN /
+// GITHUB_TOKEN), which only raises the API rate limit; it is not mandatory.
 function githubToken() {
   return (process.env.VIBECONF_GITHUB_TOKEN || process.env.GITHUB_TOKEN || '').trim() || null;
 }
@@ -126,7 +123,7 @@ function pickDmgAsset(release, arch = process.arch) {
   return dmgs.find((a) => wanted.test(a.name)) || (dmgs.length === 1 ? dmgs[0] : null);
 }
 
-async function fetchReleases({ fetchImpl = globalThis.fetch, timeoutMs = 10000, requireToken = true } = {}) {
+async function fetchReleases({ fetchImpl = globalThis.fetch, timeoutMs = 10000, requireToken = false } = {}) {
   if (requireToken && !githubToken()) throw new NoTokenError();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -135,10 +132,8 @@ async function fetchReleases({ fetchImpl = globalThis.fetch, timeoutMs = 10000, 
       headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'vibeconferencing-app', ...authHeaders() },
       signal: controller.signal,
     });
-    // A private repo answers 404 (not 403) to a client that can't see it, so an
-    // expired or under-scoped token looks exactly like "repo doesn't exist".
     if (resp.status === 404) {
-      throw new Error('GitHub returned 404 — the token is missing, expired, or lacks read access to this private repo.');
+      throw new Error('GitHub returned 404 — the releases endpoint or repo could not be found.');
     }
     if (!resp.ok) throw new Error(`GitHub API returned ${resp.status}`);
     return await resp.json();

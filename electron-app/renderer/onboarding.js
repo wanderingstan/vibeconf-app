@@ -179,7 +179,13 @@ async function populateVoices(cfg) {
 
 function voiceSampleText() {
   const o = $('voiceSelect').selectedOptions[0];
-  const name = (o ? o.textContent : '').replace(/\s*[·(].*$/, '').trim();
+  // ElevenLabs names read like "Brian - Deep, Resonant and Comforting". EL speaks
+  // the dash as a hyphen (no pause), so turn a space-delimited dash into ". " —
+  // a sentence break between the name and its description.
+  const name = (o ? o.textContent : '')
+    .replace(/\s*[·(].*$/, '')
+    .replace(/\s+[-–—]+\s+/g, '. ')
+    .trim();
   return `Hello, my name is ${name || 'your voice assistant'}.`;
 }
 function currentVoiceOpts(extra) {

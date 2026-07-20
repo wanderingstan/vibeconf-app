@@ -1579,9 +1579,14 @@ function createWhiteboardWindow(roomUrl) {
   const display = screen.getPrimaryDisplay();
   const { width: sw, height: sh } = display.workArea;
 
+  // Square share surface (#4): Meet stacks the participant tiles down the RIGHT
+  // of a shared screen, so a 16:9 board wasted width behind the tiles and left the
+  // content as a tiny centered strip. A square surface fills better next to the
+  // tile column. (The board content sizes itself in vw — see `.wb-shared` in
+  // style.css — so it fills whatever aspect this is.)
   const win = new BrowserWindow({
     width: 800,
-    height: 450,
+    height: 800,
     x: sw + 100,
     y: sh + 100,
     title: 'Vibeconferencing Whiteboard',

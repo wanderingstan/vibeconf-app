@@ -1,0 +1,11 @@
+{
+  "name": "vibeconf-app",
+  "version": "0.7.0-beta62",
+  "private": true,
+  "description": "AI agents as real participants in your video calls — the open-source desktop client (Electron + MCP).",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "test:unit": "node --test tests/*.test.mjs"
+  }
+}

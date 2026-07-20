@@ -35,6 +35,19 @@ pnpm dist     # build a signed/notarized .dmg (needs Apple Developer creds; use 
 
 The build bundles `../mcp-server` and `../extension` as app resources, so keep this repo's layout intact.
 
+## Tests
+
+Unit tests run with no build and no install (just Node ≥ 18):
+
+```bash
+npm test        # node --test tests/*.test.mjs
+```
+
+They cover the app's pure logic — agent working dirs, config scoping, profile
+resolution, launch-command quoting, turn-taking / probe gating, whiteboard
+layout, TTS chunking, updates, and more (196 tests). The `tests/e2e/` suite
+drives real Meet/Slack calls and needs the fleet harness (a later migration).
+
 ## Backend
 
 By default the app talks to the hosted **vibeconferencing.com** service (room sync, shared whiteboard, sign-in). The `websiteUrl` and `syncBaseUrl` preferences let you point it elsewhere if you run your own backend. The hosted backend and web frontend are not part of this repository.

@@ -1,140 +1,146 @@
-# Vibeconferencing — bring your agent into a video call
+# Vibeconferencing: bring your agent into the call
 
-Vibeconferencing is a Mac app that lets an AI agent (the one you already use in **Claude Code, Codex, or Cursor**) **join your Google Meet calls as a real participant**. It hears the conversation and talks back out loud. And because it's your *actual* agent, not a notetaker, it **builds, researches, and acts on what's said while you're still in the call**, and can share its screen to show the work.
+**Open-source beta for Apple Silicon Macs**
 
-![A Google Meet call with two people and the bot "jimmy bot" (an emoji avatar) presenting a shared whiteboard that diagrams the call's human and bot participants alongside live notes](media/call-whiteboard.png)
+[Download the latest release](https://github.com/wanderingstan/vibeconf-app/releases/latest) | [First-call guide](docs/quickstart.md) | [Run from source](RUNNING-FROM-SOURCE.md) | [Report an issue](https://github.com/wanderingstan/vibeconf-app/issues)
+
+Vibeconferencing gives the AI agent already working beside you a body in Google Meet. Your Claude Code, Codex, Cursor, or other MCP-capable agent joins as a visible participant, hears the room, speaks aloud, uses its existing tools, and can show the work while the conversation is still happening.
+
+**It is not a meeting notetaker. It is a way for your agent to be in the meeting with you.**
+
+![A Google Meet call with two people and the bot "jimmy bot" presenting a shared whiteboard with live notes and a diagram](media/call-whiteboard.png)
 
 ## Not notes. The thing.
 
-Most meeting AI sends a summary after everyone leaves. This one works **in the call**. Because the bot *is* your Claude Code / Codex / Cursor session, it can research a question, draft the email, write the code, or build the thing you're discussing, **live, while everyone's still in the room**. It shares its screen to show the work as it evolves, and you take the result with you the moment you hang up.
+Most meeting AI gives you a summary after everyone leaves. Vibeconferencing lets your agent research the question, draft the email, change the code, or build the first version while everyone is still in the room.
 
-> **Everyone else:** a transcript, later.
-> **Yours:** the first version, now.
+> **A transcript later is useful. A first version now changes the meeting.**
 
-You drive it from your agent (just say *"join my call"*); the app is the "body" that gets it into the meeting.
+The desktop app is the agent's body. It handles the meeting media and browser interaction; your existing agent keeps its tools, project context, and judgment.
 
----
+## Get into your first call
 
-## Get in a call with your bot — about 5 minutes
+The current beta supports **Apple Silicon Macs** and uses **Google Meet** as the primary call surface. Meet links can be detected from Chrome, Brave, or Safari. Firefox does not expose the macOS tab automation API, but you can still paste a Meet link into the app manually.
 
-**You'll need:**
-- A **Mac**
-- **Claude Code** installed and working. *(Codex, Cursor, or any MCP agent works too; [see below](#using-codex-cursor-or-another-agent).)*
-- A browser (whatever you already use: Chrome, Brave, Safari, Firefox all work)
+You need an MCP-capable agent installed and working. Claude Code is configured automatically; [Codex and other MCP clients take one additional setup step](#using-codex-cursor-or-another-agent).
 
-### 1. Download and install
-Download the **`.dmg`** from the **[latest release](https://github.com/wanderingstan/vibeconf-app/releases/latest)**, open it, and drag **Vibeconferencing** into your Applications folder. Open it once.
+### 1. Install the app
 
-### 2. Allow the permission prompts
-On first launch macOS asks for **Microphone** and **Camera**. Both are required (the bot speaks through a virtual mic and appears as a virtual-camera avatar). It will also ask for permission to **control your browser** (an Automation prompt, e.g. "Vibeconferencing" would like to control "Google Chrome"). Allow this; it's how the app detects and joins your Meet calls. If you also want the bot to *show* its whiteboard on screen, allow **Screen Recording** too (optional).
+Download the `.dmg` from the [latest release](https://github.com/wanderingstan/vibeconf-app/releases/latest), open it, and drag **Vibeconferencing** into Applications. Launch it once.
 
-### 3. Sign in *(optional)*
-Signing in gets you access to the shared whiteboard. It's optional and not automatic; sign in anytime from App Settings (**⌘,**).
+### 2. Grant the requested permissions
 
-### 4. Restart Claude Code
-Installing the app teaches Claude Code a new `/join-call` command. Quit and reopen Claude Code once so it shows up.
+Allow **Microphone** and **Camera** so the agent can speak and appear as a participant. Allow **Automation** for Chrome, Brave, or Safari if you want the app to find your open Meet automatically. **Screen Recording** is optional and is only needed when the agent presents its whiteboard.
 
-### 5. Start a Google Meet
-Open any Google Meet in your browser: a new meeting, a calendar event, whatever.
+No Vibeconferencing account is required for a basic call. Sign-in enables the hosted shared whiteboard and room sync.
 
-### 6. Tell your agent to join
-In Claude Code, type:
-```
+### 3. Restart Claude Code
+
+On first launch the app installs its Claude Code integration. Quit and reopen Claude Code once so `/join-call` and the bundled MCP tools are loaded.
+
+### 4. Open a Meet and call your agent in
+
+Open a Google Meet in Chrome, Brave, or Safari, then run:
+
+```text
 /join-call
 ```
-The bot finds your open Meet, joins it, and asks to be let in. (No need to copy any link; it detects the meeting automatically.)
 
-Prefer a click? Press **Join call** in the app instead. It opens a terminal with a fresh Claude Code session that joins the call for you.
+The app finds the meeting and your agent asks to be admitted. Click **Admit**, then talk normally. Say "we're done" when you want it to leave.
 
-### 7. Let it in, then talk to it
-Click **Admit** in your Meet window when it asks. Your bot appears as a participant. Now **just talk**. After a short pause it answers *out loud*, like anyone else in the call. Say *"we're done"* (or close Claude Code) when you want it to leave.
+Prefer a click? **Join call** in the desktop app opens a fresh Claude Code session and starts the same flow.
 
-**That's it. You're in a call with your bot. 🎉**
+For screenshots, first-call checks, and common problems, use the [full quickstart](docs/quickstart.md).
 
-### 8. Give your bot a good voice *(optional, whenever you're ready)*
-Out of the box it uses the basic built-in Mac voice, which is fine for testing but robotic. Pick one:
+## What you can do together
 
-- **⭐ ElevenLabs (best, most natural):** grab a free API key at **[elevenlabs.io](https://elevenlabs.io)**, then in the app press **⌘,** (App Settings) and paste the key. Then choose a voice from the People pane.
-- **Premium Mac voices (free):** in **System Settings → Accessibility → Spoken Content**, download an "Enhanced" or "Premium" voice, then pick it in the app's voice selector. A big step up from the default, no account needed.
-- **Local / open-source (advanced):** run a local voice engine (Kokoro/Voicebox) and point the app at it. See [docs/preferences.md](docs/preferences.md).
+![The in-call side panel showing the agent's voice, avatar, whiteboard, chat, screenshot, and participation controls](media/call-capabilities.png)
 
-*Downloading a premium macOS voice (free): search "system voice" in System Settings, open the picker under Accessibility → Spoken Content, and grab a "Premium" or "Enhanced" one.*
+Talk in plain language. The useful commands are the work itself:
 
-![Animated walkthrough: searching "system voice" in macOS System Settings, which opens the System voice picker under Accessibility → Spoken Content where an Enhanced/Premium voice can be downloaded](media/premium-mac-voice.gif)
+- "Research the options we just discussed and put your recommendation on the board."
+- "Draft the follow-up email while we decide what it should say."
+- "Make the change in the repo and show us the diff."
+- "Turn that decision into a diagram we can correct together."
+- "Go quiet and listen until I ask for you."
 
----
+The agent can also read and post meeting chat, take a screenshot, change its voice or avatar, and switch between active, passive, and silent modes.
 
-## What you can ask it
+## Give it a better voice
 
-Talk in plain language, no commands needed:
+The built-in macOS voice is enough to prove the loop. When you want a more natural voice:
 
-![The bot's in-call side panel introducing itself: you can ask it to change its voice, change its avatar background, show or edit a whiteboard, read or post chat, take a screenshot, or switch between active/passive/silent modes, with two bots showing custom World-Cup avatar backgrounds](media/call-capabilities.png)
+- **Premium macOS voice, free and local:** install an Enhanced or Premium voice under System Settings > Accessibility > Spoken Content, then select it in the People pane.
+- **ElevenLabs:** add your own API key in App Settings, then choose a voice in the People pane.
+- **Local voice engine:** point the app at a compatible local Kokoro or Voicebox service. See [Preferences](docs/preferences.md).
 
-- *"Put a summary of what we decided on the whiteboard"*
-- *"Take notes on this meeting on the whiteboard, with diagrams"*
-- *"Change your voice"* · *"give yourself a beach background"*
-- *"Take a screenshot of the call"* · *"read the chat"*
-- *"Go quiet and just listen"* (it keeps up without speaking)
+## How it works
+
+```text
+Your agent  -- MCP -->  bundled MCP server  -- local HTTP -->  desktop app  -->  Google Meet
+  thinks, builds,         call tools and                         captions,       visible agent
+  and uses tools          turn-taking                            voice, camera    participant
+```
+
+The agent never implements WebRTC. It calls tools such as `join_call`, `wait_for_speech`, `speak`, `update_whiteboard`, and `leave_call`; the desktop app owns the meeting-facing media and browser behavior.
+
+## Trust and data flow
+
+Vibeconferencing is meeting software, so it can handle sensitive conversation. The important boundaries are:
+
+| Data | What happens |
+|---|---|
+| Meeting speech | Google Meet produces captions. The desktop app reads those caption turns and exposes them to your agent through the local MCP server. |
+| Agent context | Your agent and its configured model provider receive the meeting context needed to answer or act. Their normal data policies apply. |
+| Local logs | The app keeps rotating local session logs for debugging. They can contain transcript text and agent activity. |
+| Shared rooms | When hosted room sync is active, transcript entries and whiteboard state are sent to the configured sync backend, which defaults to `vibeconferencing.com`. |
+| Voice | macOS voices stay local. If you configure ElevenLabs, the text to be spoken is sent to ElevenLabs. |
+| Remote diagnostics | Remote log shipping is off by default. If enabled, log lines may be sent to the configured backend. |
+
+Read [Data, privacy, and permissions](docs/data-and-privacy.md) before using the beta for sensitive calls. Always make the agent's presence clear and follow the consent requirements for your meeting and jurisdiction.
 
 ## Using Codex, Cursor, or another agent
 
-Any MCP-capable agent can drive the bot. **Claude Code is wired up automatically** when you install the app. For other agents you point them at the app's bundled MCP server once. See **[docs/codex.md](docs/codex.md)** (Codex CLI) and the **[Quickstart](docs/quickstart.md)**.
+Claude Code is configured automatically. Any MCP-capable client can use the bundled server with a one-time configuration. See [Codex setup](docs/codex.md) and the [Quickstart](docs/quickstart.md).
 
-## More docs
+## Documentation
 
-[Install](docs/install.md) · [Quickstart](docs/quickstart.md) · [Multi-bot setups](docs/multi-bot.md) · [Preferences](docs/preferences.md) · [What you can ask (MCP tools)](docs/mcp-tools.md) · [Modes & states](docs/modes-and-states.md) · [Troubleshooting](docs/troubleshooting.md)
-
----
+[Install](docs/install.md) | [Quickstart](docs/quickstart.md) | [Codex](docs/codex.md) | [Multi-bot setups](docs/multi-bot.md) | [Preferences](docs/preferences.md) | [MCP tools](docs/mcp-tools.md) | [Modes and states](docs/modes-and-states.md) | [Troubleshooting](docs/troubleshooting.md)
 
 ## For developers
 
 <details>
-<summary>Repo layout, how it works, building, and tests</summary>
+<summary>Repository layout, local development, and tests</summary>
 
-**What's in here**
+| Directory | What it contains |
+|---|---|
+| `electron-app/` | Audio pipeline, virtual camera, Meet and Slack automation, turn-taking, local control server, and settings UI. |
+| `mcp-server/` | The MCP tools used by the driving agent. It is bundled into the app. |
+| `extension/` | Page scripts used by the meeting and avatar surfaces. It is bundled into the app. |
+| `scripts/`, `tests/`, `docs/` | Unit tests, real-call harnesses, and user/developer documentation. |
 
-| Dir | What it is |
-|-----|------------|
-| `electron-app/` | The Electron app: audio pipeline, virtual camera, Meet/Slack automation, turn-taking, the local control server, and the settings UI. |
-| `mcp-server/` | The MCP server the agent talks to (tools like `join_call`, `wait_for_speech`, `speak`, `update_whiteboard`, `set_voice`). Bundled into the app. |
-| `extension/` | Injected page scripts (Runway avatar bridge, LiveKit client). Bundled into the app. |
-| `scripts/`, `tests/`, `docs/` | Test harness (fleet + nightly), unit/e2e tests, and user docs. |
-
-**How it works**
-
-```
- AI agent (Claude Code)  ──MCP──▶  mcp-server  ──HTTP──▶  Electron app  ──▶  Google Meet / Slack
-   (speak, listen,                 (bundled)              (audio in/out,        (as a real
-    whiteboard, …)                                        virtual camera)        participant)
-```
-
-The agent never touches WebRTC. It calls MCP tools; the app does the real-time media work (captures call audio for transcription, plays synthesized speech into a virtual mic, renders the avatar/whiteboard into a virtual camera) and drives the Meet/Slack UI.
-
-**Build** (Node ≥ 18 and [pnpm](https://pnpm.io)):
+Build the desktop app with Node 18+ and [pnpm](https://pnpm.io):
 
 ```bash
 cd electron-app
 pnpm install
-pnpm dev      # run from source
-pnpm dist     # signed/notarized .dmg (Apple Developer creds needed; dist:fast skips notarization)
+pnpm dev
 ```
 
-The build bundles `../mcp-server` and `../extension`, so keep the repo layout intact.
-
-**Tests.** Unit tests need no build or install (just Node ≥ 18):
+Run the dependency-free unit suite from the repository root:
 
 ```bash
-npm test      # 196 unit tests: config scoping, profile resolution, turn-taking gating, whiteboard layout, updates, …
+npm test
 ```
 
-`tests/e2e/` drives real Meet/Slack calls via the fleet harness (`scripts/`); the nightly runner is `scripts/scheduled-meet-test.sh` (see `scripts/SCHEDULING.md`).
+See [Running from source](RUNNING-FROM-SOURCE.md) for profiles, Codex MCP setup, and source-build caveats. Real Meet and Slack checks live under `scripts/` and `tests/e2e/`.
 
 </details>
 
-## Backend
+## Open-source boundary
 
-By default the app talks to the hosted **vibeconferencing.com** service (room sync, shared whiteboard, sign-in). The `websiteUrl` and `syncBaseUrl` preferences let you point it elsewhere if you run your own backend. The hosted backend and web frontend are not part of this repository.
+The desktop app, bundled MCP server, extension code, docs, and test harness in this repository are MIT licensed. The hosted `vibeconferencing.com` backend and web frontend are separate and are not included here. `websiteUrl` and `syncBaseUrl` can point the app at a compatible service.
 
 ## License
 
-[MIT](./LICENSE) © 2026 Stan James
+[MIT](./LICENSE) (c) 2026 Stan James

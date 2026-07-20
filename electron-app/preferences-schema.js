@@ -189,13 +189,13 @@ const PREFERENCES = {
   },
   remoteLogging: {
     type: 'boolean',
-    default: true,
+    default: false,
     description:
       'Ship this app\'s session log to the backend so it can be read remotely ' +
       'via get_session_log (instance:…) or the logs CLI — useful for debugging ' +
-      'another machine\'s bots without terminal access. ON by default during ' +
-      'early testing (the team relies on these call logs for optimizing/debugging); ' +
-      'the log may contain transcript text. Set false to keep logs local. ' +
+      'another machine\'s bots without terminal access. OFF by default because ' +
+      'the log may contain transcript text. Enable only for an active debugging ' +
+      'session whose participants understand that logs will leave this Mac. ' +
       'Takes effect immediately (no restart).',
   },
   websiteUrl: {

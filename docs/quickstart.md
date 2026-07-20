@@ -2,7 +2,7 @@
 
 You'll start a Google Meet, run `/join-call` in Claude Code, and have a bot show up in the call as a participant you can talk to.
 
-Prereqs: you've [installed](install.md) the app, granted Mic/Camera permissions, signed in to vibeconferencing.com, and restarted Claude Code at least once after install.
+Prereqs: you've [installed](install.md) the app, granted Mic/Camera permissions, and restarted Claude Code at least once after install. A Vibeconferencing account is optional for a basic call; sign-in enables hosted room sync and the shared whiteboard.
 
 ## The five-step path
 
@@ -25,7 +25,7 @@ You don't need to type the Meet URL — the app autodetects it from the next ste
 ```
 
 That's it. The skill:
-- Picks up the Meet URL from your active Chrome/Brave tab automatically
+- Picks up the Meet URL from your active Chrome, Brave, or Safari tab automatically
 - Reads your project's `CLAUDE.md` for a bot persona/character name (falls back to "Jimmy" or whatever you set in the panel's Bot Name field)
 - Calls `join_call` on the MCP server
 - Starts a `wait_for_speech` loop so the bot is listening
@@ -86,5 +86,5 @@ Once the bot is in the call, any of these work from Claude Code:
 ## Next
 
 - Two bots in one call → **[Multi-bot setups](multi-bot.md)**
-- Bot modes (active / passive / silent), states (yielding, thinking), avatar tuning → coming soon in `modes-and-states.md`
-- Full list of MCP tools → coming soon in `mcp-tools.md`
+- Bot modes (active / passive / silent), states (yielding, thinking), avatar tuning → **[Modes and states](modes-and-states.md)**
+- Full list of MCP tools → **[MCP tools](mcp-tools.md)**

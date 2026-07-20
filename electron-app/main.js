@@ -3284,17 +3284,17 @@ app.whenReady().then(async () => {
   }
   await localServer.start();
 
-  // Remote log shipping (opt-in via `remoteLogging` pref). Build a stable
+  // Remote log shipping (explicit opt-in via `remoteLogging` pref). Build a stable
   // instanceId from hostname + profile so the same bot is recognizable across
   // restarts; meta is read at flush time so the current room is always fresh.
   try {
     const sanitize = (s) => String(s || '').replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '') || 'x';
     const hostShort = sanitize(require('os').hostname().split('.')[0]);
     const instanceId = `${hostShort}--${sanitize(appProfile || 'default')}`;
-    // Default ON (schema default) when the user hasn't set it — only an explicit
-    // `false` keeps logs local. `=== true` would ignore the schema default for
-    // unset installs, so use `!== false`.
-    const remoteLoggingOn = store?.get('remoteLogging') !== false;
+    // Resolve through the public preference schema so the privacy-safe default
+    // has one authority. Existing explicit opt-ins remain enabled.
+    const remoteLoggingDefault = require('./preferences-schema').PREFERENCES.remoteLogging.default;
+    const remoteLoggingOn = store?.get('remoteLogging') ?? remoteLoggingDefault;
     configureRemoteLog({
       enabled: remoteLoggingOn,
       endpointBase: () => getWebsiteUrl(),

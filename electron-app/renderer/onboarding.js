@@ -93,7 +93,7 @@ async function loadAuth() {
   const who = auth?.user?.email || auth?.user?.name || '';
   $('authStatus').textContent = signedIn
     ? `Signed in${who ? ' as ' + who : ''}. ✓`
-    : 'Not signed in — the whiteboard is disabled until you sign in.';
+    : 'Not signed in. The whiteboard is disabled until you sign in.';
   $('signInBtn').style.display = signedIn ? 'none' : '';
   $('signOutBtn').style.display = signedIn ? '' : 'none';
   if (signedIn) stopAuthPoll();
@@ -223,6 +223,7 @@ $('elKey').addEventListener('change', async () => {
   populateVoices();
 });
 $('getKeyLink').addEventListener('click', (e) => { e.preventDefault(); api.invoke('onboarding:open-url', 'https://elevenlabs.io/app/settings/api-keys'); });
+$('voiceboxLink').addEventListener('click', (e) => { e.preventDefault(); api.invoke('onboarding:open-url', 'https://github.com/jamiepine/voicebox'); });
 
 // ── initial load ─────────────────────────────────────────────────────────
 (async () => {

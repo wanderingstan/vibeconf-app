@@ -88,9 +88,11 @@ function stopAuthPoll() { if (authPollTimer) { clearInterval(authPollTimer); aut
 async function loadAuth() {
   let auth;
   try { auth = await api.invoke('check-auth'); } catch { auth = null; }
-  const signedIn = !!(auth && (auth.signedIn || auth.email || auth.ok));
+  // check-auth returns { authenticated, user: { email, name } } (see /api/auth/me).
+  const signedIn = !!(auth && auth.authenticated);
+  const who = auth?.user?.email || auth?.user?.name || '';
   $('authStatus').textContent = signedIn
-    ? `Signed in${auth.email ? ' as ' + auth.email : ''}. ✓`
+    ? `Signed in${who ? ' as ' + who : ''}. ✓`
     : 'Not signed in — the whiteboard is disabled until you sign in.';
   $('signInBtn').style.display = signedIn ? 'none' : '';
   $('signOutBtn').style.display = signedIn ? '' : 'none';
@@ -204,9 +206,9 @@ function persistSelectedVoice() {
   if (opts.provider !== 'voicebox') opts.voiceboxProfileId = '';
   api.send('update-tts-config', opts);
 }
+// Same convention as the preferences panel: picking a voice persists it AND
+// auditions it immediately — no separate "play" button.
 $('voiceSelect').addEventListener('change', () => { persistSelectedVoice(); previewSelectedVoice(); });
-$('previewVoice').addEventListener('click', previewSelectedVoice);
-$('previewVoice2').addEventListener('click', previewSelectedVoice);
 // Re-list voices (unlocks ElevenLabs voices) once a key is entered; persist the
 // key first so the audition path (synth-voice-sample reads the stored key) works.
 $('elKey').addEventListener('change', async () => {

@@ -13,6 +13,12 @@ set -u
 # script while zsh is still reading it — corrupting the running shell. Re-exec from
 # a stable /tmp copy first so a pull can't touch the code we're executing. Guarded
 # so we only copy once. Disable the whole self-update with VIBECONF_NO_SELFUPDATE=1.
+# Resolve the repo root from the REAL script path BEFORE the re-exec below. After the
+# re-exec $0 is the /tmp copy, so ${0:A:h:h} would point outside the checkout and every
+# lane would fail with "no package.json" (#460). Compute once here; export across exec.
+: ${VIBECONF_REPO:="${0:A:h:h}"}
+export VIBECONF_REPO
+
 if [[ "${VIBECONF_NO_SELFUPDATE:-0}" != "1" && "${VIBECONF_SELF_COPY:-0}" != "1" ]]; then
   _copy="$(mktemp -t scheduled-meet-test 2>/dev/null)" || _copy=""
   if [[ -n "$_copy" ]] && cp "$0" "$_copy" 2>/dev/null; then
@@ -21,7 +27,7 @@ if [[ "${VIBECONF_NO_SELFUPDATE:-0}" != "1" && "${VIBECONF_SELF_COPY:-0}" != "1"
   fi
 fi
 
-REPO="${0:A:h:h}"   # repo root = this scripts/ dir up one
+REPO="$VIBECONF_REPO"   # repo root, resolved pre-re-exec (see above)
 RESULTS="$HOME/vibeconf-test-results"
 mkdir -p "$RESULTS"
 

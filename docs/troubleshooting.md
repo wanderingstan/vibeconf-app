@@ -116,4 +116,4 @@ Include:
 - If multi-bot: the other instance's `Local server:` URL and profile name
 - For UI issues: a `get_call_screenshot` of the moment
 
-Filed at [github.com/wanderingstan/vibeconferencing/issues](https://github.com/wanderingstan/vibeconferencing/issues).
+Filed at [github.com/wanderingstan/vibeconf-app/issues](https://github.com/wanderingstan/vibeconf-app/issues).

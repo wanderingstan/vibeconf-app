@@ -11,7 +11,7 @@ Vibeconferencing is macOS-only (Apple Silicon). Two install paths: a signed DMG 
 
 ## Install from DMG (recommended)
 
-1. Download `Vibeconferencing-<version>-arm64.dmg` from the [GitHub releases page](https://github.com/wanderingstan/vibeconferencing/releases).
+1. Download `Vibeconferencing-<version>-arm64.dmg` from the [GitHub releases page](https://github.com/wanderingstan/vibeconf-app/releases/latest).
 2. Open the DMG and drag **Vibeconferencing** into Applications.
 3. Launch it once. macOS may ask you to confirm — the app is signed and notarized by Apple.
 4. **Grant macOS permissions** when prompted (or in System Settings → Privacy & Security):
@@ -27,7 +27,7 @@ The first launch will auto-install the Claude Code integration (writes `~/.claud
 For dev work or running unreleased main. See [RUNNING-FROM-SOURCE.md](../RUNNING-FROM-SOURCE.md) for the full walkthrough — the short version:
 
 ```bash
-git clone git@github.com:wanderingstan/vibeconferencing.git
+git clone git@github.com:wanderingstan/vibeconf-app.git
 cd vibeconferencing
 pnpm install              # web companion deps (optional unless running the website locally)
 cd electron-app

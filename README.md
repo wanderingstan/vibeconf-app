@@ -1,4 +1,4 @@
-# Vibeconferencing — put an AI agent in your video calls
+# Vibeconferencing — bring your agent into a video call
 
 Vibeconferencing is a Mac app that lets an AI agent — the one you already use in **Claude Code, Codex, or Cursor** — **join your Google Meet calls as a real participant**. It hears the conversation, talks back out loud, and — because it's your *actual* agent, not a notetaker — it **builds, researches, and acts on what's said while you're still in the call**, and can share its screen to show the work.
 

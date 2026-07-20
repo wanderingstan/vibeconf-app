@@ -2,6 +2,8 @@
 
 The macOS desktop app that puts **AI agents into your video calls as real participants**. A bot joins a Google Meet call (or Slack huddle), *hears* the conversation, *speaks* back via text-to-speech, shows a virtual-camera avatar, and shares a live whiteboard — all driven by an AI agent (e.g. Claude Code) through a bundled MCP server.
 
+![A Google Meet call with two people and the bot "jimmy bot" (an emoji avatar) presenting a shared whiteboard that diagrams the call's human and bot participants alongside live notes](media/call-whiteboard.png)
+
 This is the open-source **client**. It connects to the hosted vibeconferencing.com backend for room sync, the shared whiteboard, and sign-in (both configurable — see below).
 
 ## What's in here
@@ -51,6 +53,12 @@ drives real Meet/Slack calls and needs the fleet harness (a later migration).
 ## Backend
 
 By default the app talks to the hosted **vibeconferencing.com** service (room sync, shared whiteboard, sign-in). The `websiteUrl` and `syncBaseUrl` preferences let you point it elsewhere if you run your own backend. The hosted backend and web frontend are not part of this repository.
+
+## Talk to it like a participant
+
+Ask the bot in plain language — no commands. Each bot has a customizable emoji avatar and background, and you can steer voice, whiteboard, and behavior mid-call.
+
+![A call where the bot's side panel introduces itself — listing that you can ask it to change its voice, change its avatar background, show or edit a whiteboard, read or post chat, take a screenshot, or switch between active/passive/silent modes — with two bots showing custom World-Cup-themed avatar backgrounds](media/call-capabilities.png)
 
 ## License
 

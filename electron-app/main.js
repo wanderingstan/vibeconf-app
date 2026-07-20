@@ -1459,12 +1459,22 @@ function createOnboardingWindow() {
   onboardingWindow = new BrowserWindow({
     width: 520, height: 660, title: 'Set up Vibeconferencing',
     icon: path.join(__dirname, 'icon.png'),
+    center: true, show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload-onboarding.js'),
       contextIsolation: true, nodeIntegration: false,
     },
   });
   onboardingWindow.loadFile(path.join(__dirname, 'renderer', 'onboarding.html'));
+  // Show only once painted, and pull it in front of the main app window (on
+  // first run the main window is created around the same time and would
+  // otherwise cover the wizard). moveTop + focus wins the z-order race.
+  onboardingWindow.once('ready-to-show', () => {
+    if (!onboardingWindow || onboardingWindow.isDestroyed()) return;
+    onboardingWindow.show();
+    onboardingWindow.moveTop();
+    onboardingWindow.focus();
+  });
   onboardingWindow.on('closed', () => { onboardingWindow = null; });
 }
 

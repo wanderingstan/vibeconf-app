@@ -28,6 +28,11 @@
       border-radius: 6px; padding: 9px 11px; font-size: 14px; font-family: inherit;
     }
     input:focus { outline: none; border-color: #8ab4f8; }
+    select {
+      width: 100%; background: #2a2d31; color: #e8eaed; border: 1px solid #5f6368;
+      border-radius: 6px; padding: 9px 11px; font-size: 14px; font-family: inherit;
+    }
+    select:focus { outline: none; border-color: #8ab4f8; }
     a { color: #8ab4f8; }
     .btn {
       background: #8ab4f8; color: #202124; border: none; border-radius: 6px;
@@ -50,6 +55,9 @@
     .card { background: #2a2d31; border: 1px solid #3c4043; border-radius: 8px; padding: 14px; }
     .choice { display: flex; gap: 8px; margin-top: 10px; }
     .choice .btn { flex: 1; }
+    /* selected state for a two-button choice (keeps both the same width) */
+    .btn.ghost.selected { background: #8ab4f8; color: #202124; border-color: #8ab4f8; font-weight: 600; }
+    .btn.ghost.selected:hover { background: #aecbfa; }
     .hint { color: #9aa0a6; font-size: 12px; margin-top: 8px; }
     footer {
       display: flex; align-items: center; gap: 8px; padding: 12px 24px;
@@ -91,7 +99,7 @@
 
     <section data-step="logging">
       <h2>Call logging</h2>
-      <p class="sub">The app can send its own diagnostic logs (timing, errors, and what the bot heard/said) to help improve it. This is your choice, and it's off unless you turn it on.</p>
+      <p class="sub">The app can send its own diagnostic logs (timing, errors, and what the bot heard and said, which can include transcript text) to help us improve it. During the beta this is on by default so the team can debug the bot — it's your call, and you can turn it off here or later in Bot Settings.</p>
       <div class="card">
         <div class="choice">
           <button class="btn ghost" id="logYes">Allow logging</button>
@@ -103,11 +111,16 @@
 
     <section data-step="voice">
       <h2>Give your bot a good voice</h2>
-      <p class="sub">The default Mac voice is robotic. For a natural voice, paste an ElevenLabs API key (a free tier is plenty to start).</p>
+      <p class="sub">The default Mac voice is robotic. For a natural voice, paste an ElevenLabs API key (a free tier is plenty to start), then pick a voice below.</p>
       <label for="elKey">ElevenLabs API key <span style="color:#9aa0a6">(optional)</span></label>
       <input type="password" id="elKey" placeholder="sk_..." autocomplete="off" spellcheck="false" />
       <div class="hint">Don't have one? <a href="#" id="getKeyLink">Get a free key at elevenlabs.io →</a></div>
-      <div class="hint">Prefer no account? You can download a free premium macOS voice in System&nbsp;Settings → Accessibility → Spoken&nbsp;Content, or just continue with the default and change it later.</div>
+      <label for="voiceSelect">Voice</label>
+      <select id="voiceSelect"><option value="mac:Samantha">Samantha (default)</option></select>
+      <div class="choice">
+        <button class="btn ghost" id="previewVoice">🔊 Hear this voice</button>
+      </div>
+      <div class="hint">Prefer no account? You can download a free premium macOS voice in System&nbsp;Settings → Accessibility → Spoken&nbsp;Content — then pick it here.</div>
     </section>
 
     <section data-step="bot">
@@ -116,7 +129,7 @@
       <label for="botName">Bot name</label>
       <input type="text" id="botName" placeholder="Jimmy" />
       <div class="choice">
-        <button class="btn ghost" id="previewVoice">🔊 Hear the voice</button>
+        <button class="btn ghost" id="previewVoice2">🔊 Hear the voice</button>
       </div>
     </section>
 

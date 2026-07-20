@@ -79,6 +79,12 @@ async function loadPermissions() {
 }
 
 // ── sign-in ──────────────────────────────────────────────────────────────
+// Login opens vibeconferencing.com in a browser; the app receives the token
+// asynchronously when the user finishes. So a single check right after the
+// click is too early — poll until signed in (and re-check on window focus, for
+// when the user completes login and switches back to this window).
+let authPollTimer = null;
+function stopAuthPoll() { if (authPollTimer) { clearInterval(authPollTimer); authPollTimer = null; } }
 async function loadAuth() {
   let auth;
   try { auth = await api.invoke('check-auth'); } catch { auth = null; }
@@ -88,31 +94,138 @@ async function loadAuth() {
     : 'Not signed in — the whiteboard is disabled until you sign in.';
   $('signInBtn').style.display = signedIn ? 'none' : '';
   $('signOutBtn').style.display = signedIn ? '' : 'none';
+  if (signedIn) stopAuthPoll();
 }
-$('signInBtn').addEventListener('click', async () => { try { await api.invoke('login'); } catch {} setTimeout(loadAuth, 1500); });
+$('signInBtn').addEventListener('click', async () => {
+  try { await api.invoke('login'); } catch {}
+  stopAuthPoll();
+  let tries = 0;
+  authPollTimer = setInterval(async () => { tries += 1; await loadAuth(); if (tries > 60) stopAuthPoll(); }, 2000);
+});
 $('signOutBtn').addEventListener('click', async () => { try { await api.invoke('logout'); } catch {} setTimeout(loadAuth, 500); });
+window.addEventListener('focus', () => { if (steps[i] === 'signin') loadAuth(); });
 
 // ── logging consent ──────────────────────────────────────────────────────
+// Highlight the chosen button via a `.selected` class — never by adding/removing
+// `.btn`, which also carries `flex:1` (removing it made the buttons different widths).
 function paintLog(v) {
   $('logState').textContent = v === true ? 'Logging is ON.' : v === false ? 'Logging is OFF.' : 'Not set.';
-  $('logYes').classList.toggle('btn', v !== true); $('logNo').classList.toggle('btn', v !== false);
+  $('logYes').classList.toggle('selected', v === true);
+  $('logNo').classList.toggle('selected', v === false);
 }
 $('logYes').addEventListener('click', async () => { await api.invoke('set-config', 'remoteLogging', true); paintLog(true); });
 $('logNo').addEventListener('click', async () => { await api.invoke('set-config', 'remoteLogging', false); paintLog(false); });
 
-// ── voice / bot ──────────────────────────────────────────────────────────
+// ── voice picker ───────────────────────────────────────────────────────────
+// Mirrors the panel's unified picker: merge macOS + ElevenLabs + Voicebox into
+// one dropdown, value = "mac:<name>" / "el:<id>" / "vb:<id>". Persist via
+// update-tts-config (same as the panel) and audition through the local speakers
+// via synth-voice-sample (NOT play-speech-test — that only plays into a live call).
+let savedVoiceCfg = null;
+async function populateVoices(cfg) {
+  const sel = $('voiceSelect');
+  if (!sel) return;
+  const apiKey = ($('elKey').value || '').trim();
+  const [macos, voicebox, eleven] = await Promise.all([
+    api.invoke('list-macos-voices').catch(() => []),
+    api.invoke('list-voicebox-profiles').catch(() => []),
+    apiKey ? api.invoke('list-elevenlabs-voices', apiKey).catch(() => []) : Promise.resolve([]),
+  ]);
+  let selected = sel.value;
+  if (cfg) {
+    const p = cfg.ttsProvider || ''; const vb = cfg.voiceboxProfileId || '';
+    const el = cfg.ttsVoiceId || ''; const mac = cfg.macosVoice || 'Samantha';
+    if (p === 'voicebox' && vb) selected = 'vb:' + vb;
+    else if (p === 'elevenlabs' && el) selected = 'el:' + el;
+    else if (p === 'macos-say') selected = 'mac:' + mac;
+    else if (el && apiKey) selected = 'el:' + el;
+    else selected = 'mac:' + mac;
+  }
+  sel.innerHTML = '';
+  const addGroup = (label, items) => {
+    if (!items.length) return;
+    const og = document.createElement('optgroup'); og.label = label;
+    for (const it of items) {
+      const o = document.createElement('option');
+      o.value = it.value; o.textContent = it.text;
+      if (it.engine) o.dataset.engine = it.engine;
+      if (it.value === selected) o.selected = true;
+      og.appendChild(o);
+    }
+    sel.appendChild(og);
+  };
+  addGroup('Voicebox (local)', (Array.isArray(voicebox) ? voicebox : []).map((p) => ({
+    value: 'vb:' + p.id,
+    text: `${p.name} (${p.preset_engine || p.default_engine || 'engine'})`,
+    engine: p.preset_engine || p.default_engine || '',
+  })));
+  addGroup('ElevenLabs', (Array.isArray(eleven) ? eleven : []).map((v) => ({
+    value: 'el:' + v.id,
+    text: v.category && v.category !== 'premade' ? `${v.name} · ${v.category}` : v.name,
+  })));
+  const macList = Array.isArray(macos) ? macos : [];
+  const tierOf = (n) => (/\(Premium\)/i.test(n) ? 0 : /\(Enhanced\)/i.test(n) ? 1 : 2);
+  const white = (n) => ['Samantha', 'Karen'].some((w) => n === w || n.startsWith(w + ' '));
+  addGroup('Built-in (macOS)', macList
+    .filter((v) => tierOf(v.name) < 2 || white(v.name))
+    .map((v) => ({ value: 'mac:' + v.name, text: `${v.name} (${v.locale})` })));
+  addGroup('Other built-in (lower quality)', macList
+    .filter((v) => tierOf(v.name) === 2 && !white(v.name))
+    .map((v) => ({ value: 'mac:' + v.name, text: `${v.name} (${v.locale})` })));
+  if (!sel.options.length) sel.innerHTML = '<option value="mac:Samantha">Samantha (default)</option>';
+}
+
+function voiceSampleText() {
+  const o = $('voiceSelect').selectedOptions[0];
+  const name = (o ? o.textContent : '').replace(/\s*[·(].*$/, '').trim();
+  return `Hello, my name is ${name || 'your voice assistant'}.`;
+}
+function currentVoiceOpts(extra) {
+  const val = $('voiceSelect').value || '';
+  const sep = val.indexOf(':'); const kind = val.slice(0, sep); const id = val.slice(sep + 1);
+  if (kind === 'vb') {
+    const engine = $('voiceSelect').selectedOptions[0]?.dataset.engine || 'kokoro';
+    return { provider: 'voicebox', voiceboxProfileId: id, voiceboxEngine: engine, ...extra };
+  }
+  if (kind === 'el') return { provider: 'elevenlabs', voiceId: id, ...extra };
+  return { provider: 'macos-say', macosVoice: id, ...extra };
+}
+let _sample = null;
+async function previewSelectedVoice() {
+  try {
+    if (_sample) { try { _sample.pause(); } catch {} _sample = null; }
+    const r = await api.invoke('synth-voice-sample', currentVoiceOpts({ text: voiceSampleText() }));
+    if (r?.ok && r.dataUrl) { _sample = new Audio(r.dataUrl); _sample.play().catch(() => {}); }
+  } catch {}
+}
+function persistSelectedVoice() {
+  // voiceboxProfileId:'' clears any prior Voicebox pick so providers don't fight.
+  const opts = currentVoiceOpts({});
+  if (opts.provider !== 'voicebox') opts.voiceboxProfileId = '';
+  api.send('update-tts-config', opts);
+}
+$('voiceSelect').addEventListener('change', () => { persistSelectedVoice(); previewSelectedVoice(); });
+$('previewVoice').addEventListener('click', previewSelectedVoice);
+$('previewVoice2').addEventListener('click', previewSelectedVoice);
+// Re-list voices (unlocks ElevenLabs voices) once a key is entered; persist the
+// key first so the audition path (synth-voice-sample reads the stored key) works.
+$('elKey').addEventListener('change', async () => {
+  const key = ($('elKey').value || '').trim();
+  try { await api.invoke('set-config', 'ttsApiKey', key); } catch {}
+  populateVoices();
+});
 $('getKeyLink').addEventListener('click', (e) => { e.preventDefault(); api.invoke('onboarding:open-url', 'https://elevenlabs.io/app/settings/api-keys'); });
-$('previewVoice').addEventListener('click', () => api.send('play-speech-test'));
 
 // ── initial load ─────────────────────────────────────────────────────────
 (async () => {
   try {
-    const cfg = await api.invoke('get-config', ['botName', 'ttsApiKey', 'remoteLogging']);
-    if (cfg) {
-      $('botName').value = cfg.botName || '';
-      $('elKey').value = cfg.ttsApiKey || '';
-      paintLog(cfg.remoteLogging);
+    savedVoiceCfg = await api.invoke('get-config', ['botName', 'ttsApiKey', 'remoteLogging', 'ttsProvider', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId']);
+    if (savedVoiceCfg) {
+      $('botName').value = savedVoiceCfg.botName || '';
+      $('elKey').value = savedVoiceCfg.ttsApiKey || '';
+      paintLog(savedVoiceCfg.remoteLogging);
     }
   } catch (e) { console.warn('initial load failed', e); }
+  populateVoices(savedVoiceCfg);
   render();
 })();

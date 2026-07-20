@@ -101,12 +101,12 @@ if [[ "${VIBECONF_NO_SELFUPDATE:-0}" != "1" ]]; then
   echo "=== self-update: DMG ===" | tee -a "$LOG"
   _app="/Applications/Vibeconferencing.app"
   _installed=$(defaults read "$_app/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null)
-  _tag=$(gh release list --repo wanderingstan/vibeconferencing --limit 1 --json tagName -q '.[0].tagName' 2>/dev/null)
+  _tag=$(gh release list --repo wanderingstan/vibeconf-app --limit 1 --json tagName -q '.[0].tagName' 2>/dev/null)
   _latest="${_tag#v}"
   echo "  installed=$_installed latest=$_latest" | tee -a "$LOG"
   if [[ -n "$_latest" && "$_installed" != "$_latest" ]]; then
     _dmg="/tmp/vibeconf-$_tag.dmg"; rm -f "$_dmg"
-    if gh release download "$_tag" --repo wanderingstan/vibeconferencing --pattern '*arm64.dmg' --output "$_dmg" 2>&1 | tee -a "$LOG" && [[ -f "$_dmg" ]]; then
+    if gh release download "$_tag" --repo wanderingstan/vibeconf-app --pattern '*arm64.dmg' --output "$_dmg" 2>&1 | tee -a "$LOG" && [[ -f "$_dmg" ]]; then
       # Version-gated, so the always-on production app is only restarted on nights a
       # new build actually drops. Quit it → replace the bundle → relaunch it.
       osascript -e 'quit app "Vibeconferencing"' 2>/dev/null; sleep 3

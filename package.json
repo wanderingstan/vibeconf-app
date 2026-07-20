@@ -2,10 +2,29 @@
   "name": "vibeconf-app",
   "version": "0.7.0-beta62",
   "private": true,
-  "description": "AI agents as real participants in your video calls — the open-source desktop client (Electron + MCP).",
+  "description": "AI agents as real participants in your video calls \u2014 the open-source desktop client (Electron + MCP).",
   "license": "MIT",
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "test:unit": "node --test tests/*.test.mjs"
+    "test:unit": "node --test tests/*.test.mjs",
+    "test:fleet": "scripts/spawn-test-fleet.sh",
+    "test:meet": "node scripts/meet-test.mjs",
+    "test:slack": "node scripts/slack-test.mjs",
+    "test:slack:ci": "SLACK_TEST_URL=${SLACK_TEST_URL:-https://app.slack.com/client/T0BCX7N0RA6/C0BCZ4E3Q49}; VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 2 --slack --slack-url=$SLACK_TEST_URL && node scripts/slack-test.mjs --bots Alice:7901,Jimmy:7902 --slack-url=$SLACK_TEST_URL; code=$?; scripts/spawn-test-fleet.sh 2 --slack --kill; exit $code",
+    "test:slack:rec": "scripts/record-run.sh --label slack -- pnpm test:slack:ci",
+    "test:meet:ci": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 2 && node scripts/meet-test.mjs --bots Alice:7901,Jimmy:7902; code=$?; scripts/spawn-test-fleet.sh 2 --kill; exit $code",
+    "test:meet:rec": "scripts/record-run.sh --label meet -- pnpm test:meet:ci",
+    "test:codex:ci": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 1 && node scripts/smoke-codex-mcp.mjs --base-url=http://127.0.0.1:7901; code=$?; scripts/spawn-test-fleet.sh 1 --kill; exit $code",
+    "test:meet:ci:workspace": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 2 --google && node scripts/meet-test.mjs --target workspace --bots Alice:7901,Jimmy:7902; code=$?; scripts/spawn-test-fleet.sh 2 --google --kill; exit $code",
+    "test:meet:dmg": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 2 --dmg && node scripts/meet-test.mjs --bots Alice:7901,Jimmy:7902; code=$?; scripts/spawn-test-fleet.sh 2 --kill; exit $code",
+    "test:meet:built": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 2 --built && node scripts/meet-test.mjs --bots Alice:7901,Jimmy:7902; code=$?; scripts/spawn-test-fleet.sh 2 --kill; exit $code",
+    "test:meet:agents": "VIBECONF_NO_RUN_TAG=1 node scripts/agent-fuzz-test.mjs",
+    "test:screenshot": "node scripts/screenshot-test.mjs",
+    "test:screenshot:ci": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 1 && node scripts/screenshot-test.mjs --bots Alice:7901; code=$?; scripts/spawn-test-fleet.sh 1 --kill; exit $code",
+    "test:share-verify": "node scripts/share-verify-test.mjs",
+    "test:share-verify:ci": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 2 && node scripts/share-verify-test.mjs --bots Alice:7901,Jimmy:7902; code=$?; scripts/spawn-test-fleet.sh 2 --kill; exit $code",
+    "test:detect": "node scripts/detect-test.mjs",
+    "smoke:codex-mcp": "node scripts/smoke-codex-mcp.mjs",
+    "install:codex-mcp": "node scripts/install-codex-mcp.mjs"
   }
 }

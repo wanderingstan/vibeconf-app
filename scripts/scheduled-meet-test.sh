@@ -21,7 +21,7 @@ if [[ "${VIBECONF_NO_SELFUPDATE:-0}" != "1" && "${VIBECONF_SELF_COPY:-0}" != "1"
   fi
 fi
 
-REPO="/Users/wanderingstan/Developer/vibeconferencing"
+REPO="${0:A:h:h}"   # repo root = this scripts/ dir up one
 RESULTS="$HOME/vibeconf-test-results"
 mkdir -p "$RESULTS"
 

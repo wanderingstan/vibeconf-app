@@ -15,7 +15,7 @@
   <array>
     <string>/bin/zsh</string>
     <string>-lc</string>
-    <string>/Users/wanderingstan/Developer/vibeconferencing/scripts/scheduled-meet-test.sh</string>
+    <string>/Users/wanderingstan/Developer/vibeconf-app/scripts/scheduled-meet-test.sh</string>
   </array>
 
   <!-- Nightly at 03:00. Edit Hour/Minute to taste; add more <dict> entries to

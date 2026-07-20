@@ -42,7 +42,7 @@ Out of the box it uses the basic built-in Mac voice — fine for testing, but ro
 - **Free — premium Mac voices:** in **System Settings → Accessibility → Spoken Content**, download an "Enhanced" or "Premium" voice, then pick it in the app's voice selector. A big step up from the default, no account needed.
 - **Local / open-source (advanced):** run a local voice engine (Kokoro/Voicebox) and point the app at it — see [docs/preferences.md](docs/preferences.md).
 
-*Downloading a premium macOS voice (free) — search "system voice" in System Settings, open the picker under Accessibility → Spoken Content, and grab an "Enhanced" one:*
+*Downloading a premium macOS voice (free) — search "system voice" in System Settings, open the picker under Accessibility → Spoken Content, and grab a "Premium" or "Enhanced" one:*
 
 ![Animated walkthrough: searching "system voice" in macOS System Settings, which opens the System voice picker under Accessibility → Spoken Content where an Enhanced/Premium voice can be downloaded](media/premium-mac-voice.gif)
 

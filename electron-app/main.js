@@ -1447,6 +1447,59 @@ function openAppSettings() {
   appSettingsWindow.on('closed', () => { appSettingsWindow = null; });
 }
 
+// ── First-run setup wizard (onboarding) ─────────────────────────────────────
+// A guided walkthrough shown once on first launch (guarded by the app-level
+// `onboardingComplete` flag) and re-runnable from the app menu. Pure step logic
+// lives in onboarding-flow.js; the renderer is renderer/onboarding.html.
+let onboardingWindow = null;
+function createOnboardingWindow() {
+  if (onboardingWindow && !onboardingWindow.isDestroyed()) {
+    onboardingWindow.show(); onboardingWindow.focus(); return;
+  }
+  onboardingWindow = new BrowserWindow({
+    width: 520, height: 660, title: 'Set up Vibeconferencing',
+    icon: path.join(__dirname, 'icon.png'),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-onboarding.js'),
+      contextIsolation: true, nodeIntegration: false,
+    },
+  });
+  onboardingWindow.loadFile(path.join(__dirname, 'renderer', 'onboarding.html'));
+  onboardingWindow.on('closed', () => { onboardingWindow = null; });
+}
+
+// Probe (and, on first send, trigger) the macOS "Automation" permission by sending
+// a benign Apple Event to whichever supported browser is running. macOS has no API
+// to read Automation status, so we infer it: a successful reply = granted, error
+// -1743 = denied, no browser running = unknown.
+function probeBrowserAutomation() {
+  return new Promise((resolve) => {
+    const { execFile } = require('child_process');
+    const script = `
+set out to ""
+tell application "System Events"
+  set procNames to name of every process
+end tell
+repeat with b in {"Google Chrome", "Brave Browser", "Safari"}
+  if procNames contains (b as string) then
+    try
+      tell application (b as string) to set out to out & (count windows) & ";"
+    on error errMsg number errNum
+      if errNum is -1743 then return "denied"
+    end try
+  end if
+end repeat
+if out is "" then return "unknown"
+return "granted"`;
+    execFile('osascript', ['-e', script], { timeout: 8000 }, (err, stdout) => {
+      const s = String(stdout || '').trim();
+      if (s === 'granted' || s === 'denied' || s === 'unknown') return resolve(s);
+      if (err) return resolve(/-1743|not allowed|not authori/i.test(err.message || '') ? 'denied' : 'unknown');
+      resolve('unknown');
+    });
+  });
+}
+
 // ── P2: Runway photoreal face (opt-in) ──────────────────────────────────────
 // Provision a puppet-mode avatar session (scripts/runway-session.mjs) and tell the Meet page to
 // connect — runway-avatar.js renders the avatar video into the camera. Guard-preserving (our
@@ -3337,6 +3390,12 @@ app.whenReady().then(async () => {
     ensureClaudeIntegration();
   }
 
+  // First-run setup wizard: shown once for the default instance (guarded by the
+  // app-level onboardingComplete flag); re-runnable from the app menu.
+  if (isDefaultInstance && !store.get('onboardingComplete')) {
+    createOnboardingWindow();
+  }
+
   // Request microphone permission (needed for audio pipeline even with virtual mic)
   if (process.platform === 'darwin') {
     try {
@@ -4186,6 +4245,10 @@ function createMainWindow() {
             }
           },
         },
+        {
+          label: 'Setup Assistant…',
+          click: () => createOnboardingWindow(),
+        },
         { type: 'separator' },
         {
           // "Leave no trace" (F&F): remove EVERYTHING the app wrote into the
@@ -4742,6 +4805,54 @@ function setupIPC() {
   });
 
   ipcMain.handle('get-app-version', () => ({ version: app.getVersion(), packaged: app.isPackaged }));
+
+  // ── First-run setup wizard IPC (onboarding:*) ─────────────────────────────
+  ipcMain.handle('onboarding:get-permissions', async () => {
+    const flow = require('./onboarding-flow.js');
+    const statusMap = {
+      microphone: systemPreferences.getMediaAccessStatus('microphone'),
+      camera: systemPreferences.getMediaAccessStatus('camera'),
+      screen: systemPreferences.getMediaAccessStatus('screen'),
+      automation: await probeBrowserAutomation(),
+    };
+    return flow.permissionsSummary(statusMap);
+  });
+
+  ipcMain.handle('onboarding:request-permission', async (_e, key) => {
+    try {
+      if (key === 'microphone') await systemPreferences.askForMediaAccess('microphone');
+      else if (key === 'camera') await systemPreferences.askForMediaAccess('camera');
+      else if (key === 'screen') {
+        // A real capture attempt registers the app in the Screen Recording list
+        // and prompts when not-determined (thumbnail must be non-trivial, #… ).
+        try { await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 192, height: 192 } }); } catch { /* prompt only */ }
+      } else if (key === 'automation') {
+        await probeBrowserAutomation();
+      }
+    } catch (err) { console.warn('[onboarding] request-permission', key, err && err.message); }
+    return { ok: true };
+  });
+
+  ipcMain.handle('onboarding:open-system-settings', (_e, key) => {
+    const pane = {
+      microphone: 'Privacy_Microphone', camera: 'Privacy_Camera',
+      screen: 'Privacy_ScreenCapture', automation: 'Privacy_Automation',
+    }[key] || 'Privacy';
+    shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${pane}`);
+    return { ok: true };
+  });
+
+  ipcMain.handle('onboarding:open-url', (_e, url) => {
+    if (/^https?:\/\//.test(String(url || ''))) shell.openExternal(String(url));
+    return { ok: true };
+  });
+
+  ipcMain.handle('onboarding:finish', () => {
+    try { store.set('onboardingComplete', true); } catch { /* ignore */ }
+    if (onboardingWindow && !onboardingWindow.isDestroyed()) onboardingWindow.close();
+    if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); }
+    return { ok: true };
+  });
 
   // null for the default instance (the panel shows "Default bot."); the concrete
   // name only for named --profile instances.

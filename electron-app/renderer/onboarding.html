@@ -1,0 +1,140 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Set up Vibeconferencing</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: 'Google Sans', -apple-system, system-ui, sans-serif;
+      background: #202124; color: #e8eaed; font-size: 14px; line-height: 1.5;
+      display: flex; flex-direction: column; height: 100vh;
+    }
+    header { padding: 18px 24px 10px; }
+    header h1 { font-size: 18px; margin: 0 0 10px; }
+    .dots { display: flex; gap: 6px; }
+    .dots span { width: 22px; height: 4px; border-radius: 2px; background: #3c4043; }
+    .dots span.done { background: #5f6368; }
+    .dots span.active { background: #8ab4f8; }
+    main { flex: 1; overflow-y: auto; padding: 6px 24px 12px; }
+    section[data-step] { display: none; }
+    section[data-step].active { display: block; }
+    h2 { font-size: 16px; margin: 6px 0 4px; }
+    p.sub { color: #c8ccd0; margin: 0 0 14px; }
+    label { display: block; font-size: 12px; color: #c8ccd0; margin: 10px 0 4px; }
+    input[type=text], input[type=password] {
+      width: 100%; background: #2a2d31; color: #e8eaed; border: 1px solid #5f6368;
+      border-radius: 6px; padding: 9px 11px; font-size: 14px; font-family: inherit;
+    }
+    input:focus { outline: none; border-color: #8ab4f8; }
+    a { color: #8ab4f8; }
+    .btn {
+      background: #8ab4f8; color: #202124; border: none; border-radius: 6px;
+      padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit;
+    }
+    .btn:hover { background: #aecbfa; }
+    .btn.ghost { background: #2a2d31; color: #e8eaed; border: 1px solid #5f6368; font-weight: 400; }
+    .btn.ghost:hover { background: #3c4043; }
+    .btn:disabled { opacity: .5; cursor: default; }
+    /* permission + toggle rows */
+    .prow { display: flex; align-items: flex-start; gap: 12px; padding: 12px 0; border-top: 1px solid #2f3136; }
+    .prow:first-of-type { border-top: none; }
+    .prow .meta { flex: 1; }
+    .prow .name { font-weight: 600; }
+    .prow .name .req { color: #f28b82; font-size: 11px; margin-left: 6px; }
+    .prow .name .opt { color: #9aa0a6; font-size: 11px; margin-left: 6px; }
+    .prow .why { color: #9aa0a6; font-size: 12px; margin-top: 2px; }
+    .status { font-size: 13px; white-space: nowrap; align-self: center; }
+    .status.ok { color: #81c995; } .status.no { color: #9aa0a6; } .status.bad { color: #f28b82; }
+    .card { background: #2a2d31; border: 1px solid #3c4043; border-radius: 8px; padding: 14px; }
+    .choice { display: flex; gap: 8px; margin-top: 10px; }
+    .choice .btn { flex: 1; }
+    .hint { color: #9aa0a6; font-size: 12px; margin-top: 8px; }
+    footer {
+      display: flex; align-items: center; gap: 8px; padding: 12px 24px;
+      border-top: 1px solid #2f3136; background: #202124;
+    }
+    footer .spacer { flex: 1; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 id="stepTitle">Welcome</h1>
+    <div class="dots" id="dots"></div>
+  </header>
+
+  <main>
+    <section data-step="welcome" class="active">
+      <h2>Bring your agent into a video call 👋</h2>
+      <p class="sub">In a few quick steps you'll set up permissions, sign in, pick a voice, and name your first bot. Takes about two minutes.</p>
+      <p class="hint">You can re-run this anytime from the app menu → “Setup Assistant”.</p>
+    </section>
+
+    <section data-step="permissions">
+      <h2>Permissions</h2>
+      <p class="sub">macOS will ask you to confirm each one. Microphone and Camera are required; the other two are recommended.</p>
+      <div id="permList"></div>
+    </section>
+
+    <section data-step="signin">
+      <h2>Sign in to vibeconferencing.com</h2>
+      <p class="sub">This powers the shared whiteboard. You can skip it, but the bot won't be able to present a whiteboard until you sign in.</p>
+      <div class="card">
+        <div id="authStatus">Checking…</div>
+        <div class="choice">
+          <button class="btn" id="signInBtn">Sign in with Google</button>
+          <button class="btn ghost" id="signOutBtn" style="display:none">Log out</button>
+        </div>
+      </div>
+    </section>
+
+    <section data-step="logging">
+      <h2>Call logging</h2>
+      <p class="sub">The app can send its own diagnostic logs (timing, errors, and what the bot heard/said) to help improve it. This is your choice, and it's off unless you turn it on.</p>
+      <div class="card">
+        <div class="choice">
+          <button class="btn ghost" id="logYes">Allow logging</button>
+          <button class="btn ghost" id="logNo">No thanks</button>
+        </div>
+        <div class="hint" id="logState">Not set.</div>
+      </div>
+    </section>
+
+    <section data-step="voice">
+      <h2>Give your bot a good voice</h2>
+      <p class="sub">The default Mac voice is robotic. For a natural voice, paste an ElevenLabs API key (a free tier is plenty to start).</p>
+      <label for="elKey">ElevenLabs API key <span style="color:#9aa0a6">(optional)</span></label>
+      <input type="password" id="elKey" placeholder="sk_..." autocomplete="off" spellcheck="false" />
+      <div class="hint">Don't have one? <a href="#" id="getKeyLink">Get a free key at elevenlabs.io →</a></div>
+      <div class="hint">Prefer no account? You can download a free premium macOS voice in System&nbsp;Settings → Accessibility → Spoken&nbsp;Content, or just continue with the default and change it later.</div>
+    </section>
+
+    <section data-step="bot">
+      <h2>Name your bot</h2>
+      <p class="sub">What should your bot be called in calls?</p>
+      <label for="botName">Bot name</label>
+      <input type="text" id="botName" placeholder="Jimmy" />
+      <div class="choice">
+        <button class="btn ghost" id="previewVoice">🔊 Hear the voice</button>
+      </div>
+    </section>
+
+    <section data-step="done">
+      <h2>You're all set 🎉</h2>
+      <p class="sub">Start a Google Meet in Chrome or Brave, then in Claude Code type:</p>
+      <div class="card"><code style="font-size:15px">/join-call</code></div>
+      <p class="hint">Your bot will join and ask to be admitted. Click Admit, then just talk.</p>
+    </section>
+  </main>
+
+  <footer>
+    <button class="btn ghost" id="backBtn">Back</button>
+    <div class="spacer"></div>
+    <button class="btn ghost" id="skipBtn" style="display:none">Skip</button>
+    <button class="btn" id="nextBtn">Next</button>
+  </footer>
+
+  <script src="onboarding.js"></script>
+</body>
+</html>

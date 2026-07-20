@@ -18,24 +18,40 @@ You drive it from your agent (just say *"join my call"*); the app is the "body" 
 ## Get in a call with your bot — about 5 minutes
 
 **You'll need:**
-- A **Mac with Apple Silicon** (M1, M2, M3, or M4)
+- A **Mac**
 - **Claude Code** installed and working. *(Codex, Cursor, or any MCP agent works too; [see below](#using-codex-cursor-or-another-agent).)*
-- **Chrome or Brave** (the app uses one of these for the meeting)
-- A **Google account** (so you're in the Meet too)
+- A browser (whatever you already use: Chrome, Brave, Safari, Firefox all work)
 
 ### 1. Download and install
-Download the **`.dmg`** from the **[latest release](https://github.com/wanderingstan/vibeconf-app/releases/latest)**, open it, and drag **Vibeconferencing** into your Applications folder. Open it once. It's signed and notarized by Apple, so it just runs.
+Download the **`.dmg`** from the **[latest release](https://github.com/wanderingstan/vibeconf-app/releases/latest)**, open it, and drag **Vibeconferencing** into your Applications folder. Open it once.
 
 ### 2. Allow the permission prompts
-On first launch macOS asks for **Microphone** and **Camera**. Both are required (the bot speaks through a virtual mic and appears as a virtual-camera avatar). If you also want the bot to *show* its whiteboard on screen, allow **Screen Recording** too (optional).
+On first launch macOS asks for **Microphone** and **Camera**. Both are required (the bot speaks through a virtual mic and appears as a virtual-camera avatar). It will also ask for permission to **control your browser** (an Automation prompt, e.g. "Vibeconferencing" would like to control "Google Chrome"). Allow this; it's how the app detects and joins your Meet calls. If you also want the bot to *show* its whiteboard on screen, allow **Screen Recording** too (optional).
 
-### 3. Sign in
-The app opens a browser tab to sign in at vibeconferencing.com (this powers the shared whiteboard), then hands you back to the app automatically.
+### 3. Sign in *(optional)*
+Signing in gets you access to the shared whiteboard. It's optional and not automatic; sign in anytime from App Settings (**⌘,**).
 
 ### 4. Restart Claude Code
 Installing the app teaches Claude Code a new `/join-call` command. Quit and reopen Claude Code once so it shows up.
 
-### 5. Give your bot a good voice *(strongly recommended)*
+### 5. Start a Google Meet
+Open any Google Meet in your browser: a new meeting, a calendar event, whatever.
+
+### 6. Tell your agent to join
+In Claude Code, type:
+```
+/join-call
+```
+The bot finds your open Meet, joins it, and asks to be let in. (No need to copy any link; it detects the meeting automatically.)
+
+Prefer a click? Press **Join call** in the app instead. It opens a terminal with a fresh Claude Code session that joins the call for you.
+
+### 7. Let it in, then talk to it
+Click **Admit** in your Meet window when it asks. Your bot appears as a participant. Now **just talk**. After a short pause it answers *out loud*, like anyone else in the call. Say *"we're done"* (or close Claude Code) when you want it to leave.
+
+**That's it. You're in a call with your bot. 🎉**
+
+### 8. Give your bot a good voice *(optional, whenever you're ready)*
 Out of the box it uses the basic built-in Mac voice, which is fine for testing but robotic. Pick one:
 
 - **⭐ ElevenLabs (best, most natural):** grab a free API key at **[elevenlabs.io](https://elevenlabs.io)**, then in the app press **⌘,** (App Settings) and paste the key. Then choose a voice from the People pane.
@@ -46,21 +62,6 @@ Out of the box it uses the basic built-in Mac voice, which is fine for testing b
 
 ![Animated walkthrough: searching "system voice" in macOS System Settings, which opens the System voice picker under Accessibility → Spoken Content where an Enhanced/Premium voice can be downloaded](media/premium-mac-voice.gif)
 
-### 6. Start a Google Meet
-Open any Google Meet in Chrome or Brave: a new meeting, a calendar event, whatever.
-
-### 7. Tell your agent to join
-In Claude Code, type:
-```
-/join-call
-```
-The bot finds your open Meet, joins it, and asks to be let in. (No need to copy any link; it detects the meeting automatically.)
-
-### 8. Let it in, then talk to it
-Click **Admit** in your Meet window when it asks. Your bot appears as a participant. Now **just talk**. After a short pause it answers *out loud*, like anyone else in the call. Say *"we're done"* (or close Claude Code) when you want it to leave.
-
-**That's it. You're in a call with your bot. 🎉**
-
 ---
 
 ## What you can ask it
@@ -70,6 +71,7 @@ Talk in plain language, no commands needed:
 ![The bot's in-call side panel introducing itself: you can ask it to change its voice, change its avatar background, show or edit a whiteboard, read or post chat, take a screenshot, or switch between active/passive/silent modes, with two bots showing custom World-Cup avatar backgrounds](media/call-capabilities.png)
 
 - *"Put a summary of what we decided on the whiteboard"*
+- *"Take notes on this meeting on the whiteboard, with diagrams"*
 - *"Change your voice"* · *"give yourself a beach background"*
 - *"Take a screenshot of the call"* · *"read the chat"*
 - *"Go quiet and just listen"* (it keeps up without speaking)

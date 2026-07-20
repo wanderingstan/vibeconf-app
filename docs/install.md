@@ -7,7 +7,7 @@ Vibeconferencing is macOS-only (Apple Silicon). Two install paths: a signed DMG 
 - macOS on Apple Silicon (M1/M2/M3/M4)
 - A Google account that can join the Meet calls you want the bot in
 - An MCP-speaking agent (Claude Code, Codex CLI, etc.) installed and working
-- Chrome or Brave (used by the Electron app's embedded Meet view — Safari/Firefox not supported)
+- Chrome, Brave, or Safari for automatic Meet-tab detection. Firefox does not expose the macOS tab automation API, but you can paste a Meet URL into the app manually.
 
 ## Install from DMG (recommended)
 
@@ -27,8 +27,8 @@ The first launch will auto-install the Claude Code integration (writes `~/.claud
 For dev work or running unreleased main. See [RUNNING-FROM-SOURCE.md](../RUNNING-FROM-SOURCE.md) for the full walkthrough — the short version:
 
 ```bash
-git clone git@github.com:wanderingstan/vibeconf-app.git
-cd vibeconferencing
+git clone https://github.com/wanderingstan/vibeconf-app.git
+cd vibeconf-app
 pnpm install              # web companion deps (optional unless running the website locally)
 cd electron-app
 pnpm install              # Electron app deps

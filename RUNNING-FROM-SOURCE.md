@@ -6,8 +6,8 @@ For faster iteration than waiting for a new DMG release. You'll get whatever's o
 
 ```bash
 # Clone the repo
-git clone git@github.com:wanderingstan/vibeconf-app.git
-cd vibeconferencing
+git clone https://github.com/wanderingstan/vibeconf-app.git
+cd vibeconf-app
 
 # Install webapp deps (only needed if you want to run the Vite preview)
 pnpm install

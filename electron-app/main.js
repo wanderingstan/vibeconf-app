@@ -3032,20 +3032,43 @@ function ensureClaudeIntegration() {
 
   // Determine paths based on whether we're packaged or in dev
   const isPackaged = app.isPackaged;
-  const mcpServerPath = isPackaged
-    ? path.join(process.resourcesPath, 'mcp-server', 'server.js')
-    : path.join(__dirname, '..', 'mcp-server', 'server.js');
+  const mcpServerRoot = isPackaged
+    ? path.join(process.resourcesPath, 'mcp-server')
+    : path.join(__dirname, '..', 'mcp-server');
+  const mcpServerPath = path.join(mcpServerRoot, 'server.js');
   const appLaunchCmd = isPackaged
     ? 'open -a Vibeconferencing'
     : `cd ${__dirname} && npx electron .`;
 
+  // ~/.claude.json is durable config; only point it at a server that can
+  // actually start. Packaged builds get prod deps via beforePack; a fresh
+  // source checkout has none until someone installs them in mcp-server/.
+  const serverEntryExists = fs.existsSync(mcpServerPath);
+  // The server needs BOTH the MCP SDK and zod to boot — check both, not just the SDK.
+  const serverDepsPresent = isPackaged || (
+    fs.existsSync(path.join(mcpServerRoot, 'node_modules', '@modelcontextprotocol', 'sdk')) &&
+    fs.existsSync(path.join(mcpServerRoot, 'node_modules', 'zod')));
+
+  // A linked git worktree (`.git` is a file, not a dir) is a removable
+  // checkout — repointing durable config at one strands the entry when the
+  // worktree goes away.
+  let isTempWorktree = false;
+  if (!isPackaged) {
+    try { isTempWorktree = fs.statSync(path.join(__dirname, '..', '.git')).isFile(); } catch {}
+  }
+
   let changed = false;
 
   // --- Ensure global MCP config in ~/.claude.json ---
-  let claudeJson = {};
-  try {
-    claudeJson = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf-8'));
-  } catch {}
+  // Read defensively: a missing file is fine (we create it), but a present-but-
+  // unreadable/malformed file must NOT be rewritten from {} — that would erase
+  // every other MCP server the user has. See claude-config.js.
+  const { readClaudeConfigSafe, atomicWriteJson } = require('./claude-config.js');
+  const { config: claudeJson, readable: configReadable, mtimeMs: claudeMtimeMs } = readClaudeConfigSafe(claudeJsonPath);
+  if (!configReadable) {
+    console.warn('[electron] ~/.claude.json exists but is unreadable/malformed —',
+      'leaving MCP config untouched to avoid clobbering other servers');
+  }
 
   if (!claudeJson.mcpServers) claudeJson.mcpServers = {};
 
@@ -3060,8 +3083,20 @@ function ensureClaudeIntegration() {
     currentMcp.env?.VIBECONF_BASE_URL !== localBaseUrl ||
     currentMcp.env?.VIBECONF_BOT_NAME !== configuredBotName ||
     currentMcp.args?.[0] !== mcpServerPath;
+  const existingServerOk = !!currentMcp?.args?.[0] && fs.existsSync(currentMcp.args[0]);
 
-  if (needsUpdate) {
+  if (!configReadable) {
+    /* warned above — never rewrite an unreadable/malformed config from {} */
+  } else if (!serverEntryExists) {
+    console.warn('[electron] MCP server entrypoint missing at', mcpServerPath,
+      '— leaving MCP config untouched');
+  } else if (!serverDepsPresent) {
+    console.warn('[electron] mcp-server deps not installed (no node_modules/@modelcontextprotocol/sdk).',
+      'Run `npm install` (or pnpm) in', mcpServerRoot, '— leaving MCP config untouched');
+  } else if (isTempWorktree && existingServerOk && currentMcp.args[0] !== mcpServerPath) {
+    console.warn('[electron] running from a git worktree — keeping existing MCP server path',
+      currentMcp.args[0], 'instead of repointing durable config at', mcpServerPath);
+  } else if (needsUpdate) {
     claudeJson.mcpServers.vibeconferencing = {
       command: 'node',
       args: [mcpServerPath],
@@ -3071,7 +3106,7 @@ function ensureClaudeIntegration() {
         VIBECONF_BASE_URL: localBaseUrl,
       },
     };
-    fs.writeFileSync(claudeJsonPath, JSON.stringify(claudeJson, null, 2) + '\n');
+    atomicWriteJson(claudeJsonPath, claudeJson, { expectedMtimeMs: claudeMtimeMs });
     console.log('[electron] Updated MCP config → local server at', localBaseUrl, 'botName:', configuredBotName);
     changed = true;
   } else {
@@ -3085,14 +3120,12 @@ function ensureClaudeIntegration() {
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
 
-  if (installedVersion !== SKILL_VERSION) {
+  const skillSourcePath = path.join(mcpServerRoot, 'join-call-skill.md');
+  if (installedVersion !== SKILL_VERSION && !fs.existsSync(skillSourcePath)) {
+    console.warn('[electron] join-call skill source missing at', skillSourcePath, '— skipping skill install');
+  } else if (installedVersion !== SKILL_VERSION) {
     fs.mkdirSync(skillDir, { recursive: true });
-    const skillContent = fs.readFileSync(
-      isPackaged
-        ? path.join(process.resourcesPath, 'mcp-server', 'join-call-skill.md')
-        : path.join(__dirname, '..', 'mcp-server', 'join-call-skill.md'),
-      'utf-8'
-    );
+    const skillContent = fs.readFileSync(skillSourcePath, 'utf-8');
     fs.writeFileSync(skillPath, skillContent);
     fs.writeFileSync(versionFile, SKILL_VERSION);
     console.log('[electron] Installed/updated skill v%s at %s', SKILL_VERSION, skillPath);

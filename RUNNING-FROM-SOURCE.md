@@ -15,6 +15,10 @@ pnpm install
 # Install Electron app deps
 cd electron-app
 pnpm install
+
+# Install MCP server deps (required — /join-call tools can't load without them)
+cd ../mcp-server
+pnpm install
 ```
 
 ### If `pnpm dev` errors with "Electron failed to install correctly"
@@ -37,7 +41,7 @@ pnpm dev
 
 This launches the app pointed at the source files in your checkout. No packaging step. Changes to `main.js`, `local-server.js`, `preload-meet.js`, etc. take effect on next restart of the app.
 
-The MCP server is pulled from `../mcp-server/` (same checkout), so it stays in sync with the Electron app's expectations automatically.
+The MCP server is pulled from `../mcp-server/` (same checkout), so it stays in sync with the Electron app's expectations automatically. If its deps are missing the app logs a warning and leaves your existing Claude MCP config untouched — run `pnpm install` in `mcp-server/` (see setup above).
 
 ### Running multiple local app instances
 

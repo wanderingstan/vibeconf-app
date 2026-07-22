@@ -69,3 +69,35 @@ test('atomicWriteJson writes valid JSON and leaves no temp file behind', () => {
   assert.deepEqual(JSON.parse(fs.readFileSync(p, 'utf-8')), { a: 1 });
   assert.deepEqual(fs.readdirSync(home).filter((f) => f.includes('.tmp-')), [], 'no temp file left behind');
 });
+
+test('atomicWriteJson PRESERVES 0600 (never widens a tokens file to 0644)', () => {
+  const p = path.join(tmpHome(), '.claude.json');
+  fs.writeFileSync(p, '{}');
+  fs.chmodSync(p, 0o600);
+  atomicWriteJson(p, { a: 1 });
+  assert.equal(fs.statSync(p).mode & 0o777, 0o600, 'existing 0600 mode is preserved through the rename');
+});
+
+test('atomicWriteJson defaults a NEW file to 0600, not 0644', () => {
+  const p = path.join(tmpHome(), '.claude.json');
+  atomicWriteJson(p, { a: 1 });
+  assert.equal(fs.statSync(p).mode & 0o777, 0o600);
+});
+
+test('concurrency guard: aborts (no clobber) if the file changed since it was read', () => {
+  const p = path.join(tmpHome(), '.claude.json');
+  fs.writeFileSync(p, JSON.stringify({ mcpServers: { other: { command: 'x' } } }));
+  const { mtimeMs } = readClaudeConfigSafe(p);
+  fs.utimesSync(p, new Date(), new Date(Date.now() + 10_000)); // simulate a concurrent writer bumping mtime
+  assert.throws(() => atomicWriteJson(p, { clobbered: true }, { expectedMtimeMs: mtimeMs }), /changed since read/);
+  assert.ok(JSON.parse(fs.readFileSync(p, 'utf-8')).mcpServers.other, 'the concurrent state is not clobbered');
+});
+
+test('concurrency guard: proceeds when the file is unchanged since read', () => {
+  const p = path.join(tmpHome(), '.claude.json');
+  atomicWriteJson(p, { mcpServers: { a: {} } });
+  const { config, mtimeMs } = readClaudeConfigSafe(p);
+  config.mcpServers.b = {};
+  atomicWriteJson(p, config, { expectedMtimeMs: mtimeMs });
+  assert.ok(JSON.parse(fs.readFileSync(p, 'utf-8')).mcpServers.b, 'unchanged file → write proceeds');
+});

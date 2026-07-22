@@ -3064,7 +3064,7 @@ function ensureClaudeIntegration() {
   // unreadable/malformed file must NOT be rewritten from {} — that would erase
   // every other MCP server the user has. See claude-config.js.
   const { readClaudeConfigSafe, atomicWriteJson } = require('./claude-config.js');
-  const { config: claudeJson, readable: configReadable } = readClaudeConfigSafe(claudeJsonPath);
+  const { config: claudeJson, readable: configReadable, mtimeMs: claudeMtimeMs } = readClaudeConfigSafe(claudeJsonPath);
   if (!configReadable) {
     console.warn('[electron] ~/.claude.json exists but is unreadable/malformed —',
       'leaving MCP config untouched to avoid clobbering other servers');
@@ -3106,7 +3106,7 @@ function ensureClaudeIntegration() {
         VIBECONF_BASE_URL: localBaseUrl,
       },
     };
-    atomicWriteJson(claudeJsonPath, claudeJson);
+    atomicWriteJson(claudeJsonPath, claudeJson, { expectedMtimeMs: claudeMtimeMs });
     console.log('[electron] Updated MCP config → local server at', localBaseUrl, 'botName:', configuredBotName);
     changed = true;
   } else {

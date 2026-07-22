@@ -3044,8 +3044,10 @@ function ensureClaudeIntegration() {
   // actually start. Packaged builds get prod deps via beforePack; a fresh
   // source checkout has none until someone installs them in mcp-server/.
   const serverEntryExists = fs.existsSync(mcpServerPath);
-  const serverDepsPresent = isPackaged ||
-    fs.existsSync(path.join(mcpServerRoot, 'node_modules', '@modelcontextprotocol', 'sdk'));
+  // The server needs BOTH the MCP SDK and zod to boot — check both, not just the SDK.
+  const serverDepsPresent = isPackaged || (
+    fs.existsSync(path.join(mcpServerRoot, 'node_modules', '@modelcontextprotocol', 'sdk')) &&
+    fs.existsSync(path.join(mcpServerRoot, 'node_modules', 'zod')));
 
   // A linked git worktree (`.git` is a file, not a dir) is a removable
   // checkout — repointing durable config at one strands the entry when the
@@ -3058,10 +3060,15 @@ function ensureClaudeIntegration() {
   let changed = false;
 
   // --- Ensure global MCP config in ~/.claude.json ---
-  let claudeJson = {};
-  try {
-    claudeJson = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf-8'));
-  } catch {}
+  // Read defensively: a missing file is fine (we create it), but a present-but-
+  // unreadable/malformed file must NOT be rewritten from {} — that would erase
+  // every other MCP server the user has. See claude-config.js.
+  const { readClaudeConfigSafe, atomicWriteJson } = require('./claude-config.js');
+  const { config: claudeJson, readable: configReadable } = readClaudeConfigSafe(claudeJsonPath);
+  if (!configReadable) {
+    console.warn('[electron] ~/.claude.json exists but is unreadable/malformed —',
+      'leaving MCP config untouched to avoid clobbering other servers');
+  }
 
   if (!claudeJson.mcpServers) claudeJson.mcpServers = {};
 
@@ -3078,7 +3085,9 @@ function ensureClaudeIntegration() {
     currentMcp.args?.[0] !== mcpServerPath;
   const existingServerOk = !!currentMcp?.args?.[0] && fs.existsSync(currentMcp.args[0]);
 
-  if (!serverEntryExists) {
+  if (!configReadable) {
+    /* warned above — never rewrite an unreadable/malformed config from {} */
+  } else if (!serverEntryExists) {
     console.warn('[electron] MCP server entrypoint missing at', mcpServerPath,
       '— leaving MCP config untouched');
   } else if (!serverDepsPresent) {
@@ -3097,7 +3106,7 @@ function ensureClaudeIntegration() {
         VIBECONF_BASE_URL: localBaseUrl,
       },
     };
-    fs.writeFileSync(claudeJsonPath, JSON.stringify(claudeJson, null, 2) + '\n');
+    atomicWriteJson(claudeJsonPath, claudeJson);
     console.log('[electron] Updated MCP config → local server at', localBaseUrl, 'botName:', configuredBotName);
     changed = true;
   } else {

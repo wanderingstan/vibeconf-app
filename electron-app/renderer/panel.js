@@ -1676,7 +1676,10 @@ unifiedVoiceSelect?.addEventListener('change', () => {
   // The spoken name = the dropdown label minus the "· premade" / "(Enhanced)" /
   // "(kokoro)" suffixes, so every provider says "Hello, my name is <name>."
   const label = unifiedVoiceSelect.selectedOptions[0]?.textContent || '';
-  const name = label.replace(/\s*[·(].*$/, '').trim();
+  // A space-delimited dash in an ElevenLabs name ("Brian - Deep, Resonant…") is
+  // spoken as a hyphen with no pause; turn it into ". " so the name and its
+  // description land as separate sentences.
+  const name = label.replace(/\s*[·(].*$/, '').replace(/\s+[-–—]+\s+/g, '. ').trim();
   const text = `Hello, my name is ${name || 'your voice assistant'}.`;
   if (kind === 'vb') {
     const engine = unifiedVoiceSelect.selectedOptions[0]?.dataset.engine || 'kokoro';

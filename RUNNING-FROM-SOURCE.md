@@ -19,7 +19,9 @@ pnpm install
 
 ### If `pnpm dev` errors with "Electron failed to install correctly"
 
-pnpm's strict mode sometimes skips Electron's binary-download postinstall script. Run it manually once:
+pnpm v10 blocks dependency postinstall scripts by default, which can skip Electron's binary download. `electron-app/package.json` allows it via `pnpm.onlyBuiltDependencies: ["electron"]`, so a normal `pnpm install` should build the binary automatically.
+
+If you still hit the error (older pnpm, or the binary didn't land), run the download once by hand:
 
 ```bash
 # from electron-app/

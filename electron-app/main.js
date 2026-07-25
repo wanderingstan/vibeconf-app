@@ -259,6 +259,22 @@ const localServer = new globalThis.LocalServer({
   appVersion: app.getVersion(),
   packaged: app.isPackaged, // release (installed .app/DMG) vs running from source
 
+  // Claude-ready feedback loop: a launched Claude session's SessionStart hook POSTs here
+  // once it's up — which only happens when Claude Code is BOTH installed and signed in
+  // (a session can't start otherwise). Open, localhost-only, no side effects but flipping
+  // the flag. See markClaudeReady + ensureClaudeReadyHook.
+  extraRoutes: async (req, res) => {
+    let pathname;
+    try { pathname = new URL(req.url, 'http://127.0.0.1').pathname; } catch { return false; }
+    if (pathname === '/claude-ready' && req.method === 'POST') {
+      markClaudeReady('session-hook');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return true;
+    }
+    return false;
+  },
+
   getWhiteboardLoadedUrl: () => {
     try {
       if (whiteboardWindow && !whiteboardWindow.isDestroyed() && !whiteboardWindow.webContents.isDestroyed()) {
@@ -2680,6 +2696,48 @@ function ensureAgentWorkdir() {
   return agentDir;
 }
 
+// ── Claude Code readiness (onboarding feedback loop) ─────────────────────────
+// A launched Claude session's SessionStart hook POSTs /claude-ready once it's up — which
+// only happens when Claude Code is BOTH installed and signed in. So this flag means
+// "installed + authenticated + working", front-loaded during onboarding instead of
+// discovered mid-call. Persisted so we only confirm once.
+let claudeReady = false;
+try { claudeReady = !!store.get('claudeReady'); } catch { /* store not ready */ }
+
+function markClaudeReady(source) {
+  const was = claudeReady;
+  claudeReady = true;
+  try { store.set('claudeReady', true); } catch { /* noop */ }
+  if (!was) {
+    console.log('[electron] Claude Code confirmed ready (' + (source || '?') + ')');
+    try { if (panelView && !panelView.webContents.isDestroyed()) panelView.webContents.send('claude-ready', true); } catch { /* noop */ }
+    try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('claude-ready', true); } catch { /* noop */ }
+  }
+}
+ipcMain.handle('get-claude-ready', () => claudeReady);
+
+// Merge a SessionStart hook into the agent dir's settings.local.json so ANY Claude session
+// launched there pings /claude-ready on startup (proof it's installed + signed in).
+// Idempotent — keeps existing settings/hooks; only adds ours if absent.
+function ensureClaudeReadyHook(agentDir, port) {
+  try {
+    const settingsPath = path.join(agentDir, '.claude', 'settings.local.json');
+    let settings = {};
+    try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')); } catch { /* fresh */ }
+    settings.hooks = settings.hooks || {};
+    const list = Array.isArray(settings.hooks.SessionStart) ? settings.hooks.SessionStart : [];
+    const present = list.some((g) => (g.hooks || []).some((h) => typeof h.command === 'string' && h.command.includes('/claude-ready')));
+    if (!present) {
+      const cmd = `curl -s -m 2 -X POST http://127.0.0.1:${port}/claude-ready >/dev/null 2>&1 || true`;
+      list.push({ hooks: [{ type: 'command', command: cmd }] });
+      settings.hooks.SessionStart = list;
+      fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+      console.log('[electron] Added Claude-ready SessionStart hook → 127.0.0.1:' + port);
+    }
+  } catch (err) { console.warn('[electron] ensureClaudeReadyHook failed:', err.message); }
+}
+
 // Claude Code isn't installed → offer a CONSENTED one-click install (visible Terminal
 // running the official installer) with a copy-the-command fallback. Never runs anything
 // without an explicit button press. Windows can't auto-run yet (the Terminal launcher is
@@ -2738,6 +2796,8 @@ async function launchClaudeTerminal(meetCode) {
   // #305: default to this profile's trusted agent dir instead of the untrusted
   // /tmp. An explicit Settings → "Claude Working Directory" still wins.
   const claudeDir = store.get('claudeWorkDir') || ensureAgentWorkdir();
+  // Ensure this dir's session pings /claude-ready on start (feedback loop for readiness).
+  ensureClaudeReadyHook(claudeDir, localServer.port);
   // Use the bot's name (getActiveBotName) so the spawned /join-call <code> <name>
   // + MCP env align with the call we're in. (Slack's real account name is read
   // separately — #283; until then this is the Meet/Bot Name.)

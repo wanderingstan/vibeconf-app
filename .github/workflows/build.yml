@@ -1,0 +1,59 @@
+# Cross-platform build validation (#468 tee-up).
+#
+# Builds the desktop app on BOTH Windows and macOS on every push, so a change made
+# on a Mac can't silently break the Windows build. Builds are UNSIGNED — this is
+# validation, not release: no code-signing certs/secrets are used. When a Windows
+# Authenticode cert exists, add a signed release workflow separately.
+#
+# Cost note: macOS runners bill 10x minutes. If CI minutes get tight, narrow the
+# `push` trigger to `branches: [main]` (PRs still validate before merge).
+
+name: build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            args: "--win"
+          - os: macos-latest
+            args: "--mac -c.mac.notarize=false"
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: electron-app
+    env:
+      # Don't attempt code-signing in CI — no certs here (validation build only).
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install deps (electron-app)
+        run: npm ci
+
+      - name: Build unsigned installer
+        run: npx --no-install electron-builder ${{ matrix.args }} --publish never
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibeconf-${{ matrix.os }}
+          path: |
+            electron-app/dist/*.exe
+            electron-app/dist/*.dmg
+            electron-app/dist/*.zip
+          if-no-files-found: ignore
+          retention-days: 14

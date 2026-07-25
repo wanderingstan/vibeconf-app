@@ -26,7 +26,7 @@ const PERMISSIONS = [
 
 // The wizard's steps, in order. `signin` (vibeconferencing.com) is skippable, but
 // skipping disables the shared whiteboard — the wizard says so and lets you go on.
-const STEPS = ['welcome', 'permissions', 'signin', 'logging', 'voice', 'bot', 'done'];
+const STEPS = ['welcome', 'permissions', 'signin', 'logging', 'voice', 'bot', 'claude', 'done'];
 
 // Normalize a raw permission status into { granted, needsAttention, status }.
 // macOS media statuses: 'granted' | 'denied' | 'restricted' | 'not-determined'.

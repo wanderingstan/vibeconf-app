@@ -2775,6 +2775,7 @@ function markClaudeReady(source) {
     console.log('[electron] Claude Code confirmed ready (' + (source || '?') + ')');
     try { if (panelView && !panelView.webContents.isDestroyed()) panelView.webContents.send('claude-ready', true); } catch { /* noop */ }
     try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('claude-ready', true); } catch { /* noop */ }
+    try { if (onboardingWindow && !onboardingWindow.isDestroyed()) onboardingWindow.webContents.send('claude-ready', true); } catch { /* noop */ }
   }
 }
 ipcMain.handle('get-claude-ready', () => claudeReady);
@@ -4974,6 +4975,34 @@ function setupIPC() {
     try { store.set('onboardingComplete', true); } catch { /* ignore */ }
     if (onboardingWindow && !onboardingWindow.isDestroyed()) onboardingWindow.close();
     if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); }
+    return { ok: true };
+  });
+
+  // ── Claude Code step (install + sign-in via the /claude-ready feedback loop) ──
+  ipcMain.handle('onboarding:claude-status', async () => {
+    let installed = false;
+    try { installed = (await require('./claude-install.js').detectClaude()).installed; } catch { /* noop */ }
+    return { installed, ready: claudeReady };
+  });
+  ipcMain.handle('onboarding:install-claude', () => {
+    // Open Terminal running the official installer (visible — the wizard is the consent).
+    const cmd = require('./claude-install.js').installCommandFor();
+    const script = `tell application "Terminal"\n  activate\n  do script "${cmd}"\nend tell`;
+    require('child_process').execFile('osascript', ['-e', script], () => {});
+    return { ok: true };
+  });
+  ipcMain.handle('onboarding:copy-install-command', () => {
+    require('electron').clipboard.writeText(require('./claude-install.js').installCommandFor());
+    return { ok: true };
+  });
+  ipcMain.handle('onboarding:verify-claude', () => {
+    // Launch a Claude session in the agent dir (which carries the /claude-ready SessionStart
+    // hook), so signing in + starting a session flips readiness. Same Terminal path as a call.
+    const claudeDir = store.get('claudeWorkDir') || ensureAgentWorkdir();
+    ensureClaudeReadyHook(claudeDir, localServer.port);
+    const cmd = require('./launch-command.js').buildTerminalCommand({ workdir: claudeDir, innerCmd: 'claude' });
+    const script = `tell application "Terminal"\n  activate\n  do script "${cmd}"\nend tell`;
+    require('child_process').execFile('osascript', ['-e', script], () => {});
     return { ok: true };
   });
 

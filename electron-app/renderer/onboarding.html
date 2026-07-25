@@ -123,9 +123,31 @@
 
     <section data-step="bot">
       <h2>Name your bot</h2>
-      <p class="sub">What should your bot be called in calls?</p>
+      <p class="sub">What should your bot be called, and how should its on-camera face look?</p>
       <label for="botName">Bot name</label>
       <input type="text" id="botName" placeholder="Jimmy" />
+      <label for="emojiSet" style="margin-top:14px">Emoji style <span style="color:#9aa0a6">(the bot's face on the virtual camera)</span></label>
+      <select id="emojiSet">
+        <option value="fluent3d">Fluent 3D — glossy (default)</option>
+        <option value="twemoji">Twemoji — flat</option>
+        <option value="openmoji">OpenMoji — outlined</option>
+        <option value="noto">Noto — Google</option>
+        <option value="native">Native — your OS</option>
+      </select>
+    </section>
+
+    <section data-step="claude">
+      <h2>Install Claude Code</h2>
+      <p class="sub">Your bot is driven by <b>Claude Code</b> — the <code>claude</code> command. It's a self-contained install (no Node.js needed) and uses your existing Claude subscription.</p>
+      <div id="claudeStatus" class="card">Checking…</div>
+      <div id="claudeInstallRow" style="margin-top:12px; display:none">
+        <button id="claudeInstallBtn">Install Claude Code</button>
+        <span class="hint">Runs the official installer from claude.ai in a Terminal — <a href="#" id="claudeCopyLink">or copy the command</a>.</span>
+      </div>
+      <div id="claudeVerifyRow" style="margin-top:12px; display:none">
+        <button id="claudeVerifyBtn">Sign in &amp; verify</button>
+        <span class="hint">Opens Claude Code so you can sign in with your subscription. This turns green automatically once it's ready.</span>
+      </div>
     </section>
 
     <section data-step="done">

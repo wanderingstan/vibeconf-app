@@ -7,9 +7,11 @@ const api = window.electronAPI;
 const steps = [...document.querySelectorAll('section[data-step]')].map((s) => s.dataset.step);
 const TITLE = {
   welcome: 'Welcome', permissions: 'Permissions', signin: 'Sign in',
-  logging: 'Call logging', voice: 'Voice', bot: 'Your bot', done: 'All set',
+  logging: 'Call logging', voice: 'Voice', bot: 'Your bot', claude: 'Claude Code', done: 'All set',
 };
-const SKIPPABLE = new Set(['signin', 'voice']);
+// claude is skippable (you CAN finish without it, but the bot won't run until it's
+// installed) — the step says so; signin/voice are the other optional steps.
+const SKIPPABLE = new Set(['signin', 'voice', 'claude']);
 let i = 0;
 
 const $ = (id) => document.getElementById(id);
@@ -26,6 +28,8 @@ function render() {
   $('nextBtn').textContent = i === steps.length - 1 ? 'Finish' : 'Next';
   if (step === 'permissions') loadPermissions();
   if (step === 'signin') loadAuth();
+  if (step === 'bot') loadEmojiSet();
+  if (step === 'claude') loadClaude();
 }
 
 async function saveCurrent() {
@@ -35,6 +39,8 @@ async function saveCurrent() {
     if (step === 'bot') {
       const name = ($('botName').value || '').trim();
       if (name) await api.invoke('set-config', 'botName', name);
+      const emojiSet = $('emojiSet').value;
+      if (emojiSet) await api.invoke('set-config', 'emojiSet', emojiSet);
     }
   } catch (e) { console.warn('save failed', e); }
 }
@@ -117,6 +123,45 @@ function paintLog(v) {
 }
 $('logYes').addEventListener('click', async () => { await api.invoke('set-config', 'remoteLogging', true); paintLog(true); });
 $('logNo').addEventListener('click', async () => { await api.invoke('set-config', 'remoteLogging', false); paintLog(false); });
+
+// ── emoji set (chosen alongside the bot name) ──────────────────────────────
+async function loadEmojiSet() {
+  try {
+    const cur = await api.invoke('get-config', 'emojiSet');
+    const val = (cur && typeof cur === 'object') ? cur.emojiSet : cur;
+    if (val) $('emojiSet').value = val;
+  } catch { /* leave default */ }
+}
+
+// ── Claude Code (install + sign-in via the /claude-ready feedback loop) ─────
+function paintClaude(st) {
+  const status = $('claudeStatus'), installRow = $('claudeInstallRow'), verifyRow = $('claudeVerifyRow');
+  if (st.ready) {
+    status.textContent = 'Ready ✓ — Claude Code is installed and signed in.';
+    status.style.color = '#137333';
+    installRow.style.display = 'none'; verifyRow.style.display = 'none';
+  } else if (st.installed) {
+    status.textContent = 'Installed. Sign in with your Claude subscription to finish.';
+    status.style.color = '';
+    installRow.style.display = 'none'; verifyRow.style.display = '';
+  } else {
+    status.textContent = 'Not installed yet.';
+    status.style.color = '';
+    installRow.style.display = ''; verifyRow.style.display = 'none';
+  }
+}
+async function loadClaude() {
+  let st = { installed: false, ready: false };
+  try { st = await api.invoke('onboarding:claude-status'); } catch { /* noop */ }
+  paintClaude(st);
+}
+$('claudeInstallBtn').addEventListener('click', async () => { await api.invoke('onboarding:install-claude'); });
+$('claudeCopyLink').addEventListener('click', async (e) => { e.preventDefault(); await api.invoke('onboarding:copy-install-command'); e.target.textContent = 'copied ✓'; });
+$('claudeVerifyBtn').addEventListener('click', async () => { await api.invoke('onboarding:verify-claude'); });
+// The launched session's SessionStart hook pings /claude-ready → main emits 'claude-ready'.
+api.on('claude-ready', () => { if (steps[i] === 'claude') paintClaude({ installed: true, ready: true }); });
+// Re-check when returning from the Terminal (install finished / signed in).
+window.addEventListener('focus', () => { if (steps[i] === 'claude') loadClaude(); });
 
 // ── voice picker ───────────────────────────────────────────────────────────
 // Mirrors the panel's unified picker: merge macOS + ElevenLabs + Voicebox into

@@ -16,6 +16,8 @@ test('steps include sign-in and are ordered welcome→done', () => {
   assert.equal(STEPS[STEPS.length - 1], 'done');
   assert.ok(STEPS.includes('signin'), 'has the vibeconferencing.com sign-in step');
   assert.ok(STEPS.includes('permissions') && STEPS.includes('logging') && STEPS.includes('bot'));
+  assert.ok(STEPS.includes('claude'), 'has the Claude Code install step');
+  assert.ok(STEPS.indexOf('claude') < STEPS.indexOf('done'), 'claude comes before done');
 });
 
 test('mic + camera are required; screen + automation are optional', () => {

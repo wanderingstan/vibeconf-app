@@ -5005,6 +5005,43 @@ function setupIPC() {
     require('child_process').execFile('osascript', ['-e', script], () => {});
     return { ok: true };
   });
+  // Silent auto-verify: when the user lands on the Claude step and `claude` is installed
+  // but not yet confirmed, run a headless `claude -p "ok"` and judge by its RESULT — a
+  // non-empty reply with exit 0 proves it's installed AND signed in, so we markClaudeReady
+  // and the step turns green with no click and no visible Terminal. If they're not signed
+  // in (or it hangs), it errors / times out, stays amber, and "Sign in & verify" remains
+  // for the interactive /login.
+  //
+  // Deliberately NOT run in the agent dir: that dir carries the SessionStart hook, which
+  // fires on session *start* — possibly before the auth check — so it could false-green a
+  // signed-out user. A throwaway probe dir (no hook) makes the command's exit code the sole
+  // signal. The login shell (`-lc`) gives it the user's real PATH (the GUI app's is minimal).
+  // Runs at most once per app launch.
+  let claudeAutoVerifyRan = false;
+  ipcMain.handle('onboarding:auto-verify-claude', async () => {
+    if (claudeReady || claudeAutoVerifyRan) return { started: false, ready: claudeReady };
+    let installed = false;
+    try { installed = (await require('./claude-install.js').detectClaude()).installed; } catch { /* noop */ }
+    if (!installed) return { started: false, ready: false };
+    claudeAutoVerifyRan = true;
+    const os = require('os');
+    let probeDir;
+    try { probeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vc-claude-probe-')); }
+    catch { probeDir = os.tmpdir(); }
+    const shell = process.env.SHELL || '/bin/zsh';
+    try {
+      require('child_process').execFile(
+        shell, ['-lc', 'claude -p "ok" < /dev/null'],
+        { cwd: probeDir, timeout: 30000, maxBuffer: 1 << 20 },
+        (err, stdout) => {
+          try { if (probeDir !== os.tmpdir()) fs.rmSync(probeDir, { recursive: true, force: true }); } catch { /* noop */ }
+          if (!err && String(stdout || '').trim()) markClaudeReady('auto-verify');
+          else console.log('[electron] auto-verify: claude not confirmed signed in (leaving amber)');
+        },
+      );
+    } catch (err) { console.warn('[electron] auto-verify-claude spawn failed:', err.message); }
+    return { started: true, ready: false };
+  });
 
   // null for the default instance (the panel shows "Default bot."); the concrete
   // name only for named --profile instances.

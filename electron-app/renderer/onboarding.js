@@ -134,7 +134,9 @@ async function loadEmojiSet() {
 }
 
 // ── Claude Code (install + sign-in via the /claude-ready feedback loop) ─────
+let claudeIsGreen = false;
 function paintClaude(st) {
+  if (st.ready) claudeIsGreen = true;
   const status = $('claudeStatus'), installRow = $('claudeInstallRow'), verifyRow = $('claudeVerifyRow');
   if (st.ready) {
     status.textContent = 'Ready ✓ — Claude Code is installed and signed in.';
@@ -154,6 +156,21 @@ async function loadClaude() {
   let st = { installed: false, ready: false };
   try { st = await api.invoke('onboarding:claude-status'); } catch { /* noop */ }
   paintClaude(st);
+  // If it's installed but not confirmed yet, silently verify your sign-in in the
+  // background (headless `claude -p`) — turns green with no click if you're signed in.
+  // The "Sign in & verify" button stays put in case you're not (needs interactive /login).
+  if (st.installed && !st.ready) {
+    $('claudeStatus').textContent = 'Installed — checking your Claude sign-in…';
+    let r = null;
+    try { r = await api.invoke('onboarding:auto-verify-claude'); } catch { /* noop */ }
+    // If the background check was started, give its hook a moment to ping; if it hasn't
+    // greened by then you're likely not signed in — revert to the "Sign in & verify" prompt.
+    if (r && r.started) {
+      setTimeout(() => { if (steps[i] === 'claude' && !claudeIsGreen) paintClaude({ installed: true, ready: false }); }, 20000);
+    } else if (!claudeIsGreen) {
+      paintClaude({ installed: true, ready: false });
+    }
+  }
 }
 $('claudeInstallBtn').addEventListener('click', async () => { await api.invoke('onboarding:install-claude'); });
 $('claudeCopyLink').addEventListener('click', async (e) => { e.preventDefault(); await api.invoke('onboarding:copy-install-command'); e.target.textContent = 'copied ✓'; });

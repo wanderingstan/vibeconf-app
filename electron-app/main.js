@@ -2680,8 +2680,61 @@ function ensureAgentWorkdir() {
   return agentDir;
 }
 
-function launchClaudeTerminal(meetCode) {
+// Claude Code isn't installed → offer a CONSENTED one-click install (visible Terminal
+// running the official installer) with a copy-the-command fallback. Never runs anything
+// without an explicit button press. Windows can't auto-run yet (the Terminal launcher is
+// macOS-only — #468), so there it's copy-only.
+function promptInstallClaude() {
+  const { clipboard } = require('electron');
   const { execFile } = require('child_process');
+  const { installCommandFor } = require('./claude-install.js');
+  const cmd = installCommandFor();
+  const parent = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : null;
+  const canAutoRun = process.platform === 'darwin';
+
+  const buttons = canAutoRun ? ['Install Claude Code', 'Copy command', 'Cancel'] : ['Copy command', 'Cancel'];
+  dialog.showMessageBox(parent, {
+    type: 'info',
+    title: 'Install Claude Code',
+    message: "Claude Code isn't installed",
+    detail:
+      "Vibeconferencing runs the bot through Claude Code (the `claude` command). You have a "
+      + "Claude subscription, so you just need the CLI — it's a self-contained installer, no Node.js required.\n\n"
+      + (canAutoRun
+          ? '"Install Claude Code" runs the official installer from claude.ai in a Terminal window (you\'ll see it run). Or "Copy command" to run it yourself:\n\n'
+          : 'Copy this command and run it in your terminal:\n\n')
+      + cmd
+      + "\n\nWhen it finishes, the first run asks you to log in with your Claude subscription. Then click Join again.",
+    buttons,
+    defaultId: 0,
+    cancelId: buttons.length - 1,
+    noLink: true,
+  }).then(({ response }) => {
+    const choice = buttons[response];
+    if (choice === 'Copy command') {
+      clipboard.writeText(cmd);
+      dialog.showMessageBox(parent, { type: 'info', title: 'Copied', message: 'Install command copied', detail: `Paste it into a terminal and run it:\n\n${cmd}\n\nThen click Join again.`, buttons: ['OK'], noLink: true });
+    } else if (choice === 'Install Claude Code') {
+      // Reuse the Terminal `do script` path so the user WATCHES the official installer run.
+      const script = `tell application "Terminal"\n  activate\n  do script "${cmd.replace(/"/g, '\\"')}"\nend tell`;
+      execFile('osascript', ['-e', script], (err) => {
+        if (err) { console.error('[electron] install launch failed:', err.message); clipboard.writeText(cmd); }
+      });
+      dialog.showMessageBox(parent, { type: 'info', title: 'Installing Claude Code', message: 'Installing in Terminal', detail: 'A Terminal window is running the official installer. When it finishes, log in with your Claude subscription, then click Join again.', buttons: ['OK'], noLink: true });
+    }
+  }).catch(() => { /* dialog dismissed */ });
+}
+
+async function launchClaudeTerminal(meetCode) {
+  const { execFile } = require('child_process');
+  // Claude Code drives the bot. If the `claude` CLI isn't installed, offer to install it
+  // (or copy the command) instead of launching a Terminal into "command not found".
+  // Detection failure is non-fatal — we still launch (don't block a user who has it).
+  try {
+    const { detectClaude } = require('./claude-install.js');
+    const det = await detectClaude();
+    if (!det.installed) { promptInstallClaude(); return; }
+  } catch (e) { console.error('[electron] claude detection failed (continuing to launch):', e.message); }
   // #305: default to this profile's trusted agent dir instead of the untrusted
   // /tmp. An explicit Settings → "Claude Working Directory" still wins.
   const claudeDir = store.get('claudeWorkDir') || ensureAgentWorkdir();

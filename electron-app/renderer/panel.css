@@ -11,9 +11,19 @@ body {
   color: #e8eaed;
 }
 
+/* A flex column, but NOT full-height: the window is now sized to fit this
+   content (main.js listens for panel-content-height), so a `min-height: 100vh`
+   would be circular — the content would always be exactly as tall as the window
+   it is supposed to be measuring. */
 .container {
   padding: 16px;
+  display: flex;
+  flex-direction: column;
 }
+/* The banner is flush to the bottom edge too when nothing follows it, so the
+   avatar fills the whole window pre-call. (Settings/troubleshooting keep their
+   bottom padding — their content genuinely ends there.) */
+#mainScreen .container { padding-bottom: 0; }
 
 h1 {
   font-size: 18px;
@@ -189,6 +199,27 @@ button:disabled {
   color: #ffffff;
 }
 
+/* The banner's error overlay. Base .error-bar keeps its colours (and still
+   styles #micPermissionWarning in Troubleshooting); this only re-places it. */
+.hero-error {
+  position: absolute;
+  z-index: 5;                 /* above both scrims */
+  left: 12px; right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: none;              /* JS flips this to flex */
+  align-items: flex-start;
+  /* Translucent so the face still reads behind it. backdrop-filter keeps the
+     text legible over a busy background without going fully opaque. */
+  background: rgba(59, 24, 24, 0.82);
+  backdrop-filter: blur(3px);
+  border: 1px solid rgba(242, 139, 130, 0.45);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  line-height: 1.45;
+  max-height: 70%;
+  overflow-y: auto;
+}
+
 .participant-row {
   display: flex;
   align-items: center;
@@ -252,52 +283,33 @@ button:disabled {
   font-size: 10px;
 }
 
-.header-row {
+/* ── App footer ── the app's own identity, demoted to one quiet line: product ·
+   version · your vibeconferencing.com login. It FLOWS (no margin-top:auto) so
+   it sits directly under the avatar banner rather than being pushed to the
+   bottom of a tall window — with the window sized to its content, that's the
+   same place, and it stays put in-call when the call card appears. */
+.app-footer {
+  padding-top: 7px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 12px;
+  gap: 5px;
+  font-size: 11px;
+  /* On the artwork now, not on the panel background — the old #5f6368 would be
+     invisible against a dark avatar. Dim white + a shadow reads on anything
+     while staying clearly secondary to the call button above it. */
+  color: rgba(232, 234, 237, 0.62);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+  min-width: 0;
 }
-
-.header-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.header-logo {
-  width: 24px;
-  height: 24px;
-  flex-shrink: 0;
-}
-
-.header-title-text {
-  display: flex;
-  flex-direction: column;
-  line-height: 1.1;
-}
-
-.app-meta {
-  display: flex;
-  gap: 6px;
-  align-items: center;
+.app-footer-name { flex: 0 0 auto; }
+.app-footer-sep { flex: 0 0 auto; }
+.app-footer #userIdStatus {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
 .app-version {
   font-size: 11px;
-  color: #9aa0a6;
-}
-
-.app-profile {
-  font-size: 11px;
-  color: #fdd663;
-  background: #3c4043;
-  padding: 1px 6px;
-  border-radius: 3px;
-}
-
-.header-row h1 {
-  margin-bottom: 0;
+  color: inherit;
 }
 
 .icon-btn {
@@ -317,7 +329,28 @@ button:disabled {
   background: #3c4043;
 }
 
-.back-btn {
+/* Bot Settings heading — the bot's own avatar next to the title, so this screen
+   is visibly about THIS BOT and not the machine-wide App Settings. */
+.settings-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.settings-head h1 { margin-bottom: 0; }
+/* Same tile treatment as the masthead avatar, scaled down to heading size.
+   Both classes in the selector: .agent-avatar is defined LATER in this file and
+   would otherwise win the 84px size on equal specificity. */
+.agent-avatar.settings-avatar {
+  flex: 0 0 auto;
+  width: 34px; height: 34px;
+  border-radius: 9px;
+}
+.settings-avatar .agent-avatar-emoji { font-size: 19px; }
+
+/* The generic `button:not(.primary)` fill is (0,1,1) and would beat a bare
+   class, so ghost buttons need the `button.` prefix to stay ghosts. */
+button.back-btn {
   background: none;
   border: none;
   color: #8ab4f8;
@@ -329,7 +362,8 @@ button:disabled {
   text-align: left;
 }
 
-.back-btn:hover {
+button.back-btn:hover:not(:disabled) {
+  background: none;
   color: #aecbfa;
 }
 
@@ -364,7 +398,7 @@ button:disabled {
   color: #9aa0a6;
 }
 
-.auth-action-btn {
+button.auth-action-btn {
   background: none;
   border: none;
   color: #8ab4f8;
@@ -375,7 +409,8 @@ button:disabled {
   margin-bottom: 0;
 }
 
-.auth-action-btn:hover {
+button.auth-action-btn:hover:not(:disabled) {
+  background: none;
   color: #aecbfa;
 }
 
@@ -420,7 +455,7 @@ button:disabled {
 }
 .popout-btn:hover { background: #3c4043; border-color: #8ab4f8; color: #aecbfa; }
 
-/* Bot Google Identity — which account is actually signed in */
+/* Sign-ins section — which Google account is actually signed in */
 .account-email {
   font-size: 12px;
   margin: 0 0 8px;
@@ -439,23 +474,88 @@ button:disabled {
 }
 .text-link:hover { color: #aecbfa; text-decoration: underline; }
 
-/* ── Agent identity card (#289 agent-first layout) ──────────────────────── */
-.agent-card {
-  margin: 6px 0 14px;
-  padding: 12px;
-  border: 1px solid #5f6368;
-  border-radius: 12px;
-  background: #2a2d31;
+/* ── Bot identity — the full-bleed avatar banner ────────────────────────────
+   The avatar IS the masthead: flush to the window's top / left / right edges,
+   with the name, ⚙ and the call controls laid over it. The negative margins
+   cancel .container's 16px padding on three sides.
+
+   NOT `overflow: hidden` — the bot-switcher dropdown hangs below the name and
+   would be clipped at the banner's edge. Only .hero-art clips.
+
+   SQUARE. Full width either way (the negative margins), so a 1:1 ratio makes it
+   as tall as the window is wide — much more room for the face than the old 16:9
+   slab. Background art is authored 16:9 and gets centre-cropped to fit, which is
+   the same cover-fit the camera applies.
+
+   No min-height: as a flex ITEM of .container (a column flex), min-height:auto
+   resolves to the content-based minimum, so the banner still GROWS past the
+   square when the Meet/Slack URL field opens inside it. An explicit min-height
+   would override that and the field would overflow instead. */
+.bot-hero {
+  /* -16 on three sides cancels .container's padding so the banner bleeds to the
+     window edges. NOT on the bottom: a negative bottom margin pulls the
+     container's own bottom edge up over the banner and clips the status line
+     off it. #mainScreen .container has padding-bottom:0 instead. */
+  position: relative;
+  margin: -16px -16px 0;
+  aspect-ratio: 1 / 1;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
 }
-.agent-top { display: flex; align-items: center; gap: 12px; }
+/* Scrims: the name and buttons sit on top of arbitrary user art, so darken the
+   two edges they occupy. Purely decorative — under the controls, over the art. */
+.bot-hero::before,
+.bot-hero::after {
+  content: ''; position: absolute; left: 0; right: 0; z-index: 3;
+  pointer-events: none;
+}
+.bot-hero::before {
+  top: 0; height: 92px;
+  background: linear-gradient(to bottom, rgba(0,0,0,0.55), rgba(0,0,0,0));
+}
+.bot-hero::after {
+  bottom: 0; height: 60%;
+  background: linear-gradient(to top, rgba(0,0,0,0.7), rgba(0,0,0,0));
+}
+.hero-top, .hero-bottom { position: relative; z-index: 4; }
+.hero-top {
+  display: flex; align-items: flex-start;
+  padding: 10px 10px 0;
+}
+/* The name is centred across the FULL banner width; the gear is pinned to the
+   corner and taken out of the flow so it can't push the name off-centre. */
+.hero-top .agent-name-row { flex: 1 1 auto; justify-content: center; min-width: 0; }
+.hero-top .agent-gear { position: absolute; top: 8px; right: 8px; }
+.hero-bottom { padding: 0 12px 12px; }
+.hero-bottom .field { margin-bottom: 8px; }
+.hero-bottom .field label { color: #e8eaed; text-shadow: 0 1px 2px rgba(0,0,0,0.6); }
+
+/* The art layer — fills the banner and is the only thing that clips.
+   container-type lets the face size itself as a fraction of the banner (cqmin)
+   rather than a hardcoded px, so it tracks the panel width. */
+.agent-avatar.hero-art {
+  position: absolute; inset: 0;
+  width: auto; height: auto;
+  border-radius: 0;
+  z-index: 0;
+  container-type: size;
+}
 
 .agent-avatar {
   position: relative;
   flex: 0 0 auto;
-  width: 54px; height: 54px;
-  border-radius: 14px;
+  width: 84px; height: 84px;
+  border-radius: 20px;
   overflow: hidden;
-  background: linear-gradient(135deg, #3c4043, #26282b);
+  /* No avatarBackgroundSvg set (the default is an empty string) → mirror the
+     VIRTUAL CAMERA's fallback, which is this blue gradient, not a neutral grey.
+     Keep these three stops in step with the default gradient in page-inject.js,
+     or the panel shows one background and the call shows another. (The camera's
+     version drifts its endpoints over time; a static approximation is fine for
+     a still portrait.) */
+  background: linear-gradient(160deg, #1a237e 0%, #283593 50%, #1565c0 100%);
   display: flex; align-items: center; justify-content: center;
 }
 .agent-avatar-bg { position: absolute; inset: 0; }
@@ -464,65 +564,143 @@ button:disabled {
    via preserveAspectRatio="xMidYMid slice" — see renderer/svg-cover.js. */
 .agent-avatar-bg img { width: 100%; height: 100%; display: block; object-fit: cover; }
 .agent-avatar-bg svg { width: 100%; height: 100%; display: block; }
-.agent-avatar-emoji { position: relative; font-size: 28px; line-height: 1; }
-/* Real virtual-camera snapshot (profileIcon). Covers the generated bg+emoji when
-   present; the container's overflow:hidden + border-radius clip it to shape. */
-.agent-avatar-photo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 2; }
+.agent-avatar-emoji { position: relative; font-size: 46px; line-height: 1; }
+/* The banner is the "big friendly emoji" anchor. The camera uses
+   `emojiSize = min(w, h) * 0.77` (page-inject); 70% here — a touch under, since
+   the square banner also carries the name above and the call button + status
+   line below, and the face wants a little air from them. Same value for the image and the native glyph, matching how the
+   camera passes emojiSize to both drawImage and ctx.font. A bigger face also
+   makes the ±1.8% bob visibly larger, since that amplitude is a fraction of
+   the face. */
+.hero-art .agent-avatar-emoji { font-size: 70cqmin; }
+/* ── Resting motion ──────────────────────────────────────────────────────────
+   The same idle animation the virtual camera runs on the emoji, so the portrait
+   breathes like the face on the call does. page-inject's _render does:
+     bob     = sin(frameCount * 0.045) * emojiSize * 0.018
+     breathe = 1 + sin(frameCount * 0.04) * 0.012
+   at 30fps → a 4.65s vertical bob of ±1.8% and a 5.24s scale pulse of ±1.2%.
+   The two periods are deliberately NOT equal: they drift in and out of phase,
+   which is what keeps it from looking like a metronome.
 
-.agent-id { flex: 1 1 auto; min-width: 0; }
-.agent-name-row { position: relative; display: flex; align-items: center; gap: 6px; }
+   `translate` and `scale` as INDIVIDUAL properties, not `transform` — two
+   animations on one `transform` would clobber each other. Percentage translate
+   is relative to the element's own size, which is exactly the camera's
+   "fraction of emojiSize". ease-in-out is a close approximation of a sine. */
+@keyframes avatar-bob {
+  0%, 100% { translate: 0 -1.8%; }
+  50%      { translate: 0 1.8%; }
+}
+@keyframes avatar-breathe {
+  0%, 100% { scale: 0.988; }
+  50%      { scale: 1.012; }
+}
+.agent-avatar-emoji,
+.agent-avatar-emoji-img {
+  animation: avatar-bob 4.65s ease-in-out infinite,
+             avatar-breathe 5.24s ease-in-out infinite;
+}
+/* Same courtesy as the blink: no idle motion for anyone who asked the OS for
+   less of it. */
+@media (prefers-reduced-motion: reduce) {
+  .agent-avatar-emoji,
+  .agent-avatar-emoji-img { animation: none; }
+}
+
+/* The face, drawn from the chosen emoji set's artwork (see paintAvatarEmoji).
+   Sized off the container so it scales with the tile, exactly like the native
+   glyph it replaces. */
+.agent-avatar-emoji-img {
+  position: relative; z-index: 2;
+  width: 46px; height: 46px;
+  display: block; object-fit: contain;
+}
+.hero-art .agent-avatar-emoji-img { width: 70cqmin; height: 70cqmin; }
+.settings-avatar .agent-avatar-emoji-img { width: 21px; height: 21px; }
+
+.agent-name-row { position: relative; display: flex; align-items: center; gap: 2px; }
+/* The name IS the switcher control (Chrome profile chip / Slack workspace
+   switcher). Ghost button so it reads as a heading until hovered. */
+/* `button.` prefix, not a bare class: the global `button:not(.primary)` fill is
+   specificity (0,1,1) and would otherwise beat a plain class and paint these
+   ghost controls solid grey. */
+button.agent-namebtn {
+  width: auto; min-width: 0;
+  display: flex; align-items: center; gap: 5px;
+  background: none; border: none; cursor: pointer;
+  padding: 2px 6px; margin: 0 0 0 -6px; border-radius: 8px;
+  text-align: left;
+}
+button.agent-namebtn:hover:not(:disabled) { background: #3c4043; }
 .agent-name {
   font-family: 'Google Sans', Roboto, sans-serif;
-  font-size: 22px; font-weight: 700; color: #8ab4f8; letter-spacing: 0.3px;
+  font-size: 26px; font-weight: 700; color: #e8eaed; letter-spacing: 0.3px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  /* Sits on the user's own artwork — a shadow keeps it readable on anything. */
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
 }
-.agent-switch {
-  width: auto; margin: 0; flex: 0 0 auto;
-  background: none; border: none; color: #8ab4f8; cursor: pointer;
-  font-size: 18px; line-height: 1; padding: 2px 4px; border-radius: 6px;
+.agent-caret { flex: 0 0 auto; font-size: 13px; color: #e8eaed; text-shadow: 0 1px 3px rgba(0,0,0,0.8); }
+button.agent-namebtn:hover:not(:disabled) .agent-caret { color: #e8eaed; }
+/* Bot settings gear — sits next to the name, ghost-icon treatment. Stays
+   visible in-call (unlike the switcher). */
+button.agent-gear {
+  width: auto; margin: 0; flex: 0 0 auto; align-self: center;
+  background: none; border: none; color: #e8eaed; cursor: pointer;
+  font-size: 24px; line-height: 1; padding: 4px 6px; border-radius: 6px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
 }
-.agent-switch:hover { background: #3c4043; }
-/* Bot settings gear — sits next to the ⇄ switcher in the name row, same
-   ghost-icon treatment. Stays visible in-call (unlike the switcher). */
-.agent-gear {
-  width: auto; margin: 0; flex: 0 0 auto;
-  background: none; border: none; color: #9aa0a6; cursor: pointer;
-  font-size: 16px; line-height: 1; padding: 2px 4px; border-radius: 6px;
-}
-.agent-gear:hover { background: #3c4043; color: #e8eaed; }
+button.agent-gear:hover:not(:disabled) { background: #3c4043; color: #e8eaed; }
 /* #379: the switcher SWITCHES the current window (replaces this bot), which only
-   makes sense pre-call. Hide it in-call so nobody expects to hot-swap the bot
-   mid-call; the additive "New Profile Window…" (menu bar) stays available. Gated
-   on a single body flag so the broader pre-call/in-call UI split (#289) can reuse
-   it for other pre-call-only controls. */
-body[data-call-state="in-call"] #profileMenuBtn { display: none; }
-.agent-call-id {
-  font-size: 12px; color: #9aa0a6;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.agent-call-id.in-call { color: #81c995; }
+   makes sense pre-call. In-call, the name must STILL be visible (it's the
+   masthead now), so we neutralise the control rather than hide it: drop the
+   caret and the hover affordance. panel.js also ignores the click. */
+body[data-call-state="in-call"] .agent-caret { display: none; }
+body[data-call-state="in-call"] button.agent-namebtn { cursor: default; }
+body[data-call-state="in-call"] button.agent-namebtn:hover:not(:disabled) { background: none; }
 
 /* ── Call zone ── join/leave tools, grouped as a card distinct from the Bot
    card above. Two entirely separate views (pre-call / in-call) driven by the
    SAME body[data-call-state] flag that gates the Leave/Troubleshooting
    controls — never both at once. */
-.call-card {
-  margin: 0 0 14px;
-  padding: 12px;
-  border: 1px solid #5f6368;
-  border-radius: 12px;
-  background: #2a2d31;
+/* No box. With the bot masthead and the app footer both unboxed, a bordered
+   card around the only remaining zone just drew a rectangle around the button. */
+/* Pre-call and in-call controls occupy the SAME slot on the banner, so Leave
+   Call lands exactly where Call now was and nothing reflows or resizes. */
+.hero-incall { display: none; }
+body[data-call-state="in-call"] .hero-precall { display: none; }
+body[data-call-state="in-call"] .hero-incall { display: block; }
+/* Leave Call — the primary action's shape, in red. */
+button.primary.danger { background: #d93025; color: #fff; }
+button.primary.danger:hover:not(:disabled) { background: #e8544a; }
+/* Primary action + the ⋯ that reveals manual URL entry, on one line. The
+   primary flexes so it stays the obvious target; ⋯ is a fixed ghost square. */
+.join-row { display: flex; align-items: stretch; gap: 6px; }
+.join-row .primary { flex: 1 1 auto; margin-bottom: 0; }
+button.join-more {
+  flex: 0 0 auto; width: auto; margin: 0;
+  padding: 0 12px;
+  background: rgba(32, 33, 36, 0.55);
+  border: 1px solid rgba(232, 234, 237, 0.4);
+  border-radius: 20px;
+  color: #e8eaed;
+  font-size: 15px; line-height: 1;
 }
-.call-precall .field { margin-top: 0; } /* first field, no extra top gap */
-.call-incall { display: none; }         /* pre-call by default */
-body[data-call-state="in-call"] .call-precall { display: none; }
-body[data-call-state="in-call"] .call-incall { display: block; }
-.call-incall .agent-call-id { margin-bottom: 6px; color: #81c995; }
+button.join-more:hover:not(:disabled) { background: #3c4043; color: #e8eaed; border-color: #8ab4f8; }
+/* Open state — reads as "this is what's showing the field below". */
+button.join-more[aria-expanded="true"] { color: #8ab4f8; border-color: #8ab4f8; background: #303134; }
+/* The in-call ⓘ reuses the same ghost pill as ▸ so the two states have an
+   identical footprint — Leave Call lands exactly where Call now was. The glyph
+   is a touch larger; ⓘ reads small next to a bare triangle. */
+button.join-more#openTroubleshootingBtn { font-size: 18px; }
+/* The "not wired up yet" note under the primary button. */
+.stub-note { margin: 0 0 12px; color: #fdd663; }
+
 /* Read-only current-call URL + copy button (in-call). */
-.call-url-row { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.call-url-row { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
 .call-url {
   flex: 1 1 auto; min-width: 0;
-  font-size: 12px; color: #8ab4f8;
+  /* On the artwork now — needs the same shadow treatment as the status line. */
+  font-size: 12px; color: #e8eaed;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   user-select: text;
 }
@@ -532,10 +710,6 @@ body[data-call-state="in-call"] .call-incall { display: block; }
   font-size: 13px; border-radius: 6px;
 }
 .call-url-copy:hover { background: #3c4043; color: #e8eaed; }
-
-/* ── Misc zone ── de-emphasized transitional footer (just the fast-model line
-   now; the login moved up to the header). */
-.misc-zone { margin-top: 4px; }
 
 /* #305 — the bot's effective working dir under the Claude Working Directory field. */
 .workdir-path {
@@ -577,8 +751,16 @@ body[data-call-state="in-call"] .call-incall { display: block; }
   background: #8ab4f8;
   border-radius: 10px 10px 0 0;
 }
-/* Keep panel content from hiding behind the fixed bar. */
-.container { padding-bottom: 44px; }
+/* The bar labels the bot's-view region, so it only exists while that region
+   does — during a call. Out of a call it's hidden and gives back its 44px, so
+   the panel owns the whole window. Driven by body[data-botview] from main. */
+body[data-botview="hidden"] .botview-bar { display: none; }
+/* The ⓘ Troubleshooting window loads this same page, but it is NOT the panel —
+   it has no bot's-view webview beneath it, so the bar that labels one is just a
+   blue stripe along its bottom edge. */
+body[data-window="troubleshooting"] .botview-bar { display: none; }
+/* Keep panel content from hiding behind the fixed bar (only when it's there). */
+body[data-botview="visible"] #mainScreen .container { padding-bottom: 44px; }
 .botview-label {
   font-size: 12px;
   color: #ffffff;
@@ -603,15 +785,6 @@ body[data-call-state="in-call"] .call-incall { display: block; }
 }
 .botview-toggle:hover { background: rgba(255, 255, 255, 0.28); }
 
-/* ── Header login ── your vibeconferencing.com sign-in, small + right-aligned
-   in the header where the settings gear used to sit. */
-.header-login {
-  flex: 0 0 auto;
-  display: flex; align-items: center; gap: 6px;
-  font-size: 11px; color: #9aa0a6; white-space: nowrap;
-}
-.agent-voice { font-size: 12px; color: #9aa0a6; margin-top: 4px; display: flex; align-items: center; gap: 4px; }
-
 /* Profile switcher dropdown (anchored under the name row) */
 .profile-menu {
   display: none;
@@ -621,21 +794,6 @@ body[data-call-state="in-call"] .call-incall { display: block; }
   max-height: 60vh; overflow: auto;
 }
 
-/* Connected calling platforms */
-.agent-connections { margin-top: 12px; padding-top: 10px; border-top: 1px solid #3c4043; }
-.conn-label { font-size: 10px; letter-spacing: 0.5px; text-transform: uppercase; color: #9aa0a6; margin-bottom: 6px; }
-.conn-row { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 3px 0; }
-.conn-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: #5f6368; }
-.conn-dot.on { background: #81c995; }
-.conn-name { flex: 1 1 auto; min-width: 0; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; }
-.conn-name strong { color: #e8eaed; }
-.conn-actions { flex: 0 0 auto; white-space: nowrap; }
-.conn-add {
-  width: auto; margin: 8px 0 0; padding: 2px 0;
-  background: none; border: none; color: #8ab4f8; cursor: pointer;
-  font-size: 12px; text-align: left;
-}
-.conn-add:hover { color: #aecbfa; }
 
 /* User (vibeconferencing.com) login — de-emphasized, transitional (#289) */
 .user-id-line {
@@ -643,10 +801,3 @@ body[data-call-state="in-call"] .call-incall { display: block; }
   margin-top: 10px; padding-top: 8px; border-top: 1px solid #3c4043;
   font-size: 11px; color: #9aa0a6;
 }
-
-/* Health zone */
-.health-zone {
-  margin-top: 14px; padding-top: 10px; border-top: 1px solid #3c4043;
-  font-size: 11px; color: #9aa0a6;
-}
-.health-key { color: #bdc1c6; }

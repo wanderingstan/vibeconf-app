@@ -8,30 +8,106 @@
   <!-- Main Screen -->
   <div class="screen" id="mainScreen">
     <div class="container">
-      <div class="header-row">
-        <div class="header-title">
-          <svg class="header-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-            <circle cx="8" cy="8" r="7.5" fill="#D97757"/>
-            <rect x="17" y="2" width="13" height="13" fill="#7765E3"/>
-            <rect x="2" y="17" width="13" height="13" fill="#E8547A"/>
-            <circle cx="24" cy="24" r="7.5" fill="#3ECFCF"/>
-          </svg>
-          <div class="header-title-text">
-            <h1>Vibeconferencing</h1>
-            <div class="app-meta">
-              <span id="appVersion" class="app-version"></span>
+      <!-- ══ ZONE 1: BOT ═══════════════════════════════════════════════════
+           The bot IS the page. A full-bleed avatar banner — flush to the
+           window's top, left and right edges (it escapes .container's padding
+           with negative margins) — carrying everything else on top of it:
+           name centred at the top, ⚙ pinned top-right, and the call controls
+           along the bottom. Everything else about the bot lives behind the ⚙. -->
+      <div class="bot-hero">
+        <!-- The art layer: the bot's background-as-avatar (its
+             avatarBackgroundSvg + idle emoji) or its captured virtual-camera
+             snapshot, so the panel previews how it looks on camera (#289).
+             Absolutely filling the banner, and the only thing that clips —
+             the hero itself must NOT clip, or the bot-switcher dropdown would
+             be cut off at its edge. -->
+        <div id="agentAvatar" class="agent-avatar hero-art"><span id="agentAvatarEmoji" class="agent-avatar-emoji">🙂</span></div>
+
+        <div class="hero-top">
+          <!-- The whole name+▾ is one button: clicking the name opens the bot
+               switcher, the way Chrome's profile chip and Slack's workspace
+               switcher behave. ▾ reads as "there's a menu here"; the old ⇄ read
+               as "swap" without hinting that a list would appear. -->
+          <div class="agent-name-row">
+            <button id="profileMenuBtn" class="agent-namebtn" title="Switch bot — replaces this window with another bot. ⌥-click a bot to open it in a separate window instead. Hidden during a call.">
+              <span id="botNameBig" class="agent-name">—</span>
+              <span class="agent-caret" aria-hidden="true">▾</span>
+            </button>
+            <!-- Bot switcher dropdown (#282), anchored under the name row. -->
+            <div id="profileMenu" class="profile-menu"></div>
+          </div>
+          <!-- Settings gear — opens THIS bot's settings (voice, behavior).
+               Machine-wide config is App Settings (⌘,). Pinned to the corner,
+               out of the centred name's way. -->
+          <button id="openSettingsBtn" class="agent-gear" title="This bot's settings (voice, acknowledgments, behavior). Machine-wide settings are in App Settings, ⌘,.">&#9881;</button>
+        </div>
+
+        <!-- Errors land across the bot's face rather than as a bar shoved under
+             the call buttons — that pushed the layout around and read as page
+             furniture. Over the avatar it's unmissable and costs no space. -->
+        <div class="error-bar hero-error" id="errorBar" style="display:none"><span id="errorText"></span><button class="error-close" id="errorClose">&times;</button></div>
+
+        <!-- PRE-CALL controls, over the foot of the avatar.
+
+             Two modes, driven by panel.js:
+               · nothing detected → one button, "Call <bot> now". No URL field:
+                 asking for a URL up front made the common case look like work.
+               · a call detected (or the user opened ▸) → the URL field appears
+                 and the button becomes "Add <bot> to call". -->
+        <div class="hero-bottom">
+          <div class="hero-precall">
+          <div class="field" id="callUrlField" style="display:none">
+            <label for="meetUrl">Meet / Slack URL</label>
+            <input type="text" id="meetUrl" placeholder="meet.google.com/xxx-xxxx-xxx or app.slack.com/client/…" />
+          </div>
+          <div class="join-row">
+            <!-- The helper text that used to sit under this button is now its
+                 tooltip — true but not worth permanent screen space. -->
+            <button id="joinBtn" class="primary" title="Calls open in Chrome/Safari are detected automatically. You can also type /join-call in any Claude Code session.">Call now</button>
+            <!-- Manual entry. A disclosure triangle, so it reads as expand /
+                 collapse: ▸ to open, ▴ to collapse (swapped in panel.js).
+                 Hidden once a call is detected, since the URL field is already
+                 showing and there'd be nothing to reveal. -->
+            <button id="manualUrlToggle" class="join-more" aria-expanded="false" title="Add the bot to a call that's already running — paste its Meet or Slack URL">▸</button>
+          </div>
+          </div>
+
+          <!-- IN-CALL: the same footprint as the pre-call controls, in the same
+               place on the banner — Leave sits exactly where Call was, so
+               joining a call doesn't reflow (or resize) anything. -->
+          <div class="hero-incall">
+            <!-- Which call the bot is in — for confirming the room and copying
+                 the invite link. (The old "● in Meet as Jimmy" line above this
+                 was removed: the name is already the banner's headline.) -->
+            <div class="call-url-row" title="The call this bot is currently in.">
+              <span id="callUrlDisplay" class="call-url"></span>
+              <button id="copyCallUrlBtn" class="call-url-copy" title="Copy call link">⧉</button>
+            </div>
+            <div class="join-row">
+              <button id="leaveCallBtn" class="primary danger">Leave Call</button>
+              <button id="openTroubleshootingBtn" class="join-more" title="Troubleshooting — live call state, captions, and the agent's view">ⓘ</button>
             </div>
           </div>
-        </div>
-        <!-- YOUR (vibeconferencing.com) login — app-level since #366: one sign-in
-             covers every bot. Small, right-aligned in the header (next to the
-             version), where the settings gear used to sit. -->
-        <div class="header-login" title="Your vibeconferencing.com login — for the shared whiteboard rooms. Signing in once covers all bots.">
-          <span id="userIdStatus">checking…</span>
-          <button id="userSignInMainBtn" class="auth-action-btn" style="display:none">Sign in</button>
+
+          <!-- App identity, on the banner rather than under it: product ·
+               version · your vibeconferencing.com login. Living inside the
+               banner is what lets the avatar fill the whole window in the
+               small (pre-call) state — as its own row below, it left a band of
+               grey above and below itself. -->
+          <div class="app-footer" title="Vibeconferencing, and your vibeconferencing.com login (for the shared whiteboard rooms — signing in once covers all bots).">
+            <span class="app-footer-name">Vibeconferencing</span>
+            <span id="appVersion" class="app-version"></span>
+            <span class="app-footer-sep">·</span>
+            <span id="userIdStatus">checking…</span>
+            <button id="userSignInMainBtn" class="auth-action-btn" style="display:none">Sign in</button>
+          </div>
         </div>
       </div>
-      <div class="error-bar" id="errorBar" style="display:none"><span id="errorText"></span><button class="error-close" id="errorClose">&times;</button></div>
+
+      <!-- The "not wired up yet" note for Call-now. Below the banner, not on it:
+           it's three lines of prose and would either overflow the art or force
+           the banner to jump taller. -->
+      <div class="helper-text stub-note" id="startCallStub" style="display:none"></div>
 
       <!-- #381: onboarding — voice needs a machine-wide ElevenLabs key, which now
            lives in App Settings (⌘,). Shown only when no key is set; deep-links
@@ -41,103 +117,6 @@
         <button id="openAppSettingsFromBanner" style="background:#8ab4f8;border:none;color:#202124;border-radius:14px;padding:5px 12px;font-weight:600;cursor:pointer;white-space:nowrap">Set it up →</button>
       </div>
 
-      <!-- ══ ZONE 1: CALL ══════════════════════════════════════════════════
-           The frequent action, so it leads. Two entirely distinct views,
-           toggled by the SAME body[data-call-state] flag that shows/hides the
-           Leave + Troubleshooting controls. -->
-      <div class="call-card">
-        <!-- PRE-CALL: enter a call. (No "not in a call" status — the whole
-             view already implies it.) -->
-        <div class="call-precall">
-          <div class="field">
-            <label for="meetUrl">Meet / Slack URL</label>
-            <input type="text" id="meetUrl" placeholder="meet.google.com/xxx-xxxx-xxx or app.slack.com/client/…" />
-          </div>
-          <button id="joinBtn" class="primary" disabled>Join Call</button>
-          <div class="helper-text" style="margin-top:8px">Calls in Chrome/Safari are auto-detected. You can also type <code>/join-call</code> in any Claude Code session.</div>
-          <div class="helper-text" style="margin-top:4px"><a href="#" id="defaultMeetBtn" class="text-link">Open default testing meet in browser ↗</a></div>
-        </div>
-
-        <!-- IN-CALL: the live call — identity + which call + leave / troubleshooting. -->
-        <div class="call-incall">
-          <div id="botCallIdentity" class="agent-call-id" title="The name this bot is appearing under in the current call (Google account name in Meet, Slack name in a huddle).">in a call</div>
-          <!-- The current call's URL (read-only) — to confirm which call the bot is
-               in and to copy/share the invite link. -->
-          <div class="call-url-row" title="The call this bot is currently in.">
-            <span id="callUrlDisplay" class="call-url"></span>
-            <button id="copyCallUrlBtn" class="call-url-copy" title="Copy call link">⧉</button>
-          </div>
-          <div id="connectedSection">
-            <button id="leaveCallBtn" style="margin-top:8px;background:#d93025;color:#fff;border:none;padding:8px 16px;border-radius:20px;cursor:pointer">Leave Call</button>
-            <div class="nav-buttons">
-              <button id="openTroubleshootingBtn">Troubleshooting</button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- ══ ZONE 2: BOT ═══════════════════════════════════════════════════
-           Who this bot is: avatar · name · ⚙ its settings · voice · connected
-           calling identities. (Switched below the Call zone — the bot changes
-           far less often than you join calls.) -->
-      <div class="agent-card">
-        <div class="agent-top">
-          <!-- Avatar tile = the bot's background-as-avatar (its avatarBackgroundSvg
-               + idle emoji), so the panel previews how it looks on camera (#289). -->
-          <div id="agentAvatar" class="agent-avatar"><span id="agentAvatarEmoji" class="agent-avatar-emoji">🙂</span></div>
-          <div class="agent-id">
-            <div class="agent-name-row">
-              <div id="botNameBig" title="This bot's stable identity — its name / personality / logins. The name it actually appears under in a call shows in the Call section above once joined." class="agent-name">—</div>
-              <!-- Bot switcher. A more prominent "external" treatment was
-                   considered and deferred — this compact ⇄ stays for now. -->
-              <button id="profileMenuBtn" class="agent-switch" title="Switch bot — replaces this window with another bot. ⌥-click a bot to open it in a separate window instead. Hidden during a call.">⇄</button>
-              <!-- Settings gear — opens THIS bot's settings (voice, behavior).
-                   Machine-wide config is App Settings (⌘,). -->
-              <button id="openSettingsBtn" class="agent-gear" title="This bot's settings (voice, acknowledgments, behavior). Machine-wide settings are in App Settings, ⌘,.">&#9881;</button>
-              <!-- Bot switcher dropdown (#282). Anchored under the bot-switcher
-                   control (moved out of the card — see .bot-switcher). -->
-              <div id="profileMenu" class="profile-menu"></div>
-            </div>
-            <div class="agent-voice" title="Text-to-speech voice. ElevenLabs when a voice ID is set; otherwise the built-in macOS voice."><span id="voiceStatus">checking…</span></div>
-          </div>
-        </div>
-
-        <!-- Connected calling platforms (#289). Each is a status row: ● = connected
-             (signed in), ○ = guest/not connected. "Add" connects another account. -->
-        <div class="agent-connections">
-          <div class="conn-label">Platforms</div>
-          <div class="conn-row" title="The bot's Google Meet sign-in — only needed to auto-admit into invite-only meetings. Guest mode works for open meetings.">
-            <span class="conn-dot" id="connMeetDot"></span>
-            <span class="conn-name"><strong>Meet</strong> · <span id="botIdentityStatus">checking…</span></span>
-            <span class="conn-actions">
-              <button id="botSignInMainBtn" class="auth-action-btn" style="display:none">Sign in</button>
-              <!-- Signing OUT of the bot's Google account (→ guest) is a big, rare
-                   action — it lives in Settings, not the primary UI (#289). -->
-            </span>
-          </div>
-          <div class="conn-row" title="The bot's Slack identity for huddles — the signed-in Slack account's display name. (Reading the live name from the huddle is tracked in #283.)">
-            <span class="conn-dot" id="connSlackDot"></span>
-            <span class="conn-name"><strong>Slack</strong> · <span id="botSlackIdentityStatus">—</span></span>
-            <span class="conn-actions">
-              <button id="slackSignInMainBtn" class="auth-action-btn" style="display:none">Sign in</button>
-              <!-- Signing OUT of Slack is a big, rare action — it lives in Settings,
-                   not the primary UI (#289), matching Meet + vibeconferencing.com. -->
-            </span>
-          </div>
-          <!-- "⊕ Add calling platform" returns once there's more than one
-               platform to add (#289). For now Meet + Slack are both fixed. -->
-        </div>
-      </div>
-
-      <!-- ══ ZONE 3: MISC ══════════════════════════════════════════════════
-           De-emphasized, transitional status (the login moved up to the header;
-           this footer may go away once the fast-model line is no longer
-           user-facing). -->
-      <div class="misc-zone">
-        <div class="health-zone">
-          <span title="The on-device fast model (Apple FoundationModels via the OpenAI-compatible wrapper) powering turn-taking triage/engagement. 'Detected' = the configured endpoint answered just now."><span class="health-key">⚡ Fast model</span> · <span id="fastModelStatus">checking…</span></span>
-        </div>
-      </div>
     </div>
   </div>
 
@@ -145,11 +124,23 @@
   <div class="screen" id="settingsScreen" style="display:none">
     <div class="container">
       <button id="backFromSettingsBtn" class="back-btn">&larr; Back</button>
-      <h1>Settings</h1>
+      <!-- "Bot Settings", with the bot's own avatar, so this is unmistakably
+           THIS BOT's prefs and not the machine-wide App Settings (⌘,). -->
+      <div class="settings-head">
+        <div id="settingsAvatar" class="agent-avatar settings-avatar"><span class="agent-avatar-emoji">🙂</span></div>
+        <h1>Bot Settings</h1>
+      </div>
 
-      <!-- Voice + face first — the per-profile prefs most users touch. The user
-           (vibeconferencing.com) login moved to App Settings (⌘,) since #366/#381;
-           Bot Name moved into Bot Google Identity below (only matters as a guest). -->
+      <!-- Name first — it's the bot's identity and the thing the panel shows.
+           (It used to be buried in a "Bot Google Identity" section behind a
+           guest-vs-account explainer; that's an edge case, and a signed-in bot
+           self-evidently uses its Google name.) -->
+      <div class="field" id="botNameField">
+        <label for="botName">Name</label>
+        <input type="text" id="botName" value="Jimmy" />
+        <div class="helper-text">What this bot is called, here and in calls it joins as a guest.</div>
+      </div>
+
       <div class="field">
         <label for="unifiedVoice">Voice</label>
         <select id="unifiedVoice" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit">
@@ -173,34 +164,20 @@
         <div style="font-size:11px;color:#666;margin-top:2px">Graphics for the bot's face emoji. Twemoji is a distinct, consistent set shipped with the app (#316).</div>
       </div>
 
+      <!-- Optional platform logins. Both are edge cases — Meet works as a guest,
+           and huddles are the only reason to touch Slack — so this is just the
+           buttons plus one line of why. The guest-vs-account explainer that used
+           to live here is gone; signing in visibly overrides the name above. -->
       <div class="section">
-        <h2>Bot Google Identity</h2>
+        <h2>Sign-ins</h2>
         <p class="helper-text" style="margin:0 0 8px">
-          Currently: <strong><span id="meetModeIndicator">guest</span></strong>.
-          In <strong>guest</strong> mode the bot joins Meet under the name below.
-          In <strong>account</strong> mode the bot is signed into Google and inherits that account's name.
-          The choice persists across launches.
+          Optional. Sign the bot into Google so it's auto-admitted to invite-only
+          Meets, or into Slack so it can join huddles. Signing in uses that
+          account's name instead of the one above. Logins persist across launches.
         </p>
-        <!-- Bot Name only matters as a GUEST — a signed-in bot uses its Google
-             account name — so panel.js hides #botNameField in account mode. -->
-        <div class="field" id="botNameField">
-          <label for="botName">Bot Name (Meet, guest)</label>
-          <input type="text" id="botName" value="Jimmy" />
-          <div class="helper-text">The name the bot joins Google Meet under when it joins as a guest.</div>
-        </div>
         <div id="meetAccountEmail" class="account-email" style="display:none"></div>
         <button id="meetSignInBtn">Sign in to Google as bot</button>
         <button id="meetSignOutBtn" style="display:none">Sign out (use as guest)</button>
-      </div>
-
-      <div class="section">
-        <h2>Bot Slack Identity</h2>
-        <p class="helper-text" style="margin:0 0 8px">
-          For Slack huddles the bot joins as its signed-in <strong>Slack account</strong>
-          (there's no guest path). Sign in once here — the login persists across
-          launches in this profile. This opens Slack in the bot's view; log in and
-          pick the workspace, then come back.
-        </p>
         <button id="slackSignInBtn">Sign into Slack as bot</button>
         <button id="slackSignOutBtn" style="display:none">Sign out of Slack</button>
       </div>

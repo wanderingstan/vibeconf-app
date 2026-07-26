@@ -28,4 +28,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const { clipboard } = require('electron');
     clipboard.writeText(text);
   },
+
 });
+
+// Emoji graphics (#316) are read in MAIN, via the 'emoji-data-uri' IPC, not
+// here. This preload is SANDBOXED (panelView doesn't set sandbox:false the way
+// createMeetView does), so its `require` resolves only Electron's small
+// allowlist — a relative path like './emoji-assets.js' throws. Reading the file
+// main-side keeps the panel sandboxed instead of relaxing it for a file read.

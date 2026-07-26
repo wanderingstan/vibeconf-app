@@ -3,9 +3,20 @@
 
 const api = window.electronAPI;
 
+// This file backs TWO windows: the control panel, and the ⓘ Troubleshooting
+// window (main loads panel.html?screen=troubleshooting). In the latter we show
+// only the troubleshooting screen and suppress everything belonging to the panel
+// proper — specifically anything that would DOUBLE a side effect: reporting a
+// content height (which resizes the MAIN window), rewriting the cached avatar
+// thumbnail, or running the identity/profile pollers a second time.
+//
+// Inbound broadcasts need no guarding: main sends those to panelView.webContents,
+// which this window is not.
+const IS_TROUBLESHOOTING_WINDOW =
+  new URLSearchParams(window.location.search).get('screen') === 'troubleshooting';
+
 const joinBtn = document.getElementById('joinBtn');
 const meetUrlInput = document.getElementById('meetUrl');
-const connectedSection = document.getElementById('connectedSection');
 const callUrlDisplay = document.getElementById('callUrlDisplay');
 const copyCallUrlBtn = document.getElementById('copyCallUrlBtn');
 // Copy the current call's URL for inviting others (#panel-cleanup).
@@ -36,7 +47,6 @@ const micWarn = document.getElementById('micPermissionWarning');
 const shareWhiteboardBtn = document.getElementById('shareWhiteboardBtn');
 const meetSignInBtn = document.getElementById('meetSignInBtn');
 const meetSignOutBtn = document.getElementById('meetSignOutBtn');
-const meetModeIndicator = document.getElementById('meetModeIndicator');
 const slackSignInBtn = document.getElementById('slackSignInBtn');
 const slackSignOutBtn = document.getElementById('slackSignOutBtn');
 
@@ -74,6 +84,9 @@ function showScreen(screen) {
   settingsScreen.style.display = 'none';
   troubleshootingScreen.style.display = 'none';
   screen.style.display = 'block';
+  // Screens differ a lot in height (Settings is long) and the window is sized to
+  // fit — remeasure. Defined below; ignore on the very first paint.
+  try { reportContentHeight(); } catch { /* not wired yet */ }
 }
 
 document.getElementById('openSettingsBtn').addEventListener('click', () => {
@@ -83,29 +96,55 @@ document.getElementById('openSettingsBtn').addEventListener('click', () => {
   if (typeof refreshAccountEmail === 'function') refreshAccountEmail(lastMeetMode);
 });
 document.getElementById('backFromSettingsBtn').addEventListener('click', () => showScreen(mainScreen));
-document.getElementById('openTroubleshootingBtn').addEventListener('click', () => showScreen(troubleshootingScreen));
-document.getElementById('backFromTroubleshootingBtn').addEventListener('click', () => showScreen(mainScreen));
+// ⓘ opens Troubleshooting in its OWN window, so the panel keeps showing the
+// avatar and the call controls. (The screen's own ⧉ Pop out can't do this: it
+// re-parents the single panelView, which leaves the main window with no panel
+// and falling back to a full-size Meet view.)
+document.getElementById('openTroubleshootingBtn')?.addEventListener('click', () => {
+  api.invoke('open-troubleshooting-window').catch(() => {});
+});
 
-// ── #289 panel redesign: agent-card wiring ───────────────────────────────────
+if (IS_TROUBLESHOOTING_WINDOW) {
+  showScreen(troubleshootingScreen);
+  // Lets the stylesheet drop the panel chrome that has no business in a plain
+  // window — see body[data-window="troubleshooting"] in panel.css.
+  document.body.dataset.window = 'troubleshooting';
+  // No panel behind this to go back to, and the window's own title bar already
+  // has a close button directly above it.
+  const back = document.getElementById('backFromTroubleshootingBtn');
+  if (back) back.style.display = 'none';
+  // "⧉ Pop out" detaches the whole panelView — from here that would empty the
+  // MAIN window, which is the exact behaviour this window exists to avoid.
+  const popout = document.getElementById('popoutPanelBtn');
+  if (popout) popout.style.display = 'none';
+}
+
+
+// In the panel this returns to the main screen; in the ⓘ window it's rebound
+// above to close the window, so don't also swap screens underneath it.
+if (!IS_TROUBLESHOOTING_WINDOW) {
+  document.getElementById('backFromTroubleshootingBtn').addEventListener('click', () => showScreen(mainScreen));
+}
+
+// ── #289 panel redesign: bot identity (avatar + name) wiring ────────────────
 // ("⊕ Add calling platform" was here; removed until there's a 3rd platform to
 // add — Meet + Slack are both fixed for now. #289.)
 
 // Render the agent avatar's background SVG layer (the same `avatarBackgroundSvg`
 // pref the bot can set via MCP). Empty/unset → keep the default CSS gradient.
-const agentAvatarEl = document.getElementById('agentAvatar');
-async function renderAgentAvatar() {
-  if (!agentAvatarEl) return;
-  let svg = '';
-  try {
-    const cfg = await api.invoke('get-config', ['avatarBackgroundSvg']);
-    svg = (cfg && cfg.avatarBackgroundSvg) || '';
-  } catch { /* ignore — fall back to gradient */ }
-  let bg = agentAvatarEl.querySelector('.agent-avatar-bg');
+// Two tiles wear this look: the panel masthead and the Bot Settings heading, so
+// each config read paints both.
+const agentAvatarEls = ['agentAvatar', 'settingsAvatar']
+  .map((id) => document.getElementById(id))
+  .filter(Boolean);
+
+function paintAvatarBg(el, svg) {
+  let bg = el.querySelector('.agent-avatar-bg');
   if (svg && svg.trim()) {
     if (!bg) {
       bg = document.createElement('div');
       bg.className = 'agent-avatar-bg';
-      agentAvatarEl.insertBefore(bg, agentAvatarEl.firstChild);
+      el.insertBefore(bg, el.firstChild);
     }
     bg.innerHTML = svg;
     // The tile is square; backgrounds are authored 16:9. `object-fit: cover` in
@@ -116,43 +155,344 @@ async function renderAgentAvatar() {
   } else if (bg) {
     bg.remove();
   }
+}
 
-  // Prefer a real snapshot of the virtual-camera feed (captured while in a call,
-  // main-side) over the reconstructed background+emoji — it matches what
-  // participants actually see, including Runway faces. Falls back to the
-  // generated look when `profileIcon` is unset.
-  try {
-    const c = await api.invoke('get-config', ['profileIcon']);
-    const dataUrl = c && c.profileIcon;
-    let photo = agentAvatarEl.querySelector('.agent-avatar-photo');
-    if (dataUrl) {
-      if (!photo) {
-        photo = document.createElement('img');
-        photo.className = 'agent-avatar-photo';
-        photo.alt = '';
-        agentAvatarEl.appendChild(photo);
-      }
-      if (photo.getAttribute('src') !== dataUrl) photo.src = dataUrl;
-    } else if (photo) {
-      photo.remove();
+// The face the panel shows: the bot's RESTING expression. The live in-call face
+// cycles through a dozen states (thinking, muted, yielding…), but a control panel
+// wants a stable portrait, and resting is the one the bot wears most.
+// (`idleEmojiOverride` and friends are runtime-only — not persisted — so there is
+// nothing per-bot to read here yet.)
+const RESTING_EMOJI = '\u{1F642}'; // 🙂
+
+// set|emoji → data URI (or null for native / not in the set). Main reads a file
+// per lookup and the blink asks for the same handful over and over, so cache.
+const emojiUriCache = new Map();
+async function emojiUriFor(setName, emoji) {
+  const key = setName + '|' + emoji;
+  if (emojiUriCache.has(key)) return emojiUriCache.get(key);
+  let uri = null;
+  try { uri = await api.invoke('emoji-data-uri', setName, emoji); } catch { /* native glyph */ }
+  emojiUriCache.set(key, uri);
+  return uri;
+}
+
+// Draw the face from the CHOSEN EMOJI SET's artwork, exactly like the virtual
+// camera does, so the panel and the call show the same picture. 'native' (or an
+// emoji the set doesn't ship) falls back to the OS glyph already in the markup.
+function paintAvatarEmoji(el, dataUri, emojiChar) {
+  const glyph = el.querySelector('.agent-avatar-emoji');
+  let img = el.querySelector('.agent-avatar-emoji-img');
+  if (dataUri) {
+    if (!img) {
+      img = document.createElement('img');
+      img.className = 'agent-avatar-emoji-img';
+      img.alt = '';
+      el.appendChild(img);
     }
-  } catch { /* keep the generated look */ }
+    if (img.getAttribute('src') !== dataUri) img.src = dataUri;
+    if (glyph) glyph.style.display = 'none';
+  } else {
+    if (img) img.remove();
+    if (glyph) {
+      glyph.style.display = '';
+      if (emojiChar) glyph.textContent = emojiChar; // 'native' set — swap the glyph
+    }
+  }
 }
 
-// Connection dots reflect whether each calling platform is signed in. We read the
-// status text the existing identity pollers already maintain (✓ = signed in) so we
-// don't have to re-thread that state through every update path.
-// The Meet dot follows the Meet identity row's ✓ (signed-in) text. The Slack
-// dot is owned by refreshSlackIdentity (cookie-authoritative).
-const connMeetDot = document.getElementById('connMeetDot');
-function syncConnDots() {
-  const meetTxt = (document.getElementById('botIdentityStatus')?.textContent || '').trim();
-  if (connMeetDot) connMeetDot.classList.toggle('on', meetTxt.startsWith('✓'));
+async function renderAgentAvatar() {
+  if (IS_TROUBLESHOOTING_WINDOW) return; // no avatar here; skips its timers too
+  if (!agentAvatarEls.length) return;
+  let svg = '';
+  let emojiSet = 'native';
+  try {
+    const cfg = await api.invoke('get-config', ['avatarBackgroundSvg', 'emojiSet']);
+    svg = (cfg && cfg.avatarBackgroundSvg) || '';
+    emojiSet = (cfg && cfg.emojiSet) || 'native';
+  } catch { /* ignore — fall back to gradient + native glyph */ }
+
+  // The thumbnail is a PORTRAIT — always the resting face, never a live state.
+  const restingUri = await emojiUriFor(emojiSet, RESTING_EMOJI);
+  // …but what's on screen right now may be the bot's live in-call face.
+  const face = baseFaceEmoji();
+  const faceUri = face === RESTING_EMOJI ? restingUri : await emojiUriFor(emojiSet, face);
+
+  for (const el of agentAvatarEls) {
+    paintAvatarBg(el, svg);
+    // Don't stomp a blink or mood that's mid-play — this runs on a 60s timer,
+    // so it would otherwise cut ~4% of expressions short (a 2.4s mood inside a
+    // 60s window). playFaceSequence lands on the right base itself.
+    if (!facePlaying) paintAvatarEmoji(el, faceUri, face);
+  }
+  refreshAvatarThumb(svg, emojiSet, restingUri);
+  startBlinking(emojiSet);
 }
-setInterval(syncConnDots, 1500);
+
+// --- Blink ------------------------------------------------------------------
+// A still face reads as a screenshot; an occasional blink reads as alive. This
+// is panel-only decoration — the in-call avatar has its own state machine.
+//
+// 🙂 → 😐 → 😑 → 😐 → 🙂. The closed-eye face (😑) also flattens the mouth, so
+// cutting straight to it from the smile reads as a change of MOOD rather than a
+// blink; passing through 😐 lets the mouth relax and snap back, which reads as
+// one motion. Frame times are deliberately uneven — closing is faster than
+// opening, as in a real blink.
+const BLINK_FRAMES = [
+  { emoji: '\u{1F610}', ms: 60 },  // 😐 mouth relaxes, eyes still open
+  { emoji: '\u{1F611}', ms: 110 }, // 😑 eyes closed — the blink itself
+  { emoji: '\u{1F610}', ms: 70 },  // 😐 eyes back open
+];
+const BLINK_MIN_GAP_MS = 5700;
+const BLINK_MAX_GAP_MS = 13500;
+
+// Occasional change of expression, on a much slower clock than the blink. The
+// bot isn't reacting to anything — this is idle personality, so it stays rare
+// enough to feel like a glance rather than a tic.
+// Chosen to read as IDLE personality, not as a reaction to you. Each is a round
+// yellow face like the resting 🙂, so the pass through 😐 still reads as one
+// movement; anything with hands (🤗 🫡), an object, or a strong emotion breaks
+// that and looks like the bot is responding to something that didn't happen.
+const MOOD_EMOJIS = [
+  '\u{1F914}',        // 🤔 thinking
+  '\u{1F609}',        // 😉 wink
+  '\u{1F60F}',        // 😏 smirk
+  '\u263A\uFE0F',     // ☺️ smiling
+  '\u{1F61B}',        // 😛 tongue out
+  '\u{1F643}',        // 🙃 upside-down — playful and completely unreadable as a mood, which is the point
+  '\u{1F60C}',        // 😌 relieved — closed eyes, so it lands naturally right after a blink
+  '\u{1F60A}',        // 😊 smiling eyes — the warm cousin of the resting face; the gentlest of the set
+  '\u{1F971}',        // 🥱 yawn
+];
+const MOOD_MIN_GAP_MS = 70000;
+const MOOD_MAX_GAP_MS = 110000;  // ~90s on average, but never on a fixed beat
+const MOOD_HOLD_MIN_MS = 2000;
+const MOOD_HOLD_MAX_MS = 2800;
+// Lead in and out through 😐, the same trick the blink uses: cutting straight
+// from a smile to 🤔 reads as a jump-cut, but letting the face pass through
+// neutral reads as one movement.
+const MOOD_EASE_EMOJI = '\u{1F610}'; // 😐
+const MOOD_EASE_MS = 90;
+
+let blinkTimer = null;
+let moodTimer = null;
+let blinkSet = null;
+// The bot's ACTUAL face while it's in a call, pushed from the virtual camera's
+// render loop (main → 'avatar-emoji'). When set it wins over everything here:
+// personality when idle, state when working. So during a call the panel avatar
+// is a live status display in the same vocabulary the other participants see —
+// 🤔 formulating a reply, 😄 speaking, 🙋 yielding, 🤐 muted — instead of
+// winking at you while the bot is mid-sentence.
+let liveFaceEmoji = null;
+// Whether a call is live at all (joining → in-call). Gates the mirror: the
+// camera's render loop reports asynchronously, so its LAST frame of a call
+// (🫥, from callStatus 'left') lands AFTER the call-ended handlers have run.
+// Clearing on hangup alone therefore loses the race and the panel keeps wearing
+// 🫥 — so late reports are rejected outright instead.
+let callActive = false;
+// One face, two animations — whichever starts first owns it until it's done, so
+// a mood can't be interrupted by a blink halfway through (or vice versa).
+let facePlaying = false;
+
+const randBetween = (lo, hi) => lo + Math.random() * (hi - lo);
+
+function faceAnimationAllowed() {
+  // Someone who asked the OS for less motion doesn't want a face twitching at
+  // them, and a hidden panel shouldn't burn timers.
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return false;
+  if (liveFaceEmoji) return false; // the real face is on screen — don't animate over it
+  return document.visibilityState !== 'hidden';
+}
+
+// The face to show when nothing is playing: the bot's real one in a call, else
+// the resting portrait.
+function baseFaceEmoji() {
+  return liveFaceEmoji || RESTING_EMOJI;
+}
+
+async function paintFace(emoji) {
+  const uri = await emojiUriFor(blinkSet, emoji);
+  for (const el of agentAvatarEls) paintAvatarEmoji(el, uri, emoji);
+}
+
+const hold = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Play a sequence of {emoji, ms} frames, then return to resting. Refuses to
+// start if the face is already busy; always lands back on 🙂 even if cut short.
+async function playFaceSequence(frames) {
+  if (facePlaying || !faceAnimationAllowed()) return;
+  facePlaying = true;
+  try {
+    for (const f of frames) {
+      if (!faceAnimationAllowed()) break;
+      await paintFace(f.emoji);
+      await hold(f.ms);
+    }
+    await paintFace(baseFaceEmoji());
+  } finally {
+    facePlaying = false;
+  }
+}
+
+function scheduleBlink() {
+  clearTimeout(blinkTimer);
+  blinkTimer = setTimeout(async () => {
+    await playFaceSequence(BLINK_FRAMES);
+    scheduleBlink();
+  }, randBetween(BLINK_MIN_GAP_MS, BLINK_MAX_GAP_MS));
+}
+
+function scheduleMood() {
+  clearTimeout(moodTimer);
+  moodTimer = setTimeout(async () => {
+    const mood = MOOD_EMOJIS[Math.floor(Math.random() * MOOD_EMOJIS.length)];
+    await playFaceSequence([
+      { emoji: MOOD_EASE_EMOJI, ms: MOOD_EASE_MS },
+      { emoji: mood, ms: randBetween(MOOD_HOLD_MIN_MS, MOOD_HOLD_MAX_MS) },
+      { emoji: MOOD_EASE_EMOJI, ms: MOOD_EASE_MS },
+    ]);
+    scheduleMood();
+  }, randBetween(MOOD_MIN_GAP_MS, MOOD_MAX_GAP_MS));
+}
+
+// Called on every avatar render; only (re)starts when the set actually changed,
+// so the 60s re-render doesn't restart the cycle each time.
+function startBlinking(emojiSet) {
+  if (blinkTimer && blinkSet === emojiSet) return;
+  blinkSet = emojiSet;
+  // Warm the cache so the first play doesn't flash an undecoded frame. Main
+  // reads a file per lookup, so doing this up front also keeps the animations
+  // off the IPC path once they're running.
+  for (const f of BLINK_FRAMES) emojiUriFor(emojiSet, f.emoji);
+  for (const e of MOOD_EMOJIS) emojiUriFor(emojiSet, e);
+  emojiUriFor(emojiSet, MOOD_EASE_EMOJI);
+  scheduleBlink();
+  scheduleMood();
+}
+
+// Live face from the virtual camera (in-call). Null/absent → back to idle
+// personality. Repaints immediately unless a blink/mood is mid-play, which lands
+// on the new base itself.
+function clearLiveFace() {
+  if (!liveFaceEmoji) return;
+  liveFaceEmoji = null;
+  if (!facePlaying) paintFace(RESTING_EMOJI);
+  if (blinkSet !== null) { scheduleBlink(); scheduleMood(); } // idle personality resumes
+}
+
+api.on('avatar-emoji', ({ emoji }) => {
+  if (!callActive) return; // a straggler from a call that already ended
+  const next = emoji || null;
+  if (next === liveFaceEmoji) return;
+  liveFaceEmoji = next;
+  if (!facePlaying) paintFace(baseFaceEmoji());
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    clearTimeout(blinkTimer);
+    clearTimeout(moodTimer);
+  } else if (blinkSet !== null) {
+    scheduleBlink();
+    scheduleMood();
+  }
+});
+
+// --- Switcher thumbnail cache --------------------------------------------
+// The bot switcher lists OTHER profiles, and it can't render their avatars the
+// way we render ours: it would have to read each profile's avatarBackgroundSvg
+// (capped at 1MB each) and parse a dozen of them on every menu open, to paint
+// 24px squares. So each bot rasterises its OWN avatar once, here, into a small
+// PNG in its config — and the switcher just shows that image.
+//
+// This replaces the old `profileIcon`, which was a snapshot stolen from the live
+// camera feed and so only existed after the bot had been in a call (and caught
+// mid-blink at that). Rendering it locally means a brand-new bot has a correct
+// thumbnail immediately.
+const AVATAR_THUMB_PX = 96;
+
+// Only re-rasterise when the inputs actually changed — this runs on a 60s timer.
+let lastThumbKey = null;
+
+function loadImage(src) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+}
+
+// Scale-to-fill + centre-crop, matching how the background is cover-fitted
+// everywhere else (and how the camera treats it).
+function drawCover(ctx, img, size) {
+  const iw = img.naturalWidth || img.width;
+  const ih = img.naturalHeight || img.height;
+  if (!iw || !ih) return;
+  const scale = Math.max(size / iw, size / ih);
+  const w = iw * scale;
+  const h = ih * scale;
+  ctx.drawImage(img, (size - w) / 2, (size - h) / 2, w, h);
+}
+
+async function refreshAvatarThumb(svg, emojiSet, emojiUri) {
+  if (IS_TROUBLESHOOTING_WINDOW) return; // one writer for the cached thumbnail
+  const key = `${emojiSet}|${svg.length}|${svg.slice(0, 64)}|${svg.slice(-64)}`;
+  if (key === lastThumbKey) return;
+  lastThumbKey = key; // claim it up front so overlapping runs don't both rasterise
+  try {
+    const size = AVATAR_THUMB_PX;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+
+    // Background: the bot's SVG, or the same neutral gradient the CSS uses so a
+    // bot that never set one still gets a real thumbnail.
+    let painted = false;
+    if (svg && svg.trim()) {
+      const bg = await loadImage('data:image/svg+xml;utf8,' + encodeURIComponent(svg));
+      if (bg) { drawCover(ctx, bg, size); painted = true; }
+    }
+    if (!painted) {
+      // Same fallback as the CSS tile and the virtual camera: the blue gradient,
+      // not a neutral grey. See the note on .agent-avatar in panel.css.
+      const g = ctx.createLinearGradient(size * 0.3, 0, size * 0.7, size);
+      g.addColorStop(0, '#1a237e');
+      g.addColorStop(0.5, '#283593');
+      g.addColorStop(1, '#1565c0');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, size, size);
+    }
+
+    // Face, centred at roughly the proportion the live avatar uses.
+    const face = size * 0.62;
+    if (emojiUri) {
+      const em = await loadImage(emojiUri);
+      if (em) ctx.drawImage(em, (size - face) / 2, (size - face) / 2, face, face);
+    } else {
+      // 'native' set — draw the OS glyph so the thumbnail still has a face. One
+      // name per platform, since this is the one path that deliberately uses the
+      // system font rather than our bundled artwork: macOS, Windows, then the
+      // usual Linux packages. Unmatched names are skipped, so listing all of
+      // them costs nothing.
+      ctx.font = `${Math.round(face)}px "Apple Color Emoji", "Segoe UI Emoji", `
+        + `"Noto Color Emoji", "Twemoji Mozilla", system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(RESTING_EMOJI, size / 2, size / 2 + face * 0.04);
+    }
+
+    await api.invoke('set-config', 'avatarThumb', canvas.toDataURL('image/png'));
+  } catch {
+    lastThumbKey = null; // let the next tick retry
+  }
+}
+
+// (The per-platform connection dots lived here. The panel no longer shows the
+// bot's platform logins — that detail is in this bot's Settings screen.)
 renderAgentAvatar();
-// Re-render periodically so a freshly-captured profileIcon (or a background/emoji
-// change) shows without a panel reload. Cheap; the icon rarely changes.
+// Re-render periodically so a background/emoji change made by the bot (via MCP)
+// shows without a panel reload. Cheap; both rarely change.
 setInterval(renderAgentAvatar, 60 * 1000);
 
 // ---------------------------------------------------------------------------
@@ -301,12 +641,162 @@ function isJoinableUrl(url) {
   return isValidMeetUrl(url.startsWith('http') ? url : 'https://meet.google.com/' + url);
 }
 
-function updateJoinBtnState() {
-  const url = meetUrlInput.value.trim();
-  joinBtn.disabled = !url || !isJoinableUrl(url);
+// --- Pre-call modes -------------------------------------------------------
+// Out of the box the panel offers ONE action: "Call <bot> now". The Meet/Slack
+// URL field only appears when there's a reason for it — a call was detected in
+// the browser, or the user opened manual entry via ⋯ — and the button then
+// becomes "Add <bot> to call", because that's a different act: joining the bot
+// to a call that already exists.
+const callUrlField = document.getElementById('callUrlField');
+const manualUrlToggle = document.getElementById('manualUrlToggle');
+const startCallStub = document.getElementById('startCallStub');
+
+let detectedCallUrl = null; // the ACTIVE offer — drives the auto-expanded mode
+let manualUrlEntry = false; // the user opened ▸ themselves
+// The last call we were told about, kept even after a dismissal so reopening ▸
+// prefills it. Dismissing means "not right now", not "forget what you saw" —
+// without this, collapsing and reopening seconds later gave an empty box even
+// though the Meet was still sitting there in the browser. Only an undetect
+// (main sending null: the tab closed or navigated away) forgets it.
+
+// "Add to call" mode = there's a URL to act on, from either source.
+function isAddToCallMode() {
+  return !!detectedCallUrl || manualUrlEntry;
 }
 
-meetUrlInput.addEventListener('input', updateJoinBtnState);
+function updateJoinBtnState() {
+  if (inCall) return; // in-call UI owns the button
+  const addMode = isAddToCallMode();
+  const name = currentBotName || 'your bot';
+
+  if (callUrlField) callUrlField.style.display = addMode ? '' : 'none';
+  if (manualUrlToggle) {
+    // ALWAYS visible, including when a call was auto-detected — collapsing it is
+    // how you dismiss that detection and get back to "Call <bot> now". Hiding it
+    // in the detected case (as it first did) left no route back at all: main
+    // won't re-notify while the tab is still open, so the panel was stuck in
+    // "Add to call" from the first Meet it ever saw.
+    manualUrlToggle.style.display = '';
+    // Disclosure triangle: ▸ to open, ▴ to collapse — the arrow points the way
+    // the panel is about to move (right = out, up = back away). Tracks the
+    // ACTUAL expanded state, so a detected call shows ▴ ready to dismiss.
+    manualUrlToggle.textContent = addMode ? '▴' : '▸';
+    manualUrlToggle.setAttribute('aria-expanded', String(addMode));
+    manualUrlToggle.title = addMode
+      ? 'Dismiss this call — go back to starting a new one'
+      : "Add the bot to a call that's already running — paste its Meet or Slack URL";
+  }
+
+  if (addMode) {
+    joinBtn.textContent = `Add ${name} to call`;
+    const url = meetUrlInput.value.trim();
+    joinBtn.disabled = !url || !isJoinableUrl(url);
+  } else {
+    joinBtn.textContent = `Call ${name} now`;
+    joinBtn.disabled = false; // nothing to validate — it starts a fresh call
+  }
+}
+
+if (manualUrlToggle) {
+  manualUrlToggle.addEventListener('click', () => {
+    if (isAddToCallMode()) {
+      dismissCallUrl(); // collapsing also drops a detected URL — that IS the dismissal
+      return;
+    }
+    manualUrlEntry = true;
+    // Reopening after a dismissal restores the call we last saw, so you don't
+    // have to go and copy the URL again for a Meet that's still open.
+    if (meetUrlInput && !meetUrlInput.value.trim() && lastKnownCallUrl) {
+      meetUrlInput.value = lastKnownCallUrl;
+    }
+    if (startCallStub) startCallStub.style.display = 'none';
+    updateJoinBtnState();
+    if (meetUrlInput) { meetUrlInput.focus(); meetUrlInput.select(); }
+  });
+}
+
+// A call turned up in the browser → switch to "Add to call" and fill the URL.
+let lastKnownCallUrl = null;
+
+function noteDetectedCall(url) {
+  if (!url || inCall) return;
+  detectedCallUrl = url;
+  lastKnownCallUrl = url;
+  meetUrlInput.value = url;
+  if (startCallStub) startCallStub.style.display = 'none';
+  updateJoinBtnState();
+}
+
+// The detected call went away (the tab closed, or the user navigated off it —
+// main sends meet-detected/slack-huddle-detected with null). Without this the
+// panel would stay in "Add <bot> to call" forever after the FIRST call it ever
+// saw, with the ▸ toggle hidden and no route back to "Call <bot> now".
+function clearDetectedCall() {
+  if (!detectedCallUrl) return;
+  // Don't wipe a URL the user typed over the detected one — just stop treating
+  // it as detected, which brings the ▸ toggle back.
+  if (meetUrlInput.value.trim() === detectedCallUrl.trim()) meetUrlInput.value = '';
+  detectedCallUrl = null;
+  lastKnownCallUrl = null; // the call is genuinely gone — nothing to restore
+  updateJoinBtnState();
+}
+
+// Explicit dismissal: empty the field, or press Escape in it. Either way we drop
+// back to the single "Call <bot> now" button. ▸ reopens it.
+function dismissCallUrl() {
+  meetUrlInput.value = '';
+  detectedCallUrl = null;
+  manualUrlEntry = false;
+  if (manualUrlToggle) manualUrlToggle.setAttribute('aria-expanded', 'false');
+  if (startCallStub) startCallStub.style.display = 'none';
+  updateJoinBtnState();
+}
+
+meetUrlInput.addEventListener('input', () => {
+  // Clearing the box is a dismissal — it's the obvious gesture for "no, not
+  // that call", and it's the only way to shed a detected URL while its tab is
+  // still open (main won't re-notify until the tab's URL actually changes).
+  if (!meetUrlInput.value.trim()) dismissCallUrl();
+  else updateJoinBtnState();
+});
+updateJoinBtnState(); // paint the initial label (the markup ships a neutral one)
+
+// --- Window sizing --------------------------------------------------------
+// The window is only as tall as the panel needs. Out of a call that's the
+// avatar banner + footer; in a call main.js adds the bot's-view region on top
+// of whatever we report here. We just measure and tell it; main clamps to the
+// screen and owns the actual resize.
+//
+// Measure the ACTIVE screen only — the settings and troubleshooting screens are
+// long, and document.scrollHeight would report the tallest one even while it's
+// display:none-adjacent. rAF-coalesced because ResizeObserver can fire several
+// times for one layout pass.
+let _lastReportedHeight = 0;
+let _heightTimer = 0;
+function reportContentHeight() {
+  if (IS_TROUBLESHOOTING_WINDOW) return; // sizing the main window is not ours to do
+  // setTimeout, NOT requestAnimationFrame: rAF stops entirely for an occluded
+  // view, so a call starting while the window sits behind another app would
+  // never report its taller in-call height — and the bot's-view region would be
+  // placed over the panel's own content. Timers still fire when throttled.
+  clearTimeout(_heightTimer);
+  _heightTimer = setTimeout(() => {
+    const screenEl = [...document.querySelectorAll('.screen')]
+      .find((el) => el.style.display !== 'none');
+    if (!screenEl) return;
+    const h = Math.ceil(screenEl.getBoundingClientRect().height);
+    if (!h || h === _lastReportedHeight) return;
+    _lastReportedHeight = h;
+    api.send('panel-content-height', h);
+  }, 16);
+}
+
+if (window.ResizeObserver) {
+  const ro = new ResizeObserver(reportContentHeight);
+  for (const el of document.querySelectorAll('.screen .container')) ro.observe(el);
+}
+window.addEventListener('load', reportContentHeight);
+reportContentHeight();
 
 // ---------------------------------------------------------------------------
 // App version
@@ -333,8 +823,7 @@ api.invoke('get-app-version').then((info) => {
 // covers the case where the URL was set before the panel finished loading.
 api.invoke('get-call-state').then((s) => {
   if (s && s.currentMeetUrl && !inCall && !meetUrlInput.value.trim()) {
-    meetUrlInput.value = s.currentMeetUrl;
-    updateJoinBtnState();
+    noteDetectedCall(s.currentMeetUrl);
   }
 }).catch(() => {});
 
@@ -342,18 +831,19 @@ Promise.all([
   api.invoke('get-app-profile'),
   api.invoke('get-local-port').catch(() => null),
 ]).then(([profile, port]) => {
-  appProfileName = profile || null; // the stable heading identity (#282)
-  // The profile chip is gone (it duplicated the agent-card name). Fold the
-  // profile + local-server port — the "which instance is this" debug detail —
-  // into the profile-name header's tooltip instead (#289).
-  const big = document.getElementById('botNameBig');
-  if (big) {
-    const baseTitle = big.getAttribute('title') || '';
+  appProfileName = profile || null; // the on-disk profile name (#282)
+  // The profile chip is gone (it duplicated the bot name). Fold the profile +
+  // local-server port — the "which instance is this" debug detail — into the
+  // name control's tooltip instead (#289). The tooltip lives on the BUTTON, not
+  // the inner name span, since the button is what the pointer is over.
+  const nameBtn = document.getElementById('profileMenuBtn');
+  if (nameBtn) {
+    const baseTitle = nameBtn.getAttribute('title') || '';
     const detail = [
       profile ? `Bot: "${profile}" (launched with --profile=${profile}) — isolated storage with its own preferences and Google login.` : 'Default bot.',
       port ? `local-server port ${port}` : null,
     ].filter(Boolean).join('\n');
-    big.title = baseTitle + '\n\n' + detail;
+    nameBtn.title = baseTitle + '\n\n' + detail;
   }
   updateBotNameBig();
 }).catch(() => {});
@@ -365,6 +855,11 @@ const profileMenu = document.getElementById('profileMenu');
 function closeProfileMenu() { if (profileMenu) profileMenu.style.display = 'none'; }
 
 // Electron renderers don't implement window.prompt (it silently returns null),
+// which is what this replaces. alert()/confirm() DO work, but they're blocking
+// native modals that freeze the renderer until dismissed — so the app's errors
+// go through showError() (the overlay on the avatar) instead, and this file
+// calls no window dialogs at all.
+//
 // so use a small in-DOM modal instead. Resolves to the trimmed string, or null
 // on cancel/escape. Reused by "New profile" and the navigate-webview tool.
 function inlinePrompt({ title, placeholder = '', initial = '', okLabel = 'OK' }) {
@@ -466,8 +961,8 @@ async function doSwitchProfile(name) {
   if (!n) return;
   try {
     const r = await api.invoke('switch-profile', n);
-    if (r && r.ok === false) window.alert('Could not switch bot: ' + (r.error || 'unknown'));
-  } catch (e) { window.alert('Could not switch bot: ' + e.message); }
+    if (r && r.ok === false) showError('Could not switch bot: ' + (r.error || 'unknown'));
+  } catch (e) { showError('Could not switch bot: ' + e.message); }
 }
 
 // #379: additive path — open a profile in a SEPARATE new window, leaving THIS
@@ -479,8 +974,8 @@ async function doOpenProfileWindow(name) {
   if (!n) return;
   try {
     const r = await api.invoke('open-profile-window', n);
-    if (r && r.ok === false) window.alert('Could not open bot window: ' + (r.error || 'unknown'));
-  } catch (e) { window.alert('Could not open bot window: ' + e.message); }
+    if (r && r.ok === false) showError('Could not open bot window: ' + (r.error || 'unknown'));
+  } catch (e) { showError('Could not open bot window: ' + e.message); }
 }
 
 // Menu-bar "New Profile…" → prompt for a NEW profile name (a never-seen name
@@ -501,10 +996,10 @@ api.on('new-window', async () => {
   try {
     const r = await api.invoke('open-next-available-window');
     if (r && r.ok === false) {
-      if (r.error === 'all-running') window.alert('Every bot is already open in a window.');
-      else window.alert('Could not open window: ' + (r.error || 'unknown'));
+      if (r.error === 'all-running') showError('Every bot is already open in a window.');
+      else showError('Could not open window: ' + (r.error || 'unknown'));
     }
-  } catch (e) { window.alert('Could not open window: ' + e.message); }
+  } catch (e) { showError('Could not open window: ' + e.message); }
 });
 
 function renderProfileMenu(data) {
@@ -518,8 +1013,12 @@ function renderProfileMenu(data) {
     profileMenu.appendChild(empty);
   }
   for (const p of profiles) {
-    const displayName = p.isDefault ? 'Default' : p.name;
+    // Friendly name, like the panel heading: the bot's own name, with the
+    // on-disk profile dir only as a fallback (and in the row tooltip).
+    const dirName = p.isDefault ? 'Default' : p.name;
+    const displayName = p.botName || dirName;
     const row = document.createElement('div');
+    row.title = `Profile folder: ${p.name}`;
     row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:' + (p.isCurrent ? 'default' : 'pointer');
     if (!p.isCurrent) {
       row.onmouseenter = () => { row.style.background = '#3c4043'; };
@@ -545,21 +1044,21 @@ function renderProfileMenu(data) {
     top.style.cssText = 'font-weight:600;color:#e8eaed;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
     const sub = document.createElement('div');
     // Prefer the most identifying remembered fact: bound account email, then the
-    // remembered Meet/Slack display name, then the Bot Name default (#282).
-    sub.textContent = p.meetAccountEmail || p.lastMeetName || p.lastSlackName || p.botName || '— no account bound —';
+    // remembered Meet/Slack display name (#282). The Bot Name is the top line
+    // now, so it's no longer a useful sub-line — fall back to the profile dir.
+    sub.textContent = p.meetAccountEmail || p.lastMeetName || p.lastSlackName || dirName;
     sub.style.cssText = 'color:#9aa0a6;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
     label.appendChild(top); label.appendChild(sub);
-    // Avatar thumbnail: the profile's captured virtual-camera snapshot when it
-    // has one, else a neutral monogram circle so every row aligns. Mirrors the
-    // main agent avatar (profileIcon), now per-profile in the switcher.
+    // Avatar thumbnail: the small PNG each bot rasterises of its own avatar
+    // (see refreshAvatarThumb), else a neutral monogram so every row aligns.
     const avatar = document.createElement('div');
     // Rounded SQUARE (not a circle) to match the main agent avatar and show more
     // of the background — the most customizable part of the icon (emojis all read
     // about the same). 6px ≈ the main avatar's 14px/54px proportion at 24px.
     avatar.style.cssText = 'width:24px;height:24px;flex:0 0 auto;border-radius:6px;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#3c4043;color:#9aa0a6;font-size:11px;font-weight:600';
-    if (p.profileIcon) {
+    if (p.avatarThumb) {
       const img = document.createElement('img');
-      img.src = p.profileIcon;
+      img.src = p.avatarThumb;
       img.alt = '';
       img.style.cssText = 'width:100%;height:100%;object-fit:cover';
       avatar.appendChild(img);
@@ -613,6 +1112,7 @@ function renderProfileMenu(data) {
 // freshly-captured icons stay current.
 let cachedProfiles = null;
 async function refreshProfilesCache() {
+  if (IS_TROUBLESHOOTING_WINDOW) return; // list-profiles probes every port; once is enough
   try {
     cachedProfiles = await api.invoke('list-profiles');
     if (profileMenu && profileMenu.style.display === 'block') renderProfileMenu(cachedProfiles);
@@ -627,6 +1127,10 @@ if (profileMenuBtn && profileMenu) {
   refreshProfilesCache(); // warm the cache at load so the first open is instant
   profileMenuBtn.addEventListener('click', (e) => {
     e.stopPropagation();
+    // The name doubles as the switcher, and the name stays on screen in-call —
+    // so the CLICK is what gets gated now, not the control's visibility (#379:
+    // no hot-swapping the bot mid-call).
+    if (inCall) return;
     // Test the actually-open state (=== 'block'), NOT "!== 'none'": the menu
     // starts hidden via the CSS class, so the INLINE style.display is '' on the
     // first click — "!== 'none'" was true, so the first click closed-then-returned
@@ -678,7 +1182,6 @@ api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', '
   rememberedSlackName = result?.lastSlackName || null;
   refreshSlackIdentity();
   try { updateBotNameBig(); } catch { /* defined below; ignore on first paint */ }
-  try { updateCallIdentity(); } catch { /* defined below */ }
   // Prefer the new websiteUrl key; fall back to legacy syncBaseUrl so users with
   // older configs still see their existing override populated in the field.
   const effectiveUrl = result?.websiteUrl || result?.syncBaseUrl || '';
@@ -690,7 +1193,6 @@ api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', '
   // #340: one unified picker merging macOS + ElevenLabs + Voicebox. Pre-selects
   // from the saved provider/voice; defaults to Samantha (tts.js's real default).
   populateUnifiedVoices(result);
-  try { refreshVoiceStatus(); } catch { /* defined below; ignore if not yet */ }
   if (result?.claudeWorkDir) claudeWorkDirInput.value = result.claudeWorkDir;
   if (result?.claudeModel) claudeModelInput.value = result.claudeModel;
   if (emojiSetInput && result?.emojiSet) emojiSetInput.value = result.emojiSet;
@@ -714,7 +1216,9 @@ const userSignOutMainBtn = document.getElementById('userSignOutMainBtn');
 function setUserRow(signedIn, who) {
   if (userIdStatus) {
     userIdStatus.textContent = signedIn ? who : '⚠ not signed in';
-    userIdStatus.style.color = signedIn ? '#81c995' : '#fdd663';
+    // Signed in is the normal case — let it sit quiet in the footer's grey.
+    // Only the actionable "not signed in" state earns a colour.
+    userIdStatus.style.color = signedIn ? '' : '#fdd663';
   }
   if (userSignInMainBtn) userSignInMainBtn.style.display = signedIn ? 'none' : 'inline-block';
   if (userSignOutMainBtn) userSignOutMainBtn.style.display = signedIn ? 'inline-block' : 'none';
@@ -754,20 +1258,18 @@ api.on('auth-changed', () => {
 // ---------------------------------------------------------------------------
 
 api.on('meet-detected', (data) => {
-  if (data && data.url && !inCall) {
-    meetUrlInput.value = data.url;
-    updateJoinBtnState();
-  }
+  if (inCall) return;
+  if (data && data.url) noteDetectedCall(data.url);
+  else clearDetectedCall(); // main sends null when the Meet tab is gone
 });
 
 // A Slack huddle detected in the browser (about:blank window + an app.slack.com
 // workspace tab). Fill the URL so the user can Join it — joining switches to the
 // Slack provider at runtime (no --provider flag).
 api.on('slack-huddle-detected', (data) => {
-  if (data && data.url && !inCall) {
-    meetUrlInput.value = data.url;
-    updateJoinBtnState();
-  }
+  if (inCall) return;
+  if (data && data.url) noteDetectedCall(data.url);
+  else clearDetectedCall(); // huddle ended / workspace tab closed
 });
 
 // ---------------------------------------------------------------------------
@@ -794,8 +1296,7 @@ function enterCallState(meetCode) {
   // in-call UI split (#289). Also close the switcher if it happened to be open.
   document.body.dataset.callState = 'in-call';
   closeProfileMenu();
-  updateCallIdentity(); // light up the "appearing as" sub-line (#282)
-  connectedSection.style.display = 'block';
+  reportContentHeight(); // the in-call card just appeared — the window must grow
   joinBtn.style.display = 'none';
 
   // Show which call the bot is actually in (read-only) — for confirming the
@@ -820,17 +1321,27 @@ function exitCallState() {
   inCall = false;
   callProvider = null;
   document.body.dataset.callState = 'idle'; // #379: pre-call controls return
-  updateCallIdentity(); // back to "not in a call" (#282)
-  connectedSection.style.display = 'none';
+  reportContentHeight(); // the in-call card just went away — shrink back
   joinBtn.style.display = '';
-  joinBtn.textContent = 'Join Call';
-  updateJoinBtnState();
+  updateJoinBtnState(); // restores the right label for the current mode
 
   roomIdField.style.display = 'none';
   roomLink.style.display = 'none';
 }
 
 joinBtn.addEventListener('click', () => {
+  // "Call <bot> now" — starting a fresh call is NOT WIRED UP yet. Say so
+  // plainly and point at the path that does work, rather than failing silently.
+  if (!isAddToCallMode()) {
+    if (startCallStub) {
+      startCallStub.textContent =
+        `Starting a new call for ${currentBotName || 'this bot'} isn't wired up yet. `
+        + 'Open a call in Chrome or Safari and it will be detected here, or use ▸ to paste its URL.';
+      startCallStub.style.display = '';
+    }
+    return;
+  }
+
   let url = meetUrlInput.value.trim();
   if (!url) return;
   if (isValidSlackUrl(url)) {
@@ -850,24 +1361,14 @@ joinBtn.addEventListener('click', () => {
   setTimeout(() => {
     if (!inCall) {
       joinBtn.style.display = '';
-      joinBtn.textContent = 'Join Call';
-      updateJoinBtnState();
+      updateJoinBtnState(); // restores the right label for the current mode
     }
   }, 3000);
 });
 
 meetUrlInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !joinBtn.disabled) joinBtn.click();
-});
-
-// Open the baked-in default testing meet in the USER's own browser (so the
-// operator joins as a human alongside the bot). The app's tab-detection then
-// auto-fills the URL here, ready to send the bot in too. Eases testing.
-const DEFAULT_MEET_URL = 'https://meet.google.com/paz-sqoa-npe';
-const defaultMeetBtn = document.getElementById('defaultMeetBtn');
-defaultMeetBtn?.addEventListener('click', (e) => {
-  e.preventDefault();
-  api.send('open-external-url', DEFAULT_MEET_URL);
+  if (e.key === 'Escape') { e.preventDefault(); dismissCallUrl(); }
 });
 
 document.getElementById('leaveCallBtn').addEventListener('click', () => {
@@ -931,184 +1432,82 @@ function refreshAccountEmail(mode) {
 
 let lastMeetMode = 'guest';
 function applyMeetMode(mode) {
-  if (!meetModeIndicator) return;
   lastMeetMode = mode;
-  meetModeIndicator.textContent = mode;
-  if (mode === 'account') {
-    meetSignInBtn.style.display = 'none';
-    meetSignOutBtn.style.display = '';
-  } else {
-    meetSignInBtn.style.display = '';
-    meetSignOutBtn.style.display = 'none';
-  }
-  // Bot Name only matters as a GUEST — a signed-in bot uses its Google account
-  // name — so show the field only in guest mode (it lives in this section now).
-  const botNameField = document.getElementById('botNameField');
-  if (botNameField) botNameField.style.display = (mode === 'account') ? 'none' : '';
+  if (meetSignInBtn) meetSignInBtn.style.display = (mode === 'account') ? 'none' : '';
+  if (meetSignOutBtn) meetSignOutBtn.style.display = (mode === 'account') ? '' : 'none';
+  // The Name field stays visible in BOTH modes now. It used to be hidden in
+  // account mode (a signed-in bot uses its Google name), but it's still the
+  // bot's name everywhere else in the app — hiding it made the settings screen
+  // look broken for signed-in bots.
   refreshAccountEmail(mode);
   refreshBotIdentity(mode); // keep the main-view identity row in sync
   updateBotNameBig();
 }
 
-// Big glanceable heading = the STABLE identity so multiple app instances are
-// easy to tell apart (#282): the app profile, or the Bot Name for the default
-// (no-profile) instance. It does NOT swap to the account name — the live in-call
-// name lives in the sub-line (updateCallIdentity) so the heading never lies.
+// Big glanceable heading = the bot's FRIENDLY name (its Bot Name preference),
+// the way Chrome shows a profile's display name and keeps the directory name on
+// disk only. So the profile that lives in profiles/Default renders as "Jimmy"
+// until the user renames it; the on-disk profile name survives in the tooltip.
+// It does NOT swap to the account name — the live in-call name lives in the
+// name is not restated anywhere, so the heading never lies.
 const botNameBig = document.getElementById('botNameBig');
-const botCallIdentity = document.getElementById('botCallIdentity');
 let botAccountName = null;   // the bot's Google display name when signed in
 let callProvider = null;     // 'meet' | 'slack' while in a call, else null
 let rememberedMeetName = null;  // last Meet display name for this profile (#282)
 let rememberedSlackName = null; // last Slack display name for this profile (#282)
 function updateBotNameBig() {
   if (!botNameBig) return;
-  // Stable slot identity: the profile name, or "Default" for the unnamed
-  // instance (#282). The actual/remembered name lives in the sub-line below.
-  botNameBig.textContent = appProfileName || 'Default';
+  // Friendly name first (the Bot Name preference); fall back to the on-disk
+  // profile name only if there isn't one, so the heading is never empty.
+  botNameBig.textContent = currentBotName || appProfileName || 'Default';
+  // The pre-call button says the bot's name too ("Call Jimmy now"), so it has
+  // to follow a rename. One choke point keeps the two from drifting.
+  updateJoinBtnState();
 }
 
-// The "appearing as" sub-line: dim "not in a call" when idle; once in a call,
-// the actual provider display name (Meet = Google account name, or the guest
-// green-room name; Slack = the account name, remembered or placeholder — #283).
-function updateCallIdentity() {
-  if (!botCallIdentity) return;
-  if (!inCall || !callProvider) {
-    // Idle: just "not in a call". The remembered per-platform display names now
-    // live in their own connection rows below (next to the Meet email / Slack
-    // status), so we don't duplicate them under the profile name (#289).
-    botCallIdentity.style.color = '#9aa0a6';
-    botCallIdentity.textContent = 'not in a call';
-    return;
-  }
-  let appearing;
-  if (callProvider === 'slack') {
-    // We don't read the live Slack account name yet (#283); show the remembered
-    // one if we have it, else a neutral placeholder.
-    appearing = rememberedSlackName || 'your Slack account name';
-    botCallIdentity.textContent = `● in Slack as ${appearing}`;
-  } else {
-    appearing = (lastMeetMode === 'account' && botAccountName)
-      ? botAccountName
-      : (currentBotName || (botNameInput && botNameInput.value.trim()) || 'guest');
-    botCallIdentity.textContent = `● in Meet as ${appearing}`;
-  }
-  botCallIdentity.style.color = '#81c995';
-}
+// (The "● in Meet as Jimmy" sub-line lived here. Removed — the bot's name is
+// already the banner's headline, so restating it during a call was noise.
+// callProvider / botAccountName / rememberedMeetName are still tracked: the bot
+// switcher's per-profile sub-line uses them.)
 
-// --- Bot Meet identity on the MAIN view (so the auto-admit login isn't buried
-// in Settings — the confusion behind people signing into the wrong session). ---
-const botIdentityStatus = document.getElementById('botIdentityStatus');
-const botSignInMainBtn = document.getElementById('botSignInMainBtn');
+// --- Bot Meet identity. The main view no longer renders a Meet status row (the
+// sign-in lives in this bot's Settings), but we still resolve the bot's Google
+// account name here: it feeds the in-call "appearing as" line and the remembered
+// Meet name used by the bot switcher. ---
 const botSignOutMainBtn = document.getElementById('botSignOutMainBtn');
 
 async function refreshBotIdentity(mode) {
-  if (!botIdentityStatus) return;
   const m = mode || lastMeetMode;
   if (m !== 'account') {
-    // Guest mode: the bot appears under the Bot Name preference, so show it
-    // inline with a quick "Change" link straight to Settings (focused on the
-    // name field) — no hunting through the menu.
-    botIdentityStatus.textContent = currentBotName ? `👤 Guest ‘${currentBotName}’ ` : '👤 Guest ';
-    const change = document.createElement('a');
-    change.textContent = 'Change';
-    change.href = '#';
-    change.style.color = '#8ab4f8';
-    change.style.textDecoration = 'underline';
-    change.style.fontSize = '0.9em';
-    change.onclick = (e) => {
-      e.preventDefault();
-      showScreen(settingsScreen);
-      if (botNameInput) { botNameInput.focus(); botNameInput.select(); }
-    };
-    botIdentityStatus.appendChild(change);
-    botIdentityStatus.style.color = '#fdd663';
-    if (botSignInMainBtn) botSignInMainBtn.style.display = 'inline-block';
     if (botSignOutMainBtn) botSignOutMainBtn.style.display = 'none';
     botAccountName = null; // guest → in-call name uses the Bot Name preference
     updateBotNameBig();
-    updateCallIdentity();
     return;
   }
-  if (botSignInMainBtn) botSignInMainBtn.style.display = 'none';
   if (botSignOutMainBtn) botSignOutMainBtn.style.display = 'inline-block';
-  botIdentityStatus.textContent = '✓ Signed in (reading account…)';
-  botIdentityStatus.style.color = '#81c995';
   try {
     const r = await api.invoke('get-meet-account-email');
-    // Show the Meet display name (what appears in the participant list) next to
-    // the account email — the identity lives here in the Meet row now (#289).
-    if (r?.signedIn && r.email) botIdentityStatus.textContent = r.name ? `✓ ${r.name} · ${r.email}` : '✓ ' + r.email;
-    else if (r?.signedIn) botIdentityStatus.textContent = '✓ Signed in (couldn\'t read which account)';
-    else { botIdentityStatus.textContent = '⚠ Account mode but not signed in yet'; botIdentityStatus.style.color = '#fdd663'; }
     // In-call name: prefer the Google display name, fall back to the email's
-    // local part, then (in updateCallIdentity) the Bot Name preference.
+    // local part. Feeds the bot switcher's per-profile sub-line.
     botAccountName = r?.name || (r?.email ? r.email.split('@')[0] : null);
-    if (r?.name) rememberedMeetName = r.name; // persist for the idle sub-line after the call (#282)
+    if (r?.name) rememberedMeetName = r.name; // persist for the switcher sub-line (#282)
     updateBotNameBig();
-    updateCallIdentity(); // refresh "in Meet as …" once the account name resolves
-  } catch {
-    // Scrape failed but the cookie says signed in — fall back to the remembered
-    // Meet display name if we have one, else a neutral "Signed in".
-    botIdentityStatus.textContent = rememberedMeetName ? `✓ ${rememberedMeetName}` : '✓ Signed in';
-  }
+  } catch { /* scrape failed — keep the remembered name and retry on the next poll */ }
 }
 
-// --- Bot Slack identity on the MAIN view (parity with Bot Meet identity). In a
-// huddle the bot joins as its signed-in Slack ACCOUNT name. We don't read that
-// live name from the huddle DOM yet (#283), so this is informational; once a
-// remembered Slack name exists it's shown. No override preference anymore. ---
-const botSlackIdentityStatus = document.getElementById('botSlackIdentityStatus');
-const slackSignInMainBtn = document.getElementById('slackSignInMainBtn');
+// --- Bot Slack identity. Like the Meet identity above, the main view no longer
+// renders a Slack status row — sign-in/out live in this bot's Settings. This
+// keeps the Settings sign-out button honest against the live cookie. ---
 async function refreshSlackIdentity() {
-  if (!botSlackIdentityStatus) return;
   // Cookie-authoritative connected check (get-slack-mode → the `d` session
-  // cookie). We can't read WHICH workspace/user without the huddle DOM (#283),
-  // so: signed in → show the remembered name if we have one, else just
-  // "Signed in"; not signed in → "Not connected". The conn dot follows suit.
+  // cookie). We can't read WHICH workspace/user without the huddle DOM (#283).
   let signedIn = false;
   try { signedIn = !!(await api.invoke('get-slack-mode'))?.signedIn; } catch { /* treat as unknown */ }
-  if (signedIn) {
-    botSlackIdentityStatus.textContent = rememberedSlackName ? `✓ ${rememberedSlackName}` : '✓ Signed in';
-    botSlackIdentityStatus.style.color = '#81c995';
-  } else {
-    botSlackIdentityStatus.textContent = 'Not connected';
-    botSlackIdentityStatus.style.color = '#9aa0a6';
-  }
-  const dot = document.getElementById('connSlackDot');
-  if (dot) dot.classList.toggle('on', signedIn);
-  // Main-view "Sign in" — shown only when NOT connected, matching Meet's
-  // botSignInMainBtn and the vibeconferencing.com userSignInMainBtn (#289).
-  if (slackSignInMainBtn) slackSignInMainBtn.style.display = signedIn ? 'none' : 'inline-block';
-  // Sign-out only makes sense while signed in — hidden otherwise, matching
-  // the Meet identity section's sign-out behavior.
+  // Sign-out only makes sense while signed in — hidden otherwise.
   if (slackSignOutBtn) slackSignOutBtn.style.display = signedIn ? '' : 'none';
 }
 refreshSlackIdentity();
 
-// Main-view Slack sign-in — parity with the Meet + vibeconferencing.com sign-in
-// buttons on the profile box. Same slack-sign-in IPC as the Settings "Sign into
-// Slack as bot" button.
-slackSignInMainBtn?.addEventListener('click', async () => {
-  slackSignInMainBtn.disabled = true;
-  slackSignInMainBtn.textContent = 'Opening Slack…';
-  try {
-    await api.invoke('slack-sign-in');
-  } catch (err) {
-    showError('Slack sign-in failed: ' + err.message);
-  }
-  setTimeout(() => {
-    slackSignInMainBtn.disabled = false;
-    slackSignInMainBtn.textContent = 'Sign in';
-    refreshSlackIdentity();
-  }, 1500);
-});
-
-botSignInMainBtn?.addEventListener('click', async () => {
-  botSignInMainBtn.disabled = true;
-  botSignInMainBtn.textContent = 'Opening Google sign-in…';
-  try { await api.invoke('meet-sign-in-as-bot'); applyMeetMode('account'); } catch { /* ignore */ }
-  setTimeout(() => { botSignInMainBtn.disabled = false; botSignInMainBtn.textContent = 'Sign in as bot'; refreshBotIdentity('account'); }, 4000);
-});
 botSignOutMainBtn?.addEventListener('click', async () => {
   botSignOutMainBtn.disabled = true;
   try { await api.invoke('meet-sign-out-bot'); applyMeetMode('guest'); } catch { /* ignore */ }
@@ -1125,6 +1524,7 @@ botSignOutMainBtn?.addEventListener('click', async () => {
 // get-meet-account-email — a DOM scrape on the live meet page — which spams the
 // meet console every 7s and is noise while debugging a call (Stan).
 setInterval(() => {
+  if (IS_TROUBLESHOOTING_WINDOW) return; // the panel already runs this poll
   if (inCall) return;
   api.invoke('get-meet-mode').then((info) => {
     if (!info?.mode) return;
@@ -1139,76 +1539,9 @@ setInterval(() => {
   refreshSlackIdentity();
 }, 7000);
 
-// --- Bot vitals: fast-model reachability + voice mode -----------------------
-// Read-only indicators so the bot's current capabilities are visible at a glance
-// next to the identity rows. Fast model = the on-device (Apple) endpoint that
-// powers triage/engagement; Voice = ElevenLabs (a voice ID is set) vs built-in.
-const fastModelStatus = document.getElementById('fastModelStatus');
-const voiceStatus = document.getElementById('voiceStatus');
-
-const FAST_MODEL_DOWNLOAD_URL = 'https://github.com/gety-ai/apple-on-device-openai/releases';
-
-// "✗ Not detected — Download now", where "Download now" opens the release page
-// in the default browser (via the https-validated open-external-url IPC).
-function showFastModelNotDetected(title) {
-  fastModelStatus.textContent = '✗ Not detected — ';
-  const dl = document.createElement('a');
-  dl.textContent = 'Download now';
-  dl.href = '#';
-  dl.style.color = '#8ab4f8';
-  dl.style.textDecoration = 'underline';
-  dl.onclick = (e) => { e.preventDefault(); api.send('open-external-url', FAST_MODEL_DOWNLOAD_URL); };
-  fastModelStatus.appendChild(dl);
-  fastModelStatus.style.color = '#fdd663';
-  fastModelStatus.title = title || '';
-}
-
-async function refreshFastModelStatus() {
-  if (!fastModelStatus) return;
-  try {
-    const r = await api.invoke('get-fast-model-status');
-    if (r?.ok) {
-      fastModelStatus.textContent = `✓ Detected — ${r.model || 'model'}`;
-      fastModelStatus.style.color = '#81c995';
-      fastModelStatus.title = `Reachable at ${r.endpoint}`;
-    } else {
-      showFastModelNotDetected(r?.endpoint ? `No response from ${r.endpoint}${r.error ? ` (${r.error})` : ''}` : 'No endpoint configured');
-    }
-  } catch {
-    showFastModelNotDetected();
-  }
-}
-
-function refreshVoiceStatus() {
-  if (!voiceStatus) return;
-  // Reflect the unified picker's current selection (its value encodes provider).
-  const val = (unifiedVoiceSelect?.value || '');
-  const label = unifiedVoiceSelect?.selectedOptions?.[0]?.textContent || '';
-  const customId = (ttsVoiceIdInput?.value || '').trim();
-  if (val.startsWith('vb:')) {
-    voiceStatus.textContent = `🔊 Voicebox: ${label}`;
-    voiceStatus.style.color = '#81c995';
-    voiceStatus.title = `Voicebox voice: ${label} (local, experimental)`;
-  } else if (val.startsWith('el:')) {
-    voiceStatus.textContent = `🔊 ElevenLabs: ${label}`;
-    voiceStatus.style.color = '#81c995';
-    voiceStatus.title = `ElevenLabs voice: ${label}`;
-  } else if (customId) {
-    voiceStatus.textContent = '🔊 ElevenLabs voice (custom ID)';
-    voiceStatus.style.color = '#81c995';
-    voiceStatus.title = `ElevenLabs custom voice ID: ${customId}`;
-  } else {
-    voiceStatus.textContent = label ? `🔈 ${label}` : '🔈 Built-in macOS voice';
-    voiceStatus.style.color = '#9aa0a6';
-    voiceStatus.title = 'Built-in macOS voice.';
-  }
-}
-
-refreshFastModelStatus();
-refreshVoiceStatus();
-// Poll the fast model (cheap localhost ping); the voice line updates on edit too.
-setInterval(refreshFastModelStatus, 7000);
-ttsVoiceIdInput?.addEventListener('input', refreshVoiceStatus);
+// (The "⚡ Fast model" health line + its 7s reachability poll lived here. The
+// panel no longer surfaces it — the on-device model still backs triage /
+// engagement in main.js, it just isn't something the user acts on.)
 
 // Initial state on panel load.
 api.invoke('get-meet-mode').then((info) => {
@@ -1235,7 +1568,7 @@ api.on('navigate-webview-prompt', async (data) => {
   });
   if (!url) return;
   api.invoke('navigate-webview', url).then((r) => {
-    if (r && r.ok === false) window.alert('Could not navigate: ' + (r.error || 'unknown'));
+    if (r && r.ok === false) showError('Could not navigate: ' + (r.error || 'unknown'));
   }).catch(() => {});
 });
 
@@ -1297,6 +1630,24 @@ function applyBotViewLabel(state) {
     ? "Dock the bot's view back as a thumbnail below this panel"
     : "Pop the bot's view out into its own large window";
 }
+// The bar exists only while the region below it does — i.e. during a call.
+// Main owns that decision (it spans joining/waiting-to-be-admitted, which the
+// panel's own data-call-state deliberately doesn't), so we just mirror the flag
+// onto <body> and let the stylesheet show/hide the bar and its 44px reservation.
+function applyBotViewVisible(visible) {
+  document.body.dataset.botview = visible ? 'visible' : 'hidden';
+  // This flag is main's callStatusMeansInCall — true from 'joining' right
+  // through 'in-call', false on idle/left. It's the authority on whether the
+  // panel should be mirroring the bot's live face, and it's deliberately WIDER
+  // than the panel's own `inCall` (which only flips once actually admitted), so
+  // the 🫥 "not on the line yet" face shows while joining.
+  callActive = !!visible;
+  if (!callActive) clearLiveFace();
+  // Toggles the 44px reservation for the bot's-view bar — a height change.
+  reportContentHeight();
+}
+applyBotViewVisible(false); // no call yet on load
+
 if (botViewToggleBtn) {
   botViewToggleBtn.addEventListener('click', async () => {
     try {
@@ -1304,10 +1655,14 @@ if (botViewToggleBtn) {
       applyBotViewLabel(res?.state);
     } catch { /* ignore */ }
   });
-  api.invoke('get-bot-view').then((r) => applyBotViewLabel(r?.state)).catch(() => {});
+  api.invoke('get-bot-view').then((r) => {
+    applyBotViewLabel(r?.state);
+    applyBotViewVisible(!!r?.visible);
+  }).catch(() => {});
 }
 // Main tells us when it changes (incl. the user closing the popped-out window).
 api.on('bot-view-changed', ({ state }) => applyBotViewLabel(state));
+api.on('bot-view-visible', ({ visible }) => applyBotViewVisible(!!visible));
 
 meetSignInBtn?.addEventListener('click', async () => {
   meetSignInBtn.disabled = true;
@@ -1548,7 +1903,6 @@ botNameInput.addEventListener('change', () => {
   api.invoke('set-config', 'botName', name);
   api.send('to-meet', { action: 'set-config', payload: { botName: name } });
   updateBotNameBig();
-  updateCallIdentity(); // guest in-call name = Bot Name; keep it current
   refreshBotIdentity(); // keep the guest "👤 Guest 'Name'" line in sync
 });
 
@@ -1573,7 +1927,6 @@ ttsVoiceIdInput.addEventListener('change', () => {
   const id = ttsVoiceIdInput.value.trim();
   // A custom/cloned voice id (advanced) forces ElevenLabs so it actually routes.
   api.send('update-tts-config', id ? { provider: 'elevenlabs', voiceId: id } : { voiceId: '' });
-  refreshVoiceStatus();
 });
 
 // #340: standard macOS voices are mostly robotic — keep only a couple tolerable
@@ -1650,7 +2003,6 @@ async function populateUnifiedVoices(config) {
   if (!sel.options.length) {
     sel.innerHTML = '<option value="mac:Samantha">Samantha (default)</option>';
   }
-  refreshVoiceStatus();
 }
 
 // Audition a voice through the LOCAL speakers when it's picked — main synthesizes
@@ -1695,7 +2047,6 @@ unifiedVoiceSelect?.addEventListener('change', () => {
     api.send('update-tts-config', { provider: 'macos-say', macosVoice: id, voiceboxProfileId: '' });
     previewVoiceSample({ provider: 'macos-say', macosVoice: id, text });
   }
-  refreshVoiceStatus();
 });
 
 refreshVoicesBtn?.addEventListener('click', (e) => {

@@ -28,7 +28,7 @@ test('scope map: the decided app-level keys, everything else per-profile', () =>
   for (const k of ['ttsApiKey', 'vcSessionToken', 'vcSessionLoggedOutToken', 'syncBaseUrl', 'websiteUrl', 'dangerousMode']) {
     assert.equal(isAppLevel(k), true, `${k} should be app-level`);
   }
-  for (const k of ['botName', 'ttsVoiceId', 'meetAccountEmail', 'bargeInGraceMs', 'claudeModel', 'remoteLogging', 'profileIcon']) {
+  for (const k of ['botName', 'ttsVoiceId', 'meetAccountEmail', 'bargeInGraceMs', 'claudeModel', 'remoteLogging', 'avatarThumb']) {
     assert.equal(isAppLevel(k), false, `${k} should be per-profile`);
   }
 });

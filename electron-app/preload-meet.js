@@ -73,25 +73,12 @@ try {
 
 // Emoji image sets (#316): expose a sync resolver so page-inject (eval'd into
 // this preload's global, where fs/__dirname aren't directly reachable) can read
-// a bundled emoji SVG by relative path ("<set>/<file>.svg"). Returns the SVG
-// string or null (missing file / read error → renderer falls back to native).
+// a bundled emoji graphic by relative path ("<set>/<file>"). Returns a data URI
+// (SVG text or base64 PNG by extension) or null → renderer falls back to native.
+// The path/format handling lives in emoji-assets.js, shared with preload-panel.
 try {
-  const emojiBaseDir = __dirname.includes('.asar')
-    ? path.join(process.resourcesPath, 'emoji')  // bundled via extraResources
-    : path.join(__dirname, 'emoji');             // electron-app/emoji in source
-  // Returns a ready-to-use data URI (SVG text or PNG base64 by extension) so the
-  // renderer stays format-agnostic — SVG sets (twemoji/openmoji/noto) and PNG
-  // sets (Fluent 3D) both work. null on any read error → native glyph.
-  globalThis.__vibeEmojiDataUri = (relPath) => {
-    try {
-      const clean = String(relPath).replace(/\.\.[/\\]/g, ''); // no path traversal
-      const full = path.join(emojiBaseDir, clean);
-      if (clean.toLowerCase().endsWith('.png')) {
-        return 'data:image/png;base64,' + fs.readFileSync(full).toString('base64');
-      }
-      return 'data:image/svg+xml;utf8,' + encodeURIComponent(fs.readFileSync(full, 'utf-8'));
-    } catch { return null; }
-  };
+  const emojiAssets = require('./emoji-assets.js');
+  globalThis.__vibeEmojiDataUri = (relPath) => emojiAssets.dataUriForRelPath(relPath, __dirname);
 } catch { globalThis.__vibeEmojiDataUri = () => null; }
 
 // P2: forward Runway-face control to runway-avatar.js (which listens for source:'runway-avatar').

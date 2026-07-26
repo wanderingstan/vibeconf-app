@@ -1,7 +1,7 @@
 # Cross-platform build validation (#468 tee-up).
 #
-# Builds the desktop app on BOTH Windows and macOS on every push, so a change made
-# on a Mac can't silently break the Windows build. Builds are UNSIGNED — this is
+# Builds the desktop app on Windows, macOS AND Linux on every push, so a change made
+# on a Mac can't silently break the other platforms. Builds are UNSIGNED — this is
 # validation, not release: no code-signing certs/secrets are used. When a Windows
 # Authenticode cert exists, add a signed release workflow separately.
 #
@@ -27,6 +27,8 @@ jobs:
             args: "--win"
           - os: macos-latest
             args: "--mac -c.mac.notarize=false"
+          - os: ubuntu-latest
+            args: "--linux"
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -55,5 +57,7 @@ jobs:
             electron-app/dist/*.exe
             electron-app/dist/*.dmg
             electron-app/dist/*.zip
+            electron-app/dist/*.AppImage
+            electron-app/dist/*.deb
           if-no-files-found: ignore
           retention-days: 14

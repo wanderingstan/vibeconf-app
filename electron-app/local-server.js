@@ -231,6 +231,12 @@ class LocalServer {
     // existing turn instead of inserting a duplicate.
     this._turnAlias = new Map(); // scraper turnId -> canonical turnId (post re-render)
     this._turnFps = new Map();   // fingerprint -> [canonical turnId, ...] in insertion order
+    // #12: fingerprints of turns that have aged out of the maxTurns window. A
+    // re-render replays them too, and once they're gone from `turns` there is
+    // nothing left to alias them to — they'd re-insert as brand-new speech.
+    // Remembering them lets a replay of aged-out history be dropped outright.
+    this._retiredFps = new Set();
+    this.maxRetiredFps = 2000;
     this.whiteboard = { content: '', version: 0, lastModified: null, lastEditor: null };
     this.members = [];
     this.maxTranscripts = 500;
@@ -426,6 +432,7 @@ class LocalServer {
     this.turns = new Map();
     this._turnAlias = new Map();
     this._turnFps = new Map();
+    this._retiredFps = new Set();
     this.whiteboard = { content: '', version: 0, lastModified: null, lastEditor: null };
     this.members = [];
     this.sharing = false;
@@ -469,6 +476,7 @@ class LocalServer {
     this.turns = new Map();
     this._turnAlias = new Map();
     this._turnFps = new Map();
+    this._retiredFps = new Set();
     this.members = [];
     this.sharing = false;
     this.participants = [];
@@ -1281,6 +1289,29 @@ class LocalServer {
     if (!list.includes(turnId)) { list.push(turnId); this._turnFps.set(fp, list); }
   }
 
+  // #12: keep the replay bookkeeping in step with the maxTurns prune. Dropped
+  // ids must leave _turnFps/_turnAlias (they can never match again, and stale
+  // aliases would route live growth into a turn we no longer hold), and their
+  // fingerprints move to _retiredFps so a later replay of that aged-out
+  // history is dropped rather than re-ingested as new speech.
+  _retireTurns(droppedIds) {
+    if (!droppedIds || droppedIds.size === 0) return;
+    for (const [fp, ids] of this._turnFps) {
+      const kept = ids.filter((id) => !droppedIds.has(id));
+      if (kept.length === ids.length) continue;
+      this._retiredFps.add(fp);
+      if (kept.length) this._turnFps.set(fp, kept);
+      else this._turnFps.delete(fp);
+    }
+    for (const [scraperId, canonical] of this._turnAlias) {
+      if (droppedIds.has(canonical)) this._turnAlias.delete(scraperId);
+    }
+    // Bound the retired set — Sets iterate in insertion order, so this is FIFO.
+    while (this._retiredFps.size > this.maxRetiredFps) {
+      this._retiredFps.delete(this._retiredFps.values().next().value);
+    }
+  }
+
   updateTurns(incoming) {
     if (!this.roomId || !Array.isArray(incoming) || incoming.length === 0) return;
     // If caption turns with text are arriving, captions are definitionally ON —
@@ -1295,6 +1326,7 @@ class LocalServer {
     const incomingIds = new Set();
     const claimedThisBatch = new Set(); // canonical ids already matched in this snapshot
     let newAliases = 0;
+    let retiredDropped = 0; // #12: replayed turns already aged out of the window
     let changed = false;
 
     // #402: replay signature. A container re-render REPLAYS history: many
@@ -1309,6 +1341,26 @@ class LocalServer {
       return n + (this.turns.has(eff) ? 0 : 1);
     }, 0);
     const replayMode = unknownCount >= 3;
+
+    // #12: per-speaker candidate index for the prefix fallback below, built
+    // once per batch (newest turn first) and normalized lazily — the fallback
+    // used to look at one turn per speaker, so scanning them all must not turn
+    // a 200-turn replay snapshot into 200 full re-normalizations of the map.
+    const speakerTurns = new Map(); // speaker -> [[id, turn], ...] newest firstSeen first
+    const normCache = new Map();    // canonical turnId -> normalized fingerprint of its text
+    if (replayMode) {
+      for (const [id, t] of this.turns) {
+        const list = speakerTurns.get(t.speaker) || [];
+        list.push([id, t]);
+        speakerTurns.set(t.speaker, list);
+      }
+      for (const list of speakerTurns.values()) list.sort((a, b) => b[1].firstSeen - a[1].firstSeen);
+    }
+    const normOf = (id, turn) => {
+      let n = normCache.get(id);
+      if (n === undefined) { n = this._turnFp(turn.speaker, turn.text); normCache.set(id, n); }
+      return n;
+    };
 
     for (let i = 0; i < incoming.length; i++) {
       const inc = incoming[i];
@@ -1334,21 +1386,24 @@ class LocalServer {
           (id) => this.turns.has(id) && !claimedThisBatch.has(id)
         );
         if (match === undefined) {
-          // The LIVE turn may have grown since the re-render (its replay text
-          // is a superset of what we stored, or vice versa). Check only the
-          // most recent turn by this speaker — prefix relation ⇒ same turn.
+          // A turn may have been REVISED between our copy and the replay: the
+          // live turn grew after the re-render snapshot, or Meet re-emits a
+          // truncated/extended version of history. A prefix relation on
+          // normalized text ⇒ same turn.
+          //
+          // #12: scan ALL of this speaker's unclaimed turns, newest first.
+          // Checking only the most recent one meant every OLDER revised turn
+          // fell through and re-inserted as fresh speech — which is how the
+          // whole call kept re-arriving on 2026-07-22 despite the #402 alias.
           const normInc = this._turnFp(inc.speaker, inc.text);
-          let recent = null;
-          for (const [id, t] of this.turns) {
-            if (t.speaker === inc.speaker && !claimedThisBatch.has(id) &&
-                (!recent || t.firstSeen >= recent.t.firstSeen)) recent = { id, t };
-          }
-          if (recent) {
-            const normOld = this._turnFp(recent.t.speaker, recent.t.text);
-            const [a, b] = [normInc, normOld];
-            const minLen = Math.min(a.length, b.length);
-            if (minLen > recent.t.speaker.length + 12 && (a.startsWith(b) || b.startsWith(a))) {
-              match = recent.id;
+          const speakerLen = String(inc.speaker).length;
+          for (const [id, t] of (speakerTurns.get(inc.speaker) || [])) {
+            if (claimedThisBatch.has(id) || !this.turns.has(id)) continue;
+            const normOld = normOf(id, t);
+            if (Math.min(normInc.length, normOld.length) > speakerLen + 12 &&
+                (normInc.startsWith(normOld) || normOld.startsWith(normInc))) {
+              match = id;
+              break;
             }
           }
         }
@@ -1356,6 +1411,16 @@ class LocalServer {
           this._turnAlias.set(inc.turnId, match);
           effId = match;
           newAliases++;
+        } else if (this._retiredFps.has(this._turnFp(inc.speaker, inc.text))) {
+          // #12: replayed history that has already aged out of the maxTurns
+          // window. There is nothing left to alias it to, and re-inserting it
+          // would deliver a minutes-old turn as new speech — exactly the
+          // snowball past the 200-turn horizon (the observed 200-turn
+          // plateaus). Drop it; a genuine repeat of the same words by the same
+          // speaker only gets dropped inside a replay burst, where the whole
+          // batch is history by construction.
+          retiredDropped++;
+          continue;
         }
       }
       incomingIds.add(effId);
@@ -1387,8 +1452,19 @@ class LocalServer {
         let textChanged = false;
         let settledNow = false;
         if (existing.text !== inc.text) {
-          existing.text = inc.text;
-          textChanged = true;
+          // #12: decide on NORMALIZED text — only a change in the actual WORDS
+          // is new speech. Two re-render artifacts used to bump lastUpdated,
+          // which re-qualified the turn for _entriesSince(since) and dumped the
+          // replayed history to every subsequent waiter:
+          //   • cosmetic revision — same words, different punctuation/case/spacing
+          //   • truncation — the replay carries a shorter prefix of the turn
+          // A truncated replay also must not overwrite the fuller text we hold.
+          const prevNorm = this._turnFp(existing.speaker, existing.text);
+          const nextNorm = this._turnFp(inc.speaker, inc.text);
+          const truncated = nextNorm !== prevNorm && prevNorm.startsWith(nextNorm);
+          if (!truncated) existing.text = inc.text; // cosmetic: take Meet's tidier copy
+          textChanged = !truncated && nextNorm !== prevNorm;
+          normCache.set(effId, truncated ? prevNorm : nextNorm);
           // #402: index the new text too, so a later replay of the grown
           // version fingerprint-matches this same turn.
           this._recordTurnFp(existing.speaker, inc.text, effId);
@@ -1407,9 +1483,10 @@ class LocalServer {
     // #402: a burst of fresh aliases = the caption container re-rendered and
     // replayed history. Loud, parseable marker (the ground-truth analyzer and
     // future audits key off it); the replay itself was absorbed above.
-    if (newAliases >= 5) {
+    if (newAliases >= 5 || retiredDropped >= 5) {
       console.log(ts(), '⚠️  [caption-replay] container re-render detected — remapped ' + newAliases +
-        ' replayed turn(s) to existing entries (#402)');
+        ' replayed turn(s) to existing entries (#402)' +
+        (retiredDropped ? '; dropped ' + retiredDropped + ' replayed turn(s) aged out of the window (#12)' : ''));
     }
 
     // Turns that disappeared from the DOM entirely are also settled.
@@ -1427,6 +1504,7 @@ class LocalServer {
     if (this.turns.size > this.maxTurns) {
       const sorted = [...this.turns.entries()].sort((a, b) => b[1].lastUpdated - a[1].lastUpdated);
       this.turns = new Map(sorted.slice(0, this.maxTurns));
+      this._retireTurns(new Set(sorted.slice(this.maxTurns).map(([id]) => id)));
     }
 
     if (changed) this._checkWaiters();

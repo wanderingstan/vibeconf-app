@@ -1,0 +1,111 @@
+# Tag-triggered release: builds the Windows and Linux installers and attaches
+# them to a DRAFT GitHub release.
+#
+# Why a draft: the release notes here are hand-written, and updates.js reads the
+# releases API to offer updates — a half-uploaded release shouldn't be visible to
+# running apps. The draft collects its assets, you write the notes, then publish.
+#
+# macOS is deliberately NOT built here. The .dmg is signed and notarized, which
+# needs Apple Developer certs; those aren't in GitHub secrets (and putting them
+# there is a real decision, not a detail). Build the Mac locally with `pnpm dist`
+# and attach it to the same draft:
+#
+#     gh release upload v0.7.0-beta63 electron-app/dist/*.dmg
+#
+# Windows is UNSIGNED — SmartScreen will warn ("More info" → "Run anyway").
+# Linux AppImage/deb need no signing.
+#
+# Usage:
+#     npm version --no-git-tag-version 0.7.0-beta63   # in BOTH package.json files
+#     git commit -am "Release v0.7.0-beta63" && git push
+#     git tag v0.7.0-beta63 && git push origin v0.7.0-beta63
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # Fail before spending build minutes if the tag and package.json disagree —
+  # main has drifted from the released version before (128 commits at v0.7.0-beta62).
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches package.json version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          for f in package.json electron-app/package.json; do
+            v=$(node -p "require('./$f').version")
+            if [ "$v" != "$tag" ]; then
+              echo "::error::$f is $v but the tag is $tag — bump the version and re-tag."
+              exit 1
+            fi
+          done
+          echo "version $tag matches both package.json files"
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "release $GITHUB_REF_NAME already exists — reusing it"
+            exit 0
+          fi
+          # Every release so far is a prerelease; a hyphen in the tag (beta/rc)
+          # means prerelease. updates.js lists releases rather than using
+          # /releases/latest precisely because that endpoint skips prereleases.
+          flags="--draft --generate-notes"
+          case "$GITHUB_REF_NAME" in *-*) flags="$flags --prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" $flags --title "$GITHUB_REF_NAME"
+
+  build:
+    needs: prepare
+    name: build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            args: "--win"
+          - os: ubuntu-latest
+            args: "--linux"
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: electron-app
+    env:
+      # No code-signing certs in CI — see the header note.
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install deps (electron-app)
+        run: npm ci
+
+      - name: Build installer
+        run: npx --no-install electron-builder ${{ matrix.args }} --publish never
+
+      - name: Attach installers to the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          assets=(dist/*.exe dist/*.AppImage dist/*.deb)
+          if [ ${#assets[@]} -eq 0 ]; then
+            echo "::error::no installers found in electron-app/dist"
+            exit 1
+          fi
+          printf 'uploading: %s\n' "${assets[@]}"
+          gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber

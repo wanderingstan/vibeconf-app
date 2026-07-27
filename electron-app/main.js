@@ -2203,7 +2203,7 @@ async function clearMeetIdentityCache(partition) {
 //   - Auto-grant the media permissions Meet always asks for.
 //   - Hand getDisplayMedia the right desktopCapturer source (#158).
 //   - Set a Chrome-like UA so Meet doesn't show the "unsupported browser"
-//     gate.
+//     gate, and pin Accept-Language to English (#23).
 function configureMeetSession(sess) {
   sess.webRequest.onHeadersReceived((details, callback) => {
     const headers = { ...details.responseHeaders };
@@ -2281,7 +2281,18 @@ function configureMeetSession(sess) {
     }
   });
 
-  sess.setUserAgent(CHROME_UA);
+  // #23: pin the session's Accept-Language to English. Every Meet-DOM literal
+  // in meet-selectors.js is an English string — caption region aria-label, the
+  // 'You' self-speaker filter, join/leave button text, presenting regexes — so
+  // a non-English Meet UI doesn't degrade, it fails scattered and silent (bot
+  // joins, then can't hear or can't tell it's in the call).
+  //
+  // This covers the GUEST case, which is the common one: with no Google account
+  // signed in, Meet's locale comes from the browser, and that's ours to set.
+  // A signed-in bot account carries its own server-side language preference
+  // that generally wins over this header — that case needs detection, not a
+  // header (tracked in #23).
+  sess.setUserAgent(CHROME_UA, 'en-US,en');
 }
 
 // ---------------------------------------------------------------------------

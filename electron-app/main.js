@@ -1333,6 +1333,54 @@ function pushEmojiSet(value) {
   });
 }
 
+// preferences-schema caps avatarBackgroundSvg at 1,000,000 chars. That cap is
+// enforced on the agent's set_preference path but NOT on the panel's set-config
+// path, so the import below has to respect it itself — otherwise a phone photo
+// writes a config.json nothing will accept afterwards.
+const AVATAR_BG_MAX_CHARS = 1_000_000;
+
+// Wrap a picked image file in a 16:9 background SVG, inlined as a data URI.
+//
+// Inlined rather than referenced as file://: a reference breaks the moment the
+// file is moved or deleted, and svg-resolver would then hand the renderer an
+// SVG whose <image> silently fails to load — a black camera with no explanation.
+// Inlining costs size, which is why we downscale first.
+//
+// PNG is tried before JPEG so screenshots and flat graphics keep their crisp
+// edges and alpha; photos blow the budget as PNG and fall through to the JPEG
+// quality ladder. JPEG has no alpha, but this image fills the whole frame, so
+// there is nothing behind it to show through.
+function buildBackgroundSvgFromImage(filePath) {
+  const { nativeImage } = require('electron');
+  let img = nativeImage.createFromPath(filePath);
+  if (img.isEmpty()) throw new Error('Could not read that image');
+
+  // Scale so the image still COVERS the 1280x720 camera frame — never upscale,
+  // that only inflates bytes. preserveAspectRatio="slice" crops the overflow.
+  const { width, height } = img.getSize();
+  const scale = Math.max(1280 / width, 720 / height);
+  if (scale < 1) {
+    img = img.resize({ width: Math.round(width * scale), height: Math.round(height * scale), quality: 'best' });
+  }
+
+  const budget = AVATAR_BG_MAX_CHARS - 300; // headroom for the SVG wrapper
+  let dataUri = null;
+  const png = `data:image/png;base64,${img.toPNG().toString('base64')}`;
+  if (png.length <= budget) {
+    dataUri = png;
+  } else {
+    for (const quality of [85, 70, 55, 40]) {
+      const jpeg = `data:image/jpeg;base64,${img.toJPEG(quality).toString('base64')}`;
+      if (jpeg.length <= budget) { dataUri = jpeg; break; }
+    }
+  }
+  if (!dataUri) throw new Error('That image is too large to store even at low quality — try a smaller one');
+
+  return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">' +
+    `<image href="${dataUri}" x="0" y="0" width="1280" height="720" preserveAspectRatio="xMidYMid slice"/>` +
+    '</svg>';
+}
+
 async function pushAvatarBackground(svgSource) {
   if (!meetView || meetView.webContents.isDestroyed()) return;
   try {
@@ -5461,6 +5509,37 @@ function setupIPC() {
     // through applyPref, which already pushes these). #316.
     if (key === 'emojiSet') pushEmojiSet(value);
     if (key === 'botName') applyWindowTitle();
+    // The background is settable from Bot Settings now, not just by the agent.
+    // Without this the in-call avatar kept the OLD background until the next
+    // launch, while the panel preview showed the new one.
+    if (key === 'avatarBackgroundSvg') pushAvatarBackground(value);
+  });
+
+  // Bot Settings → "Choose image…". The agent can already set a background
+  // mid-call via set_preference, but that means authoring SVG; this is the
+  // by-hand path for people who just want to point at a file.
+  ipcMain.handle('choose-avatar-background-image', async () => {
+    const parent = BrowserWindow.getFocusedWindow() || mainWindow;
+    const { canceled, filePaths } = await dialog.showOpenDialog(parent, {
+      title: 'Choose a background image',
+      message: 'Shown behind the bot\'s face on its camera (16:9, centre-cropped).',
+      properties: ['openFile'],
+      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }],
+    });
+    if (canceled || !filePaths || !filePaths.length) return { canceled: true };
+    const filePath = filePaths[0];
+    try {
+      const svg = buildBackgroundSvgFromImage(filePath);
+      store.set('avatarBackgroundSvg', svg);
+      // Caption is purely for recall — it's what get_room_info shows the agent
+      // when asked "what's my background?", so the filename beats nothing.
+      store.set('avatarBackgroundCaption', path.basename(filePath));
+      pushAvatarBackground(svg);
+      return { ok: true, svg, name: path.basename(filePath) };
+    } catch (err) {
+      console.warn('[electron] Background image import failed:', err.message);
+      return { ok: false, error: err.message };
+    }
   });
 
   // Emoji graphics (#316) for the PANEL's avatar. Read here rather than in

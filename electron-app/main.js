@@ -1406,6 +1406,24 @@ function autoUpdaterInstance() {
     error: (m) => console.error(ts(), '[updates]', m),
     debug: () => {},
   };
+  // Pin this OFF. electron-updater turns allowPrerelease on by itself whenever
+  // the RUNNING version has a prerelease component — which ours always does —
+  // and that flips it onto a channel-matching code path that our tag scheme
+  // silently breaks. semver reads `0.7.0-beta64` as the single identifier
+  // "beta64" (no dot), so the provider takes "beta64" to be the channel this
+  // build follows, then walks the releases feed for another release on that
+  // same channel. There is only ever one: itself. beta64 therefore resolved
+  // beta64 and reported "no update"; a beta60 build matched nothing at all and
+  // failed with "No published versions on GitHub". Every build was a channel of
+  // one, and self-update could never have worked.
+  //
+  // With it off, the provider just asks GitHub which release is Latest and
+  // reads that release's latest-*.yml — which is exactly our model: one line of
+  // releases, the newest is the one everybody gets. (Renaming tags to
+  // `0.7.0-beta.66` would also work, since semver would then see the channel as
+  // "beta", one of the two names the provider special-cases. Not worth
+  // re-cutting the tag scheme for.)
+  autoUpdater.allowPrerelease = false;
   // Stage the download, but never restart on our own: installing is gated on
   // not being in a call, and the user gets the last word either way.
   autoUpdater.autoDownload = true;

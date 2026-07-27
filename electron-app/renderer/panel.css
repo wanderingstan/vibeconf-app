@@ -9,6 +9,32 @@ body {
   min-width: 280px;
   background: #202124;
   color: #e8eaed;
+  /* This is an app surface, not a document. Selecting the bot's name or a
+     button label achieves nothing and actively gets in the way — the banner's
+     top strip is a window drag handle, so a slightly-off drag was selecting
+     "Jimmy" instead of moving the window. Real text is opted back in below. */
+  user-select: none;
+  cursor: default;
+}
+
+/* Anything you'd genuinely want to select or copy: fields you type in, and the
+   diagnostic text on the Troubleshooting screen (call state, captions, curl
+   command, the agent prompt, paths). Several of those have copy buttons, but
+   partial selection is still the thing people reach for. */
+input,
+textarea,
+code,
+pre,
+.call-url,
+.account-email,
+.workdir-path,
+.call-state-debug,
+.caption-feed,
+.transcript-area,
+#agentPromptText,
+#curlCommand {
+  user-select: text;
+  cursor: auto;
 }
 
 /* A flex column, but NOT full-height: the window is now sized to fit this
@@ -289,7 +315,9 @@ button:disabled {
    bottom of a tall window — with the window sized to its content, that's the
    same place, and it stays put in-call when the call card appears. */
 .app-footer {
-  padding-top: 7px;
+  /* The hero-bottom block is anchored to the banner's foot, so growing this gap
+     lifts the call button while the status line stays put. */
+  padding-top: 18px;
   display: flex;
   align-items: center;
   gap: 5px;
@@ -302,8 +330,13 @@ button:disabled {
   min-width: 0;
 }
 .app-footer-name { flex: 0 0 auto; }
-.app-footer-sep { flex: 0 0 auto; }
+/* Product + version sit at the left edge, your login at the right — the two are
+   unrelated, and splitting them reads as a status bar rather than a sentence.
+   (The "·" that used to join them went with the change; it only made sense
+   while they were adjacent.) It still ellipsises rather than pushing the
+   version around when the address is long. */
 .app-footer #userIdStatus {
+  margin-left: auto;
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
@@ -561,6 +594,13 @@ body[data-titlebar="win"] .hero-top .agent-gear { right: 146px; }
   border-radius: 0;
   z-index: 0;
   container-type: size;
+  /* OPTICAL centring. The overlays aren't symmetric — the call button plus the
+     status line are ~25px taller than the name row above — so a face centred in
+     the box reads as sitting low. Padding the bottom of the flex box lifts the
+     face by half of it, splitting the difference. Done with padding rather than
+     a transform because `translate` and `scale` are already spoken for by the
+     bob and breathe animations. */
+  padding-bottom: 32px;
 }
 
 .agent-avatar {
@@ -586,13 +626,20 @@ body[data-titlebar="win"] .hero-top .agent-gear { right: 146px; }
 .agent-avatar-bg svg { width: 100%; height: 100%; display: block; }
 .agent-avatar-emoji { position: relative; font-size: 46px; line-height: 1; }
 /* The banner is the "big friendly emoji" anchor. The camera uses
-   `emojiSize = min(w, h) * 0.77` (page-inject); 70% here — a touch under, since
-   the square banner also carries the name above and the call button + status
-   line below, and the face wants a little air from them. Same value for the image and the native glyph, matching how the
+   `emojiSize = min(w, h) * 0.77` (page-inject); a touch under here, since the
+   square banner also carries the name above and the call button + status line
+   below, and the face wants a little air from them.
+
+   67.37% is not arbitrary: at the 380px banner it renders the face at 256 CSS
+   px — EXACTLY the native size of the Fluent 3D artwork. A CSS size equal to
+   the source size means an integer scale factor at every device pixel ratio
+   (1.00x / 2.00x / 3.00x) rather than the 2.078x that 70% produced on retina.
+   Costs 10px of face (3.8%) and nothing else. If PANEL_WIDTH ever moves, this
+   fraction should move with it to keep the face at 256 CSS px. Same value for the image and the native glyph, matching how the
    camera passes emojiSize to both drawImage and ctx.font. A bigger face also
    makes the ±1.8% bob visibly larger, since that amplitude is a fraction of
    the face. */
-.hero-art .agent-avatar-emoji { font-size: 70cqmin; }
+.hero-art .agent-avatar-emoji { font-size: 67.37cqmin; }
 /* ── Resting motion ──────────────────────────────────────────────────────────
    The same idle animation the virtual camera runs on the emoji, so the portrait
    breathes like the face on the call does. page-inject's _render does:
@@ -634,7 +681,7 @@ body[data-titlebar="win"] .hero-top .agent-gear { right: 146px; }
   width: 46px; height: 46px;
   display: block; object-fit: contain;
 }
-.hero-art .agent-avatar-emoji-img { width: 70cqmin; height: 70cqmin; }
+.hero-art .agent-avatar-emoji-img { width: 67.37cqmin; height: 67.37cqmin; }
 .settings-avatar .agent-avatar-emoji-img { width: 21px; height: 21px; }
 
 .agent-name-row { position: relative; display: flex; align-items: center; gap: 2px; }
@@ -693,8 +740,24 @@ button.primary.danger { background: #d93025; color: #fff; }
 button.primary.danger:hover:not(:disabled) { background: #e8544a; }
 /* Primary action + the ⋯ that reveals manual URL entry, on one line. The
    primary flexes so it stays the obvious target; ⋯ is a fixed ghost square. */
-.join-row { display: flex; align-items: stretch; gap: 6px; }
-.join-row .primary { flex: 1 1 auto; margin-bottom: 0; }
+/* Centred, and each control sized to its own content — a full-width button for
+   two words read as a heavy slab across the avatar. */
+.join-row { display: flex; align-items: stretch; justify-content: center; gap: 6px; }
+.join-row .primary {
+  /* `width: auto` is doing the work, not `flex`. The global `button` rule sets
+     width:100%, and with flex-basis:auto that width IS the flex base size — so
+     the button kept filling the row no matter what flex-grow said. */
+  width: auto;
+  flex: 0 1 auto;
+  margin-bottom: 0;
+  padding-left: 26px;
+  padding-right: 26px;
+  /* Long bot names still can't overflow the banner. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 button.join-more {
   flex: 0 0 auto; width: auto; margin: 0;
   padding: 0 12px;
@@ -707,6 +770,17 @@ button.join-more {
 button.join-more:hover:not(:disabled) { background: #3c4043; color: #e8eaed; border-color: #8ab4f8; }
 /* Open state — reads as "this is what's showing the field below". */
 button.join-more[aria-expanded="true"] { color: #8ab4f8; border-color: #8ab4f8; background: #303134; }
+/* ONE glyph, rotated — ▸ and ▴ are different characters with different optical
+   weights and widths, so swapping them made the control jump. Rotating the same
+   ▸ counter-clockwise lands it pointing up, identical in size, and animates. */
+.join-caret {
+  display: inline-block;
+  transition: rotate 160ms ease;
+}
+button.join-more[aria-expanded="true"] .join-caret { rotate: -90deg; }
+@media (prefers-reduced-motion: reduce) {
+  .join-caret { transition: none; }
+}
 /* The in-call ⓘ reuses the same ghost pill as ▸ so the two states have an
    identical footprint — Leave Call lands exactly where Call now was. The glyph
    is a touch larger; ⓘ reads small next to a bare triangle. */

@@ -64,11 +64,10 @@
             <!-- The helper text that used to sit under this button is now its
                  tooltip — true but not worth permanent screen space. -->
             <button id="joinBtn" class="primary" title="Calls open in Chrome/Safari are detected automatically. You can also type /join-call in any Claude Code session.">Call now</button>
-            <!-- Manual entry. A disclosure triangle, so it reads as expand /
-                 collapse: ▸ to open, ▴ to collapse (swapped in panel.js).
-                 Hidden once a call is detected, since the URL field is already
-                 showing and there'd be nothing to reveal. -->
-            <button id="manualUrlToggle" class="join-more" aria-expanded="false" title="Add the bot to a call that's already running — paste its Meet or Slack URL">▸</button>
+            <!-- Manual entry. A disclosure triangle: ▸ to open, rotating to
+                 point up when it will collapse. The glyph is in a span so CSS
+                 can rotate IT rather than the button's pill. -->
+            <button id="manualUrlToggle" class="join-more" aria-expanded="false" title="Add the bot to a call that's already running — paste its Meet or Slack URL"><span class="join-caret">▸</span></button>
           </div>
           </div>
 
@@ -97,7 +96,6 @@
           <div class="app-footer" title="Vibeconferencing, and your vibeconferencing.com login (for the shared whiteboard rooms — signing in once covers all bots).">
             <span class="app-footer-name">Vibeconferencing</span>
             <span id="appVersion" class="app-version"></span>
-            <span class="app-footer-sep">·</span>
             <span id="userIdStatus">checking…</span>
             <button id="userSignInMainBtn" class="auth-action-btn" style="display:none">Sign in</button>
           </div>

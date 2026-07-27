@@ -677,10 +677,10 @@ function updateJoinBtnState() {
     // won't re-notify while the tab is still open, so the panel was stuck in
     // "Add to call" from the first Meet it ever saw.
     manualUrlToggle.style.display = '';
-    // Disclosure triangle: ▸ to open, ▴ to collapse — the arrow points the way
-    // the panel is about to move (right = out, up = back away). Tracks the
-    // ACTUAL expanded state, so a detected call shows ▴ ready to dismiss.
-    manualUrlToggle.textContent = addMode ? '▴' : '▸';
+    // The triangle points the way the panel is about to move: right to open,
+    // rotated up to collapse. aria-expanded drives the rotation in CSS, so this
+    // is the only thing to set — and it tracks the ACTUAL expanded state, so a
+    // detected call already points up, ready to dismiss.
     manualUrlToggle.setAttribute('aria-expanded', String(addMode));
     manualUrlToggle.title = addMode
       ? 'Dismiss this call — go back to starting a new one'
@@ -859,7 +859,10 @@ Promise.all([
 const profileMenuBtn = document.getElementById('profileMenuBtn');
 const profileMenu = document.getElementById('profileMenu');
 
-function closeProfileMenu() { if (profileMenu) profileMenu.style.display = 'none'; }
+function closeProfileMenu() {
+  if (profileMenu) profileMenu.style.display = 'none';
+  delete document.body.dataset.menuOpen;
+}
 
 // Electron renderers don't implement window.prompt (it silently returns null),
 // which is what this replaces. alert()/confirm() DO work, but they're blocking
@@ -1027,7 +1030,12 @@ function renderProfileMenu(data) {
     const row = document.createElement('div');
     row.title = `Profile folder: ${p.name}`;
     row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:' + (p.isCurrent ? 'default' : 'pointer');
-    if (!p.isCurrent) {
+    if (p.isCurrent) {
+      // Picking the bot you're already on is a no-op — but it must still close
+      // the menu. Leaving it inert meant a natural "never mind" gesture left the
+      // dropdown stuck open.
+      row.onclick = () => closeProfileMenu();
+    } else {
       row.onmouseenter = () => { row.style.background = '#3c4043'; };
       row.onmouseleave = () => { row.style.background = ''; };
       // Default click SWITCHES this window to that profile (#379). ⌥-click opens
@@ -1144,12 +1152,20 @@ if (profileMenuBtn && profileMenu) {
     // (a no-op) and only the second click opened it.
     if (profileMenu.style.display === 'block') { closeProfileMenu(); return; }
     profileMenu.style.display = 'block';
+    // While the menu is open the banner's top strip must stop being a window
+    // drag handle: a drag region swallows mouse events before the DOM sees them,
+    // so clicking the space beside the bot name — the usual "click outside to
+    // dismiss" — did nothing at all.
+    document.body.dataset.menuOpen = 'true';
     if (cachedProfiles) renderProfileMenu(cachedProfiles);           // instant from cache
     else profileMenu.innerHTML = '<div style="padding:6px 8px;color:#9aa0a6">Loading…</div>';
     refreshProfilesCache();                                          // refresh in the background (re-renders if still open)
   });
   document.addEventListener('click', (e) => {
     if (profileMenu.style.display === 'block' && !profileMenu.contains(e.target) && e.target !== profileMenuBtn) closeProfileMenu();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && profileMenu.style.display === 'block') closeProfileMenu();
   });
 }
 

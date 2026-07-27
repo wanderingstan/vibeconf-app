@@ -996,6 +996,49 @@ server.tool(
   }
 );
 
+// --- start_call ---
+server.tool(
+  "start_call",
+  "Start a BRAND-NEW call: creates a fresh Google Meet that anyone with the link can join, sends the bot into it, and opens the user's own browser to it. This is the /call command, and it mirrors the app's \"Call <bot> now\" button. Use it when there is no existing call — to put the bot into a call that ALREADY exists, use join_call instead.",
+  {
+    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance."),
+  },
+  async ({ bot_name }) => {
+    try {
+      // Same multi-profile routing as join_call: the name selects which running
+      // app instance starts the call, so `/call Alice` uses Alice's app.
+      const routed = await routeToInstance(bot_name);
+      if (routed.error) return { content: [{ type: "text", text: routed.error }] };
+      const where = routed.instance
+        ? ` (profile "${routed.instance.profile}" on port ${routed.instance.port})`
+        : "";
+
+      const resp = await vfetch(`${BASE_URL}/api/call/start`, { method: "POST" });
+      const data = await resp.json().catch(() => ({}));
+
+      if (data.success) {
+        // The app deliberately does NOT return the meeting URL — it's a bearer
+        // capability, and nobody here needs it: the bot is already joining and
+        // the user's browser is already opening.
+        const room = data.roomId ? ` Room: ${data.roomId}.` : "";
+        return { content: [{ type: "text", text: `Started a new call${where}.${room} The bot is joining and your browser is opening to it.` }] };
+      }
+
+      const REASONS = {
+        "signed-out": "Not signed in to vibeconferencing.com. Sign in from the app's panel, then try again.",
+        "rate-limited": "Too many calls started recently — try again in a few minutes.",
+        upstream: "Google couldn't create the room. Try again.",
+        "bad-request": "The app sent a malformed request — this is a bug worth reporting.",
+        offline: "Couldn't reach vibeconferencing.com. Check the network.",
+      };
+      const why = REASONS[data.code] || `Couldn't start a call (${data.code || "unknown"}).`;
+      return { content: [{ type: "text", text: why }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error starting a call: ${err.message}. Is the Vibeconferencing app running?` }] };
+    }
+  }
+);
+
 // --- leave_call ---
 server.tool(
   "leave_call",

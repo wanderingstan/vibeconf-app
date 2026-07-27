@@ -666,6 +666,9 @@ const localServer = new globalThis.LocalServer({
     }
   },
   // Profile switcher (#282): a sibling instance asked us to come forward.
+  // /call → POST /api/call/start → the same path the panel button takes.
+  onStartCall: () => createAndJoinMeet(),
+
   onFocusRequest: () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore();
@@ -924,6 +927,9 @@ const localServer = new globalThis.LocalServer({
     // The bot's view only takes up window space during a call — grow/shrink the
     // column here, before anything else, so the layout tracks the call.
     setBotViewInCall(status);
+    // A call we spawned has ended (host ended it, bot was removed, whatever) —
+    // hand the room back. leave-meet covers the button; this covers the rest.
+    if (status === 'left' || status === 'idle') retireLiveMeet(`call-status:${status}`);
     // (lastSlackName is populated once we read the real Slack display name from
     // the huddle DOM — #283. We don't fake it from a preference anymore.)
     // #189: a fresh call gets a fresh auto-posted whiteboard link.
@@ -1725,6 +1731,131 @@ function getWebsiteUrl() {
   if (syncUrl && /^https:\/\//i.test(syncUrl)) return syncUrl;
 
   return DEFAULT_WEBSITE;
+}
+
+// ── Instant meetings: POST /api/meet/create ────────────────────────────────
+// "Call <bot> now" spawns a Google Meet anyone with the link can join — no
+// admit prompt, no host required — then sends the bot into it.
+//
+// MAIN PROCESS ONLY. A renderer fetch sends an Origin header and the backend
+// only allows https://vibeconferencing.com, so it would 403.
+//
+// The response is a BEARER CAPABILITY: holding meetingUri/meetingCode is
+// permission to enter the room. The server never logs them and neither do we —
+// with remoteLogging on (the default) a stray console.log would ship live
+// capabilities off the machine. Log the shape, never the value.
+// The room we created, so we can close it when the call ends. In memory only:
+// retire is HYGIENE, not a prerequisite — a create now returns your existing
+// room rather than 429ing, and the server reaps what we miss. So a room lost to
+// a crash costs nothing but a lingering TTL, and there's no case for persisting
+// this to chase it across restarts.
+let liveMeetSpaceName = null;
+
+// Point the bot at a Meet URL and bring up everything a call needs: sync, and
+// the bot's Claude session. Shared by the manual join ('join-meet') and the
+// "Call <bot> now" path — duplicating it once left the bot in the room with no
+// agent behind it, a face that never speaks.
+function joinMeetUrl(meetUrl) {
+  currentMeetUrl = meetUrl;
+  loadMeetURL(meetUrl);
+
+  const match = meetUrl.match(/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/);
+  if (!match) return;
+  const meetCode = match[1];
+  localServer.setRoom(meetCode);
+  sync.updateConfig({ roomId: meetCode, baseUrl: getWebsiteUrl() });
+  sync.ensureRoom().then(() => {
+    sync.startPolling();
+    console.log('[electron] Sync started for room:', meetCode);
+  });
+  launchClaudeTerminal(meetCode); // the agent behind the face
+}
+
+async function websiteRequest(pathname, { method = 'GET', headers = {}, body = null } = {}) {
+  const baseUrl = getWebsiteUrl();
+  const { net } = require('electron');
+  const cookies = await session.defaultSession.cookies.get({ url: baseUrl, name: 'vc_session' });
+  const cookie = cookies.length ? `vc_session=${cookies[0].value}` : (store.get('vcSessionToken') ? `vc_session=${store.get('vcSessionToken')}` : '');
+  return new Promise((resolve) => {
+    const request = net.request({ method, url: `${baseUrl}${pathname}` });
+    if (cookie) request.setHeader('Cookie', cookie);
+    for (const [k, v] of Object.entries(headers)) request.setHeader(k, v);
+    let raw = '';
+    request.on('response', (response) => {
+      response.on('data', (c) => { raw += c.toString(); });
+      response.on('end', () => {
+        let json = null;
+        try { json = JSON.parse(raw); } catch { /* non-JSON error body */ }
+        resolve({ status: response.statusCode, json });
+      });
+    });
+    request.on('error', (err) => resolve({ status: 0, json: null, error: err.message }));
+    if (body) request.write(JSON.stringify(body));
+    request.end();
+  });
+}
+
+// Give the room back when the call ends, so it closes promptly instead of
+// lingering to its TTL. Hygiene, not a prerequisite: missing it doesn't block
+// the next call — the server reaper collects it. Safe to call twice.
+// "Call <bot> now": create a room, send the bot in, and open the human's
+// browser to it. Returns a discriminated result callers map to UI — never the
+// raw upstream body. Shared by the panel button (IPC) and the /call command
+// (POST /api/call/start), so the two can't drift.
+async function createAndJoinMeet() {
+  // A FRESH key per press. Reusing one returns the SAME room instead of a new
+  // one, which is right for a retry of one press and wrong for a second press.
+  const idempotencyKey = require('crypto').randomUUID();
+  const r = await websiteRequest('/api/meet/create', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey },
+  });
+
+  if (r.status === 200 && r.json?.meetingUri) {
+    // Shape only — meetingUri/meetingCode are capabilities, never logged.
+    console.log(`[meet-create] room ready (replay=${!!r.json.replay})`);
+    // On a replay this is the room we already had — including after a crash
+    // lost track of it, which is how a forgotten room finds its way home.
+    liveMeetSpaceName = r.json.spaceName || null;
+    joinMeetUrl(r.json.meetingUri);
+    // …and get the HUMAN in too. The bot joins inside the Electron webview;
+    // the user joins as themselves in their own browser, with their own
+    // camera and Google account. Without this the button puts the bot in an
+    // empty room and leaves you to find your own way there.
+    //
+    // Their browser tab is also what focusBrowserCallTab (#275) brings
+    // forward once the bot is admitted, and what the app's tab detection
+    // watches — so opening it here fits the paths that already exist.
+    openExternalUrl(r.json.meetingUri);
+    return { ok: true, url: r.json.meetingUri };
+  }
+
+  // Keys only: the body may carry a spaceName, and while that isn't a join
+  // link it's still server state we don't need in a shipped log.
+  console.warn(`[meet-create] failed → status ${r.status}`
+    + (r.json ? ` (body keys: ${Object.keys(r.json).join(',')})` : ''));
+  if (r.status === 401) return { ok: false, code: 'signed-out' };
+  if (r.status === 429) return { ok: false, code: 'rate-limited' };
+  if (r.status === 502) return { ok: false, code: 'upstream' };
+  if (r.status === 400) return { ok: false, code: 'bad-request' };
+  if (r.status === 0) return { ok: false, code: 'offline', detail: r.error };
+  return { ok: false, code: 'unknown', detail: `status ${r.status}` };
+}
+
+async function retireLiveMeet(reason) {
+  const spaceName = liveMeetSpaceName;
+  if (!spaceName) return;
+  liveMeetSpaceName = null; // clear first so a second call can't double-fire
+  try {
+    const r = await websiteRequest('/api/meet/retire', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: { spaceName },
+    });
+    console.log(`[meet-create] retired room (${reason}) → status ${r.status}`);
+  } catch (err) {
+    console.warn('[meet-create] retire failed:', err.message);
+  }
 }
 
 async function checkAuth() {
@@ -3283,6 +3414,31 @@ function ensureClaudeIntegration() {
     console.log('[electron] Skill v%s already installed', SKILL_VERSION);
   }
 
+  // --- Ensure global skill in ~/.claude/skills/call/ ---
+  // /call starts a BRAND-NEW call (the command form of the panel's "Call <bot>
+  // now"); /join-call puts the bot into one that already exists. Same version
+  // gate, its own directory — Claude Code takes one skill per directory.
+  try {
+    const callSkillDir = path.join(claudeDir, 'skills', 'call');
+    const callVersionFile = path.join(callSkillDir, '.version');
+    let callInstalled = '';
+    try { callInstalled = fs.readFileSync(callVersionFile, 'utf-8').trim(); } catch { /* not yet */ }
+    if (callInstalled !== SKILL_VERSION) {
+      fs.mkdirSync(callSkillDir, { recursive: true });
+      fs.writeFileSync(path.join(callSkillDir, 'SKILL.md'), fs.readFileSync(
+        isPackaged
+          ? path.join(process.resourcesPath, 'mcp-server', 'call-skill.md')
+          : path.join(__dirname, '..', 'mcp-server', 'call-skill.md'),
+        'utf-8',
+      ));
+      fs.writeFileSync(callVersionFile, SKILL_VERSION);
+      console.log('[electron] Installed/updated /call skill v%s', SKILL_VERSION);
+      changed = true;
+    }
+  } catch (err) {
+    console.warn('[electron] /call skill install failed:', err.message);
+  }
+
   // Agent-activity overlay hook (independent of the MCP/skill version bumps).
   // Port-agnostic: app-spawned sessions inject VIBECONF_LOCAL_PORT themselves.
   ensureAgentActivityHook();
@@ -3655,6 +3811,12 @@ app.whenReady().then(async () => {
   createMainWindow();
   setupIPC();
 
+  // (A startup sweep retired a room persisted from a previous run. Removed: it
+  // only ever unblocked a button that no longer gets blocked, and it could hang
+  // up a call you were still in — crash the app mid-call, relaunch, and it would
+  // retire the room out from under you.)
+  try { store.delete('liveMeetSpace'); } catch { /* nothing to clean up */ }
+
   // Process CLI args FIRST so syncBaseUrl/botName are set before auto-login
   if (cliArgs['bot-name']) {
     sync.updateConfig({ botName: cliArgs['bot-name'] });
@@ -3961,6 +4123,7 @@ app.on('window-all-closed', () => {
 // Close any terminal windows we opened, synchronously, before the process
 // exits — covers Cmd-Q and other quit paths the async close would miss.
 app.on('before-quit', () => {
+  retireLiveMeet('before-quit'); // best-effort hygiene; the reaper is the net
   stopAllRunwayFaces('before-quit'); // P2: best-effort end of Runway sessions on quit (fire-and-forget)
   closeAllClaudeTerminalsSync();
 });
@@ -5146,6 +5309,8 @@ function setupIPC() {
     hiddenTitleBar: hasHiddenTitleBar() ? (process.platform === 'darwin' ? 'mac' : 'win') : null,
   }));
 
+  ipcMain.handle('create-and-join-meet', async () => createAndJoinMeet());
+
   ipcMain.handle('get-app-version', () => ({ version: app.getVersion(), packaged: app.isPackaged }));
 
   // ── First-run setup wizard IPC (onboarding:*) ─────────────────────────────
@@ -5579,30 +5744,12 @@ function setupIPC() {
   });
 
   // --- Meet window management ---
-  ipcMain.on('join-meet', (_event, meetUrl) => {
-    currentMeetUrl = meetUrl;
-    loadMeetURL(meetUrl);
-
-    // Extract meet code and start sync + Claude
-    const match = meetUrl.match(/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/);
-    if (match) {
-      const meetCode = match[1];
-      localServer.setRoom(meetCode);
-      const baseUrl = getWebsiteUrl();
-      sync.updateConfig({ roomId: meetCode, baseUrl });
-      sync.ensureRoom().then(() => {
-        sync.startPolling();
-        console.log('[electron] Sync started for room:', meetCode);
-      });
-
-      // Launch Claude Code in Terminal
-      launchClaudeTerminal(meetCode);
-    }
-  });
+  ipcMain.on('join-meet', (_event, meetUrl) => { joinMeetUrl(meetUrl); });
 
   ipcMain.on('open-external-url', (_event, url) => { openExternalUrl(url); });
 
   ipcMain.on('leave-meet', () => {
+    retireLiveMeet('leave-meet'); // give the room back or the next press 429s
     currentMeetUrl = null;
     detectedMeetUrl = null; // Reset so detection will re-notify about the same Meet
     localServer.clearRoom();

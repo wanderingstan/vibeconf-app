@@ -649,7 +649,6 @@ function isJoinableUrl(url) {
 // to a call that already exists.
 const callUrlField = document.getElementById('callUrlField');
 const manualUrlToggle = document.getElementById('manualUrlToggle');
-const startCallStub = document.getElementById('startCallStub');
 
 let detectedCallUrl = null; // the ACTIVE offer — drives the auto-expanded mode
 let manualUrlEntry = false; // the user opened ▸ themselves
@@ -709,8 +708,7 @@ if (manualUrlToggle) {
     if (meetUrlInput && !meetUrlInput.value.trim() && lastKnownCallUrl) {
       meetUrlInput.value = lastKnownCallUrl;
     }
-    if (startCallStub) startCallStub.style.display = 'none';
-    updateJoinBtnState();
+      updateJoinBtnState();
     if (meetUrlInput) { meetUrlInput.focus(); meetUrlInput.select(); }
   });
 }
@@ -723,7 +721,6 @@ function noteDetectedCall(url) {
   detectedCallUrl = url;
   lastKnownCallUrl = url;
   meetUrlInput.value = url;
-  if (startCallStub) startCallStub.style.display = 'none';
   updateJoinBtnState();
 }
 
@@ -748,7 +745,6 @@ function dismissCallUrl() {
   detectedCallUrl = null;
   manualUrlEntry = false;
   if (manualUrlToggle) manualUrlToggle.setAttribute('aria-expanded', 'false');
-  if (startCallStub) startCallStub.style.display = 'none';
   updateJoinBtnState();
 }
 
@@ -1352,16 +1348,43 @@ function exitCallState() {
   roomLink.style.display = 'none';
 }
 
-joinBtn.addEventListener('click', () => {
-  // "Call <bot> now" — starting a fresh call is NOT WIRED UP yet. Say so
-  // plainly and point at the path that does work, rather than failing silently.
+// Messages for every way POST /api/meet/create can fail. The signed-out case is
+// a real state, not an edge: this is the first feature that hard-requires a
+// vibeconferencing.com login, so it has to say what to do about it.
+const CREATE_MEET_ERRORS = {
+  'signed-out': 'Sign in at vibeconferencing.com to start a call — the footer below has your login.',
+  'rate-limited': 'Too many calls started just now. Try again in a few minutes.',
+  'upstream': "Google couldn't create the room. Try again.",
+  'bad-request': 'The app sent a malformed request — this is a bug, please report it.',
+  'offline': "Couldn't reach vibeconferencing.com. Check your connection.",
+  'unknown': "Couldn't start a call.",
+};
+
+joinBtn.addEventListener('click', async () => {
+  // "Call <bot> now" — ask the website for a fresh Meet anyone can walk into,
+  // then send the bot in. Main does the request: a renderer fetch carries an
+  // Origin the backend rejects.
   if (!isAddToCallMode()) {
-    if (startCallStub) {
-      startCallStub.textContent =
-        `Starting a new call for ${currentBotName || 'this bot'} isn't wired up yet. `
-        + 'Open a call in Chrome or Safari and it will be detected here, or use ▸ to paste its URL.';
-      startCallStub.style.display = '';
+    const label = joinBtn.textContent;
+    joinBtn.disabled = true;
+    joinBtn.textContent = 'Starting…';
+    try {
+      const r = await api.invoke('create-and-join-meet');
+      if (r?.ok) {
+        // Main has already pointed the bot's view at the room. Put the link in
+        // the field so the in-call view can show and copy it for the human.
+        if (r.url) { meetUrlInput.value = r.url; detectedCallUrl = r.url; lastKnownCallUrl = r.url; }
+        joinBtn.textContent = 'Joining…';
+        // enterCallState waits for 'call-status-changed', same as a manual join.
+        return;
+      }
+      showError(CREATE_MEET_ERRORS[r?.code] || CREATE_MEET_ERRORS.unknown);
+    } catch (err) {
+      showError('Could not start a call: ' + err.message);
     }
+    joinBtn.disabled = false;
+    joinBtn.textContent = label;
+    updateJoinBtnState();
     return;
   }
 

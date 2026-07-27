@@ -96,6 +96,17 @@ document.getElementById('openSettingsBtn').addEventListener('click', () => {
   if (typeof refreshAccountEmail === 'function') refreshAccountEmail(lastMeetMode);
 });
 document.getElementById('backFromSettingsBtn').addEventListener('click', () => showScreen(mainScreen));
+
+// Escape leaves Settings too. A pane you can open with one key should close with
+// one, and it's the reflex when a control isn't where you expect.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (settingsScreen.style.display === 'none') return;
+  // Don't steal it from a field mid-edit — the URL box uses Escape to dismiss.
+  const tag = (document.activeElement?.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+  showScreen(mainScreen);
+});
 // ⓘ opens Troubleshooting in its OWN window, so the panel keeps showing the
 // avatar and the call controls. (The screen's own ⧉ Pop out can't do this: it
 // re-parents the single panelView, which leaves the main window with no panel

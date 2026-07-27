@@ -116,12 +116,16 @@
   <!-- Settings Screen -->
   <div class="screen" id="settingsScreen" style="display:none">
     <div class="container">
-      <button id="backFromSettingsBtn" class="back-btn">&larr; Back</button>
       <!-- "Bot Settings", with the bot's own avatar, so this is unmistakably
-           THIS BOT's prefs and not the machine-wide App Settings (⌘,). -->
+           THIS BOT's prefs and not the machine-wide App Settings (⌘,).
+           The ✕ sits exactly where the ⚙ is on the main screen: the control
+           that opened this closes it, in the same place. A top-LEFT "Back" was
+           buried under the macOS traffic lights once the title bar went away,
+           and top-left is the one corner that's never free on macOS. -->
       <div class="settings-head">
         <div id="settingsAvatar" class="agent-avatar settings-avatar"><span class="agent-avatar-emoji">🙂</span></div>
         <h1>Bot Settings</h1>
+        <button id="backFromSettingsBtn" class="screen-close" title="Done — back to the bot (Esc)">&#10005;</button>
       </div>
 
       <!-- Name first — it's the bot's identity and the thing the panel shows.

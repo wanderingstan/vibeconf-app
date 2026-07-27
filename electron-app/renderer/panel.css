@@ -365,11 +365,53 @@ button:disabled {
 /* Bot Settings heading — the bot's own avatar next to the title, so this screen
    is visibly about THIS BOT and not the machine-wide App Settings. */
 .settings-head {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
   margin-bottom: 14px;
 }
+/* Mirrors button.agent-gear on the main screen — same corner, same ghost
+   treatment — so entering and leaving settings are the same gesture.
+   FIXED, not absolute: Settings is a long scrolling page, and a close button
+   that scrolls away is a close button you have to hunt for. It stays put and
+   content passes under it, which is why it carries its own backdrop. */
+button.screen-close {
+  /* The SAME offsets as .hero-top .agent-gear (top/right 8px). That strip
+     starts at the window's content origin and spans its full width, so an
+     absolute 8px there and a fixed 8px here land on the same pixel — which is
+     the point: the button you press to leave is where the one you pressed to
+     enter was. Safe at 8px on both platforms because it's top-RIGHT, away from
+     the macOS traffic lights; Windows' caption buttons are dodged below. */
+  position: fixed; top: 8px; right: 8px; z-index: 20;
+  width: 36px; height: 36px; padding: 0; margin: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; cursor: pointer; color: #9aa0a6;
+  font-size: 19px; line-height: 1; border-radius: 50%;
+  /* Page colour rather than transparent: text scrolling beneath a bare glyph
+     is unreadable for both. */
+  background: rgba(32, 33, 36, 0.82);
+  backdrop-filter: blur(4px);
+}
+button.screen-close:hover:not(:disabled) { background: #3c4043; color: #e8eaed; }
+/* Windows draws its caption buttons top-right, over this; same 146px dodge the
+   gear makes. macOS needs no vertical nudge — its controls are top-left. */
+body[data-titlebar="win"] button.screen-close { right: 146px; }
+
+/* Frameless: the header runs to the window's edges and carries its own inset,
+   the same shape as the banner on the main screen. Doing it with CONTAINER
+   padding instead left a dead strip exactly level with the window controls —
+   the one place you'd reach for to drag — while the area just below it worked.
+   Owning the space means the header can be the drag handle for all of it.
+   The inset is vertical because this heading is left-aligned, unlike the
+   centred bot name, so it can't simply pass beside the macOS traffic lights. */
+body[data-titlebar] #settingsScreen .container { padding-top: 0; }
+body[data-titlebar] #settingsScreen .settings-head {
+  -webkit-app-region: drag;
+  margin: 0 -16px 14px;   /* escape the container's side padding, as .bot-hero does */
+  padding: 34px 16px 0;
+}
+body[data-titlebar] #settingsScreen .settings-head button { -webkit-app-region: no-drag; }
 .settings-head h1 { margin-bottom: 0; }
 /* Same tile treatment as the masthead avatar, scaled down to heading size.
    Both classes in the selector: .agent-avatar is defined LATER in this file and
@@ -709,10 +751,17 @@ button.agent-namebtn:hover:not(:disabled) { background: #3c4043; }
 button.agent-namebtn:hover:not(:disabled) .agent-caret { color: #e8eaed; }
 /* Bot settings gear — sits next to the name, ghost-icon treatment. Stays
    visible in-call (unlike the switcher). */
+/* Same 36px circle as button.screen-close, which is what replaces it on the
+   Settings screen — they're the two halves of one round trip, so they should be
+   the same target. Sized by an explicit box rather than font-size + padding:
+   ⚙ and ✕ have quite different glyph-to-em ratios, so matching their font sizes
+   would NOT have matched their buttons. The font sizes differ to compensate. */
 button.agent-gear {
-  width: auto; margin: 0; flex: 0 0 auto; align-self: center;
+  width: 36px; height: 36px; padding: 0; margin: 0;
+  flex: 0 0 auto; align-self: center;
+  display: inline-flex; align-items: center; justify-content: center;
   background: none; border: none; color: #e8eaed; cursor: pointer;
-  font-size: 24px; line-height: 1; padding: 4px 6px; border-radius: 6px;
+  font-size: 26px; line-height: 1; border-radius: 50%;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
 }
 button.agent-gear:hover:not(:disabled) { background: #3c4043; color: #e8eaed; }
@@ -785,8 +834,6 @@ button.join-more[aria-expanded="true"] .join-caret { rotate: -90deg; }
    identical footprint — Leave Call lands exactly where Call now was. The glyph
    is a touch larger; ⓘ reads small next to a bare triangle. */
 button.join-more#openTroubleshootingBtn { font-size: 18px; }
-/* The "not wired up yet" note under the primary button. */
-.stub-note { margin: 0 0 12px; color: #fdd663; }
 
 /* Read-only current-call URL + copy button (in-call). */
 .call-url-row { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }

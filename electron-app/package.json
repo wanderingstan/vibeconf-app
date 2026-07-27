@@ -1,7 +1,7 @@
 {
   "name": "vibeconferencing-agent",
   "productName": "Vibeconferencing",
-  "version": "0.7.0-beta62",
+  "version": "0.7.0-beta63",
   "description": "AI bot that joins Google Meet calls — Electron wrapper",
   "homepage": "https://github.com/wanderingstan/vibeconf-app",
   "author": "Stan James <wanderingstan@gmail.com>",

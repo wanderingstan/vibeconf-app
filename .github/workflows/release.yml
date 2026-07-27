@@ -58,11 +58,18 @@ jobs:
             echo "release $GITHUB_REF_NAME already exists — reusing it"
             exit 0
           fi
-          # Every release so far is a prerelease; a hyphen in the tag (beta/rc)
-          # means prerelease. updates.js lists releases rather than using
-          # /releases/latest precisely because that endpoint skips prereleases.
+          # NOT marked --prerelease, even though the tags carry a -betaN suffix.
+          # The suffix is real and stays: it's semver-correct (0.7.0-beta64 sorts
+          # below a future 0.7.0) and updates.js relies on that ordering. But
+          # GitHub never awards "Latest" to a prerelease, so flagging them left
+          # the badge stuck on whichever build happened to be newest at the time
+          # — v0.7.0-beta62 was still labelled Latest while beta63 shipped.
+          #
+          # Safe for updates: pickUpdate filters on `includePrereleases ||
+          # !r.prerelease` and that option defaults to true, so the flag makes no
+          # difference to what the app offers. It only moves a badge, and makes
+          # /releases/latest return something useful.
           flags="--draft --generate-notes"
-          case "$GITHUB_REF_NAME" in *-*) flags="$flags --prerelease" ;; esac
           gh release create "$GITHUB_REF_NAME" $flags --title "$GITHUB_REF_NAME"
 
   build:

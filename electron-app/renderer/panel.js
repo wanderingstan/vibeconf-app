@@ -157,7 +157,11 @@ function paintAvatarBg(el, svg) {
       bg.className = 'agent-avatar-bg';
       el.insertBefore(bg, el.firstChild);
     }
-    bg.innerHTML = svg;
+    // Namespace this copy's ids. Several tiles carry the SAME background at
+    // once, and duplicate inline-SVG ids make every copy's url(#…) / <use>
+    // resolve to the first one in the document — which sits in the hidden
+    // screen, so gradients silently stopped painting. See svg-scope.js.
+    bg.innerHTML = scopeSvgIds(svg, scopeForElement(el));
     // The tile is square; backgrounds are authored 16:9. `object-fit: cover` in
     // the stylesheet does nothing to an INLINE <svg> — only to replaced elements
     // — so the SVG was letterboxing on its default preserveAspectRatio ("meet").
@@ -167,6 +171,71 @@ function paintAvatarBg(el, svg) {
     bg.remove();
   }
 }
+
+// --- Avatar background, by hand (Bot Settings) ------------------------------
+// The agent can set `avatarBackgroundSvg` itself mid-call, but that means
+// authoring SVG. This is the old-fashioned path: see what's set, pick an image,
+// clear it. The heavy lifting (downscale, encode, wrap in a 16:9 SVG) happens in
+// main — the renderer is sandboxed and can't read files.
+const avatarBgPreview = document.getElementById('avatarBgPreview');
+const avatarBgStatus = document.getElementById('avatarBgStatus');
+const chooseAvatarBgBtn = document.getElementById('chooseAvatarBgBtn');
+const clearAvatarBgBtn = document.getElementById('clearAvatarBgBtn');
+
+// Unlike the avatar tiles, this preview is ALREADY 16:9 — the camera's shape —
+// so cover-fitting it is a no-op for a well-authored background and only crops
+// one that isn't. That's the point: it shows the framing the call will use.
+function paintAvatarBgPreview(svg) {
+  if (!avatarBgPreview) return;
+  if (svg && svg.trim()) {
+    avatarBgPreview.innerHTML = scopeSvgIds(svg, scopeForElement(avatarBgPreview));
+    coverFitFirstSvg(avatarBgPreview);
+  } else {
+    avatarBgPreview.innerHTML = '<span class="avatar-bg-empty">Default animated gradient</span>';
+  }
+  if (clearAvatarBgBtn) clearAvatarBgBtn.style.display = (svg && svg.trim()) ? '' : 'none';
+}
+
+function setAvatarBgStatus(text, isError) {
+  if (!avatarBgStatus) return;
+  avatarBgStatus.textContent = text || '';
+  avatarBgStatus.style.color = isError ? '#f28b82' : '#81c995';
+}
+
+chooseAvatarBgBtn?.addEventListener('click', async () => {
+  chooseAvatarBgBtn.disabled = true;
+  setAvatarBgStatus('');
+  try {
+    const r = await api.invoke('choose-avatar-background-image');
+    if (r?.canceled) return;
+    if (r?.ok) {
+      paintAvatarBgPreview(r.svg);
+      // Repaint the avatar tiles too — the masthead and the settings heading
+      // both wear this background, and waiting out the 60s timer would read as
+      // the change not having taken.
+      for (const el of agentAvatarEls) paintAvatarBg(el, r.svg);
+      setAvatarBgStatus('Set from ' + (r.name || 'image'));
+    } else {
+      setAvatarBgStatus(r?.error || 'Could not load that image', true);
+    }
+  } catch (err) {
+    setAvatarBgStatus(err?.message || 'Could not load that image', true);
+  } finally {
+    chooseAvatarBgBtn.disabled = false;
+  }
+});
+
+clearAvatarBgBtn?.addEventListener('click', async () => {
+  try {
+    await api.invoke('set-config', 'avatarBackgroundSvg', '');
+    await api.invoke('set-config', 'avatarBackgroundCaption', '');
+    paintAvatarBgPreview('');
+    for (const el of agentAvatarEls) paintAvatarBg(el, '');
+    setAvatarBgStatus('Cleared — back to the default gradient');
+  } catch (err) {
+    setAvatarBgStatus(err?.message || 'Could not clear', true);
+  }
+});
 
 // The face the panel shows: the bot's RESTING expression. The live in-call face
 // cycles through a dozen states (thinking, muted, yielding…), but a control panel
@@ -228,6 +297,7 @@ async function renderAgentAvatar() {
   const face = baseFaceEmoji();
   const faceUri = face === RESTING_EMOJI ? restingUri : await emojiUriFor(emojiSet, face);
 
+  paintAvatarBgPreview(svg);
   for (const el of agentAvatarEls) {
     paintAvatarBg(el, svg);
     // Don't stomp a blink or mood that's mid-play — this runs on a 60s timer,
@@ -859,8 +929,21 @@ Promise.all([
     ].filter(Boolean).join('\n');
     nameBtn.title = baseTitle + '\n\n' + detail;
   }
+  // Name the profile in the Settings header too. get-app-profile returns null
+  // for the default instance (it's launched without --profile), but "Default"
+  // IS the folder under profiles/ that these settings write to — so say that
+  // rather than leaving the line blank on the most common case of all.
+  const profileEl = document.getElementById('settingsProfileName');
+  if (profileEl) {
+    const name = profile || 'Default';
+    profileEl.textContent = 'Profile: ' + name + (port ? ' · port ' + port : '');
+  }
   updateBotNameBig();
-}).catch(() => {});
+}).catch(() => {
+  // Don't strand the header on its "…" placeholder if the lookup fails.
+  const profileEl = document.getElementById('settingsProfileName');
+  if (profileEl) profileEl.textContent = 'Profile: Default';
+});
 
 // --- Profile switcher (#282): Chrome-style list + launch/focus. -------------
 const profileMenuBtn = document.getElementById('profileMenuBtn');

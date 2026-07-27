@@ -450,6 +450,31 @@ body[data-titlebar] #settingsScreen .settings-head {
 }
 body[data-titlebar] #settingsScreen .settings-head button { -webkit-app-region: no-drag; }
 .settings-head h1 { margin-bottom: 0; }
+/* Title + profile name stack, so the profile reads as a subtitle of "Bot
+   Settings" rather than a third sibling competing with the close button. */
+.settings-title { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.settings-profile {
+  font-size: 11px; color: #9aa0a6; line-height: 1.2;
+  /* A long profile name must not push the close button off — truncate instead. */
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Avatar-background preview. 16:9 to match the camera, so what's shown here is
+   framed exactly as the call will frame it. */
+.avatar-bg-preview {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid #5f6368;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #202124;
+  display: flex; align-items: center; justify-content: center;
+}
+/* The SVG is injected as a child; svg-cover.js gives it preserveAspectRatio
+   "slice", and these make it fill the box for the crop to act on. */
+.avatar-bg-preview svg { width: 100%; height: 100%; display: block; }
+.avatar-bg-empty { font-size: 11px; color: #666; }
 /* Same tile treatment as the masthead avatar, scaled down to heading size.
    Both classes in the selector: .agent-avatar is defined LATER in this file and
    would otherwise win the 84px size on equal specificity. */

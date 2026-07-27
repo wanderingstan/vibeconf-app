@@ -126,7 +126,14 @@
            and top-left is the one corner that's never free on macOS. -->
       <div class="settings-head">
         <div id="settingsAvatar" class="agent-avatar settings-avatar"><span class="agent-avatar-emoji">🙂</span></div>
-        <h1>Bot Settings</h1>
+        <!-- Which PROFILE these settings write to. With several bots open at
+             once the windows look alike, and everything below is per-profile —
+             so name the profile here rather than leaving it to the tooltip on
+             the main screen. -->
+        <div class="settings-title">
+          <h1>Bot Settings</h1>
+          <div id="settingsProfileName" class="settings-profile" title="The on-disk profile these settings belong to. Each profile has its own preferences, Google login, and storage.">…</div>
+        </div>
         <button id="backFromSettingsBtn" class="screen-close" title="Done — back to the bot (Esc)">&#10005;</button>
       </div>
 
@@ -161,6 +168,24 @@
           <option value="fluent3d">Fluent 3D (Microsoft)</option>
         </select>
         <div style="font-size:11px;color:#666;margin-top:2px">Graphics for the bot's face emoji. Twemoji is a distinct, consistent set shipped with the app (#316).</div>
+      </div>
+
+      <!-- Avatar background. The bot can already set this mid-call via
+           set_preference, but that means authoring SVG; this is the
+           old-fashioned path — see what's set, drop an image in, clear it. -->
+      <div class="field">
+        <label>Avatar Background</label>
+        <div id="avatarBgPreview" class="avatar-bg-preview">
+          <span class="avatar-bg-empty">Default animated gradient</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+          <button id="chooseAvatarBgBtn" class="popout-btn">Choose image…</button>
+          <button id="clearAvatarBgBtn" class="popout-btn" style="display:none">Clear</button>
+          <span id="avatarBgStatus" style="font-size:11px;color:#81c995"></span>
+        </div>
+        <div style="font-size:11px;color:#666;margin-top:4px">
+          Shown behind the bot's face on its camera. The frame is 16:9 — an image of any shape is scaled to fill it and centre-cropped, so keep anything important near the middle. PNG, JPEG, GIF or WebP; the file is copied into this bot's settings, so moving it later is fine.
+        </div>
       </div>
 
       <!-- Optional platform logins. Both are edge cases — Meet works as a guest,
@@ -372,6 +397,7 @@
     <button id="botViewToggleBtn" class="botview-toggle" title="Pop the bot's view out into its own large window (or dock it back as a thumbnail)">⧉ Pop out</button>
   </div>
   <script src="svg-cover.js"></script>
+  <script src="svg-scope.js"></script>
   <script src="panel.js"></script>
 </body>
 </html>

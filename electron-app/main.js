@@ -930,6 +930,9 @@ const localServer = new globalThis.LocalServer({
     // A call we spawned has ended (host ended it, bot was removed, whatever) —
     // hand the room back. leave-meet covers the button; this covers the rest.
     if (status === 'left' || status === 'idle') retireLiveMeet(`call-status:${status}`);
+    // An update that landed mid-call has been sitting staged and unmentioned.
+    // Now that the call is over, it's safe to offer.
+    if (status === 'left' || status === 'idle') { try { offerStagedUpdate(); } catch { /* not wired yet */ } }
     // (lastSlackName is populated once we read the real Slack display name from
     // the huddle DOM — #283. We don't fake it from a preference anymore.)
     // #189: a fresh call gets a fresh auto-posted whiteboard link.
@@ -1374,83 +1377,179 @@ let appSettingsWindow = null; // #381: machine-wide App Settings (⌘,), a singl
 // many profile windows are open, reinforcing "there's one machine config".
 // Since window ↔ profile now correlate (#379), app-level config lives here rather
 // than inside any one profile's panel.
-// "Check for Updates…" (App menu). Talks to the GitHub releases API rather than
-// electron-updater: our releases carry no latest-mac.yml, and every one of them
-// is a PRERELEASE, which /releases/latest excludes by design. The version math
-// lives in updates.js so it can be tested without a desktop.
+// ── Self-update (electron-updater) ─────────────────────────────────────────
+// Replaces a hand-rolled GitHub-releases checker that could only hand the user
+// a .dmg to install themselves. That existed because electron-updater wants a
+// publish provider and a latest-*.yml, and because every release was flagged a
+// prerelease — all three of which are now false.
 //
-// We hand the DMG to the user rather than swapping the app out from under them.
-// The running instance may be mid-call, and a self-replacing installer is a much
-// bigger promise than "there's a newer build, want it?".
+// electron-updater is the cross-platform layer, not the mechanism: on macOS it
+// delegates to Electron's built-in autoUpdater (Squirrel.Mac) and needs the
+// signed .zip, not the .dmg; on Windows it drives the NSIS installer directly;
+// on Linux it self-updates an AppImage. WHEN we let it run lives in
+// update-policy.js so those rules can be tested without a desktop.
+const updatePolicy = require('./update-policy');
+
+// Where releases live. Keeps the old VIBECONF_UPDATE_REPO override so anyone
+// pointing a test build at a fork keeps working.
+const UPDATE_REPO = process.env.VIBECONF_UPDATE_REPO || 'wanderingstan/vibeconf-app';
+
 let _updateCheckInFlight = false;
+let _updateDownloaded = null;   // the info of a build staged and waiting to install
+let _updateNotifiedFor = null;  // don't re-nag about a version already declined
+
+function autoUpdaterInstance() {
+  const { autoUpdater } = require('electron-updater');
+  autoUpdater.logger = {
+    info: (m) => console.log(ts(), '[updates]', m),
+    warn: (m) => console.warn(ts(), '[updates]', m),
+    error: (m) => console.error(ts(), '[updates]', m),
+    debug: () => {},
+  };
+  // Stage the download, but never restart on our own: installing is gated on
+  // not being in a call, and the user gets the last word either way.
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  return autoUpdater;
+}
+
+function updateContext() {
+  return {
+    platform: process.platform,
+    packaged: app.isPackaged,
+    env: process.env,
+    isDefaultInstance,
+  };
+}
+
+// Offer the staged build. Called when a download finishes and again when a call
+// ends, since the usual sequence is "update arrives mid-call, install after".
+async function offerStagedUpdate() {
+  if (!_updateDownloaded) return;
+  const version = _updateDownloaded.version;
+  if (_updateNotifiedFor === version) return;
+
+  const installable = updatePolicy.canInstallNow({ callStatus: localServer.callStatus });
+  if (!installable.ok) {
+    console.log(ts(), `[updates] ${version} staged; waiting (${installable.reason})`);
+    return;
+  }
+  _updateNotifiedFor = version;
+
+  const { dialog } = require('electron');
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    message: `Vibeconferencing ${version} is ready to install.`,
+    detail: 'It has already downloaded. Restarting takes a few seconds — or it '
+      + 'will install by itself the next time you quit.',
+    buttons: ['Restart Now', 'Later'],
+    defaultId: 0,
+    cancelId: 1,
+  });
+  if (response !== 0) return;
+
+  // Re-check: the dialog is modal to the window, not to the world, and a call
+  // can start via /join-call or browser detection while it sits open.
+  const stillSafe = updatePolicy.canInstallNow({ callStatus: localServer.callStatus });
+  if (!stillSafe.ok) {
+    console.log(ts(), '[updates] install cancelled — a call started while asking');
+    return;
+  }
+  autoUpdaterInstance().quitAndInstall();
+}
+
 async function checkForUpdates({ silentWhenCurrent = true } = {}) {
   if (_updateCheckInFlight) return;
+
+  // A manual check from the menu should say something even when this build
+  // can't update itself — silence would just look broken.
+  const allowed = updatePolicy.shouldCheck(updateContext());
+  if (!allowed.ok) {
+    console.log(ts(), `[updates] skipped (${allowed.reason})`);
+    if (!silentWhenCurrent) {
+      const { dialog, shell } = require('electron');
+      const DETAIL = {
+        'dev-build': 'This is a development build — there is nothing to update.',
+        'linux-not-appimage': 'This copy was installed from a .deb, which your package '
+          + 'manager owns. Download new builds from the Releases page (or use the AppImage, '
+          + 'which updates itself).',
+        'not-default-instance': 'Updates are handled by the main app window, not by a '
+          + 'named bot profile. Check from there.',
+      };
+      const buttons = allowed.reason === 'linux-not-appimage' ? ['Open Releases Page', 'OK'] : ['OK'];
+      const { response } = await dialog.showMessageBox(mainWindow, {
+        type: 'info',
+        message: 'Automatic updates are not available for this build.',
+        detail: DETAIL[allowed.reason] || allowed.reason,
+        buttons,
+        defaultId: buttons.length - 1,
+        cancelId: buttons.length - 1,
+      });
+      if (buttons[response] === 'Open Releases Page') {
+        shell.openExternal(`https://github.com/${UPDATE_REPO}/releases`);
+      }
+    }
+    return;
+  }
+
+  // Already have one staged — re-offer instead of downloading it twice.
+  if (_updateDownloaded) { _updateNotifiedFor = null; await offerStagedUpdate(); return; }
+
   _updateCheckInFlight = true;
-  const { dialog, shell } = require('electron');
-  const updates = require('./updates');
   const current = app.getVersion();
   try {
-    const releases = await updates.fetchReleases();
-    const latest = updates.pickUpdate(releases, current);
-
-    if (!latest) {
-      console.log(ts(), `[updates] ${current} is current (${releases.length} releases checked)`);
-      if (!silentWhenCurrent) {
-        await dialog.showMessageBox(mainWindow, {
-          type: 'info',
-          message: 'You’re up to date.',
-          detail: `Vibeconferencing ${current} is the latest version.`,
-          buttons: ['OK'],
-        });
-      }
-      return;
+    const result = await autoUpdaterInstance().checkForUpdates();
+    const found = result && result.updateInfo && result.updateInfo.version !== current;
+    if (!found && !silentWhenCurrent) {
+      const { dialog } = require('electron');
+      await dialog.showMessageBox(mainWindow, {
+        type: 'info',
+        message: `Vibeconferencing ${current} is up to date.`,
+        buttons: ['OK'],
+      });
     }
-
-    const asset = updates.pickDmgAsset(latest);
-    console.log(ts(), `[updates] ${current} → ${latest.tag_name} available` + (asset ? ` (${asset.name})` : ' (no matching .dmg)'));
-
-    // Without a DMG for this architecture there is nothing to download; send
-    // them to the release page instead of failing silently.
-    const buttons = asset ? ['Download', 'Release Notes', 'Later'] : ['Release Notes', 'Later'];
-    const { response } = await dialog.showMessageBox(mainWindow, {
-      type: 'info',
-      message: `Vibeconferencing ${latest.tag_name.replace(/^v/, '')} is available.`,
-      detail: `You have ${current}.` + (asset
-        ? `\n\nDownloading puts the installer in your Downloads folder. Quit the app before installing.`
-        : `\n\nNo installer for this Mac (${process.arch}) in that release.`),
-      buttons,
-      defaultId: 0,
-      cancelId: buttons.length - 1,
-    });
-    const choice = buttons[response];
-
-    if (choice === 'Release Notes') { shell.openExternal(latest.html_url); return; }
-    if (choice !== 'Download') return;
-
-    console.log(ts(), `[updates] downloading ${asset.name} (${Math.round((asset.size || 0) / 1048576)}MB)…`);
-    let lastLogged = 0;
-    const file = await updates.downloadAsset(asset, {
-      onProgress: (frac) => {
-        const pct = Math.floor(frac * 100);
-        if (pct >= lastLogged + 10) { lastLogged = pct; console.log(ts(), `[updates] ${pct}%`); }
-      },
-    });
-    console.log(ts(), `[updates] saved ${file}`);
-    shell.showItemInFolder(file);
   } catch (err) {
     console.warn(ts(), '[updates] check failed:', err.message);
-    const { response } = await dialog.showMessageBox(mainWindow, {
-      type: 'error',
-      message: 'Could not check for updates.',
-      detail: `${err.message}\n\nYou can always download the latest build from the Releases page.`,
-      buttons: ['Open Releases Page', 'OK'],
-      defaultId: 1,
-      cancelId: 1,
-    });
-    if (response === 0) shell.openExternal(`https://github.com/${process.env.VIBECONF_UPDATE_REPO || 'wanderingstan/vibeconferencing'}/releases`);
+    if (!silentWhenCurrent) {
+      const { dialog, shell } = require('electron');
+      const { response } = await dialog.showMessageBox(mainWindow, {
+        type: 'error',
+        message: 'Could not check for updates.',
+        detail: `${err.message}\n\nYou can always download the latest build from the Releases page.`,
+        buttons: ['Open Releases Page', 'OK'],
+        defaultId: 1,
+        cancelId: 1,
+      });
+      if (response === 0) shell.openExternal(`https://github.com/${UPDATE_REPO}/releases`);
+    }
   } finally {
     _updateCheckInFlight = false;
   }
+}
+
+// Check on a delay after launch, then every few hours. The delay is jittered so
+// a fleet starting together doesn't hit GitHub in one burst.
+function startUpdateChecks() {
+  const allowed = updatePolicy.shouldCheck(updateContext());
+  if (!allowed.ok) {
+    console.log(ts(), `[updates] automatic checks off (${allowed.reason})`);
+    return;
+  }
+  const updater = autoUpdaterInstance();
+  updater.on('update-downloaded', (info) => {
+    _updateDownloaded = info;
+    _updateNotifiedFor = null;
+    console.log(ts(), `[updates] ${info.version} downloaded and staged`);
+    offerStagedUpdate();
+  });
+  updater.on('error', (err) => console.warn(ts(), '[updates] updater error:', err && err.message));
+
+  const SIX_HOURS = 6 * 60 * 60 * 1000;
+  setTimeout(() => {
+    checkForUpdates();
+    const timer = setInterval(() => checkForUpdates(), SIX_HOURS);
+    if (timer.unref) timer.unref();
+  }, updatePolicy.firstCheckDelayMs()).unref?.();
 }
 
 function openAppSettings() {
@@ -3685,6 +3784,10 @@ app.whenReady().then(async () => {
   } else {
     ensureClaudeIntegration();
   }
+
+  // Keep the app up to date on its own. Gated inside: dev builds, .deb installs
+  // and named profiles all opt out, and nothing installs during a call.
+  startUpdateChecks();
 
   // First-run setup wizard: shown once for the default instance (guarded by the
   // app-level onboardingComplete flag); re-runnable from the app menu.

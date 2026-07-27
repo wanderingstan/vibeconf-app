@@ -1,3 +1,10 @@
 # Dependencies — installed, never committed. Every package dir gets one:
 # electron-app/, mcp-server/, extension/, and the repo root.
 node_modules/
+
+# Build output — electron-builder writes installers and unpacked apps here.
+dist/
+
+# Local agent state: worktrees (which are embedded git repos), scratch, caches.
+.claude/
+__pycache__/

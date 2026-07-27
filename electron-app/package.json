@@ -2,7 +2,7 @@
   "name": "vibeconferencing-agent",
   "productName": "Vibeconferencing",
   "version": "0.7.0-beta63",
-  "description": "AI bot that joins Google Meet calls — Electron wrapper",
+  "description": "AI bot that joins Google Meet calls \u2014 Electron wrapper",
   "homepage": "https://github.com/wanderingstan/vibeconf-app",
   "author": "Stan James <wanderingstan@gmail.com>",
   "main": "main.js",
@@ -20,6 +20,13 @@
   "build": {
     "beforePack": "./before-pack.js",
     "appId": "com.vibeconferencing.agent",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "wanderingstan",
+        "repo": "vibeconf-app"
+      }
+    ],
     "productName": "Vibeconferencing",
     "mac": {
       "category": "public.app-category.productivity",
@@ -91,7 +98,8 @@
     ]
   },
   "dependencies": {
-    "electron-store": "^8.1.0"
+    "electron-store": "^8.1.0",
+    "electron-updater": "^6.3.9"
   },
   "devDependencies": {
     "electron": "^33.0.0",

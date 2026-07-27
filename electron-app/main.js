@@ -1592,7 +1592,7 @@ function openAppSettings() {
 }
 
 // ── First-run setup wizard (onboarding) ─────────────────────────────────────
-// A guided walkthrough shown once on first launch (guarded by the app-level
+// A guided walkthrough shown once on first launch (guarded by the per-profile
 // `onboardingComplete` flag) and re-runnable from the app menu. Pure step logic
 // lives in onboarding-flow.js; the renderer is renderer/onboarding.html.
 let onboardingWindow = null;
@@ -3884,7 +3884,10 @@ app.whenReady().then(async () => {
   startUpdateChecks();
 
   // First-run setup wizard: shown once for the default instance (guarded by the
-  // app-level onboardingComplete flag); re-runnable from the app menu.
+  // per-profile onboardingComplete flag); re-runnable from the app menu. The
+  // isDefaultInstance gate is what actually keeps --profile instances from
+  // auto-showing it — the flag is not in APP_LEVEL_KEYS, so each profile has
+  // its own copy and would otherwise re-run the wizard on first launch.
   if (isDefaultInstance && !store.get('onboardingComplete')) {
     createOnboardingWindow();
   }

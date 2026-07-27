@@ -5,8 +5,9 @@
 // testing on their own: the step list, the permission model, and how a raw macOS
 // status becomes a simple granted/needed flag the UI renders.
 //
-// Shown once on first launch (guarded by the app-level `onboardingComplete`
-// flag); re-runnable from the app menu.
+// Shown once on first launch (guarded by the per-profile `onboardingComplete`
+// flag, and by isDefaultInstance so profiles don't re-run it); re-runnable from
+// the app menu.
 
 // The permissions the app needs, in the order the wizard asks for them. `required`
 // gates "you can finish" — mic + camera are hard requirements (audio pipeline +

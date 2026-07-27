@@ -19,6 +19,8 @@
     .desc { color:#9aa0a6; font-size:11px; margin-top:4px; line-height:1.4; }
     .row-check { display:flex; align-items:center; gap:8px; margin-top:8px; }
     .row-check label { margin:0; }
+    .ext-link { color:#8ab4f8; text-decoration:none; }
+    .ext-link:hover { text-decoration:underline; }
   </style>
 </head>
 <body>
@@ -44,6 +46,7 @@
     <label for="ttsApiKey">API key</label>
     <input type="password" id="ttsApiKey" placeholder="sk_..." autocomplete="off" spellcheck="false" />
     <div class="desc">The machine-wide ElevenLabs secret used for text-to-speech. Without it, bots fall back to the built-in macOS voice.</div>
+    <div class="desc">Get a key at <a href="https://elevenlabs.io/app/settings/api-keys" id="ttsKeyLink" class="ext-link">elevenlabs.io ↗</a> — signup is free, and the free tier includes enough characters to try it out.</div>
   </div>
 
   <!-- Schema-driven (#381): every app-level (scope:'app') schema pref renders here,

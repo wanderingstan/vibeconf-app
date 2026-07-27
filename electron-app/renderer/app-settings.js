@@ -44,6 +44,12 @@ ttsInput.addEventListener('change', () => {
   api.send('update-tts-config', { apiKey: ttsInput.value.trim() });
 });
 
+// Open the "get a key" link in the real browser instead of navigating this window.
+document.getElementById('ttsKeyLink').addEventListener('click', (e) => {
+  e.preventDefault();
+  api.send('open-external-url', e.currentTarget.href);
+});
+
 // --- Schema-driven app-level prefs (scope:'app'). ---
 api.invoke('get-app-settings-schema').then(async (fields) => {
   const section = document.getElementById('schemaSection');

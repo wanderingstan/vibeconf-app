@@ -225,26 +225,63 @@ button:disabled {
   color: #ffffff;
 }
 
-/* The banner's error overlay. Base .error-bar keeps its colours (and still
-   styles #micPermissionWarning in Troubleshooting); this only re-places it. */
-.hero-error {
+/* ── Notice stack ──────────────────────────────────────────────────────────
+   Anything the app needs to tell you sits HERE, across the bot's face, rather
+   than in the page flow. A banner in the flow pushes the avatar and the call
+   controls around every time it appears — and these appear on a timer you don't
+   control, so the layout would shift under your cursor.
+
+   One shared stack rather than each notice positioning itself: two at once
+   (a call error while the voice key is missing) then sit under one another
+   instead of on top of each other. */
+.hero-notices {
   position: absolute;
   z-index: 5;                 /* above both scrims */
   left: 12px; right: 12px;
   top: 50%;
   transform: translateY(-50%);
-  display: none;              /* JS flips this to flex */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 76%;
+  overflow-y: auto;
+  pointer-events: none;       /* the gaps shouldn't swallow clicks */
+}
+.hero-notice {
+  pointer-events: auto;
   align-items: flex-start;
   /* Translucent so the face still reads behind it. backdrop-filter keeps the
      text legible over a busy background without going fully opaque. */
-  background: rgba(59, 24, 24, 0.82);
   backdrop-filter: blur(3px);
-  border: 1px solid rgba(242, 139, 130, 0.45);
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
   line-height: 1.45;
-  max-height: 70%;
-  overflow-y: auto;
 }
+/* Errors keep .error-bar's red (which also styles #micPermissionWarning in
+   Troubleshooting); this only makes it translucent over artwork. */
+.hero-notice.error-bar {
+  background: rgba(59, 24, 24, 0.82);
+  border: 1px solid rgba(242, 139, 130, 0.45);
+}
+/* Warnings — amber, and not an error: something is off, nothing is broken. */
+.notice-warn {
+  display: none;              /* JS flips this to flex */
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: #f0d9a8;
+  background: rgba(58, 47, 28, 0.86);
+  border: 1px solid rgba(138, 109, 59, 0.7);
+}
+button.notice-action {
+  width: auto; margin: 0; flex: 0 0 auto;
+  background: #8ab4f8; border: none; color: #202124;
+  border-radius: 14px; padding: 5px 12px;
+  font-weight: 600; font-size: 12px; white-space: nowrap; cursor: pointer;
+}
+button.notice-action:hover:not(:disabled) { background: #aecbfa; }
 
 .participant-row {
   display: flex;

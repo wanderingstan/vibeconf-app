@@ -42,10 +42,20 @@
           <button id="openSettingsBtn" class="agent-gear" title="This bot's settings (voice, acknowledgments, behavior). Machine-wide settings are in App Settings, ⌘,.">&#9881;</button>
         </div>
 
-        <!-- Errors land across the bot's face rather than as a bar shoved under
-             the call buttons — that pushed the layout around and read as page
-             furniture. Over the avatar it's unmissable and costs no space. -->
-        <div class="error-bar hero-error" id="errorBar" style="display:none"><span id="errorText"></span><button class="error-close" id="errorClose">&times;</button></div>
+        <!-- Notices land across the bot's face rather than as bars shoved into
+             the page — that pushed the layout around and read as furniture.
+             Over the avatar they're unmissable and cost no space. One shared
+             stack so two at once sit under each other instead of colliding. -->
+        <div class="hero-notices">
+          <div class="error-bar hero-notice" id="errorBar" style="display:none"><span id="errorText"></span><button class="error-close" id="errorClose">&times;</button></div>
+
+          <!-- #381: voice needs a machine-wide ElevenLabs key, which lives in
+               App Settings (⌘,). Shown only when no key is set. -->
+          <div class="hero-notice notice-warn" id="appSettingsBanner" style="display:none">
+            <span>🔊 Voice is off — no ElevenLabs key set.</span>
+            <button id="openAppSettingsFromBanner" class="notice-action">Set it up →</button>
+          </div>
+        </div>
 
         <!-- PRE-CALL controls, over the foot of the avatar.
 
@@ -100,14 +110,6 @@
             <button id="userSignInMainBtn" class="auth-action-btn" style="display:none">Sign in</button>
           </div>
         </div>
-      </div>
-
-      <!-- #381: onboarding — voice needs a machine-wide ElevenLabs key, which now
-           lives in App Settings (⌘,). Shown only when no key is set; deep-links
-           there rather than burying the field. -->
-      <div id="appSettingsBanner" style="display:none;margin:8px 12px;padding:8px 10px;background:#3a2f1c;border:1px solid #8a6d3b;border-radius:8px;color:#f0d9a8;font-size:12px;align-items:center;justify-content:space-between;gap:8px">
-        <span>🔊 Voice is off — no ElevenLabs key set.</span>
-        <button id="openAppSettingsFromBanner" style="background:#8ab4f8;border:none;color:#202124;border-radius:14px;padding:5px 12px;font-weight:600;cursor:pointer;white-space:nowrap">Set it up →</button>
       </div>
 
     </div>

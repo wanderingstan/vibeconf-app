@@ -77,10 +77,10 @@ test('readConfigFields: falls back to the loose config for legacy profiles', () 
   withProfilesRoot((root) => {
     const dir = join(root, 'legacy');
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, 'config.json'), JSON.stringify({ botName: 'Legacy', profileIcon: 'x' }));
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ botName: 'Legacy', avatarThumb: 'x' }));
     const f = pm.readConfigFields(dir);
     assert.equal(f.botName, 'Legacy');
-    assert.equal(f.profileIcon, 'x');
+    assert.equal(f.avatarThumb, 'x');
   });
 });
 
@@ -90,7 +90,7 @@ test('readConfigFields: empty when neither config exists', () => {
     mkdirSync(dir, { recursive: true });
     assert.deepEqual(pm.readConfigFields(dir), {
       botName: null, meetAccountEmail: null, lastMeetName: null,
-      lastSlackName: null, profileIcon: null,
+      lastSlackName: null, avatarThumb: null,
     });
   });
 });

@@ -41,6 +41,37 @@ LOG="$RESULTS/run-$STAMP.log"
 
 cd "$REPO" || { echo "repo not found: $REPO"; exit 3; }
 
+# --- Hard global watchdog — a stuck lane must NEVER wedge the schedule again. On
+# 2026-07-21 a run hung indefinitely (the join loop waits forever for an admission
+# that never comes in the unattended 2-guest meet); because launchd won't start an
+# overlapping instance, that one hung process silently skipped the next 4 nightlies.
+# After VIBECONF_GLOBAL_TIMEOUT seconds, force-kill this run's process tree AND any
+# test-profile fleets — Electron reparents to init, so a pattern-kill by test profile
+# is the reliable sweep and it never matches the default/production profile — so
+# launchd is freed to run the next night. Disable with VIBECONF_NO_WATCHDOG=1. ---
+if [[ "${VIBECONF_NO_WATCHDOG:-0}" != "1" ]]; then
+  GLOBAL_TIMEOUT="${VIBECONF_GLOBAL_TIMEOUT:-1800}"   # 30 min — a healthy full run is well under this
+  _run_pid=$$
+  (
+    _w=0
+    while (( _w < GLOBAL_TIMEOUT )); do
+      kill -0 "$_run_pid" 2>/dev/null || exit 0       # run finished on its own — stand down
+      sleep 15; _w=$(( _w + 15 ))
+    done
+    echo "$(date +%Y-%m-%dT%H-%M-%S) ⏰ watchdog: run $STAMP exceeded ${GLOBAL_TIMEOUT}s — force-killing (pid $_run_pid)" >>"$RESULTS/watchdog.log"
+    kill -TERM "$_run_pid" 2>/dev/null                # stop the run advancing first…
+    pkill -f 'profile=test-meet-guest' 2>/dev/null    # …then sweep test fleets (reparented to init)…
+    pkill -f 'profile=test-slack'      2>/dev/null
+    pkill -P "$_run_pid" 2>/dev/null                  # …and any lingering lane children…
+    sleep 10
+    kill -KILL "$_run_pid" 2>/dev/null                # …hard-kill the run if TERM didn't take
+  ) &
+  _watchdog_pid=$!
+  # On any normal exit, stand the watchdog down and sweep any lingering test fleets (a
+  # wedged lane skips its own teardown; this guarantees no zombie fleet survives a run).
+  trap 'kill "$_watchdog_pid" 2>/dev/null; pkill -f "profile=test-meet-guest" 2>/dev/null; pkill -f "profile=test-slack" 2>/dev/null' EXIT
+fi
+
 # --- optional screen recording of each live-call lane. OFF by default; set
 # VIBECONF_RECORD=1 to enable. Records the screen while a lane runs and keeps the
 # .mov per policy — VIBECONF_RECORD_KEEP=fails (default) keeps only FAILING runs'

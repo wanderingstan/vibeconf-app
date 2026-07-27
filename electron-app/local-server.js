@@ -76,8 +76,11 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onInspectDom, onPlayAudio, onFocusRequest, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
+    // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
+    // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
+    this.extraRoutes = extraRoutes || null;
     this.appVersion = appVersion || null;
     // Release (installed .app/DMG) vs running from source (pnpm dev). Surfaced so
     // both the human (panel) and an agent (no-room status) can tell which build
@@ -110,6 +113,9 @@ class LocalServer {
     this.onScrollShare = onScrollShare || (async () => ({ ok: false, error: 'not implemented' }));
     this.onPlayAudio = onPlayAudio || (() => {});
     this.onFocusRequest = onFocusRequest || (() => {}); // raise this instance's window (profile switcher)
+    // Start a brand-new call: create a room, send the bot in, open the human's
+    // browser. Backs the /call command, mirroring the panel's "Call <bot> now".
+    this.onStartCall = onStartCall || (async () => ({ ok: false, code: 'unsupported' }));
     this.onInspectDom = onInspectDom || (async () => ({ ok: false, error: 'not implemented' }));
     this.onBotStateChange = onBotStateChange || (() => {}); // 'idle' | 'listening' | 'ticking' | 'thinking' | 'speaking' | 'yielding'
     this.onModeChange = onModeChange || (() => {});        // 'active' | 'passive' | 'silent'
@@ -2642,6 +2648,13 @@ class LocalServer {
       return;
     }
 
+    // Custom routes (main.js) get first crack — BEFORE the auth gate — so they can serve
+    // open localhost-only routes like the Claude-ready ping. Returns true if it handled it.
+    if (this.extraRoutes) {
+      try { if (await this.extraRoutes(req, res)) return; }
+      catch (err) { console.error('[local-server] extraRoutes error:', err && err.message); }
+    }
+
     // #356: bearer-token gate. Open routes stay reachable so instance discovery
     // and opaque-token asset serving keep working: GET /api/sync/no-room is the
     // MCP's discovery ping (returns only coarse status), and /asset/<token> already
@@ -2725,6 +2738,21 @@ class LocalServer {
     // raise THIS instance's window when the user picks an already-running
     // profile — cross-process focus that OS-level "activate" can't do reliably
     // (all instances share one bundle id).
+    // Start a call from outside the app — the /call command's entry point.
+    // Deliberately mirrors the panel button rather than duplicating it: both go
+    // through main's createAndJoinMeet. Never echoes the meeting URL back; the
+    // link is a bearer capability and the caller doesn't need it (the bot is
+    // already in, and the human's browser is already opening).
+    if (url.pathname === '/api/call/start' && req.method === 'POST') {
+      let result;
+      try { result = await this.onStartCall(); } catch (err) { result = { ok: false, code: 'error', detail: err.message }; }
+      res.writeHead(result?.ok ? 200 : 502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result?.ok
+        ? { success: true, roomId: this.roomId || null }
+        : { success: false, code: result?.code || 'unknown', detail: result?.detail || null }));
+      return;
+    }
+
     if (url.pathname === '/api/focus' && req.method === 'POST') {
       try { this.onFocusRequest(); } catch { /* best-effort */ }
       res.writeHead(200, { 'Content-Type': 'application/json' });

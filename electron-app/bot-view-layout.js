@@ -47,6 +47,15 @@ function nextState(state) {
   return state === 'popped' ? 'thumbnail' : 'popped';
 }
 
+// Whether the bottom region (Meet thumbnail / popped-out placeholder) exists at
+// all. It only earns its space during a call. `inCall` covers the whole live
+// stretch — joining and waiting-to-be-admitted included, so the green room and
+// the admission prompt are visible. Defaults to true so existing callers (and
+// applyMeetZoom, which only wants the zoom) keep their old behaviour.
+function showRegion(opts = {}) {
+  return opts.inCall === undefined ? true : !!opts.inCall;
+}
+
 // The zoom that makes a device-pixel-wide viewport show MEET_TARGET_CSS_WIDTH
 // virtual pixels. `clamped` flags when we hit the floor (layout no longer exact).
 function meetZoomForWidth(deviceWidth, targetCss = MEET_TARGET_CSS_WIDTH) {
@@ -78,6 +87,23 @@ function computeLayout(state, contentSize, opts = {}) {
   const region = { x: 0, y: panelHeight, width: panelWidth, height: regionHeight };
   const panelBounds = { x: 0, y: 0, width: panelWidth, height: panelHeight };
 
+  // Out of a call there is nothing for the bot's view to show — it was just a
+  // permanent "This is the bot's view" placard eating a 16:9 slab of the window.
+  // Give the whole column to the panel and report no region at all. Callers must
+  // DETACH the Meet view on a null meetBounds, not merely skip setBounds (a
+  // still-attached view keeps painting at its old bounds).
+  if (!showRegion(opts)) {
+    return {
+      panelBounds: { x: 0, y: 0, width: panelWidth, height },
+      meetBounds: null,
+      placeholderBounds: null,
+      meetZoom: state === 'popped' ? POPPED_ZOOM : zoom,
+      meetInOwnWindow: state === 'popped',
+      clamped: false,
+      regionHidden: true,
+    };
+  }
+
   if (state === 'popped') {
     // Meet floats in its own window (main.js owns that window's zoom + size). The
     // region below the panel shows a placeholder instead of an empty rectangle.
@@ -102,6 +128,13 @@ function computeLayout(state, contentSize, opts = {}) {
   };
 }
 
+// Height of the bot's-view region (the 16:9 slab under the panel). Exported so
+// main.js can size the window to "panel content + region" without re-deriving
+// the ratio. Zero when the region is hidden — see computeLayout.
+function regionHeightFor(panelWidth = 380) {
+  return Math.round(panelWidth * 9 / 16);
+}
+
 // The MAIN window is ALWAYS a narrow column now (panel + optional Meet thumbnail),
 // so its content width is the panel width in both states. Kept as a function so
 // main.js has one place to ask, and in case a future state wants a different shape.
@@ -116,6 +149,8 @@ module.exports = {
   MIN_ZOOM,
   MAX_ZOOM,
   nextState,
+  showRegion,
+  regionHeightFor,
   meetZoomForWidth,
   computeLayout,
   windowWidthFor,

@@ -6,6 +6,11 @@
 //
 // Adding a new agent-exposed preference: add it here, then read it via
 // store.get('key') ?? PREFERENCES.key.default in the consumer.
+//
+// hiddenInSettingsUI: true keeps a pref out of the App Settings "Advanced"
+// section while leaving it fully functional (CLI flags, set_preference, any
+// already-persisted value). Use it for plumbing nobody should reach for in
+// normal use.
 
 const PREFERENCES = {
   comprehendCharThreshold: {
@@ -210,6 +215,7 @@ const PREFERENCES = {
       'Must be a full http:// or https:// URL with no trailing slash. ' +
       'APP-LEVEL (#366): shared by all profiles on this machine.',
     requiresRestart: true,
+    hiddenInSettingsUI: true,
   },
   syncBaseUrl: {
     type: 'string',
@@ -221,6 +227,7 @@ const PREFERENCES = {
       'Must be a full http:// or https:// URL with no trailing slash. ' +
       'APP-LEVEL (#366): shared by all profiles on this machine.',
     requiresRestart: true,
+    hiddenInSettingsUI: true,
   },
 
   // ── Conversation timing knobs ────────────────────────────────────────────

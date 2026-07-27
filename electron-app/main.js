@@ -5396,7 +5396,8 @@ function setupIPC() {
     const P = require('./preferences-schema').PREFERENCES;
     const { isAppLevel } = require('./config-scope.js');
     return Object.entries(P)
-      .filter(([k, def]) => isAppLevel(k) && def && typeof def === 'object' && 'type' in def)
+      .filter(([k, def]) => isAppLevel(k) && def && typeof def === 'object' && 'type' in def
+        && !def.hiddenInSettingsUI)
       .map(([k, def]) => ({
         key: k,
         type: def.type,

@@ -36,7 +36,7 @@ function readConfigFields(dir) {
     meetAccountEmail: cfg.meetAccountEmail || null,
     lastMeetName: cfg.lastMeetName || null,   // remembered Meet display name (#282)
     lastSlackName: cfg.lastSlackName || null, // remembered Slack display name (#282)
-    profileIcon: cfg.profileIcon || null,     // captured virtual-camera avatar snapshot, for the switcher thumbnail
+    avatarThumb: cfg.avatarThumb || null,     // small PNG each bot renders of its own avatar, for the switcher thumbnail
   };
 }
 

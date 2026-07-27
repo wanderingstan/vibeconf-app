@@ -360,19 +360,6 @@
       // Electron stdout that we tail with `cmux read-screen`.
       if (emoji !== this._lastLoggedEmoji) {
         this._lastLoggedEmoji = emoji;
-        // The profile icon can only be captured from the resting 🙂 face
-        // (__vibeconfCaptureAvatarIcon returns null for every other one). That
-        // face is on screen ~19% of a call, so the old 60s poll had roughly a
-        // one-in-five chance of landing on it: the snapshot succeeded 5 times
-        // across 36 logged sessions. Tell main the instant we settle onto it.
-        // Throttled — a flicker between 🙂 and 😐 must not spam IPC.
-        if (emoji === VirtualCamera.MODE_EMOJIS.active) {
-          const _now = Date.now();
-          if (_now - (VirtualCamera._lastRestingPingAt || 0) > 3000) {
-            VirtualCamera._lastRestingPingAt = _now;
-            window.postMessage({ __botsInCalls: true, action: 'avatar-resting' }, '*');
-          }
-        }
         const reason = notOnLine ? `callStatus=${this.callStatus} hasEngaged=${this.hasEngaged}` :
           audioPlaying ? `audio playing (state=${this.state}${this.speakingEmojiOverride ? ' override' : ''})` :
           activityEmoji ? `state=${this.state}${this.state === 'yielding' && this.yieldingEmojiOverride ? ' (yielding override)' : ''}` :
@@ -383,6 +370,14 @@
           __botsInCalls: true,
           action: 'log',
           payload: { line: `Avatar → ${emoji} · ${reason}` },
+        }, '*');
+        // Mirror the face into the control panel. Announced from HERE — the one
+        // place that knows what was actually rendered — so the panel never has
+        // to re-derive the priority chain above and can't drift from it.
+        window.postMessage({
+          __botsInCalls: true,
+          action: 'avatar-emoji',
+          payload: { emoji },
         }, '*');
       }
       // Base "zoom" for the face — native glyph AND every image set use this, so
@@ -1148,41 +1143,6 @@
     }
     return cameras.get(key);
   }
-
-  // Snapshot the live virtual-camera feed for the panel's profile icon. Main pulls
-  // this on a staleness timer via executeJavaScript. Returns a small square PNG
-  // data URL of the ACTUAL feed — emoji face OR Runway avatar — so the icon always
-  // matches what participants see (no more reconstructing from background+emoji).
-  // Only snapshots a GOOD resting frame:
-  //   - emoji face: the smiling 🙂 active-listening face SPECIFICALLY. state can
-  //     be 'listening' while the RENDERED emoji is 😐 (HEARING, someone else is
-  //     talking) or 😔 (idle/pensive) — those make an unflattering icon, so we
-  //     gate on the actual displayed emoji (cam._lastLoggedEmoji, set in _render)
-  //     rather than reconstructing the priority logic here.
-  //   - Runway face: a real video, so the emoji gate doesn't apply — snapshot any
-  //     resting frame (idle/listening), skipping speaking/thinking/yielding.
-  // Anything else (thinking/speaking/working, non-face emoji, non-active mode) → null.
-  window.__vibeconfCaptureAvatarIcon = (size) => {
-    try {
-      size = size || 128;
-      let cam = null;
-      for (const c of cameras.values()) { if (c && c.canvas && c.canvas.width) cam = c; }
-      if (!cam) return null;
-      const runwayLive = cam.avatarVideo && cam.avatarVideo.readyState >= 2 && cam.avatarVideo.videoWidth > 0;
-      if (runwayLive) {
-        if (cam.state !== 'idle' && cam.state !== 'listening') return null; // resting Runway frame only
-      } else if (cam._lastLoggedEmoji !== VirtualCamera.MODE_EMOJIS.active) {
-        return null; // emoji face: only the smiling 🙂 active-listening face
-      }
-      const src = cam.canvas;
-      const side = Math.min(src.width, src.height);         // center square of the 16:9 feed
-      const sx = (src.width - side) / 2, sy = (src.height - side) / 2;
-      const off = document.createElement('canvas');
-      off.width = size; off.height = size;
-      off.getContext('2d').drawImage(src, sx, sy, side, side, 0, 0, size, size);
-      return off.toDataURL('image/png');
-    } catch (e) { return null; }
-  };
 
   // P2 bridge — lets runway-avatar.js (separate page script) drive the Runway face: set the
   // avatar <video> on every VirtualCamera (+ latch it for cameras created later), and read the

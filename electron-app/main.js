@@ -666,6 +666,9 @@ const localServer = new globalThis.LocalServer({
     }
   },
   // Profile switcher (#282): a sibling instance asked us to come forward.
+  // /call → POST /api/call/start → the same path the panel button takes.
+  onStartCall: () => createAndJoinMeet(),
+
   onFocusRequest: () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore();
@@ -921,6 +924,12 @@ const localServer = new globalThis.LocalServer({
   },
 
   onCallStatusChange: (status) => {
+    // The bot's view only takes up window space during a call — grow/shrink the
+    // column here, before anything else, so the layout tracks the call.
+    setBotViewInCall(status);
+    // A call we spawned has ended (host ended it, bot was removed, whatever) —
+    // hand the room back. leave-meet covers the button; this covers the rest.
+    if (status === 'left' || status === 'idle') retireLiveMeet(`call-status:${status}`);
     // (lastSlackName is populated once we read the real Slack display name from
     // the huddle DOM — #283. We don't fake it from a preference anymore.)
     // #189: a fresh call gets a fresh auto-posted whiteboard link.
@@ -1235,20 +1244,21 @@ const localServer = new globalThis.LocalServer({
     // fires — no live-apply needed).
     if (key === 'ttsVoiceId') {
       tts.updateConfig?.({ voiceId: value });
-    } else if (key === 'botName' && panelView && !panelView.webContents.isDestroyed()) {
+    } else if (key === 'botName') {
+      applyWindowTitle(); // the window is named after the bot
       // Surface the change in the panel so the input reflects reality.
-      panelView.webContents.send('extension-message', {
-        action: 'config-updated',
-        payload: { key, value },
-      });
+      if (panelView && !panelView.webContents.isDestroyed()) {
+        panelView.webContents.send('extension-message', {
+          action: 'config-updated',
+          payload: { key, value },
+        });
+      }
     } else if (key === 'avatarBackgroundSvg') {
       pushAvatarBackground(value);
-      // Appearance changed → the cached camera snapshot is now wrong. Drop it so
-      // the panel falls back to the generated look and recaptures on the next call.
-      try { store.delete('profileIcon'); store.set('profileIconAt', 0); } catch { /* ignore */ }
+      // (The panel re-renders its own avatar — and its switcher thumbnail — off
+      // these prefs directly, so nothing to invalidate here.)
     } else if (key === 'emojiSet') {
       pushEmojiSet(value);
-      try { store.delete('profileIcon'); store.set('profileIconAt', 0); } catch { /* ignore */ }
     } else if (key === 'studioSound') {
       // Toggle Meet's voice filter live (no rejoin needed) when in-call.
       if (localServer.callStatus === 'in-call' && meetView && !meetView.webContents.isDestroyed()) {
@@ -1350,6 +1360,7 @@ let mainWindow = null;   // single window that holds both views
 let panelView = null;     // left sidebar BrowserView
 let meetView = null;      // right Meet BrowserView
 let panelPopoutWindow = null; // when popped out, the panelView lives here instead
+let troubleshootingWindow = null; // the ⓘ window — a second copy of panel.html
 // Bot-view thumbnail column (feat/bot-view-thumbnail-column). The app is a narrow
 // column; the Meet view is either a shrunk thumbnail below the panel ('thumbnail')
 // or floated into its own large window ('popped'). One button toggles them. See
@@ -1720,6 +1731,131 @@ function getWebsiteUrl() {
   if (syncUrl && /^https:\/\//i.test(syncUrl)) return syncUrl;
 
   return DEFAULT_WEBSITE;
+}
+
+// ── Instant meetings: POST /api/meet/create ────────────────────────────────
+// "Call <bot> now" spawns a Google Meet anyone with the link can join — no
+// admit prompt, no host required — then sends the bot into it.
+//
+// MAIN PROCESS ONLY. A renderer fetch sends an Origin header and the backend
+// only allows https://vibeconferencing.com, so it would 403.
+//
+// The response is a BEARER CAPABILITY: holding meetingUri/meetingCode is
+// permission to enter the room. The server never logs them and neither do we —
+// with remoteLogging on (the default) a stray console.log would ship live
+// capabilities off the machine. Log the shape, never the value.
+// The room we created, so we can close it when the call ends. In memory only:
+// retire is HYGIENE, not a prerequisite — a create now returns your existing
+// room rather than 429ing, and the server reaps what we miss. So a room lost to
+// a crash costs nothing but a lingering TTL, and there's no case for persisting
+// this to chase it across restarts.
+let liveMeetSpaceName = null;
+
+// Point the bot at a Meet URL and bring up everything a call needs: sync, and
+// the bot's Claude session. Shared by the manual join ('join-meet') and the
+// "Call <bot> now" path — duplicating it once left the bot in the room with no
+// agent behind it, a face that never speaks.
+function joinMeetUrl(meetUrl) {
+  currentMeetUrl = meetUrl;
+  loadMeetURL(meetUrl);
+
+  const match = meetUrl.match(/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/);
+  if (!match) return;
+  const meetCode = match[1];
+  localServer.setRoom(meetCode);
+  sync.updateConfig({ roomId: meetCode, baseUrl: getWebsiteUrl() });
+  sync.ensureRoom().then(() => {
+    sync.startPolling();
+    console.log('[electron] Sync started for room:', meetCode);
+  });
+  launchClaudeTerminal(meetCode); // the agent behind the face
+}
+
+async function websiteRequest(pathname, { method = 'GET', headers = {}, body = null } = {}) {
+  const baseUrl = getWebsiteUrl();
+  const { net } = require('electron');
+  const cookies = await session.defaultSession.cookies.get({ url: baseUrl, name: 'vc_session' });
+  const cookie = cookies.length ? `vc_session=${cookies[0].value}` : (store.get('vcSessionToken') ? `vc_session=${store.get('vcSessionToken')}` : '');
+  return new Promise((resolve) => {
+    const request = net.request({ method, url: `${baseUrl}${pathname}` });
+    if (cookie) request.setHeader('Cookie', cookie);
+    for (const [k, v] of Object.entries(headers)) request.setHeader(k, v);
+    let raw = '';
+    request.on('response', (response) => {
+      response.on('data', (c) => { raw += c.toString(); });
+      response.on('end', () => {
+        let json = null;
+        try { json = JSON.parse(raw); } catch { /* non-JSON error body */ }
+        resolve({ status: response.statusCode, json });
+      });
+    });
+    request.on('error', (err) => resolve({ status: 0, json: null, error: err.message }));
+    if (body) request.write(JSON.stringify(body));
+    request.end();
+  });
+}
+
+// Give the room back when the call ends, so it closes promptly instead of
+// lingering to its TTL. Hygiene, not a prerequisite: missing it doesn't block
+// the next call — the server reaper collects it. Safe to call twice.
+// "Call <bot> now": create a room, send the bot in, and open the human's
+// browser to it. Returns a discriminated result callers map to UI — never the
+// raw upstream body. Shared by the panel button (IPC) and the /call command
+// (POST /api/call/start), so the two can't drift.
+async function createAndJoinMeet() {
+  // A FRESH key per press. Reusing one returns the SAME room instead of a new
+  // one, which is right for a retry of one press and wrong for a second press.
+  const idempotencyKey = require('crypto').randomUUID();
+  const r = await websiteRequest('/api/meet/create', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey },
+  });
+
+  if (r.status === 200 && r.json?.meetingUri) {
+    // Shape only — meetingUri/meetingCode are capabilities, never logged.
+    console.log(`[meet-create] room ready (replay=${!!r.json.replay})`);
+    // On a replay this is the room we already had — including after a crash
+    // lost track of it, which is how a forgotten room finds its way home.
+    liveMeetSpaceName = r.json.spaceName || null;
+    joinMeetUrl(r.json.meetingUri);
+    // …and get the HUMAN in too. The bot joins inside the Electron webview;
+    // the user joins as themselves in their own browser, with their own
+    // camera and Google account. Without this the button puts the bot in an
+    // empty room and leaves you to find your own way there.
+    //
+    // Their browser tab is also what focusBrowserCallTab (#275) brings
+    // forward once the bot is admitted, and what the app's tab detection
+    // watches — so opening it here fits the paths that already exist.
+    openExternalUrl(r.json.meetingUri);
+    return { ok: true, url: r.json.meetingUri };
+  }
+
+  // Keys only: the body may carry a spaceName, and while that isn't a join
+  // link it's still server state we don't need in a shipped log.
+  console.warn(`[meet-create] failed → status ${r.status}`
+    + (r.json ? ` (body keys: ${Object.keys(r.json).join(',')})` : ''));
+  if (r.status === 401) return { ok: false, code: 'signed-out' };
+  if (r.status === 429) return { ok: false, code: 'rate-limited' };
+  if (r.status === 502) return { ok: false, code: 'upstream' };
+  if (r.status === 400) return { ok: false, code: 'bad-request' };
+  if (r.status === 0) return { ok: false, code: 'offline', detail: r.error };
+  return { ok: false, code: 'unknown', detail: `status ${r.status}` };
+}
+
+async function retireLiveMeet(reason) {
+  const spaceName = liveMeetSpaceName;
+  if (!spaceName) return;
+  liveMeetSpaceName = null; // clear first so a second call can't double-fire
+  try {
+    const r = await websiteRequest('/api/meet/retire', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: { spaceName },
+    });
+    console.log(`[meet-create] retired room (${reason}) → status ${r.status}`);
+  } catch (err) {
+    console.warn('[meet-create] retire failed:', err.message);
+  }
 }
 
 async function checkAuth() {
@@ -3278,6 +3414,31 @@ function ensureClaudeIntegration() {
     console.log('[electron] Skill v%s already installed', SKILL_VERSION);
   }
 
+  // --- Ensure global skill in ~/.claude/skills/call/ ---
+  // /call starts a BRAND-NEW call (the command form of the panel's "Call <bot>
+  // now"); /join-call puts the bot into one that already exists. Same version
+  // gate, its own directory — Claude Code takes one skill per directory.
+  try {
+    const callSkillDir = path.join(claudeDir, 'skills', 'call');
+    const callVersionFile = path.join(callSkillDir, '.version');
+    let callInstalled = '';
+    try { callInstalled = fs.readFileSync(callVersionFile, 'utf-8').trim(); } catch { /* not yet */ }
+    if (callInstalled !== SKILL_VERSION) {
+      fs.mkdirSync(callSkillDir, { recursive: true });
+      fs.writeFileSync(path.join(callSkillDir, 'SKILL.md'), fs.readFileSync(
+        isPackaged
+          ? path.join(process.resourcesPath, 'mcp-server', 'call-skill.md')
+          : path.join(__dirname, '..', 'mcp-server', 'call-skill.md'),
+        'utf-8',
+      ));
+      fs.writeFileSync(callVersionFile, SKILL_VERSION);
+      console.log('[electron] Installed/updated /call skill v%s', SKILL_VERSION);
+      changed = true;
+    }
+  } catch (err) {
+    console.warn('[electron] /call skill install failed:', err.message);
+  }
+
   // Agent-activity overlay hook (independent of the MCP/skill version bumps).
   // Port-agnostic: app-spawned sessions inject VIBECONF_LOCAL_PORT themselves.
   ensureAgentActivityHook();
@@ -3650,6 +3811,12 @@ app.whenReady().then(async () => {
   createMainWindow();
   setupIPC();
 
+  // (A startup sweep retired a room persisted from a previous run. Removed: it
+  // only ever unblocked a button that no longer gets blocked, and it could hang
+  // up a call you were still in — crash the app mid-call, relaunch, and it would
+  // retire the room out from under you.)
+  try { store.delete('liveMeetSpace'); } catch { /* nothing to clean up */ }
+
   // Process CLI args FIRST so syncBaseUrl/botName are set before auto-login
   if (cliArgs['bot-name']) {
     sync.updateConfig({ botName: cliArgs['bot-name'] });
@@ -3956,6 +4123,7 @@ app.on('window-all-closed', () => {
 // Close any terminal windows we opened, synchronously, before the process
 // exits — covers Cmd-Q and other quit paths the async close would miss.
 app.on('before-quit', () => {
+  retireLiveMeet('before-quit'); // best-effort hygiene; the reaper is the net
   stopAllRunwayFaces('before-quit'); // P2: best-effort end of Runway sessions on quit (fire-and-forget)
   closeAllClaudeTerminalsSync();
 });
@@ -4039,6 +4207,88 @@ function applyMeetZoom() {
   try { meetView.webContents.setZoomFactor(l.meetZoom); } catch { /* view gone */ }
 }
 
+// Open a URL in the user's external default browser — so the operator can join
+// a meet as a human, separate from the bot's Electron Meet view. https only.
+function openExternalUrl(url) {
+  if (typeof url === 'string' && /^https:\/\//i.test(url)) shell.openExternal(url);
+}
+
+// The baked-in testing meet, opened from File ▸ Open Default Testing Meet in
+// Browser. Temporary convenience for development.
+const DEFAULT_TESTING_MEET_URL = 'https://meet.google.com/paz-sqoa-npe';
+
+// The bot's view only occupies the window during a call. `joining` and
+// `waiting-to-be-admitted` count as "in a call" so the green room and the
+// admission prompt are on screen — hiding those would leave the user staring at
+// a panel while the bot silently waited for entry.
+let botViewInCall = false;
+function callStatusMeansInCall(status) {
+  return !!status && status !== 'idle' && status !== 'left';
+}
+function setBotViewInCall(status) {
+  const active = callStatusMeansInCall(status);
+  if (active === botViewInCall) return;
+  botViewInCall = active;
+  applyWindowHeight(); // grow to make room for the region, or shrink back
+  layoutViews();
+  broadcastBotViewVisible();
+}
+
+// --- Window height: fit the panel, plus the bot's view only during a call ----
+// The window used to be a fixed 820px tall regardless of content, which left a
+// large empty rectangle under the panel out of a call. Now the panel measures
+// itself (renderer → 'panel-content-height') and we add the 16:9 region on top
+// only while there IS a call to show in it.
+const MIN_WINDOW_HEIGHT = 260;
+const WINDOW_HEIGHT_MARGIN = 40; // leave a little breathing room under the dock
+let panelContentHeight = 0;
+function applyWindowHeight() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (panelPopoutWindow) return;      // panel lives elsewhere; its height isn't ours
+  if (!panelContentHeight) return;    // nothing measured yet
+  const region = botViewInCall ? botViewLayout.regionHeightFor(PANEL_WIDTH) : 0;
+  let want = panelContentHeight + region;
+  try {
+    const { screen } = require('electron');
+    const area = screen.getDisplayMatching(mainWindow.getBounds()).workArea;
+    want = Math.min(want, Math.max(MIN_WINDOW_HEIGHT, area.height - WINDOW_HEIGHT_MARGIN));
+  } catch { /* no screen info — just use the content height */ }
+  const height = Math.max(MIN_WINDOW_HEIGHT, Math.round(want));
+  const [w, h] = mainWindow.getContentSize();
+  if (Math.abs(h - height) <= 1) return; // already there; don't churn
+  console.log(`[electron] window height → ${height} (panel ${panelContentHeight} + region ${region})`);
+  mainWindow.setContentSize(w, height);  // 'resize' → layoutViews
+}
+
+// The panel's "🤖 Bot's view" bar labels the region, so it lives and dies with
+// it. Driven from HERE rather than the panel's own data-call-state, because that
+// flag deliberately stays "idle" through joining/waiting-to-be-admitted (the
+// pre-call controls stay up) — which would strand the region without its bar.
+function broadcastBotViewVisible() {
+  if (panelView && !panelView.webContents.isDestroyed()) {
+    panelView.webContents.send('bot-view-visible', { visible: botViewInCall });
+  }
+}
+
+// The window title names the BOT, not just the app — with several bots open at
+// once, "Vibeconferencing" three times over in the window menu and app switcher
+// tells you nothing. Falls back to the profile name, then the app name.
+function applyWindowTitle() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  let name = null;
+  try {
+    // Same resolution the panel uses for its headline: the stored botName, else
+    // the SCHEMA DEFAULT (get-config fills unset prefs with it, which is why an
+    // untouched bot reads "Jimmy" on screen). Falling straight through to the
+    // profile name here would title the window differently from what it shows.
+    name = store.get('botName') || require('./preferences-schema').PREFERENCES.botName?.default;
+  } catch { /* store/schema not ready */ }
+  name = String(name || appProfile || '').trim();
+  try { mainWindow.setTitle(name ? `${name} — Vibeconferencing` : 'Vibeconferencing'); } catch { /* gone */ }
+}
+
+let warnedZoomClamped = false;
+
 function layoutViews() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   const [width, height] = mainWindow.getContentSize();
@@ -4054,9 +4304,49 @@ function layoutViews() {
     return;
   }
 
-  const l = botViewLayout.computeLayout(botViewState, { width, height }, { panelWidth: PANEL_WIDTH });
+  const l = botViewLayout.computeLayout(
+    botViewState,
+    { width, height },
+    { panelWidth: PANEL_WIDTH, inCall: botViewInCall },
+  );
+  // computeLayout reports `clamped` when the panel got too narrow for the zoom
+  // trick to hold Meet's virtual viewport steady — Chromium's page zoom bottoms
+  // out at 0.25, so below ~294px Meet gets a genuinely narrower viewport and
+  // REFLOWS, which breaks caption scraping and every DOM selector. That failure
+  // is silent and mid-call, so say something. Once per process; it can only
+  // change if PANEL_WIDTH does.
+  if (l.clamped && !warnedZoomClamped) {
+    warnedZoomClamped = true;
+    console.warn(`[electron] PANEL_WIDTH ${PANEL_WIDTH} is below the ~294px floor: `
+      + 'Meet zoom is clamped at its minimum, so Meet will reflow and caption '
+      + 'scraping/selectors may break.');
+  }
   if (l.panelBounds && panelView && !panelView.webContents.isDestroyed()) {
     panelView.setBounds(l.panelBounds);
+  }
+  // Out of a call the region doesn't exist, so the docked Meet view must stop
+  // painting over the now-full-height panel. PARK IT OFFSCREEN rather than
+  // detaching it: removeBrowserView leaves Electron's own 'resize' listener
+  // bound to the window (it never reaches _BrowserView_removeResizeListener), so
+  // the next resize runs #autoResize with a null ownerWindow and throws
+  // "Electron bug: #autoResize called without owner window" — an
+  // uncaughtException, which the app then shows the user as a real error.
+  //
+  // applyWindowHeight() resizes the window on this very same transition, and on
+  // macOS that 'resize' arrives asynchronously — i.e. reliably AFTER the detach.
+  // Staying attached keeps ownerWindow non-null and sidesteps it entirely.
+  const meetDockable = meetView && !meetView.webContents.isDestroyed() && !meetPopoutWindow;
+  const meetAttached = meetDockable && mainWindow.getBrowserViews
+    && mainWindow.getBrowserViews().includes(meetView);
+  if (l.regionHidden) {
+    // Just below the window's bottom edge: a valid, non-zero rect that Chromium
+    // clips away entirely. Its webContents keeps running, so idle.html (and any
+    // state it holds) survives to the next call.
+    if (meetAttached) {
+      meetView.setBounds({ x: 0, y: height, width, height: botViewLayout.regionHeightFor(PANEL_WIDTH) });
+    }
+  } else if (meetDockable && !meetAttached) {
+    mainWindow.addBrowserView(meetView); // re-dock (e.g. after a provider swap)
   }
   if (l.meetBounds && meetView && !meetView.webContents.isDestroyed()) {
     meetView.setBounds(l.meetBounds);
@@ -4301,6 +4591,38 @@ function activateMeetProvider() {
   layoutViews();
 }
 
+// Let the avatar banner run to the very top of the window, behind the window
+// controls, where the platform supports it. Gated because support is uneven:
+//
+//   macOS   — 'hiddenInset' floats the traffic lights over our content. The good
+//             one, and the only value that does this on mac.
+//   Windows — 'hiddenInset' is IGNORED (normal frame), so use 'hidden' plus
+//             titleBarOverlay, which draws the native min/max/close over the
+//             content. Colours match the banner's default gradient top.
+//   Linux   — left with a standard frame deliberately. 'hidden' there removes
+//             the caption buttons entirely, and frameless drag/resize behaviour
+//             varies across GNOME/KDE, so this wants testing on a real desktop
+//             before we ship it rather than a guess from here.
+//
+// Everywhere it's off, the window simply keeps its normal title bar and the
+// banner starts below it — the previous look, nothing broken.
+function titleBarOptions() {
+  if (process.platform === 'darwin') return { titleBarStyle: 'hiddenInset' };
+  if (process.platform === 'win32') {
+    return {
+      titleBarStyle: 'hidden',
+      titleBarOverlay: { color: '#1a237e', symbolColor: '#e8eaed', height: 32 },
+    };
+  }
+  return {};
+}
+
+// Does the window lack a normal title bar? Then the panel makes its top strip
+// draggable, since there's no OS bar left to grab.
+function hasHiddenTitleBar() {
+  return process.platform === 'darwin' || process.platform === 'win32';
+}
+
 function createMainWindow() {
   // Optional explicit window placement from CLI (--window-x/-y/-w/-h), used by
   // the multi-bot test launcher to tile windows in a grid. Setting x/y at
@@ -4308,20 +4630,36 @@ function createMainWindow() {
   // window server for some instances). Omitted → Electron centers as usual.
   const winX = cliArgs['window-x'] != null ? parseInt(cliArgs['window-x'], 10) : null;
   const winY = cliArgs['window-y'] != null ? parseInt(cliArgs['window-y'], 10) : null;
-  const winW = cliArgs['window-w'] != null ? parseInt(cliArgs['window-w'], 10) : null;
-  const winH = cliArgs['window-h'] != null ? parseInt(cliArgs['window-h'], 10) : null;
+  // NOTE: --window-w/-h are deliberately NOT honoured. The window is exactly the
+  // size its content needs — a fixed-width column, height derived from the panel
+  // — so an external size is something to fight, not respect. The test launcher
+  // already passes position only (it found that sizing "made each app fill its
+  // whole grid cell"), and honouring a height silently disabled auto-sizing:
+  // after a bot switch, which forwarded the old window's bounds, the new window
+  // froze at that height and stopped growing for the bot's view during a call.
   mainWindow = new BrowserWindow({
+    ...titleBarOptions(),
     // The app launches as a NARROW COLUMN (panel on top, shrunk Meet thumbnail
     // below) so it never looks like the user's own Meet window — Seth and new
     // users kept confusing the two. The Meet view is a scaled-down thumbnail (see
-    // bot-view-layout.js); a button pops it out to its own large window. Explicit
-    // CLI sizes (the multi-bot test launcher tiles with --window-w/-h) still win.
-    width: Number.isFinite(winW) ? winW : PANEL_WIDTH,
-    height: Number.isFinite(winH) ? winH : 820,
+    // bot-view-layout.js); a button pops it out to its own large window. The
+    // size is the app's to decide (see the note above) — only --window-x/-y are
+    // honoured, which is all the test launcher passes.
+    width: PANEL_WIDTH,
+    // A provisional height: the panel reports its real content height as soon as
+    // it lays out, and applyWindowHeight shrinks this to fit.
+    height: 820,
+    // Content-sized, so there is nothing for a user resize to mean: dragging the
+    // edge would just be undone by the next content change. The width is a fixed
+    // column the layout assumes (bot-view-layout is built around PANEL_WIDTH),
+    // and the height is derived — so let the app own both.
+    resizable: false,
     ...(Number.isFinite(winX) ? { x: winX } : {}),
     ...(Number.isFinite(winY) ? { y: winY } : {}),
     minWidth: PANEL_WIDTH,
-    minHeight: 460,
+    // Low, because out of a call the window is only as tall as the avatar banner
+    // + footer. The real floor is MIN_WINDOW_HEIGHT in applyWindowHeight.
+    minHeight: MIN_WINDOW_HEIGHT,
     title: 'Vibeconferencing',
     icon: path.join(__dirname, 'icon.png'),
     webPreferences: {
@@ -4336,10 +4674,18 @@ function createMainWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'preload-panel.js'),
       contextIsolation: true,
+      // Same reason as createMeetView (#424): Chromium throttles timers and
+      // STOPS rAF for an occluded view. The panel now measures itself and
+      // reports its height so main can size the window — if that measurement is
+      // frozen while the window sits behind the user's editor, a call starts
+      // with a stale (pre-call) height and the bot's-view region lands on top of
+      // the panel's own content.
+      backgroundThrottling: false,
     },
   });
   mainWindow.addBrowserView(panelView);
   panelView.webContents.loadFile(path.join(__dirname, 'renderer', 'panel.html'));
+  applyWindowTitle();
 
   // --- macOS menu bar ---
   const template = [
@@ -4466,8 +4812,20 @@ function createMainWindow() {
           accelerator: 'CmdOrCtrl+Shift+L',
           click: () => {
             if (panelView && !panelView.webContents.isDestroyed()) {
+              // (The pop-out happens in the navigate-webview handler, AFTER the
+              // URL is entered — popping out here would put a child window over
+              // the panel that's asking for the URL.)
               let currentUrl = '';
               try { if (meetView && !meetView.webContents.isDestroyed()) currentUrl = meetView.webContents.getURL(); } catch { /* ignore */ }
+              // Raise the app window so the URL prompt is actually on screen —
+              // it may be behind an already-open pop-out, or minimised.
+              try {
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                  if (mainWindow.isMinimized()) mainWindow.restore();
+                  mainWindow.show();
+                  mainWindow.moveTop();
+                }
+              } catch { /* ignore */ }
               // Focus the panel view first — otherwise the prompt input's .focus()
               // in the renderer doesn't grab the keyboard (the panel BrowserView
               // isn't the focused frame), so you'd have to click it before typing.
@@ -4476,6 +4834,16 @@ function createMainWindow() {
               panelView.webContents.send('navigate-webview-prompt', { currentUrl });
             }
           },
+        },
+        { type: 'separator' },
+        {
+          // Was a link in the panel's pre-call card. It's a testing shortcut, not
+          // something most users need on the main screen — and it's on its way
+          // out — so it lives in the menu now. Opens in the USER's own browser
+          // (so you join as a human alongside the bot); the app's tab-detection
+          // then auto-fills the URL in the panel, ready to send the bot in too.
+          label: 'Open Default Testing Meet in Browser',
+          click: () => { openExternalUrl(DEFAULT_TESTING_MEET_URL); },
         },
       ],
     },
@@ -4832,62 +5200,11 @@ function setupIPC() {
     return vals;
   });
 
-  // Profile icon from the real camera feed. The panel used to reconstruct the icon
-  // from background+emoji, which drifts from the actual avatar (different emoji
-  // sets, and Runway faces). Instead: while in a call, pull a small snapshot of the
-  // live virtual-camera canvas (page-inject's __vibeconfCaptureAvatarIcon, which
-  // only returns a RESTING face) and cache it as `profileIcon`. Staleness-gated —
-  // refresh at most every few hours; the per-minute check no-ops until the cached
-  // icon is old AND the bot is caught in a resting frame. Best-effort; the panel
-  // falls back to the generated look when `profileIcon` is unset.
-  const PROFILE_ICON_MAX_AGE_MS = 4 * 60 * 60 * 1000; // ~4h
-  function profileIconIsFresh() {
-    const at = Number(store.get('profileIconAt')) || 0;
-    return !!store.get('profileIcon') && (Date.now() - at) < PROFILE_ICON_MAX_AGE_MS;
-  }
-  async function maybeCaptureProfileIcon() {
-    try {
-      if (!meetView || meetView.webContents.isDestroyed()) return false;
-      if (profileIconIsFresh()) return false;
-      const dataUrl = await meetView.webContents
-        .executeJavaScript('window.__vibeconfCaptureAvatarIcon ? window.__vibeconfCaptureAvatarIcon(128) : null')
-        .catch(() => null);
-      if (typeof dataUrl === 'string' && dataUrl.startsWith('data:image')) {
-        store.set('profileIcon', dataUrl);
-        store.set('profileIconAt', Date.now());
-        console.log('[profile-icon] captured a fresh avatar snapshot from the camera feed');
-        return true;
-      }
-    } catch { /* best-effort — never disrupt the call */ }
-    return false;
-  }
-
-  // __vibeconfCaptureAvatarIcon only returns a frame when the camera is showing
-  // the resting 🙂 face. Measured across a 45-minute call, that face is on screen
-  // ~19% of the time — so the old fixed 60s poll was a one-in-five lottery, and it
-  // had won 5 times across 36 logged sessions. Capture on the EDGE instead: the
-  // renderer pings us the moment it settles onto 🙂.
-  ipcMain.on(CALL_EVENTS.avatarResting, () => {
-    if (profileIconIsFresh()) return; // nothing wanted — don't touch the renderer
-    maybeCaptureProfileIcon();
-  });
-
-  // Backstop for the edge we can miss: if the avatar was ALREADY 🙂 when the call
-  // started, no transition ever fires. Poll hard while there's no icon, then idle
-  // once one is cached — a fresh icon needs no work at all until it ages out.
-  const ICON_POLL_WANTED_MS = 5 * 1000;
-  const ICON_POLL_IDLE_MS = 5 * 60 * 1000;
-  let _iconPollTimer = null;
-  function scheduleProfileIconPoll() {
-    clearTimeout(_iconPollTimer);
-    const delay = profileIconIsFresh() ? ICON_POLL_IDLE_MS : ICON_POLL_WANTED_MS;
-    _iconPollTimer = setTimeout(async () => {
-      await maybeCaptureProfileIcon();
-      scheduleProfileIconPoll();
-    }, delay);
-    if (_iconPollTimer.unref) _iconPollTimer.unref();
-  }
-  scheduleProfileIconPoll();
+  // (The switcher thumbnail used to be stolen from the live camera feed here —
+  // an edge-triggered capture plus a poll ladder plus 4h staleness gating, all to
+  // catch the avatar mid-rest. The panel now rasterises the same picture from the
+  // background + emoji prefs directly, so a bot has a thumbnail before it has
+  // ever been in a call. See refreshAvatarThumb in renderer/panel.js.)
 
   // Bot vitals for the panel: is the on-device fast model reachable? Pings the
   // configured ack endpoint (Apple wrapper / any openai-compat) GET /v1/models
@@ -4921,12 +5238,78 @@ function setupIPC() {
     // Live-apply the visual prefs the panel can set here (the agent path goes
     // through applyPref, which already pushes these). #316.
     if (key === 'emojiSet') pushEmojiSet(value);
-    // Appearance change from the panel → invalidate the cached camera-snapshot icon
-    // so it regenerates (matches the applyPref/agent path above).
-    if (key === 'emojiSet' || key === 'avatarBackgroundSvg') {
-      try { store.delete('profileIcon'); store.set('profileIconAt', 0); } catch { /* ignore */ }
+    if (key === 'botName') applyWindowTitle();
+  });
+
+  // Emoji graphics (#316) for the PANEL's avatar. Read here rather than in
+  // preload-panel: that preload is sandboxed, so its `require` can't reach a
+  // local module. Returns a data URI, or null for the 'native' set / an emoji
+  // the set doesn't ship — the panel then draws the OS glyph.
+  ipcMain.handle('emoji-data-uri', (_event, setName, emoji) => {
+    try { return require('./emoji-assets.js').dataUriFor(setName, emoji, __dirname); } catch { return null; }
+  });
+
+  // The panel measured itself → resize the window to fit (plus the bot's-view
+  // region while in a call). See applyWindowHeight.
+  ipcMain.on('panel-content-height', (_event, h) => {
+    const n = Math.round(Number(h) || 0);
+    if (!n || n === panelContentHeight) return;
+    panelContentHeight = n;
+    applyWindowHeight();
+  });
+
+  // Troubleshooting in its OWN window. Deliberately not setPanelPoppedOut: that
+  // re-parents the one and only panelView, so the main window is left with no
+  // panel and falls back to a full-size Meet view. A BrowserView can't be in two
+  // windows, so the only way to keep the panel put is a second webContents —
+  // this window loads the SAME panel.html with ?screen=troubleshooting, and
+  // panel.js shows just that screen.
+  //
+  // Being a separate webContents is also what keeps it quiet: every
+  // panelView.webContents.send(...) broadcast goes to the panel, not here, so
+  // there are no duplicate prompts or state handlers. Only this window's own
+  // OUTBOUND calls need suppressing — see IS_TROUBLESHOOTING_WINDOW.
+  ipcMain.handle('open-troubleshooting-window', () => {
+    if (troubleshootingWindow && !troubleshootingWindow.isDestroyed()) {
+      troubleshootingWindow.show();
+      troubleshootingWindow.focus();
+      return { ok: true };
+    }
+    const win = new BrowserWindow({
+      width: 560,
+      height: 820,
+      title: 'Vibeconferencing — Troubleshooting',
+      icon: path.join(__dirname, 'icon.png'),
+      webPreferences: {
+        preload: path.join(__dirname, 'preload-panel.js'),
+        contextIsolation: true,
+        backgroundThrottling: false, // a live call-state view must not freeze
+      },
+    });
+    troubleshootingWindow = win;
+    win.on('closed', () => { troubleshootingWindow = null; });
+    win.loadFile(path.join(__dirname, 'renderer', 'panel.html'), { search: 'screen=troubleshooting' });
+    return { ok: true };
+  });
+
+  // The bot's live face, straight from the virtual camera's render loop, relayed
+  // to the panel so its avatar shows the SAME expression the call sees.
+  ipcMain.on('avatar-emoji-changed', (_event, emoji) => {
+    if (typeof emoji !== 'string' || !emoji) return;
+    if (panelView && !panelView.webContents.isDestroyed()) {
+      panelView.webContents.send('avatar-emoji', { emoji });
     }
   });
+
+  // The panel needs to know whether it must provide its own drag handle.
+  ipcMain.handle('get-window-chrome', () => ({
+    // 'mac' | 'win' | null — the panel needs the PLATFORM, not just a boolean:
+    // macOS floats its controls top-LEFT (harmless under a centred name) while
+    // Windows draws them top-RIGHT, exactly where the settings gear lives.
+    hiddenTitleBar: hasHiddenTitleBar() ? (process.platform === 'darwin' ? 'mac' : 'win') : null,
+  }));
+
+  ipcMain.handle('create-and-join-meet', async () => createAndJoinMeet());
 
   ipcMain.handle('get-app-version', () => ({ version: app.getVersion(), packaged: app.isPackaged }));
 
@@ -5224,12 +5607,16 @@ function setupIPC() {
     }
 
     // #379: open the new profile window where THIS one is, not centered. The main
-    // window already honors --window-x/y/w/h (createMainWindow, used by the test
-    // launcher), so just forward the current window's bounds. Default + named.
+    // window honors --window-x/y (createMainWindow, as the test launcher uses),
+    // so forward just the current window's position. Default + named.
+    //
+    // POSITION ONLY. Size isn't ours to hand over: the window is a fixed-width
+    // column with a content-derived height, and createMainWindow ignores
+    // --window-w/-h for exactly that reason.
     try {
       if (mainWindow && !mainWindow.isDestroyed()) {
         const b = mainWindow.getBounds();
-        args = [...args, `--window-x=${b.x}`, `--window-y=${b.y}`, `--window-w=${b.width}`, `--window-h=${b.height}`];
+        args = [...args, `--window-x=${b.x}`, `--window-y=${b.y}`];
       }
     } catch { /* ignore — fall back to Electron's default centering */ }
 
@@ -5348,7 +5735,7 @@ function setupIPC() {
     setBotViewState(botViewLayout.nextState(botViewState));
     return { state: botViewState };
   });
-  ipcMain.handle('get-bot-view', () => ({ state: botViewState }));
+  ipcMain.handle('get-bot-view', () => ({ state: botViewState, visible: botViewInCall }));
 
 
   // --- Auth check ---
@@ -5357,35 +5744,12 @@ function setupIPC() {
   });
 
   // --- Meet window management ---
-  ipcMain.on('join-meet', (_event, meetUrl) => {
-    currentMeetUrl = meetUrl;
-    loadMeetURL(meetUrl);
+  ipcMain.on('join-meet', (_event, meetUrl) => { joinMeetUrl(meetUrl); });
 
-    // Extract meet code and start sync + Claude
-    const match = meetUrl.match(/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/);
-    if (match) {
-      const meetCode = match[1];
-      localServer.setRoom(meetCode);
-      const baseUrl = getWebsiteUrl();
-      sync.updateConfig({ roomId: meetCode, baseUrl });
-      sync.ensureRoom().then(() => {
-        sync.startPolling();
-        console.log('[electron] Sync started for room:', meetCode);
-      });
-
-      // Launch Claude Code in Terminal
-      launchClaudeTerminal(meetCode);
-    }
-  });
-
-  // Open a URL in the user's external default browser (e.g. the idle screen's
-  // "Start default testing meet" link — so the operator can join the meet as a
-  // human in their own browser, separate from the bot's Electron Meet view).
-  ipcMain.on('open-external-url', (_event, url) => {
-    if (typeof url === 'string' && /^https:\/\//i.test(url)) shell.openExternal(url);
-  });
+  ipcMain.on('open-external-url', (_event, url) => { openExternalUrl(url); });
 
   ipcMain.on('leave-meet', () => {
+    retireLiveMeet('leave-meet'); // give the room back or the next press 429s
     currentMeetUrl = null;
     detectedMeetUrl = null; // Reset so detection will re-notify about the same Meet
     localServer.clearRoom();
@@ -5590,6 +5954,12 @@ function setupIPC() {
     if (meetView && !meetView.webContents.isDestroyed()) {
       console.log('[electron] navigate-webview →', url);
       meetView.webContents.loadURL(url);
+      // Show the result. Out of a call the bot's view isn't on screen at all,
+      // so without this you'd drive the webview somewhere and have nothing to
+      // look at — seeing where the bot's browser landed IS the point of this
+      // command. Only when it isn't already popped: if the user has it open,
+      // leave their window exactly where and how it is.
+      if (botViewState !== 'popped') setBotViewState('popped');
       return { ok: true, url };
     }
     return { ok: false, error: 'no webview' };

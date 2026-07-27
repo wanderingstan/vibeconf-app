@@ -97,3 +97,39 @@ test('degenerate sizes never produce negative bounds', () => {
     }
   }
 });
+
+// ── Out of a call the region doesn't exist at all (the bot's view used to sit
+// there permanently showing a "This is the bot's view" placard). ──────────────
+
+test('out of a call, the panel gets the whole column and there is no region', () => {
+  for (const state of L.STATES) {
+    const l = L.computeLayout(state, { width: 380, height: 800 }, { panelWidth: 380, inCall: false });
+    assert.equal(l.regionHidden, true, `${state}: region is hidden out of a call`);
+    assert.equal(l.meetBounds, null, `${state}: nothing docked`);
+    assert.equal(l.placeholderBounds, null, `${state}: not even the popped-out placeholder`);
+    assert.deepEqual(l.panelBounds, { x: 0, y: 0, width: 380, height: 800 },
+      `${state}: the panel takes the full height`);
+  }
+});
+
+test('in a call, the region comes back exactly as before', () => {
+  const inCall = L.computeLayout('thumbnail', { width: 380, height: 800 }, { panelWidth: 380, inCall: true });
+  const legacy = L.computeLayout('thumbnail', { width: 380, height: 800 }, { panelWidth: 380 });
+  assert.deepEqual(inCall.meetBounds, legacy.meetBounds);
+  assert.deepEqual(inCall.panelBounds, legacy.panelBounds);
+  assert.ok(!inCall.regionHidden);
+});
+
+test('omitting inCall keeps the old behaviour, so existing callers are unaffected', () => {
+  assert.equal(L.showRegion({}), true);
+  assert.equal(L.showRegion({ panelWidth: 380 }), true);
+  assert.equal(L.showRegion({ inCall: false }), false);
+  assert.equal(L.showRegion({ inCall: true }), true);
+});
+
+test('a hidden region still reports a usable zoom (applyMeetZoom reads it)', () => {
+  for (const state of L.STATES) {
+    const l = L.computeLayout(state, { width: 380, height: 800 }, { panelWidth: 380, inCall: false });
+    assert.ok(l.meetZoom >= L.MIN_ZOOM && l.meetZoom <= L.MAX_ZOOM, `${state}: zoom stays in range`);
+  }
+});

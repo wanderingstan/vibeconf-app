@@ -83,4 +83,8 @@ window.addEventListener('message', (event) => {
   if (event.data.action === 'log' && event.data.payload?.line) {
     ipcRenderer.send('page-inject-log', event.data.payload.line);
   }
+  // Mirror the avatar's face into the control panel, same as the Meet provider.
+  if (event.data.action === 'avatar-emoji' && event.data.payload?.emoji) {
+    ipcRenderer.send('avatar-emoji-changed', event.data.payload.emoji);
+  }
 });

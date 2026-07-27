@@ -2235,12 +2235,6 @@ window.addEventListener('message', (event) => {
     if (name) meetProvider.emit(CALL_EVENTS.speakingChanged, { name, speaking });
   }
 
-  if (event.data.action === 'avatar-resting') {
-    // The camera just settled onto the resting 🙂 face — the only frame the
-    // profile-icon snapshot may be taken from. Main decides whether it wants one.
-    meetProvider.emit(CALL_EVENTS.avatarResting);
-  }
-
   if (event.data.action === 'tts-ended') {
     // After speaking, restore mic to its mode-appropriate state. Active mode
     // wants the mic open so the bot can be heard; passive/silent want it muted
@@ -2255,6 +2249,11 @@ window.addEventListener('message', (event) => {
     if (event.data.payload?.line) {
       ipcRenderer.send('page-inject-log', event.data.payload.line);
     }
+  }
+
+  if (event.data.action === 'avatar-emoji') {
+    // The rendered face changed — main relays it to the panel avatar.
+    if (event.data.payload?.emoji) ipcRenderer.send('avatar-emoji-changed', event.data.payload.emoji);
   }
 
   if (event.data.action === 'transcript') {

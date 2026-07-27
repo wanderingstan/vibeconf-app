@@ -81,6 +81,37 @@ test('the safety-net close still refuses to fire while the flow is running', () 
   assert.match(provider, /if \(settingsDlg && isVisible\(settingsDlg\) && !_studioSoundInProgress\)/);
 });
 
+// #61: Meet's idle-timeout prompt. Unanswered, Meet EJECTS the bot — which is
+// its normal state between turns. The sweeper must click "Stay in the call",
+// never "Leave now".
+test('the "Are you still there?" matcher hits Meet\'s wording', () => {
+  const re = MEET.modals.stillThereRe;
+  for (const s of ['Are you still there?', 'are you still there', 'ARE YOU STILL THERE?']) {
+    assert.equal(re.test(s), true, `must match ${JSON.stringify(s)}`);
+  }
+  for (const s of ['Your call ends in 5 minutes', 'Others may see your video differently', '']) {
+    assert.equal(re.test(s), false, `must NOT match ${JSON.stringify(s)}`);
+  }
+});
+
+test('the still-there handler picks Stay, never Leave now', () => {
+  const start = provider.indexOf('MEET.modals.stillThereRe');
+  assert.ok(start > 0, 'the #61 handler should still live in dismissBlockingModals');
+  const block = provider.slice(start, start + 1200);
+  assert.match(block, /startsWith\('stay'\)/, 'must select the Stay affordance by prefix');
+  const code = block.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+  assert.ok(!/leave now/i.test(code), 'must never click Leave now');
+  // Prefix match so "Stay in call" / "Stay in the call" both work.
+  assert.equal(MEET.modals.stayInCallText.startsWith('stay'), true);
+});
+
+test('the still-there handler scans every open dialog, not just the first', () => {
+  // It can appear alongside another toast-style dialog; querySelector would miss it.
+  const start = provider.indexOf('MEET.modals.stillThereRe');
+  const preceding = provider.slice(Math.max(0, start - 600), start);
+  assert.match(preceding, /querySelectorAll\(MEET\.modals\.anyDialog\)/);
+});
+
 test('the flag is always cleared, even when the flow throws', () => {
   const finallyBlock = /finally \{\s*\n\s*_studioSoundInProgress = false;/.exec(provider);
   assert.ok(finallyBlock, 'a thrown studio-sound flow must not wedge the sweeper off forever');

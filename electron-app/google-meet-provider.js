@@ -214,6 +214,38 @@ function dismissBlockingModals() {
     }
   }
 
+  // #61: Meet's idle-timeout prompt — "Are you still there?" (Leave now / Stay
+  // in the call). Meet raises it after a couple of idle minutes and EJECTS the
+  // participant if nobody answers — which is exactly the bot's normal state
+  // between turns (agent long-polling in wait_for_speech, nobody talking). The
+  // bot IS still there, so always click Stay. Scans every open dialog rather
+  // than the first one: this can appear alongside another toast-style dialog,
+  // and getting it wrong costs us the call.
+  for (const sdlg of document.querySelectorAll(MEET.modals.anyDialog)) {
+    if (!isVisible(sdlg)) continue;
+    const title = (sdlg.getAttribute('aria-label') || '').trim() ||
+      (sdlg.querySelector('[role="heading"]')?.textContent || '').trim();
+    if (!MEET.modals.stillThereRe.test(title) &&
+        !MEET.modals.stillThereRe.test(sdlg.textContent || '')) continue;
+    // Prefix match ("Stay in the call" / "Stay in call") so a wording tweak
+    // doesn't drop us back to the eject path. Never matches "Leave now".
+    const stay = [...sdlg.querySelectorAll('button, [role="button"]')].find((b) => {
+      const lbl = (b.textContent || '').trim().toLowerCase();
+      const aria = (b.getAttribute('aria-label') || '').trim().toLowerCase();
+      return (lbl.startsWith('stay') || aria.startsWith('stay')) && isVisible(b);
+    });
+    if (stay) {
+      stay.click();
+      console.log('[electron-meet] Answered "Are you still there?" with Stay (#61)');
+      return true;
+    }
+    // Recognized but no Stay button — don't fall through to the unknown-modal
+    // dump; log it so we learn the new affordance.
+    console.warn('[electron-meet] "Are you still there?" dialog found but no Stay button (#61):\n' +
+      (sdlg.outerHTML || '').slice(0, 1500));
+    return false;
+  }
+
   // #404: Meet's free-tier time-limit warning ("Your call ends in N minutes /
   // Free group calls have a limit of 1 hour"). Dismiss it AND tell the agent —
   // it should know the clock is running so it can wrap up or suggest a fresh

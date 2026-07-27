@@ -13,6 +13,11 @@ const TITLE = {
 // installed) — the step says so; signin/voice are the other optional steps.
 const SKIPPABLE = new Set(['signin', 'voice', 'claude']);
 let i = 0;
+// The logging answer, mirrored from the `remoteLogging` pref: undefined until
+// the user picks, then true/false. Next stays disabled on that step while it's
+// undefined (see canAdvance in onboarding-flow.js — this renderer can't require
+// the module under contextIsolation, so the rule is mirrored, like `steps`).
+let remoteLogging;
 
 const $ = (id) => document.getElementById(id);
 const dots = $('dots');
@@ -26,6 +31,8 @@ function render() {
   $('backBtn').style.visibility = i === 0 ? 'hidden' : 'visible';
   $('skipBtn').style.display = SKIPPABLE.has(step) ? '' : 'none';
   $('nextBtn').textContent = i === steps.length - 1 ? 'Finish' : 'Next';
+  // The logging step has no Skip and won't advance until it's answered.
+  $('nextBtn').disabled = step === 'logging' && remoteLogging !== true && remoteLogging !== false;
   if (step === 'permissions') loadPermissions();
   if (step === 'signin') loadAuth();
   if (step === 'bot') loadEmojiSet();
@@ -117,9 +124,14 @@ window.addEventListener('focus', () => { if (steps[i] === 'signin') loadAuth(); 
 // Highlight the chosen button via a `.selected` class — never by adding/removing
 // `.btn`, which also carries `flex:1` (removing it made the buttons different widths).
 function paintLog(v) {
-  $('logState').textContent = v === true ? 'Logging is ON.' : v === false ? 'Logging is OFF.' : 'Not set.';
+  remoteLogging = v === true || v === false ? v : undefined;
+  $('logState').textContent = v === true ? 'Logging is ON.'
+    : v === false ? 'Logging is OFF.'
+    : 'Choose one to continue. Logging stays off unless you allow it.';
   $('logYes').classList.toggle('selected', v === true);
   $('logNo').classList.toggle('selected', v === false);
+  // Unblocks Next the moment an answer lands (and on the initial hydrate).
+  render();
 }
 $('logYes').addEventListener('click', async () => { await api.invoke('set-config', 'remoteLogging', true); paintLog(true); });
 $('logNo').addEventListener('click', async () => { await api.invoke('set-config', 'remoteLogging', false); paintLog(false); });

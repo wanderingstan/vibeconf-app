@@ -1742,8 +1742,8 @@ function getWebsiteUrl() {
 //
 // The response is a BEARER CAPABILITY: holding meetingUri/meetingCode is
 // permission to enter the room. The server never logs them and neither do we —
-// with remoteLogging on (the default) a stray console.log would ship live
-// capabilities off the machine. Log the shape, never the value.
+// with remoteLogging on a stray console.log would ship live capabilities off
+// the machine. Log the shape, never the value.
 // The room we created, so we can close it when the call ends. In memory only:
 // retire is HYGIENE, not a prerequisite — a create now returns your existing
 // room rather than 429ing, and the server reaps what we miss. So a room lost to

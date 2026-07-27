@@ -95,7 +95,7 @@ Vibeconferencing is meeting software, so it can handle sensitive conversation. T
 | Local logs | The app keeps rotating local session logs for debugging. They can contain transcript text and agent activity. |
 | Shared rooms | When hosted room sync is active, transcript entries and whiteboard state are sent to the configured sync backend, which defaults to `vibeconferencing.com`. |
 | Voice | macOS voices stay local. If you configure ElevenLabs, the text to be spoken is sent to ElevenLabs. |
-| Remote diagnostics | Remote log shipping is off by default. If enabled, log lines may be sent to the configured backend. |
+| Remote diagnostics | Remote log shipping is off unless you turn it on. The first-run wizard asks you to choose before it lets you continue. If enabled, log lines may be sent to the configured backend. |
 
 Read [Data, privacy, and permissions](docs/data-and-privacy.md) before using the beta for sensitive calls. Always make the agent's presence clear and follow the consent requirements for your meeting and jurisdiction.
 

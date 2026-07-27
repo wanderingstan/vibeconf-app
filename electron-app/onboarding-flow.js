@@ -71,6 +71,20 @@ function looksLikeElevenLabsKey(v) {
   return s === '' || /^sk_[A-Za-z0-9]{8,}$/.test(s);
 }
 
+// Whether Next is allowed to leave `step`. Only `logging` gates: remote log
+// shipping is OFF unless chosen (`remoteLogging` defaults false), so letting
+// someone walk past the question would decide it for them by omission — the
+// point of asking is that the answer is theirs. Every other step advances
+// freely (SKIPPABLE ones even offer a Skip button).
+//
+// `state.remoteLogging` is whatever the pref currently reads: `undefined` when
+// it has never been answered, true/false once it has (a re-run of the wizard
+// therefore arrives already unblocked).
+function canAdvance(step, state = {}) {
+  if (step !== 'logging') return true;
+  return state.remoteLogging === true || state.remoteLogging === false;
+}
+
 // Step navigation helpers (kept pure so the renderer can't walk off the ends).
 function nextStep(current) {
   const i = STEPS.indexOf(current);
@@ -91,6 +105,7 @@ module.exports = {
   normalizePermission,
   permissionsSummary,
   looksLikeElevenLabsKey,
+  canAdvance,
   nextStep,
   prevStep,
   stepProgress,

@@ -7,7 +7,7 @@ Vibeconferencing is a beta that lets an AI agent hear and participate in a live 
 - The app reads Google Meet caption text and passes relevant turns to the MCP agent driving the call.
 - The app writes local session logs that may contain transcript text and agent activity.
 - Hosted room sync can send transcript entries and whiteboard state to the configured backend.
-- Remote log shipping is optional and off by default.
+- Remote log shipping is off unless you turn it on; the first-run wizard makes you answer yes or no.
 - Voice may be local or may use ElevenLabs, depending on your settings.
 - The app does not include its own general-purpose model. Your selected agent and model provider process the context used to answer or act.
 
@@ -23,6 +23,12 @@ The app tees diagnostic output into per-session files under:
 
 ```text
 ~/Library/Application Support/Vibeconferencing/logs/
+```
+
+If you run named profiles (multi-bot setups), each profile keeps its own logs alongside its own config:
+
+```text
+~/Library/Application Support/Vibeconferencing/profiles/<profile>/logs/
 ```
 
 These logs can contain transcript fragments, agent activity, room state, errors, and configuration metadata. The app currently retains up to 100 prior session log files plus the active session. Treat them as sensitive meeting data and remove them when they are no longer needed.
@@ -41,7 +47,11 @@ The hosted backend is not part of this repository. The desktop app's `websiteUrl
 
 ## Remote diagnostics
 
-Remote log shipping is off by default. If you enable it, the app can upload batches of session log lines to the configured backend. Those lines may contain transcript text. Disable remote logging when it is not required for an active debugging session.
+Remote log shipping is off unless you turn it on. The first-run wizard's **Call logging** step asks you to allow or decline it and will not continue until you answer, so the setting is always a choice you made rather than a default you inherited. You can change it later in preferences (`remoteLogging`, takes effect immediately) or by re-running the wizard from the app menu.
+
+If you enable it, the app can upload batches of session log lines to the configured backend. Those lines may contain transcript text. Disable remote logging when it is not required for an active debugging session.
+
+Note that the wizard runs once, on the default profile's first launch. Additional named profiles never see it and simply stay off until you enable logging for them explicitly.
 
 ## macOS permissions
 

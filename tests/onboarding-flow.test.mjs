@@ -8,7 +8,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const {
   PERMISSIONS, STEPS, normalizePermission, permissionsSummary,
-  looksLikeElevenLabsKey, nextStep, prevStep, stepProgress,
+  looksLikeElevenLabsKey, canAdvance, nextStep, prevStep, stepProgress,
 } = require('../electron-app/onboarding-flow.js');
 
 test('steps include sign-in and are ordered welcome→done', () => {
@@ -59,6 +59,22 @@ test('looksLikeElevenLabsKey: empty ok (skip → macOS TTS), sk_ ok, junk not', 
   assert.equal(looksLikeElevenLabsKey('sk_0123456789abcdef'), true);
   assert.equal(looksLikeElevenLabsKey('not-a-key'), false);
   assert.equal(looksLikeElevenLabsKey('sk_short'), false);
+});
+
+test('the logging step will not advance until it is answered', () => {
+  // Unanswered: Next is blocked, so the pref can't be decided by walking past it.
+  assert.equal(canAdvance('logging', {}), false);
+  assert.equal(canAdvance('logging', { remoteLogging: undefined }), false);
+  assert.equal(canAdvance('logging', { remoteLogging: null }), false);
+  // Either explicit answer unblocks — "No thanks" is an answer, not an absence.
+  assert.equal(canAdvance('logging', { remoteLogging: false }), true);
+  assert.equal(canAdvance('logging', { remoteLogging: true }), true);
+});
+
+test('no other step gates on the logging answer', () => {
+  for (const step of STEPS.filter((s) => s !== 'logging')) {
+    assert.equal(canAdvance(step, {}), true, `${step} should advance freely`);
+  }
 });
 
 test('step navigation is clamped at both ends', () => {

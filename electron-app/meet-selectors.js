@@ -247,6 +247,13 @@ const MEET = {
     // minutes phrase so the later/final warnings (5 min, 1 min) hit too.
     callEndsRe: /call ends in (\d+) minute/i,
     dismissText: 'dismiss', // its only button (lowercased compare)
+    // #61: Meet's idle-timeout prompt — "Are you still there?" with buttons
+    // "Leave now" / "Stay in the call". Meet raises it when it sees no input
+    // for a couple of minutes and EJECTS the participant if nothing answers.
+    // The bot is always still there (its agent is long-polling in
+    // wait_for_speech), so we always click Stay.
+    stillThereRe: /are you still there/i,
+    stayInCallText: 'stay in the call', // lowercased compare; prefix-matched
   },
 };
 

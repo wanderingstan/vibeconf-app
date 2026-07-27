@@ -1983,6 +1983,82 @@ async function checkAuth() {
   });
 }
 
+// ── Liveness heartbeat ──────────────────────────────────────────────────────
+// The app runs for hours or days, so /api/auth/me (fired once at launch) can't
+// tell the backend whether an install is still alive. This ping is that signal,
+// and it carries the running version so a release announcement can target the
+// people actually on an old build.
+//
+// Deliberately NOT a "user is active" signal — the backend keeps it in a
+// separate column from last_seen_at for exactly that reason. A machine left on
+// overnight heartbeats all night; nobody was using it.
+//
+// Best-effort throughout: no retries, no queueing, failures logged at most
+// once per transition. Missing a heartbeat costs a data point, and the backend
+// treats "online" as a heartbeat within the last hour, so a sleeping laptop or
+// a flaky network doesn't need to be compensated for here.
+const HEARTBEAT_INTERVAL_MS = 15 * 60 * 1000;
+let heartbeatTimer = null;
+let _heartbeatFailing = false;
+
+async function sendHeartbeat() {
+  const baseUrl = getWebsiteUrl();
+  const { net } = require('electron');
+
+  const cookies = await session.defaultSession.cookies.get({ url: baseUrl, name: 'vc_session' });
+  const token = cookies.length ? cookies[0].value : store.get('vcSessionToken');
+  // Logged-out apps have nothing to report and no way to authenticate. Skip
+  // silently — this is the normal state for a fresh install, not an error.
+  if (!token) return;
+
+  const payload = JSON.stringify({
+    version: app.getVersion(),
+    platform: process.platform,
+  });
+
+  return new Promise((resolve) => {
+    const request = net.request({ method: 'POST', url: `${baseUrl}/api/app/heartbeat` });
+    request.setHeader('Content-Type', 'application/json');
+    request.setHeader('Cookie', `vc_session=${token}`);
+    request.on('response', (response) => {
+      response.on('data', () => {});
+      response.on('end', () => {
+        const ok = response.statusCode >= 200 && response.statusCode < 300;
+        if (!ok && !_heartbeatFailing) {
+          _heartbeatFailing = true;
+          console.warn(ts(), `[heartbeat] failing — status ${response.statusCode}`);
+        } else if (ok && _heartbeatFailing) {
+          _heartbeatFailing = false;
+          console.log(ts(), '[heartbeat] recovered');
+        }
+        resolve();
+      });
+    });
+    request.on('error', (err) => {
+      if (!_heartbeatFailing) {
+        _heartbeatFailing = true;
+        console.warn(ts(), '[heartbeat] failing —', err && err.message);
+      }
+      resolve();
+    });
+    request.write(payload);
+    request.end();
+  });
+}
+
+function startHeartbeat() {
+  if (heartbeatTimer) return;
+  // Jitter the first ping. #371 means one process per profile, so a machine
+  // running several bots would otherwise fire every instance's heartbeat in
+  // the same instant, and the nightly runner launches them together.
+  const jitter = Math.floor(Math.random() * 60 * 1000);
+  setTimeout(() => {
+    sendHeartbeat();
+    heartbeatTimer = setInterval(() => sendHeartbeat(), HEARTBEAT_INTERVAL_MS);
+    if (heartbeatTimer.unref) heartbeatTimer.unref();
+  }, jitter).unref?.();
+}
+
 // The one place the vc_session cookie shape is defined — used by the login
 // flow and by the #366 shared-login seeding, so an inherited login can never
 // silently diverge from a direct one.
@@ -3959,6 +4035,16 @@ app.whenReady().then(async () => {
       console.log('[electron] Not logged in — user can click Log in button');
     }
   });
+
+  // Liveness heartbeat. Started unconditionally: sendHeartbeat no-ops while
+  // logged out, so an app that gets logged in later starts reporting on its
+  // next tick without needing to be told.
+  startHeartbeat();
+
+  // A sleeping machine fires no timers, so a laptop closed overnight would
+  // look offline for up to 15 minutes after waking. Ping immediately on resume
+  // so the dashboard reflects reality as soon as the app can talk again.
+  require('electron').powerMonitor.on('resume', () => { sendHeartbeat(); });
 
   // --- Meet/Slack detection: poll Chrome/Safari/Brave tabs for active Meet
   // calls and Slack huddles ---

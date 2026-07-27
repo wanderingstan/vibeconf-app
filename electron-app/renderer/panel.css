@@ -524,11 +524,31 @@ button.auth-action-btn:hover:not(:disabled) {
   display: flex; align-items: flex-start;
   padding: 10px 10px 0;
 }
+/* No OS title bar → this strip becomes the window's drag handle. Whatever is
+   interactive inside it must opt back out, or it stops being clickable. */
+body[data-titlebar] .hero-top {
+  -webkit-app-region: drag;
+  /* Clears the window controls now floating over the banner. They miss the name
+     horizontally (macOS traffic lights sit at x 13–70, the name is centred), so
+     this only has to stop the two reading as cramped — not fully clear them. */
+  padding-top: 18px;
+}
+body[data-titlebar] .hero-top button,
+body[data-titlebar] .hero-top .profile-menu { -webkit-app-region: no-drag; }
+/* …and the whole strip stands down while the bot switcher is open, so clicking
+   beside the name dismisses it instead of dragging the window. */
+body[data-menu-open] .hero-top { -webkit-app-region: no-drag; }
+
+/* Windows draws min/max/close top-RIGHT — right on top of the settings gear.
+   Slide the gear clear of the ~138px overlay. */
+body[data-titlebar="win"] .hero-top .agent-gear { right: 146px; }
 /* The name is centred across the FULL banner width; the gear is pinned to the
    corner and taken out of the flow so it can't push the name off-centre. */
 .hero-top .agent-name-row { flex: 1 1 auto; justify-content: center; min-width: 0; }
 .hero-top .agent-gear { position: absolute; top: 8px; right: 8px; }
-.hero-bottom { padding: 0 12px 12px; }
+/* Only 5px below the status line — it's the quietest thing on screen and reads
+   better tucked against the edge than floating above it. */
+.hero-bottom { padding: 0 12px 5px; }
 .hero-bottom .field { margin-bottom: 8px; }
 .hero-bottom .field label { color: #e8eaed; text-shadow: 0 1px 2px rgba(0,0,0,0.6); }
 

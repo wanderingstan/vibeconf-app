@@ -761,6 +761,13 @@ meetUrlInput.addEventListener('input', () => {
 });
 updateJoinBtnState(); // paint the initial label (the markup ships a neutral one)
 
+// With the title bar hidden (macOS/Windows — see titleBarOptions in main.js)
+// there's no OS bar left to drag the window by, so the banner's top strip
+// becomes the handle. The stylesheet does the rest.
+api.invoke('get-window-chrome').then((c) => {
+  if (c?.hiddenTitleBar) document.body.dataset.titlebar = c.hiddenTitleBar; // 'mac' | 'win'
+}).catch(() => { /* keep the normal frame assumption */ });
+
 // --- Window sizing --------------------------------------------------------
 // The window is only as tall as the panel needs. Out of a call that's the
 // avatar banner + footer; in a call main.js adds the bot's-view region on top

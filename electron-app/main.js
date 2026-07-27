@@ -1238,12 +1238,15 @@ const localServer = new globalThis.LocalServer({
     // fires — no live-apply needed).
     if (key === 'ttsVoiceId') {
       tts.updateConfig?.({ voiceId: value });
-    } else if (key === 'botName' && panelView && !panelView.webContents.isDestroyed()) {
+    } else if (key === 'botName') {
+      applyWindowTitle(); // the window is named after the bot
       // Surface the change in the panel so the input reflects reality.
-      panelView.webContents.send('extension-message', {
-        action: 'config-updated',
-        payload: { key, value },
-      });
+      if (panelView && !panelView.webContents.isDestroyed()) {
+        panelView.webContents.send('extension-message', {
+          action: 'config-updated',
+          payload: { key, value },
+        });
+      }
     } else if (key === 'avatarBackgroundSvg') {
       pushAvatarBackground(value);
       // (The panel re-renders its own avatar — and its switcher thumbnail — off
@@ -4076,12 +4079,7 @@ function setBotViewInCall(status) {
 const MIN_WINDOW_HEIGHT = 260;
 const WINDOW_HEIGHT_MARGIN = 40; // leave a little breathing room under the dock
 let panelContentHeight = 0;
-// An explicit --window-h means someone (the test fleet, tiling bots) is placing
-// this window deliberately. Don't fight them.
-let autoWindowHeight = true;
-
 function applyWindowHeight() {
-  if (!autoWindowHeight) return;
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (panelPopoutWindow) return;      // panel lives elsewhere; its height isn't ours
   if (!panelContentHeight) return;    // nothing measured yet
@@ -4095,6 +4093,7 @@ function applyWindowHeight() {
   const height = Math.max(MIN_WINDOW_HEIGHT, Math.round(want));
   const [w, h] = mainWindow.getContentSize();
   if (Math.abs(h - height) <= 1) return; // already there; don't churn
+  console.log(`[electron] window height → ${height} (panel ${panelContentHeight} + region ${region})`);
   mainWindow.setContentSize(w, height);  // 'resize' → layoutViews
 }
 
@@ -4107,6 +4106,25 @@ function broadcastBotViewVisible() {
     panelView.webContents.send('bot-view-visible', { visible: botViewInCall });
   }
 }
+
+// The window title names the BOT, not just the app — with several bots open at
+// once, "Vibeconferencing" three times over in the window menu and app switcher
+// tells you nothing. Falls back to the profile name, then the app name.
+function applyWindowTitle() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  let name = null;
+  try {
+    // Same resolution the panel uses for its headline: the stored botName, else
+    // the SCHEMA DEFAULT (get-config fills unset prefs with it, which is why an
+    // untouched bot reads "Jimmy" on screen). Falling straight through to the
+    // profile name here would title the window differently from what it shows.
+    name = store.get('botName') || require('./preferences-schema').PREFERENCES.botName?.default;
+  } catch { /* store/schema not ready */ }
+  name = String(name || appProfile || '').trim();
+  try { mainWindow.setTitle(name ? `${name} — Vibeconferencing` : 'Vibeconferencing'); } catch { /* gone */ }
+}
+
+let warnedZoomClamped = false;
 
 function layoutViews() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -4128,6 +4146,18 @@ function layoutViews() {
     { width, height },
     { panelWidth: PANEL_WIDTH, inCall: botViewInCall },
   );
+  // computeLayout reports `clamped` when the panel got too narrow for the zoom
+  // trick to hold Meet's virtual viewport steady — Chromium's page zoom bottoms
+  // out at 0.25, so below ~294px Meet gets a genuinely narrower viewport and
+  // REFLOWS, which breaks caption scraping and every DOM selector. That failure
+  // is silent and mid-call, so say something. Once per process; it can only
+  // change if PANEL_WIDTH does.
+  if (l.clamped && !warnedZoomClamped) {
+    warnedZoomClamped = true;
+    console.warn(`[electron] PANEL_WIDTH ${PANEL_WIDTH} is below the ~294px floor: `
+      + 'Meet zoom is clamped at its minimum, so Meet will reflow and caption '
+      + 'scraping/selectors may break.');
+  }
   if (l.panelBounds && panelView && !panelView.webContents.isDestroyed()) {
     panelView.setBounds(l.panelBounds);
   }
@@ -4398,6 +4428,38 @@ function activateMeetProvider() {
   layoutViews();
 }
 
+// Let the avatar banner run to the very top of the window, behind the window
+// controls, where the platform supports it. Gated because support is uneven:
+//
+//   macOS   — 'hiddenInset' floats the traffic lights over our content. The good
+//             one, and the only value that does this on mac.
+//   Windows — 'hiddenInset' is IGNORED (normal frame), so use 'hidden' plus
+//             titleBarOverlay, which draws the native min/max/close over the
+//             content. Colours match the banner's default gradient top.
+//   Linux   — left with a standard frame deliberately. 'hidden' there removes
+//             the caption buttons entirely, and frameless drag/resize behaviour
+//             varies across GNOME/KDE, so this wants testing on a real desktop
+//             before we ship it rather than a guess from here.
+//
+// Everywhere it's off, the window simply keeps its normal title bar and the
+// banner starts below it — the previous look, nothing broken.
+function titleBarOptions() {
+  if (process.platform === 'darwin') return { titleBarStyle: 'hiddenInset' };
+  if (process.platform === 'win32') {
+    return {
+      titleBarStyle: 'hidden',
+      titleBarOverlay: { color: '#1a237e', symbolColor: '#e8eaed', height: 32 },
+    };
+  }
+  return {};
+}
+
+// Does the window lack a normal title bar? Then the panel makes its top strip
+// draggable, since there's no OS bar left to grab.
+function hasHiddenTitleBar() {
+  return process.platform === 'darwin' || process.platform === 'win32';
+}
+
 function createMainWindow() {
   // Optional explicit window placement from CLI (--window-x/-y/-w/-h), used by
   // the multi-bot test launcher to tile windows in a grid. Setting x/y at
@@ -4405,21 +4467,30 @@ function createMainWindow() {
   // window server for some instances). Omitted → Electron centers as usual.
   const winX = cliArgs['window-x'] != null ? parseInt(cliArgs['window-x'], 10) : null;
   const winY = cliArgs['window-y'] != null ? parseInt(cliArgs['window-y'], 10) : null;
-  const winW = cliArgs['window-w'] != null ? parseInt(cliArgs['window-w'], 10) : null;
-  const winH = cliArgs['window-h'] != null ? parseInt(cliArgs['window-h'], 10) : null;
-  // An explicit --window-h means the caller is placing this window deliberately
-  // (the multi-bot test launcher tiles with --window-w/-h); leave it alone.
-  if (Number.isFinite(winH)) autoWindowHeight = false;
+  // NOTE: --window-w/-h are deliberately NOT honoured. The window is exactly the
+  // size its content needs — a fixed-width column, height derived from the panel
+  // — so an external size is something to fight, not respect. The test launcher
+  // already passes position only (it found that sizing "made each app fill its
+  // whole grid cell"), and honouring a height silently disabled auto-sizing:
+  // after a bot switch, which forwarded the old window's bounds, the new window
+  // froze at that height and stopped growing for the bot's view during a call.
   mainWindow = new BrowserWindow({
+    ...titleBarOptions(),
     // The app launches as a NARROW COLUMN (panel on top, shrunk Meet thumbnail
     // below) so it never looks like the user's own Meet window — Seth and new
     // users kept confusing the two. The Meet view is a scaled-down thumbnail (see
-    // bot-view-layout.js); a button pops it out to its own large window. Explicit
-    // CLI sizes (the multi-bot test launcher tiles with --window-w/-h) still win.
-    width: Number.isFinite(winW) ? winW : PANEL_WIDTH,
+    // bot-view-layout.js); a button pops it out to its own large window. The
+    // size is the app's to decide (see the note above) — only --window-x/-y are
+    // honoured, which is all the test launcher passes.
+    width: PANEL_WIDTH,
     // A provisional height: the panel reports its real content height as soon as
     // it lays out, and applyWindowHeight shrinks this to fit.
-    height: Number.isFinite(winH) ? winH : 820,
+    height: 820,
+    // Content-sized, so there is nothing for a user resize to mean: dragging the
+    // edge would just be undone by the next content change. The width is a fixed
+    // column the layout assumes (bot-view-layout is built around PANEL_WIDTH),
+    // and the height is derived — so let the app own both.
+    resizable: false,
     ...(Number.isFinite(winX) ? { x: winX } : {}),
     ...(Number.isFinite(winY) ? { y: winY } : {}),
     minWidth: PANEL_WIDTH,
@@ -4451,6 +4522,7 @@ function createMainWindow() {
   });
   mainWindow.addBrowserView(panelView);
   panelView.webContents.loadFile(path.join(__dirname, 'renderer', 'panel.html'));
+  applyWindowTitle();
 
   // --- macOS menu bar ---
   const template = [
@@ -5003,6 +5075,7 @@ function setupIPC() {
     // Live-apply the visual prefs the panel can set here (the agent path goes
     // through applyPref, which already pushes these). #316.
     if (key === 'emojiSet') pushEmojiSet(value);
+    if (key === 'botName') applyWindowTitle();
   });
 
   // Emoji graphics (#316) for the PANEL's avatar. Read here rather than in
@@ -5064,6 +5137,14 @@ function setupIPC() {
       panelView.webContents.send('avatar-emoji', { emoji });
     }
   });
+
+  // The panel needs to know whether it must provide its own drag handle.
+  ipcMain.handle('get-window-chrome', () => ({
+    // 'mac' | 'win' | null — the panel needs the PLATFORM, not just a boolean:
+    // macOS floats its controls top-LEFT (harmless under a centred name) while
+    // Windows draws them top-RIGHT, exactly where the settings gear lives.
+    hiddenTitleBar: hasHiddenTitleBar() ? (process.platform === 'darwin' ? 'mac' : 'win') : null,
+  }));
 
   ipcMain.handle('get-app-version', () => ({ version: app.getVersion(), packaged: app.isPackaged }));
 
@@ -5361,12 +5442,16 @@ function setupIPC() {
     }
 
     // #379: open the new profile window where THIS one is, not centered. The main
-    // window already honors --window-x/y/w/h (createMainWindow, used by the test
-    // launcher), so just forward the current window's bounds. Default + named.
+    // window honors --window-x/y (createMainWindow, as the test launcher uses),
+    // so forward just the current window's position. Default + named.
+    //
+    // POSITION ONLY. Size isn't ours to hand over: the window is a fixed-width
+    // column with a content-derived height, and createMainWindow ignores
+    // --window-w/-h for exactly that reason.
     try {
       if (mainWindow && !mainWindow.isDestroyed()) {
         const b = mainWindow.getBounds();
-        args = [...args, `--window-x=${b.x}`, `--window-y=${b.y}`, `--window-w=${b.width}`, `--window-h=${b.height}`];
+        args = [...args, `--window-x=${b.x}`, `--window-y=${b.y}`];
       }
     } catch { /* ignore — fall back to Electron's default centering */ }
 

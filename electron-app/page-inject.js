@@ -1383,10 +1383,28 @@
   const _getDisplayMedia = MediaDevices.prototype.getDisplayMedia;
 
   MediaDevices.prototype.getDisplayMedia = async function (constraints) {
-    console.debug('[bots-in-calls] *** getDisplayMedia CALLED ***');
+    console.debug('[bots-in-calls] *** getDisplayMedia CALLED ***', JSON.stringify(constraints));
     // In Electron, session.setDisplayMediaRequestHandler handles source selection.
     // In Chrome extension, fall through to native picker.
-    return _getDisplayMedia.call(navigator.mediaDevices, constraints);
+    //
+    // Ask for the board's audio on the bot's behalf. Meet DOES request audio,
+    // but with `windowAudio: "exclude"` and `systemAudio: "exclude"` — it only
+    // wants tab audio, which a window share isn't. Chromium honours that and
+    // drops the audio the main-process handler offers, so the whiteboard's
+    // track never reaches the stream no matter what the handler returns.
+    // Replacing the constraint with a plain `audio: true` clears the exclusions.
+    // Electron only: the extension path shows the real picker, where forcing
+    // audio would change what the user is prompted for.
+    const inElectron = typeof window.__vibeconf_getScreenShareSource === 'function';
+    if (inElectron) {
+      constraints = { ...(constraints || {}), audio: true };
+      if (!constraints.video) constraints.video = true; // audio-only requests are rejected
+    }
+    const stream = await _getDisplayMedia.call(navigator.mediaDevices, constraints);
+    console.log('[bots-in-calls] getDisplayMedia →',
+      stream.getVideoTracks().length, 'video,',
+      stream.getAudioTracks().length, 'audio track(s)');
+    return stream;
   };
 
   // ---------------------------------------------------------------------------

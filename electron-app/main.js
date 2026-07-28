@@ -19,6 +19,14 @@ const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionL
 // byte-identical to the prior literals — same wire.
 const { CALL_EVENTS, CALL_COMMANDS } = require('./call-provider.js');
 
+// Let the shared board play sound unprompted. Now that the whiteboard window's
+// audio is captured into the screen share, a board pointed at a page with a
+// <video>/<audio> would otherwise sit silent: Chromium's autoplay policy needs a
+// user gesture, and nobody can click an off-screen capture window. (The app's own
+// executeJavaScript calls pass userGesture:true, so only externally-loaded URLs
+// were affected.) Must run before app ready to take effect.
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+
 // Git commit + dirty flag for the session-log header. Works when running from
 // source (dev: __dirname is inside the repo); returns 'n/a' in a packaged app
 // (no .git in the asar) or if git isn't available. Soft-fail, never throws.
@@ -2556,6 +2564,20 @@ function configureMeetSession(sess) {
 
     if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
       try {
+        // Audio for the shared board. Electron's Streams.audio takes a
+        // WebFrameMain and captures that frame's audio — so anything the
+        // whiteboard page plays (a <video>, a sound effect) reaches the call.
+        // Cross-platform, no Chromium feature flags, unlike system loopback
+        // (which is Windows-only in Electron 33 and is a separate problem for
+        // the full-screen share path above).
+        //
+        // enableLocalEcho stays at its default false: the bot's own speakers
+        // must stay silent or the board's audio would bleed back through the
+        // OS mic. Meet's mic pipeline mangles music/effects (see play_audio's
+        // tool description), which is exactly why this path exists.
+        const wbAudio = !whiteboardWindow.webContents.isDestroyed()
+          ? whiteboardWindow.webContents.mainFrame
+          : null;
         const sources = await desktopCapturer.getSources({
           types: ['window'],
           thumbnailSize: { width: 0, height: 0 },
@@ -2573,13 +2595,16 @@ function configureMeetSession(sess) {
         if (!source) source = candidates.find(s => s.name.startsWith(wbTitle));
 
         if (source) {
-          console.log('[electron] Matched whiteboard source:', source.id, source.name);
-          callback({ video: source });
+          console.log('[electron] Matched whiteboard source:', source.id, source.name,
+            '· audio:', wbAudio ? 'whiteboard frame' : 'none');
+          callback(wbAudio ? { video: source, audio: wbAudio } : { video: source });
           return;
         }
 
         console.warn('[electron] No matching whiteboard source — using webContents fallback (avoiding main window).');
-        callback({ video: whiteboardWindow.webContents });
+        callback(wbAudio
+          ? { video: whiteboardWindow.webContents, audio: wbAudio }
+          : { video: whiteboardWindow.webContents });
       } catch (err) {
         console.error('[electron] Display media error:', err);
         callback({});

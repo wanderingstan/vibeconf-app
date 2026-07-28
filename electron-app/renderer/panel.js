@@ -879,18 +879,22 @@ updateJoinBtnState(); // paint the initial label (the markup ships a neutral one
 // becomes the handle. The stylesheet does the rest.
 api.invoke('get-window-chrome').then((c) => {
   if (c?.hiddenTitleBar) document.body.dataset.titlebar = c.hiddenTitleBar; // 'mac' | 'win'
-  // "Download more macOS voices…" opens macOS System Settings → Spoken Content.
-  // There is nothing behind it anywhere else, so hide it off macOS rather than
-  // offer a link that can only fail.
-  hideMacVoicesLinkUnless(c?.platform === 'darwin');
+  // "Download more voices…" opens the OS pane that installs them: Spoken
+  // Content on macOS, Settings → Speech on Windows. Nothing is behind it
+  // anywhere else, so hide it there rather than offer a link that can only fail.
+  paintMoreVoicesLink(c?.platform);
 }).catch(() => {
   // Platform unknown — better a missing shortcut than a dead one.
-  hideMacVoicesLinkUnless(false);
+  paintMoreVoicesLink('');
 });
 
-function hideMacVoicesLinkUnless(isMac) {
+function paintMoreVoicesLink(platform) {
   const el = document.getElementById('macVoicesLink');
-  if (el && !isMac) el.style.display = 'none';
+  if (!el) return;
+  const osName = platform === 'darwin' ? 'macOS' : platform === 'win32' ? 'Windows' : '';
+  if (!osName) { el.style.display = 'none'; return; }
+  const link = document.getElementById('openVoiceSettingsBtn');
+  if (link) link.textContent = `Download more ${osName} voices…`;
 }
 
 // --- Window sizing --------------------------------------------------------
@@ -2161,14 +2165,17 @@ ttsVoiceIdInput.addEventListener('change', () => {
 
 // #340: standard macOS voices are mostly robotic — keep only a couple tolerable
 // ones ("Daniel", "Samantha", "Karen") in the main group; the rest drop to "Other".
+// Windows' SAPI voices arrive pre-tiered (tier 1) and never hit this list — see
+// system-voices.js for why they aren't demoted.
 // DUPLICATED in mcp-server/server.js (the agent's list_voices) and
 // electron-app/renderer/onboarding.js — keep all three in sync.
 // TODO(#342): single-source this + the merge logic behind one /api/voices endpoint.
 const WHITELISTED_MACOS_STANDARD = ['Daniel', 'Samantha', 'Karen'];
 
-// Unified voice picker: merge macOS + ElevenLabs + Voicebox into one dropdown,
-// grouped Voicebox → ElevenLabs → macOS(good) → Other, so the best voices are up
-// top. Option value encodes the provider: "vb:<id>" / "el:<id>" / "mac:<name>".
+// Unified voice picker: merge the OS's built-in voices + ElevenLabs + Voicebox
+// into one dropdown, grouped Voicebox → ElevenLabs → built-in(good) → Other, so
+// the best voices are up top. Option value encodes the provider: "vb:<id>" /
+// "el:<id>" / "mac:<name>" ("mac:" is the historical prefix for "built-in").
 // Show (or clear) why the ElevenLabs voice list came back empty. Only the
 // actionable cases are worth a line under the picker — a missing/rejected key
 // is already obvious from the key field, but "valid key, wrong scope" is not
@@ -2187,8 +2194,8 @@ async function populateUnifiedVoices(config) {
   const sel = unifiedVoiceSelect;
   if (!sel) return;
   const apiKey = (ttsApiKeyInput?.value || config?.ttsApiKey || '').trim();
-  const [macos, voicebox, elevenResult] = await Promise.all([
-    api.invoke('list-macos-voices').catch(() => []),
+  const [systemResult, voicebox, elevenResult] = await Promise.all([
+    api.invoke('list-system-voices').catch(() => ({ platform: '', voices: [] })),
     api.invoke('list-voicebox-profiles').catch(() => []),
     apiKey
       ? api.invoke('list-elevenlabs-voices', apiKey).catch(() => ({ voices: [], error: null }))
@@ -2239,14 +2246,18 @@ async function populateUnifiedVoices(config) {
     value: 'el:' + v.id,
     text: v.category && v.category !== 'premade' ? `${v.name} · ${v.category}` : v.name,
   })));
-  const macList = Array.isArray(macos) ? macos : [];
-  const tierOf = (name) => (/\(Premium\)/i.test(name) ? 0 : /\(Enhanced\)/i.test(name) ? 1 : 2);
+  // main tiers the voices (0 Premium / 1 Enhanced-or-SAPI / 2 plain); tierOf is
+  // the fallback for the shape older builds returned.
+  const sysList = Array.isArray(systemResult?.voices) ? systemResult.voices : [];
+  const osName = systemResult?.platform === 'win32' ? 'Windows'
+    : systemResult?.platform === 'darwin' ? 'macOS' : 'system';
+  const tierOf = (v) => (v.tier != null ? v.tier : /\(Premium\)/i.test(v.name) ? 0 : /\(Enhanced\)/i.test(v.name) ? 1 : 2);
   const whitelisted = (name) => WHITELISTED_MACOS_STANDARD.some((w) => name === w || name.startsWith(w + ' '));
-  addGroup('Built-in (macOS)', macList
-    .filter((v) => tierOf(v.name) < 2 || whitelisted(v.name))
+  addGroup(`Built-in (${osName})`, sysList
+    .filter((v) => tierOf(v) < 2 || whitelisted(v.name))
     .map((v) => ({ value: 'mac:' + v.name, text: `${v.name} (${v.locale})` })));
-  addGroup('Other built-in (lower quality)', macList
-    .filter((v) => tierOf(v.name) === 2 && !whitelisted(v.name))
+  addGroup('Other built-in (lower quality)', sysList
+    .filter((v) => tierOf(v) === 2 && !whitelisted(v.name))
     .map((v) => ({ value: 'mac:' + v.name, text: `${v.name} (${v.locale})` })));
 
   if (!sel.options.length) {
@@ -2255,8 +2266,8 @@ async function populateUnifiedVoices(config) {
 }
 
 // Audition a voice through the LOCAL speakers when it's picked — main synthesizes
-// a short sample and returns a data URL we play here (mirrors the macOS `say`
-// preview for ElevenLabs + Voicebox). Best-effort; stays quiet on failure.
+// a short sample and returns a data URL we play here (mirrors the built-in
+// voice preview for ElevenLabs + Voicebox). Best-effort; stays quiet on failure.
 let _voiceSampleAudio = null;
 async function previewVoiceSample(opts) {
   try {

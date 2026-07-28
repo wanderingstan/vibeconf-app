@@ -181,7 +181,8 @@ api.on('claude-ready', () => { if (steps[i] === 'claude') paintClaude({ installe
 window.addEventListener('focus', () => { if (steps[i] === 'claude') loadClaude(); });
 
 // ── voice picker ───────────────────────────────────────────────────────────
-// Mirrors the panel's unified picker: merge macOS + ElevenLabs + Voicebox into
+// Mirrors the panel's unified picker: merge the OS's built-in voices (`say` on
+// macOS, SAPI on Windows) + ElevenLabs + Voicebox into
 // one dropdown, value = "mac:<name>" / "el:<id>" / "vb:<id>". Persist via
 // update-tts-config (same as the panel) and audition through the local speakers
 // via synth-voice-sample (NOT play-speech-test — that only plays into a live call).
@@ -190,8 +191,8 @@ async function populateVoices(cfg) {
   const sel = $('voiceSelect');
   if (!sel) return;
   const apiKey = ($('elKey').value || '').trim();
-  const [macos, voicebox, elevenResult] = await Promise.all([
-    api.invoke('list-macos-voices').catch(() => []),
+  const [systemResult, voicebox, elevenResult] = await Promise.all([
+    api.invoke('list-system-voices').catch(() => ({ platform: '', voices: [] })),
     api.invoke('list-voicebox-profiles').catch(() => []),
     apiKey
       ? api.invoke('list-elevenlabs-voices', apiKey).catch(() => ({ voices: [], error: null }))
@@ -237,15 +238,19 @@ async function populateVoices(cfg) {
     value: 'el:' + v.id,
     text: v.category && v.category !== 'premade' ? `${v.name} · ${v.category}` : v.name,
   })));
-  const macList = Array.isArray(macos) ? macos : [];
-  const tierOf = (n) => (/\(Premium\)/i.test(n) ? 0 : /\(Enhanced\)/i.test(n) ? 1 : 2);
+  const sysList = Array.isArray(systemResult?.voices) ? systemResult.voices : [];
+  const osName = systemResult?.platform === 'win32' ? 'Windows'
+    : systemResult?.platform === 'darwin' ? 'macOS' : 'system';
+  // main tiers them (0 Premium / 1 Enhanced-or-SAPI / 2 plain); the regex is the
+  // fallback for the shape older builds returned.
+  const tierOf = (v) => (v.tier != null ? v.tier : /\(Premium\)/i.test(v.name) ? 0 : /\(Enhanced\)/i.test(v.name) ? 1 : 2);
   // Keep in sync with WHITELISTED_MACOS_STANDARD in panel.js / mcp-server/server.js.
   const white = (n) => ['Daniel', 'Samantha', 'Karen'].some((w) => n === w || n.startsWith(w + ' '));
-  addGroup('Built-in (macOS)', macList
-    .filter((v) => tierOf(v.name) < 2 || white(v.name))
+  addGroup(`Built-in (${osName})`, sysList
+    .filter((v) => tierOf(v) < 2 || white(v.name))
     .map((v) => ({ value: 'mac:' + v.name, text: `${v.name} (${v.locale})` })));
-  addGroup('Other built-in (lower quality)', macList
-    .filter((v) => tierOf(v.name) === 2 && !white(v.name))
+  addGroup('Other built-in (lower quality)', sysList
+    .filter((v) => tierOf(v) === 2 && !white(v.name))
     .map((v) => ({ value: 'mac:' + v.name, text: `${v.name} (${v.locale})` })));
   if (!sel.options.length) sel.innerHTML = '<option value="mac:Daniel">Daniel (default)</option>';
 }

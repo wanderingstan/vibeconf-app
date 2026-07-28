@@ -1598,13 +1598,15 @@ shareWhiteboardBtn.addEventListener('click', async () => {
 // ---------------------------------------------------------------------------
 
 const shareWindowToggleBtn = document.getElementById('shareWindowToggleBtn');
-const shareWindowHint = document.getElementById('shareWindowHint');
 
 function applyShareWindowState({ exists, visible, lockedVisible } = {}) {
   if (!shareWindowToggleBtn) return;
+  // Lives in the bot's-view bar next to "Pop out": both are the bot's own
+  // windows, and that bar is where you look when you want at one of them.
+  // Only present while a board window exists — there is nothing to toggle
+  // otherwise, and an always-on button would imply a share that isn't running.
   shareWindowToggleBtn.style.display = exists ? '' : 'none';
-  if (shareWindowHint) shareWindowHint.style.display = exists ? '' : 'none';
-  shareWindowToggleBtn.textContent = visible ? 'Hide share window' : 'Show share window';
+  shareWindowToggleBtn.textContent = visible ? '🖥 Hide share' : '🖥 Show share';
   // While a live share is capturing the WINDOW, hiding it would black out what
   // the room sees — say so on the button rather than failing on click.
   shareWindowToggleBtn.disabled = !!lockedVisible;

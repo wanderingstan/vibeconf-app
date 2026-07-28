@@ -10,9 +10,15 @@
 # there is a real decision, not a detail). Build the Mac locally with `pnpm dist`
 # and attach it to the same draft:
 #
-#     gh release upload v0.7.0-beta63 electron-app/dist/*.dmg \
-#                                       electron-app/dist/*-mac.zip \
-#                                       electron-app/dist/latest-mac.yml
+#     V=0.7.0-beta63
+#     gh release upload "v$V" electron-app/dist/*"$V"*.dmg \
+#                             electron-app/dist/*"$V"*-mac.zip \
+#                             electron-app/dist/latest-mac.yml
+#
+# Glob on the VERSION, not just the extension. dist/ is not cleaned between
+# builds, so a bare `dist/*.dmg` also matches every previous release still
+# sitting there and quietly uploads a stale build onto the new release — hit
+# for real cutting v0.8.0-beta1, with v0.7.0-beta66 still in dist/.
 #
 # All three matter: Squirrel.Mac updates from the .zip (not the .dmg), and
 # latest-mac.yml is the feed that points at it. Upload the .dmg alone and macOS

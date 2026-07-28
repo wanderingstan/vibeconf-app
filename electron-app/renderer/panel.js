@@ -936,13 +936,13 @@ Promise.all([
   const profileEl = document.getElementById('settingsProfileName');
   if (profileEl) {
     const name = profile || 'Default';
-    profileEl.textContent = 'Profile: ' + name + (port ? ' · port ' + port : '');
+    profileEl.textContent = 'Bot profile: ' + name + (port ? ' · port ' + port : '');
   }
   updateBotNameBig();
 }).catch(() => {
   // Don't strand the header on its "…" placeholder if the lookup fails.
   const profileEl = document.getElementById('settingsProfileName');
-  if (profileEl) profileEl.textContent = 'Profile: Default';
+  if (profileEl) profileEl.textContent = 'Bot profile: Default';
 });
 
 // --- Profile switcher (#282): Chrome-style list + launch/focus. -------------
@@ -1186,14 +1186,14 @@ function renderProfileMenu(data) {
 
   // #379: discoverability hint for the additive path.
   const hint = document.createElement('div');
-  hint.textContent = '⌥-click a profile to open it in a new window instead';
+  hint.textContent = '⌥-click a bot profile to open it in a new window instead';
   hint.style.cssText = 'padding:4px 8px 2px;color:#5f6368;font-size:10px';
   profileMenu.appendChild(hint);
 
-  // Debugging help: reveal the profiles folder so the user can delete/rename
+  // Debugging help: reveal the bot-profiles folder so the user can delete/rename
   // profile dirs directly (#282).
   const folder = document.createElement('div');
-  folder.textContent = '📂 Open profiles folder';
+  folder.textContent = '📂 Open bot profiles folder';
   folder.style.cssText = 'padding:6px 8px;color:#9aa0a6;cursor:pointer';
   folder.onmouseenter = () => { folder.style.background = '#3c4043'; };
   folder.onmouseleave = () => { folder.style.background = ''; };

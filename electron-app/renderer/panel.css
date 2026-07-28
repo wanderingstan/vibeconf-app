@@ -650,7 +650,12 @@ button.auth-action-btn:hover:not(:disabled) {
 }
 .bot-hero::before {
   top: 0; height: 92px;
-  background: linear-gradient(to bottom, rgba(0,0,0,0.55), rgba(0,0,0,0));
+  /* 0.35, down from 0.55. At 0.55 this composited to roughly #1C364E over a
+     #4079AF sky — near black exactly where the artwork is most saturated, so a
+     blue-sky background read as washed out at the top of the window. The old
+     value only looked fine because the stock background was near-black anyway.
+     0.35 still separates the name and gear from light artwork. */
+  background: linear-gradient(to bottom, rgba(0,0,0,0.35), rgba(0,0,0,0));
 }
 .bot-hero::after {
   bottom: 0; height: 60%;

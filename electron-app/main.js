@@ -11,6 +11,7 @@ const { APP_LEVEL_KEYS, ScopedStore, migrateAppLevelKeys } = require('./config-s
 const profileManager = require('./profile-manager.js');
 const { MEET } = require('./meet-selectors.js'); // pure data — safe in the main process
 const { resolveSvg } = require('./svg-resolver.js');
+const { SHARE_SIZE, resolveShareSize, keyEventsFor, clickEventsFor } = require('./share-surface.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
 // The call-provider contract. main.js is the consumer side: it subscribes to
 // CALL_EVENTS (provider → app) and issues CALL_COMMANDS (app → provider) by
@@ -753,6 +754,116 @@ const localServer = new globalThis.LocalServer({
     console.log('[local-server] Share audio', want ? 'muted' : 'unmuted');
     return { ok: true, muted: want };
   },
+  // Resize the shared board. Works with or without a live share: with one, the
+  // window resizes and the capture follows; without, the size is remembered and
+  // the next share opens at it. That symmetry is deliberate — a bot setting up
+  // a board shouldn't have to know whether it is already presenting.
+  onSetShareSize: async ({ width, height } = {}) => {
+    const resolved = resolveShareSize({ width, height }, shareSize);
+    shareSize = { width: resolved.width, height: resolved.height };
+
+    let applied = false;
+    if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
+      try {
+        // setContentSize, to match how the window was created: these numbers
+        // are the page's viewport, which is what the agent reasoned about and
+        // what participants actually see. Position is left alone — the window
+        // lives off-screen by design.
+        whiteboardWindow.setContentSize(shareSize.width, shareSize.height);
+        applied = true;
+      } catch (err) {
+        return { ok: false, error: 'Could not resize the shared window: ' + err.message };
+      }
+    }
+    console.log('[local-server] Share size →', shareSize.width + '×' + shareSize.height,
+      applied ? '(applied to the live share)' : '(saved for the next share)');
+    return { ok: true, width: shareSize.width, height: shareSize.height, applied, notes: resolved.notes };
+  },
+
+  // Click into the shared board.
+  //
+  // A selector is the preferred target: the bot can find one with inspect_dom,
+  // and it survives the board being a different size than the screenshot it was
+  // measured from. Raw x/y stays available for canvas-style content with no
+  // addressable elements.
+  onShareClick: async ({ selector, x, y, button, clickCount } = {}) => {
+    const wc = shareWebContents();
+    if (!wc) return { ok: false, error: 'Nothing is being shared to click' };
+
+    let point = { x, y };
+    if (selector) {
+      const found = await elementCenterInShare(wc, selector);
+      if (!found.ok) return found;
+      point = found;
+    }
+    const { events, error } = clickEventsFor({ ...point, button, clickCount });
+    if (error) return { ok: false, error };
+
+    for (const ev of events) wc.sendInputEvent(ev);
+    console.log('[local-server] Share click at', point.x + ',' + point.y,
+      selector ? '(' + selector + ')' : '', button || 'left');
+    return { ok: true, x: point.x, y: point.y, selector: selector || null };
+  },
+
+  // Type into the shared board. An optional selector is focused first, since
+  // keystrokes go to whatever the page considers focused — without that, text
+  // aimed at a form field lands on the body and vanishes.
+  onShareType: async ({ text, key, modifiers, selector } = {}) => {
+    const wc = shareWebContents();
+    if (!wc) return { ok: false, error: 'Nothing is being shared to type into' };
+
+    const { events, error } = keyEventsFor({ text, key, modifiers });
+    if (error) return { ok: false, error };
+
+    if (selector) {
+      const focused = await focusInShare(wc, selector);
+      if (!focused.ok) return focused;
+    }
+    // The window is off-screen and never focused by the user, so Chromium would
+    // otherwise route key events to a page that considers itself inactive.
+    // webContents.focus() marks the CONTENTS focused without raising or
+    // activating the window, so it can't steal the user's foreground app.
+    try { wc.focus(); } catch { /* best effort */ }
+
+    for (const ev of events) wc.sendInputEvent(ev);
+    console.log('[local-server] Share type:', key ? 'key ' + key : JSON.stringify(text),
+      (modifiers && modifiers.length) ? 'mods ' + modifiers.join('+') : '',
+      selector ? 'into ' + selector : '');
+    return { ok: true, typed: text ?? null, key: key ?? null, selector: selector || null };
+  },
+
+  // Show or hide the shared window's OS title bar.
+  //
+  // Electron fixes `frame` at construction, so this cannot be toggled on a live
+  // window — it has to be rebuilt. Rebuilding mid-share would drop the capture
+  // and force a re-present, so during a share the setting is saved and applied
+  // to the next one. Idle, the window is rebuilt immediately at the same URL,
+  // so the bot sees the change take effect straight away.
+  onSetShareTitleBar: async ({ visible } = {}) => {
+    const want = visible !== false;
+    if (want === shareTitleBar) {
+      return { ok: true, visible: want, applied: true, unchanged: true };
+    }
+    shareTitleBar = want;
+
+    const live = whiteboardWindow && !whiteboardWindow.isDestroyed();
+    if (live && localServer.sharing) {
+      console.log('[local-server] Share title bar →', want, '(deferred — a share is live)');
+      return { ok: true, visible: want, applied: false };
+    }
+    if (live) {
+      let url = null;
+      try { url = whiteboardWindow.webContents.getURL() || null; } catch { /* going away */ }
+      try { whiteboardWindow.close(); } catch { /* already gone */ }
+      whiteboardWindow = null;
+      if (url) whiteboardWindow = createWhiteboardWindow(url);
+      console.log('[local-server] Share title bar →', want, '(window rebuilt)');
+      return { ok: true, visible: want, applied: true };
+    }
+    console.log('[local-server] Share title bar →', want, '(saved for the next share)');
+    return { ok: true, visible: want, applied: false };
+  },
+
   onScrollShare: async ({ direction, amount } = {}) => {
     if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
       return { ok: false, error: 'Nothing is being shared to scroll' };
@@ -1948,6 +2059,61 @@ async function stopAllRunwayFaces(why) {
 
 let whiteboardWindow = null;
 let fullScreenShareRequested = false;
+
+// The shared window's webContents, or null if there is nothing to drive.
+function shareWebContents() {
+  if (!whiteboardWindow || whiteboardWindow.isDestroyed()) return null;
+  if (whiteboardWindow.webContents.isDestroyed()) return null;
+  return whiteboardWindow.webContents;
+}
+
+// Resolve a CSS selector to the CENTRE of the element, in the page's own CSS
+// pixels — which is the coordinate space sendInputEvent expects, and notably
+// NOT the pixel space of get_shared_screenshot (2× on a Retina host). Going
+// through the DOM sidesteps that mismatch entirely.
+async function elementCenterInShare(wc, selector) {
+  const js = `(() => {
+    const el = document.querySelector(${JSON.stringify(selector)});
+    if (!el) return { ok: false, error: 'no element matches ' + ${JSON.stringify(JSON.stringify(selector))} };
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) return { ok: false, error: 'element matches but has zero size (hidden?)' };
+    el.scrollIntoView({ block: 'center', inline: 'center' });
+    const r2 = el.getBoundingClientRect();
+    return { ok: true, x: Math.round(r2.left + r2.width / 2), y: Math.round(r2.top + r2.height / 2) };
+  })()`;
+  try {
+    const r = await wc.executeJavaScript(js, true);
+    return r?.ok ? r : { ok: false, error: r?.error || 'could not locate ' + selector };
+  } catch (err) {
+    return { ok: false, error: 'selector lookup failed: ' + err.message };
+  }
+}
+
+// Focus an element so typed keys land in it.
+async function focusInShare(wc, selector) {
+  const js = `(() => {
+    const el = document.querySelector(${JSON.stringify(selector)});
+    if (!el) return { ok: false, error: 'no element matches ' + ${JSON.stringify(JSON.stringify(selector))} };
+    if (typeof el.focus !== 'function') return { ok: false, error: 'element cannot be focused' };
+    el.focus();
+    return { ok: document.activeElement === el, error: 'element did not take focus' };
+  })()`;
+  try {
+    const r = await wc.executeJavaScript(js, true);
+    return r?.ok ? { ok: true } : { ok: false, error: r?.error || 'could not focus ' + selector };
+  } catch (err) {
+    return { ok: false, error: 'focus failed: ' + err.message };
+  }
+}
+
+// Size of the shared board. Held here rather than read off the window so a
+// size set BEFORE a share (or between shares) survives the window being
+// recreated — createWhiteboardWindow opens at whatever this says.
+let shareSize = { ...SHARE_SIZE.recommended };
+// Whether the shared window keeps its OS title bar. Default true: it labels the
+// share and is the only way to grab the window by hand. Electron fixes `frame`
+// at construction, so changing this recreates the window.
+let shareTitleBar = true;
 // How long the Present-now trigger waits for the bot to actually be in the call
 // before clicking, and how long it then keeps retrying. Both were effectively
 // one combined 10s budget, which a slow Meet join could consume on its own.
@@ -2008,13 +2174,33 @@ function createWhiteboardWindow(roomUrl) {
   // content as a tiny centered strip. A square surface fills better next to the
   // tile column. (The board content sizes itself in vw — see `.wb-shared` in
   // style.css — so it fills whatever aspect this is.)
+  //
+  // Square stays the RECOMMENDED default, but the bot can pick another shape —
+  // the board hosts arbitrary URLs, and a phone mock or a wide dashboard has its
+  // own natural aspect. shareSize carries whatever was last asked for.
   const win = new BrowserWindow({
-    width: 800,
-    height: 800,
+    width: shareSize.width,
+    height: shareSize.height,
+    // Size the CONTENT, not the window. What gets captured — and what the page
+    // lays out into — is the content area, so a bot asking for a 390x844 phone
+    // mock should get exactly that viewport rather than 28px less height once
+    // the title bar takes its cut. (Slightly taller board than the previous
+    // 800x772 content area; the width the whiteboard is tuned for is unchanged.)
+    useContentSize: true,
     x: sw + 100,
     y: sh + 100,
     title: 'Vibeconferencing Whiteboard',
     skipTaskbar: true,
+    // The title bar is captured along with the window, so it shows up in the
+    // share. That is the DEFAULT and usually wanted: it labels what people are
+    // looking at, and it is the only handle for dragging or minimising this
+    // window by hand. A bot can turn it off (set_share_title_bar) for a clean
+    // edge-to-edge capture — a screenshot, a mock, anything where a strip of
+    // macOS chrome would read as an accident.
+    //
+    // Construction-only in Electron, which is why this is a window-creation
+    // setting rather than something toggled on a live window.
+    frame: shareTitleBar,
     // Share the bot's identity partition (same as meetView) so this shared-screen
     // surface inherits ALL the bot's credentials — Google, Slack, and cached HTTP
     // Basic-Auth. Without this it landed on Electron's default session, so a site
@@ -2656,6 +2842,10 @@ function configureMeetSession(sess) {
     }
 
     if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
+      // callback() may only fire once, so track whether it has — the catch
+      // below must not answer again on behalf of a call that already did.
+      let answered = false;
+      const answer = (streams) => { answered = true; callback(streams); };
       try {
         // Audio for the shared board. Electron's Streams.audio takes a
         // WebFrameMain and captures that frame's audio — so anything the
@@ -2690,17 +2880,27 @@ function configureMeetSession(sess) {
         if (source) {
           console.log('[electron] Matched whiteboard source:', source.id, source.name,
             '· audio:', wbAudio ? 'whiteboard frame' : 'none');
-          callback(wbAudio ? { video: source, audio: wbAudio } : { video: source });
+          answer(wbAudio ? { video: source, audio: wbAudio } : { video: source });
           return;
         }
 
-        console.warn('[electron] No matching whiteboard source — using webContents fallback (avoiding main window).');
-        callback(wbAudio
-          ? { video: whiteboardWindow.webContents, audio: wbAudio }
-          : { video: whiteboardWindow.webContents });
+        // mainFrame, NOT webContents: Streams.video takes a WebFrameMain or a
+        // DesktopCapturerSource, and anything else throws
+        // "video must be a WebFrameMain or DesktopCapturerSource" — so this
+        // fallback threw instead of falling back, which went unnoticed because
+        // source matching almost always succeeds. Verified working in a call:
+        // frame capture of the board, 30fps, and it follows a resize.
+        console.warn('[electron] No matching whiteboard source — using frame-capture fallback (avoiding main window).');
+        answer(wbAudio
+          ? { video: whiteboardWindow.webContents.mainFrame, audio: wbAudio }
+          : { video: whiteboardWindow.webContents.mainFrame });
       } catch (err) {
+        // callback() is one-time: if the call above already fired and THEN threw
+        // (a bad video type does exactly that), calling it again raises
+        // "One-time callback was called more than once" as an unhandled
+        // rejection, burying the real error under a second one.
         console.error('[electron] Display media error:', err);
-        callback({});
+        if (!answered) { try { callback({}); } catch { /* already answered */ } }
       }
     } else {
       console.log('[electron] Display media request → no whiteboard window, denying');
@@ -3887,7 +4087,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '25';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '26';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}

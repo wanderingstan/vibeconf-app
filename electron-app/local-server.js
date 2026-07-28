@@ -76,7 +76,7 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref, extraRoutes } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
     // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
     // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
@@ -111,6 +111,10 @@ class LocalServer {
     this.onJoinSlack = onJoinSlack || (() => {});
     this.onLoadUrl = onLoadUrl || (() => {});
     this.onScrollShare = onScrollShare || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onSetShareSize = onSetShareSize || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onSetShareTitleBar = onSetShareTitleBar || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onShareClick = onShareClick || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onShareType = onShareType || (async () => ({ ok: false, error: 'not implemented' }));
     this.onSetShareAudio = onSetShareAudio || (async () => ({ ok: false, error: 'not implemented' }));
     this.onPlayAudio = onPlayAudio || (() => {});
     this.onFocusRequest = onFocusRequest || (() => {}); // raise this instance's window (profile switcher)
@@ -3639,6 +3643,29 @@ class LocalServer {
 
     // Handle set-share-audio — silence/restore the shared surface's sound
     // mid-share, without stopping and restarting the share.
+    if (data.meta?.action === 'set-share-title-bar') {
+      results.setShareTitleBar = await this.onSetShareTitleBar({ visible: data.meta.visible });
+    }
+
+    if (data.meta?.action === 'set-share-size') {
+      results.setShareSize = await this.onSetShareSize({ width: data.meta.width, height: data.meta.height });
+    }
+
+    // Drive the shared board: click and type into whatever it is showing.
+    if (data.meta?.action === 'share-click') {
+      results.shareClick = await this.onShareClick({
+        selector: data.meta.selector, x: data.meta.x, y: data.meta.y,
+        button: data.meta.button, clickCount: data.meta.clickCount,
+      });
+    }
+
+    if (data.meta?.action === 'share-type') {
+      results.shareType = await this.onShareType({
+        text: data.meta.text, key: data.meta.key,
+        modifiers: data.meta.modifiers, selector: data.meta.selector,
+      });
+    }
+
     if (data.meta?.action === 'set-share-audio') {
       results.setShareAudio = await this.onSetShareAudio({ muted: data.meta.muted });
     }

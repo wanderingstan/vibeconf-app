@@ -1029,7 +1029,7 @@ function inlinePrompt({ title, placeholder = '', initial = '', okLabel = 'OK' })
     cancel.style.cssText = 'background:none;border:1px solid #5f6368;color:#9aa0a6;border-radius:18px;padding:6px 14px;cursor:pointer';
     const ok = document.createElement('button');
     ok.textContent = okLabel;
-    ok.style.cssText = 'background:#8ab4f8;border:none;color:#202124;border-radius:18px;padding:6px 14px;font-weight:600;cursor:pointer';
+    ok.style.cssText = 'background:#7fded4;border:none;color:#202124;border-radius:18px;padding:6px 14px;font-weight:600;cursor:pointer';
     const close = (val) => { overlay.remove(); resolve(val); };
     cancel.onclick = () => close(null);
     ok.onclick = () => close(input.value.trim() || null);
@@ -1076,7 +1076,7 @@ function basicAuthPrompt({ host = '', realm = '' }) {
     cancel.style.cssText = 'background:none;border:1px solid #5f6368;color:#9aa0a6;border-radius:18px;padding:6px 14px;cursor:pointer';
     const ok = document.createElement('button');
     ok.textContent = 'Sign in';
-    ok.style.cssText = 'background:#8ab4f8;border:none;color:#202124;border-radius:18px;padding:6px 14px;font-weight:600;cursor:pointer';
+    ok.style.cssText = 'background:#7fded4;border:none;color:#202124;border-radius:18px;padding:6px 14px;font-weight:600;cursor:pointer';
     const close = (val) => { overlay.remove(); resolve(val); };
     const submit = () => { const u = userIn.value.trim(); close(u ? { user: u, password: passIn.value } : null); };
     cancel.onclick = () => close(null);
@@ -1185,7 +1185,7 @@ function renderProfileMenu(data) {
     const mark = document.createElement('span');
     mark.style.cssText = 'width:14px;flex:0 0 auto;text-align:center';
     if (p.isCurrent) {
-      mark.textContent = '✓'; mark.style.color = '#8ab4f8'; mark.title = 'current bot (this window)';
+      mark.textContent = '✓'; mark.style.color = '#7fded4'; mark.title = 'current bot (this window)';
     } else {
       mark.textContent = '●'; mark.style.color = p.running ? '#81c995' : '#5f6368';
       mark.title = p.running ? `running on port ${p.port}` : 'not running';
@@ -1223,7 +1223,7 @@ function renderProfileMenu(data) {
   }
   const add = document.createElement('div');
   add.textContent = '＋ New bot…';
-  add.style.cssText = 'padding:6px 8px;margin-top:4px;border-top:1px solid #5f6368;color:#8ab4f8;cursor:pointer';
+  add.style.cssText = 'padding:6px 8px;margin-top:4px;border-top:1px solid #5f6368;color:#7fded4;cursor:pointer';
   add.onclick = async (e) => {
     const additive = e.altKey; // ⌥ → open the new profile in a separate window
     closeProfileMenu();

@@ -9,11 +9,17 @@
 
 class TTSProvider {
   constructor(config = {}) {
-    this.provider = config.provider || 'auto'; // 'auto' picks elevenlabs if key set, else macos-say
+    this.provider = config.provider || 'auto'; // 'auto' picks elevenlabs if key set, else the OS voice
     this.apiKey = config.apiKey || '';
     this.voiceId = config.voiceId || 'CwhRBWXzGAHq8TQ4Fs17'; // "Roger" (premade, free tier)
     this.modelId = config.modelId || 'eleven_flash_v2_5'; // fast model (~75ms, 0.5 credits/char)
-    this.macosVoice = config.macosVoice || 'Daniel'; // macOS say voice
+    // The OS's built-in voice name: a `say` voice on macOS, a SAPI voice on
+    // Windows (#18). One key for both — the config/IPC name stayed `macosVoice`
+    // so existing saved settings keep working; only the meaning widened.
+    // On Windows the default is '' rather than a guessed name: SAPI then uses
+    // the machine's default voice, which is always installed. main.js seeds a
+    // real name into the store once it has enumerated them.
+    this.macosVoice = config.macosVoice || (process.platform === 'win32' ? '' : 'Daniel');
     this.voiceboxUrl = config.voiceboxUrl || 'http://127.0.0.1:17493'; // local Voicebox server
     this.voiceboxProfileId = config.voiceboxProfileId || '';
     this.voiceboxEngine = config.voiceboxEngine || 'kokoro'; // must match what the profile supports
@@ -58,10 +64,10 @@ class TTSProvider {
 
   _resolveProvider() {
     if (this.provider !== 'auto') return this.provider;
-    // Auto: use ElevenLabs if key is set, otherwise fall back to macOS say
+    // Auto: use ElevenLabs if a key is set, else the OS's built-in voice.
     if (this.apiKey) return 'elevenlabs';
     if (typeof require !== 'undefined' || typeof process !== 'undefined') return 'macos-say';
-    throw new Error('No TTS provider available. Set an ElevenLabs API key or run on macOS.');
+    throw new Error('No TTS provider available. Set an ElevenLabs API key or run on macOS/Windows.');
   }
 
   async _doSynthesize(text) {
@@ -69,8 +75,11 @@ class TTSProvider {
     switch (provider) {
       case 'elevenlabs':
         return this._elevenlabs(text);
+      // 'macos-say' is the historical id for "the OS's built-in voice" and is
+      // what's persisted in existing configs; 'system' is the honest alias.
       case 'macos-say':
-        return this._macosSay(text);
+      case 'system':
+        return this._systemSay(text);
       case 'voicebox':
         return this._voicebox(text);
       default:
@@ -132,13 +141,23 @@ class TTSProvider {
     return response.arrayBuffer();
   }
 
-  // Force the macOS `say` fallback for a single utterance, regardless of the
+  // Force the OS's built-in voice for a single utterance, regardless of the
   // configured provider. main.js calls this when ElevenLabs fails (e.g. quota
   // exhausted mid-call) so the bot stays audible with a degraded voice rather
-  // than going silent. Returns an ArrayBuffer or null. Throws if not on macOS.
+  // than going silent. Returns an ArrayBuffer or null. Throws on a platform
+  // with no built-in path (Linux — #21).
   async sayFallback(text) {
     if (!text?.trim()) return null;
-    return this._macosSay(text);
+    return this._systemSay(text);
+  }
+
+  // The OS's out-of-the-box voice: `say` on macOS, SAPI via PowerShell on
+  // Windows (#18). Both render to a temp file and hand back the same 16-bit
+  // 22.05kHz mono WAV, so everything downstream is platform-blind.
+  async _systemSay(text) {
+    if (process.platform === 'win32') return this._windowsSapi(text);
+    if (process.platform === 'darwin') return this._macosSay(text);
+    throw new Error(`No built-in TTS voice on ${process.platform} — set an ElevenLabs API key or run Voicebox`);
   }
 
   async _macosSay(text) {
@@ -173,6 +192,55 @@ class TTSProvider {
     } finally {
       // Clean up temp files
       try { fs.unlinkSync(aiffPath); } catch {}
+      try { fs.unlinkSync(wavPath); } catch {}
+    }
+  }
+
+  // Windows' equivalent of the `say` path (#18): SAPI 5 through PowerShell's
+  // System.Speech, which is present on every Windows install with nothing to
+  // download. Renders straight to a 16-bit 22.05kHz mono WAV — the same shape
+  // _macosSay returns after afconvert — so callers can't tell the two apart.
+  //
+  // The utterance goes through a temp .txt rather than the command line: it's
+  // arbitrary model output, and a file means no quoting rules, no length cap,
+  // and nothing that could be read as script. See system-voices.js.
+  async _windowsSapi(text) {
+    const { execFileSync } = require('child_process');
+    const os = require('os');
+    const path = require('path');
+    const fs = require('fs');
+    const { sapiRenderScript, powerShellArgs } = require('./system-voices.js');
+
+    // pid + random, for the same reason as _macosSay: os.tmpdir() is shared by
+    // every bot on the machine, so a timestamp alone collides across profiles.
+    const uniq = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const txtPath = path.join(os.tmpdir(), `vibeconf-tts-${uniq}.txt`);
+    const wavPath = path.join(os.tmpdir(), `vibeconf-tts-${uniq}.wav`);
+
+    try {
+      fs.writeFileSync(txtPath, text, 'utf8');
+      const script = sapiRenderScript({
+        textPath: txtPath,
+        wavPath,
+        voice: this.macosVoice, // stored key is historical; it holds the SAPI name here
+      });
+      // PowerShell's cold start is ~0.5-1s on top of synthesis, so this gets a
+      // longer leash than `say`'s 15s.
+      try {
+        execFileSync('powershell.exe', powerShellArgs(script), { timeout: 20000, stdio: ['ignore', 'ignore', 'pipe'] });
+      } catch (err) {
+        // execFileSync's own message is just "Command failed"; PowerShell's is
+        // on stderr, and it's the only thing that says WHICH part broke.
+        const detail = String(err.stderr || '').trim().split('\n')[0] || err.message;
+        throw new Error(`Windows SAPI synthesis failed: ${detail}`);
+      }
+
+      if (!fs.existsSync(wavPath)) throw new Error('Windows SAPI wrote no audio file');
+      const buffer = fs.readFileSync(wavPath);
+      if (!buffer.length) throw new Error('Windows SAPI produced an empty WAV');
+      return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+    } finally {
+      try { fs.unlinkSync(txtPath); } catch {}
       try { fs.unlinkSync(wavPath); } catch {}
     }
   }

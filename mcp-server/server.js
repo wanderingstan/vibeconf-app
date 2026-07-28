@@ -23,7 +23,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { execSync } from "child_process";
+import { execSync, execFileSync } from "child_process";
 import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
@@ -558,8 +558,65 @@ function isElevenLabsActive() {
   return !!config.ttsApiKey;
 }
 
-// Parse `say -v '?'` into [{ name, locale, sample, tier }], quality first
-// (Premium > Enhanced > plain), English first, then name. Robust to the
+// The OS's built-in voices as [{ name, locale, sample, tier }], quality first
+// (Premium > Enhanced > plain), English first, then name.
+//
+// macOS reads `say -v '?'`; Windows has no `say`, so it asks SAPI through
+// PowerShell (#18) — the same two commands the app itself renders with.
+//
+// DUPLICATED from electron-app/system-voices.js on purpose: this file is copied
+// into the packaged app standalone (extraResources) and cannot require() into
+// electron-app/. Keep the two in sync, same as elevenLabsErrorText below.
+function listSystemVoices() {
+  if (process.platform === 'win32') return listSapiVoices();
+  if (process.platform !== 'darwin') return [];
+  return listMacosVoices();
+}
+
+// PowerShell that prints "Name|Culture|Gender" per installed SAPI voice, passed
+// via -EncodedCommand (base64 UTF-16LE) so execution policy never applies.
+function listSapiVoices() {
+  const script = [
+    `$ErrorActionPreference = 'Stop'`,
+    `[Console]::OutputEncoding = [Text.Encoding]::UTF8`,
+    `Add-Type -AssemblyName System.Speech`,
+    `$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer`,
+    `foreach ($v in $synth.GetInstalledVoices()) {`,
+    `  if (-not $v.Enabled) { continue }`,
+    `  $i = $v.VoiceInfo`,
+    `  Write-Output ("{0}|{1}|{2}" -f $i.Name, $i.Culture.Name, $i.Gender)`,
+    `}`,
+    `$synth.Dispose()`,
+  ].join('\n');
+  let output;
+  try {
+    // PowerShell's cold start needs more headroom than `say`'s 5s.
+    output = execFileSync('powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+      { encoding: 'utf-8', timeout: 15000 });
+  } catch { return []; }
+  const voices = [];
+  for (const line of String(output).split('\n')) {
+    const parts = line.trim().split('|');
+    if (parts.length < 2) continue;
+    const name = parts[0].trim();
+    if (!name) continue;
+    const gender = (parts[2] || '').trim();
+    // tier 1, not 2: David/Zira are all most Windows machines have, so demoting
+    // them to "lower quality" would leave the recommended group empty.
+    voices.push({
+      name,
+      locale: parts[1].trim().replace('-', '_') || 'en_US',
+      sample: gender && gender !== 'NotSet' ? gender : '',
+      tier: 1,
+    });
+  }
+  const seen = new Set();
+  return voices.filter(v => (seen.has(v.name) ? false : seen.add(v.name)))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Parse `say -v '?'` into [{ name, locale, sample, tier }]. Robust to the
 // parenthetical multi-locale voices ("Eddy (English (US)) en_US") and numeric
 // locales ("Majed ar_001") that the simple column regex drops.
 function listMacosVoices() {
@@ -652,7 +709,7 @@ async function listVoiceboxProfiles() {
 // --- list_voices ---
 server.tool(
   "list_voices",
-  "List available text-to-speech voices across all providers — Voicebox (if its local server is running), ElevenLabs (if an API key is configured), and the built-in macOS voices — matching what the settings picker shows. To use one, call set_voice with its EXACT name (e.g. 'Ava (Premium)') or id. Prefer Voicebox/ElevenLabs or the Premium/Enhanced macOS voices; the plain 'Other' macOS ones sound robotic.",
+  "List available text-to-speech voices across all providers — Voicebox (if its local server is running), ElevenLabs (if an API key is configured), and the operating system's built-in voices (macOS `say` voices, or Windows SAPI voices such as 'Microsoft Zira Desktop') — matching what the settings picker shows. To use one, call set_voice with its EXACT name (e.g. 'Ava (Premium)') or id. Prefer Voicebox/ElevenLabs or the Premium/Enhanced macOS voices; the plain 'Other' macOS ones sound robotic.",
   {},
   async () => {
     const config = readConfig();
@@ -660,8 +717,10 @@ server.tool(
 
     // Current voice, derived from the active provider.
     const usingVb = config.ttsProvider === 'voicebox' && config.voiceboxProfileId;
-    const usingMac = !usingVb && (config.ttsProvider === 'macos-say' || !isElevenLabsActive());
-    sections.push(`Current voice: ${usingVb ? `Voicebox profile ${config.voiceboxProfileId}` : usingMac ? `${config.macosVoice || 'Daniel'} (built-in macOS)` : 'ElevenLabs (see below)'}`);
+    const osLabel = process.platform === 'win32' ? 'Windows' : process.platform === 'darwin' ? 'macOS' : 'system';
+    const usingSys = !usingVb && (config.ttsProvider === 'macos-say' || !isElevenLabsActive());
+    const sysVoiceName = config.macosVoice || (process.platform === 'win32' ? 'the system default' : 'Daniel');
+    sections.push(`Current voice: ${usingVb ? `Voicebox profile ${config.voiceboxProfileId}` : usingSys ? `${sysVoiceName} (built-in ${osLabel})` : 'ElevenLabs (see below)'}`);
 
     // Voicebox (local TTS) — listed first when the server is up (#340), matching
     // the settings picker's ordering.
@@ -687,22 +746,30 @@ server.tool(
       }
     }
 
-    // Built-in macOS voices — always shown so the bot can pick a high-quality
+    // The OS's built-in voices — always shown so the bot can pick a decent
     // built-in voice even when an ElevenLabs key is set (e.g. to save EL quota).
-    const mac = listMacosVoices();
-    if (mac.length) {
+    const sys = listSystemVoices();
+    if (sys.length) {
       const fmt = (v) => `${v.name} (${v.locale})`;
-      const premium = mac.filter(v => v.tier === 0).map(fmt);
-      const enhanced = mac.filter(v => v.tier === 1).map(fmt);
-      const stdEn = mac.filter(v => v.tier === 2 && v.locale.startsWith('en'));
-      const stdWhitelisted = stdEn.filter(v => isWhitelistedStandard(v.name)).map(v => v.name);
-      const stdOther = stdEn.filter(v => !isWhitelistedStandard(v.name)).map(v => v.name);
-      const lines = ['=== Built-in macOS voices ==='];
-      lines.push('★ HIGH QUALITY (recommended) — Premium: ' + (premium.length ? premium.join(', ') : '(none installed)'));
-      lines.push('★ HIGH QUALITY — Enhanced: ' + (enhanced.length ? enhanced.join(', ') : '(none installed)'));
-      if (stdWhitelisted.length) lines.push(`Decent standard: ${stdWhitelisted.join(', ')}`);
-      if (stdOther.length) lines.push(`Other (lower quality): ${stdOther.join(', ')}`);
-      lines.push('To use one, call set_voice with the EXACT name including any "(Premium)"/"(Enhanced)" suffix.');
+      const lines = [`=== Built-in ${osLabel} voices ===`];
+      if (process.platform === 'win32') {
+        // SAPI has no Premium/Enhanced tiering — it's one flat list, and every
+        // entry is a voice the machine can actually speak in.
+        lines.push(sys.map(fmt).join(', '));
+        lines.push('These are the machine\'s installed SAPI voices; more can be added in Settings → Time & Language → Speech.');
+        lines.push('To use one, call set_voice with the EXACT name (e.g. "Microsoft Zira Desktop").');
+      } else {
+        const premium = sys.filter(v => v.tier === 0).map(fmt);
+        const enhanced = sys.filter(v => v.tier === 1).map(fmt);
+        const stdEn = sys.filter(v => v.tier === 2 && v.locale.startsWith('en'));
+        const stdWhitelisted = stdEn.filter(v => isWhitelistedStandard(v.name)).map(v => v.name);
+        const stdOther = stdEn.filter(v => !isWhitelistedStandard(v.name)).map(v => v.name);
+        lines.push('★ HIGH QUALITY (recommended) — Premium: ' + (premium.length ? premium.join(', ') : '(none installed)'));
+        lines.push('★ HIGH QUALITY — Enhanced: ' + (enhanced.length ? enhanced.join(', ') : '(none installed)'));
+        if (stdWhitelisted.length) lines.push(`Decent standard: ${stdWhitelisted.join(', ')}`);
+        if (stdOther.length) lines.push(`Other (lower quality): ${stdOther.join(', ')}`);
+        lines.push('To use one, call set_voice with the EXACT name including any "(Premium)"/"(Enhanced)" suffix.');
+      }
       sections.push(lines.join('\n'));
     }
 
@@ -713,23 +780,26 @@ server.tool(
 // --- set_voice ---
 server.tool(
   "set_voice",
-  "Change the bot's text-to-speech voice. Use list_voices to see options. Pass the EXACT voice name — a built-in macOS voice (e.g. 'Ava (Premium)'), an ElevenLabs voice name/ID, or a Voicebox profile name/id. Matched in that order; the chosen voice becomes primary (its provider is forced, so e.g. a built-in voice wins even with an ElevenLabs key set). Saved across sessions; use the speak `voice` parameter for immediate effect this turn.",
+  "Change the bot's text-to-speech voice. Use list_voices to see options. Pass the EXACT voice name — a built-in OS voice (e.g. 'Ava (Premium)' on macOS, 'Microsoft Zira Desktop' on Windows), an ElevenLabs voice name/ID, or a Voicebox profile name/id. Matched in that order; the chosen voice becomes primary (its provider is forced, so e.g. a built-in voice wins even with an ElevenLabs key set). Saved across sessions; use the speak `voice` parameter for immediate effect this turn.",
   {
-    voice: z.string().describe("Exact voice name. Built-in macOS (e.g. 'Ava (Premium)', 'Samantha') or ElevenLabs voice name/ID."),
+    voice: z.string().describe("Exact voice name. Built-in OS voice (macOS 'Ava (Premium)' / 'Samantha', Windows 'Microsoft Zira Desktop') or ElevenLabs voice name/ID."),
   },
   async ({ voice }) => {
     try {
       const config = readConfig();
 
-      // Match a built-in macOS voice first (case-insensitive, exact) — lets the
-      // bot pick a high-quality built-in voice regardless of the EL key.
-      const mac = listMacosVoices();
-      const macMatch = mac.find(v => v.name.toLowerCase() === voice.toLowerCase());
-      if (macMatch) {
-        config.macosVoice = macMatch.name;
+      // Match a built-in OS voice first (case-insensitive, exact) — lets the
+      // bot pick a built-in voice regardless of the EL key. The stored keys are
+      // still named macosVoice/'macos-say' for config compatibility; on Windows
+      // they hold a SAPI voice name (#18).
+      const osLabel = process.platform === 'win32' ? 'Windows' : 'macOS';
+      const sys = listSystemVoices();
+      const sysMatch = sys.find(v => v.name.toLowerCase() === voice.toLowerCase());
+      if (sysMatch) {
+        config.macosVoice = sysMatch.name;
         config.ttsProvider = 'macos-say'; // force the built-in voice as primary
         writeConfig(config);
-        return { content: [{ type: "text", text: `Voice changed to the built-in macOS voice "${macMatch.name}". It's now your primary voice (ElevenLabs disabled until you switch back). Pass voice:"${macMatch.name}" to speak for immediate effect; the saved default applies on app restart.` }] };
+        return { content: [{ type: "text", text: `Voice changed to the built-in ${osLabel} voice "${sysMatch.name}". It's now your primary voice (ElevenLabs disabled until you switch back). Pass voice:"${sysMatch.name}" to speak for immediate effect; the saved default applies on app restart.` }] };
       }
 
       // Then a Voicebox profile (by name or id) — local TTS, forces provider (#340).

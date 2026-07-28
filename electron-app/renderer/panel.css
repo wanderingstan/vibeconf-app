@@ -423,14 +423,18 @@ button.screen-close {
   position: fixed; top: 8px; right: 8px; z-index: 20;
   width: 36px; height: 36px; padding: 0; margin: 0;
   display: inline-flex; align-items: center; justify-content: center;
-  border: none; cursor: pointer; color: #9aa0a6;
+  border: none; cursor: pointer;
   font-size: 19px; line-height: 1; border-radius: 50%;
-  /* Page colour rather than transparent: text scrolling beneath a bare glyph
-     is unreadable for both. */
-  background: rgba(32, 33, 36, 0.82);
-  backdrop-filter: blur(4px);
+  /* Filled blue, iOS-style: this is the affirmative "done" action, and it's the
+     same #8ab4f8/#202124 pairing as button.primary — one blue in the app rather
+     than a second one imported from iOS. Opaque, so no backdrop-filter is
+     needed to keep text scrolling underneath from showing through.
+     iOS greys this out until something has changed; we don't track a dirty
+     state (each control here saves as you touch it), so it stays blue. */
+  background: #8ab4f8;
+  color: #202124;
 }
-button.screen-close:hover:not(:disabled) { background: #3c4043; color: #e8eaed; }
+button.screen-close:hover:not(:disabled) { background: #aecbfa; color: #202124; }
 /* Windows draws its caption buttons top-right, over this; same 146px dodge the
    gear makes. macOS needs no vertical nudge — its controls are top-left. */
 body[data-titlebar="win"] button.screen-close { right: 146px; }

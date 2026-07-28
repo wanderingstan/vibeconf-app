@@ -2248,7 +2248,13 @@ function broadcastShareWindowState() {
 function createWhiteboardWindow(roomUrl) {
   // Re-read the preference each time: it is the user's standing choice, and the
   // window is rebuilt on every share.
-  try { shareWindowVisible = store.get('shareWindowVisible') === true; } catch { shareWindowVisible = false; }
+  try {
+    shareWindowVisible = store.get('shareWindowVisible') === true;
+  } catch (err) {
+    console.warn('[electron] Could not read shareWindowVisible:', err.message);
+    shareWindowVisible = false;
+  }
+  console.log('[electron] Share window will start', shareWindowVisible ? 'VISIBLE' : 'hidden');
 
   // Square share surface (#4): Meet stacks the participant tiles down the RIGHT
   // of a shared screen, so a 16:9 board wasted width behind the tiles and left the
@@ -2974,6 +2980,22 @@ function configureMeetSession(sess) {
         const wbAudio = !whiteboardWindow.webContents.isDestroyed()
           ? whiteboardWindow.webContents.mainFrame
           : null;
+        // A hidden board has no OS window to capture — it isn't in the window
+        // list at all — so ask for frame capture directly rather than searching,
+        // failing to match, and arriving here via the fallback. Same result, but
+        // the happy path stops logging "No matching whiteboard source", which
+        // reads as a failure to whoever debugs a share next.
+        if (!whiteboardWindow.isVisible()) {
+          console.log('[electron] Share window is hidden — capturing the page frame'
+            + (wbAudio ? ' (with audio)' : ''));
+          shareCaptureMode = 'frame';
+          setImmediate(broadcastShareWindowState);
+          answer(wbAudio
+            ? { video: whiteboardWindow.webContents.mainFrame, audio: wbAudio }
+            : { video: whiteboardWindow.webContents.mainFrame });
+          return;
+        }
+
         const sources = await desktopCapturer.getSources({
           types: ['window'],
           thumbnailSize: { width: 0, height: 0 },
@@ -2999,13 +3021,15 @@ function configureMeetSession(sess) {
           return;
         }
 
+        // Genuinely unexpected now: the window IS on screen but no source matched
+        // it. Frame capture still works, so recover rather than fail the share.
+        //
         // mainFrame, NOT webContents: Streams.video takes a WebFrameMain or a
         // DesktopCapturerSource, and anything else throws
         // "video must be a WebFrameMain or DesktopCapturerSource" — so this
         // fallback threw instead of falling back, which went unnoticed because
-        // source matching almost always succeeds. Verified working in a call:
-        // frame capture of the board, 30fps, and it follows a resize.
-        console.warn('[electron] No matching whiteboard source — using frame-capture fallback (avoiding main window).');
+        // source matching almost always succeeds.
+        console.warn('[electron] Visible share window matched NO capture source — falling back to frame capture (avoiding main window).');
         shareCaptureMode = 'frame';
         setImmediate(broadcastShareWindowState);
         answer(wbAudio

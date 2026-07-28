@@ -1,20 +1,37 @@
 # Cross-platform build validation (#468 tee-up).
 #
-# Builds the desktop app on Windows, macOS AND Linux on every push, so a change made
-# on a Mac can't silently break the other platforms. Builds are UNSIGNED — this is
+# Builds the desktop app on Windows, macOS AND Linux, so a change made on a Mac
+# can't silently break the other platforms. Builds are UNSIGNED — this is
 # validation, not release: no code-signing certs/secrets are used. When a Windows
 # Authenticode cert exists, add a signed release workflow separately.
 #
-# Cost note: macOS runners bill 10x minutes. If CI minutes get tight, narrow the
-# `push` trigger to `branches: [main]` (PRs still validate before merge).
+# Cost note: macOS runners bill 10x minutes and Windows 2x. Free on this repo
+# while it is public, but the triggers below are shaped so that stops mattering
+# if it ever goes private.
 
 name: build
 
 on:
+  # `main` ONLY, not every branch. With `branches: ["**"]` a push to a PR branch
+  # matched here AND under `pull_request`, so every commit built the full matrix
+  # TWICE — six jobs where three would do. Branch work is validated by the
+  # pull_request trigger; this push trigger is the post-merge safety net on main.
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
   workflow_dispatch:
+
+# One live run per branch/PR. Without this, pushing a follow-up commit leaves the
+# previous matrix building a commit nobody is waiting on any more — burning a
+# macOS runner at 10x to report on superseded code.
+#
+# `main` is deliberately excluded from cancellation (the `|| github.run_id` makes
+# each main run its own group): those runs are the record of whether a merged
+# commit builds, and cancelling one because the next merge landed would leave a
+# gap exactly where the history should be complete.
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:

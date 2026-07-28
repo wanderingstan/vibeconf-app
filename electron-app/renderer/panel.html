@@ -134,7 +134,21 @@
           <h1>Bot Settings</h1>
           <div id="settingsProfileName" class="settings-profile" title="The on-disk profile these settings belong to. Each profile has its own preferences, Google login, and storage.">…</div>
         </div>
-        <button id="backFromSettingsBtn" class="screen-close" title="Done — back to the bot (Esc)">&#10005;</button>
+        <!-- A checkmark, not an ✕ (iOS-style "done" affordance): leaving this
+             screen COMMITS what you changed — every control here saves as you
+             touch it — so the glyph should read as confirmation, not discard.
+             Drawn as SVG rather than the ✓ character: the glyph's weight and
+             baseline vary by platform font, and this needs to sit optically
+             centred in a 36px circle on both macOS and Windows. -->
+        <button id="backFromSettingsBtn" class="screen-close" aria-label="Done" title="Done — back to the bot (Esc)">
+          <!-- Sized so the check spans ~half the 36px circle, as Apple's does.
+               Both levers matter: the box is 26px AND the path runs the full
+               width of the viewBox — a bigger box alone would just scale up the
+               padding baked into a tight path. -->
+          <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true" focusable="false">
+            <path d="M4 12 L9.5 17.5 L20 6" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
       </div>
 
       <!-- Name first — it's the bot's identity and the thing the panel shows.

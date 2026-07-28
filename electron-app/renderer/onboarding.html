@@ -117,6 +117,9 @@
       <div class="hint">Don't have one? <a href="#" id="getKeyLink">Get a free key at elevenlabs.io →</a></div>
       <label for="voiceSelect">Voice <span style="color:#9aa0a6">(plays a sample when you pick one)</span></label>
       <select id="voiceSelect"><option value="mac:Samantha">Samantha (default)</option></select>
+      <!-- Why no ElevenLabs voices showed up, when the API told us. The common
+           surprise is a valid key that lacks the `voices_read` scope. -->
+      <div id="elVoiceError" style="display:none;font-size:11px;color:#fdd663;margin-top:4px;line-height:1.4"></div>
       <div class="hint">Prefer no account? You can download a free premium macOS voice in System&nbsp;Settings → Accessibility → Spoken&nbsp;Content, then pick it here.</div>
       <div class="hint">Or run <a href="#" id="voiceboxLink">Voicebox</a>, a free open-source local voice engine. Once it's running its voices show up in the list too.</div>
     </section>

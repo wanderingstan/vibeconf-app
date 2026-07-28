@@ -152,6 +152,10 @@
         <select id="unifiedVoice" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit">
           <option value="">Loading voices…</option>
         </select>
+        <!-- Why ElevenLabs voices are missing, when we know. A scoped key that
+             lacks `voices_read` 401s the list call while TTS still works, which
+             otherwise looks identical to "no key set". -->
+        <div id="elevenVoiceError" style="display:none;font-size:11px;color:#fdd663;margin-top:4px;line-height:1.4"></div>
         <div style="font-size:11px;color:#666;margin-top:2px">
           Every voice available right now, best first. ElevenLabs voices appear once a key is set in <strong>App Settings</strong> (⌘,); Voicebox voices when its local app is running.
           <a href="#" id="refreshVoicesBtn" style="color:#8ab4f8;text-decoration:underline">Refresh voices</a> ·

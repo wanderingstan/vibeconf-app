@@ -338,7 +338,7 @@ const localServer = new globalThis.LocalServer({
     const roomId = localServer.roomId;
     if (roomId) {
       const baseUrl = getWebsiteUrl();
-      const roomUrl = `${baseUrl}/room/${roomId}?mode=whiteboard`;
+      const roomUrl = whiteboardShareUrl(baseUrl, roomId);
 
       // If the whiteboard window was navigated to an external URL (via load-url),
       // navigate it back to the room page so it can receive SSE updates
@@ -619,7 +619,13 @@ const localServer = new globalThis.LocalServer({
                 JSON.stringify(base) + ', room=' + JSON.stringify(meetCode) + ')');
               return;
             }
-            const url = `${base}/room/${meetCode}?mode=whiteboard`;
+            // src=chat marks this as a link a PERSON will click, which is what
+            // lets the web page show a signup CTA here and never on the board
+            // we are screen-sharing. The two URLs used to be identical, so the
+            // page had no way to tell them apart — and the bot's capture window
+            // runs on a session with a plain Chrome user agent, so there was no
+            // passive signal to fall back on either.
+            const url = `${base}/room/${meetCode}?mode=whiteboard&src=chat`;
             // #241: the chat pane can be slow/flaky to open right after a share,
             // so retry a few times rather than failing on one bad attempt (the
             // user may only share once, so "retry on next share" wasn't enough).
@@ -1826,6 +1832,20 @@ function reloadWhiteboardWindow(reason) {
     return { ok: true };
   }
   return { ok: false, error: 'Nothing is being shared to reload' };
+}
+
+/**
+ * URL for the OFF-SCREEN window we capture as the bot's screen share.
+ *
+ * surface=share tells the web page this board is being broadcast, not read, so
+ * it suppresses the signup CTA that the chat link (src=chat) turns on. Getting
+ * this wrong paints a CTA into a live call's shared screen, so every caller
+ * that loads the capture window must come through here — the page cannot work
+ * it out on its own, since this window runs on the bot's session partition with
+ * a plain Chrome user agent and is indistinguishable from a real browser.
+ */
+function whiteboardShareUrl(baseUrl, roomId) {
+  return `${baseUrl}/room/${roomId}?mode=whiteboard&surface=share`;
 }
 
 function createWhiteboardWindow(roomUrl) {
@@ -6872,7 +6892,7 @@ function setupIPC() {
   // --- Whiteboard + screen share ---
   ipcMain.on('start-whiteboard-share', (_event, { meetCode }) => {
     const baseUrl = getWebsiteUrl();
-    const roomUrl = `${baseUrl}/room/${meetCode}?mode=whiteboard`;
+    const roomUrl = whiteboardShareUrl(baseUrl, meetCode);
 
     if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
       whiteboardWindow = createWhiteboardWindow(roomUrl);
@@ -6884,7 +6904,7 @@ function setupIPC() {
   // Combined: open whiteboard + trigger screen share in Meet
   ipcMain.handle('share-whiteboard', async (_event, { meetCode }) => {
     const baseUrl = getWebsiteUrl();
-    const roomUrl = `${baseUrl}/room/${meetCode}?mode=whiteboard`;
+    const roomUrl = whiteboardShareUrl(baseUrl, meetCode);
 
     // Open whiteboard window if not already open
     if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {

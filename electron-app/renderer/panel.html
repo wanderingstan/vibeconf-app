@@ -167,7 +167,6 @@
       <div class="field" id="botNameField">
         <label for="botName">Name</label>
         <input type="text" id="botName" value="Jimmy" />
-        <div class="helper-text">What this bot is called, here and in calls it joins as a guest.</div>
       </div>
 
       <div class="field">
@@ -181,12 +180,15 @@
         <div id="elevenVoiceError" style="display:none;font-size:11px;color:#fdd663;margin-top:4px;line-height:1.4"></div>
         <div style="font-size:11px;color:#666;margin-top:2px">
           Every voice available right now, best first. ElevenLabs voices appear once a key is set in <strong>App Settings</strong> (⌘,); Voicebox voices when its local app is running.
-          <a href="#" id="refreshVoicesBtn" style="color:#8ab4f8;text-decoration:underline">Refresh voices</a> ·
-          <a href="#" id="openVoiceSettingsBtn" style="color:#8ab4f8;text-decoration:underline">Download more macOS voices…</a>
+          <a href="#" id="refreshVoicesBtn" style="color:#8ab4f8;text-decoration:underline">Refresh voices</a><!--
+            The separator lives INSIDE the span with the link, so hiding it on
+            non-macOS doesn't leave a dangling " · ".
+       --><span id="macVoicesLink"> ·
+          <a href="#" id="openVoiceSettingsBtn" style="color:#8ab4f8;text-decoration:underline">Download more macOS voices…</a></span>
         </div>
       </div>
       <div class="field">
-        <label for="emojiSet">Avatar Emoji Set</label>
+        <label for="emojiSet">Emoji style</label>
         <select id="emojiSet" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit">
           <option value="native">Native (OS font)</option>
           <option value="twemoji">Twemoji (flat)</option>
@@ -194,7 +196,6 @@
           <option value="noto">Noto (Google)</option>
           <option value="fluent3d">Fluent 3D (Microsoft)</option>
         </select>
-        <div style="font-size:11px;color:#666;margin-top:2px">Graphics for the bot's face emoji. Twemoji is a distinct, consistent set shipped with the app (#316).</div>
       </div>
 
       <!-- Avatar background. The bot can already set this mid-call via
@@ -202,8 +203,13 @@
            old-fashioned path — see what's set, drop an image in, clear it. -->
       <div class="field">
         <label>Avatar Background</label>
-        <div id="avatarBgPreview" class="avatar-bg-preview">
-          <span class="avatar-bg-empty">Default animated gradient</span>
+        <!-- Two layers: the background art, and the bot's face over it — so this
+             previews the whole picture the call shows, not just the backdrop.
+             Separate elements because each is repainted independently (change
+             the emoji set and the art must survive, and vice versa). -->
+        <div id="avatarBgPreview" class="avatar-bg-preview is-default">
+          <div class="avatar-bg-preview-art"></div>
+          <div class="avatar-bg-preview-face">🙂</div>
         </div>
         <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
           <button id="chooseAvatarBgBtn" class="popout-btn">Choose image…</button>
@@ -211,7 +217,7 @@
           <span id="avatarBgStatus" style="font-size:11px;color:#81c995"></span>
         </div>
         <div style="font-size:11px;color:#666;margin-top:4px">
-          Shown behind the bot's face on its camera. The frame is 16:9 — an image of any shape is scaled to fill it and centre-cropped, so keep anything important near the middle. PNG, JPEG, GIF or WebP; the file is copied into this bot's settings, so moving it later is fine.
+          Cropped to 16:9, so keep the subject centred. SVG, PNG, JPEG, GIF or WebP.
         </div>
       </div>
 

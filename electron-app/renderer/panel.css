@@ -55,7 +55,7 @@ h1 {
   font-size: 18px;
   font-weight: 500;
   margin-bottom: 12px;
-  color: #8ab4f8;
+  color: #7fded4;
 }
 
 h2 {
@@ -105,7 +105,7 @@ h2 {
 }
 
 .field input:focus {
-  border-color: #8ab4f8;
+  border-color: #7fded4;
 }
 
 button {
@@ -120,7 +120,7 @@ button {
 }
 
 button.primary {
-  background: #8ab4f8;
+  background: #7fded4;
   color: #202124;
   font-weight: 500;
 }
@@ -173,7 +173,7 @@ button:disabled {
 
 .room-link {
   display: block;
-  color: #8ab4f8;
+  color: #7fded4;
   font-size: 13px;
   margin-bottom: 8px;
   text-decoration: none;
@@ -277,7 +277,7 @@ button:disabled {
 }
 button.notice-action {
   width: auto; margin: 0; flex: 0 0 auto;
-  background: #8ab4f8; border: none; color: #202124;
+  background: #7fded4; border: none; color: #202124;
   border-radius: 14px; padding: 5px 12px;
   font-weight: 600; font-size: 12px; white-space: nowrap; cursor: pointer;
 }
@@ -306,7 +306,7 @@ button.notice-action:hover:not(:disabled) { background: #aecbfa; }
 
 .level-fill {
   height: 100%;
-  background: #8ab4f8;
+  background: #7fded4;
   border-radius: 3px;
   transition: width 0.15s;
 }
@@ -333,7 +333,7 @@ button.notice-action:hover:not(:disabled) { background: #aecbfa; }
 }
 
 .transcript-speaker {
-  color: #8ab4f8;
+  color: #7fded4;
   font-weight: 500;
 }
 
@@ -426,12 +426,12 @@ button.screen-close {
   border: none; cursor: pointer;
   font-size: 19px; line-height: 1; border-radius: 50%;
   /* Filled blue, iOS-style: this is the affirmative "done" action, and it's the
-     same #8ab4f8/#202124 pairing as button.primary — one blue in the app rather
+     same #7fded4/#202124 (phosphor teal) pairing as button.primary — one blue in the app rather
      than a second one imported from iOS. Opaque, so no backdrop-filter is
      needed to keep text scrolling underneath from showing through.
      iOS greys this out until something has changed; we don't track a dirty
      state (each control here saves as you touch it), so it stays blue. */
-  background: #8ab4f8;
+  background: #7fded4;
   color: #202124;
 }
 button.screen-close:hover:not(:disabled) { background: #aecbfa; color: #202124; }
@@ -470,7 +470,7 @@ body[data-titlebar] #settingsScreen .settings-head button { -webkit-app-region: 
 .settings-note {
   margin: 0 0 16px;
   padding: 9px 11px;
-  border-left: 2px solid #8ab4f8;
+  border-left: 2px solid #7fded4;
   border-radius: 0 6px 6px 0;
   background: #282a2d;
   color: #bdc1c6;
@@ -528,7 +528,7 @@ body[data-titlebar] #settingsScreen .settings-head button { -webkit-app-region: 
 button.back-btn {
   background: none;
   border: none;
-  color: #8ab4f8;
+  color: #7fded4;
   font-size: 13px;
   cursor: pointer;
   padding: 4px 0;
@@ -576,7 +576,7 @@ button.back-btn:hover:not(:disabled) {
 button.auth-action-btn {
   background: none;
   border: none;
-  color: #8ab4f8;
+  color: #7fded4;
   font-size: 12px;
   cursor: pointer;
   padding: 2px 0;
@@ -602,8 +602,8 @@ button.auth-action-btn:hover:not(:disabled) {
   color: #9aa0a6;
   text-transform: uppercase;
 }
-.caption-feed .cap-live { color: #8ab4f8; }
-.caption-feed .cap-live .cap-tag { color: #8ab4f8; font-weight: 600; }
+.caption-feed .cap-live { color: #7fded4; }
+.caption-feed .cap-live .cap-tag { color: #7fded4; font-weight: 600; }
 .caption-feed .cap-speaker { color: #e8eaed; font-weight: 600; }
 
 .caption-badge {
@@ -628,7 +628,7 @@ button.auth-action-btn:hover:not(:disabled) {
   cursor: pointer;
   white-space: nowrap;
 }
-.popout-btn:hover { background: #3c4043; border-color: #8ab4f8; color: #aecbfa; }
+.popout-btn:hover { background: #3c4043; border-color: #7fded4; color: #aecbfa; }
 
 /* Sign-ins section — which Google account is actually signed in */
 .account-email {
@@ -644,7 +644,7 @@ button.auth-action-btn:hover:not(:disabled) {
 
 /* Small inline debug link (e.g. default testing meet) */
 .text-link {
-  color: #8ab4f8;
+  color: #7fded4;
   text-decoration: none;
 }
 .text-link:hover { color: #aecbfa; text-decoration: underline; }
@@ -921,9 +921,9 @@ button.join-more {
   color: #e8eaed;
   font-size: 15px; line-height: 1;
 }
-button.join-more:hover:not(:disabled) { background: #3c4043; color: #e8eaed; border-color: #8ab4f8; }
+button.join-more:hover:not(:disabled) { background: #3c4043; color: #e8eaed; border-color: #7fded4; }
 /* Open state — reads as "this is what's showing the field below". */
-button.join-more[aria-expanded="true"] { color: #8ab4f8; border-color: #8ab4f8; background: #303134; }
+button.join-more[aria-expanded="true"] { color: #7fded4; border-color: #7fded4; background: #303134; }
 /* ONE glyph, rotated — ▸ and ▴ are different characters with different optical
    weights and widths, so swapping them made the control jump. Rotating the same
    ▸ counter-clockwise lands it pointing up, identical in size, and animates. */
@@ -998,7 +998,7 @@ button.join-more#openTroubleshootingBtn { font-size: 18px; }
   /* Solid accent blue — must match the injected in-view banner
      (#vibeconf-status-bar) directly below it so the two read as one surface
      with no seam. Keep these two colours identical if either changes. */
-  background: #8ab4f8;
+  background: #7fded4;
   border-radius: 10px 10px 0 0;
 }
 /* The bar labels the bot's-view region, so it only exists while that region

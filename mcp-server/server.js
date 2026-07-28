@@ -1112,8 +1112,10 @@ server.tool(
 const startShareSchema = {
   room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   share_type: z.enum(["whiteboard", "screen"]).optional().describe("What to share. 'whiteboard' (default) shares the bot's whiteboard window — set its content with update_whiteboard (markdown/Mermaid, an image, or any URL). 'screen' shares the entire screen."),
+  width: z.number().optional().describe("Width of the shared board in pixels. Leave unset for the recommended 800 — the whiteboard renderer is TUNED for 800 wide, so markdown/Mermaid boards should keep it. Only change this when sharing a URL whose content wants a different shape."),
+  height: z.number().optional().describe("Height of the shared board in pixels. Leave unset for the recommended 800. Square is deliberate: Meet stacks participant tiles down the RIGHT of a shared screen, so a wide board loses its edge behind them."),
 };
-async function startShareHandler({ room_id, share_type }) {
+async function startShareHandler({ room_id, share_type, width, height }) {
     const roomId = room_id || ROOM_ID;
     if (!roomId) {
       return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
@@ -1140,6 +1142,18 @@ async function startShareHandler({ room_id, share_type }) {
     // shares in the same call (e.g. an "ended unexpectedly" from a prior
     // drop must not get mis-reported as the cause of THIS attempt failing).
     const attemptStartedAt = new Date().toISOString();
+
+    // Size first, so the window opens at the requested shape rather than
+    // opening square and visibly resizing in front of the room.
+    if (width !== undefined || height !== undefined) {
+      await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(botSyncPayload(BOT_NAME, {
+          meta: { action: "set-share-size", width, height },
+        })),
+      }).catch(() => { /* non-fatal — the share still happens at the current size */ });
+    }
 
     const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
       method: "POST",
@@ -1264,6 +1278,102 @@ server.tool(
       return { content: [{ type: "text", text: `Scrolled ${direction || 'down'}.` }] };
     }
     return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "Failed to scroll"}` }] };
+  }
+);
+
+// --- set_share_size ---
+server.tool(
+  "set_share_size",
+  "Resize the shared board. Works whether or not you are already presenting: with a live share the window resizes and participants see it immediately; otherwise the size is remembered and the next start_share opens at it. RECOMMENDED: 800x800, the default. The whiteboard renderer is tuned for 800 wide, so leave it alone for markdown/Mermaid boards — resizing those makes text and diagrams render at the wrong scale. Change it when the board is showing a URL with its own natural shape: a phone-sized mock (390x844), a wide dashboard (1440x900), a tall document. Square is the default for a reason — Meet stacks the participant tiles down the RIGHT of a shared screen, so a wide board loses its right edge behind them. Clamped to 240-4096px.",
+  {
+    width: z.number().optional().describe("Width in pixels. Omit to keep the current width."),
+    height: z.number().optional().describe("Height in pixels. Omit to keep the current height."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ width, height, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    if (width === undefined && height === undefined) {
+      return { content: [{ type: "text", text: "Error: provide width, height, or both." }] };
+    }
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(botSyncPayload(BOT_NAME, { meta: { action: "set-share-size", width, height } })),
+    });
+    const data = await resp.json();
+    const r = data.results?.setShareSize;
+    if (r?.ok) {
+      const notes = r.notes?.length ? " (" + r.notes.join("; ") + ")" : "";
+      return { content: [{ type: "text", text: `Shared board is now ${r.width}x${r.height}${notes}. ${r.applied ? "Applied to the live share." : "Saved — the next share opens at this size."}` }] };
+    }
+    return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "Failed to resize"}` }] };
+  }
+);
+
+// --- click_share ---
+server.tool(
+  "click_share",
+  "Click inside whatever the bot is screen-sharing — a real mouse event, so the page reacts exactly as it would to a person. Use it to drive an app on the board: press a button, open a menu, follow a link, tick a checkbox. PREFER selector over x/y: pass a CSS selector and the click lands on that element's centre, which you can find with inspect_dom. Raw x/y is for content with no addressable elements (a canvas, a map, an embedded viewer) — and note those coordinates are CSS pixels IN THE PAGE, which are NOT screenshot pixels: get_shared_screenshot is 2x on a Retina host, so halve what you measure there. Whatever you click, the room sees it happen.",
+  {
+    selector: z.string().optional().describe("CSS selector to click, e.g. 'button.submit', '#next', 'a[href=\"/docs\"]'. Clicks the element's centre and scrolls it into view first. Preferred over x/y."),
+    x: z.number().optional().describe("X in CSS pixels within the shared page. Only when no selector fits."),
+    y: z.number().optional().describe("Y in CSS pixels within the shared page."),
+    button: z.enum(["left", "right", "middle"]).optional().describe("Mouse button. Default left."),
+    double: z.boolean().optional().describe("Send a double-click instead of a single click."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ selector, x, y, button, double, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    if (!selector && (x === undefined || y === undefined)) {
+      return { content: [{ type: "text", text: "Error: provide a selector, or both x and y." }] };
+    }
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
+        meta: { action: "share-click", selector, x, y, button, clickCount: double ? 2 : 1 },
+      })),
+    });
+    const data = await resp.json();
+    const r = data.results?.shareClick;
+    if (r?.ok) {
+      return { content: [{ type: "text", text: `Clicked ${r.selector ? r.selector + " " : ""}at (${r.x}, ${r.y}). Check the result with get_shared_screenshot or inspect_dom.` }] };
+    }
+    return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "Failed to click"}` }] };
+  }
+);
+
+// --- type_share ---
+server.tool(
+  "type_share",
+  "Type into whatever the bot is screen-sharing — real key events, so autocomplete, validation and keyboard shortcuts all behave normally. Pass text to type it, or key to press a single named key (Enter, Tab, Escape, Backspace, ArrowDown, Home...). Add modifiers for a shortcut (['cmd'] + text 'a' selects all). Pass selector to focus a field first — without it keys go to whatever the page already has focused, which for a freshly loaded page is nothing, and the text vanishes. A newline inside text presses Enter, so you can fill a field and submit in one call. The room sees every keystroke land.",
+  {
+    text: z.string().optional().describe("Text to type, character by character. A \n presses Enter."),
+    key: z.string().optional().describe("A single named key instead of text: 'Enter', 'Tab', 'Escape', 'Backspace', 'Delete', 'ArrowUp'/'ArrowDown'/'ArrowLeft'/'ArrowRight', 'Home', 'End', 'PageDown'."),
+    modifiers: z.array(z.string()).optional().describe("Held modifiers: 'cmd'/'meta', 'ctrl', 'alt'/'option', 'shift'. With text, this becomes a shortcut on the first character rather than literal typing."),
+    selector: z.string().optional().describe("CSS selector of the field to focus first, e.g. 'input[name=q]', 'textarea'. Strongly recommended when typing into a form."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ text, key, modifiers, selector, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    if (!text && !key) return { content: [{ type: "text", text: "Error: provide text to type, or a key to press." }] };
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
+        meta: { action: "share-type", text, key, modifiers, selector },
+      })),
+    });
+    const data = await resp.json();
+    const r = data.results?.shareType;
+    if (r?.ok) {
+      const what = r.key ? `Pressed ${r.key}` : `Typed ${JSON.stringify(r.typed)}`;
+      return { content: [{ type: "text", text: `${what}${r.selector ? " into " + r.selector : ""}. Check the result with get_shared_screenshot or inspect_dom.` }] };
+    }
+    return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "Failed to type"}` }] };
   }
 );
 

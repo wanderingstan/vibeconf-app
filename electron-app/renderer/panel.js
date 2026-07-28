@@ -1304,7 +1304,7 @@ api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', '
   updateAppSettingsBanner(!!result?.ttsApiKey); // #381 onboarding banner
   if (result?.ttsVoiceId) ttsVoiceIdInput.value = result.ttsVoiceId;
   // #340: one unified picker merging macOS + ElevenLabs + Voicebox. Pre-selects
-  // from the saved provider/voice; defaults to Samantha (tts.js's real default).
+  // from the saved provider/voice; defaults to Daniel (tts.js's real default).
   populateUnifiedVoices(result);
   if (result?.claudeWorkDir) claudeWorkDirInput.value = result.claudeWorkDir;
   if (result?.claudeModel) claudeModelInput.value = result.claudeModel;
@@ -2070,10 +2070,11 @@ ttsVoiceIdInput.addEventListener('change', () => {
 });
 
 // #340: standard macOS voices are mostly robotic — keep only a couple tolerable
-// ones ("Samantha", "Karen") in the main group; the rest drop to "Other".
-// DUPLICATED in mcp-server/server.js (the agent's list_voices) — keep in sync.
+// ones ("Daniel", "Samantha", "Karen") in the main group; the rest drop to "Other".
+// DUPLICATED in mcp-server/server.js (the agent's list_voices) and
+// electron-app/renderer/onboarding.js — keep all three in sync.
 // TODO(#342): single-source this + the merge logic behind one /api/voices endpoint.
-const WHITELISTED_MACOS_STANDARD = ['Samantha', 'Karen'];
+const WHITELISTED_MACOS_STANDARD = ['Daniel', 'Samantha', 'Karen'];
 
 // Unified voice picker: merge macOS + ElevenLabs + Voicebox into one dropdown,
 // grouped Voicebox → ElevenLabs → macOS(good) → Other, so the best voices are up
@@ -2096,7 +2097,7 @@ async function populateUnifiedVoices(config) {
     const provider = config.ttsProvider || '';
     const vb = config.voiceboxProfileId || '';
     const elId = config.ttsVoiceId || '';
-    const mac = config.macosVoice || 'Samantha';
+    const mac = config.macosVoice || 'Daniel';
     if (provider === 'voicebox' && vb) selectedValue = 'vb:' + vb;
     else if (provider === 'elevenlabs' && elId) selectedValue = 'el:' + elId;
     else if (provider === 'macos-say') selectedValue = 'mac:' + mac;
@@ -2141,7 +2142,7 @@ async function populateUnifiedVoices(config) {
     .map((v) => ({ value: 'mac:' + v.name, text: `${v.name} (${v.locale})` })));
 
   if (!sel.options.length) {
-    sel.innerHTML = '<option value="mac:Samantha">Samantha (default)</option>';
+    sel.innerHTML = '<option value="mac:Daniel">Daniel (default)</option>';
   }
 }
 

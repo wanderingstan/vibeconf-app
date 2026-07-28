@@ -489,12 +489,30 @@ body[data-titlebar] #settingsScreen .settings-head button { -webkit-app-region: 
   border-radius: 8px;
   overflow: hidden;
   background: #202124;
-  display: flex; align-items: center; justify-content: center;
+  /* container-type lets the face size itself as a fraction of the PREVIEW
+     rather than the window, the same trick .hero-art uses. */
+  container-type: size;
 }
+/* No background set: show the same default gradient the camera falls back to,
+   so the preview shows the look rather than describing it. Matches the
+   .agent-avatar default — see the note there. */
+.avatar-bg-preview.is-default {
+  background: linear-gradient(160deg, #1a237e 0%, #283593 50%, #1565c0 100%);
+}
+.avatar-bg-preview-art { position: absolute; inset: 0; }
 /* The SVG is injected as a child; svg-cover.js gives it preserveAspectRatio
    "slice", and these make it fill the box for the crop to act on. */
-.avatar-bg-preview svg { width: 100%; height: 100%; display: block; }
-.avatar-bg-empty { font-size: 11px; color: #666; }
+.avatar-bg-preview-art svg { width: 100%; height: 100%; display: block; }
+/* The face, centred over the art. 77cqh mirrors the camera's own
+   `emojiSize = min(w, h) * 0.77` (page-inject.js) — on a 16:9 box the height IS
+   the min, so the preview shows the face at the size the call will. */
+.avatar-bg-preview-face {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 77cqh; line-height: 1;
+  pointer-events: none;
+}
+.avatar-bg-preview-face img { height: 77cqh; width: auto; display: block; }
 /* Same tile treatment as the masthead avatar, scaled down to heading size.
    Both classes in the selector: .agent-avatar is defined LATER in this file and
    would otherwise win the 84px size on equal specificity. */

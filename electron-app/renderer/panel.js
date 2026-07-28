@@ -185,15 +185,48 @@ const clearAvatarBgBtn = document.getElementById('clearAvatarBgBtn');
 // Unlike the avatar tiles, this preview is ALREADY 16:9 — the camera's shape —
 // so cover-fitting it is a no-op for a well-authored background and only crops
 // one that isn't. That's the point: it shows the framing the call will use.
+//
+// The art goes in its own layer rather than straight into the box, so the face
+// painted over it survives a background change (and vice versa) — innerHTML on
+// the box itself would wipe whichever one it wasn't updating.
 function paintAvatarBgPreview(svg) {
   if (!avatarBgPreview) return;
-  if (svg && svg.trim()) {
-    avatarBgPreview.innerHTML = scopeSvgIds(svg, scopeForElement(avatarBgPreview));
-    coverFitFirstSvg(avatarBgPreview);
+  const art = avatarBgPreview.querySelector('.avatar-bg-preview-art');
+  if (!art) return;
+  const has = !!(svg && svg.trim());
+  if (has) {
+    art.innerHTML = scopeSvgIds(svg, scopeForElement(avatarBgPreview));
+    coverFitFirstSvg(art);
   } else {
-    avatarBgPreview.innerHTML = '<span class="avatar-bg-empty">Default animated gradient</span>';
+    // No background set → show the SAME default gradient the camera falls back
+    // to, not a "nothing here" message. Empty is a real look the bot can wear,
+    // so the preview should show it rather than describe it. (The Clear button
+    // hides itself below, which is what signals "nothing set".)
+    art.innerHTML = '';
   }
-  if (clearAvatarBgBtn) clearAvatarBgBtn.style.display = (svg && svg.trim()) ? '' : 'none';
+  avatarBgPreview.classList.toggle('is-default', !has);
+  if (clearAvatarBgBtn) clearAvatarBgBtn.style.display = has ? '' : 'none';
+}
+
+// The resting face, over the background — so this previews the whole picture the
+// call will show, not just the backdrop. Static on purpose: the tiles blink and
+// change mood, but a settings preview wants a portrait, the same call
+// refreshAvatarThumb makes for the switcher thumbnail.
+function paintAvatarBgPreviewFace(dataUri, emojiChar) {
+  if (!avatarBgPreview) return;
+  const face = avatarBgPreview.querySelector('.avatar-bg-preview-face');
+  if (!face) return;
+  if (dataUri) {
+    // The chosen set's artwork, exactly as the camera draws it.
+    face.innerHTML = '';
+    const img = document.createElement('img');
+    img.src = dataUri;
+    img.alt = '';
+    face.appendChild(img);
+  } else {
+    // 'native' set, or an emoji this set doesn't ship — the OS glyph.
+    face.textContent = emojiChar || RESTING_EMOJI;
+  }
 }
 
 function setAvatarBgStatus(text, isError) {
@@ -298,6 +331,9 @@ async function renderAgentAvatar() {
   const faceUri = face === RESTING_EMOJI ? restingUri : await emojiUriFor(emojiSet, face);
 
   paintAvatarBgPreview(svg);
+  // Resting face, not the live one: this is a portrait of the setting, and it
+  // shouldn't flicker through in-call states while someone is editing.
+  paintAvatarBgPreviewFace(restingUri, RESTING_EMOJI);
   for (const el of agentAvatarEls) {
     paintAvatarBg(el, svg);
     // Don't stomp a blink or mood that's mid-play — this runs on a 60s timer,
@@ -2270,8 +2306,14 @@ claudeModelInput.addEventListener('change', () => {
   api.invoke('set-config', 'claudeModel', claudeModelInput.value.trim());
 });
 
-if (emojiSetInput) emojiSetInput.addEventListener('change', () => {
-  api.invoke('set-config', 'emojiSet', emojiSetInput.value);
+if (emojiSetInput) emojiSetInput.addEventListener('change', async () => {
+  await api.invoke('set-config', 'emojiSet', emojiSetInput.value);
+  // Repaint OUR avatar now. set-config pushes the new set to the in-call camera
+  // immediately, but the panel's own face is painted by renderAgentAvatar on a
+  // 60s timer — so picking a set used to change the bot's face in the call while
+  // the face on this screen sat on the old artwork for up to a minute, which
+  // reads as "the setting didn't take".
+  renderAgentAvatar();
 });
 
 dangerousModeInput.addEventListener('change', () => {

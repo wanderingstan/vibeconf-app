@@ -194,7 +194,6 @@
           <option value="noto">Noto (Google)</option>
           <option value="fluent3d">Fluent 3D (Microsoft)</option>
         </select>
-        <div style="font-size:11px;color:#666;margin-top:2px">Graphics for the bot's face emoji. Twemoji is a distinct, consistent set shipped with the app (#316).</div>
       </div>
 
       <!-- Avatar background. The bot can already set this mid-call via
@@ -202,8 +201,13 @@
            old-fashioned path — see what's set, drop an image in, clear it. -->
       <div class="field">
         <label>Avatar Background</label>
-        <div id="avatarBgPreview" class="avatar-bg-preview">
-          <span class="avatar-bg-empty">Default animated gradient</span>
+        <!-- Two layers: the background art, and the bot's face over it — so this
+             previews the whole picture the call shows, not just the backdrop.
+             Separate elements because each is repainted independently (change
+             the emoji set and the art must survive, and vice versa). -->
+        <div id="avatarBgPreview" class="avatar-bg-preview is-default">
+          <div class="avatar-bg-preview-art"></div>
+          <div class="avatar-bg-preview-face">🙂</div>
         </div>
         <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
           <button id="chooseAvatarBgBtn" class="popout-btn">Choose image…</button>

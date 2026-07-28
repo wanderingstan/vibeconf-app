@@ -8,3 +8,6 @@ dist/
 # Local agent state: worktrees (which are embedded git repos), scratch, caches.
 .claude/
 __pycache__/
+
+# macOS
+.DS_Store

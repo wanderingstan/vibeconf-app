@@ -1588,6 +1588,46 @@ shareWhiteboardBtn.addEventListener('click', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Share window visibility
+//
+// The board window is hidden by default — for most people it's a capture
+// surface, not something to look at, and it shares fine hidden. This toggle is
+// for when you want to drive it by hand (or just see what the room sees). It
+// only appears while a board window exists, since there's nothing to toggle
+// otherwise.
+// ---------------------------------------------------------------------------
+
+const shareWindowToggleBtn = document.getElementById('shareWindowToggleBtn');
+const shareWindowHint = document.getElementById('shareWindowHint');
+
+function applyShareWindowState({ exists, visible, lockedVisible } = {}) {
+  if (!shareWindowToggleBtn) return;
+  shareWindowToggleBtn.style.display = exists ? '' : 'none';
+  if (shareWindowHint) shareWindowHint.style.display = exists ? '' : 'none';
+  shareWindowToggleBtn.textContent = visible ? 'Hide share window' : 'Show share window';
+  // While a live share is capturing the WINDOW, hiding it would black out what
+  // the room sees — say so on the button rather than failing on click.
+  shareWindowToggleBtn.disabled = !!lockedVisible;
+  shareWindowToggleBtn.title = lockedVisible
+    ? 'Can\'t hide it while the share is capturing this window — stop sharing first.'
+    : '';
+}
+
+shareWindowToggleBtn?.addEventListener('click', async () => {
+  shareWindowToggleBtn.disabled = true;
+  try {
+    const r = await api.invoke('toggle-share-window');
+    if (r?.error) showError(r.error);
+  } catch (err) {
+    showError('Failed to toggle the share window: ' + err.message);
+  }
+  try { applyShareWindowState(await api.invoke('get-share-window')); } catch { /* ignore */ }
+});
+
+api.on('share-window-state', (state) => applyShareWindowState(state));
+api.invoke('get-share-window').then(applyShareWindowState).catch(() => {});
+
+// ---------------------------------------------------------------------------
 // Bot Google identity — guest vs account mode (#170)
 // ---------------------------------------------------------------------------
 

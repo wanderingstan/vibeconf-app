@@ -2117,6 +2117,16 @@ let shareSize = { ...SHARE_SIZE.recommended };
 // share and is the only way to grab the window by hand. Electron fixes `frame`
 // at construction, so changing this recreates the window.
 let shareTitleBar = true;
+// Whether the board window is shown on screen. Hidden by DEFAULT: for most
+// people it is a capture surface, not something to look at, and a hidden window
+// still shares fine — it falls out of desktopCapturer's window list, so the
+// handler uses frame capture instead. Persisted, so someone who wants it around
+// (to drive the board by hand) keeps it across shares.
+let shareWindowVisible = false;  // seeded from the store in createWhiteboardWindow
+// How the LIVE share is being captured: 'window' (a desktopCapturer source) or
+// 'frame' (the page itself). Hiding a window-captured board would black out the
+// stream — the source stops existing — so the toggle refuses that one case.
+let shareCaptureMode = null;
 // How long the Present-now trigger waits for the bot to actually be in the call
 // before clicking, and how long it then keeps retrying. Both were effectively
 // one combined 10s budget, which a slow Meet join could consume on its own.
@@ -2219,7 +2229,26 @@ function positionShareWindow(win, { force = false } = {}) {
   }
 }
 
+// Tell the panel whether there is a board window and whether it is on screen,
+// so the toggle can label itself and disappear when there is nothing to toggle.
+function broadcastShareWindowState() {
+  const exists = !!(whiteboardWindow && !whiteboardWindow.isDestroyed());
+  try {
+    if (panelView && !panelView.webContents.isDestroyed()) {
+      panelView.webContents.send('share-window-state', {
+        exists,
+        visible: exists && shareWindowVisible,
+        // The one combination the toggle must refuse — see shareCaptureMode.
+        lockedVisible: exists && shareWindowVisible && localServer.sharing && shareCaptureMode === 'window',
+      });
+    }
+  } catch { /* panel not up yet */ }
+}
+
 function createWhiteboardWindow(roomUrl) {
+  // Re-read the preference each time: it is the user's standing choice, and the
+  // window is rebuilt on every share.
+  try { shareWindowVisible = store.get('shareWindowVisible') === true; } catch { shareWindowVisible = false; }
 
   // Square share surface (#4): Meet stacks the participant tiles down the RIGHT
   // of a shared screen, so a 16:9 board wasted width behind the tiles and left the
@@ -2278,7 +2307,9 @@ function createWhiteboardWindow(roomUrl) {
   // Place it beside the app, then reveal it — created with show:false so it
   // never flashes at wherever macOS would have put it first.
   positionShareWindow(win, { force: true });
-  win.showInactive();   // visible, but it must NOT steal focus from the call
+  // showInactive, never show(): even when visible this window must not steal
+  // focus from the call.
+  if (shareWindowVisible) win.showInactive();
 
   // Follow the app window. Same mechanism as the Slack huddle popup, minus the
   // parenting: parenting would force the board to float above the app, and this
@@ -2303,7 +2334,10 @@ function createWhiteboardWindow(roomUrl) {
       mainWindow?.removeListener('resize', follow);
     } catch { /* main window already gone */ }
     whiteboardWindow = null;
+    shareCaptureMode = null;
+    broadcastShareWindowState();
   });
+  setImmediate(broadcastShareWindowState);
   return win;
 }
 
@@ -2959,6 +2993,8 @@ function configureMeetSession(sess) {
         if (source) {
           console.log('[electron] Matched whiteboard source:', source.id, source.name,
             '· audio:', wbAudio ? 'whiteboard frame' : 'none');
+          shareCaptureMode = 'window';
+          setImmediate(broadcastShareWindowState);   // the toggle may need to lock
           answer(wbAudio ? { video: source, audio: wbAudio } : { video: source });
           return;
         }
@@ -2970,6 +3006,8 @@ function configureMeetSession(sess) {
         // source matching almost always succeeds. Verified working in a call:
         // frame capture of the board, 30fps, and it follows a resize.
         console.warn('[electron] No matching whiteboard source — using frame-capture fallback (avoiding main window).');
+        shareCaptureMode = 'frame';
+        setImmediate(broadcastShareWindowState);
         answer(wbAudio
           ? { video: whiteboardWindow.webContents.mainFrame, audio: wbAudio }
           : { video: whiteboardWindow.webContents.mainFrame });
@@ -6573,6 +6611,43 @@ function setupIPC() {
   });
   ipcMain.handle('get-bot-view', () => ({ state: botViewState, visible: botViewInCall }));
 
+  // --- Share window visibility ---
+  // Hidden by default; the panel offers a toggle for when you need to drive the
+  // board by hand (or just see what the room is seeing).
+  ipcMain.handle('get-share-window', () => {
+    const exists = !!(whiteboardWindow && !whiteboardWindow.isDestroyed());
+    return {
+      exists,
+      visible: exists && shareWindowVisible,
+      lockedVisible: exists && shareWindowVisible && localServer.sharing && shareCaptureMode === 'window',
+    };
+  });
+
+  ipcMain.handle('toggle-share-window', () => {
+    if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
+      return { ok: false, error: 'Nothing is being shared' };
+    }
+    const want = !shareWindowVisible;
+    // Refuse only the dangerous direction: a live share whose video comes from
+    // the WINDOW source goes black if that window stops existing on screen.
+    // Frame-captured shares (the default, since the window starts hidden) don't
+    // care, and showing is always safe.
+    if (!want && localServer.sharing && shareCaptureMode === 'window') {
+      return { ok: false, error: 'Can\'t hide the window while it is being captured — the share would go black. Stop sharing first.' };
+    }
+    shareWindowVisible = want;
+    try { store.set('shareWindowVisible', want); } catch { /* non-fatal */ }
+    try {
+      if (want) whiteboardWindow.showInactive();
+      else whiteboardWindow.hide();
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    console.log('[electron] Share window', want ? 'shown' : 'hidden');
+    broadcastShareWindowState();
+    return { ok: true, visible: want };
+  });
+
 
   // --- Auth check ---
   ipcMain.handle('check-auth', () => {
@@ -7017,6 +7092,8 @@ function setupIPC() {
   ipcMain.on(CALL_EVENTS.screenShareStopped, () => {
     console.log('[electron] Screen share stopped');
     localServer.setSharing(false);
+    shareCaptureMode = null;
+    broadcastShareWindowState();   // hiding is safe again
   });
 
   // Forwarded log lines from page-inject.js (via preload-meet). These are

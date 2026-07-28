@@ -781,24 +781,204 @@ class LocalServer {
   // case a collision is possible) so solo / single-human calls stay snappy —
   // we can't reliably tell from one app that another participant IS a bot
   // (this.members is local-only), so participant count is the cheap proxy.
-  _speakWithBotJitter(t) {
-    const speakNow = () => {
-      if (this.callStatus !== 'in-call') return; // call ended during the jitter
-      // #367: remember this utterance's self-scored urgency so _armBargeIn can
-      // scale the grace by how badly the bot wanted to be heard.
-      this._currentUrgency = (typeof t.urgency === 'number') ? t.urgency : null;
-      this._setBotState('speaking', { emoji: t.emoji });
-      this.onBotSpeech(t.text, t.voice, t.emoji);
-    };
-    const others = (this.participants || []).filter(p => !p.isSelf && p.name && p.name !== 'You').length;
-    const maxJitter = Number(this._pref('botSpeakJitterMaxMs')) || 0;
-    if (others >= 2 && maxJitter > 0) {
-      const jitter = Math.floor(Math.random() * maxJitter);
-      console.log(ts(), `🎲 [bot-jitter] ${others} others in call — delaying speak ${jitter}ms to avoid lockstep`);
-      setTimeout(speakNow, jitter);
-    } else {
-      speakNow();
+  //
+  // #67: this is ALSO where the floor is checked — at the moment audio would
+  // start, and nowhere earlier. The check used to sit in _handlePost, before
+  // the jitter below, which got it wrong in BOTH directions: it missed speech
+  // that started during the delay (the bot talked over it), and it stashed
+  // against speech that had already stopped by the time audio was ready (the
+  // bot went silent for no reason). A floor read is only meaningful at the
+  // instant it gates.
+  //
+  // Resolves 'spoken' | 'stashed' | 'aborted' so the caller can tell the agent
+  // what actually happened to its reply.
+  _speakWithBotJitter(t, { exempt = false } = {}) {
+    return new Promise((resolve) => {
+      const speakNow = () => {
+        if (this.callStatus !== 'in-call') return resolve('aborted'); // call ended during the jitter
+        if (this.anyoneSpeaking) {
+          if (!exempt) {
+            this._stashUnspokenSpeech([t]);
+            return resolve('stashed');
+          }
+          console.log(ts(), '🛡️  [barge-in] EXEMPT — playing over speech:', String(t.text || '').slice(0, 60));
+        }
+        // #367: remember this utterance's self-scored urgency so _armBargeIn can
+        // scale the grace by how badly the bot wanted to be heard.
+        this._currentUrgency = (typeof t.urgency === 'number') ? t.urgency : null;
+        this._setBotState('speaking', { emoji: t.emoji });
+        this.onBotSpeech(t.text, t.voice, t.emoji);
+        resolve('spoken');
+      };
+      const others = (this.participants || []).filter(p => !p.isSelf && p.name && p.name !== 'You').length;
+      const maxJitter = Number(this._pref('botSpeakJitterMaxMs')) || 0;
+      if (others >= 2 && maxJitter > 0) {
+        const jitter = Math.floor(Math.random() * maxJitter);
+        console.log(ts(), `🎲 [bot-jitter] ${others} others in call — delaying speak ${jitter}ms to avoid lockstep`);
+        setTimeout(speakNow, jitter);
+      } else {
+        speakNow();
+      }
+    });
+  }
+
+  // Hold composed-but-unspoken bot speech for replay on the next opening,
+  // rather than discarding it (#239 — discarding forced the agent into a fresh
+  // 15-30s round to re-derive the same answer). The next silence edge replays
+  // it via _maybeReplayBargeInStash(), unless it has aged out or the
+  // conversation has moved on past it.
+  _stashUnspokenSpeech(entries) {
+    const stashEntries = entries
+      .filter((t) => t && t.text)
+      .map((t) => ({ text: t.text, voice: t.voice, emoji: t.emoji, urgency: t.urgency }));
+    if (stashEntries.length === 0) return false;
+    // A second stash before the first ever got its opening means the earlier
+    // thought is being discarded. That used to happen silently — the single
+    // biggest reason stashes "disappeared" without a log line.
+    if (this.bargeInStash) {
+      const lostAgeMs = Date.now() - this.bargeInStash.at;
+      console.log(ts(), '🛡️  [barge-in] overwriting an unplayed stash (' + lostAgeMs + 'ms old, ' +
+        this.bargeInStash.entries.length + ' entr' + (this.bargeInStash.entries.length === 1 ? 'y' : 'ies') +
+        ') — the floor never opened for it:', JSON.stringify((this.bargeInStash.entries[0]?.text || '').slice(0, 60)));
     }
+    // Baseline the words-heard-from-others counter so the replay path can
+    // measure how much NEW speech landed while the reply was held.
+    this.bargeInStash = {
+      entries: stashEntries,
+      at: Date.now(),
+      wordsAtStash: this._tickWordCount(this.getEffectiveBotName()),
+    };
+    console.log(ts(), '🛡️  [barge-in] Floor busy at audio-start — stashed bot speech for replay (' +
+      stashEntries.length + ' entr' + (stashEntries.length === 1 ? 'y' : 'ies') + '):',
+      String(stashEntries[0].text).slice(0, 60));
+    this._setBotState('yielding', { reason: 'user-speaking' }, { force: true });
+    return true;
+  }
+
+  // Apply a sync payload's transcript entries: speak them (bot) or record them
+  // (member), and report back what happened for results.transcript. Split out
+  // of _handlePost so the speak/stash decision is reachable without an HTTP
+  // round-trip (see tests/floor-gate-at-audio-start.test.mjs).
+  async _applyTranscriptPayload(data, roomId, now) {
+    // In silent mode, suppress bot speech entirely — don't record or speak.
+    // Agent learns its speech was suppressed via results.transcript.reason.
+    // #338: some bot utterances are exempt from the barge-in hold — they're
+    // brief and a little overlap beats the alternative (silence → the room
+    // re-asks → a duplicate answer, the #335 failure). Two exemptions:
+    //   • the turn's OPENING ACK — the first reply to a resolve (_pendingTurnSince),
+    //     capped at ≤30 words so a real ack (the #335 one was 23) is protected but
+    //     a runaway long "first reply" can't steamroll a human. This "I'm on it" is
+    //     the whole signal that keeps the room from re-asking while the bot does
+    //     slow tool work.
+    //   • very short utterances (≤6 words) — backchannels ("Got it.", "On it.")
+    // Substantive mid-turn responses are NOT exempt — they still yield.
+    const _firstReplyToResolve = this._pendingTurnSince != null;
+    const _botText = data.role === 'bot' ? (data.transcript.map((t) => t && t.text ? t.text : '').join(' ').trim()) : '';
+    const _wordCount = _botText ? _botText.split(/\s+/).length : 0;
+    // All three knobs read live (tunable mid-call via set_preference).
+    const _exemptPref = this._pref('bargeInAckExempt');
+    const _ackExemptOn = _exemptPref !== false && _exemptPref !== 'false';
+    const _ackMax = Number(this._pref('bargeInAckMaxWords')) || 0;
+    const _bcMax = Number(this._pref('bargeInBackchannelMaxWords')) || 0;
+    const _bargeExempt = data.role === 'bot' && _ackExemptOn && _wordCount > 0 &&
+      ((_firstReplyToResolve && _wordCount <= _ackMax) || (_bcMax > 0 && _wordCount <= _bcMax));
+
+    // #343: log the slow model's self-scored urgency against the live floor
+    // state (concurrent speakers + peak-while-waiting), for EVERY bot speak
+    // attempt regardless of the outcome below. This is the raw scatter
+    // — urgency vs interruptibility — we fit the speak/wait gate from later.
+    // Log-only for now; nothing gates on it yet.
+    if (data.role === 'bot' && _wordCount > 0) {
+      const _urg = data.transcript.map((t) => t && t.urgency).find((u) => typeof u === 'number');
+      const _urgStr = typeof _urg === 'number' ? _urg.toFixed(2) : 'n/a';
+      console.log(ts(), `🎯 [urgency] u=${_urgStr} floor=${this.activeSpeakerCount} (peak ${this._peakSpeakersSinceQuiet}) words=${_wordCount}${_firstReplyToResolve ? ' first-reply' : ''}`);
+    }
+
+    if (data.role === 'bot' && this.mode === 'silent') {
+      return { ok: false, reason: 'mode-silent', sent: 0, entries: [] };
+    }
+
+    // #67: NO floor check here. It used to live at this point — before the
+    // speak jitter and before TTS synthesis — which meant it was reading the
+    // room up to a second before any audio could play, and got it wrong in
+    // both directions. The gate now lives in _speakWithBotJitter, at the
+    // instant audio starts; we await its verdict so the agent still gets an
+    // accurate synchronous answer.
+    const entries = [];
+    let stashed = false;
+    for (const t of data.transcript) {
+      if (!t.text) continue;
+
+      // Bot speech goes to the speak path FIRST, and is only recorded as a
+      // transcript entry once it has actually gone out — a stashed reply was
+      // never said, so it must not appear in the transcript. Deferred
+      // (pre-in-call) speech is queued below and recorded as before.
+      if (data.role === 'bot' && this.callStatus === 'in-call') {
+        const outcome = await this._speakWithBotJitter(
+          { text: t.text, voice: t.voice, emoji: t.emoji, urgency: t.urgency },
+          { exempt: _bargeExempt },
+        );
+        if (outcome !== 'spoken') {
+          if (outcome === 'stashed') stashed = true;
+          continue;
+        }
+      }
+
+      const id = `${roomId}-tx-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      const entry = {
+        id,
+        roomId,
+        participantName: data.sender,
+        role: data.role || 'member',
+        text: t.text,
+        isFinal: true,
+        timestamp: now,
+      };
+      if (t.voice) entry.voice = t.voice;
+      if (typeof t.urgency === 'number') entry.urgency = t.urgency; // #343: self-scored, for the analyzer
+      this.transcripts.push(entry);
+      entries.push(entry);
+
+      if (data.role === 'bot') {
+        // Claude's reaction time: this first speak after a turn-resolve
+        // closes the clock. Null it so a same-turn phase-(c) follow-up speak
+        // doesn't recount. Bound it [100ms, 120s] to discard garbage (a stale
+        // pending crossing a long quiet stretch, or a clock skew).
+        if (this._pendingTurnSince != null) {
+          const thinkMs = Date.now() - this._pendingTurnSince;
+          this._pendingTurnSince = null;
+          if (thinkMs >= 100 && thinkMs <= 120000) this._recordResponseMs(thinkMs);
+        }
+        // Record the member utterance this response is answering — the most
+        // recent non-bot entry. Lets us flag the next window as a
+        // continuation if that speaker just keeps extending the same thought.
+        // Use the merged view so caption turns (#178) are considered, not
+        // just legacy this.transcripts entries.
+        const allEntries = this._entriesSince(null, null);
+        const lastMember = [...allEntries].reverse().find(e => e.role !== 'bot');
+        if (lastMember) {
+          this.lastRespondedSpeaker = lastMember.participantName;
+          this.lastRespondedText = lastMember.text;
+          this.lastRespondedAt = Date.now();
+        }
+        // TTS was already dispatched above when in-call. If we're NOT in the
+        // call yet, queue it: the virtual mic stream isn't connected to Meet's
+        // other participants until callStatus is 'in-call', so speaking
+        // earlier plays into the void. The transcript entry is recorded now
+        // either way, so order is preserved on flush.
+        if (this.callStatus !== 'in-call') {
+          console.log('[local-server] Queueing bot speech until in-call:', t.text.slice(0, 40));
+          this.pendingBotSpeech.push({ text: t.text, voice: t.voice, emoji: t.emoji, urgency: t.urgency });
+        }
+      }
+    }
+
+    if (stashed && entries.length === 0) {
+      // Distinct reason so the MCP layer tells the agent to STAND DOWN (its
+      // reply is queued and will auto-replay) rather than re-derive.
+      return { ok: false, reason: 'user-speaking-stashed', sent: 0, entries: [] };
+    }
+    return { ok: true, sent: entries.length, entries };
   }
 
   _flushPendingBotSpeech() {
@@ -3328,143 +3508,7 @@ class LocalServer {
 
     // Handle transcript entries (bot speech)
     if (data.transcript && Array.isArray(data.transcript)) {
-      // In silent mode, suppress bot speech entirely — don't record or speak.
-      // Agent learns its speech was suppressed via results.transcript.reason.
-      // #338: some bot utterances are exempt from the barge-in drop — they're
-      // brief and a little overlap beats the alternative (silence → the room
-      // re-asks → a duplicate answer, the #335 failure). Two exemptions:
-      //   • the turn's OPENING ACK — the first reply to a resolve (_pendingTurnSince),
-      //     capped at ≤40 words so a real ack (the #335 one was 23) is protected but
-      //     a runaway long "first reply" can't steamroll a human. This "I'm on it" is
-      //     the whole signal that keeps the room from re-asking while the bot does
-      //     slow tool work.
-      //   • very short utterances (≤6 words) — backchannels ("Got it.", "On it.")
-      // Substantive mid-turn responses are NOT exempt — they still yield.
-      const _firstReplyToResolve = this._pendingTurnSince != null;
-      const _botText = data.role === 'bot' ? (data.transcript.map((t) => t && t.text ? t.text : '').join(' ').trim()) : '';
-      const _wordCount = _botText ? _botText.split(/\s+/).length : 0;
-      // All three knobs read live (tunable mid-call via set_preference).
-      const _exemptPref = this._pref('bargeInAckExempt');
-      const _ackExemptOn = _exemptPref !== false && _exemptPref !== 'false';
-      const _ackMax = Number(this._pref('bargeInAckMaxWords')) || 0;
-      const _bcMax = Number(this._pref('bargeInBackchannelMaxWords')) || 0;
-      const _bargeExempt = data.role === 'bot' && _ackExemptOn && _wordCount > 0 &&
-        ((_firstReplyToResolve && _wordCount <= _ackMax) || (_bcMax > 0 && _wordCount <= _bcMax));
-
-      // #343: log the slow model's self-scored urgency against the live floor
-      // state (concurrent speakers + peak-while-waiting), for EVERY bot speak
-      // attempt regardless of the barge-in outcome below. This is the raw scatter
-      // — urgency vs interruptibility — we fit the speak/wait gate from later.
-      // Log-only for now; nothing gates on it yet.
-      if (data.role === 'bot' && _wordCount > 0) {
-        const _urg = data.transcript.map((t) => t && t.urgency).find((u) => typeof u === 'number');
-        const _urgStr = typeof _urg === 'number' ? _urg.toFixed(2) : 'n/a';
-        console.log(ts(), `🎯 [urgency] u=${_urgStr} floor=${this.activeSpeakerCount} (peak ${this._peakSpeakersSinceQuiet}) words=${_wordCount}${_firstReplyToResolve ? ' first-reply' : ''}`);
-      }
-
-      if (data.role === 'bot' && this.mode === 'silent') {
-        results.transcript = { ok: false, reason: 'mode-silent', sent: 0, entries: [] };
-      } else if (data.role === 'bot' && this.anyoneSpeaking && !_bargeExempt) {
-        // Barge-in guard: user started speaking after the agent decided to
-        // respond but before the audio could play. Talking over them is the
-        // worst voice-UX failure mode, so we don't play it now. But rather
-        // than DISCARD the composed reply (the old behavior — which forced the
-        // agent into a fresh 15-30s Claude round to re-derive the same answer,
-        // the #239 "raised hand but never speaks / re-thinks everything" bug),
-        // we STASH it exactly like the mid-TTS back-off path (_performBackOff).
-        // The next silence edge auto-replays it via _maybeReplayBargeInStash()
-        // — "the floor opened, I just say what I was going to say" — unless too
-        // much was said in the meantime (content-delta gate), in which case the
-        // stash is dropped and the agent re-derives on the caught-up window.
-        const stashEntries = data.transcript
-          .filter((t) => t && t.text)
-          .map((t) => ({ text: t.text, voice: t.voice, emoji: t.emoji, urgency: t.urgency }));
-        if (stashEntries.length > 0) {
-          // A second stash before the first ever got its opening means the
-          // earlier thought is being discarded. That used to happen silently —
-          // the single biggest reason stashes "disappeared" without a log line.
-          if (this.bargeInStash) {
-            const lostAgeMs = Date.now() - this.bargeInStash.at;
-            console.log(ts(), '🛡️  [barge-in] overwriting an unplayed stash (' + lostAgeMs + 'ms old, ' +
-              this.bargeInStash.entries.length + ' entr' + (this.bargeInStash.entries.length === 1 ? 'y' : 'ies') +
-              ') — the floor never opened for it:', JSON.stringify((this.bargeInStash.entries[0]?.text || '').slice(0, 60)));
-          }
-          // Baseline the words-heard-from-others counter so the replay path can
-          // measure how much NEW speech landed while the reply was held.
-          this.bargeInStash = {
-            entries: stashEntries,
-            at: Date.now(),
-            wordsAtStash: this._tickWordCount(this.getEffectiveBotName()),
-          };
-          console.log(ts(), '🛡️  [barge-in] Stashed dropped bot speech for replay (' + stashEntries.length + ' entr' + (stashEntries.length === 1 ? 'y' : 'ies') + '):', data.transcript?.[0]?.text?.slice(0, 60));
-          this._setBotState('yielding', { reason: 'user-speaking' }, { force: true });
-          // Distinct reason so the MCP layer tells the agent to STAND DOWN
-          // (its reply is queued and will auto-replay) rather than re-derive.
-          results.transcript = { ok: false, reason: 'user-speaking-stashed', sent: 0, entries: [] };
-        } else {
-          console.log(ts(), '🛡️  [barge-in] Dropped bot speech — user is currently speaking (nothing to stash):', data.transcript?.[0]?.text?.slice(0, 60));
-          this._setBotState('yielding', { reason: 'user-speaking' }, { force: true });
-          results.transcript = { ok: false, reason: 'user-speaking', sent: 0, entries: [] };
-        }
-      } else {
-        if (data.role === 'bot' && this.anyoneSpeaking && _bargeExempt) {
-          console.log(ts(), '🛡️  [barge-in] EXEMPT — played over speech (' + (_firstReplyToResolve ? 'opening ack' : _wordCount + '-word backchannel') + ')');
-        }
-        const entries = [];
-        for (const t of data.transcript) {
-          if (!t.text) continue;
-          const id = `${roomId}-tx-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-          const entry = {
-            id,
-            roomId,
-            participantName: data.sender,
-            role: data.role || 'member',
-            text: t.text,
-            isFinal: true,
-            timestamp: now,
-          };
-          if (t.voice) entry.voice = t.voice;
-          if (typeof t.urgency === 'number') entry.urgency = t.urgency; // #343: self-scored, for the analyzer
-          this.transcripts.push(entry);
-          entries.push(entry);
-
-          // Trigger TTS for bot speech — but defer if we're not in the call
-          // yet. The virtual mic stream isn't connected to Meet's other
-          // participants until callStatus is 'in-call'; speaking earlier means
-          // audio plays into the void. The transcript entry is recorded
-          // immediately either way so order is preserved on flush.
-          if (data.role === 'bot') {
-            // Claude's reaction time: this first speak after a turn-resolve
-            // closes the clock. Null it so a same-turn phase-(c) follow-up speak
-            // doesn't recount. Bound it [100ms, 120s] to discard garbage (a stale
-            // pending crossing a long quiet stretch, or a clock skew).
-            if (this._pendingTurnSince != null) {
-              const thinkMs = Date.now() - this._pendingTurnSince;
-              this._pendingTurnSince = null;
-              if (thinkMs >= 100 && thinkMs <= 120000) this._recordResponseMs(thinkMs);
-            }
-            // Record the member utterance this response is answering — the most
-            // recent non-bot entry. Lets us flag the next window as a
-            // continuation if that speaker just keeps extending the same thought.
-            // Use the merged view so caption turns (#178) are considered, not
-            // just legacy this.transcripts entries.
-            const allEntries = this._entriesSince(null, null);
-            const lastMember = [...allEntries].reverse().find(e => e.role !== 'bot');
-            if (lastMember) {
-              this.lastRespondedSpeaker = lastMember.participantName;
-              this.lastRespondedText = lastMember.text;
-              this.lastRespondedAt = Date.now();
-            }
-            if (this.callStatus !== 'in-call') {
-              console.log('[local-server] Queueing bot speech until in-call:', t.text.slice(0, 40));
-              this.pendingBotSpeech.push({ text: t.text, voice: t.voice, emoji: t.emoji, urgency: t.urgency });
-            } else {
-              this._speakWithBotJitter({ text: t.text, voice: t.voice, emoji: t.emoji, urgency: t.urgency });
-            }
-          }
-        }
-        results.transcript = { ok: true, sent: entries.length, entries };
-      }
+      results.transcript = await this._applyTranscriptPayload(data, roomId, now);
     }
 
     // Handle whiteboard update

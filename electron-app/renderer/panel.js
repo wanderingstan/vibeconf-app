@@ -879,7 +879,19 @@ updateJoinBtnState(); // paint the initial label (the markup ships a neutral one
 // becomes the handle. The stylesheet does the rest.
 api.invoke('get-window-chrome').then((c) => {
   if (c?.hiddenTitleBar) document.body.dataset.titlebar = c.hiddenTitleBar; // 'mac' | 'win'
-}).catch(() => { /* keep the normal frame assumption */ });
+  // "Download more macOS voices…" opens macOS System Settings → Spoken Content.
+  // There is nothing behind it anywhere else, so hide it off macOS rather than
+  // offer a link that can only fail.
+  hideMacVoicesLinkUnless(c?.platform === 'darwin');
+}).catch(() => {
+  // Platform unknown — better a missing shortcut than a dead one.
+  hideMacVoicesLinkUnless(false);
+});
+
+function hideMacVoicesLinkUnless(isMac) {
+  const el = document.getElementById('macVoicesLink');
+  if (el && !isMac) el.style.display = 'none';
+}
 
 // --- Window sizing --------------------------------------------------------
 // The window is only as tall as the panel needs. Out of a call that's the

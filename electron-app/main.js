@@ -5752,6 +5752,11 @@ function setupIPC() {
     // macOS floats its controls top-LEFT (harmless under a centred name) while
     // Windows draws them top-RIGHT, exactly where the settings gear lives.
     hiddenTitleBar: hasHiddenTitleBar() ? (process.platform === 'darwin' ? 'mac' : 'win') : null,
+    // The raw platform, for UI that is OS-specific rather than chrome-specific
+    // (the "Download more macOS voices…" link). hiddenTitleBar can't stand in
+    // for this: it is null whenever the window wears a normal frame, on every
+    // platform, so it says nothing about which OS we're on.
+    platform: process.platform,
   }));
 
   ipcMain.handle('create-and-join-meet', async () => createAndJoinMeet());

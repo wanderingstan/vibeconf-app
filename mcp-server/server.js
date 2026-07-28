@@ -1033,11 +1033,12 @@ server.tool(
 // --- start_call ---
 server.tool(
   "start_call",
-  "Start a BRAND-NEW call: creates a fresh Google Meet that anyone with the link can join, sends the bot into it, and opens the user's own browser to it. This is the /call command, and it mirrors the app's \"Call <bot> now\" button. Use it when there is no existing call — to put the bot into a call that ALREADY exists, use join_call instead.",
+  "Start a BRAND-NEW call: creates a fresh Google Meet that anyone with the link can join, sends the bot into it, and opens the user's own browser to it. This is the /call command, and it mirrors the app's \"Call <bot> now\" button. Use it when there is no existing call — to put the bot into a call that ALREADY exists, use join_call instead. If the user is NOT at the machine running the app — driving you from a phone, or from a remote session — pass open_browser: false, and you will get the meeting link back to hand them.",
   {
     bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance."),
+    open_browser: z.boolean().optional().describe("Whether to open a browser to the meeting ON THE MACHINE RUNNING THE APP. Default true, which is right when the user is sitting at it. Pass false when they are remote (on their phone, in a remote session): no stray tab opens on the unattended desktop, and the response includes the join link so you can give it to them."),
   },
-  async ({ bot_name }) => {
+  async ({ bot_name, open_browser }) => {
     try {
       // Same multi-profile routing as join_call: the name selects which running
       // app instance starts the call, so `/call Alice` uses Alice's app.
@@ -1047,15 +1048,25 @@ server.tool(
         ? ` (profile "${routed.instance.profile}" on port ${routed.instance.port})`
         : "";
 
-      const resp = await vfetch(`${BASE_URL}/api/call/start`, { method: "POST" });
+      const remote = open_browser === false;
+      const resp = await vfetch(`${BASE_URL}/api/call/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ openBrowser: !remote }),
+      });
       const data = await resp.json().catch(() => ({}));
 
       if (data.success) {
-        // The app deliberately does NOT return the meeting URL — it's a bearer
-        // capability, and nobody here needs it: the bot is already joining and
-        // the user's browser is already opening.
         const room = data.roomId ? ` Room: ${data.roomId}.` : "";
-        return { content: [{ type: "text", text: `Started a new call${where}.${room} The bot is joining and your browser is opening to it.` }] };
+        // The link is always reported: whoever called this is the user's own
+        // agent, and without it a remote user can't reach the room they made.
+        const link = data.url || (data.roomId ? `https://meet.google.com/${data.roomId}` : null);
+        const lead = remote
+          ? "No browser was opened on the app's machine — give the user this link so they can join from wherever they are"
+          : "The bot is joining and your browser is opening to it. The link, in case you want to pass it on";
+        return { content: [{ type: "text", text: link
+          ? `Started a new call${where}.${room} ${lead}:\n\n${link}`
+          : `Started a new call${where}.${room} The app did not return a join link — check the app's panel for the room.` }] };
       }
 
       const REASONS = {

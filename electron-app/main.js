@@ -692,6 +692,24 @@ const localServer = new globalThis.LocalServer({
     if (app.dock) app.dock.show();
     app.focus({ steal: true });
   },
+  // Silence the shared surface's audio without touching the share itself.
+  //
+  // The mute itself happens in page-inject, on the gain node feeding the track
+  // Meet publishes. Not here: webContents.setAudioMuted() mutes this machine's
+  // speakers, and the capture tap sits upstream of that — a call verified the
+  // asymmetry, with the host laptop silent while a remote device heard the
+  // board. So the host already hears nothing during a share, and muting the
+  // window would only silence a local output nobody is listening to.
+  onSetShareAudio: async ({ muted } = {}) => {
+    const want = !!muted;
+    if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
+      return { ok: false, error: 'Nothing is being shared' };
+    }
+    sendExtMsg({ action: CALL_COMMANDS.ACTIONS.setShareAudio, payload: { muted: want } });
+    shareAudioMuted = want;
+    console.log('[local-server] Share audio', want ? 'muted' : 'unmuted');
+    return { ok: true, muted: want };
+  },
   onScrollShare: async ({ direction, amount } = {}) => {
     if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
       return { ok: false, error: 'Nothing is being shared to scroll' };
@@ -1868,6 +1886,10 @@ async function stopAllRunwayFaces(why) {
 
 let whiteboardWindow = null;
 let fullScreenShareRequested = false;
+// Agent-controlled mute for the shared surface's audio (set_share_audio).
+// Mirrors the state page-inject holds, purely so the main process can report
+// it; the mute is enforced there, on the gain node feeding the published track.
+let shareAudioMuted = false;
 // Generation token for the whiteboard-share "Present now" retry loop. Bumped on
 // every new share AND on stop/leave, so a stray retry can't fire after the share
 // already succeeded or after the whiteboard window was torn down. On Slack the

@@ -76,7 +76,7 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref, extraRoutes } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
     // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
     // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
@@ -111,6 +111,7 @@ class LocalServer {
     this.onJoinSlack = onJoinSlack || (() => {});
     this.onLoadUrl = onLoadUrl || (() => {});
     this.onScrollShare = onScrollShare || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onSetShareAudio = onSetShareAudio || (async () => ({ ok: false, error: 'not implemented' }));
     this.onPlayAudio = onPlayAudio || (() => {});
     this.onFocusRequest = onFocusRequest || (() => {}); // raise this instance's window (profile switcher)
     // Start a brand-new call: create a room, send the bot in, open the human's
@@ -3590,6 +3591,12 @@ class LocalServer {
     if (data.meta?.action === 'scroll-share') {
       const r = await this.onScrollShare({ direction: data.meta.direction, amount: data.meta.amount });
       results.scrollShare = r || { ok: true };
+    }
+
+    // Handle set-share-audio — silence/restore the shared surface's sound
+    // mid-share, without stopping and restarting the share.
+    if (data.meta?.action === 'set-share-audio') {
+      results.setShareAudio = await this.onSetShareAudio({ muted: data.meta.muted });
     }
 
     // Handle inspect-dom command — read-only DOM extraction from the Meet view

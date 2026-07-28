@@ -38,6 +38,7 @@ const CALL_COMMANDS = {
     cameraOn: 'camera-on',
     cameraOff: 'camera-off',
     playSpeechTest: 'play-speech-test',
+    setShareAudio: 'set-share-audio',
   },
   triggerScreenShare: 'trigger-screen-share',
   triggerStopSharing: 'trigger-stop-sharing',
@@ -136,6 +137,8 @@ class CallProvider {
   async startShare(/* type */) { this.notImplemented('startShare'); }
   /** Stop sharing. Maps to trigger-stop-sharing. */
   async stopShare() { this.notImplemented('stopShare'); }
+  /** Silence (true) / restore (false) the shared surface's audio for the call. */
+  async setShareAudioMuted(/* muted */) { this.notImplemented('setShareAudioMuted'); }
 
   // --- Roster snapshot -----------------------------------------------------
   /** Current participants: [{ name, speaking, isSelf }]. */

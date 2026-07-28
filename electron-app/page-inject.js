@@ -1382,6 +1382,70 @@
 
   const _getDisplayMedia = MediaDevices.prototype.getDisplayMedia;
 
+  // Agent-controlled mute for the shared surface's sound (set_share_audio).
+  //
+  // The mute has to live UPSTREAM of the track we hand Meet. Setting
+  // `enabled = false` on the captured track looks right and does nothing:
+  // Meet clones the track before publishing it, and a clone carries its own
+  // `enabled` state, so we end up silencing a track nobody transmits while the
+  // clone plays on. (Verified in a live call — a "muted" share was still
+  // audible on a remote device.) Muting the shared WINDOW instead
+  // (webContents.setAudioMuted) is no good either: that is local-output
+  // muting, and the capture tap sits upstream of it.
+  //
+  // So route the captured audio through a gain node and publish the gain's
+  // output instead. Every clone Meet makes descends from that node, so gain 0
+  // silences all of them at once, instantly, with no renegotiation and without
+  // restarting the share. The board keeps playing normally — the bot can still
+  // watch a video it has muted for everyone else.
+  //
+  // The flag outlives any one share: a share started while muted comes up
+  // muted, rather than surprising the room with sound already suppressed.
+  let shareAudioGain = null;
+  let shareAudioMuted = false;
+
+  function applyShareAudioMute() {
+    if (!shareAudioGain) return false;
+    shareAudioGain.gain.value = shareAudioMuted ? 0 : 1;
+    return true;
+  }
+
+  // Swap the stream's captured audio track for a gain-controlled copy of it.
+  // Returns the published track, or null if anything went wrong — in which
+  // case the raw track stays in place and the share is simply un-muteable,
+  // which beats losing the audio altogether.
+  function installShareAudioGain(stream) {
+    const raw = stream.getAudioTracks()[0];
+    if (!raw) { shareAudioGain = null; return null; }
+    try {
+      const ctx = new AudioContext();
+      const gain = ctx.createGain();
+      const dest = ctx.createMediaStreamDestination();
+      ctx.createMediaStreamSource(new MediaStream([raw])).connect(gain).connect(dest);
+      const published = dest.stream.getAudioTracks()[0];
+
+      stream.removeTrack(raw);
+      stream.addTrack(published);
+      shareAudioGain = gain;
+      applyShareAudioMute();
+      ctx.resume().catch(() => { /* autoplay-policy switch should prevent this */ });
+
+      // The raw track ends when the share does. Tear the graph down with it —
+      // the gain's output track would otherwise stay live forever, since
+      // nothing else ends it.
+      raw.addEventListener('ended', () => {
+        try { published.stop(); ctx.close(); } catch { /* already gone */ }
+        if (shareAudioGain === gain) shareAudioGain = null;
+      });
+      return published;
+    } catch (err) {
+      console.warn('[bots-in-calls] Share audio gain setup failed —',
+        'audio will play but cannot be muted:', err.message);
+      shareAudioGain = null;
+      return null;
+    }
+  }
+
   MediaDevices.prototype.getDisplayMedia = async function (constraints) {
     console.debug('[bots-in-calls] *** getDisplayMedia CALLED ***', JSON.stringify(constraints));
     // In Electron, session.setDisplayMediaRequestHandler handles source selection.
@@ -1401,9 +1465,11 @@
       if (!constraints.video) constraints.video = true; // audio-only requests are rejected
     }
     const stream = await _getDisplayMedia.call(navigator.mediaDevices, constraints);
+    if (inElectron) installShareAudioGain(stream);
     console.log('[bots-in-calls] getDisplayMedia →',
       stream.getVideoTracks().length, 'video,',
-      stream.getAudioTracks().length, 'audio track(s)');
+      stream.getAudioTracks().length, 'audio track(s)',
+      shareAudioGain ? (shareAudioMuted ? '(muted)' : '(muteable)') : '(not muteable)');
     return stream;
   };
 
@@ -1428,6 +1494,12 @@
 
       case 'set-config':
         if (payload) Object.assign(config, payload);
+        break;
+
+      case 'set-share-audio':
+        shareAudioMuted = !!payload?.muted;
+        console.log('[bots-in-calls] Share audio', shareAudioMuted ? 'MUTED' : 'unmuted',
+          applyShareAudioMute() ? '(applied to live track)' : '(no live share — applies to the next one)');
         break;
 
       case 'set-speaking':

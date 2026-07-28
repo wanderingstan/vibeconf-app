@@ -1267,6 +1267,37 @@ server.tool(
   }
 );
 
+// --- set_share_audio ---
+server.tool(
+  "set_share_audio",
+  "Mute or unmute the sound coming from what you're screen-sharing, without stopping the share. By default a shared board's audio is live — a video or sound effect playing on it is heard by everyone in the call. Mute it when the room should talk OVER the content rather than listen to it (e.g. you've put a video up for discussion, or you're leaving a page open that plays sound you don't want as a backdrop), then unmute when it's time to actually watch. Takes effect instantly and the share keeps running; the video keeps playing either way, so you can still see it. The setting sticks across shares until you change it.",
+  {
+    muted: z.boolean().describe("true = the call hears nothing from the shared surface. false = restore its sound."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ muted, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) {
+      return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    }
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
+        meta: { action: "set-share-audio", muted },
+      })),
+    });
+    const data = await resp.json();
+    const r = data.results?.setShareAudio;
+    if (r?.ok) {
+      return { content: [{ type: "text", text: muted
+        ? "Share audio muted — the call hears nothing from the shared surface."
+        : "Share audio unmuted — the call hears the shared surface again." }] };
+    }
+    return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "Failed to set share audio"}` }] };
+  }
+);
+
 // --- inspect_dom ---
 server.tool(
   "inspect_dom",

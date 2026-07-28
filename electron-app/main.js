@@ -19,6 +19,14 @@ const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionL
 // byte-identical to the prior literals — same wire.
 const { CALL_EVENTS, CALL_COMMANDS } = require('./call-provider.js');
 
+// Let the shared board play sound unprompted. Now that the whiteboard window's
+// audio is captured into the screen share, a board pointed at a page with a
+// <video>/<audio> would otherwise sit silent: Chromium's autoplay policy needs a
+// user gesture, and nobody can click an off-screen capture window. (The app's own
+// executeJavaScript calls pass userGesture:true, so only externally-loaded URLs
+// were affected.) Must run before app ready to take effect.
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+
 // Git commit + dirty flag for the session-log header. Works when running from
 // source (dev: __dirname is inside the repo); returns 'n/a' in a packaged app
 // (no .git in the asar) or if git isn't available. Soft-fail, never throws.
@@ -580,28 +588,71 @@ const localServer = new globalThis.LocalServer({
         // (cancel on stop/leave) and, on Slack, stop as soon as `sharing` (the
         // real selfPresenting toggle) reports engaged.
         const myGen = ++shareGeneration;
+        selfPresentingConfirmed = false;
         (async () => {
-          for (let attempt = 1; attempt <= 5; attempt++) {
-            await new Promise((r) => setTimeout(r, attempt === 1 ? 1800 : 2000));
+          // Wait for the call before clicking anything. A share requested while
+          // Meet is still on "Getting ready…" has no Present button to find, and
+          // the old fixed 5×2s budget could expire entirely inside that window —
+          // the share then failed silently, having burned all five attempts
+          // clicking at a page that had not loaded yet. Joining is not on a
+          // budget here: the generation token still cancels this loop on
+          // stop/leave/new-share, so waiting cannot strand it.
+          const joinDeadline = Date.now() + PRESENT_JOIN_WAIT_MS;
+          while (localServer.callStatus !== 'in-call' && Date.now() < joinDeadline) {
+            await new Promise((r) => setTimeout(r, 500));
+            if (myGen !== shareGeneration) {
+              console.log('[electron] Whiteboard share: Present trigger loop cancelled while waiting to join');
+              return;
+            }
+          }
+          if (localServer.callStatus !== 'in-call') {
+            console.warn('[electron] Whiteboard share: still not in call after',
+              Math.round(PRESENT_JOIN_WAIT_MS / 1000) + 's (status: ' + localServer.callStatus + ')',
+              '— triggering anyway');
+          }
+
+          // Then retry until Meet confirms we are presenting. Backs off so a
+          // slow-but-working share isn't hammered (and so a genuinely broken
+          // one doesn't emit a screen-share error every 2s for the whole
+          // window): ~1.8s, 2s, 3s, 4s… capped, ending near PRESENT_RETRY_MS.
+          const retryDeadline = Date.now() + PRESENT_RETRY_MS;
+          let attempt = 0;
+          let waitMs = 1800;
+          while (Date.now() < retryDeadline) {
+            await new Promise((r) => setTimeout(r, waitMs));
+            waitMs = Math.min(Math.round(waitMs * 1.4), 8000);
+            attempt++;
             if (myGen !== shareGeneration) {
               console.log('[electron] Whiteboard share: Present trigger loop cancelled (superseded by stop/leave/new share)');
               return;
             }
-            // On Slack `sharing` tracks the REAL toggle (selfPresenting), so once
-            // it's engaged, re-triggering would turn it back OFF — stop. On Meet
-            // `sharing` is set optimistically up front, so it isn't a reliable
-            // "engaged" signal there; keep the belt-and-suspenders retries.
-            if (slackProviderMode && localServer.sharing) {
-              console.log('[electron] Whiteboard share: engaged on Slack (attempt ' + attempt + ') — stopping retries');
+            // Stop as soon as the share is really engaged. selfPresenting is the
+            // provider's read of the actual UI ("Stop presenting" visible) on
+            // BOTH platforms, unlike `sharing`, which Meet sets optimistically
+            // up front and so can never report engagement. This matters beyond
+            // tidiness on Slack, where the control is a single TOGGLE and a late
+            // re-click would flip sharing back OFF.
+            if (selfPresentingConfirmed || (slackProviderMode && localServer.sharing)) {
+              console.log('[electron] Whiteboard share: engaged (attempt ' + attempt + ') — stopping retries');
               return;
             }
             if (meetView && !meetView.webContents.isDestroyed()) {
-              console.log('[electron] Whiteboard share: Present-now trigger attempt ' + attempt + '/5');
+              console.log('[electron] Whiteboard share: Present-now trigger attempt ' + attempt);
               sendCallCmd(CALL_COMMANDS.triggerScreenShare, { shareType: 'window' });
             } else {
-              console.warn('[electron] Whiteboard share: meetView unavailable on Present trigger attempt ' + attempt + '/5 (#269)');
+              console.warn('[electron] Whiteboard share: meetView unavailable on Present trigger attempt ' + attempt + ' (#269)');
             }
           }
+          if (myGen !== shareGeneration) return;
+          if (selfPresentingConfirmed || (slackProviderMode && localServer.sharing)) return;
+          // Give up loudly. `sharing` was set optimistically at the top of
+          // onShareWhiteboard, so leaving it true would have the app — and the
+          // agent reading status — believe it is presenting a board nobody can
+          // see. This is the case that used to end in silence.
+          console.error('[electron] Whiteboard share: never engaged after',
+            Math.round(PRESENT_RETRY_MS / 1000) + 's and ' + attempt + ' attempts — giving up');
+          localServer.setSharing(false);
+          localServer.addError('Screen share never started — Meet did not accept the Present-now trigger.');
         })();
         // #189: drop the board-only URL into Meet chat the first time the
         // whiteboard is shared this call, so participants can open it in
@@ -683,6 +734,24 @@ const localServer = new globalThis.LocalServer({
     }
     if (app.dock) app.dock.show();
     app.focus({ steal: true });
+  },
+  // Silence the shared surface's audio without touching the share itself.
+  //
+  // The mute itself happens in page-inject, on the gain node feeding the track
+  // Meet publishes. Not here: webContents.setAudioMuted() mutes this machine's
+  // speakers, and the capture tap sits upstream of that — a call verified the
+  // asymmetry, with the host laptop silent while a remote device heard the
+  // board. So the host already hears nothing during a share, and muting the
+  // window would only silence a local output nobody is listening to.
+  onSetShareAudio: async ({ muted } = {}) => {
+    const want = !!muted;
+    if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
+      return { ok: false, error: 'Nothing is being shared' };
+    }
+    sendExtMsg({ action: CALL_COMMANDS.ACTIONS.setShareAudio, payload: { muted: want } });
+    shareAudioMuted = want;
+    console.log('[local-server] Share audio', want ? 'muted' : 'unmuted');
+    return { ok: true, muted: want };
   },
   onScrollShare: async ({ direction, amount } = {}) => {
     if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
@@ -1879,6 +1948,19 @@ async function stopAllRunwayFaces(why) {
 
 let whiteboardWindow = null;
 let fullScreenShareRequested = false;
+// How long the Present-now trigger waits for the bot to actually be in the call
+// before clicking, and how long it then keeps retrying. Both were effectively
+// one combined 10s budget, which a slow Meet join could consume on its own.
+const PRESENT_JOIN_WAIT_MS = 60_000;
+const PRESENT_RETRY_MS = 30_000;
+// The provider's read of the real Meet/Slack UI ("Stop presenting" visible),
+// as opposed to localServer.sharing, which Meet sets optimistically the moment
+// a share is requested. This is what tells the retry loop it can stop.
+let selfPresentingConfirmed = false;
+// Agent-controlled mute for the shared surface's audio (set_share_audio).
+// Mirrors the state page-inject holds, purely so the main process can report
+// it; the mute is enforced there, on the gain node feeding the published track.
+let shareAudioMuted = false;
 // Generation token for the whiteboard-share "Present now" retry loop. Bumped on
 // every new share AND on stop/leave, so a stray retry can't fire after the share
 // already succeeded or after the whiteboard window was torn down. On Slack the
@@ -2575,6 +2657,20 @@ function configureMeetSession(sess) {
 
     if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
       try {
+        // Audio for the shared board. Electron's Streams.audio takes a
+        // WebFrameMain and captures that frame's audio — so anything the
+        // whiteboard page plays (a <video>, a sound effect) reaches the call.
+        // Cross-platform, no Chromium feature flags, unlike system loopback
+        // (which is Windows-only in Electron 33 and is a separate problem for
+        // the full-screen share path above).
+        //
+        // enableLocalEcho stays at its default false: the bot's own speakers
+        // must stay silent or the board's audio would bleed back through the
+        // OS mic. Meet's mic pipeline mangles music/effects (see play_audio's
+        // tool description), which is exactly why this path exists.
+        const wbAudio = !whiteboardWindow.webContents.isDestroyed()
+          ? whiteboardWindow.webContents.mainFrame
+          : null;
         const sources = await desktopCapturer.getSources({
           types: ['window'],
           thumbnailSize: { width: 0, height: 0 },
@@ -2592,13 +2688,16 @@ function configureMeetSession(sess) {
         if (!source) source = candidates.find(s => s.name.startsWith(wbTitle));
 
         if (source) {
-          console.log('[electron] Matched whiteboard source:', source.id, source.name);
-          callback({ video: source });
+          console.log('[electron] Matched whiteboard source:', source.id, source.name,
+            '· audio:', wbAudio ? 'whiteboard frame' : 'none');
+          callback(wbAudio ? { video: source, audio: wbAudio } : { video: source });
           return;
         }
 
         console.warn('[electron] No matching whiteboard source — using webContents fallback (avoiding main window).');
-        callback({ video: whiteboardWindow.webContents });
+        callback(wbAudio
+          ? { video: whiteboardWindow.webContents, audio: wbAudio }
+          : { video: whiteboardWindow.webContents });
       } catch (err) {
         console.error('[electron] Display media error:', err);
         callback({});
@@ -6871,6 +6970,7 @@ function setupIPC() {
   // Track our own presenting state from Meet UI (Stop presenting button visible)
   ipcMain.on(CALL_EVENTS.selfPresenting, (_event, { presenting }) => {
     const wasSharing = localServer.sharing;
+    selfPresentingConfirmed = !!presenting;
     localServer.setSharing(presenting);
     if (!presenting) {
       // Distinguish an agent-initiated stop (onStopSharing already cleared

@@ -2070,8 +2070,9 @@ server.tool(
   {
     room_id: z.string().describe("Meet code (e.g. abc-defg-hij) OR a Slack huddle URL (https://app.slack.com/client/<team>/<channel>)."),
     bot_name: z.string().optional().describe("Bot display name in Meet. Omit to use the bot name configured for this MCP instance (set via the app's panel or VIBECONF_BOT_NAME env). Only pass this to explicitly override — don't pass a literal default like 'Jimmy', that overrides the user's preference."),
+    force: z.boolean().optional().describe("Rebuild the session even if the bot is already in this call. Default false, which makes a repeat join a harmless no-op. Only pass true when the live session is genuinely wedged and you mean to drop and rejoin — it tears down the working call. It also skips the same-name collision check."),
   },
-  async ({ room_id, bot_name }) => {
+  async ({ room_id, bot_name, force }) => {
     try {
       // Multi-profile routing (#301): the name selects which running app instance
       // to drive. Re-bind this session's BASE_URL to it BEFORE resolving the bot
@@ -2146,15 +2147,30 @@ server.tool(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(botSyncPayload(joinedBotName, {
-          meta: { action: "join", meetCode: room_id, botName: joinedBotName },
+          meta: { action: "join", meetCode: room_id, botName: joinedBotName, ...(force ? { force: true } : {}) },
         })),
       });
       const data = await resp.json();
       if (data.results?.join?.ok) {
         ROOM_ID = room_id;
-        BOT_NAME = joinedBotName;
+        BOT_NAME = data.results.join.botName || joinedBotName;
         botNameLocked = true;
         lastPollTime = null;
+
+        // Already there: the app deliberately did nothing rather than tear the
+        // live session down (#26). Say so plainly — an agent that reads this as
+        // a fresh join would greet the room a second time.
+        if (data.results.join.alreadyInCall) {
+          const st = data.results.join.status === 'joining' ? 'still joining' : 'already in';
+          return { content: [{ type: "text", text: [
+            `The bot is ${st} call ${room_id} as "${BOT_NAME}"${routedNote} — nothing to do, and nothing was disturbed.`,
+            ``,
+            `Do NOT greet again if you already have. Go straight back to the loop: \`wait_for_speech\` → optionally \`speak\` / \`update_whiteboard\` / \`read_chat\` → \`wait_for_speech\`.`,
+            ``,
+            `If you genuinely believe the session is wedged, pass force:true to rebuild it — that WILL drop and rejoin the call.`,
+          ].join('\n') }] };
+        }
+
         return {
           content: [{
             type: "text",

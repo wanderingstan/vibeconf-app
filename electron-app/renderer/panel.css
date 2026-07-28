@@ -463,6 +463,22 @@ body[data-titlebar] #settingsScreen .settings-head button { -webkit-app-region: 
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
+/* Standing note at the top of Bot Settings. Informational, not a warning, so it
+   borrows the accent blue rather than the amber/red notice treatment — and it
+   sits flat against the page instead of floating like .hero-notice, since it is
+   permanent furniture rather than something that appeared and can be dismissed. */
+.settings-note {
+  margin: 0 0 16px;
+  padding: 9px 11px;
+  border-left: 2px solid #8ab4f8;
+  border-radius: 0 6px 6px 0;
+  background: #282a2d;
+  color: #bdc1c6;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.settings-note strong { color: #e8eaed; font-weight: 600; }
+
 /* Avatar-background preview. 16:9 to match the camera, so what's shown here is
    framed exactly as the call will frame it. */
 .avatar-bg-preview {

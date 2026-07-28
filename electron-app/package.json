@@ -2,9 +2,9 @@
   "name": "vibeconferencing-agent",
   "productName": "Vibeconferencing",
   "version": "0.7.0-beta66",
-  "description": "AI bot that joins Google Meet calls — Electron wrapper",
+  "description": "AI agents as real participants in your video calls",
   "homepage": "https://github.com/wanderingstan/vibeconf-app",
-  "author": "Stan James <wanderingstan@gmail.com>",
+  "author": "Stan James <stan@wanderingstan.com>",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -61,7 +61,7 @@
       ],
       "icon": "icon.png",
       "category": "AudioVideo",
-      "maintainer": "Stan James <wanderingstan@gmail.com>",
+      "maintainer": "Stan James <stan@wanderingstan.com>",
       "synopsis": "AI agents as real participants in your video calls"
     },
     "files": [

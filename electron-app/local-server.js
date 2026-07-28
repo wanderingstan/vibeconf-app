@@ -2902,6 +2902,11 @@ class LocalServer {
       this.server = http.createServer((req, res) => {
         this._handleRequest(req, res).catch(err => {
           console.error('[local-server] Request error:', err.message);
+          // A handler that already responded and THEN threw would otherwise
+          // raise ERR_HTTP_HEADERS_SENT here as an unhandled rejection, burying
+          // the real error under a second one — which is exactly how the bug
+          // above hid: the log showed the headers error, not the cause.
+          if (res.headersSent) { try { res.end(); } catch { /* already closed */ } return; }
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: false, error: err.message }));
         });
@@ -3349,9 +3354,20 @@ class LocalServer {
 
     const roomId = pathMatch[1];
 
-    // Accept requests for any room ID — set it as active if we don't have one
+    // Accept requests for any room ID — set it as active if we don't have one.
+    //
+    // Through setRoom, NOT a bare assignment. setRoom is what CREATES the
+    // per-room state (whiteboard, transcripts, turns); assigning roomId alone
+    // left this.roomId truthy while this.whiteboard stayed undefined, so the
+    // first whiteboard write on an adopted room died with "Cannot set
+    // properties of undefined (setting 'content')" and any snapshot built for
+    // that room died reading it. Reproduced on 0.8.0-beta1 and -beta2: a
+    // whiteboard POST to a room the app hasn't otherwise been told about.
+    //
+    // Adoption only happens when there is no room yet, so there is no state to
+    // lose by initialising it here.
     if (!this.roomId) {
-      this.roomId = roomId;
+      this.setRoom(roomId);
     }
 
     if (req.method === 'GET') {

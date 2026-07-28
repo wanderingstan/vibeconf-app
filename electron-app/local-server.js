@@ -237,7 +237,26 @@ class LocalServer {
     // Remembering them lets a replay of aged-out history be dropped outright.
     this._retiredFps = new Set();
     this.maxRetiredFps = 2000;
-    this.whiteboard = { content: '', version: 0, lastModified: null, lastEditor: null };
+    // #12 regression alarm. The three replay paths were closed in beta-66, but
+    // #402 closed an earlier set on 2026-07-08 and looked healthy for two weeks
+    // before the 2026-07-22 call showed it had been recurring throughout —
+    // nobody was watching, and the symptom (a bot answering twice) reads as
+    // chattiness rather than a data bug. So watch the invariant directly:
+    //
+    //   a turn's lastUpdated must never advance while its NORMALIZED text is
+    //   unchanged.
+    //
+    // lastUpdated is exactly what _entriesSince(since) filters on, so moving it
+    // without new words is what re-qualifies replayed history as fresh speech —
+    // the mechanism behind every variant of #12 so far. Checking the OUTCOME
+    // rather than the `if (textChanged)` branch means a future path that bumps
+    // it some other way is caught too.
+    //
+    // Deliberately NOT checked at delivery: a client may legitimately re-poll
+    // with an unchanged `since` and correctly receive the same entries again.
+    // An earlier draft flagged that as a replay and fired on healthy calls.
+    this._replayAlarmFired = false; // one addError per session, not per batch
+    this.replayAlarmCount = 0;      // total violations, for the session log
     this.members = [];
     this.maxTranscripts = 500;
 
@@ -433,6 +452,8 @@ class LocalServer {
     this._turnAlias = new Map();
     this._turnFps = new Map();
     this._retiredFps = new Set();
+    this._replayAlarmFired = false;
+    this.replayAlarmCount = 0;
     this.whiteboard = { content: '', version: 0, lastModified: null, lastEditor: null };
     this.members = [];
     this.sharing = false;
@@ -477,6 +498,8 @@ class LocalServer {
     this._turnAlias = new Map();
     this._turnFps = new Map();
     this._retiredFps = new Set();
+    this._replayAlarmFired = false;
+    this.replayAlarmCount = 0;
     this.members = [];
     this.sharing = false;
     this.participants = [];
@@ -1289,6 +1312,44 @@ class LocalServer {
     if (!list.includes(turnId)) { list.push(turnId); this._turnFps.set(fp, list); }
   }
 
+  // #12 regression alarm — see the constructor for why this exists rather than
+  // a reminder to check back in a few days. Runs after each updateTurns batch
+  // and enforces one invariant: lastUpdated may only advance when the turn's
+  // normalized text actually changed.
+  //
+  // Reports through addError() so it lands in get_room_info's "Recent Errors" —
+  // the bot driving the call sees it live and can say so out loud, instead of
+  // the recurrence hiding for another fortnight. Also logged, because that ring
+  // buffer holds 10 entries and dies with the room; the log is what you grep to
+  // confirm a clean streak.
+  _checkReplayRegression() {
+    let offenders = 0;
+    for (const turn of this.turns.values()) {
+      const fp = this._turnFp(turn.speaker, turn.text);
+      // _alarmFp/_alarmLU are the (text, lastUpdated) pair as of the last check.
+      // Same words + a later lastUpdated = the turn re-qualified for waiters'
+      // `since` cursors while saying nothing new. That is the bug.
+      if (turn._alarmFp === fp && turn.lastUpdated > turn._alarmLU) offenders++;
+      turn._alarmFp = fp;
+      turn._alarmLU = turn.lastUpdated;
+    }
+    if (!offenders) return;
+
+    this.replayAlarmCount += offenders;
+    console.warn(
+      ts(), '🔁 [#12] caption replay: lastUpdated advanced on', offenders,
+      'turn(s) with unchanged text (session total', this.replayAlarmCount + ')',
+    );
+    if (!this._replayAlarmFired) {
+      this._replayAlarmFired = true;
+      this.addError(
+        `caption replay regression (#12): ${offenders} turn(s) re-surfaced to waiters ` +
+        `without their text changing. This is the bug fixed in beta-66 recurring — ` +
+        `please capture the session log before the call ends.`,
+      );
+    }
+  }
+
   // #12: keep the replay bookkeeping in step with the maxTurns prune. Dropped
   // ids must leave _turnFps/_turnAlias (they can never match again, and stale
   // aliases would route live growth into a turn we no longer hold), and their
@@ -1499,6 +1560,8 @@ class LocalServer {
         this._logHeard(turn.speaker, turn.text);
       }
     }
+
+    this._checkReplayRegression();
 
     // Bound the map size — keep the most recently-active turns.
     if (this.turns.size > this.maxTurns) {

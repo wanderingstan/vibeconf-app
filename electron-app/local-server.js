@@ -22,6 +22,7 @@ const AUTH_TOKEN_DIR = path.join(os.homedir(), '.vibeconferencing', 'local-token
 function localTokenPath(port) { return path.join(AUTH_TOKEN_DIR, `${port}.token`); }
 const prefsSchema = require('./preferences-schema.js');
 const { getRecentSessionLog, getSessionLogPath } = require('./session-log.js');
+const { shouldIgnoreRejoin } = require('./rejoin-guard.js');
 const { TranscriptTailer } = require('./agent-transcript.js');
 
 // Mime types for the whiteboard asset server (#157). Conservative list —
@@ -3560,12 +3561,38 @@ class LocalServer {
     if (data.meta?.action === 'join') {
       const meetCode = data.meta.meetCode || roomId;
       const botName = data.meta.botName;
+
+      // #26: a second join for the room we are ALREADY in is almost always an
+      // agent retrying after a transient error, not realising the first join
+      // succeeded. Honouring it destroyed the working session: loadMeetURL
+      // tears down and recreates the Meet view, and the reload then sticks
+      // forever on Meet's "Getting ready…" screen — no join button ever
+      // renders. The agent finally sees "the bot couldn't enter the Meet
+      // (denied or removed)", which blames Meet for something we did.
+      //
+      // So treat it as the no-op it should have been. A join for a DIFFERENT
+      // room still switches calls, and force:true still rebuilds the session
+      // for the case where it really is wedged.
+      if (shouldIgnoreRejoin({
+        requestedRoom: meetCode,
+        currentRoom: this.roomId,
+        callStatus: this.callStatus,
+        force: data.meta.force,
+      })) {
+        console.log('[local-server] Join ignored — already', this.callStatus, 'in', meetCode);
+        results.join = {
+          ok: true,
+          alreadyInCall: true,
+          status: this.callStatus,
+          botName: this.getEffectiveBotName() || null,
+        };
+      }
       // #222: refuse to join under a name that's already in the call — two
       // same-named bots are indistinguishable in the Meet roster, the
       // transcript, and bot-to-bot addressivity. Skip the check when
       // rejoining under a name this session already used (our own presence
       // entry may not have expired), and allow meta.force to override.
-      if (botName && !data.meta.force && botName !== this._everJoinedAs) {
+      if (!results.join && botName && !data.meta.force && botName !== this._everJoinedAs) {
         const clash = await this._nameAlreadyInCall(meetCode, botName);
         if (clash) {
           console.log('[local-server] Join refused — name collision:', botName, '(' + clash + ')');

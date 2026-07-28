@@ -12,8 +12,8 @@ class TTSProvider {
     this.provider = config.provider || 'auto'; // 'auto' picks elevenlabs if key set, else macos-say
     this.apiKey = config.apiKey || '';
     this.voiceId = config.voiceId || 'CwhRBWXzGAHq8TQ4Fs17'; // "Roger" (premade, free tier)
-    this.modelId = config.modelId || 'eleven_v2_flash'; // fast model
-    this.macosVoice = config.macosVoice || 'Samantha'; // macOS say voice
+    this.modelId = config.modelId || 'eleven_flash_v2_5'; // fast model (~75ms, 0.5 credits/char)
+    this.macosVoice = config.macosVoice || 'Daniel'; // macOS say voice
     this.voiceboxUrl = config.voiceboxUrl || 'http://127.0.0.1:17493'; // local Voicebox server
     this.voiceboxProfileId = config.voiceboxProfileId || '';
     this.voiceboxEngine = config.voiceboxEngine || 'kokoro'; // must match what the profile supports

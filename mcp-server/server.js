@@ -595,7 +595,7 @@ function listMacosVoices() {
 // list and the settings picker agree.
 // TODO(#342): single-source this + the merge logic behind one /api/voices endpoint
 // so panel.js and this file stop duplicating the list.
-const WHITELISTED_MACOS_STANDARD = ['Samantha', 'Karen'];
+const WHITELISTED_MACOS_STANDARD = ['Daniel', 'Samantha', 'Karen'];
 const isWhitelistedStandard = (name) => WHITELISTED_MACOS_STANDARD.some((w) => name === w || name.startsWith(w + ' '));
 
 // Voicebox local-TTS profiles (#340) — mirror the app's list-voicebox-profiles so
@@ -627,7 +627,7 @@ server.tool(
     // Current voice, derived from the active provider.
     const usingVb = config.ttsProvider === 'voicebox' && config.voiceboxProfileId;
     const usingMac = !usingVb && (config.ttsProvider === 'macos-say' || !isElevenLabsActive());
-    sections.push(`Current voice: ${usingVb ? `Voicebox profile ${config.voiceboxProfileId}` : usingMac ? `${config.macosVoice || 'Samantha'} (built-in macOS)` : 'ElevenLabs (see below)'}`);
+    sections.push(`Current voice: ${usingVb ? `Voicebox profile ${config.voiceboxProfileId}` : usingMac ? `${config.macosVoice || 'Daniel'} (built-in macOS)` : 'ElevenLabs (see below)'}`);
 
     // Voicebox (local TTS) — listed first when the server is up (#340), matching
     // the settings picker's ordering.

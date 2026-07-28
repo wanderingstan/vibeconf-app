@@ -198,7 +198,7 @@ async function populateVoices(cfg) {
   let selected = sel.value;
   if (cfg) {
     const p = cfg.ttsProvider || ''; const vb = cfg.voiceboxProfileId || '';
-    const el = cfg.ttsVoiceId || ''; const mac = cfg.macosVoice || 'Samantha';
+    const el = cfg.ttsVoiceId || ''; const mac = cfg.macosVoice || 'Daniel';
     if (p === 'voicebox' && vb) selected = 'vb:' + vb;
     else if (p === 'elevenlabs' && el) selected = 'el:' + el;
     else if (p === 'macos-say') selected = 'mac:' + mac;
@@ -229,14 +229,15 @@ async function populateVoices(cfg) {
   })));
   const macList = Array.isArray(macos) ? macos : [];
   const tierOf = (n) => (/\(Premium\)/i.test(n) ? 0 : /\(Enhanced\)/i.test(n) ? 1 : 2);
-  const white = (n) => ['Samantha', 'Karen'].some((w) => n === w || n.startsWith(w + ' '));
+  // Keep in sync with WHITELISTED_MACOS_STANDARD in panel.js / mcp-server/server.js.
+  const white = (n) => ['Daniel', 'Samantha', 'Karen'].some((w) => n === w || n.startsWith(w + ' '));
   addGroup('Built-in (macOS)', macList
     .filter((v) => tierOf(v.name) < 2 || white(v.name))
     .map((v) => ({ value: 'mac:' + v.name, text: `${v.name} (${v.locale})` })));
   addGroup('Other built-in (lower quality)', macList
     .filter((v) => tierOf(v.name) === 2 && !white(v.name))
     .map((v) => ({ value: 'mac:' + v.name, text: `${v.name} (${v.locale})` })));
-  if (!sel.options.length) sel.innerHTML = '<option value="mac:Samantha">Samantha (default)</option>';
+  if (!sel.options.length) sel.innerHTML = '<option value="mac:Daniel">Daniel (default)</option>';
 }
 
 function voiceSampleText() {

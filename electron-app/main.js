@@ -832,6 +832,38 @@ const localServer = new globalThis.LocalServer({
     return { ok: true, typed: text ?? null, key: key ?? null, selector: selector || null };
   },
 
+  // Show or hide the shared window's OS title bar.
+  //
+  // Electron fixes `frame` at construction, so this cannot be toggled on a live
+  // window — it has to be rebuilt. Rebuilding mid-share would drop the capture
+  // and force a re-present, so during a share the setting is saved and applied
+  // to the next one. Idle, the window is rebuilt immediately at the same URL,
+  // so the bot sees the change take effect straight away.
+  onSetShareTitleBar: async ({ visible } = {}) => {
+    const want = visible !== false;
+    if (want === shareTitleBar) {
+      return { ok: true, visible: want, applied: true, unchanged: true };
+    }
+    shareTitleBar = want;
+
+    const live = whiteboardWindow && !whiteboardWindow.isDestroyed();
+    if (live && localServer.sharing) {
+      console.log('[local-server] Share title bar →', want, '(deferred — a share is live)');
+      return { ok: true, visible: want, applied: false };
+    }
+    if (live) {
+      let url = null;
+      try { url = whiteboardWindow.webContents.getURL() || null; } catch { /* going away */ }
+      try { whiteboardWindow.close(); } catch { /* already gone */ }
+      whiteboardWindow = null;
+      if (url) whiteboardWindow = createWhiteboardWindow(url);
+      console.log('[local-server] Share title bar →', want, '(window rebuilt)');
+      return { ok: true, visible: want, applied: true };
+    }
+    console.log('[local-server] Share title bar →', want, '(saved for the next share)');
+    return { ok: true, visible: want, applied: false };
+  },
+
   onScrollShare: async ({ direction, amount } = {}) => {
     if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
       return { ok: false, error: 'Nothing is being shared to scroll' };
@@ -2078,6 +2110,10 @@ async function focusInShare(wc, selector) {
 // size set BEFORE a share (or between shares) survives the window being
 // recreated — createWhiteboardWindow opens at whatever this says.
 let shareSize = { ...SHARE_SIZE.recommended };
+// Whether the shared window keeps its OS title bar. Default true: it labels the
+// share and is the only way to grab the window by hand. Electron fixes `frame`
+// at construction, so changing this recreates the window.
+let shareTitleBar = true;
 // How long the Present-now trigger waits for the bot to actually be in the call
 // before clicking, and how long it then keeps retrying. Both were effectively
 // one combined 10s budget, which a slow Meet join could consume on its own.
@@ -2155,14 +2191,16 @@ function createWhiteboardWindow(roomUrl) {
     y: sh + 100,
     title: 'Vibeconferencing Whiteboard',
     skipTaskbar: true,
-    // No title bar: this window exists to be CAPTURED, and its frame was being
-    // captured with it — every share carried a "Vibeconferencing Whiteboard"
-    // title bar across the top, spending vertical space on a chrome that means
-    // nothing to participants. Nothing needs the frame: the window lives
-    // off-screen, is never dragged or closed by hand, and the share-handler
-    // matches it by getMediaSourceId() (with the title as a fallback, which a
-    // frameless window still reports).
-    frame: false,
+    // The title bar is captured along with the window, so it shows up in the
+    // share. That is the DEFAULT and usually wanted: it labels what people are
+    // looking at, and it is the only handle for dragging or minimising this
+    // window by hand. A bot can turn it off (set_share_title_bar) for a clean
+    // edge-to-edge capture — a screenshot, a mock, anything where a strip of
+    // macOS chrome would read as an accident.
+    //
+    // Construction-only in Electron, which is why this is a window-creation
+    // setting rather than something toggled on a live window.
+    frame: shareTitleBar,
     // Share the bot's identity partition (same as meetView) so this shared-screen
     // surface inherits ALL the bot's credentials — Google, Slack, and cached HTTP
     // Basic-Auth. Without this it landed on Electron's default session, so a site
@@ -2804,6 +2842,10 @@ function configureMeetSession(sess) {
     }
 
     if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
+      // callback() may only fire once, so track whether it has — the catch
+      // below must not answer again on behalf of a call that already did.
+      let answered = false;
+      const answer = (streams) => { answered = true; callback(streams); };
       try {
         // Audio for the shared board. Electron's Streams.audio takes a
         // WebFrameMain and captures that frame's audio — so anything the
@@ -2838,17 +2880,27 @@ function configureMeetSession(sess) {
         if (source) {
           console.log('[electron] Matched whiteboard source:', source.id, source.name,
             '· audio:', wbAudio ? 'whiteboard frame' : 'none');
-          callback(wbAudio ? { video: source, audio: wbAudio } : { video: source });
+          answer(wbAudio ? { video: source, audio: wbAudio } : { video: source });
           return;
         }
 
-        console.warn('[electron] No matching whiteboard source — using webContents fallback (avoiding main window).');
-        callback(wbAudio
-          ? { video: whiteboardWindow.webContents, audio: wbAudio }
-          : { video: whiteboardWindow.webContents });
+        // mainFrame, NOT webContents: Streams.video takes a WebFrameMain or a
+        // DesktopCapturerSource, and anything else throws
+        // "video must be a WebFrameMain or DesktopCapturerSource" — so this
+        // fallback threw instead of falling back, which went unnoticed because
+        // source matching almost always succeeds. Verified working in a call:
+        // frame capture of the board, 30fps, and it follows a resize.
+        console.warn('[electron] No matching whiteboard source — using frame-capture fallback (avoiding main window).');
+        answer(wbAudio
+          ? { video: whiteboardWindow.webContents.mainFrame, audio: wbAudio }
+          : { video: whiteboardWindow.webContents.mainFrame });
       } catch (err) {
+        // callback() is one-time: if the call above already fired and THEN threw
+        // (a bad video type does exactly that), calling it again raises
+        // "One-time callback was called more than once" as an unhandled
+        // rejection, burying the real error under a second one.
         console.error('[electron] Display media error:', err);
-        callback({});
+        if (!answered) { try { callback({}); } catch { /* already answered */ } }
       }
     } else {
       console.log('[electron] Display media request → no whiteboard window, denying');

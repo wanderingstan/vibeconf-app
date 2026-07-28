@@ -1470,6 +1470,13 @@
       stream.getVideoTracks().length, 'video,',
       stream.getAudioTracks().length, 'audio track(s)',
       shareAudioGain ? (shareAudioMuted ? '(muted)' : '(muteable)') : '(not muteable)');
+    // Dimensions/fps of what participants actually receive. Worth a line in the
+    // log: a share that looks fine locally can still arrive letterboxed or at
+    // the wrong aspect, and this is the only place that shows it.
+    try {
+      const vt = stream.getVideoTracks()[0];
+      if (vt) console.log('[bots-in-calls] share video settings:', JSON.stringify(vt.getSettings()));
+    } catch (e) { console.warn('[bots-in-calls] track settings failed', e.message); }
     return stream;
   };
 

@@ -1114,8 +1114,9 @@ const startShareSchema = {
   share_type: z.enum(["whiteboard", "screen"]).optional().describe("What to share. 'whiteboard' (default) shares the bot's whiteboard window — set its content with update_whiteboard (markdown/Mermaid, an image, or any URL). 'screen' shares the entire screen."),
   width: z.number().optional().describe("Width of the shared board in pixels. Leave unset for the recommended 800 — the whiteboard renderer is TUNED for 800 wide, so markdown/Mermaid boards should keep it. Only change this when sharing a URL whose content wants a different shape."),
   height: z.number().optional().describe("Height of the shared board in pixels. Leave unset for the recommended 800. Square is deliberate: Meet stacks participant tiles down the RIGHT of a shared screen, so a wide board loses its edge behind them."),
+  title_bar: z.boolean().optional().describe("Whether the shared window keeps its title bar. Default true — it labels what people are looking at. Pass false for an edge-to-edge capture when the chrome would read as an accident (a screenshot, a design mock, a full-bleed image)."),
 };
-async function startShareHandler({ room_id, share_type, width, height }) {
+async function startShareHandler({ room_id, share_type, width, height, title_bar }) {
     const roomId = room_id || ROOM_ID;
     if (!roomId) {
       return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
@@ -1142,6 +1143,18 @@ async function startShareHandler({ room_id, share_type, width, height }) {
     // shares in the same call (e.g. an "ended unexpectedly" from a prior
     // drop must not get mis-reported as the cause of THIS attempt failing).
     const attemptStartedAt = new Date().toISOString();
+
+    // Title bar before the window is built — `frame` is fixed at construction,
+    // so asking after the share has started would only affect the NEXT one.
+    if (title_bar !== undefined) {
+      await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(botSyncPayload(BOT_NAME, {
+          meta: { action: "set-share-title-bar", visible: title_bar },
+        })),
+      }).catch(() => { /* non-fatal — the share still happens */ });
+    }
 
     // Size first, so the window opens at the requested shape rather than
     // opening square and visibly resizing in front of the room.
@@ -1308,6 +1321,35 @@ server.tool(
       return { content: [{ type: "text", text: `Shared board is now ${r.width}x${r.height}${notes}. ${r.applied ? "Applied to the live share." : "Saved — the next share opens at this size."}` }] };
     }
     return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "Failed to resize"}` }] };
+  }
+);
+
+// --- set_share_title_bar ---
+server.tool(
+  "set_share_title_bar",
+  "Show or hide the title bar on the window you are screen-sharing. It is SHOWN by default and that is usually right — it labels what people are looking at, and it is the only handle for moving that window by hand. Hide it when the chrome would read as an accident rather than a label: a full-bleed image, a design mock, a screenshot you want edge to edge. Note this cannot change during a live share (the window has to be rebuilt): while presenting, the setting is saved and applies to your next start_share, so set it BEFORE you share, or pass title_bar to start_share directly.",
+  {
+    visible: z.boolean().describe("true = keep the title bar (default). false = hide it for a clean edge-to-edge capture."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ visible, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(botSyncPayload(BOT_NAME, { meta: { action: "set-share-title-bar", visible } })),
+    });
+    const data = await resp.json();
+    const r = data.results?.setShareTitleBar;
+    if (r?.ok) {
+      const state = r.visible ? "shown" : "hidden";
+      if (r.unchanged) return { content: [{ type: "text", text: `Title bar was already ${state}.` }] };
+      return { content: [{ type: "text", text: r.applied
+        ? `Title bar ${state}.`
+        : `Title bar will be ${state} on your next share — it can't change while you're presenting.` }] };
+    }
+    return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "Failed to set the title bar"}` }] };
   }
 );
 

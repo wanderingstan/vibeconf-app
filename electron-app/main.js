@@ -1645,6 +1645,54 @@ function openAppSettings() {
   appSettingsWindow.on('closed', () => { appSettingsWindow = null; });
 }
 
+// ── About window ────────────────────────────────────────────────────────────
+// Replaces Electron's default About panel, which showed the Electron icon and
+// no product identity of ours. A custom window rather than
+// app.setAboutPanelOptions because that API takes no icon on macOS (iconPath is
+// Linux/Windows only) — the native panel draws the BUNDLE's icon, so it is the
+// Electron icon in any `pnpm dev` run and only becomes ours once packaged.
+// Owning the window means the logo is right in development too, and identical
+// on every platform.
+let aboutWindow = null;
+function openAboutWindow() {
+  if (aboutWindow && !aboutWindow.isDestroyed()) {
+    aboutWindow.show(); aboutWindow.focus(); return;
+  }
+  aboutWindow = new BrowserWindow({
+    width: 340, height: 375, // sized to the content — measured, not guessed
+    title: 'About Vibeconferencing',
+    icon: path.join(__dirname, 'icon.png'),
+    // Fixed size: the content is a fixed block of text, so a resize handle
+    // would only ever produce empty space.
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    center: true,
+    show: false,
+    // Frameless, like the macOS About panel it stands in for. The body carries
+    // -webkit-app-region: drag so the window is still movable.
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    backgroundColor: '#202124', // paint the final colour before first frame
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-about.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  aboutWindow.loadFile(path.join(__dirname, 'renderer', 'about.html'));
+  aboutWindow.once('ready-to-show', () => {
+    if (aboutWindow && !aboutWindow.isDestroyed()) aboutWindow.show();
+  });
+  // The website link must leave the app, not navigate this window into a web
+  // page with no way back — there is no chrome here to go back with.
+  aboutWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https:\/\//i.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  aboutWindow.on('closed', () => { aboutWindow = null; });
+}
+
 // ── First-run setup wizard (onboarding) ─────────────────────────────────────
 // A guided walkthrough shown once on first launch (guarded by the per-profile
 // `onboardingComplete` flag) and re-runnable from the app menu. Pure step logic
@@ -5035,7 +5083,8 @@ function createMainWindow() {
     {
       label: app.name,
       submenu: [
-        { role: 'about' },
+        // Our own About window, not { role: 'about' } — see openAboutWindow.
+        { label: 'About ' + app.name, click: () => openAboutWindow() },
         {
           label: 'Check for Updates…',
           click: () => checkForUpdates({ silentWhenCurrent: false }),
@@ -5686,7 +5735,15 @@ function setupIPC() {
 
   ipcMain.handle('create-and-join-meet', async () => createAndJoinMeet());
 
-  ipcMain.handle('get-app-version', () => ({ version: app.getVersion(), packaged: app.isPackaged }));
+  // `description` is served from package.json so the About window renders the
+  // product line rather than carrying its own copy of it. One source of truth:
+  // editing the manifest updates the About box, and there is no second string
+  // to forget. (Electron has no app.getDescription(), hence the require.)
+  ipcMain.handle('get-app-version', () => ({
+    version: app.getVersion(),
+    packaged: app.isPackaged,
+    description: require('./package.json').description || '',
+  }));
 
   // ── First-run setup wizard IPC (onboarding:*) ─────────────────────────────
   ipcMain.handle('onboarding:get-permissions', async () => {

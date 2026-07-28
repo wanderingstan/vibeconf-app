@@ -314,13 +314,15 @@ const PREFERENCES = {
   },
   bargeInAckMaxWords: {
     type: 'number',
-    default: 40,
+    default: 30,
     min: 0,
     max: 200,
     description:
       'Max words for the OPENING ACK to stay barge-in-exempt (see bargeInAckExempt). ' +
       'Protects a real ack (a sentence or two) while letting a runaway-long first reply ' +
-      'still yield to a human. Read live.',
+      'still yield to a human. Lowered from 40 to 30 (#67) — an exempt ack plays OVER a ' +
+      'live human, so the cap wants to be just above a genuine ack (the #335 one was 23) ' +
+      'and no higher. Read live.',
   },
   bargeInBackchannelMaxWords: {
     type: 'number',

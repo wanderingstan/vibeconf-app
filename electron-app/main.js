@@ -725,7 +725,7 @@ const localServer = new globalThis.LocalServer({
   },
   // Profile switcher (#282): a sibling instance asked us to come forward.
   // /call → POST /api/call/start → the same path the panel button takes.
-  onStartCall: () => createAndJoinMeet(),
+  onStartCall: (opts) => createAndJoinMeet(opts),
 
   onFocusRequest: () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -2441,7 +2441,11 @@ async function websiteRequest(pathname, { method = 'GET', headers = {}, body = n
 // browser to it. Returns a discriminated result callers map to UI — never the
 // raw upstream body. Shared by the panel button (IPC) and the /call command
 // (POST /api/call/start), so the two can't drift.
-async function createAndJoinMeet() {
+// openBrowser:false is for a caller who ISN'T at this machine — someone driving
+// Claude Code from their phone, who wants the meeting made here and the link
+// handed back so they can join from where they actually are. Opening a browser
+// on an unattended desktop would just leave a stray tab in an empty call.
+async function createAndJoinMeet({ openBrowser = true } = {}) {
   // A FRESH key per press. Reusing one returns the SAME room instead of a new
   // one, which is right for a retry of one press and wrong for a second press.
   const idempotencyKey = require('crypto').randomUUID();
@@ -2465,7 +2469,8 @@ async function createAndJoinMeet() {
     // Their browser tab is also what focusBrowserCallTab (#275) brings
     // forward once the bot is admitted, and what the app's tab detection
     // watches — so opening it here fits the paths that already exist.
-    openExternalUrl(r.json.meetingUri);
+    if (openBrowser) openExternalUrl(r.json.meetingUri);
+    else console.log('[meet-create] browser launch suppressed — caller is remote');
     return { ok: true, url: r.json.meetingUri };
   }
 
@@ -4228,7 +4233,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '26';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '27';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}

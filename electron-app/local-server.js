@@ -3070,11 +3070,22 @@ class LocalServer {
     // link is a bearer capability and the caller doesn't need it (the bot is
     // already in, and the human's browser is already opening).
     if (url.pathname === '/api/call/start' && req.method === 'POST') {
+      // openBrowser:false means the caller isn't sitting at this machine (Claude
+      // Code driven from a phone, say), so no tab is opened on an unattended
+      // desktop. The join link is returned either way: it used to be withheld
+      // as a bearer capability, but the caller is the user's own agent, and a
+      // remote one has no other route into the room it just made.
+      let openBrowser = true;
+      try {
+        const parsed = JSON.parse((await this._readBody(req)) || '{}');
+        if (parsed && parsed.openBrowser === false) openBrowser = false;
+      } catch { /* no body / unparseable — keep the desktop default */ }
+
       let result;
-      try { result = await this.onStartCall(); } catch (err) { result = { ok: false, code: 'error', detail: err.message }; }
+      try { result = await this.onStartCall({ openBrowser }); } catch (err) { result = { ok: false, code: 'error', detail: err.message }; }
       res.writeHead(result?.ok ? 200 : 502, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result?.ok
-        ? { success: true, roomId: this.roomId || null }
+        ? { success: true, roomId: this.roomId || null, url: result.url || null }
         : { success: false, code: result?.code || 'unknown', detail: result?.detail || null }));
       return;
     }

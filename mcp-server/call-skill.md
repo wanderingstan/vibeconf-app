@@ -1,7 +1,7 @@
 ---
 name: call
 description: Start a brand-new call with your bot — creates a Meet, sends the bot in, and opens your browser to it
-argument-hint: "[BotName]  — optional, picks which bot when several are running"
+argument-hint: "[BotName] [remote]  — bot picks which bot when several run; remote if you're not at the app's machine"
 disable-model-invocation: true
 allowed-tools: mcp__vibeconferencing__start_call mcp__vibeconferencing__list_call_instances mcp__vibeconferencing__get_room_info mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__read_whiteboard mcp__vibeconferencing__read_transcripts mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__set_mode mcp__vibeconferencing__set_camera mcp__vibeconferencing__get_call_screenshot mcp__vibeconferencing__get_shared_screenshot mcp__vibeconferencing__read_chat mcp__vibeconferencing__send_chat mcp__vibeconferencing__leave_call mcp__vibeconferencing__start_share mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__stop_sharing mcp__vibeconferencing__scroll_share mcp__vibeconferencing__inspect_dom mcp__vibeconferencing__list_preferences mcp__vibeconferencing__set_preference mcp__vibeconferencing__set_avatar_emoji mcp__vibeconferencing__set_whiteboard_style mcp__vibeconferencing__reload_whiteboard mcp__vibeconferencing__play_sound mcp__vibeconferencing__get_working_memory mcp__vibeconferencing__post_understanding mcp__vibeconferencing__bank_probe
 ---
@@ -19,21 +19,35 @@ Call `start_call`. Pass `bot_name` only if `$ARGUMENTS` names one — it selects
 `/join-call`. With one instance running, omit it.
 
 ```
-/call            → start a call with the sole running bot
-/call Alice      → start a call with the "Alice" profile's bot
+/call             → start a call with the sole running bot
+/call Alice       → start a call with the "Alice" profile's bot
+/call remote      → you're NOT at the app's machine (see below)
+/call Alice remote
 ```
 
 The app does three things from that one call: creates a Meet anyone with the link can
 join (no admit prompt, no host needed), sends the bot into it, and opens **your** browser
-to the same room so you're in it too. You do not need to find or paste a link.
+to the same room so you're in it too. You do not need to find or paste a link — unless
+you're driving this from somewhere else, in which case see "When the user isn't at the
+app's machine" below.
 
 If it reports a problem, relay it and stop — the likely ones are being signed out of
 vibeconferencing.com (sign in from the app's panel) or having started several calls in
 quick succession. Do not retry in a loop; a retry that succeeds gives you a *second*
 room, not another try at the first.
 
-`start_call` returns the room id but deliberately **not** the meeting URL — the link is a
-bearer capability, and nothing here needs it. Don't go looking for it.
+`start_call` returns the room id **and the join link**. Show the link when it's useful —
+someone joining from another device, or a person being invited — and skip it when the
+user's browser is already open in the room.
+
+### When the user isn't at the app's machine
+
+If `$ARGUMENTS` says `remote`, or the user has told you they're on their phone or in a
+remote session, pass `open_browser: false`. No browser then opens on the app's machine —
+nobody is sitting there, and a tab left in an empty call is litter at best.
+
+Give them the join link on its own line so it's tappable. Everything after this is the
+same; they join from their own device instead of a browser on the desktop.
 
 ## Step 2: Wait for the bot to be admitted
 

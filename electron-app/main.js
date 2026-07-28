@@ -3035,13 +3035,21 @@ async function listVoiceboxProfiles() {
 }
 
 // Fetch the account's ElevenLabs voices (GET /v1/voices) for the unified voice
-// picker (#340). Best-effort: returns [] (never throws) if no key is available
-// or the request fails/times out — matching enumerateMacosVoices()'s soft-fail.
+// picker (#340). Never throws: returns { voices, error }, where `error` is null
+// on success and an actionable {kind, message} otherwise.
+//
+// It returns the REASON, not just an empty list, because ElevenLabs keys are
+// scoped: a key that speaks fine can still lack `voices_read`, which 401s here.
+// This previously fell into `if (!res.ok) return []`, so a user who pasted a
+// working key saw no voices and no explanation — indistinguishable from "no key"
+// or "no voices on the account". See elevenlabs-errors.js.
+//
 // `category` ('premade' / 'cloned' / 'professional' / 'generated') lets the UI
 // surface custom/cloned voices distinctly if it wants.
 async function listElevenLabsVoices(apiKey) {
+  const { classifyVoicesError, classifyVoicesNetworkError } = require('./elevenlabs-errors.js');
   const key = apiKey || store?.get('ttsApiKey');
-  if (!key) return [];
+  if (!key) return { voices: [], error: null };   // no key set is not an error
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
@@ -3050,12 +3058,25 @@ async function listElevenLabsVoices(apiKey) {
       signal: controller.signal,
     });
     clearTimeout(timeout);
-    if (!res.ok) return [];
+    if (!res.ok) {
+      // Body may be empty or non-JSON on gateway errors — classify on the
+      // status alone in that case rather than throwing here.
+      let body = null;
+      try { body = await res.json(); } catch { /* not JSON */ }
+      const error = classifyVoicesError(res.status, body);
+      console.warn('[elevenlabs] voices list failed:', error.kind, '—', error.message);
+      return { voices: [], error };
+    }
     const data = await res.json();
     const voices = Array.isArray(data?.voices) ? data.voices : [];
-    return voices.map((v) => ({ id: v.voice_id, name: v.name || v.voice_id, category: v.category || '' }));
-  } catch {
-    return [];
+    return {
+      voices: voices.map((v) => ({ id: v.voice_id, name: v.name || v.voice_id, category: v.category || '' })),
+      error: null,
+    };
+  } catch (err) {
+    const error = classifyVoicesNetworkError(err);
+    console.warn('[elevenlabs] voices list failed:', error.kind, '—', error.message);
+    return { voices: [], error };
   }
 }
 
@@ -6816,7 +6837,10 @@ function setupIPC() {
 
   // List the account's ElevenLabs voices for the unified voice picker (#340).
   // Optional apiKey arg lets the panel fetch with a just-typed key before it's
-  // saved; falls back to the stored key. Returns [{ id, name, category }] or [].
+  // saved; falls back to the stored key.
+  // Returns { voices: [{ id, name, category }], error: null | { kind, message } }
+  // — the error is what lets the picker explain a key that's valid but lacks
+  // the `voices_read` scope, instead of silently showing nothing.
   ipcMain.handle('list-elevenlabs-voices', async (_event, apiKey) => {
     return listElevenLabsVoices(apiKey);
   });

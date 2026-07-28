@@ -190,11 +190,21 @@ async function populateVoices(cfg) {
   const sel = $('voiceSelect');
   if (!sel) return;
   const apiKey = ($('elKey').value || '').trim();
-  const [macos, voicebox, eleven] = await Promise.all([
+  const [macos, voicebox, elevenResult] = await Promise.all([
     api.invoke('list-macos-voices').catch(() => []),
     api.invoke('list-voicebox-profiles').catch(() => []),
-    apiKey ? api.invoke('list-elevenlabs-voices', apiKey).catch(() => []) : Promise.resolve([]),
+    apiKey
+      ? api.invoke('list-elevenlabs-voices', apiKey).catch(() => ({ voices: [], error: null }))
+      : Promise.resolve({ voices: [], error: null }),
   ]);
+  // A scoped key missing `voices_read` lists nothing while TTS still works —
+  // say so here, or the wizard silently looks like the key didn't take.
+  const eleven = elevenResult?.voices || [];
+  const elErr = $('elVoiceError');
+  if (elErr) {
+    elErr.textContent = elevenResult?.error ? '⚠ ' + elevenResult.error.message : '';
+    elErr.style.display = elevenResult?.error ? 'block' : 'none';
+  }
   let selected = sel.value;
   if (cfg) {
     const p = cfg.ttsProvider || ''; const vb = cfg.voiceboxProfileId || '';

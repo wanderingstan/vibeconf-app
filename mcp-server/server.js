@@ -598,6 +598,40 @@ function listMacosVoices() {
 const WHITELISTED_MACOS_STANDARD = ['Daniel', 'Samantha', 'Karen'];
 const isWhitelistedStandard = (name) => WHITELISTED_MACOS_STANDARD.some((w) => name === w || name.startsWith(w + ' '));
 
+// Turn a failed ElevenLabs response into a reason the agent can relay.
+// ElevenLabs keys are SCOPED: a key that speaks fine can still lack
+// `voices_read`, which 401s the list call. A bare "API error 401" sends the
+// agent (and the user) hunting for a bad key that isn't bad. The body carries
+// detail.status ('missing_permissions' | 'invalid_api_key' | …) and a message
+// naming the permission.
+//
+// Deliberately duplicated from electron-app/elevenlabs-errors.js rather than
+// imported: this file is copied into the packaged app standalone
+// (extraResources) and cannot reach into electron-app/. Keep the two in sync.
+async function elevenLabsErrorText(resp) {
+  let detail = {};
+  try {
+    const body = await resp.json();
+    detail = typeof body?.detail === 'string' ? { message: body.detail } : (body?.detail || {});
+  } catch { /* empty or non-JSON body — fall through to the status alone */ }
+  const status = String(detail.status || '');
+  const message = String(detail.message || '');
+
+  if (status === 'missing_permissions' || /missing the permission/i.test(message)) {
+    const named = /permission\s+([a-z_]+)/i.exec(message);
+    const perm = named ? named[1] : 'voices_read';
+    return `the API key lacks the "${perm}" permission (HTTP ${resp.status}). ` +
+      `Speaking may still work. Fix it at elevenlabs.io -> Profile -> API Keys by enabling "${perm}".`;
+  }
+  if (status === 'invalid_api_key' || /invalid api key/i.test(message)) {
+    return `the API key was rejected as invalid (HTTP ${resp.status}).`;
+  }
+  if (status === 'quota_exceeded' || /quota/i.test(message)) {
+    return `the ElevenLabs account is out of quota (HTTP ${resp.status}).`;
+  }
+  return `API error ${resp.status}${message ? ` — ${message}` : ''}`;
+}
+
 // Voicebox local-TTS profiles (#340) — mirror the app's list-voicebox-profiles so
 // the agent sees the same voices the settings picker does. Best-effort: returns
 // [] if Voicebox isn't running.
@@ -642,7 +676,7 @@ server.tool(
     if (isElevenLabsActive()) {
       try {
         const resp = await vfetch('https://api.elevenlabs.io/v1/voices', { headers: { 'xi-api-key': config.ttsApiKey } });
-        if (!resp.ok) throw new Error(`API error ${resp.status}`);
+        if (!resp.ok) throw new Error(await elevenLabsErrorText(resp));
         const data = await resp.json();
         const voices = data.voices.map(v =>
           `${v.name} — ${`${v.labels?.accent || ''} ${v.labels?.gender || ''} ${v.labels?.age || ''}`.trim()} [id: ${v.voice_id}]`
@@ -712,7 +746,7 @@ server.tool(
       // Else try ElevenLabs by name or ID.
       if (isElevenLabsActive()) {
         const resp = await vfetch('https://api.elevenlabs.io/v1/voices', { headers: { 'xi-api-key': config.ttsApiKey } });
-        if (!resp.ok) throw new Error(`API error ${resp.status}`);
+        if (!resp.ok) throw new Error(await elevenLabsErrorText(resp));
         const data = await resp.json();
         const match = data.voices.find(v => v.name.toLowerCase() === voice.toLowerCase() || v.voice_id === voice);
         if (match) {

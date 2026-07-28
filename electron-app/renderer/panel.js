@@ -2079,17 +2079,35 @@ const WHITELISTED_MACOS_STANDARD = ['Daniel', 'Samantha', 'Karen'];
 // Unified voice picker: merge macOS + ElevenLabs + Voicebox into one dropdown,
 // grouped Voicebox → ElevenLabs → macOS(good) → Other, so the best voices are up
 // top. Option value encodes the provider: "vb:<id>" / "el:<id>" / "mac:<name>".
+// Show (or clear) why the ElevenLabs voice list came back empty. Only the
+// actionable cases are worth a line under the picker — a missing/rejected key
+// is already obvious from the key field, but "valid key, wrong scope" is not
+// discoverable any other way.
+function showElevenVoiceError(error) {
+  const el = document.getElementById('elevenVoiceError');
+  if (!el) return;
+  if (!error) { el.style.display = 'none'; el.textContent = ''; return; }
+  el.textContent = '⚠ ' + error.message;
+  el.style.display = 'block';
+}
+
 // Pass the saved config on initial load to pre-select; call with no arg to
 // refresh in place (preserves the current selection).
 async function populateUnifiedVoices(config) {
   const sel = unifiedVoiceSelect;
   if (!sel) return;
   const apiKey = (ttsApiKeyInput?.value || config?.ttsApiKey || '').trim();
-  const [macos, voicebox, eleven] = await Promise.all([
+  const [macos, voicebox, elevenResult] = await Promise.all([
     api.invoke('list-macos-voices').catch(() => []),
     api.invoke('list-voicebox-profiles').catch(() => []),
-    apiKey ? api.invoke('list-elevenlabs-voices', apiKey).catch(() => []) : Promise.resolve([]),
+    apiKey
+      ? api.invoke('list-elevenlabs-voices', apiKey).catch(() => ({ voices: [], error: null }))
+      : Promise.resolve({ voices: [], error: null }),
   ]);
+  // {voices, error}: a scoped key that can't read voices used to look exactly
+  // like no key at all. Show why instead of nothing.
+  const eleven = elevenResult?.voices || [];
+  showElevenVoiceError(elevenResult?.error || null);
 
   // Desired selection: derive from saved config on initial load, else keep current.
   let selectedValue = sel.value;

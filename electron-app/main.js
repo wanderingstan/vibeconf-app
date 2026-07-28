@@ -1356,7 +1356,26 @@ const AVATAR_BG_MAX_CHARS = 1_000_000;
 // edges and alpha; photos blow the budget as PNG and fall through to the JPEG
 // quality ladder. JPEG has no alpha, but this image fills the whole frame, so
 // there is nothing behind it to show through.
-function buildBackgroundSvgFromImage(filePath) {
+async function buildBackgroundSvgFromImage(filePath) {
+  // An SVG is already the native format for this preference — the agent sets
+  // avatarBackgroundSvg to SVG source directly — so take it as-is rather than
+  // rasterising it into a data URI inside another SVG. It stays sharp at any
+  // size and a fraction of the bytes. (nativeImage cannot read SVG at all, so
+  // the raster path below would have rejected it outright.)
+  //
+  // resolveSvg does the two things an imported file needs: strips <script>, and
+  // inlines any <image href="file://…"> it references, so the stored SVG is
+  // self-contained and does not break when the author moves their assets.
+  if (path.extname(filePath).toLowerCase() === '.svg') {
+    const source = await fs.promises.readFile(filePath, 'utf8');
+    const svg = await resolveSvg(source);
+    if (!/<svg[\s>]/i.test(svg)) throw new Error('That file does not look like an SVG');
+    if (svg.length > AVATAR_BG_MAX_CHARS) {
+      throw new Error('That SVG is too large to store — try one with fewer embedded images');
+    }
+    return svg;
+  }
+
   const { nativeImage } = require('electron');
   let img = nativeImage.createFromPath(filePath);
   if (img.isEmpty()) throw new Error('Could not read that image');
@@ -5647,12 +5666,14 @@ function setupIPC() {
       title: 'Choose a background image',
       message: 'Shown behind the bot\'s face on its camera (16:9, centre-cropped).',
       properties: ['openFile'],
-      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }],
+      // SVG first: it is the native format for this preference and the only one
+      // that stays sharp at any size, so it leads the list.
+      filters: [{ name: 'Images', extensions: ['svg', 'png', 'jpg', 'jpeg', 'gif', 'webp'] }],
     });
     if (canceled || !filePaths || !filePaths.length) return { canceled: true };
     const filePath = filePaths[0];
     try {
-      const svg = buildBackgroundSvgFromImage(filePath);
+      const svg = await buildBackgroundSvgFromImage(filePath);
       store.set('avatarBackgroundSvg', svg);
       // Caption is purely for recall — it's what get_room_info shows the agent
       // when asked "what's my background?", so the filename beats nothing.

@@ -1,0 +1,5 @@
+# Every change to this repo needs @wanderingstan on the review.
+# The main ruleset requires an approving review from a code owner; without
+# this file that requirement matches nobody and quietly requires nothing.
+
+* @wanderingstan

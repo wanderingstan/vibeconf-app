@@ -163,9 +163,57 @@ function clickEventsFor({ x, y, button, clickCount } = {}) {
   };
 }
 
+// Gap between the shared board and the app window, matching the one the
+// terminal launcher already leaves below the app.
+const SHARE_GAP = 10;
+
+/**
+ * Where to put the shared board relative to the app window.
+ *
+ * LEFT of the app by default, top-aligned. Left because the board is wide
+ * (800 by default) and the app window is narrow, so a right-hand placement
+ * collides with the way people actually park the app — top-right of the
+ * display. The board's RIGHT edge is what gets anchored, so growing it with
+ * set_share_size extends leftward and it keeps hugging the app instead of
+ * sliding underneath it.
+ *
+ * Falls back to the right of the app when the left won't fit, then clamps into
+ * the work area. Clamping can overlap the app window, which is fine — it is a
+ * real window and can be moved; being off-screen is what isn't fine.
+ *
+ * @returns {{x:number, y:number, side:'left'|'right'|'clamped'}}
+ */
+function shareWindowPosition({ mainBounds, workArea, width, height, gap = SHARE_GAP } = {}) {
+  if (!mainBounds || !workArea) return null;
+
+  const fits = (x) => x >= workArea.x && x + width <= workArea.x + workArea.width;
+
+  const leftX = mainBounds.x - gap - width;
+  const rightX = mainBounds.x + mainBounds.width + gap;
+  let x, side;
+  if (fits(leftX)) { x = leftX; side = 'left'; }
+  else if (fits(rightX)) { x = rightX; side = 'right'; }
+  else {
+    // Neither side fits: keep it on-screen, preferring the left edge so the
+    // board stays where the eye expects it.
+    x = Math.max(workArea.x, Math.min(leftX, workArea.x + workArea.width - width));
+    side = 'clamped';
+  }
+
+  // Top-aligned with the app, pulled down if that would push the bottom off.
+  let y = mainBounds.y;
+  const maxY = workArea.y + workArea.height - height;
+  if (y > maxY) y = maxY;
+  if (y < workArea.y) y = workArea.y;
+
+  return { x: Math.round(x), y: Math.round(y), side };
+}
+
 module.exports = {
   SHARE_SIZE,
+  SHARE_GAP,
   resolveShareSize,
+  shareWindowPosition,
   normalizeModifiers,
   keyEventsFor,
   clickEventsFor,

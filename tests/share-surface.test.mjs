@@ -15,8 +15,12 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const {
-  SHARE_SIZE, resolveShareSize, normalizeModifiers, keyEventsFor, clickEventsFor,
+  SHARE_SIZE, SHARE_GAP, resolveShareSize, shareWindowPosition,
+  normalizeModifiers, keyEventsFor, clickEventsFor,
 } = require('../electron-app/share-surface.js');
+
+// A 1512x945 work area with the menu bar taken off the top — a MacBook default.
+const AREA = { x: 0, y: 25, width: 1512, height: 920 };
 
 // --- sizing ---------------------------------------------------------------
 
@@ -154,4 +158,65 @@ test('0,0 is a legitimate click target', () => {
   const r = clickEventsFor({ x: 0, y: 0 });
   assert.equal(r.error, undefined, 'falsy-but-valid coordinates must not be rejected');
   assert.equal(r.events.length, 3);
+});
+
+// --- positioning ------------------------------------------------------------
+
+test('the board sits to the LEFT of the app, top-aligned', () => {
+  // App parked top-right, the way people actually keep it.
+  const main = { x: 1100, y: 60, width: 400, height: 700 };
+  const p = shareWindowPosition({ mainBounds: main, workArea: AREA, width: 800, height: 800 });
+  assert.equal(p.side, 'left');
+  assert.equal(p.x, 1100 - SHARE_GAP - 800, 'right edge hugs the app');
+  assert.equal(p.y, 60, 'top-aligned with the app');
+});
+
+test('the RIGHT edge is anchored, so growing the board extends leftward', () => {
+  const main = { x: 1100, y: 60, width: 400, height: 700 };
+  const narrow = shareWindowPosition({ mainBounds: main, workArea: AREA, width: 400, height: 400 });
+  const wide = shareWindowPosition({ mainBounds: main, workArea: AREA, width: 800, height: 400 });
+  assert.equal(narrow.x + 400, wide.x + 800,
+    'both end at the same right edge — the board grows away from the app, not under it');
+});
+
+test('no room on the left falls back to the right', () => {
+  const main = { x: 40, y: 60, width: 400, height: 700 };
+  const p = shareWindowPosition({ mainBounds: main, workArea: AREA, width: 800, height: 800 });
+  assert.equal(p.side, 'right');
+  assert.equal(p.x, 40 + 400 + SHARE_GAP);
+});
+
+test('when neither side fits, stay on-screen rather than tidy', () => {
+  // A board nearly as wide as the display: overlap is acceptable, off-screen is not.
+  const main = { x: 600, y: 60, width: 400, height: 700 };
+  const p = shareWindowPosition({ mainBounds: main, workArea: AREA, width: 1400, height: 800 });
+  assert.equal(p.side, 'clamped');
+  assert.ok(p.x >= AREA.x, 'not off the left edge');
+  assert.ok(p.x + 1400 <= AREA.x + AREA.width, 'not off the right edge');
+});
+
+test('a tall board is pulled up so its bottom stays on-screen', () => {
+  const main = { x: 1100, y: 800, width: 400, height: 120 };
+  const p = shareWindowPosition({ mainBounds: main, workArea: AREA, width: 800, height: 800 });
+  assert.equal(p.y, AREA.y + AREA.height - 800);
+  assert.ok(p.y >= AREA.y);
+});
+
+test('the top never lands above the work area (under the menu bar)', () => {
+  const main = { x: 1100, y: 0, width: 400, height: 700 };
+  const p = shareWindowPosition({ mainBounds: main, workArea: AREA, width: 800, height: 800 });
+  assert.equal(p.y, AREA.y);
+});
+
+test('a second display with a non-zero origin is handled', () => {
+  const area = { x: 1512, y: 0, width: 1920, height: 1080 };
+  const main = { x: 2900, y: 100, width: 400, height: 700 };
+  const p = shareWindowPosition({ mainBounds: main, workArea: area, width: 800, height: 800 });
+  assert.equal(p.side, 'left');
+  assert.ok(p.x >= area.x, 'stays on the second display, not spilling onto the first');
+});
+
+test('missing bounds returns null rather than guessing', () => {
+  assert.equal(shareWindowPosition({ workArea: AREA, width: 800, height: 800 }), null);
+  assert.equal(shareWindowPosition({ mainBounds: { x: 0, y: 0, width: 10, height: 10 } }), null);
 });

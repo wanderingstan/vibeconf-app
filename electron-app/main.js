@@ -11,7 +11,7 @@ const { APP_LEVEL_KEYS, ScopedStore, migrateAppLevelKeys } = require('./config-s
 const profileManager = require('./profile-manager.js');
 const { MEET } = require('./meet-selectors.js'); // pure data — safe in the main process
 const { resolveSvg } = require('./svg-resolver.js');
-const { SHARE_SIZE, resolveShareSize, keyEventsFor, clickEventsFor } = require('./share-surface.js');
+const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEventsFor } = require('./share-surface.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
 // The call-provider contract. main.js is the consumer side: it subscribes to
 // CALL_EVENTS (provider → app) and issues CALL_COMMANDS (app → provider) by
@@ -770,6 +770,9 @@ const localServer = new globalThis.LocalServer({
         // what participants actually see. Position is left alone — the window
         // lives off-screen by design.
         whiteboardWindow.setContentSize(shareSize.width, shareSize.height);
+        // Re-anchor: the RIGHT edge is what hugs the app, so a wider board must
+        // extend leftward rather than sliding under the app window.
+        positionShareWindow(whiteboardWindow);
         applied = true;
       } catch (err) {
         return { ok: false, error: 'Could not resize the shared window: ' + err.message };
@@ -2163,11 +2166,60 @@ function whiteboardShareUrl(baseUrl, roomId) {
   return `${baseUrl}/room/${roomId}?mode=whiteboard&surface=share`;
 }
 
+// The board's title, carrying the bot's name so it is obvious WHICH bot is
+// presenting — the title bar is visible in the share by default, and with
+// several bots in a call that question otherwise means cross-referencing Meet's
+// own UI. getEffectiveBotName() honours a per-call override; the persistent
+// preference is the fallback. Stays distinct from the MAIN window's bare
+// "Vibeconferencing" title — matching that one is what caused #158.
+function whiteboardWindowTitle() {
+  let name = null;
+  try { name = localServer?.getEffectiveBotName?.() || store?.get('botName') || null; } catch { /* early */ }
+  return name ? `Vibeconferencing Whiteboard - ${name}` : 'Vibeconferencing Whiteboard';
+}
+
+// Put the board beside the app window, and keep it there as the app moves.
+//
+// It used to be placed at `x: workArea.width + 100` with a comment about being
+// off-screen — but workArea.width is a SIZE, not a right edge, and macOS refuses
+// to leave a window fully off-screen anyway, so it was clamped into the corner
+// of the display and has been visible (and used) all along. Now the placement is
+// deliberate: left of the app, top-aligned, right edge hugging it.
+//
+// Follows the app's move/resize the way the Slack huddle popup does
+// (slack-surface.js), with one difference that matters: once the USER drags the
+// board somewhere, following stops. The huddle popup can overlay unconditionally
+// because nobody moves it; this window gets moved by hand, and snapping it back
+// on every app nudge would be maddening.
+function positionShareWindow(win, { force = false } = {}) {
+  if (!win || win.isDestroyed()) return;
+  if (win.__userPlaced && !force) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    const { screen } = require('electron');
+    const bounds = win.getBounds();
+    const area = screen.getDisplayMatching(mainWindow.getBounds()).workArea;
+    const at = shareWindowPosition({
+      mainBounds: mainWindow.getBounds(),
+      workArea: area,
+      width: bounds.width,
+      height: bounds.height,
+    });
+    if (!at) return;
+    if (bounds.x === at.x && bounds.y === at.y) return; // already there
+    // Our own setPosition fires 'moved' too, so mark the move as ours — else the
+    // first reposition looks like a drag and disables following forever.
+    console.log('[electron] Share window placed', at.side, 'of the app at', at.x + ',' + at.y,
+      '(' + bounds.width + 'x' + bounds.height + ')');
+    win.__movingProgrammatically = true;
+    win.setPosition(at.x, at.y);
+    setImmediate(() => { win.__movingProgrammatically = false; });
+  } catch (err) {
+    console.warn('[electron] Could not position the share window:', err.message);
+  }
+}
+
 function createWhiteboardWindow(roomUrl) {
-  // Position off the bottom-right of the screen so macOS doesn't clamp to (0,0)
-  const { screen } = require('electron');
-  const display = screen.getPrimaryDisplay();
-  const { width: sw, height: sh } = display.workArea;
 
   // Square share surface (#4): Meet stacks the participant tiles down the RIGHT
   // of a shared screen, so a 16:9 board wasted width behind the tiles and left the
@@ -2187,9 +2239,8 @@ function createWhiteboardWindow(roomUrl) {
     // the title bar takes its cut. (Slightly taller board than the previous
     // 800x772 content area; the width the whiteboard is tuned for is unchanged.)
     useContentSize: true,
-    x: sw + 100,
-    y: sh + 100,
-    title: 'Vibeconferencing Whiteboard',
+    show: false,               // positioned below, then shown — no visible jump
+    title: whiteboardWindowTitle(),
     skipTaskbar: true,
     // The title bar is captured along with the window, so it shows up in the
     // share. That is the DEFAULT and usually wanted: it labels what people are
@@ -2224,7 +2275,35 @@ function createWhiteboardWindow(roomUrl) {
     console.warn('[electron] Whiteboard window FAILED to load:', code, desc, url,
       '— the captured window will be blank, which Meet may reject as "Can\'t share your screen".');
   });
-  win.on('closed', () => { whiteboardWindow = null; });
+  // Place it beside the app, then reveal it — created with show:false so it
+  // never flashes at wherever macOS would have put it first.
+  positionShareWindow(win, { force: true });
+  win.showInactive();   // visible, but it must NOT steal focus from the call
+
+  // Follow the app window. Same mechanism as the Slack huddle popup, minus the
+  // parenting: parenting would force the board to float above the app, and this
+  // one sits BESIDE it, where the user may well want the app on top.
+  const follow = () => positionShareWindow(win);
+  mainWindow?.on('move', follow);
+  mainWindow?.on('resize', follow);
+
+  // A drag by hand wins permanently — see positionShareWindow. Programmatic
+  // moves set a flag so they aren't mistaken for one.
+  win.on('moved', () => {
+    if (win.__movingProgrammatically) return;
+    if (!win.__userPlaced) {
+      win.__userPlaced = true;
+      console.log('[electron] Share window moved by hand — it will stay put from now on');
+    }
+  });
+
+  win.on('closed', () => {
+    try {
+      mainWindow?.removeListener('move', follow);
+      mainWindow?.removeListener('resize', follow);
+    } catch { /* main window already gone */ }
+    whiteboardWindow = null;
+  });
   return win;
 }
 

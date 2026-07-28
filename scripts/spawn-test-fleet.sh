@@ -212,7 +212,13 @@ if (( GRID )); then
   MENUBAR=28
   case $N in
     1) COLS=1; ROWS=1 ;;
-    2) COLS=1; ROWS=2 ;;   # 2 bots: stacked full-width rows — cleanest on a laptop
+    2) COLS=2; ROWS=1 ;;   # 2 bots: SIDE BY SIDE. Stacking looked cleaner on
+                           # paper and wasn't: the app window is narrow (~380)
+                           # and tall (~666), while a half-screen row is ~477
+                           # high — so the lower window opened overlapping the
+                           # upper one and sat mostly hidden behind it. Two
+                           # ~380-wide windows fit a 1512 display side by side
+                           # with room to spare, and both stay fully visible.
     *) COLS=2; ROWS=2 ;;   # 3–4 bots: 2×2 grid
   esac
   CELLW=$(( SCRW / COLS ))

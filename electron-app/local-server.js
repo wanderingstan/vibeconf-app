@@ -363,6 +363,11 @@ class LocalServer {
     // (or stay silent).
     this._lastReplayedStash = null;
 
+    // #109: the counterpart — texts of a stash that was DISCARDED rather than
+    // replayed, plus why. Same one-shot surfacing, so the agent learns its
+    // reply never reached the room instead of inferring it from a missing note.
+    this._lastDiscardedStash = null;
+
     // Last ack decision event — phrase, source ('llm' / 'llm-fallback-builtin'
     // / 'builtin'), latency, and any error. Surfaced in the troubleshooting
     // panel so it's visible at-a-glance whether the LLM path is hitting,
@@ -2281,6 +2286,19 @@ class LocalServer {
     return true;
   }
 
+  // #109: record a stash we threw away, so the agent finds out on its next
+  // resolve. speak() told it "held — will auto-replay", and the ONLY signal
+  // that it didn't was the absence of a replayedBargeInStash note — a negative
+  // an agent can't reliably read. On the Jul 28 call 13 of 31 stashes died this
+  // way, each one a reply the agent believed had been spoken. Silence about a
+  // dropped reply is worse than the drop: the agent goes on to build on
+  // something the room never heard.
+  _noteDiscardedStash(stash, reason) {
+    const texts = (stash?.entries || []).map((e) => e && e.text).filter(Boolean);
+    if (!texts.length) return;
+    this._lastDiscardedStash = { texts, reason };
+  }
+
   // Attempt to replay any fresh barge-in stash before the waiter returns
   // to the slow model. Returns the array of texts that were played (or
   // null if nothing). The bot speaks via the existing onBotSpeech path,
@@ -2292,6 +2310,7 @@ class LocalServer {
     // Wall-clock staleness guard: the floor took too long to reopen.
     if (ageMs > maxAgeMs) {
       console.log(ts(), '🛡️  [barge-in] discarding stash — too stale (' + ageMs + 'ms old, max ' + maxAgeMs + 'ms)');
+      this._noteDiscardedStash(this.bargeInStash, `the floor stayed busy for ${Math.round(ageMs / 1000)}s`);
       this.bargeInStash = null;
       return null;
     }
@@ -2306,6 +2325,7 @@ class LocalServer {
       const maxNewWords = Number(this._pref('bargeInStashRedeliverMaxNewWords'));
       if (Number.isFinite(maxNewWords) && newWords > maxNewWords) {
         console.log(ts(), '🛡️  [barge-in] discarding stash — conversation moved on (' + newWords + ' new words > ' + maxNewWords + ') — agent will re-derive');
+        this._noteDiscardedStash(this.bargeInStash, `${newWords} words were said while it waited`);
         this.bargeInStash = null;
         return null;
       }
@@ -2836,6 +2856,13 @@ class LocalServer {
     const replayedBargeInStash = startTime ? this._lastReplayedStash : null;
     if (startTime && this._lastReplayedStash) this._lastReplayedStash = null;
 
+    // #109: the mirror case — a queued reply that was thrown away rather than
+    // played. Same one-shot discipline, opposite meaning: the agent must know
+    // the room never heard it, so it can say the thing again if it still
+    // matters instead of assuming it landed.
+    const discardedBargeInStash = startTime ? this._lastDiscardedStash : null;
+    if (startTime && this._lastDiscardedStash) this._lastDiscardedStash = null;
+
     return {
       success: true,
       roomId: this.roomId,
@@ -2845,6 +2872,7 @@ class LocalServer {
       continuationOfPriorResponse,
       previousAckPhrase,
       replayedBargeInStash,
+      discardedBargeInStash,
       transcript: {
         entries,
         count: entries.length,

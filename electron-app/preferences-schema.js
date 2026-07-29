@@ -469,15 +469,34 @@ const PREFERENCES = {
   },
   botSpeakJitterMaxMs: {
     type: 'number',
-    default: 800,
+    default: 2000,
     min: 0,
     max: 5000,
     description:
       'When the call has 2+ other participants (so another bot could answer the ' +
-      'same prompt in lockstep), the bot waits a random 0–N ms before speaking, to ' +
-      'decorrelate simultaneous starts (#230) — two bots sharing identical timing ' +
-      'otherwise speak in unison. Solo / single-human calls skip the jitter and ' +
-      'speak immediately. 0 disables. Higher = more separation but more lag.',
+      'same prompt in lockstep), the bot waits a random 0-N ms before speaking, to ' +
+      'decorrelate simultaneous starts (#230). Raised 800 -> 2000 in #100: the ' +
+      'delay only helps if the LOSING bot can SEE the winner before its own turn, ' +
+      'and speaking-detection needs ~400-700ms (3 meter mutations in a 1200ms ' +
+      'window). Two draws from U(0,N) differ by more than the detection latency ' +
+      'with probability (1 - D/N)^2, so N=800 converted into a yield only ~14% of ' +
+      'the time — jitter fired 119 times on the Jul 28 call and bots still answered ' +
+      'together. N=2000 gets that to ~56%. Solo / single-human calls skip it ' +
+      'entirely. 0 disables. Higher = more separation, more lag.',
+  },
+  botSpeakUrgencyLeadMs: {
+    type: 'number',
+    default: 900,
+    min: 0,
+    max: 5000,
+    description:
+      'How much of the speak delay is decided by URGENCY rather than chance. The ' +
+      'bot waits (1 - urgency) x this, PLUS the random jitter above — so a reply ' +
+      'the agent scored 0.9 reaches the floor ~700ms before one scored 0.1, by ' +
+      'construction rather than by winning a coin flip. Without it two bots with ' +
+      'very different things to say are equally likely to go first. Unscored ' +
+      'utterances count as 0.5. 0 makes ordering purely random (the pre-#100 ' +
+      'behaviour). Read live.',
   },
   defaultSilenceSeconds: {
     type: 'number',

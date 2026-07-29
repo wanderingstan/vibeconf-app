@@ -923,6 +923,10 @@ button.join-more {
   font-size: 15px; line-height: 1;
 }
 button.join-more:hover:not(:disabled) { background: #3c4043; color: #e8eaed; border-color: #8ab4f8; }
+/* The bot's-view toggle swaps 👀 for ✕ once the view is popped out. ✕ is a text
+   glyph where 👀 is emoji, so at the same font-size it renders visibly smaller
+   and lighter — this puts it back on par with its neighbours. */
+button.join-more.is-close { font-size: 18px; font-weight: 500; }
 /* Open state — reads as "this is what's showing the field below". */
 button.join-more[aria-expanded="true"] { color: #8ab4f8; border-color: #8ab4f8; background: #303134; }
 /* ONE glyph, rotated — ▸ and ▴ are different characters with different optical

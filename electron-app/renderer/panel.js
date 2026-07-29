@@ -1868,11 +1868,14 @@ function applyBotViewLabel(state, resting) {
   // lie — clicking puts the view away entirely rather than docking it as a
   // thumbnail. Name what the click actually does.
   const hides = resting !== 'thumbnail';
-  // Glyph stays 👀 in every state. The button now sits in the in-call row beside
-  // Leave Call, where a changing label would resize the control and shove the
-  // row around on every state flip — and where it mirrors the fixed ⓘ opposite
-  // it. The title still names what a click will DO, which is the part that has
-  // to stay honest.
+  // 👀 to open the view, ✕ to put it away again. A one-GLYPH swap, not the old
+  // "⧉ Pop out"/"⧉ Hide" relabel: same width either way, so the row doesn't
+  // resize and shift on every state flip. The title still names what a click
+  // will DO, which is the part that has to stay honest.
+  botViewToggleBtn.textContent = popped ? '✕' : '\u{1F440}';
+  // The ✕ is a text glyph where 👀 is emoji, so it renders visually smaller at
+  // the same font-size. The class bumps it back to match.
+  botViewToggleBtn.classList.toggle('is-close', popped);
   botViewToggleBtn.title = popped
     ? (hides
         ? "Put the bot's view away. It keeps running at full size so the bot can still read shared screens — you just stop seeing it."

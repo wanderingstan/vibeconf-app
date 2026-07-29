@@ -469,19 +469,24 @@ const PREFERENCES = {
   },
   fastFloorDetection: {
     type: 'boolean',
-    default: false,
+    default: true,
     description:
       'EXPERIMENTAL (#115). Use the Web Audio analyser to decide whether anyone is ' +
       'speaking, instead of waiting on Meet mic-meter DOM mutations. The DOM path ' +
       'needs 3 mutations in a 1200ms window, so it lands ~400-700ms after speech ' +
       'starts; the analyser already samples every animation frame (~16ms) and is ' +
-      'the signal every turn-taking gate actually wants. When on, EITHER signal ' +
-      'counts as busy, so the DOM path still covers cases the analyser misses. ' +
-      'Off by default: the level threshold (-55dB) was tuned for STT gating, not ' +
-      'for this, and a threshold that is too sensitive would make the bot think ' +
-      'someone is ALWAYS talking and never speak at all. The floor-latency lines ' +
-      'in the log are recorded either way — turn this on only once those show the ' +
-      'analyser leading cleanly. Read live, so it can be flipped mid-call.',
+      'the signal every turn-taking gate actually wants. EITHER signal counts as ' +
+      'busy, so the DOM path still covers what the analyser misses. ' +
+      'ON while the userbase is test users only, because the experiment needs real ' +
+      'call data and nobody runs with a non-default preference. KNOWN RISK: the ' +
+      '-55dB threshold is inherited from STT gating (where its own comment says it ' +
+      'was "set low for now"), and Meet applies noise suppression + VAD before ' +
+      'animating the meter we are replacing — so a raw level check may fire on a ' +
+      'fan or a keyboard. The failure is the bot believing someone is ALWAYS ' +
+      'talking and never speaking at all, which reads as thinking rather than as a ' +
+      'bug. If a bot goes quiet, set this false — it is read live, so it takes ' +
+      'effect mid-call. Watch the [floor-levels] and [floor-latency] log lines; ' +
+      'they record regardless of this setting.',
   },
   botSpeakJitterMaxMs: {
     type: 'number',

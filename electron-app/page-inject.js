@@ -2199,9 +2199,11 @@
   // real call answers the question with numbers instead of opinions.
   //
   // The current -55dB threshold is inherited from STT gating, where the comment
-  // says it was "set low for now"; it is almost certainly too permissive to gate
-  // turn-taking on. Do not enable fastFloorDetection until the stats show a
-  // clear gap.
+  // says it was "set low for now", and is very likely too permissive for this.
+  // fastFloorDetection is ON anyway while the userbase is test users only —
+  // the experiment needs real call data, and nobody runs with a non-default
+  // preference. If a bot goes quiet mid-call, that is this: it thinks someone is
+  // always talking. set_preference fastFloorDetection false is read live.
   const AUDIO_FLOOR_STATS_MS = 15000;
   let _levelSamples = [];
   let _lastLevelStatsAt = 0;

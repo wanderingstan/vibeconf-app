@@ -2488,7 +2488,14 @@ let liveMeetSpaceName = null;
 // the bot's Claude session. Shared by the manual join ('join-meet') and the
 // "Call <bot> now" path — duplicating it once left the bot in the room with no
 // agent behind it, a face that never speaks.
-function joinMeetUrl(meetUrl) {
+//
+// spawnAgent: whether to open a Terminal running Claude to drive the bot. TRUE
+// for the panel button, where a human pressed it and nothing else is attached —
+// without it the bot is a face in the room with nobody behind it. FALSE when the
+// request arrived over MCP, because an agent making that request IS the agent;
+// spawning a second one gives the call two drivers that fight over
+// wait_for_speech, which is exactly what happened on 2026-07-29.
+function joinMeetUrl(meetUrl, { spawnAgent = true } = {}) {
   currentMeetUrl = meetUrl;
   loadMeetURL(meetUrl);
 
@@ -2501,7 +2508,11 @@ function joinMeetUrl(meetUrl) {
     sync.startPolling();
     console.log('[electron] Sync started for room:', meetCode);
   });
-  launchClaudeTerminal(meetCode); // the agent behind the face
+  if (spawnAgent) {
+    launchClaudeTerminal(meetCode); // the agent behind the face
+  } else {
+    console.log('[electron] Agent terminal not spawned — the caller is already an agent');
+  }
 }
 
 async function websiteRequest(pathname, { method = 'GET', headers = {}, body = null } = {}) {
@@ -2539,7 +2550,7 @@ async function websiteRequest(pathname, { method = 'GET', headers = {}, body = n
 // Claude Code from their phone, who wants the meeting made here and the link
 // handed back so they can join from where they actually are. Opening a browser
 // on an unattended desktop would just leave a stray tab in an empty call.
-async function createAndJoinMeet({ openBrowser = true } = {}) {
+async function createAndJoinMeet({ openBrowser = true, spawnAgent = true } = {}) {
   // A FRESH key per press. Reusing one returns the SAME room instead of a new
   // one, which is right for a retry of one press and wrong for a second press.
   const idempotencyKey = require('crypto').randomUUID();
@@ -2554,7 +2565,7 @@ async function createAndJoinMeet({ openBrowser = true } = {}) {
     // On a replay this is the room we already had — including after a crash
     // lost track of it, which is how a forgotten room finds its way home.
     liveMeetSpaceName = r.json.spaceName || null;
-    joinMeetUrl(r.json.meetingUri);
+    joinMeetUrl(r.json.meetingUri, { spawnAgent });
     // …and get the HUMAN in too. The bot joins inside the Electron webview;
     // the user joins as themselves in their own browser, with their own
     // camera and Google account. Without this the button puts the bot in an

@@ -3228,13 +3228,24 @@ class LocalServer {
       // as a bearer capability, but the caller is the user's own agent, and a
       // remote one has no other route into the room it just made.
       let openBrowser = true;
+      // No spawned agent by default on THIS route. Reaching it means an MCP
+      // client asked for the call, and that client is the agent — the app used
+      // to open a Terminal running a second Claude anyway, so the call got two
+      // drivers racing for wait_for_speech (2026-07-29: the session that made
+      // the call was displaced by the one the app spawned). The panel button
+      // does not come through here; it keeps its terminal.
+      //
+      // Overridable for the case with no agent behind it at all — a bare curl,
+      // a script — where a driverless bot in the room is the worse outcome.
+      let spawnAgent = false;
       try {
         const parsed = JSON.parse((await this._readBody(req)) || '{}');
         if (parsed && parsed.openBrowser === false) openBrowser = false;
-      } catch { /* no body / unparseable — keep the desktop default */ }
+        if (parsed && parsed.spawnAgent === true) spawnAgent = true;
+      } catch { /* no body / unparseable — keep the defaults */ }
 
       let result;
-      try { result = await this.onStartCall({ openBrowser }); } catch (err) { result = { ok: false, code: 'error', detail: err.message }; }
+      try { result = await this.onStartCall({ openBrowser, spawnAgent }); } catch (err) { result = { ok: false, code: 'error', detail: err.message }; }
       res.writeHead(result?.ok ? 200 : 502, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result?.ok
         ? { success: true, roomId: this.roomId || null, url: result.url || null }

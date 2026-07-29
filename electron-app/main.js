@@ -5127,6 +5127,39 @@ function setBotViewInCall(status) {
 const MIN_WINDOW_HEIGHT = 260;
 const WINDOW_HEIGHT_MARGIN = 40; // leave a little breathing room under the dock
 let panelContentHeight = 0;
+
+// The window is created hidden and revealed here, once the panel has measured
+// itself and we've sized to fit. Otherwise every launch showed the provisional
+// 820px column for a beat and then visibly snapped to its real height.
+//
+// A fallback timer arms alongside it: if the panel never reports (a renderer
+// that failed to load, a measurement that throws), a window that stays hidden
+// forever is far worse than one that flashes. The timer shows it regardless,
+// at whatever size it happens to be.
+let mainWindowShown = false;
+let _showMainWindowFallback = null;
+function showMainWindowOnce() {
+  if (mainWindowShown) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindowShown = true;
+  clearTimeout(_showMainWindowFallback);
+  // On first run the setup wizard is created BEFORE this window and wins its
+  // z-order race by showing + moveTop + focus. Deferring our show moved us
+  // after it, so a plain show() would now cover the wizard it was written to
+  // stay in front of. Come up without stealing focus, then put it back on top.
+  const wizardUp = onboardingWindow && !onboardingWindow.isDestroyed();
+  if (wizardUp) {
+    mainWindow.showInactive();
+    try { onboardingWindow.moveTop(); onboardingWindow.focus(); } catch { /* gone */ }
+  } else {
+    mainWindow.show();
+  }
+}
+function armShowMainWindowFallback(ms = 2000) {
+  clearTimeout(_showMainWindowFallback);
+  _showMainWindowFallback = setTimeout(showMainWindowOnce, ms);
+}
+
 function applyWindowHeight() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (panelPopoutWindow) return;      // panel lives elsewhere; its height isn't ours
@@ -5140,9 +5173,14 @@ function applyWindowHeight() {
   } catch { /* no screen info — just use the content height */ }
   const height = Math.max(MIN_WINDOW_HEIGHT, Math.round(want));
   const [w, h] = mainWindow.getContentSize();
-  if (Math.abs(h - height) <= 1) return; // already there; don't churn
-  console.log(`[electron] window height → ${height} (panel ${panelContentHeight} + region ${region})`);
-  mainWindow.setContentSize(w, height);  // 'resize' → layoutViews
+  if (Math.abs(h - height) > 1) { // otherwise already there; don't churn
+    console.log(`[electron] window height → ${height} (panel ${panelContentHeight} + region ${region})`);
+    mainWindow.setContentSize(w, height);  // 'resize' → layoutViews
+  }
+  // Measured AND sized — the window is finally worth looking at. Deliberately
+  // outside the resize branch above: if the provisional height happened to match
+  // the measurement, there is no resize to do and the window would never show.
+  showMainWindowOnce();
 }
 
 // The panel's "🤖 Bot's view" bar labels the region, so it lives and dies with
@@ -5678,6 +5716,13 @@ function createMainWindow() {
     // A provisional height: the panel reports its real content height as soon as
     // it lays out, and applyWindowHeight shrinks this to fit.
     height: 820,
+    // Stay hidden until that first measurement lands — see showMainWindowOnce.
+    // Shown at 820 the app opened as a tall column and visibly snapped to its
+    // real (roughly square) height a moment later, every single launch.
+    show: false,
+    // Paint the panel's own surface colour rather than white while the window
+    // is empty, so revealing it can't flash white first.
+    backgroundColor: '#202124',
     // Content-sized, so there is nothing for a user resize to mean: dragging the
     // edge would just be undone by the next content change. The width is a fixed
     // column the layout assumes (bot-view-layout is built around PANEL_WIDTH),
@@ -5714,6 +5759,10 @@ function createMainWindow() {
   });
   mainWindow.addBrowserView(panelView);
   panelView.webContents.loadFile(path.join(__dirname, 'renderer', 'panel.html'));
+  // The window is hidden until the panel reports its height (showMainWindowOnce).
+  // Arm the safety net now, so a renderer that never loads can't leave the app
+  // running with no window at all.
+  armShowMainWindowFallback();
   applyWindowTitle();
 
   // --- macOS menu bar ---

@@ -784,13 +784,48 @@ class LocalServer {
     this._autoLeaveTriggered = false;
   }
 
-  // Speak now, or after a small random jitter when another bot could answer the
-  // same prompt in lockstep (#230). Two bots with identical timing logic
-  // otherwise start speaking in unison; a random 0–N ms delay decorrelates the
-  // starts so one clearly goes first. Gated on 2+ other participants (the only
-  // case a collision is possible) so solo / single-human calls stay snappy —
-  // we can't reliably tell from one app that another participant IS a bot
-  // (this.members is local-only), so participant count is the cheap proxy.
+  // How long to hold a reply before audio starts, to keep two bots from
+  // answering the same prompt in unison (#230, #100).
+  //
+  // The delay only helps if the LOSER can notice the winner before its own turn
+  // comes up — and noticing is slow. DOMSpeakerTracker needs MIN_MUTATIONS = 3
+  // in a 1200ms window (google-meet-provider.js), so another bot takes roughly
+  // 400-700ms to register as speaking. Two draws from U(0, J) differ by more
+  // than the detection latency D with probability (1 - D/J)^2:
+  //
+  //     J=800  (the old default)   D=500ms  ->  yields  14%
+  //     J=2000                     D=500ms  ->  yields  56%
+  //
+  // So the original 800ms window decorrelated the STARTS without converting
+  // into a yield in ~86% of collisions. That is what the Jul 28 call sounded
+  // like: jitter fired 119 times and bots still answered together.
+  //
+  // Two changes. The window is wider, and the delay is ORDERED BY URGENCY — the
+  // reply the agent scored higher goes first by construction instead of winning
+  // a coin flip, with a random component to break ties between equal scores.
+  // Unscored counts as 0.5, the same midpoint convention used elsewhere.
+  //
+  // Still a mitigation, not a fix. Two bots that pick the same delay still
+  // collide; the real answer is a shared floor claim, which needs a channel
+  // between instances that doesn't exist yet. Tracked in #100.
+  _speakDelay(t, others) {
+    const maxJitter = Number(this._pref('botSpeakJitterMaxMs')) || 0;
+    // Only meaningful when someone else could be answering too. Solo and
+    // single-human calls stay snappy.
+    if (others < 2 || maxJitter <= 0) return { delayMs: 0, why: 'no collision risk' };
+
+    const lead = Number(this._pref('botSpeakUrgencyLeadMs')) || 0;
+    const u = (typeof t?.urgency === 'number') ? Math.max(0, Math.min(1, t.urgency)) : 0.5;
+    // Low urgency waits longer, so the more valuable reply reaches the floor first.
+    const urgencyPart = Math.round((1 - u) * lead);
+    const randomPart = Math.floor(Math.random() * maxJitter);
+    return {
+      delayMs: urgencyPart + randomPart,
+      why: `urgency ${u.toFixed(2)} → ${urgencyPart}ms + ${randomPart}ms random`,
+    };
+  }
+
+  // Speak now, or after the delay above.
   //
   // #67: this is ALSO where the floor is checked — at the moment audio would
   // start, and nowhere earlier. The check used to sit in _handlePost, before
@@ -821,11 +856,10 @@ class LocalServer {
         resolve('spoken');
       };
       const others = (this.participants || []).filter(p => !p.isSelf && p.name && p.name !== 'You').length;
-      const maxJitter = Number(this._pref('botSpeakJitterMaxMs')) || 0;
-      if (others >= 2 && maxJitter > 0) {
-        const jitter = Math.floor(Math.random() * maxJitter);
-        console.log(ts(), `🎲 [bot-jitter] ${others} others in call — delaying speak ${jitter}ms to avoid lockstep`);
-        setTimeout(speakNow, jitter);
+      const { delayMs, why } = this._speakDelay(t, others);
+      if (delayMs > 0) {
+        console.log(ts(), `🎲 [bot-jitter] ${others} others in call — delaying speak ${delayMs}ms (${why})`);
+        setTimeout(speakNow, delayMs);
       } else {
         speakNow();
       }

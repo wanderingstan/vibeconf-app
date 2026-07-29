@@ -20,6 +20,16 @@ Parse `$ARGUMENTS` for the room. **Accept either a bare meet code (`xxx-xxxx-xxx
 
 > Note: a *profile* now IS the agent — its name, personality, and logins travel together. The older "load a persona/character from CLAUDE.md" model is being phased out in favor of the profile, so treat the name as the profile/agent to drive, not a separate persona.
 
+**The name is FIXED AT JOIN — you cannot rename yourself mid-call.** The display name is handed to Meet when the bot enters the call, and a great deal hangs off it (name-mention detection, MCP routing to the right app instance). Changing a profile's name while in a call updates the profile but NOT the tile: Meet keeps showing the name you joined under for the rest of the call.
+
+So if someone says *"rename yourself to Pepper"* or *"you should be Solene, not Otto"*, do **not** claim the change took effect. Instead:
+
+1. Say plainly that the name is set at join time and can't change mid-call.
+2. Offer to `leave_call` and rejoin under the new name — that is the only way to change it.
+3. If they agree, leave, then join again passing the new name as `bot_name`.
+
+Until you actually rejoin, keep answering to the name on your tile — that's the name everyone in the room can see.
+
 Examples:
 - `/join-call abc-defg-hij` -> room code `abc-defg-hij`; drives the sole running profile (or asks which, if several)
 - `/join-call https://meet.google.com/abc-defg-hij` -> extract code `abc-defg-hij` from the URL
@@ -121,6 +131,11 @@ Guidelines:
 - **A shared board's sound is live — everyone hears it.** If you put a video on the board, the room hears its audio. Use `set_share_audio` to mute it when people should talk OVER the content rather than listen to it, and unmute when it's time to actually watch. The video keeps playing either way, and the share is never interrupted. Prefer this over stopping the share.
 - If someone says goodbye or asks you to leave, say goodbye via `speak`, then call `leave_call` to hang up. Then stop the loop.
 - If `wait_for_speech` times out with no speech, call it again — people may just be quiet. The bot may still be joining the Meet call or waiting to be admitted. Do NOT relaunch the app or check `get_room_info` — just keep calling `wait_for_speech`.
+- **Stuck in the waiting room? Tell the user where the admit button is.** After ~3 consecutive empty timeouts with `Call status: waiting-to-be-admitted`, say so in your terminal output — the user is watching you, not the Meet tab, and has no idea you're stranded.
+
+  Meet now shows the host a **"wants to join — review potential risks"** prompt for bots rather than the normal Admit/Deny pair. It looks deny-only: the visible button is **Deny**, and there is *no* Admit next to it. **There is still an admit — it's behind the ⋮ (three-dot) overflow button on that prompt.** Meet just makes it hard to find.
+
+  So tell the host, in words: *"I'm waiting to be admitted. Meet is probably showing you a 'review potential risks' prompt — the Admit option is hidden behind the three-dot menu on it, not next to the Deny button."* Do not conclude the join is impossible, and do not relaunch the app; a host who can't find Admit looks identical to a host who is ignoring you.
 - **Never silently double-poll.** If `wait_for_speech` returns ANY transcript content — even a fragment like "Now when you..." that ends mid-thought — you MUST call `speak` before the next `wait_for_speech`. Use a brief continuation prompt for fragments ("Go on?", "And...?", "What were you about to say?"). From the user's side, your silence after they spoke looks identical to a hung session. Only consecutive timeouts (no transcript content) are okay to chain without speaking.
 - **Exception — continuation of what you already answered.** If `wait_for_speech` appends the note "this continues what you already responded to", the speaker is just extending the same thought you just replied to (captions kept growing). In that case do NOT respond again unless it adds genuinely new information — call `wait_for_speech` again without speaking. This is the one case where chaining on transcript content is correct; it prevents responding twice to one utterance.
 - **Exception — background tick (do NOT speak).** If `wait_for_speech` returns a result that begins `[BACKGROUND TICK — do NOT speak]`, the conversation is ongoing and you are *not* being addressed. You were surfaced early only so you can keep your understanding current during a long stretch you're not part of. **Do not `speak`.** Read the latest transcript, silently update your sense of where the discussion is going (optionally call `post_understanding` to record it), and then call `wait_for_speech` again. This is the second case where chaining on transcript content without speaking is correct — it's how you "listen actively" instead of going dark until the very end. (Enabled by the `backgroundTickWords` preference; if it's off you'll never see this.)

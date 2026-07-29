@@ -671,13 +671,21 @@ const localServer = new globalThis.LocalServer({
                 JSON.stringify(base) + ', room=' + JSON.stringify(meetCode) + ')');
               return;
             }
-            // src=chat marks this as a link a PERSON will click, which is what
-            // lets the web page show a signup CTA here and never on the board
-            // we are screen-sharing. The two URLs used to be identical, so the
-            // page had no way to tell them apart — and the bot's capture window
-            // runs on a session with a plain Chrome user agent, so there was no
-            // passive signal to fall back on either.
-            const url = `${base}/room/${meetCode}?mode=whiteboard&src=chat`;
+            // surface=viewer marks this as a link a PERSON will open, which is
+            // what lets the web page show a signup CTA here and never on the
+            // board we are screen-sharing (surface=share). The two URLs used to
+            // be identical, so the page had no way to tell them apart — and the
+            // bot's capture window runs on a session with a plain Chrome user
+            // agent, so there was no passive signal to fall back on either.
+            //
+            // #102: this used to say src=chat. Wrong axis — that describes where
+            // the link CAME FROM, and the same human-facing URL also reaches
+            // people via get_room_info, pasted into email, or read aloud. What
+            // the page needs to know is WHO IS LOOKING, so it pairs with
+            // surface=share as one parameter with two values. src= is kept
+            // alongside as optional provenance for analytics ONLY — never the
+            // thing the CTA keys off.
+            const url = `${base}/room/${meetCode}?mode=whiteboard&surface=viewer&src=chat`;
             // #241: the chat pane can be slow/flaky to open right after a share,
             // so retry a few times rather than failing on one bad attempt (the
             // user may only share once, so "retry on next share" wasn't enough).

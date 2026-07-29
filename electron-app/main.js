@@ -1754,7 +1754,7 @@ async function offerStagedUpdate() {
   const { response } = await dialog.showMessageBox(mainWindow, {
     type: 'info',
     message: `Vibeconferencing ${version} is ready to install.`,
-    detail: 'It has already downloaded. Restarting takes a few seconds — or it '
+    detail: 'It has already downloaded. Restarting takes a few seconds, or it '
       + 'will install by itself the next time you quit.',
     buttons: ['Restart Now', 'Later'],
     defaultId: 0,
@@ -4620,7 +4620,7 @@ app.whenReady().then(async () => {
               type: 'warning',
               title: 'Screen Recording Permission',
               message: 'Whiteboard sharing is disabled',
-              detail: 'Vibeconferencing needs Screen Recording permission to share the whiteboard in your Meet calls. The app will still work without it — the bot just can\'t share visuals.\n\nIn System Settings > Privacy & Security > Screen & System Audio Recording, enable the toggle next to Vibeconferencing, then restart the app.',
+              detail: 'Vibeconferencing needs Screen Recording permission to share the whiteboard in your Meet calls. The app will still work without it; the bot just can\'t share visuals.\n\nIn System Settings > Privacy & Security > Screen & System Audio Recording, enable the toggle next to Vibeconferencing, then restart the app.',
               buttons: ['Open System Settings', 'Continue Without'],
               defaultId: 0,
               cancelId: 1,
@@ -5825,7 +5825,7 @@ function createMainWindow() {
                 try { store?.set('claudeIntegrationRemoved', true); } catch { /* non-fatal */ }
                 dialog.showMessageBox(mainWindow, {
                   type: 'info',
-                  message: 'Claude integration removed — no trace left. Restart Claude Code to apply.',
+                  message: 'Claude integration removed. No trace left. Restart Claude Code to apply.',
                 });
               }
             });

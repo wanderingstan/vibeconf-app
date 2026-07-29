@@ -29,7 +29,7 @@
                switcher behave. ▾ reads as "there's a menu here"; the old ⇄ read
                as "swap" without hinting that a list would appear. -->
           <div class="agent-name-row">
-            <button id="profileMenuBtn" class="agent-namebtn" title="Switch bot — replaces this window with another bot. ⌥-click a bot to open it in a separate window instead. Hidden during a call.">
+            <button id="profileMenuBtn" class="agent-namebtn" title="Switch bot. Replaces this window with another bot. ⌥-click a bot to open it in a separate window instead. Hidden during a call.">
               <span id="botNameBig" class="agent-name">—</span>
               <span class="agent-caret" aria-hidden="true">▾</span>
             </button>
@@ -52,7 +52,7 @@
           <!-- #381: voice needs a machine-wide ElevenLabs key, which lives in
                App Settings (⌘,). Shown only when no key is set. -->
           <div class="hero-notice notice-warn" id="appSettingsBanner" style="display:none">
-            <span>🔊 Voice is off — no ElevenLabs key set.</span>
+            <span>🔊 Voice is off: no ElevenLabs key set.</span>
             <button id="openAppSettingsFromBanner" class="notice-action">Set it up →</button>
           </div>
         </div>
@@ -77,7 +77,7 @@
             <!-- Manual entry. A disclosure triangle: ▸ to open, rotating to
                  point up when it will collapse. The glyph is in a span so CSS
                  can rotate IT rather than the button's pill. -->
-            <button id="manualUrlToggle" class="join-more" aria-expanded="false" title="Add the bot to a call that's already running — paste its Meet or Slack URL"><span class="join-caret">▸</span></button>
+            <button id="manualUrlToggle" class="join-more" aria-expanded="false" title="Add the bot to a call that's already running. Paste its Meet or Slack URL"><span class="join-caret">▸</span></button>
           </div>
           </div>
 
@@ -94,7 +94,7 @@
                  so the line costs nothing the rest of the time — and it keeps
                  its text label, which a bare 🖥 among icons could not carry.
                  Hides itself; see applyShareWindowState. -->
-            <button id="shareWindowToggleBtn" class="share-window-btn" style="display:none" title="The window the room sees while the bot presents. Normally hidden — show it to click around the board yourself.">🖥 Show share</button>
+            <button id="shareWindowToggleBtn" class="share-window-btn" style="display:none" title="The window the room sees while the bot presents. Normally hidden. Show it to click around the board yourself.">🖥 Show share</button>
             <div class="call-url-row" title="The call this bot is currently in.">
               <span id="callUrlDisplay" class="call-url"></span>
               <button id="copyCallUrlBtn" class="call-url-copy" title="Copy call link">⧉</button>
@@ -108,7 +108,7 @@
                    control doesn't jump. -->
               <button id="botViewToggleBtn" class="join-more" title="See what the bot sees">👀</button>
               <button id="leaveCallBtn" class="primary danger">Leave Call</button>
-              <button id="openTroubleshootingBtn" class="join-more" title="Troubleshooting — live call state, captions, and the agent's view">🚧</button>
+              <button id="openTroubleshootingBtn" class="join-more" title="Troubleshooting: live call state, captions, and the agent's view">🚧</button>
             </div>
           </div>
 
@@ -117,7 +117,7 @@
                banner is what lets the avatar fill the whole window in the
                small (pre-call) state — as its own row below, it left a band of
                grey above and below itself. -->
-          <div class="app-footer" title="Vibeconferencing, and your vibeconferencing.com login (for the shared whiteboard rooms — signing in once covers all bots).">
+          <div class="app-footer" title="Vibeconferencing, and your vibeconferencing.com login (for the shared whiteboard rooms; signing in once covers all bots).">
             <span class="app-footer-name">Vibeconferencing</span>
             <span id="appVersion" class="app-version"></span>
             <span id="userIdStatus">checking…</span>
@@ -154,7 +154,7 @@
              Drawn as SVG rather than the ✓ character: the glyph's weight and
              baseline vary by platform font, and this needs to sit optically
              centred in a 36px circle on both macOS and Windows. -->
-        <button id="backFromSettingsBtn" class="screen-close" aria-label="Done" title="Done — back to the bot (Esc)">
+        <button id="backFromSettingsBtn" class="screen-close" aria-label="Done" title="Done, back to the bot (Esc)">
           <!-- Sized so the check spans ~half the 36px circle, as Apple's does.
                Both levers matter: the box is 26px AND the path runs the full
                width of the viewBox — a bigger box alone would just scale up the
@@ -262,7 +262,7 @@
         </div>
         <div class="field">
           <label for="claudeWorkDir">Claude Working Directory</label>
-          <input type="text" id="claudeWorkDir" placeholder="(auto — this bot's trusted folder)" />
+          <input type="text" id="claudeWorkDir" placeholder="(auto: this bot's trusted folder)" />
           <div style="font-size:11px;color:#666;margin-top:2px">Where the bot's Claude session starts. Leave blank to use this bot's own trusted folder (recommended); set a path to override.</div>
           <div class="workdir-row" style="display:flex;align-items:center;gap:8px;margin-top:6px">
             <code id="agentWorkdirPath" class="workdir-path" title="The folder the bot's session actually starts in">…</code>
@@ -271,7 +271,7 @@
         </div>
         <div class="field">
           <label for="agentClaudeMd">Personality (CLAUDE.md)</label>
-          <div style="font-size:11px;color:#666;margin:0 0 6px">The bot's standing instructions, loaded at the start of every call. This is the <code>CLAUDE.md</code> in its working folder — edit freely.</div>
+          <div style="font-size:11px;color:#666;margin:0 0 6px">The bot's standing instructions, loaded at the start of every call. This is the <code>CLAUDE.md</code> in its working folder. Edit freely.</div>
           <textarea id="agentClaudeMd" rows="12" spellcheck="false" placeholder="(loading…)" style="width:100%;box-sizing:border-box;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.45;resize:vertical"></textarea>
           <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
             <button id="saveAgentClaudeMdBtn" class="popout-btn">Save personality</button>
@@ -292,7 +292,7 @@
         <!-- The Voice picker lives up top; the machine-wide ElevenLabs API KEY
              moved to App Settings (⌘,) since #366/#381. Only the per-profile
              custom Voice ID override stays here. -->
-        <div class="helper-text" style="margin:0 0 8px">The ElevenLabs API key is machine-wide — set it in <strong>App Settings</strong> (⌘,).</div>
+        <div class="helper-text" style="margin:0 0 8px">The ElevenLabs API key is machine-wide. Set it in <strong>App Settings</strong> (⌘,).</div>
         <details style="margin:2px 0 8px">
           <summary style="font-size:11px;color:#9aa0a6;cursor:pointer">Advanced: custom ElevenLabs Voice ID</summary>
           <div class="field" style="margin-top:6px">
@@ -327,7 +327,7 @@
         <div class="field">
           <label for="ackLongPhrases">Long ack phrases (one per line)</label>
           <textarea id="ackLongPhrases" rows="4" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit;resize:vertical" placeholder="Let me think about that.&#10;Hmm, let me consider that.&#10;Give me a moment."></textarea>
-          <div style="font-size:11px;color:#666;margin-top:2px">Used when the user spoke a lot — gives the agent more time to respond.</div>
+          <div style="font-size:11px;color:#666;margin-top:2px">Used when the user spoke a lot. Gives the agent more time to respond.</div>
         </div>
       </div>
     </div>
@@ -349,7 +349,7 @@
         <p class="helper-text" style="margin:0 0 8px">Live view of what the app's detectors believe. Updates while this screen is open.</p>
         <div id="callStateDebug" class="call-state-debug">Not in a call.</div>
         <div style="margin-top:10px">
-          <div class="helper-text" style="margin:0 0 6px">Show on the bot's camera (rendered on the virtual camera so it appears in the bot's Meet tile — <strong>visible to everyone in the call</strong>):</div>
+          <div class="helper-text" style="margin:0 0 6px">Show on the bot's camera (rendered on the virtual camera so it appears in the bot's Meet tile, <strong>visible to everyone in the call</strong>):</div>
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="overlayHealth" /> <span>Bot health &amp; response time</span></label>
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:4px"><input type="checkbox" id="overlayCaptions" /> <span>Captions heard</span></label>
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:4px"><input type="checkbox" id="overlayAgentLog" /> <span>Agent activity log</span></label>
@@ -359,7 +359,7 @@
 
       <div class="section">
         <h2>Simulate Speech</h2>
-        <p class="helper-text" style="margin:0 0 8px">Inject a synthetic caption turn into the conversation pipeline — same path Meet captions use. Bot reacts as if this person had spoken aloud. Useful when you can't speak (coffee shop), want to paste test data, or need to script a flow.</p>
+        <p class="helper-text" style="margin:0 0 8px">Inject a synthetic caption turn into the conversation pipeline, the same path Meet captions use. Bot reacts as if this person had spoken aloud. Useful when you can't speak (coffee shop), want to paste test data, or need to script a flow.</p>
         <div class="field">
           <label for="simulateSpeaker">Speaker name</label>
           <input type="text" id="simulateSpeaker" value="Test User" />
@@ -399,7 +399,7 @@
 
       <div class="section">
         <h2>Live Captions <span class="helper-text">(bot's-eye view)</span></h2>
-        <p class="helper-text" style="margin:0 0 6px">Exactly what captions the bot is receiving — the still-growing turn is marked LIVE. Compare in real time against the bot's Meet tile.</p>
+        <p class="helper-text" style="margin:0 0 6px">Exactly what captions the bot is receiving. The still-growing turn is marked LIVE. Compare in real time against the bot's Meet tile.</p>
         <div id="captionStateBadge" class="caption-badge" style="margin-bottom:6px"></div>
         <div class="field">
           <div id="rawCaptionText" class="audio-status caption-feed" style="max-height:240px;overflow-y:auto;font-family:monospace;font-size:11px;white-space:pre-wrap"></div>

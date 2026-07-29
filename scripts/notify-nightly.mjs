@@ -78,6 +78,7 @@ const dmg = lastLine('results.jsonl');
 const main = lastLine('results-main.jsonl');
 const slack = lastLine('slack-results.jsonl');
 const codex = lastLine('codex-smoke-results.jsonl');
+const joinRoute = lastLine('join-route-results.jsonl');
 const fuzz = lastLine('agent-fuzz/results.jsonl');
 
 const lines = [
@@ -85,6 +86,10 @@ const lines = [
   statusLine('main meet', main),
   statusLine('Slack', slack),
   statusLine('codex', codex),
+  // #105: the /join-call + /call routes. A lane that runs and records but never
+  // reports is a lane nobody reads — the whole point is being TOLD when the
+  // route users take is broken.
+  statusLine('join/call routes', joinRoute),
   fuzzLine(fuzz),
 ];
 const anyRed = lines.some((l) => l.startsWith('🔴'));

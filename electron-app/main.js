@@ -1624,8 +1624,9 @@ let troubleshootingWindow = null; // the ⓘ window — a second copy of panel.h
 // column; the Meet view is either a shrunk thumbnail below the panel ('thumbnail')
 // or floated into its own large window ('popped'). One button toggles them. See
 // electron-app/bot-view-layout.js for the pure geometry/zoom.
-let botViewState = 'thumbnail';
+let botViewState = 'hidden'; // #103: resting state, reconciled to botViewMode on first layout
 let meetPopoutWindow = null; // when 'popped', the meetView lives here instead
+let meetHiddenWindow = null; // when 'hidden', a never-shown host giving meetView a big surface
 let appSettingsWindow = null; // #381: machine-wide App Settings (⌘,), a singleton
 
 // #381: open (or focus) the App Settings window — machine-wide config shared by
@@ -2291,10 +2292,11 @@ function createWhiteboardWindow(roomUrl) {
     // surface inherits ALL the bot's credentials — Google, Slack, and cached HTTP
     // Basic-Auth. Without this it landed on Electron's default session, so a site
     // you'd logged into in the Meet webview showed up logged-OUT when shared.
-    // #424: never throttle — this window is positioned OFF-SCREEN by design and
-    // is captured as the bot's shared screen. Chromium would otherwise throttle
-    // its timers/rAF (it is permanently occluded), freezing whiteboard/page
-    // animations in what participants see.
+    // #424: never throttle. This window is normally HIDDEN (not off-screen — an
+    // earlier version of this comment said off-screen, but shareWindowPosition
+    // deliberately clamps it into the work area, since macOS won't reliably keep
+    // a window off it). Hidden or occluded, Chromium would throttle its
+    // timers/rAF and freeze whiteboard/page animations in what participants see.
     webPreferences: { contextIsolation: true, nodeIntegration: false, partition: SESSION_PARTITION, backgroundThrottling: false },
   });
   // Pin the BrowserWindow title so the loaded page can't overwrite it. The
@@ -5103,7 +5105,7 @@ function applyWindowHeight() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (panelPopoutWindow) return;      // panel lives elsewhere; its height isn't ours
   if (!panelContentHeight) return;    // nothing measured yet
-  const region = botViewInCall ? botViewLayout.regionHeightFor(PANEL_WIDTH) : 0;
+  const region = botViewInCall ? botViewLayout.regionHeightFor(PANEL_WIDTH, botViewState) : 0;
   let want = panelContentHeight + region;
   try {
     const { screen } = require('electron');
@@ -5192,7 +5194,10 @@ function layoutViews() {
   // applyWindowHeight() resizes the window on this very same transition, and on
   // macOS that 'resize' arrives asynchronously — i.e. reliably AFTER the detach.
   // Staying attached keeps ownerWindow non-null and sidesteps it entirely.
-  const meetDockable = meetView && !meetView.webContents.isDestroyed() && !meetPopoutWindow;
+  // #103: 'hidden' parks meetView in its own never-shown host, so the main
+  // window must not try to dock, park or resize it — same exclusion as 'popped'.
+  const meetElsewhere = !!meetPopoutWindow || !!meetHiddenWindow;
+  const meetDockable = meetView && !meetView.webContents.isDestroyed() && !meetElsewhere;
   const meetAttached = meetDockable && mainWindow.getBrowserViews
     && mainWindow.getBrowserViews().includes(meetView);
   if (l.regionHidden) {
@@ -5230,9 +5235,84 @@ function layoutViews() {
 // Mirrors setPanelPoppedOut: the SAME meetView BrowserView is reparented, so its
 // webContents — the live call, caption scraper, virtual camera — survives the move
 // untouched.
+// #103: the resting state — where the bot's view sits when not popped out.
+// 'hidden' keeps Meet in a never-shown window at full size so screenshots are
+// legible; 'thumbnail' is the legacy narrow preview. Read live so the panel can
+// switch it, but the host window is only rebuilt on the next setBotViewState.
+function restingBotViewState() {
+  return store.get('botViewMode') === 'thumbnail' ? 'thumbnail' : 'hidden';
+}
+
+// The 'hidden' host: a window that exists purely to give meetView a large
+// compositing surface. It is NEVER shown to the user.
+//
+// Two constraints learned the hard way, both measured (#103):
+//   • The view must stay ATTACHED to a window. Detached, Chromium stops
+//     scheduling it — rAF fell from 180 frames/1.5s to 2. A frozen Meet view is
+//     the #424 failure (bot goes silently deaf) with extra steps.
+//   • The window must be SHOWN ONCE before it can be captured. A never-shown
+//     window has no display surface and capturePage() throws
+//     "Current display surface not available for capture". So: show, let a
+//     frame land, hide. It is on screen for a few hundred ms at startup.
+//
+// document.visibilityState stays "visible" while hidden (verified), so Meet
+// never thinks it's backgrounded and keeps decoding remote video — which is the
+// whole point, since those tiles are what the bot needs to read.
+function ensureHiddenMeetHost() {
+  if (meetHiddenWindow && !meetHiddenWindow.isDestroyed()) return meetHiddenWindow;
+  const { width, height } = botViewLayout.HIDDEN_SIZE;
+  const win = new BrowserWindow({
+    width, height,
+    useContentSize: true,
+    show: false,
+    skipTaskbar: true,
+    title: "Vibeconferencing — Bot's view (hidden)",
+    webPreferences: { nodeIntegration: false, contextIsolation: true },
+  });
+  meetHiddenWindow = win;
+  win.on('closed', () => { if (meetHiddenWindow === win) meetHiddenWindow = null; });
+
+  // Establish the display surface, then get it off screen. showInactive avoids
+  // stealing focus from whatever the user is doing.
+  try {
+    win.showInactive();
+    setTimeout(() => { try { if (!win.isDestroyed()) win.hide(); } catch { /* gone */ } }, 400);
+  } catch { /* headless / no display — capture will report its own error */ }
+  return win;
+}
+
 function setBotViewState(state) {
-  if (!botViewLayout.STATES.includes(state)) state = 'thumbnail';
+  if (!botViewLayout.STATES.includes(state)) state = restingBotViewState();
   botViewState = state;
+
+  if (state === 'hidden') {
+    // Move meetView into the hidden host at full size, zoom 1.
+    const win = ensureHiddenMeetHost();
+    if (meetPopoutWindow && !meetPopoutWindow.isDestroyed()) {
+      try { meetPopoutWindow.removeBrowserView(meetView); } catch { /* gone */ }
+      meetPopoutWindow.destroy();
+      meetPopoutWindow = null;
+    }
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        try { mainWindow.removeBrowserView(meetView); } catch { /* not attached */ }
+      }
+      try { win.addBrowserView(meetView); } catch { /* already there */ }
+      const { width, height } = botViewLayout.HIDDEN_SIZE;
+      meetView.setBounds({ x: 0, y: 0, width, height });
+      try { meetView.webContents.setZoomFactor(botViewLayout.HIDDEN_ZOOM); } catch { /* gone */ }
+    }
+    layoutViews();
+    broadcastBotViewState();
+    return true;
+  }
+
+  // Leaving 'hidden' — tear the host down so we don't leak a window per toggle.
+  if (meetHiddenWindow && !meetHiddenWindow.isDestroyed()) {
+    try { meetHiddenWindow.removeBrowserView(meetView); } catch { /* gone */ }
+    meetHiddenWindow.destroy();
+    meetHiddenWindow = null;
+  }
 
   if (state === 'popped' && !meetPopoutWindow) {
     if (meetView && !meetView.webContents.isDestroyed() && mainWindow && !mainWindow.isDestroyed()) {
@@ -5260,6 +5340,14 @@ function setBotViewState(state) {
     win.on('close', () => { try { win.removeBrowserView(meetView); } catch { /* gone */ } });
     win.on('closed', () => {
       meetPopoutWindow = null;
+      const resting = restingBotViewState();
+      if (resting === 'hidden') {
+        // Straight back into the hidden host — do NOT dock it into the main
+        // window on the way, or the view spends a frame at thumbnail size and
+        // any capture racing this gets the small image.
+        setBotViewState('hidden');
+        return;
+      }
       botViewState = 'thumbnail';
       if (meetView && !meetView.webContents.isDestroyed() && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.addBrowserView(meetView);
@@ -5288,7 +5376,9 @@ function setBotViewState(state) {
 
 function broadcastBotViewState() {
   if (panelView && !panelView.webContents.isDestroyed()) {
-    panelView.webContents.send('bot-view-changed', { state: botViewState });
+    // #103: the panel labels its toggle by what a click WILL do, so it needs to
+    // know which resting state we'd return to — 'hidden' or the legacy thumbnail.
+    panelView.webContents.send('bot-view-changed', { state: botViewState, resting: restingBotViewState() });
   }
   sendBannerVisibility();
 }
@@ -5779,6 +5869,17 @@ function createMainWindow() {
       meetView.webContents.openDevTools({ mode: 'detach' });
     }
   });
+
+  // #103: put the bot's view into its resting state. Under the default
+  // ('hidden') this moves meetView straight into the never-shown host at
+  // 1600x900 / zoom 1, so screenshots are legible from the first capture.
+  // Deferred a tick so the main window has finished its own first layout —
+  // ensureHiddenMeetHost briefly shows its window to establish a display
+  // surface, and doing that mid-construction fights the main window for focus.
+  setTimeout(() => {
+    try { setBotViewState(restingBotViewState()); }
+    catch (err) { console.warn('[electron] initial bot-view state failed:', err.message); }
+  }, 0);
 
   layoutViews();
   mainWindow.on('resize', layoutViews);
@@ -6640,10 +6741,10 @@ function setupIPC() {
 
   // Bot-view toggle: thumbnail column ↔ Meet in its own large window.
   ipcMain.handle('toggle-bot-view', () => {
-    setBotViewState(botViewLayout.nextState(botViewState));
-    return { state: botViewState };
+    setBotViewState(botViewLayout.nextState(botViewState, { restingState: restingBotViewState() }));
+    return { state: botViewState, resting: restingBotViewState() };
   });
-  ipcMain.handle('get-bot-view', () => ({ state: botViewState, visible: botViewInCall }));
+  ipcMain.handle('get-bot-view', () => ({ state: botViewState, visible: botViewInCall, resting: restingBotViewState() }));
 
   // --- Share window visibility ---
   // Hidden by default; the panel offers a toggle for when you need to drive the

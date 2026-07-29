@@ -1678,7 +1678,7 @@ function refreshAccountEmail(mode) {
       meetAccountEmail.textContent = '✓ Signed in to Google (could not read which account)';
       meetAccountEmail.className = 'account-email email-ok';
     } else {
-      meetAccountEmail.textContent = '⚠ Mode is "account" but no Google session detected — the bot may not be signed in. If joins require admission, click "Sign in to Google as bot".';
+      meetAccountEmail.textContent = '⚠ Mode is "account" but no Google session detected. The bot may not be signed in. If joins require admission, click "Sign in to Google as bot".';
       meetAccountEmail.className = 'account-email email-bad';
     }
   }).catch(() => {

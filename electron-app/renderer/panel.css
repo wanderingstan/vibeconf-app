@@ -142,6 +142,15 @@ button:disabled {
   opacity: 0.5;
   cursor: default;
 }
+/* Opacity alone wasn't enough on the accent-blue primary: at 0.5 over the dark
+   hero it still read as a live, pressable button — which is exactly wrong while
+   the bot is mid-join. Drop the accent entirely so the control goes grey and
+   flat, the way a disabled button is expected to look. */
+button.primary:disabled {
+  background: #3c4043;
+  color: #9aa0a6;
+  opacity: 0.75; /* less needed now the colour carries the state */
+}
 
 .section {
   margin-top: 16px;

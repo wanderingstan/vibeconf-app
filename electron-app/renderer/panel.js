@@ -780,8 +780,30 @@ function isAddToCallMode() {
   return !!detectedCallUrl || manualUrlEntry;
 }
 
+// True between pressing the call button and the call actually starting (or
+// failing). A REAL state rather than something the click handler pokes into the
+// button, because updateJoinBtnState recomputes `disabled` purely from URL
+// validity — and it is called from updateBotNameBig, the URL input handler and
+// config updates, any of which can fire mid-join. Each one silently re-enabled
+// the button and overwrote "Joining…" with "Call Jimmy now", so the control
+// looked live and clickable while the bot was already on its way in.
+// 'starting' (asking the website for a room) | 'joining' (bot on its way in) | null
+let joinPhase = null;
+function setJoinPhase(phase) {
+  joinPhase = phase || null;
+  updateJoinBtnState();
+}
+
 function updateJoinBtnState() {
   if (inCall) return; // in-call UI owns the button
+  if (joinPhase) {
+    // One label per phase, in one place. (The two routes used to disagree:
+    // 'Joining…' with an ellipsis on the create-a-call path, 'Joining...' with
+    // three dots on the paste-a-URL path.)
+    joinBtn.textContent = joinPhase === 'starting' ? 'Starting…' : 'Joining…';
+    joinBtn.disabled = true;
+    return;
+  }
   const addMode = isAddToCallMode();
   const name = currentBotName || 'your bot';
 
@@ -1457,6 +1479,7 @@ document.getElementById('errorClose').addEventListener('click', () => {
 
 function enterCallState(meetCode) {
   inCall = true;
+  joinPhase = null; // we're in; the in-call row owns this space now
   // #379: mark the panel in-call so CSS can hide pre-call-only controls (the
   // profile switcher). A single body flag keeps room for the broader pre-call vs
   // in-call UI split (#289). Also close the switcher if it happened to be open.
@@ -1489,7 +1512,10 @@ function exitCallState() {
   document.body.dataset.callState = 'idle'; // #379: pre-call controls return
   reportContentHeight(); // the in-call card just went away — shrink back
   joinBtn.style.display = '';
-  updateJoinBtnState(); // restores the right label for the current mode
+  // Clears "Joining…" too: leaving covers the case where a join was still in
+  // flight (denied admission, host never let the bot in) and would otherwise
+  // strand the button disabled.
+  setJoinPhase(null); // restores the right label for the current mode
 
   roomIdField.style.display = 'none';
   roomLink.style.display = 'none';
@@ -1512,16 +1538,14 @@ joinBtn.addEventListener('click', async () => {
   // then send the bot in. Main does the request: a renderer fetch carries an
   // Origin the backend rejects.
   if (!isAddToCallMode()) {
-    const label = joinBtn.textContent;
-    joinBtn.disabled = true;
-    joinBtn.textContent = 'Starting…';
+    setJoinPhase('starting'); // asking the website for a room, not joining yet
     try {
       const r = await api.invoke('create-and-join-meet');
       if (r?.ok) {
         // Main has already pointed the bot's view at the room. Put the link in
         // the field so the in-call view can show and copy it for the human.
         if (r.url) { meetUrlInput.value = r.url; detectedCallUrl = r.url; lastKnownCallUrl = r.url; }
-        joinBtn.textContent = 'Joining…';
+        setJoinPhase('joining');
         // enterCallState waits for 'call-status-changed', same as a manual join.
         return;
       }
@@ -1529,9 +1553,7 @@ joinBtn.addEventListener('click', async () => {
     } catch (err) {
       showError('Could not start a call: ' + err.message);
     }
-    joinBtn.disabled = false;
-    joinBtn.textContent = label;
-    updateJoinBtnState();
+    setJoinPhase(null); // restores the right label + enabled state for the mode
     return;
   }
 
@@ -1544,8 +1566,7 @@ joinBtn.addEventListener('click', async () => {
     if (!url.startsWith('http')) url = 'https://meet.google.com/' + url;
     api.joinMeet(url);
   }
-  joinBtn.textContent = 'Joining...';
-  joinBtn.disabled = true;
+  setJoinPhase('joining');
 
   // Don't eagerly call enterCallState here — wait for the 'call-status-changed'
   // IPC to fire with 'in-call'. Otherwise the Leave Call button appears
@@ -1554,7 +1575,7 @@ joinBtn.addEventListener('click', async () => {
   setTimeout(() => {
     if (!inCall) {
       joinBtn.style.display = '';
-      updateJoinBtnState(); // restores the right label for the current mode
+      setJoinPhase(null); // give the button back if we never made it in
     }
   }, 3000);
 });

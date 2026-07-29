@@ -281,6 +281,13 @@ class LocalServer {
 
     // Real-time speaking state (from DOMSpeakerTracker, not captions)
     this.anyoneSpeaking = false;       // true if any participant is currently speaking
+    // #115: the analyser-based floor signal (page-inject, ~16ms) alongside the
+    // DOM-mutation one that sets anyoneSpeaking (~400-700ms). Always recorded so
+    // a real call yields the latency comparison; only folded into the gates when
+    // fastFloorDetection is on.
+    this.audioFloorSpeaking = false;
+    this._audioFloorAt = 0;
+    this._domFloorAt = 0;
     // #343: how many participants (excl. self) are speaking RIGHT NOW. The old
     // `anyoneSpeaking` boolean collapses this away, but the count is the raw
     // interruptibility signal — 1 speaker is far more interruptible than 2-3 in
@@ -841,7 +848,7 @@ class LocalServer {
     return new Promise((resolve) => {
       const speakNow = () => {
         if (this.callStatus !== 'in-call') return resolve('aborted'); // call ended during the jitter
-        if (this.anyoneSpeaking) {
+        if (this.floorBusy) {   // #115: analyser-or-DOM when fastFloorDetection is on
           if (!exempt) {
             this._stashUnspokenSpeech([t]);
             return resolve('stashed');
@@ -1280,6 +1287,34 @@ class LocalServer {
     };
   }
 
+  // #115: record the fast floor edge and, when the DOM path later agrees, log
+  // how far behind it was. That delta is the whole question the issue asks.
+  setAudioFloor(speaking, at) {
+    if (speaking === this.audioFloorSpeaking) return;
+    this.audioFloorSpeaking = speaking;
+    const now = at || Date.now();
+    if (speaking) {
+      this._audioFloorAt = now;
+      console.log(ts(), '🎤 [floor-audio] speech ON  (analyser)');
+    } else {
+      this._audioFloorAt = 0;
+      console.log(ts(), '🎤 [floor-audio] speech OFF (analyser)');
+    }
+    // Wake anyone gated on the floor so a faster ON is actually actionable.
+    if (this._pref('fastFloorDetection') === true) this._onFloorChanged?.();
+  }
+
+  // The floor as the turn-taking gates should see it. With fastFloorDetection
+  // on, EITHER signal counts as busy — the analyser gets there first, the DOM
+  // path keeps it honest if the analyser misses (threshold too high, no remote
+  // track yet). Off, this is exactly today's behaviour.
+  get floorBusy() {
+    if (this._pref('fastFloorDetection') === true) {
+      return this.anyoneSpeaking || this.audioFloorSpeaking;
+    }
+    return this.anyoneSpeaking;
+  }
+
   setParticipants(participants) {
     const wasEmpty = this.participants.length === 0;
     this.participants = participants || [];
@@ -1311,6 +1346,14 @@ class LocalServer {
     const speakingNow = this.participants.filter(p => p.speaking && !p.isSelf && p.name !== 'You');
     this.activeSpeakerCount = speakingNow.length;
     this.anyoneSpeaking = this.activeSpeakerCount > 0;
+    // #115: on the DOM path's rising edge, report how long after the analyser it
+    // arrived. This is the measurement the issue asks for, and it costs one line.
+    if (this.anyoneSpeaking && !wasSpeaking) {
+      this._domFloorAt = Date.now();
+      if (this._audioFloorAt) {
+        console.log(ts(), `📏 [floor-latency] DOM detected speech ${this._domFloorAt - this._audioFloorAt}ms after the analyser did`);
+      }
+    }
     if (this.activeSpeakerCount > this._peakSpeakersSinceQuiet) {
       this._peakSpeakersSinceQuiet = this.activeSpeakerCount;
     }

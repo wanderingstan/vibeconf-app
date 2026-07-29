@@ -7529,6 +7529,13 @@ function setupIPC() {
   });
 
   // --- Participant list + presenting state from preload-meet.js ---
+  // #115: the analyser-based floor signal. Always recorded (so a real call
+  // produces the DOM-vs-audio comparison the issue asks for); only consumed by
+  // the turn-taking gates when fastFloorDetection is enabled.
+  ipcMain.on('audio-floor', (_event, { speaking, at }) => {
+    localServer.setAudioFloor(!!speaking, at);
+  });
+
   ipcMain.on(CALL_EVENTS.participantsUpdated, (_event, participants) => {
     localServer.setParticipants(participants || []);
   });

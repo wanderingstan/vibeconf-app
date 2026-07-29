@@ -16,7 +16,7 @@
  *
  * Configuration via environment variables:
  *   VIBECONF_ROOM_ID   - The Meet code / room ID (required)
- *   VIBECONF_BOT_NAME  - Bot's display name (default: "Jimmy")
+ *   VIBECONF_BOT_NAME  - Bot's display name (default: "Unnamed bot")
  *   VIBECONF_BASE_URL  - API base URL (default: http://127.0.0.1:7865 — the Electron app's local server)
  */
 
@@ -29,7 +29,7 @@ import { join } from "path";
 import { homedir } from "os";
 
 let ROOM_ID = process.env.VIBECONF_ROOM_ID || "";
-let BOT_NAME = process.env.VIBECONF_BOT_NAME || "Jimmy";
+let BOT_NAME = process.env.VIBECONF_BOT_NAME || "Unnamed bot";
 // The local app instance this session drives. Starts at the env/default port, but
 // join_call RE-BINDS it to the instance matching the requested profile name, so a
 // single agent session can target any running profile regardless of which port
@@ -2149,7 +2149,7 @@ server.tool(
   "Tell the Vibeconferencing app to join a call — a Google Meet OR a Slack huddle. Use this when the app is running but idle. For Meet, pass the meet code; the app navigates and joins. For Slack, pass the huddle URL (app.slack.com/client/<team>/<channel>); the app switches to the Slack provider and auto-joins the huddle.",
   {
     room_id: z.string().describe("Meet code (e.g. abc-defg-hij) OR a Slack huddle URL (https://app.slack.com/client/<team>/<channel>)."),
-    bot_name: z.string().optional().describe("Bot display name in Meet. Omit to use the bot name configured for this MCP instance (set via the app's panel or VIBECONF_BOT_NAME env). Only pass this to explicitly override — don't pass a literal default like 'Jimmy', that overrides the user's preference."),
+    bot_name: z.string().optional().describe("Bot display name in Meet. Omit to use the bot name configured for this MCP instance (set via the app's panel or VIBECONF_BOT_NAME env). Only pass this to explicitly override — don't pass a literal default like 'Unnamed bot', that overrides the user's preference."),
     force: z.boolean().optional().describe("Rebuild the session even if the bot is already in this call. Default false, which makes a repeat join a harmless no-op. Only pass true when the live session is genuinely wedged and you mean to drop and rejoin — it tears down the working call. It also skips the same-name collision check."),
   },
   async ({ room_id, bot_name, force }) => {

@@ -11,6 +11,8 @@ const { APP_LEVEL_KEYS, ScopedStore, migrateAppLevelKeys } = require('./config-s
 const profileManager = require('./profile-manager.js');
 const { MEET } = require('./meet-selectors.js'); // pure data — safe in the main process
 const { resolveSvg } = require('./svg-resolver.js');
+// One source of truth for the unconfigured bot name — see preferences-schema.
+const { DEFAULT_BOT_NAME } = require('./preferences-schema');
 const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEventsFor } = require('./share-surface.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
 // The call-provider contract. main.js is the consumer side: it subscribes to
@@ -295,7 +297,7 @@ const localServer = new globalThis.LocalServer({
   // The user's persistent panel preference, read live (#212). Lets the MCP
   // resolve an omitted bot_name to this instead of a frozen env default, and
   // keeps join_call from ever overwriting it.
-  getConfiguredBotName: () => (store?.get('botName') || 'Jimmy'),
+  getConfiguredBotName: () => (store?.get('botName') || DEFAULT_BOT_NAME),
   onBotSpeech: (text, voice, emoji) => {
     console.log('[local-server] Bot speech:', text.slice(0, 80), emoji ? `(emoji: ${emoji})` : '');
     // Triage EVAL: pair the fast model's turn-taking verdict with the fact that
@@ -3902,7 +3904,7 @@ async function launchClaudeTerminal(meetCode) {
   // Use the bot's name (getActiveBotName) so the spawned /join-call <code> <name>
   // + MCP env align with the call we're in. (Slack's real account name is read
   // separately — #283; until then this is the Meet/Bot Name.)
-  const botName = getActiveBotName() || store.get('botName') || 'Jimmy';
+  const botName = getActiveBotName() || store.get('botName') || DEFAULT_BOT_NAME;
 
   // Named profile instances (second bot, e.g. Samantha): the auto-launch runs
   // `claude` which would otherwise pick up the USER-SCOPED ~/.claude.json
@@ -4291,7 +4293,7 @@ function ensureClaudeIntegration() {
   // `claude` at a fixed target regardless of who installs it. (On join_call the
   // MCP server re-binds by profile name anyway; this is just the default target.)
   const localBaseUrl = `http://127.0.0.1:${DEFAULT_PORT}`;
-  const configuredBotName = store.get('botName') || 'Jimmy';
+  const configuredBotName = store.get('botName') || DEFAULT_BOT_NAME;
   const currentMcp = claudeJson.mcpServers.vibeconferencing;
   const needsUpdate = !currentMcp ||
     currentMcp.env?.VIBECONF_BASE_URL !== localBaseUrl ||
@@ -5253,8 +5255,8 @@ function applyWindowTitle() {
   try {
     // Same resolution the panel uses for its headline: the stored botName, else
     // the SCHEMA DEFAULT (get-config fills unset prefs with it, which is why an
-    // untouched bot reads "Jimmy" on screen). Falling straight through to the
-    // profile name here would title the window differently from what it shows.
+    // untouched bot reads "Unnamed bot" on screen). Falling straight through to
+    // the profile name here would title the window differently from what it shows.
     name = store.get('botName') || require('./preferences-schema').PREFERENCES.botName?.default;
   } catch { /* store/schema not ready */ }
   name = String(name || appProfile || '').trim();
@@ -6373,7 +6375,7 @@ function setupIPC() {
   // Separate from get-config('botName') (which the panel uses to show the
   // persistent preference) so a per-call name never leaks into the panel field.
   ipcMain.handle('get-meet-bot-name', () => {
-    return localServer.getEffectiveBotName() || store.get('botName') || 'Jimmy';
+    return localServer.getEffectiveBotName() || store.get('botName') || DEFAULT_BOT_NAME;
   });
 
   ipcMain.handle('set-config', (_event, key, value) => {

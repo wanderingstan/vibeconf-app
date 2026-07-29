@@ -5,10 +5,10 @@
 # from these assets — a half-uploaded release shouldn't be visible to running
 # apps. The draft collects its assets, you write the notes, then publish.
 #
-# macOS is deliberately NOT built here. The .dmg is signed and notarized, which
-# needs Apple Developer certs; those aren't in GitHub secrets (and putting them
-# there is a real decision, not a detail). Build the Mac locally with `pnpm dist`
-# and attach it to the same draft:
+# macOS is deliberately NOT built here. The Mac build is signed and notarized,
+# which needs Apple Developer certs; those aren't in GitHub secrets (and putting
+# them there is a real decision, not a detail). Build the Mac locally with
+# `pnpm dist` and attach it to the same draft:
 #
 #     V=0.7.0-beta63
 #     gh release upload "v$V" electron-app/dist/*"$V"*.dmg \
@@ -23,6 +23,25 @@
 # All three matter: Squirrel.Mac updates from the .zip (not the .dmg), and
 # latest-mac.yml is the feed that points at it. Upload the .dmg alone and macOS
 # self-update silently does nothing.
+#
+# EXPECTED, not a bug: the .dmg itself reports unsigned and unstapled —
+#
+#     spctl -a -t install ...dmg   -> rejected (no usable signature)
+#     xcrun stapler validate ...dmg -> does not have a ticket stapled to it
+#
+# What gets signed, notarized and stapled is the .app INSIDE. Verify that
+# instead, and only that:
+#
+#     spctl -a -vvv electron-app/dist/mac-arm64/Vibeconferencing.app
+#         -> accepted, source=Notarized Developer ID
+#     xcrun stapler validate electron-app/dist/mac-arm64/Vibeconferencing.app
+#         -> The validate action worked!
+#
+# electron-builder notarizes the .app and only then wraps it in the .dmg, so the
+# container never gets a ticket of its own. Gatekeeper unwraps the .dmg and
+# judges the .app, so users are unaffected. Every release since at least
+# v0.8.0-beta1 has shipped this way. Checked and re-checked at v0.8.0-beta4 —
+# if the .app verifies, the build is good; don't go hunting the .dmg.
 #
 # Windows is UNSIGNED — SmartScreen will warn ("More info" → "Run anyway").
 # Linux AppImage/deb need no signing.

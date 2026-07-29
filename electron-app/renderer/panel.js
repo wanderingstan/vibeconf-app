@@ -67,7 +67,10 @@ const ackShortPhrasesInput = document.getElementById('ackShortPhrases');
 const ackLongPhrasesInput = document.getElementById('ackLongPhrases');
 
 let syncBaseUrl = 'http://127.0.0.1:7865';
-let currentBotName = 'Jimmy';
+// Until get-config lands. Not a plausible name on purpose — see
+// DEFAULT_BOT_NAME in preferences-schema.js (this renderer is sandboxed and
+// cannot require it).
+let currentBotName = 'Unnamed bot';
 let appProfileName = null; // app profile (stable heading identity, #282); null for the default instance
 let inCall = false;
 
@@ -2172,7 +2175,9 @@ speechBtn.addEventListener('click', () => {
 // ---------------------------------------------------------------------------
 
 botNameInput.addEventListener('change', () => {
-  const name = botNameInput.value.trim() || 'Jimmy';
+  // Emptying the field falls back to the unconfigured name rather than
+  // silently re-adopting whatever the old default happened to be.
+  const name = botNameInput.value.trim() || 'Unnamed bot';
   currentBotName = name;
   api.invoke('set-config', 'botName', name);
   api.send('to-meet', { action: 'set-config', payload: { botName: name } });

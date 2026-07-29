@@ -12,6 +12,12 @@
 // already-persisted value). Use it for plumbing nobody should reach for in
 // normal use.
 
+// The name a bot wears when nobody has given it one. Exported so every
+// fallback in the app reads THIS rather than repeating a literal — the old
+// `store.get('botName') || 'Jimmy'` pattern was copied to six places, and a
+// default that lives in six places is a default nobody can change.
+const DEFAULT_BOT_NAME = 'Unnamed bot';
+
 const PREFERENCES = {
   comprehendCharThreshold: {
     type: 'number',
@@ -87,7 +93,14 @@ const PREFERENCES = {
   },
   botName: {
     type: 'string',
-    default: 'Jimmy',
+    // Deliberately NOT a plausible name. "Jimmy" was the default for a long
+    // time, and it reads as a real, configured bot — so an unconfigured or
+    // stray test profile was indistinguishable from someone's actual bot, both
+    // on screen and in a Meet participant list. That cost us a live call on
+    // 2026-07-29: a leftover test instance answered to "Jimmy", joined the
+    // call, and the agent drove the wrong one. A name nobody would choose makes
+    // the mistake obvious the moment it shows up anywhere.
+    default: DEFAULT_BOT_NAME,
     description:
       "The bot's display name in Meet calls. Takes effect on the next call.",
     requiresRestart: true,
@@ -741,4 +754,4 @@ function describe(store) {
   });
 }
 
-module.exports = { PREFERENCES, validate, describe };
+module.exports = { PREFERENCES, validate, describe, DEFAULT_BOT_NAME };

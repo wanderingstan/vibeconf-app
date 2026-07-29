@@ -2045,8 +2045,8 @@ class LocalServer {
   // #222: best-effort check whether `name` is already present in the call —
   // first against the live Meet roster (when we're already in the call),
   // then against the website's room presence (other bots register there
-  // even when our app hasn't joined yet, which is how two fresh sessions
-  // both default to "Jimmy" and collide). Returns a human-readable source
+  // even when our app hasn't joined yet, which is how two unconfigured
+  // sessions both take the default name and collide). Returns a human-readable source
   // string when taken, null when free. Network failures return null — the
   // guard must never block a join just because presence is unreachable.
   async _nameAlreadyInCall(roomId, name) {

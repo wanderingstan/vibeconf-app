@@ -1209,10 +1209,16 @@ function installCallHealthTick() {
 // Auto-join
 // ---------------------------------------------------------------------------
 
-let BOT_NAME = 'Jimmy';
+// Placeholder until get-meet-bot-name resolves. Deliberately not a plausible
+// name: if the race below is ever lost, this is what gets TYPED into Meet's
+// name field, and "Unnamed bot" in a participant list is a visible bug rather
+// than a bot that looks correctly configured. Keep in step with
+// DEFAULT_BOT_NAME in preferences-schema.js (this file runs in the page and
+// cannot require it).
+let BOT_NAME = 'Unnamed bot';
 
 // Race-sensitive: if Meet's pre-join screen renders before this resolves,
-// autoJoin would type the default 'Jimmy' into the name input even when the
+// autoJoin would type the placeholder above into the name input even when the
 // user has a different botName configured. Keep the promise around so the
 // DOMContentLoaded handler can await it before reading BOT_NAME.
 const botNameLoaded = ipcRenderer.invoke('get-meet-bot-name').then((name) => {
@@ -2813,7 +2819,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
     // Make sure the config-loaded botName has had a chance to land before we
     // type into Meet's name field. Without this await the IPC roundtrip can
-    // lose to Meet's pre-join render and we'd type the default 'Jimmy'.
+    // lose to Meet's pre-join render and we'd type the placeholder name.
     await botNameLoaded;
 
     // Standalone safety net runs the whole time, so even if autoJoin bails on a

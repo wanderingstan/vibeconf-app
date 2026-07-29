@@ -327,6 +327,23 @@ const PREFERENCES = {
       'acks — while the code above it claims "substantive mid-turn responses are NOT ' +
       'exempt". 12 is about where an ack stops being an ack. Read live.',
   },
+  bargeInAckMinUrgency: {
+    type: 'number',
+    default: 0.5,
+    min: 0,
+    max: 1,
+    description:
+      'Minimum self-scored URGENCY for an utterance to stay barge-in-exempt, i.e. to ' +
+      'play OVER a live speaker. Length alone was the gate until #109; urgency was ' +
+      'consulted only AFTER speech started (scaling the grace, see ' +
+      'bargeInUrgencyScaling), so a low-value interruption not only began but then ' +
+      'held the floor longer. On the Jul 28 call every short utterance that actually ' +
+      'played over someone scored 0.3-0.4 ("mildly useful"), while every 0.8-0.9 one ' +
+      'went out into an open floor and needed no exemption at all — so a 0.5 floor ' +
+      'blocks the bad cases at no cost to the good ones. Unscored utterances count as ' +
+      '0.5 (the same midpoint convention as the grace scaling), so an agent that never ' +
+      'passes urgency keeps its acks. Set 0 to disable the urgency condition. Read live.',
+  },
   bargeInBackchannelMaxWords: {
     type: 'number',
     default: 6,

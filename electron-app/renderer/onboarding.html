@@ -42,6 +42,10 @@
     .btn.ghost { background: #2a2d31; color: #e8eaed; border: 1px solid #5f6368; font-weight: 400; }
     .btn.ghost:hover { background: #3c4043; }
     .btn:disabled { opacity: .5; cursor: default; }
+    /* The one button on a step that IS the step. Claude Code is the only thing
+       standing between a fresh install and a working bot, so its install button
+       should not read as the same weight as "Open System Settings". */
+    .btn.cta { padding: 12px 22px; font-size: 15px; border-radius: 8px; }
     /* permission + toggle rows */
     .prow { display: flex; align-items: flex-start; gap: 12px; padding: 12px 0; border-top: 1px solid #2f3136; }
     .prow:first-of-type { border-top: none; }
@@ -144,12 +148,12 @@
       <p class="sub">Your bot is driven by <b>Claude Code</b> — the <code>claude</code> command. It's a self-contained install (no Node.js needed) and uses your existing Claude subscription.</p>
       <div id="claudeStatus" class="card">Checking…</div>
       <div id="claudeInstallRow" style="margin-top:12px; display:none">
-        <button id="claudeInstallBtn">Install Claude Code</button>
-        <span class="hint">Runs the official installer from claude.ai in a Terminal — <a href="#" id="claudeCopyLink">or copy the command</a>.</span>
+        <button class="btn cta" id="claudeInstallBtn">Install Claude Code</button>
+        <div class="hint">Runs the official installer from claude.ai in a Terminal — <a href="#" id="claudeCopyLink">or copy the command</a>.</div>
       </div>
       <div id="claudeVerifyRow" style="margin-top:12px; display:none">
-        <button id="claudeVerifyBtn">Sign in &amp; verify</button>
-        <span class="hint">Opens Claude Code so you can sign in with your subscription. This turns green automatically once it's ready.</span>
+        <button class="btn cta" id="claudeVerifyBtn">Sign in &amp; verify</button>
+        <div class="hint">Opens Claude Code so you can sign in with your subscription. This turns green automatically once it's ready.</div>
       </div>
     </section>
 

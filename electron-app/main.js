@@ -6506,13 +6506,40 @@ function setupIPC() {
   // ── First-run setup wizard IPC (onboarding:*) ─────────────────────────────
   ipcMain.handle('onboarding:get-permissions', async () => {
     const flow = require('./onboarding-flow.js');
-    const statusMap = {
-      microphone: systemPreferences.getMediaAccessStatus('microphone'),
-      camera: systemPreferences.getMediaAccessStatus('camera'),
-      screen: systemPreferences.getMediaAccessStatus('screen'),
-      automation: await probeBrowserAutomation(),
-    };
+    // Only ask the OS about permissions this OS can actually answer — querying
+    // the rest returns a constant ('screen' on Windows) or fails outright
+    // (osascript on Windows), and both render as a row the user can't act on.
+    const wanted = new Set(flow.permissionsFor(process.platform).map((p) => p.key));
+    const statusMap = {};
+    for (const key of ['microphone', 'camera', 'screen']) {
+      if (wanted.has(key)) statusMap[key] = systemPreferences.getMediaAccessStatus(key);
+    }
+    if (wanted.has('automation')) statusMap.automation = await probeBrowserAutomation();
     return flow.permissionsSummary(statusMap);
+  });
+
+  // Leaving the Claude step without Claude Code. Returns true to proceed.
+  // Deliberately NOT a blocker: someone may be driving the bot with a different
+  // agent, and this wizard has no way to know that. It states the consequence
+  // and defaults to the safe button; it doesn't refuse.
+  ipcMain.handle('onboarding:confirm-skip-claude', async (_e, { installed = false } = {}) => {
+    const { dialog } = require('electron');
+    const detail = installed
+      ? 'Claude Code is installed but not signed in yet, so it can\'t drive the bot. '
+        + 'You can sign in later — the app won\'t be able to join a call until you do.'
+      : 'The app hosts a bot; an agent is what actually drives it. Without Claude Code '
+        + '(or another agent you plan to point at it), nothing will happen when you try '
+        + 'to start a call.';
+    const parent = onboardingWindow && !onboardingWindow.isDestroyed() ? onboardingWindow : mainWindow;
+    const { response } = await dialog.showMessageBox(parent, {
+      type: 'warning',
+      message: 'Continue without Claude Code?',
+      detail: `${detail}\n\nYou can re-run this setup any time from the app menu.`,
+      buttons: ['Go Back', 'Continue Anyway'],
+      defaultId: 0,
+      cancelId: 0,
+    });
+    return response === 1;
   });
 
   ipcMain.handle('onboarding:request-permission', async (_e, key) => {

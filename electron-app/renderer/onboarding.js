@@ -52,6 +52,17 @@ async function go(delta) {
 }
 
 $('nextBtn').addEventListener('click', async () => {
+  // Moving off the Claude step without Claude Code is the one way to finish this
+  // wizard and still have nothing that works — the app is a bot host, and without
+  // an agent driving it there is nothing to drive. Say so once, rather than
+  // letting it be discovered later as "the app is broken".
+  //
+  // Next only, not Skip: Skip is the deliberate "I know, I have another agent"
+  // escape hatch, and warning on it would just train people to dismiss warnings.
+  if (steps[i] === 'claude' && !claudeIsGreen) {
+    const proceed = await api.invoke('onboarding:confirm-skip-claude', { installed: claudeState.installed });
+    if (!proceed) return;
+  }
   if (i === steps.length - 1) { await saveCurrent(); await api.invoke('onboarding:finish'); return; }
   await go(1);
 });
@@ -135,8 +146,10 @@ async function loadEmojiSet() {
 
 // ── Claude Code (install + sign-in via the /claude-ready feedback loop) ─────
 let claudeIsGreen = false;
+let claudeState = { installed: false, ready: false };
 function paintClaude(st) {
   if (st.ready) claudeIsGreen = true;
+  claudeState = { installed: !!st.installed, ready: !!st.ready };
   const status = $('claudeStatus'), installRow = $('claudeInstallRow'), verifyRow = $('claudeVerifyRow');
   if (st.ready) {
     status.textContent = 'Ready ✓ — Claude Code is installed and signed in.';

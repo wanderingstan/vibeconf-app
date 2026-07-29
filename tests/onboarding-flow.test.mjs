@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const {
-  PERMISSIONS, STEPS, normalizePermission, permissionsSummary,
+  PERMISSIONS, STEPS, permissionsFor, normalizePermission, permissionsSummary,
   looksLikeElevenLabsKey, nextStep, prevStep, stepProgress,
 } = require('../electron-app/onboarding-flow.js');
 
@@ -27,6 +27,41 @@ test('mic + camera are required; screen + automation are optional', () => {
   assert.deepEqual(opt, ['automation', 'screen']);
 });
 
+// Every permission row must be one the OS can actually answer. A row we can't
+// evaluate either states something untrue or sits permanently indeterminate,
+// and the user has no way to tell which — both were seen on Windows in beta4.
+test('permissions are filtered to the platforms that can answer them', () => {
+  assert.deepEqual(permissionsFor('darwin').map((p) => p.key),
+    ['microphone', 'camera', 'screen', 'automation'], 'macOS answers all four');
+
+  const win = permissionsFor('win32').map((p) => p.key);
+  assert.deepEqual(win, ['microphone', 'camera']);
+  assert.ok(!win.includes('screen'),
+    'getMediaAccessStatus always returns granted for screen on Windows — a constant, not a grant');
+  assert.ok(!win.includes('automation'),
+    'the automation probe shells osascript, which does not exist on Windows');
+
+  assert.deepEqual(permissionsFor('linux'), [], 'no media permission API on Linux');
+});
+
+test('a platform with no answerable permissions does not wedge the wizard', () => {
+  // The failure this prevents: rows that can never be granted would leave
+  // allRequiredGranted false forever, so Finish never unlocks.
+  const linux = permissionsSummary({}, { platform: 'linux' });
+  assert.deepEqual(linux.rows, []);
+  assert.equal(linux.allRequiredGranted, true, 'nothing required is missing, so finishing is allowed');
+});
+
+test('Windows summary reports only mic + camera', () => {
+  const win = permissionsSummary(
+    { microphone: 'granted', camera: 'granted', screen: 'granted', automation: 'unknown' },
+    { platform: 'win32' },
+  );
+  assert.deepEqual(win.rows.map((r) => r.key), ['microphone', 'camera']);
+  assert.equal(win.allRequiredGranted, true);
+  assert.deepEqual(win.missingOptional, [], 'the optional rows are absent, not merely ungranted');
+});
+
 test('normalizePermission: granted vs needs-System-Settings vs promptable', () => {
   assert.equal(normalizePermission('microphone', 'granted').granted, true);
   const denied = normalizePermission('camera', 'denied');
@@ -40,17 +75,18 @@ test('normalizePermission: granted vs needs-System-Settings vs promptable', () =
 });
 
 test('permissionsSummary: can finish only when both required are granted', () => {
-  const s1 = permissionsSummary({ microphone: 'granted', camera: 'granted', screen: 'denied', automation: 'unknown' });
+  const D = { platform: 'darwin' };  // pin: these assertions are about the macOS row set
+  const s1 = permissionsSummary({ microphone: 'granted', camera: 'granted', screen: 'denied', automation: 'unknown' }, D);
   assert.equal(s1.allRequiredGranted, true);
   assert.deepEqual(s1.missingRequired, []);
   assert.deepEqual(s1.missingOptional.sort(), ['automation', 'screen']);
 
-  const s2 = permissionsSummary({ microphone: 'granted', camera: 'denied' });
+  const s2 = permissionsSummary({ microphone: 'granted', camera: 'denied' }, D);
   assert.equal(s2.allRequiredGranted, false);
   assert.deepEqual(s2.missingRequired, ['camera']);
 
   // empty map → nothing granted → can't finish
-  assert.equal(permissionsSummary({}).allRequiredGranted, false);
+  assert.equal(permissionsSummary({}, D).allRequiredGranted, false);
 });
 
 test('looksLikeElevenLabsKey: empty ok (skip → macOS TTS), sk_ ok, junk not', () => {

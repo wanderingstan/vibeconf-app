@@ -11,20 +11,51 @@
 // an Electron/Chromium page-zoom — NOT CSS — and the app already uses it (Meet
 // runs at 0.75 today).
 //
-// Two states, toggled by one button:
-//   thumbnail ↔ popped
+// Three states. One button toggles the resting state against 'popped':
 //
-//   thumbnail : narrow column, panel on top, shrunk Meet below it. DEFAULT.
-//   popped    : Meet floats in its own large window at today's zoom; the app
-//               column is panel-only.
+//   hidden    : Meet lives in its own window that is never shown, at a LARGE
+//               fixed size and zoom 1. DEFAULT. Nobody was watching the
+//               thumbnail anyway — it was a debugging aid — and shrinking it
+//               was actively costing the bot its eyesight (see below).
+//   thumbnail : narrow column, panel on top, shrunk Meet below it. Legacy.
+//   popped    : Meet floats in its own large VISIBLE window; the app column is
+//               panel-only. This is the escape hatch — it's how a human signs
+//               the bot into Google/Slack/GitHub (⌘L in that window), so it
+//               must survive 'hidden' becoming the default.
 //
 // (There is no separate side-by-side "expanded" state — a single large floating
 // window is enough, so the app is ALWAYS a narrow column.)
 //
+// #103 — why 'hidden' is the default. capturePage() grabs the COMPOSITED
+// SURFACE: its pixel count is bounds x devicePixelRatio, and the page zoom is
+// already baked in. It does not re-render at 1:1. Measured, bounds fixed at
+// 400x300:
+//
+//   zoom 1.00   innerWidth  400css   capture 800x600   a 100px box -> 200 px
+//   zoom 0.50   innerWidth  800css   capture 800x600   a 100px box -> 100 px
+//   zoom 0.32   innerWidth 1250css   capture 800x600   a 100px box ->  64 px
+//
+// So the thumbnail's zoom compensation — lovely for keeping Meet's layout from
+// reflowing — meant the bot's screenshots WERE the shrunken image. On the Jul 28
+// call the Meet region was 380x214, captured at 760x428, with Meet laid out at
+// 1173css inside it: an effective 0.32. A participant's shared terminal came
+// through at ~3px per line of text, i.e. unreadable, and the bot had to say so
+// out loud on the call. Rendering into real device pixels instead is the only
+// fix; there is no full-resolution copy to ask for.
+//
 // This module is pure: given a state and the window's content size it returns the
 // view bounds and the Meet zoom. All the Electron window surgery lives in main.js.
 
-const STATES = ['thumbnail', 'popped'];
+const STATES = ['hidden', 'thumbnail', 'popped'];
+
+// Size of the never-shown host window in the 'hidden' state, in CSS px. Chosen
+// so Meet's pinned virtual width (MEET_TARGET_CSS_WIDTH) fits at zoom 1 with
+// room to spare, and 16:9 so Meet lays out as it would on a normal display.
+// The capture comes back at this x devicePixelRatio — 3200x1800 on a 2x screen,
+// against 760x428 docked. Roughly 3x linear, 10x area.
+const HIDDEN_SIZE = { width: 1600, height: 900 };
+// No compensation needed when we aren't squeezing it into a narrow column.
+const HIDDEN_ZOOM = 1;
 
 // The virtual width we keep Meet believing it has, in BOTH states, so its layout
 // never reflows. Derived from today's default: the full Meet view is ~880 device
@@ -42,9 +73,13 @@ const MAX_ZOOM = 5;
 
 const clamp = (z) => Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z));
 
-// Toggle between the two states. An unknown state resets to the default.
-function nextState(state) {
-  return state === 'popped' ? 'thumbnail' : 'popped';
+// The one button toggles the RESTING state against 'popped'. Resting is
+// whichever of hidden/thumbnail the user has configured (botViewMode), so the
+// toggle keeps meaning "show me the bot's view / put it away" regardless of
+// which resting state is in force. An unknown state toggles toward popped.
+function nextState(state, opts = {}) {
+  const resting = opts.restingState === 'thumbnail' ? 'thumbnail' : 'hidden';
+  return state === 'popped' ? resting : 'popped';
 }
 
 // Whether the bottom region (Meet thumbnail / popped-out placeholder) exists at
@@ -97,8 +132,26 @@ function computeLayout(state, contentSize, opts = {}) {
       panelBounds: { x: 0, y: 0, width: panelWidth, height },
       meetBounds: null,
       placeholderBounds: null,
-      meetZoom: state === 'popped' ? POPPED_ZOOM : zoom,
-      meetInOwnWindow: state === 'popped',
+      meetZoom: state === 'popped' ? POPPED_ZOOM : (state === 'hidden' ? HIDDEN_ZOOM : zoom),
+      // 'hidden' is own-window in AND out of a call — the host window persists so
+      // the capture surface (and Meet itself) survives the gap between calls.
+      meetInOwnWindow: state === 'popped' || state === 'hidden',
+      clamped: false,
+      regionHidden: true,
+    };
+  }
+
+  if (state === 'hidden') {
+    // Meet lives in a window that is never shown, so there is nothing to lay out
+    // in the column at all — the panel takes the whole thing, exactly as it does
+    // out of a call. No placeholder either: a "popped out" placard would be a
+    // lie, since nothing popped out and there is nothing to go and look at.
+    return {
+      panelBounds: { x: 0, y: 0, width: panelWidth, height },
+      meetBounds: null,
+      placeholderBounds: null,
+      meetZoom: HIDDEN_ZOOM,
+      meetInOwnWindow: true,
       clamped: false,
       regionHidden: true,
     };
@@ -131,7 +184,10 @@ function computeLayout(state, contentSize, opts = {}) {
 // Height of the bot's-view region (the 16:9 slab under the panel). Exported so
 // main.js can size the window to "panel content + region" without re-deriving
 // the ratio. Zero when the region is hidden — see computeLayout.
-function regionHeightFor(panelWidth = 380) {
+function regionHeightFor(panelWidth = 380, state) {
+  // 'hidden' has no region at all — Meet is in a window nobody sees, so the
+  // column must not reserve a 16:9 slab for it.
+  if (state === 'hidden') return 0;
   return Math.round(panelWidth * 9 / 16);
 }
 
@@ -144,6 +200,8 @@ function windowWidthFor(state, opts = {}) {
 
 module.exports = {
   STATES,
+  HIDDEN_SIZE,
+  HIDDEN_ZOOM,
   MEET_TARGET_CSS_WIDTH,
   POPPED_ZOOM,
   MIN_ZOOM,

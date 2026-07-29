@@ -327,6 +327,22 @@ const PREFERENCES = {
       'acks — while the code above it claims "substantive mid-turn responses are NOT ' +
       'exempt". 12 is about where an ack stops being an ack. Read live.',
   },
+  botViewMode: {
+    type: 'string',
+    enum: ['hidden', 'thumbnail'],
+    default: 'hidden',
+    requiresRestart: true,
+    description:
+      "Where the bot's Meet view rests when it isn't popped out. 'hidden' (default) " +
+      'keeps it in a window that is never shown, at 1600x900 and zoom 1, so ' +
+      'get_call_screenshot captures ~3200x1800 and the bot can actually READ a ' +
+      "participant's shared screen. 'thumbnail' is the legacy narrow-column preview: " +
+      'it looks nicer but squeezes Meet to ~380px, and since capturePage() bakes the ' +
+      'zoom in, that shrunken image IS what the bot sees — on the Jul 28 call a shared ' +
+      'terminal arrived at ~3px per line and the bot said so out loud (#103). Either ' +
+      "way the pop-out button still works, and that's how you sign the bot into " +
+      'Google/Slack/GitHub. Switch to thumbnail if hiding the view ever misbehaves.',
+  },
   bargeInAckMinUrgency: {
     type: 'number',
     default: 0.5,

@@ -1857,13 +1857,19 @@ api.on('panel-popout-changed', ({ poppedOut }) => applyPopoutLabel(!!poppedOut))
 // Bot-view toggle: the Meet thumbnail docked below the panel ↔ its own large
 // window. Label flips so the button always names what a click will DO.
 const botViewToggleBtn = document.getElementById('botViewToggleBtn');
-function applyBotViewLabel(state) {
+function applyBotViewLabel(state, resting) {
   if (!botViewToggleBtn) return;
   const popped = state === 'popped';
-  botViewToggleBtn.textContent = popped ? '⧉ Dock' : '⧉ Pop out';
+  // #103: the resting state is 'hidden' by default now, so "Dock" would be a
+  // lie — clicking puts the view away entirely rather than docking it as a
+  // thumbnail. Name what the click actually does.
+  const hides = resting !== 'thumbnail';
+  botViewToggleBtn.textContent = popped ? (hides ? '⧉ Hide' : '⧉ Dock') : '⧉ Pop out';
   botViewToggleBtn.title = popped
-    ? "Dock the bot's view back as a thumbnail below this panel"
-    : "Pop the bot's view out into its own large window";
+    ? (hides
+        ? "Put the bot's view away. It keeps running at full size so the bot can still read shared screens — you just stop seeing it."
+        : "Dock the bot's view back as a thumbnail below this panel")
+    : "Pop the bot's view out into its own large window — this is where you sign the bot into Google, Slack or GitHub (\u2318L)";
 }
 // The bar exists only while the region below it does — i.e. during a call.
 // Main owns that decision (it spans joining/waiting-to-be-admitted, which the
@@ -1887,16 +1893,16 @@ if (botViewToggleBtn) {
   botViewToggleBtn.addEventListener('click', async () => {
     try {
       const res = await api.invoke('toggle-bot-view');
-      applyBotViewLabel(res?.state);
+      applyBotViewLabel(res?.state, res?.resting);
     } catch { /* ignore */ }
   });
   api.invoke('get-bot-view').then((r) => {
-    applyBotViewLabel(r?.state);
+    applyBotViewLabel(r?.state, r?.resting);
     applyBotViewVisible(!!r?.visible);
   }).catch(() => {});
 }
 // Main tells us when it changes (incl. the user closing the popped-out window).
-api.on('bot-view-changed', ({ state }) => applyBotViewLabel(state));
+api.on('bot-view-changed', ({ state, resting }) => applyBotViewLabel(state, resting));
 api.on('bot-view-visible', ({ visible }) => applyBotViewVisible(!!visible));
 
 meetSignInBtn?.addEventListener('click', async () => {

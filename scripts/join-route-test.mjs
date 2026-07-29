@@ -258,9 +258,10 @@ async function main() {
         startText = `ERROR: ${err.message}`;
       }
       const started = /meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3}/i.test(startText);
-      console.log(`${started ? 'PASS' : 'WARN'}  [advisory] start_call (/call) mints a meet and sends the bot in`
-        + (started ? '' : `\n      ${startText.slice(0, 240)}`
-          + '\n      Advisory only — this one depends on the website, not just our code.'));
+      check('start_call (/call) mints a meet and sends the bot in', started,
+        `${startText.slice(0, 240)}\n      NOTE: unlike the checks above, this one reaches `
+        + 'vibeconferencing.com (/api/meet/create), so a red can also mean an expired '
+        + 'session or the site being down — check those before assuming a code bug.');
       await mcp.request('tools/call', { name: 'leave_call', arguments: {} }).catch(() => {});
     }
   } finally {

@@ -27,6 +27,6 @@
     "smoke:codex-mcp": "node scripts/smoke-codex-mcp.mjs",
     "install:codex-mcp": "node scripts/install-codex-mcp.mjs",
     "test:join-route": "node scripts/join-route-test.mjs",
-    "test:join-route:ci": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 1 && node scripts/join-route-test.mjs --base-url=http://127.0.0.1:7901 --bot-name=Alice; code=$?; scripts/spawn-test-fleet.sh 1 --kill; exit $code"
+    "test:join-route:ci": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 1 && node scripts/join-route-test.mjs --base-url=http://127.0.0.1:7901 --bot-name=Alice --include-start-call; code=$?; scripts/spawn-test-fleet.sh 1 --kill; exit $code"
   }
 }

@@ -36,9 +36,18 @@ const srv = (fast) => {
   return s;
 };
 
-test('the experiment ships OFF — a bad threshold would silence the bot entirely', () => {
-  assert.equal(PREFERENCES.fastFloorDetection.default, false,
-    'enable only after the floor-latency log lines show the analyser leading cleanly');
+test('the experiment ships ON, deliberately, while the users are all test users', () => {
+  // Off would be the cautious default, and was until #116 review: an experiment
+  // nobody runs produces no data, because nobody sets a non-default preference.
+  // Revisit the moment there are real users — the failure mode (bot silently
+  // never speaks) is one an outsider would read as "it's thinking", not as a bug.
+  assert.equal(PREFERENCES.fastFloorDetection.default, true);
+});
+
+test('it is read live, so a bot that goes quiet can be rescued mid-call', () => {
+  // The whole safety argument for shipping it on rests on this: no restart.
+  assert.notEqual(PREFERENCES.fastFloorDetection.requiresRestart, true,
+    'a restart-gated escape hatch is no escape hatch during a live call');
 });
 
 test('with it off, the floor is exactly the DOM signal — todays behaviour', () => {

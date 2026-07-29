@@ -439,6 +439,24 @@
       const AGENT_JOSTLE_MAX = 0.52;      // rad, ~30°
       const agentTilt = (this._agentJostleDir || 0) * AGENT_JOSTLE_MAX;
 
+      // While PEEKING (the 🫥 arrival pose, head half below the frame) the same
+      // agent-activity signal drives a smaller, sideways version: proof of life
+      // during the stretch where the bot is in the call but its agent is still
+      // waking up, which was otherwise dead still for ~15s.
+      //
+      // Not the full ±30°: rotating a half-clipped head about its own centre
+      // swings the visible top out of frame and reads as a cartwheel rather than
+      // a glance. A third of the tilt plus a small horizontal shift reads as the
+      // head peering about instead.
+      //
+      // Honest limitation: this only moves when there IS activity, and agentLog
+      // fills from the session's PostToolUse hook — so nothing happens between
+      // the terminal launching and the agent's first tool call. Stillness there
+      // is truthful (nothing is happening yet), and claudeReady would be the
+      // signal to cover it if that gap ever wants filling.
+      const PEEK_TILT_SCALE = 0.34;
+      const PEEK_SHIFT_PX = 26;
+
       ctx.save();
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -494,8 +512,11 @@
       }
       // Apply translation + rotation + non-uniform scale around the avatar
       // center. The scaleX/scaleY give the "mouth open" jaw effect.
-      ctx.translate(cx + thinkSway, cy + bob - speakBounce + ghostRise);
-      if (speakTilt || tickTilt || agentTilt) ctx.rotate(speakTilt + tickTilt + agentTilt);
+      const peeking = ghostRise > 0;
+      const agentTiltNow = peeking ? agentTilt * PEEK_TILT_SCALE : agentTilt;
+      const peekShift = peeking ? (this._agentJostleDir || 0) * PEEK_SHIFT_PX : 0;
+      ctx.translate(cx + thinkSway + peekShift, cy + bob - speakBounce + ghostRise);
+      if (speakTilt || tickTilt || agentTiltNow) ctx.rotate(speakTilt + tickTilt + agentTiltNow);
       if (this.speaking) {
         ctx.scale(speakScaleX * tickPop, speakScaleY * tickPop);
       } else {

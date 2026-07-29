@@ -119,6 +119,19 @@ pnpm dev      # run from source
 pnpm dist     # signed/notarized .dmg (Apple Developer creds needed; dist:fast skips notarization)
 ```
 
+`pnpm dist` reads its Apple credentials from the environment — all three are
+required, and electron-builder fails the build naming the one that's missing:
+
+```bash
+export APPLE_ID=...                    # Apple Developer account email
+export APPLE_APP_SPECIFIC_PASSWORD=... # appleid.apple.com → App-Specific Passwords
+export APPLE_TEAM_ID=PNPVJ6J7X2
+```
+
+With none of them set, notarization is skipped with a warning rather than
+failing — you get a signed but un-notarized app. Use `dist:fast` when that's
+what you actually want.
+
 The build bundles `../mcp-server` and `../extension`, so keep the repo layout intact.
 
 **Tests.** Unit tests need no build or install (just Node ≥ 18):

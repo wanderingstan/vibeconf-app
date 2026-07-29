@@ -116,3 +116,39 @@ test('the flag is always cleared, even when the flow throws', () => {
   const finallyBlock = /finally \{\s*\n\s*_studioSoundInProgress = false;/.exec(provider);
   assert.ok(finallyBlock, 'a thrown studio-sound flow must not wedge the sweeper off forever');
 });
+
+// Meet's Gemini notice: "Gemini is available to answer questions about meeting
+// discussions…", with Learn more / Don't show again. We click the SUPPRESS
+// button, not a close: closing brings it back next call, and a bot that joins
+// all day would meet it every time.
+test('the Gemini notice matcher hits its copy and nothing else', () => {
+  const re = MEET.modals.geminiNoticeRe;
+  assert.equal(re.test('Gemini is available to answer questions about meeting discussions.'), true);
+  assert.equal(re.test('GEMINI IS AVAILABLE'), true);
+  for (const other of ['Your call ends in 5 minutes', 'Are you still there?', '']) {
+    assert.equal(re.test(other), false, `must NOT match ${JSON.stringify(other)}`);
+  }
+});
+
+test('"Don\'t show again" matches whichever apostrophe Meet renders', () => {
+  // Meet uses U+2019, not ASCII — comparing raw text would silently never match,
+  // and the notice would sit there unanswered every call.
+  const normalise = (s) => (s || '').replace(/[’ʼ]/g, "'").trim().toLowerCase();
+  for (const label of ['Don’t show again', "Don't show again", 'DON’T SHOW AGAIN', '  Don’t show again  ']) {
+    assert.equal(normalise(label), MEET.modals.dontShowAgainText, `must match ${JSON.stringify(label)}`);
+  }
+  assert.notEqual(normalise('Learn more'), MEET.modals.dontShowAgainText);
+});
+
+test('the Gemini handler clicks suppress, never the Learn more link', () => {
+  const start = provider.indexOf('MEET.modals.geminiNoticeRe');
+  assert.ok(start > 0, 'the Gemini arm should still live in dismissBlockingModals');
+  // Reach back far enough to include the normaliser, which is declared just
+  // above the loop that tests the marker.
+  const block = provider.slice(Math.max(0, start - 600), start + 1400);
+  const code = block.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+  assert.match(code, /dontShowAgainText/, 'must select the suppress button');
+  assert.ok(!/learn more/i.test(code), 'must never click Learn more');
+  // Normalising the apostrophe is what makes the match work at all.
+  assert.match(code, /replace\(/, 'must normalise the apostrophe before comparing');
+});

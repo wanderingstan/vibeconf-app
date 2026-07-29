@@ -246,6 +246,38 @@ function dismissBlockingModals() {
     return false;
   }
 
+  // Meet's Gemini notice: "Gemini is available to answer questions about meeting
+  // discussions…" with Learn more / Don't show again. Purely informational, but
+  // it sits over the UI until answered.
+  //
+  // Click "Don't show again" rather than merely closing it: the close route
+  // brings it back next call, and a bot that joins all day would meet it every
+  // time. Nothing is given up by suppressing it — the notice describes a host
+  // setting, it doesn't grant or withhold anything.
+  //
+  // Not folded into the "Got it" catch-all above because this dialog has no
+  // "Got it"; its dismiss affordance is the suppress button itself.
+  {
+    const normalise = (s) => (s || '').replace(/[’ʼ]/g, "'").trim().toLowerCase();
+    for (const gdlg of document.querySelectorAll(MEET.modals.anyDialog)) {
+      if (!isVisible(gdlg)) continue;
+      if (!MEET.modals.geminiNoticeRe.test(gdlg.textContent || '')) continue;
+      const suppress = [...gdlg.querySelectorAll('button, [role="button"]')].find((b) =>
+        (normalise(b.textContent) === MEET.modals.dontShowAgainText ||
+         normalise(b.getAttribute('aria-label')) === MEET.modals.dontShowAgainText) && isVisible(b));
+      if (suppress) {
+        suppress.click();
+        console.log('[electron-meet] Dismissed the Gemini notice via "Don\'t show again"');
+        return true;
+      }
+      // Recognised but the button moved or was reworded. Log the DOM so we can
+      // follow it, and don't fall through to the unknown-modal dump.
+      console.warn('[electron-meet] Gemini notice found but no "Don\'t show again" button:\n' +
+        (gdlg.outerHTML || '').slice(0, 1500));
+      return false;
+    }
+  }
+
   // #404: Meet's free-tier time-limit warning ("Your call ends in N minutes /
   // Free group calls have a limit of 1 hour"). Dismiss it AND tell the agent —
   // it should know the clock is running so it can wrap up or suggest a fresh

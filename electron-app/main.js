@@ -1727,12 +1727,41 @@ function autoUpdaterInstance() {
   return autoUpdater;
 }
 
+// The updater lease lives beside the app-level config and the port registry —
+// BASE_USER_DATA is the one directory every profile on this machine shares, and
+// a lease that lived in a per-profile userData dir would be invisible to exactly
+// the instances it needs to coordinate with.
+function updaterLeasePath() {
+  return path.join(BASE_USER_DATA, 'updater-lease.json');
+}
+
+function readUpdaterLease() {
+  try { return JSON.parse(fs.readFileSync(updaterLeasePath(), 'utf8')); }
+  catch { return null; }  // absent or corrupt reads as "nobody holds it"
+}
+
+function writeUpdaterLease(lease) {
+  try { fs.writeFileSync(updaterLeasePath(), JSON.stringify(lease)); }
+  catch (err) { console.warn(ts(), '[updates] could not write lease:', err.message); }
+}
+
+// Drop the lease on a clean quit so the next instance takes over immediately
+// rather than waiting out the expiry. Best-effort: the expiry is what makes an
+// unclean exit survivable, and this only saves the wait.
+function releaseUpdaterLease() {
+  const held = readUpdaterLease();
+  if (held && held.pid === process.pid) {
+    try { fs.unlinkSync(updaterLeasePath()); } catch { /* already gone */ }
+  }
+}
+
 function updateContext() {
   return {
     platform: process.platform,
     packaged: app.isPackaged,
     env: process.env,
-    isDefaultInstance,
+    lease: readUpdaterLease(),
+    profile: appProfile,
   };
 }
 
@@ -1782,13 +1811,26 @@ async function checkForUpdates({ silentWhenCurrent = true } = {}) {
     console.log(ts(), `[updates] skipped (${allowed.reason})`);
     if (!silentWhenCurrent) {
       const { dialog, shell } = require('electron');
+      // Another window holding the lease is temporary and not a property of the
+      // build, so it gets its own wording — "not available for this build" would
+      // read as permanent for something that resolves on its own.
+      if (allowed.reason === 'another-instance-updating') {
+        const who = allowed.lease && allowed.lease.profile;
+        await dialog.showMessageBox(mainWindow, {
+          type: 'info',
+          message: 'Another window is already handling updates.',
+          detail: `${who ? `The "${who}" window` : 'Another window'} is checking for this machine — `
+            + 'only one does at a time, so several bots never download the same build at once. '
+            + 'Close it and this window will take over.',
+          buttons: ['OK'],
+        });
+        return;
+      }
       const DETAIL = {
         'dev-build': 'This is a development build — there is nothing to update.',
         'linux-not-appimage': 'This copy was installed from a .deb, which your package '
           + 'manager owns. Download new builds from the Releases page (or use the AppImage, '
           + 'which updates itself).',
-        'not-default-instance': 'Updates are handled by the main app window, not by a '
-          + 'named bot profile. Check from there.',
       };
       const buttons = allowed.reason === 'linux-not-appimage' ? ['Open Releases Page', 'OK'] : ['OK'];
       const { response } = await dialog.showMessageBox(mainWindow, {
@@ -1805,6 +1847,10 @@ async function checkForUpdates({ silentWhenCurrent = true } = {}) {
     }
     return;
   }
+
+  // Claimed it — record that before any slow work, so a sibling checking a
+  // second later sees the lease rather than starting its own download.
+  writeUpdaterLease(allowed.lease);
 
   // Already have one staged — re-offer instead of downloading it twice.
   if (_updateDownloaded) { _updateNotifiedFor = null; await offerStagedUpdate(); return; }
@@ -1844,11 +1890,16 @@ async function checkForUpdates({ silentWhenCurrent = true } = {}) {
 // Check on a delay after launch, then every few hours. The delay is jittered so
 // a fleet starting together doesn't hit GitHub in one burst.
 function startUpdateChecks() {
-  const allowed = updatePolicy.shouldCheck(updateContext());
-  if (!allowed.ok) {
-    console.log(ts(), `[updates] automatic checks off (${allowed.reason})`);
+  // Only the STATIC question here — can this build ever update itself? Whether
+  // this instance is the one that checks is a per-check question now: the lease
+  // holder can quit at any time, and answering it once at launch would leave a
+  // still-running sibling permanently silent.
+  const updatable = updatePolicy.canAutoUpdate(updateContext());
+  if (!updatable.ok) {
+    console.log(ts(), `[updates] automatic checks off (${updatable.reason})`);
     return;
   }
+  app.on('will-quit', releaseUpdaterLease);
   const updater = autoUpdaterInstance();
   updater.on('update-downloaded', (info) => {
     _updateDownloaded = info;

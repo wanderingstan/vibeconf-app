@@ -32,17 +32,56 @@ test('a dev checkout never tries to update itself', () => {
   assert.equal(dev.reason, 'dev-build');
 });
 
-test('only the default instance checks — N bots must not race into one bundle', () => {
-  const base = { platform: 'darwin', packaged: true };
-  assert.equal(P.shouldCheck({ ...base, isDefaultInstance: true }).ok, true);
+const BASE = { platform: 'darwin', packaged: true };
+const alive = () => true;
+const dead = () => false;
 
-  const named = P.shouldCheck({ ...base, isDefaultInstance: false });
-  assert.equal(named.ok, false);
-  assert.equal(named.reason, 'not-default-instance');
+test('any profile may check — a lone named instance is not locked out', () => {
+  // The bug this replaced: a shortcut that always launches --profile=bot2 meant
+  // no default instance ever ran, so the machine never updated at all.
+  const bot2 = P.shouldCheck({ ...BASE, lease: null, profile: 'bot2', pid: 42 });
+  assert.equal(bot2.ok, true);
+  assert.deepEqual(bot2.lease, { pid: 42, profile: 'bot2', at: bot2.lease.at });
 });
 
-test('being the default instance does not override an unupdatable build', () => {
-  const deb = P.shouldCheck({ platform: 'linux', packaged: true, env: {}, isDefaultInstance: true });
+test('one updater at a time — a sibling holding a live lease is turned away', () => {
+  const held = { pid: 1, profile: 'default', at: 1_000 };
+  const other = P.shouldCheck({ ...BASE, lease: held, pid: 2, now: 2_000, isAlive: alive });
+  assert.equal(other.ok, false, 'the incumbent is alive and its lease is fresh');
+  assert.equal(other.reason, 'another-instance-updating');
+  assert.deepEqual(other.lease, held, 'the incumbent is returned, so we can name it');
+});
+
+test('the lease holder renews its own lease rather than blocking itself', () => {
+  const mine = { pid: 7, profile: 'bot2', at: 1_000 };
+  const again = P.shouldCheck({ ...BASE, lease: mine, pid: 7, now: 9_000, isAlive: alive });
+  assert.equal(again.ok, true);
+  assert.equal(again.lease.at, 9_000, 'renewed to now');
+});
+
+test('a crashed holder never wedges the machine — two independent ways out', () => {
+  const held = { pid: 1, profile: 'default', at: 1_000 };
+
+  // 1. Its process is gone. No release ever ran, but we can see it died.
+  const crashed = P.claimUpdaterLease({ lease: held, pid: 2, now: 2_000, isAlive: dead });
+  assert.equal(crashed.ok, true, 'holder is gone');
+
+  // 2. Its pid is somehow still alive (pid reuse, a paused process) but the
+  //    lease aged out. Belt and braces: either alone frees it.
+  const expired = P.claimUpdaterLease({
+    lease: held, pid: 2, now: 1_000 + P.UPDATER_LEASE_MS, isAlive: alive, leaseMs: P.UPDATER_LEASE_MS,
+  });
+  assert.equal(expired.ok, true, 'lease aged out even though the pid answers');
+});
+
+test('a corrupt or absent lease file reads as free, not as blocked', () => {
+  for (const lease of [null, undefined, {}, { pid: 'nonsense' }]) {
+    assert.equal(P.claimUpdaterLease({ lease, pid: 3 }).ok, true, `${JSON.stringify(lease)} must not wedge it`);
+  }
+});
+
+test('holding the lease does not override an unupdatable build', () => {
+  const deb = P.shouldCheck({ platform: 'linux', packaged: true, env: {}, lease: null, pid: 1 });
   assert.equal(deb.ok, false, 'still a deb');
   assert.equal(deb.reason, 'linux-not-appimage');
 });

@@ -3815,6 +3815,18 @@ function promptInstallClaude() {
 
 async function launchClaudeTerminal(meetCode) {
   const { execFile } = require('child_process');
+  // Test fleets drive the bot from the harness over MCP — they have no use for a
+  // spawned agent, and every start_call left another Terminal window on the
+  // machine that nothing reaped (the MCP leave_call path doesn't call
+  // closeClaudeTerminal; only window-all-closed and the panel's leave-meet do).
+  // spawn-test-fleet.sh sets this. Prevention, not cleanup — the fleet teardown
+  // also sweeps, but not spawning them is the honest fix.
+  // Flag, not env: the fleet launches with `open -n --args`, which does NOT pass
+  // the parent environment through. Env is still honoured for `pnpm dev` runs.
+  if (cliArgs['no-agent-terminal'] === 'true' || process.env.VIBECONF_NO_AGENT_TERMINAL === '1') {
+    console.log('[electron] agent terminal suppressed (--no-agent-terminal)');
+    return;
+  }
   // Claude Code drives the bot. If the `claude` CLI isn't installed, offer to install it
   // (or copy the command) instead of launching a Terminal into "command not found".
   // Detection failure is non-fatal — we still launch (don't block a user who has it).

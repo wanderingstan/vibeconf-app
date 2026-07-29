@@ -57,24 +57,39 @@ test('thumbnail: narrow column, panel on top, Meet 16:9 below', () => {
   assert.equal(l.placeholderBounds, null, 'no placeholder while docked');
 });
 
-test('popped: Meet leaves the main window; a placeholder fills the region it left', () => {
+test('popped: Meet leaves the main window and the panel takes the whole column', () => {
   const l = L.computeLayout('popped', { width: 380, height: 900 }, { panelWidth: 380 });
   assert.equal(l.meetInOwnWindow, true);
   assert.equal(l.meetBounds, null, 'no Meet in the main window');
-  // The column keeps its shape: panel on top, 16:9 region below — now a placeholder.
-  const region = { x: 0, y: 900 - 214, width: 380, height: 214 };
-  assert.deepEqual(l.placeholderBounds, region, 'placeholder occupies the freed region, not an empty rectangle');
-  assert.deepEqual(l.panelBounds, { x: 0, y: 0, width: 380, height: 900 - 214 });
+  // The region used to hold a "Popped out" placard. Popping the view out then
+  // cost half the panel window to be told, in words, what the button you just
+  // pressed had already done — so the space goes back to the panel instead.
+  assert.equal(l.placeholderBounds, null, 'no placard occupying the freed region');
+  assert.equal(l.regionHidden, true, 'the region is gone, not merely empty');
+  assert.deepEqual(l.panelBounds, { x: 0, y: 0, width: 380, height: 900 },
+    'panel reclaims the full height');
   assert.equal(l.meetZoom, L.POPPED_ZOOM, 'the floating window shows Meet at today\'s zoom');
 });
 
-test('the column keeps the SAME shape across the toggle — only the region occupant changes', () => {
+test('popped and hidden lay out identically — both give the column to the panel', () => {
+  // The only difference between them is WHERE Meet lives (a visible window vs a
+  // never-shown one), which is main.js's business, not the column's.
+  const popped = L.computeLayout('popped', { width: 380, height: 900 }, { panelWidth: 380 });
+  const hidden = L.computeLayout('hidden', { width: 380, height: 900 }, { panelWidth: 380 });
+  assert.deepEqual(popped.panelBounds, hidden.panelBounds);
+  assert.equal(popped.meetBounds, null);
+  assert.equal(hidden.meetBounds, null);
+  assert.equal(popped.placeholderBounds, null);
+  assert.equal(popped.regionHidden, hidden.regionHidden);
+});
+
+test('thumbnail still reserves the region — only popped/hidden give it back', () => {
   const thumb = L.computeLayout('thumbnail', { width: 380, height: 900 }, { panelWidth: 380 });
   const popped = L.computeLayout('popped', { width: 380, height: 900 }, { panelWidth: 380 });
-  assert.deepEqual(thumb.panelBounds, popped.panelBounds, 'panel bounds identical, so nothing reshuffles');
-  assert.deepEqual(thumb.meetBounds, popped.placeholderBounds, 'thumbnail Meet region == popped placeholder region');
+  assert.deepEqual(thumb.meetBounds, { x: 0, y: 900 - 214, width: 380, height: 214 });
   assert.equal(thumb.placeholderBounds, null);
-  assert.equal(popped.meetBounds, null);
+  assert.ok(popped.panelBounds.height > thumb.panelBounds.height,
+    'popping out gives the panel MORE room than docking does');
 });
 
 test('the main window is always a narrow column, in both states', () => {
@@ -170,6 +185,19 @@ test('hidden gives the panel the entire column', () => {
     'no 16:9 slab is reserved for a view nobody can see');
   assert.equal(L.regionHeightFor(380, 'hidden'), 0);
   assert.ok(L.regionHeightFor(380, 'thumbnail') > 0, 'thumbnail still reserves its region');
+});
+
+// applyWindowHeight is panelContentHeight + regionHeightFor(state), so any state
+// that reserves a region resizes the MAIN WINDOW. Only 'thumbnail' should: it is
+// the one state that actually puts something in the column. 'popped' used to
+// reserve the slab for a "Popped out" placard, so popping the view out grew the
+// window by 214px — and once the placard went, it would have grown it by 214px
+// of empty background instead.
+test('only thumbnail reserves height — hidden and popped must not resize the window', () => {
+  assert.equal(L.regionHeightFor(380, 'popped'), 0, 'popped adds no height');
+  assert.equal(L.regionHeightFor(380, 'hidden'), L.regionHeightFor(380, 'popped'),
+    'toggling between hidden and popped is a no-op for window height');
+  assert.equal(L.regionHeightFor(380, 'thumbnail'), 214);
 });
 
 test('hidden beats thumbnail on captured pixels by a wide margin', () => {

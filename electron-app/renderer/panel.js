@@ -780,8 +780,30 @@ function isAddToCallMode() {
   return !!detectedCallUrl || manualUrlEntry;
 }
 
+// True between pressing the call button and the call actually starting (or
+// failing). A REAL state rather than something the click handler pokes into the
+// button, because updateJoinBtnState recomputes `disabled` purely from URL
+// validity — and it is called from updateBotNameBig, the URL input handler and
+// config updates, any of which can fire mid-join. Each one silently re-enabled
+// the button and overwrote "Joining…" with "Call Jimmy now", so the control
+// looked live and clickable while the bot was already on its way in.
+// 'starting' (asking the website for a room) | 'joining' (bot on its way in) | null
+let joinPhase = null;
+function setJoinPhase(phase) {
+  joinPhase = phase || null;
+  updateJoinBtnState();
+}
+
 function updateJoinBtnState() {
   if (inCall) return; // in-call UI owns the button
+  if (joinPhase) {
+    // One label per phase, in one place. (The two routes used to disagree:
+    // 'Joining…' with an ellipsis on the create-a-call path, 'Joining...' with
+    // three dots on the paste-a-URL path.)
+    joinBtn.textContent = joinPhase === 'starting' ? 'Starting…' : 'Joining…';
+    joinBtn.disabled = true;
+    return;
+  }
   const addMode = isAddToCallMode();
   const name = currentBotName || 'your bot';
 
@@ -1457,6 +1479,7 @@ document.getElementById('errorClose').addEventListener('click', () => {
 
 function enterCallState(meetCode) {
   inCall = true;
+  joinPhase = null; // we're in; the in-call row owns this space now
   // #379: mark the panel in-call so CSS can hide pre-call-only controls (the
   // profile switcher). A single body flag keeps room for the broader pre-call vs
   // in-call UI split (#289). Also close the switcher if it happened to be open.
@@ -1489,7 +1512,10 @@ function exitCallState() {
   document.body.dataset.callState = 'idle'; // #379: pre-call controls return
   reportContentHeight(); // the in-call card just went away — shrink back
   joinBtn.style.display = '';
-  updateJoinBtnState(); // restores the right label for the current mode
+  // Clears "Joining…" too: leaving covers the case where a join was still in
+  // flight (denied admission, host never let the bot in) and would otherwise
+  // strand the button disabled.
+  setJoinPhase(null); // restores the right label for the current mode
 
   roomIdField.style.display = 'none';
   roomLink.style.display = 'none';
@@ -1512,16 +1538,14 @@ joinBtn.addEventListener('click', async () => {
   // then send the bot in. Main does the request: a renderer fetch carries an
   // Origin the backend rejects.
   if (!isAddToCallMode()) {
-    const label = joinBtn.textContent;
-    joinBtn.disabled = true;
-    joinBtn.textContent = 'Starting…';
+    setJoinPhase('starting'); // asking the website for a room, not joining yet
     try {
       const r = await api.invoke('create-and-join-meet');
       if (r?.ok) {
         // Main has already pointed the bot's view at the room. Put the link in
         // the field so the in-call view can show and copy it for the human.
         if (r.url) { meetUrlInput.value = r.url; detectedCallUrl = r.url; lastKnownCallUrl = r.url; }
-        joinBtn.textContent = 'Joining…';
+        setJoinPhase('joining');
         // enterCallState waits for 'call-status-changed', same as a manual join.
         return;
       }
@@ -1529,9 +1553,7 @@ joinBtn.addEventListener('click', async () => {
     } catch (err) {
       showError('Could not start a call: ' + err.message);
     }
-    joinBtn.disabled = false;
-    joinBtn.textContent = label;
-    updateJoinBtnState();
+    setJoinPhase(null); // restores the right label + enabled state for the mode
     return;
   }
 
@@ -1544,8 +1566,7 @@ joinBtn.addEventListener('click', async () => {
     if (!url.startsWith('http')) url = 'https://meet.google.com/' + url;
     api.joinMeet(url);
   }
-  joinBtn.textContent = 'Joining...';
-  joinBtn.disabled = true;
+  setJoinPhase('joining');
 
   // Don't eagerly call enterCallState here — wait for the 'call-status-changed'
   // IPC to fire with 'in-call'. Otherwise the Leave Call button appears
@@ -1554,7 +1575,7 @@ joinBtn.addEventListener('click', async () => {
   setTimeout(() => {
     if (!inCall) {
       joinBtn.style.display = '';
-      updateJoinBtnState(); // restores the right label for the current mode
+      setJoinPhase(null); // give the button back if we never made it in
     }
   }, 3000);
 });
@@ -1606,10 +1627,11 @@ const shareWindowToggleBtn = document.getElementById('shareWindowToggleBtn');
 
 function applyShareWindowState({ exists, visible, lockedVisible } = {}) {
   if (!shareWindowToggleBtn) return;
-  // Lives in the bot's-view bar next to "Pop out": both are the bot's own
-  // windows, and that bar is where you look when you want at one of them.
-  // Only present while a board window exists — there is nothing to toggle
-  // otherwise, and an always-on button would imply a share that isn't running.
+  // Its own line above the call URL, in the in-call block. Only present while a
+  // board window exists — there is nothing to toggle otherwise, and an always-on
+  // button would imply a share that isn't running. That conditionality is why it
+  // gets a line rather than a fourth pill in the button row: it costs nothing
+  // when absent, and keeps its text label, which a bare icon couldn't carry.
   shareWindowToggleBtn.style.display = exists ? '' : 'none';
   shareWindowToggleBtn.textContent = visible ? '🖥 Hide share' : '🖥 Show share';
   // While a live share is capturing the WINDOW, hiding it would black out what
@@ -1854,8 +1876,11 @@ if (popoutPanelBtn) {
 // Main tells us when the state changes (incl. user closing the popout window).
 api.on('panel-popout-changed', ({ poppedOut }) => applyPopoutLabel(!!poppedOut));
 
-// Bot-view toggle: the Meet thumbnail docked below the panel ↔ its own large
-// window. Label flips so the button always names what a click will DO.
+// Bot-view toggle (👀): the Meet view hidden/docked ↔ its own large window.
+// Lives in the in-call row beside Leave Call — with the view hidden by default
+// it is the only way to see what the bot is doing, so it belongs with the call
+// controls rather than in the bar under the panel. Its TITLE flips so the
+// control always names what a click will DO.
 const botViewToggleBtn = document.getElementById('botViewToggleBtn');
 function applyBotViewLabel(state, resting) {
   if (!botViewToggleBtn) return;
@@ -1864,19 +1889,27 @@ function applyBotViewLabel(state, resting) {
   // lie — clicking puts the view away entirely rather than docking it as a
   // thumbnail. Name what the click actually does.
   const hides = resting !== 'thumbnail';
-  botViewToggleBtn.textContent = popped ? (hides ? '⧉ Hide' : '⧉ Dock') : '⧉ Pop out';
+  // 👀 to open the view, ✕ to put it away again. A one-GLYPH swap, not the old
+  // "⧉ Pop out"/"⧉ Hide" relabel: same width either way, so the row doesn't
+  // resize and shift on every state flip. The title still names what a click
+  // will DO, which is the part that has to stay honest.
+  botViewToggleBtn.textContent = popped ? '✕' : '\u{1F440}';
+  // The ✕ is a text glyph where 👀 is emoji, so it renders visually smaller at
+  // the same font-size. The class bumps it back to match.
+  botViewToggleBtn.classList.toggle('is-close', popped);
   botViewToggleBtn.title = popped
     ? (hides
         ? "Put the bot's view away. It keeps running at full size so the bot can still read shared screens — you just stop seeing it."
         : "Dock the bot's view back as a thumbnail below this panel")
     : "Pop the bot's view out into its own large window — this is where you sign the bot into Google, Slack or GitHub (\u2318L)";
 }
-// The bar exists only while the region below it does — i.e. during a call.
-// Main owns that decision (it spans joining/waiting-to-be-admitted, which the
-// panel's own data-call-state deliberately doesn't), so we just mirror the flag
-// onto <body> and let the stylesheet show/hide the bar and its 44px reservation.
+// Main's "is there a call" signal. It spans joining/waiting-to-be-admitted,
+// which the panel's own data-call-state deliberately doesn't — which is why the
+// face state below reads from THIS rather than from `inCall`.
+//
+// (This used to also drive body[data-botview], which showed the bot's-view bar
+// and reserved 44px for it. Both are gone with the bar.)
 function applyBotViewVisible(visible) {
-  document.body.dataset.botview = visible ? 'visible' : 'hidden';
   // This flag is main's callStatusMeansInCall — true from 'joining' right
   // through 'in-call', false on idle/left. It's the authority on whether the
   // panel should be mirroring the bot's live face, and it's deliberately WIDER
@@ -1884,7 +1917,7 @@ function applyBotViewVisible(visible) {
   // the 🫥 "not on the line yet" face shows while joining.
   callActive = !!visible;
   if (!callActive) clearLiveFace();
-  // Toggles the 44px reservation for the bot's-view bar — a height change.
+  // The in-call controls differ in height from the pre-call ones, so re-measure.
   reportContentHeight();
 }
 applyBotViewVisible(false); // no call yet on load

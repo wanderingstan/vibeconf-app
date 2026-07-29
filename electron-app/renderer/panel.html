@@ -88,13 +88,27 @@
             <!-- Which call the bot is in — for confirming the room and copying
                  the invite link. (The old "● in Meet as Jimmy" line above this
                  was removed: the name is already the banner's headline.) -->
+            <!-- Rehomed from the bot's-view bar, which is gone along with the
+                 view region it used to cap. Its own line rather than a fourth
+                 pill in the row below: it only exists while a board window does,
+                 so the line costs nothing the rest of the time — and it keeps
+                 its text label, which a bare 🖥 among icons could not carry.
+                 Hides itself; see applyShareWindowState. -->
+            <button id="shareWindowToggleBtn" class="share-window-btn" style="display:none" title="The window the room sees while the bot presents. Normally hidden — show it to click around the board yourself.">🖥 Show share</button>
             <div class="call-url-row" title="The call this bot is currently in.">
               <span id="callUrlDisplay" class="call-url"></span>
               <button id="copyCallUrlBtn" class="call-url-copy" title="Copy call link">⧉</button>
             </div>
             <div class="join-row">
+              <!-- Watch the bot. Now that the Meet view is hidden by default,
+                   this is the ONLY way to see what the bot is doing, so it
+                   belongs beside Leave Call rather than in the bar under the
+                   panel — mirroring the ⓘ on the other side. Its title flips
+                   with state (applyBotViewLabel); the glyph stays put so the
+                   control doesn't jump. -->
+              <button id="botViewToggleBtn" class="join-more" title="See what the bot sees">👀</button>
               <button id="leaveCallBtn" class="primary danger">Leave Call</button>
-              <button id="openTroubleshootingBtn" class="join-more" title="Troubleshooting — live call state, captions, and the agent's view">ⓘ</button>
+              <button id="openTroubleshootingBtn" class="join-more" title="Troubleshooting — live call state, captions, and the agent's view">🚧</button>
             </div>
           </div>
 
@@ -425,11 +439,6 @@
        below this panel. Pinned to the bottom of the panel view (position:fixed) so
        it sits flush against the webview on every screen. The label is the point:
        it stops new users mistaking the bot's view for their own call. -->
-  <div class="botview-bar" title="This is the bot's view — what the bot sees and hears. Not your call.">
-    <span class="botview-label">🤖 Bot's view</span>
-    <button id="shareWindowToggleBtn" class="botview-toggle" style="display:none" title="The window the room sees while the bot presents. Normally hidden — show it to click around the board yourself.">🖥 Show share</button>
-    <button id="botViewToggleBtn" class="botview-toggle" title="Pop the bot's view out into its own large window (or dock it back as a thumbnail)">⧉ Pop out</button>
-  </div>
   <script src="svg-cover.js"></script>
   <script src="svg-scope.js"></script>
   <script src="panel.js"></script>

@@ -5995,10 +5995,11 @@ function startAgentActivityPush() {
 
 // Debug overlay is split into independent categories (#overlay). Each is a
 // human-only store key (NOT in the agent-facing schema — same prompt-injection
-// guard as the old single toggle). Health defaults ON for early testing; the
-// noisier sections default OFF. The on-camera overlay draws iff any is on.
+// guard as the old single toggle). All sections default OFF — the overlay is a
+// debugging tool, not something to show a call by default. The on-camera
+// overlay draws iff any is on.
 const OVERLAY_DEFAULTS = {
-  overlayHealth: true,        // CALL + LOOP + response-time
+  overlayHealth: false,       // CALL + LOOP + response-time
   overlayCaptions: false,     // what the bot is hearing (heard/proc)
   overlayAgentLog: false,     // driving Claude session's activity tail ("log output")
   overlayExperiments: false,  // EXP flags + banked probes

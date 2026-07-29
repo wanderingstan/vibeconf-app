@@ -1312,7 +1312,7 @@ if (profileMenuBtn && profileMenu) {
 }
 
 // Per-category debug overlay (#overlay). Each checkbox id matches its store key,
-// so a bare loop wires them all. Health defaults on; the noisier sections off.
+// so a bare loop wires them all. All sections default off; opt in per profile.
 api.invoke('get-overlay-flags').then((flags) => {
   for (const key of Object.keys(flags || {})) {
     const el = document.getElementById(key);

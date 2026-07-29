@@ -3366,6 +3366,14 @@ class LocalServer {
     //
     // Adoption only happens when there is no room yet, so there is no state to
     // lose by initialising it here.
+    //
+    // #105: capture room + status BEFORE adopting. setRoom also does
+    // setCallStatus('joining'), so after this line both values look exactly
+    // like an in-progress join — and the rejoin guard downstream reads them to
+    // decide whether a join is a duplicate. Left to read live state, the very
+    // first /join-call after launch matches its OWN adoption and gets dropped.
+    // The guard needs the state as it was before this request touched it.
+    const preAdoption = { roomId: this.roomId, callStatus: this.callStatus };
     if (!this.roomId) {
       this.setRoom(roomId);
     }
@@ -3373,7 +3381,7 @@ class LocalServer {
     if (req.method === 'GET') {
       await this._handleGet(req, res, url, roomId);
     } else if (req.method === 'POST') {
-      await this._handlePost(req, res, roomId);
+      await this._handlePost(req, res, roomId, preAdoption);
     } else {
       res.writeHead(405, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: false, error: 'Method not allowed' }));
@@ -3505,7 +3513,7 @@ class LocalServer {
     res.end(JSON.stringify(result));
   }
 
-  async _handlePost(req, res, roomId) {
+  async _handlePost(req, res, roomId, preAdoption = null) {
     const body = await this._readBody(req);
     let data;
     try {
@@ -3589,13 +3597,20 @@ class LocalServer {
       // So treat it as the no-op it should have been. A join for a DIFFERENT
       // room still switches calls, and force:true still rebuilds the session
       // for the case where it really is wedged.
+      //
+      // #105: read the PRE-adoption room/status, not the live ones. Adopting an
+      // unknown room (handleRequest) calls setRoom, which sets callStatus to
+      // 'joining' — so by the time we get here a first-ever join has already
+      // written the exact state this guard treats as "a join is in flight", and
+      // would ignore itself. preAdoption is what was true before this request.
+      const guardState = preAdoption || { roomId: this.roomId, callStatus: this.callStatus };
       if (shouldIgnoreRejoin({
         requestedRoom: meetCode,
-        currentRoom: this.roomId,
-        callStatus: this.callStatus,
+        currentRoom: guardState.roomId,
+        callStatus: guardState.callStatus,
         force: data.meta.force,
       })) {
-        console.log('[local-server] Join ignored — already', this.callStatus, 'in', meetCode);
+        console.log('[local-server] Join ignored — already', guardState.callStatus, 'in', meetCode);
         results.join = {
           ok: true,
           alreadyInCall: true,

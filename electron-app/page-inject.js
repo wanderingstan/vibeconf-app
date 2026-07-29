@@ -2064,6 +2064,9 @@
         this.lastSpeakingTime = Date.now();
       }
 
+      // #115: publish the fast floor signal alongside the existing STT gating.
+      try { noteAudioLevel(this.speaking); noteLevelSample(db); } catch { /* never break level monitoring */ }
+
       if (this.speaking && !wasSpeaking) {
         // Started/stopped speaking debug lines suppressed — too noisy in
         // the terminal log. Re-enable locally if debugging speech detection.
@@ -2164,6 +2167,95 @@
       this._stopRecording();
       this.audioCtx.close();
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // #115: audio-level floor signal.
+  //
+  // The turn-taking gates (barge-in, speak jitter) consume `anyoneSpeaking`,
+  // which today comes from counting mutations on Meet's mic-meter DOM — 3
+  // within a 1200ms window, so ~400-700ms after audio actually starts. The
+  // analyser above already answers "is anyone making sound" every animation
+  // frame (~16ms). This publishes that as a separate signal so the two can be
+  // compared on a real call before anything switches over to it.
+  //
+  // Aggregate, not per-participant: Meet can send mixed audio, so attribution
+  // from this path is unreliable — but the floor gate only asks "is ANYBODY
+  // talking", which is exactly what an analyser answers well.
+  //
+  // Falling edge is held briefly: speech has gaps between words, and without
+  // hysteresis this would chatter many times per second.
+  // Stan's objection, and the real design constraint: Meet's mic meter is not a
+  // slow proxy for "sound" — it's a slow proxy for "Meet's own VAD decided this
+  // is SPEECH". Google applies noise suppression and voice-activity detection
+  // before it animates that meter. A raw RMS analyser answers a different and
+  // easier question: "is there any energy at all", which a keyboard, a fan or a
+  // dog will answer yes to.
+  //
+  // So this is not purely a latency win — it trades Meet's noise judgement for
+  // ~400ms. Whether that trade is affordable depends on how far the speech level
+  // sits above the room noise level in practice, which nobody here has measured.
+  // Hence the periodic stats line below: it reports the level DISTRIBUTION so a
+  // real call answers the question with numbers instead of opinions.
+  //
+  // The current -55dB threshold is inherited from STT gating, where the comment
+  // says it was "set low for now"; it is almost certainly too permissive to gate
+  // turn-taking on. Do not enable fastFloorDetection until the stats show a
+  // clear gap.
+  const AUDIO_FLOOR_STATS_MS = 15000;
+  let _levelSamples = [];
+  let _lastLevelStatsAt = 0;
+
+  function noteLevelSample(db) {
+    if (Number.isFinite(db) && db > -200) _levelSamples.push(db);
+    const now = Date.now();
+    if (!_lastLevelStatsAt) { _lastLevelStatsAt = now; return; }
+    if (now - _lastLevelStatsAt < AUDIO_FLOOR_STATS_MS || _levelSamples.length < 50) return;
+    _lastLevelStatsAt = now;
+    const a = _levelSamples.sort((x, y) => x - y);
+    const at = (q) => a[Math.min(a.length - 1, Math.floor(q * a.length))].toFixed(1);
+    // p10 approximates the room's noise floor; p95 approximates speech peaks.
+    // A usable threshold needs daylight between them.
+    window.postMessage({
+      __botsInCalls: true,
+      action: 'log',
+      payload: { line: `[floor-levels] over ${(AUDIO_FLOOR_STATS_MS / 1000)}s, n=${a.length}: `
+        + `p10 ${at(0.10)}dB (noise floor?) · p50 ${at(0.50)}dB · p90 ${at(0.90)}dB · p95 ${at(0.95)}dB (speech?) `
+        + `· separation ${(at(0.95) - at(0.10)).toFixed(1)}dB` },
+    }, '*');
+    _levelSamples = [];
+  }
+
+  const AUDIO_FLOOR_RELEASE_MS = 350;
+  let _audioFloorBusy = false;
+  let _audioFloorLastTrueAt = 0;
+  let _audioFloorReleaseTimer = null;
+
+  function publishAudioFloor(busy) {
+    if (busy === _audioFloorBusy) return;
+    _audioFloorBusy = busy;
+    window.postMessage({
+      __botsInCalls: true,
+      action: 'audio-floor',
+      payload: { speaking: busy, at: Date.now() },
+    }, '*');
+  }
+
+  // Called from ParticipantAudio._monitorLevel on every frame.
+  function noteAudioLevel(anySpeakingNow) {
+    const now = Date.now();
+    if (anySpeakingNow) {
+      _audioFloorLastTrueAt = now;
+      if (_audioFloorReleaseTimer) { clearTimeout(_audioFloorReleaseTimer); _audioFloorReleaseTimer = null; }
+      publishAudioFloor(true);           // rising edge: immediate, that's the point
+      return;
+    }
+    if (!_audioFloorBusy || _audioFloorReleaseTimer) return;
+    const wait = Math.max(0, AUDIO_FLOOR_RELEASE_MS - (now - _audioFloorLastTrueAt));
+    _audioFloorReleaseTimer = setTimeout(() => {
+      _audioFloorReleaseTimer = null;
+      if (Date.now() - _audioFloorLastTrueAt >= AUDIO_FLOOR_RELEASE_MS) publishAudioFloor(false);
+    }, wait);
   }
 
   // ---------------------------------------------------------------------------

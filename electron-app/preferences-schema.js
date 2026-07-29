@@ -467,6 +467,22 @@ const PREFERENCES = {
       'arriving before the bot decides the captions have dropped out (and ' +
       'surfaces that to the agent as a warning). See issue #187.',
   },
+  fastFloorDetection: {
+    type: 'boolean',
+    default: false,
+    description:
+      'EXPERIMENTAL (#115). Use the Web Audio analyser to decide whether anyone is ' +
+      'speaking, instead of waiting on Meet mic-meter DOM mutations. The DOM path ' +
+      'needs 3 mutations in a 1200ms window, so it lands ~400-700ms after speech ' +
+      'starts; the analyser already samples every animation frame (~16ms) and is ' +
+      'the signal every turn-taking gate actually wants. When on, EITHER signal ' +
+      'counts as busy, so the DOM path still covers cases the analyser misses. ' +
+      'Off by default: the level threshold (-55dB) was tuned for STT gating, not ' +
+      'for this, and a threshold that is too sensitive would make the bot think ' +
+      'someone is ALWAYS talking and never speak at all. The floor-latency lines ' +
+      'in the log are recorded either way — turn this on only once those show the ' +
+      'analyser leading cleanly. Read live, so it can be flipped mid-call.',
+  },
   botSpeakJitterMaxMs: {
     type: 'number',
     default: 2000,

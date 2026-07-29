@@ -2267,6 +2267,14 @@ window.addEventListener('message', (event) => {
     if (name) meetProvider.emit(CALL_EVENTS.speakingChanged, { name, speaking });
   }
 
+  if (event.data.action === 'audio-floor') {
+    // #115: fast floor signal from the Web Audio analyser (~16ms) — published
+    // alongside the DOM mutation path (~400-700ms) so the two can be compared
+    // on a real call. Consumed only when fastFloorDetection is on.
+    const { speaking, at } = event.data.payload || {};
+    ipcRenderer.send('audio-floor', { speaking: !!speaking, at: at || Date.now() });
+  }
+
   if (event.data.action === 'tts-ended') {
     // After speaking, restore mic to its mode-appropriate state. Active mode
     // wants the mic open so the bot can be heard; passive/silent want it muted

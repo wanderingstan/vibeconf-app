@@ -254,6 +254,19 @@ const MEET = {
     // wait_for_speech), so we always click Stay.
     stillThereRe: /are you still there/i,
     stayInCallText: 'stay in the call', // lowercased compare; prefix-matched
+    // Meet's Gemini notice: "Gemini is available to answer questions about
+    // meeting discussions. It won't create a recording or store caption data
+    // after the meeting ends. The meeting host can turn it off in settings."
+    // with Learn more / Don't show again.
+    //
+    // Matched on "gemini is available" rather than the full sentence: the rest
+    // of that copy is the kind of thing Google rewords, and this pairing of
+    // marker + button is specific enough on its own.
+    geminiNoticeRe: /gemini is available/i,
+    // "Don't show again", not merely closing it — otherwise it returns every
+    // call and the bot burns a sweep on it each time. Compared after
+    // normalising the apostrophe: Meet renders U+2019, not ASCII.
+    dontShowAgainText: "don't show again",
   },
 };
 

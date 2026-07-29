@@ -127,13 +127,22 @@ if [[ "${VIBECONF_NO_SELFUPDATE:-0}" != "1" ]]; then
   _before=$(git -C "$REPO" rev-parse HEAD 2>/dev/null)
   git -C "$REPO" pull --ff-only origin main 2>&1 | tee -a "$LOG" || echo "  (pull failed — staying on current checkout)" | tee -a "$LOG"
   _after=$(git -C "$REPO" rev-parse HEAD 2>/dev/null)
-  if [[ -n "$_before" && "$_before" != "$_after" ]]; then
-    # Deps: install only if a lockfile actually changed in the pulled range (root
-    # and electron-app are separate — not a workspace).
-    _changed=$(git -C "$REPO" diff --name-only "$_before" "$_after" 2>/dev/null)
-    echo "$_changed" | grep -q '^pnpm-lock.yaml$' && { echo "  root deps changed — pnpm install" | tee -a "$LOG"; (cd "$REPO" && pnpm install) 2>&1 | tee -a "$LOG" || true; }
-    echo "$_changed" | grep -q '^electron-app/pnpm-lock.yaml$' && { echo "  electron-app deps changed — pnpm install" | tee -a "$LOG"; (cd "$REPO/electron-app" && pnpm install) 2>&1 | tee -a "$LOG" || true; }
-  fi
+  # What changed in the pulled range (empty if the pull was a no-op).
+  _changed=""
+  [[ -n "$_before" && "$_before" != "$_after" ]] && _changed=$(git -C "$REPO" diff --name-only "$_before" "$_after" 2>/dev/null)
+  echo "$_changed" | grep -q '^pnpm-lock.yaml$' && { echo "  root deps changed — pnpm install" | tee -a "$LOG"; (cd "$REPO" && pnpm install) 2>&1 | tee -a "$LOG" || true; }
+  # Each sub-package is a SEPARATE install (not a workspace). (Re)install when its
+  # lockfile changed in the pulled range OR its node_modules is missing entirely —
+  # the latter self-heals a fresh checkout that was never installed. That gap
+  # silently broke the codex MCP smoke: the repo move left mcp-server uninstalled,
+  # and since no lockfile "changed" (and no-op pulls skip the range diff), nothing
+  # ever ran pnpm install for it until it was done by hand.
+  for _sub in electron-app mcp-server; do
+    if echo "$_changed" | grep -q "^${_sub}/pnpm-lock.yaml\$" || [[ ! -d "$REPO/$_sub/node_modules" ]]; then
+      echo "  $_sub deps — pnpm install (lockfile changed or node_modules missing)" | tee -a "$LOG"
+      (cd "$REPO/$_sub" && pnpm install) 2>&1 | tee -a "$LOG" || true
+    fi
+  done
 
   echo "=== self-update: DMG ===" | tee -a "$LOG"
   _app="/Applications/Vibeconferencing.app"

@@ -445,6 +445,16 @@ server.tool(
       ? `\n[Auto-replayed your previously-yielded speech on the silence gap: ${data.replayedBargeInStash.map(s => JSON.stringify(s)).join(' · ')}. That speech already played — do NOT repeat it. Either build on it or stay silent.]`
       : '';
 
+    // #109: the opposite outcome. speak() promised the held reply would
+    // auto-replay, and it didn't — so say so out loud. Until now the only
+    // signal was the ABSENCE of the replay note above, which is a negative an
+    // agent can't read reliably; the reply just vanished and the agent carried
+    // on as though the room had heard it.
+    const d = data.discardedBargeInStash;
+    const discardLine = d && Array.isArray(d.texts) && d.texts.length
+      ? `\n[NOT SPOKEN — your held reply was dropped, not replayed (${d.reason}): ${d.texts.map(s => JSON.stringify(s)).join(' · ')}. The room never heard this. If it still matters, say it again — reworded for where the conversation is NOW, not where it was. If it's been overtaken, let it go.]`
+      : '';
+
     if (entries.length === 0) {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       // Chat-triggered wake: a new chat message arrived while the room was quiet
@@ -459,7 +469,7 @@ server.tool(
       const deafLine = status.captionsOn === false
         ? '\n[Captions are OFF in Meet — the bot hears via captions, so it is DEAF until they are re-enabled. The app is retrying automatically; if this persists, say or chat: "Could someone turn captions back on? (CC button in Meet\'s toolbar)"]'
         : '';
-      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${statusLine}${errorLines}${chatLine}${ackLine}${replayLine}${deafLine}` }] };
+      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${statusLine}${errorLines}${chatLine}${ackLine}${replayLine}${discardLine}${deafLine}` }] };
     }
 
     // Each entry is now one logical speaker turn (#178 snapshot model); no
@@ -490,7 +500,7 @@ server.tool(
     return {
       content: [{
         type: "text",
-        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):\n\n${transcriptText}${chatLine}${continuationLine}${ackLine}${replayLine}`,
+        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):\n\n${transcriptText}${chatLine}${continuationLine}${ackLine}${replayLine}${discardLine}`,
       }],
     };
   }
@@ -527,7 +537,7 @@ server.tool(
       return { content: [{ type: "text", text: "Speech suppressed (silent mode)." }] };
     }
     if (tx?.reason === 'user-speaking-stashed') {
-      return { content: [{ type: "text", text: "Speech held (not dropped) — the user started talking before your reply could play, so it's been STASHED and will auto-replay the moment the floor goes quiet. Do NOT recompose or repeat it. Just call wait_for_speech again and keep listening: if the room simply paused, your queued reply plays itself; if the conversation moved on, the stash is discarded and your next wait_for_speech will surface the new content for a fresh response (you'll see a replayedBargeInStash note if it did go out, so you can build on it rather than repeat it)." }] };
+      return { content: [{ type: "text", text: "Speech held (not dropped) — the user started talking before your reply could play, so it's been STASHED to auto-replay the moment the floor goes quiet. Do NOT recompose or repeat it now. Call wait_for_speech again and keep listening; it will tell you which way this went. Either it played, and you'll get an 'Auto-replayed your previously-yielded speech' note — build on it, don't repeat it. Or the conversation moved on and it was dropped, and you'll get a 'NOT SPOKEN — your held reply was dropped' note — the room never heard it, so say it again if it still matters. You do not have to infer either outcome from silence." }] };
     }
     if (tx?.reason === 'user-speaking') {
       return { content: [{ type: "text", text: "Speech dropped — the user started speaking before your response could play. Call wait_for_speech to hear what they said and respond to their new message instead of repeating this one." }] };

@@ -314,15 +314,18 @@ const PREFERENCES = {
   },
   bargeInAckMaxWords: {
     type: 'number',
-    default: 30,
+    default: 12,
     min: 0,
     max: 200,
     description:
       'Max words for the OPENING ACK to stay barge-in-exempt (see bargeInAckExempt). ' +
-      'Protects a real ack (a sentence or two) while letting a runaway-long first reply ' +
-      'still yield to a human. Lowered from 40 to 30 (#67) — an exempt ack plays OVER a ' +
-      'live human, so the cap wants to be just above a genuine ack (the #335 one was 23) ' +
-      'and no higher. Read live.',
+      'Protects a real ack ("Sure — putting that together now.") while letting anything ' +
+      'longer yield to a human. An exempt utterance plays OVER a live speaker, so this ' +
+      'cap is the sole thing standing between "the bot signalled it heard me" and "the ' +
+      'bot talked over me". 40 -> 30 (#67) -> 12 (#109): on the Jul 28 call all 14 ' +
+      'exemptions came through this path at a median of 18 words — full sentences, not ' +
+      'acks — while the code above it claims "substantive mid-turn responses are NOT ' +
+      'exempt". 12 is about where an ack stops being an ack. Read live.',
   },
   bargeInBackchannelMaxWords: {
     type: 'number',

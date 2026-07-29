@@ -151,6 +151,48 @@ if (( KILL )); then
     # matches the full argv and never matches the real bots (default on 7865/66).
     if pkill -f "profile=$profile" 2>/dev/null; then echo "  • reaped lingering profile=$profile process(es)"; fi
   done
+
+  # Sweep any agent Terminal windows a test bot spawned. Fleets now launch with
+  # --no-agent-terminal=true so there should be none, but an app launched by hand,
+  # or an older build, still litters one per start_call — and nothing else reaps
+  # them (the MCP leave_call path skips closeClaudeTerminal). Belt and braces so a
+  # long night doesn't leave a screen full of windows.
+  #
+  # Deliberately narrow: only windows whose tab is running our `/join-call` or
+  # `/call` command. It never touches a Terminal window someone is working in, so
+  # this is safe to run on a machine that isn't a dedicated test box.
+  if [[ "${VIBECONF_NO_TERMINAL_SWEEP:-0}" != "1" ]] && command -v osascript >/dev/null 2>&1; then
+    swept=$(osascript <<'APPLESCRIPT' 2>/dev/null || echo 0
+tell application "System Events"
+  if not (exists process "Terminal") then return 0
+end tell
+set n to 0
+tell application "Terminal"
+  repeat with w in windows
+    try
+      repeat with t in tabs of w
+        set cmd to ""
+        try
+          set cmd to (processes of t) as string
+        end try
+        set ttl to ""
+        try
+          set ttl to custom title of t
+        end try
+        if (cmd contains "claude") and ((ttl contains "join-call") or (ttl contains "/call") or (ttl contains "vibeconf")) then
+          close w
+          set n to n + 1
+          exit repeat
+        end if
+      end repeat
+    end try
+  end repeat
+end tell
+return n
+APPLESCRIPT
+)
+    [[ "${swept:-0}" =~ ^[0-9]+$ ]] && (( swept > 0 )) && echo "  • closed $swept agent Terminal window(s)"
+  fi
   echo "✓ done"
   exit 0
 fi
@@ -161,10 +203,16 @@ fi
 # or manually, e.g.:
 #   cd electron-app && pnpm dev -- --provider=slack --profile=test-slack-1 \
 #     --slack-url=https://app.slack.com/client/<team>/<channel>   # then log in, close
-EXTRA_ARGS=""
+# Test bots are driven by the harness (meet-test.mjs / join-route-test.mjs) over
+# MCP, so the auto-spawned Claude agent is pure litter — and nothing reaped it:
+# the MCP leave_call path doesn't call closeClaudeTerminal, only window-all-closed
+# and the panel's leave-meet do. Every start_call left another Terminal window on
+# the machine. A flag rather than an env var because `open -n --args` (below)
+# does not pass the parent environment through.
+EXTRA_ARGS="--no-agent-terminal=true"
 if (( SLACK )); then
   [[ -n "$SLACK_URL" ]] || { echo "✗ --slack needs --slack-url=https://app.slack.com/client/<team>/<channel>"; exit 1; }
-  EXTRA_ARGS="--provider=slack --slack-url=$SLACK_URL"
+  EXTRA_ARGS="$EXTRA_ARGS --provider=slack --slack-url=$SLACK_URL"
 fi
 # Open detached DevTools on each spawned app (handy for live DOM debugging).
 (( DEVTOOLS )) && EXTRA_ARGS="$EXTRA_ARGS --devtools=true"

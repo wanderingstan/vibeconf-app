@@ -286,12 +286,18 @@ const PREFERENCES = {
   },
   bargeInGraceMaxMs: {
     type: 'number',
-    default: 3500,
+    default: 1500,
     min: 0,
     max: 10_000,
     description:
       'When bargeInUrgencyScaling is on: the grace for a max-urgency utterance — ' +
-      'the bot fights hardest to be heard. Default 3500ms.',
+      'the bot fights hardest to be heard. Default 1500ms — was 3500ms, lowered ' +
+      'in #138: the agent self-scored u≈0.90 on essentially every utterance that ' +
+      'call, so the scaling sat pinned near its ceiling and bought ~2.9s of ' +
+      'talking over a human, which is what "you\'re not stopping when we start ' +
+      'speaking" felt like from the room. With the min at 700ms the whole range ' +
+      'is now inside human turn-taking latency; raise it again if the urgency ' +
+      'distribution ever spreads out enough for the ceiling to mean something.',
   },
   workingStateMinMs: {
     type: 'number',

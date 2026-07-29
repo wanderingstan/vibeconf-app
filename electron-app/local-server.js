@@ -1310,7 +1310,25 @@ class LocalServer {
       console.log(ts(), '🎤 [floor-audio] speech OFF (analyser)');
     }
     // Wake anyone gated on the floor so a faster ON is actually actionable.
-    if (this._pref('fastFloorDetection') === true) this._onFloorChanged?.();
+    if (this._pref('fastFloorDetection') === true) this._onFloorChanged();
+  }
+
+  // #138: the analyser edge, made actionable. Until this existed, _armBargeIn
+  // was only reachable from Meet's DOM rising edge in setParticipants — and
+  // while bot TTS is playing that edge often never arrives at all (the log for
+  // #138: 221 analyser ONs, 5 arms, 1 back-off). So a human who started talking
+  // over the bot was invisible to the back-off logic, which is the entire
+  // mechanism by which a human is allowed to take the floor.
+  //
+  // Rising edge only. The analyser samples every animation frame and dips
+  // between words; clearing the monitor on an OFF edge would restart the grace
+  // period on every syllable gap and the bot would never yield. A floor that
+  // genuinely reopened is handled where it already was: the DOM falling edge in
+  // setParticipants, and _evaluateBargeIn's own floorBusy re-check when the
+  // grace timer fires.
+  _onFloorChanged() {
+    // A no-op unless the bot is mid-utterance with nothing already armed.
+    if (this.floorBusy) this._armBargeIn();
   }
 
   // The floor as the turn-taking gates should see it. With fastFloorDetection
@@ -1382,8 +1400,10 @@ class LocalServer {
       this._checkWaiters();
       this.onAnyoneSpeakingChange(false);
       // The interrupter went silent before our grace timer fired — drop
-      // the back-off monitor (#154).
-      this._clearBargeIn('interrupter went silent');
+      // the back-off monitor (#154). #138: only if the analyser agrees the room
+      // is actually quiet; Meet's tracker drops a speaker mid-utterance often
+      // enough that trusting it alone here disarmed live interruptions.
+      if (!this.floorBusy) this._clearBargeIn('interrupter went silent');
       // A held reply outranks a probe: if the bot already composed a real
       // thought, the first opening belongs to that, not to a filler phrase.
       // Wait the FULL turn-silence gate before replaying — the same bar a
@@ -2154,9 +2174,10 @@ class LocalServer {
       this._clearBargeIn('bot stopped speaking');
     }
     // Entering 'speaking' — if someone is already mid-utterance, arm
-    // immediately. Otherwise arming happens lazily when anyoneSpeaking
-    // flips true (in setParticipants).
-    if (state === 'speaking' && this.anyoneSpeaking) {
+    // immediately. Otherwise arming happens lazily when the floor flips busy
+    // (the DOM edge in setParticipants, or the analyser edge via
+    // _onFloorChanged). #138: floorBusy so the analyser counts here too.
+    if (state === 'speaking' && this.floorBusy) {
       this._armBargeIn();
     }
     this.onBotStateChange(state, extra);
@@ -2255,15 +2276,24 @@ class LocalServer {
   // interrupting. Caller guarantees the timer slot is clear so we can
   // re-arm with the random bot-vs-bot delay if needed.
   _evaluateBargeIn() {
-    if (this.botState !== 'speaking' || !this.anyoneSpeaking) {
+    if (this.botState !== 'speaking' || !this.floorBusy) {
       // Bot already stopped, or interrupter shut up during the grace
-      // period — nothing to do.
+      // period — nothing to do. #138: floorBusy, not anyoneSpeaking, or an
+      // analyser-armed monitor would always bail here on the way back out.
       return;
     }
     const interrupters = this.participants.filter(
       (p) => p.speaking && !p.isSelf && p.name !== 'You'
     );
-    if (interrupters.length === 0) return;
+    if (interrupters.length === 0) {
+      // #138: the analyser hears someone but Meet's DOM tracker hasn't named
+      // them (routinely, while TTS plays). We can't tell bot from human without
+      // a name, and the rule below is already "unknown ⇒ human" — so yield.
+      // Talking over a real person is the worse failure.
+      console.log(ts(), '🛡️  [barge-in] someone interrupted (analyser only, no DOM speaker yet) — backing off');
+      this._performBackOff('human-interrupt');
+      return;
+    }
 
     // Cross-reference against registered bot members (same logic the
     // get_room_info / panel tag uses). When the binding is unknown, default
@@ -2292,7 +2322,7 @@ class LocalServer {
     console.log(ts(), '🛡️  [barge-in] bot-vs-bot — random additional delay ' + delay + 'ms before deciding');
     this._bargeInTimer = setTimeout(() => {
       this._bargeInTimer = null;
-      if (this.botState !== 'speaking' || !this.anyoneSpeaking) {
+      if (this.botState !== 'speaking' || !this.floorBusy) {
         console.log(ts(), '🛡️  [barge-in] bot-vs-bot resolved during random delay — continuing');
         return;
       }
@@ -2474,8 +2504,12 @@ class LocalServer {
     if (this.callStatus !== 'in-call') return;
     // Silent mode is "act but never speak" — a replay is speech.
     if (this.mode === 'silent') return;
-    // The floor closed again, or the bot is already talking.
-    if (this.anyoneSpeaking || this.botState === 'speaking') return;
+    // The floor closed again, or the bot is already talking. #138: floorBusy —
+    // a replay calls onBotSpeech directly, so it never reaches the audio-start
+    // gate, and this read is the only thing standing between a held reply and
+    // talking over someone Meet's tracker hasn't flagged. A stuck-ON analyser
+    // costs a stash (it ages out and the agent re-derives), not a whole call.
+    if (this.floorBusy || this.botState === 'speaking') return;
 
     // Same precedence as the resolve-time path: an utterance the room actually
     // heard the bot START saying (#350) outranks one it never heard at all.
@@ -2621,7 +2655,7 @@ class LocalServer {
     this._probeTimer = null;
     if (!this._pref('probeFiring')) return;
     if (this.mode !== 'active' || this.callStatus !== 'in-call') return;
-    if (this.anyoneSpeaking || this.botState === 'speaking') return;
+    if (this.floorBusy || this.botState === 'speaking') return; // #138: either signal
     // A held reply beats a filler. The stash-opening timer owns this gap.
     if (this.bargeInStash) return;
     if (this.waiters.length === 0) return; // slow model isn't listening
@@ -2664,7 +2698,7 @@ class LocalServer {
   fireProbe() {
     if (!this._pref('probeFiring')) return null;
     if (this.mode !== 'active' || this.callStatus !== 'in-call') return null;
-    if (this.anyoneSpeaking || this.botState === 'speaking') return null;
+    if (this.floorBusy || this.botState === 'speaking') return null; // #138: either signal
     // Re-check: a stash may have landed, or someone may have left (dropping the
     // room to a 1:1), during the ~0.6s gate call.
     if (this.bargeInStash) return null;

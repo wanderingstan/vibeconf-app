@@ -1216,14 +1216,14 @@ function ensureStatusBar() {
       /* Auto-grow for long messages instead of clipping them off the right
          edge (a full-sentence #404 notice ran past the viewport — unreadable). */
       min-height: 56px;
-      /* SOLID accent blue, opaque — must exactly match the panel's "Bot's view"
-         bar (.botview-bar) that sits directly above this in the column, so the
-         two read as one surface with no visible seam. It was rgba(...,0.82),
-         which over the white Meet page rendered lighter than the panel bar (over
-         the dark panel) and made the seam obvious. Opaque #8ab4f8 looks the same
-         whatever is behind it. (Was partially transparent to keep Google's UI
-         visible beneath — the seamless look wins; the banner is click-through
-         and auto-fades on hover anyway.) */
+      /* SOLID accent blue, opaque. This used to have to match the panel's
+         "Bot's view" bar (.botview-bar) directly above it in the column so the
+         two read as one surface; that bar is gone now that the view is hidden by
+         default, but opaque still beats the old rgba(...,0.82), which over the
+         white Meet page rendered lighter than the dark panel behind it and made
+         the seam obvious. Opaque #8ab4f8 looks the same whatever is behind it.
+         (Was partially transparent to keep Google's UI visible beneath — the
+         solid look wins; the banner is click-through and auto-fades on hover.) */
       background: #8ab4f8; color: #ffffff;
       /* ...and click-through so they stay USABLE for debugging — the banner
          never intercepts pointer events (#bot-view banner is purely a label).

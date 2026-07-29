@@ -980,61 +980,32 @@ button.join-more#openTroubleshootingBtn { font-size: 18px; }
   text-align: left;
 }
 
-/* Bot-view bar — labels + toggles the Meet thumbnail docked directly below the
-   panel. Pinned to the very bottom of the panel view so it abuts the webview, and
-   painted in the same blue as the in-call header banner (#vibeconf-status-bar,
-   rgba(138,180,248,0.82)) so the bar and the view below read as one surface. The
-   rounded top corners echo the window's own rounded corners. */
-.botview-bar {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 10;
+/* Share-window toggle, shown on its own line above the call URL while a board
+   window exists. Sized between .join-more and a full-width button: it is a
+   secondary, occasional control, and centring it keeps the in-call block on one
+   axis. (It used to live in the bot's-view bar, which is gone along with the
+   view region it capped.) */
+.share-window-btn {
+  /* Block-level flex + fit-content, NOT inline-flex: `margin: 0 auto` only
+     centres a block-level box, and inline-flex left-aligned it. */
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 7px 12px;
-  /* Solid accent blue — must match the injected in-view banner
-     (#vibeconf-status-bar) directly below it so the two read as one surface
-     with no seam. Keep these two colours identical if either changes. */
-  background: #8ab4f8;
-  border-radius: 10px 10px 0 0;
-}
-/* The bar labels the bot's-view region, so it only exists while that region
-   does — during a call. Out of a call it's hidden and gives back its 44px, so
-   the panel owns the whole window. Driven by body[data-botview] from main. */
-body[data-botview="hidden"] .botview-bar { display: none; }
-/* The ⓘ Troubleshooting window loads this same page, but it is NOT the panel —
-   it has no bot's-view webview beneath it, so the bar that labels one is just a
-   blue stripe along its bottom edge. */
-body[data-window="troubleshooting"] .botview-bar { display: none; }
-/* Keep panel content from hiding behind the fixed bar (only when it's there). */
-body[data-botview="visible"] #mainScreen .container { padding-bottom: 44px; }
-.botview-label {
-  font-size: 12px;
-  color: #ffffff;
-  font-weight: 600;
-  white-space: nowrap;
-  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.18);
-}
-/* Toggle button, restyled for the blue bar: translucent white, high contrast. */
-.botview-toggle {
-  flex: 0 0 auto;
-  width: auto;
-  margin: 0;
+  justify-content: center;
+  width: fit-content;
+  margin: 0 auto 6px;
+  padding: 3px 12px;
   font-size: 12px;
   font-weight: 600;
-  padding: 3px 10px;
+  line-height: 1.6;
   border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.55);
-  background: rgba(255, 255, 255, 0.16);
-  color: #ffffff;
+  border: 1px solid rgba(232, 234, 237, 0.4);
+  background: rgba(32, 33, 36, 0.55);
+  color: #e8eaed;
   cursor: pointer;
   white-space: nowrap;
 }
-.botview-toggle:hover { background: rgba(255, 255, 255, 0.28); }
+.share-window-btn:hover:not(:disabled) { background: #3c4043; border-color: #8ab4f8; }
+.share-window-btn:disabled { opacity: 0.55; cursor: default; }
 
 /* Profile switcher dropdown (anchored under the name row) */
 .profile-menu {

@@ -1606,10 +1606,11 @@ const shareWindowToggleBtn = document.getElementById('shareWindowToggleBtn');
 
 function applyShareWindowState({ exists, visible, lockedVisible } = {}) {
   if (!shareWindowToggleBtn) return;
-  // Lives in the bot's-view bar next to "Pop out": both are the bot's own
-  // windows, and that bar is where you look when you want at one of them.
-  // Only present while a board window exists — there is nothing to toggle
-  // otherwise, and an always-on button would imply a share that isn't running.
+  // Its own line above the call URL, in the in-call block. Only present while a
+  // board window exists — there is nothing to toggle otherwise, and an always-on
+  // button would imply a share that isn't running. That conditionality is why it
+  // gets a line rather than a fourth pill in the button row: it costs nothing
+  // when absent, and keeps its text label, which a bare icon couldn't carry.
   shareWindowToggleBtn.style.display = exists ? '' : 'none';
   shareWindowToggleBtn.textContent = visible ? '🖥 Hide share' : '🖥 Show share';
   // While a live share is capturing the WINDOW, hiding it would black out what
@@ -1854,8 +1855,11 @@ if (popoutPanelBtn) {
 // Main tells us when the state changes (incl. user closing the popout window).
 api.on('panel-popout-changed', ({ poppedOut }) => applyPopoutLabel(!!poppedOut));
 
-// Bot-view toggle: the Meet thumbnail docked below the panel ↔ its own large
-// window. Label flips so the button always names what a click will DO.
+// Bot-view toggle (👀): the Meet view hidden/docked ↔ its own large window.
+// Lives in the in-call row beside Leave Call — with the view hidden by default
+// it is the only way to see what the bot is doing, so it belongs with the call
+// controls rather than in the bar under the panel. Its TITLE flips so the
+// control always names what a click will DO.
 const botViewToggleBtn = document.getElementById('botViewToggleBtn');
 function applyBotViewLabel(state, resting) {
   if (!botViewToggleBtn) return;
@@ -1864,19 +1868,24 @@ function applyBotViewLabel(state, resting) {
   // lie — clicking puts the view away entirely rather than docking it as a
   // thumbnail. Name what the click actually does.
   const hides = resting !== 'thumbnail';
-  botViewToggleBtn.textContent = popped ? (hides ? '⧉ Hide' : '⧉ Dock') : '⧉ Pop out';
+  // Glyph stays 👀 in every state. The button now sits in the in-call row beside
+  // Leave Call, where a changing label would resize the control and shove the
+  // row around on every state flip — and where it mirrors the fixed ⓘ opposite
+  // it. The title still names what a click will DO, which is the part that has
+  // to stay honest.
   botViewToggleBtn.title = popped
     ? (hides
         ? "Put the bot's view away. It keeps running at full size so the bot can still read shared screens — you just stop seeing it."
         : "Dock the bot's view back as a thumbnail below this panel")
     : "Pop the bot's view out into its own large window — this is where you sign the bot into Google, Slack or GitHub (\u2318L)";
 }
-// The bar exists only while the region below it does — i.e. during a call.
-// Main owns that decision (it spans joining/waiting-to-be-admitted, which the
-// panel's own data-call-state deliberately doesn't), so we just mirror the flag
-// onto <body> and let the stylesheet show/hide the bar and its 44px reservation.
+// Main's "is there a call" signal. It spans joining/waiting-to-be-admitted,
+// which the panel's own data-call-state deliberately doesn't — which is why the
+// face state below reads from THIS rather than from `inCall`.
+//
+// (This used to also drive body[data-botview], which showed the bot's-view bar
+// and reserved 44px for it. Both are gone with the bar.)
 function applyBotViewVisible(visible) {
-  document.body.dataset.botview = visible ? 'visible' : 'hidden';
   // This flag is main's callStatusMeansInCall — true from 'joining' right
   // through 'in-call', false on idle/left. It's the authority on whether the
   // panel should be mirroring the bot's live face, and it's deliberately WIDER
@@ -1884,7 +1893,7 @@ function applyBotViewVisible(visible) {
   // the 🫥 "not on the line yet" face shows while joining.
   callActive = !!visible;
   if (!callActive) clearLiveFace();
-  // Toggles the 44px reservation for the bot's-view bar — a height change.
+  // The in-call controls differ in height from the pre-call ones, so re-measure.
   reportContentHeight();
 }
 applyBotViewVisible(false); // no call yet on load

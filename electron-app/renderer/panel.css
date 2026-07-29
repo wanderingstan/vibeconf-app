@@ -435,9 +435,10 @@ button.screen-close {
   color: #202124;
 }
 button.screen-close:hover:not(:disabled) { background: #aecbfa; color: #202124; }
-/* Windows draws its caption buttons top-right, over this; same 146px dodge the
-   gear makes. macOS needs no vertical nudge — its controls are top-left. */
-body[data-titlebar="win"] button.screen-close { right: 146px; }
+/* (A 146px dodge lived here for the Windows caption-button overlay. Windows has
+   a standard title bar again — see titleBarOptions in main.js — so nothing
+   floats over this button any more. macOS needs no nudge: controls are
+   top-left.) */
 
 /* Frameless: the header runs to the window's edges and carries its own inset,
    the same shape as the banner on the main screen. Doing it with CONTAINER
@@ -719,9 +720,9 @@ body[data-titlebar] .hero-top .profile-menu { -webkit-app-region: no-drag; }
    beside the name dismisses it instead of dragging the window. */
 body[data-menu-open] .hero-top { -webkit-app-region: no-drag; }
 
-/* Windows draws min/max/close top-RIGHT — right on top of the settings gear.
-   Slide the gear clear of the ~138px overlay. */
-body[data-titlebar="win"] .hero-top .agent-gear { right: 146px; }
+/* (The gear used to slide 146px clear of the Windows caption overlay. Windows
+   has a standard title bar again — see titleBarOptions in main.js — so the gear
+   sits in the corner on every platform.) */
 /* The name is centred across the FULL banner width; the gear is pinned to the
    corner and taken out of the flow so it can't push the name off-centre. */
 .hero-top .agent-name-row { flex: 1 1 auto; justify-content: center; min-width: 0; }

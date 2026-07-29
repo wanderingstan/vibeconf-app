@@ -874,11 +874,12 @@ meetUrlInput.addEventListener('input', () => {
 });
 updateJoinBtnState(); // paint the initial label (the markup ships a neutral one)
 
-// With the title bar hidden (macOS/Windows — see titleBarOptions in main.js)
+// With the title bar hidden (macOS only — see titleBarOptions in main.js)
 // there's no OS bar left to drag the window by, so the banner's top strip
-// becomes the handle. The stylesheet does the rest.
+// becomes the handle. The stylesheet does the rest. Windows and Linux keep a
+// standard frame, so they never set this and the banner starts below the bar.
 api.invoke('get-window-chrome').then((c) => {
-  if (c?.hiddenTitleBar) document.body.dataset.titlebar = c.hiddenTitleBar; // 'mac' | 'win'
+  if (c?.hiddenTitleBar) document.body.dataset.titlebar = c.hiddenTitleBar; // 'mac'
   // "Download more voices…" opens the OS pane that installs them: Spoken
   // Content on macOS, Settings → Speech on Windows. Nothing is behind it
   // anywhere else, so hide it there rather than offer a link that can only fail.

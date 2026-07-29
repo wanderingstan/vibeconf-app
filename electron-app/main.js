@@ -5449,35 +5449,36 @@ function activateMeetProvider() {
 }
 
 // Let the avatar banner run to the very top of the window, behind the window
-// controls, where the platform supports it. Gated because support is uneven:
+// controls — on macOS only. Support is uneven, and the two platforms want
+// genuinely different things:
 //
 //   macOS   — 'hiddenInset' floats the traffic lights over our content. The good
-//             one, and the only value that does this on mac.
-//   Windows — 'hiddenInset' is IGNORED (normal frame), so use 'hidden' plus
-//             titleBarOverlay, which draws the native min/max/close over the
-//             content. Colours match the banner's default gradient top.
-//   Linux   — left with a standard frame deliberately. 'hidden' there removes
-//             the caption buttons entirely, and frameless drag/resize behaviour
-//             varies across GNOME/KDE, so this wants testing on a real desktop
-//             before we ship it rather than a guess from here.
+//             one, and the only value that does this on mac. Mac's menu bar
+//             lives at the top of the SCREEN, so hiding the window's title bar
+//             costs nothing.
+//   Windows — a standard frame, deliberately. Windows draws the app menu bar
+//             INSIDE the window, and 'hidden' + titleBarOverlay takes the whole
+//             caption strip with it — so the File/Edit/Window menus had nowhere
+//             to render and simply vanished. The overlay also sat on top of the
+//             panel header (see docs/media). A traditional title bar is what a
+//             Windows app is supposed to look like anyway: the menu bar appears
+//             under it, and the banner starts below both.
+//   Linux   — standard frame too. 'hidden' there removes the caption buttons
+//             entirely, and frameless drag/resize behaviour varies across
+//             GNOME/KDE, so this wants testing on a real desktop before we ship
+//             it rather than a guess from here.
 //
-// Everywhere it's off, the window simply keeps its normal title bar and the
-// banner starts below it — the previous look, nothing broken.
+// Everywhere it's off, the window keeps its normal title bar and the banner
+// starts below it — nothing broken, just conventional.
 function titleBarOptions() {
   if (process.platform === 'darwin') return { titleBarStyle: 'hiddenInset' };
-  if (process.platform === 'win32') {
-    return {
-      titleBarStyle: 'hidden',
-      titleBarOverlay: { color: '#1a237e', symbolColor: '#e8eaed', height: 32 },
-    };
-  }
   return {};
 }
 
 // Does the window lack a normal title bar? Then the panel makes its top strip
-// draggable, since there's no OS bar left to grab.
+// draggable, since there's no OS bar left to grab. macOS only — see above.
 function hasHiddenTitleBar() {
-  return process.platform === 'darwin' || process.platform === 'win32';
+  return process.platform === 'darwin';
 }
 
 function createMainWindow() {
@@ -6196,10 +6197,11 @@ function setupIPC() {
 
   // The panel needs to know whether it must provide its own drag handle.
   ipcMain.handle('get-window-chrome', () => ({
-    // 'mac' | 'win' | null — the panel needs the PLATFORM, not just a boolean:
-    // macOS floats its controls top-LEFT (harmless under a centred name) while
-    // Windows draws them top-RIGHT, exactly where the settings gear lives.
-    hiddenTitleBar: hasHiddenTitleBar() ? (process.platform === 'darwin' ? 'mac' : 'win') : null,
+    // 'mac' | null. Still carries the platform rather than a boolean because
+    // the panel's CSS keys off it, and because Windows wore a 'win' variant
+    // until it went back to a standard frame (titleBarOptions) — the shape is
+    // ready if another platform ever needs floating controls again.
+    hiddenTitleBar: hasHiddenTitleBar() ? 'mac' : null,
     // The raw platform, for UI that is OS-specific rather than chrome-specific
     // (the "Download more macOS voices…" link). hiddenTitleBar can't stand in
     // for this: it is null whenever the window wears a normal frame, on every

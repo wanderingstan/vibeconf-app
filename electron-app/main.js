@@ -1359,7 +1359,36 @@ const localServer = new globalThis.LocalServer({
       return { error: 'No active Meet view to capture' };
     }
     try {
-      const image = await meetView.webContents.capturePage();
+      let image = await meetView.webContents.capturePage();
+
+      // #103: an EMPTY capture means the compositor has no display surface for
+      // this view yet. It happens when the 'hidden' host window has never been
+      // shown, or was hidden before its first frame landed — and capturePage
+      // resolves with a 0x0 image rather than throwing, so without this the app
+      // cheerfully writes a 0-byte PNG and reports success. (Observed exactly
+      // that on the first real run of the hidden host.)
+      //
+      // Self-heal: put the host on screen just long enough for a frame, capture
+      // again, hide it. Costs a brief flash the first time and nothing after.
+      if (image.isEmpty() && meetHiddenWindow && !meetHiddenWindow.isDestroyed()) {
+        console.warn('[electron] Empty capture — waking the hidden bot-view host for a frame');
+        try {
+          meetHiddenWindow.showInactive();
+          for (let i = 0; i < 12 && image.isEmpty(); i++) {
+            await new Promise((r) => setTimeout(r, 100));
+            image = await meetView.webContents.capturePage();
+          }
+        } finally {
+          try { if (!meetHiddenWindow.isDestroyed()) meetHiddenWindow.hide(); } catch { /* gone */ }
+        }
+      }
+
+      // Never report success for an empty image. A 0-byte PNG read back as "the
+      // call looks like nothing" is worse than an error the agent can act on.
+      if (image.isEmpty()) {
+        return { error: 'Capture came back empty — the bot view has no display surface yet. Retry in a moment; if it persists, set the botViewMode preference to "thumbnail".' };
+      }
+
       const buf = image.toPNG();
       const dir = path.join(app.getPath('temp'), 'vibeconf-screenshots');
       await fs.promises.mkdir(dir, { recursive: true });
@@ -5274,9 +5303,29 @@ function ensureHiddenMeetHost() {
 
   // Establish the display surface, then get it off screen. showInactive avoids
   // stealing focus from whatever the user is doing.
+  //
+  // Hiding on a fixed timer is NOT reliable: the first real run hid the window
+  // while Meet was still loading, no frame ever landed, and every capture came
+  // back 0x0. So poll for an actual non-empty frame and only hide once we have
+  // one — with a ceiling so a headless/no-display machine doesn't leave the
+  // window up forever. onCaptureScreenshot self-heals if this still loses a
+  // race.
   try {
     win.showInactive();
-    setTimeout(() => { try { if (!win.isDestroyed()) win.hide(); } catch { /* gone */ } }, 400);
+    const deadline = Date.now() + 8000;
+    const settle = async () => {
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 150));
+        if (win.isDestroyed()) return;
+        if (!meetView || meetView.webContents.isDestroyed()) continue;
+        try {
+          const img = await meetView.webContents.capturePage();
+          if (!img.isEmpty()) break;   // a frame landed — safe to hide
+        } catch { /* not ready yet */ }
+      }
+      try { if (!win.isDestroyed()) win.hide(); } catch { /* gone */ }
+    };
+    settle();
   } catch { /* headless / no display — capture will report its own error */ }
   return win;
 }

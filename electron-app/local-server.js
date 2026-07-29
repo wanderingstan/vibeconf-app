@@ -3017,7 +3017,18 @@ class LocalServer {
         workingMemory: this.getWorkingMemory(),
         chatUnread: this.chatUnread,
         roomUrl: this.roomId ? `${(this.getWebsiteUrl() || '').replace(/\/$/, '')}/room/${this.roomId}` : null,
-        whiteboardUrl: this.roomId ? `${(this.getWebsiteUrl() || '').replace(/\/$/, '')}/room/${this.roomId}?mode=whiteboard` : null,
+        // #102: carries surface=viewer like the auto-posted link (main.js:680).
+        // This is the URL get_room_info hands the agent, and the skill tells the
+        // agent to paste it into chat when someone ASKS for the whiteboard link —
+        // i.e. the highest-intent case there is. Emitting it untagged meant that
+        // path could never show the signup CTA even once the web side reads the
+        // tag, while the auto-posted link would. No src= here: this URL's
+        // provenance is genuinely unknown — the agent may paste it into chat, an
+        // email, or read it aloud — which is exactly why the CTA must key off
+        // AUDIENCE (surface) rather than transport. The bot's own capture window
+        // uses surface=share instead (main.js:2208) and must never come through
+        // here.
+        whiteboardUrl: this.roomId ? `${(this.getWebsiteUrl() || '').replace(/\/$/, '')}/room/${this.roomId}?mode=whiteboard&surface=viewer` : null,
         // What's loaded in the screen-share window now — any URL, not just the
         // whiteboard (#177).
         screenShareUrl: this.getWhiteboardLoadedUrl(),

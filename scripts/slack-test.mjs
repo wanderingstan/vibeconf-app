@@ -48,6 +48,12 @@ const nonce = (b) => `slackchat-${b.name}-${stamp}`;
 // load (seen on the 2026-07-08 nightly: huddle preview reached + Start clicked, but
 // in-call at ~35s hadn't landed). The huddle DID establish on an immediate re-run,
 // so this is start-latency, not a hard failure — a longer window absorbs it.
+//
+// But a longer window does NOT absorb a hard block: from ~2026-07-13 the huddle
+// stopped establishing entirely because Slack threw a mandatory-2FA setup wall in
+// front of the (admin/owner) test account. It read only as a generic timeout for
+// two weeks. On failure we now capture a screenshot + the main-window DOM (see
+// captureHuddleBlocker) so the cause is visible in the log, not just guessed.
 async function waitForInCall(bot, timeoutMs = 60000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -57,6 +63,55 @@ async function waitForInCall(bot, timeoutMs = 60000) {
   return false;
 }
 
+// Known signatures Slack throws in place of a huddle — so an opaque "huddle never
+// established" timeout self-documents its cause in the log. Order matters: first
+// match wins as the reported cause.
+const BLOCKER_SIGNATURES = [
+  [/two-factor|two factor|\b2FA\b/i, 'Slack 2FA-setup wall (account requires two-factor auth)'],
+  [/use Slack in your browser|open the Slack app|download the/i, "Slack 'use Slack in your browser' interstitial"],
+  [/sign in|signed out|enter your (email|password)|log in to|workspace url/i, 'Slack sign-in / session expired — profile needs re-auth'],
+  [/rate.?limit|too many|try again later|slow down/i, 'Slack rate-limit / throttle'],
+  [/something went wrong|error|unavailable|try reloading/i, 'Slack generic error page'],
+];
+
+// On an inCall timeout, capture WHAT the bot is actually looking at instead of
+// bailing blind: a screenshot (pixels) + the main-window DOM (greppable text). In
+// Slack mode the bot's 'meet' surface IS the app.slack.com window, so whatever is
+// blocking the huddle (2FA wall, re-auth, "use Slack in your browser") lands here.
+async function captureHuddleBlocker(bot) {
+  // 1) Screenshot — always attempt; shows any blocker visually.
+  try {
+    const shot = await bot.screenshot();
+    if (shot.ok) console.log(`  📸 [${bot.name}] inCall-timeout screenshot: ${shot.path}`);
+    else console.log(`  📸 [${bot.name}] screenshot unavailable (${shot.path ? 'no path' : 'no active view'})`);
+  } catch (e) { console.log(`  📸 [${bot.name}] screenshot failed: ${e.message}`); }
+
+  // 2) DOM of the main Slack window — target the text-bearing elements a blocker
+  //    uses (headings/dialogs/buttons/links), NOT 'body': Slack front-loads
+  //    body.outerHTML with huge inline <style>, so a capped 'body' slice is all
+  //    CSS and the real message never appears.
+  try {
+    const dom = await bot.inspectDom({
+      target: 'meet',
+      selector: 'h1, h2, h3, [role="dialog"], [role="alertdialog"], [aria-modal="true"], button, a[href]',
+      maxElements: 20,
+      maxChars: 2000,
+    });
+    if (!dom.ok) { console.log(`  🔎 [${bot.name}] DOM inspect unavailable: ${dom.error || 'unknown'}`); return; }
+    const text = (dom.html || [])
+      .join('\n')
+      .replace(/<(style|script|svg)[\s\S]*?<\/\1>/gi, ' ') // drop non-text element bodies
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const hit = BLOCKER_SIGNATURES.find(([re]) => re.test(text));
+    if (hit) console.log(`  🚧 [${bot.name}] LIKELY CAUSE: ${hit[1]}`);
+    else console.log(`  🔎 [${bot.name}] no known blocker signature matched — inspect the screenshot`);
+    // A readable snippet so unknown blockers are still diagnosable from the log alone.
+    console.log(`  🔎 [${bot.name}] window text: ${text.slice(0, 500)}${text.length > 500 ? '…' : ''}`);
+  } catch (e) { console.log(`  🔎 [${bot.name}] DOM inspect failed: ${e.message}`); }
+}
+
 async function run() {
   const [a, b] = BOTS;
 
@@ -64,7 +119,10 @@ async function run() {
   for (const bot of BOTS) {
     const ok = await waitForInCall(bot);
     record(bot.name, 'inCall', ok, ok ? '' : 'not in-call after 60s — huddle never established?');
-    if (!ok) return; // nothing else will work; bail so the failure is clear
+    if (!ok) {
+      await captureHuddleBlocker(bot); // capture the blocker (screenshot + DOM) before bailing
+      return; // nothing else will work; bail so the failure is clear
+    }
   }
 
   // 1) Speak (→ main-window VirtualMic). Heard by the human/other bot via captions.

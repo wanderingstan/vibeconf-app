@@ -253,6 +253,17 @@ export class Bot {
     return { path: data?.path || null, ok };
   }
 
+  // Read-only DOM extraction from a bot surface (mirrors the inspect_dom MCP
+  // tool). target 'meet' = the bot's main call view — which in Slack mode is the
+  // app.slack.com window, so this is what surfaces a re-auth / 2FA / "use Slack
+  // in your browser" interstitial when a huddle won't establish. Returns
+  // { ok, total, html } where html is an array of the matched elements' outerHTML.
+  async inspectDom({ target = 'meet', selector = 'body', maxElements = 3, maxChars = 20000 } = {}) {
+    const { data } = await this._sync({ meta: { action: 'inspect-dom', target, selector, maxElements, maxChars } });
+    const r = data?.results?.inspectDom || { ok: false, error: 'no result' };
+    return r;
+  }
+
   // Detection status (no-room): Meet URLs + any Slack huddle the app found in
   // browser tabs. Used by the detection test.
   async detected() {

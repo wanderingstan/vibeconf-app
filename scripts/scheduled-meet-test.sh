@@ -241,6 +241,26 @@ printf '{"ts":"%s","exit":%s,"log":"%s"}\n' "$STAMP" "$CODEX_CODE" "$(basename "
   >> "$RESULTS/codex-smoke-results.jsonl"
 echo "=== codex smoke exit: $CODEX_CODE (recorded, not gating) ===" | tee -a "$LOG"
 
+# --- join-route smoke (#105) — the /join-call route THROUGH the MCP server.
+# Nothing else covers it: the fleet puts bots in a call with a --meet-url launch
+# arg, meet-test drives an already-joined bot over HTTP, and the codex smoke only
+# calls get_room_info. The route a real user takes had no coverage, which is how
+# #105 shipped — the first join after launch matched its own room adoption and was
+# silently dropped, costing most of the Jul 28 standup.
+#
+# Deterministic and admission-free by design: it asserts the app NAVIGATED
+# (currentMeetUrl), never that Google admitted anyone. So unlike the live-call
+# lanes (see #57, red for weeks because the mini's session was locked), a red here
+# means WE broke something. Decoupled from the primary exit for its first nights,
+# same as the codex lane; promote once it has a green streak. ---
+echo "" | tee -a "$LOG"
+echo "=== join-route smoke (#105) $STAMP ===" | tee -a "$LOG"
+pnpm test:join-route:ci 2>&1 | tee -a "$LOG"
+JOINROUTE_CODE=${pipestatus[1]:-$?}
+printf '{"ts":"%s","exit":%s,"log":"%s"}\n' "$STAMP" "$JOINROUTE_CODE" "$(basename "$LOG")" \
+  >> "$RESULTS/join-route-results.jsonl"
+echo "=== join-route exit: $JOINROUTE_CODE (recorded, not gating) ===" | tee -a "$LOG"
+
 # --- Telegram digest — post a one-message summary of tonight's results to Stan's
 # DM. This cron isn't a Claude session, so notify-nightly.mjs hits the Bot API
 # directly with the existing bot token (~/.claude/channels/telegram/.env). Green

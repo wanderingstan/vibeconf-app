@@ -39,5 +39,23 @@ export function resolveTarget(name) {
   if (!t) {
     throw new Error(`Unknown meet target "${name}". Known: ${Object.keys(MEET_TARGETS).join(', ')}`);
   }
+  // #122: the nightly mints a FRESH open room via /api/meet/create (the /call
+  // endpoint) and passes it down in VIBECONF_MEET_ROOM. Two wins: the endpoint
+  // gets exercised, and we stop depending on one long-lived room that Google may
+  // reap out from under every live-call lane at once — a failure that would look
+  // exactly like our bug.
+  //
+  // Only the open-guest target is overridable. The workspace target's whole
+  // point is a specific invite-only room the bot accounts are members of; a
+  // freshly minted room would just fail to admit them.
+  //
+  // Verified 2026-07-29: a minted room stays joinable AFTER /api/meet/retire —
+  // retire releases our quota claim, it does not close the room. So the mint can
+  // happen in an earlier lane that then leaves.
+  const override = (process.env.VIBECONF_MEET_ROOM || '').trim();
+  if (override && name === 'default') {
+    return { name, ...t, room: override, minted: true,
+      note: `${t.note} (room overridden by VIBECONF_MEET_ROOM — freshly minted this run)` };
+  }
   return { name, ...t };
 }

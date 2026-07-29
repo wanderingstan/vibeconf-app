@@ -168,6 +168,48 @@ if [[ "${VIBECONF_NO_SELFUPDATE:-0}" != "1" ]]; then
   echo "" | tee -a "$LOG"
 fi
 
+# --- join-route smoke (#105) + tonight's meet room (#122). RUNS FIRST, on purpose.
+#
+# Two jobs. It covers the /join-call and /call routes through the MCP server —
+# nothing else does, which is how #105 shipped and cost most of the Jul 28
+# standup. And because /call mints a fresh open Meet via /api/meet/create, it
+# hands that room to every lane below via VIBECONF_MEET_ROOM.
+#
+# Why that matters: the live-call lanes otherwise share one hard-coded room
+# (meet-targets.mjs). The day Google reaps it, every lane goes red at once for a
+# reason that looks exactly like our bug. Minting per run also exercises the
+# create endpoint, which nothing else tested.
+#
+# Safe to mint here and use later: a minted room stays joinable AFTER
+# /api/meet/retire (verified 2026-07-29) — retire releases our quota claim, it
+# does not close the room. So this lane leaving does not take the room with it.
+#
+# FALLBACK: if the mint fails (site down, expired session, network),
+# VIBECONF_MEET_ROOM stays empty and resolveTarget falls back to the hard-coded
+# room — the lanes below run exactly as they did before. We log which was used,
+# so a silent drift to the fallback can't hide a create endpoint that has been
+# broken for a month.
+#
+# The join-route checks themselves are Google-free: they assert the app
+# NAVIGATED, never that anyone was admitted. Non-gating for its first nights,
+# same as the codex lane; promote once it has a green streak. ---
+echo "" | tee -a "$LOG"
+echo "=== join-route smoke (#105) $STAMP ===" | tee -a "$LOG"
+JOINROUTE_OUT="$(pnpm test:join-route:ci 2>&1)"
+JOINROUTE_CODE=$?
+echo "$JOINROUTE_OUT" | tee -a "$LOG"
+printf '{"ts":"%s","exit":%s,"log":"%s"}\n' "$STAMP" "$JOINROUTE_CODE" "$(basename "$LOG")" \
+  >> "$RESULTS/join-route-results.jsonl"
+echo "=== join-route exit: $JOINROUTE_CODE (recorded, not gating) ===" | tee -a "$LOG"
+
+MINTED="$(echo "$JOINROUTE_OUT" | grep -oE 'VIBECONF_MINTED_ROOM=[a-z]{3}-[a-z]{4}-[a-z]{3}' | tail -1 | cut -d= -f2)"
+if [[ -n "$MINTED" ]]; then
+  export VIBECONF_MEET_ROOM="$MINTED"
+  echo "=== tonight's meet room: $MINTED (freshly minted via /api/meet/create) ===" | tee -a "$LOG"
+else
+  echo "=== meet room: FALLING BACK to the hard-coded room — /call did not mint one ===" | tee -a "$LOG"
+fi
+
 # Run the one-shot DMG target — the scheduled run on the always-on Mac mini
 # drives the PACKAGED app so it tests the exact artifact an average user runs
 # (no source-vs-package fidelity gap). Capture everything, preserve exit code.
@@ -240,26 +282,6 @@ CODEX_CODE=${pipestatus[1]:-$?}
 printf '{"ts":"%s","exit":%s,"log":"%s"}\n' "$STAMP" "$CODEX_CODE" "$(basename "$LOG")" \
   >> "$RESULTS/codex-smoke-results.jsonl"
 echo "=== codex smoke exit: $CODEX_CODE (recorded, not gating) ===" | tee -a "$LOG"
-
-# --- join-route smoke (#105) — the /join-call route THROUGH the MCP server.
-# Nothing else covers it: the fleet puts bots in a call with a --meet-url launch
-# arg, meet-test drives an already-joined bot over HTTP, and the codex smoke only
-# calls get_room_info. The route a real user takes had no coverage, which is how
-# #105 shipped — the first join after launch matched its own room adoption and was
-# silently dropped, costing most of the Jul 28 standup.
-#
-# Deterministic and admission-free by design: it asserts the app NAVIGATED
-# (currentMeetUrl), never that Google admitted anyone. So unlike the live-call
-# lanes (see #57, red for weeks because the mini's session was locked), a red here
-# means WE broke something. Decoupled from the primary exit for its first nights,
-# same as the codex lane; promote once it has a green streak. ---
-echo "" | tee -a "$LOG"
-echo "=== join-route smoke (#105) $STAMP ===" | tee -a "$LOG"
-pnpm test:join-route:ci 2>&1 | tee -a "$LOG"
-JOINROUTE_CODE=${pipestatus[1]:-$?}
-printf '{"ts":"%s","exit":%s,"log":"%s"}\n' "$STAMP" "$JOINROUTE_CODE" "$(basename "$LOG")" \
-  >> "$RESULTS/join-route-results.jsonl"
-echo "=== join-route exit: $JOINROUTE_CODE (recorded, not gating) ===" | tee -a "$LOG"
 
 # --- Telegram digest — post a one-message summary of tonight's results to Stan's
 # DM. This cron isn't a Claude session, so notify-nightly.mjs hits the Bot API

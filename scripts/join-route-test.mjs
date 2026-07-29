@@ -257,7 +257,13 @@ async function main() {
       } catch (err) {
         startText = `ERROR: ${err.message}`;
       }
-      const started = /meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3}/i.test(startText);
+      const mintedCode = (startText.match(/meet\.google\.com\/([a-z]{3}-[a-z]{4}-[a-z]{3})/i) || [])[1];
+      const started = !!mintedCode;
+      // #122: hand the fresh room to the lanes that run after us. A minted room
+      // survives the leave_call below — retire releases our quota claim, it does
+      // NOT close the room (verified 2026-07-29) — so downstream lanes can join
+      // it. The marker is parsed by scheduled-meet-test.sh; keep the format.
+      if (mintedCode) console.log(`VIBECONF_MINTED_ROOM=${mintedCode}`);
       check('start_call (/call) mints a meet and sends the bot in', started,
         `${startText.slice(0, 240)}\n      NOTE: unlike the checks above, this one reaches `
         + 'vibeconferencing.com (/api/meet/create), so a red can also mean an expired '

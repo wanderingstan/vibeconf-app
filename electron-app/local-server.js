@@ -1163,6 +1163,15 @@ class LocalServer {
     if (!transcriptPath) return;
     if (transcriptPath !== this._agentTailer.path) {
       console.log('[local-server] Agent session bound:', sessionId || '?', '→', transcriptPath);
+      // #125: say so when we bind a path that isn't there. The tailer tolerates
+      // it (the 1.5s poll picks up a lazily-created file), so this is a warning
+      // and not an error — but without it a missing transcript looks EXACTLY
+      // like a working one: a confident "Agent session bound" and then silence.
+      // That ambiguity cost an afternoon chasing a proof-of-life outage that
+      // turned out not to exist.
+      if (!fs.existsSync(transcriptPath)) {
+        console.warn('[local-server] …but that transcript does not exist yet — agent activity will stay empty until it appears');
+      }
     }
     this._agentTailer.bind(transcriptPath, sessionId);
   }

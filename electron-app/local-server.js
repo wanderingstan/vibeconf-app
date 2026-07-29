@@ -876,12 +876,22 @@ class LocalServer {
     // brief and a little overlap beats the alternative (silence → the room
     // re-asks → a duplicate answer, the #335 failure). Two exemptions:
     //   • the turn's OPENING ACK — the first reply to a resolve (_pendingTurnSince),
-    //     capped at ≤30 words so a real ack (the #335 one was 23) is protected but
-    //     a runaway long "first reply" can't steamroll a human. This "I'm on it" is
-    //     the whole signal that keeps the room from re-asking while the bot does
-    //     slow tool work.
-    //   • very short utterances (≤6 words) — backchannels ("Got it.", "On it.")
+    //     capped at bargeInAckMaxWords so a real ack is protected but a runaway long
+    //     "first reply" can't steamroll a human. This "I'm on it" is the whole signal
+    //     that keeps the room from re-asking while the bot does slow tool work.
+    //   • very short utterances — backchannels ("Got it.", "On it.")
     // Substantive mid-turn responses are NOT exempt — they still yield.
+    //
+    // #109: BOTH conditions now also require enough self-scored URGENCY. Length
+    // alone was the gate, and it let 30-word paragraphs through — while urgency,
+    // which the agent already scores on every utterance, was consulted ONLY after
+    // speech had started (to scale the grace, #367). The combination was backwards:
+    // a low-value interruption both began AND then held the floor longer for it.
+    // Measured on the Jul 28 call: every short utterance that actually played over
+    // a live speaker scored 0.3-0.4, and every 0.8-0.9 short one went out into an
+    // open floor where no exemption was needed — so the floor costs nothing.
+    // Unscored → 0.5, the same midpoint convention the grace scaling uses, so an
+    // agent that never passes urgency keeps its acks.
     const _firstReplyToResolve = this._pendingTurnSince != null;
     const _botText = data.role === 'bot' ? (data.transcript.map((t) => t && t.text ? t.text : '').join(' ').trim()) : '';
     const _wordCount = _botText ? _botText.split(/\s+/).length : 0;
@@ -890,8 +900,19 @@ class LocalServer {
     const _ackExemptOn = _exemptPref !== false && _exemptPref !== 'false';
     const _ackMax = Number(this._pref('bargeInAckMaxWords')) || 0;
     const _bcMax = Number(this._pref('bargeInBackchannelMaxWords')) || 0;
-    const _bargeExempt = data.role === 'bot' && _ackExemptOn && _wordCount > 0 &&
+    // #109: unscored counts as the midpoint, matching _graceForCurrentUtterance.
+    const _minUrgency = Number(this._pref('bargeInAckMinUrgency'));
+    const _scored = data.role === 'bot'
+      ? data.transcript.map((t) => t && t.urgency).find((u) => typeof u === 'number')
+      : undefined;
+    const _urgency = typeof _scored === 'number' ? _scored : 0.5;
+    const _urgentEnough = !Number.isFinite(_minUrgency) || _minUrgency <= 0 || _urgency >= _minUrgency;
+    const _bargeExempt = data.role === 'bot' && _ackExemptOn && _wordCount > 0 && _urgentEnough &&
       ((_firstReplyToResolve && _wordCount <= _ackMax) || (_bcMax > 0 && _wordCount <= _bcMax));
+    if (data.role === 'bot' && _wordCount > 0 && !_urgentEnough &&
+        ((_firstReplyToResolve && _wordCount <= _ackMax) || (_bcMax > 0 && _wordCount <= _bcMax))) {
+      console.log(ts(), `🛡️  [barge-in] not exempt — urgency ${_urgency.toFixed(2)} < ${_minUrgency} (short enough, but not worth interrupting for)`);
+    }
 
     // #343: log the slow model's self-scored urgency against the live floor
     // state (concurrent speakers + peak-while-waiting), for EVERY bot speak

@@ -77,6 +77,39 @@ test('backchannels stay tighter than acks', () => {
     'a backchannel is the narrower case and must not be the looser threshold');
 });
 
+// --- 1b. urgency is part of the decision to START, not only the grace after ---
+//
+// Measured on the Jul 28 call, short utterances (<=12 words) by whether anyone
+// was already speaking when they went out:
+//
+//   played over a live speaker (floor>=1):  0.3, 0.4, 0.4
+//   went out into an open floor:            0.2, 0.3(x5), 0.4(x3), 0.6(x2), 0.8(x2), 0.9(x6)
+//
+// Every interruption was "mildly useful"; every genuinely urgent short utterance
+// already had the floor to itself and needed no exemption. So a floor between
+// those two groups blocks the bad cases and costs nothing.
+const JUL28_SHORT_THAT_INTERRUPTED = [0.3, 0.4, 0.4];
+
+test('an urgency floor exists — length alone must not license an interruption', () => {
+  const floor = def('bargeInAckMinUrgency');
+  assert.ok(floor > 0, 'a zero floor disables the urgency condition entirely');
+  assert.ok(floor <= 0.6,
+    `${floor} is above "worth saying" (0.6) on the speak scale — that would block legitimate acks`);
+});
+
+test('the floor clears every short interruption seen on Jul 28', () => {
+  const floor = def('bargeInAckMinUrgency');
+  const stillExempt = JUL28_SHORT_THAT_INTERRUPTED.filter((u) => u >= floor);
+  assert.deepEqual(stillExempt, [],
+    `urgency ${stillExempt.join(', ')} would still play over a live speaker at floor=${floor}`);
+});
+
+test('unscored utterances are treated as the midpoint, so they keep their acks', () => {
+  assert.ok(def('bargeInAckMinUrgency') <= 0.5,
+    'unscored counts as 0.5 (matching the grace scaling). A floor above 0.5 would ' +
+    'silently disable every exemption for an agent that does not pass urgency.');
+});
+
 // --- 2. discarded stashes are reported ---
 
 const withStash = (texts) => {

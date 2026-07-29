@@ -5063,31 +5063,6 @@ function createMeetView(partition) {
 // window). Module-level so both createMainWindow and swap-time relayouts
 // share the same logic.
 const botViewLayout = require('./bot-view-layout.js');
-let placeholderView = null; // shown in the thumbnail region while Meet is popped out
-
-// The "Meet is popped out" placeholder that fills the thumbnail region so the
-// column isn't an empty rectangle while the Meet view floats in its own window.
-// A tiny self-contained data: page — no file, no assets — painted in the app's
-// dark surface so it reads as part of the panel, not a blank gap.
-function ensurePlaceholderView() {
-  if (placeholderView && !placeholderView.webContents.isDestroyed()) return placeholderView;
-  placeholderView = new BrowserView({ webPreferences: { contextIsolation: true } });
-  const html = `<!doctype html><meta charset="utf-8"><style>
-    html,body{margin:0;height:100%;background:#202124;color:#9aa0a6;
-      font-family:'Google Sans',Roboto,Arial,sans-serif;-webkit-user-select:none;cursor:default}
-    .wrap{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;text-align:center;padding:12px;box-sizing:border-box}
-    .icon{font-size:30px;line-height:1}
-    .title{font-size:14px;font-weight:600;color:#e8eaed}
-    .sub{font-size:12px;color:#9aa0a6}
-  </style><div class="wrap">
-    <div class="icon">🪟</div>
-    <div class="title">Popped out</div>
-    <div class="sub">The bot's view is in its own window.<br>Use <b>Dock</b> above to bring it back.</div>
-  </div>`;
-  placeholderView.webContents.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
-  return placeholderView;
-}
-
 // Re-assert the Meet zoom for the current state. setZoomFactor is per-webContents
 // and survives Meet's SPA routing, but a REAL document reload resets it — so this
 // is also called from createMeetView's dom-ready hook, not just on state change.
@@ -5249,17 +5224,6 @@ function layoutViews() {
     applyMeetZoom();
   }
 
-  // Placeholder occupies the thumbnail region while Meet is popped out; removed
-  // (and left detached, but kept for reuse) when Meet is docked back.
-  if (l.placeholderBounds) {
-    const pv = ensurePlaceholderView();
-    if (mainWindow.getBrowserViews && !mainWindow.getBrowserViews().includes(pv)) {
-      mainWindow.addBrowserView(pv);
-    }
-    pv.setBounds(l.placeholderBounds);
-  } else if (placeholderView && !placeholderView.webContents.isDestroyed()) {
-    try { mainWindow.removeBrowserView(placeholderView); } catch { /* not attached */ }
-  }
 }
 
 // Toggle the Meet view between the docked thumbnail and its own large window.
@@ -5450,10 +5414,10 @@ function setBotViewState(state) {
         mainWindow.addBrowserView(meetView);
       }
       applyMeetZoom();
-      layoutViews(); // removes the placeholder + re-docks the thumbnail
+      layoutViews(); // re-docks the thumbnail into the region
       broadcastBotViewState();
     });
-    layoutViews(); // panel reclaims the top region; the placeholder fills the rest
+    layoutViews(); // panel reclaims the whole column — no region while popped
     broadcastBotViewState();
     return true;
   }

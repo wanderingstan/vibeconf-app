@@ -158,15 +158,19 @@ function computeLayout(state, contentSize, opts = {}) {
   }
 
   if (state === 'popped') {
-    // Meet floats in its own window (main.js owns that window's zoom + size). The
-    // region below the panel shows a placeholder instead of an empty rectangle.
+    // Meet floats in its own window (main.js owns that window's zoom + size), and
+    // the column gives the freed space back to the panel — exactly as 'hidden'
+    // does. There is no placeholder: the region used to hold a "Popped out"
+    // placard, which meant popping the view out cost you half the panel window to
+    // be told, in words, what the button you just pressed had already done.
     return {
-      panelBounds,
+      panelBounds: { x: 0, y: 0, width: panelWidth, height },
       meetBounds: null,
-      placeholderBounds: region,
+      placeholderBounds: null,
       meetZoom: POPPED_ZOOM, // applied in the popped window
       meetInOwnWindow: true,
       clamped: false,
+      regionHidden: true,
     };
   }
 
@@ -187,7 +191,15 @@ function computeLayout(state, contentSize, opts = {}) {
 function regionHeightFor(panelWidth = 380, state) {
   // 'hidden' has no region at all — Meet is in a window nobody sees, so the
   // column must not reserve a 16:9 slab for it.
-  if (state === 'hidden') return 0;
+  //
+  // Neither does 'popped', for the same reason: Meet is in ITS OWN window, so
+  // there is nothing left in the column to reserve height for. This used to
+  // return the full slab, because the region held a "Popped out" placard — with
+  // that gone, keeping the reservation would grow the main window by 214px of
+  // empty panel background every time you popped the view out.
+  //
+  // Only 'thumbnail' actually puts something in the column.
+  if (state === 'hidden' || state === 'popped') return 0;
   return Math.round(panelWidth * 9 / 16);
 }
 

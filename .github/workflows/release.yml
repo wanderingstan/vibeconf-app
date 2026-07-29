@@ -46,6 +46,29 @@
 # Windows is UNSIGNED — SmartScreen will warn ("More info" → "Run anyway").
 # Linux AppImage/deb need no signing.
 #
+# The Windows installer name must contain NO SPACES, which is why nsis
+# .artifactName is pinned to "${productName}-Setup-${version}.${ext}". Leave it
+# unset and electron-builder's default gives you three different names for one
+# file, and Windows self-update 404s:
+#
+#     on disk (electron-builder default)  Vibeconferencing Setup 1.2.3.exe
+#     written into latest.yml (spaces→-)  Vibeconferencing-Setup-1.2.3.exe
+#     stored by GitHub (spaces→.)         Vibeconferencing.Setup.1.2.3.exe
+#
+# electron-updater reads latest.yml, requests the hyphenated URL, and gets a
+# 404 — silently, so the app just never offers an update. Windows self-update
+# was broken this way from the first release through v0.8.0-beta4, found only
+# by running the Windows build and noticing no modal ever appeared. macOS and
+# Linux were never affected: their artifact names have no spaces to mangle.
+#
+# If you ever see the mismatch on a published release, renaming the asset fixes
+# it without a re-upload (sha512 covers content, not filename):
+#
+#     id=$(gh api repos/wanderingstan/vibeconf-app/releases/tags/vX --jq \
+#          '.assets[]|select(.name|endswith(".exe"))|.id')
+#     gh api -X PATCH repos/wanderingstan/vibeconf-app/releases/assets/$id \
+#          -f name='Vibeconferencing-Setup-X.exe'
+#
 # Usage:
 #     npm version --no-git-tag-version 0.7.0-beta63   # in BOTH package.json files
 #     git commit -am "Release v0.7.0-beta63" && git push

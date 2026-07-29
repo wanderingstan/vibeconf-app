@@ -1359,7 +1359,9 @@ const localServer = new globalThis.LocalServer({
       return { error: 'No active Meet view to capture' };
     }
     try {
-      let image = await meetView.webContents.capturePage();
+      let image = null;
+      try { image = await meetView.webContents.capturePage(); }
+      catch { image = null; } // "Current display surface not available" — heal below
 
       // #103: an EMPTY capture means the compositor has no display surface for
       // this view yet. It happens when the 'hidden' host window has never been
@@ -1370,13 +1372,13 @@ const localServer = new globalThis.LocalServer({
       //
       // Self-heal: put the host on screen just long enough for a frame, capture
       // again, hide it. Costs a brief flash the first time and nothing after.
-      if (image.isEmpty() && meetHiddenWindow && !meetHiddenWindow.isDestroyed()) {
+      if ((!image || image.isEmpty()) && meetHiddenWindow && !meetHiddenWindow.isDestroyed()) {
         console.warn('[electron] Empty capture — waking the hidden bot-view host for a frame');
         try {
           meetHiddenWindow.showInactive();
-          for (let i = 0; i < 12 && image.isEmpty(); i++) {
+          for (let i = 0; i < 20 && (!image || image.isEmpty()); i++) {
             await new Promise((r) => setTimeout(r, 100));
-            image = await meetView.webContents.capturePage();
+            try { image = await meetView.webContents.capturePage(); } catch { image = null; }
           }
         } finally {
           try { if (!meetHiddenWindow.isDestroyed()) meetHiddenWindow.hide(); } catch { /* gone */ }
@@ -1385,7 +1387,7 @@ const localServer = new globalThis.LocalServer({
 
       // Never report success for an empty image. A 0-byte PNG read back as "the
       // call looks like nothing" is worse than an error the agent can act on.
-      if (image.isEmpty()) {
+      if (!image || image.isEmpty()) {
         return { error: 'Capture came back empty — the bot view has no display surface yet. Retry in a moment; if it persists, set the botViewMode preference to "thumbnail".' };
       }
 
@@ -5287,6 +5289,36 @@ function restingBotViewState() {
 // document.visibilityState stays "visible" while hidden (verified), so Meet
 // never thinks it's backgrounded and keeps decoding remote video — which is the
 // whole point, since those tiles are what the bot needs to read.
+// Give the hidden host a real display surface: show it, wait for meetView to
+// actually produce a frame, then hide it again. Must run whenever a FRESH
+// meetView is attached, not only when the host is created — a view attached to
+// an already-hidden window never gets a surface, and capturePage then THROWS
+// "Current display surface not available for capture" (seen live on a join,
+// which recreates the view).
+let hiddenHostSettling = false;
+async function settleHiddenMeetHost() {
+  const win = meetHiddenWindow;
+  if (!win || win.isDestroyed() || hiddenHostSettling) return;
+  hiddenHostSettling = true;
+  try {
+    win.showInactive();
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 150));
+      if (win.isDestroyed()) return;
+      if (!meetView || meetView.webContents.isDestroyed()) continue;
+      try {
+        const img = await meetView.webContents.capturePage();
+        if (!img.isEmpty()) break; // a frame landed — safe to hide
+      } catch { /* surface not ready yet */ }
+    }
+  } catch { /* headless / no display — capture reports its own error */ }
+  finally {
+    try { if (!win.isDestroyed()) win.hide(); } catch { /* gone */ }
+    hiddenHostSettling = false;
+  }
+}
+
 function ensureHiddenMeetHost() {
   if (meetHiddenWindow && !meetHiddenWindow.isDestroyed()) return meetHiddenWindow;
   const { width, height } = botViewLayout.HIDDEN_SIZE;
@@ -5310,24 +5342,40 @@ function ensureHiddenMeetHost() {
   // one — with a ceiling so a headless/no-display machine doesn't leave the
   // window up forever. onCaptureScreenshot self-heals if this still loses a
   // race.
-  try {
-    win.showInactive();
-    const deadline = Date.now() + 8000;
-    const settle = async () => {
-      while (Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 150));
-        if (win.isDestroyed()) return;
-        if (!meetView || meetView.webContents.isDestroyed()) continue;
-        try {
-          const img = await meetView.webContents.capturePage();
-          if (!img.isEmpty()) break;   // a frame landed — safe to hide
-        } catch { /* not ready yet */ }
-      }
-      try { if (!win.isDestroyed()) win.hide(); } catch { /* gone */ }
-    };
-    settle();
-  } catch { /* headless / no display — capture will report its own error */ }
+  settleHiddenMeetHost();
   return win;
+}
+
+// #103: attach the CURRENT meetView to whichever window the current state says
+// owns it. Every path that (re)creates meetView — first launch, activateMeetProvider,
+// a partition/provider swap — must go through this instead of
+// `mainWindow.addBrowserView(meetView)`.
+//
+// Why this exists: those call sites used to hard-code the main window. With the
+// 'hidden' resting state that put the fresh view in the main window while
+// meetHiddenWindow still existed, so layoutViews treated it as "elsewhere" and
+// never set its bounds — leaving it at 0x0, never painting. The bot reported
+// itself in the call while the avatar sat on the 🫥 "not on the line yet" face
+// and nothing ever rendered. Caught on the second live test, not by any unit test.
+function attachMeetViewForState() {
+  if (!meetView || meetView.webContents.isDestroyed()) return;
+  if (botViewState === 'hidden') {
+    const win = ensureHiddenMeetHost();
+    try { win.addBrowserView(meetView); } catch { /* already attached */ }
+    const { width, height } = botViewLayout.HIDDEN_SIZE;
+    meetView.setBounds({ x: 0, y: 0, width, height });
+    try { meetView.webContents.setZoomFactor(botViewLayout.HIDDEN_ZOOM); } catch { /* gone */ }
+    settleHiddenMeetHost(); // a fresh view in an already-hidden window has no surface
+    return;
+  }
+  if (botViewState === 'popped' && meetPopoutWindow && !meetPopoutWindow.isDestroyed()) {
+    try { meetPopoutWindow.addBrowserView(meetView); } catch { /* already attached */ }
+    const [w, h] = meetPopoutWindow.getContentSize();
+    meetView.setBounds({ x: 0, y: 0, width: w, height: h });
+    try { meetView.webContents.setZoomFactor(botViewLayout.POPPED_ZOOM); } catch { /* gone */ }
+    return;
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.addBrowserView(meetView);
 }
 
 function setBotViewState(state) {
@@ -5583,7 +5631,7 @@ function activateMeetProvider() {
   slackSurface = null;
   ensureMeetSessionConfigured(currentMeetPartition);
   meetView = createMeetView(currentMeetPartition);
-  mainWindow.addBrowserView(meetView);
+  attachMeetViewForState(); // #103: hidden host / popout / main window, per state
   layoutViews();
 }
 
@@ -5908,7 +5956,7 @@ function createMainWindow() {
   } else {
     meetView = createMeetView(currentMeetPartition);
   }
-  mainWindow.addBrowserView(meetView);
+  attachMeetViewForState(); // #103: hidden host / popout / main window, per state
 
   // Open DevTools on demand from panel — registered once, references the
   // current module-level meetView so it always targets the live one after
@@ -6019,7 +6067,7 @@ async function loadMeetURL(meetUrl) {
   if (boundEmail) console.log('[electron] Pinning Meet account via authuser:', boundEmail);
 
   meetView = createMeetView(currentMeetPartition);
-  mainWindow.addBrowserView(meetView);
+  attachMeetViewForState(); // #103: hidden host / popout / main window, per state
   layoutViews();
 
   meetView.webContents.loadURL(urlToLoad);

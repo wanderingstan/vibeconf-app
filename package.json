@@ -1,6 +1,6 @@
 {
   "name": "vibeconf-app",
-  "version": "0.8.0-beta4",
+  "version": "0.8.0-beta5",
   "private": true,
   "description": "AI agents as real participants in your video calls",
   "license": "MIT",

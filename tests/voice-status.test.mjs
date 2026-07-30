@@ -123,6 +123,28 @@ test('the announcement re-arms for the next call', () => {
   assert.match(block, /_noVoiceAnnouncedFor = null/, 'a new call must be able to announce again');
 });
 
+test('a voice name that is not installed cannot mute the bot', () => {
+  // The default OS voice is a PREFERENCE, not a promise: no macOS voice name is
+  // guaranteed present (on macOS 26.5 even `Alex` is a download now), and the
+  // Windows name comes from whatever that machine happens to have. Both paths
+  // must degrade to the system default rather than throw, or a bot would go
+  // silent because of a string.
+  //
+  // macOS gets this from `say` itself, which substitutes the default voice and
+  // exits 0 for an unknown or empty -v. Windows needs it in our own code:
+  assert.match(
+    readFileSync(join(root, 'electron-app/system-voices.js'), 'utf8'),
+    /if \(\$voice\) \{ try \{ \$synth\.SelectVoice\(\$voice\) \} catch \{ \} \}/,
+    'SAPI must fall back to the default voice rather than throw on a missing one',
+  );
+  // And the reasoning is recorded where the default is set, so the next reader
+  // does not "fix" a non-bug.
+  const tts = readFileSync(join(root, 'electron-app/tts.js'), 'utf8');
+  const line = tts.slice(tts.indexOf('this.macosVoice = config.macosVoice'));
+  assert.match(tts.slice(Math.max(0, tts.indexOf('this.macosVoice = config.macosVoice') - 1400)), /PREFERENCE, not a guarantee/);
+  assert.match(line.slice(0, 200), /'Daniel'/, 'the macOS default is a real voice name, not empty');
+});
+
 test('the recorded clip exists and is packaged', () => {
   const clip = join(root, 'electron-app/no-voice.mp3');
   const size = statSync(clip).size;

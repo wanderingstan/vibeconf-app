@@ -214,7 +214,19 @@ function announceNoVoiceOnce() {
     'You have NO VOICE in this call: ' + status.reason
     + ' A short recorded notice has been played to the room telling them you will type instead. '
     + 'Do not call speak — nothing will be heard. Use send_chat for every reply, and keep them '
-    + 'brief since people are reading rather than listening. If someone asks how to give you a '
+    + 'brief since people are reading rather than listening. '
+    // Wear the state on the face too. 😶 is already this app's "no mouth — will
+    // act but cannot speak" (MODE_EMOJIS.silent in page-inject.js), so a
+    // voiceless bot showing it reads the same way silent mode does — the room
+    // can see the reason instead of watching a smiling face say nothing.
+    //
+    // Asked of the agent rather than forced by the renderer because the agent
+    // already owns its face via set_avatar_emoji, and this needs no new state
+    // plumbed through to the camera. Set BOTH: the idle override always applies,
+    // but the listening one is only honoured in active mode (page-inject.js).
+    + 'Also call set_avatar_emoji with idle:"\u{1F636}" and listening:"\u{1F636}" so the room can SEE '
+    + 'you have no voice rather than wondering why you are quiet. '
+    + 'If someone asks how to give you a '
     + 'voice, tell them: open the app, add an ElevenLabs API key in App Settings, or run Voicebox locally.'
   );
 }

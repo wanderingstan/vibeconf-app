@@ -114,6 +114,23 @@ test('a voiceless bot announces itself in-call, once', () => {
   // And it must tell the agent to stop trying to speak.
   assert.match(body, /Do not call speak/);
   assert.match(body, /send_chat/);
+  // …and to wear it. 😶 is already MODE_EMOJIS.silent ("no mouth — will act but
+  // cannot speak"), so a voiceless bot showing it reads the same way silent mode
+  // does. Asked of the agent rather than forced by the renderer, since the agent
+  // already owns its face and this needs no new state pushed to the camera.
+  assert.match(body, /set_avatar_emoji/);
+  assert.match(body, /idle:"\\u\{1F636\}"/, 'the idle override applies in every mode');
+  assert.match(body, /listening:"\\u\{1F636\}"/, 'the listening override is what shows in active mode');
+});
+
+test('the "cannot speak" face is the one the app already uses for that meaning', () => {
+  // Not a new glyph: page-inject already maps silent mode to 😶 and describes it
+  // as "no mouth — will act but cannot speak". A voiceless bot is the same
+  // condition reached a different way, so it should look the same rather than
+  // inventing a second vocabulary for it.
+  const inject = readFileSync(join(root, 'electron-app/page-inject.js'), 'utf8');
+  assert.match(inject, /silent: '\\u\{1F636\}'/, 'MODE_EMOJIS.silent should still be 😶');
+  assert.match(main, /\\u\{1F636\}/, 'main should ask for that same face');
 });
 
 test('the announcement re-arms for the next call', () => {

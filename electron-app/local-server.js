@@ -21,6 +21,7 @@ const { URL } = require('url');
 const AUTH_TOKEN_DIR = path.join(os.homedir(), '.vibeconferencing', 'local-tokens');
 function localTokenPath(port) { return path.join(AUTH_TOKEN_DIR, `${port}.token`); }
 const prefsSchema = require('./preferences-schema.js');
+const { classifyAgent, agentIsAbsent } = require('./agent-liveness.js');
 const { getRecentSessionLog, getSessionLogPath } = require('./session-log.js');
 const { shouldIgnoreRejoin } = require('./rejoin-guard.js');
 const { TranscriptTailer } = require('./agent-transcript.js');
@@ -420,6 +421,16 @@ class LocalServer {
     // Long-poll waiters
     this.waiters = [];           // { resolve, since, bot, silence, timer }
     this.lastWaitForSpeechAt = null; // ms timestamp of the most recent wait_for_speech call
+    // Anything the AGENT did, not just wait_for_speech (#38). Every MCP tool
+    // reaches the app over HTTP, so one stamp at the request door covers the
+    // whole surface — including the long tool-work stretches where the loop is
+    // legitimately not waiting and would otherwise look dead.
+    this.lastAgentActivityAt = null;
+    // Set when a long-poll's socket dies before the poll resolves, i.e. the
+    // agent process went away mid-wait. Unlike the timestamp above this is not
+    // an inference from elapsed time — it is the OS telling us the peer is
+    // gone — so it counts immediately. Cleared by the agent's next request.
+    this.agentSocketLostAt = null;
 
     // --- Claude responsiveness (mid-call perf) ---------------------------------
     // The headline "is the bot snappy today" metric is Claude's reaction time:
@@ -1283,6 +1294,10 @@ class LocalServer {
       activeWaiters: this.waiters.length,
       lastAckEvent: this.lastAckEvent,
       lastWaitForSpeechAt: this.lastWaitForSpeechAt,
+      lastAgentActivityAt: this.lastAgentActivityAt,
+      // Computed once, here, so the avatar and the Troubleshooting readout
+      // can never disagree about whether anyone is driving.
+      agentState: this.agentState(),
       pendingBotSpeech: (this.pendingBotSpeech || []).map(e => ({
         text: e.text || '',
         voice: e.voice || null,
@@ -1295,6 +1310,38 @@ class LocalServer {
         isBot: botNames.has((p.name || '').toLowerCase()),
       })),
     };
+  }
+
+  // Is anyone driving this bot? See agent-liveness.js for why wait_for_speech's
+  // 55s cap is what makes this trustworthy.
+  agentState() {
+    // A dropped socket is proof, not inference, so it short-circuits the
+    // elapsed-time thresholds entirely.
+    if (this.agentSocketLost && this.waiters.length === 0) return 'away';
+    return classifyAgent({
+      activeWaiters: this.waiters.length,
+      lastAgentActivityAt: this.lastAgentActivityAt,
+    });
+  }
+
+  // The face-worthy half of it: away or never-attached, and only while we are
+  // actually in a call — out of a call there is nothing for an agent to drive,
+  // so "no agent" is the normal resting condition rather than a fault.
+  agentAbsentInCall() {
+    return this.callStatus === 'in-call' && agentIsAbsent(this.agentState());
+  }
+
+  // WHY we think nobody is driving, because the two are not equally certain and
+  // should not claim to be:
+  //   'dropped' — the socket died. The process is gone; this is a fact.
+  //   'quiet'   — nothing has called in for a while. It could equally be an
+  //               agent blocked on a permission prompt in its terminal, or one
+  //               deep in work that makes no MCP calls. Saying "it exited" here
+  //               would be a guess presented as a diagnosis.
+  //   'never'   — nothing ever attached.
+  agentAbsenceReason() {
+    if (this.agentSocketLost && this.waiters.length === 0) return 'dropped';
+    return this.agentState() === 'never' ? 'never' : 'quiet';
   }
 
   // #115: record the fast floor edge and, when the DOM path later agrees, log
@@ -3081,6 +3128,13 @@ class LocalServer {
     if (!this.authToken) this.authToken = crypto.randomBytes(24).toString('hex');
     return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => {
+        // The agent is the only thing that talks to this server over HTTP (the
+        // panel uses IPC), so any request IS proof of life. Stamped on arrival
+        // rather than completion because wait_for_speech blocks for up to 55s —
+        // crediting it at the end would backdate the agent's liveness by a
+        // whole cycle.
+        this.lastAgentActivityAt = Date.now();
+        this.agentSocketLost = false;
         this._handleRequest(req, res).catch(err => {
           console.error('[local-server] Request error:', err.message);
           // A handler that already responded and THEN threw would otherwise
@@ -3722,6 +3776,26 @@ class LocalServer {
           this._resolveWaiter(waiter, 'timeout');
         }, clampedWait * 1000),
       };
+      // A killed agent closes its TCP connection immediately, so this is a FACT
+      // rather than a guess from elapsed silence — and it is the common case,
+      // since an agent in the conversation loop spends most of its life parked
+      // in this poll. Without it, killing an agent mid-wait takes the full
+      // timeout to notice; with it, the face changes within a poll tick.
+      //
+      // Guarded on waiter.resolved because 'close' also fires on the normal
+      // response, which is not a disconnect.
+      req.on('close', () => {
+        if (waiter.resolved) return;
+        waiter.resolved = true;
+        clearTimeout(waiter.timer);
+        clearTimeout(waiter.silenceTimer);
+        clearTimeout(waiter.tickTimer);
+        this.waiters = this.waiters.filter((w) => w !== waiter);
+        this.agentSocketLost = true;
+        this.agentSocketLostAt = Date.now();
+        console.log(ts(), '\u{1F50C} [agent] wait_for_speech socket closed before resolving — agent went away');
+        resolve({ success: true, aborted: true, asOf: new Date().toISOString(), transcript: { entries: [] } });
+      });
       this.waiters.push(waiter);
       this.lastWaitForSpeechAt = Date.now();
       this._setBotState('listening');

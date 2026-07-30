@@ -128,6 +128,11 @@
       // room and the operator can SEE that the bot is impaired instead of it
       // sitting there wearing a happy listening face while hearing nothing.
       this.impaired = avatarState.impaired;
+      // #38: no agent is driving. Distinct from `impaired` (agent present but
+      // hobbled) and from callStatus (not in the call at all).
+      this.agentAbsent = avatarState.agentAbsent;
+      // 'dropped' | 'quiet' | 'never' — only 'dropped' is certain enough to topple.
+      this.agentAbsentReason = avatarState.agentAbsentReason;
       // Per-response speaking emoji (set by speak's emoji param). Cleared
       // when the TTS queue drains. Falls through to ACTIVITY_EMOJIS.speaking.
       this.speakingEmojiOverride = null;
@@ -341,12 +346,18 @@
         : VirtualCamera.MODE_EMOJIS[this.mode] || VirtualCamera.MODE_EMOJIS.active;
       // Deaf takes priority over everything except not-on-line — the whole
       // point is making "can't hear you" visible while otherwise in-call.
+      // #38: ranks above deaf. "Can't hear you" presumes someone is home to
+      // hear; if nothing is driving the bot, that is the more basic truth and
+      // the one worth showing. 🫥 is already this UI's "nobody home" (it is what
+      // callStatus shows out of a call), so it reads without a legend.
+      const agentAbsentEmoji = this.agentAbsent ? '\u{1FAE5}' : null; // 🫥
       const deafEmoji = this.deaf ? '\u{1F649}' : null; // 🙉
       // #424: impaired ranks just under deaf — deaf is a KNOWN cause (captions
       // off), impaired is "something's wrong and I may not be hearing you".
       const impairedEmoji = this.impaired ? '\u{1F974}' : null; // 🥴
       const emoji =
         notOnLine
+        || agentAbsentEmoji
         || deafEmoji
         || impairedEmoji
         || audioPlaying
@@ -497,7 +508,12 @@
       const RISE_HOLD_MS = 4000;
       const RISE_DURATION_MS = 11200;
       let ghostRise = 0;
-      if (emoji === '\u{1FAE5}') {
+      // The rise is an ARRIVAL animation: the bot peeking over the edge while its
+      // agent boots, then settling into place. An agent that has GONE (#38) is
+      // the opposite story, and playing the entrance for a departure reads as
+      // the bot warming up when it has in fact just died. Same glyph, no
+      // entrance — it is simply there, and toppled if we know it is dead.
+      if (emoji === '\u{1FAE5}' && !this.agentAbsent) {
         if (this.callStatus === 'in-call') {
           if (!this._riseSince) this._riseSince = Date.now(); // stamp on entry
           const p = Math.max(0, Math.min(1, (Date.now() - this._riseSince - RISE_HOLD_MS) / RISE_DURATION_MS));
@@ -512,11 +528,30 @@
       }
       // Apply translation + rotation + non-uniform scale around the avatar
       // center. The scaleX/scaleY give the "mouth open" jaw effect.
+      // #38: a DROPPED agent keels over. Reserved for the certain case (the
+      // socket died, so the process is gone) — a merely-quiet agent might be
+      // alive on a permission prompt, and toppling it would assert a death we
+      // cannot see. Eased rather than snapped so it reads as falling.
+      //
+      // 135°, NOT 180°. A half-turn lands the face perfectly inverted, which
+      // reads as deliberate — a thing someone rotated. Stopping short leaves it
+      // off-axis, which is what makes it look collapsed rather than flipped:
+      // the same reason a dead animal reads as dead from its angle alone.
+      const DEAD_FLIP_RAD = Math.PI * 0.75;
+      const DEAD_FLIP_MS = 700;
+      let deadFlip = 0;
+      if (this.agentAbsent && this.agentAbsentReason === 'dropped') {
+        if (!this._deadSince) this._deadSince = Date.now();
+        const p = Math.max(0, Math.min(1, (Date.now() - this._deadSince) / DEAD_FLIP_MS));
+        deadFlip = DEAD_FLIP_RAD * (1 - Math.pow(1 - p, 3)); // easeOutCubic
+      } else {
+        this._deadSince = 0;
+      }
       const peeking = ghostRise > 0;
       const agentTiltNow = peeking ? agentTilt * PEEK_TILT_SCALE : agentTilt;
       const peekShift = peeking ? (this._agentJostleDir || 0) * PEEK_SHIFT_PX : 0;
       ctx.translate(cx + thinkSway + peekShift, cy + bob - speakBounce + ghostRise);
-      if (speakTilt || tickTilt || agentTiltNow) ctx.rotate(speakTilt + tickTilt + agentTiltNow);
+      if (speakTilt || tickTilt || agentTiltNow || deadFlip) ctx.rotate(speakTilt + tickTilt + agentTiltNow + deadFlip);
       if (this.speaking) {
         ctx.scale(speakScaleX * tickPop, speakScaleY * tickPop);
       } else {
@@ -1717,6 +1752,18 @@
         playNextTTS();
         break;
       }
+
+      case 'set-agent-absent':
+        // #38: nothing is driving the bot — show 🫥 rather than a resting face
+        // that implies someone is listening.
+        if (payload) {
+          const away = !!payload.absent;
+          const why = payload.reason || null;
+          for (const cam of cameras.values()) { cam.agentAbsent = away; cam.agentAbsentReason = why; }
+          avatarState.agentAbsent = away; // seed future cameras
+          avatarState.agentAbsentReason = why;
+        }
+        break;
 
       case 'set-impaired':
         // #424: generic degraded-state flag → avatar shows 🥴. Raised when the

@@ -1716,6 +1716,69 @@ sync.updateConfig({
 // throttled/frozen renderer, etc. Making it VISIBLE beats the bot sitting there
 // wearing a happy listening face while it hears nothing. Notifies the agent
 // once per episode so it can say something rather than appear to ignore people.
+// #38: nobody is driving. A bot whose agent died looks exactly like one
+// listening politely — resting face, in the call, saying nothing — and it is the
+// only one of #155's four silences that is a real fault rather than the system
+// working as designed.
+//
+// Polled rather than event-driven because the interesting transition is an
+// ABSENCE of requests, which by definition fires no event. Cheap: one integer
+// comparison every 15s. See agent-liveness.js for why the 55s wait_for_speech
+// cap makes this safe, and why it is deliberately thin pending #113.
+let _agentAbsent = false;
+let _agentAbsentReason = null;
+// 5s, not 15: the socket-close path sets the state instantly, so this interval
+// is now the only thing between the agent dying and the face showing it.
+const AGENT_LIVENESS_POLL_MS = 5_000;
+function pollAgentLiveness() {
+  let absent = false;
+  try { absent = localServer.agentAbsentInCall(); } catch { return; }
+  if (absent === _agentAbsent) return;
+  _agentAbsent = absent;
+  try { _agentAbsentReason = absent ? localServer.agentAbsenceReason() : null; } catch { _agentAbsentReason = null; }
+  if (meetView && !meetView.webContents.isDestroyed()) {
+    meetView.webContents.send('extension-message', {
+      action: 'set-agent-absent',
+      // The reason rides along so the avatar can be as certain as we are: a
+      // dropped socket topples the face, a merely-quiet agent does not.
+      payload: { absent, reason: absent ? _agentAbsentReason : null },
+    });
+  }
+  console.warn('[electron]', absent
+    ? '\u{1FAE5} no agent driving — avatar shows nobody home'
+    : '\u{1FAE5} agent back — avatar restored');
+
+  // Raise it as a real app error on the way OUT only. broadcastError already
+  // does both halves of what this needs: the notice over the avatar in the
+  // panel, and a system notification when the app isn't in the foreground
+  // (deduped, so a long outage doesn't spam). Recovery is deliberately quiet —
+  // an alert for "everything is fine again" trains people to dismiss alerts.
+  //
+  // This is the one silence in #155 that is a genuine fault, so unlike the
+  // others it earns an interruption rather than just a face.
+  if (absent) {
+    // Word it to match how sure we actually are. A dropped socket means the
+    // process is gone; a quiet stretch might just as easily be an agent sitting
+    // on a permission prompt, and telling someone to restart a session that is
+    // alive and waiting for them would be actively unhelpful.
+    const reason = _agentAbsentReason || 'quiet';
+    const message = reason === 'dropped'
+      ? "The agent driving this bot disconnected. Its terminal has exited or lost "
+        + 'its connection, so nothing is answering in the call. Restart the session to reconnect it.'
+      : reason === 'never'
+        ? "No agent ever attached to this bot. It's in the call but nothing is driving it. "
+          + 'Check the terminal: the session may have failed to start, or be waiting on a Claude login.'
+        : "This bot has gone quiet: no agent activity for a while, so it may not answer. "
+          + 'Check its terminal. It could be waiting on a permission prompt, busy on a long task, or stopped.';
+    try {
+      broadcastError(message);
+    } catch (err) {
+      console.error('[electron] Failed to surface agent-absent error:', err.message);
+    }
+  }
+}
+setInterval(pollAgentLiveness, AGENT_LIVENESS_POLL_MS);
+
 let _impaired = false;
 function setImpaired(on, reason = '') {
   on = !!on;

@@ -662,13 +662,26 @@ function ackLabel(ev) {
   return `${phrase} · ${sourceTag} · ${latency} · ${ago}`;
 }
 
+// The verdict comes from the server (agent-liveness.js) rather than being
+// recomputed here: the avatar shows 🫥 off the same classification, and two
+// copies of the thresholds would eventually disagree about whether anyone is
+// driving — with the debug screen reassuring you while the face says otherwise.
+//
+// This reads lastAgentActivityAt (ANY agent request), not lastWaitForSpeechAt:
+// an agent deep in tool work is alive and simply not waiting, which the old
+// wait-only view scored as going stale.
 function agentLoopHealth(s) {
-  if (s.activeWaiters > 0) return `🟢 listening (${s.activeWaiters} waiter${s.activeWaiters > 1 ? 's' : ''})`;
-  if (!s.lastWaitForSpeechAt) return '⚪️ no wait_for_speech yet — agent may not have started the loop';
-  const idleSecs = Math.round((Date.now() - s.lastWaitForSpeechAt) / 1000);
-  if (idleSecs < 5) return `🟡 between waits (${idleSecs}s)`;
-  if (idleSecs < 60) return `🟡 idle ${idleSecs}s — agent may be processing or speaking`;
-  return `🔴 stale ${agoLabel(s.lastWaitForSpeechAt)} — agent likely stopped the wait_for_speech loop`;
+  const quietSecs = s.lastAgentActivityAt
+    ? Math.round((Date.now() - s.lastAgentActivityAt) / 1000)
+    : 0;
+  switch (s.agentState) {
+    case 'live': return `🟢 listening (${s.activeWaiters} waiter${s.activeWaiters === 1 ? '' : 's'})`;
+    case 'settling': return `🟡 between waits (${quietSecs}s)`;
+    case 'busy': return `🟡 idle ${quietSecs}s — agent may be processing or speaking`;
+    case 'away': return `🔴 stale ${agoLabel(s.lastAgentActivityAt)} — agent likely stopped the wait_for_speech loop`;
+    case 'never': return '⚪️ no agent activity yet — agent may not have started the loop';
+    default: return `⚪️ unknown (${s.agentState || 'no state reported'})`;
+  }
 }
 
 // Health thresholds for Claude's reaction time (ms). Tune freely — mirrored in

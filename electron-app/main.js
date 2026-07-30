@@ -4186,8 +4186,42 @@ async function launchClaudeTerminal(meetCode) {
       const mcpServerPath = app.isPackaged
         ? path.join(process.resourcesPath, 'mcp-server', 'server.js')
         : path.join(__dirname, '..', 'mcp-server', 'server.js');
+      // Start from the servers the user already has, rather than from nothing.
+      //
+      // --strict-mcp-config (below) makes this file the ONLY source of MCP
+      // servers for the spawned session — that is what guarantees the port pin,
+      // but built from scratch it also silently stripped every other tool the
+      // user normally has. An agent launched for a named profile could reach
+      // its bot and nothing else: no image generation, no search, no issue
+      // tracker. Same agent, same machine, mysteriously fewer tools.
+      //
+      // USER scope only (~/.claude.json's top-level mcpServers). Project-scoped
+      // servers are deliberately tied to a directory the bot isn't working in —
+      // inheriting one scoped to the user's home into a bot's session would be
+      // surprising, and in a shared-machine case, wrong.
+      const inherited = {};
+      try {
+        const home = process.env.HOME || process.env.USERPROFILE;
+        const userCfg = JSON.parse(fs.readFileSync(path.join(home, '.claude.json'), 'utf-8'));
+        Object.assign(inherited, userCfg.mcpServers || {});
+      } catch { /* no user config, or unreadable — the pin below still works */ }
+
+      // A per-bot extension point. Without this, --strict leaves no way to give
+      // ONE bot a server the others don't have: .mcp.json in the workdir is a
+      // source strict mode ignores, so it would be silently inert. Uses the dir the
+      // session actually starts in (claudeDir), which honours a claudeWorkDir
+      // override rather than assuming the default agent dir.
+      try {
+        const botMcp = JSON.parse(fs.readFileSync(path.join(claudeDir, '.mcp.json'), 'utf-8'));
+        Object.assign(inherited, botMcp.mcpServers || {});
+      } catch { /* none — the common case */ }
+
       const cfg = {
         mcpServers: {
+          ...inherited,
+          // LAST, so it always wins. This entry is the entire reason the file
+          // exists: the user-scoped one carries a fallback port pointing at the
+          // PRIMARY app, so an unpinned session would drive the wrong bot.
           vibeconferencing: {
             command: 'node',
             args: [mcpServerPath],
@@ -4204,7 +4238,8 @@ async function launchClaudeTerminal(meetCode) {
       // Inner quotes escaped for the AppleScript `do script "…"` wrapper below;
       // quote the path because the profile userData dir contains spaces.
       mcpFlags = ` --mcp-config \\"${cfgPath}\\" --strict-mcp-config`;
-      console.log('[electron] Profile', appProfile, '— launching Claude pinned to port', localServer.port, 'via', cfgPath);
+      console.log('[electron] Profile', appProfile, '— launching Claude pinned to port', localServer.port,
+        'with', Object.keys(cfg.mcpServers).length, 'MCP server(s):', Object.keys(cfg.mcpServers).join(', '));
     } catch (err) {
       console.error('[electron] Failed to write profile MCP config:', err.message);
     }

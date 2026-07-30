@@ -201,17 +201,6 @@
           <a href="#" id="openVoiceSettingsBtn" style="color:#8ab4f8;text-decoration:underline">Download more macOS voices…</a></span>
         </div>
       </div>
-      <div class="field">
-        <label for="emojiSet">Emoji style</label>
-        <select id="emojiSet" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit">
-          <option value="native">Native (OS font)</option>
-          <option value="twemoji">Twemoji (flat)</option>
-          <option value="openmoji">OpenMoji (outlined)</option>
-          <option value="noto">Noto (Google)</option>
-          <option value="fluent3d">Fluent 3D (Microsoft)</option>
-        </select>
-      </div>
-
       <!-- The language the bot LISTENS in. Not a display setting: the bot reads
            the room through Meet's captions, so a mismatch means it hears
            nonsense and answers it. Applied on join; Meet has no host-level
@@ -223,7 +212,7 @@
       <div class="field">
         <label for="captionLanguage">Language spoken in calls</label>
         <select id="captionLanguage" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit">
-          <option value="">Leave as Meet has it</option>
+          <option value="">Don't change it</option>
           <option value="en-US">English</option>
           <option value="en-GB">English (UK)</option>
           <option value="de-DE">German</option>
@@ -245,6 +234,17 @@
           <option value="vi-VN">Vietnamese</option>
         </select>
         <div style="font-size:11px;color:#666;margin-top:2px">What the bot listens for. Set this to the language people actually speak in the call.</div>
+      </div>
+
+      <div class="field">
+        <label for="emojiSet">Emoji style</label>
+        <select id="emojiSet" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit">
+          <option value="native">Native (OS font)</option>
+          <option value="twemoji">Twemoji (flat)</option>
+          <option value="openmoji">OpenMoji (outlined)</option>
+          <option value="noto">Noto (Google)</option>
+          <option value="fluent3d">Fluent 3D (Microsoft)</option>
+        </select>
       </div>
 
       <!-- Avatar background. The bot can already set this mid-call via

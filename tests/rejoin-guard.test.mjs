@@ -28,6 +28,12 @@ test('a repeat join while still JOINING that room is also ignored', () => {
   }), true, 'the retry that races the first join is the common case');
 });
 
+test('a repeat join while still NAVIGATING (the instant right after setRoom) is also ignored', () => {
+  assert.equal(shouldIgnoreRejoin({
+    requestedRoom: ROOM, currentRoom: ROOM, callStatus: 'navigating',
+  }), true, 'navigating is the same in-progress join, just before Meet DOM confirms joining');
+});
+
 test('a DIFFERENT room is a real call switch, never ignored', () => {
   assert.equal(shouldIgnoreRejoin({
     requestedRoom: 'zzz-zzzz-zzz', currentRoom: ROOM, callStatus: 'in-call',

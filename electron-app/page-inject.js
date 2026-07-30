@@ -71,6 +71,7 @@
     // 'in-call' means the agent isn't actually on the line — show 🫥.
     static CALL_STATUS_EMOJIS = {
       'idle':                   '\u{1FAE5}',  // 🫥 no call yet
+      'navigating':             '\u{1FAE5}',  // 🫥 view dispatched, not yet loaded
       'joining':                '\u{1FAE5}',  // 🫥 connecting to Meet
       'waiting-to-be-admitted': '\u{1FAE5}',  // 🫥 waiting on host to admit
       'left':                   '\u{1FAE5}',  // 🫥 call ended
@@ -105,7 +106,7 @@
       // the last known values so a new camera picks up where the call is.
       this.state = avatarState.state;   // 'idle' | 'listening' | 'ticking' | 'thinking' | 'working' | 'speaking' | 'yielding'
       this.mode = avatarState.mode;     // 'active' | 'passive' | 'silent'
-      this.callStatus = avatarState.callStatus; // 'idle' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
+      this.callStatus = avatarState.callStatus; // 'idle' | 'navigating' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
       // True once the agent has done anything besides idle. Stays 🫥 until then,
       // since "in-call but agent not yet engaged" still means not on the line.
       // Resets whenever a new call begins.
@@ -1649,11 +1650,12 @@
       // the 'set-bot-state' handler above, so 🫥 means "no agent driving yet".)
 
       case 'set-call-status':
-        // Forwarded from local-server: 'idle' | 'joining' |
+        // Forwarded from local-server: 'idle' | 'navigating' | 'joining' |
         // 'waiting-to-be-admitted' | 'in-call' | 'left'. Used to show 🫥
         // before the bot is actually in the call.
         if (payload?.status) {
-          const resets = payload.status === 'idle' || payload.status === 'joining' || payload.status === 'left';
+          const resets = payload.status === 'idle' || payload.status === 'navigating' ||
+            payload.status === 'joining' || payload.status === 'left';
           for (const cam of cameras.values()) {
             cam.callStatus = payload.status;
             // New-call markers reset the engagement gate — show 🫥 again

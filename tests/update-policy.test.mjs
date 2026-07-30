@@ -90,7 +90,7 @@ test('installing waits for the call to end, including while joining', () => {
   assert.equal(P.canInstallNow({ callStatus: 'idle' }).ok, true);
   assert.equal(P.canInstallNow({ callStatus: 'left' }).ok, true, 'the call is over');
 
-  for (const status of ['joining', 'waiting-to-be-admitted', 'in-call']) {
+  for (const status of ['navigating', 'joining', 'waiting-to-be-admitted', 'in-call']) {
     const r = P.canInstallNow({ callStatus: status });
     assert.equal(r.ok, false, `${status} is live — restarting would drop the bot`);
     assert.equal(r.reason, 'in-call');

@@ -1139,7 +1139,7 @@ server.tool(
     try {
       const probe = await vfetch(`${BASE_URL}/api/sync/no-room`);
       const probeData = await probe.json();
-      const activeStatuses = ["in-call", "joining", "waiting-to-be-admitted"];
+      const activeStatuses = ["in-call", "joining", "navigating", "waiting-to-be-admitted"];
       if (probeData.roomId && activeStatuses.includes(probeData.status?.callStatus)) {
         roomId = probeData.roomId;
         ROOM_ID = probeData.roomId;
@@ -2059,7 +2059,7 @@ server.tool(
     try {
       const resp = await vfetch(`${BASE_URL}/api/sync/no-room`);
       const data = await resp.json();
-      const activeStatuses = ['in-call', 'joining', 'waiting-to-be-admitted'];
+      const activeStatuses = ['in-call', 'joining', 'navigating', 'waiting-to-be-admitted'];
       if (data.roomId && activeStatuses.includes(data.status?.callStatus)) {
         // App is in a call — that's authoritative
         if (roomId && roomId !== data.roomId) {
@@ -2342,7 +2342,8 @@ server.tool(
         // live session down (#26). Say so plainly — an agent that reads this as
         // a fresh join would greet the room a second time.
         if (data.results.join.alreadyInCall) {
-          const st = data.results.join.status === 'joining' ? 'still joining' : 'already in';
+          const st = (data.results.join.status === 'joining' || data.results.join.status === 'navigating')
+            ? 'still joining' : 'already in';
           return { content: [{ type: "text", text: [
             `The bot is ${st} call ${room_id} as "${BOT_NAME}"${routedNote} — nothing to do, and nothing was disturbed.`,
             ``,

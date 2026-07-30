@@ -4429,8 +4429,27 @@ function updateSpeakingState(name, speaking) {
 if (isDefaultInstance) {
   const gotTheLock = app.requestSingleInstanceLock();
   if (!gotTheLock) {
-    console.log('[electron] Another instance is running, quitting.');
-    app.quit();
+    // Reinstalling/updating the app does NOT kill an already-running process —
+    // it just overwrites the .app bundle. That old process keeps the lock and
+    // keeps serving on DEFAULT_PORT, so a "fresh" relaunch silently quits here
+    // while the old process answers every MCP call with whatever stale state
+    // it was last in (this is exactly how a truly-just-launched app can be
+    // reported as `callStatus: 'joining'` — it's not this process at all).
+    // Best-effort diagnostics before quitting so that class of confusion is
+    // visible in the log instead of silent; never block quitting on it.
+    (async () => {
+      let detail = 'no response';
+      try {
+        const resp = await fetch(`http://127.0.0.1:${DEFAULT_PORT}/api/sync/no-room`,
+          { signal: AbortSignal.timeout(1500) });
+        const data = await resp.json();
+        detail = `roomId=${data.roomId || '(none)'} callStatus=${data.status?.callStatus || '(unknown)'}`;
+      } catch (err) {
+        detail = `port ${DEFAULT_PORT} did not answer diagnostics: ${err.message}`;
+      }
+      console.log('[electron] Another instance already holds the single-instance lock —', detail, '— quitting this one.');
+      app.quit();
+    })();
   }
   app.on('second-instance', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -4634,7 +4653,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '32';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '33';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
@@ -4726,6 +4745,17 @@ app.whenReady().then(async () => {
   // → -105 in WebRTC → the Runway avatar video never connects. The OS resolver handles them, so
   // route host resolution through it. Harmless for Meet/everything else.
   try { app.configureHostResolver({ secureDnsMode: 'off' }); console.log('[runway] host resolver → secureDnsMode off (plain system DNS)'); } catch (e) { console.warn('[runway] configureHostResolver failed:', e && e.message); }
+
+  // Defensive startup reset: a fresh process already constructs `localServer`
+  // with callStatus 'idle' (it's never persisted to disk), so this is
+  // normally a no-op. But it closes off an entire class of "stale status
+  // survives a restart" bug for free — belt-and-suspenders against any future
+  // persistence path, and against a `localServer` singleton that outlives a
+  // single boot for reasons that aren't true today. Real fresh boots pay
+  // nothing for it since setCallStatus() is a no-op when the value hasn't
+  // changed. Must run before any --meet-url auto-join logic below, which is
+  // what actually moves callStatus off 'idle'.
+  localServer.setCallStatus('idle');
 
   // #366 preference scoping: app-level keys (ElevenLabs key, website login,
   // URL overrides, dangerousMode — see config-scope.js) live in the BASE

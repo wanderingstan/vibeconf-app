@@ -10,7 +10,8 @@
 //        bare `this.roomId = roomId`, because only setRoom builds the room's
 //        whiteboard/transcript state.
 //
-// setRoom also calls setCallStatus('joining'). So from beta3 on, the FIRST
+// setRoom also calls setCallStatus (originally 'joining', now 'navigating' —
+// see the callStatus finer-state split below). So from beta3 on, the FIRST
 // join_call after launch adopted the room on its way in — writing both values
 // the guard inspects — and then matched its own footprint and was ignored.
 // Reported ok:true/alreadyInCall:true, so the agent believed it had joined
@@ -39,14 +40,14 @@ const { shouldIgnoreRejoin } = require('../electron-app/rejoin-guard.js');
 const ROOM = 'abc-defg-hij';
 const fresh = () => new LocalServer({ port: 0 });
 
-test('adopting a room sets callStatus to joining — the side effect behind the bug', () => {
+test('adopting a room sets callStatus to navigating — the side effect behind the bug', () => {
   const s = fresh();
   assert.equal(s.roomId, null);
   assert.equal(s.callStatus, 'idle');
 
   s.setRoom(ROOM); // what handleRequest does for an unknown room
 
-  assert.equal(s.callStatus, 'joining',
+  assert.equal(s.callStatus, 'navigating',
     'setRoom announces a join in progress; the guard must not read this as evidence of an EARLIER join');
 });
 

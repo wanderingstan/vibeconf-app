@@ -528,16 +528,22 @@
       }
       // Apply translation + rotation + non-uniform scale around the avatar
       // center. The scaleX/scaleY give the "mouth open" jaw effect.
-      // #38: a DROPPED agent turns the face over. Reserved for the certain case
-      // (the socket died, so the process is gone) — a merely-quiet agent might
-      // be alive on a permission prompt, and toppling it would assert a death we
-      // cannot see. Eased rather than snapped so it reads as falling over.
+      // #38: a DROPPED agent keels over. Reserved for the certain case (the
+      // socket died, so the process is gone) — a merely-quiet agent might be
+      // alive on a permission prompt, and toppling it would assert a death we
+      // cannot see. Eased rather than snapped so it reads as falling.
+      //
+      // 135°, NOT 180°. A half-turn lands the face perfectly inverted, which
+      // reads as deliberate — a thing someone rotated. Stopping short leaves it
+      // off-axis, which is what makes it look collapsed rather than flipped:
+      // the same reason a dead animal reads as dead from its angle alone.
+      const DEAD_FLIP_RAD = Math.PI * 0.75;
       const DEAD_FLIP_MS = 700;
       let deadFlip = 0;
       if (this.agentAbsent && this.agentAbsentReason === 'dropped') {
         if (!this._deadSince) this._deadSince = Date.now();
         const p = Math.max(0, Math.min(1, (Date.now() - this._deadSince) / DEAD_FLIP_MS));
-        deadFlip = Math.PI * (1 - Math.pow(1 - p, 3)); // easeOutCubic
+        deadFlip = DEAD_FLIP_RAD * (1 - Math.pow(1 - p, 3)); // easeOutCubic
       } else {
         this._deadSince = 0;
       }

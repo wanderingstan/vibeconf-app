@@ -1726,7 +1726,9 @@ sync.updateConfig({
 // comparison every 15s. See agent-liveness.js for why the 55s wait_for_speech
 // cap makes this safe, and why it is deliberately thin pending #113.
 let _agentAbsent = false;
-const AGENT_LIVENESS_POLL_MS = 15_000;
+// 5s, not 15: the socket-close path sets the state instantly, so this interval
+// is now the only thing between the agent dying and the face showing it.
+const AGENT_LIVENESS_POLL_MS = 5_000;
 function pollAgentLiveness() {
   let absent = false;
   try { absent = localServer.agentAbsentInCall(); } catch { return; }
@@ -1751,12 +1753,22 @@ function pollAgentLiveness() {
   // This is the one silence in #155 that is a genuine fault, so unlike the
   // others it earns an interruption rather than just a face.
   if (absent) {
+    // Word it to match how sure we actually are. A dropped socket means the
+    // process is gone; a quiet stretch might just as easily be an agent sitting
+    // on a permission prompt, and telling someone to restart a session that is
+    // alive and waiting for them would be actively unhelpful.
+    let reason = 'quiet';
+    try { reason = localServer.agentAbsenceReason(); } catch { /* default */ }
+    const message = reason === 'dropped'
+      ? "The agent driving this bot disconnected. Its terminal has exited or lost "
+        + 'its connection, so nothing is answering in the call. Restart the session to reconnect it.'
+      : reason === 'never'
+        ? "No agent ever attached to this bot. It's in the call but nothing is driving it. "
+          + 'Check the terminal: the session may have failed to start, or be waiting on a Claude login.'
+        : "This bot has gone quiet: no agent activity for a while, so it may not answer. "
+          + 'Check its terminal. It could be waiting on a permission prompt, busy on a long task, or stopped.';
     try {
-      broadcastError(
-        "No agent is driving this bot — it's in the call but nothing is answering. "
-        + 'Check the terminal running the agent: it may have exited, or be waiting '
-        + 'on a Claude login. Restart the session to reconnect it.'
-      );
+      broadcastError(message);
     } catch (err) {
       console.error('[electron] Failed to surface agent-absent error:', err.message);
     }

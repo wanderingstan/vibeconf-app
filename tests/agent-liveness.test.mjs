@@ -30,7 +30,12 @@ test('the 55s wait_for_speech cap is what makes this detectable', () => {
   // AGENT_AWAY_MS window below has to move too. Pinned so that is a deliberate
   // change rather than a silent regression in an unrelated file.
   assert.match(mcp, /Math\.min\(55,\s*timeout_seconds\s*\|\|\s*55\)/);
-  assert.ok(AGENT_AWAY_MS > 55_000 * 2 - 1, 'the away window must span at least two check-in cycles');
+  // Activity is stamped on request ARRIVAL and a poll occupies up to 55s of it,
+  // so the moment a poll resolves the clock already reads ~55s. The usable
+  // turnaround budget is (AGENT_AWAY_MS - 55s), and it has to comfortably
+  // outlast one slow model turn.
+  assert.ok(AGENT_AWAY_MS - 55_000 >= 30_000,
+    'the backstop must leave >=30s of turnaround headroom past the poll duration');
 });
 
 test('an agent that is waiting is live', () => {
@@ -43,13 +48,13 @@ test('a busy agent is not reported as gone', () => {
   // The false positive that matters. An agent mid-tool-call or synthesising a
   // long answer legitimately goes quiet past one 55s cycle; alarming there would
   // put 🫥 on a bot that is merely thinking, and train people to ignore it.
-  const busy = classifyAgent({ activeWaiters: 0, lastAgentActivityAt: NOW - 90_000, now: NOW });
+  const busy = classifyAgent({ activeWaiters: 0, lastAgentActivityAt: NOW - 80_000, now: NOW });
   assert.equal(busy, 'busy');
   assert.equal(agentIsAbsent(busy), false, 'a thinking agent must not get the absent face');
 });
 
-test('two missed cycles is gone', () => {
-  const away = classifyAgent({ activeWaiters: 0, lastAgentActivityAt: NOW - 130_000, now: NOW });
+test('sustained silence is gone', () => {
+  const away = classifyAgent({ activeWaiters: 0, lastAgentActivityAt: NOW - 100_000, now: NOW });
   assert.equal(away, 'away');
   assert.equal(agentIsAbsent(away), true);
 });
@@ -78,6 +83,29 @@ test('any agent request counts as proof of life, not just wait_for_speech', () =
   assert.ok(door < stamp && stamp < handle, 'must be stamped on arrival, before the handler runs');
 });
 
+test('a dropped socket is detected immediately, not waited out', () => {
+  // The main signal. An agent killed while parked in wait_for_speech — where it
+  // spends most of its life — closes its TCP connection, which the OS tells us
+  // about at once. Waiting out an elapsed-time threshold for something already
+  // known is the slowness this removes.
+  assert.match(server, /req\.on\('close', \(\) => \{/);
+  assert.match(server, /this\.agentSocketLost = true;/);
+  // 'close' also fires on a normal response, which is not a disconnect.
+  const fn = server.slice(server.indexOf("req.on('close'"));
+  assert.match(fn.slice(0, 200), /if \(waiter\.resolved\) return;/);
+  // The waiter must be torn down, not left to fire its timers into a dead socket.
+  assert.match(fn.slice(0, 600), /clearTimeout\(waiter\.timer\)/);
+  assert.match(fn.slice(0, 600), /this\.waiters = this\.waiters\.filter/);
+});
+
+test('a dropped socket short-circuits the elapsed-time thresholds', () => {
+  const fn = server.slice(server.indexOf('agentState() {'));
+  const body = fn.slice(0, fn.indexOf('\n  }'));
+  assert.match(body, /if \(this\.agentSocketLost && this\.waiters\.length === 0\) return 'away';/);
+  // And the agent's next request clears it, so a reconnect recovers.
+  assert.match(server, /this\.agentSocketLost = false;/);
+});
+
 test('the absent face only applies during a call', () => {
   // Out of a call there is nothing for an agent to drive, so "no agent" is the
   // normal resting condition rather than a fault worth a face.
@@ -102,8 +130,7 @@ test('losing the agent raises a real app error, not just a face', () => {
   // in the foreground (deduped).
   const fn = main.slice(main.indexOf('function pollAgentLiveness'));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
-  assert.match(body, /broadcastError\(/);
-  assert.match(body, /No agent is driving this bot/);
+  assert.match(body, /broadcastError\(message\)/);
   // Only on the way out. An alert for "everything is fine again" trains people
   // to dismiss alerts.
   const raise = body.indexOf('broadcastError(');
@@ -129,4 +156,31 @@ test('the panel and the avatar cannot disagree', () => {
   assert.match(panel, /switch \(s\.agentState\)/, 'the panel must read the served verdict');
   assert.ok(!/idleSecs < 60/.test(panel), 'the panel must not keep its own thresholds');
   assert.match(server, /agentState: this\.agentState\(\)/, 'the verdict must be in the status payload');
+});
+
+test('the warning claims only as much as we actually know', () => {
+  // A dropped socket means the process is gone. A quiet stretch does NOT — it
+  // could be an agent sitting on a permission prompt in its terminal, or one
+  // deep in work that makes no MCP calls. Telling someone to restart a session
+  // that is alive and waiting on them would be worse than saying nothing.
+  const fn = main.slice(main.indexOf('function pollAgentLiveness'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.match(body, /agentAbsenceReason\(\)/);
+  assert.match(body, /reason === 'dropped'/);
+  // Only the dropped case is allowed to assert the terminal exited.
+  const dropped = body.slice(body.indexOf("reason === 'dropped'"), body.indexOf("reason === 'never'"));
+  assert.match(dropped, /disconnected/);
+  // The ambiguous case must name the innocent explanations too.
+  const quiet = body.slice(body.indexOf('gone quiet'));
+  assert.match(quiet.slice(0, 300), /permission prompt/);
+  assert.ok(!/Restart the session/.test(quiet.slice(0, 300)),
+    'must not tell the user to restart an agent that may be alive and waiting on them');
+});
+
+test('the three absence reasons stay distinguishable', () => {
+  const fn = server.slice(server.indexOf('agentAbsenceReason()'));
+  const body = fn.slice(0, fn.indexOf('\n  }'));
+  assert.match(body, /return 'dropped'/);
+  assert.match(body, /'never'/);
+  assert.match(body, /'quiet'/);
 });

@@ -426,6 +426,11 @@ class LocalServer {
     // whole surface — including the long tool-work stretches where the loop is
     // legitimately not waiting and would otherwise look dead.
     this.lastAgentActivityAt = null;
+    // Set when a long-poll's socket dies before the poll resolves, i.e. the
+    // agent process went away mid-wait. Unlike the timestamp above this is not
+    // an inference from elapsed time — it is the OS telling us the peer is
+    // gone — so it counts immediately. Cleared by the agent's next request.
+    this.agentSocketLostAt = null;
 
     // --- Claude responsiveness (mid-call perf) ---------------------------------
     // The headline "is the bot snappy today" metric is Claude's reaction time:
@@ -1310,6 +1315,9 @@ class LocalServer {
   // Is anyone driving this bot? See agent-liveness.js for why wait_for_speech's
   // 55s cap is what makes this trustworthy.
   agentState() {
+    // A dropped socket is proof, not inference, so it short-circuits the
+    // elapsed-time thresholds entirely.
+    if (this.agentSocketLost && this.waiters.length === 0) return 'away';
     return classifyAgent({
       activeWaiters: this.waiters.length,
       lastAgentActivityAt: this.lastAgentActivityAt,
@@ -1321,6 +1329,19 @@ class LocalServer {
   // so "no agent" is the normal resting condition rather than a fault.
   agentAbsentInCall() {
     return this.callStatus === 'in-call' && agentIsAbsent(this.agentState());
+  }
+
+  // WHY we think nobody is driving, because the two are not equally certain and
+  // should not claim to be:
+  //   'dropped' — the socket died. The process is gone; this is a fact.
+  //   'quiet'   — nothing has called in for a while. It could equally be an
+  //               agent blocked on a permission prompt in its terminal, or one
+  //               deep in work that makes no MCP calls. Saying "it exited" here
+  //               would be a guess presented as a diagnosis.
+  //   'never'   — nothing ever attached.
+  agentAbsenceReason() {
+    if (this.agentSocketLost && this.waiters.length === 0) return 'dropped';
+    return this.agentState() === 'never' ? 'never' : 'quiet';
   }
 
   // #115: record the fast floor edge and, when the DOM path later agrees, log
@@ -3113,6 +3134,7 @@ class LocalServer {
         // crediting it at the end would backdate the agent's liveness by a
         // whole cycle.
         this.lastAgentActivityAt = Date.now();
+        this.agentSocketLost = false;
         this._handleRequest(req, res).catch(err => {
           console.error('[local-server] Request error:', err.message);
           // A handler that already responded and THEN threw would otherwise
@@ -3754,6 +3776,26 @@ class LocalServer {
           this._resolveWaiter(waiter, 'timeout');
         }, clampedWait * 1000),
       };
+      // A killed agent closes its TCP connection immediately, so this is a FACT
+      // rather than a guess from elapsed silence — and it is the common case,
+      // since an agent in the conversation loop spends most of its life parked
+      // in this poll. Without it, killing an agent mid-wait takes the full
+      // timeout to notice; with it, the face changes within a poll tick.
+      //
+      // Guarded on waiter.resolved because 'close' also fires on the normal
+      // response, which is not a disconnect.
+      req.on('close', () => {
+        if (waiter.resolved) return;
+        waiter.resolved = true;
+        clearTimeout(waiter.timer);
+        clearTimeout(waiter.silenceTimer);
+        clearTimeout(waiter.tickTimer);
+        this.waiters = this.waiters.filter((w) => w !== waiter);
+        this.agentSocketLost = true;
+        this.agentSocketLostAt = Date.now();
+        console.log(ts(), '\u{1F50C} [agent] wait_for_speech socket closed before resolving — agent went away');
+        resolve({ success: true, aborted: true, asOf: new Date().toISOString(), transcript: { entries: [] } });
+      });
       this.waiters.push(waiter);
       this.lastWaitForSpeechAt = Date.now();
       this._setBotState('listening');

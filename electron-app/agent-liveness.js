@@ -24,11 +24,20 @@
 // things worth keeping. So: no reconnect logic, no backoff, no session
 // bookkeeping here. Two timestamps and a threshold.
 
-// Two missed cycles. One missed cycle is ordinary — an agent mid-tool-call, or
-// synthesising a long reply, legitimately goes quiet past 55s — so alarming at
-// one would put 🫥 on the face of a bot that is merely thinking. Two is the
-// point where "busy" stops being the simpler explanation.
-const AGENT_AWAY_MS = 120_000;
+// A BACKSTOP, not the main signal. The common case — an agent killed while
+// parked in wait_for_speech, which is where it spends most of its life — is
+// caught by the socket closing, which is instant and is a fact rather than an
+// inference (see agentSocketLost in local-server.js). This threshold only covers
+// an agent that dies during its turnaround, with no poll open to drop.
+//
+// Why it can't be much tighter: activity is stamped when a request ARRIVES, and
+// a wait_for_speech occupies up to 55s of that. So the moment a poll resolves,
+// the clock already reads ~55s and the usable budget is (threshold - 55s). At
+// 65s that leaves ~10s for the agent to think and issue its next call, which a
+// single slow model turn would blow through — flagging a healthy bot as dead.
+// 90s leaves ~35s, which is comfortably past a normal turnaround while still
+// being half of what a pure elapsed-time detector needed.
+const AGENT_AWAY_MS = 90_000;
 
 // Below this the agent is between waits (the loop's own turnaround), which is
 // normal and not worth distinguishing to the user.

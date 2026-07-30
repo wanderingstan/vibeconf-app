@@ -178,12 +178,56 @@ const PREFERENCES = {
       "now (drafting what the bot would say) and by the fast model once it " +
       "becomes the bot's voice. Empty = a neutral, conversational default.",
   },
+  // ── The bot's voice ───────────────────────────────────────────────────────
+  // One choice, four keys, because the three TTS providers don't share an
+  // identifier space: an OS voice is a NAME ("Ava (Premium)"), ElevenLabs is an
+  // opaque ID, and Voicebox needs a profile id PLUS the engine that renders it.
+  // So the stored form is "which provider" + "that provider's identifier".
+  //
+  // They live here rather than in some private corner because set_voice has to
+  // be able to write them through /api/preferences like every other setting —
+  // when they weren't preferences, the MCP server grew its own config file to
+  // hold them and the two copies silently diverged. Prefer set_voice
+  // over setting any of these by hand: it resolves a name across all three
+  // providers and writes the whole set consistently.
+  ttsProvider: {
+    type: 'string',
+    default: '',
+    enum: ['', 'elevenlabs', 'macos-say', 'voicebox'],
+    description:
+      'Which text-to-speech engine renders the bot\'s voice. Empty = pick automatically ' +
+      '(ElevenLabs when a key is set, otherwise the built-in OS voice). Set indirectly ' +
+      'by set_voice, which forces the provider that owns the voice you chose.',
+  },
   ttsVoiceId: {
     type: 'string',
     default: '',
     description:
-      'ElevenLabs voice ID. Empty means use macOS built-in TTS. ' +
+      'ElevenLabs voice ID, used when ttsProvider is "elevenlabs". ' +
       'Use list_voices and set_voice for an in-call switch instead of editing this directly.',
+  },
+  macosVoice: {
+    type: 'string',
+    default: '',
+    description:
+      'Built-in OS voice NAME, used when ttsProvider is "macos-say" — a macOS `say` voice ' +
+      '("Ava (Premium)") or, on Windows, a SAPI voice ("Microsoft Zira Desktop"). The key ' +
+      'is named for macOS for config compatibility; it holds the Windows voice too. ' +
+      'Use list_voices and set_voice rather than editing this directly.',
+  },
+  voiceboxProfileId: {
+    type: 'string',
+    default: '',
+    description:
+      'Voicebox local-TTS profile id, used when ttsProvider is "voicebox". ' +
+      'Use list_voices and set_voice rather than editing this directly.',
+  },
+  voiceboxEngine: {
+    type: 'string',
+    default: '',
+    description:
+      'Which engine renders the Voicebox profile (e.g. "kokoro"). Set alongside ' +
+      'voiceboxProfileId by set_voice; a profile id without its engine will not speak.',
   },
   avatarBackgroundSvg: {
     type: 'string',

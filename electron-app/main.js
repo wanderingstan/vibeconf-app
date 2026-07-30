@@ -164,24 +164,40 @@ function noteChatResult(result) {
 // Once per call — the walk opens Meet's Settings dialog, which briefly covers
 // the caption region, and repeating it on every captions-ready blip would make
 // the bot intermittently deaf for no gain.
-let _captionLanguageAppliedFor = null;
+// What the caption language is CURRENTLY set to, and for which call:
+// { room, requested, resolved }. Set by onSetCaptionLanguage — the one place
+// every path (join-time pref, a mid-call set_caption_language, a preference
+// write) funnels through — so any of them can tell whether the work is already
+// done. Both spellings are kept because Meet resolves loose tags: ask for "es"
+// and it selects "es-ES", and the next request may use either form.
+let _captionLanguageApplied = null;
+function captionLanguageAlreadyApplied(room, language) {
+  const a = _captionLanguageApplied;
+  if (!a || !room || a.room !== room) return false;
+  return a.requested === language || a.resolved === language;
+}
+
+// The walk takes a second or two and captions-ready can fire repeatedly in that
+// window. The success latch alone can't stop a second walk starting before the
+// first finishes, so the automatic paths also hold this while one is running.
+// (An explicit set_caption_language is not gated by it — the agent asked.)
+let _captionLanguageInFlight = false;
+
 function applyCaptionLanguagePref() {
   const want = String(store?.get('captionLanguage') || '').trim();
   if (!want) return;                                     // unset = leave Meet alone
   const room = localServer.roomId;
-  if (!room || _captionLanguageAppliedFor === room) return;
-  _captionLanguageAppliedFor = room;
+  if (!room || _captionLanguageInFlight || captionLanguageAlreadyApplied(room, want)) return;
+  _captionLanguageInFlight = true;
   localServer.onSetCaptionLanguage({ language: want })
     .then((r) => {
       if (r && r.ok) console.log('[electron] Caption language applied on join:', r.language);
-      else {
-        // Don't wedge it: a failure here should be retryable on the next
-        // captions-ready rather than silently never attempted again.
-        _captionLanguageAppliedFor = null;
-        console.warn('[electron] Caption language on join failed:', r && r.error);
-      }
+      // A failure needs no un-latching: onSetCaptionLanguage only records the
+      // language when it actually succeeded, so the next captions-ready retries.
+      else console.warn('[electron] Caption language on join failed:', r && r.error);
     })
-    .catch((err) => { _captionLanguageAppliedFor = null; console.warn('[electron] Caption language on join threw:', err.message); });
+    .catch((err) => { console.warn('[electron] Caption language on join threw:', err.message); })
+    .finally(() => { _captionLanguageInFlight = false; });
 }
 
 function callViewRequest(channel, payload, resultEvent, timeoutMs = 15000) {
@@ -827,8 +843,13 @@ const localServer = new globalThis.LocalServer({
       CALL_EVENTS.captionLanguageResult,
       30000,
     );
-    if (result && result.ok) console.log('[local-server] Caption language →', result.language);
-    else console.warn('[local-server] Caption language change failed:', result && result.error);
+    if (result && result.ok) {
+      console.log('[local-server] Caption language →', result.language);
+      // Record what's now live, so the other paths into here (the join-time
+      // pref, a preference write) can see the work is already done rather than
+      // walking Meet's Settings dialog a second time for the same value.
+      _captionLanguageApplied = { room: localServer.roomId, requested: want, resolved: result.language };
+    } else console.warn('[local-server] Caption language change failed:', result && result.error);
     return result;
   },
   onSetShareAudio: async ({ muted } = {}) => {
@@ -1552,8 +1573,20 @@ const localServer = new globalThis.LocalServer({
     // Live-apply hooks per-key. Anything we leave out is read on next use
     // (the ack thresholds, for example, are read every time a thinking state
     // fires — no live-apply needed).
+    // The voice keys, live. All four have to be here: set_voice writes the
+    // provider AND that provider's identifier together, and applying only the
+    // id (which is all this did) left the engine on its old provider until the
+    // next restart — the change looked saved but the bot kept its old voice.
     if (key === 'ttsVoiceId') {
       tts.updateConfig?.({ voiceId: value });
+    } else if (key === 'ttsProvider') {
+      tts.updateConfig?.({ provider: value });
+    } else if (key === 'macosVoice') {
+      tts.updateConfig?.({ macosVoice: value });
+    } else if (key === 'voiceboxProfileId') {
+      tts.updateConfig?.({ voiceboxProfileId: value });
+    } else if (key === 'voiceboxEngine') {
+      tts.updateConfig?.({ voiceboxEngine: value });
     } else if (key === 'botName') {
       applyWindowTitle(); // the window is named after the bot
       // Surface the change in the panel so the input reflects reality.
@@ -1571,11 +1604,20 @@ const localServer = new globalThis.LocalServer({
       pushEmojiSet(value);
     } else if (key === 'captionLanguage') {
       // Take effect now if we're in a call; otherwise it lands on the next join.
-      if (localServer.callStatus === 'in-call' && String(value || '').trim()) {
-        _captionLanguageAppliedFor = localServer.roomId; // this IS the application
-        localServer.onSetCaptionLanguage({ language: String(value).trim() })
+      //
+      // Skipped when this language is already live — set_caption_language now
+      // SAVES what it applied, so it arrives here immediately after doing the
+      // work, and re-walking Meet's Settings dialog would cover the caption
+      // region (making the bot briefly deaf) to reach the state it's already in.
+      const want = String(value || '').trim();
+      if (localServer.callStatus === 'in-call' && want
+          && !_captionLanguageInFlight
+          && !captionLanguageAlreadyApplied(localServer.roomId, want)) {
+        _captionLanguageInFlight = true;
+        localServer.onSetCaptionLanguage({ language: want })
           .then((r) => console.log('[electron] Caption language pref applied live:', r && (r.language || r.error)))
-          .catch(() => {});
+          .catch(() => {})
+          .finally(() => { _captionLanguageInFlight = false; });
       }
     } else if (key === 'studioSound') {
       // Toggle Meet's voice filter live (no rejoin needed) when in-call.

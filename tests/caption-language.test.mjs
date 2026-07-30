@@ -133,3 +133,15 @@ test('Slack reports caption language as unsupported rather than pretending', () 
   const fn = slack.slice(slack.indexOf('async setCaptionLanguage'));
   assert.match(fn, /ok: false/);
 });
+
+test('the previous language comes from the selected option, not the combobox text', () => {
+  // combo.textContent looked obvious and was wrong: Meet stacks three hidden
+  // duplicate label spans inside the combobox, so it returned
+  // "Language of the meetingLanguage of the meeting…English" with the real
+  // answer buried at the end. Seen live 2026-07-30 in the first working run.
+  const fn = codeOnly(provider.slice(provider.indexOf('async function setCaptionLanguage')));
+  assert.ok(!/before = \(combo\.textContent/.test(fn),
+    'must not read the combobox textContent — it concatenates hidden label spans');
+  assert.match(fn, /MEET\.captionLanguage\.selectedOption/,
+    'must read the aria-selected option instead');
+});

@@ -2630,12 +2630,25 @@ async function setCaptionLanguage(language) {
       return { ok: false, error: 'language dropdown not found' };
     }
 
-    const before = (combo.textContent || '').trim();
+    // Read the previous language AFTER opening the listbox (below), from the
+    // option Meet marks aria-selected. combo.textContent looked obvious and was
+    // wrong: Meet stacks three hidden duplicate label spans inside the combobox,
+    // so it returned "Language of the meetingLanguage of the meeting…English"
+    // with the real answer buried at the end. Verified live 2026-07-30.
+    let before = null;
 
     // 4) Open the listbox and pick the option.
     combo.click();
     let box = await waitFor(() => findListbox(combo), 3000);
     let opts = optionsIn(box);
+    // The currently-selected option is the honest source for "what was it
+    // before" — one element, one label, no hidden duplicates.
+    const selected = box ? box.querySelector(MEET.captionLanguage.selectedOption) : null;
+    if (selected) {
+      before = (selected.getAttribute('data-value')
+        || (selected.getAttribute('aria-label') || '').trim()
+        || (selected.textContent || '').trim()) || null;
+    }
     let opt = pickOption(opts);
 
     // Fallback: the menu is deferred/virtualised and rendered nothing we can

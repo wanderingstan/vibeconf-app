@@ -319,7 +319,11 @@ for i in $(seq 1 $N); do
   # implicitly). Idempotent merge — preserves whatever else is in the config.
   PROFDIR="$HOME/Library/Application Support/Vibeconferencing/profiles/$profile"
   mkdir -p "$PROFDIR"
-  node -e 'const fs=require("fs");const p=process.argv[1]+"/config.json";let c={};try{c=JSON.parse(fs.readFileSync(p,"utf8"))}catch{}if(c.ttsProvider!=="macos-say"){c.ttsProvider="macos-say";fs.writeFileSync(p,JSON.stringify(c,null,2));}' "$PROFDIR"
+  # Also seed onboardingComplete=true: the first-run setup wizard is a
+  # focus-stealing modal, and once it can appear for ANY un-onboarded profile
+  # (not just the default instance) it would pop up over these freshly-created
+  # guest profiles mid-test. Idempotent merge — writes only when something changed.
+  node -e 'const fs=require("fs");const p=process.argv[1]+"/config.json";let c={};try{c=JSON.parse(fs.readFileSync(p,"utf8"))}catch{}let d=false;if(c.ttsProvider!=="macos-say"){c.ttsProvider="macos-say";d=true;}if(c.onboardingComplete!==true){c.onboardingComplete=true;d=true;}if(d)fs.writeFileSync(p,JSON.stringify(c,null,2));' "$PROFDIR"
   if (( PKG )); then
     # open -n = new instance (profiles bypass the single-instance lock). It
     # returns immediately and runs detached; we wait/kill by port below, and the

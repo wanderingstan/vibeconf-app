@@ -71,20 +71,24 @@ SLACK_SETUP_URL="${SLACK_SETUP_URL:-https://app.slack.com/}"
 # botName in particular MUST be persisted: the app reads store.get('botName')
 # and falls back to a hardcoded 'Jimmy' when it's unset — so an un-seeded Alice
 # profile shows up as "Jimmy" on the main screen and in Bot Preferences.
+# onboardingComplete=true skips the first-run setup wizard: the wizard is a
+# focus-stealing modal window, and once it can appear for ANY un-onboarded
+# profile (not just the default instance) it would pop up mid-test. Seeding it
+# keeps the fleet headless.
 # These are per-profile electron-store prefs (config.json), login-independent,
 # so we write them directly (creating the profile dir if needed). Runs
 # regardless of the --google/--slack flags.
 PROFILE_ROOT="$HOME/Library/Application Support/Vibeconferencing/profiles"
-set_pref() {  # <profile-name> <key> <value>
+set_pref() {  # <profile-name> <key> <value> — 'true'/'false' are written as JSON booleans
   local dir="$PROFILE_ROOT/$1"
-  node -e 'const fs=require("fs"),p=process.argv[1],k=process.argv[2],v=process.argv[3];let c={};try{c=JSON.parse(fs.readFileSync(p,"utf8"))}catch{};c[k]=v;fs.writeFileSync(p,JSON.stringify(c,null,2)+"\n")' "$dir/config.json" "$2" "$3"
+  node -e 'const fs=require("fs"),p=process.argv[1],k=process.argv[2],raw=process.argv[3];const v=raw==="true"?true:raw==="false"?false:raw;let c={};try{c=JSON.parse(fs.readFileSync(p,"utf8"))}catch{};c[k]=v;fs.writeFileSync(p,JSON.stringify(c,null,2)+"\n")' "$dir/config.json" "$2" "$3"
   echo "  • $1 → $2=$3"
 }
-echo "▶ Profile identity: Alice(-1)=fluent3d, Jimmy(-2)=noto"
+echo "▶ Profile identity: Alice(-1)=fluent3d, Jimmy(-2)=noto (+ skip onboarding wizard)"
 for cls in test-meet-guest test-meet-google test-slack; do
   mkdir -p "$PROFILE_ROOT/$cls-1" "$PROFILE_ROOT/$cls-2"
-  set_pref "$cls-1" botName Alice; set_pref "$cls-1" emojiSet fluent3d
-  set_pref "$cls-2" botName Jimmy; set_pref "$cls-2" emojiSet noto
+  set_pref "$cls-1" botName Alice; set_pref "$cls-1" emojiSet fluent3d; set_pref "$cls-1" onboardingComplete true
+  set_pref "$cls-2" botName Jimmy; set_pref "$cls-2" emojiSet noto;     set_pref "$cls-2" onboardingComplete true
 done
 echo
 

@@ -55,6 +55,7 @@ All tools accept an optional `room_id` argument. If omitted, the MCP server uses
 | Tool | What |
 |---|---|
 | **`set_mode`** | Switch the bot's persistent behavior mode. `active` = responds freely on every pause (default). `passive` = silent until its name is mentioned. `silent` = listens and can act (whiteboard, tools) but never speaks. See [modes-and-states.md](modes-and-states.md). |
+| **`set_caption_language`** | Set the language the bot LISTENS in, by changing Meet's "Language of the meeting" caption setting. Not cosmetic: the bot hears the room by reading Meet's captions, so a mismatch means it hears nonsense and answers it rather than falling silent. Meet has no host-level control — each participant sets their own — so the bot sets its own. Takes a BCP-47 tag (`de-DE`, `es-ES`, `en-GB`); a bare `de` resolves to the first regional variant Meet lists. |
 
 ## Preferences
 

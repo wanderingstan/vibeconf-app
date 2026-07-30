@@ -89,13 +89,26 @@ export function lineGroup(svg) {
   return null;
 }
 
+// OpenMoji draws 👀 looking to its left, which on the panel means the eyes look
+// away from the button they belong to. Mirrored, they look INTO "Call now" —
+// the thing they're offering to show you.
+//
+// Mirrored here rather than with a CSS transform so the asset is simply correct:
+// nothing downstream has to remember to flip it, and it can't be double-flipped
+// by a second rule later.
+const MIRRORED = new Set(['eyes']);
+
 // A standalone 72x72 SVG holding just the outline. Whitespace is collapsed
 // because the whole thing has to survive as a single-line CSS url().
-export function iconSvg(cp) {
+export function iconSvg(cp, { mirror = false } = {}) {
   const g = lineGroup(readGlyph(cp));
   if (!g) throw new Error(`U+${cp} has no <g id="line"> outline`);
   const body = g.replace(/<!--.*?-->/gs, '').replace(/\s+/g, ' ').trim();
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72">${body}</svg>`;
+  // translate-then-scale: scale(-1,1) alone reflects about x=0 and takes the
+  // glyph off the left edge of the canvas, so it has to be pushed back by the
+  // full 72 width.
+  const art = mirror ? `<g transform="translate(72,0) scale(-1,1)">${body}</g>` : body;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72">${art}</svg>`;
 }
 
 // Only the characters that would break out of a double-quoted CSS url() need
@@ -113,7 +126,7 @@ export function cssUrl(svg) {
 
 export function buildCss() {
   const rules = [
-    ...Object.entries(ICONS).map(([name, cp]) => [name, iconSvg(cp)]),
+    ...Object.entries(ICONS).map(([name, cp]) => [name, iconSvg(cp, { mirror: MIRRORED.has(name) })]),
     ...Object.entries(DRAWN).map(([name, body]) => [name, drawnSvg(body)]),
   ]
     .map(([name, svg]) => `.ui-icon-${name} { --ui-icon: ${cssUrl(svg)}; }`)
@@ -156,7 +169,7 @@ ${rules}
 `;
 }
 
-export { DRAWN, drawnSvg };
+export { DRAWN, drawnSvg, MIRRORED };
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
 if (isMain) {

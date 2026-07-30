@@ -15,7 +15,7 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ICONS, buildCss, iconSvg, cssUrl } from '../scripts/gen-ui-icons.mjs';
+import { ICONS, MIRRORED, buildCss, iconSvg, cssUrl } from '../scripts/gen-ui-icons.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
@@ -45,6 +45,22 @@ test('every icon resolves to real outline art, not an empty shell', () => {
     // paints the whole opaque area with currentColor.
     assert.ok(!svg.includes('id="color"'), `${name} dragged the colour layer in`);
     assert.ok(css.includes(`.ui-icon-${name} {`), `${name} is missing its CSS rule`);
+  }
+});
+
+test('the eyes are mirrored so they look toward the button', () => {
+  // OpenMoji draws 👀 glancing left, away from the control it sits beside.
+  const flipped = iconSvg(ICONS.eyes, { mirror: true });
+  // Both halves matter: scale(-1,1) alone reflects about x=0 and would put the
+  // glyph off the canvas entirely, leaving an empty icon that still validates.
+  assert.match(flipped, /transform="translate\(72,0\) scale\(-1,1\)"/);
+  assert.ok(css.includes('translate(72,0) scale(-1,1)'), 'the shipped eyes icon is not mirrored');
+  // And only that one — a flip applied to the gear or the clipboard would be a
+  // bug nobody notices until they read the artwork closely.
+  assert.deepStrictEqual([...MIRRORED], ['eyes']);
+  for (const [name, cp] of Object.entries(ICONS)) {
+    if (name === 'eyes') continue;
+    assert.ok(!iconSvg(cp, { mirror: false }).includes('scale(-1,1)'), `${name} should not be flipped`);
   }
 });
 

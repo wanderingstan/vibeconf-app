@@ -21,6 +21,7 @@ const { URL } = require('url');
 const AUTH_TOKEN_DIR = path.join(os.homedir(), '.vibeconferencing', 'local-tokens');
 function localTokenPath(port) { return path.join(AUTH_TOKEN_DIR, `${port}.token`); }
 const prefsSchema = require('./preferences-schema.js');
+const { classifyAgent, agentIsAbsent } = require('./agent-liveness.js');
 const { getRecentSessionLog, getSessionLogPath } = require('./session-log.js');
 const { shouldIgnoreRejoin } = require('./rejoin-guard.js');
 const { TranscriptTailer } = require('./agent-transcript.js');
@@ -420,6 +421,11 @@ class LocalServer {
     // Long-poll waiters
     this.waiters = [];           // { resolve, since, bot, silence, timer }
     this.lastWaitForSpeechAt = null; // ms timestamp of the most recent wait_for_speech call
+    // Anything the AGENT did, not just wait_for_speech (#38). Every MCP tool
+    // reaches the app over HTTP, so one stamp at the request door covers the
+    // whole surface — including the long tool-work stretches where the loop is
+    // legitimately not waiting and would otherwise look dead.
+    this.lastAgentActivityAt = null;
 
     // --- Claude responsiveness (mid-call perf) ---------------------------------
     // The headline "is the bot snappy today" metric is Claude's reaction time:
@@ -1283,6 +1289,10 @@ class LocalServer {
       activeWaiters: this.waiters.length,
       lastAckEvent: this.lastAckEvent,
       lastWaitForSpeechAt: this.lastWaitForSpeechAt,
+      lastAgentActivityAt: this.lastAgentActivityAt,
+      // Computed once, here, so the avatar and the Troubleshooting readout
+      // can never disagree about whether anyone is driving.
+      agentState: this.agentState(),
       pendingBotSpeech: (this.pendingBotSpeech || []).map(e => ({
         text: e.text || '',
         voice: e.voice || null,
@@ -1295,6 +1305,22 @@ class LocalServer {
         isBot: botNames.has((p.name || '').toLowerCase()),
       })),
     };
+  }
+
+  // Is anyone driving this bot? See agent-liveness.js for why wait_for_speech's
+  // 55s cap is what makes this trustworthy.
+  agentState() {
+    return classifyAgent({
+      activeWaiters: this.waiters.length,
+      lastAgentActivityAt: this.lastAgentActivityAt,
+    });
+  }
+
+  // The face-worthy half of it: away or never-attached, and only while we are
+  // actually in a call — out of a call there is nothing for an agent to drive,
+  // so "no agent" is the normal resting condition rather than a fault.
+  agentAbsentInCall() {
+    return this.callStatus === 'in-call' && agentIsAbsent(this.agentState());
   }
 
   // #115: record the fast floor edge and, when the DOM path later agrees, log
@@ -3081,6 +3107,12 @@ class LocalServer {
     if (!this.authToken) this.authToken = crypto.randomBytes(24).toString('hex');
     return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => {
+        // The agent is the only thing that talks to this server over HTTP (the
+        // panel uses IPC), so any request IS proof of life. Stamped on arrival
+        // rather than completion because wait_for_speech blocks for up to 55s —
+        // crediting it at the end would backdate the agent's liveness by a
+        // whole cycle.
+        this.lastAgentActivityAt = Date.now();
         this._handleRequest(req, res).catch(err => {
           console.error('[local-server] Request error:', err.message);
           // A handler that already responded and THEN threw would otherwise

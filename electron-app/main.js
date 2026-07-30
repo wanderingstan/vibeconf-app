@@ -1716,6 +1716,54 @@ sync.updateConfig({
 // throttled/frozen renderer, etc. Making it VISIBLE beats the bot sitting there
 // wearing a happy listening face while it hears nothing. Notifies the agent
 // once per episode so it can say something rather than appear to ignore people.
+// #38: nobody is driving. A bot whose agent died looks exactly like one
+// listening politely — resting face, in the call, saying nothing — and it is the
+// only one of #155's four silences that is a real fault rather than the system
+// working as designed.
+//
+// Polled rather than event-driven because the interesting transition is an
+// ABSENCE of requests, which by definition fires no event. Cheap: one integer
+// comparison every 15s. See agent-liveness.js for why the 55s wait_for_speech
+// cap makes this safe, and why it is deliberately thin pending #113.
+let _agentAbsent = false;
+const AGENT_LIVENESS_POLL_MS = 15_000;
+function pollAgentLiveness() {
+  let absent = false;
+  try { absent = localServer.agentAbsentInCall(); } catch { return; }
+  if (absent === _agentAbsent) return;
+  _agentAbsent = absent;
+  if (meetView && !meetView.webContents.isDestroyed()) {
+    meetView.webContents.send('extension-message', {
+      action: 'set-agent-absent',
+      payload: { absent },
+    });
+  }
+  console.warn('[electron]', absent
+    ? '\u{1FAE5} no agent driving — avatar shows nobody home'
+    : '\u{1FAE5} agent back — avatar restored');
+
+  // Raise it as a real app error on the way OUT only. broadcastError already
+  // does both halves of what this needs: the notice over the avatar in the
+  // panel, and a system notification when the app isn't in the foreground
+  // (deduped, so a long outage doesn't spam). Recovery is deliberately quiet —
+  // an alert for "everything is fine again" trains people to dismiss alerts.
+  //
+  // This is the one silence in #155 that is a genuine fault, so unlike the
+  // others it earns an interruption rather than just a face.
+  if (absent) {
+    try {
+      broadcastError(
+        "No agent is driving this bot — it's in the call but nothing is answering. "
+        + 'Check the terminal running the agent: it may have exited, or be waiting '
+        + 'on a Claude login. Restart the session to reconnect it.'
+      );
+    } catch (err) {
+      console.error('[electron] Failed to surface agent-absent error:', err.message);
+    }
+  }
+}
+setInterval(pollAgentLiveness, AGENT_LIVENESS_POLL_MS);
+
 let _impaired = false;
 function setImpaired(on, reason = '') {
   on = !!on;

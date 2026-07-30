@@ -128,6 +128,9 @@
       // room and the operator can SEE that the bot is impaired instead of it
       // sitting there wearing a happy listening face while hearing nothing.
       this.impaired = avatarState.impaired;
+      // #38: no agent is driving. Distinct from `impaired` (agent present but
+      // hobbled) and from callStatus (not in the call at all).
+      this.agentAbsent = avatarState.agentAbsent;
       // Per-response speaking emoji (set by speak's emoji param). Cleared
       // when the TTS queue drains. Falls through to ACTIVITY_EMOJIS.speaking.
       this.speakingEmojiOverride = null;
@@ -341,12 +344,18 @@
         : VirtualCamera.MODE_EMOJIS[this.mode] || VirtualCamera.MODE_EMOJIS.active;
       // Deaf takes priority over everything except not-on-line — the whole
       // point is making "can't hear you" visible while otherwise in-call.
+      // #38: ranks above deaf. "Can't hear you" presumes someone is home to
+      // hear; if nothing is driving the bot, that is the more basic truth and
+      // the one worth showing. 🫥 is already this UI's "nobody home" (it is what
+      // callStatus shows out of a call), so it reads without a legend.
+      const agentAbsentEmoji = this.agentAbsent ? '\u{1FAE5}' : null; // 🫥
       const deafEmoji = this.deaf ? '\u{1F649}' : null; // 🙉
       // #424: impaired ranks just under deaf — deaf is a KNOWN cause (captions
       // off), impaired is "something's wrong and I may not be hearing you".
       const impairedEmoji = this.impaired ? '\u{1F974}' : null; // 🥴
       const emoji =
         notOnLine
+        || agentAbsentEmoji
         || deafEmoji
         || impairedEmoji
         || audioPlaying
@@ -1717,6 +1726,16 @@
         playNextTTS();
         break;
       }
+
+      case 'set-agent-absent':
+        // #38: nothing is driving the bot — show 🫥 rather than a resting face
+        // that implies someone is listening.
+        if (payload) {
+          const away = !!payload.absent;
+          for (const cam of cameras.values()) cam.agentAbsent = away;
+          avatarState.agentAbsent = away; // seed future cameras
+        }
+        break;
 
       case 'set-impaired':
         // #424: generic degraded-state flag → avatar shows 🥴. Raised when the

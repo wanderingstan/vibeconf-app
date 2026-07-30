@@ -22,6 +22,7 @@
 // Exit code is non-zero if any step failed or a stall was detected — so this can
 // gate CI later.
 
+import { execFileSync } from 'node:child_process';
 import { Bot, sleep, report, record } from './meet-test-lib.mjs';
 import { resolveTarget } from './meet-targets.mjs';
 
@@ -114,8 +115,25 @@ const GERMAN_MARKERS = ['guten', 'morgen', 'spreche', 'deutsch', 'ich'];
 // speaks English, so this is the state the test must leave behind.
 const RESTORE_LANGUAGE = 'en-US';
 
+// Is the German voice actually installed? Anna is unambiguous — exactly one
+// voice by that name, de_DE, no same-named voice in another locale — but it is
+// the CLASSIC German voice and a machine could lack it. Without this check `say`
+// silently falls back to the system default (English), the German line comes out
+// English-accented, Meet's German recogniser misses it, and the test fails
+// looking like a caption-language bug. Skip loudly instead.
+function germanVoiceInstalled() {
+  try {
+    return execFileSync('say', ['-v', '?'], { encoding: 'utf8' })
+      .split('\n').some((l) => new RegExp(`^${GERMAN_VOICE}\\s`).test(l) && /de_DE/.test(l));
+  } catch { return false; } // no `say` at all (non-macOS) — same skip
+}
+
 async function captionLanguageTest(bots) {
   if (bots.length < 2) { console.log('\n(caption-language test needs 2+ bots — skipping)'); return; }
+  if (!germanVoiceInstalled()) {
+    console.log(`\n(caption-language test needs the ${GERMAN_VOICE} de_DE voice — not installed, skipping)`);
+    return;
+  }
   console.log('\n— caption language (German round trip) —');
   const [speaker, listener] = bots;
 
@@ -131,8 +149,26 @@ async function captionLanguageTest(bots) {
   // language; speaking immediately gets transcribed by the OLD one.
   await sleep(3000);
 
-  const heard = listener.waitForSpeech({ wait: 20, silence: 2 });
-  await sleep(500); // let the listener's long-poll be established first
+  // Drain the backlog FIRST. Scenario-phase lines the listener never consumed
+  // ("diagram is on the board", "stopping the share") resolve wait_for_speech
+  // INSTANTLY, so the assertion reads that old English instead of the German
+  // line and fails for the wrong reason — which is exactly what the first run of
+  // this test did. Same loop playAudioTest and chatWakeTest already use: wait
+  // until one call TIMES OUT, which means nobody spoke in the window.
+  let quiet = false;
+  for (let i = 0; i < 8 && !quiet; i++) {
+    const d = await listener.waitForSpeech({ wait: 6, silence: 2 });
+    quiet = d.timedOut;
+  }
+  if (!quiet) {
+    record(listener.name, 'captionLanguageHeard', false,
+      'could not reach a quiet room — backlogged speech would be read instead of the German line');
+    await Promise.all(bots.map((b) => b.setCaptionLanguage(RESTORE_LANGUAGE)));
+    return;
+  }
+
+  const heard = listener.waitForSpeech({ wait: 25, silence: 2 });
+  await sleep(2500); // ensure the listener is parked in its long-poll before the line plays
   await speaker.speak(GERMAN_LINE, { voice: GERMAN_VOICE, emoji: '🇩🇪' });
   const r = await heard;
 

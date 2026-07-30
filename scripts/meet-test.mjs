@@ -89,6 +89,77 @@ const DEFAULT_SCRIPT = async (bot) => {
 // test of "bot A can SEND and bot B can SEE it" — decoupled from speech/share
 // timing (the old inline version spread the sends ~40s apart and read at the
 // wrong moments, producing false misses).
+// Caption-language round trip: the bot's HEARING, end to end.
+//
+// The bot reads the room through Meet's caption region, so the caption language
+// decides whether it understands anything. Set to the wrong one, Meet emits
+// English-ish mush from German speech and the agent answers the mush — it does
+// not fall silent, it becomes confidently wrong. That failure is invisible
+// unless something actually checks the words that came back, which is what this
+// does.
+//
+// Both bots switch to German, one speaks German, the other must hear GERMAN
+// TEXT. The speaker uses a German macOS voice on purpose: `say` with an English
+// voice pronounces German phonetically as an English speaker would, and Meet's
+// German recogniser will not reliably match that — the test would fail for the
+// TTS, not for the feature under test. ElevenLabs handles the switch itself; the
+// `say` fallback needs telling.
+const GERMAN_VOICE = 'Anna'; // de_DE, ships with macOS
+const GERMAN_LINE = 'Guten Morgen, ich spreche jetzt Deutsch mit dir.';
+// Words that only survive if the captions were actually transcribed as German.
+// Deliberately not the whole sentence: caption text drifts, and an exact-match
+// assertion would fail on a perfectly good transcription.
+const GERMAN_MARKERS = ['guten', 'morgen', 'spreche', 'deutsch', 'ich'];
+// What the fleet listens in the rest of the time. Everything else in this suite
+// speaks English, so this is the state the test must leave behind.
+const RESTORE_LANGUAGE = 'en-US';
+
+async function captionLanguageTest(bots) {
+  if (bots.length < 2) { console.log('\n(caption-language test needs 2+ bots — skipping)'); return; }
+  console.log('\n— caption language (German round trip) —');
+  const [speaker, listener] = bots;
+
+  // Both sides: the listener needs German captions to hear it, and the speaker
+  // needs them so its own view agrees about what was said.
+  const results = await Promise.all(bots.map((b) => b.setCaptionLanguage('de-DE')));
+  const setOk = results.every((r) => r.ok);
+  record(speaker.name, 'captionLanguageSet', setOk,
+    setOk ? `both bots on ${results[0].language}` : `set failed: ${results.map((r) => r.error || 'ok').join('; ')}`);
+  if (!setOk) return; // no point asserting the round trip if the switch failed
+
+  // Meet needs a moment after the switch before the recogniser is on the new
+  // language; speaking immediately gets transcribed by the OLD one.
+  await sleep(3000);
+
+  const heard = listener.waitForSpeech({ wait: 20, silence: 2 });
+  await sleep(500); // let the listener's long-poll be established first
+  await speaker.speak(GERMAN_LINE, { voice: GERMAN_VOICE, emoji: '🇩🇪' });
+  const r = await heard;
+
+  const text = (r.transcript || []).map((e) => e.text || '').join(' ').toLowerCase();
+  // Whole words, not substrings: "ich" is inside "which" and "rich", so a plain
+  // includes() would score English text as German.
+  const hits = GERMAN_MARKERS.filter((w) => new RegExp(`\\b${w}\\b`).test(text));
+  // Two markers, not one: a single short word ("ich") could plausibly appear in
+  // an English mis-transcription by chance. Two is not chance.
+  const ok = hits.length >= 2;
+  record(listener.name, 'captionLanguageHeard', ok,
+    ok ? `heard German (${hits.join(', ')}): "${text.slice(0, 60)}"`
+       : r.timedOut ? 'heard nothing — the German line never landed as captions'
+                    : `heard non-German text: "${text.slice(0, 80)}"`);
+
+  // ALWAYS put it back. This is a Meet ACCOUNT setting, not a per-call one: left
+  // on German it survives the call, the fleet teardown and the night, and every
+  // later phase plus tomorrow's entire run would be listening in the wrong
+  // language. A test that quietly breaks the next run is worse than no test.
+  // Restored even when the assertion above failed — especially then.
+  const restored = await Promise.all(bots.map((b) => b.setCaptionLanguage(RESTORE_LANGUAGE)));
+  record(speaker.name, 'captionLanguageRestored', restored.every((x) => x.ok),
+    restored.every((x) => x.ok)
+      ? `both bots back on ${RESTORE_LANGUAGE}`
+      : `RESTORE FAILED — bots may still be listening in German: ${restored.map((x) => x.error || 'ok').join('; ')}`);
+}
+
 async function chatHandshakeTest(bots) {
   if (bots.length < 2) { console.log('\n(chat handshake needs 2+ bots — skipping)'); return; }
   console.log('\n— chat send + cross-read handshake —');
@@ -231,6 +302,7 @@ async function main() {
   // Coordinated phases that need the bots still in the call.
   await assertCleanRoom(BOTS).catch((err) => console.error('✗ clean-room check error:', err.message));
   await chatHandshakeTest(BOTS).catch((err) => console.error('✗ chat handshake error:', err.message));
+  await captionLanguageTest(BOTS).catch((err) => console.error('✗ caption-language test error:', err.message));
   await playAudioTest(BOTS).catch((err) => console.error('✗ play-audio test error:', err.message));
   await chatWakeTest(BOTS).catch((err) => console.error('✗ chat-wake test error:', err.message));
 

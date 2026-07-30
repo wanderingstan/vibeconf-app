@@ -105,6 +105,17 @@ export class Bot {
     return data;
   }
 
+  // Set the language the bot LISTENS in (Meet's "Language of the meeting").
+  // Walks Meet's Settings dialog in the app, so it takes a couple of seconds.
+  async setCaptionLanguage(language) {
+    const { data, ms } = await this._sync({ meta: { action: 'set-caption-language', language } });
+    const r = data?.results?.setCaptionLanguage;
+    log(this.name, 'setCaptionLanguage', {
+      ms, ok: !!r?.ok, note: r?.ok ? `${r.language}${r.previous ? ` (was ${r.previous})` : ''}` : (r?.error || 'no result'),
+    });
+    return r || { ok: false, error: 'no result' };
+  }
+
   async updateWhiteboard(content) {
     const { data, ms } = await this._sync({ whiteboard: { content } });
     log(this.name, 'updateWhiteboard', { ms, ok: data?.success !== false, note: `v${data?.results?.whiteboard?.version ?? '?'}` });

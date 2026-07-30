@@ -1,6 +1,11 @@
 # Dependencies — installed, never committed. Every package dir gets one:
 # electron-app/, mcp-server/, extension/, and the repo root.
-node_modules/
+#
+# No trailing slash, deliberately: "node_modules/" matches only DIRECTORIES, so
+# a SYMLINK named node_modules sails past it. That is not hypothetical — linking
+# a worktree's deps at the real install got the link itself committed, baking an
+# absolute path from one machine into the repo.
+node_modules
 
 # Build output — electron-builder writes installers and unpacked apps here.
 dist/

@@ -868,9 +868,9 @@ button.agent-namebtn:hover:not(:disabled) .agent-caret { color: #e8eaed; }
    visible in-call (unlike the switcher). */
 /* Same 36px circle as button.screen-close, which is what replaces it on the
    Settings screen — they're the two halves of one round trip, so they should be
-   the same target. Sized by an explicit box rather than font-size + padding:
-   ⚙ and ✕ have quite different glyph-to-em ratios, so matching their font sizes
-   would NOT have matched their buttons. The font sizes differ to compensate. */
+   the same target. Sized by an explicit box rather than font-size + padding: the
+   ⚙ icon and the ✕ glyph have quite different shape-to-em ratios, so matching
+   their font sizes would NOT have matched their buttons. */
 button.agent-gear {
   width: 36px; height: 36px; padding: 0; margin: 0;
   flex: 0 0 auto; align-self: center;
@@ -880,6 +880,12 @@ button.agent-gear {
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
 }
 button.agent-gear:hover:not(:disabled) { background: #3c4043; color: #e8eaed; }
+/* These controls sit ON the avatar, over whatever artwork the bot is using, so
+   they need the same lift the name and buttons get. text-shadow cannot do it:
+   an icon is a masked box, not text, and has no glyph to shadow. drop-shadow
+   follows the actual painted shape. */
+.bot-hero .ui-icon { filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.8)); }
+.bot-hero .join-caret { text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8); }
 /* #379: the switcher SWITCHES the current window (replaces this bot), which only
    makes sense pre-call. In-call, the name must STILL be visible (it's the
    masthead now), so we neutralise the control rather than hide it: drop the
@@ -922,22 +928,27 @@ button.primary.danger:hover:not(:disabled) { background: #e8544a; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The icon-only controls flanking the main button (👀 ▸ 🚧) are styled as the
+   ⚙ above them is: no border or fill at rest, just the icon on the artwork,
+   with a round highlight on hover. They used to be outlined pills, which put
+   three competing boxes either side of the one button that matters.
+
+   Same 36px circle as .agent-gear, so every icon target on the banner is one
+   size. */
 button.join-more {
-  flex: 0 0 auto; width: auto; margin: 0;
-  padding: 0 12px;
-  background: rgba(32, 33, 36, 0.55);
-  border: 1px solid rgba(232, 234, 237, 0.4);
-  border-radius: 20px;
+  flex: 0 0 auto; margin: 0; padding: 0;
+  width: 36px; height: 36px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: none; border: none; border-radius: 50%;
   color: #e8eaed;
   font-size: 15px; line-height: 1;
 }
-button.join-more:hover:not(:disabled) { background: #3c4043; color: #e8eaed; border-color: #8ab4f8; }
-/* The bot's-view toggle swaps 👀 for ✕ once the view is popped out. ✕ is a text
-   glyph where 👀 is emoji, so at the same font-size it renders visibly smaller
-   and lighter — this puts it back on par with its neighbours. */
-button.join-more.is-close { font-size: 18px; font-weight: 500; }
+button.join-more:hover:not(:disabled) { background: #3c4043; color: #e8eaed; }
+/* The bot's-view toggle swaps 👀 for ✕ once the view is popped out. Both are
+   drawn art in the same icon box now, so neither needs a size correction — the
+   .is-close class survives only as a state hook for anything that wants it. */
 /* Open state — reads as "this is what's showing the field below". */
-button.join-more[aria-expanded="true"] { color: #8ab4f8; border-color: #8ab4f8; background: #303134; }
+button.join-more[aria-expanded="true"] { color: #8ab4f8; background: rgba(60, 64, 67, 0.9); }
 /* ONE glyph, rotated — ▸ and ▴ are different characters with different optical
    weights and widths, so swapping them made the control jump. Rotating the same
    ▸ counter-clockwise lands it pointing up, identical in size, and animates. */
@@ -949,10 +960,8 @@ button.join-more[aria-expanded="true"] .join-caret { rotate: -90deg; }
 @media (prefers-reduced-motion: reduce) {
   .join-caret { transition: none; }
 }
-/* The in-call ⓘ reuses the same ghost pill as ▸ so the two states have an
-   identical footprint — Leave Call lands exactly where Call now was. The glyph
-   is a touch larger; ⓘ reads small next to a bare triangle. */
-button.join-more#openTroubleshootingBtn { font-size: 18px; }
+/* The in-call 🚧 reuses the same ghost circle as ▸, so the two states have
+   an identical footprint — Leave Call lands exactly where Call now was. */
 
 /* Read-only current-call URL + copy button (in-call). */
 /* Centred as a PAIR, matching the name above and the buttons below. */
@@ -1019,6 +1028,25 @@ button.join-more#openTroubleshootingBtn { font-size: 18px; }
 }
 .share-window-btn:hover:not(:disabled) { background: #3c4043; border-color: #8ab4f8; }
 .share-window-btn:disabled { opacity: 0.55; cursor: default; }
+
+/* ── Chrome icon sizes ────────────────────────────────────────────────────────
+   ui-icons.css sizes an icon relative to its text (1.15em), which is right when
+   one leads a label. The icon-only buttons have no text to be relative TO —
+   their font-size was picked for an emoji glyph, which carries a lot of padding
+   inside its em box that these outlines don't. So the standalone ones get an
+   explicit pixel box instead, sized to the button rather than to a font.
+
+   OpenMoji's outlines are 2px strokes on a 72px canvas, so they turn to mush
+   below ~16px — these are all at or above that on purpose. */
+button.agent-gear .ui-icon { width: 24px; height: 24px; vertical-align: 0; }
+/* The Done check spans ~half its 36px circle — it's the only affordance on that
+   screen, so it carries more weight than the icons packed into the call row. */
+.screen-close .ui-icon { width: 26px; height: 26px; vertical-align: 0; }
+button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
+/* Leading a label: small, and tied to the label's size. */
+.share-window-btn .ui-icon { width: 16px; height: 16px; }
+.hero-notice .ui-icon { width: 16px; height: 16px; }
+.profile-menu .ui-icon { width: 16px; height: 16px; }
 
 /* Profile switcher dropdown (anchored under the name row) */
 .profile-menu {

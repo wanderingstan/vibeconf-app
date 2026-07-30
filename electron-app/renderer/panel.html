@@ -2,6 +2,9 @@
 <html>
 <head>
   <meta charset="utf-8" />
+  <!-- Chrome icons as monochrome SVG (generated; see scripts/gen-ui-icons.mjs).
+       Loaded BEFORE panel.css so the per-button sizing there wins. -->
+  <link rel="stylesheet" href="ui-icons.css" />
   <link rel="stylesheet" href="panel.css" />
 </head>
 <body>
@@ -39,7 +42,7 @@
           <!-- Settings gear — opens THIS bot's settings (voice, behavior).
                Machine-wide config is App Settings (⌘,). Pinned to the corner,
                out of the centred name's way. -->
-          <button id="openSettingsBtn" class="agent-gear" title="This bot's settings (voice, acknowledgments, behavior). Machine-wide settings are in App Settings, ⌘,.">&#9881;</button>
+          <button id="openSettingsBtn" class="agent-gear" title="This bot's settings (voice, acknowledgments, behavior). Machine-wide settings are in App Settings, ⌘,."><i class="ui-icon ui-icon-gear"></i></button>
         </div>
 
         <!-- Notices land across the bot's face rather than as bars shoved into
@@ -52,7 +55,7 @@
           <!-- #381: voice needs a machine-wide ElevenLabs key, which lives in
                App Settings (⌘,). Shown only when no key is set. -->
           <div class="hero-notice notice-warn" id="appSettingsBanner" style="display:none">
-            <span>🔊 Voice is off: no ElevenLabs key set.</span>
+            <span><i class="ui-icon ui-icon-speaker ui-icon--lead"></i>Voice is off: no ElevenLabs key set.</span>
             <button id="openAppSettingsFromBanner" class="notice-action">Set it up →</button>
           </div>
         </div>
@@ -78,7 +81,7 @@
                  and in-call rows are separate blocks the stylesheet swaps, so a
                  single button cannot live in both. panel.js drives them as a set
                  via .botview-toggle-btn. -->
-            <button class="join-more botview-toggle-btn" title="See what the bot sees">👀</button>
+            <button class="join-more botview-toggle-btn" title="See what the bot sees"><i class="ui-icon ui-icon-eyes"></i></button>
             <!-- The helper text that used to sit under this button is now its
                  tooltip — true but not worth permanent screen space. -->
             <button id="joinBtn" class="primary" title="Calls open in Chrome/Safari are detected automatically. You can also type /join-call in any Claude Code session.">Call now</button>
@@ -102,7 +105,7 @@
                  so the line costs nothing the rest of the time — and it keeps
                  its text label, which a bare 🖥 among icons could not carry.
                  Hides itself; see applyShareWindowState. -->
-            <button id="shareWindowToggleBtn" class="share-window-btn" style="display:none" title="The window the room sees while the bot presents. Normally hidden. Show it to click around the board yourself.">🖥 Show share</button>
+            <button id="shareWindowToggleBtn" class="share-window-btn" style="display:none" title="The window the room sees while the bot presents. Normally hidden. Show it to click around the board yourself."><i class="ui-icon ui-icon-screen ui-icon--lead"></i><span class="share-window-label">Show share</span></button>
             <div class="call-url-row" title="The call this bot is currently in.">
               <span id="callUrlDisplay" class="call-url"></span>
               <button id="copyCallUrlBtn" class="call-url-copy" title="Copy call link">⧉</button>
@@ -114,9 +117,9 @@
                    panel — mirroring the ⓘ on the other side. Its title flips
                    with state (applyBotViewLabel); the glyph stays put so the
                    control doesn't jump. -->
-              <button id="botViewToggleBtn" class="join-more botview-toggle-btn" title="See what the bot sees">👀</button>
+              <button id="botViewToggleBtn" class="join-more botview-toggle-btn" title="See what the bot sees"><i class="ui-icon ui-icon-eyes"></i></button>
               <button id="leaveCallBtn" class="primary danger">Leave Call</button>
-              <button id="openTroubleshootingBtn" class="join-more" title="Troubleshooting: live call state, captions, and the agent's view">🚧</button>
+              <button id="openTroubleshootingBtn" class="join-more" title="Troubleshooting: live call state, captions, and the agent's view"><i class="ui-icon ui-icon-construction"></i></button>
             </div>
           </div>
 
@@ -159,17 +162,16 @@
         <!-- A checkmark, not an ✕ (iOS-style "done" affordance): leaving this
              screen COMMITS what you changed — every control here saves as you
              touch it — so the glyph should read as confirmation, not discard.
-             Drawn as SVG rather than the ✓ character: the glyph's weight and
+             Drawn art rather than the ✓ character: the glyph's weight and
              baseline vary by platform font, and this needs to sit optically
-             centred in a 36px circle on both macOS and Windows. -->
+             centred in a 36px circle on both macOS and Windows.
+
+             It shares the icon mechanism with the rest of the chrome, so the
+             check is defined once (scripts/gen-ui-icons.mjs) rather than being a
+             second hand-written path here. Sized to 26px in panel.css so it
+             spans ~half the circle, as Apple's does. -->
         <button id="backFromSettingsBtn" class="screen-close" aria-label="Done" title="Done, back to the bot (Esc)">
-          <!-- Sized so the check spans ~half the 36px circle, as Apple's does.
-               Both levers matter: the box is 26px AND the path runs the full
-               width of the viewBox — a bigger box alone would just scale up the
-               padding baked into a tight path. -->
-          <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true" focusable="false">
-            <path d="M4 12 L9.5 17.5 L20 6" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
+          <i class="ui-icon ui-icon-check" aria-hidden="true"></i>
         </button>
       </div>
 

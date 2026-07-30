@@ -165,12 +165,31 @@ test('the preference is applied when captions go live, once per call', () => {
   assert.match(main, /captionsReady[\s\S]{0,200}applyCaptionLanguagePref\(\)/);
   const fn = main.slice(main.indexOf('function applyCaptionLanguagePref'));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
-  assert.match(body, /_captionLanguageAppliedFor === room/,
-    'must not re-walk the Settings dialog on every captions-ready blip');
+  // Two distinct guards, because they stop two different things. The latch
+  // records what is already live (so a language that's set doesn't get set
+  // again); the in-flight flag covers the seconds DURING a walk, when the latch
+  // hasn't been written yet and captions-ready can fire repeatedly.
+  assert.match(body, /captionLanguageAlreadyApplied\(room, want\)/,
+    'must not re-walk the Settings dialog for a language that is already live');
+  assert.match(body, /_captionLanguageInFlight/,
+    'must not start a second walk while one is still running');
   assert.match(codeOnly(body), /if \(!want\) return/,
     'an unset preference must leave Meet alone');
-  // A failure must not wedge it off for the rest of the call.
-  assert.match(body, /_captionLanguageAppliedFor = null/);
+});
+
+test('a failed caption-language change stays retryable', () => {
+  // It must not wedge off for the rest of the call. This used to need an
+  // explicit un-latch on the failure path; now the latch is only WRITTEN on
+  // success, which gets the same guarantee with nothing to forget.
+  const fn = main.slice(main.indexOf('onSetCaptionLanguage: async'));
+  const body = fn.slice(0, fn.indexOf('\n  },\n'));
+  const record = body.indexOf('_captionLanguageApplied = {');
+  assert.ok(record > 0, 'the applied language must be recorded somewhere');
+  // The recording sits inside the ok branch, not after it.
+  const okBranch = body.indexOf('if (result && result.ok)');
+  assert.ok(okBranch > 0 && okBranch < record, 'the latch must be written only on success');
+  assert.match(body.slice(record), /^_captionLanguageApplied = \{ room: [^}]*resolved: result\.language/,
+    'record the tag Meet resolved to, since that is what gets reapplied later');
 });
 
 test('changing the preference mid-call takes effect immediately', () => {

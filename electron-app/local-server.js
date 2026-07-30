@@ -3512,28 +3512,63 @@ class LocalServer {
         res.end(JSON.stringify({ success: false, error: 'Invalid JSON' }));
         return;
       }
-      const { key, value } = parsed || {};
-      const result = prefsSchema.validate(key, value);
-      if (!result.ok) {
+      // Two shapes: {key, value} for a single setting, or {updates: [{key,
+      // value}, …]} to change several as ONE operation.
+      //
+      // The batch exists because some settings are only meaningful together.
+      // A voice is a provider PLUS that provider's identifier (see the voice
+      // block in preferences-schema.js); applied as separate requests, a
+      // failure between them leaves the bot on ElevenLabs pointing at a macOS
+      // voice name — a state that can't speak. So every update is validated
+      // BEFORE any is written, and a bad one rejects the whole set.
+      const batch = Array.isArray(parsed?.updates)
+        ? parsed.updates
+        : [{ key: parsed?.key, value: parsed?.value }];
+      if (batch.length === 0) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: false, error: result.error, key }));
+        res.end(JSON.stringify({ success: false, error: 'No updates provided' }));
         return;
       }
+
+      const validated = [];
+      for (const upd of batch) {
+        const result = prefsSchema.validate(upd?.key, upd?.value);
+        if (!result.ok) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: result.error, key: upd?.key }));
+          return;
+        }
+        validated.push({ key: upd.key, value: result.value });
+      }
+
+      // Writes first, then the live-apply hooks. Persisting is the part that
+      // must not be lost; applyPref only mirrors it into the running app, and
+      // ordering it second means a throwing hook can't leave a change applied
+      // but unsaved (which is exactly the bug this endpoint is fixing).
+      const applied = [];
       try {
-        this.setPref(key, result.value);
-        this.applyPref(key, result.value);
+        for (const { key, value } of validated) {
+          this.setPref(key, value);
+          applied.push(key);
+        }
+        for (const { key, value } of validated) this.applyPref(key, value);
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: false, error: err.message, key }));
+        res.end(JSON.stringify({ success: false, error: err.message, applied }));
         return;
       }
-      const spec = prefsSchema.PREFERENCES[key];
+
+      const requiresRestart = validated.some(
+        ({ key }) => !!prefsSchema.PREFERENCES[key]?.requiresRestart,
+      );
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         success: true,
-        key,
-        value: result.value,
-        requiresRestart: !!spec?.requiresRestart,
+        // Single-key callers still get the flat {key, value} they always did.
+        ...(validated.length === 1
+          ? { key: validated[0].key, value: validated[0].value }
+          : { updated: validated }),
+        requiresRestart,
       }));
       return;
     }

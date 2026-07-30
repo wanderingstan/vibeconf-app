@@ -24,7 +24,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { execSync, execFileSync } from "child_process";
-import { readFileSync, writeFileSync } from "fs";
+import { readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 
@@ -550,22 +550,67 @@ server.tool(
   }
 );
 
-// --- Helper: read app config ---
+// --- Preferences: read and write through the APP, not the config file ---
+//
+// Settings belong to the running bot, and only the app knows which bot that is.
+// Its /api/preferences routes each key to the right store (app-level secrets vs
+// the per-profile config for whichever profile is running), applies the change
+// live, and works on every platform.
+//
+// This used to write the config file directly, at a hardcoded macOS path that
+// pointed at the APP-LEVEL config — so a voice change during a call landed in a
+// file the app reads no voice keys from. It looked saved, reported "applies on
+// next restart", and was silently ignored forever. Don't reintroduce a file
+// write here; add the key to preferences-schema.js instead.
+
+async function getPrefs() {
+  try {
+    const resp = await vfetch(`${BASE_URL}/api/preferences`);
+    const data = await resp.json();
+    if (!data?.success) return {};
+    return Object.fromEntries((data.preferences || []).map((p) => [p.key, p.value]));
+  } catch { return {}; }
+}
+
+// One request for the whole set: the app validates every update before writing
+// any, so a rejected key can't leave a half-changed voice behind.
+async function setPrefs(updates) {
+  const resp = await vfetch(`${BASE_URL}/api/preferences`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ updates }),
+  });
+  const data = await resp.json();
+  if (!data?.success) throw new Error(data?.error || 'Failed to save preferences');
+  return data;
+}
+
+// --- Helper: the app-level config file ---
+//
+// Still a direct file read, and correctly so: the ElevenLabs key is app-level
+// (one secret per machine, see electron-app/config-scope.js) and preferences
+// deliberately don't expose secrets, so there is no API to ask for it. This is
+// the ONLY thing that should be read this way.
 function getConfigPath() {
-  return join(homedir(), 'Library', 'Application Support', 'Vibeconferencing', 'config.json');
+  // Where Electron puts userData per platform. The old macOS-only path meant
+  // readConfig() returned {} on Windows and Linux, so the bot there believed no
+  // ElevenLabs key was configured and quietly fell back to the OS voice.
+  const home = homedir();
+  if (process.platform === 'win32') {
+    return join(process.env.APPDATA || join(home, 'AppData', 'Roaming'), 'Vibeconferencing', 'config.json');
+  }
+  if (process.platform === 'darwin') {
+    return join(home, 'Library', 'Application Support', 'Vibeconferencing', 'config.json');
+  }
+  return join(process.env.XDG_CONFIG_HOME || join(home, '.config'), 'Vibeconferencing', 'config.json');
 }
 
 function readConfig() {
   try { return JSON.parse(readFileSync(getConfigPath(), 'utf-8')); } catch { return {}; }
 }
 
-function writeConfig(config) {
-  writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
-}
-
 function isElevenLabsActive() {
-  const config = readConfig();
-  return !!config.ttsApiKey;
+  return !!readConfig().ttsApiKey;
 }
 
 // The OS's built-in voices as [{ name, locale, sample, tier }], quality first
@@ -722,15 +767,19 @@ server.tool(
   "List available text-to-speech voices across all providers — Voicebox (if its local server is running), ElevenLabs (if an API key is configured), and the operating system's built-in voices (macOS `say` voices, or Windows SAPI voices such as 'Microsoft Zira Desktop') — matching what the settings picker shows. To use one, call set_voice with its EXACT name (e.g. 'Ava (Premium)') or id. Prefer Voicebox/ElevenLabs or the Premium/Enhanced macOS voices; the plain 'Other' macOS ones sound robotic.",
   {},
   async () => {
-    const config = readConfig();
+    // The RUNNING bot's voice, from the app — not the config file. Read from
+    // the file, this reported whatever was last written there by the old
+    // set_voice, which is a different profile's setting at best and a value the
+    // app never used at worst.
+    const prefs = await getPrefs();
     const sections = [];
 
     // Current voice, derived from the active provider.
-    const usingVb = config.ttsProvider === 'voicebox' && config.voiceboxProfileId;
+    const usingVb = prefs.ttsProvider === 'voicebox' && prefs.voiceboxProfileId;
     const osLabel = process.platform === 'win32' ? 'Windows' : process.platform === 'darwin' ? 'macOS' : 'system';
-    const usingSys = !usingVb && (config.ttsProvider === 'macos-say' || !isElevenLabsActive());
-    const sysVoiceName = config.macosVoice || (process.platform === 'win32' ? 'the system default' : 'Daniel');
-    sections.push(`Current voice: ${usingVb ? `Voicebox profile ${config.voiceboxProfileId}` : usingSys ? `${sysVoiceName} (built-in ${osLabel})` : 'ElevenLabs (see below)'}`);
+    const usingSys = !usingVb && (prefs.ttsProvider === 'macos-say' || !isElevenLabsActive());
+    const sysVoiceName = prefs.macosVoice || (process.platform === 'win32' ? 'the system default' : 'Daniel');
+    sections.push(`Current voice: ${usingVb ? `Voicebox profile ${prefs.voiceboxProfileId}` : usingSys ? `${sysVoiceName} (built-in ${osLabel})` : 'ElevenLabs (see below)'}`);
 
     // Voicebox (local TTS) — listed first when the server is up (#340), matching
     // the settings picker's ordering.
@@ -744,7 +793,7 @@ server.tool(
 
     if (isElevenLabsActive()) {
       try {
-        const resp = await vfetch('https://api.elevenlabs.io/v1/voices', { headers: { 'xi-api-key': config.ttsApiKey } });
+        const resp = await vfetch('https://api.elevenlabs.io/v1/voices', { headers: { 'xi-api-key': readConfig().ttsApiKey } });
         if (!resp.ok) throw new Error(await elevenLabsErrorText(resp));
         const data = await resp.json();
         const voices = data.voices.map(v =>
@@ -790,14 +839,16 @@ server.tool(
 // --- set_voice ---
 server.tool(
   "set_voice",
-  "Change the bot's text-to-speech voice. Use list_voices to see options. Pass the EXACT voice name — a built-in OS voice (e.g. 'Ava (Premium)' on macOS, 'Microsoft Zira Desktop' on Windows), an ElevenLabs voice name/ID, or a Voicebox profile name/id. Matched in that order; the chosen voice becomes primary (its provider is forced, so e.g. a built-in voice wins even with an ElevenLabs key set). Saved across sessions; use the speak `voice` parameter for immediate effect this turn.",
+  "Change the bot's text-to-speech voice. Use list_voices to see options. Pass the EXACT voice name — a built-in OS voice (e.g. 'Ava (Premium)' on macOS, 'Microsoft Zira Desktop' on Windows), an ElevenLabs voice name/ID, or a Voicebox profile name/id. Matched in that order; the chosen voice becomes primary (its provider is forced, so e.g. a built-in voice wins even with an ElevenLabs key set). Takes effect immediately and is saved to this bot's profile, so it persists after the call and across restarts.",
   {
     voice: z.string().describe("Exact voice name. Built-in OS voice (macOS 'Ava (Premium)' / 'Samantha', Windows 'Microsoft Zira Desktop') or ElevenLabs voice name/ID."),
   },
   async ({ voice }) => {
     try {
-      const config = readConfig();
-
+      // Each branch writes the provider AND that provider's identifier in one
+      // batched request. They are only meaningful together: a provider without
+      // its matching id is a bot that can't speak.
+      //
       // Match a built-in OS voice first (case-insensitive, exact) — lets the
       // bot pick a built-in voice regardless of the EL key. The stored keys are
       // still named macosVoice/'macos-say' for config compatibility; on Windows
@@ -806,34 +857,39 @@ server.tool(
       const sys = listSystemVoices();
       const sysMatch = sys.find(v => v.name.toLowerCase() === voice.toLowerCase());
       if (sysMatch) {
-        config.macosVoice = sysMatch.name;
-        config.ttsProvider = 'macos-say'; // force the built-in voice as primary
-        writeConfig(config);
-        return { content: [{ type: "text", text: `Voice changed to the built-in ${osLabel} voice "${sysMatch.name}". It's now your primary voice (ElevenLabs disabled until you switch back). Pass voice:"${sysMatch.name}" to speak for immediate effect; the saved default applies on app restart.` }] };
+        await setPrefs([
+          { key: 'macosVoice', value: sysMatch.name },
+          { key: 'ttsProvider', value: 'macos-say' }, // force the built-in voice as primary
+        ]);
+        return { content: [{ type: "text", text: `Voice changed to the built-in ${osLabel} voice "${sysMatch.name}". It's now your primary voice (ElevenLabs disabled until you switch back), effective immediately and saved to this bot's profile.` }] };
       }
 
       // Then a Voicebox profile (by name or id) — local TTS, forces provider (#340).
       const vb = await listVoiceboxProfiles();
       const vbMatch = vb.find(p => (p.name || '').toLowerCase() === voice.toLowerCase() || p.id === voice);
       if (vbMatch) {
-        config.voiceboxProfileId = vbMatch.id;
-        config.voiceboxEngine = vbMatch.preset_engine || vbMatch.default_engine || 'kokoro';
-        config.ttsProvider = 'voicebox';
-        writeConfig(config);
-        return { content: [{ type: "text", text: `Voice changed to Voicebox profile "${vbMatch.name}". It's now your primary voice; the saved default applies on app restart.` }] };
+        await setPrefs([
+          { key: 'voiceboxProfileId', value: vbMatch.id },
+          { key: 'voiceboxEngine', value: vbMatch.preset_engine || vbMatch.default_engine || 'kokoro' },
+          { key: 'ttsProvider', value: 'voicebox' },
+        ]);
+        return { content: [{ type: "text", text: `Voice changed to Voicebox profile "${vbMatch.name}". It's now your primary voice, effective immediately and saved to this bot's profile.` }] };
       }
 
-      // Else try ElevenLabs by name or ID.
+      // Else try ElevenLabs by name or ID. The key is app-level, so it comes
+      // from the config file rather than the preferences API (which never
+      // exposes secrets).
       if (isElevenLabsActive()) {
-        const resp = await vfetch('https://api.elevenlabs.io/v1/voices', { headers: { 'xi-api-key': config.ttsApiKey } });
+        const resp = await vfetch('https://api.elevenlabs.io/v1/voices', { headers: { 'xi-api-key': readConfig().ttsApiKey } });
         if (!resp.ok) throw new Error(await elevenLabsErrorText(resp));
         const data = await resp.json();
         const match = data.voices.find(v => v.name.toLowerCase() === voice.toLowerCase() || v.voice_id === voice);
         if (match) {
-          config.ttsVoiceId = match.voice_id;
-          config.ttsProvider = 'elevenlabs';
-          writeConfig(config);
-          return { content: [{ type: "text", text: `Voice changed to ElevenLabs "${match.name}". Pass voice:"${match.voice_id}" to speak for immediate effect; the saved default applies on app restart.` }] };
+          await setPrefs([
+            { key: 'ttsVoiceId', value: match.voice_id },
+            { key: 'ttsProvider', value: 'elevenlabs' },
+          ]);
+          return { content: [{ type: "text", text: `Voice changed to ElevenLabs "${match.name}", effective immediately and saved to this bot's profile.` }] };
         }
       }
 
@@ -1610,7 +1666,20 @@ server.tool(
     const result = data.results?.setCaptionLanguage;
     if (result?.ok) {
       const was = result.previous ? ` (was ${result.previous})` : "";
-      return { content: [{ type: "text", text: `Caption language set to ${result.language}${was}. The bot now hears the room in that language; earlier transcripts were captioned in the previous one.` }] };
+      // Save it to the bot's profile so it sticks past this call. Store the tag
+      // MEET resolved to, not the one asked for — "es" becomes "es-ES", and the
+      // resolved form is what should be reapplied on the next join.
+      //
+      // The app skips re-driving Meet for a language it just applied, so this
+      // costs nothing beyond the write. Best-effort: the language IS already
+      // set, so failing to persist it is worth a note, not an error.
+      let saved = " Saved as this bot's language for future calls.";
+      try {
+        await setPrefs([{ key: 'captionLanguage', value: result.language }]);
+      } catch (err) {
+        saved = ` (Note: it's set for this call, but saving it as the bot's default failed: ${err.message})`;
+      }
+      return { content: [{ type: "text", text: `Caption language set to ${result.language}${was}. The bot now hears the room in that language; earlier transcripts were captioned in the previous one.${saved}` }] };
     }
     return { content: [{ type: "text", text: `Error: ${result?.error || data.error || "failed to set the caption language"}` }] };
   }

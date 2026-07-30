@@ -963,11 +963,11 @@ server.tool(
 // --- update_whiteboard ---
 server.tool(
   "update_whiteboard",
-  "Update the shared whiteboard/screen in the Google Meet call. Supports markdown and Mermaid diagrams. Can also load an arbitrary URL (e.g. a website, localhost app, dashboard) instead of markdown content. Pass image_path (absolute local file path) to show a local image — it gets registered with the app's local server and embedded as markdown.",
+  "Update the shared whiteboard/screen in the Google Meet call. Supports markdown and Mermaid diagrams. Can also load an arbitrary URL (e.g. a website, localhost app, dashboard) instead of markdown content. To show a local image (e.g. a generated image), pass image_path (absolute local file path) — it gets registered with the app's local server and embedded as markdown. Do NOT put a raw file:// URL in a markdown image tag inside 'content' and do NOT hand-build a base64 data URI — the whiteboard renders in a sandboxed browser that can't load file:// URLs (broken image), and inlining base64 wastes huge amounts of context. image_path is the only correct way to show a local image.",
   {
-    content: z.string().optional().describe("Markdown content for the whiteboard. Supports headings, lists, code blocks, and Mermaid diagrams."),
+    content: z.string().optional().describe("Markdown content for the whiteboard. Supports headings, lists, code blocks, and Mermaid diagrams. Do not embed local images here via file:// URLs or base64 data URIs — use the image_path parameter instead."),
     url: z.string().optional().describe("Load an arbitrary URL in the whiteboard window instead of markdown content. Useful for showing websites, localhost apps, or dashboards."),
-    image_path: z.string().optional().describe("Absolute local file path to an image (png/jpg/gif/webp/svg/bmp/pdf). The local server registers it and embeds it in the markdown. If 'content' is also provided, the image is appended after it."),
+    image_path: z.string().optional().describe("Absolute local file path to an image (png/jpg/gif/webp/svg/bmp/pdf). The local server registers it and embeds it in the markdown. This is the correct way to show a local/generated image — do not build your own file:// link or base64 data URI. If 'content' is also provided, the image is appended after it."),
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
   async ({ content, url, image_path, room_id }) => {

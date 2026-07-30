@@ -65,7 +65,10 @@ From here the loop is identical to `/join-call`, and that skill is the reference
 - `update_whiteboard` / `share_whiteboard` — put something on screen
 - `leave_call` — hang up when the user is done
 
-Keep taking turns until the user says they're finished, then `leave_call`.
+Keep taking turns until the user says they're finished, then `leave_call` — but if the call
+made anything (whiteboard content, artifacts, decisions), first post the whiteboard's permanent
+URL to chat via `send_chat` (from `get_room_info`, the `?mode=whiteboard` link) as the call's
+record. The board IS the receipt, and the link outlives the meeting.
 
 Leaving matters a little more here than with `/join-call`: this command created the room,
 and hanging up properly closes it rather than leaving it to expire on its own.

@@ -3,6 +3,21 @@
 
 const api = window.electronAPI;
 
+// Markup for one of the chrome icons in ui-icons.css (OpenMoji outlines, painted
+// with currentColor). Use this instead of pasting an emoji character into a
+// label: the OS emoji fonts draw ⚙/👀/🚧 at different sizes and weights, so the
+// same button looked different on every platform.
+//
+// `lead` adds the gap an icon needs when it sits in front of a text label; an
+// icon that IS the whole label takes no variant.
+//
+// Both arguments are OURS — never interpolate anything user-supplied here, since
+// callers assign the result with innerHTML.
+function uiIcon(name, variant = '') {
+  const mod = variant === 'lead' ? ' ui-icon--lead' : '';
+  return `<i class="ui-icon ui-icon-${name}${mod}"></i>`;
+}
+
 // This file backs TWO windows: the control panel, and the ⓘ Troubleshooting
 // window (main loads panel.html?screen=troubleshooting). In the latter we show
 // only the troubleshooting screen and suppress everything belonging to the panel
@@ -1272,7 +1287,7 @@ function renderProfileMenu(data) {
   // Debugging help: reveal the bot-profiles folder so the user can delete/rename
   // profile dirs directly (#282).
   const folder = document.createElement('div');
-  folder.textContent = '📂 Open bot profiles folder';
+  folder.innerHTML = uiIcon('folder', 'lead') + 'Open bot profiles folder';
   folder.style.cssText = 'padding:6px 8px;color:#9aa0a6;cursor:pointer';
   folder.onmouseenter = () => { folder.style.background = '#3c4043'; };
   folder.onmouseleave = () => { folder.style.background = ''; };
@@ -1281,7 +1296,7 @@ function renderProfileMenu(data) {
 
   // Reveal the session-log folder — quick path to past calls' logs (#292).
   const logs = document.createElement('div');
-  logs.textContent = '📋 Open call logs folder';
+  logs.innerHTML = uiIcon('clipboard', 'lead') + 'Open call logs folder';
   logs.style.cssText = 'padding:6px 8px;color:#9aa0a6;cursor:pointer';
   logs.onmouseenter = () => { logs.style.background = '#3c4043'; };
   logs.onmouseleave = () => { logs.style.background = ''; };
@@ -1641,7 +1656,10 @@ function applyShareWindowState({ exists, visible, lockedVisible } = {}) {
   // gets a line rather than a fourth pill in the button row: it costs nothing
   // when absent, and keeps its text label, which a bare icon couldn't carry.
   shareWindowToggleBtn.style.display = exists ? '' : 'none';
-  shareWindowToggleBtn.textContent = visible ? '🖥 Hide share' : '🖥 Show share';
+  // Only the WORD changes — the 🖥 icon is a static element in the markup, so
+  // rewriting the button's whole text content would delete it.
+  const shareLabel = shareWindowToggleBtn.querySelector('.share-window-label');
+  if (shareLabel) shareLabel.textContent = visible ? 'Hide share' : 'Show share';
   // While a live share is capturing the WINDOW, hiding it would black out what
   // the room sees — say so on the button rather than failing on click.
   shareWindowToggleBtn.disabled = !!lockedVisible;
@@ -1912,9 +1930,11 @@ function applyBotViewLabel(state, resting) {
         : "Dock the bot's view back as a thumbnail below this panel")
     : "Pop the bot's view out into its own large window — this is where you sign the bot into Google, Slack or GitHub (\u2318L)";
   for (const btn of botViewToggleBtns) {
-    btn.textContent = popped ? '✕' : '\u{1F440}';
-    // The ✕ is a text glyph where 👀 is emoji, so it renders visually smaller at
-    // the same font-size. The class bumps it back to match.
+    // Both states are now the same 20px icon box, so the swap can't change the
+    // button's size — which is what the one-glyph swap was reaching for in the
+    // first place. (The old ✕ character needed .is-close to bump its font-size
+    // back up to the emoji's; drawn art needs no such correction.)
+    btn.innerHTML = popped ? uiIcon('close') : uiIcon('eyes');
     btn.classList.toggle('is-close', popped);
     btn.title = title;
   }

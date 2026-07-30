@@ -166,6 +166,36 @@ const MEET = {
   },
 
   // -------------------------------------------------------------------------
+  // Caption language: ⋮ → Settings → Captions → "Language of the meeting".
+  // -------------------------------------------------------------------------
+  // The bot HEARS through Meet's captions, so this is not a display preference:
+  // set to the wrong language, Meet emits nonsense from correct speech and the
+  // agent answers the nonsense. Meet has no host-level push for this — every
+  // participant sets it themselves — so the bot must set its own.
+  //
+  // Everything here is keyed on ROLES and ACCESSIBLE NAMES, never on Meet's
+  // generated classes (`aqdrmf-rymPhb-ibnC6b`…) or jsnames, which rotate on
+  // every React rebuild. DOM captured live 2026-07-29.
+  captionLanguage: {
+    // Left-nav item in the Settings dialog whose own text is exactly "Captions".
+    captionsTabText: 'captions',
+    // The dropdown's accessible name. Meet renders it as a <div role="combobox"
+    // aria-haspopup="listbox"> whose aria-labelledby points at a span holding
+    // this text — so we find the combobox by its NAME, not its shape.
+    comboboxLabel: 'language of the meeting',
+    combobox: '[role="combobox"][aria-haspopup="listbox"]',
+    // The popup it controls, and its options. Each option carries the BCP-47 tag
+    // in data-value ("es-ES", "en-GB", "cmn-Hans-CN"), which is the one durable,
+    // semantic hook in this subtree — worth far more than any class name.
+    listbox: '[role="listbox"]',
+    option: '[role="option"]',
+    // Where the currently-selected language is displayed on the closed combobox.
+    // Read for verification; matched by position within the combobox rather than
+    // by its class, which rotates.
+    selectedOption: '[role="option"][aria-selected="true"]',
+  },
+
+  // -------------------------------------------------------------------------
   // Join / admission flow.
   // -------------------------------------------------------------------------
   join: {

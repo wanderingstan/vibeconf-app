@@ -201,6 +201,41 @@
           <a href="#" id="openVoiceSettingsBtn" style="color:#8ab4f8;text-decoration:underline">Download more macOS voices…</a></span>
         </div>
       </div>
+      <!-- The language the bot LISTENS in. Not a display setting: the bot reads
+           the room through Meet's captions, so a mismatch means it hears
+           nonsense and answers it. Applied on join; Meet has no host-level
+           control, so each bot sets its own.
+
+           Only Meet's non-BETA languages are listed — the BETA ones work but
+           transcribe less reliably, and this is the bot's hearing. Any tag can
+           still be set via the preference or set_caption_language. -->
+      <div class="field">
+        <label for="captionLanguage">Language spoken in calls</label>
+        <select id="captionLanguage" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit">
+          <option value="">Don't change it</option>
+          <option value="en-US">English</option>
+          <option value="en-GB">English (UK)</option>
+          <option value="de-DE">German</option>
+          <option value="es-ES">Spanish (Spain)</option>
+          <option value="es-MX">Spanish (Mexico)</option>
+          <option value="fr-FR">French</option>
+          <option value="fr-CA">French (Canada)</option>
+          <option value="it-IT">Italian</option>
+          <option value="nl-NL">Dutch</option>
+          <option value="pl-PL">Polish</option>
+          <option value="pt-BR">Portuguese (Brazil)</option>
+          <option value="pt-PT">Portuguese (Portugal)</option>
+          <option value="ro-RO">Romanian</option>
+          <option value="ru-RU">Russian</option>
+          <option value="ja-JP">Japanese</option>
+          <option value="ko-KR">Korean</option>
+          <option value="th-TH">Thai</option>
+          <option value="tr-TR">Turkish</option>
+          <option value="vi-VN">Vietnamese</option>
+        </select>
+        <div style="font-size:11px;color:#666;margin-top:2px">What the bot listens for. Set this to the language people actually speak in the call.</div>
+      </div>
+
       <div class="field">
         <label for="emojiSet">Emoji style</label>
         <select id="emojiSet" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit">

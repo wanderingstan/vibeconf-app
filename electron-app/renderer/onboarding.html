@@ -126,6 +126,36 @@
       <div id="elVoiceError" style="display:none;font-size:11px;color:#fdd663;margin-top:4px;line-height:1.4"></div>
       <div class="hint">Prefer no account? You can download a free premium macOS voice in System&nbsp;Settings → Accessibility → Spoken&nbsp;Content, then pick it here.</div>
       <div class="hint">Or run <a href="#" id="voiceboxLink">Voicebox</a>, a free open-source local voice engine. Once it's running its voices show up in the list too.</div>
+
+      <!-- The other half of the voice step: the language the bot LISTENS in.
+           The bot reads the room through Meet's captions, so this decides
+           whether it understands anything — a mismatch means it hears nonsense
+           and answers the nonsense rather than falling silent. Worth asking here
+           rather than leaving to be discovered mid-call. -->
+      <label for="captionLanguage" style="margin-top:14px">Language spoken in calls <span style="color:#9aa0a6">(what the bot listens for)</span></label>
+      <select id="captionLanguage">
+        <option value="">Don't change it</option>
+        <option value="en-US">English</option>
+        <option value="en-GB">English (UK)</option>
+        <option value="de-DE">German</option>
+        <option value="es-ES">Spanish (Spain)</option>
+        <option value="es-MX">Spanish (Mexico)</option>
+        <option value="fr-FR">French</option>
+        <option value="fr-CA">French (Canada)</option>
+        <option value="it-IT">Italian</option>
+        <option value="nl-NL">Dutch</option>
+        <option value="pl-PL">Polish</option>
+        <option value="pt-BR">Portuguese (Brazil)</option>
+        <option value="pt-PT">Portuguese (Portugal)</option>
+        <option value="ro-RO">Romanian</option>
+        <option value="ru-RU">Russian</option>
+        <option value="ja-JP">Japanese</option>
+        <option value="ko-KR">Korean</option>
+        <option value="th-TH">Thai</option>
+        <option value="tr-TR">Turkish</option>
+        <option value="vi-VN">Vietnamese</option>
+      </select>
+      <div class="hint">Set this to the language people actually speak in your calls. The bot applies it to Meet's captions each time it joins.</div>
     </section>
 
     <section data-step="bot">

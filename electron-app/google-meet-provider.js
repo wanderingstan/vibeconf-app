@@ -203,7 +203,7 @@ function dismissBlockingModals() {
   // NEVER wants a Settings dialog open, closing any lingering one is always
   // safe and self-heals the stuck flow within a sweep (~1s).
   const settingsDlg = document.querySelector(MEET.studioSound.settingsDialog);
-  if (settingsDlg && isVisible(settingsDlg) && !_studioSoundInProgress) {
+  if (settingsDlg && isVisible(settingsDlg) && !_settingsDialogInProgress) {
     const close = settingsDlg.querySelector(MEET.studioSound.settingsCloseAction) ||
       [...settingsDlg.querySelectorAll('button, [role="button"]')].find((b) =>
         (b.getAttribute('aria-label') || '').trim().toLowerCase() === MEET.studioSound.closeDialogLabel.toLowerCase());
@@ -331,7 +331,7 @@ function dismissBlockingModals() {
   // title varies ("Settings", "Video settings"), and while the flag is up ANY open
   // dialog belongs to us.
   const dlg = document.querySelector(MEET.modals.anyDialog);
-  if (dlg && isVisible(dlg) && !_studioSoundInProgress && Date.now() - _lastModalDumpAt > 15000) {
+  if (dlg && isVisible(dlg) && !_settingsDialogInProgress && Date.now() - _lastModalDumpAt > 15000) {
     const txt = (dlg.textContent || '').toLowerCase();
     const isRecordingConsent = txt.includes('being recorded') || txt.includes('taking notes');
     if (!isRecordingConsent) {
@@ -2437,11 +2437,16 @@ async function clickPresentNow(shareType) {
 // More options (⋮) → Settings → Audio → toggle "Studio sound" → Close. (Steps
 // confirmed live by Stan.) Best-effort with short waits, since menus/dialogs
 // animate in.
-// #416: true while setStudioSound is deliberately driving the Settings dialog,
+// #416: true while one of OUR flows is deliberately driving the Settings dialog,
 // so the modal sweeper's safety-net close (dismissBlockingModals) doesn't yank
 // the dialog out from under it mid-flow. The sweeper only closes a Settings
 // dialog that is NOT ours-in-progress = an abandoned/stuck one.
-let _studioSoundInProgress = false;
+//
+// Deliberately named for the DIALOG, not for studio sound: two flows now walk it
+// (setStudioSound, setCaptionLanguage), and a flag named after one of them would
+// have to be set by the other under a misleading name — or, worse, left unset,
+// letting the sweeper slam the dialog shut mid-walk.
+let _settingsDialogInProgress = false;
 
 async function setStudioSound(enabled) {
   const waitFor = async (fn, ms = 5000) => {
@@ -2455,7 +2460,7 @@ async function setStudioSound(enabled) {
     // a clickable item whose own text is exactly "Audio" (the settings left-nav)
     Array.from(document.querySelectorAll('[role="tab"], [role="menuitemradio"], button, [role="button"], [tabindex]'))
       .find((el) => el.textContent && el.textContent.trim().toLowerCase() === MEET.studioSound.audioTabText && isVisible(el)) || null;
-  _studioSoundInProgress = true; // #416: suppress the sweeper's safety-net close while we drive the dialog
+  _settingsDialogInProgress = true; // #416: suppress the sweeper's safety-net close while we drive the dialog
   try {
     // 1) Open the toolbar ⋮ menu. EXACT aria-label match — a substring match also
     //    hits the per-participant "More options for <name>" tile buttons (which
@@ -2521,11 +2526,193 @@ async function setStudioSound(enabled) {
     console.warn('[studio-sound] error:', e.message);
     return false;
   } finally {
-    _studioSoundInProgress = false; // #416: re-arm the sweeper's safety net
+    _settingsDialogInProgress = false; // #416: re-arm the sweeper's safety net
+  }
+}
+
+// Set the caption language: ⋮ → Settings → Captions → "Language of the meeting".
+//
+// This is the bot's HEARING, not a display preference. It reads the room through
+// Meet's caption region, so a wrong language means Meet emits nonsense from
+// perfectly good speech and the agent answers the nonsense — worse than silence,
+// and invisible until someone reads the transcript. Meet has no host-level push
+// for this (every participant sets their own), so the bot sets its own.
+//
+// `language` is a BCP-47 tag as Meet spells it in each option's data-value:
+// "es-ES", "es-MX", "en-GB", "cmn-Hans-CN", "ar-x-LEVANT". A bare "es" resolves
+// to the first option whose tag starts with it, so callers can be lazy.
+async function setCaptionLanguage(language) {
+  const want = String(language || '').trim();
+  if (!want) { console.warn('[caption-language] no language given'); return { ok: false, error: 'no language given' }; }
+  const wantLc = want.toLowerCase();
+
+  const waitFor = async (fn, ms = 5000) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) { try { const el = fn(); if (el) return el; } catch { /* ignore */ } await delay(150); }
+    return null;
+  };
+
+  // Accessible name of an element, following aria-labelledby. Meet labels this
+  // combobox by reference, not with an aria-label, so a plain attribute read
+  // finds nothing.
+  const accName = (el) => {
+    if (!el) return '';
+    const direct = (el.getAttribute('aria-label') || '').trim();
+    if (direct) return direct;
+    const ids = (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean);
+    return ids.map((id) => (document.getElementById(id)?.textContent || '').trim()).join(' ').trim();
+  };
+
+  const findCombobox = () =>
+    Array.from(document.querySelectorAll(MEET.captionLanguage.combobox))
+      .find((el) => accName(el).toLowerCase().includes(MEET.captionLanguage.comboboxLabel) && isVisible(el)) || null;
+
+  const findCaptionsTab = () =>
+    Array.from(document.querySelectorAll('[role="tab"], [role="menuitemradio"], button, [role="button"], [tabindex]'))
+      .find((el) => (el.textContent || '').trim().toLowerCase() === MEET.captionLanguage.captionsTabText && isVisible(el)) || null;
+
+  // The options live in the element the combobox CONTROLS. Resolve by
+  // aria-controls rather than by searching inside the combobox: the wrapper
+  // carries data-is-menu-hoisted, so Meet may portal the listbox somewhere else
+  // in the document entirely (and data-is-menu-deferred means it may not exist
+  // at all until opened). Fall back to any visible listbox.
+  const findListbox = (combo) => {
+    const id = combo && combo.getAttribute('aria-controls');
+    const byId = id ? document.getElementById(id) : null;
+    if (byId) return byId;
+    return Array.from(document.querySelectorAll(MEET.captionLanguage.listbox)).find(isVisible) || null;
+  };
+
+  const optionsIn = (box) => Array.from(box ? box.querySelectorAll(MEET.captionLanguage.option) : []);
+
+  // data-value is the BCP-47 tag and the one durable, semantic hook here. Exact
+  // match first, then a prefix match so "es" finds "es-ES", then the visible
+  // label as a last resort (Meet's own display text, e.g. "Spanish (Spain)").
+  const pickOption = (opts) => {
+    const tag = (o) => (o.getAttribute('data-value') || '').toLowerCase();
+    return opts.find((o) => tag(o) === wantLc)
+      || opts.find((o) => tag(o).startsWith(wantLc + '-'))
+      || opts.find((o) => tag(o).startsWith(wantLc))
+      || opts.find((o) => (o.getAttribute('aria-label') || '').toLowerCase().startsWith(wantLc))
+      || opts.find((o) => (o.textContent || '').trim().toLowerCase().startsWith(wantLc))
+      || null;
+  };
+
+  _settingsDialogInProgress = true; // #416: hold off the sweeper while we drive the dialog
+  try {
+    // 1) Toolbar ⋮ — EXACT aria-label, or the per-participant "More options for
+    //    <name>" buttons match too and open a menu with no Settings in it.
+    const more = await waitFor(() => document.querySelector(MEET.studioSound.moreOptions));
+    if (!more) { console.warn('[caption-language] step1: toolbar "More options" not found'); return { ok: false, error: 'More options not found' }; }
+    more.click();
+
+    // 2) "Settings" in that menu.
+    const settings = await waitFor(() =>
+      Array.from(document.querySelectorAll('[role="menuitem"], [role="menuitemradio"], li, [role="button"]'))
+        .find((el) => (el.textContent || '').trim().toLowerCase().startsWith(MEET.studioSound.settingsText) && isVisible(el)));
+    if (!settings) { console.warn('[caption-language] step2: "Settings" menu item not found'); return { ok: false, error: 'Settings menu item not found' }; }
+    settings.click();
+
+    // 3) Captions tab. Meet may open the dialog on any tab, so click and VERIFY
+    //    the combobox appears, retrying — the same shape setStudioSound needs for
+    //    its Audio tab, and for the same reason (#416).
+    await waitFor(() => document.querySelector('[role="dialog"]'));
+    let combo = findCombobox();
+    for (let attempt = 0; attempt < 4 && !combo; attempt++) {
+      const tab = findCaptionsTab();
+      if (tab) { tab.click(); console.log('[caption-language] step3: clicked Captions tab (attempt', attempt + 1, ')'); }
+      combo = await waitFor(findCombobox, 1500);
+    }
+    if (!combo) {
+      const items = Array.from(document.querySelectorAll('[role="tab"], [role="dialog"] [role="button"], [role="dialog"] li'))
+        .map((el) => (el.getAttribute('aria-label') || el.textContent || '').trim()).filter(Boolean).slice(0, 30);
+      console.warn('[caption-language] step3: "Language of the meeting" combobox not found. Dialog items:', JSON.stringify(items));
+      return { ok: false, error: 'language dropdown not found' };
+    }
+
+    // Read the previous language AFTER opening the listbox (below), from the
+    // option Meet marks aria-selected. combo.textContent looked obvious and was
+    // wrong: Meet stacks three hidden duplicate label spans inside the combobox,
+    // so it returned "Language of the meetingLanguage of the meeting…English"
+    // with the real answer buried at the end. Verified live 2026-07-30.
+    let before = null;
+
+    // 4) Open the listbox and pick the option.
+    combo.click();
+    let box = await waitFor(() => findListbox(combo), 3000);
+    let opts = optionsIn(box);
+    // The currently-selected option is the honest source for "what was it
+    // before" — one element, one label, no hidden duplicates.
+    const selected = box ? box.querySelector(MEET.captionLanguage.selectedOption) : null;
+    if (selected) {
+      before = (selected.getAttribute('data-value')
+        || (selected.getAttribute('aria-label') || '').trim()
+        || (selected.textContent || '').trim()) || null;
+    }
+    let opt = pickOption(opts);
+
+    // Fallback: the menu is deferred/virtualised and rendered nothing we can
+    // match. Meet's listbox supports type-ahead (keydown handler on the ul), so
+    // type the tag and let it jump. Deliberately a fallback — typing depends on
+    // Meet's display spelling, where data-value does not.
+    if (!opt && box) {
+      console.log('[caption-language] step4: no matchable option rendered — trying type-ahead for', JSON.stringify(want));
+      for (const ch of want) {
+        box.dispatchEvent(new KeyboardEvent('keydown', { key: ch, bubbles: true }));
+        await delay(60);
+      }
+      opts = optionsIn(box);
+      opt = opts.find((o) => o.getAttribute('aria-selected') === 'true') || pickOption(opts);
+    }
+
+    if (!opt) {
+      const sample = opts.slice(0, 8).map((o) => o.getAttribute('data-value')).filter(Boolean);
+      console.warn('[caption-language] step4: no option matched', JSON.stringify(want),
+        '— rendered options:', opts.length, JSON.stringify(sample));
+      return { ok: false, error: 'no caption language matched "' + want + '"', optionCount: opts.length };
+    }
+
+    const chosen = opt.getAttribute('data-value') || (opt.getAttribute('aria-label') || '').trim();
+    opt.click();
+    console.log('[caption-language] step4: selected', JSON.stringify(chosen));
+
+    // 5) Close the dialog, verifying it went (#416) — an abandoned Settings
+    //    dialog covers the caption region and the bot goes deaf with no human
+    //    there to close it.
+    const dialogGone = () => !document.querySelector(MEET.studioSound.settingsDialog);
+    for (let attempt = 0; attempt < 5 && !dialogGone(); attempt++) {
+      const close = await waitFor(() =>
+        document.querySelector(MEET.studioSound.settingsCloseAction) ||
+        findByAriaLabel(MEET.studioSound.closeDialogLabel) ||
+        document.querySelector(MEET.studioSound.closeDialogSelector), 1500);
+      if (close) close.click();
+      await delay(250);
+    }
+    if (!dialogGone()) {
+      console.warn('[caption-language] step5: Settings dialog still open after retries — leaving it to the modal sweeper (#416)');
+    }
+    return { ok: true, language: chosen, previous: before || null };
+  } catch (e) {
+    console.warn('[caption-language] error:', e.message);
+    return { ok: false, error: e.message };
+  } finally {
+    _settingsDialogInProgress = false; // #416: re-arm the sweeper's safety net
   }
 }
 
 ipcRenderer.on('set-studio-sound', (_event, payload) => { meetProvider.setStudioSound(!!(payload && payload.enabled)); });
+// Reports the OUTCOME back, not just fire-and-forget: the agent needs to know
+// whether the bot's hearing actually changed, and which tag Meet settled on.
+ipcRenderer.on(CALL_COMMANDS.setCaptionLanguage, async (_event, payload) => {
+  const requestId = payload && payload.requestId;
+  let result;
+  try {
+    result = await meetProvider.setCaptionLanguage((payload && payload.language) || '');
+  } catch (e) {
+    result = { ok: false, error: e.message };
+  }
+  ipcRenderer.send(CALL_EVENTS.captionLanguageResult, { requestId, ...(result || {}) });
+});
 
 // Detect Meet's intermittent screen-share error modal ("Can't share your screen
 // / Something went wrong when screen sharing. Please try again."). Returns the
@@ -2637,6 +2824,7 @@ class GoogleMeetProvider extends CallProvider {
     }, '*');
   }
   async setStudioSound(enabled) { return setStudioSound(enabled); }
+  async setCaptionLanguage(language) { return setCaptionLanguage(language); }
 
   async enableCaptions() { clickCaptionsWhenReady(); }
   async recoverCaptions() { return captionScraper._recoverCaptions(); }

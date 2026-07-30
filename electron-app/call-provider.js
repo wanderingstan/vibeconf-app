@@ -43,6 +43,7 @@ const CALL_COMMANDS = {
   triggerScreenShare: 'trigger-screen-share',
   triggerStopSharing: 'trigger-stop-sharing',
   setStudioSound: 'set-studio-sound',
+  setCaptionLanguage: 'set-caption-language',
   recoverCaptions: 'recover-captions',
   readChat: 'read-chat',
   sendChat: 'send-chat',
@@ -61,6 +62,7 @@ const CALL_EVENTS = {
   // Chat.
   chatUnread: 'chat-unread',
   chatResult: 'chat-result', // request/response reply to read-chat / send-chat
+  captionLanguageResult: 'caption-language-result', // reply to set-caption-language
   // Side-panel state (which pane is open).
   paneState: 'pane-state',
   // Presenting / screen share.
@@ -119,6 +121,9 @@ class CallProvider {
   async speak(/* payload */) { this.notImplemented('speak'); }
   /** Toggle Meet's "Studio sound" voice filter (off lets music/SFX through). */
   async setStudioSound(/* enabled */) { this.notImplemented('setStudioSound'); }
+  // Caption language is how the bot HEARS (it reads Meet's caption region), so a
+  // provider without captions has nothing to set — Slack overrides this to say so.
+  async setCaptionLanguage(/* language */) { this.notImplemented('setCaptionLanguage'); }
 
   // --- Captions / listening ------------------------------------------------
   /** Ensure captions are on. Provider streams transcript via captionTurns. */

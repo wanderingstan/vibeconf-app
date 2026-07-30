@@ -77,7 +77,7 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref, extraRoutes } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onShareWhiteboard, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
     // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
     // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
@@ -117,6 +117,7 @@ class LocalServer {
     this.onShareClick = onShareClick || (async () => ({ ok: false, error: 'not implemented' }));
     this.onShareType = onShareType || (async () => ({ ok: false, error: 'not implemented' }));
     this.onSetShareAudio = onSetShareAudio || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onSetCaptionLanguage = onSetCaptionLanguage || (async () => ({ ok: false, error: 'not implemented' }));
     this.onPlayAudio = onPlayAudio || (() => {});
     this.onFocusRequest = onFocusRequest || (() => {}); // raise this instance's window (profile switcher)
     // Start a brand-new call: create a room, send the bot in, open the human's
@@ -3928,6 +3929,13 @@ class LocalServer {
 
     if (data.meta?.action === 'set-share-audio') {
       results.setShareAudio = await this.onSetShareAudio({ muted: data.meta.muted });
+    }
+
+    // The caption language the bot LISTENS in. Not cosmetic: the bot reads the
+    // room through Meet's caption region, so the wrong language means it hears
+    // nonsense and answers it.
+    if (data.meta?.action === 'set-caption-language') {
+      results.setCaptionLanguage = await this.onSetCaptionLanguage({ language: data.meta.language });
     }
 
     // Handle inspect-dom command — read-only DOM extraction from the Meet view

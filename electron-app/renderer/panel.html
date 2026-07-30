@@ -52,11 +52,20 @@
         <div class="hero-notices">
           <div class="error-bar hero-notice" id="errorBar" style="display:none"><span id="errorText"></span><button class="error-close" id="errorClose">&times;</button></div>
 
-          <!-- #381: voice needs a machine-wide ElevenLabs key, which lives in
-               App Settings (⌘,). Shown only when no key is set. -->
+          <!-- #381: shown only when the bot genuinely cannot make a sound —
+               a platform with no built-in voice (Linux, #21) and neither an
+               ElevenLabs key nor a Voicebox profile.
+               NOT shown merely because there's no ElevenLabs key: on macOS and
+               Windows the bot falls back to the OS voice and speaks fine, and
+               claiming otherwise sent people hunting for a broken feature that
+               was working. panel.js asks main for the real answer. -->
           <div class="hero-notice notice-warn" id="appSettingsBanner" style="display:none">
-            <span><i class="ui-icon ui-icon-speaker ui-icon--lead"></i>Voice is off: no ElevenLabs key set.</span>
-            <button id="openAppSettingsFromBanner" class="notice-action">Set it up →</button>
+            <span><i class="ui-icon ui-icon-speaker ui-icon--lead"></i>This bot can't speak: no voice available on this system. It will use chat instead.</span>
+            <!-- Opens App Settings, not this bot's Settings: with no provider at
+                 all there is nothing for the per-bot voice picker to list, and
+                 the only thing that fixes it (the machine-wide ElevenLabs key)
+                 lives there. -->
+            <button id="openAppSettingsFromBanner" class="notice-action">Choose a voice →</button>
           </div>
         </div>
 

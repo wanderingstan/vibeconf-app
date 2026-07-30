@@ -1375,13 +1375,26 @@ api.invoke('get-overlay-flags').then((flags) => {
 // field. The key can be set in the separate App Settings window, so re-check when
 // this window regains focus.
 const appSettingsBanner = document.getElementById('appSettingsBanner');
-function updateAppSettingsBanner(hasKey) {
-  if (appSettingsBanner) appSettingsBanner.style.display = hasKey ? 'none' : 'flex';
+
+// Shown ONLY when the bot has no way to make sound at all.
+//
+// This used to key off `!ttsApiKey`, which is a different question and got the
+// answer wrong for most people: a keyless bot on macOS or Windows speaks fine
+// through the OS voice, and a Voicebox user has local TTS. Both were told
+// "Voice is off" while their voice was on — and someone who deliberately picked
+// a built-in voice with set_voice got nagged about a key their own choice had
+// made irrelevant. Main owns the real answer (electron-app/voice-status.js);
+// asking it over IPC keeps one copy of the rule rather than a second one here
+// that drifts.
+function updateAppSettingsBanner(status) {
+  if (appSettingsBanner) appSettingsBanner.style.display = status?.canSpeak === false ? 'flex' : 'none';
+}
+function refreshVoiceBanner() {
+  return api.invoke('get-voice-status').then(updateAppSettingsBanner).catch(() => {});
 }
 document.getElementById('openAppSettingsFromBanner')?.addEventListener('click', () => api.invoke('open-app-settings'));
-window.addEventListener('focus', () => {
-  api.invoke('get-config', ['ttsApiKey']).then((c) => updateAppSettingsBanner(!!c?.ttsApiKey)).catch(() => {});
-});
+// The key lives in the separate App Settings window, so re-check on focus.
+window.addEventListener('focus', refreshVoiceBanner);
 
 api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'ttsProvider', 'claudeWorkDir', 'claudeModel', 'emojiSet', 'captionLanguage', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
   if (result?.botName) { botNameInput.value = result.botName; currentBotName = result.botName; }
@@ -1395,7 +1408,7 @@ api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', '
   if (effectiveUrl) { websiteUrlInput.value = effectiveUrl; syncBaseUrl = effectiveUrl; }
   // #366/#381: the ElevenLabs key field moved to App Settings — no input here to
   // fill. The onboarding banner still reflects whether a key is configured.
-  updateAppSettingsBanner(!!result?.ttsApiKey); // #381 onboarding banner
+  refreshVoiceBanner(); // #381 — only when nothing can speak at all
   if (result?.ttsVoiceId) ttsVoiceIdInput.value = result.ttsVoiceId;
   // #340: one unified picker merging macOS + ElevenLabs + Voicebox. Pre-selects
   // from the saved provider/voice; defaults to Daniel (tts.js's real default).

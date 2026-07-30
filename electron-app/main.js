@@ -13,6 +13,7 @@ const { MEET } = require('./meet-selectors.js'); // pure data — safe in the ma
 const { resolveSvg } = require('./svg-resolver.js');
 // One source of truth for the unconfigured bot name — see preferences-schema.
 const { DEFAULT_BOT_NAME } = require('./preferences-schema');
+const { resolveVoice } = require('./voice-status.js');
 const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEventsFor } = require('./share-surface.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
 // The call-provider contract. main.js is the consumer side: it subscribes to
@@ -175,6 +176,47 @@ function captionLanguageAlreadyApplied(room, language) {
   const a = _captionLanguageApplied;
   if (!a || !room || a.room !== room) return false;
   return a.requested === language || a.resolved === language;
+}
+
+// What the bot can currently speak with. Read live from the store rather than
+// cached: the ElevenLabs key can be entered in the App Settings window, and a
+// voice can be changed mid-call, both without a relaunch.
+function currentVoiceStatus() {
+  return resolveVoice({
+    ttsApiKey: store?.get('ttsApiKey'),
+    ttsProvider: store?.get('ttsProvider'),
+    voiceboxProfileId: store?.get('voiceboxProfileId'),
+    platform: process.platform,
+  });
+}
+
+// A bot with no voice used to join and simply never make a sound — indis­tin­guish­able,
+// from the room's side, from one that had crashed or wasn't listening. It now says
+// so out loud, once, using a pre-recorded clip (it cannot synthesise the sentence
+// for the very reason it needs to say it), and tells its agent to use chat.
+let _noVoiceAnnouncedFor = null;
+function announceNoVoiceOnce() {
+  const room = localServer.roomId;
+  const status = currentVoiceStatus();
+  if (status.canSpeak || !room || _noVoiceAnnouncedFor === room) return;
+  _noVoiceAnnouncedFor = room;
+  console.log('[electron] No voice available — announcing in-call and switching to chat.', status.reason);
+  try {
+    localServer.onPlayAudio({ path: noVoiceClipPath, emoji: '\u{1F507}' });
+  } catch (err) {
+    // The clip is a courtesy to the room; the agent instruction below is the
+    // part that actually keeps the call working, so never let this stop it.
+    console.warn('[electron] No-voice clip failed to play:', err.message);
+  }
+  // Rides the status.errors channel the agent already reads on each lull, the
+  // same way the ElevenLabs-fallback notice does.
+  localServer.addError(
+    'You have NO VOICE in this call: ' + status.reason
+    + ' A short recorded notice has been played to the room telling them you will type instead. '
+    + 'Do not call speak — nothing will be heard. Use send_chat for every reply, and keep them '
+    + 'brief since people are reading rather than listening. If someone asks how to give you a '
+    + 'voice, tell them: open the app, add an ElevenLabs API key in App Settings, or run Voicebox locally.'
+  );
 }
 
 // The walk takes a second or two and captions-ready can fire repeatedly in that
@@ -1249,7 +1291,11 @@ const localServer = new globalThis.LocalServer({
     // and any provider (Meet / Slack / future).
     if (status === 'in-call') {
       focusBrowserCallTab(localServer.roomId);
+      // Say it early: the room should learn the bot is typing-only before they
+      // spend the call waiting for it to answer out loud.
+      announceNoVoiceOnce();
     }
+    if (status === 'left' || status === 'idle') _noVoiceAnnouncedFor = null;
     // Studio sound: if disabled by pref, turn off Meet's voice filter once in-call
     // so non-voice audio (SFX/music via play_audio) passes through. Delay lets the
     // in-call toolbar (More options ⋮) finish rendering. Default leaves it ON.
@@ -2976,6 +3022,15 @@ function openGoogleLogin() {
 // Read page-inject.js source once at startup
 const pageInjectCode = fs.readFileSync(path.join(EXT_DIR, 'page-inject.js'), 'utf-8');
 const testSpeechPath = path.join(EXT_DIR, 'test-speech.mp3');
+// The "I have no voice" notice, pre-recorded because the bot cannot synthesise
+// that sentence for exactly the reason it needs to say it. Ships alongside
+// test-speech.mp3 via the "*.mp3" entry in package.json's files list.
+//
+// Regenerate with:
+//   say -v "Ava (Premium)" -o /tmp/nv.aiff "<the sentence>" \
+//     && ffmpeg -y -i /tmp/nv.aiff -codec:a libmp3lame -b:a 64k -ac 1 -ar 22050 \
+//        electron-app/no-voice.mp3
+const noVoiceClipPath = path.join(EXT_DIR, 'no-voice.mp3');
 
 // Chrome-like user agent to avoid Google blocking
 const CHROME_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
@@ -6630,6 +6685,11 @@ function setupIPC() {
     // platform, so it says nothing about which OS we're on.
     platform: process.platform,
   }));
+
+  // Can this bot actually make a sound, and with what? The panel's warning
+  // banner keys off this rather than off the presence of an ElevenLabs key,
+  // which is a different question — see electron-app/voice-status.js.
+  ipcMain.handle('get-voice-status', () => currentVoiceStatus());
 
   ipcMain.handle('create-and-join-meet', async () => createAndJoinMeet());
 

@@ -19,6 +19,22 @@ class TTSProvider {
     // On Windows the default is '' rather than a guessed name: SAPI then uses
     // the machine's default voice, which is always installed. main.js seeds a
     // real name into the store once it has enumerated them.
+    //
+    // 'Daniel' on macOS is a PREFERENCE, not a guarantee, and naming a voice
+    // that isn't installed is safe: `say` substitutes the system default and
+    // still exits 0 (verified — an unknown name and an empty one both render
+    // audio). Windows is explicitly safe the same way, via the try/catch around
+    // SelectVoice in system-voices.js. So neither platform can go mute because
+    // of the voice NAME — worth knowing before "fixing" this to '', which would
+    // only trade a male default for the locale's default and change nothing
+    // about reliability.
+    //
+    // Daniel is en_GB, so the obvious "fix" is a US voice — but the iconic ones
+    // aren't there any more. On macOS 26.5, `Alex` is NOT installed (it became a
+    // download); the plain en_US tier is the legacy set (Agnes, Albert, Fred,
+    // Junior) plus novelty voices. Naming Alex would land on the system default,
+    // which is Samantha — female, i.e. the opposite of what picking a male voice
+    // was for. Daniel is male, present, and decent, so it stays.
     this.macosVoice = config.macosVoice || (process.platform === 'win32' ? '' : 'Daniel');
     this.voiceboxUrl = config.voiceboxUrl || 'http://127.0.0.1:17493'; // local Voicebox server
     this.voiceboxProfileId = config.voiceboxProfileId || '';

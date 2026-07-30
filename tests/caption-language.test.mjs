@@ -194,3 +194,19 @@ test('the settings picker offers only Meet non-BETA languages, plus leave-as-is'
     assert.match(v, /^[a-z]{2}-[A-Z]{2}$/, `${v} should be a BCP-47 tag`);
   }
 });
+
+test('the onboarding wizard asks for the language alongside the voice', () => {
+  // A newcomer who works in German shouldn't discover mid-call that the bot is
+  // listening in English. It belongs in the same step as the voice: one is how
+  // the bot speaks, the other how it hears.
+  const html = readFileSync(join(root, 'electron-app/renderer/onboarding.html'), 'utf8');
+  const voiceStep = html.slice(html.indexOf('data-step="voice"'), html.indexOf('data-step="bot"'));
+  assert.match(voiceStep, /id="captionLanguage"/, 'the picker belongs in the voice step');
+
+  const js = readFileSync(join(root, 'electron-app/renderer/onboarding.js'), 'utf8');
+  // Saved UNCONDITIONALLY: '' is a real choice ("Don't change it"), so a
+  // truthiness guard like botName's would make that choice unsaveable.
+  assert.match(js, /set-config', 'captionLanguage', \$\('captionLanguage'\)\.value/);
+  // And prefilled, so re-running the wizard doesn't silently reset it.
+  assert.match(js, /savedVoiceCfg\.captionLanguage/);
+});

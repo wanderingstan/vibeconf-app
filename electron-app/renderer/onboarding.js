@@ -35,7 +35,12 @@ function render() {
 async function saveCurrent() {
   const step = steps[i];
   try {
-    if (step === 'voice') await api.invoke('set-config', 'ttsApiKey', ($('elKey').value || '').trim());
+    if (step === 'voice') {
+      await api.invoke('set-config', 'ttsApiKey', ($('elKey').value || '').trim());
+      // '' is a real choice ("Don't change it"), so this is set unconditionally
+      // rather than guarded by truthiness the way botName is.
+      await api.invoke('set-config', 'captionLanguage', $('captionLanguage').value);
+    }
     if (step === 'bot') {
       const name = ($('botName').value || '').trim();
       if (name) await api.invoke('set-config', 'botName', name);
@@ -319,9 +324,10 @@ $('voiceboxLink').addEventListener('click', (e) => { e.preventDefault(); api.inv
 // ── initial load ─────────────────────────────────────────────────────────
 (async () => {
   try {
-    savedVoiceCfg = await api.invoke('get-config', ['botName', 'ttsApiKey', 'remoteLogging', 'ttsProvider', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId']);
+    savedVoiceCfg = await api.invoke('get-config', ['botName', 'ttsApiKey', 'remoteLogging', 'ttsProvider', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'captionLanguage']);
     if (savedVoiceCfg) {
       $('botName').value = savedVoiceCfg.botName || '';
+      if ($('captionLanguage')) $('captionLanguage').value = savedVoiceCfg.captionLanguage || '';
       $('elKey').value = savedVoiceCfg.ttsApiKey || '';
       paintLog(savedVoiceCfg.remoteLogging);
     }

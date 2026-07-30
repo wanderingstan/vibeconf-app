@@ -59,12 +59,12 @@ test('it does not match unrelated dialogs', () => {
   }
 });
 
-test('the unknown-modal report is guarded by _studioSoundInProgress', () => {
+test('the unknown-modal report is guarded by _settingsDialogInProgress', () => {
   // The line that decides whether to dump DOM + notify the agent.
   // The condition contains nested parens (isVisible(dlg)), so match up to `) {`.
   const line = /const dlg = document\.querySelector\(MEET\.modals\.anyDialog\);\s*\n\s*if \((.*)\) \{/.exec(provider);
   assert.ok(line, 'the unknown-modal guard should still look like this');
-  assert.match(line[1], /!_studioSoundInProgress/,
+  assert.match(line[1], /!_settingsDialogInProgress/,
     'while we drive a dialog, ANY open dialog is ours — do not report it as unhandled');
 });
 
@@ -73,12 +73,18 @@ test('the guard is on the flag, not on the dialog title', () => {
   // missed Seth's case. Make sure nobody "simplifies" it back to a title check.
   const block = provider.slice(provider.indexOf('const dlg = document.querySelector(MEET.modals.anyDialog);'));
   const guard = block.slice(0, block.indexOf('\n', block.indexOf('if (')));
-  assert.ok(!/aria-label|Settings/i.test(guard), 'guard must not depend on the dialog title');
+  // The FLAG is now named for the dialog (_settingsDialogInProgress), since two
+  // flows drive it — so a bare /Settings/i search hits the flag itself. Drop the
+  // flag name first, then assert nothing title-shaped remains: no aria-label
+  // read, and no quoted "Settings" literal to compare against.
+  const withoutFlag = guard.replace(/_settingsDialogInProgress/g, '');
+  assert.ok(!/aria-label/i.test(withoutFlag), 'guard must not read the dialog title');
+  assert.ok(!/['"][^'"]*settings/i.test(withoutFlag), 'guard must not compare a title literal');
 });
 
 test('the safety-net close still refuses to fire while the flow is running', () => {
   // Otherwise the sweeper would slam the dialog shut mid-walk (#416).
-  assert.match(provider, /if \(settingsDlg && isVisible\(settingsDlg\) && !_studioSoundInProgress\)/);
+  assert.match(provider, /if \(settingsDlg && isVisible\(settingsDlg\) && !_settingsDialogInProgress\)/);
 });
 
 // #61: Meet's idle-timeout prompt. Unanswered, Meet EJECTS the bot — which is
@@ -113,7 +119,7 @@ test('the still-there handler scans every open dialog, not just the first', () =
 });
 
 test('the flag is always cleared, even when the flow throws', () => {
-  const finallyBlock = /finally \{\s*\n\s*_studioSoundInProgress = false;/.exec(provider);
+  const finallyBlock = /finally \{\s*\n\s*_settingsDialogInProgress = false;/.exec(provider);
   assert.ok(finallyBlock, 'a thrown studio-sound flow must not wedge the sweeper off forever');
 });
 

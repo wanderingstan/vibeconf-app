@@ -1584,6 +1584,38 @@ server.tool(
 );
 
 // --- set_mode ---
+// --- set_caption_language ---
+server.tool(
+  "set_caption_language",
+  "Set the language the bot LISTENS in, by changing Meet's \"Language of the meeting\" caption setting. This is not cosmetic: the bot hears the room by reading Meet's captions, so if the meeting is in Spanish while this is English, Meet produces nonsense from correct speech and the bot answers the nonsense — it does not fall silent, it becomes confidently wrong. Call this as soon as you notice the room is speaking a language other than the current caption language, or when asked to work in another language. Meet has no host-level control for this (each participant sets their own), so the bot must set its own. Takes a few seconds: it walks Meet's Settings dialog.",
+  {
+    language: z.string().describe("BCP-47 tag as Meet spells it: 'es-ES', 'es-MX', 'en-GB', 'fr-FR', 'de-DE', 'ja-JP', 'pt-BR', 'cmn-Hans-CN'. A bare language ('es') resolves to the first regional variant Meet offers. Many are marked BETA in Meet's own list."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ language, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) {
+      return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    }
+
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
+        meta: { action: "set-caption-language", language },
+      })),
+    });
+
+    const data = await resp.json();
+    const result = data.results?.setCaptionLanguage;
+    if (result?.ok) {
+      const was = result.previous ? ` (was ${result.previous})` : "";
+      return { content: [{ type: "text", text: `Caption language set to ${result.language}${was}. The bot now hears the room in that language; earlier transcripts were captioned in the previous one.` }] };
+    }
+    return { content: [{ type: "text", text: `Error: ${result?.error || data.error || "failed to set the caption language"}` }] };
+  }
+);
+
 server.tool(
   "set_mode",
   "Set the bot's persistent behavior mode. 'active' = responds freely on every pause (default). 'passive' = silent until its name is mentioned — use when the user wants the bot to stay out of the way. 'silent' = listens and can act (update whiteboard, run tools) but never speaks. Call this when the user explicitly asks you to switch modes (e.g. 'be quiet', 'speak when spoken to', 'go silent', 'be active again').",

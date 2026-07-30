@@ -364,6 +364,13 @@ class SlackProvider extends CallProvider {
     // No Slack analog of Meet's "Studio sound" voice filter — no-op.
     return true;
   }
+  async setCaptionLanguage(/* language */) {
+    // Huddles have no caption region for the bot to read, so there is no caption
+    // language to set. Reported as unsupported rather than silently "true": the
+    // agent asked to change how it hears, and pretending that worked would be a
+    // lie it cannot detect.
+    return { ok: false, error: 'Slack huddles have no caption language to set' };
+  }
 }
 
 module.exports = { SlackProvider };

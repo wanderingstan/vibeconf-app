@@ -86,7 +86,7 @@ const SLACK_POPUP_CMDS = new Set([
   CALL_COMMANDS.ACTIONS.unmuteMic, CALL_COMMANDS.ACTIONS.muteMic,
   CALL_COMMANDS.ACTIONS.cameraOn, CALL_COMMANDS.ACTIONS.cameraOff,
   CALL_COMMANDS.triggerScreenShare, CALL_COMMANDS.triggerStopSharing,
-  CALL_COMMANDS.setStudioSound, CALL_COMMANDS.recoverCaptions,
+  CALL_COMMANDS.setStudioSound, CALL_COMMANDS.setCaptionLanguage, CALL_COMMANDS.recoverCaptions,
   CALL_COMMANDS.readChat, CALL_COMMANDS.sendChat,
 ]);
 
@@ -152,6 +152,32 @@ function noteChatResult(result) {
     try { localServer.addError(msg); } catch { /* best-effort */ }
   }
   return result;
+}
+
+// Generic "ask the call view to do something and tell me how it went". chatRequest
+// is the same shape hard-wired to the chat events; this is it with the event and
+// timeout as parameters, for operations whose outcome the agent must actually see.
+function callViewRequest(channel, payload, resultEvent, timeoutMs = 15000) {
+  return new Promise((resolve) => {
+    const wc = callCmdWC(channel);
+    if (!wc) {
+      resolve({ ok: false, error: 'No active call view' });
+      return;
+    }
+    const requestId = `${channel}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const timer = setTimeout(() => {
+      ipcMain.removeListener(resultEvent, handler);
+      resolve({ ok: false, error: `${channel} timed out` });
+    }, timeoutMs);
+    const handler = (_event, data) => {
+      if (data?.requestId !== requestId) return;
+      clearTimeout(timer);
+      ipcMain.removeListener(resultEvent, handler);
+      resolve(data);
+    };
+    ipcMain.on(resultEvent, handler);
+    wc.send(channel, { requestId, ...payload });
+  });
 }
 
 function chatRequest(channel, payload) {
@@ -754,6 +780,30 @@ const localServer = new globalThis.LocalServer({
   // asymmetry, with the host laptop silent while a remote device heard the
   // board. So the host already hears nothing during a share, and muting the
   // window would only silence a local output nobody is listening to.
+  // The caption language the bot listens in. Fire-and-report: the provider walks
+  // Meet's Settings dialog, which takes a second or two, so we await it and hand
+  // the real outcome back rather than an optimistic ok — a silently-failed change
+  // here leaves the bot hearing nonsense, which is the whole failure this guards.
+  onSetCaptionLanguage: async ({ language } = {}) => {
+    const want = String(language || '').trim();
+    if (!want) return { ok: false, error: 'Provide a language (e.g. "es-ES", "en-GB", "fr-FR")' };
+    if (localServer.callStatus !== 'in-call') {
+      return { ok: false, error: 'Not in a call — the caption language is a per-call Meet setting' };
+    }
+    // Round-trip through the call view — it owns the DOM walk and reports which
+    // tag Meet actually selected, which can differ from what was asked ("es" →
+    // "es-ES"). Same requestId pattern as chatRequest; 30s because this clicks
+    // through a menu, a tab and a listbox with verification at each step.
+    const result = await callViewRequest(
+      CALL_COMMANDS.setCaptionLanguage,
+      { language: want },
+      CALL_EVENTS.captionLanguageResult,
+      30000,
+    );
+    if (result && result.ok) console.log('[local-server] Caption language →', result.language);
+    else console.warn('[local-server] Caption language change failed:', result && result.error);
+    return result;
+  },
   onSetShareAudio: async ({ muted } = {}) => {
     const want = !!muted;
     if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {

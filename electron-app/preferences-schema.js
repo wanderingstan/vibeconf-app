@@ -91,6 +91,25 @@ const PREFERENCES = {
     description:
       'Phrases the bot picks from for long acks (when wordCount >= ackLongMin).',
   },
+  // The language the bot LISTENS in — Meet's "Language of the meeting" caption
+  // setting, applied automatically when the bot joins a call.
+  //
+  // Empty means LEAVE MEET ALONE. Deliberately not defaulted to 'en-US': that
+  // would make every existing bot start rewriting a Meet account setting it had
+  // never touched, on upgrade, for no reason the user asked for. Opt in.
+  //
+  // This is the bot's hearing, not a display preference — it reads the room
+  // through the caption region, so a mismatch means it hears nonsense and
+  // answers the nonsense rather than falling silent.
+  captionLanguage: {
+    type: 'string',
+    default: '',
+    description:
+      "BCP-47 tag for the language the bot listens in, e.g. 'de-DE', 'es-ES', " +
+      "'en-GB'. Applied to Meet's \"Language of the meeting\" when the bot joins " +
+      'a call. Empty leaves whatever Meet is already set to. Meet has no ' +
+      'host-level control for this, so each bot sets its own.',
+  },
   botName: {
     type: 'string',
     // Deliberately NOT a plausible name. "Jimmy" was the default for a long

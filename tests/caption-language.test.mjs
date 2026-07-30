@@ -145,3 +145,52 @@ test('the previous language comes from the selected option, not the combobox tex
   assert.match(fn, /MEET\.captionLanguage\.selectedOption/,
     'must read the aria-selected option instead');
 });
+
+// --- per-bot preference -----------------------------------------------------
+
+test('captionLanguage is a preference, defaulting to "leave Meet alone"', () => {
+  const { PREFERENCES } = require('../electron-app/preferences-schema.js');
+  const p = PREFERENCES.captionLanguage;
+  assert.ok(p, 'the preference should exist');
+  assert.equal(p.type, 'string');
+  // NOT 'en-US'. Defaulting to a real language would make every existing bot
+  // start rewriting a Meet account setting it had never touched, on upgrade,
+  // without anyone asking. Empty = opt in.
+  assert.equal(p.default, '');
+});
+
+test('the preference is applied when captions go live, once per call', () => {
+  // captions-ready, not join: before it, the caption region and the Settings
+  // dialog that owns the language may not be there to drive.
+  assert.match(main, /captionsReady[\s\S]{0,200}applyCaptionLanguagePref\(\)/);
+  const fn = main.slice(main.indexOf('function applyCaptionLanguagePref'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.match(body, /_captionLanguageAppliedFor === room/,
+    'must not re-walk the Settings dialog on every captions-ready blip');
+  assert.match(codeOnly(body), /if \(!want\) return/,
+    'an unset preference must leave Meet alone');
+  // A failure must not wedge it off for the rest of the call.
+  assert.match(body, /_captionLanguageAppliedFor = null/);
+});
+
+test('changing the preference mid-call takes effect immediately', () => {
+  const apply = main.slice(main.indexOf("} else if (key === 'captionLanguage')"));
+  const block = apply.slice(0, apply.indexOf("} else if (key === 'studioSound')"));
+  assert.match(block, /callStatus === 'in-call'/);
+  assert.match(block, /onSetCaptionLanguage/);
+});
+
+test('the settings picker offers only Meet non-BETA languages, plus leave-as-is', () => {
+  const panel = readFileSync(join(root, 'electron-app/renderer/panel.html'), 'utf8');
+  const sel = panel.slice(panel.indexOf('id="captionLanguage"'));
+  const block = sel.slice(0, sel.indexOf('</select>'));
+  const values = [...block.matchAll(/<option value="([^"]*)"/g)].map((m) => m[1]);
+  assert.ok(values.includes(''), 'must offer "leave as Meet has it"');
+  for (const tag of ['de-DE', 'es-ES', 'en-GB', 'ja-JP']) {
+    assert.ok(values.includes(tag), `expected ${tag} in the picker`);
+  }
+  // Every non-empty entry should look like a BCP-47 tag, not a display name.
+  for (const v of values.filter(Boolean)) {
+    assert.match(v, /^[a-z]{2}-[A-Z]{2}$/, `${v} should be a BCP-47 tag`);
+  }
+});

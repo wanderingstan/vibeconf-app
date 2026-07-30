@@ -60,6 +60,7 @@ const refreshVoicesBtn = document.getElementById('refreshVoicesBtn');
 const claudeWorkDirInput = document.getElementById('claudeWorkDir');
 const claudeModelInput = document.getElementById('claudeModel');
 const emojiSetInput = document.getElementById('emojiSet');
+const captionLanguageInput = document.getElementById('captionLanguage');
 const dangerousModeInput = document.getElementById('dangerousMode');
 const ackShortMinInput = document.getElementById('ackShortMin');
 const ackLongMinInput = document.getElementById('ackLongMin');
@@ -1367,7 +1368,7 @@ window.addEventListener('focus', () => {
   api.invoke('get-config', ['ttsApiKey']).then((c) => updateAppSettingsBanner(!!c?.ttsApiKey)).catch(() => {});
 });
 
-api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'ttsProvider', 'claudeWorkDir', 'claudeModel', 'emojiSet', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
+api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'ttsProvider', 'claudeWorkDir', 'claudeModel', 'emojiSet', 'captionLanguage', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
   if (result?.botName) { botNameInput.value = result.botName; currentBotName = result.botName; }
   rememberedMeetName = result?.lastMeetName || null;   // #282 remembered names
   rememberedSlackName = result?.lastSlackName || null;
@@ -1387,6 +1388,10 @@ api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', '
   if (result?.claudeWorkDir) claudeWorkDirInput.value = result.claudeWorkDir;
   if (result?.claudeModel) claudeModelInput.value = result.claudeModel;
   if (emojiSetInput && result?.emojiSet) emojiSetInput.value = result.emojiSet;
+  // '' is a real value here ("leave as Meet has it"), so don't treat it as absent.
+  if (captionLanguageInput && result?.captionLanguage !== undefined) {
+    captionLanguageInput.value = result.captionLanguage || '';
+  }
   if (result?.dangerousMode) dangerousModeInput.checked = true;
   if (result?.ackShortMin != null) ackShortMinInput.value = result.ackShortMin;
   if (result?.ackLongMin != null) ackLongMinInput.value = result.ackLongMin;
@@ -2414,6 +2419,12 @@ claudeWorkDirInput.addEventListener('change', () => {
 
 claudeModelInput.addEventListener('change', () => {
   api.invoke('set-config', 'claudeModel', claudeModelInput.value.trim());
+});
+
+if (captionLanguageInput) captionLanguageInput.addEventListener('change', () => {
+  // set-config live-applies it: mid-call it takes effect now, otherwise on the
+  // next join. See applyCaptionLanguagePref in main.
+  api.invoke('set-config', 'captionLanguage', captionLanguageInput.value);
 });
 
 if (emojiSetInput) emojiSetInput.addEventListener('change', async () => {

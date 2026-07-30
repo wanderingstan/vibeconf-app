@@ -157,6 +157,33 @@ function noteChatResult(result) {
 // Generic "ask the call view to do something and tell me how it went". chatRequest
 // is the same shape hard-wired to the chat events; this is it with the event and
 // timeout as parameters, for operations whose outcome the agent must actually see.
+// Apply the captionLanguage preference once the bot is in a call with captions
+// live. Captions-ready is the right moment: before it, the caption region (and
+// the Settings dialog that owns the language) may not be there to drive.
+//
+// Once per call — the walk opens Meet's Settings dialog, which briefly covers
+// the caption region, and repeating it on every captions-ready blip would make
+// the bot intermittently deaf for no gain.
+let _captionLanguageAppliedFor = null;
+function applyCaptionLanguagePref() {
+  const want = String(store?.get('captionLanguage') || '').trim();
+  if (!want) return;                                     // unset = leave Meet alone
+  const room = localServer.roomId;
+  if (!room || _captionLanguageAppliedFor === room) return;
+  _captionLanguageAppliedFor = room;
+  localServer.onSetCaptionLanguage({ language: want })
+    .then((r) => {
+      if (r && r.ok) console.log('[electron] Caption language applied on join:', r.language);
+      else {
+        // Don't wedge it: a failure here should be retryable on the next
+        // captions-ready rather than silently never attempted again.
+        _captionLanguageAppliedFor = null;
+        console.warn('[electron] Caption language on join failed:', r && r.error);
+      }
+    })
+    .catch((err) => { _captionLanguageAppliedFor = null; console.warn('[electron] Caption language on join threw:', err.message); });
+}
+
 function callViewRequest(channel, payload, resultEvent, timeoutMs = 15000) {
   return new Promise((resolve) => {
     const wc = callCmdWC(channel);
@@ -1542,6 +1569,14 @@ const localServer = new globalThis.LocalServer({
       // these prefs directly, so nothing to invalidate here.)
     } else if (key === 'emojiSet') {
       pushEmojiSet(value);
+    } else if (key === 'captionLanguage') {
+      // Take effect now if we're in a call; otherwise it lands on the next join.
+      if (localServer.callStatus === 'in-call' && String(value || '').trim()) {
+        _captionLanguageAppliedFor = localServer.roomId; // this IS the application
+        localServer.onSetCaptionLanguage({ language: String(value).trim() })
+          .then((r) => console.log('[electron] Caption language pref applied live:', r && (r.language || r.error)))
+          .catch(() => {});
+      }
     } else if (key === 'studioSound') {
       // Toggle Meet's voice filter live (no rejoin needed) when in-call.
       if (localServer.callStatus === 'in-call' && meetView && !meetView.webContents.isDestroyed()) {
@@ -7519,6 +7554,7 @@ function setupIPC() {
   ipcMain.on(CALL_EVENTS.captionsReady, () => {
     console.log('[electron] Captions ready — flushing pending bot speech');
     localServer._flushPendingBotSpeech();
+    applyCaptionLanguagePref();
   });
 
   ipcMain.on(CALL_EVENTS.ttsEnded, () => {

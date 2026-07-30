@@ -15,7 +15,7 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ICONS, MIRRORED, buildCss, iconSvg, cssUrl } from '../scripts/gen-ui-icons.mjs';
+import { ICONS, MIRRORED, VENDORED, buildCss, iconSvg, cssUrl } from '../scripts/gen-ui-icons.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
@@ -46,6 +46,23 @@ test('every icon resolves to real outline art, not an empty shell', () => {
     assert.ok(!svg.includes('id="color"'), `${name} dragged the colour layer in`);
     assert.ok(css.includes(`.ui-icon-${name} {`), `${name} is missing its CSS rule`);
   }
+});
+
+test('vendored icons are real art with a CSS rule', () => {
+  // The gear is not OpenMoji — it's Octicons' gear-24, pasted in because that
+  // set draws for the 24px box this panel actually uses. Same requirements as
+  // the extracted glyphs: real geometry, a viewBox so the mask can scale it,
+  // and no colour layer to fight the currentColor fill.
+  for (const [name, svg] of Object.entries(VENDORED)) {
+    assert.match(svg, /<(path|circle|rect|line|polyline|polygon|ellipse)\b/, `${name} has no geometry`);
+    assert.match(svg, /viewBox="0 0 \d+ \d+"/, `${name} lost its viewBox`);
+    assert.ok(!svg.includes('id="color"'), `${name} dragged the colour layer in`);
+    assert.ok(css.includes(`.ui-icon-${name} {`), `${name} is missing its CSS rule`);
+  }
+  // And the gear specifically must not fall back to OpenMoji's ⚙ (U+2699),
+  // whose toothed hairline rim is illegible at this size.
+  assert.ok(VENDORED.gear, 'the gear is no longer vendored');
+  assert.ok(!Object.keys(ICONS).includes('gear'), 'the gear is being drawn from OpenMoji again');
 });
 
 test('the eyes are mirrored so they look toward the button', () => {

@@ -1885,13 +1885,18 @@ if (popoutPanelBtn) {
 api.on('panel-popout-changed', ({ poppedOut }) => applyPopoutLabel(!!poppedOut));
 
 // Bot-view toggle (👀): the Meet view hidden/docked ↔ its own large window.
-// Lives in the in-call row beside Leave Call — with the view hidden by default
-// it is the only way to see what the bot is doing, so it belongs with the call
-// controls rather than in the bar under the panel. Its TITLE flips so the
-// control always names what a click will DO.
-const botViewToggleBtn = document.getElementById('botViewToggleBtn');
+// Sits left of the main button in BOTH states — "Call now" and "Leave Call".
+// With the view hidden by default this is the only way to see what the bot is
+// doing, and that matters BEFORE a call too: ⌘⇧L navigates first, so it cannot
+// show you the current state. Its TITLE flips so the control always names what
+// a click will DO.
+//
+// Two elements, not one: the pre-call and in-call rows are separate blocks the
+// stylesheet swaps, so a single button cannot be in both. They are driven as a
+// set here, which keeps one handler and one label rule for both.
+const botViewToggleBtns = [...document.querySelectorAll('.botview-toggle-btn')];
 function applyBotViewLabel(state, resting) {
-  if (!botViewToggleBtn) return;
+  if (!botViewToggleBtns.length) return;
   const popped = state === 'popped';
   // #103: the resting state is 'hidden' by default now, so "Dock" would be a
   // lie — clicking puts the view away entirely rather than docking it as a
@@ -1901,15 +1906,18 @@ function applyBotViewLabel(state, resting) {
   // "⧉ Pop out"/"⧉ Hide" relabel: same width either way, so the row doesn't
   // resize and shift on every state flip. The title still names what a click
   // will DO, which is the part that has to stay honest.
-  botViewToggleBtn.textContent = popped ? '✕' : '\u{1F440}';
-  // The ✕ is a text glyph where 👀 is emoji, so it renders visually smaller at
-  // the same font-size. The class bumps it back to match.
-  botViewToggleBtn.classList.toggle('is-close', popped);
-  botViewToggleBtn.title = popped
+  const title = popped
     ? (hides
         ? "Put the bot's view away. It keeps running at full size so the bot can still read shared screens — you just stop seeing it."
         : "Dock the bot's view back as a thumbnail below this panel")
     : "Pop the bot's view out into its own large window — this is where you sign the bot into Google, Slack or GitHub (\u2318L)";
+  for (const btn of botViewToggleBtns) {
+    btn.textContent = popped ? '✕' : '\u{1F440}';
+    // The ✕ is a text glyph where 👀 is emoji, so it renders visually smaller at
+    // the same font-size. The class bumps it back to match.
+    btn.classList.toggle('is-close', popped);
+    btn.title = title;
+  }
 }
 // Main's "is there a call" signal. It spans joining/waiting-to-be-admitted,
 // which the panel's own data-call-state deliberately doesn't — which is why the
@@ -1930,13 +1938,15 @@ function applyBotViewVisible(visible) {
 }
 applyBotViewVisible(false); // no call yet on load
 
-if (botViewToggleBtn) {
-  botViewToggleBtn.addEventListener('click', async () => {
-    try {
-      const res = await api.invoke('toggle-bot-view');
-      applyBotViewLabel(res?.state, res?.resting);
-    } catch { /* ignore */ }
-  });
+if (botViewToggleBtns.length) {
+  for (const btn of botViewToggleBtns) {
+    btn.addEventListener('click', async () => {
+      try {
+        const res = await api.invoke('toggle-bot-view');
+        applyBotViewLabel(res?.state, res?.resting);
+      } catch { /* ignore */ }
+    });
+  }
   api.invoke('get-bot-view').then((r) => {
     applyBotViewLabel(r?.state, r?.resting);
     applyBotViewVisible(!!r?.visible);

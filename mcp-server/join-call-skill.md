@@ -43,7 +43,7 @@ Examples:
 
 Call `get_room_info` (no room_id needed). Its response tells you one of three things:
 
-1. **The app is already in a call** — the reply will be a full room info block that starts with `Room: xxx-xxxx-xxx` and includes a `Call status:` line (e.g. `in-call`, `joining`, `waiting-to-be-admitted`). This is authoritative — use that room code and skip detection entirely.
+1. **The app is already in a call** — the reply will be a full room info block that starts with `Room: xxx-xxxx-xxx` and includes a `Call status:` line (e.g. `in-call`, `joining`, `navigating`, `waiting-to-be-admitted`). This is authoritative — use that room code and skip detection entirely. `navigating` means the app has just recorded intent to join and dispatched the browser view — it hasn't reached Meet's page yet; `joining` means Meet's own page has loaded and confirmed a join attempt is underway. Both mean "in progress, keep polling" — treat them the same as far as your next step goes.
 2. **Detected Meet URLs** — the reply starts with `Not in a call. Detected Google Meet URLs:`. Extract the meet code from the first URL.
 3. **Nothing detected** — fall back to AppleScript below.
 
@@ -103,7 +103,7 @@ disown
 - If **RUNNING**: Call `get_room_info` with the room code as `room_id` and check `Call status`:
   - `in-call`: Already joined — go to Step 3.
   - `idle` or `left`: App is running but not in this call. Call `join_call` with the room code to tell the app to navigate to the Meet and join.
-  - `joining` or `waiting-to-be-admitted`: The app is in the process of joining. Go to Step 3 — the long-poll will block until speech arrives after admission.
+  - `navigating`, `joining`, or `waiting-to-be-admitted`: The app is in the process of joining. Go to Step 3 — the long-poll will block until speech arrives after admission.
 
 ## Step 3: Start the conversation loop
 

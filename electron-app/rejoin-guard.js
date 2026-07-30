@@ -9,7 +9,7 @@
  * @param {object} args
  * @param {string} args.requestedRoom  room the caller wants to join
  * @param {string} args.currentRoom    room the app believes it is in
- * @param {string} args.callStatus     idle | joining | waiting-to-be-admitted | in-call | left
+ * @param {string} args.callStatus     idle | navigating | joining | waiting-to-be-admitted | in-call | left
  * @param {boolean} args.force         caller insists on rebuilding the session
  * @returns {boolean} true → answer "already in this call" and change nothing
  */
@@ -20,8 +20,10 @@ function shouldIgnoreRejoin({ requestedRoom, currentRoom, callStatus, force } = 
   if (!requestedRoom || !currentRoom || requestedRoom !== currentRoom) return false;
   // Only while the session is alive or on its way. From 'idle' or 'left' there
   // is nothing to protect, and refusing there would strand a bot that dropped
-  // out and is trying to come back.
-  return callStatus === 'in-call' || callStatus === 'joining';
+  // out and is trying to come back. 'navigating' counts too — it's the very
+  // first instant of the same in-progress join, just before Meet's DOM
+  // confirms 'joining'.
+  return callStatus === 'in-call' || callStatus === 'joining' || callStatus === 'navigating';
 }
 
 module.exports = { shouldIgnoreRejoin };

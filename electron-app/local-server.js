@@ -127,7 +127,7 @@ class LocalServer {
     this.onInspectDom = onInspectDom || (async () => ({ ok: false, error: 'not implemented' }));
     this.onBotStateChange = onBotStateChange || (() => {}); // 'idle' | 'listening' | 'ticking' | 'thinking' | 'speaking' | 'yielding'
     this.onModeChange = onModeChange || (() => {});        // 'active' | 'passive' | 'silent'
-    this.onCallStatusChange = onCallStatusChange || (() => {}); // 'idle' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
+    this.onCallStatusChange = onCallStatusChange || (() => {}); // 'idle' | 'navigating' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
     this.onAnyoneSpeakingChange = onAnyoneSpeakingChange || (() => {}); // boolean
     this.onCaptionsChange = onCaptionsChange || (() => {}); // boolean — true=on, false=off (=== deaf)
     this.onWorkingMemoryChange = onWorkingMemoryChange || (() => {}); // ({understanding, stance, updatedAt, updatedBy})
@@ -269,7 +269,7 @@ class LocalServer {
     this.maxTranscripts = 500;
 
     // Call status tracking
-    this.callStatus = 'idle';    // idle, joining, waiting-to-be-admitted, in-call, left
+    this.callStatus = 'idle';    // idle, navigating, joining, waiting-to-be-admitted, in-call, left
     this.sharing = false;
     this.errors = [];            // recent errors (max 10)
 
@@ -511,7 +511,17 @@ class LocalServer {
     this.resolveAllWaiters();
     // Use the setter so onCallStatusChange fires — the avatar uses this to
     // switch to 🫥 while joining.
-    this.setCallStatus('joining');
+    //
+    // 'navigating', NOT 'joining': this only records intent — the BrowserView
+    // may not even have loadURL() called yet. It used to jump straight to
+    // 'joining', which meant `get_room_info` reported "joining" the instant a
+    // --meet-url launch (or any programmatic join) recorded the room, even
+    // before the page had rendered. The real 'joining' now only fires once
+    // Meet's own DOM confirms it (see the 'Joining...'/'Joining Meet...'
+    // status text handled in the CALL_EVENTS.statusUpdate listener in
+    // main.js), so agents polling get_room_info can tell "dispatched" from
+    // "Meet is actually attempting to admit us" apart.
+    this.setCallStatus('navigating');
   }
 
   clearRoom() {
@@ -715,11 +725,12 @@ class LocalServer {
     this.onCallStatusChange(status);
 
     // Mint a first-class call ID when a call begins — the first transition into
-    // an active state (joining / waiting / in-call) without one. Format:
-    // <roomCode>-<compact-UTC-timestamp> (e.g. kku-fpvq-smx-20260629T164900Z).
+    // an active state (navigating / joining / waiting / in-call) without one.
+    // Format: <roomCode>-<compact-UTC-timestamp> (e.g. kku-fpvq-smx-20260629T164900Z).
     // One per call, cleared on end, so it disambiguates multiple calls within a
     // single session log and is greppable as a `[call] id=…` block (#292).
-    const activeState = status === 'joining' || status === 'waiting-to-be-admitted' || status === 'in-call';
+    const activeState = status === 'navigating' || status === 'joining' ||
+      status === 'waiting-to-be-admitted' || status === 'in-call';
     if (activeState && !this.callId) {
       this.callStartedAt = new Date().toISOString();
       const code = this.roomId || 'call';
@@ -3649,7 +3660,7 @@ class LocalServer {
     // lose by initialising it here.
     //
     // #105: capture room + status BEFORE adopting. setRoom also does
-    // setCallStatus('joining'), so after this line both values look exactly
+    // setCallStatus('navigating'), so after this line both values look exactly
     // like an in-progress join — and the rejoin guard downstream reads them to
     // decide whether a join is a duplicate. Left to read live state, the very
     // first /join-call after launch matches its OWN adoption and gets dropped.
@@ -3901,7 +3912,7 @@ class LocalServer {
       //
       // #105: read the PRE-adoption room/status, not the live ones. Adopting an
       // unknown room (handleRequest) calls setRoom, which sets callStatus to
-      // 'joining' — so by the time we get here a first-ever join has already
+      // 'navigating' — so by the time we get here a first-ever join has already
       // written the exact state this guard treats as "a join is in flight", and
       // would ignore itself. preAdoption is what was true before this request.
       const guardState = preAdoption || { roomId: this.roomId, callStatus: this.callStatus };

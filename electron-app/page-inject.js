@@ -508,7 +508,12 @@
       const RISE_HOLD_MS = 4000;
       const RISE_DURATION_MS = 11200;
       let ghostRise = 0;
-      if (emoji === '\u{1FAE5}') {
+      // The rise is an ARRIVAL animation: the bot peeking over the edge while its
+      // agent boots, then settling into place. An agent that has GONE (#38) is
+      // the opposite story, and playing the entrance for a departure reads as
+      // the bot warming up when it has in fact just died. Same glyph, no
+      // entrance — it is simply there, and toppled if we know it is dead.
+      if (emoji === '\u{1FAE5}' && !this.agentAbsent) {
         if (this.callStatus === 'in-call') {
           if (!this._riseSince) this._riseSince = Date.now(); // stamp on entry
           const p = Math.max(0, Math.min(1, (Date.now() - this._riseSince - RISE_HOLD_MS) / RISE_DURATION_MS));

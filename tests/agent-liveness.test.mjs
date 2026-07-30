@@ -205,3 +205,14 @@ test('the reason reaches the avatar, not just the app', () => {
   assert.match(inject, /cam\.agentAbsentReason = why/);
   assert.match(inject, /avatarState\.agentAbsentReason = why/, 'future cameras must inherit it');
 });
+
+test('a departing agent does not play the arrival animation', () => {
+  // 🫥 is shared with "in the call, agent still warming up", which peeks over
+  // the bottom edge and rises into place. Reusing that for an agent that has
+  // GONE plays an entrance for a departure — it reads as booting up at the
+  // exact moment the bot died.
+  const rise = inject.slice(inject.indexOf('let ghostRise = 0;'));
+  const guard = rise.slice(0, rise.indexOf('const peeking'));
+  assert.match(guard, /emoji === '\\u\{1FAE5\}' && !this\.agentAbsent/,
+    'the rise must be skipped when the face means the agent is gone');
+});

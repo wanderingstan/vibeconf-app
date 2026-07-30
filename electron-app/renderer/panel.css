@@ -1038,7 +1038,10 @@ button.join-more[aria-expanded="true"] .join-caret { rotate: -90deg; }
 
    OpenMoji's outlines are 2px strokes on a 72px canvas, so they turn to mush
    below ~16px — these are all at or above that on purpose. */
-button.agent-gear .ui-icon { width: 24px; height: 24px; vertical-align: 0; }
+/* 20, not 24: the gear is Octicons art, whose glyph fills its canvas edge to
+   edge, where the OpenMoji outlines around it leave a wide margin. At the same
+   box it reads a size larger than every other icon on the banner. */
+button.agent-gear .ui-icon { width: 20px; height: 20px; vertical-align: 0; }
 /* The Done check spans ~half its 36px circle — it's the only affordance on that
    screen, so it carries more weight than the icons packed into the call row. */
 .screen-close .ui-icon { width: 26px; height: 26px; vertical-align: 0; }

@@ -36,7 +36,6 @@ const OUT = path.join(root, 'electron-app', 'renderer', 'ui-icons.css');
 //   · → ↗ ▸ ▾ stay text glyphs — they're typography rather than pictures, and ▸
 //     in particular is ROTATED by CSS to point up, which a mask can't be
 export const ICONS = {
-  gear: '2699', // ⚙  this bot's settings
   eyes: '1F440', // 👀 what the bot sees
   construction: '1F6A7', // 🚧 troubleshooting
   screen: '1F5A5', // 🖥  show/hide the shared window
@@ -143,6 +142,7 @@ export function cssUrl(svg) {
 export function buildCss() {
   const rules = [
     ...Object.entries(ICONS).map(([name, cp]) => [name, iconSvg(cp, { mirror: MIRRORED.has(name) })]),
+    ...Object.entries(VENDORED),
     ...Object.entries(DRAWN).map(([name, body]) => [name, drawnSvg(body)]),
   ]
     .map(([name, svg]) => `.ui-icon-${name} { --ui-icon: ${cssUrl(svg)}; }`)
@@ -154,6 +154,9 @@ export function buildCss() {
  * colour set we already bundle for the bot's face. Replaces the literal emoji
  * characters that used to sit in the panel's buttons, which every OS drew
  * differently and at a size we couldn't control.
+ *
+ * The gear is the exception: it comes from Octicons (MIT,
+ * https://github.com/primer/octicons), whose art is drawn for this size.
  *
  * Each icon is a MASK, not an image: the glyph shape is punched out of
  * \`currentColor\`, so an icon takes the colour of whatever button holds it and
@@ -185,12 +188,12 @@ ${rules}
 `;
 }
 
-export { DRAWN, drawnSvg, MIRRORED };
+export { DRAWN, drawnSvg, MIRRORED, VENDORED };
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
 if (isMain) {
   const css = buildCss();
   fs.writeFileSync(OUT, css);
   const kb = (Buffer.byteLength(css) / 1024).toFixed(1);
-  console.log(`wrote ${path.relative(root, OUT)} — ${Object.keys(ICONS).length + Object.keys(DRAWN).length} icons, ${kb} KB`);
+  console.log(`wrote ${path.relative(root, OUT)} — ${Object.keys(ICONS).length + Object.keys(VENDORED).length + Object.keys(DRAWN).length} icons, ${kb} KB`);
 }

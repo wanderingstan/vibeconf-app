@@ -1726,6 +1726,7 @@ sync.updateConfig({
 // comparison every 15s. See agent-liveness.js for why the 55s wait_for_speech
 // cap makes this safe, and why it is deliberately thin pending #113.
 let _agentAbsent = false;
+let _agentAbsentReason = null;
 // 5s, not 15: the socket-close path sets the state instantly, so this interval
 // is now the only thing between the agent dying and the face showing it.
 const AGENT_LIVENESS_POLL_MS = 5_000;
@@ -1734,10 +1735,13 @@ function pollAgentLiveness() {
   try { absent = localServer.agentAbsentInCall(); } catch { return; }
   if (absent === _agentAbsent) return;
   _agentAbsent = absent;
+  try { _agentAbsentReason = absent ? localServer.agentAbsenceReason() : null; } catch { _agentAbsentReason = null; }
   if (meetView && !meetView.webContents.isDestroyed()) {
     meetView.webContents.send('extension-message', {
       action: 'set-agent-absent',
-      payload: { absent },
+      // The reason rides along so the avatar can be as certain as we are: a
+      // dropped socket topples the face, a merely-quiet agent does not.
+      payload: { absent, reason: absent ? _agentAbsentReason : null },
     });
   }
   console.warn('[electron]', absent
@@ -1757,8 +1761,7 @@ function pollAgentLiveness() {
     // process is gone; a quiet stretch might just as easily be an agent sitting
     // on a permission prompt, and telling someone to restart a session that is
     // alive and waiting for them would be actively unhelpful.
-    let reason = 'quiet';
-    try { reason = localServer.agentAbsenceReason(); } catch { /* default */ }
+    const reason = _agentAbsentReason || 'quiet';
     const message = reason === 'dropped'
       ? "The agent driving this bot disconnected. Its terminal has exited or lost "
         + 'its connection, so nothing is answering in the call. Restart the session to reconnect it.'

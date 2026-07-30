@@ -184,3 +184,24 @@ test('the three absence reasons stay distinguishable', () => {
   assert.match(body, /'never'/);
   assert.match(body, /'quiet'/);
 });
+
+test('only a certainly-dead agent turns the face over', () => {
+  // The topple asserts death. A dropped socket earns that; a quiet stretch does
+  // not, because the agent may be alive on a permission prompt — turning its
+  // face over would claim something we cannot see.
+  const fn = inject.slice(inject.indexOf('const DEAD_FLIP_MS'));
+  const body = fn.slice(0, fn.indexOf('const peeking'));
+  assert.match(body, /this\.agentAbsent && this\.agentAbsentReason === 'dropped'/);
+  assert.match(body, /Math\.PI/, 'a topple is 180 degrees');
+  assert.match(body, /1 - Math\.pow\(1 - p, 3\)/, 'eased, so it reads as falling rather than snapping');
+  // It has to actually reach the rotation.
+  assert.match(inject, /ctx\.rotate\(speakTilt \+ tickTilt \+ agentTiltNow \+ deadFlip\)/);
+  // And reset, so a reconnected agent stands back up.
+  assert.match(body, /this\._deadSince = 0;/);
+});
+
+test('the reason reaches the avatar, not just the app', () => {
+  assert.match(main, /payload: \{ absent, reason: absent \? _agentAbsentReason : null \}/);
+  assert.match(inject, /cam\.agentAbsentReason = why/);
+  assert.match(inject, /avatarState\.agentAbsentReason = why/, 'future cameras must inherit it');
+});

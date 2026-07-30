@@ -131,6 +131,8 @@
       // #38: no agent is driving. Distinct from `impaired` (agent present but
       // hobbled) and from callStatus (not in the call at all).
       this.agentAbsent = avatarState.agentAbsent;
+      // 'dropped' | 'quiet' | 'never' — only 'dropped' is certain enough to topple.
+      this.agentAbsentReason = avatarState.agentAbsentReason;
       // Per-response speaking emoji (set by speak's emoji param). Cleared
       // when the TTS queue drains. Falls through to ACTIVITY_EMOJIS.speaking.
       this.speakingEmojiOverride = null;
@@ -521,11 +523,24 @@
       }
       // Apply translation + rotation + non-uniform scale around the avatar
       // center. The scaleX/scaleY give the "mouth open" jaw effect.
+      // #38: a DROPPED agent turns the face over. Reserved for the certain case
+      // (the socket died, so the process is gone) — a merely-quiet agent might
+      // be alive on a permission prompt, and toppling it would assert a death we
+      // cannot see. Eased rather than snapped so it reads as falling over.
+      const DEAD_FLIP_MS = 700;
+      let deadFlip = 0;
+      if (this.agentAbsent && this.agentAbsentReason === 'dropped') {
+        if (!this._deadSince) this._deadSince = Date.now();
+        const p = Math.max(0, Math.min(1, (Date.now() - this._deadSince) / DEAD_FLIP_MS));
+        deadFlip = Math.PI * (1 - Math.pow(1 - p, 3)); // easeOutCubic
+      } else {
+        this._deadSince = 0;
+      }
       const peeking = ghostRise > 0;
       const agentTiltNow = peeking ? agentTilt * PEEK_TILT_SCALE : agentTilt;
       const peekShift = peeking ? (this._agentJostleDir || 0) * PEEK_SHIFT_PX : 0;
       ctx.translate(cx + thinkSway + peekShift, cy + bob - speakBounce + ghostRise);
-      if (speakTilt || tickTilt || agentTiltNow) ctx.rotate(speakTilt + tickTilt + agentTiltNow);
+      if (speakTilt || tickTilt || agentTiltNow || deadFlip) ctx.rotate(speakTilt + tickTilt + agentTiltNow + deadFlip);
       if (this.speaking) {
         ctx.scale(speakScaleX * tickPop, speakScaleY * tickPop);
       } else {
@@ -1732,8 +1747,10 @@
         // that implies someone is listening.
         if (payload) {
           const away = !!payload.absent;
-          for (const cam of cameras.values()) cam.agentAbsent = away;
+          const why = payload.reason || null;
+          for (const cam of cameras.values()) { cam.agentAbsent = away; cam.agentAbsentReason = why; }
           avatarState.agentAbsent = away; // seed future cameras
+          avatarState.agentAbsentReason = why;
         }
         break;
 

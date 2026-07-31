@@ -838,7 +838,15 @@ const localServer = new globalThis.LocalServer({
   onStopSharing: () => {
     console.log('[local-server] Stop sharing requested by agent');
     fullScreenShareRequested = false;
-    externalShareRequest = null; // POC (share-agent-tab): drop any external tab source
+    // POC (share-agent-tab): if we were sharing an external browser tab, close
+    // its throwaway (isolated) window on stop so no window is left hanging.
+    const stoppedTabUrl = externalShareRequest && externalShareRequest.url;
+    externalShareRequest = null;
+    if (stoppedTabUrl) {
+      require('./share-external-tab.js').closeShareWindowByUrl(stoppedTabUrl)
+        .then((r) => console.log('[electron] closed external-tab share window:', r.ok))
+        .catch(() => { /* best-effort tidy-up */ });
+    }
     shareGeneration++; // cancel any in-flight Present-now retry loop (it would re-toggle Slack)
     // Close the whiteboard window — this ends the display media stream for whiteboard shares
     if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {

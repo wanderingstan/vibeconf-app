@@ -65,7 +65,15 @@ function buildActivateTabScript(url, { appName = 'Google Chrome', meetFragment =
     `          return "COLLISION"`,
     `        end if`,
     `        set active tab index of w to tabIndex`,
-    `        return (title of t)`,
+    `        set theTitle to (title of t)`,
+    // Clean up the seed blank "New Tab" that our make-new-window step left in
+    // this window, so only the shared page remains (and the window closes on
+    // its own once that page tab is gone). Scoped to THIS window so we never
+    // touch a New Tab the user has elsewhere.
+    `        try`,
+    `          close (every tab of w whose URL is "chrome://newtab/")`,
+    `        end try`,
+    `        return theTitle`,
     `      end if`,
     `    end repeat`,
     `  end repeat`,
@@ -155,6 +163,40 @@ async function listBrowserWindows(desktopCapturer) {
   return sources.map((s) => ({ id: s.id, name: s.name }));
 }
 
+// Build the AppleScript that closes the (isolated) window containing the shared
+// URL — i.e. every tab in it — used on stop_sharing to tidy up the throwaway
+// browsing window. Returns "CLOSED" / "NOTFOUND".
+function buildCloseWindowScript(url, appName = 'Google Chrome') {
+  const u = appleScriptStringLiteral(url);
+  const app = appleScriptStringLiteral(appName);
+  return [
+    `tell application ${app}`,
+    `  repeat with w in windows`,
+    `    set found to false`,
+    `    repeat with t in tabs of w`,
+    `      if (URL of t contains ${u}) then set found to true`,
+    `    end repeat`,
+    `    if found then`,
+    `      close w`,
+    `      return "CLOSED"`,
+    `    end if`,
+    `  end repeat`,
+    `  return "NOTFOUND"`,
+    `end tell`,
+  ].join('\n');
+}
+
+// Close the window that contains `url`. Never rejects. Resolves { ok }.
+function closeShareWindowByUrl(url, { appName = 'Google Chrome' } = {}) {
+  return new Promise((resolve) => {
+    if (!url) return resolve({ ok: false, reason: 'no url' });
+    execFile('osascript', ['-e', buildCloseWindowScript(url, appName)], { timeout: 5000 }, (err, stdout) => {
+      if (err) return resolve({ ok: false, reason: err.message });
+      resolve({ ok: String(stdout || '').trim() === 'CLOSED' });
+    });
+  });
+}
+
 module.exports = {
   appleScriptStringLiteral,
   buildActivateTabScript,
@@ -162,4 +204,6 @@ module.exports = {
   pickWindowSource,
   resolveTabShareSource,
   listBrowserWindows,
+  buildCloseWindowScript,
+  closeShareWindowByUrl,
 };

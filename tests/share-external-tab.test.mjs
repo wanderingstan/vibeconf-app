@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import {
   appleScriptStringLiteral,
   buildActivateTabScript,
+  buildCloseWindowScript,
   pickWindowSource,
 } from '../electron-app/share-external-tab.js';
 
@@ -25,7 +26,22 @@ test('buildActivateTabScript embeds the URL and targets the app, sets active tab
   assert.match(s, /tell application "Google Chrome"/);
   assert.match(s, /URL of t contains "https:\/\/dashboard\.example\.com\/abc"/);
   assert.match(s, /set active tab index of w to tabIndex/);
-  assert.match(s, /return \(title of t\)/);
+  assert.match(s, /return theTitle/);
+});
+
+test('buildActivateTabScript cleans up the seed blank New Tab after activating', () => {
+  const s = buildActivateTabScript('https://dashboard.example.com/abc', {});
+  assert.match(s, /close \(every tab of w whose URL is "chrome:\/\/newtab\/"\)/);
+  assert.ok(s.indexOf('set active tab index') < s.indexOf('chrome://newtab'), 'cleanup happens after activating');
+});
+
+test('buildCloseWindowScript closes the window containing the shared URL', () => {
+  const s = buildCloseWindowScript('https://dashboard.example.com/abc', 'Google Chrome');
+  assert.match(s, /tell application "Google Chrome"/);
+  assert.match(s, /URL of t contains "https:\/\/dashboard\.example\.com\/abc"/);
+  assert.match(s, /close w/);
+  assert.match(s, /return "CLOSED"/);
+  assert.match(s, /return "NOTFOUND"/);
 });
 
 test('buildActivateTabScript guards against sharing the call window (collision detection)', () => {

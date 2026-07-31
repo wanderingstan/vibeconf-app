@@ -97,6 +97,11 @@
       // when main.js pushes a new activity line (overlay-independent); the head
       // snaps to this lean and holds until the next line.
       this._agentJostleDir = 0;    // hash-derived lean direction, -1..1
+      // "Heard my name" reaction — see 'name-mentioned' below. _mentionTiltSign
+      // alternates each time so consecutive mentions don't cock the head the
+      // same way twice in a row; _nameMentionPulseAt is read via `|| 0` so it
+      // needs no explicit init (mirrors _tickPulseAt).
+      this._mentionTiltSign = 1;
       // Seed persistent state from the module-level avatarState, NOT hardcoded
       // defaults. A camera can be created mid-call — e.g. turning the camera on
       // makes the host page re-acquire the video stream, spawning a fresh
@@ -442,6 +447,22 @@
       const tickTilt = tickPulse * 0.16; // ~9° peak head tilt
       const tickPop = 1 + tickPulse * 0.12; // ~12% peak enlarge
 
+      // "Heard my name" pulse — another participant's speech named the bot
+      // directly (set on 'name-mentioned', fired from local-server the first
+      // time a caption turn contains the bot's own name). Same self-expiring
+      // wall-clock shape as the tick pulse above, just bigger and a beat
+      // longer: this is meant to read as a dog cocking its head and leaning
+      // in toward the camera at the sound of its name, not just a passing
+      // "noted" tick. Tilt direction alternates per-mention (_mentionTiltSign,
+      // flipped in the 'name-mentioned' handler) so a run of mentions doesn't
+      // hold the same cocked pose every time.
+      const MENTION_PULSE_MS = 900;
+      const mentionPulseAge = Date.now() - (this._nameMentionPulseAt || 0);
+      const mentionPulse = (mentionPulseAge >= 0 && mentionPulseAge < MENTION_PULSE_MS)
+        ? Math.sin((mentionPulseAge / MENTION_PULSE_MS) * Math.PI) : 0;
+      const mentionTilt = mentionPulse * (this._mentionTiltSign || 1) * 0.24; // ~14° peak head-cock
+      const mentionPop = 1 + mentionPulse * 0.22; // ~22% peak lean-in grow
+
       // #326 — head rotation driven by agent log activity (proof-of-life). Each
       // new activity line (pushed by main.js, overlay-independent) snaps the head
       // INSTANTLY to a fresh hash-derived angle, and it HOLDS there until the next
@@ -552,13 +573,15 @@
       const agentTiltNow = peeking ? agentTilt * PEEK_TILT_SCALE : agentTilt;
       const peekShift = peeking ? (this._agentJostleDir || 0) * PEEK_SHIFT_PX : 0;
       ctx.translate(cx + thinkSway + peekShift, cy + bob - speakBounce + ghostRise);
-      if (speakTilt || tickTilt || agentTiltNow || deadFlip) ctx.rotate(speakTilt + tickTilt + agentTiltNow + deadFlip);
+      if (speakTilt || tickTilt || agentTiltNow || deadFlip || mentionTilt) {
+        ctx.rotate(speakTilt + tickTilt + agentTiltNow + deadFlip + mentionTilt);
+      }
       if (this.speaking) {
-        ctx.scale(speakScaleX * tickPop, speakScaleY * tickPop);
+        ctx.scale(speakScaleX * tickPop * mentionPop, speakScaleY * tickPop * mentionPop);
       } else {
         // Idle/listening/thinking breathing — keeps the glyph subtly alive
         // without the loud jaw motion of the speaking path. (#223)
-        ctx.scale(breathe * tickPop, breathe * tickPop);
+        ctx.scale(breathe * tickPop * mentionPop, breathe * tickPop * mentionPop);
       }
       // Twemoji set (#316): draw the bundled SVG centered at the origin (all the
       // bob/breathe/lip-sync transforms are already applied, so the image is just
@@ -1633,6 +1656,19 @@
             cam.anyoneSpeaking = payload.anyoneSpeaking;
           }
         }
+        break;
+
+      case 'name-mentioned':
+        // Another participant's speech named the bot directly — the same
+        // detection that lets a passive/silent bot wake up and answer (#343).
+        // Brief head-tilt + "leaning in" grow, like a dog cocking its head at
+        // the sound of its name. Alternate the tilt side each time so a run
+        // of mentions doesn't look like a single held pose.
+        for (const cam of cameras.values()) {
+          cam._nameMentionPulseAt = Date.now();
+          cam._mentionTiltSign = -(cam._mentionTiltSign || 1);
+        }
+        console.debug('[bots-in-calls] Name mentioned — avatar reaction fired');
         break;
 
       case 'play-join-chime':

@@ -78,7 +78,7 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref, extraRoutes } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
     // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
     // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
@@ -129,6 +129,11 @@ class LocalServer {
     this.onBotStateChange = onBotStateChange || (() => {}); // 'idle' | 'listening' | 'ticking' | 'thinking' | 'speaking' | 'yielding'
     this.onModeChange = onModeChange || (() => {});        // 'active' | 'passive' | 'silent'
     this.onCallStatusChange = onCallStatusChange || (() => {}); // 'idle' | 'navigating' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
+    // Fired at most once per caption turn, the first time it contains the
+    // bot's own name — the moment someone else directly addresses the bot
+    // (the same detection that lets a passive/silent bot wake up and
+    // answer). Drives a purely cosmetic avatar reaction; carries no payload.
+    this.onNameMentioned = onNameMentioned || (() => {});
     this.onAnyoneSpeakingChange = onAnyoneSpeakingChange || (() => {}); // boolean
     this.onCaptionsChange = onCaptionsChange || (() => {}); // boolean — true=on, false=off (=== deaf)
     this.onWorkingMemoryChange = onWorkingMemoryChange || (() => {}); // ({understanding, stance, updatedAt, updatedBy})
@@ -1751,6 +1756,24 @@ class LocalServer {
     }
   }
 
+  // Fire onNameMentioned at most once per caption turn, the first time its
+  // text contains the bot's own name — a purely cosmetic "I heard that" avatar
+  // signal, separate from the passive/silent name-gate in _checkWaiters (#343)
+  // which decides whether to actually respond. Flagged on the turn object
+  // rather than fired on every updateTurns() call: a turn keeps growing as the
+  // speaker keeps talking, and re-triggering the animation on every caption
+  // tick while the name stays in view would make it fire many times for one
+  // mention instead of once at the moment it first appears.
+  _maybeSignalNameMention(turn, text) {
+    if (turn._nameMentionSignaled) return;
+    const myName = (this.getEffectiveBotName() || '').toLowerCase();
+    if (!myName) return;
+    if (String(text || '').toLowerCase().includes(myName)) {
+      turn._nameMentionSignaled = true;
+      this.onNameMentioned();
+    }
+  }
+
   updateTurns(incoming) {
     if (!this.roomId || !Array.isArray(incoming) || incoming.length === 0) return;
     // If caption turns with text are arriving, captions are definitionally ON —
@@ -1867,7 +1890,7 @@ class LocalServer {
 
       const existing = this.turns.get(effId);
       if (!existing) {
-        this.turns.set(effId, {
+        const newTurn = {
           id: `${this.roomId}-turn-${effId}`,
           speaker: inc.speaker,
           text: inc.text,
@@ -1875,11 +1898,13 @@ class LocalServer {
           lastUpdated: now,
           settled: !isBottommost,
           source: 'caption',
-        });
+        };
+        this.turns.set(effId, newTurn);
         this._recordTurnFp(inc.speaker, inc.text, effId);
         changed = true;
         this._logRawCaption(effId, inc.speaker, inc.text, isBottommost);
         if (!isBottommost) this._logHeard(inc.speaker, inc.text); // arrived already final
+        this._maybeSignalNameMention(newTurn, inc.text);
       } else {
         // #268: separate a real TEXT change (new content the agent hasn't seen)
         // from a settle-flag flip (same text, just finalized). Only a text change
@@ -1908,6 +1933,7 @@ class LocalServer {
           // version fingerprint-matches this same turn.
           this._recordTurnFp(existing.speaker, inc.text, effId);
           this._logRawCaption(effId, inc.speaker, inc.text, isBottommost);
+          if (textChanged) this._maybeSignalNameMention(existing, existing.text);
         }
         if (!existing.settled && !isBottommost) {
           existing.settled = true;

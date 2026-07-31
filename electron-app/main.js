@@ -1272,6 +1272,16 @@ const localServer = new globalThis.LocalServer({
       localServer.setLastAckPhrase(ack);
     }
   },
+  // Someone else's speech named the bot directly (#343's name-gate, fired
+  // once per caption turn from updateTurns). Purely cosmetic — a brief
+  // avatar reaction so it's visible on camera that the bot noticed, the way
+  // a dog cocks its head at the sound of its name. Carries no payload; the
+  // renderer owns the animation's timing.
+  onNameMentioned: () => {
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('extension-message', { action: 'name-mentioned' });
+    }
+  },
   onModeChange: (mode) => {
     console.log('[local-server] Mode:', mode);
     if (meetView && !meetView.webContents.isDestroyed()) {

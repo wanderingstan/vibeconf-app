@@ -447,19 +447,29 @@
       const tickTilt = tickPulse * 0.16; // ~9° peak head tilt
       const tickPop = 1 + tickPulse * 0.12; // ~12% peak enlarge
 
-      // "Heard my name" pulse — another participant's speech named the bot
+      // "Heard my name" reaction — another participant's speech named the bot
       // directly (set on 'name-mentioned', fired from local-server the first
-      // time a caption turn contains the bot's own name). Same self-expiring
-      // wall-clock shape as the tick pulse above, just bigger and a beat
-      // longer: this is meant to read as a dog cocking its head and leaning
-      // in toward the camera at the sound of its name, not just a passing
-      // "noted" tick. Tilt direction alternates per-mention (_mentionTiltSign,
-      // flipped in the 'name-mentioned' handler) so a run of mentions doesn't
-      // hold the same cocked pose every time.
-      const MENTION_PULSE_MS = 900;
-      const mentionPulseAge = Date.now() - (this._nameMentionPulseAt || 0);
-      const mentionPulse = (mentionPulseAge >= 0 && mentionPulseAge < MENTION_PULSE_MS)
-        ? Math.sin((mentionPulseAge / MENTION_PULSE_MS) * Math.PI) : 0;
+      // time a caption turn contains the bot's own name). Unlike the tick
+      // pulse above (a passing "noted that" blip), this is meant to read as a
+      // STATE CHANGE — the dog-cocks-its-head-and-leans-in moment where it's
+      // committed to answering — so it snaps into the pose almost instantly
+      // (MENTION_ATTACK_MS) and then holds/settles back out slowly
+      // (MENTION_DECAY_MS ≈ 5s) rather than bouncing right back like the tick
+      // pulse does. cos(p·π/2) eases the decay so it visibly LINGERS near
+      // peak before falling away, instead of fading evenly from the start.
+      // Tilt direction alternates per-mention (_mentionTiltSign, flipped in
+      // the 'name-mentioned' handler) so a run of mentions doesn't hold the
+      // same cocked pose every time.
+      const MENTION_ATTACK_MS = 150;
+      const MENTION_DECAY_MS = 5000;
+      const mentionAge = Date.now() - (this._nameMentionPulseAt || 0);
+      let mentionPulse = 0;
+      if (mentionAge >= 0 && mentionAge < MENTION_ATTACK_MS) {
+        mentionPulse = mentionAge / MENTION_ATTACK_MS;
+      } else if (mentionAge >= MENTION_ATTACK_MS && mentionAge < MENTION_ATTACK_MS + MENTION_DECAY_MS) {
+        const p = (mentionAge - MENTION_ATTACK_MS) / MENTION_DECAY_MS;
+        mentionPulse = Math.cos(p * Math.PI / 2);
+      }
       const mentionTilt = mentionPulse * (this._mentionTiltSign || 1) * 0.24; // ~14° peak head-cock
       const mentionPop = 1 + mentionPulse * 0.22; // ~22% peak lean-in grow
 

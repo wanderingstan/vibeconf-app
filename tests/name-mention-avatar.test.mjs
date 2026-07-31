@@ -101,8 +101,9 @@ test('the bot own speech never reaches updateTurns, so it cannot trigger its own
   assert.match(selectors, /selfSpeaker: 'You'/);
 });
 
-test('the avatar composites a head-tilt + lean-in pulse, self-expiring like the tick pulse', () => {
-  assert.match(inject, /MENTION_PULSE_MS/);
+test('the avatar composites a head-tilt + lean-in reaction that snaps in fast and lingers', () => {
+  assert.match(inject, /MENTION_ATTACK_MS = 150/, 'snaps into the pose almost instantly');
+  assert.match(inject, /MENTION_DECAY_MS = 5000/, 'a state change, not a passing tick — must hold for seconds, not fractions of one');
   assert.match(inject, /mentionTilt = mentionPulse \* \(this\._mentionTiltSign \|\| 1\)/);
   assert.match(inject, /mentionPop = 1 \+ mentionPulse \* 0\.22/);
   // It has to actually reach the rotation and scale, alongside the other pulses.

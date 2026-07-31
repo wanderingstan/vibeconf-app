@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { BOT_NAMES, FEMININE, MASCULINE, randomBotName } = require('../electron-app/bot-names.js');
+const { BOT_NAMES, FEMININE, MASCULINE, ROBOTIC, randomBotName } = require('../electron-app/bot-names.js');
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
 const wizard = readFileSync(join(root, 'electron-app/renderer/onboarding.js'), 'utf8');
@@ -161,4 +161,26 @@ test('typing beats spinning, and navigating away stops it', () => {
   assert.match(wizard, /\$\('botName'\)\?\.addEventListener\('keydown', stopSpin\)/);
   const save = wizard.slice(wizard.indexOf('async function saveCurrent'));
   assert.match(save.slice(0, 300), /stopSpin\(\);/);
+});
+
+test('famous robots are in the pool, but stay a garnish', () => {
+  const lower = new Set(ROBOTIC.map((n) => n.toLowerCase()));
+  for (const n of ['hal', 'tron', 'marvin', 'optimus', 'clippy']) {
+    assert.ok(lower.has(n), `${n} should be in the robot list`);
+  }
+  // A joke name is fun once and tiresome as the usual outcome. Most people
+  // should still be handed an ordinary name.
+  const share = ROBOTIC.length / BOT_NAMES.length;
+  assert.ok(share > 0.03 && share < 0.2, `robots are ${(share * 100).toFixed(0)}% of the pool`);
+});
+
+test('no robot name wakes a real assistant in the room', () => {
+  // This is the one exclusion that is not about the bot at all. It says its own
+  // name out loud, in a room of phones and laptops — a bot called Alexa or Siri
+  // would set off every device within earshot of the speaker, every time it
+  // introduced itself. Cortana is allowed only because it is discontinued.
+  const wakeWords = ['alexa', 'siri', 'cortana', 'bixby'];
+  const lower = new Set(BOT_NAMES.map((n) => n.toLowerCase()));
+  const live = wakeWords.filter((w) => w !== 'cortana').filter((w) => lower.has(w));
+  assert.deepEqual(live, [], `these would trigger nearby devices: ${live.join(', ')}`);
 });

@@ -25,7 +25,8 @@
 // only if it actually causes confusion in a log.
 //
 // Roughly even split, and deliberately wide — a first-run bot should not always
-// sound like it came from the same village.
+// sound like it came from the same village. A third list of famous robots rides
+// along outside that split, since none of them are gendered.
 
 const FEMININE = [
   // Spanish + Portuguese
@@ -116,7 +117,39 @@ const MASCULINE = [
   'Nicholas', 'Dominic', 'Evan',
 ];
 
-const BOT_NAMES = [...FEMININE, ...MASCULINE];
+// Famous robots, computers and AIs. A bot named after one is a small joke that
+// lands immediately, and unlike the two lists above these carry no gender, so
+// they sit outside the even split rather than tipping it.
+//
+// The same two rules apply, and they cost this category more than the others:
+//
+//   R2D2, C-3PO, Wall-E     digits and hyphens; the ASCII rule bans them and
+//                           `say` reads them as gibberish anyway
+//   Bender, Data, Ash, Zen  ordinary words — "on a bender", "the data says"
+//   Vision, Friday, Colossus, Bumblebee, Tars, Holly    likewise
+//   Iron Giant, Optimus Prime, Johnny Five, Deep Thought   two words; only the
+//                           distinctive half survives, hence Optimus alone
+//   Terminator              a role, not a name — nobody is called it
+//
+//   Alexa, Siri             EXCLUDED FOR A DIFFERENT AND BETTER REASON: the bot
+//                           says its own name aloud, in a room full of phones and
+//                           speakers. A bot introducing itself would set off every
+//                           assistant within earshot. Cortana is here because it
+//                           is discontinued and wakes nothing.
+const ROBOTIC = [
+  // Film
+  'Hal', 'Tron', 'Robby', 'Gort', 'Wally', 'Optimus', 'Megatron', 'Jarvis', 'Ultron',
+  'Baymax', 'Chappie', 'Robocop', 'Skynet', 'Pris', 'Astro', 'Talos',
+  // Television
+  'Twiki', 'Kryten', 'Marvin', 'Rosie', 'Vicki', 'Ziggy', 'Orac', 'Maeve', 'Dolores',
+  'Bernard', 'Roy',
+  // Books
+  'Daneel', 'Giskard', 'Multivac', 'Wintermute',
+  // Real, or real enough
+  'Eliza', 'Watson', 'Turing', 'Clippy', 'Cortana',
+];
+
+const BOT_NAMES = [...FEMININE, ...MASCULINE, ...ROBOTIC];
 
 // One name, uniformly at random.
 //
@@ -131,4 +164,4 @@ function randomBotName({ taken = [], random = Math.random } = {}) {
   return from[Math.floor(random() * from.length)];
 }
 
-module.exports = { BOT_NAMES, FEMININE, MASCULINE, randomBotName };
+module.exports = { BOT_NAMES, FEMININE, MASCULINE, ROBOTIC, randomBotName };

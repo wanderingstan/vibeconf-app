@@ -10,7 +10,7 @@
 # them there is a real decision, not a detail). Build the Mac locally with
 # `pnpm dist` and attach it to the same draft:
 #
-#     V=0.7.0-beta63
+#     V=0.8.10
 #     gh release upload "v$V" electron-app/dist/*"$V"*.dmg \
 #                             electron-app/dist/*"$V"*-mac.zip \
 #                             electron-app/dist/latest-mac.yml
@@ -69,10 +69,10 @@
 #     gh api -X PATCH repos/wanderingstan/vibeconf-app/releases/assets/$id \
 #          -f name='Vibeconferencing-Setup-X.exe'
 #
-# Usage:
-#     npm version --no-git-tag-version 0.7.0-beta63   # in BOTH package.json files
-#     git commit -am "Release v0.7.0-beta63" && git push
-#     git tag v0.7.0-beta63 && git push origin v0.7.0-beta63
+# Usage (clean semver — NO -beta suffix; see the note at "NOT marked --prerelease"):
+#     npm version --no-git-tag-version 0.8.10   # in BOTH package.json files
+#     git commit -am "Release v0.8.10" && git push
+#     git tag v0.8.10 && git push origin v0.8.10
 
 name: release
 
@@ -112,16 +112,19 @@ jobs:
             echo "release $GITHUB_REF_NAME already exists — reusing it"
             exit 0
           fi
-          # NOT marked --prerelease, even though the tags carry a -betaN suffix.
-          # The suffix is real and stays — it's semver-correct (0.7.0-beta64 sorts
-          # below a future 0.7.0). But GitHub never awards "Latest" to a
-          # prerelease, so flagging them left the badge stuck on whichever build
-          # happened to be newest at the time: v0.7.0-beta62 was still labelled
-          # Latest while beta63 shipped.
+          # NOT marked --prerelease. We ship CLEAN SEMVER now (0.8.10, 0.8.11, …),
+          # so these are full releases: GitHub awards "Latest" to the highest
+          # version and electron-updater installs it in one hop.
           #
-          # It also matters to self-update now: electron-updater's GitHub provider
-          # skips prereleases unless allowPrerelease is set, so flagging these
-          # would hide every release from the updater.
+          # (History: tags used to carry a -betaN suffix. That was a mistake — the
+          # no-dot form breaks semver ordering once past single digits, because
+          # `beta9`/`beta10` are single alphanumeric identifiers compared
+          # LEXICALLY, so `beta10` sorts BELOW `beta9`. GitHub/electron-updater
+          # then couldn't identify the true latest and the updater lagged / stepped
+          # through intermediate versions. Dropping the suffix fixes it. Marking
+          # --prerelease would ALSO break things — GitHub never awards "Latest" to
+          # a prerelease, and electron-updater's provider skips prereleases unless
+          # allowPrerelease is set — so don't add it back either.)
           flags="--draft --generate-notes"
           gh release create "$GITHUB_REF_NAME" $flags --title "$GITHUB_REF_NAME"
 

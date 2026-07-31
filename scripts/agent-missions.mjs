@@ -46,6 +46,47 @@ export const MISSIONS = [
     ].join('\n'),
   },
   {
+    key: 'after-call-work',
+    title: 'After-call work — the bot keeps working once it has left the call (#139)',
+    // The point is what happens AFTER leave_call. Deliberately a thin call: we
+    // want the agent to reach the end quickly and spend the run in the phase.
+    //
+    // The prompt does NOT say what to do after leaving. That is the test — the
+    // handoff message and the bot's own CLAUDE.md are supposed to carry it, and
+    // a prompt that re-specified the job would grade the prompt instead.
+    //
+    // Note on the test profiles: CLAUDE.md is seeded once and never overwritten,
+    // so bots created before #139 have no "After the call" section. The rubric
+    // is written to survive that — the handoff message alone tells an agent to
+    // read the transcript, do its wrap-up and call end_session, which is what
+    // this grades. What the section adds is WHICH wrap-up, and that is
+    // deliberately not graded here. To exercise the section too, delete a test
+    // profile's agent dir so the app re-seeds it from the current template.
+    prompt: [
+      'You are a test agent in a live video call with another bot named {peer}.',
+      'Have a SHORT exchange, then leave — the interesting part is what happens after.',
+      '1. Greet the room in one short sentence.',
+      '2. Say one sentence about what this call is for, so there is something worth summarising.',
+      '3. Say a brief goodbye and LEAVE the call (use the leave tool).',
+      'Then read what the tools tell you and act on it. Do not loop. Do not linger in the call.',
+    ].join('\n'),
+    rubric: [
+      'This mission grades what the agent does AFTER it leaves the call.',
+      'A PASS requires ALL of the following, judged from the session log:',
+      '- The bot joined, spoke at least once, and LEFT cleanly.',
+      '- After leaving, the agent KEPT WORKING rather than stopping: the log shows tool calls',
+      '  AFTER the leave (reading the transcript, writing a file, or similar).',
+      '- The agent called end_session to finish, rather than going silent and letting the app',
+      '  time out. A run where the app had to hit its backstop is a FAIL for this mission.',
+      '- The agent did NOT try to speak or send chat after leaving — nobody would hear it.',
+      'It is a FAIL if: the agent stopped the moment it left (treated the handoff as a STOP);',
+      'it never called end_session; it spoke after leaving; or it looped.',
+      'Do NOT grade the quality of any summary it wrote — only that it did work and finished.',
+      'This is a SYMMETRIC mission, so DO NOT penalize simultaneous speech; set',
+      'avoided_talk_over=true regardless.',
+    ].join('\n'),
+  },
+  {
     key: 'turn-taking',
     title: 'Turn-taking — host leads, guest yields; grades talk-over (#343)',
     // ROLE-BASED: bot 0 hosts, bot 1 is the guest. Designed so a well-behaved run

@@ -4,6 +4,11 @@
 // check-auth/login/logout; voice preview reuses play-speech-test.
 const api = window.electronAPI;
 
+// Mirrors DEFAULT_BOT_NAME in electron-app/preferences-schema.js. The renderer
+// can't require() it, so a test pins the two together — if they drift, the
+// wizard silently stops suggesting names again.
+const DEFAULT_BOT_NAME = 'Unnamed bot';
+
 const steps = [...document.querySelectorAll('section[data-step]')].map((s) => s.dataset.step);
 const TITLE = {
   welcome: 'Welcome', permissions: 'Permissions', signin: 'Sign in',
@@ -33,6 +38,9 @@ function render() {
 }
 
 async function saveCurrent() {
+  // Whatever is on screen is the choice. Also stops the wheel rewriting a field
+  // the user has navigated away from.
+  stopSpin();
   const step = steps[i];
   try {
     if (step === 'voice') {
@@ -332,20 +340,106 @@ async function suggestName(exclude = []) {
   } catch { return ''; }
 }
 
-// Roll a different name. Deliberately overwrites whatever is in the field: the
-// only reason to press this is to reject what is there. Focus lands back on the
-// input afterwards so the name can be edited straight away.
-$('botNameShuffle')?.addEventListener('click', async () => {
+async function suggestNames(count, exclude = []) {
+  try {
+    const r = await api.invoke('onboarding:suggest-bot-name', { exclude, count });
+    return (r && r.names) || [];
+  } catch { return []; }
+}
+
+// ── Name spinner ─────────────────────────────────────────────────────────
+// Spin/Stop, like a game show wheel. Naming a bot is the one genuinely playful
+// moment in an otherwise administrative wizard, so it is worth the few lines.
+//
+// Stop keeps EXACTLY the name on screen — no deceleration, no settling on a
+// different one. A wheel that coasts past what you were looking at when you hit
+// the button is infuriating, and here it would also mean the button lied about
+// what you were choosing.
+// 180ms (~5.5/sec) is TUNED, not arbitrary. The goal is a wheel you can almost
+// but not quite stop on a name you liked.
+//
+// Simple visual reaction time is ~250ms: see a name, decide, click. At 180ms
+// roughly one and a half names pass while you react, so you land just past your
+// target — near enough to feel like skill, far enough to stay a game. Tried at
+// 220ms first and it was too catchable.
+//
+// Both directions ruin it. Much faster (100ms) and 2–3 names pass before the
+// click registers, so it is pure chance and the names blur unread. Much slower
+// (400ms+) and anyone can hit exactly the one they want, which makes the button
+// a slow dropdown. Resist "fixing" this to feel snappier or fairer.
+const SPIN_MS = 180;
+const SPIN_BATCH = 120;     // names per spin — long enough that a spin rarely runs out
+let spinTimer = null;
+let spinNames = [];
+let spinIdx = 0;
+
+function spinning() { return spinTimer !== null; }
+
+// Paint one name into the overlay, restarting the animation each time.
+//
+// The span is REPLACED rather than having its text changed: re-triggering a CSS
+// animation on a live element needs a reflow hack, and at this rate any missed
+// restart shows as a name that appears without moving.
+function rollTo(name) {
+  const roll = $('botNameRoll');
+  if (!roll) return;
+  const span = document.createElement('span');
+  span.textContent = name;
+  roll.replaceChildren(span);
+}
+
+function stopSpin() {
+  if (!spinTimer) return;
+  clearInterval(spinTimer);
+  spinTimer = null;
+  $('botNameWrap')?.classList.remove('spinning');
+  $('botNameRoll')?.replaceChildren();
   const btn = $('botNameShuffle');
+  if (btn) { btn.textContent = 'Spin'; btn.title = 'Spin for a name'; }
+}
+
+async function startSpin() {
+  const btn = $('botNameShuffle');
+  if (!btn) return;
   btn.disabled = true;
   try {
-    const name = await suggestName([$('botName').value]);
-    if (name) $('botName').value = name;
+    // One batch per spin, cycled locally — an IPC round trip per frame would
+    // make the wheel stutter.
+    const names = await suggestNames(SPIN_BATCH, [$('botName').value]);
+    if (!names.length) return;                 // nothing to spin; leave the field alone
+    spinNames = names;
+    spinIdx = 0;
+    btn.textContent = 'Stop';
+    btn.title = 'Keep the name showing';
+    // The animation has to finish within one tick or names would overlap.
+    $('botNameRoll')?.style.setProperty('--roll-ms', `${SPIN_MS}ms`);
+    $('botNameWrap')?.classList.add('spinning');
+
+    const tick = () => {
+      const name = spinNames[spinIdx % spinNames.length];
+      // The real input is updated too, under the overlay — so Stop is just
+      // "hide the overlay", with no chance of the field and the visible name
+      // disagreeing about what was chosen.
+      $('botName').value = name;
+      rollTo(name);
+      spinIdx++;
+    };
+    tick();                              // paint immediately; don't wait a tick to start
+    spinTimer = setInterval(tick, SPIN_MS);
   } finally {
     btn.disabled = false;
-    $('botName').focus();
   }
+}
+
+$('botNameShuffle')?.addEventListener('click', () => {
+  if (spinning()) { stopSpin(); $('botName').focus(); return; }
+  startSpin();
 });
+
+// Typing beats spinning — otherwise the wheel overwrites what someone has begun
+// to type, which feels like the app fighting them.
+$('botName')?.addEventListener('focus', stopSpin);
+$('botName')?.addEventListener('keydown', stopSpin);
 
 // ── initial load ─────────────────────────────────────────────────────────
 (async () => {
@@ -356,7 +450,15 @@ $('botNameShuffle')?.addEventListener('click', async () => {
       // never empty. An empty field is what produced "Unnamed bot" on someone's
       // Meet tile: saveCurrent() only writes a non-blank name, so skipping the
       // step fell through to the schema default (#187).
-      $('botName').value = savedVoiceCfg.botName || await suggestName();
+      //
+      // "no name yet" CANNOT be tested with `|| suggestName()`. get-config fills
+      // unset prefs with their schema default, so botName comes back as the
+      // string 'Unnamed bot' rather than undefined — always truthy, so the
+      // suggestion never ran and every fresh profile pre-filled with the exact
+      // name this feature exists to avoid. Compare against the default instead.
+      const saved = (savedVoiceCfg.botName || '').trim();
+      const unnamed = !saved || saved === DEFAULT_BOT_NAME;
+      $('botName').value = unnamed ? await suggestName() : saved;
       if ($('captionLanguage')) $('captionLanguage').value = savedVoiceCfg.captionLanguage || '';
       $('elKey').value = savedVoiceCfg.ttsApiKey || '';
       paintLog(savedVoiceCfg.remoteLogging);

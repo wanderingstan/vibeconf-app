@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { BOT_NAMES, FEMININE, MASCULINE, randomBotName } = require('../electron-app/bot-names.js');
+const { BOT_NAMES, FEMININE, MASCULINE, ROBOTIC, randomBotName } = require('../electron-app/bot-names.js');
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
 const wizard = readFileSync(join(root, 'electron-app/renderer/onboarding.js'), 'utf8');
@@ -56,8 +56,25 @@ test('no name is also a common word', () => {
 test('every name is plain ASCII, for the TTS', () => {
   // The bot says its own name aloud. Diacritics and non-English phonology get
   // mangled by `say` and SAPI, so the spellings have to be ones they read.
+  //
+  // This used to demand a single lowercase word (/^[A-Z][a-z]+$/), which quietly
+  // banned every multi-word and alphanumeric robot. A live test call showed
+  // Google's captions returning "C-3PO" and "R2D2" verbatim, so digits, hyphens
+  // and spaces are allowed now — what stays banned is non-ASCII.
   for (const n of BOT_NAMES) {
-    assert.match(n, /^[A-Z][a-z]+$/, `${n} should be a plain capitalised ASCII name`);
+    assert.match(n, /^[A-Z][A-Za-z0-9-]*( [A-Z][A-Za-z0-9-]*)*$/, `${n} is not a TTS-safe ASCII name`);
+  }
+});
+
+test('multi-word names still work with mention detection', () => {
+  // local-server.js wakes the bot with a lowercased substring test against the
+  // caption text, so a name only matches if the captions spell it the same way,
+  // punctuation and all. That is fine for these — but it means a name whose
+  // spelling Google renders differently ("C3PO", "R2 D2") would silently never
+  // wake the bot, with no error anywhere. Hence the live-call check.
+  const captions = 'When I talk about the robot C-3PO, how does that get transcribed? What about R2D2?';
+  for (const n of ['C-3PO', 'R2D2']) {
+    assert.ok(captions.toLowerCase().includes(n.toLowerCase()), `${n} would not wake on a real caption line`);
   }
 });
 
@@ -97,33 +114,129 @@ test('the suggestion is made in main, not the renderer', () => {
   // Two wizards open at once must not land on the same name, and only main can
   // see which names are already in use on this machine.
   assert.match(main, /ipcMain\.handle\('onboarding:suggest-bot-name'/);
-  assert.match(main, /randomBotName\(\{ taken: \[\.\.\.taken/);
+  assert.match(main, /const avoid = \[\.\.\.taken/, 'main merges the taken list itself');
   assert.match(main, /listProfiles\(PROFILES_ROOT\)/, 'the taken list should be the real one');
 });
 
 test('the wizard pre-fills only when the bot has no name yet', () => {
   // Re-running the wizard for a named bot must not rename it.
-  assert.match(wizard, /savedVoiceCfg\.botName \|\| await suggestName\(\)/);
+  //
+  // This assertion USED TO PIN THE BUG: it asserted the literal expression
+  // `savedVoiceCfg.botName || await suggestName()`, which reads correctly and is
+  // wrong, because get-config fills botName with its schema default. The test
+  // passed for exactly the reason the feature didn't work. Assert the BEHAVIOUR
+  // — a real name is kept, the default is not — not the spelling.
+  assert.match(wizard, /unnamed \? await suggestName\(\) : saved/);
+  assert.match(wizard, /saved === DEFAULT_BOT_NAME/);
   // And a failed suggestion degrades to the old empty field rather than blocking.
   const fn = wizard.slice(wizard.indexOf('async function suggestName'));
   assert.match(fn.slice(0, fn.indexOf('\n}')), /catch \{ return ''; \}/);
 });
 
-test('"Try another" cannot hand back the name it was asked to replace', () => {
-  // A 1-in-345 repeat would read as a broken button, not a coincidence — so the
+test('a suggestion never hands back the name it was asked to replace', () => {
+  // A repeat would read as a broken control, not a 1-in-345 coincidence — so the
   // current field value is excluded, not just the names already in use.
-  assert.match(main, /exclude = \[\] \} = \{\}\)/);
+  assert.match(main, /exclude = \[\], count = 1 \} = \{\}\)/);
   assert.match(main, /\.\.\.taken, \.\.\.\(Array\.isArray\(exclude\) \? exclude : \[\]\)/);
-  assert.match(wizard, /suggestName\(\[\$\('botName'\)\.value\]\)/);
 });
 
-test('the shuffle button exists and is wired', () => {
+test('the spinner exists and toggles Spin/Stop', () => {
   const html = readFileSync(join(root, 'electron-app/renderer/onboarding.html'), 'utf8');
   assert.match(html, /id="botNameShuffle"/);
-  // The input is width:100%, so it needs a flex row to share the line.
+  assert.match(html, />Spin</, 'starts as Spin');
+  // The input is width:100%, so it needs a flex row to share the line — and the
+  // button needs a min-width so Spin↔Stop doesn't resize it mid-spin.
   assert.match(html, /class="field-row"/);
-  assert.match(wizard, /\$\('botNameShuffle'\)\?\.addEventListener/);
-  // Disabled while in flight, so a double-click can't race two suggestions.
-  const fn = wizard.slice(wizard.indexOf("$('botNameShuffle')?.addEventListener"));
-  assert.match(fn.slice(0, 500), /btn\.disabled = true/);
+  assert.match(html, /min-width: 92px/);
+  assert.match(wizard, /btn\.textContent = 'Stop'/);
+  assert.match(wizard, /btn\.textContent = 'Spin'/);
+});
+
+test('Stop keeps exactly the name on screen', () => {
+  // No deceleration, no settling elsewhere. A wheel that coasts past what you
+  // were looking at when you clicked is infuriating — and here it would mean the
+  // button lied about what you were choosing.
+  const fn = wizard.slice(wizard.indexOf('function stopSpin'));
+  const body = fn.slice(0, fn.indexOf('\n}'));
+  assert.match(body, /clearInterval\(spinTimer\)/);
+  assert.ok(!/botName'\)\.value =/.test(body), 'stopping must not change the field');
+});
+
+test('the spin speed sits at the reaction-time cusp', () => {
+  // Tuned so you can ALMOST stop on a name you liked. Simple reaction time is
+  // ~250ms, so at ~220ms the wheel advances about one name while you react.
+  const m = wizard.match(/const SPIN_MS = (\d+)/);
+  assert.ok(m, 'SPIN_MS should exist');
+  const ms = Number(m[1]);
+  assert.ok(ms >= 180 && ms <= 300, `${ms}ms is outside the cusp: <180 is pure luck, >300 is easy to aim`);
+});
+
+test('one batch per spin, not an IPC per frame', () => {
+  // At ~4.5 names/sec a round trip per frame would make the wheel stutter.
+  assert.match(wizard, /suggestNames\(SPIN_BATCH/);
+  assert.match(main, /names\.push\(randomBotName\(\{ taken: \[\.\.\.avoid, \.\.\.names\] \}\)\)/,
+    'a batch must not repeat a name back-to-back');
+});
+
+test('typing beats spinning, and navigating away stops it', () => {
+  // Otherwise the wheel overwrites what someone has begun to type, and a spin
+  // left running keeps rewriting a field nobody is looking at.
+  assert.match(wizard, /\$\('botName'\)\?\.addEventListener\('focus', stopSpin\)/);
+  assert.match(wizard, /\$\('botName'\)\?\.addEventListener\('keydown', stopSpin\)/);
+  const save = wizard.slice(wizard.indexOf('async function saveCurrent'));
+  assert.match(save.slice(0, 300), /stopSpin\(\);/);
+});
+
+test('famous robots are in the pool, but stay a garnish', () => {
+  const lower = new Set(ROBOTIC.map((n) => n.toLowerCase()));
+  for (const n of ['hal', 'tron', 'marvin', 'optimus prime', 'clippy', 'r2d2', 'c-3po']) {
+    assert.ok(lower.has(n), `${n} should be in the robot list`);
+  }
+  // A joke name is fun once and tiresome as the usual outcome. Most people
+  // should still be handed an ordinary name.
+  const share = ROBOTIC.length / BOT_NAMES.length;
+  assert.ok(share > 0.03 && share < 0.2, `robots are ${(share * 100).toFixed(0)}% of the pool`);
+});
+
+test('no robot name wakes a real assistant in the room', () => {
+  // This is the one exclusion that is not about the bot at all. It says its own
+  // name out loud, in a room of phones and laptops — a bot called Alexa or Siri
+  // would set off every device within earshot of the speaker, every time it
+  // introduced itself. Cortana is allowed only because it is discontinued.
+  const wakeWords = ['alexa', 'siri', 'cortana', 'bixby'];
+  const lower = new Set(BOT_NAMES.map((n) => n.toLowerCase()));
+  const live = wakeWords.filter((w) => w !== 'cortana').filter((w) => lower.has(w));
+  assert.deepEqual(live, [], `these would trigger nearby devices: ${live.join(', ')}`);
+});
+
+test('the wizard suggests a name instead of pre-filling the default', () => {
+  // The bug this pins: get-config fills unset prefs with their schema default,
+  // so botName came back as 'Unnamed bot', not undefined. `savedCfg.botName ||
+  // suggestName()` therefore always took the left branch and every fresh profile
+  // pre-filled with the one name #187 exists to prevent — the feature looked
+  // implemented and did nothing.
+  const src = readFileSync(new URL('../electron-app/renderer/onboarding.js', import.meta.url), 'utf8');
+  assert.match(src, /saved === DEFAULT_BOT_NAME/, 'must treat the schema default as "unnamed"');
+  assert.doesNotMatch(src, /savedVoiceCfg\.botName \|\| await suggestName/, 'the truthiness check is the bug');
+
+  // The renderer can't require() the schema, so the copied literal has to match.
+  const schema = readFileSync(new URL('../electron-app/preferences-schema.js', import.meta.url), 'utf8');
+  const real = schema.match(/const DEFAULT_BOT_NAME = '([^']+)'/)[1];
+  const copy = src.match(/const DEFAULT_BOT_NAME = '([^']+)'/)[1];
+  assert.equal(copy, real, 'onboarding.js copy of DEFAULT_BOT_NAME has drifted from the schema');
+});
+
+test('the names the header comment promises are actually in the list', () => {
+  // The header said Pepper was deliberately kept, and Pepper was not in the
+  // list — the rationale outlived the entry. A comment that describes the file
+  // inaccurately is worse than no comment, so it is checked now.
+  const lower = new Set(BOT_NAMES.map((n) => n.toLowerCase()));
+  for (const n of ['jimmy', 'alice', 'pepper', 'samantha', 'daniel', 'ava', 'nora', 'zoe']) {
+    assert.ok(lower.has(n), `the header claims ${n} is kept, but it is not in the list`);
+  }
+});
+
+test('the house names are in', () => {
+  const lower = new Set(BOT_NAMES.map((n) => n.toLowerCase()));
+  for (const n of ['stan', 'seth', 'vern']) assert.ok(lower.has(n), `${n} should be in the pool`);
 });

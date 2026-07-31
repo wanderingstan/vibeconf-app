@@ -22,10 +22,13 @@
 // Names shared with TTS voices (Samantha, Daniel, Ava, Nora, Zoe…) and with bots
 // already around this project (Jimmy, Alice, Pepper) are deliberately KEPT: they
 // are good names, and the ambiguity is cosmetic rather than behavioural. Revisit
-// only if it actually causes confusion in a log.
+// only if it actually causes confusion in a log. (This paragraph claimed Pepper
+// for a while before the list actually contained it — a test now checks that the
+// names named here are really present, so the comment cannot drift again.)
 //
 // Roughly even split, and deliberately wide — a first-run bot should not always
-// sound like it came from the same village.
+// sound like it came from the same village. A third list of famous robots rides
+// along outside that split, since none of them are gendered.
 
 const FEMININE = [
   // Spanish + Portuguese
@@ -68,6 +71,11 @@ const FEMININE = [
   'Claire', 'Lucy', 'Caroline', 'Emilia', 'Allison', 'Julia', 'Vivian', 'Sophie',
   'Madeline', 'Lydia', 'Josephine', 'Katherine', 'Diana', 'Rachel', 'Megan',
   'Nicole', 'Michelle', 'Rebecca', 'Danielle', 'Christine', 'Andrea', 'Marie',
+  // Asked for by name. "Robin" is also a bird — a rule-1 bend, allowed on the
+  // same reasoning as Bender: a real word, but not one that comes up in a
+  // meeting.
+  'Kate', 'Maria', 'Sandra', 'Lisa', 'Mavi',
+  'Melinda', 'Valerie', 'Robin', 'Analita', 'Aurelia', 'Annabeth',
   'Victoria',
 ];
 
@@ -108,15 +116,79 @@ const MASCULINE = [
   // Common in the US. Same word rule, which costs a lot of popular ones here:
   // Jack, Mason, Hunter, Cooper, Parker, Carter, Brooks, Miles, Angel, Roman,
   // Christian and Maverick are all excluded as ordinary words or occupations.
-  'Liam', 'Noah', 'Elijah', 'James', 'William', 'Benjamin', 'Lucas', 'Henry',
+  'Liam', 'Noah', 'Elijah', 'James', 'William', 'Benjamin', 'Lucas',
   'Alexander', 'Michael', 'Ethan', 'Jacob', 'Logan', 'Jackson', 'Sebastian',
   'Owen', 'Theodore', 'Samuel', 'Joseph', 'David', 'Wyatt', 'Matthew', 'Luke',
   'Julian', 'Gabriel', 'Isaac', 'Lincoln', 'Anthony', 'Dylan', 'Charles',
   'Andrew', 'Nathan', 'Caleb', 'Adrian', 'Nolan', 'Cameron', 'Connor',
   'Nicholas', 'Dominic', 'Evan',
+  // The people who built this thing, and Stan's dad.
+  'Stan', 'Seth', 'Vern',
+  // Asked for by name. Two of these bend rule 1 and are in anyway, on request:
+  // "Bob" is also a verb (bob up and down) and a haircut, and "John" is also a
+  // toilet — both will false-wake occasionally. They are common enough as names
+  // that the trade is worth making, but it IS a trade, not an oversight.
+  'Trevor', 'Jeff', 'Steve', 'John', 'Jordan', 'Alex', 'Chris', 'Joshua',
+  'Robert', 'Bob', 'Fabian', 'Peter', 'Kenny',
+  // "Earl" is a rank and a tea, so it bends rule 1 too — same call as Robin.
+  'Dan', 'Earl', 'Henry'
 ];
 
-const BOT_NAMES = [...FEMININE, ...MASCULINE];
+// Famous robots, computers and AIs. A bot named after one is a small joke that
+// lands immediately, and unlike the two lists above these carry no gender, so
+// they sit outside the even split rather than tipping it.
+//
+// Rule 1 still applies. Rule 2 turned out to be over-strict here, and the list
+// below reflects a real test call rather than a guess about what Google can hear:
+//
+//     "When I talk about the robot C-3PO, how does that get transcribed?
+//      What about R2D2?"
+//
+// Every one came back exactly right, hyphens and digits included. So R2D2 and
+// C-3PO are in, and the shape rule was widened to allow digits, hyphens and
+// spaces instead of insisting on one plain word.
+//
+// Two-word names are in for the same reason, and they are actually SAFER than
+// single words under rule 1: mention detection is a substring match, so a bot
+// called Iron Giant wakes on "iron giant" together — far rarer in conversation
+// than either "iron" or "giant" alone. That is why the two-word icons are here
+// in full while a bare "Giant" would never be allowed.
+//
+// Still out, on rule 1:
+//
+//   Data, Ash, Zen          ordinary words — "the data says", "ash tray"
+//   Vision, Friday, Colossus, Bumblebee, Tars, Holly    likewise
+//
+//   Alexa, Siri             EXCLUDED FOR A DIFFERENT AND BETTER REASON: the bot
+//                           says its own name aloud, in a room full of phones and
+//                           speakers. A bot introducing itself would set off every
+//                           assistant within earshot. Cortana is here because it
+//                           is discontinued and wakes nothing.
+const ROBOTIC = [
+  // Film
+  'Hal', 'Tron', 'Robby', 'Gort', 'Wally', 'Megatron', 'Jarvis', 'Ultron',
+  'Baymax', 'Chappie', 'Robocop', 'Skynet', 'Pris', 'Astro', 'Talos', 'Terminator',
+  // Television, and a judgement call: "bender" IS a word, but not one that comes
+  // up in a meeting, and the robot is famous enough to be worth the small risk.
+  'Bender',
+  // Film — confirmed intact through Google's captions on a live test call
+  'R2D2', 'C-3PO',
+  // Film — the two-word ones, safer than either word on its own
+  'Optimus Prime', 'Iron Giant', 'Johnny Five',
+  // Television
+  'Twiki', 'Kryten', 'Marvin', 'Rosie', 'Vicki', 'Ziggy', 'Orac', 'Maeve', 'Dolores',
+  'Bernard', 'Roy',
+  // Books
+  'Daneel', 'Giskard', 'Multivac', 'Wintermute', 'Deep Thought',
+  // Real, or real enough
+  'Eliza', 'Watson', 'Turing', 'Clippy', 'Cortana',
+  // SoftBank's Pepper, and one of this project's own bots. The single knowing
+  // exception to rule 1 — "pass the pepper" will occasionally false-wake it —
+  // kept because it is already a bot here and the trade was made with open eyes.
+  'Pepper',
+];
+
+const BOT_NAMES = [...FEMININE, ...MASCULINE, ...ROBOTIC];
 
 // One name, uniformly at random.
 //
@@ -131,4 +203,4 @@ function randomBotName({ taken = [], random = Math.random } = {}) {
   return from[Math.floor(random() * from.length)];
 }
 
-module.exports = { BOT_NAMES, FEMININE, MASCULINE, randomBotName };
+module.exports = { BOT_NAMES, FEMININE, MASCULINE, ROBOTIC, randomBotName };

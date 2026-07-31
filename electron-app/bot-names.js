@@ -113,7 +113,7 @@ const MASCULINE = [
   // Common in the US. Same word rule, which costs a lot of popular ones here:
   // Jack, Mason, Hunter, Cooper, Parker, Carter, Brooks, Miles, Angel, Roman,
   // Christian and Maverick are all excluded as ordinary words or occupations.
-  'Liam', 'Noah', 'Elijah', 'James', 'William', 'Benjamin', 'Lucas', 'Henry',
+  'Liam', 'Noah', 'Elijah', 'James', 'William', 'Benjamin', 'Lucas',
   'Alexander', 'Michael', 'Ethan', 'Jacob', 'Logan', 'Jackson', 'Sebastian',
   'Owen', 'Theodore', 'Samuel', 'Joseph', 'David', 'Wyatt', 'Matthew', 'Luke',
   'Julian', 'Gabriel', 'Isaac', 'Lincoln', 'Anthony', 'Dylan', 'Charles',
@@ -126,7 +126,7 @@ const MASCULINE = [
   // toilet — both will false-wake occasionally. They are common enough as names
   // that the trade is worth making, but it IS a trade, not an oversight.
   'Trevor', 'Jeff', 'Steve', 'John', 'Jordan', 'Alex', 'Chris', 'Joshua',
-  'Robert', 'Bob', 'Fabian', 'Peter', 'Kenny',
+  'Robert', 'Bob', 'Fabian', 'Peter', 'Kenny', 'Henry'
 ];
 
 // Famous robots, computers and AIs. A bot named after one is a small joke that
@@ -137,7 +137,7 @@ const MASCULINE = [
 // below reflects a real test call rather than a guess about what Google can hear:
 //
 //     "When I talk about the robot C-3PO, how does that get transcribed?
-//      What about R2D2? ... And you know, Wally, that's a little harder."
+//      What about R2D2?"
 //
 // Every one came back exactly right, hyphens and digits included. So R2D2 and
 // C-3PO are in, and the shape rule was widened to allow digits, hyphens and
@@ -151,7 +151,7 @@ const MASCULINE = [
 //
 // Still out, on rule 1:
 //
-//   Bender, Data, Ash, Zen  ordinary words — "on a bender", "the data says"
+//   Data, Ash, Zen          ordinary words — "the data says", "ash tray"
 //   Vision, Friday, Colossus, Bumblebee, Tars, Holly    likewise
 //
 //   Alexa, Siri             EXCLUDED FOR A DIFFERENT AND BETTER REASON: the bot
@@ -163,6 +163,9 @@ const ROBOTIC = [
   // Film
   'Hal', 'Tron', 'Robby', 'Gort', 'Wally', 'Megatron', 'Jarvis', 'Ultron',
   'Baymax', 'Chappie', 'Robocop', 'Skynet', 'Pris', 'Astro', 'Talos', 'Terminator',
+  // Television, and a judgement call: "bender" IS a word, but not one that comes
+  // up in a meeting, and the robot is famous enough to be worth the small risk.
+  'Bender',
   // Film — confirmed intact through Google's captions on a live test call
   'R2D2', 'C-3PO',
   // Film — the two-word ones, safer than either word on its own

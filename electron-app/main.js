@@ -3613,12 +3613,29 @@ function configureMeetSession(sess) {
 // --website-url, --local-port, --profile, --devtools
 // ---------------------------------------------------------------------------
 
+// Flags that take a value; used to catch the silently-ignored space form below.
+const KNOWN_VALUE_FLAGS = new Set(['profile', 'local-port', 'website-url', 'meet-url', 'bot-name']);
+
 function parseCLIArgs() {
   const args = process.argv.slice(1); // skip electron binary
   const result = {};
   for (const arg of args) {
     const match = arg.match(/^--(\w[\w-]*)=(.+)$/);
-    if (match) result[match[1]] = match[2];
+    if (match) { result[match[1]] = match[2]; continue; }
+    // A known value-flag given WITHOUT '=' (the space form, e.g. `--profile foo`)
+    // matches nothing above and is silently dropped — so the app opens the REAL
+    // Default profile / real port / production URL while you think you passed an
+    // override (#158). Silence is the whole danger, so warn LOUDLY rather than
+    // fall back quietly. (We don't consume the next argv token — guessing the
+    // user's intent is exactly what #158 argues against.)
+    const bare = arg.match(/^--(\w[\w-]*)$/);
+    if (bare && KNOWN_VALUE_FLAGS.has(bare[1])) {
+      console.warn(
+        `[electron] ⚠️  --${bare[1]} needs the =value form (e.g. --${bare[1]}=VALUE). `
+        + `The space form is IGNORED, so this launch is using DEFAULTS (Default profile, port 7865, production URL). `
+        + `Re-launch with --${bare[1]}=VALUE.`,
+      );
+    }
   }
   return result;
 }

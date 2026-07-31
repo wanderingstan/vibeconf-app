@@ -554,7 +554,11 @@
         if (this.callStatus === 'in-call') {
           if (!this._riseSince) this._riseSince = Date.now(); // stamp on entry
           const p = Math.max(0, Math.min(1, (Date.now() - this._riseSince - RISE_HOLD_MS) / RISE_DURATION_MS));
-          const eased = 1 - Math.pow(1 - p, 3); // easeOutCubic — quick lift, gentle settle
+          // easeInCubic, not easeOutCubic: a slow start reads as a deliberate
+          // liftoff — the previous easeOutCubic started at full speed, which
+          // read as a jolt right as the rise began. No ease-out is needed at
+          // the tail either; it can arrive at center at full speed.
+          const eased = Math.pow(p, 3);
           ghostRise = (1 - eased) * (h - cy);
         } else {
           ghostRise = h - cy;   // not admitted yet — hold peeking at the bottom edge

@@ -32,6 +32,14 @@ function defaultBotSettings() {
     permissions: {
       allow: [
         'mcp__vibeconferencing__*',
+        // After-call work writes into this directory — call notes, summaries,
+        // receipts. By then the call is over and nobody is watching the
+        // terminal, so a permission prompt would hang the wrap-up silently
+        // rather than ask anyone. Bounded by the workspace: this dir IS the
+        // session's cwd, and writes outside it still prompt.
+        'Write',
+        'Edit',
+        'Read',
       ],
     },
   };
@@ -98,6 +106,30 @@ itself, so renaming the bot never means editing this file.)
 - Answer the question that was actually asked; don't pad.
 - Use the whiteboard for anything visual — diagrams, code, structured notes.
 - When you're unsure, say so briefly rather than guessing confidently.
+
+## After the call
+When a call ends you may get an AFTER-CALL WORK phase: you are still running, and
+the call's transcript, whiteboard and room info are all still readable even
+though you have left the meeting. This section is what you do with that time.
+
+By default: **write a short summary of the call into \`call-notes/\`.**
+
+1. \`get_room_info\` for the call id, then \`read_transcripts\` for what was said.
+2. Write \`call-notes/<call-id>.md\` — a few lines of what the call was about,
+   any decisions, and anything someone asked you to remember or follow up. Skip
+   the blow-by-blow; write what you would want to read in a month.
+3. Call \`end_session\`. Do it as soon as you are done — the app holds the room
+   and your terminal open until you do.
+
+If the call produced nothing worth keeping (a test, a two-line hello), write
+nothing and call \`end_session\` straight away. An empty note is worse than none.
+
+Never \`speak\` or \`send_chat\` in this phase — you have left the meeting, so
+nobody would hear or see it.
+
+Change any of this. Summaries into a different shape, a receipt posted somewhere,
+tickets filed, nothing at all — this is the bot's own file, and after-call work is
+whatever you write here.
 
 ## Make it yours
 Add anything that should shape this bot: topics it cares about, tone, domain

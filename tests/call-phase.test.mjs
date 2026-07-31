@@ -197,3 +197,24 @@ test('the skill teaches the phase, and the installed copy will be replaced', () 
   // The installed skill is app-owned and only reinstalls when the version changes.
   assert.match(main, /const SKILL_VERSION = '36'/);
 });
+
+test('the bot template says what after-call work is for', () => {
+  // The handoff message tells the agent "its CLAUDE.md says what that is". If
+  // the template says nothing, the agent arrives in the phase with time, tools,
+  // and no instructions — which is worse than not having the phase.
+  const { defaultClaudeMd, defaultBotSettings } = require('../electron-app/agent-workdir.js');
+  const md = defaultClaudeMd();
+  assert.match(md, /## After the call/);
+  assert.match(md, /call-notes\//, 'the MVP: a summary written into the agent dir');
+  assert.match(md, /end_session/, 'and how to end the phase');
+  assert.match(md, /Never `speak` or `send_chat`/, 'the bot has left the meeting');
+  // It has to read as editable — after-call work is per-bot, not a house rule.
+  assert.match(md, /Change any of this/);
+
+  // Agents are normally launched in dangerous mode, so this is belt-and-braces:
+  // without it, a bot on a machine that has NOT opted into that would hit a
+  // permission prompt in a terminal nobody is watching, and the wrap-up would
+  // hang instead of failing loudly.
+  const allow = defaultBotSettings().permissions.allow;
+  assert.ok(allow.includes('Write'), 'writing notes is the default after-call job');
+});

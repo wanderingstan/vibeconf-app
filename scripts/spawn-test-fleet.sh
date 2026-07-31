@@ -289,6 +289,15 @@ if (( ! SLACK )) && [[ -z "${VIBECONF_NO_RUN_TAG:-}" ]]; then
 fi
 
 BOTS_ARG=""
+# Give every test profile the CURRENT after-call instructions (#139). CLAUDE.md is
+# seeded once and never overwritten, so profiles made before the section existed
+# would otherwise never get it — and the real-agent mission would grade the
+# handoff message alone while the template went untested. Inserts, never
+# overwrites; a no-op once present.
+for i in $(seq 1 $N); do
+  node "$(dirname "$0")/ensure-after-call-section.mjs" "${PROFILE_BASE}-$i" || true
+done
+
 for i in $(seq 1 $N); do
   profile="${PROFILE_BASE}-$i"
   port=$((BASE_PORT + i - 1))

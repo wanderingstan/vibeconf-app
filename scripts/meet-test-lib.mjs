@@ -82,7 +82,14 @@ export class Bot {
   // ~4-5s once live; this is NOT a 30s cold-start — that earlier reading was just
   // both bots sitting idle in warm-up while nobody spoke). Capped so a bot that
   // never reaches in-call still proceeds. Env: VIBECONF_WARMUP_MAX_MS / _SETTLE_MS.
-  async warmUp({ maxMs = Number(process.env.VIBECONF_WARMUP_MAX_MS) || 20000,
+  //
+  // 40s (was 20s): Google Meet's GUEST-join latency is variable — usually ~8-15s,
+  // but on slower nights it runs 25-31s (verified 2026-07-31: a pre-#160 build and
+  // latest main BOTH joined at ~23-31s under the same Meet conditions, so this is
+  // Google-side latency, not a regression). A 20s cap false-reported "not in-call"
+  // on those nights and cascaded into downstream failures; 40s absorbs the tail
+  // while still bounding a genuinely-stuck join.
+  async warmUp({ maxMs = Number(process.env.VIBECONF_WARMUP_MAX_MS) || 40000,
                 settleMs = Number(process.env.VIBECONF_WARMUP_SETTLE_MS) || 5000 } = {}) {
     const t0 = Date.now();
     let inCall = false;
@@ -96,6 +103,19 @@ export class Bot {
     log(this.name, 'warmUp', { ms: waited, ok: true,
       note: inCall ? `in-call after ${waited - settleMs}ms (+${settleMs}ms settle)` : `not in-call in ${maxMs}ms — proceeding` });
     return { inCall, waitedMs: waited };
+  }
+
+  // Poll until in-call (no settle). For gating OPTIONAL steps that HARD-require
+  // in-call — e.g. the caption-language round trip, a per-call Meet setting that
+  // errors "Not in a call" if the bot hasn't joined yet. Returns a bool so callers
+  // can skip loudly rather than hard-fail when Google's guest-join is slow.
+  async waitInCall({ maxMs = 40000 } = {}) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < maxMs) {
+      try { if ((await this.status()).callStatus === 'in-call') return true; } catch { /* retry */ }
+      await sleep(1000);
+    }
+    return false;
   }
 
   async speak(text, { emoji, voice } = {}) {

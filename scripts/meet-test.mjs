@@ -137,6 +137,18 @@ async function captionLanguageTest(bots) {
   console.log('\n— caption language (German round trip) —');
   const [speaker, listener] = bots;
 
+  // Caption language is a per-call Meet setting — set-caption-language hard-fails
+  // "Not in a call" until the bot has actually joined. On slow Google-join nights
+  // the main warm-up can lapse before in-call is reached, so gate here: wait for
+  // both bots to be in-call and SKIP LOUDLY if they aren't, rather than record a
+  // failure. Otherwise a slow-but-healthy Meet join reads as a caption-language
+  // regression (2026-07-31: env-slow guest join ~25-31s failed this every time).
+  const joined = await Promise.all(bots.map((b) => b.waitInCall({ maxMs: 40000 })));
+  if (!joined.every(Boolean)) {
+    console.log(`(caption-language test needs both bots in-call — only ${joined.filter(Boolean).length}/${bots.length} joined in time; skipping)`);
+    return;
+  }
+
   // Both sides: the listener needs German captions to hear it, and the speaker
   // needs them so its own view agrees about what was said.
   const results = await Promise.all(bots.map((b) => b.setCaptionLanguage('de-DE')));

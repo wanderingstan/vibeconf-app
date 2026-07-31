@@ -12,7 +12,7 @@ const profileManager = require('./profile-manager.js');
 const { MEET } = require('./meet-selectors.js'); // pure data — safe in the main process
 const { resolveSvg } = require('./svg-resolver.js');
 // One source of truth for the unconfigured bot name — see preferences-schema.
-const { DEFAULT_BOT_NAME } = require('./preferences-schema');
+const { DEFAULT_BOT_NAME, PREFERENCES } = require('./preferences-schema');
 const { resolveVoice } = require('./voice-status.js');
 const { isInCall, isFinished, isCallComplete } = require('./call-phase.js');
 const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEventsFor } = require('./share-surface.js');
@@ -182,6 +182,16 @@ function captionLanguageAlreadyApplied(room, language) {
 // What the bot can currently speak with. Read live from the store rather than
 // cached: the ElevenLabs key can be entered in the App Settings window, and a
 // voice can be changed mid-call, both without a relaunch.
+// A preference's EFFECTIVE value: what is stored, or the schema default when it
+// has never been set. store.get() alone gives the raw value, so an unset pref
+// reads as undefined and every `|| 0` / `|| ''` fallback silently wins over the
+// documented default.
+function prefValue(key) {
+  const stored = store?.get(key);
+  if (stored !== undefined && stored !== null) return stored;
+  return PREFERENCES[key]?.default;
+}
+
 function currentVoiceStatus() {
   return resolveVoice({
     ttsApiKey: store?.get('ttsApiKey'),
@@ -237,13 +247,20 @@ function announceNoVoiceOnce() {
 // filing, writing a receipt — and until it says otherwise the call's state has to
 // stay exactly where it is.
 //
-// Gated on the afterCallWorkSeconds preference, 0 (off) by default: the phase is
-// only useful once an agent knows to use it, so the machinery lands first and the
-// behaviour is opted into. 0 reproduces the old teardown-on-leave exactly.
+// Gated on the afterCallWorkSeconds preference, 300s by default. That default is
+// a BACKSTOP, not a schedule: an agent that finishes calls end_session and the
+// app tears down at once, so the usual cost is seconds. Setting it to 0 turns the
+// phase off and reproduces the old teardown-on-leave exactly.
 let _afterCallWorkTimer = null;
 
 function beginAfterCallWorkOrTeardown(reason) {
-  const seconds = Number(store?.get('afterCallWorkSeconds')) || 0;
+  // Through the schema, NOT store.get(): a raw read returns undefined for any
+  // profile that has never set this, so `Number(undefined) || 0` disabled the
+  // phase everywhere despite a 300s default. The default only ever showed up in
+  // list_preferences, and this gate disagreed with afterCallWorkPlan() — which
+  // does resolve the default, so the agent was told it had 300 seconds while the
+  // app tore the call down immediately.
+  const seconds = Number(prefValue('afterCallWorkSeconds')) || 0;
   // No agent driving means nobody to do the work — #156 already tracks this, so
   // a button-only call (or one whose agent died) tears down as it always did
   // rather than waiting out a timer for a session that cannot answer.

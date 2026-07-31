@@ -222,3 +222,34 @@ test('the bot template says what after-call work is for', () => {
   const allow = defaultBotSettings().permissions.allow;
   assert.ok(allow.includes('Write'), 'writing notes is the default after-call job');
 });
+
+test('an unset preference still gets its documented default', () => {
+  // The bug: the gate read store.get() directly, which returns undefined for any
+  // profile that never set this — so `Number(undefined) || 0` disabled the phase
+  // everywhere, despite a 300s default. It only worked where the pref had been
+  // POSTed explicitly, which is exactly what hand-testing does.
+  //
+  // Worse, the two readers disagreed: afterCallWorkPlan() resolves the default,
+  // so the agent was told it had 300 seconds while the app tore down at once.
+  assert.ok(!/store\?\.get\('afterCallWorkSeconds'\)/.test(main),
+    'the gate must not read the raw store — an unset pref reads as undefined');
+  assert.match(main, /prefValue\('afterCallWorkSeconds'\)/);
+
+  // And the resolver has to actually fall back.
+  const fn = main.slice(main.indexOf('function prefValue'));
+  const body = fn.slice(0, fn.indexOf('\n}'));
+  assert.match(body, /PREFERENCES\[key\]\?\.default/);
+  assert.match(body, /stored !== undefined && stored !== null/,
+    'a stored 0 must win over the default — turning the phase OFF has to stick');
+});
+
+test('the two readers agree about whether the phase runs', () => {
+  // afterCallWorkPlan() tells the AGENT what it gets; beginAfterCallWorkOrTeardown()
+  // decides what actually happens. If they resolve the preference differently the
+  // agent waits on a window that was never opened.
+  const planned = server.slice(server.indexOf('afterCallWorkPlan()'));
+  const pbody = planned.slice(0, planned.indexOf('\n  }'));
+  assert.match(pbody, /this\._pref\('afterCallWorkSeconds'\)/, 'server side resolves via _pref');
+  // _pref falls back to the schema, and so must the app side.
+  assert.match(main, /prefValue\('afterCallWorkSeconds'\)/);
+});

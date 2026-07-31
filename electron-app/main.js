@@ -1293,7 +1293,6 @@ const localServer = new globalThis.LocalServer({
     setBotViewInCall(status);
     // A call we spawned has ended (host ended it, bot was removed, whatever) —
     // hand the room back. leave-meet covers the button; this covers the rest.
-    if (status === 'left' || status === 'idle') retireLiveMeet(`call-status:${status}`);
     // An update that landed mid-call has been sitting staged and unmentioned.
     // Now that the call is over, it's safe to offer.
     if (status === 'left' || status === 'idle') { try { offerStagedUpdate(); } catch { /* not wired yet */ } }
@@ -2816,12 +2815,19 @@ function getWebsiteUrl() {
 // permission to enter the room. The server never logs them and neither do we —
 // with remoteLogging on (the default) a stray console.log would ship live
 // capabilities off the machine. Log the shape, never the value.
-// The room we created, so we can close it when the call ends. In memory only:
-// retire is HYGIENE, not a prerequisite — a create now returns your existing
-// room rather than 429ing, and the server reaps what we miss. So a room lost to
-// a crash costs nothing but a lingering TTL, and there's no case for persisting
-// this to chase it across restarts.
-let liveMeetSpaceName = null;
+// Rooms we create are retired SERVER-side by the TTL reaper (api/meet/reap), and
+// the client no longer tries to help.
+//
+// It used to: leaving a call POSTed /api/meet/retire, which runs closeSpace +
+// endActiveConference — and endActiveConference EJECTS everyone still in the
+// room. The bot leaving a call is not the same event as the meeting being over,
+// so asking the bot to drop off would end the meeting for the humans who stayed
+// to keep talking.
+//
+// Nothing is lost by dropping it. The retire endpoint's own header calls client
+// retire "best-effort… the durable TTL reaper is the real guarantee", and a
+// create returns your existing room rather than 429ing, so an un-retired room
+// costs a lingering TTL and nothing else.
 
 // Point the bot at a Meet URL and bring up everything a call needs: sync, and
 // the bot's Claude session. Shared by the manual join ('join-meet') and the
@@ -2901,9 +2907,6 @@ async function createAndJoinMeet({ openBrowser = true, spawnAgent = true } = {})
   if (r.status === 200 && r.json?.meetingUri) {
     // Shape only — meetingUri/meetingCode are capabilities, never logged.
     console.log(`[meet-create] room ready (replay=${!!r.json.replay})`);
-    // On a replay this is the room we already had — including after a crash
-    // lost track of it, which is how a forgotten room finds its way home.
-    liveMeetSpaceName = r.json.spaceName || null;
     joinMeetUrl(r.json.meetingUri, { spawnAgent });
     // …and get the HUMAN in too. The bot joins inside the Electron webview;
     // the user joins as themselves in their own browser, with their own
@@ -2930,21 +2933,6 @@ async function createAndJoinMeet({ openBrowser = true, spawnAgent = true } = {})
   return { ok: false, code: 'unknown', detail: `status ${r.status}` };
 }
 
-async function retireLiveMeet(reason) {
-  const spaceName = liveMeetSpaceName;
-  if (!spaceName) return;
-  liveMeetSpaceName = null; // clear first so a second call can't double-fire
-  try {
-    const r = await websiteRequest('/api/meet/retire', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: { spaceName },
-    });
-    console.log(`[meet-create] retired room (${reason}) → status ${r.status}`);
-  } catch (err) {
-    console.warn('[meet-create] retire failed:', err.message);
-  }
-}
 
 async function checkAuth() {
   const baseUrl = getWebsiteUrl();
@@ -5521,7 +5509,6 @@ app.on('window-all-closed', () => {
 // Close any terminal windows we opened, synchronously, before the process
 // exits — covers Cmd-Q and other quit paths the async close would miss.
 app.on('before-quit', () => {
-  retireLiveMeet('before-quit'); // best-effort hygiene; the reaper is the net
   stopAllRunwayFaces('before-quit'); // P2: best-effort end of Runway sessions on quit (fire-and-forget)
   closeAllClaudeTerminalsSync();
 });
@@ -7445,7 +7432,6 @@ function setupIPC() {
   ipcMain.on('open-external-url', (_event, url) => { openExternalUrl(url); });
 
   ipcMain.on('leave-meet', () => {
-    retireLiveMeet('leave-meet'); // give the room back or the next press 429s
     currentMeetUrl = null;
     detectedMeetUrl = null; // Reset so detection will re-notify about the same Meet
     localServer.clearRoom();

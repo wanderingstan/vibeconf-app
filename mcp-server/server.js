@@ -1377,6 +1377,46 @@ server.tool(
   startShareHandler
 );
 
+// --- share_tab (POC: share the tab you're browsing) ---
+// The SAME agent drives a Chrome tab (via the claude-in-chrome extension) and
+// this bot, so it already knows the tab's URL — pass it here. The app activates
+// that tab and screen-shares its window into the call, live. Reuses the
+// screen-share pipeline; the URL is the join key. See share-external-tab.js.
+async function shareTabHandler({ room_id, url, app_name }) {
+  const roomId = room_id || ROOM_ID;
+  if (!roomId) return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+  if (!url) return { content: [{ type: "text", text: "Error: url is required — the URL of the tab to share (the one you're browsing in Chrome)." }] };
+
+  const attemptStartedAt = new Date().toISOString();
+  const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(botSyncPayload(BOT_NAME, { meta: { action: "share-tab", url, appName: app_name } })),
+  });
+  const data = await resp.json();
+  if (!data.success) return { content: [{ type: "text", text: `Error: ${data.error || "Failed to share tab"}` }] };
+
+  const statusData = await waitForSharingState(roomId, true, { timeoutMs: 9000, intervalMs: 300, stablePolls: 2 });
+  if (statusData.status?.sharing === true) {
+    return { content: [{ type: "text", text: `Now sharing the browser tab (${url}) into the call. It updates live as you browse — narrate or drive it as you like.` }] };
+  }
+  const errors = (statusData.status?.errors || []).filter(e => e.message.includes('Screen share') && e.timestamp >= attemptStartedAt);
+  if (errors.length) {
+    return { content: [{ type: "text", text: `Couldn't share the tab: ${errors[errors.length - 1].message}. Common causes: the tab/URL isn't open in Chrome, or screen-recording permission is off.` }] };
+  }
+  return { content: [{ type: "text", text: "Share request sent but the app isn't presenting yet — the tab may not be open in Chrome, or the Meet UI needs focus. Tell the user." }] };
+}
+server.tool(
+  "share_tab",
+  "Share a SPECIFIC browser tab into the Google Meet by its URL — ideal for showing the room the exact page you're browsing with the Chrome tools. Pass the tab's `url`; the app finds that tab in Chrome, makes it active, and screen-shares its window live (participants see it update as you navigate). Prefer this over start_share('screen') when you want to present one page rather than the whole desktop. macOS only for now (uses AppleScript to locate the tab); Windows support tracked separately.",
+  {
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+    url: z.string().describe("The URL of the tab to share — the page you're browsing (e.g. from the claude-in-chrome tab you navigated). Matched by substring against open Chrome tabs, so a distinctive URL works best."),
+    app_name: z.string().optional().describe("Browser app to search, default 'Google Chrome'. Use 'Brave Browser' if the tab is in Brave."),
+  },
+  shareTabHandler
+);
+
 // --- stop_sharing ---
 server.tool(
   "stop_sharing",

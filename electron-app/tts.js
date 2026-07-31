@@ -39,6 +39,11 @@ class TTSProvider {
     this.voiceboxUrl = config.voiceboxUrl || 'http://127.0.0.1:17493'; // local Voicebox server
     this.voiceboxProfileId = config.voiceboxProfileId || '';
     this.voiceboxEngine = config.voiceboxEngine || 'kokoro'; // must match what the profile supports
+    // #150: a single URI-like `voice` string can seed provider + id + engine at
+    // once (e.g. "elevenlabs:v1", "system:Daniel", "voicebox:p1?engine=kokoro").
+    // Applied AFTER the individual keys so an explicit `voice` wins; omit it and
+    // the legacy keys behave exactly as before (fully backward compatible).
+    if (typeof config.voice === 'string') this._applyVoiceUri(config.voice);
     this._queue = [];
     this._active = false;
   }
@@ -52,6 +57,31 @@ class TTSProvider {
     if (config.voiceboxUrl) this.voiceboxUrl = config.voiceboxUrl;
     if (config.voiceboxProfileId) this.voiceboxProfileId = config.voiceboxProfileId;
     if (config.voiceboxEngine) this.voiceboxEngine = config.voiceboxEngine;
+    // #150: the unified string wins over the individual keys in the same update.
+    if (typeof config.voice === 'string') this._applyVoiceUri(config.voice);
+  }
+
+  // #150: seed provider/id/engine from a single voice URI. Empty string → auto.
+  _applyVoiceUri(uri) {
+    const { voiceUriToLegacy } = require('./voice-uri.js');
+    const legacy = voiceUriToLegacy(uri);
+    this.provider = legacy.ttsProvider || 'auto';
+    if (legacy.ttsVoiceId) this.voiceId = legacy.ttsVoiceId;
+    if ('macosVoice' in legacy) this.macosVoice = legacy.macosVoice;
+    if ('voiceboxProfileId' in legacy) this.voiceboxProfileId = legacy.voiceboxProfileId;
+    if (legacy.voiceboxEngine) this.voiceboxEngine = legacy.voiceboxEngine;
+  }
+
+  // #150: the current voice as one URI string — for logging, diffing, copying
+  // between profiles, and eventually replacing the four stored keys.
+  voiceUri() {
+    const { formatVoiceUri } = require('./voice-uri.js');
+    const provider = this.provider === 'auto' ? '' : this.provider;
+    let id = '';
+    if (provider === 'elevenlabs') id = this.voiceId;
+    else if (provider === 'voicebox') id = this.voiceboxProfileId;
+    else if (provider === 'macos-say' || provider === 'system') id = this.macosVoice;
+    return formatVoiceUri({ provider, id, engine: this.voiceboxEngine });
   }
 
   async synthesize(text) {

@@ -186,6 +186,19 @@ function captionLanguageAlreadyApplied(room, language) {
 // has never been set. store.get() alone gives the raw value, so an unset pref
 // reads as undefined and every `|| 0` / `|| ''` fallback silently wins over the
 // documented default.
+// Tell the panel a config value changed, so its controls re-read.
+//
+// Both write paths call this: set-config (the wizard and the panel itself) and
+// applyPref (an agent's set_preference). Before, only applyPref's botName branch
+// sent it — and nothing in the panel listened, so even that was dropped. The
+// result was a panel showing a boot-time snapshot forever, and settings that
+// looked like they had failed to save when they had not (#190, #143).
+function notifyConfigChanged(key, value) {
+  if (panelView && !panelView.webContents.isDestroyed()) {
+    panelView.webContents.send('extension-message', { action: 'config-updated', payload: { key, value } });
+  }
+}
+
 function prefValue(key) {
   const stored = store?.get(key);
   if (stored !== undefined && stored !== null) return stored;
@@ -1728,6 +1741,10 @@ const localServer = new globalThis.LocalServer({
   getPref: (key) => store?.get(key),
   setPref: (key, value) => store?.set(key, value),
   applyPref: (key, value) => {
+    // An agent's set_preference lands here. The panel re-reads on this, the same
+    // way it does for a set-config write, so a value changed mid-call shows up in
+    // Bot Settings instead of the boot-time snapshot.
+    notifyConfigChanged(key, value);
     // Live-apply hooks per-key. Anything we leave out is read on next use
     // (the ack thresholds, for example, are read every time a thinking state
     // fires — no live-apply needed).
@@ -1747,13 +1764,6 @@ const localServer = new globalThis.LocalServer({
       tts.updateConfig?.({ voiceboxEngine: value });
     } else if (key === 'botName') {
       applyWindowTitle(); // the window is named after the bot
-      // Surface the change in the panel so the input reflects reality.
-      if (panelView && !panelView.webContents.isDestroyed()) {
-        panelView.webContents.send('extension-message', {
-          action: 'config-updated',
-          payload: { key, value },
-        });
-      }
     } else if (key === 'avatarBackgroundSvg') {
       pushAvatarBackground(value);
       // (The panel re-renders its own avatar — and its switcher thumbnail — off
@@ -6907,6 +6917,10 @@ function setupIPC() {
 
   ipcMain.handle('set-config', (_event, key, value) => {
     store.set(key, value);
+    // Every key, not only the ones with a live-apply hook below — the panel shows
+    // more prefs than this function specially handles, and the wizard writes
+    // several of them.
+    notifyConfigChanged(key, value);
     // Live-apply the visual prefs the panel can set here (the agent path goes
     // through applyPref, which already pushes these). #316.
     if (key === 'emojiSet') pushEmojiSet(value);

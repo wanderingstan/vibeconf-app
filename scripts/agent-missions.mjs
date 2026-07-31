@@ -55,11 +55,10 @@ export const MISSIONS = [
     // handoff message and the bot's own CLAUDE.md are supposed to carry it, and
     // a prompt that re-specified the job would grade the prompt instead.
     //
-    // CLAUDE.md is seeded once and never overwritten, so test profiles predating
-    // #139 had no "After the call" section — which would have left the design
-    // centre untested, since the template is what says WHICH wrap-up to do.
-    // spawn-test-fleet.sh now runs ensure-after-call-section.mjs to insert it,
-    // so this mission grades the real path: template → handoff → agent → file.
+    // spawn-test-fleet.sh resets every test profile's CLAUDE.md to the shipped
+    // default before a run, so this grades the real path — template → handoff →
+    // agent → result — against the instructions a fresh install would get,
+    // rather than whatever a profile had accumulated.
     prompt: [
       'You are a test agent in a live video call with another bot named {peer}.',
       'Have a SHORT exchange, then leave — the interesting part is what happens after.',

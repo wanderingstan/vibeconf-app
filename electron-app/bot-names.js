@@ -71,8 +71,11 @@ const FEMININE = [
   'Claire', 'Lucy', 'Caroline', 'Emilia', 'Allison', 'Julia', 'Vivian', 'Sophie',
   'Madeline', 'Lydia', 'Josephine', 'Katherine', 'Diana', 'Rachel', 'Megan',
   'Nicole', 'Michelle', 'Rebecca', 'Danielle', 'Christine', 'Andrea', 'Marie',
-  // Asked for by name.
+  // Asked for by name. "Robin" is also a bird — a rule-1 bend, allowed on the
+  // same reasoning as Bender: a real word, but not one that comes up in a
+  // meeting.
   'Kate', 'Maria', 'Sandra', 'Lisa', 'Mavi',
+  'Melinda', 'Valerie', 'Robin', 'Analita', 'Aurelia', 'Annabeth',
   'Victoria',
 ];
 
@@ -126,7 +129,9 @@ const MASCULINE = [
   // toilet — both will false-wake occasionally. They are common enough as names
   // that the trade is worth making, but it IS a trade, not an oversight.
   'Trevor', 'Jeff', 'Steve', 'John', 'Jordan', 'Alex', 'Chris', 'Joshua',
-  'Robert', 'Bob', 'Fabian', 'Peter', 'Kenny', 'Henry'
+  'Robert', 'Bob', 'Fabian', 'Peter', 'Kenny',
+  // "Earl" is a rank and a tea, so it bends rule 1 too — same call as Robin.
+  'Dan', 'Earl', 'Henry'
 ];
 
 // Famous robots, computers and AIs. A bot named after one is a small joke that

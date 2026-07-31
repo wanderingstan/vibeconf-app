@@ -98,10 +98,13 @@
       // snaps to this lean and holds until the next line.
       this._agentJostleDir = 0;    // hash-derived lean direction, -1..1
       // "Heard my name" reaction — see 'name-mentioned' below. _mentionTiltSign
-      // alternates each time so consecutive mentions don't cock the head the
-      // same way twice in a row; _nameMentionPulseAt is read via `|| 0` so it
-      // needs no explicit init (mirrors _tickPulseAt).
+      // ALTERNATES each mention (so consecutive mentions stay visually
+      // distinguishable as separate events); _mentionTiltMag is re-rolled
+      // randomly each time so the tilt amplitude varies and doesn't look like
+      // an identical mechanical tic. _nameMentionPulseAt is read via `|| 0` so
+      // it needs no explicit init (mirrors _tickPulseAt).
       this._mentionTiltSign = 1;
+      this._mentionTiltMag = 1;
       // Seed persistent state from the module-level avatarState, NOT hardcoded
       // defaults. A camera can be created mid-call — e.g. turning the camera on
       // makes the host page re-acquire the video stream, spawning a fresh
@@ -459,7 +462,9 @@
       // peak before falling away, instead of fading evenly from the start.
       // Tilt direction alternates per-mention (_mentionTiltSign, flipped in
       // the 'name-mentioned' handler) so a run of mentions doesn't hold the
-      // same cocked pose every time.
+      // same cocked pose every time; _mentionTiltMag (re-rolled randomly per
+      // mention) varies the peak tilt AMOUNT so the motion doesn't look like
+      // an identical mechanical tic every time — organic, not robotic.
       const MENTION_ATTACK_MS = 150;
       const MENTION_DECAY_MS = 5000;
       const mentionAge = Date.now() - (this._nameMentionPulseAt || 0);
@@ -470,7 +475,7 @@
         const p = (mentionAge - MENTION_ATTACK_MS) / MENTION_DECAY_MS;
         mentionPulse = Math.cos(p * Math.PI / 2);
       }
-      const mentionTilt = mentionPulse * (this._mentionTiltSign || 1) * 0.24; // ~14° peak head-cock
+      const mentionTilt = mentionPulse * (this._mentionTiltSign || 1) * (this._mentionTiltMag || 1) * 0.24; // ~14° peak head-cock, ±30% varied
       const mentionPop = 1 + mentionPulse * 0.22; // ~22% peak lean-in grow
 
       // #326 — head rotation driven by agent log activity (proof-of-life). Each
@@ -1668,18 +1673,23 @@
         }
         break;
 
-      case 'name-mentioned':
+      case 'name-mentioned': {
         // Another participant's speech named the bot directly — the same
         // detection that lets a passive/silent bot wake up and answer (#343).
         // Brief head-tilt + "leaning in" grow, like a dog cocking its head at
-        // the sound of its name. Alternate the tilt side each time so a run
-        // of mentions doesn't look like a single held pose.
+        // the sound of its name. Side still ALTERNATES (not random) so back-
+        // to-back mentions stay visually distinguishable as separate events;
+        // the peak-tilt SIZE is re-rolled randomly each time so the motion
+        // doesn't look like a mechanical, identical-amplitude tic.
+        const mag = 0.7 + Math.random() * 0.6; // ±30% around the base peak tilt
         for (const cam of cameras.values()) {
           cam._nameMentionPulseAt = Date.now();
           cam._mentionTiltSign = -(cam._mentionTiltSign || 1);
+          cam._mentionTiltMag = mag;
         }
         console.debug('[bots-in-calls] Name mentioned — avatar reaction fired');
         break;
+      }
 
       case 'play-join-chime':
         // Replaces the old canned "Hello I am X" welcome — short two-tone

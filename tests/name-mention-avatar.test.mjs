@@ -112,8 +112,18 @@ test('the avatar composites a head-tilt + lean-in reaction that snaps in fast an
   assert.match(inject, /breathe \* tickPop \* mentionPop/);
 });
 
-test("the 'name-mentioned' IPC case stamps the pulse and alternates tilt direction", () => {
+test("the 'name-mentioned' IPC case stamps the pulse, alternates tilt SIDE, and varies tilt SIZE", () => {
   const body = inject.slice(inject.indexOf("case 'name-mentioned':"), inject.indexOf("case 'play-join-chime':"));
   assert.match(body, /cam\._nameMentionPulseAt = Date\.now\(\)/);
+  // Side must ALTERNATE (deterministic), not be re-rolled — back-to-back
+  // mentions need to stay visually distinguishable as separate events.
   assert.match(body, /cam\._mentionTiltSign = -\(cam\._mentionTiltSign \|\| 1\)/);
+  // Size, by contrast, must be RANDOM each time so it doesn't read as a
+  // mechanical, identical-amplitude tic.
+  assert.match(body, /Math\.random\(\)/, 'peak tilt amount should vary randomly per mention');
+  assert.match(body, /cam\._mentionTiltMag = mag/);
+});
+
+test('the render loop actually applies the randomized magnitude to the tilt', () => {
+  assert.match(inject, /mentionTilt = mentionPulse \* \(this\._mentionTiltSign \|\| 1\) \* \(this\._mentionTiltMag \|\| 1\)/);
 });

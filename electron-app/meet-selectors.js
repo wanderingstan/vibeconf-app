@@ -270,6 +270,14 @@ const MEET = {
     // Cancel to KEEP the current presentation rather than tear down the board.
     presentTakeoverMarker: 'existing presentation',
     presentTakeoverCancelText: 'cancel',
+    // #141: Meet's "Your screen is still visible to others. Click to resume
+    // presenting or stop screen sharing." toast — a persistent + auto-hide
+    // dialog (same family as the #404 time-limit toast) whose ONLY button is
+    // "Close". The "Got it" sweep never matched it, so it sat over the captions
+    // for 13 min and dumped ~82KB into the log. Match on the distinctive body
+    // phrase so we never click Close on an unrelated dialog.
+    screenVisibleMarker: 'still visible to others',
+    closeText: 'close',
     // #404: Meet's free-tier time-limit warning — a toast-style dialog
     // (role=dialog, data-is-auto-hide) with aria-label/heading "Your call ends
     // in N minutes" and body "Free group calls have a limit of 1 hour". DOM

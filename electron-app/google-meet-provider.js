@@ -194,6 +194,28 @@ function dismissBlockingModals() {
     }
   }
 
+  // #141: "Your screen is still visible to others. Click to resume presenting
+  // or stop screen sharing." — a persistent toast whose ONLY affordance is
+  // Close, so the "Got it" sweep above never matched it. It appears during
+  // normal presenter hand-off (no stop_sharing needed), sits over the captions
+  // (the bot's only visual channel), and re-dumps its DOM every 15s. Match on
+  // the distinctive body phrase, then click Close — scoped to that dialog so it
+  // can't close an unrelated one.
+  for (const dlg of document.querySelectorAll(MEET.modals.dialogOrModal)) {
+    if (!isVisible(dlg)) continue;
+    const hay = ((dlg.getAttribute('aria-label') || '') + ' ' + (dlg.textContent || '')).toLowerCase();
+    if (!hay.includes(MEET.modals.screenVisibleMarker)) continue;
+    for (const b of dlg.querySelectorAll('button, [role="button"]')) {
+      const aria = (b.getAttribute('aria-label') || '').trim().toLowerCase();
+      const lbl = (b.textContent || '').trim().toLowerCase();
+      if ((aria === MEET.modals.closeText || lbl === MEET.modals.closeText) && isVisible(b)) {
+        b.click();
+        console.log('[electron-meet] Dismissed "screen still visible to others" toast via Close (#141)');
+        return true;
+      }
+    }
+  }
+
   // #416: safety net for a STUCK Settings dialog. setStudioSound opens Meet's
   // Settings dialog (⋮ → Settings → Audio) transiently; if its close step
   // fails — e.g. Studio Sound is unavailable on the account so the toggle is

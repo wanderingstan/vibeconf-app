@@ -697,6 +697,7 @@ const localServer = new globalThis.LocalServer({
         // whiteboard-window picker (with main-window exclusion to avoid
         // #158's infinity-mirror), not the full-screen-grab branch.
         fullScreenShareRequested = false;
+        externalShareRequest = null; // POC: switching to the whiteboard drops any tab source
         ipcMain.emit('start-whiteboard-share', {}, { meetCode });
         // Trigger Meet's "Present now" once the whiteboard window is up. A single
         // 2s setTimeout silently dropped the trigger whenever meetView was
@@ -837,6 +838,15 @@ const localServer = new globalThis.LocalServer({
   onStopSharing: () => {
     console.log('[local-server] Stop sharing requested by agent');
     fullScreenShareRequested = false;
+    // POC (share-agent-tab): if we were sharing an external browser tab, close
+    // its throwaway (isolated) window on stop so no window is left hanging.
+    const stoppedTabUrl = externalShareRequest && externalShareRequest.url;
+    externalShareRequest = null;
+    if (stoppedTabUrl) {
+      require('./share-external-tab.js').closeShareWindowByUrl(stoppedTabUrl)
+        .then((r) => console.log('[electron] closed external-tab share window:', r.ok))
+        .catch(() => { /* best-effort tidy-up */ });
+    }
     shareGeneration++; // cancel any in-flight Present-now retry loop (it would re-toggle Slack)
     // Close the whiteboard window — this ends the display media stream for whiteboard shares
     if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
@@ -848,6 +858,9 @@ const localServer = new globalThis.LocalServer({
       sendCallCmd(CALL_COMMANDS.triggerStopSharing);
     }
   },
+  // POC (share-agent-tab): the 'share-tab' action lands here with the URL the
+  // agent is browsing. Resolve → stash → Present-now (see startExternalTabShare).
+  onShareTab: (url, appName) => { startExternalTabShare({ url, appName }); },
   onLoadUrl: (url) => {
     console.log('[local-server] Load URL in whiteboard:', url);
     if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
@@ -2403,6 +2416,49 @@ async function stopAllRunwayFaces(why) {
 
 let whiteboardWindow = null;
 let fullScreenShareRequested = false;
+// POC (share-agent-tab): when set to a desktopCapturer window source, the
+// display-media handler shares THAT external window (a specific Chrome tab the
+// agent is browsing) instead of the whiteboard. Cleared on stop/leave. See
+// share-external-tab.js + docs/share-agent-tab-poc.md.
+let externalShareRequest = null; // { source, title, url } | null
+
+// POC (share-agent-tab): resolve a Chrome tab (by URL) to a desktopCapturer
+// window source, stash it, and trigger Meet's Present-now. Called from the
+// 'share-tab' /api/sync action (via onShareTab) and the 'share-external-tab'
+// IPC. Fire-and-forget like onShareWhiteboard — the MCP tool polls `sharing`.
+// TODO for productionization: reuse the whiteboard-share Present-now retry loop
+// (generation token) instead of a single trigger; see docs/share-agent-tab-poc.md.
+async function startExternalTabShare({ url, appName } = {}) {
+  const { resolveTabShareSource } = require('./share-external-tab.js');
+  const excludeIds = [
+    mainWindow && !mainWindow.isDestroyed() ? mainWindow.getMediaSourceId() : null,
+    whiteboardWindow && !whiteboardWindow.isDestroyed() ? whiteboardWindow.getMediaSourceId() : null,
+  ].filter(Boolean);
+
+  const resolved = await resolveTabShareSource(desktopCapturer, url, { appName, excludeIds });
+  if (!resolved.ok) {
+    console.warn('[electron] share-external-tab failed:', resolved.reason);
+    if (localServer) localServer.addError('Screen share failed: ' + resolved.reason);
+    return { success: false, error: resolved.reason };
+  }
+  externalShareRequest = { source: resolved.source, title: resolved.title, url };
+  if (localServer) localServer.setSharing(true);
+  console.log('[electron] share-external-tab →', resolved.source.id, `"${resolved.title}"`);
+
+  if (meetView && meetView.webContents) {
+    sendCallCmd(CALL_COMMANDS.triggerScreenShare, { shareType: 'window' });
+  }
+  // Now that the page is captured, bring the user's Meet window back to the
+  // front so they're looking at the call, not the shared page (capture is
+  // occlusion-proof, so the browsing window can sit behind). Best-effort; no-op
+  // if the call isn't in this browser. Small delay lets the share engage first.
+  setTimeout(() => {
+    require('./share-external-tab.js').raiseMeetWindow()
+      .then((r) => console.log('[electron] raised Meet window after share:', r.ok))
+      .catch(() => { /* best-effort */ });
+  }, 800);
+  return { success: true, title: resolved.title };
+}
 
 // The shared window's webContents, or null if there is nothing to drive.
 function shareWebContents() {
@@ -3324,6 +3380,17 @@ function configureMeetSession(sess) {
         console.error('[electron] Full screen share error:', err);
         callback({});
       }
+      return;
+    }
+
+    // POC (share-agent-tab): share a specific external browser window (a Chrome
+    // tab the agent is browsing). externalShareRequest.source was resolved ahead
+    // of time (tab activated + desktopCapturer source matched) by the
+    // 'share-external-tab' handler below, so here we just hand it back.
+    if (externalShareRequest && externalShareRequest.source) {
+      console.log('[electron] External-tab share source:',
+        externalShareRequest.source.id, `"${externalShareRequest.title}"`);
+      callback({ video: externalShareRequest.source });
       return;
     }
 
@@ -4653,7 +4720,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '34';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '35';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
@@ -8031,6 +8098,7 @@ function setupIPC() {
         localServer.addError('Screen share ended unexpectedly');
       }
       fullScreenShareRequested = false;
+      externalShareRequest = null; // POC (share-agent-tab)
     }
   });
 
@@ -8220,6 +8288,18 @@ function setupIPC() {
 
     return { success: true, url: roomUrl };
   });
+
+  // POC (share-agent-tab): share a specific external Chrome tab by URL. The
+  // agent (which drives that tab via claude-in-chrome) passes the URL; we
+  // activate the tab, resolve its window as a desktopCapturer source, stash it
+  // in externalShareRequest, and trigger Meet's Present-now — the display-media
+  // handler above then hands back that source. See share-external-tab.js.
+  //
+  // Still TODO for a real feature (see docs/share-agent-tab-poc.md): route the
+  // 'share-tab' /api/sync action + list_windows through local-server to here,
+  // reuse the whiteboard-share Present-now retry loop, and clear
+  // externalShareRequest on stop/leave alongside fullScreenShareRequested.
+  ipcMain.handle('share-external-tab', (_event, opts) => startExternalTabShare(opts));
 
   // Provide desktopCapturer source for screen share
   ipcMain.handle('get-screen-share-source', async () => {

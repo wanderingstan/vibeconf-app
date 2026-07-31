@@ -79,7 +79,7 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref, extraRoutes } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
     // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
     // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
@@ -108,6 +108,7 @@ class LocalServer {
     this.onReloadWhiteboard = onReloadWhiteboard || (() => ({ ok: false, error: 'reload not wired' })); // #321 follow-up
     this.whiteboardCss = '';
     this.onLeaveCall = onLeaveCall || (() => {});
+    this.onEndSession = onEndSession || (() => {});
     this.onShareWhiteboard = onShareWhiteboard || (() => {});
     this.onShareTab = onShareTab || (() => {}); // POC (share-agent-tab)
     this.onStopSharing = onStopSharing || (() => {});
@@ -1333,6 +1334,21 @@ class LocalServer {
     };
   }
 
+  // What happens when this bot's participation ends: does it get an after-call
+  // work phase, and how long. Read at the moment of leaving rather than cached,
+  // since both inputs can change mid-call.
+  //
+  // Reported to the AGENT so its handoff message can be specific — "you have 300
+  // seconds" is actionable in a way that "you may have some time" is not. Also
+  // the honest answer when the phase is off: it gets told to stop, as today.
+  afterCallWorkPlan() {
+    const seconds = Number(this._pref('afterCallWorkSeconds')) || 0;
+    // No agent driving means nobody to hand off TO. Matches the app-side gate in
+    // beginAfterCallWorkOrTeardown so the two can't disagree about what happens.
+    const hasAgent = !agentIsAbsent(this.agentState());
+    return { enabled: seconds > 0 && hasAgent, seconds: seconds > 0 && hasAgent ? seconds : 0 };
+  }
+
   // Is anyone driving this bot? See agent-liveness.js for why wait_for_speech's
   // 55s cap is what makes this trustworthy.
   agentState() {
@@ -1561,7 +1577,7 @@ class LocalServer {
       clearTimeout(w.timer);
       clearTimeout(w.silenceTimer);
       clearTimeout(w.tickTimer);
-      w.resolve({ success: true, autoLeft: true, asOf: new Date().toISOString(), transcript: { entries: [] } });
+      w.resolve({ success: true, autoLeft: true, afterCallWork: this.afterCallWorkPlan(), asOf: new Date().toISOString(), transcript: { entries: [] } });
     }
     this.waiters = [];
     try { this.onLeaveCall(); } catch (err) { console.warn(ts(), '[call-ended] onLeaveCall failed:', err.message); }
@@ -1590,7 +1606,7 @@ class LocalServer {
       clearTimeout(w.timer);
       clearTimeout(w.silenceTimer);
       clearTimeout(w.tickTimer);
-      w.resolve({ success: true, autoLeft: true, asOf: new Date().toISOString(), transcript: { entries: [] } });
+      w.resolve({ success: true, autoLeft: true, afterCallWork: this.afterCallWorkPlan(), asOf: new Date().toISOString(), transcript: { entries: [] } });
     }
     this.waiters = [];
 
@@ -4003,8 +4019,20 @@ class LocalServer {
     // Handle leave command
     if (data.meta?.action === 'leave') {
       this.currentCallBotName = null; // #212: clear the per-call name override
+      // Captured BEFORE onLeaveCall, which is what starts the phase — after it
+      // the agent-liveness read could race with teardown.
+      const plan = this.afterCallWorkPlan();
       this.onLeaveCall();
-      results.leave = { ok: true };
+      results.leave = { ok: true, afterCallWork: plan };
+    }
+
+    // The agent says its after-call work is done. Ends the phase early rather
+    // than burning the whole backstop, which is the difference between a bot
+    // that wraps up in 20s and one that ties up a terminal for 5 minutes.
+    if (data.meta?.action === 'end-session') {
+      const wasActive = this.callStatus === 'after-call-work';
+      if (wasActive) this.onEndSession();
+      results.endSession = { ok: true, wasActive };
     }
 
     // Handle share/stop whiteboard commands

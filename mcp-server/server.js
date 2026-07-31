@@ -405,7 +405,9 @@ server.tool(
       return {
         content: [{
           type: "text",
-          text: "Auto-left the call: everyone else left and the bot was alone. The app has already hung up. Exiting the conversation loop. Do not retry wait_for_speech and do not call leave_call.",
+          text: "Auto-left the call: everyone else left and the bot was alone. The app has already hung up. "
+            + "Do not retry wait_for_speech and do not call leave_call."
+            + afterCallWorkNote(data.afterCallWork),
         }],
       };
     }
@@ -583,6 +585,26 @@ async function setPrefs(updates) {
   const data = await resp.json();
   if (!data?.success) throw new Error(data?.error || 'Failed to save preferences');
   return data;
+}
+
+// The handoff into after-call work (#139). Three different endings lead here —
+// the agent leaving, everyone else leaving, the meeting ending — and they must
+// all say the same thing, or an agent will learn one ending and be surprised by
+// the next.
+//
+// Says "you are still running" as plainly as possible: the previous behaviour was
+// an unambiguous STOP, so anything less than explicit will be read as one.
+function afterCallWorkNote(plan) {
+  if (!plan || !plan.enabled) {
+    return ' Your work here is done — exit the conversation loop.';
+  }
+  return ` You are now in AFTER-CALL WORK. You have up to ${plan.seconds} seconds, and you are still running.\n\n`
+    + 'The call is over but its state is NOT gone: read_transcripts, read_whiteboard and get_room_info all still '
+    + 'work, and still describe the call that just ended. Use them for whatever wrap-up this bot is meant to do — '
+    + 'its CLAUDE.md says what that is (a summary, a receipt, notes filed somewhere).\n\n'
+    + 'Do NOT call speak or send_chat: you have left the meeting, so nobody will hear or see it.\n\n'
+    + 'Call end_session as soon as you are finished. That releases the app immediately instead of making it wait out '
+    + 'the whole window. If there is nothing to do, call it now.';
 }
 
 // --- Helper: the app-level config file ---
@@ -1244,7 +1266,8 @@ server.tool(
     const data = await resp.json();
     if (data.success) {
       botNameLocked = false;
-      return { content: [{ type: "text", text: "Left the call successfully." }] };
+      return { content: [{ type: "text", text: "Left the call successfully."
+        + afterCallWorkNote(data.results?.leave?.afterCallWork) }] };
     } else {
       return { content: [{ type: "text", text: `Error: ${data.error || "Failed to leave"}` }] };
     }
@@ -1984,6 +2007,37 @@ server.tool(
     } catch (err) {
       return { content: [{ type: "text", text: `Error: ${err.message}` }] };
     }
+  }
+);
+
+// --- end_session ---
+server.tool(
+  "end_session",
+  "Finish your after-call work and release the app. Call this once you have done whatever wrap-up the bot is meant to do after leaving a call (summary, receipt, notes) — or immediately if there is nothing to do. The app is holding the call's room, transcript and your terminal open until you do, so calling it promptly matters; it will otherwise wait out the full window. Only meaningful during after-call work: harmless at any other time.",
+  {
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) {
+      return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    }
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
+        meta: { action: "end-session" },
+      })),
+    });
+    const data = await resp.json();
+    const r = data.results?.endSession;
+    if (r?.ok && r.wasActive) {
+      return { content: [{ type: "text", text: "After-call work finished — the app is tearing the call down now. Nothing further to do; exit the conversation loop." }] };
+    }
+    if (r?.ok) {
+      return { content: [{ type: "text", text: "No after-call work was running, so there was nothing to end. Exit the conversation loop." }] };
+    }
+    return { content: [{ type: "text", text: `Error: ${data.error || "could not end the session"}` }] };
   }
 );
 

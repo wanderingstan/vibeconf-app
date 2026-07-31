@@ -651,6 +651,13 @@ const localServer = new globalThis.LocalServer({
     activateSlackProvider(url, { autojoin: true });
     return localServer.roomId || null;
   },
+  // The agent has finished its after-call work. Ends the phase now instead of
+  // waiting out the backstop.
+  onEndSession: () => {
+    console.log('[local-server] After-call work finished by the agent — tearing down');
+    finishCall();
+  },
+
   onLeaveCall: () => {
     console.log('[local-server] Leave call requested by agent');
     stopAllRunwayFaces('leave-call'); // P2: end Runway sessions + timers when leaving the call
@@ -4807,7 +4814,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '35';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '36';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}

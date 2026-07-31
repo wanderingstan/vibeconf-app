@@ -129,3 +129,71 @@ test('the phase always ends, even if the agent never says so', () => {
 test('a staged update waits for the call to be fully over', () => {
   assert.match(main, /if \(isCallComplete\(status\)\) \{ try \{ offerStagedUpdate\(\)/);
 });
+
+// ── The agent-facing half ────────────────────────────────────────────────────
+
+const mcp = readFileSync(join(root, 'mcp-server/server.js'), 'utf8');
+const skill = readFileSync(join(root, 'mcp-server/join-call-skill.md'), 'utf8');
+const docs = readFileSync(join(root, 'docs/mcp-tools.md'), 'utf8');
+
+test('every ending hands off with the same words', () => {
+  // Three endings reach this — the agent leaving, everyone else leaving, the
+  // meeting ending. An agent that learns one and meets another must not be
+  // surprised, so they share one function rather than three phrasings.
+  assert.match(mcp, /function afterCallWorkNote\(plan\)/);
+  assert.match(mcp, /afterCallWorkNote\(data\.afterCallWork\)/, 'wait_for_speech ending');
+  assert.match(mcp, /afterCallWorkNote\(data\.results\?\.leave\?\.afterCallWork\)/, 'leave_call ending');
+});
+
+test('the handoff is explicit that the agent is still alive', () => {
+  // The previous behaviour was an unambiguous STOP. Anything less than explicit
+  // will be read as one.
+  const fn = mcp.slice(mcp.indexOf('function afterCallWorkNote'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.match(body, /still running/);
+  assert.match(body, /read_transcripts/, 'name what still works');
+  assert.match(body, /Do NOT call speak or send_chat/, 'the bot has left; nobody would hear it');
+  assert.match(body, /end_session/);
+  assert.match(body, /\$\{plan\.seconds\}/, 'a specific budget is actionable where a vague one is not');
+  // And when the phase is off, it must still say stop.
+  assert.match(body, /exit the conversation loop/);
+});
+
+test('end_session exists, and ends the phase early', () => {
+  assert.match(mcp, /"end_session",/);
+  assert.match(mcp, /action: "end-session"/);
+  assert.match(server, /data\.meta\?\.action === 'end-session'/);
+  // Only meaningful during the phase — and it reports which case happened, so an
+  // agent calling it at the wrong time learns something instead of nothing.
+  assert.match(server, /wasActive = this\.callStatus === 'after-call-work'/);
+  assert.match(main, /onEndSession: \(\) => \{/);
+});
+
+test('the plan is computed once and agrees with the app', () => {
+  // If the agent is told "300 seconds" and the app then decides not to run the
+  // phase, the agent waits for a window that does not exist.
+  const fn = server.slice(server.indexOf('afterCallWorkPlan()'));
+  const body = fn.slice(0, fn.indexOf('\n  }'));
+  assert.match(body, /afterCallWorkSeconds/);
+  assert.match(body, /agentIsAbsent\(this\.agentState\(\)\)/, 'same agent gate as the app side');
+  // Captured before onLeaveCall, which is what starts the phase.
+  const leave = server.slice(server.indexOf("data.meta?.action === 'leave'"));
+  const lbody = leave.slice(0, leave.indexOf('results.leave'));
+  assert.ok(lbody.indexOf('afterCallWorkPlan()') < lbody.indexOf('this.onLeaveCall()'),
+    'the plan must be read before leaving starts the teardown race');
+});
+
+test('the tool is whitelisted and documented', () => {
+  // Skills gate which tools an agent may call; docs/mcp-tools.md is not
+  // test-enforced anywhere else, and has been missed before.
+  assert.match(skill, /mcp__vibeconferencing__end_session/);
+  assert.match(readFileSync(join(root, 'mcp-server/call-skill.md'), 'utf8'), /mcp__vibeconferencing__end_session/);
+  assert.match(docs, /`end_session`/);
+});
+
+test('the skill teaches the phase, and the installed copy will be replaced', () => {
+  assert.match(skill, /AFTER-CALL WORK/);
+  assert.match(skill, /end_session/);
+  // The installed skill is app-owned and only reinstalls when the version changes.
+  assert.match(main, /const SKILL_VERSION = '36'/);
+});

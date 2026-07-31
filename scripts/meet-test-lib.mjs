@@ -328,8 +328,22 @@ export class Bot {
   // --- chat (Meet text chat) ---
 
   async sendChat(text) {
-    const { data, ms } = await this._post('/api/chat', JSON.stringify({ action: 'send', text }));
-    log(this.name, 'sendChat', { ms, ok: data?.success !== false, note: data?.error || `"${text.slice(0, 40)}"` });
+    // Meet's chat input intermittently fails to clear/send on a flaky pane (the
+    // send reports "input not cleared") — a transient Meet hiccup, not a broken
+    // chat path: the same send succeeds moments later (seen 2026-07-31, one
+    // sendChat failed then an identical one passed in the same run). Retry once
+    // after a short settle before recording a failure.
+    const send = () => this._post('/api/chat', JSON.stringify({ action: 'send', text }));
+    let { data, ms } = await send();
+    let retried = false;
+    if (data?.success === false) {
+      retried = true;
+      await sleep(1500); // let the chat pane settle before the single retry
+      ({ data, ms } = await send());
+    }
+    const ok = data?.success !== false;
+    const suffix = retried ? (ok ? ' (ok on retry)' : ' (failed twice)') : '';
+    log(this.name, 'sendChat', { ms, ok, note: (data?.error || `"${text.slice(0, 40)}"`) + suffix });
     return data;
   }
 

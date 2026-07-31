@@ -79,6 +79,29 @@ test('a stash replays on a floor opening with NO waiter parked — the whole poi
     'agent must learn on its next resolve that the thought already went out');
 });
 
+test('per-message voice survives the stash → replay (#65)', async () => {
+  // A stash carrying a per-message voice override must replay in THAT voice, not
+  // the session default. _stashUnspokenSpeech keeps `voice` on each entry and
+  // _maybeReplayBargeInStash passes it to onBotSpeech; this pins that so it
+  // can't regress (the original bug replayed in the default voice).
+  const s = makeServer();
+  const spokenV = [];
+  s.onBotSpeech = (text, voice) => spokenV.push({ text, voice });
+  s.bargeInStash = {
+    entries: [{ text: 'held in a one-off voice', voice: 'elevenlabs:BRIANID' }],
+    at: Date.now(),
+    wordsAtStash: 0,
+  };
+  s._setBotState('yielding', { reason: 'user-speaking' }, { force: true });
+
+  stopSpeaking(s);
+  await settle();
+
+  assert.equal(spokenV.length, 1, 'replayed exactly once');
+  assert.equal(spokenV[0].voice, 'elevenlabs:BRIANID',
+    'the per-message voice override must survive stash→replay, not fall back to the session default (#65)');
+});
+
 test('the raised hand stays up while the stash waits for its opening', () => {
   const s = makeServer();
   stash(s, 'held thought');

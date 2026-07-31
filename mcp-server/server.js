@@ -46,10 +46,11 @@ const LOGS_TOKEN = process.env.VIBECONF_LOGS_TOKEN || "";
 // ~/.vibeconferencing/local-tokens/<port>.token (0600). We read it per-request and
 // send `Authorization: Bearer <token>`; a browser page can't read that file, so it
 // can't forge the header. Remote (WEBSITE_URL) calls pass straight through
-// unchanged. A missing token file just sends no header — harmless while the app's
-// VIBECONF_REQUIRE_TOKEN enforcement is off, and it starts working the moment the
-// app is launched with enforcement on. All local vfetch() calls below go through
-// vfetch() so this is a single choke point.
+// unchanged. A missing token file sends no header, which now means a 401 rather
+// than nothing (#201 turned enforcement on by default) — and that is the point:
+// no token for this port means this is not our app, most likely another macOS
+// user account's instance holding the port. Failing loudly there beats driving
+// the wrong bot. All local calls go through vfetch(), so this is one choke point.
 const _nativeFetch = globalThis.fetch;
 function _localToken(port) {
   try {

@@ -15,9 +15,9 @@ const { URL } = require('url');
 // (session logs / transcripts / working memory) or drive the bot. Defense is a
 // random per-launch bearer token written to a 0600 file that only same-user local
 // processes (our MCP server) can read — a browser page can't read local files, so
-// it can't obtain the token. ENFORCEMENT is gated behind VIBECONF_REQUIRE_TOKEN so
-// this lands dark (zero behavior change) until the MCP client side is wired +
-// validated live; the token file is always written so the client can read it.
+// it can't obtain the token. ENFORCEMENT is now ON by default (#201); set
+// VIBECONF_REQUIRE_TOKEN=0 for the legacy open server. It landed dark first so
+// the MCP client side could be wired and validated live.
 const AUTH_TOKEN_DIR = path.join(os.homedir(), '.vibeconferencing', 'local-tokens');
 function localTokenPath(port) { return path.join(AUTH_TOKEN_DIR, `${port}.token`); }
 const prefsSchema = require('./preferences-schema.js');
@@ -3247,10 +3247,22 @@ class LocalServer {
   }
 
   async _handleRequest(req, res) {
-    // #356: enforcement is gated so this change lands dark. Off (default) →
-    // behavior is byte-for-byte the legacy wildcard-CORS, no-auth server. On →
-    // wildcard CORS is withdrawn and sensitive routes require the bearer token.
-    const requireAuth = !!process.env.VIBECONF_REQUIRE_TOKEN;
+    // #356: enforcement landed dark and is now ON by default (#201). Set
+    // VIBECONF_REQUIRE_TOKEN=0 to fall back to the legacy wildcard-CORS, no-auth
+    // server if something local turns out to need it.
+    //
+    // What flipped this: two macOS user accounts each assign profile ports from
+    // their OWN registry, but 127.0.0.1 is machine-wide — so an agent in account
+    // B could connect to account A's app and drive it. With no auth that is
+    // SILENT: the agent joins and speaks into the wrong app while the bot in
+    // front of the user sits mute, no error on either side. The token makes the
+    // wrong app answer 401 instead, which is a bug report rather than a mystery.
+    //
+    // Safe to require because the local server only serves /api/* and /asset/* —
+    // /room/:id (the board a browser opens) is rendered by the website, not here.
+    // The only HTTP client is the MCP server, a same-user Node process that reads
+    // the 0600 token file per request.
+    const requireAuth = process.env.VIBECONF_REQUIRE_TOKEN !== '0';
     const reqPath = (() => { try { return new URL(req.url, `http://127.0.0.1:${this.port}`).pathname; } catch { return req.url || ''; } })();
 
     // CORS headers for local requests.

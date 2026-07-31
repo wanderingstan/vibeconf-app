@@ -188,9 +188,23 @@ const ROBOTIC = [
   'Pepper',
 ];
 
+// Every name, each appearing once. This is the LIST — what exists — and it is
+// what callers should read to ask "is this name in the pool?".
 const BOT_NAMES = [...FEMININE, ...MASCULINE, ...ROBOTIC];
 
-// One name, uniformly at random.
+// The robots are outnumbered about 8:1 by ordinary names, so on a straight
+// uniform draw they came up roughly one spin in ten — and they are the part of
+// the wheel people actually enjoy. Weighting them makes the draw behave as
+// though there were ~130 of them rather than 44, so a robot turns up closer to
+// one spin in four.
+//
+// Done by repeating the entries rather than with a branch, so there is exactly
+// one draw and one code path. That keeps `taken` filtering, the empty-pool
+// fallback and the injected `random` all working unchanged.
+const ROBOT_WEIGHT = 3;
+const DRAW_POOL = [...FEMININE, ...MASCULINE, ...ROBOTIC, ...ROBOTIC, ...ROBOTIC];
+
+// One name at random, robots over-represented per ROBOT_WEIGHT.
 //
 // `taken` lets a caller avoid names already in use on this machine, so someone
 // setting up a second bot doesn't get handed the first one's name. Falls back to
@@ -198,9 +212,9 @@ const BOT_NAMES = [...FEMININE, ...MASCULINE, ...ROBOTIC];
 // name is worse than nothing, but no name at all is worse still.
 function randomBotName({ taken = [], random = Math.random } = {}) {
   const used = new Set(taken.map((n) => String(n || '').trim().toLowerCase()));
-  const pool = BOT_NAMES.filter((n) => !used.has(n.toLowerCase()));
-  const from = pool.length > 0 ? pool : BOT_NAMES;
+  const pool = DRAW_POOL.filter((n) => !used.has(n.toLowerCase()));
+  const from = pool.length > 0 ? pool : DRAW_POOL;
   return from[Math.floor(random() * from.length)];
 }
 
-module.exports = { BOT_NAMES, FEMININE, MASCULINE, ROBOTIC, randomBotName };
+module.exports = { BOT_NAMES, FEMININE, MASCULINE, ROBOTIC, ROBOT_WEIGHT, randomBotName };

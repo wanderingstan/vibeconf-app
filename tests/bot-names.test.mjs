@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { BOT_NAMES, FEMININE, MASCULINE, ROBOTIC, randomBotName } = require('../electron-app/bot-names.js');
+const { BOT_NAMES, FEMININE, MASCULINE, ROBOTIC, ROBOT_WEIGHT, randomBotName } = require('../electron-app/bot-names.js');
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
 const wizard = readFileSync(join(root, 'electron-app/renderer/onboarding.js'), 'utf8');
@@ -239,4 +239,29 @@ test('the names the header comment promises are actually in the list', () => {
 test('the house names are in', () => {
   const lower = new Set(BOT_NAMES.map((n) => n.toLowerCase()));
   for (const n of ['stan', 'seth', 'vern']) assert.ok(lower.has(n), `${n} should be in the pool`);
+});
+
+test('robots are over-represented in the draw, not in the list', () => {
+  // Two different numbers, deliberately. The LIST stays ~10% robots — that is
+  // what the pool contains. The DRAW weights them so they turn up about a
+  // quarter of the time, because a wheel that shows a robot once every ten
+  // spins may as well not have them.
+  const inList = ROBOTIC.length / BOT_NAMES.length;
+  assert.ok(inList < 0.2, `the list itself should stay mostly ordinary names, got ${(inList * 100).toFixed(0)}%`);
+
+  const robots = new Set(ROBOTIC);
+  const N = 60000;
+  let hits = 0;
+  for (let i = 0; i < N; i++) if (robots.has(randomBotName())) hits++;
+  const drawn = hits / N;
+
+  const expected = (ROBOTIC.length * ROBOT_WEIGHT) / (BOT_NAMES.length + ROBOTIC.length * (ROBOT_WEIGHT - 1));
+  assert.ok(Math.abs(drawn - expected) < 0.02, `drew ${(drawn * 100).toFixed(1)}%, expected ~${(expected * 100).toFixed(1)}%`);
+  assert.ok(drawn > inList * 2, 'weighting should visibly beat the list share, or it is not doing anything');
+});
+
+test('weighting never returns a name that is not in the list', () => {
+  // The draw pool repeats entries; a bug there could surface a duplicate-shaped
+  // value or an off-by-one past the end.
+  for (let i = 0; i < 5000; i++) assert.ok(BOT_NAMES.includes(randomBotName()));
 });

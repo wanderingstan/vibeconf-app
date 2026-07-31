@@ -34,6 +34,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Run the unit suite alongside the platform builds. The build jobs only compile
+  # the installer — they never ran `node --test`, so a change that broke a unit
+  # test (e.g. a skill's allowed-tools drifting out of sync) could merge green.
+  # This job closes that gap.
+  #
+  # Runs on macOS: some tests shell out to macOS built-ins (`say`, `afconvert`,
+  # `osascript`) and assert macOS behavior, so they aren't portable to a Linux
+  # runner yet — and macOS is the development platform the suite is green on.
+  # (Follow-up: guard the ~handful of macOS-specific tests so this can move to
+  # the cheaper ubuntu runner.)
+  unit-tests:
+    name: unit tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+      # The tests import electron-app modules, some of which pull deps.
+      - name: Install deps (electron-app)
+        working-directory: electron-app
+        run: npm ci
+      - name: Run unit tests
+        run: node --test tests/*.test.mjs
+
   build:
     name: build (${{ matrix.os }})
     strategy:

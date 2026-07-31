@@ -350,19 +350,19 @@ async function suggestNames(count, exclude = []) {
 // different one. A wheel that coasts past what you were looking at when you hit
 // the button is infuriating, and here it would also mean the button lied about
 // what you were choosing.
-// 220ms (~4.5/sec) is TUNED, not arbitrary. The goal is a wheel you can almost
+// 180ms (~5.5/sec) is TUNED, not arbitrary. The goal is a wheel you can almost
 // but not quite stop on a name you liked.
 //
-// Simple visual reaction time is ~250ms: see a name, decide, click. So at 220ms
-// the wheel advances roughly one name in the time it takes to react — you land
-// next to your target, usually one past it. Close enough to feel like skill,
-// unreliable enough to stay a game.
+// Simple visual reaction time is ~250ms: see a name, decide, click. At 180ms
+// roughly one and a half names pass while you react, so you land just past your
+// target — near enough to feel like skill, far enough to stay a game. Tried at
+// 220ms first and it was too catchable.
 //
 // Both directions ruin it. Much faster (100ms) and 2–3 names pass before the
 // click registers, so it is pure chance and the names blur unread. Much slower
 // (400ms+) and anyone can hit exactly the one they want, which makes the button
 // a slow dropdown. Resist "fixing" this to feel snappier or fairer.
-const SPIN_MS = 220;
+const SPIN_MS = 180;
 const SPIN_BATCH = 120;     // names per spin — long enough that a spin rarely runs out
 let spinTimer = null;
 let spinNames = [];
@@ -370,10 +370,25 @@ let spinIdx = 0;
 
 function spinning() { return spinTimer !== null; }
 
+// Paint one name into the overlay, restarting the animation each time.
+//
+// The span is REPLACED rather than having its text changed: re-triggering a CSS
+// animation on a live element needs a reflow hack, and at this rate any missed
+// restart shows as a name that appears without moving.
+function rollTo(name) {
+  const roll = $('botNameRoll');
+  if (!roll) return;
+  const span = document.createElement('span');
+  span.textContent = name;
+  roll.replaceChildren(span);
+}
+
 function stopSpin() {
   if (!spinTimer) return;
   clearInterval(spinTimer);
   spinTimer = null;
+  $('botNameWrap')?.classList.remove('spinning');
+  $('botNameRoll')?.replaceChildren();
   const btn = $('botNameShuffle');
   if (btn) { btn.textContent = 'Spin'; btn.title = 'Spin for a name'; }
 }
@@ -391,10 +406,21 @@ async function startSpin() {
     spinIdx = 0;
     btn.textContent = 'Stop';
     btn.title = 'Keep the name showing';
-    spinTimer = setInterval(() => {
-      $('botName').value = spinNames[spinIdx % spinNames.length];
+    // The animation has to finish within one tick or names would overlap.
+    $('botNameRoll')?.style.setProperty('--roll-ms', `${SPIN_MS}ms`);
+    $('botNameWrap')?.classList.add('spinning');
+
+    const tick = () => {
+      const name = spinNames[spinIdx % spinNames.length];
+      // The real input is updated too, under the overlay — so Stop is just
+      // "hide the overlay", with no chance of the field and the visible name
+      // disagreeing about what was chosen.
+      $('botName').value = name;
+      rollTo(name);
       spinIdx++;
-    }, SPIN_MS);
+    };
+    tick();                              // paint immediately; don't wait a tick to start
+    spinTimer = setInterval(tick, SPIN_MS);
   } finally {
     btn.disabled = false;
   }

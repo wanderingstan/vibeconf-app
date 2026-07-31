@@ -105,6 +105,12 @@
       // it needs no explicit init (mirrors _tickPulseAt).
       this._mentionTiltSign = 1;
       this._mentionTiltMag = 1;
+      // Background-tick "noted that" pulse — see 'set-bot-state' below.
+      // Direction + size are re-rolled randomly on every firing (not just
+      // seeded once here) so multiple bots on one call don't tilt in lockstep
+      // when they all notice the same silence gap at once.
+      this._tickTiltSign = 1;
+      this._tickTiltMag = 1;
       // Seed persistent state from the module-level avatarState, NOT hardcoded
       // defaults. A camera can be created mid-call — e.g. turning the camera on
       // makes the host page re-acquire the video stream, spawning a fresh
@@ -444,10 +450,19 @@
       // Background-tick "noted that" pulse — a quick head-tilt + pop that eases
       // out over ~700ms when the avatar enters thinking (set in 'set-bot-state').
       // Framerate-robust via wall-clock. sin gives a smooth 0→1→0.
+      //
+      // Multi-bot calls all hear the same silence gap at roughly the same
+      // real-world moment, so every bot used to enter 'thinking' — and fire
+      // this pulse — in perfect lockstep, which read as synchronized rather
+      // than as several independent bots each noticing on their own. Each
+      // bot is a separate process with no shared state, so the only fix is
+      // per-process randomness: 'set-bot-state' jitters the START time and
+      // rerolls a random direction (_tickTiltSign) + size (_tickTiltMag) on
+      // every firing, so bots visibly drift out of sync with each other.
       const PULSE_MS = 700;
       const pulseAge = Date.now() - (this._tickPulseAt || 0);
       const tickPulse = (pulseAge >= 0 && pulseAge < PULSE_MS) ? Math.sin((pulseAge / PULSE_MS) * Math.PI) : 0;
-      const tickTilt = tickPulse * 0.16; // ~9° peak head tilt
+      const tickTilt = tickPulse * (this._tickTiltSign || 1) * (this._tickTiltMag || 1) * 0.16; // ~9° peak head tilt, direction+size randomized per-fire
       const tickPop = 1 + tickPulse * 0.12; // ~12% peak enlarge
 
       // "Heard my name" reaction — another participant's speech named the bot
@@ -1632,7 +1647,19 @@
             // Brief "noted that" pulse on entering thinking — this is what a
             // background_tick (#245) causes, so the avatar tilts+pops to signal
             // the slow model just surfaced. Harmless before a normal response too.
-            if (payload.state === 'thinking' && cam.state !== 'thinking') cam._tickPulseAt = Date.now();
+            //
+            // Jittered start + re-rolled direction/size so multiple bots on the
+            // same call — which all notice the same silence gap at roughly the
+            // same instant — don't visibly tilt in perfect lockstep. TICK_JITTER_MS
+            // delays the pulse's start (Date.now() in the future is fine: the
+            // render loop's pulseAge just stays negative, so nothing shows,
+            // until real time catches up to it).
+            if (payload.state === 'thinking' && cam.state !== 'thinking') {
+              const TICK_JITTER_MS = 250;
+              cam._tickPulseAt = Date.now() + Math.random() * TICK_JITTER_MS;
+              cam._tickTiltSign = Math.random() < 0.5 ? -1 : 1;
+              cam._tickTiltMag = 0.7 + Math.random() * 0.6; // ±30% around the base peak tilt
+            }
             cam.state = payload.state;
             // hasEngaged = "a real agent backend is driving us", which is the
             // meaning of 🫥 vs a face: 🫥 = in the call but unattended. ANY

@@ -530,19 +530,19 @@
       // to center. So the rise reads as "arriving in the room," not "still trying
       // to get in."
       //
-      // Timing (1s/5.6s -> 4s/11.2s): the old rise reached center well
-      // before the spawned agent finished starting up in its terminal, so the face
-      // looked settled and ready while nothing was actually listening yet. Slower
-      // keeps it visibly still-arriving for about as long as the agent takes.
+      // Timing (1s/5.6s -> 4s/11.2s -> 2s/11.2s): the old rise reached center
+      // well before the spawned agent finished starting up in its terminal,
+      // so the face looked settled and ready while nothing was actually
+      // listening yet. The 4s hold fixed that but read as sluggish once the
+      // ease-in made the liftoff itself feel deliberate rather than abrupt —
+      // 2s is enough to register the peeking pose as intentional without the
+      // whole entrance feeling slow.
       //
       // Note it is a canned timer, not a readiness signal — if it still finishes
       // early, the honest fix is to drive it from claudeReady (main.js POSTs
       // /claude-ready when the spawned session is actually up) rather than to keep
       // stretching these numbers.
-      // 4s, not a beat: the peeking pose is the joke, and at 1-2s most people
-      // never registered it before the face started moving. Long enough to be
-      // seen and read as deliberate.
-      const RISE_HOLD_MS = 4000;
+      const RISE_HOLD_MS = 2000;
       const RISE_DURATION_MS = 11200;
       let ghostRise = 0;
       // The rise is an ARRIVAL animation: the bot peeking over the edge while its

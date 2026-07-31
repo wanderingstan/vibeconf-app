@@ -90,15 +90,19 @@ test('teardown waits for the end of the lifecycle', () => {
   assert.ok(!/if \(status === 'idle' \|\| status === 'left'\) \{/.test(server));
 });
 
-test('the phase is opt-in, and off by default', () => {
-  // The machinery lands before anything knows to use it, so the default must
-  // reproduce the old teardown-on-leave exactly.
+test('after-call work is on by default, and can be turned off', () => {
+  // A standard feature, not an opt-in: shipped at 0 nobody would ever see it.
+  // The cost of the default is only paid when an agent fails to call
+  // end_session — a working one finishes in seconds and the window is never
+  // reached.
   const p = PREFERENCES.afterCallWorkSeconds;
   assert.ok(p, 'the preference should exist');
   assert.equal(p.type, 'number');
-  assert.equal(p.default, 0);
-  assert.ok(validate('afterCallWorkSeconds', 300).ok);
+  assert.equal(p.default, 300);
+  // 0 must remain a real choice — it restores teardown-the-moment-the-bot-leaves.
+  assert.ok(validate('afterCallWorkSeconds', 0).ok, 'the phase must be switchable off');
   assert.ok(!validate('afterCallWorkSeconds', -1).ok, 'negative time is meaningless');
+  assert.ok(!validate('afterCallWorkSeconds', 3600).ok, 'an hour-long hold is not a backstop');
 });
 
 test('leaving enters the phase instead of tearing down', () => {

@@ -103,16 +103,19 @@ const PREFERENCES = {
   // answers the nonsense rather than falling silent.
   afterCallWorkSeconds: {
     type: 'number',
-    default: 0,
+    default: 300,
     min: 0,
     max: 1800,
     description:
       "How long the bot's agent may keep working after it leaves a call, in seconds. "
       + 'The call\'s room, transcript and tools all stay available during this window, so the '
       + 'agent can summarise, file notes, or write a receipt before the app tears the call down. '
-      + '0 (the default) tears down immediately, exactly as before. This is a BACKSTOP, not a '
-      + 'schedule — an agent that finishes early ends the phase itself. Skipped entirely when no '
-      + 'agent is driving the bot, since there would be nobody to do the work.',
+      + 'What it actually does is in the bot\'s CLAUDE.md, under "After the call". '
+      + 'This is a BACKSTOP, not a schedule: an agent that finishes early calls end_session and '
+      + 'the app tears down immediately, so the usual cost is seconds, not the whole window. It '
+      + 'only runs to the limit when an agent never reports back. Skipped entirely when no agent '
+      + 'is driving the bot, since there would be nobody to do the work. Set 0 to turn the phase '
+      + 'off and tear down the moment the bot leaves.',
   },
   captionLanguage: {
     type: 'string',

@@ -383,6 +383,44 @@ export class Bot {
     return data;
   }
 
+  // Where this bot is in its lifecycle (call-phase.js), plus the call identity.
+  //
+  // NOT called status(): that name is taken by the richer per-room reader above,
+  // and a second definition would silently replace it — every existing caller
+  // would quietly lose captionsOn / botState / anyoneSpeaking / sharing.
+  //
+  // Reads /api/sync/no-room because the per-room response omits callId.
+  async lifecycle() {
+    try {
+      const resp = await fetch(`${this.base}/api/sync/no-room`, { signal: AbortSignal.timeout(2500) });
+      const d = await resp.json();
+      return { callStatus: d?.status?.callStatus || null, roomId: d?.roomId || null, callId: d?.callId || null };
+    } catch { return { callStatus: null, roomId: null, callId: null }; }
+  }
+
+  // Poll until the bot reaches a lifecycle phase, or give up. Phases are driven
+  // by real Meet state and a leave click, so they take a second or two to settle.
+  async waitForPhase(phase, timeoutMs = 20000) {
+    const deadline = Date.now() + timeoutMs;
+    let last = null;
+    while (Date.now() < deadline) {
+      const s = await this.lifecycle();
+      last = s.callStatus;
+      if (last === phase) { log(this.name, 'waitForPhase', { ok: true, note: phase }); return true; }
+      await sleep(1000);
+    }
+    log(this.name, 'waitForPhase', { ok: false, note: `wanted ${phase}, still ${last}` });
+    return false;
+  }
+
+  // End the after-call-work phase, the way an agent does when its wrap-up is done.
+  async endSession() {
+    const { data, ms } = await this._sync({ meta: { action: 'end-session' } });
+    const r = data?.results?.endSession;
+    log(this.name, 'endSession', { ms, ok: !!r?.ok, note: r?.wasActive ? 'ended an active phase' : 'no phase was running' });
+    return r;
+  }
+
   // Reachability check before a run.
   async ping() {
     try {

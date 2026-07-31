@@ -7,12 +7,24 @@
 //
 // TWO RULES SHAPED THIS LIST:
 //
-// 1. NOT ALSO A COMMON WORD. This is the one that prevents a real bug: the bot
-//    wakes on hearing its own name in the captions, so a bot called Iris, Ivy,
-//    June, Hazel, Grace, Dawn, Joy or Dev would trigger on ordinary conversation.
-//    Homophones count too — "Mai" is "my", which would fire constantly. A false
-//    wake is worse than a dull name, so this rule is applied strictly and costs
-//    the list some otherwise lovely entries.
+// 1. NOT A WORD YOU'D HEAR IN A MEETING. This is the one that prevents a real
+//    bug: the bot wakes on hearing its own name in the captions, so a bot called
+//    Iris, Ivy, June, Hazel, Grace, Dawn, Joy or Dev would trigger on ordinary
+//    conversation. Homophones count too — "Mai" is "my", which would fire
+//    constantly.
+//
+//    THE TEST IS MEETING VOCABULARY, NOT THE DICTIONARY. That distinction is
+//    the whole rule, and it was learned the slow way — the list first banned
+//    anything that appears in a dictionary, which is far too strict. What
+//    matters is how often the word turns up in the rooms this app is actually
+//    used in. "Grace" and "Dawn" are out because people say them at work.
+//    Bender, Robin, Earl, Bob, John and Pepper are IN despite being words,
+//    because nobody says "bob", "earl" or "pass the pepper" on a standup. They
+//    will misfire once in a while; people work it out in about one call, and
+//    the names are worth it.
+//
+//    So when adding a name, do not ask "is this a word?" — ask "would this come
+//    up in a typical meeting?" Only the second question predicts false wakes.
 //
 // 2. PRONOUNCEABLE BY AN ENGLISH TTS. The bot says its own name aloud. Names
 //    needing diacritics or non-English phonology get mangled, so the list favours
@@ -71,9 +83,7 @@ const FEMININE = [
   'Claire', 'Lucy', 'Caroline', 'Emilia', 'Allison', 'Julia', 'Vivian', 'Sophie',
   'Madeline', 'Lydia', 'Josephine', 'Katherine', 'Diana', 'Rachel', 'Megan',
   'Nicole', 'Michelle', 'Rebecca', 'Danielle', 'Christine', 'Andrea', 'Marie',
-  // Asked for by name. "Robin" is also a bird — a rule-1 bend, allowed on the
-  // same reasoning as Bender: a real word, but not one that comes up in a
-  // meeting.
+  // Asked for by name. Robin is a word, and allowed — see rule 1.
   'Kate', 'Maria', 'Sandra', 'Lisa', 'Mavi',
   'Melinda', 'Valerie', 'Robin', 'Analita', 'Aurelia', 'Annabeth',
   'Victoria',
@@ -124,13 +134,10 @@ const MASCULINE = [
   'Nicholas', 'Dominic', 'Evan',
   // The people who built this thing, and Stan's dad.
   'Stan', 'Seth', 'Vern',
-  // Asked for by name. Two of these bend rule 1 and are in anyway, on request:
-  // "Bob" is also a verb (bob up and down) and a haircut, and "John" is also a
-  // toilet — both will false-wake occasionally. They are common enough as names
-  // that the trade is worth making, but it IS a trade, not an oversight.
+  // Asked for by name. Bob and John are words, and allowed — see rule 1.
   'Trevor', 'Jeff', 'Steve', 'John', 'Jordan', 'Alex', 'Chris', 'Joshua',
   'Robert', 'Bob', 'Fabian', 'Peter', 'Kenny',
-  // "Earl" is a rank and a tea, so it bends rule 1 too — same call as Robin.
+  // Earl is a rank and a tea, and allowed — see rule 1.
   'Dan', 'Earl', 'Henry'
 ];
 
@@ -168,8 +175,7 @@ const ROBOTIC = [
   // Film
   'Hal', 'Tron', 'Robby', 'Gort', 'Wally', 'Megatron', 'Jarvis', 'Ultron',
   'Baymax', 'Chappie', 'Robocop', 'Skynet', 'Pris', 'Astro', 'Talos', 'Terminator',
-  // Television, and a judgement call: "bender" IS a word, but not one that comes
-  // up in a meeting, and the robot is famous enough to be worth the small risk.
+  // The canonical rule-1 judgement call, and the one the rule is written around.
   'Bender',
   // Film — confirmed intact through Google's captions on a live test call
   'R2D2', 'C-3PO',
@@ -182,9 +188,7 @@ const ROBOTIC = [
   'Daneel', 'Giskard', 'Multivac', 'Wintermute', 'Deep Thought',
   // Real, or real enough
   'Eliza', 'Watson', 'Turing', 'Clippy', 'Cortana',
-  // SoftBank's Pepper, and one of this project's own bots. The single knowing
-  // exception to rule 1 — "pass the pepper" will occasionally false-wake it —
-  // kept because it is already a bot here and the trade was made with open eyes.
+  // SoftBank's Pepper, and one of this project's own bots.
   'Pepper',
 ];
 

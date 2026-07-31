@@ -1956,6 +1956,27 @@ const UPDATE_REPO = process.env.VIBECONF_UPDATE_REPO || 'wanderingstan/vibeconf-
 let _updateCheckInFlight = false;
 let _updateDownloaded = null;   // the info of a build staged and waiting to install
 let _updateNotifiedFor = null;  // don't re-nag about a version already declined
+let _manualCheckPending = false; // a menu-triggered check is waiting to hear back
+
+// A menu "Check for Updates…" must give feedback the MOMENT an update is found —
+// not after the whole build finishes downloading (autoDownload is on, so a plain
+// menu check would otherwise sit silent through the entire download and look
+// dead). Fired from the 'update-available' event (which lands right after the
+// check, before the download) AND, as a fallback, from checkForUpdates' found
+// branch — whichever gets there first. Idempotent via _manualCheckPending, so
+// the passive background check stays quiet.
+function announceManualUpdateDownloading(version) {
+  if (!_manualCheckPending) return;
+  _manualCheckPending = false;
+  const { dialog } = require('electron');
+  dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    message: `Update available: Vibeconferencing ${version}`,
+    detail: "It's downloading in the background now — you'll get a prompt to install "
+      + 'when it\'s ready, and you can keep working until then.',
+    buttons: ['OK'],
+  });
+}
 
 function autoUpdaterInstance() {
   const { autoUpdater } = require('electron-updater');
@@ -2118,11 +2139,18 @@ async function checkForUpdates({ silentWhenCurrent = true } = {}) {
   if (_updateDownloaded) { _updateNotifiedFor = null; await offerStagedUpdate(); return; }
 
   _updateCheckInFlight = true;
+  // Only a MANUAL check wants the "found → downloading" popup; the passive check
+  // stays silent until the build is staged.
+  _manualCheckPending = !silentWhenCurrent;
   const current = app.getVersion();
   try {
     const result = await autoUpdaterInstance().checkForUpdates();
     const found = result && result.updateInfo && result.updateInfo.version !== current;
-    if (!found && !silentWhenCurrent) {
+    if (found) {
+      // Fallback in case the 'update-available' event didn't beat us here.
+      announceManualUpdateDownloading(result.updateInfo.version);
+    } else if (!silentWhenCurrent) {
+      _manualCheckPending = false;
       const { dialog } = require('electron');
       await dialog.showMessageBox(mainWindow, {
         type: 'info',
@@ -2132,6 +2160,7 @@ async function checkForUpdates({ silentWhenCurrent = true } = {}) {
     }
   } catch (err) {
     console.warn(ts(), '[updates] check failed:', err.message);
+    _manualCheckPending = false;
     if (!silentWhenCurrent) {
       const { dialog, shell } = require('electron');
       const { response } = await dialog.showMessageBox(mainWindow, {
@@ -2163,13 +2192,20 @@ function startUpdateChecks() {
   }
   app.on('will-quit', releaseUpdaterLease);
   const updater = autoUpdaterInstance();
+  // Fires right after a check finds an update — BEFORE the download. Used to give
+  // a manual "Check for Updates…" instant feedback instead of a silent wait for
+  // the full download (no-op for the passive check, which leaves the flag off).
+  updater.on('update-available', (info) => announceManualUpdateDownloading(info.version));
   updater.on('update-downloaded', (info) => {
     _updateDownloaded = info;
     _updateNotifiedFor = null;
     console.log(ts(), `[updates] ${info.version} downloaded and staged`);
     offerStagedUpdate();
   });
-  updater.on('error', (err) => console.warn(ts(), '[updates] updater error:', err && err.message));
+  updater.on('error', (err) => {
+    console.warn(ts(), '[updates] updater error:', err && err.message);
+    _manualCheckPending = false; // don't leave a manual check armed after a failed download
+  });
 
   const SIX_HOURS = 6 * 60 * 60 * 1000;
   setTimeout(() => {

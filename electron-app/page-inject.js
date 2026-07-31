@@ -97,6 +97,20 @@
       // when main.js pushes a new activity line (overlay-independent); the head
       // snaps to this lean and holds until the next line.
       this._agentJostleDir = 0;    // hash-derived lean direction, -1..1
+      // "Heard my name" reaction — see 'name-mentioned' below. _mentionTiltSign
+      // ALTERNATES each mention (so consecutive mentions stay visually
+      // distinguishable as separate events); _mentionTiltMag is re-rolled
+      // randomly each time so the tilt amplitude varies and doesn't look like
+      // an identical mechanical tic. _nameMentionPulseAt is read via `|| 0` so
+      // it needs no explicit init (mirrors _tickPulseAt).
+      this._mentionTiltSign = 1;
+      this._mentionTiltMag = 1;
+      // Background-tick "noted that" pulse — see 'set-bot-state' below.
+      // Direction + size are re-rolled randomly on every firing (not just
+      // seeded once here) so multiple bots on one call don't tilt in lockstep
+      // when they all notice the same silence gap at once.
+      this._tickTiltSign = 1;
+      this._tickTiltMag = 1;
       // Seed persistent state from the module-level avatarState, NOT hardcoded
       // defaults. A camera can be created mid-call — e.g. turning the camera on
       // makes the host page re-acquire the video stream, spawning a fresh
@@ -436,11 +450,48 @@
       // Background-tick "noted that" pulse — a quick head-tilt + pop that eases
       // out over ~700ms when the avatar enters thinking (set in 'set-bot-state').
       // Framerate-robust via wall-clock. sin gives a smooth 0→1→0.
+      //
+      // Multi-bot calls all hear the same silence gap at roughly the same
+      // real-world moment, so every bot used to enter 'thinking' — and fire
+      // this pulse — in perfect lockstep, which read as synchronized rather
+      // than as several independent bots each noticing on their own. Each
+      // bot is a separate process with no shared state, so the only fix is
+      // per-process randomness: 'set-bot-state' jitters the START time and
+      // rerolls a random direction (_tickTiltSign) + size (_tickTiltMag) on
+      // every firing, so bots visibly drift out of sync with each other.
       const PULSE_MS = 700;
       const pulseAge = Date.now() - (this._tickPulseAt || 0);
       const tickPulse = (pulseAge >= 0 && pulseAge < PULSE_MS) ? Math.sin((pulseAge / PULSE_MS) * Math.PI) : 0;
-      const tickTilt = tickPulse * 0.16; // ~9° peak head tilt
+      const tickTilt = tickPulse * (this._tickTiltSign || 1) * (this._tickTiltMag || 1) * 0.16; // ~9° peak head tilt, direction+size randomized per-fire
       const tickPop = 1 + tickPulse * 0.12; // ~12% peak enlarge
+
+      // "Heard my name" reaction — another participant's speech named the bot
+      // directly (set on 'name-mentioned', fired from local-server the first
+      // time a caption turn contains the bot's own name). Unlike the tick
+      // pulse above (a passing "noted that" blip), this is meant to read as a
+      // STATE CHANGE — the dog-cocks-its-head-and-leans-in moment where it's
+      // committed to answering — so it snaps into the pose almost instantly
+      // (MENTION_ATTACK_MS) and then holds/settles back out slowly
+      // (MENTION_DECAY_MS ≈ 5s) rather than bouncing right back like the tick
+      // pulse does. cos(p·π/2) eases the decay so it visibly LINGERS near
+      // peak before falling away, instead of fading evenly from the start.
+      // Tilt direction alternates per-mention (_mentionTiltSign, flipped in
+      // the 'name-mentioned' handler) so a run of mentions doesn't hold the
+      // same cocked pose every time; _mentionTiltMag (re-rolled randomly per
+      // mention) varies the peak tilt AMOUNT so the motion doesn't look like
+      // an identical mechanical tic every time — organic, not robotic.
+      const MENTION_ATTACK_MS = 150;
+      const MENTION_DECAY_MS = 5000;
+      const mentionAge = Date.now() - (this._nameMentionPulseAt || 0);
+      let mentionPulse = 0;
+      if (mentionAge >= 0 && mentionAge < MENTION_ATTACK_MS) {
+        mentionPulse = mentionAge / MENTION_ATTACK_MS;
+      } else if (mentionAge >= MENTION_ATTACK_MS && mentionAge < MENTION_ATTACK_MS + MENTION_DECAY_MS) {
+        const p = (mentionAge - MENTION_ATTACK_MS) / MENTION_DECAY_MS;
+        mentionPulse = Math.cos(p * Math.PI / 2);
+      }
+      const mentionTilt = mentionPulse * (this._mentionTiltSign || 1) * (this._mentionTiltMag || 1) * 0.24; // ~14° peak head-cock, ±30% varied
+      const mentionPop = 1 + mentionPulse * 0.22; // ~22% peak lean-in grow
 
       // #326 — head rotation driven by agent log activity (proof-of-life). Each
       // new activity line (pushed by main.js, overlay-independent) snaps the head
@@ -494,19 +545,19 @@
       // to center. So the rise reads as "arriving in the room," not "still trying
       // to get in."
       //
-      // Timing (1s/5.6s -> 4s/11.2s): the old rise reached center well
-      // before the spawned agent finished starting up in its terminal, so the face
-      // looked settled and ready while nothing was actually listening yet. Slower
-      // keeps it visibly still-arriving for about as long as the agent takes.
+      // Timing (1s/5.6s -> 4s/11.2s -> 2s/11.2s): the old rise reached center
+      // well before the spawned agent finished starting up in its terminal,
+      // so the face looked settled and ready while nothing was actually
+      // listening yet. The 4s hold fixed that but read as sluggish once the
+      // ease-in made the liftoff itself feel deliberate rather than abrupt —
+      // 2s is enough to register the peeking pose as intentional without the
+      // whole entrance feeling slow.
       //
       // Note it is a canned timer, not a readiness signal — if it still finishes
       // early, the honest fix is to drive it from claudeReady (main.js POSTs
       // /claude-ready when the spawned session is actually up) rather than to keep
       // stretching these numbers.
-      // 4s, not a beat: the peeking pose is the joke, and at 1-2s most people
-      // never registered it before the face started moving. Long enough to be
-      // seen and read as deliberate.
-      const RISE_HOLD_MS = 4000;
+      const RISE_HOLD_MS = 2000;
       const RISE_DURATION_MS = 11200;
       let ghostRise = 0;
       // The rise is an ARRIVAL animation: the bot peeking over the edge while its
@@ -518,7 +569,11 @@
         if (this.callStatus === 'in-call') {
           if (!this._riseSince) this._riseSince = Date.now(); // stamp on entry
           const p = Math.max(0, Math.min(1, (Date.now() - this._riseSince - RISE_HOLD_MS) / RISE_DURATION_MS));
-          const eased = 1 - Math.pow(1 - p, 3); // easeOutCubic — quick lift, gentle settle
+          // easeInCubic, not easeOutCubic: a slow start reads as a deliberate
+          // liftoff — the previous easeOutCubic started at full speed, which
+          // read as a jolt right as the rise began. No ease-out is needed at
+          // the tail either; it can arrive at center at full speed.
+          const eased = Math.pow(p, 3);
           ghostRise = (1 - eased) * (h - cy);
         } else {
           ghostRise = h - cy;   // not admitted yet — hold peeking at the bottom edge
@@ -552,13 +607,15 @@
       const agentTiltNow = peeking ? agentTilt * PEEK_TILT_SCALE : agentTilt;
       const peekShift = peeking ? (this._agentJostleDir || 0) * PEEK_SHIFT_PX : 0;
       ctx.translate(cx + thinkSway + peekShift, cy + bob - speakBounce + ghostRise);
-      if (speakTilt || tickTilt || agentTiltNow || deadFlip) ctx.rotate(speakTilt + tickTilt + agentTiltNow + deadFlip);
+      if (speakTilt || tickTilt || agentTiltNow || deadFlip || mentionTilt) {
+        ctx.rotate(speakTilt + tickTilt + agentTiltNow + deadFlip + mentionTilt);
+      }
       if (this.speaking) {
-        ctx.scale(speakScaleX * tickPop, speakScaleY * tickPop);
+        ctx.scale(speakScaleX * tickPop * mentionPop, speakScaleY * tickPop * mentionPop);
       } else {
         // Idle/listening/thinking breathing — keeps the glyph subtly alive
         // without the loud jaw motion of the speaking path. (#223)
-        ctx.scale(breathe * tickPop, breathe * tickPop);
+        ctx.scale(breathe * tickPop * mentionPop, breathe * tickPop * mentionPop);
       }
       // Twemoji set (#316): draw the bundled SVG centered at the origin (all the
       // bob/breathe/lip-sync transforms are already applied, so the image is just
@@ -1590,7 +1647,19 @@
             // Brief "noted that" pulse on entering thinking — this is what a
             // background_tick (#245) causes, so the avatar tilts+pops to signal
             // the slow model just surfaced. Harmless before a normal response too.
-            if (payload.state === 'thinking' && cam.state !== 'thinking') cam._tickPulseAt = Date.now();
+            //
+            // Jittered start + re-rolled direction/size so multiple bots on the
+            // same call — which all notice the same silence gap at roughly the
+            // same instant — don't visibly tilt in perfect lockstep. TICK_JITTER_MS
+            // delays the pulse's start (Date.now() in the future is fine: the
+            // render loop's pulseAge just stays negative, so nothing shows,
+            // until real time catches up to it).
+            if (payload.state === 'thinking' && cam.state !== 'thinking') {
+              const TICK_JITTER_MS = 250;
+              cam._tickPulseAt = Date.now() + Math.random() * TICK_JITTER_MS;
+              cam._tickTiltSign = Math.random() < 0.5 ? -1 : 1;
+              cam._tickTiltMag = 0.7 + Math.random() * 0.6; // ±30% around the base peak tilt
+            }
             cam.state = payload.state;
             // hasEngaged = "a real agent backend is driving us", which is the
             // meaning of 🫥 vs a face: 🫥 = in the call but unattended. ANY
@@ -1634,6 +1703,24 @@
           }
         }
         break;
+
+      case 'name-mentioned': {
+        // Another participant's speech named the bot directly — the same
+        // detection that lets a passive/silent bot wake up and answer (#343).
+        // Brief head-tilt + "leaning in" grow, like a dog cocking its head at
+        // the sound of its name. Side still ALTERNATES (not random) so back-
+        // to-back mentions stay visually distinguishable as separate events;
+        // the peak-tilt SIZE is re-rolled randomly each time so the motion
+        // doesn't look like a mechanical, identical-amplitude tic.
+        const mag = 0.7 + Math.random() * 0.6; // ±30% around the base peak tilt
+        for (const cam of cameras.values()) {
+          cam._nameMentionPulseAt = Date.now();
+          cam._mentionTiltSign = -(cam._mentionTiltSign || 1);
+          cam._mentionTiltMag = mag;
+        }
+        console.debug('[bots-in-calls] Name mentioned — avatar reaction fired');
+        break;
+      }
 
       case 'play-join-chime':
         // Replaces the old canned "Hello I am X" welcome — short two-tone

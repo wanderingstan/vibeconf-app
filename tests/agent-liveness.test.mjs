@@ -197,7 +197,7 @@ test('only a certainly-dead agent turns the face over', () => {
   assert.match(body, /DEAD_FLIP_RAD = Math\.PI \* 0\.75/, 'should keel over, not flip');
   assert.match(body, /1 - Math\.pow\(1 - p, 3\)/, 'eased, so it reads as falling rather than snapping');
   // It has to actually reach the rotation.
-  assert.match(inject, /ctx\.rotate\(speakTilt \+ tickTilt \+ agentTiltNow \+ deadFlip\)/);
+  assert.match(inject, /speakTilt \+ tickTilt \+ agentTiltNow \+ deadFlip \+ mentionTilt/);
   // And reset, so a reconnected agent stands back up.
   assert.match(body, /this\._deadSince = 0;/);
 });

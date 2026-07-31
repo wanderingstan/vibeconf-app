@@ -7105,6 +7105,20 @@ function setupIPC() {
     return { ok: true };
   });
 
+  // A name to pre-fill the wizard's field with (#187). Generated HERE rather than
+  // in the renderer so two profiles being set up at once can't be handed the same
+  // one — and so the "already taken" list is the real one.
+  ipcMain.handle('onboarding:suggest-bot-name', () => {
+    const { randomBotName } = require('./bot-names.js');
+    let taken = [];
+    try {
+      taken = profileManager.listProfiles(PROFILES_ROOT)
+        .map((p) => p && (p.botName || p.name))
+        .filter(Boolean);
+    } catch { /* first run, or unreadable — a possible duplicate beats no name */ }
+    return { name: randomBotName({ taken }) };
+  });
+
   ipcMain.handle('onboarding:finish', () => {
     try { store.set('onboardingComplete', true); } catch { /* ignore */ }
     if (onboardingWindow && !onboardingWindow.isDestroyed()) onboardingWindow.close();

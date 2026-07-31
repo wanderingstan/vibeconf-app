@@ -321,12 +321,27 @@ $('elKey').addEventListener('change', async () => {
 $('getKeyLink').addEventListener('click', (e) => { e.preventDefault(); api.invoke('onboarding:open-url', 'https://elevenlabs.io/app/settings/api-keys'); });
 $('voiceboxLink').addEventListener('click', (e) => { e.preventDefault(); api.invoke('onboarding:open-url', 'https://github.com/jamiepine/voicebox'); });
 
+// A suggested name for a brand-new bot. Main picks it — it knows which names are
+// already in use, and two wizards open at once must not land on the same one.
+// Falls back to empty rather than blocking the wizard if the call fails: the old
+// behaviour, which is worse but still usable.
+async function suggestName() {
+  try {
+    const r = await api.invoke('onboarding:suggest-bot-name');
+    return (r && r.name) || '';
+  } catch { return ''; }
+}
+
 // ── initial load ─────────────────────────────────────────────────────────
 (async () => {
   try {
     savedVoiceCfg = await api.invoke('get-config', ['botName', 'ttsApiKey', 'remoteLogging', 'ttsProvider', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'captionLanguage']);
     if (savedVoiceCfg) {
-      $('botName').value = savedVoiceCfg.botName || '';
+      // Pre-fill a suggestion when this bot has no name yet, so the field is
+      // never empty. An empty field is what produced "Unnamed bot" on someone's
+      // Meet tile: saveCurrent() only writes a non-blank name, so skipping the
+      // step fell through to the schema default (#187).
+      $('botName').value = savedVoiceCfg.botName || await suggestName();
       if ($('captionLanguage')) $('captionLanguage').value = savedVoiceCfg.captionLanguage || '';
       $('elKey').value = savedVoiceCfg.ttsApiKey || '';
       paintLog(savedVoiceCfg.remoteLogging);

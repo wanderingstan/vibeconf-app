@@ -1383,6 +1383,12 @@ server.tool(
 // that tab and screen-shares its window into the call, live. Reuses the
 // screen-share pipeline; the URL is the join key. See share-external-tab.js.
 async function shareTabHandler({ room_id, url, app_name }) {
+  // Platform guard: the whole locate/isolate/present flow is AppleScript, so this
+  // is macOS-only for now. On Windows/Linux, fail LOUD and CLEAR (not with a
+  // cryptic "osascript not found") and point at the portable alternatives.
+  if (process.platform !== "darwin") {
+    return { content: [{ type: "text", text: "Sharing a specific browser tab (share_tab) is macOS-only right now — it uses AppleScript to find and isolate the tab, which Windows/Linux don't support yet. On this platform, tell the user and use start_share with share_type 'screen' to share the whole screen, or the whiteboard, instead." }] };
+  }
   const roomId = room_id || ROOM_ID;
   if (!roomId) return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
   if (!url) return { content: [{ type: "text", text: "Error: url is required — the URL of the tab to share (the one you're browsing in Chrome)." }] };

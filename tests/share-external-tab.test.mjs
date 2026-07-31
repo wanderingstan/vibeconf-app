@@ -21,15 +21,26 @@ test('appleScriptStringLiteral escapes quotes and backslashes', () => {
 });
 
 test('buildActivateTabScript embeds the URL and targets the app, sets active tab', () => {
-  const s = buildActivateTabScript('https://meet.google.com/abc', 'Google Chrome');
+  const s = buildActivateTabScript('https://dashboard.example.com/abc', { appName: 'Google Chrome' });
   assert.match(s, /tell application "Google Chrome"/);
-  assert.match(s, /URL of t contains "https:\/\/meet\.google\.com\/abc"/);
+  assert.match(s, /URL of t contains "https:\/\/dashboard\.example\.com\/abc"/);
   assert.match(s, /set active tab index of w to tabIndex/);
   assert.match(s, /return \(title of t\)/);
 });
 
-test('buildActivateTabScript can target another browser (Brave)', () => {
-  assert.match(buildActivateTabScript('https://x.com', 'Brave Browser'), /tell application "Brave Browser"/);
+test('buildActivateTabScript guards against sharing the call window (collision detection)', () => {
+  const s = buildActivateTabScript('https://dashboard.example.com/abc', {});
+  assert.match(s, /URL of t contains "meet\.google\.com"/, 'detects the Meet window');
+  assert.match(s, /return "COLLISION"/, 'returns COLLISION when the tab shares the Meet window');
+  assert.match(s, /return "NOTFOUND"/, 'returns NOTFOUND when no tab matches');
+  // the collision check must come BEFORE the activate line, so a colliding tab is never activated
+  assert.ok(s.indexOf('return "COLLISION"') < s.indexOf('set active tab index'), 'collision returns before activating');
+});
+
+test('buildActivateTabScript can target another browser + custom meet fragment', () => {
+  const s = buildActivateTabScript('https://x.com', { appName: 'Brave Browser', meetFragment: 'zoom.us' });
+  assert.match(s, /tell application "Brave Browser"/);
+  assert.match(s, /URL of t contains "zoom\.us"/);
 });
 
 test('pickWindowSource: exact title wins', () => {

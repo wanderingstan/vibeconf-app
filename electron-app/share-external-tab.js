@@ -33,41 +33,61 @@ function appleScriptStringLiteral(s) {
   return '"' + String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
 }
 
-// Build the AppleScript that finds the first tab whose URL contains `url`,
-// makes it active in its window, and returns that tab's title (or "" if none).
-// `appName` lets callers target Brave etc.; defaults to Chrome (where the
-// claude-in-chrome extension lives).
-function buildActivateTabScript(url, appName = 'Google Chrome') {
+// Build the AppleScript that finds the first tab whose URL contains `url` and
+// makes it active in its window, returning that tab's title. It ALSO guards the
+// call: if that tab lives in the same window as a Google Meet tab, activating it
+// would flip the window away from the call and hide it — so in that case it does
+// NOT activate and returns the sentinel `COLLISION`. Returns `NOTFOUND` if no
+// tab matches. `meetFragment` identifies the call tab; `appName` targets the
+// browser (Chrome by default — where the claude-in-chrome extension lives).
+function buildActivateTabScript(url, { appName = 'Google Chrome', meetFragment = 'meet.google.com' } = {}) {
   const u = appleScriptStringLiteral(url);
   const app = appleScriptStringLiteral(appName);
+  const meet = appleScriptStringLiteral(meetFragment);
   return [
     `tell application ${app}`,
+    `  set meetWinId to missing value`,
+    `  repeat with w in windows`,
+    `    repeat with t in tabs of w`,
+    `      if (URL of t contains ${meet}) then`,
+    `        set meetWinId to (id of w)`,
+    `        exit repeat`,
+    `      end if`,
+    `    end repeat`,
+    `    if meetWinId is not missing value then exit repeat`,
+    `  end repeat`,
     `  repeat with w in windows`,
     `    set tabIndex to 0`,
     `    repeat with t in tabs of w`,
     `      set tabIndex to tabIndex + 1`,
     `      if (URL of t contains ${u}) then`,
+    `        if (meetWinId is not missing value) and ((id of w) is meetWinId) then`,
+    `          return "COLLISION"`,
+    `        end if`,
     `        set active tab index of w to tabIndex`,
     `        return (title of t)`,
     `      end if`,
     `    end repeat`,
     `  end repeat`,
-    `  return ""`,
+    `  return "NOTFOUND"`,
     `end tell`,
   ].join('\n');
 }
 
-// Run the AppleScript. Resolves { ok, title } — ok=false if the tab wasn't found
-// (empty title) or AppleScript errored. Never rejects.
-function activateChromeTabByUrl(url, appName = 'Google Chrome') {
+// Run the AppleScript. Resolves { ok, title, reason }. Never rejects.
+//   ok=true                          → activated; `title` is the tab title.
+//   reason='collision'               → the tab shares the call's window; NOT activated.
+//   reason='tab not found'           → no open tab matches the URL.
+function activateChromeTabByUrl(url, { appName = 'Google Chrome', meetFragment = 'meet.google.com' } = {}) {
   return new Promise((resolve) => {
     if (!url) return resolve({ ok: false, title: null, reason: 'no url' });
-    const script = buildActivateTabScript(url, appName);
+    const script = buildActivateTabScript(url, { appName, meetFragment });
     execFile('osascript', ['-e', script], { timeout: 5000 }, (err, stdout) => {
       if (err) return resolve({ ok: false, title: null, reason: err.message });
-      const title = String(stdout || '').trim();
-      if (!title) return resolve({ ok: false, title: null, reason: 'tab not found' });
-      resolve({ ok: true, title });
+      const out = String(stdout || '').trim();
+      if (out === 'COLLISION') return resolve({ ok: false, title: null, reason: 'collision' });
+      if (out === 'NOTFOUND' || out === '') return resolve({ ok: false, title: null, reason: 'tab not found' });
+      resolve({ ok: true, title: out });
     });
   });
 }
@@ -93,9 +113,16 @@ function pickWindowSource(sources, { title, excludeIds = [] } = {}) {
 // showing it. `desktopCapturer` is passed in (Electron main-process object) so
 // this module stays testable and import-light. Returns
 // { ok, source, title, reason }.
-async function resolveTabShareSource(desktopCapturer, url, { appName = 'Google Chrome', excludeIds = [] } = {}) {
-  const activated = await activateChromeTabByUrl(url, appName);
-  if (!activated.ok) return { ok: false, source: null, title: null, reason: activated.reason };
+async function resolveTabShareSource(desktopCapturer, url, { appName = 'Google Chrome', meetFragment = 'meet.google.com', excludeIds = [] } = {}) {
+  const activated = await activateChromeTabByUrl(url, { appName, meetFragment });
+  if (!activated.ok) {
+    // Turn the terse sentinels into something the agent can act on.
+    const reason = activated.reason === 'collision'
+      ? "the page is in the same browser window as the call — open it in a SEPARATE window first "
+        + "(e.g. make a new window, then load the URL there) so presenting it doesn't hide the call"
+      : activated.reason;
+    return { ok: false, source: null, title: null, reason };
+  }
 
   // Small settle so the window server picks up the new active-tab title before
   // we read the source list. Titles are read right after activation to minimise

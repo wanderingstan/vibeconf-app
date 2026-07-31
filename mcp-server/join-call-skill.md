@@ -130,10 +130,15 @@ Guidelines:
 - **The shared window has a title bar, and it shows in the share.** That's the default and usually fine — it labels what people are looking at. Turn it off with `set_share_title_bar` (or `title_bar: false` on `start_share`) when you want an edge-to-edge capture, like a full-bleed image or a design mock. It can't change mid-share, so decide before you present.
 - **Presenting a web page you're browsing (`share_tab`).** There are two ways to show a web page: the whiteboard window can *load* a URL and you drive it with `click_share`/`type_share` (above) — an in-app browser. OR, if you're browsing a page in the user's **real Chrome** with the Claude Chrome extension (the `mcp__claude-in-chrome__*` tools), you can share *that exact tab* into the call with `share_tab({ url })`. Use `share_tab` when the point is to show the room the live page you're actually driving; use the whiteboard-URL path when you just need any page on the board.
   - **Prerequisite — the Chrome extension must be connected to THIS session.** `share_tab` only makes sense if the `mcp__claude-in-chrome__*` tools are available here (advanced local setup: the Chrome extension + its MCP). If they aren't (e.g. a headless/remote bot), you can't drive a real Chrome tab — fall back to the whiteboard-URL + `click_share`/`type_share` approach. Don't claim you're sharing a browsed tab if you don't have the browser tools.
+  - **CRITICAL — isolate the page from the call's window FIRST.** The Chrome extension opens tabs in the *current* Chrome window, and a window shows only one tab at a time. So if you browse in the same window as the Meet, presenting that page **hides the call**. Before you open anything, make a fresh Chrome window so the browsing lands there instead:
+    ```
+    osascript -e 'tell application "Google Chrome" to make new window'
+    ```
+    Do this **before the session's first `navigate`/`tabs_create_mcp`** — once the extension plants its tab group in a window, new tabs stay in that window and it can't be moved cleanly.
   - **The recipe:**
-    1. Open the page with the browser tools — `tabs_create_mcp` then `navigate({ url })`. A fresh tab group keeps the page in its own window, which makes the share stable (a window shows one tab at a time).
-    2. Take the URL you navigated to. That URL is the handle.
-    3. `share_tab({ url })` — the app finds that tab in Chrome, makes it active, and screen-shares its window live.
+    1. Make the fresh window (the `osascript` above) so it's the current Chrome window.
+    2. Open the page — `navigate({ url })` (or `tabs_create_mcp` then `navigate`). It lands in the fresh window, not the call's.
+    3. `share_tab({ url })` — the app activates that tab in its isolated window and screen-shares it live. **If it replies that the page shares the call's window, you skipped step 1** — make a new window, re-load the page there, and retry.
     4. Keep driving it (`navigate`, the browser `computer` tool) and **narrate as you go** — the room watches it update in real time. Say what you're doing before you do it.
     5. `stop_sharing` when done (or `start_share` to switch back to the whiteboard).
   - **Caveats:** macOS only for now (Windows support is separate); it shares whatever the tab shows, so don't put anything private in that tab; and match a distinctive URL (a bare `google.com` could match the wrong tab).

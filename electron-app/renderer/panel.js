@@ -1409,7 +1409,16 @@ document.getElementById('openAppSettingsFromBanner')?.addEventListener('click', 
 // The key lives in the separate App Settings window, so re-check on focus.
 window.addEventListener('focus', refreshVoiceBanner);
 
-api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'ttsProvider', 'claudeWorkDir', 'claudeModel', 'emojiSet', 'captionLanguage', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
+// Load every config value this window displays, and paint the controls from it.
+//
+// EXTRACTED so it can run more than once. It used to be a bare call at startup,
+// which meant the panel showed a boot-time snapshot forever: anything written
+// afterwards — by the onboarding wizard, by set_preference from an agent, by
+// another window — left the controls showing stale values. Someone naming their
+// bot in the wizard saw "Unnamed bot" in Settings and reasonably concluded the
+// save had failed, when it had worked (#190, #143).
+function loadConfigIntoControls() {
+  return api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'ttsProvider', 'claudeWorkDir', 'claudeModel', 'emojiSet', 'captionLanguage', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
   if (result?.botName) { botNameInput.value = result.botName; currentBotName = result.botName; }
   rememberedMeetName = result?.lastMeetName || null;   // #282 remembered names
   rememberedSlackName = result?.lastSlackName || null;
@@ -1441,7 +1450,34 @@ api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', '
 
   // Check auth status after config is loaded (so we know the server URL)
   checkAuthStatus();
+}).catch(() => {});
+}
+
+loadConfigIntoControls();
+
+// Re-read whenever something else writes config. main sends this from BOTH write
+// paths — set-config (the wizard, this panel) and applyPref (an agent's
+// set_preference) — so the controls track reality no matter who changed it.
+//
+// Re-reading everything rather than applying message.payload on purpose: a
+// targeted update has to know which control shows which key, and that mapping
+// silently rots as prefs are added. Re-reading cannot drift.
+api.on('extension-message', (message) => {
+  if (message?.action !== 'config-updated') return;
+  // Don't repaint under someone's hands. A re-read rewrites every control,
+  // including the ack-phrase textareas — so an echo triggered by changing the
+  // emoji dropdown could wipe a half-typed phrase in a different field. The
+  // panel re-reads on open and on focus anyway, so skipping here costs nothing.
+  const el = document.activeElement;
+  const editing = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
+  if (editing) return;
+  loadConfigIntoControls();
 });
+
+// Catch up on anything written while this window was in the background — the
+// wizard and App Settings are separate windows, and an agent can write at any
+// time. Pairs with the focus-time voice-banner refresh just above.
+window.addEventListener('focus', () => { loadConfigIntoControls(); });
 
 // #366/#381: the user (vibeconferencing.com) login moved OUT of the profile
 // Settings pane — it's app-level, so it lives in App Settings (⌘,). It also

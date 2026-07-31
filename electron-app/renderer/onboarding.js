@@ -4,6 +4,11 @@
 // check-auth/login/logout; voice preview reuses play-speech-test.
 const api = window.electronAPI;
 
+// Mirrors DEFAULT_BOT_NAME in electron-app/preferences-schema.js. The renderer
+// can't require() it, so a test pins the two together — if they drift, the
+// wizard silently stops suggesting names again.
+const DEFAULT_BOT_NAME = 'Unnamed bot';
+
 const steps = [...document.querySelectorAll('section[data-step]')].map((s) => s.dataset.step);
 const TITLE = {
   welcome: 'Welcome', permissions: 'Permissions', signin: 'Sign in',
@@ -445,7 +450,15 @@ $('botName')?.addEventListener('keydown', stopSpin);
       // never empty. An empty field is what produced "Unnamed bot" on someone's
       // Meet tile: saveCurrent() only writes a non-blank name, so skipping the
       // step fell through to the schema default (#187).
-      $('botName').value = savedVoiceCfg.botName || await suggestName();
+      //
+      // "no name yet" CANNOT be tested with `|| suggestName()`. get-config fills
+      // unset prefs with their schema default, so botName comes back as the
+      // string 'Unnamed bot' rather than undefined — always truthy, so the
+      // suggestion never ran and every fresh profile pre-filled with the exact
+      // name this feature exists to avoid. Compare against the default instead.
+      const saved = (savedVoiceCfg.botName || '').trim();
+      const unnamed = !saved || saved === DEFAULT_BOT_NAME;
+      $('botName').value = unnamed ? await suggestName() : saved;
       if ($('captionLanguage')) $('captionLanguage').value = savedVoiceCfg.captionLanguage || '';
       $('elKey').value = savedVoiceCfg.ttsApiKey || '';
       paintLog(savedVoiceCfg.remoteLogging);

@@ -56,8 +56,25 @@ test('no name is also a common word', () => {
 test('every name is plain ASCII, for the TTS', () => {
   // The bot says its own name aloud. Diacritics and non-English phonology get
   // mangled by `say` and SAPI, so the spellings have to be ones they read.
+  //
+  // This used to demand a single lowercase word (/^[A-Z][a-z]+$/), which quietly
+  // banned every multi-word and alphanumeric robot. A live test call showed
+  // Google's captions returning "C-3PO" and "R2D2" verbatim, so digits, hyphens
+  // and spaces are allowed now — what stays banned is non-ASCII.
   for (const n of BOT_NAMES) {
-    assert.match(n, /^[A-Z][a-z]+$/, `${n} should be a plain capitalised ASCII name`);
+    assert.match(n, /^[A-Z][A-Za-z0-9-]*( [A-Z][A-Za-z0-9-]*)*$/, `${n} is not a TTS-safe ASCII name`);
+  }
+});
+
+test('multi-word names still work with mention detection', () => {
+  // local-server.js wakes the bot with a lowercased substring test against the
+  // caption text, so a name only matches if the captions spell it the same way,
+  // punctuation and all. That is fine for these — but it means a name whose
+  // spelling Google renders differently ("C3PO", "R2 D2") would silently never
+  // wake the bot, with no error anywhere. Hence the live-call check.
+  const captions = 'When I talk about the robot C-3PO, how does that get transcribed? What about R2D2?';
+  for (const n of ['C-3PO', 'R2D2']) {
+    assert.ok(captions.toLowerCase().includes(n.toLowerCase()), `${n} would not wake on a real caption line`);
   }
 });
 
@@ -103,7 +120,14 @@ test('the suggestion is made in main, not the renderer', () => {
 
 test('the wizard pre-fills only when the bot has no name yet', () => {
   // Re-running the wizard for a named bot must not rename it.
-  assert.match(wizard, /savedVoiceCfg\.botName \|\| await suggestName\(\)/);
+  //
+  // This assertion USED TO PIN THE BUG: it asserted the literal expression
+  // `savedVoiceCfg.botName || await suggestName()`, which reads correctly and is
+  // wrong, because get-config fills botName with its schema default. The test
+  // passed for exactly the reason the feature didn't work. Assert the BEHAVIOUR
+  // — a real name is kept, the default is not — not the spelling.
+  assert.match(wizard, /unnamed \? await suggestName\(\) : saved/);
+  assert.match(wizard, /saved === DEFAULT_BOT_NAME/);
   // And a failed suggestion degrades to the old empty field rather than blocking.
   const fn = wizard.slice(wizard.indexOf('async function suggestName'));
   assert.match(fn.slice(0, fn.indexOf('\n}')), /catch \{ return ''; \}/);
@@ -165,7 +189,7 @@ test('typing beats spinning, and navigating away stops it', () => {
 
 test('famous robots are in the pool, but stay a garnish', () => {
   const lower = new Set(ROBOTIC.map((n) => n.toLowerCase()));
-  for (const n of ['hal', 'tron', 'marvin', 'optimus', 'clippy']) {
+  for (const n of ['hal', 'tron', 'marvin', 'optimus prime', 'clippy', 'r2d2', 'c-3po']) {
     assert.ok(lower.has(n), `${n} should be in the robot list`);
   }
   // A joke name is fun once and tiresome as the usual outcome. Most people
@@ -183,4 +207,21 @@ test('no robot name wakes a real assistant in the room', () => {
   const lower = new Set(BOT_NAMES.map((n) => n.toLowerCase()));
   const live = wakeWords.filter((w) => w !== 'cortana').filter((w) => lower.has(w));
   assert.deepEqual(live, [], `these would trigger nearby devices: ${live.join(', ')}`);
+});
+
+test('the wizard suggests a name instead of pre-filling the default', () => {
+  // The bug this pins: get-config fills unset prefs with their schema default,
+  // so botName came back as 'Unnamed bot', not undefined. `savedCfg.botName ||
+  // suggestName()` therefore always took the left branch and every fresh profile
+  // pre-filled with the one name #187 exists to prevent — the feature looked
+  // implemented and did nothing.
+  const src = readFileSync(new URL('../electron-app/renderer/onboarding.js', import.meta.url), 'utf8');
+  assert.match(src, /saved === DEFAULT_BOT_NAME/, 'must treat the schema default as "unnamed"');
+  assert.doesNotMatch(src, /savedVoiceCfg\.botName \|\| await suggestName/, 'the truthiness check is the bug');
+
+  // The renderer can't require() the schema, so the copied literal has to match.
+  const schema = readFileSync(new URL('../electron-app/preferences-schema.js', import.meta.url), 'utf8');
+  const real = schema.match(/const DEFAULT_BOT_NAME = '([^']+)'/)[1];
+  const copy = src.match(/const DEFAULT_BOT_NAME = '([^']+)'/)[1];
+  assert.equal(copy, real, 'onboarding.js copy of DEFAULT_BOT_NAME has drifted from the schema');
 });

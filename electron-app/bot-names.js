@@ -121,15 +121,26 @@ const MASCULINE = [
 // lands immediately, and unlike the two lists above these carry no gender, so
 // they sit outside the even split rather than tipping it.
 //
-// The same two rules apply, and they cost this category more than the others:
+// Rule 1 still applies. Rule 2 turned out to be over-strict here, and the list
+// below reflects a real test call rather than a guess about what Google can hear:
 //
-//   R2D2, C-3PO, Wall-E     digits and hyphens; the ASCII rule bans them and
-//                           `say` reads them as gibberish anyway
+//     "When I talk about the robot C-3PO, how does that get transcribed?
+//      What about R2D2? ... And you know, Wally, that's a little harder."
+//
+// Every one came back exactly right, hyphens and digits included. So R2D2 and
+// C-3PO are in, and the shape rule was widened to allow digits, hyphens and
+// spaces instead of insisting on one plain word.
+//
+// Two-word names are in for the same reason, and they are actually SAFER than
+// single words under rule 1: mention detection is a substring match, so a bot
+// called Iron Giant wakes on "iron giant" together — far rarer in conversation
+// than either "iron" or "giant" alone. That is why the two-word icons are here
+// in full while a bare "Giant" would never be allowed.
+//
+// Still out, on rule 1:
+//
 //   Bender, Data, Ash, Zen  ordinary words — "on a bender", "the data says"
 //   Vision, Friday, Colossus, Bumblebee, Tars, Holly    likewise
-//   Iron Giant, Optimus Prime, Johnny Five, Deep Thought   two words; only the
-//                           distinctive half survives, hence Optimus alone
-//   Terminator              a role, not a name — nobody is called it
 //
 //   Alexa, Siri             EXCLUDED FOR A DIFFERENT AND BETTER REASON: the bot
 //                           says its own name aloud, in a room full of phones and
@@ -138,13 +149,17 @@ const MASCULINE = [
 //                           is discontinued and wakes nothing.
 const ROBOTIC = [
   // Film
-  'Hal', 'Tron', 'Robby', 'Gort', 'Wally', 'Optimus', 'Megatron', 'Jarvis', 'Ultron',
-  'Baymax', 'Chappie', 'Robocop', 'Skynet', 'Pris', 'Astro', 'Talos',
+  'Hal', 'Tron', 'Robby', 'Gort', 'Wally', 'Megatron', 'Jarvis', 'Ultron',
+  'Baymax', 'Chappie', 'Robocop', 'Skynet', 'Pris', 'Astro', 'Talos', 'Terminator',
+  // Film — confirmed intact through Google's captions on a live test call
+  'R2D2', 'C-3PO',
+  // Film — the two-word ones, safer than either word on its own
+  'Optimus Prime', 'Iron Giant', 'Johnny Five',
   // Television
   'Twiki', 'Kryten', 'Marvin', 'Rosie', 'Vicki', 'Ziggy', 'Orac', 'Maeve', 'Dolores',
   'Bernard', 'Roy',
   // Books
-  'Daneel', 'Giskard', 'Multivac', 'Wintermute',
+  'Daneel', 'Giskard', 'Multivac', 'Wintermute', 'Deep Thought',
   // Real, or real enough
   'Eliza', 'Watson', 'Turing', 'Clippy', 'Cortana',
 ];

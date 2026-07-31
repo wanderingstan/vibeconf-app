@@ -1965,23 +1965,22 @@ function autoUpdaterInstance() {
     error: (m) => console.error(ts(), '[updates]', m),
     debug: () => {},
   };
-  // Pin this OFF. electron-updater turns allowPrerelease on by itself whenever
-  // the RUNNING version has a prerelease component — which ours always does —
-  // and that flips it onto a channel-matching code path that our tag scheme
-  // silently breaks. semver reads `0.7.0-beta64` as the single identifier
-  // "beta64" (no dot), so the provider takes "beta64" to be the channel this
-  // build follows, then walks the releases feed for another release on that
-  // same channel. There is only ever one: itself. beta64 therefore resolved
-  // beta64 and reported "no update"; a beta60 build matched nothing at all and
-  // failed with "No published versions on GitHub". Every build was a channel of
-  // one, and self-update could never have worked.
+  // We ship CLEAN SEMVER now (0.8.10, 0.8.11, …) — no `-beta` suffix. Keep this
+  // OFF: with no prerelease component in the running version, electron-updater
+  // never auto-enables allowPrerelease, and the provider just asks GitHub which
+  // release is Latest (highest semver) and installs that release's latest-*.yml
+  // in ONE hop — the newest is the one everybody gets, no stepping.
   //
-  // With it off, the provider just asks GitHub which release is Latest and
-  // reads that release's latest-*.yml — which is exactly our model: one line of
-  // releases, the newest is the one everybody gets. (Renaming tags to
-  // `0.7.0-beta.66` would also work, since semver would then see the channel as
-  // "beta", one of the two names the provider special-cases. Not worth
-  // re-cutting the tag scheme for.)
+  // Why the scheme changed: tags used to be `0.8.0-beta9` (no dot). semver reads
+  // `beta9` as a single ALPHANUMERIC identifier, so versions compared LEXICALLY,
+  // not numerically — `beta10` sorts BELOW `beta9`, so once a series crossed
+  // single digits neither GitHub's "Latest" nor electron-updater could tell
+  // which build was actually newest. The updater lagged / appeared to step
+  // through intermediate versions instead of jumping to the true latest. Dropping
+  // the prerelease identifier fixes the ordering for good. (allowPrerelease also
+  // used to be force-enabled here because the RUNNING version always had a
+  // prerelease component — with clean semver it no longer does, so this line is
+  // now a belt-and-suspenders guard rather than a workaround.)
   autoUpdater.allowPrerelease = false;
   // Stage the download, but never restart on our own: installing is gated on
   // not being in a call, and the user gets the last word either way.
@@ -4925,7 +4924,7 @@ app.whenReady().then(async () => {
       header: {
         version: app.getVersion(),
         // Git commit + dirty status — the version string alone is ambiguous when
-        // running from source (an un-bumped package.json reads e.g. "beta55" even
+        // running from source (an un-bumped package.json reads e.g. "0.8.9" even
         // with newer code). This makes a log unambiguous about exactly what ran.
         git: gitBuildInfo(),
         platform: process.platform,

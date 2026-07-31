@@ -92,7 +92,10 @@ function shouldCheck({ lease, now, pid, profile, leaseMs, isAlive, ...rest } = {
 // `joining` and `waiting-to-be-admitted` count as live — the bot is on its way
 // in, and losing it there is just as bad.
 function canInstallNow({ callStatus = 'idle' } = {}) {
-  const live = !!callStatus && callStatus !== 'idle' && callStatus !== 'left';
+  // Includes after-call-work: quitting to install would kill the agent
+  // mid-wrap-up, which is the same failure as dropping it mid-sentence — just
+  // less visible, because nobody is watching the call any more.
+  const live = require('./call-phase.js').isBusy(callStatus);
   return live ? { ok: false, reason: 'in-call' } : { ok: true, reason: null };
 }
 

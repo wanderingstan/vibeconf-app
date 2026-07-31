@@ -2592,12 +2592,16 @@ api.on('meet-status', (status) => {
 
 api.on('call-status-changed', ({ status, provider }) => {
   // Authoritative call-state signal from the local server. Only show Leave Call
-  // once we're actually in the meeting; hide it on idle/left.
+  // once we're actually in the meeting; hide it once the bot has left.
   if (status === 'in-call') {
     callProvider = provider || 'meet';
     const code = meetCodeInput.value || '';
     enterCallState(code);
-  } else if (status === 'idle' || status === 'left') {
+    // after-call-work counts as out of the call: the bot HAS left the meeting,
+    // so "Leave Call" is no longer the action on offer even though the agent is
+    // still busy. (call-phase.js owns this vocabulary; the renderer is context-
+    // isolated and can't require it, so the values are spelled out.)
+  } else if (status === 'idle' || status === 'call-complete' || status === 'after-call-work') {
     callProvider = null;
     exitCallState();
   }

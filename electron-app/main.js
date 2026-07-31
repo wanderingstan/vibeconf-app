@@ -14,6 +14,7 @@ const { resolveSvg } = require('./svg-resolver.js');
 // One source of truth for the unconfigured bot name — see preferences-schema.
 const { DEFAULT_BOT_NAME } = require('./preferences-schema');
 const { resolveVoice } = require('./voice-status.js');
+const { isInCall, isFinished, isCallComplete } = require('./call-phase.js');
 const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEventsFor } = require('./share-surface.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
 // The call-provider contract. main.js is the consumer side: it subscribes to
@@ -229,6 +230,56 @@ function announceNoVoiceOnce() {
     + 'If someone asks how to give you a '
     + 'voice, tell them: open the app, add an ElevenLabs API key in App Settings, or run Voicebox locally.'
   );
+}
+
+// ── After-call work (#139) ───────────────────────────────────────────────────
+// The bot has left the Meet. Its agent may still have work to do — summarising,
+// filing, writing a receipt — and until it says otherwise the call's state has to
+// stay exactly where it is.
+//
+// Gated on the afterCallWorkSeconds preference, 0 (off) by default: the phase is
+// only useful once an agent knows to use it, so the machinery lands first and the
+// behaviour is opted into. 0 reproduces the old teardown-on-leave exactly.
+let _afterCallWorkTimer = null;
+
+function beginAfterCallWorkOrTeardown(reason) {
+  const seconds = Number(store?.get('afterCallWorkSeconds')) || 0;
+  // No agent driving means nobody to do the work — #156 already tracks this, so
+  // a button-only call (or one whose agent died) tears down as it always did
+  // rather than waiting out a timer for a session that cannot answer.
+  const hasAgent = (() => {
+    try { return !localServer.agentAbsentInCall(); } catch { return false; }
+  })();
+
+  if (seconds <= 0 || !hasAgent) {
+    console.log('[electron] Call ended (' + reason + ') — tearing down'
+      + (seconds > 0 && !hasAgent ? ' (no agent to do after-call work)' : ''));
+    finishCall();
+    return;
+  }
+
+  console.log('[electron] Call ended (' + reason + ') — entering after-call work for up to ' + seconds + 's');
+  localServer.setCallStatus('after-call-work');
+  clearTimeout(_afterCallWorkTimer);
+  // A backstop, not a schedule. Nothing reaps a terminal window on its own, so an
+  // agent that never says it is finished would otherwise leave one open forever —
+  // the stale-process failure, reintroduced.
+  _afterCallWorkTimer = setTimeout(() => {
+    console.warn('[electron] After-call work hit its ' + seconds + 's limit — finishing');
+    finishCall();
+  }, seconds * 1000);
+}
+
+// End of the lifecycle: the app-side teardown finally runs. Routed through the
+// panel because that is where the existing leave path lives — showIdle, the
+// terminal close and clearRoom all hang off it.
+function finishCall() {
+  clearTimeout(_afterCallWorkTimer);
+  _afterCallWorkTimer = null;
+  localServer.setCallStatus('call-complete');
+  if (panelView && !panelView.webContents.isDestroyed()) {
+    panelView.webContents.send('leave-requested');
+  }
 }
 
 // The walk takes a second or two and captions-ready can fire repeatedly in that
@@ -623,14 +674,14 @@ const localServer = new globalThis.LocalServer({
       if (meetView && !meetView.webContents.isDestroyed()) {
         meetView.webContents.send('trigger-leave-call');
       }
-      // Let the click register with Google's servers, then do the teardown
-      // (panel → leave-meet → showIdle navigates the view to Meet home). The
-      // teardown is the fallback path if the button wasn't present.
-      setTimeout(() => {
-        if (panelView && !panelView.webContents.isDestroyed()) {
-          panelView.webContents.send('leave-requested');
-        }
-      }, LEAVE_CLICK_SETTLE_MS);
+      // Let the click register with Google's servers, then END THE BOT'S
+      // PARTICIPATION — which is not the same as tearing the app down.
+      //
+      // If after-call work is enabled, the bot enters that phase here and the
+      // teardown waits for it: the room, the transcript and every tool stay live
+      // while the agent wraps up. Otherwise this is the old behaviour, teardown
+      // immediately. See call-phase.js.
+      setTimeout(() => beginAfterCallWorkOrTeardown('leave-call'), LEAVE_CLICK_SETTLE_MS);
     };
 
     const checkAndLeave = () => {
@@ -1305,7 +1356,10 @@ const localServer = new globalThis.LocalServer({
     // hand the room back. leave-meet covers the button; this covers the rest.
     // An update that landed mid-call has been sitting staged and unmentioned.
     // Now that the call is over, it's safe to offer.
-    if (status === 'left' || status === 'idle') { try { offerStagedUpdate(); } catch { /* not wired yet */ } }
+    // Only once everything is torn down. Offering an update during
+    // after-call-work would interrupt the agent mid-wrap-up, and 'idle' is too
+    // broad — it also means "app just launched, no call yet".
+    if (isCallComplete(status)) { try { offerStagedUpdate(); } catch { /* not wired yet */ } }
     // (lastSlackName is populated once we read the real Slack display name from
     // the huddle DOM — #283. We don't fake it from a preference anymore.)
     // #189: a fresh call gets a fresh auto-posted whiteboard link.
@@ -1329,7 +1383,7 @@ const localServer = new globalThis.LocalServer({
       // spend the call waiting for it to answer out loud.
       announceNoVoiceOnce();
     }
-    if (status === 'left' || status === 'idle') _noVoiceAnnouncedFor = null;
+    if (isFinished(status)) _noVoiceAnnouncedFor = null;
     // Studio sound: if disabled by pref, turn off Meet's voice filter once in-call
     // so non-voice audio (SFX/music via play_audio) passes through. Delay lets the
     // in-call toolbar (More options ⋮) finish rendering. Default leaves it ON.
@@ -5593,7 +5647,7 @@ const DEFAULT_TESTING_MEET_URL = 'https://meet.google.com/paz-sqoa-npe';
 // a panel while the bot silently waited for entry.
 let botViewInCall = false;
 function callStatusMeansInCall(status) {
-  return !!status && status !== 'idle' && status !== 'left';
+  return isInCall(status);
 }
 function setBotViewInCall(status) {
   const active = callStatusMeansInCall(status);

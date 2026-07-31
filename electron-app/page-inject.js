@@ -1737,12 +1737,14 @@
       // the 'set-bot-state' handler above, so 🫥 means "no agent driving yet".)
 
       case 'set-call-status':
-        // Forwarded from local-server: 'idle' | 'navigating' | 'joining' |
-        // 'waiting-to-be-admitted' | 'in-call' | 'left'. Used to show 🫥
-        // before the bot is actually in the call.
+        // Forwarded from local-server; see electron-app/call-phase.js for the
+        // lifecycle. Used to show 🫥 before the bot is actually in the call.
         if (payload?.status) {
+          // A finished call re-gates engagement so the NEXT one starts at 🫥
+          // again. 'after-call-work' is deliberately absent: the agent is still
+          // working, and blanking its face mid-wrap-up would say it had gone.
           const resets = payload.status === 'idle' || payload.status === 'navigating' ||
-            payload.status === 'joining' || payload.status === 'left';
+            payload.status === 'joining' || payload.status === 'call-complete';
           for (const cam of cameras.values()) {
             cam.callStatus = payload.status;
             // New-call markers reset the engagement gate — show 🫥 again

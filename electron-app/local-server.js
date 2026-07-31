@@ -22,6 +22,7 @@ const AUTH_TOKEN_DIR = path.join(os.homedir(), '.vibeconferencing', 'local-token
 function localTokenPath(port) { return path.join(AUTH_TOKEN_DIR, `${port}.token`); }
 const prefsSchema = require('./preferences-schema.js');
 const { classifyAgent, agentIsAbsent } = require('./agent-liveness.js');
+const { isFinished } = require('./call-phase.js');
 const { getRecentSessionLog, getSessionLogPath } = require('./session-log.js');
 const { shouldIgnoreRejoin } = require('./rejoin-guard.js');
 const { TranscriptTailer } = require('./agent-transcript.js');
@@ -128,7 +129,7 @@ class LocalServer {
     this.onInspectDom = onInspectDom || (async () => ({ ok: false, error: 'not implemented' }));
     this.onBotStateChange = onBotStateChange || (() => {}); // 'idle' | 'listening' | 'ticking' | 'thinking' | 'speaking' | 'yielding'
     this.onModeChange = onModeChange || (() => {});        // 'active' | 'passive' | 'silent'
-    this.onCallStatusChange = onCallStatusChange || (() => {}); // 'idle' | 'navigating' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
+    this.onCallStatusChange = onCallStatusChange || (() => {}); // see call-phase.js for the lifecycle
     // Fired at most once per caption turn, the first time it contains the
     // bot's own name — the moment someone else directly addresses the bot
     // (the same detection that lets a passive/silent bot wake up and
@@ -275,7 +276,7 @@ class LocalServer {
     this.maxTranscripts = 500;
 
     // Call status tracking
-    this.callStatus = 'idle';    // idle, navigating, joining, waiting-to-be-admitted, in-call, left
+    this.callStatus = 'idle';    // lifecycle + predicates live in call-phase.js
     this.sharing = false;
     this.errors = [];            // recent errors (max 10)
 
@@ -749,7 +750,10 @@ class LocalServer {
     // 'in-call' fires when Meet's UI is up, but the bot's mic track isn't
     // reliably connected to other participants until the people pane is
     // populated (a stronger 'fully wired up' signal). See _flushPendingBotSpeech.
-    if (status === 'idle' || status === 'left') {
+    // Teardown-ish cleanup waits for the END of the lifecycle. During
+    // after-call-work the call is over but the agent is still working, and
+    // dropping its state there is exactly what this phase exists to prevent.
+    if (isFinished(status)) {
       this.callId = null;
       this.callStartedAt = null;
       if (this.pendingBotSpeech.length > 0) {

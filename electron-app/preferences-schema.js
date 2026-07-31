@@ -101,6 +101,19 @@ const PREFERENCES = {
   // This is the bot's hearing, not a display preference — it reads the room
   // through the caption region, so a mismatch means it hears nonsense and
   // answers the nonsense rather than falling silent.
+  afterCallWorkSeconds: {
+    type: 'number',
+    default: 0,
+    min: 0,
+    max: 1800,
+    description:
+      "How long the bot's agent may keep working after it leaves a call, in seconds. "
+      + 'The call\'s room, transcript and tools all stay available during this window, so the '
+      + 'agent can summarise, file notes, or write a receipt before the app tears the call down. '
+      + '0 (the default) tears down immediately, exactly as before. This is a BACKSTOP, not a '
+      + 'schedule — an agent that finishes early ends the phase itself. Skipped entirely when no '
+      + 'agent is driving the bot, since there would be nobody to do the work.',
+  },
   captionLanguage: {
     type: 'string',
     default: '',

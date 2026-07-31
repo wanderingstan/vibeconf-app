@@ -225,3 +225,18 @@ test('the wizard suggests a name instead of pre-filling the default', () => {
   const copy = src.match(/const DEFAULT_BOT_NAME = '([^']+)'/)[1];
   assert.equal(copy, real, 'onboarding.js copy of DEFAULT_BOT_NAME has drifted from the schema');
 });
+
+test('the names the header comment promises are actually in the list', () => {
+  // The header said Pepper was deliberately kept, and Pepper was not in the
+  // list — the rationale outlived the entry. A comment that describes the file
+  // inaccurately is worse than no comment, so it is checked now.
+  const lower = new Set(BOT_NAMES.map((n) => n.toLowerCase()));
+  for (const n of ['jimmy', 'alice', 'pepper', 'samantha', 'daniel', 'ava', 'nora', 'zoe']) {
+    assert.ok(lower.has(n), `the header claims ${n} is kept, but it is not in the list`);
+  }
+});
+
+test('the house names are in', () => {
+  const lower = new Set(BOT_NAMES.map((n) => n.toLowerCase()));
+  for (const n of ['stan', 'seth', 'vern']) assert.ok(lower.has(n), `${n} should be in the pool`);
+});

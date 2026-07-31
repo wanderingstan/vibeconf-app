@@ -22,7 +22,9 @@
 // Names shared with TTS voices (Samantha, Daniel, Ava, Nora, Zoe…) and with bots
 // already around this project (Jimmy, Alice, Pepper) are deliberately KEPT: they
 // are good names, and the ambiguity is cosmetic rather than behavioural. Revisit
-// only if it actually causes confusion in a log.
+// only if it actually causes confusion in a log. (This paragraph claimed Pepper
+// for a while before the list actually contained it — a test now checks that the
+// names named here are really present, so the comment cannot drift again.)
 //
 // Roughly even split, and deliberately wide — a first-run bot should not always
 // sound like it came from the same village. A third list of famous robots rides
@@ -115,6 +117,8 @@ const MASCULINE = [
   'Julian', 'Gabriel', 'Isaac', 'Lincoln', 'Anthony', 'Dylan', 'Charles',
   'Andrew', 'Nathan', 'Caleb', 'Adrian', 'Nolan', 'Cameron', 'Connor',
   'Nicholas', 'Dominic', 'Evan',
+  // The people who built this thing, and Stan's dad.
+  'Stan', 'Seth', 'Vern',
 ];
 
 // Famous robots, computers and AIs. A bot named after one is a small joke that
@@ -162,6 +166,10 @@ const ROBOTIC = [
   'Daneel', 'Giskard', 'Multivac', 'Wintermute', 'Deep Thought',
   // Real, or real enough
   'Eliza', 'Watson', 'Turing', 'Clippy', 'Cortana',
+  // SoftBank's Pepper, and one of this project's own bots. The single knowing
+  // exception to rule 1 — "pass the pepper" will occasionally false-wake it —
+  // kept because it is already a bot here and the trade was made with open eyes.
+  'Pepper',
 ];
 
 const BOT_NAMES = [...FEMININE, ...MASCULINE, ...ROBOTIC];

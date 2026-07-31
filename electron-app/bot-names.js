@@ -71,6 +71,8 @@ const FEMININE = [
   'Claire', 'Lucy', 'Caroline', 'Emilia', 'Allison', 'Julia', 'Vivian', 'Sophie',
   'Madeline', 'Lydia', 'Josephine', 'Katherine', 'Diana', 'Rachel', 'Megan',
   'Nicole', 'Michelle', 'Rebecca', 'Danielle', 'Christine', 'Andrea', 'Marie',
+  // Asked for by name.
+  'Kate', 'Maria', 'Sandra', 'Lisa', 'Mavi',
   'Victoria',
 ];
 
@@ -119,6 +121,12 @@ const MASCULINE = [
   'Nicholas', 'Dominic', 'Evan',
   // The people who built this thing, and Stan's dad.
   'Stan', 'Seth', 'Vern',
+  // Asked for by name. Two of these bend rule 1 and are in anyway, on request:
+  // "Bob" is also a verb (bob up and down) and a haircut, and "John" is also a
+  // toilet — both will false-wake occasionally. They are common enough as names
+  // that the trade is worth making, but it IS a trade, not an oversight.
+  'Trevor', 'Jeff', 'Steve', 'John', 'Jordan', 'Alex', 'Chris', 'Joshua',
+  'Robert', 'Bob', 'Fabian', 'Peter', 'Kenny',
 ];
 
 // Famous robots, computers and AIs. A bot named after one is a small joke that

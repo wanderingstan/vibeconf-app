@@ -116,9 +116,19 @@ async function waitForNavigation(baseUrl, roomId, timeoutMs = 20000) {
 
 function startMcp({ baseUrl, botName, timeoutMs }) {
   const serverPath = path.join(repoRoot, 'mcp-server', 'server.js');
+  // Pin the MCP server's multi-instance discovery to OUR test bot's port only
+  // (#57). By default it probes the whole 7865-7910 range, so on a machine that
+  // also runs the app for real — the always-on mini, where the production bot
+  // sits idle on :7865 — every unscoped tool call (start_call, and any join once
+  // our bot has left its call and stops self-identifying by name) trips the
+  // "Multiple app instances running" guard and the check goes red for an
+  // environment reason, not a code one. Narrowing the range to our own port makes
+  // the whole test hermetic regardless of what else is running.
+  const testPort = (baseUrl.match(/:(\d+)/) || [])[1];
+  const portRange = testPort ? { VIBECONF_PORT_RANGE: `${testPort}-${testPort}` } : {};
   const child = spawn(process.execPath, [serverPath], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, VIBECONF_BASE_URL: baseUrl, VIBECONF_BOT_NAME: botName },
+    env: { ...process.env, VIBECONF_BASE_URL: baseUrl, VIBECONF_BOT_NAME: botName, ...portRange },
   });
   const pending = new Map();
   let nextId = 1;
@@ -179,6 +189,13 @@ const failures = [];
 function check(name, ok, detail) {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${ok || !detail ? '' : `\n      ${detail}`}`);
   if (!ok) failures.push(name);
+}
+// A precondition outside our code wasn't met (not signed in, site down, rate
+// limited). NOT a pass — we proved nothing — but NOT a failure either: counting
+// it red would mean "our route is broken" when the truth is "the environment
+// isn't set up". Logged so a permanently-skipped check can't hide behind green.
+function skip(name, detail) {
+  console.log(`SKIP  ${name}${detail ? `\n      ${detail}` : ''}`);
 }
 
 async function main() {
@@ -259,15 +276,31 @@ async function main() {
       }
       const mintedCode = (startText.match(/meet\.google\.com\/([a-z]{3}-[a-z]{4}-[a-z]{3})/i) || [])[1];
       const started = !!mintedCode;
-      // #122: hand the fresh room to the lanes that run after us. A minted room
-      // survives the leave_call below — retire releases our quota claim, it does
-      // NOT close the room (verified 2026-07-29) — so downstream lanes can join
-      // it. The marker is parsed by scheduled-meet-test.sh; keep the format.
-      if (mintedCode) console.log(`VIBECONF_MINTED_ROOM=${mintedCode}`);
-      check('start_call (/call) mints a meet and sends the bot in', started,
-        `${startText.slice(0, 240)}\n      NOTE: unlike the checks above, this one reaches `
-        + 'vibeconferencing.com (/api/meet/create), so a red can also mean an expired '
-        + 'session or the site being down — check those before assuming a code bug.');
+      const CHECK = 'start_call (/call) mints a meet and sends the bot in';
+      // The route reaches vibeconferencing.com to mint a real Meet, so an
+      // unmet EXTERNAL precondition — the profile isn't signed into vibeconf.com
+      // (the isolated guest profiles never are), the site is down, or we're rate
+      // limited — is not evidence our route is broken. These map to start_call's
+      // own REASONS strings (#57). Skip on those; only a genuine code/route break
+      // (a malformed request, an exception, or an unrecognized response) is red.
+      const PRECONDITION = /Not signed in to vibeconferencing\.com|Couldn't reach vibeconferencing\.com|Too many calls started recently|Google couldn't create the room/i;
+      if (started) {
+        // #122: hand the fresh room to the lanes that run after us. A minted room
+        // survives the leave_call below — retire releases our quota claim, it does
+        // NOT close the room (verified 2026-07-29) — so downstream lanes can join
+        // it. The marker is parsed by scheduled-meet-test.sh; keep the format.
+        console.log(`VIBECONF_MINTED_ROOM=${mintedCode}`);
+        check(CHECK, true);
+      } else if (PRECONDITION.test(startText)) {
+        skip(CHECK, `${startText.slice(0, 240)}\n      This is an environment precondition, not a `
+          + 'route bug — the /call mint needs a signed-in vibeconf.com session (the guest test '
+          + 'profile has none). Sign the profile in to promote this from SKIP to a real check.');
+      } else {
+        check(CHECK, false,
+          `${startText.slice(0, 240)}\n      NOTE: unlike the checks above, this one reaches `
+          + 'vibeconferencing.com (/api/meet/create). A signed-out/site-down/rate-limited result '
+          + 'is reported as SKIP; this red means the response was none of those — a real route bug.');
+      }
       await mcp.request('tools/call', { name: 'leave_call', arguments: {} }).catch(() => {});
     }
   } finally {

@@ -197,6 +197,40 @@ function closeShareWindowByUrl(url, { appName = 'Google Chrome' } = {}) {
   });
 }
 
+// Build the AppleScript that brings the window containing the call (a
+// meet.google.com tab) back to the front. After a share starts, the isolated
+// browsing window is frontmost, so the user is left staring at the shared page
+// instead of the call. Capture is occlusion-proof (by window id), so the
+// browsing window can safely drop behind. Returns "RAISED" / "NOTFOUND".
+function buildRaiseMeetScript(meetFragment = 'meet.google.com', appName = 'Google Chrome') {
+  const meet = appleScriptStringLiteral(meetFragment);
+  const app = appleScriptStringLiteral(appName);
+  return [
+    `tell application ${app}`,
+    `  repeat with w in windows`,
+    `    repeat with t in tabs of w`,
+    `      if (URL of t contains ${meet}) then`,
+    `        set index of w to 1`,
+    `        return "RAISED"`,
+    `      end if`,
+    `    end repeat`,
+    `  end repeat`,
+    `  return "NOTFOUND"`,
+    `end tell`,
+  ].join('\n');
+}
+
+// Bring the call's browser window to the front. Never rejects. Resolves { ok }.
+// No-op (ok:false) if the call isn't in this browser (e.g. it's only in the app).
+function raiseMeetWindow({ appName = 'Google Chrome', meetFragment = 'meet.google.com' } = {}) {
+  return new Promise((resolve) => {
+    execFile('osascript', ['-e', buildRaiseMeetScript(meetFragment, appName)], { timeout: 5000 }, (err, stdout) => {
+      if (err) return resolve({ ok: false, reason: err.message });
+      resolve({ ok: String(stdout || '').trim() === 'RAISED' });
+    });
+  });
+}
+
 module.exports = {
   appleScriptStringLiteral,
   buildActivateTabScript,
@@ -206,4 +240,6 @@ module.exports = {
   listBrowserWindows,
   buildCloseWindowScript,
   closeShareWindowByUrl,
+  buildRaiseMeetScript,
+  raiseMeetWindow,
 };

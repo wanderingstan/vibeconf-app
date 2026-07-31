@@ -2448,6 +2448,15 @@ async function startExternalTabShare({ url, appName } = {}) {
   if (meetView && meetView.webContents) {
     sendCallCmd(CALL_COMMANDS.triggerScreenShare, { shareType: 'window' });
   }
+  // Now that the page is captured, bring the user's Meet window back to the
+  // front so they're looking at the call, not the shared page (capture is
+  // occlusion-proof, so the browsing window can sit behind). Best-effort; no-op
+  // if the call isn't in this browser. Small delay lets the share engage first.
+  setTimeout(() => {
+    require('./share-external-tab.js').raiseMeetWindow()
+      .then((r) => console.log('[electron] raised Meet window after share:', r.ok))
+      .catch(() => { /* best-effort */ });
+  }, 800);
   return { success: true, title: resolved.title };
 }
 

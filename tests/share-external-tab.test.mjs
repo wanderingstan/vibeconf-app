@@ -11,6 +11,7 @@ import {
   appleScriptStringLiteral,
   buildActivateTabScript,
   buildCloseWindowScript,
+  buildRaiseMeetScript,
   pickWindowSource,
 } from '../electron-app/share-external-tab.js';
 
@@ -42,6 +43,13 @@ test('buildCloseWindowScript closes the window containing the shared URL', () =>
   assert.match(s, /close w/);
   assert.match(s, /return "CLOSED"/);
   assert.match(s, /return "NOTFOUND"/);
+});
+
+test('buildRaiseMeetScript brings the call window to the front', () => {
+  const s = buildRaiseMeetScript('meet.google.com', 'Google Chrome');
+  assert.match(s, /URL of t contains "meet\.google\.com"/);
+  assert.match(s, /set index of w to 1/);
+  assert.match(s, /return "RAISED"/);
 });
 
 test('buildActivateTabScript guards against sharing the call window (collision detection)', () => {

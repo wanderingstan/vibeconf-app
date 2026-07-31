@@ -97,7 +97,7 @@ test('the suggestion is made in main, not the renderer', () => {
   // Two wizards open at once must not land on the same name, and only main can
   // see which names are already in use on this machine.
   assert.match(main, /ipcMain\.handle\('onboarding:suggest-bot-name'/);
-  assert.match(main, /randomBotName\(\{ taken: \[\.\.\.taken/);
+  assert.match(main, /const avoid = \[\.\.\.taken/, 'main merges the taken list itself');
   assert.match(main, /listProfiles\(PROFILES_ROOT\)/, 'the taken list should be the real one');
 });
 
@@ -109,21 +109,56 @@ test('the wizard pre-fills only when the bot has no name yet', () => {
   assert.match(fn.slice(0, fn.indexOf('\n}')), /catch \{ return ''; \}/);
 });
 
-test('"Try another" cannot hand back the name it was asked to replace', () => {
-  // A 1-in-345 repeat would read as a broken button, not a coincidence — so the
+test('a suggestion never hands back the name it was asked to replace', () => {
+  // A repeat would read as a broken control, not a 1-in-345 coincidence — so the
   // current field value is excluded, not just the names already in use.
-  assert.match(main, /exclude = \[\] \} = \{\}\)/);
+  assert.match(main, /exclude = \[\], count = 1 \} = \{\}\)/);
   assert.match(main, /\.\.\.taken, \.\.\.\(Array\.isArray\(exclude\) \? exclude : \[\]\)/);
-  assert.match(wizard, /suggestName\(\[\$\('botName'\)\.value\]\)/);
 });
 
-test('the shuffle button exists and is wired', () => {
+test('the spinner exists and toggles Spin/Stop', () => {
   const html = readFileSync(join(root, 'electron-app/renderer/onboarding.html'), 'utf8');
   assert.match(html, /id="botNameShuffle"/);
-  // The input is width:100%, so it needs a flex row to share the line.
+  assert.match(html, />Spin</, 'starts as Spin');
+  // The input is width:100%, so it needs a flex row to share the line — and the
+  // button needs a min-width so Spin↔Stop doesn't resize it mid-spin.
   assert.match(html, /class="field-row"/);
-  assert.match(wizard, /\$\('botNameShuffle'\)\?\.addEventListener/);
-  // Disabled while in flight, so a double-click can't race two suggestions.
-  const fn = wizard.slice(wizard.indexOf("$('botNameShuffle')?.addEventListener"));
-  assert.match(fn.slice(0, 500), /btn\.disabled = true/);
+  assert.match(html, /min-width: 92px/);
+  assert.match(wizard, /btn\.textContent = 'Stop'/);
+  assert.match(wizard, /btn\.textContent = 'Spin'/);
+});
+
+test('Stop keeps exactly the name on screen', () => {
+  // No deceleration, no settling elsewhere. A wheel that coasts past what you
+  // were looking at when you clicked is infuriating — and here it would mean the
+  // button lied about what you were choosing.
+  const fn = wizard.slice(wizard.indexOf('function stopSpin'));
+  const body = fn.slice(0, fn.indexOf('\n}'));
+  assert.match(body, /clearInterval\(spinTimer\)/);
+  assert.ok(!/botName'\)\.value =/.test(body), 'stopping must not change the field');
+});
+
+test('the spin speed sits at the reaction-time cusp', () => {
+  // Tuned so you can ALMOST stop on a name you liked. Simple reaction time is
+  // ~250ms, so at ~220ms the wheel advances about one name while you react.
+  const m = wizard.match(/const SPIN_MS = (\d+)/);
+  assert.ok(m, 'SPIN_MS should exist');
+  const ms = Number(m[1]);
+  assert.ok(ms >= 180 && ms <= 300, `${ms}ms is outside the cusp: <180 is pure luck, >300 is easy to aim`);
+});
+
+test('one batch per spin, not an IPC per frame', () => {
+  // At ~4.5 names/sec a round trip per frame would make the wheel stutter.
+  assert.match(wizard, /suggestNames\(SPIN_BATCH/);
+  assert.match(main, /names\.push\(randomBotName\(\{ taken: \[\.\.\.avoid, \.\.\.names\] \}\)\)/,
+    'a batch must not repeat a name back-to-back');
+});
+
+test('typing beats spinning, and navigating away stops it', () => {
+  // Otherwise the wheel overwrites what someone has begun to type, and a spin
+  // left running keeps rewriting a field nobody is looking at.
+  assert.match(wizard, /\$\('botName'\)\?\.addEventListener\('focus', stopSpin\)/);
+  assert.match(wizard, /\$\('botName'\)\?\.addEventListener\('keydown', stopSpin\)/);
+  const save = wizard.slice(wizard.indexOf('async function saveCurrent'));
+  assert.match(save.slice(0, 300), /stopSpin\(\);/);
 });

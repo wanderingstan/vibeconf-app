@@ -33,6 +33,9 @@ function render() {
 }
 
 async function saveCurrent() {
+  // Whatever is on screen is the choice. Also stops the wheel rewriting a field
+  // the user has navigated away from.
+  stopSpin();
   const step = steps[i];
   try {
     if (step === 'voice') {
@@ -332,20 +335,80 @@ async function suggestName(exclude = []) {
   } catch { return ''; }
 }
 
-// Roll a different name. Deliberately overwrites whatever is in the field: the
-// only reason to press this is to reject what is there. Focus lands back on the
-// input afterwards so the name can be edited straight away.
-$('botNameShuffle')?.addEventListener('click', async () => {
+async function suggestNames(count, exclude = []) {
+  try {
+    const r = await api.invoke('onboarding:suggest-bot-name', { exclude, count });
+    return (r && r.names) || [];
+  } catch { return []; }
+}
+
+// ── Name spinner ─────────────────────────────────────────────────────────
+// Spin/Stop, like a game show wheel. Naming a bot is the one genuinely playful
+// moment in an otherwise administrative wizard, so it is worth the few lines.
+//
+// Stop keeps EXACTLY the name on screen — no deceleration, no settling on a
+// different one. A wheel that coasts past what you were looking at when you hit
+// the button is infuriating, and here it would also mean the button lied about
+// what you were choosing.
+// 220ms (~4.5/sec) is TUNED, not arbitrary. The goal is a wheel you can almost
+// but not quite stop on a name you liked.
+//
+// Simple visual reaction time is ~250ms: see a name, decide, click. So at 220ms
+// the wheel advances roughly one name in the time it takes to react — you land
+// next to your target, usually one past it. Close enough to feel like skill,
+// unreliable enough to stay a game.
+//
+// Both directions ruin it. Much faster (100ms) and 2–3 names pass before the
+// click registers, so it is pure chance and the names blur unread. Much slower
+// (400ms+) and anyone can hit exactly the one they want, which makes the button
+// a slow dropdown. Resist "fixing" this to feel snappier or fairer.
+const SPIN_MS = 220;
+const SPIN_BATCH = 120;     // names per spin — long enough that a spin rarely runs out
+let spinTimer = null;
+let spinNames = [];
+let spinIdx = 0;
+
+function spinning() { return spinTimer !== null; }
+
+function stopSpin() {
+  if (!spinTimer) return;
+  clearInterval(spinTimer);
+  spinTimer = null;
   const btn = $('botNameShuffle');
+  if (btn) { btn.textContent = 'Spin'; btn.title = 'Spin for a name'; }
+}
+
+async function startSpin() {
+  const btn = $('botNameShuffle');
+  if (!btn) return;
   btn.disabled = true;
   try {
-    const name = await suggestName([$('botName').value]);
-    if (name) $('botName').value = name;
+    // One batch per spin, cycled locally — an IPC round trip per frame would
+    // make the wheel stutter.
+    const names = await suggestNames(SPIN_BATCH, [$('botName').value]);
+    if (!names.length) return;                 // nothing to spin; leave the field alone
+    spinNames = names;
+    spinIdx = 0;
+    btn.textContent = 'Stop';
+    btn.title = 'Keep the name showing';
+    spinTimer = setInterval(() => {
+      $('botName').value = spinNames[spinIdx % spinNames.length];
+      spinIdx++;
+    }, SPIN_MS);
   } finally {
     btn.disabled = false;
-    $('botName').focus();
   }
+}
+
+$('botNameShuffle')?.addEventListener('click', () => {
+  if (spinning()) { stopSpin(); $('botName').focus(); return; }
+  startSpin();
 });
+
+// Typing beats spinning — otherwise the wheel overwrites what someone has begun
+// to type, which feels like the app fighting them.
+$('botName')?.addEventListener('focus', stopSpin);
+$('botName')?.addEventListener('keydown', stopSpin);
 
 // ── initial load ─────────────────────────────────────────────────────────
 (async () => {

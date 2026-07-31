@@ -7122,7 +7122,7 @@ function setupIPC() {
   // A name to pre-fill the wizard's field with (#187). Generated HERE rather than
   // in the renderer so two profiles being set up at once can't be handed the same
   // one — and so the "already taken" list is the real one.
-  ipcMain.handle('onboarding:suggest-bot-name', (_event, { exclude = [] } = {}) => {
+  ipcMain.handle('onboarding:suggest-bot-name', (_event, { exclude = [], count = 1 } = {}) => {
     const { randomBotName } = require('./bot-names.js');
     let taken = [];
     try {
@@ -7130,10 +7130,22 @@ function setupIPC() {
         .map((p) => p && (p.botName || p.name))
         .filter(Boolean);
     } catch { /* first run, or unreadable — a possible duplicate beats no name */ }
-    // `exclude` carries what is already in the field. Without it "Try another"
-    // could hand back the name it was just asked to replace, which reads as a
-    // broken button rather than a 1-in-266 coincidence.
-    return { name: randomBotName({ taken: [...taken, ...(Array.isArray(exclude) ? exclude : [])] }) };
+    // `exclude` carries what is already in the field. Without it a fresh
+    // suggestion could hand back the name it was just asked to replace, which
+    // reads as a broken control rather than a 1-in-345 coincidence.
+    const avoid = [...taken, ...(Array.isArray(exclude) ? exclude : [])];
+
+    // `count` feeds the wizard's spinner: it cycles names locally at ~10/sec, and
+    // asking main for each one would mean an IPC round trip per frame. One batch
+    // is fetched per spin instead.
+    const n = Math.max(1, Math.min(200, Number(count) || 1));
+    const names = [];
+    for (let i = 0; i < n; i++) {
+      // Avoid what's already showing AND what this batch has used, so a spin
+      // never stutters by repeating a name back-to-back.
+      names.push(randomBotName({ taken: [...avoid, ...names] }));
+    }
+    return { name: names[0], names };
   });
 
   ipcMain.handle('onboarding:finish', () => {

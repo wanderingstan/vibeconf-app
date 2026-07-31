@@ -59,6 +59,16 @@ const FEMININE = [
   'Rosa', 'Carmen', 'Greta', 'Helena', 'Marisa', 'Alba', 'Ines', 'Elsa', 'Agata',
   'Ilse', 'Dalia', 'Rania', 'Zainab', 'Lakshmi', 'Padma', 'Rina', 'Yuna', 'Hana',
   'Nomsa', 'Rosalia',
+  // Common in the US — the majority of the audience, so the list should feel
+  // familiar more often than not. Same word rule: Lily, Ivy, Grace, Violet,
+  // Willow, Daisy, Jade, Ruby, Autumn, Nova and Aria are all names people
+  // actually use and all excluded, because the bot would wake on them.
+  'Emma', 'Olivia', 'Charlotte', 'Amelia', 'Abigail', 'Emily', 'Elizabeth', 'Ella',
+  'Chloe', 'Penelope', 'Hannah', 'Stella', 'Natalie', 'Leah', 'Audrey', 'Bella',
+  'Claire', 'Lucy', 'Caroline', 'Emilia', 'Allison', 'Julia', 'Vivian', 'Sophie',
+  'Madeline', 'Lydia', 'Josephine', 'Katherine', 'Diana', 'Rachel', 'Megan',
+  'Nicole', 'Michelle', 'Rebecca', 'Danielle', 'Christine', 'Andrea', 'Marie',
+  'Victoria',
 ];
 
 const MASCULINE = [
@@ -95,6 +105,15 @@ const MASCULINE = [
   'Antoine', 'Aldo', 'Klaus', 'Stefan', 'Boris', 'Ivan', 'Pavel', 'Yuri', 'Levi',
   'Amos', 'Yusuf', 'Idris', 'Malik', 'Samir', 'Reza', 'Pranav', 'Aditya', 'Varun',
   'Naveen', 'Haruki', 'Femi', 'Themba', 'Jimmy',
+  // Common in the US. Same word rule, which costs a lot of popular ones here:
+  // Jack, Mason, Hunter, Cooper, Parker, Carter, Brooks, Miles, Angel, Roman,
+  // Christian and Maverick are all excluded as ordinary words or occupations.
+  'Liam', 'Noah', 'Elijah', 'James', 'William', 'Benjamin', 'Lucas', 'Henry',
+  'Alexander', 'Michael', 'Ethan', 'Jacob', 'Logan', 'Jackson', 'Sebastian',
+  'Owen', 'Theodore', 'Samuel', 'Joseph', 'David', 'Wyatt', 'Matthew', 'Luke',
+  'Julian', 'Gabriel', 'Isaac', 'Lincoln', 'Anthony', 'Dylan', 'Charles',
+  'Andrew', 'Nathan', 'Caleb', 'Adrian', 'Nolan', 'Cameron', 'Connor',
+  'Nicholas', 'Dominic', 'Evan',
 ];
 
 const BOT_NAMES = [...FEMININE, ...MASCULINE];

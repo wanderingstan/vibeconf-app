@@ -28,6 +28,11 @@
       border-radius: 6px; padding: 9px 11px; font-size: 14px; font-family: inherit;
     }
     input:focus { outline: none; border-color: #8ab4f8; }
+    /* Name + "Try another" on one line. The input is width:100%, so it needs a
+       flex parent to share the row; flex:1 lets the button keep its natural size. */
+    .field-row { display: flex; gap: 8px; align-items: stretch; }
+    .field-row input { flex: 1; }
+    .field-row .btn { white-space: nowrap; flex: 0 0 auto; }
     select {
       width: 100%; background: #2a2d31; color: #e8eaed; border: 1px solid #5f6368;
       border-radius: 6px; padding: 9px 11px; font-size: 14px; font-family: inherit;
@@ -162,7 +167,10 @@
       <h2>Name your bot</h2>
       <p class="sub">What should your bot be called, and how should its on-camera face look?</p>
       <label for="botName">Bot name</label>
-      <input type="text" id="botName" placeholder="Unnamed bot" />
+      <div class="field-row">
+        <input type="text" id="botName" placeholder="Unnamed bot" />
+        <button type="button" class="btn ghost" id="botNameShuffle" title="Suggest a different name">Try another</button>
+      </div>
       <label for="emojiSet" style="margin-top:14px">Emoji style <span style="color:#9aa0a6">(the bot's face on the virtual camera)</span></label>
       <select id="emojiSet">
         <option value="fluent3d">Fluent 3D — glossy (default)</option>

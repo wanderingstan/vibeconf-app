@@ -325,12 +325,27 @@ $('voiceboxLink').addEventListener('click', (e) => { e.preventDefault(); api.inv
 // already in use, and two wizards open at once must not land on the same one.
 // Falls back to empty rather than blocking the wizard if the call fails: the old
 // behaviour, which is worse but still usable.
-async function suggestName() {
+async function suggestName(exclude = []) {
   try {
-    const r = await api.invoke('onboarding:suggest-bot-name');
+    const r = await api.invoke('onboarding:suggest-bot-name', { exclude });
     return (r && r.name) || '';
   } catch { return ''; }
 }
+
+// Roll a different name. Deliberately overwrites whatever is in the field: the
+// only reason to press this is to reject what is there. Focus lands back on the
+// input afterwards so the name can be edited straight away.
+$('botNameShuffle')?.addEventListener('click', async () => {
+  const btn = $('botNameShuffle');
+  btn.disabled = true;
+  try {
+    const name = await suggestName([$('botName').value]);
+    if (name) $('botName').value = name;
+  } finally {
+    btn.disabled = false;
+    $('botName').focus();
+  }
+});
 
 // ── initial load ─────────────────────────────────────────────────────────
 (async () => {

@@ -7108,7 +7108,7 @@ function setupIPC() {
   // A name to pre-fill the wizard's field with (#187). Generated HERE rather than
   // in the renderer so two profiles being set up at once can't be handed the same
   // one — and so the "already taken" list is the real one.
-  ipcMain.handle('onboarding:suggest-bot-name', () => {
+  ipcMain.handle('onboarding:suggest-bot-name', (_event, { exclude = [] } = {}) => {
     const { randomBotName } = require('./bot-names.js');
     let taken = [];
     try {
@@ -7116,7 +7116,10 @@ function setupIPC() {
         .map((p) => p && (p.botName || p.name))
         .filter(Boolean);
     } catch { /* first run, or unreadable — a possible duplicate beats no name */ }
-    return { name: randomBotName({ taken }) };
+    // `exclude` carries what is already in the field. Without it "Try another"
+    // could hand back the name it was just asked to replace, which reads as a
+    // broken button rather than a 1-in-266 coincidence.
+    return { name: randomBotName({ taken: [...taken, ...(Array.isArray(exclude) ? exclude : [])] }) };
   });
 
   ipcMain.handle('onboarding:finish', () => {

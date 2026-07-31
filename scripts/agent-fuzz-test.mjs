@@ -19,9 +19,13 @@
 // ⚠️ SCAFFOLDING — authored without a live run available; validate before trusting.
 //    Open validation items (see also spawn-agents.mjs):
 //    - Permissions: #279 may block `claude -p` on the mini (dangerous-skip not honored).
-//    - Transcript timing: /api/sync transcript may clear once a bot LEAVES; if the
-//      judge sees an empty transcript, snapshot per-bot transcripts on a timer
-//      DURING the run instead of once at the end (session-log is durable regardless).
+//    - Transcript timing: this USED to be a problem — /api/sync cleared the
+//      transcript the moment a bot left, so a judge reading it at the end saw
+//      nothing. After-call work (#139) fixed that: leaving now enters a phase
+//      where the room and transcript stay live until the agent calls
+//      end_session. A judge reading after a bot leaves but before teardown gets
+//      the real thing. (session-log is durable regardless, so it remains the
+//      safer source.)
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';

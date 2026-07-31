@@ -355,6 +355,40 @@ async function main() {
   await chatWakeTest(BOTS).catch((err) => console.error('✗ chat-wake test error:', err.message));
 
   // Central teardown (scripts no longer leave themselves).
+  // — after-call work (#139): the bot's participation outlives the call —
+  //
+  // Covers the MACHINERY on a real call: does leaving enter the phase instead of
+  // tearing down, does the call's state survive it, does end_session finish it.
+  //
+  // It cannot cover the JUDGEMENT — these fleet bots are scripted HTTP drivers,
+  // not Claude sessions, so nothing here checks whether a real agent reads the
+  // handoff and writes a decent note. That still needs a human on a live call.
+  console.log('\n— after-call work (the phase outlives the call) —');
+  {
+    const bot = BOTS[0];
+    const before = await bot.lifecycle();
+    await bot.leave();
+
+    const entered = await bot.waitForPhase('after-call-work');
+    if (entered) {
+      // The whole point: clearRoom() used to run here and empty this.
+      const kept = (await bot.transcriptText().catch(() => '')).split('\n').filter(Boolean).length;
+      record(bot.name, 'afterCallStateKept', kept > 0,
+        kept > 0 ? `transcript still readable (${kept} entries)` : 'transcript was wiped on leave');
+
+      const after = await bot.lifecycle();
+      record(bot.name, 'afterCallRoomKept', after.roomId === before.roomId && !!after.callId,
+        after.roomId === before.roomId ? `room ${after.roomId} + callId intact` : 'room was cleared on leave');
+
+      // And ending it early must actually tear down, rather than waiting out the
+      // backstop — that difference is the whole reason end_session exists.
+      await bot.endSession();
+      const done = await bot.waitForPhase('idle');
+      record(bot.name, 'afterCallEndSession', done,
+        done ? 'end_session tore the call down' : 'still not idle after end_session');
+    }
+  }
+
   await Promise.all(BOTS.map((b) => b.leave().catch(() => {})));
 
   const r = report();

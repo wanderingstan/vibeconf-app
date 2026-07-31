@@ -289,6 +289,21 @@ if (( ! SLACK )) && [[ -z "${VIBECONF_NO_RUN_TAG:-}" ]]; then
 fi
 
 BOTS_ARG=""
+# Put every test profile's CLAUDE.md back to the shipped default before the run.
+#
+# CLAUDE.md is seeded once and never overwritten, so a test profile otherwise
+# accumulates whatever anyone left in it and a run depends on history nobody
+# remembers. It also keeps the real-agent missions honest about features that
+# live in that file (after-call work, #139): the test should read what a fresh
+# install gets, not a profile that happens to have been patched.
+#
+# The script refuses anything not named test-*, so a bad PROFILE_BASE can't
+# reach a real bot. Failure is fatal — a run that silently skipped the reset
+# would grade the wrong instructions.
+for i in $(seq 1 $N); do
+  node "$(dirname "$0")/reset-test-profile-instructions.mjs" "${PROFILE_BASE}-$i"
+done
+
 for i in $(seq 1 $N); do
   profile="${PROFILE_BASE}-$i"
   port=$((BASE_PORT + i - 1))

@@ -46,6 +46,50 @@ export const MISSIONS = [
     ].join('\n'),
   },
   {
+    key: 'after-call-work',
+    title: 'After-call work — the bot keeps working once it has left the call (#139)',
+    // The point is what happens AFTER leave_call. Deliberately a thin call: we
+    // want the agent to reach the end quickly and spend the run in the phase.
+    //
+    // The prompt does NOT say what to do after leaving. That is the test — the
+    // handoff message and the bot's own CLAUDE.md are supposed to carry it, and
+    // a prompt that re-specified the job would grade the prompt instead.
+    //
+    // spawn-test-fleet.sh resets every test profile's CLAUDE.md to the shipped
+    // default before a run, so this grades the real path — template → handoff →
+    // agent → result — against the instructions a fresh install would get,
+    // rather than whatever a profile had accumulated.
+    prompt: [
+      'You are a test agent in a live video call with another bot named {peer}.',
+      'Have a SHORT exchange, then leave — the interesting part is what happens after.',
+      '1. Greet the room in one short sentence.',
+      '2. Say one sentence about what this call is for, so there is something worth summarising.',
+      '3. Say a brief goodbye and LEAVE the call (use the leave tool).',
+      'Then read what the tools tell you and act on it. Do not loop. Do not linger in the call.',
+    ].join('\n'),
+    rubric: [
+      'This mission grades what the agent does AFTER it leaves the call.',
+      'A PASS requires ALL of the following, judged from the session log:',
+      '- The bot joined, spoke at least once, and LEFT cleanly.',
+      '- After leaving, the agent KEPT WORKING rather than stopping: the log shows tool calls',
+      '  AFTER the leave (reading the transcript, writing a file, or similar).',
+      '- The agent called end_session to finish, rather than going silent and letting the app',
+      '  time out. A run where the app had to hit its backstop is a FAIL for this mission.',
+      '- The agent did NOT try to speak or send chat after leaving — nobody would hear it.',
+      '- Its after-call work left something BEHIND: the bot\'s instructions tell it to write a',
+      '  note under call-notes/, so the log should show a file actually being written. Any',
+      '  observable result counts — the point is that the phase produced something, not nothing.',
+      'It is a FAIL if: the agent stopped the moment it left (treated the handoff as a STOP);',
+      'it never called end_session; it spoke after leaving; it looped; or the phase ran and',
+      'produced no result at all.',
+      'Do NOT grade the QUALITY of what it wrote — an LLM judging another LLM\'s prose is the',
+      'least reliable thing this harness can do. Only that something was written, and that it is',
+      'a summary rather than a dump of the raw transcript.',
+      'This is a SYMMETRIC mission, so DO NOT penalize simultaneous speech; set',
+      'avoided_talk_over=true regardless.',
+    ].join('\n'),
+  },
+  {
     key: 'turn-taking',
     title: 'Turn-taking — host leads, guest yields; grades talk-over (#343)',
     // ROLE-BASED: bot 0 hosts, bot 1 is the guest. Designed so a well-behaved run

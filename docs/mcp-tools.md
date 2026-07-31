@@ -9,7 +9,8 @@ All tools accept an optional `room_id` argument. If omitted, the MCP server uses
 | Tool | What |
 |---|---|
 | **`join_call`** | Navigate the app to a Meet URL and join. Use when the app is open but not yet in a call. |
-| **`leave_call`** | Hang up and close the bot's session. |
+| **`leave_call`** | Hang up. If after-call work is enabled the bot enters that phase rather than shutting down; the reply says so. |
+| **`end_session`** | Finish after-call work and release the app. Call it as soon as the wrap-up is done — the app holds the room, transcript and terminal open until you do. |
 | **`get_room_info`** | The primary "what's happening" query. Returns participants, speaker state, sharing status, errors, detected Meet URLs (when not in a call), local server URL, profile name, session log path. Call this first whenever you're unsure of state. |
 
 ## Listening

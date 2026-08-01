@@ -211,6 +211,10 @@ function prefValue(key) {
 // at a time — the bot is only ever in one.
 let activeRecording = null;
 
+// Spoken when an explicit start_debug_recording begins, so participants are told
+// the call is being recorded (consent). Short on purpose.
+const RECORDING_NOTICE = "Just so everyone knows — I'm now recording this call's audio for debugging.";
+
 function recordCallEnabled() {
   // Env wins so the test fleet can force it on without touching config.
   if (process.env.VIBECONF_RECORD_CALL === '1') return true;
@@ -245,7 +249,16 @@ function startCallRecording(room, botName, { force = false } = {}) {
     if (meetView && !meetView.webContents.isDestroyed()) {
       meetView.webContents.send('trigger-record', { recording: true, room, startedAt: activeRecording.startedAt, botName: activeRecording.botName });
     }
-    return { ok: true, dir, room: room || null };
+    // Consent: an EXPLICIT start (start_debug_recording) speaks a notice so the
+    // room knows it's being recorded. The auto path (test fleet, force=false)
+    // stays silent — it's all bots, and an extra utterance would skew the
+    // nightly's speech-timing checks. The notice is captured in the recording.
+    let announced = false;
+    if (force) {
+      try { speakText(RECORDING_NOTICE); announced = true; }
+      catch (err) { console.warn('[call-record] recording notice failed to speak:', err.message); }
+    }
+    return { ok: true, dir, room: room || null, announced };
   } catch (err) {
     console.warn('[call-record] could not start recording:', err.message);
     activeRecording = null;

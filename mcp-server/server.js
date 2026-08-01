@@ -1262,7 +1262,10 @@ server.tool(
       const data = await resp.json().catch(() => ({}));
       if (data.ok) {
         if (data.already) return { content: [{ type: "text", text: `Already recording — files in:\n${data.dir}` }] };
-        return { content: [{ type: "text", text: `Recording the call's audio (one file per track). Saving to:\n${data.dir}` }] };
+        const notice = data.announced
+          ? " I spoke a notice so the room knows it's being recorded — no need to announce it again."
+          : "";
+        return { content: [{ type: "text", text: `Recording the call's audio (one file per track).${notice} Saving to:\n${data.dir}` }] };
       }
       const why = data.code === 'not-in-call'
         ? "Not in a call — join or start one first, then record."

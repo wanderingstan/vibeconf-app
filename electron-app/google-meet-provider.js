@@ -1959,6 +1959,13 @@ class DOMSpeakerTracker {
       this._applyDebugBorder(info, isSpeaking);
       meetProvider.emit(CALL_EVENTS.speakingChanged, { name, speaking: isSpeaking });
       meetProvider.emit(CALL_EVENTS.participantsUpdated, this.getParticipantList());
+      // #209: feed the page-world CallRecorder the real participant NAME so it can
+      // attribute recorded tracks. Scoped action (not the vestigial
+      // dom-speaker-change, which the provider round-trips into speakingChanged).
+      try {
+        window.postMessage({ __botsInCalls: true, __fromExtension: true,
+          action: 'speaker-active', payload: { name, speaking: isSpeaking, at: Date.now() } }, '*');
+      } catch { /* page not ready — next change re-posts */ }
     } else if (info.speaking && source === 'poll') {
       // Re-assert active speech so local-server's silence timer keeps resetting.
       meetProvider.emit(CALL_EVENTS.speakingChanged, { name, speaking: true });
@@ -2349,6 +2356,9 @@ window.addEventListener('message', (event) => {
   }
   if (event.data.action === 'record-stopped') {
     ipcRenderer.send('call-record-stopped', event.data.payload || {});
+  }
+  if (event.data.action === 'record-name') {
+    ipcRenderer.send('call-record-name', event.data.payload || {});
   }
   if (event.data.action === 'record-started') {
     ipcRenderer.send('page-inject-log', `[call-record] renderer started recording (room ${event.data.payload?.room || '?'})`);
@@ -2786,12 +2796,12 @@ ipcRenderer.on('trigger-leave-call', () => {
 // #209: main tells the page-world CallRecorder to start/stop. Main owns the
 // decision (recordCallAudio pref / VIBECONF_RECORD_CALL) and the on-disk
 // session; the page just captures tracks and streams chunks back.
-ipcRenderer.on('trigger-record', (_event, { recording, room, startedAt } = {}) => {
+ipcRenderer.on('trigger-record', (_event, { recording, room, startedAt, botName } = {}) => {
   window.postMessage({
     __botsInCalls: true,
     __fromExtension: true,
     action: recording ? 'start-recording' : 'stop-recording',
-    payload: { room, startedAt },
+    payload: { room, startedAt, botName },
   }, '*');
 });
 

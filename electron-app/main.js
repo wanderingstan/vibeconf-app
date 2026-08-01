@@ -217,8 +217,12 @@ function recordCallEnabled() {
   try { return !!prefValue('recordCallAudio'); } catch { return false; }
 }
 
-function startCallRecording(room, botName) {
-  if (activeRecording || !recordCallEnabled()) return;
+// force=true is the explicit request (start_debug_recording MCP tool): record
+// even when the recordCallAudio pref is off. The auto path (bot-joined) leaves
+// force=false so it stays gated. Returns a small status for the MCP tool.
+function startCallRecording(room, botName, { force = false } = {}) {
+  if (activeRecording) return { ok: true, already: true, dir: activeRecording.dir };
+  if (!force && !recordCallEnabled()) return { ok: false, code: 'disabled' };
   try {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const safeRoom = String(room || 'call').replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -230,28 +234,45 @@ function startCallRecording(room, botName) {
     });
     console.log(`[call-record] recording call audio to ${dir}`);
     if (meetView && !meetView.webContents.isDestroyed()) {
-      meetView.webContents.send('trigger-record', { recording: true, room, startedAt: activeRecording.startedAt });
+      meetView.webContents.send('trigger-record', { recording: true, room, startedAt: activeRecording.startedAt, botName: activeRecording.botName });
     }
+    return { ok: true, dir, room: room || null };
   } catch (err) {
     console.warn('[call-record] could not start recording:', err.message);
     activeRecording = null;
+    return { ok: false, code: 'error', detail: err.message };
   }
 }
 
 function stopCallRecording() {
-  if (!activeRecording) return;
+  if (!activeRecording) return { ok: true, already: true };
+  const dir = activeRecording.dir;
   try {
     if (meetView && !meetView.webContents.isDestroyed()) {
       meetView.webContents.send('trigger-record', { recording: false });
     }
   } catch { /* window already gone */ }
+  let tracks = 0;
   try {
     const m = activeRecording.stop();
-    console.log(`[call-record] saved ${m.tracks.length} track(s) to ${activeRecording.dir}`);
+    tracks = m.tracks.length;
+    console.log(`[call-record] saved ${tracks} track(s) to ${dir}`);
   } catch (err) {
     console.warn('[call-record] error finalizing recording:', err.message);
   }
   activeRecording = null;
+  return { ok: true, dir, tracks };
+}
+
+// Explicit on/off for the start_debug_recording / stop_debug_recording MCP
+// tools. Requires an active call to start (no tracks otherwise).
+function setCallRecording({ on } = {}) {
+  if (on) {
+    const room = localServer?.roomId || null;
+    if (!room) return { ok: false, code: 'not-in-call' };
+    return startCallRecording(room, store?.get('botName') || null, { force: true });
+  }
+  return stopCallRecording();
 }
 
 function currentVoiceStatus() {
@@ -1010,6 +1031,7 @@ const localServer = new globalThis.LocalServer({
   // Profile switcher (#282): a sibling instance asked us to come forward.
   // /call → POST /api/call/start → the same path the panel button takes.
   onStartCall: (opts) => createAndJoinMeet(opts),
+  onRecord: (opts) => setCallRecording(opts), // #209: start/stop debug recording
 
   onFocusRequest: () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -8006,6 +8028,11 @@ function setupIPC() {
   });
 
   ipcMain.on('call-record-stopped', () => { stopCallRecording(); });
+
+  // #209: track -> participant name, attributed live in the renderer.
+  ipcMain.on('call-record-name', (_event, { track, name } = {}) => {
+    if (activeRecording && track && name) activeRecording.setName(track, name);
+  });
 
   // --- Meet status updates (logged, DOM updated by preload) ---
   ipcMain.on(CALL_EVENTS.statusUpdate, (_event, status) => {

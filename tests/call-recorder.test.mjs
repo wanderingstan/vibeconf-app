@@ -88,6 +88,30 @@ test('chunks after stop() are ignored (teardown race), and stop() is idempotent'
   assert.deepEqual(first.tracks, second.tracks);
 });
 
+test('an attributed participant name lands in the manifest for its track', () => {
+  const dir = path.join(tmpDir(), 'call');
+  const s = new CallRecordingSession(dir, {});
+  s.chunk('remote-participant-1', 0, Buffer.from('a'));
+  s.chunk('remote-participant-2', 0, Buffer.from('b'));
+  s.setName('remote-participant-1', 'Cosmo'); // later vote overrides
+  s.setName('remote-participant-1', 'Alice');
+  const m = s.stop();
+  const p1 = m.tracks.find((t) => t.track === 'remote-participant-1');
+  const p2 = m.tracks.find((t) => t.track === 'remote-participant-2');
+  assert.equal(p1.name, 'Alice'); // last vote wins
+  assert.equal(p2.name, null);    // never attributed → explicit null
+});
+
+test('setName after stop() is ignored (no late mutation of a written manifest)', () => {
+  const dir = path.join(tmpDir(), 'call');
+  const s = new CallRecordingSession(dir, {});
+  s.chunk('remote-participant-1', 0, Buffer.from('a'));
+  s.stop();
+  s.setName('remote-participant-1', 'Alice');
+  const onDisk = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
+  assert.equal(onDisk.tracks[0].name, null);
+});
+
 test('empty or missing buffers never open a file', () => {
   const dir = path.join(tmpDir(), 'call');
   const s = new CallRecordingSession(dir, {});

@@ -2593,12 +2593,48 @@
   // ---------------------------------------------------------------------------
   const callRecorder = (() => {
     const TIMESLICE_MS = 1000;
-    const recorders = new Map(); // trackName -> { rec, track, seq }
+    const recorders = new Map(); // trackName -> { rec, track, seq, paId }
+    const votes = new Map();     // trackName -> { name: count }  (#209 attribution)
+    const bestName = new Map();  // trackName -> current best name
     let recording = false;
     let pollTimer = null;
+    let selfName = null;         // the bot's OWN name — never attribute it to a remote
 
     const post = (action, payload) =>
       window.postMessage({ __botsInCalls: true, action, payload }, '*');
+
+    // Attribution: the DOMSpeakerTracker (provider) posts 'speaker-active' with
+    // the REAL participant name when Meet's people-pane shows them speaking. When
+    // exactly one recorded remote track is making sound at that moment, that
+    // track is that speaker — vote it. Only sole-speaker moments count, so
+    // overlap never mis-attributes. Best guess is pushed to main as it firms up.
+    function voteFromDom(name) {
+      if (!recording || !name || name === selfName) return; // never attribute the bot's own voice
+      const active = [];
+      for (const [tname, st] of recorders) {
+        if (!st.paId) continue; // the bot's own track has no participant id
+        const pa = audioCaptureManager.participants.get(st.paId);
+        if (pa && pa.speaking) active.push(tname);
+      }
+      if (active.length !== 1) return; // ambiguous — need a sole speaker
+      const t = active[0];
+      let tally = votes.get(t);
+      if (!tally) { tally = {}; votes.set(t, tally); }
+      tally[name] = (tally[name] || 0) + 1;
+      let best = null, max = 0;
+      for (const nm in tally) { if (tally[nm] > max) { max = tally[nm]; best = nm; } }
+      if (best && bestName.get(t) !== best) {
+        bestName.set(t, best);
+        post('record-name', { track: t, name: best });
+      }
+    }
+
+    window.addEventListener('message', (event) => {
+      if (event.source !== window || !event.data?.__botsInCalls) return;
+      if (event.data.action === 'speaker-active' && event.data.payload?.speaking) {
+        voteFromDom(event.data.payload.name);
+      }
+    });
 
     function pickMime() {
       for (const m of ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus']) {
@@ -2607,7 +2643,7 @@
       return 'audio/webm';
     }
 
-    function recordTrack(name, track) {
+    function recordTrack(name, track, paId = null) {
       if (!recording || !track || track.readyState === 'ended' || recorders.has(name)) return;
       const mime = pickMime();
       let rec;
@@ -2617,7 +2653,7 @@
         post('log', { line: `[call-record] cannot record ${name}: ${err.message}` });
         return;
       }
-      const state = { rec, track, seq: 0 };
+      const state = { rec, track, seq: 0, paId };
       recorders.set(name, state);
       rec.ondataavailable = (e) => {
         if (!e.data || !e.data.size) return;
@@ -2647,7 +2683,7 @@
       } catch { /* bot mic not up yet — poll retries */ }
       try {
         for (const [id, pa] of audioCaptureManager.participants) {
-          if (pa && pa.track) recordTrack(`remote-${id}`, pa.track);
+          if (pa && pa.track) recordTrack(`remote-${id}`, pa.track, id);
         }
       } catch { /* manager is a stub (Slack) — nothing to attach */ }
     }
@@ -2656,6 +2692,7 @@
       start(meta) {
         if (recording) return;
         recording = true;
+        selfName = (meta && meta.botName) || null;
         post('record-started', { ...(meta || {}), at: Date.now() });
         attachAll();
         pollTimer = setInterval(attachAll, 1500);

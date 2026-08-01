@@ -42,7 +42,16 @@ class CallRecordingSession {
     this.endedAt = null;
     this.closed = false;
     this.tracks = new Map(); // track name -> state
+    this.names = new Map();  // track name -> attributed participant name (#209)
     fs.mkdirSync(dir, { recursive: true });
+  }
+
+  // Attribution: the renderer votes track -> participant name (via Meet's DOM
+  // active-speaker events) and sends the current best guess as it firms up.
+  // Stored live so the manifest has it even if stop() races the last vote.
+  setName(track, name) {
+    if (this.closed || !track || !name) return;
+    this.names.set(String(track), String(name));
   }
 
   _track(name, mime) {
@@ -114,6 +123,7 @@ class CallRecordingSession {
         + 'lone remote may appear duplicated). Attribution-by-name is future work.',
       tracks: [...this.tracks.values()].map((t) => ({
         track: t.name,
+        name: this.names.get(t.name) || null, // attributed participant, when known
         file: t.base,
         mime: t.mime,
         bytes: t.bytes,

@@ -339,17 +339,26 @@ for i in $(seq 1 $N); do
   # (not just the default instance) it would pop up over these freshly-created
   # guest profiles mid-test. Idempotent merge — writes only when something changed.
   node -e 'const fs=require("fs");const p=process.argv[1]+"/config.json";let c={};try{c=JSON.parse(fs.readFileSync(p,"utf8"))}catch{}let d=false;if(c.ttsProvider!=="macos-say"){c.ttsProvider="macos-say";d=true;}if(c.onboardingComplete!==true){c.onboardingComplete=true;d=true;}if(d)fs.writeFileSync(p,JSON.stringify(c,null,2));' "$PROFDIR"
+  # VIBECONF_REQUIRE_TOKEN=0: #201 made the local-server control API require a
+  # Bearer token by default. The agent-less harness drives that API directly and
+  # has no token, so with auth on every call returns {"error":"unauthorized"} and
+  # the whole run cascades. Test bots are local, isolated, single-purpose — the
+  # legacy no-auth server is correct here. (Passed as an ENV var, not a CLI flag,
+  # because that's what local-server reads; see the launch notes below for how it
+  # reaches each launch mode.)
   if (( PKG )); then
-    # open -n = new instance (profiles bypass the single-instance lock). It
-    # returns immediately and runs detached; we wait/kill by port below, and the
-    # app writes its own session log under the profile's userData
-    # (…/profiles/testN/logs), so no stdout redirect needed. Launch by explicit
-    # bundle PATH ("$APP") so we run exactly the chosen copy (installed vs built),
-    # not whatever LaunchServices resolves the app NAME to.
-    # ${=WINFLAGS}: zsh word-splits the flags into separate argv entries.
-    open -n "$APP" --args --profile="$profile" --local-port="$port" --bot-name="$name" ${=ACCT_FLAG} ${=WINFLAGS} ${=EXTRA_ARGS}
+    # Launch the bundle's executable DIRECTLY (not `open -n`) so the env reaches
+    # the app: `open -n --args` gets a FRESH LaunchServices environment and drops
+    # caller env vars (that's why other test-only config is CLI flags). --profile
+    # still bypasses the single-instance lock, so this is a separate instance just
+    # like `open -n` gave us. Explicit bundle PATH ("$APP") runs exactly the chosen
+    # copy (installed vs built). ${=WINFLAGS}: zsh word-splits into argv entries.
+    _exec="$APP/Contents/MacOS/$(defaults read "$APP/Contents/Info.plist" CFBundleExecutable)"
+    VIBECONF_REQUIRE_TOKEN=0 "$_exec" --profile="$profile" --local-port="$port" --bot-name="$name" ${=ACCT_FLAG} ${=WINFLAGS} ${=EXTRA_ARGS} \
+      >"/tmp/vibeconf-$profile.log" 2>&1 &
   else
-    nohup zsh -c "cd '$ELECTRON' && pnpm dev -- --profile=$profile --local-port=$port --bot-name=$name $ACCT_FLAG $WINFLAGS $EXTRA_ARGS" \
+    # Source: pnpm dev inherits the shell env, so the inline var reaches the app.
+    nohup zsh -c "cd '$ELECTRON' && VIBECONF_REQUIRE_TOKEN=0 pnpm dev -- --profile=$profile --local-port=$port --bot-name=$name $ACCT_FLAG $WINFLAGS $EXTRA_ARGS" \
       >"/tmp/vibeconf-$profile.log" 2>&1 &
   fi
   BOTS_ARG+="${BOTS_ARG:+,}$name:$port"

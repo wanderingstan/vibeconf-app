@@ -2246,6 +2246,12 @@ server.tool(
     if (noteMismatch) sections.push(noteMismatch, '');
     sections.push(...[
       `Room: ${roomId}`,
+      // The call id is what names this call's artifact folder (calls/<call-id>/),
+      // so the bot's CLAUDE.md can tell it where to save transcripts, summaries
+      // and recordings. It was in the payload but never printed, which made every
+      // "get_room_info for the call id" instruction quietly unfollowable.
+      // Absent between calls — the id is minted on join and cleared on leave.
+      data.callId ? `Call id: ${data.callId} (artifacts for this call belong in calls/${data.callId}/)` : null,
       `Call status: ${status.callStatus || 'unknown'}`,
       `Mode: ${status.mode || 'active'} (active=responds freely, passive=only when named, silent=listens but never speaks)`,
       status.localServerUrl ? `Local server: ${status.localServerUrl} (MCP base URL for this app instance)` : null,

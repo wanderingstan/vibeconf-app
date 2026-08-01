@@ -209,7 +209,12 @@ test('the bot template says what after-call work is for', () => {
   const { defaultClaudeMd, defaultBotSettings } = require('../electron-app/agent-workdir.js');
   const md = defaultClaudeMd();
   assert.match(md, /## After the call/);
-  assert.match(md, /call-notes\//, 'the MVP: a summary written into the agent dir');
+  assert.match(md, /calls\/<call-id>\/summary\.md/, 'the MVP: a summary written into the agent dir');
+  // The path has to be per-CALL, not per-room. roomId repeats across every call
+  // in the same room, so a bot pointed at the room code would overwrite the
+  // previous call's artifacts every time — and get_room_info prints both, so
+  // the template has to say which one out loud.
+  assert.match(md, /NOT the bare room\s+code/, 'must warn off the room code');
   assert.match(md, /end_session/, 'and how to end the phase');
   assert.match(md, /Never `speak` or `send_chat`/, 'the bot has left the meeting');
   // It has to read as editable — after-call work is per-bot, not a house rule.
@@ -252,4 +257,25 @@ test('the two readers agree about whether the phase runs', () => {
   assert.match(pbody, /this\._pref\('afterCallWorkSeconds'\)/, 'server side resolves via _pref');
   // _pref falls back to the schema, and so must the app side.
   assert.match(main, /prefValue\('afterCallWorkSeconds'\)/);
+});
+
+test('the call id actually reaches the agent, so calls/<call-id>/ is followable', () => {
+  // The template tells the bot to "get_room_info for the call id". That was
+  // already a lie: get_room_info never printed it, and the sync payload it reads
+  // did not even carry it — the payload had roomId only. An instruction the
+  // agent cannot follow fails silently, so both halves are pinned here.
+  const server = readFileSync(new URL('../electron-app/local-server.js', import.meta.url), 'utf8');
+  const mcp = readFileSync(new URL('../mcp-server/server.js', import.meta.url), 'utf8');
+
+  // The payload has to carry it...
+  assert.match(server, /roomId: this\.roomId,\n(\s*\/\/[^\n]*\n)*\s*callId: this\.callId,/,
+    'the sync payload must include callId next to roomId');
+  // ...and get_room_info has to print it.
+  assert.match(mcp, /Call id: \$\{data\.callId\}/, 'get_room_info must surface the call id');
+
+  // And it must be the per-join id, not the room code: callId is minted as the
+  // room code plus the call start time. If that ever collapses to just the code,
+  // every call in a room writes over the last one's artifacts.
+  assert.match(server, /this\.callId = `\$\{code\}-\$\{this\.callStartedAt/,
+    'callId must stay room-code + start-time, or per-call folders collide');
 });

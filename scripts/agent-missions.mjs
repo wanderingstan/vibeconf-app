@@ -77,7 +77,7 @@ export const MISSIONS = [
       '  time out. A run where the app had to hit its backstop is a FAIL for this mission.',
       '- The agent did NOT try to speak or send chat after leaving — nobody would hear it.',
       '- Its after-call work left something BEHIND: the bot\'s instructions tell it to write a',
-      '  note under call-notes/, so the log should show a file actually being written. Any',
+      '  summary under calls/<call-id>/, so the log should show a file actually being written. Any',
       '  observable result counts — the point is that the phase produced something, not nothing.',
       'It is a FAIL if: the agent stopped the moment it left (treated the handoff as a STOP);',
       'it never called end_session; it spoke after leaving; it looped; or the phase ran and',

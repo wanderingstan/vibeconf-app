@@ -26,6 +26,27 @@ const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionL
 // byte-identical to the prior literals — same wire.
 const { CALL_EVENTS, CALL_COMMANDS } = require('./call-provider.js');
 
+// How Claude Code should launch our stdio MCP server.
+//
+// It used to be the bare string 'node', which silently requires the user to
+// have Node on PATH. macOS ships none, and Claude Code's own native installer
+// (~/.local/share/claude/...) doesn't bring one — so a non-developer who does
+// everything right gets `spawn node ENOENT` and a bot that never appears.
+// This never showed up in our own testing because every machine we test on has
+// Homebrew node, and that's machine-wide: a fresh macOS *account* still sees it.
+//
+// Electron already contains a Node runtime, so use ours. ELECTRON_RUN_AS_NODE
+// makes the app binary behave exactly like `node <script>`. It costs nothing
+// (already on disk), pins a known-good version, and adds no new fragility —
+// args[0] already points inside the app bundle, so the config was always tied
+// to the app's existence.
+function mcpNodeLauncher() {
+  return {
+    command: process.execPath,
+    env: { ELECTRON_RUN_AS_NODE: '1' },
+  };
+}
+
 // Let the shared board play sound unprompted. Now that the whiteboard window's
 // audio is captured into the screen share, a board pointed at a page with a
 // <video>/<audio> would otherwise sit silent: Chromium's autoplay policy needs a
@@ -4582,9 +4603,10 @@ async function launchClaudeTerminal(meetCode) {
           // exists: the user-scoped one carries a fallback port pointing at the
           // PRIMARY app, so an unpinned session would drive the wrong bot.
           vibeconferencing: {
-            command: 'node',
+            command: mcpNodeLauncher().command,
             args: [mcpServerPath],
             env: {
+              ...mcpNodeLauncher().env,
               VIBECONF_ROOM_ID: '',
               VIBECONF_BOT_NAME: botName,
               VIBECONF_BASE_URL: `http://127.0.0.1:${localServer.port}`,
@@ -4976,7 +4998,12 @@ function ensureClaudeIntegration() {
   const localBaseUrl = `http://127.0.0.1:${DEFAULT_PORT}`;
   const configuredBotName = resolvedBotName();
   const currentMcp = claudeJson.mcpServers.vibeconferencing;
+  const nodeLauncher = mcpNodeLauncher();
+  // `command` is compared too, so installs written by an older build (which
+  // hardcoded 'node') get repaired on next launch instead of staying broken for
+  // exactly the users who can't diagnose it.
   const needsUpdate = !currentMcp ||
+    currentMcp.command !== nodeLauncher.command ||
     currentMcp.env?.VIBECONF_BASE_URL !== localBaseUrl ||
     currentMcp.env?.VIBECONF_BOT_NAME !== configuredBotName ||
     currentMcp.args?.[0] !== mcpServerPath;
@@ -4995,9 +5022,10 @@ function ensureClaudeIntegration() {
       currentMcp.args[0], 'instead of repointing durable config at', mcpServerPath);
   } else if (needsUpdate) {
     claudeJson.mcpServers.vibeconferencing = {
-      command: 'node',
+      command: nodeLauncher.command,
       args: [mcpServerPath],
       env: {
+        ...nodeLauncher.env,
         VIBECONF_ROOM_ID: '',
         VIBECONF_BOT_NAME: configuredBotName,
         VIBECONF_BASE_URL: localBaseUrl,

@@ -369,7 +369,11 @@ echo "▶ Waiting for local-servers…"
 for i in $(seq 1 $N); do
   port=$((BASE_PORT + i - 1))
   for attempt in $(seq 1 40); do
-    if curl -sf "http://127.0.0.1:$port/api/sync/no-room" >/dev/null 2>&1; then
+    # -m 5: bound each probe. The socket can be OPEN (server listening) while the
+    # app's main thread is wedged (e.g. blocked on a modal dialog) and never
+    # responds — without a max-time the readiness loop hangs indefinitely instead
+    # of giving up. (Belt-and-suspenders alongside the headless dialog-skip fix.)
+    if curl -sf -m 5 "http://127.0.0.1:$port/api/sync/no-room" >/dev/null 2>&1; then
       echo "  ✓ port $port up"; break
     fi
     if (( attempt == 40 )); then echo "  ✗ port $port never came up — see /tmp/vibeconf-test$i.log"; fi

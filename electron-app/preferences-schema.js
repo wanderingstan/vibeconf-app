@@ -158,8 +158,9 @@ const PREFERENCES = {
       'own outgoing audio plus each remote WebRTC track Meet delivers — with a ' +
       'manifest that time-aligns them. Built to diagnose "heard-nothing" stalls: ' +
       'it captures what each mic actually carried, to compare against captions. ' +
-      'NOTE: Meet mixes remote audio, so a "remote-*" track may be the whole room, ' +
-      'not one person. OFF by default; verbose on disk. Env VIBECONF_RECORD_CALL=1 ' +
+      'Meet gives each remote participant its own track (measured), so "remote-*" ' +
+      'tracks are per-participant — labeled by arrival order, not name. OFF by ' +
+      'default; verbose on disk. Env VIBECONF_RECORD_CALL=1 ' +
       'forces it on (used by the test fleet so a nightly stall comes with audio).',
   },
   studioSound: {

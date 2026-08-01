@@ -2582,10 +2582,10 @@
   // Records the bot's OWN outgoing audio (its TTS mic) and every remote WebRTC
   // track the AudioCaptureManager holds, each with its own MediaRecorder, and
   // streams the webm/opus chunks to main (call-recorder.js appends one file per
-  // track + a manifest). Meet mixes remote audio server-side, so "remote-*" is
-  // often the whole room, not one person — we record whatever distinct tracks
-  // Meet delivers and label them, rather than pretend to separate speakers we
-  // can't. Reliable split today is bot-vs-remote.
+  // track + a manifest). Meet hands each remote participant its OWN WebRTC track
+  // — measured independent in a 3-party call (#209) — so "remote-*" tracks are
+  // genuinely per-participant, not one shared mix. They're labeled by arrival
+  // order, not name; Meet can also emit extra/initially-silent tracks.
   //
   // Dormant until main sends 'start-recording' (gated on the recordCallAudio
   // pref / VIBECONF_RECORD_CALL). The poll re-attaches: the bot mic may not

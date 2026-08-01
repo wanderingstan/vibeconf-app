@@ -6,12 +6,14 @@
 // the remote track — it was silent" or "it was full of audio the bot never
 // captioned". That is the diagnostic the meet-test stalls have been missing.
 //
-// WHAT IT IS NOT: clean per-HUMAN separation. Google Meet mixes remote audio
-// server-side (see page-inject.js AudioCaptureManager) — a "remote-*" track is
-// often the whole room, not one person. We record whatever DISTINCT WebRTC
-// tracks Meet delivers, plus the bot's own outgoing audio, and label them
-// honestly in the manifest. Reliable split today is bot-vs-remote; per-person
-// split happens only when Meet actually sends separate tracks.
+// SEPARATION: measured (#209), Meet DOES hand each remote participant its own
+// WebRTC track — in a 3-party call the two remote tracks came out with near-zero
+// energy cross-correlation (independent audio, not one shared mix). So this
+// records the bot's own outgoing audio plus each distinct remote track, and you
+// get real per-participant tracks. Caveats we do NOT paper over: tracks are
+// labeled by arrival order, not participant NAME (attribution is future work),
+// and Meet can emit extra or initially-silent tracks — in a 2-person call the
+// lone remote may even appear duplicated. The manifest states this per session.
 //
 // The renderer (page-inject.js) drives a MediaRecorder per track and streams
 // base64 webm/opus chunks here via IPC. MediaRecorder timeslice chunks are NOT
@@ -104,8 +106,12 @@ class CallRecordingSession {
       startedAt: this.startedAt,
       endedAt: this.endedAt,
       durationMs: (this.endedAt || Date.now()) - this.startedAt,
-      note: 'Google Meet mixes remote audio server-side — a "remote-*" track may '
-        + 'carry the whole room, not one participant. Reliable split is bot vs remote.',
+      note: 'Each remote-* is a distinct WebRTC track from Meet. Measured '
+        + 'independent (near-zero cross-correlation) in a 3-party call, i.e. Meet '
+        + 'DOES separate participants onto their own tracks — not one shared mix. '
+        + 'Caveats: tracks are labeled by arrival order, not participant NAME, and '
+        + 'Meet can emit extra or initially-silent tracks (in a 2-person call the '
+        + 'lone remote may appear duplicated). Attribution-by-name is future work.',
       tracks: [...this.tracks.values()].map((t) => ({
         track: t.name,
         file: t.base,

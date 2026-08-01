@@ -2653,19 +2653,27 @@
         post('log', { line: `[call-record] cannot record ${name}: ${err.message}` });
         return;
       }
-      const state = { rec, track, seq: 0, paId };
+      const state = { rec, track, seq: 0, paId, startWallClock: 0 };
       recorders.set(name, state);
       rec.ondataavailable = (e) => {
         if (!e.data || !e.data.size) return;
         const reader = new FileReader();
         reader.onload = () => {
           const b64 = String(reader.result).split(',')[1];
-          if (b64) post('record-chunk', { track: name, seq: state.seq++, mime, dataBase64: b64 });
+          // startWallClock: wall-clock ms at the instant this track's recorder
+          // started, i.e. the t=0 of its webm timeline. Captured HERE in the
+          // renderer (not on chunk arrival at main) so a sample at internal time
+          // t maps to an absolute wall clock of startWallClock + t — the anchor
+          // that aligns audio with the transcript's Date.now() stamps (#209).
+          if (b64) post('record-chunk', { track: name, seq: state.seq++, mime, dataBase64: b64, startWallClock: state.startWallClock });
         };
         reader.readAsDataURL(e.data);
       };
       track.addEventListener('ended', () => stopTrack(name));
-      try { rec.start(TIMESLICE_MS); } catch (err) { post('log', { line: `[call-record] start failed ${name}: ${err.message}` }); }
+      // Stamp the wall clock immediately before start() — this is the track
+      // timeline's true origin, on the same clock as every other call event.
+      try { state.startWallClock = Date.now(); rec.start(TIMESLICE_MS); }
+      catch (err) { post('log', { line: `[call-record] start failed ${name}: ${err.message}` }); }
     }
 
     function stopTrack(name) {

@@ -55,7 +55,7 @@ class CallRecordingSession {
     this.names.set(String(track), String(name));
   }
 
-  _track(name, mime) {
+  _track(name, mime, startWallClock) {
     let t = this.tracks.get(name);
     if (!t) {
       // Never let a track name reach the filesystem unsanitized.
@@ -67,6 +67,11 @@ class CallRecordingSession {
         fd: fs.openSync(file, 'w'),
         mime: mime || 'audio/webm',
         bytes: 0, chunks: 0,
+        // startWallClock (from the renderer, at MediaRecorder.start()) is the
+        // PRECISE anchor: the webm's t=0 in absolute wall-clock ms, on the same
+        // clock as the transcript. startOffsetMs (chunk arrival at main, relative
+        // to startedAt) is kept as a coarse cross-check but lags by ~a timeslice.
+        startWallClock: Number.isFinite(startWallClock) ? startWallClock : null,
         startOffsetMs: Math.max(0, Date.now() - this.startedAt),
         lastSeq: -1, seqGaps: 0,
         capped: false,
@@ -77,9 +82,10 @@ class CallRecordingSession {
   }
 
   // Append one MediaRecorder chunk. `buffer` is a Buffer (decoded upstream).
-  chunk(name, seq, buffer, mime) {
+  // startWallClock: wall-clock ms at the track's MediaRecorder.start() (its t=0).
+  chunk(name, seq, buffer, mime, startWallClock) {
     if (this.closed || !buffer || !buffer.length) return;
-    const t = this._track(name, mime);
+    const t = this._track(name, mime, startWallClock);
     if (t.capped) return;
     if (Number.isInteger(seq)) {
       if (t.lastSeq >= 0 && seq !== t.lastSeq + 1) t.seqGaps++;
@@ -117,12 +123,13 @@ class CallRecordingSession {
       startedAt: this.startedAt,
       endedAt: this.endedAt,
       durationMs: (this.endedAt || Date.now()) - this.startedAt,
-      note: 'Each remote-* is a distinct WebRTC track from Meet. Measured '
-        + 'independent (near-zero cross-correlation) in a 3-party call, i.e. Meet '
-        + 'DOES separate participants onto their own tracks — not one shared mix. '
-        + 'Caveats: tracks are labeled by arrival order, not participant NAME, and '
-        + 'Meet can emit extra or initially-silent tracks (in a 2-person call the '
-        + 'lone remote may appear duplicated). Attribution-by-name is future work.',
+      note: 'Timeline: each track\'s startWallClock is its webm t=0 in absolute '
+        + 'wall-clock ms (same Date.now() clock as the transcript), so sample-time '
+        + 't maps to startWallClock + t — align audio with transcript/events by '
+        + 'that. Each remote-* is a distinct WebRTC track from Meet (measured '
+        + 'independent in a 3-party call — Meet separates participants, not one '
+        + 'mix); tracks are labeled by arrival order and named when attributable, '
+        + 'and Meet can emit extra or initially-silent tracks.',
       tracks: [...this.tracks.values()].map((t) => ({
         track: t.name,
         name: this.names.get(t.name) || null, // attributed participant, when known
@@ -130,7 +137,8 @@ class CallRecordingSession {
         mime: t.mime,
         bytes: t.bytes,
         chunks: t.chunks,
-        startOffsetMs: t.startOffsetMs,
+        startWallClock: t.startWallClock, // absolute wall-clock ms at the track's t=0
+        startOffsetMs: t.startOffsetMs,   // coarse cross-check (chunk arrival at main)
         seqGaps: t.seqGaps,
         capped: t.capped,
       })),

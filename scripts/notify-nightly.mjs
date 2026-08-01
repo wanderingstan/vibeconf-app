@@ -12,10 +12,10 @@
 //   VIBECONF_RESULTS_DIR=<path>  override results dir
 //   VIBECONF_TELEGRAM_ENV=<path> override the token .env location
 
-import { readFileSync } from 'fs';
+import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 
 const RESULTS = process.env.VIBECONF_RESULTS_DIR || join(homedir(), 'vibeconf-test-results');
 const CHAT = process.env.VIBECONF_NOTIFY_CHAT || '6785998012'; // Stan's DM
@@ -46,7 +46,7 @@ function dmgVersion() {
 // agent-fuzz) actually ran against. So a DMG-lane fail vs a source-lane fail points
 // at the version vs the commit at a glance.
 function mainCommit() {
-  const repo = process.env.VIBECONF_REPO || join(homedir(), 'Developer/vibeconferencing');
+  const repo = process.env.VIBECONF_REPO || join(homedir(), 'Developer/vibeconf-app');
   const line = sh(`git -C "${repo}" log -1 "--format=%h|%cr|%s"`);
   if (!line) return null;
   const [hash, age, ...rest] = line.split('|');
@@ -95,13 +95,84 @@ const lines = [
 const anyRed = lines.some((l) => l.startsWith('🔴'));
 const stamp = dmg?.ts || main?.ts || slack?.ts || '(unknown)';
 
+// --- Claude analysis (only on a red night) ---------------------------------
+// When something failed, hand the failing log lines to `claude -p` for a short
+// root-cause read and fold it into the alert, so the Telegram ping says WHY, not
+// just THAT. Best-effort: any hiccup (no claude binary, no API creds in the cron
+// env, a timeout) is swallowed and the digest sends without it. Off with
+// VIBECONF_ANALYZE=0; model via VIBECONF_ANALYZE_MODEL; binary via CLAUDE_BIN.
+function newestRunLog() {
+  try {
+    const f = readdirSync(RESULTS).filter((n) => /^run-.*\.log$/.test(n)).sort();
+    return f.length ? join(RESULTS, f[f.length - 1]) : null;
+  } catch { return null; }
+}
+function resolveClaudeBin() {
+  if (process.env.CLAUDE_BIN) return process.env.CLAUDE_BIN;
+  const onPath = sh('command -v claude');
+  if (onPath) return onPath;
+  const known = '/Applications/cmux.app/Contents/Resources/bin/claude';
+  try { readFileSync(known); return known; } catch { return null; }
+}
+// A compact, failure-focused digest of the run log — section headers plus the
+// lines that actually carry a failure/error — so the model gets signal, not the
+// whole 20KB transcript.
+function failingDigest(logPath) {
+  let raw = '';
+  try { raw = readFileSync(logPath, 'utf8'); } catch { return ''; }
+  const keep = /(^=== .* ===| ❌ |🔴|failed steps:|REAL STALL|real stall|not in-call|error|unauthorized|exit code: [1-9]|exit: [1-9])/i;
+  const picked = raw.split('\n').filter((l) => keep.test(l));
+  return picked.join('\n').slice(0, 12000);
+}
+function analyzeFailures() {
+  if (process.env.VIBECONF_ANALYZE === '0') return null;
+  const bin = resolveClaudeBin();
+  const logPath = newestRunLog();
+  if (!bin || !logPath) return null;
+  const digest = failingDigest(logPath);
+  if (!digest.trim()) return null;
+  const model = process.env.VIBECONF_ANALYZE_MODEL || 'sonnet';
+  const prompt = [
+    'You are triaging an automated nightly test run for "Vibeconferencing", an',
+    'Electron app where AI bots join Google Meet + Slack calls, driven by an HTTP',
+    'test harness. Below (via stdin) is a FAILURE DIGEST — only the failing lines',
+    'from tonight\'s run log.',
+    '',
+    'Write a SHORT root-cause read for a Telegram alert:',
+    '- 2-4 sentences on the single most likely root cause (identify the COMMON',
+    '  cause; do not restate every failed step).',
+    '- Tag it: [code regression] / [environment/Google-Meet flakiness] / [test-infra] / [unknown].',
+    '- One line for the most useful next step, if obvious.',
+    'Plain text only, no markdown, under ~120 words.',
+  ].join('\n');
+  try {
+    const out = execFileSync(bin, ['-p', prompt, '--model', model], {
+      input: digest,
+      encoding: 'utf8',
+      timeout: 180000,
+      maxBuffer: 4 * 1024 * 1024,
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+    const trimmed = (out || '').trim();
+    return trimmed ? trimmed.slice(0, 2500) : null;
+  } catch (e) {
+    console.log(`[notify] analysis skipped: ${e.message?.split('\n')[0] || e}`);
+    return null;
+  }
+}
+const analysis = anyRed ? analyzeFailures() : null;
+
 // Bold title (Telegram HTML), then two context lines: the DMG version (DMG-meet
 // lane) and the main commit (all source lanes).
 const header = `<b>${esc(`${anyRed ? '🔴' : '🌙'} Nightly ${stamp}`)}</b>`;
 const ctx = [];
 const dver = dmgVersion(); if (dver) ctx.push(`🖥 DMG ${esc(dver)}`);
 const mc = mainCommit(); if (mc) ctx.push(`🔧 main ${esc(mc)}`);
-const text = [header, ...ctx, ...lines.map(esc)].join('\n');
+const analysisBlock = analysis ? ['', '🔎 <b>Claude analysis</b>', esc(analysis)] : [];
+// Keep under Telegram's 4096-char hard limit — the status lines are the priority,
+// so trim the analysis tail (not the digest) if the whole thing runs long.
+let text = [header, ...ctx, ...lines.map(esc), ...analysisBlock].join('\n');
+if (text.length > 4090) text = text.slice(0, 4087) + '…';
 
 if (process.env.VIBECONF_NOTIFY === '0') { console.log('[notify] disabled'); process.exit(0); }
 if (process.env.VIBECONF_NOTIFY_DRYRUN === '1') { console.log('[notify] DRY-RUN — would send:\n' + text); process.exit(0); }

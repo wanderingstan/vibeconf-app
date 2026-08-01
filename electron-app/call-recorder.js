@@ -129,7 +129,8 @@ class CallRecordingSession {
         + 'that. Each remote-* is a distinct WebRTC track from Meet (measured '
         + 'independent in a 3-party call — Meet separates participants, not one '
         + 'mix); tracks are labeled by arrival order and named when attributable, '
-        + 'and Meet can emit extra or initially-silent tracks.',
+        + 'and Meet can emit extra or initially-silent tracks. A "share" track, '
+        + 'when present, is the shared tab/screen\'s own audio (raw, pre-mute).',
       tracks: [...this.tracks.values()].map((t) => ({
         track: t.name,
         name: this.names.get(t.name) || null, // attributed participant, when known

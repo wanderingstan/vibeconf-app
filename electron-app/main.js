@@ -224,11 +224,20 @@ function startCallRecording(room, botName, { force = false } = {}) {
   if (activeRecording) return { ok: true, already: true, dir: activeRecording.dir };
   if (!force && !recordCallEnabled()) return { ok: false, code: 'disabled' };
   try {
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    // Save under the bot's HOME (its agent workdir), alongside call-notes/, so a
+    // call's artifacts live together: <home>/calls/<callId>/audio-tracks/.
+    // Prefer the first-class per-join call id (#292) so this matches
+    // call-notes/<call-id>.md exactly; fall back to room+timestamp if the id
+    // hasn't been minted yet (recording started before the call went active).
+    const agentDir = require('./agent-workdir.js').agentDirFor(app.getPath('userData'));
     const safeRoom = String(room || 'call').replace(/[^a-zA-Z0-9._-]/g, '_');
-    const dir = path.join(app.getPath('userData'), 'call-audio', `${safeRoom}-${stamp}`);
+    const fallbackStamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+    const callId = (localServer && localServer.callId) || `${safeRoom}-${fallbackStamp}`;
+    const safeCallId = String(callId).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const dir = path.join(agentDir, 'calls', safeCallId, 'audio-tracks');
     activeRecording = new CallRecordingSession(dir, {
       room: room || null,
+      callId,
       botName: botName || store?.get('botName') || null,
       startedAt: Date.now(),
     });

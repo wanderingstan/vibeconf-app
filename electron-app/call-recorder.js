@@ -34,9 +34,10 @@ const MAX_TRACK_BYTES = 250 * 1024 * 1024;
 class CallRecordingSession {
   // dir: per-call output directory (created if missing).
   // meta: { room, botName, startedAt } — startedAt anchors every track's offset.
-  constructor(dir, { room = null, botName = null, startedAt = Date.now() } = {}) {
+  constructor(dir, { room = null, callId = null, botName = null, startedAt = Date.now() } = {}) {
     this.dir = dir;
     this.room = room;
+    this.callId = callId;
     this.botName = botName;
     this.startedAt = startedAt;
     this.endedAt = null;
@@ -111,6 +112,7 @@ class CallRecordingSession {
   manifest() {
     return {
       room: this.room,
+      callId: this.callId,
       botName: this.botName,
       startedAt: this.startedAt,
       endedAt: this.endedAt,

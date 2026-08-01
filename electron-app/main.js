@@ -5266,7 +5266,18 @@ app.whenReady().then(async () => {
     console.log('[electron] Screen recording permission at launch:', screenAccess);
     localServer.setPermission('screenRecording', screenAccess);
 
-    if (screenAccess !== 'granted') {
+    if (screenAccess !== 'granted' && SUPPRESS_NOTIFICATIONS) {
+      // Headless/test instance (e.g. a CI runner or the agent-less test fleet):
+      // there's no interactive user and the smoke doesn't share, so skip both the
+      // capture probe AND — critically — the blocking dialog below. Under a
+      // launcher that lacks Screen Recording (a self-hosted GitHub runner), the
+      // dialog.showMessageBoxSync() call wedges the main process (and its
+      // local-server) forever waiting for a click nobody can make. That is exactly
+      // what hung the on-push smoke to its 20-minute timeout. Permission status is
+      // already recorded above; the probe/dialog only exist to register + prompt a
+      // real user, which is meaningless here.
+      console.log('[electron] Skipping screen-capture probe + permission dialog (test/headless instance)');
+    } else if (screenAccess !== 'granted') {
       // Attempt a REAL screen capture so macOS registers Vibeconferencing in
       // the "Screen & System Audio Recording" list (and prompts if the status
       // is not-determined). The thumbnail size must be non-trivial — Electron

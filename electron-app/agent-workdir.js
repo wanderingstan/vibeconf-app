@@ -112,10 +112,23 @@ When a call ends you may get an AFTER-CALL WORK phase: you are still running, an
 the call's transcript, whiteboard and room info are all still readable even
 though you have left the meeting. This section is what you do with that time.
 
-By default: **write a short summary of the call into \`call-notes/\`.**
+### Where call artifacts go
+
+**One folder per call: \`calls/<call-id>/\`, relative to this directory.**
+
+\`get_room_info\` prints the call id — use it verbatim. It is the room code plus
+the call's start time (e.g. \`abc-defg-hij-20260801T143000Z\`), NOT the bare room
+code: the same room hosts many calls, so the room code alone would make every
+call overwrite the last one.
+
+This is the standard place for everything a call produces — the summary below
+today, and transcripts and audio recordings as those arrive. One folder per call
+keeps a call's artifacts together and makes it obvious what to delete.
+
+By default: **write a short summary of the call.**
 
 1. \`get_room_info\` for the call id, then \`read_transcripts\` for what was said.
-2. Write \`call-notes/<call-id>.md\` — a few lines of what the call was about,
+2. Write \`calls/<call-id>/summary.md\` — a few lines of what the call was about,
    any decisions, and anything someone asked you to remember or follow up. Skip
    the blow-by-blow; write what you would want to read in a month.
 3. Call \`end_session\`. Do it as soon as you are done — the app holds the room

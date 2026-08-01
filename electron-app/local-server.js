@@ -3114,6 +3114,11 @@ class LocalServer {
     return {
       success: true,
       roomId: this.roomId,
+      // The per-join call id (room code + start timestamp, minted in setRoom).
+      // roomId alone repeats across every call in the same room, so it cannot
+      // name a per-call artifact folder; this can. Surfaced through
+      // get_room_info so the bot's CLAUDE.md can point at calls/<call-id>/.
+      callId: this.callId,
       asOf: new Date().toISOString(),
       waited: !!startTime,
       elapsed,

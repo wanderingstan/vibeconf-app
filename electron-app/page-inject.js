@@ -2643,8 +2643,16 @@
 
     window.addEventListener('message', (event) => {
       if (event.source !== window || !event.data?.__botsInCalls) return;
-      if (event.data.action === 'speaker-active' && event.data.payload?.speaking) {
-        voteFromDom(event.data.payload.name);
+      if (event.data.action === 'speaker-active') {
+        const { name, speaking, at } = event.data.payload || {};
+        if (!name) return;
+        // Persist the speaker timeline (start AND stop) to disk alongside the
+        // audio: Meet mixes participants into shared slots, so the tracks alone
+        // don't say who spoke when — but this DOM-derived, wall-clock-stamped
+        // log does, and merge-call-audio.mjs turns it into who-spoke-when
+        // annotations over the merged call audio (#209).
+        if (recording) post('record-speaker-event', { name, speaking: !!speaking, at: at || Date.now() });
+        if (speaking) voteFromDom(name);
       }
     });
 

@@ -8099,6 +8099,12 @@ function setupIPC() {
     if (activeRecording && track && name) activeRecording.setName(track, name);
   });
 
+  // #209: speaker timeline (name + speaking + wall-clock) → speaker-events.jsonl,
+  // the "who spoke when" source merge-call-audio.mjs annotates the audio with.
+  ipcMain.on('call-record-speaker', (_event, { name, speaking, at } = {}) => {
+    if (activeRecording && name) activeRecording.speakerEvent(name, speaking, at);
+  });
+
   // --- Meet status updates (logged, DOM updated by preload) ---
   ipcMain.on(CALL_EVENTS.statusUpdate, (_event, status) => {
     console.log('[electron] Meet status:', status);

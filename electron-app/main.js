@@ -13,6 +13,7 @@ const { MEET } = require('./meet-selectors.js'); // pure data — safe in the ma
 const { resolveSvg } = require('./svg-resolver.js');
 // One source of truth for the unconfigured bot name — see preferences-schema.
 const { DEFAULT_BOT_NAME, PREFERENCES } = require('./preferences-schema');
+const { resolveBotName, botNameForAppUI } = require('./bot-name.js');
 const { resolveVoice } = require('./voice-status.js');
 const { isInCall, isFinished, isCallComplete } = require('./call-phase.js');
 const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEventsFor } = require('./share-surface.js');
@@ -501,7 +502,7 @@ const localServer = new globalThis.LocalServer({
   // The user's persistent panel preference, read live (#212). Lets the MCP
   // resolve an omitted bot_name to this instead of a frozen env default, and
   // keeps join_call from ever overwriting it.
-  getConfiguredBotName: () => (store?.get('botName') || DEFAULT_BOT_NAME),
+  getConfiguredBotName: () => resolvedBotName(),
   onBotSpeech: (text, voice, emoji) => {
     console.log('[local-server] Bot speech:', text.slice(0, 80), emoji ? `(emoji: ${emoji})` : '');
     // Triage EVAL: pair the fast model's turn-taking verdict with the fact that
@@ -3706,6 +3707,19 @@ const DEFAULT_PROFILE_NAME = profileManager.resolveDefaultProfileName(
 const appProfile = explicitProfile || DEFAULT_PROFILE_NAME;
 const isDefaultInstance = !explicitProfile
   || explicitProfile.toLowerCase() === DEFAULT_PROFILE_NAME.toLowerCase();
+
+// The bot's effective name when no per-call/--bot-name override is live (idle,
+// discovery, pre-join). Prefers the stored panel name, then a launch --bot-name,
+// then a humanized NAMED profile — but the default instance passes profileName:
+// null on purpose, so a genuinely unconfigured bot stays "Unnamed bot" and a
+// stray instance is visible (see bot-name.js / bot-name-default.test.mjs).
+function resolvedBotName() {
+  return resolveBotName({
+    storedName: store?.get('botName'),
+    cliName: cliArgs['bot-name'],
+    profileName: isDefaultInstance ? null : explicitProfile,
+  });
+}
 {
   const profileUserData = path.join(PROFILES_ROOT, appProfile);
   app.setPath('userData', profileUserData);
@@ -4377,7 +4391,7 @@ async function launchClaudeTerminal(meetCode) {
   // Use the bot's name (getActiveBotName) so the spawned /join-call <code> <name>
   // + MCP env align with the call we're in. (Slack's real account name is read
   // separately — #283; until then this is the Meet/Bot Name.)
-  const botName = getActiveBotName() || store.get('botName') || DEFAULT_BOT_NAME;
+  const botName = resolvedBotName();
 
   // Named profile instances (second bot, e.g. Samantha): the auto-launch runs
   // `claude` which would otherwise pick up the USER-SCOPED ~/.claude.json
@@ -4820,7 +4834,7 @@ function ensureClaudeIntegration() {
   // `claude` at a fixed target regardless of who installs it. (On join_call the
   // MCP server re-binds by profile name anyway; this is just the default target.)
   const localBaseUrl = `http://127.0.0.1:${DEFAULT_PORT}`;
-  const configuredBotName = store.get('botName') || DEFAULT_BOT_NAME;
+  const configuredBotName = resolvedBotName();
   const currentMcp = claudeJson.mcpServers.vibeconferencing;
   const needsUpdate = !currentMcp ||
     currentMcp.env?.VIBECONF_BASE_URL !== localBaseUrl ||
@@ -5801,11 +5815,16 @@ function applyWindowTitle() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   let name = null;
   try {
-    // Same resolution the panel uses for its headline: the stored botName, else
-    // the SCHEMA DEFAULT (get-config fills unset prefs with it, which is why an
-    // untouched bot reads "Unnamed bot" on screen). Falling straight through to
-    // the profile name here would title the window differently from what it shows.
-    name = store.get('botName') || require('./preferences-schema').PREFERENCES.botName?.default;
+    // The window title distinguishes bots, so it wants provenance the plain name
+    // hides: a launched or named-profile bot is titled "Alice [launch name]" /
+    // "Test Meet Guest 1 [profile]", while a real (stored) bot is just its name
+    // and an unconfigured default is "Unnamed bot". This is the ONE place the tag
+    // shows — the Meet display name stays plain (get-meet-bot-name).
+    name = botNameForAppUI({
+      storedName: store.get('botName'),
+      cliName: cliArgs['bot-name'],
+      profileName: isDefaultInstance ? null : explicitProfile,
+    });
   } catch { /* store/schema not ready */ }
   name = String(name || appProfile || '').trim();
   try { mainWindow.setTitle(name ? `${name} — Vibeconferencing` : 'Vibeconferencing'); } catch { /* gone */ }
@@ -6923,7 +6942,20 @@ function setupIPC() {
   // Separate from get-config('botName') (which the panel uses to show the
   // persistent preference) so a per-call name never leaks into the panel field.
   ipcMain.handle('get-meet-bot-name', () => {
-    return localServer.getEffectiveBotName() || store.get('botName') || DEFAULT_BOT_NAME;
+    return localServer.getEffectiveBotName() || resolvedBotName();
+  });
+
+  // For the panel: the resolved name (`name`, used verbatim in the "Call X now"
+  // button and the copy-paste curl examples) plus a provenance-tagged `display`
+  // for the big headline — so a launched/named test bot shows "Alice [CLI name]"
+  // at a glance while its real name stays "Alice" everywhere it must match.
+  ipcMain.handle('get-bot-name-info', () => {
+    const inputs = {
+      storedName: store?.get('botName'),
+      cliName: cliArgs['bot-name'],
+      profileName: isDefaultInstance ? null : explicitProfile,
+    };
+    return { name: resolveBotName(inputs), display: botNameForAppUI(inputs) };
   });
 
   ipcMain.handle('set-config', (_event, key, value) => {

@@ -4501,6 +4501,27 @@ function promptInstallClaude() {
   }).catch(() => { /* dialog dismissed */ });
 }
 
+// Claude Code is installed but signed out (#137). We still spawn the Terminal — that
+// window IS where you sign in — but say so, because the alternative is a bot tile that
+// appears and then does nothing while the room debugs the wrong thing. Non-blocking on
+// purpose: the dialog and the Terminal come up together, and the message names the
+// window to look at rather than describing an error.
+function notifyClaudeSignInNeeded() {
+  const parent = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : null;
+  dialog.showMessageBox(parent, {
+    type: 'info',
+    title: 'Claude Code needs a one-time sign-in',
+    message: 'Sign in to Claude Code in the Terminal window',
+    detail:
+      "Your bot will join the call, but nothing will drive it until Claude Code is signed in.\n\n"
+      + "A Terminal window is opening now. If it asks you to log in, do that first — then the "
+      + "bot starts responding. This is a one-time step.\n\n"
+      + "Until you sign in, the bot looks like it's in the meeting but ignoring everyone.",
+    buttons: ['OK'],
+    noLink: true,
+  }).catch(() => { /* dismissed */ });
+}
+
 async function launchClaudeTerminal(meetCode) {
   const { execFile } = require('child_process');
   // Test fleets drive the bot from the harness over MCP — they have no use for a
@@ -4519,9 +4540,16 @@ async function launchClaudeTerminal(meetCode) {
   // (or copy the command) instead of launching a Terminal into "command not found".
   // Detection failure is non-fatal — we still launch (don't block a user who has it).
   try {
-    const { detectClaude } = require('./claude-install.js');
+    const { detectClaude, detectClaudeAuth } = require('./claude-install.js');
     const det = await detectClaude();
     if (!det.installed) { promptInstallClaude(); return; }
+    // Installed ≠ signed in (#137). Skip entirely once a session has ever pinged
+    // /claude-ready — that already proves auth, and this is on the join path.
+    if (!claudeReady) {
+      const auth = await detectClaudeAuth();
+      // ONLY on an explicit false. null means "couldn't tell" — never nag on a guess.
+      if (auth.authed === false) notifyClaudeSignInNeeded();
+    }
   } catch (e) { console.error('[electron] claude detection failed (continuing to launch):', e.message); }
   // #305: default to this profile's trusted agent dir instead of the untrusted
   // /tmp. An explicit Settings → "Claude Working Directory" still wins.

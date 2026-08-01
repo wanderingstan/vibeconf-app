@@ -39,6 +39,7 @@ jobs:
           done
 
       - name: App-health smoke (Google-free)
+        timeout-minutes: 4   # the smoke itself is ~1-2 min; fail fast if it wedges (don't burn the job timeout)
         run: |
           set -o pipefail
           pnpm smoke:health:ci 2>&1 | tee /tmp/app-health-smoke.log

@@ -87,6 +87,10 @@ let syncBaseUrl = 'http://127.0.0.1:7865';
 // DEFAULT_BOT_NAME in preferences-schema.js (this renderer is sandboxed and
 // cannot require it).
 let currentBotName = 'Unnamed bot';
+// The headline may show a provenance tag the plain name must not carry (e.g.
+// "Alice [CLI name]" for a launched test bot) — currentBotName stays clean for
+// the "Call X now" button and the curl examples; this drives botNameBig only.
+let botNameDisplay = null;
 let appProfileName = null; // app profile (stable heading identity, #282); null for the default instance
 let inCall = false;
 
@@ -1424,6 +1428,14 @@ function loadConfigIntoControls() {
   rememberedSlackName = result?.lastSlackName || null;
   refreshSlackIdentity();
   try { updateBotNameBig(); } catch { /* defined below; ignore on first paint */ }
+  // The headline shows the RESOLVED name with a provenance tag for launched/named
+  // test bots ("Alice [CLI name]") — the biggest cue when monitoring tests — while
+  // currentBotName stays the plain name the button and curl examples need.
+  api.invoke('get-bot-name-info').then((info) => {
+    if (info?.name) currentBotName = info.name;
+    botNameDisplay = info?.display || null;
+    try { updateBotNameBig(); } catch { /* ignore */ }
+  }).catch(() => { /* older main without the handler — headline stays as-is */ });
   // Prefer the new websiteUrl key; fall back to legacy syncBaseUrl so users with
   // older configs still see their existing override populated in the field.
   const effectiveUrl = result?.websiteUrl || result?.syncBaseUrl || '';
@@ -1804,7 +1816,7 @@ function updateBotNameBig() {
   if (!botNameBig) return;
   // Friendly name first (the Bot Name preference); fall back to the on-disk
   // profile name only if there isn't one, so the heading is never empty.
-  botNameBig.textContent = currentBotName || appProfileName || 'Default';
+  botNameBig.textContent = botNameDisplay || currentBotName || appProfileName || 'Default';
   // The pre-call button says the bot's name too ("Call Jimmy now"), so it has
   // to follow a rename. One choke point keeps the two from drifting.
   updateJoinBtnState();
@@ -2276,6 +2288,7 @@ botNameInput.addEventListener('change', () => {
   // silently re-adopting whatever the old default happened to be.
   const name = botNameInput.value.trim() || 'Unnamed bot';
   currentBotName = name;
+  botNameDisplay = null; // a typed/saved name is a real identity — drop any fallback tag
   api.invoke('set-config', 'botName', name);
   api.send('to-meet', { action: 'set-config', payload: { botName: name } });
   updateBotNameBig();

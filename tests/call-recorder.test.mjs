@@ -88,6 +88,24 @@ test('chunks after stop() are ignored (teardown race), and stop() is idempotent'
   assert.deepEqual(first.tracks, second.tracks);
 });
 
+test('startWallClock (the track t=0) is recorded from the first chunk for alignment', () => {
+  const dir = path.join(tmpDir(), 'call');
+  const s = new CallRecordingSession(dir, { startedAt: 1000 });
+  s.chunk('bot', 0, Buffer.from('a'), 'audio/webm', 1785000000000);
+  s.chunk('bot', 1, Buffer.from('b'), 'audio/webm', 1785000009999); // later chunks don't move the anchor
+  const m = s.stop();
+  const bot = m.tracks.find((t) => t.track === 'bot');
+  assert.equal(bot.startWallClock, 1785000000000);
+});
+
+test('startWallClock is null when the renderer did not send one (graceful)', () => {
+  const dir = path.join(tmpDir(), 'call');
+  const s = new CallRecordingSession(dir, {});
+  s.chunk('bot', 0, Buffer.from('a')); // 4-arg call, no clock
+  const m = s.stop();
+  assert.equal(m.tracks[0].startWallClock, null);
+});
+
 test('an attributed participant name lands in the manifest for its track', () => {
   const dir = path.join(tmpDir(), 'call');
   const s = new CallRecordingSession(dir, {});

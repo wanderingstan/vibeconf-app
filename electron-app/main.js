@@ -8088,7 +8088,7 @@ function setupIPC() {
     if (!activeRecording || !payload) return;
     try {
       const buf = Buffer.from(payload.dataBase64 || '', 'base64');
-      activeRecording.chunk(payload.track, payload.seq, buf, payload.mime);
+      activeRecording.chunk(payload.track, payload.seq, buf, payload.mime, payload.startWallClock);
     } catch { /* skip a malformed chunk rather than kill the stream */ }
   });
 

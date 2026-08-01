@@ -2340,6 +2340,19 @@ window.addEventListener('message', (event) => {
       ipcRenderer.send('post-transcripts', [t]);
     }
   }
+
+  // #209: call audio recording — the renderer captures each track, main writes
+  // it to disk (call-recorder.js). Forward the streamed chunks and the end
+  // signal; main owns the session (dir + files + manifest).
+  if (event.data.action === 'record-chunk') {
+    ipcRenderer.send('call-record-chunk', event.data.payload);
+  }
+  if (event.data.action === 'record-stopped') {
+    ipcRenderer.send('call-record-stopped', event.data.payload || {});
+  }
+  if (event.data.action === 'record-started') {
+    ipcRenderer.send('page-inject-log', `[call-record] renderer started recording (room ${event.data.payload?.room || '?'})`);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -2768,6 +2781,18 @@ ipcRenderer.on('trigger-stop-sharing', () => { meetProvider.stopShare(); });
 ipcRenderer.on('trigger-leave-call', () => {
   const clicked = meetProvider.leave();
   console.log('[electron-meet] trigger-leave-call → Leave-call button ' + (clicked ? 'clicked' : 'NOT found'));
+});
+
+// #209: main tells the page-world CallRecorder to start/stop. Main owns the
+// decision (recordCallAudio pref / VIBECONF_RECORD_CALL) and the on-disk
+// session; the page just captures tracks and streams chunks back.
+ipcRenderer.on('trigger-record', (_event, { recording, room, startedAt } = {}) => {
+  window.postMessage({
+    __botsInCalls: true,
+    __fromExtension: true,
+    action: recording ? 'start-recording' : 'stop-recording',
+    payload: { room, startedAt },
+  }, '*');
 });
 
 // ---------------------------------------------------------------------------

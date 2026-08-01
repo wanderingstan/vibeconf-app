@@ -2577,6 +2577,106 @@
   window.__botsInCallsAudioCapture = audioCaptureManager;
 
   // ---------------------------------------------------------------------------
+  // CallRecorder (#209) — per-track call audio to disk, for debugging.
+  //
+  // Records the bot's OWN outgoing audio (its TTS mic) and every remote WebRTC
+  // track the AudioCaptureManager holds, each with its own MediaRecorder, and
+  // streams the webm/opus chunks to main (call-recorder.js appends one file per
+  // track + a manifest). Meet mixes remote audio server-side, so "remote-*" is
+  // often the whole room, not one person — we record whatever distinct tracks
+  // Meet delivers and label them, rather than pretend to separate speakers we
+  // can't. Reliable split today is bot-vs-remote.
+  //
+  // Dormant until main sends 'start-recording' (gated on the recordCallAudio
+  // pref / VIBECONF_RECORD_CALL). The poll re-attaches: the bot mic may not
+  // exist at start, and a participant can join after.
+  // ---------------------------------------------------------------------------
+  const callRecorder = (() => {
+    const TIMESLICE_MS = 1000;
+    const recorders = new Map(); // trackName -> { rec, track, seq }
+    let recording = false;
+    let pollTimer = null;
+
+    const post = (action, payload) =>
+      window.postMessage({ __botsInCalls: true, action, payload }, '*');
+
+    function pickMime() {
+      for (const m of ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus']) {
+        try { if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m; } catch { /* old engine */ }
+      }
+      return 'audio/webm';
+    }
+
+    function recordTrack(name, track) {
+      if (!recording || !track || track.readyState === 'ended' || recorders.has(name)) return;
+      const mime = pickMime();
+      let rec;
+      try {
+        rec = new MediaRecorder(new MediaStream([track]), { mimeType: mime });
+      } catch (err) {
+        post('log', { line: `[call-record] cannot record ${name}: ${err.message}` });
+        return;
+      }
+      const state = { rec, track, seq: 0 };
+      recorders.set(name, state);
+      rec.ondataavailable = (e) => {
+        if (!e.data || !e.data.size) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          const b64 = String(reader.result).split(',')[1];
+          if (b64) post('record-chunk', { track: name, seq: state.seq++, mime, dataBase64: b64 });
+        };
+        reader.readAsDataURL(e.data);
+      };
+      track.addEventListener('ended', () => stopTrack(name));
+      try { rec.start(TIMESLICE_MS); } catch (err) { post('log', { line: `[call-record] start failed ${name}: ${err.message}` }); }
+    }
+
+    function stopTrack(name) {
+      const s = recorders.get(name);
+      if (!s) return;
+      try { if (s.rec.state !== 'inactive') s.rec.stop(); } catch { /* already inactive */ }
+      recorders.delete(name);
+    }
+
+    function attachAll() {
+      if (!recording) return;
+      try {
+        const bot = window.__vibeMicTrack && window.__vibeMicTrack();
+        if (bot) recordTrack('bot', bot);
+      } catch { /* bot mic not up yet — poll retries */ }
+      try {
+        for (const [id, pa] of audioCaptureManager.participants) {
+          if (pa && pa.track) recordTrack(`remote-${id}`, pa.track);
+        }
+      } catch { /* manager is a stub (Slack) — nothing to attach */ }
+    }
+
+    return {
+      start(meta) {
+        if (recording) return;
+        recording = true;
+        post('record-started', { ...(meta || {}), at: Date.now() });
+        attachAll();
+        pollTimer = setInterval(attachAll, 1500);
+      },
+      stop() {
+        if (!recording) return;
+        recording = false;
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        for (const name of [...recorders.keys()]) stopTrack(name);
+        post('record-stopped', { at: Date.now() });
+      },
+    };
+  })();
+
+  window.addEventListener('message', (event) => {
+    if (event.source !== window || !event.data?.__botsInCalls) return;
+    if (event.data.action === 'start-recording') callRecorder.start(event.data.payload || {});
+    else if (event.data.action === 'stop-recording') callRecorder.stop();
+  });
+
+  // ---------------------------------------------------------------------------
   // SpeakerAttributedTranscription — combines Web Speech API (global STT)
   // with per-participant audio levels to attribute who said what.
   //

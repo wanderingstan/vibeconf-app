@@ -16,6 +16,7 @@ const { DEFAULT_BOT_NAME, PREFERENCES } = require('./preferences-schema');
 const { resolveVoice } = require('./voice-status.js');
 const { isInCall, isFinished, isCallComplete } = require('./call-phase.js');
 const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEventsFor } = require('./share-surface.js');
+const { CallRecordingSession } = require('./call-recorder.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
 // The call-provider contract. main.js is the consumer side: it subscribes to
 // CALL_EVENTS (provider → app) and issues CALL_COMMANDS (app → provider) by
@@ -203,6 +204,54 @@ function prefValue(key) {
   const stored = store?.get(key);
   if (stored !== undefined && stored !== null) return stored;
   return PREFERENCES[key]?.default;
+}
+
+// #209: call audio recording. The page-world CallRecorder captures each track;
+// this side owns the on-disk session (one file per track + manifest). One call
+// at a time — the bot is only ever in one.
+let activeRecording = null;
+
+function recordCallEnabled() {
+  // Env wins so the test fleet can force it on without touching config.
+  if (process.env.VIBECONF_RECORD_CALL === '1') return true;
+  try { return !!prefValue('recordCallAudio'); } catch { return false; }
+}
+
+function startCallRecording(room, botName) {
+  if (activeRecording || !recordCallEnabled()) return;
+  try {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const safeRoom = String(room || 'call').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const dir = path.join(app.getPath('userData'), 'call-audio', `${safeRoom}-${stamp}`);
+    activeRecording = new CallRecordingSession(dir, {
+      room: room || null,
+      botName: botName || store?.get('botName') || null,
+      startedAt: Date.now(),
+    });
+    console.log(`[call-record] recording call audio to ${dir}`);
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('trigger-record', { recording: true, room, startedAt: activeRecording.startedAt });
+    }
+  } catch (err) {
+    console.warn('[call-record] could not start recording:', err.message);
+    activeRecording = null;
+  }
+}
+
+function stopCallRecording() {
+  if (!activeRecording) return;
+  try {
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('trigger-record', { recording: false });
+    }
+  } catch { /* window already gone */ }
+  try {
+    const m = activeRecording.stop();
+    console.log(`[call-record] saved ${m.tracks.length} track(s) to ${activeRecording.dir}`);
+  } catch (err) {
+    console.warn('[call-record] error finalizing recording:', err.message);
+  }
+  activeRecording = null;
 }
 
 function currentVoiceStatus() {
@@ -690,6 +739,7 @@ const localServer = new globalThis.LocalServer({
 
   onLeaveCall: () => {
     console.log('[local-server] Leave call requested by agent');
+    stopCallRecording(); // #209: finalize any call audio recording before teardown
     stopAllRunwayFaces('leave-call'); // P2: end Runway sessions + timers when leaving the call
     shareGeneration++; // cancel any in-flight Present-now retry loop before the view tears down
 
@@ -7940,7 +7990,22 @@ function setupIPC() {
     if (meetView && !meetView.webContents.isDestroyed()) {
       meetView.webContents.send('extension-message', { action: 'play-join-chime' });
     }
+    // #209: begin call audio recording once the page is live (page-inject is
+    // active by the time this fires) — a no-op unless recordCallAudio is on.
+    startCallRecording(meetCode, botName);
   });
+
+  // #209: audio chunks streamed from the page-world CallRecorder. Decode and
+  // append to the active session's per-track file; drop silently if none.
+  ipcMain.on('call-record-chunk', (_event, payload) => {
+    if (!activeRecording || !payload) return;
+    try {
+      const buf = Buffer.from(payload.dataBase64 || '', 'base64');
+      activeRecording.chunk(payload.track, payload.seq, buf, payload.mime);
+    } catch { /* skip a malformed chunk rather than kill the stream */ }
+  });
+
+  ipcMain.on('call-record-stopped', () => { stopCallRecording(); });
 
   // --- Meet status updates (logged, DOM updated by preload) ---
   ipcMain.on(CALL_EVENTS.statusUpdate, (_event, status) => {

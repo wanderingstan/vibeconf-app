@@ -17,6 +17,7 @@ const { resolveBotName, botNameForAppUI } = require('./bot-name.js');
 const { resolveVoice } = require('./voice-status.js');
 const { isInCall, isFinished, isCallComplete } = require('./call-phase.js');
 const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEventsFor } = require('./share-surface.js');
+const { CallRecordingSession } = require('./call-recorder.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
 // The call-provider contract. main.js is the consumer side: it subscribes to
 // CALL_EVENTS (provider → app) and issues CALL_COMMANDS (app → provider) by
@@ -204,6 +205,97 @@ function prefValue(key) {
   const stored = store?.get(key);
   if (stored !== undefined && stored !== null) return stored;
   return PREFERENCES[key]?.default;
+}
+
+// #209: call audio recording. The page-world CallRecorder captures each track;
+// this side owns the on-disk session (one file per track + manifest). One call
+// at a time — the bot is only ever in one.
+let activeRecording = null;
+
+// Spoken when an explicit start_debug_recording begins, so participants are told
+// the call is being recorded (consent). Short on purpose.
+const RECORDING_NOTICE = "Just so everyone knows — I'm now recording this call's audio for debugging.";
+
+function recordCallEnabled() {
+  // Env wins so the test fleet can force it on without touching config.
+  if (process.env.VIBECONF_RECORD_CALL === '1') return true;
+  try { return !!prefValue('recordCallAudio'); } catch { return false; }
+}
+
+// force=true is the explicit request (start_debug_recording MCP tool): record
+// even when the recordCallAudio pref is off. The auto path (bot-joined) leaves
+// force=false so it stays gated. Returns a small status for the MCP tool.
+function startCallRecording(room, botName, { force = false } = {}) {
+  if (activeRecording) return { ok: true, already: true, dir: activeRecording.dir };
+  if (!force && !recordCallEnabled()) return { ok: false, code: 'disabled' };
+  try {
+    // Save under the bot's HOME (its agent workdir), alongside call-notes/, so a
+    // call's artifacts live together: <home>/calls/<callId>/audio-tracks/.
+    // Prefer the first-class per-join call id (#292) so this matches
+    // call-notes/<call-id>.md exactly; fall back to room+timestamp if the id
+    // hasn't been minted yet (recording started before the call went active).
+    const agentDir = require('./agent-workdir.js').agentDirFor(app.getPath('userData'));
+    const safeRoom = String(room || 'call').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const fallbackStamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+    const callId = (localServer && localServer.callId) || `${safeRoom}-${fallbackStamp}`;
+    const safeCallId = String(callId).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const dir = path.join(agentDir, 'calls', safeCallId, 'audio-tracks');
+    activeRecording = new CallRecordingSession(dir, {
+      room: room || null,
+      callId,
+      botName: botName || store?.get('botName') || null,
+      startedAt: Date.now(),
+    });
+    console.log(`[call-record] recording call audio to ${dir}`);
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('trigger-record', { recording: true, room, startedAt: activeRecording.startedAt, botName: activeRecording.botName });
+    }
+    // Consent: an EXPLICIT start (start_debug_recording) speaks a notice so the
+    // room knows it's being recorded. The auto path (test fleet, force=false)
+    // stays silent — it's all bots, and an extra utterance would skew the
+    // nightly's speech-timing checks. The notice is captured in the recording.
+    let announced = false;
+    if (force) {
+      try { speakText(RECORDING_NOTICE); announced = true; }
+      catch (err) { console.warn('[call-record] recording notice failed to speak:', err.message); }
+    }
+    return { ok: true, dir, room: room || null, announced };
+  } catch (err) {
+    console.warn('[call-record] could not start recording:', err.message);
+    activeRecording = null;
+    return { ok: false, code: 'error', detail: err.message };
+  }
+}
+
+function stopCallRecording() {
+  if (!activeRecording) return { ok: true, already: true };
+  const dir = activeRecording.dir;
+  try {
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('trigger-record', { recording: false });
+    }
+  } catch { /* window already gone */ }
+  let tracks = 0;
+  try {
+    const m = activeRecording.stop();
+    tracks = m.tracks.length;
+    console.log(`[call-record] saved ${tracks} track(s) to ${dir}`);
+  } catch (err) {
+    console.warn('[call-record] error finalizing recording:', err.message);
+  }
+  activeRecording = null;
+  return { ok: true, dir, tracks };
+}
+
+// Explicit on/off for the start_debug_recording / stop_debug_recording MCP
+// tools. Requires an active call to start (no tracks otherwise).
+function setCallRecording({ on } = {}) {
+  if (on) {
+    const room = localServer?.roomId || null;
+    if (!room) return { ok: false, code: 'not-in-call' };
+    return startCallRecording(room, store?.get('botName') || null, { force: true });
+  }
+  return stopCallRecording();
 }
 
 function currentVoiceStatus() {
@@ -691,6 +783,7 @@ const localServer = new globalThis.LocalServer({
 
   onLeaveCall: () => {
     console.log('[local-server] Leave call requested by agent');
+    stopCallRecording(); // #209: finalize any call audio recording before teardown
     stopAllRunwayFaces('leave-call'); // P2: end Runway sessions + timers when leaving the call
     shareGeneration++; // cancel any in-flight Present-now retry loop before the view tears down
 
@@ -961,6 +1054,7 @@ const localServer = new globalThis.LocalServer({
   // Profile switcher (#282): a sibling instance asked us to come forward.
   // /call → POST /api/call/start → the same path the panel button takes.
   onStartCall: (opts) => createAndJoinMeet(opts),
+  onRecord: (opts) => setCallRecording(opts), // #209: start/stop debug recording
 
   onFocusRequest: () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -7983,6 +8077,26 @@ function setupIPC() {
     if (meetView && !meetView.webContents.isDestroyed()) {
       meetView.webContents.send('extension-message', { action: 'play-join-chime' });
     }
+    // #209: begin call audio recording once the page is live (page-inject is
+    // active by the time this fires) — a no-op unless recordCallAudio is on.
+    startCallRecording(meetCode, botName);
+  });
+
+  // #209: audio chunks streamed from the page-world CallRecorder. Decode and
+  // append to the active session's per-track file; drop silently if none.
+  ipcMain.on('call-record-chunk', (_event, payload) => {
+    if (!activeRecording || !payload) return;
+    try {
+      const buf = Buffer.from(payload.dataBase64 || '', 'base64');
+      activeRecording.chunk(payload.track, payload.seq, buf, payload.mime);
+    } catch { /* skip a malformed chunk rather than kill the stream */ }
+  });
+
+  ipcMain.on('call-record-stopped', () => { stopCallRecording(); });
+
+  // #209: track -> participant name, attributed live in the renderer.
+  ipcMain.on('call-record-name', (_event, { track, name } = {}) => {
+    if (activeRecording && track && name) activeRecording.setName(track, name);
   });
 
   // --- Meet status updates (logged, DOM updated by preload) ---

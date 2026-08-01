@@ -149,6 +149,20 @@ const PREFERENCES = {
       'settled. The messy data needed to test utterance-completeness detection ' +
       '(#243). Verbose; turn ON only when collecting test data, OFF for normal use.',
   },
+  recordCallAudio: {
+    type: 'boolean',
+    default: false,
+    hiddenInSettingsUI: true,
+    description:
+      'Debug: record the call\'s audio to disk, one file per track — the bot\'s ' +
+      'own outgoing audio plus each remote WebRTC track Meet delivers — with a ' +
+      'manifest that time-aligns them. Built to diagnose "heard-nothing" stalls: ' +
+      'it captures what each mic actually carried, to compare against captions. ' +
+      'Meet gives each remote participant its own track (measured), so "remote-*" ' +
+      'tracks are per-participant — labeled by arrival order, not name. OFF by ' +
+      'default; verbose on disk. Env VIBECONF_RECORD_CALL=1 ' +
+      'forces it on (used by the test fleet so a nightly stall comes with audio).',
+  },
   studioSound: {
     type: 'boolean',
     default: true,

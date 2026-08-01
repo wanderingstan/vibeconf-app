@@ -1243,6 +1243,65 @@ server.tool(
   }
 );
 
+// --- start_debug_recording (#209) ---
+server.tool(
+  "start_debug_recording",
+  "DEBUG tool: record the current call's audio to disk, one file per track — the bot's own voice plus each remote participant's audio (Meet sends them separately), with a manifest that names tracks and time-aligns them. Built to diagnose why a bot 'heard nothing': you get the actual audio each mic carried, to compare against captions. Requires an active call. This is NOT the future user-facing recording (that will capture video + all machine sound) — this is per-track audio for debugging. Auto-runs on every call when the recordCallAudio pref / VIBECONF_RECORD_CALL is set; this tool starts it on demand otherwise.",
+  {
+    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance."),
+  },
+  async ({ bot_name }) => {
+    try {
+      const routed = await routeToInstance(bot_name);
+      if (routed.error) return { content: [{ type: "text", text: routed.error }] };
+      const resp = await vfetch(`${BASE_URL}/api/call/record`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ on: true }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (data.ok) {
+        if (data.already) return { content: [{ type: "text", text: `Already recording — files in:\n${data.dir}` }] };
+        const notice = data.announced
+          ? " I spoke a notice so the room knows it's being recorded — no need to announce it again."
+          : "";
+        return { content: [{ type: "text", text: `Recording the call's audio (one file per track).${notice} Saving to:\n${data.dir}` }] };
+      }
+      const why = data.code === 'not-in-call'
+        ? "Not in a call — join or start one first, then record."
+        : `Couldn't start recording (${data.code || 'unknown'}${data.detail ? ': ' + data.detail : ''}).`;
+      return { content: [{ type: "text", text: why }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error starting recording: ${err.message}. Is the Vibeconferencing app running?` }] };
+    }
+  }
+);
+
+// --- stop_debug_recording (#209) ---
+server.tool(
+  "stop_debug_recording",
+  "Stop the debug call-audio recording started by start_debug_recording (or by the recordCallAudio pref) and finalize the files + manifest. Returns where they were saved. Recording also stops automatically when the bot leaves the call.",
+  {
+    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance."),
+  },
+  async ({ bot_name }) => {
+    try {
+      const routed = await routeToInstance(bot_name);
+      if (routed.error) return { content: [{ type: "text", text: routed.error }] };
+      const resp = await vfetch(`${BASE_URL}/api/call/record`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ on: false }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (data.already || !data.dir) return { content: [{ type: "text", text: "No recording was in progress." }] };
+      return { content: [{ type: "text", text: `Recording stopped — ${data.tracks ?? 0} track(s) saved to:\n${data.dir}` }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error stopping recording: ${err.message}.` }] };
+    }
+  }
+);
+
 // --- leave_call ---
 server.tool(
   "leave_call",

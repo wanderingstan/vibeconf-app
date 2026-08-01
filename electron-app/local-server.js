@@ -3948,13 +3948,27 @@ class LocalServer {
       this.whiteboard.version++;
       this.whiteboard.lastModified = now;
       this.whiteboard.lastEditor = data.sender;
+      // Await the push and report what it actually did (#221).
+      //
+      // This used to set ok:true from mutating local memory alone and fire the
+      // push off unwatched, so a bot got a success — and a plausible incrementing
+      // version number — for content that never reached the board anyone was
+      // looking at. On the call this was invisible: the bot had no reason to
+      // retry, mention it, or fall back to chat. It believed it had presented.
+      //
+      // `delivered` is tri-state on purpose: true = the shared board has it,
+      // false = it does not and here is why, null = there is no room, so there
+      // is no shared board to miss.
+      const push = await this.onWhiteboardUpdate(data.whiteboard.content, data.sender);
+      const delivered = push?.delivered ?? null;
       results.whiteboard = {
-        ok: true,
+        ok: delivered !== false,
+        delivered,
         version: this.whiteboard.version,
         lastModified: now,
         lastEditor: data.sender,
+        ...(delivered === false ? { error: push.error } : {}),
       };
-      this.onWhiteboardUpdate(data.whiteboard.content, data.sender);
     }
 
     // Custom whiteboard styling (#321): relay CSS to the remote sync so the

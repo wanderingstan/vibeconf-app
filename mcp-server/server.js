@@ -1052,8 +1052,18 @@ server.tool(
 
     const data = await resp.json();
     if (data.success) {
-      const version = data.results?.whiteboard?.version;
-      return { content: [{ type: "text", text: `Whiteboard updated (version ${version}).` }] };
+      const wb = data.results?.whiteboard || {};
+      // #221: a 200 from the app used to mean "I updated my own copy", which is
+      // not what anyone is asking. The board is REMOTE — if the write did not
+      // reach it, nobody in the room sees this, and the bot needs to know that
+      // while it can still say something useful out loud.
+      if (wb.delivered === false) {
+        return { content: [{ type: "text", text:
+          `The whiteboard did NOT update — ${wb.error || "the shared board could not be reached"}. `
+          + `Nobody in the room can see this content. Do not describe it as if it were on screen: `
+          + `say the board is unavailable and send the content with send_chat instead.` }] };
+      }
+      return { content: [{ type: "text", text: `Whiteboard updated (version ${wb.version}).` }] };
     } else {
       return { content: [{ type: "text", text: `Error: ${data.error || "Failed to update"}` }] };
     }

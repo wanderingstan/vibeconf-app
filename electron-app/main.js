@@ -641,7 +641,11 @@ const localServer = new globalThis.LocalServer({
       });
     }
   },
-  onWhiteboardUpdate: (content, sender) => {
+  // Returns delivery status so the caller can tell the bot the truth (#221).
+  // Was fire-and-forget with a bare .catch(), which caught NETWORK errors only —
+  // a 500 from the sync server is a resolved promise, so an outage that dropped
+  // every board write logged nothing and still reported success to the bot.
+  onWhiteboardUpdate: async (content, sender) => {
     console.log('[local-server] Whiteboard update from', sender, ':', content.slice(0, 80));
     const roomId = localServer.roomId;
     if (roomId) {
@@ -658,8 +662,12 @@ const localServer = new globalThis.LocalServer({
         }
       }
 
-      // Forward to remote sync server so the whiteboard window picks it up
-      fetch(`${baseUrl}/api/sync/${roomId}`, {
+      // Forward to remote sync server so the whiteboard window picks it up.
+      // RETURNED, not fired off: the caller reports delivery to the bot, and a
+      // bare call here would fall through to the no-room `delivered: null`
+      // below — which reads as "nothing to deliver to" and hides the failure
+      // just as thoroughly as the old fire-and-forget did.
+      return fetch(`${baseUrl}/api/sync/${roomId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -668,10 +676,22 @@ const localServer = new globalThis.LocalServer({
           ownerName: sender,
           whiteboard: { content },
         }),
-      }).catch(err => {
+      }).then(async (resp) => {
+        if (resp.ok) return { delivered: true };
+        // Body first — the sync server puts the real reason there; the status
+        // alone ("500") tells the bot nothing it can act on or repeat aloud.
+        let detail = '';
+        try { detail = ((await resp.json())?.error) || ''; } catch { /* not JSON */ }
+        const error = `sync server ${resp.status}${detail ? `: ${detail}` : ''}`;
+        console.error('[local-server] Whiteboard update REJECTED by sync server:', error);
+        return { delivered: false, error };
+      }).catch((err) => {
         console.error('[local-server] Failed to forward whiteboard update:', err.message);
+        return { delivered: false, error: `could not reach the sync server (${err.message})` };
       });
     }
+    // No room means no shared board to deliver to — local-only, not a failure.
+    return { delivered: null };
   },
   // #321: forward custom whiteboard CSS to the remote sync so the whiteboard
   // window (which renders from the remote room page) applies it. The shared

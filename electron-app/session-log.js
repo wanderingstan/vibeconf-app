@@ -63,8 +63,17 @@ async function _flushRemote() {
       headers,
       body: JSON.stringify({ lines: batch, meta: _remote.meta ? _remote.meta() : {} }),
     });
-    // On 4xx (bad token / payload) DROP the batch — requeuing would loop forever.
-    // On 5xx / network error (caught below) we requeue so a blip recovers.
+    // 429 = the server is deliberately shedding load (it returns this when its
+    // store is struggling). Drop the batch like any 4xx, but ALSO back off: a
+    // 429 that does not change our cadence is just a politer 500, and the whole
+    // point is to take weight off a backend that has asked us to.
+    if (resp.status === 429) {
+      _failures++;
+      try { _logStream && _logStream.write(`[remote-log] shed by server (429), dropping ${batch.length} lines\n`); } catch {}
+      return;   // `finally` still reschedules, now with the backoff applied
+    }
+    // On other 4xx (bad token / payload) DROP the batch — requeuing would loop
+    // forever. On 5xx / network error (caught below) we requeue so a blip recovers.
     if (!resp.ok && resp.status >= 500) throw new Error(`HTTP ${resp.status}`);
     _failures = 0;   // recovered — back to the normal cadence
   } catch (e) {

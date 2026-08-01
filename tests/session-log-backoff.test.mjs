@@ -51,6 +51,24 @@ test('the reschedule runs even when a flush throws', () => {
   assert.match(fin.slice(0, 200), /_rescheduleFlush\(\)/);
 });
 
+test('a 429 drops the batch AND backs off', () => {
+  // The gap found while watching production: 429 did not throw, so _failures
+  // reset and the client kept its 3s cadence. The server was saying "stop" and
+  // the client heard "fine". A 429 that does not change behaviour is just a
+  // politer 500.
+  const shed = src.slice(src.indexOf('if (resp.status === 429)'));
+  assert.ok(shed.length > 0, 'a 429 must be handled distinctly from other 4xx');
+  const body = shed.slice(0, 500);
+  assert.match(body, /_failures\+\+/, 'must arm the backoff');
+  assert.match(body, /return;/, 'and drop the batch rather than requeue it');
+  // The reset must come AFTER the 429 branch, or it undoes the backoff.
+  // Anchored on the reset's comment: a bare '_failures = 0;' also matches the
+  // `let` declaration at the top of the file, which is always earlier and made
+  // this assertion fail against correct code.
+  assert.ok(src.indexOf('if (resp.status === 429)') < src.indexOf("_failures = 0;   // recovered"),
+    'the success reset must not run for a shed request');
+});
+
 test('4xx still drops immediately — only 5xx and network errors retry', () => {
   // A rejected payload or bad token can never succeed; retrying it is pure load.
   // (The backend returning 500 rather than 429 for rate-limiting is what put

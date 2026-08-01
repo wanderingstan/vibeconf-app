@@ -1,0 +1,62 @@
+name: app-health smoke
+
+# Fast, Google-free pre-merge signal. Runs the deterministic app-health smoke
+# (scripts/smoke-app-health.mjs) on every push to main, on the self-hosted Mac
+# mini runner — the only place these GUI/Electron/ScreenCaptureKit tests can run.
+# The heavy live-Meet/Slack suites stay on the nightly; this just catches the
+# deterministic regression class (auth, call-state, boot, wiring) in ~1 min.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}   # allow manual runs from the Actions tab
+
+# A burst of pushes cancels the stale in-flight run and tests only head — no
+# overlap (which would collide on the shared test ports/profiles), no wasted runs
+# on intermediate commits.
+concurrency:
+  group: app-health-smoke
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, mini]
+    timeout-minutes: 20   # generous for the first run's pnpm install; steady-state ~1-2 min
+    steps:
+      # clean:false keeps node_modules between runs on this dedicated runner, so
+      # we don't re-download the Electron toolchain every push.
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+
+      # Deps persist across runs (clean:false); (re)install a sub-package only when
+      # its node_modules is missing. Root has no deps of its own to build.
+      - name: Ensure deps
+        run: |
+          for sub in electron-app mcp-server; do
+            if [ ! -d "$sub/node_modules" ]; then
+              echo "installing $sub deps…"; (cd "$sub" && pnpm install)
+            fi
+          done
+
+      - name: App-health smoke (Google-free)
+        run: |
+          set -o pipefail
+          pnpm smoke:health:ci 2>&1 | tee /tmp/app-health-smoke.log
+
+      # The red check is the primary signal, but a Telegram ping matches where the
+      # nightly already reports. Best-effort: no token → skip, never fail the job.
+      - name: Telegram ping on failure
+        if: failure()
+        run: |
+          ENV="$HOME/.claude/channels/telegram/.env"
+          TOK=$(grep -m1 '^TELEGRAM_BOT_TOKEN=' "$ENV" 2>/dev/null | cut -d= -f2- | tr -d '"'"'"' )
+          [ -z "$TOK" ] && { echo "no telegram token — skipping"; exit 0; }
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          MSG=$(printf '🔴 app-health smoke FAILED on main @ %s\n%s\n\n%s\n\n%s' \
+            "${GITHUB_SHA:0:7}" \
+            "$(git log -1 --format=%s 2>/dev/null)" \
+            "$(grep -E '❌|FAILED' /tmp/app-health-smoke.log 2>/dev/null | head -8)" \
+            "$RUN_URL")
+          curl -sS "https://api.telegram.org/bot${TOK}/sendMessage" \
+            --data-urlencode "chat_id=6785998012" \
+            --data-urlencode "text=${MSG}" >/dev/null || true

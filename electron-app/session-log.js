@@ -27,6 +27,10 @@ let _lineBuf = '';         // partial trailing line not yet newline-terminated
 let _flushTimer = null;
 let _flushing = false;
 const REMOTE_MAX_QUEUE = 5000;  // hard cap so a dead endpoint can't grow memory
+const REMOTE_MAX_ATTEMPTS = 5;      // requeue a failing batch this many times, then drop it
+const REMOTE_MAX_BACKOFF_MS = 5 * 60_000;   // never retry more than ~12x/hour while down
+let _failures = 0;              // consecutive flush failures — drives the backoff
+let _flushIntervalMs = 3000;    // healthy cadence, restored on the first success
 const REMOTE_MAX_BATCH = 800;   // lines per POST
 
 function _enqueueChunk(chunk) {
@@ -60,23 +64,57 @@ async function _flushRemote() {
       body: JSON.stringify({ lines: batch, meta: _remote.meta ? _remote.meta() : {} }),
     });
     // On 4xx (bad token / payload) DROP the batch — requeuing would loop forever.
-    // On 5xx / network error (caught below) we requeue once so a blip recovers.
+    // On 5xx / network error (caught below) we requeue so a blip recovers.
     if (!resp.ok && resp.status >= 500) throw new Error(`HTTP ${resp.status}`);
+    _failures = 0;   // recovered — back to the normal cadence
   } catch (e) {
     // Write the failure straight to the file stream (NOT console) to avoid
     // re-entering the stdout tee and recursing.
     try { _logStream && _logStream.write(`[remote-log] flush failed: ${e && e.message}\n`); } catch {}
-    _queue.unshift(...batch);
-    if (_queue.length > REMOTE_MAX_QUEUE) _queue.splice(0, _queue.length - REMOTE_MAX_QUEUE);
+    _failures++;
+    // Give up on THIS batch after a while. The queue cap bounds memory, but the
+    // thing that actually hurts is the traffic: a batch that will never be
+    // accepted was being re-POSTed every 3s forever, and the newest lines could
+    // never get through behind it.
+    if (_failures <= REMOTE_MAX_ATTEMPTS) {
+      _queue.unshift(...batch);
+      if (_queue.length > REMOTE_MAX_QUEUE) _queue.splice(0, _queue.length - REMOTE_MAX_QUEUE);
+    } else {
+      try { _logStream && _logStream.write(`[remote-log] dropping ${batch.length} lines after ${_failures} failed attempts\n`); } catch {}
+    }
   } finally {
     _flushing = false;
+    _rescheduleFlush();
   }
 }
 
-function _ensureFlushTimer(intervalMs = 3000) {
-  if (_flushTimer) return;
-  _flushTimer = setInterval(_flushRemote, intervalMs);
+// Self-scheduling instead of setInterval, so a failing endpoint can be backed
+// off (#221).
+//
+// This is why the Aug 1 whiteboard outage would not recover on its own. The
+// backend rate-limited its Redis and started 500ing; every app instance requeued
+// its batch and re-POSTed on a FIXED 3s interval, forever, with no counter and
+// no backoff despite a comment claiming it retried "once". The retries kept the
+// database rate-limited, which is what broke room-state reads — so the logging
+// held down the very thing it was waiting on. Whatever started it, this is what
+// stopped it ending.
+function _rescheduleFlush() {
+  if (!_remote || !_remote.enabled) return;
+  if (_flushTimer) clearTimeout(_flushTimer);
+  const base = _flushIntervalMs || 3000;
+  // 3s → 6s → 12s … capped. A struggling backend gets geometrically less load
+  // from us rather than a constant drumbeat.
+  const delay = _failures
+    ? Math.min(base * Math.pow(2, Math.min(_failures, 8)), REMOTE_MAX_BACKOFF_MS)
+    : base;
+  _flushTimer = setTimeout(_flushRemote, delay);
   if (_flushTimer.unref) _flushTimer.unref();
+}
+
+function _ensureFlushTimer(intervalMs = 3000) {
+  _flushIntervalMs = intervalMs;
+  if (_flushTimer) return;
+  _rescheduleFlush();
 }
 
 // Configure (or reconfigure) remote shipping. Safe to call before or after the

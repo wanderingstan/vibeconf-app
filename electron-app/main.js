@@ -1929,6 +1929,32 @@ sync.updateConfig({
   onWhiteboardUpdate: (whiteboard) => {
     localServer.applyRemoteWhiteboard(whiteboard);
   },
+  // #221: the poll reads the SAME room state the whiteboard viewer reads, so a
+  // run of failures means the board is dark for everyone in the room — the bot's
+  // writes still land, they just cannot be fetched back. On Aug 1 that lasted a
+  // whole call and the only trace was a console line nobody was watching.
+  //
+  // Three audiences, because each can do something different about it:
+  //   - the operator, via broadcastError (panel + system notification)
+  //   - the AGENT, via addError, so it can say so aloud and use chat instead —
+  //     the only one of the three that can salvage the moment
+  //   - update_whiteboard, via the flag, so the next write fails loudly rather
+  //     than reporting a success nobody can see
+  onReadHealthChange: ({ healthy, status }) => {
+    localServer.setBoardReadHealthy(healthy);
+    if (!healthy) {
+      const msg = `The shared whiteboard can't be read right now (sync server ${status}). `
+        + 'Anything you put on the board will not be visible to anyone in the call — '
+        + 'send it with send_chat instead, and say the board is down.';
+      console.error('[sync] board reads unhealthy:', status);
+      try { localServer.addError(msg); } catch { /* best-effort */ }
+      broadcastError(`Whiteboard unavailable — the sync server is returning ${status} for room state.`);
+    } else {
+      console.log('[sync] board reads recovered');
+      try { localServer.addError('The shared whiteboard is readable again — the board works normally now.'); }
+      catch { /* best-effort */ }
+    }
+  },
 });
 
 // Resolve external refs in the SVG and broadcast the result to the meet view.

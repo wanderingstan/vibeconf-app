@@ -1057,6 +1057,15 @@ server.tool(
       // not what anyone is asking. The board is REMOTE — if the write did not
       // reach it, nobody in the room sees this, and the bot needs to know that
       // while it can still say something useful out loud.
+      // Stored, but unreadable — the write worked and the room still sees
+      // nothing. Distinct from a failed write, and the bot should say something
+      // different about it.
+      if (wb.readable === false) {
+        return { content: [{ type: "text", text:
+          `Saved, but the board CANNOT BE DISPLAYED right now — the sync server is failing to serve `
+          + `room state, so the whiteboard is blank for everyone in the call. Do not describe this as `
+          + `if it were on screen: say the board is down and send the content with send_chat.` }] };
+      }
       if (wb.delivered === false) {
         return { content: [{ type: "text", text:
           `The whiteboard did NOT update — ${wb.error || "the shared board could not be reached"}. `

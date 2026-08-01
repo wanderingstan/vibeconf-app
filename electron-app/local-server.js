@@ -798,6 +798,14 @@ class LocalServer {
     return { token, url, mime };
   }
 
+  // #221: whether room state can currently be READ back from the sync server.
+  // A write can succeed while this is false — the content is stored and nobody
+  // can fetch it — which is exactly the failure that went unnoticed on Aug 1.
+  // Set by the sync poll, read by the whiteboard write path.
+  setBoardReadHealthy(healthy) {
+    this.boardReadHealthy = healthy !== false;
+  }
+
   applyRemoteWhiteboard(whiteboard) {
     if (!whiteboard || typeof whiteboard.content !== 'string') return false;
 
@@ -3961,9 +3969,15 @@ class LocalServer {
       // is no shared board to miss.
       const push = await this.onWhiteboardUpdate(data.whiteboard.content, data.sender);
       const delivered = push?.delivered ?? null;
+      // A successful write to an unreadable board is still a board nobody sees,
+      // so `readable: false` rides alongside `delivered` rather than replacing
+      // it — the two failures are independent and the bot needs to tell them
+      // apart ("it didn't save" vs "it saved and nobody can see it").
+      const readable = this.boardReadHealthy !== false;
       results.whiteboard = {
         ok: delivered !== false,
         delivered,
+        readable,
         version: this.whiteboard.version,
         lastModified: now,
         lastEditor: data.sender,

@@ -110,6 +110,10 @@ test('the join path warns only on an explicit false, and skips when already read
   const fn = main.slice(main.indexOf('async function launchClaudeTerminal'));
   const block = fn.slice(0, fn.indexOf('buildTerminalCommand'));
   assert.match(block, /if\s*\(!claudeReady\)/, 'a proven-ready session must skip the check');
-  assert.match(block, /auth\.authed === false/, 'must warn only on an explicit false, never on null');
-  assert.doesNotMatch(block, /if\s*\(!auth\.authed\)/, 'truthiness would nag on unknown — the exact thing to avoid');
+  // The check moved off the join path (it costs a login shell), so this now
+  // reads a cached tri-state rather than a local `auth`. Same rule, same
+  // strictness — warn on an explicit false and never on unknown.
+  assert.match(block, /claudeAuthState\.authed === false/, 'must warn only on an explicit false, never on null');
+  assert.doesNotMatch(block, /if\s*\(!claudeAuthState\.authed\)/, 'truthiness would nag on unknown — the exact thing to avoid');
+  assert.doesNotMatch(block, /if\s*\(!auth\.authed\)/, 'same, for the background refresh result');
 });

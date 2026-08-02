@@ -1413,6 +1413,27 @@ document.getElementById('openAppSettingsFromBanner')?.addEventListener('click', 
 // The key lives in the separate App Settings window, so re-check on focus.
 window.addEventListener('focus', refreshVoiceBanner);
 
+// #137: Claude Code installed but signed out. Strictly `=== false` — the state
+// is tri-state and `null` means the check could not tell, which must stay
+// silent. Warning someone who IS signed in is worse than not warning at all,
+// because it teaches people that this banner is noise.
+const claudeAuthBanner = document.getElementById('claudeAuthBanner');
+function paintClaudeAuth(state) {
+  if (claudeAuthBanner) claudeAuthBanner.style.display = state?.authed === false ? 'flex' : 'none';
+}
+// `refresh` asks main to re-check behind the answer it hands back, so the panel
+// paints from cache immediately and corrects itself a moment later. Main
+// throttles it, so alt-tabbing cannot spawn a login shell per focus event.
+function refreshClaudeAuthBanner(refresh = false) {
+  return api.invoke('get-claude-auth-status', { refresh }).then(paintClaudeAuth).catch(() => {});
+}
+// Pushed when main re-checks, and — the case that matters — the moment an agent
+// connects, so finishing the sign-in clears this immediately rather than at the
+// next poll.
+api.on('claude-auth-changed', paintClaudeAuth);
+window.addEventListener('focus', () => refreshClaudeAuthBanner(true));
+refreshClaudeAuthBanner();
+
 // Load every config value this window displays, and paint the controls from it.
 //
 // EXTRACTED so it can run more than once. It used to be a bare call at startup,

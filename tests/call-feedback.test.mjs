@@ -38,8 +38,11 @@ test('the reported behaviours are all present', () => {
 test('a click costs one action and never blocks the call', () => {
   // These are pressed mid-call. A dialog, a confirmation step or a text field
   // would mean the moment is gone before it is recorded.
+  // Sliced to the end of the listener rather than a character count — a fixed
+  // window silently stops covering the code it is meant to check the moment
+  // anything is added above it.
   const handler = panelJs.slice(panelJs.indexOf("document.querySelectorAll('[data-feedback]')"));
-  const body = handler.slice(0, 1200);
+  const body = handler.slice(0, handler.indexOf('\n});') + 4);
   assert.doesNotMatch(body, /confirm\(|prompt\(|showMessageBox/, 'no dialog on the click path');
   assert.match(body, /\.catch\(/, 'a failed write must not surface as an error mid-call');
   // Visible confirmation, since a silent button leaves you unsure it registered.
@@ -67,10 +70,20 @@ test('the log line is greppable and carries the call context', () => {
 });
 
 test('feedback goes through a single handler', () => {
-  // It is meant to reach the AGENT later so it can adjust mid-call. That should
-  // be an addition inside this handler, not a second route with its own format.
-  const count = (main.match(/\[feedback\]/g) || []).length;
-  assert.ok(count <= 2, `expected one log site (plus its failure path), saw ${count}`);
+  // Agent-visibility landed as an addition INSIDE this handler, which is what
+  // was intended — not a second route with its own format and its own idea of
+  // what a marker looks like.
+  //
+  // Asserts containment rather than counting log lines: the handler legitimately
+  // logs several things now (the marker, told-agent, suppressed-repeat, the
+  // failure path), and a count would have to be revised every time one is added,
+  // which trains people to bump the number rather than check the claim.
+  const start = main.indexOf("ipcMain.handle('call-feedback'");
+  const end = main.indexOf('\n  });', start) + 6;
+  const handler = main.slice(start, end);
+  const inHandler = (handler.match(/\[feedback\]/g) || []).length;
+  const total = (main.match(/\[feedback\]/g) || []).length;
+  assert.equal(inHandler, total, 'every [feedback] log site must live in the one handler');
 });
 
 test('the troubleshooting screen is two columns, and degrades to one', () => {
@@ -188,4 +201,61 @@ test('each button carries a distinct emoji, sized to be the target', () => {
   // The label element is read directly for the log, rather than stripping emoji
   // out of textContent — `kind=` is the machine key and emoji in a grep is noise.
   assert.match(panelJs, /btn\.querySelector\('\.fb-label'\)/);
+});
+
+test('the agent is told only what it can act on', () => {
+  const map = main.slice(main.indexOf('const FEEDBACK_TO_AGENT'));
+  const body = map.slice(0, map.indexOf('\n  };'));
+  // The three that map to something the bot controls — the barge-in family, plus
+  // its inverse.
+  for (const k of ['interrupting', "'not-yielding'", "'too-timid'"]) {
+    assert.ok(body.includes(k), `${k} should carry an agent notice`);
+  }
+  // And the four that don't. A frozen agent cannot read; "you were wrong" does
+  // not say WHAT was wrong and invites flailing over a turn it cannot identify;
+  // voice and other are outside its control. Context spent to make the human
+  // feel heard is context taken from the call.
+  for (const k of ['inactive', 'wrong-response', 'voice', 'other']) {
+    assert.ok(!body.includes(`${k}:`) && !body.includes(`'${k}'`), `${k} must NOT message the agent`);
+  }
+});
+
+test('the notices are instructions, not reports', () => {
+  // "The user flagged interrupting" is a fact the agent can acknowledge and then
+  // ignore. It needs to know what to DO differently on the next turn.
+  const map = main.slice(main.indexOf('const FEEDBACK_TO_AGENT'));
+  const body = map.slice(0, map.indexOf('\n  };'));
+  assert.match(body, /score your urgency lower/, 'interrupting has to name the lever');
+  assert.match(body, /stop — even mid-sentence/, 'not-yielding has to say what stopping means');
+  assert.match(body, /speak up on the next/, 'too-timid has to say what speaking up means');
+});
+
+test('repeat clicks do not spam the agent mid-call', () => {
+  // A frustrated human clicks the same button repeatedly — a real run produced
+  // three "Interrupted" clicks inside one second. Each would otherwise be a
+  // separate line in the agent's context, all saying the same thing, at the
+  // moment it can least afford the noise.
+  assert.match(main, /const FEEDBACK_AGENT_COOLDOWN_MS = 20_000/);
+  assert.match(main, /Date\.now\(\) - last >= FEEDBACK_AGENT_COOLDOWN_MS/);
+  // Per KIND, not global: "interrupted" then "too timid" are different reports
+  // and the second must still land.
+  assert.match(main, /feedbackNotifiedAt\.get\(k\)/);
+  assert.match(main, /feedbackNotifiedAt\.set\(k, Date\.now\(\)\)/);
+  // Suppressed repeats still reach the LOG — that is the human's record.
+  assert.match(main, /agent already told about \$\{k\} recently — log only/);
+});
+
+test('the human is told whether it reached the bot', () => {
+  // Four kinds never notify, and repeats inside the cooldown are log-only.
+  // Without saying so, "noted" and "the bot is adjusting" look identical and the
+  // human reasonably keeps clicking.
+  assert.match(main, /return \{ ok: true, toldAgent \}/);
+  assert.match(panelJs, /r\.toldAgent/);
+  assert.match(panelJs, /and told the bot/);
+});
+
+test('nothing is sent to the agent outside a call', () => {
+  // addError would queue it for whoever joins next, which would arrive as a
+  // correction for something they did not do.
+  assert.match(main, /if \(notice && localServer\.roomId\)/);
 });

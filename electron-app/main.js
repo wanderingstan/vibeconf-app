@@ -7010,6 +7010,42 @@ function createMainWindow() {
   //
   // Never throws: this is clicked during a live call, and a logging failure must
   // not surface as an error in front of the room.
+  // What the agent is told when a human flags something, per kind.
+  //
+  // Written as instructions, not as reports. "The user flagged interrupting" is
+  // a fact the agent can acknowledge and then ignore; "let people finish, and
+  // score your urgency lower" is something it can act on this turn.
+  //
+  // Four of the seven get nothing. That is deliberate rather than unfinished:
+  //   frozen        — if it were reading this it would not be frozen
+  //   wrong-answer  — it does not tell the agent WHAT was wrong, and a vague
+  //                   "you were wrong" mid-call invites flailing over a turn it
+  //                   cannot identify
+  //   voice / other — nothing the agent controls
+  // A message the agent cannot act on is context spent to make the human feel
+  // heard, and it is the human's own call log that does that job.
+  const FEEDBACK_TO_AGENT = {
+    interrupting:
+      'A person in the call just flagged that you TALKED OVER them. Stop speaking if you are mid-utterance, '
+      + 'let them finish, and for the next few turns score your urgency lower so you yield the floor sooner. '
+      + 'A brief spoken apology is fine; do not explain at length.',
+    'not-yielding':
+      'A person in the call just flagged that you DID NOT YIELD when they tried to speak. When you hear someone '
+      + 'start, stop — even mid-sentence. Keep replies shorter for the next few turns so there are more gaps.',
+    'too-timid':
+      'A person in the call just flagged that you are TOO QUIET. They want to hear from you: speak up on the next '
+      + 'opening rather than waiting to be addressed by name, and do not hold back a useful reply because you are '
+      + 'unsure it is wanted.',
+  };
+
+  // One agent notice per kind per window. A frustrated human clicks the same
+  // button several times in a row — a real run of this produced three
+  // "Interrupted" clicks inside one second — and each one would otherwise
+  // become a separate line in the agent's context, all saying the same thing at
+  // the moment it can least afford the noise.
+  const FEEDBACK_AGENT_COOLDOWN_MS = 20_000;
+  const feedbackNotifiedAt = new Map();
+
   ipcMain.handle('call-feedback', (_e, { kind, label } = {}) => {
     try {
       const k = String(kind || 'unspecified').slice(0, 40);
@@ -7027,7 +7063,25 @@ function createMainWindow() {
       const speaking = localServer.anyoneSpeaking ? 'yes' : 'no';
       // Prefixed and single-line so it greps cleanly out of a busy session log.
       console.log(`[feedback] kind=${k} status=${status} bot=${bot} othersSpeaking=${speaking} room=${room} call=${callId} label=${JSON.stringify(String(label || k))}`);
-      return { ok: true };
+
+      // Tell the agent, when there is something it can do and it hasn't just
+      // been told. addError is the existing channel for app-to-agent notices
+      // (it is how the voice-fallback message reaches it), so this rides a path
+      // the agent already reads rather than inventing a second one.
+      const notice = FEEDBACK_TO_AGENT[k];
+      let toldAgent = false;
+      if (notice && localServer.roomId) {
+        const last = feedbackNotifiedAt.get(k) || 0;
+        if (Date.now() - last >= FEEDBACK_AGENT_COOLDOWN_MS) {
+          feedbackNotifiedAt.set(k, Date.now());
+          localServer.addError(notice);
+          toldAgent = true;
+          console.log(`[feedback] told the agent: ${k}`);
+        } else {
+          console.log(`[feedback] agent already told about ${k} recently — log only`);
+        }
+      }
+      return { ok: true, toldAgent };
     } catch (err) {
       console.warn('[feedback] failed to record:', err && err.message);
       return { ok: false, error: err && err.message };

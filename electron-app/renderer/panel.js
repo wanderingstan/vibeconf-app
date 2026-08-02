@@ -2197,7 +2197,17 @@ document.querySelectorAll('[data-feedback]').forEach((btn) => {
     // machine-readable key, and the label is there so a human scanning the log
     // knows what was clicked without a lookup table.
     const label = (btn.querySelector('.fb-label') || btn).textContent.trim();
-    api.invoke('call-feedback', { kind, label }).catch((e) => {
+    api.invoke('call-feedback', { kind, label }).then((r) => {
+      // Say whether it reached the BOT, not just the log. Four of the seven
+      // kinds have nothing the agent can act on, and repeats inside the cooldown
+      // are deliberately log-only — without this the human can't tell the
+      // difference between "noted" and "the bot is adjusting", and would
+      // reasonably keep clicking.
+      const status = document.getElementById('feedbackStatus');
+      if (status && r && r.toldAgent) {
+        status.textContent = `Marked "${label}" — and told the bot.`;
+      }
+    }).catch((e) => {
       console.warn('[feedback] not recorded:', e && e.message);
     });
     // Confirm without stealing attention from the call.

@@ -12,7 +12,11 @@ const DEFAULT_BOT_NAME = 'Unnamed bot';
 const steps = [...document.querySelectorAll('section[data-step]')].map((s) => s.dataset.step);
 const TITLE = {
   welcome: 'Welcome', permissions: 'Permissions', signin: 'Sign in',
-  logging: 'Call logging', voice: 'Voice', bot: 'Your bot', claude: 'Claude Code', done: 'All set',
+  // 'Brains' rather than 'Claude Code' (#231): the step now asks which agent
+  // drives the bot, and naming it after one of the three answers made the other
+  // two look like afterthoughts. The step KEY stays 'claude' — it is referenced
+  // by SKIPPABLE, the skip-confirm and the section's data-step.
+  logging: 'Call logging', voice: 'Voice', bot: 'Your bot', claude: 'Brains', done: 'All set',
 };
 // claude is skippable (you CAN finish without it, but the bot won't run until it's
 // installed) — the step says so; signin/voice are the other optional steps.
@@ -51,14 +55,12 @@ function paintAgentBackendHint() {
   const hint = $('agentBackendHint');
   if (!sel || !hint) return;
   hint.textContent = AGENT_BACKEND_HINT[sel.value] || '';
-  // The install/verify controls are about Claude Code specifically. Leaving them
-  // on screen after someone says they use something else is the same "we assume
-  // Claude" problem this control exists to fix.
-  const managed = sel.value === 'claude';
-  for (const id of ['claudeStatus', 'claudeInstallRow', 'claudeVerifyRow']) {
-    const el = $(id);
-    if (el) el.style.opacity = managed ? '1' : '0.35';
-  }
+  // HIDDEN, not dimmed. Dimming still shows someone an install button for a
+  // product they just said they aren't using, and invites a click that would do
+  // the wrong thing. loadClaude() manages the rows INSIDE this block, so hiding
+  // the wrapper leaves that logic untouched.
+  const setup = $('claudeSetup');
+  if (setup) setup.style.display = sel.value === 'claude' ? '' : 'none';
 }
 
 async function loadAgentBackend() {

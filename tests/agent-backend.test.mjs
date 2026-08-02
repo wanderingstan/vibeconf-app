@@ -95,3 +95,38 @@ test('onboarding can state the choice, rather than only skipping', () => {
   assert.match(onbJs, /const appManagesAgent = !backendSel \|\| backendSel\.value === 'claude'/);
   assert.match(onbJs, /steps\[i\] === 'claude' && !claudeIsGreen && appManagesAgent/);
 });
+
+test('choosing another agent removes the Claude setup, rather than dimming it', () => {
+  // Dimming still shows an install button for a product the user just said they
+  // are not using, and invites a click that would do the wrong thing.
+  assert.match(onbHtml, /id="claudeSetup"/, 'the Claude-specific block needs a wrapper to hide');
+  assert.match(onbJs, /setup\.style\.display = sel\.value === 'claude' \? '' : 'none'/);
+  assert.doesNotMatch(onbJs, /style\.opacity = managed/, 'dimming is not hiding');
+
+  // The wrapper must ENCLOSE the rows loadClaude() manages, so hiding it leaves
+  // that logic untouched instead of fighting it.
+  const block = onbHtml.slice(onbHtml.indexOf('id="claudeSetup"'));
+  const end = block.indexOf('</section>');
+  for (const id of ['claudeStatus', 'claudeInstallRow', 'claudeVerifyRow']) {
+    assert.ok(block.slice(0, end).includes(id), `${id} must live inside claudeSetup`);
+  }
+});
+
+test('the step asks the question before offering one answer to it', () => {
+  // The selector used to sit BELOW the install button as an afterthought, which
+  // is backwards — the choice governs whether the rest of the step applies.
+  assert.ok(onbHtml.indexOf('id="agentBackend"') < onbHtml.indexOf('id="claudeSetup"'),
+    'the choice comes first');
+  // Labelled for what it is, not for the exception it used to serve. It read
+  // "Using a different agent?" when it sat below the install button — a question
+  // that only makes sense if Claude is already assumed.
+  assert.match(onbHtml, /<label for="agentBackend"[^>]*>Agent<\/label>/);
+  assert.doesNotMatch(onbHtml, /Using a different agent/);
+  // Named for the question, not for one of the three answers.
+  assert.match(onbJs, /claude: 'Brains'/);
+  assert.doesNotMatch(onbJs, /claude: 'Claude Code'/);
+  // The step KEY stays 'claude' — SKIPPABLE, the skip-confirm and data-step all
+  // reference it, and renaming it would be a silent behaviour change.
+  assert.match(onbHtml, /data-step="claude"/);
+  assert.match(onbJs, /steps\[i\] === 'claude'/);
+});

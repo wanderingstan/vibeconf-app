@@ -185,7 +185,7 @@ const ROBOTIC = [
   'Marvin', 'Rosie', 'Vicki', 'Ziggy', 'Orac', 'Maeve', 'Dolores',
   'Bernard', 'Roy',
   // Books
-  'Daneel', 'Multivac', 'Wintermute', 'Deep Thought',
+  'Multivac', 'Wintermute', 'Deep Thought',
   // Real, or real enough
   'Eliza', 'Watson', 'Turing', 'Clippy', 'Cortana',
   // SoftBank's Pepper, and one of this project's own bots.
@@ -210,6 +210,8 @@ const ROBOTIC = [
 //     Twiki   — Meet hears "twiggy".
 //     Kryten  — Meet hears "critten".
 //     Giskard — Meet hears "just" — the worst mangle of the set.
+//     Daneel  — Meet hears "daniel": renamed to a different, meeting-common name
+//               (also a mild rule-1 trigger risk).
 //
 //   Feminine (audited 2026-08-02) — Meet mistranscribed each (heard → in quotes):
 //     Ludmila "lud" · Zaina "zamer" · Thandi "sandy" · Katrin "catherine" ·

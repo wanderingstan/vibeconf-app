@@ -75,3 +75,40 @@ test('4xx still drops immediately — only 5xx and network errors retry', () => 
   // this failure on the retry path at all.)
   assert.match(src, /if \(!resp\.ok && resp\.status >= 500\) throw new Error/);
 });
+
+test('idle instances ship on a relaxed cadence (#230)', () => {
+  // Where the volume actually was. The app polls the browser for a Meet every
+  // 5s while NOT in a call, so the queue was never empty and an idle instance
+  // POSTed every 3s forever — ~80 Redis ops/minute doing nothing, on every open
+  // app, against the store that also serves live whiteboards.
+  assert.match(src, /const REMOTE_IDLE_INTERVAL_MS = 30_000/);
+  assert.match(src, /const base = active \? \(_flushIntervalMs \|\| 3000\) : REMOTE_IDLE_INTERVAL_MS/);
+});
+
+test('the active check is a getter, and failing it errs toward shipping', () => {
+  // Read at schedule time: the call phase changes constantly, and freezing it at
+  // configure time would pin the cadence to whatever was true at launch.
+  assert.match(src, /isActive: isActive \|\| null/);
+  // If the getter throws, ship promptly rather than going quiet — losing a live
+  // tail is worse than a few extra requests, and this must never be the reason
+  // logs stop.
+  const sched = src.slice(src.indexOf('let active = true;'));
+  assert.match(sched.slice(0, 300), /catch \{[^}]*\}/);
+});
+
+test('joining counts as active, not idle', () => {
+  // A join that is failing is the single most likely thing someone is tailing
+  // the log for, so `in-call` alone is the wrong test.
+  const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
+  assert.match(main, /isActive: \(\) => String\(localServer\.callStatus \|\| 'idle'\) !== 'idle'/);
+});
+
+test('a successful no-op Meet poll is not logged (#230)', () => {
+  // One line every 5s, and the single biggest source of idle log volume. A poll
+  // that succeeded and found nothing is not information; a SLOW one is.
+  const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
+  assert.doesNotMatch(main, /console\.log\(`\[electron\] Meet poll ok/,
+    'a successful no-op poll must not be logged');
+  assert.match(main, /Meet poll slow/, 'but a slow poll still is — it means a hang or a permission problem');
+  assert.match(main, /Meet poll failed/, 'and failures were already logged');
+});

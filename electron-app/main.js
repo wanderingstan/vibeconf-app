@@ -5305,6 +5305,11 @@ app.whenReady().then(async () => {
       // vc_session JWT mirror) so the backend authorizes log writes by USER — no
       // bundled secret. Read fresh each flush so login/logout takes effect live.
       sessionToken: () => (store && store.get('vcSessionToken')) || '',
+      // #230: ship promptly while a call is in ANY phase — including joining and
+      // waiting-to-be-admitted, which is precisely when someone is tailing the
+      // log to find out why a join is failing. Idle is the one state where
+      // nobody is waiting on a line, and it was producing most of the volume.
+      isActive: () => String(localServer.callStatus || 'idle') !== 'idle',
       meta: () => ({
         version: app.getVersion(),
         platform: process.platform,
@@ -5654,7 +5659,16 @@ allURLs`;
           }
           return;
         }
-        console.log(`[electron] Meet poll ok (${elapsed}s)`);
+        // #230: a successful poll that found nothing is not information, and at
+        // one line every 5s it was the single biggest source of log volume — on
+        // an IDLE app, since this poll stops once the bot is in a call. Remote
+        // shipping flushes whenever the queue is non-empty, so that one line
+        // kept an idle instance POSTing every 3s indefinitely.
+        //
+        // Log a SLOW poll (the AppleScript can hang on permissions or a busy
+        // browser, and that is worth seeing), and let the detection changes
+        // below speak for the rest. The failure paths above already log.
+        if (elapsed >= 2) console.log(`[electron] Meet poll slow (${elapsed}s)`);
 
         const lines = (stdout || '').trim().split('\n').map((l) => l.trim()).filter(Boolean);
         const urls = lines.filter((l) => l.startsWith('MEET:')).map((l) => l.slice(5))

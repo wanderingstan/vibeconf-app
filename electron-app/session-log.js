@@ -28,6 +28,12 @@ let _flushTimer = null;
 let _flushing = false;
 const REMOTE_MAX_QUEUE = 5000;  // hard cap so a dead endpoint can't grow memory
 const REMOTE_MAX_ATTEMPTS = 5;      // requeue a failing batch this many times, then drop it
+// #230: idle is where the volume was. The app polls the browser for a Meet
+// every 5s while NOT in a call, so the queue was never empty and an idle
+// instance POSTed every 3s indefinitely — ~80 Redis ops/minute doing nothing.
+// A live tail only matters while something is happening; nobody is watching a
+// line-by-line feed of an app sitting there.
+const REMOTE_IDLE_INTERVAL_MS = 30_000;
 const REMOTE_MAX_BACKOFF_MS = 5 * 60_000;   // never retry more than ~12x/hour while down
 let _failures = 0;              // consecutive flush failures — drives the backoff
 let _flushIntervalMs = 3000;    // healthy cadence, restored on the first success
@@ -110,7 +116,12 @@ async function _flushRemote() {
 function _rescheduleFlush() {
   if (!_remote || !_remote.enabled) return;
   if (_flushTimer) clearTimeout(_flushTimer);
-  const base = _flushIntervalMs || 3000;
+  // Prompt while a call is in any phase (joining and waiting-to-be-admitted
+  // included — that is exactly when someone is tailing to see why a join is
+  // failing); relaxed when idle.
+  let active = true;
+  try { active = _remote.isActive ? !!_remote.isActive() : true; } catch { /* assume active */ }
+  const base = active ? (_flushIntervalMs || 3000) : REMOTE_IDLE_INTERVAL_MS;
   // 3s → 6s → 12s … capped. A struggling backend gets geometrically less load
   // from us rather than a constant drumbeat.
   const delay = _failures
@@ -129,7 +140,7 @@ function _ensureFlushTimer(intervalMs = 3000) {
 // Configure (or reconfigure) remote shipping. Safe to call before or after the
 // log file is opened. `endpointBase` and `meta` are getters so the live
 // website URL / current room are read at flush time, not frozen here.
-function configureRemoteLog({ enabled = false, endpointBase, instanceId, token = '', sessionToken, meta, intervalMs } = {}) {
+function configureRemoteLog({ enabled = false, endpointBase, instanceId, token = '', sessionToken, meta, isActive, intervalMs } = {}) {
   _remote = {
     enabled: !!enabled,
     endpointBase: endpointBase || (() => ''),
@@ -140,6 +151,9 @@ function configureRemoteLog({ enabled = false, endpointBase, instanceId, token =
     // backend authorizes writes by USER, no bundled secret needed.
     sessionToken: sessionToken || (() => ''),
     meta: meta || (() => ({})),
+    // #230: getter, read at schedule time — the call phase changes constantly
+    // and freezing it here would pin the cadence to whatever was true at launch.
+    isActive: isActive || null,
   };
   if (_remote.enabled) _ensureFlushTimer(intervalMs);
   return _remote.instanceId;

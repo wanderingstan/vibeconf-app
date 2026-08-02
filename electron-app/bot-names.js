@@ -51,28 +51,28 @@ const FEMININE = [
   // Italian
   'Bianca', 'Chiara', 'Alessia', 'Livia', 'Marcella', 'Fiorella',
   // German + Nordic
-  'Annika', 'Ingrid', 'Freya', 'Astrid', 'Lena', 'Maren', 'Birgit', 'Sigrid', 'Katrin',
+  'Annika', 'Ingrid', 'Freya', 'Astrid', 'Maren', 'Birgit', 'Sigrid',
   // Slavic
-  'Mira', 'Katya', 'Zora', 'Vesna', 'Danica', 'Kasia', 'Marta', 'Ludmila',
+  'Mira', 'Katya', 'Zora', 'Vesna', 'Danica', 'Kasia', 'Marta',
   // Greek
   'Thalia', 'Daphne', 'Eleni', 'Athena', 'Xenia',
   // Hebrew
   'Talia', 'Shira', 'Eliana', 'Naomi', 'Yael',
   // Arabic + Persian + Turkish
-  'Layla', 'Amina', 'Salma', 'Zaina', 'Samira', 'Yasmin', 'Farida', 'Nadira',
-  'Roxana', 'Soraya', 'Nasrin', 'Darya', 'Esra',
+  'Layla', 'Amina', 'Salma', 'Samira', 'Yasmin', 'Farida', 'Nadira',
+  'Roxana', 'Soraya', 'Darya', 'Esra',
   // South Asian
   'Priya', 'Anjali', 'Meera', 'Kavita', 'Divya', 'Asha', 'Leela', 'Nisha', 'Radha',
   // East Asian
   'Yuki', 'Aiko', 'Naoko', 'Sakura', 'Haruka', 'Chiyo', 'Mina',
   // African
-  'Amara', 'Zuri', 'Imani', 'Thandi', 'Makena',
+  'Amara', 'Zuri', 'Imani', 'Makena',
   // Previously held back only for overlapping a TTS voice or an existing bot
   'Nora', 'Zoe', 'Samantha', 'Ava', 'Alice', 'Serena', 'Tessa', 'Milena', 'Clara',
   'Sara', 'Anna', 'Amira', 'Luciana', 'Tara', 'Fiona', 'Nadia', 'Sofia', 'Isabel',
-  'Petra', 'Ilona', 'Renata', 'Simone', 'Aisha', 'Sunita', 'Indira', 'Keiko', 'Emi',
+  'Petra', 'Ilona', 'Renata', 'Simone', 'Aisha', 'Sunita', 'Indira', 'Keiko',
   'Rosa', 'Carmen', 'Greta', 'Helena', 'Marisa', 'Alba', 'Ines', 'Elsa', 'Agata',
-  'Ilse', 'Dalia', 'Rania', 'Zainab', 'Lakshmi', 'Padma', 'Rina', 'Yuna', 'Hana',
+  'Ilse', 'Dalia', 'Rania', 'Zainab', 'Lakshmi', 'Padma', 'Rina', 'Yuna',
   'Nomsa', 'Rosalia',
   // Common in the US — the majority of the audience, so the list should feel
   // familiar more often than not. Same word rule: Lily, Ivy, Grace, Violet,
@@ -101,19 +101,19 @@ const MASCULINE = [
   // Italian
   'Enzo', 'Lorenzo', 'Matteo', 'Fabio', 'Sergio', 'Bruno', 'Dante', 'Rocco', 'Silvio',
   // German + Nordic
-  'Anders', 'Lars', 'Bjorn', 'Magnus', 'Kasper', 'Stellan', 'Henrik', 'Soren', 'Nils',
+  'Anders', 'Lars', 'Bjorn', 'Magnus', 'Kasper', 'Stellan', 'Henrik',
   'Gustav',
   // Slavic
   'Milan', 'Dimitri', 'Vasily', 'Bohdan', 'Tomas', 'Nikolai', 'Radek',
   // Greek
   'Nikos', 'Stavros', 'Leander', 'Andros',
   // Hebrew
-  'Elan', 'Noam', 'Gideon', 'Ezra', 'Tobias', 'Asher',
+  'Elan', 'Gideon', 'Ezra', 'Tobias', 'Asher',
   // Arabic + Persian + Turkish
-  'Omar', 'Karim', 'Rashid', 'Tariq', 'Nasser', 'Anwar', 'Faris', 'Hakim',
-  'Darius', 'Farhad', 'Bahram', 'Emre', 'Kerem',
+  'Omar', 'Karim', 'Rashid', 'Tariq', 'Anwar', 'Faris', 'Hakim',
+  'Darius', 'Farhad', 'Bahram', 'Kerem',
   // South Asian
-  'Arjun', 'Ravi', 'Vikram', 'Rohan', 'Nikhil', 'Kiran', 'Sanjay', 'Amit', 'Rajesh',
+  'Arjun', 'Ravi', 'Vikram', 'Rohan', 'Nikhil', 'Kiran', 'Sanjay', 'Rajesh',
   // East Asian
   'Kenji', 'Daichi', 'Hiroshi', 'Takeshi', 'Minho', 'Jiro', 'Satoshi',
   // African
@@ -128,7 +128,7 @@ const MASCULINE = [
   // Christian and Maverick are all excluded as ordinary words or occupations.
   'Liam', 'Noah', 'Elijah', 'James', 'William', 'Benjamin', 'Lucas',
   'Alexander', 'Michael', 'Ethan', 'Jacob', 'Logan', 'Jackson', 'Sebastian',
-  'Owen', 'Theodore', 'Samuel', 'Joseph', 'David', 'Wyatt', 'Matthew', 'Luke',
+  'Owen', 'Theodore', 'Samuel', 'Joseph', 'David', 'Matthew', 'Luke',
   'Julian', 'Gabriel', 'Isaac', 'Lincoln', 'Anthony', 'Dylan', 'Charles',
   'Andrew', 'Nathan', 'Caleb', 'Adrian', 'Nolan', 'Cameron', 'Connor',
   'Nicholas', 'Dominic', 'Evan',
@@ -173,24 +173,57 @@ const MASCULINE = [
 //                           is discontinued and wakes nothing.
 const ROBOTIC = [
   // Film
-  'Hal', 'Tron', 'Robby', 'Gort', 'Wally', 'Megatron', 'Jarvis', 'Ultron',
-  'Baymax', 'Chappie', 'Robocop', 'Skynet', 'Pris', 'Astro', 'Talos', 'Terminator',
+  'Hal', 'Tron', 'Robby', 'Wally', 'Megatron', 'Jarvis', 'Ultron',
+  'Baymax', 'Chappie', 'Robocop', 'Skynet', 'Astro', 'Talos', 'Terminator',
   // The canonical rule-1 judgement call, and the one the rule is written around.
   'Bender',
   // Film — confirmed intact through Google's captions on a live test call
-  'R2D2', 'C-3PO',
+  'R2D2',
   // Film — the two-word ones, safer than either word on its own
   'Optimus Prime', 'Iron Giant', 'Johnny Five',
   // Television
-  'Twiki', 'Kryten', 'Marvin', 'Rosie', 'Vicki', 'Ziggy', 'Orac', 'Maeve', 'Dolores',
+  'Marvin', 'Rosie', 'Vicki', 'Ziggy', 'Orac', 'Maeve', 'Dolores',
   'Bernard', 'Roy',
   // Books
-  'Daneel', 'Giskard', 'Multivac', 'Wintermute', 'Deep Thought',
+  'Multivac', 'Wintermute', 'Deep Thought',
   // Real, or real enough
   'Eliza', 'Watson', 'Turing', 'Clippy', 'Cortana',
   // SoftBank's Pepper, and one of this project's own bots.
   'Pepper',
 ];
+
+// EXCLUDED — great names we WANTED but had to drop, kept here on purpose so a fan
+// of the name can see it was considered and why it's not offered. A third rule,
+// learned by testing (scripts/name-transcription-test.mjs): a RANDOM suggestion
+// must clear the LOWEST-COMMON-DENOMINATOR bar — pronounce + transcribe cleanly
+// even with a naive voice (macOS `say`) on Google Meet's live captions. A user
+// who deliberately TYPES one of these still gets it; the wizard just won't hand
+// it out unprompted, because the bot would answer to a mangled name out of the
+// box. (These stay COMMENTS, not a data list, so they never enter the draw.)
+//
+//   Robotic (audited 2026-08-02):
+//     C-3PO   — `say` renders it "ku-negative-three-poe"; Meet then captions
+//               "c3po". Pure pronunciation failure, not a Meet miss.
+//     Pris    — `say` says "pree" (French); Meet hears "chris". "Priss" spelling
+//               would fix the voice but collides with the common name Chris.
+//     Gort    — spoken cleanly, Meet still captions "gourd".
+//     Twiki   — Meet hears "twiggy".
+//     Kryten  — Meet hears "critten".
+//     Giskard — Meet hears "just" — the worst mangle of the set.
+//     Daneel  — Meet hears "daniel": renamed to a different, meeting-common name
+//               (also a mild rule-1 trigger risk).
+//
+//   Feminine (audited 2026-08-02) — Meet mistranscribed each (heard → in quotes):
+//     Ludmila "lud" · Zaina "zamer" · Thandi "sandy" · Katrin "catherine" ·
+//     Hana "hannah" · Lena "lima" · Nasrin "nazreen" · Emi "emmy"
+//
+//   Masculine (audited 2026-08-02):
+//     Soren "sauron" · Nils "mills" · Noam "gnome" · Nasser "nasa" ·
+//     Amit "ahmed" · Emre "emery" · Wyatt "wild"
+//
+// Several of the above read as international names macOS `say`'s English voice
+// itself fumbles rather than a Meet failure — but with 400+ names to draw from we
+// only offer ones tested to survive Meet's captions, so they're out either way.
 
 // Every name, each appearing once. This is the LIST — what exists — and it is
 // what callers should read to ask "is this name in the pool?".

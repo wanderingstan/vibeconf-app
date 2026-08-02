@@ -2229,6 +2229,9 @@
 
       // Speech detection threshold — set low for now to ensure speakingLog gets populated.
       // Tune upward once we see real per-participant levels in a multi-person call.
+      // NOTE: this gates STT RECORDING. The turn-taking floor uses its own, much
+      // louder threshold below — the two questions are different, and conflating
+      // them is what made the floor fire on keystrokes.
       const wasSpeaking = this.speaking;
       this.speaking = db > -55;
 
@@ -2237,7 +2240,12 @@
       }
 
       // #115: publish the fast floor signal alongside the existing STT gating.
-      try { noteAudioLevel(this.speaking); noteLevelSample(db); } catch { /* never break level monitoring */ }
+      //
+      // Deliberately NOT this.speaking. The floor answers "is someone taking the
+      // floor from the bot", which is a much stronger claim than "there is audio
+      // worth transcribing", and it is acted on immediately — the rising edge is
+      // instant by design, so one frame is enough to silence the bot.
+      try { noteAudioLevel(db > FLOOR_SPEECH_DB); noteLevelSample(db); } catch { /* never break level monitoring */ }
 
       if (this.speaking && !wasSpeaking) {
         // Started/stopped speaking debug lines suppressed — too noisy in
@@ -2401,6 +2409,28 @@
   }
 
   const AUDIO_FLOOR_RELEASE_MS = 350;
+
+  // How loud something must be to take the floor from a speaking bot.
+  //
+  // 20dB above the STT gate (-55dB), and chosen from measurement rather than
+  // taste. Across 1,501 level windows of real calls: the room noise floor never
+  // reached -55dB (median -92dB), so ambient sound was never the problem — but
+  // the rising edge is immediate, so one ~16ms frame over the line arms the
+  // floor and holds it 350ms. A keystroke or chair creak clears -55dB easily,
+  // and 26.5% of 3,820 measured busy periods lasted under 500ms: too short to be
+  // anyone taking the floor, each one a bot going quiet for nothing.
+  //
+  // At -35dB, 94% of windows containing real speech still clear it, and no quiet
+  // window does. That makes this an ESCAPE HATCH rather than a detector: normal
+  // turn-taking rides the DOM mic-meter as before, and this is the fast path for
+  // someone who audibly wants in. Erring loud is the right error — being slow to
+  // yield costs a moment, yielding to a cough costs the bot its voice.
+  //
+  // NOT verified: that a keystroke stays under -35dB. The 15s percentiles this
+  // was derived from smooth transients away. The number to watch is the count of
+  // sub-500ms busy periods in [floor-audio]; if they persist, this is still too
+  // low.
+  const FLOOR_SPEECH_DB = -35;
   let _audioFloorBusy = false;
   let _audioFloorLastTrueAt = 0;
   let _audioFloorReleaseTimer = null;

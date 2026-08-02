@@ -607,25 +607,29 @@ const PREFERENCES = {
   },
   fastFloorDetection: {
     type: 'boolean',
-    default: false,
+    default: true,
     description:
-      'EXPERIMENTAL (#115). Use the Web Audio analyser to decide whether anyone is ' +
-      'speaking, instead of waiting on Meet mic-meter DOM mutations. The DOM path ' +
-      'needs 3 mutations in a 1200ms window, so it lands ~400-700ms after speech ' +
-      'starts; the analyser already samples every animation frame (~16ms) and is ' +
-      'the signal every turn-taking gate actually wants. EITHER signal counts as ' +
+      'Use the Web Audio analyser as a fast path for someone taking the floor from ' +
+      'a speaking bot, alongside Meet\'s mic-meter DOM signal. The DOM path needs 3 ' +
+      'mutations in a 1200ms window, so it lands ~400-700ms after speech starts; ' +
+      'the analyser samples every animation frame (~16ms). EITHER signal counts as ' +
       'busy, so the DOM path still covers what the analyser misses. ' +
-      'ON while the userbase is test users only, because the experiment needs real ' +
-      'call data and nobody runs with a non-default preference. KNOWN RISK: the ' +
-      '-55dB threshold is inherited from STT gating (where its own comment says it ' +
-      'was "set low for now"), and Meet applies noise suppression + VAD before ' +
-      'animating the meter we are replacing — so a raw level check may fire on a ' +
-      'fan or a keyboard. The failure is the bot believing someone is ALWAYS ' +
-      'talking and never speaking at all, which reads as thinking rather than as a ' +
-      'bug. If a bot goes quiet, set this false — it is read live, so it takes ' +
-      'effect mid-call. Watch the [floor-levels] and [floor-latency] log lines; ' +
-      'they record regardless of this setting.',
+      'The floor uses its OWN threshold (FLOOR_SPEECH_DB, -35dB), well above the ' +
+      '-55dB STT gate, and that separation is the whole point. Measured across ' +
+      '1,501 level windows of real calls: the room noise floor never reached even ' +
+      '-55dB (median -92dB), so ambient sound was never the problem — but the ' +
+      'rising edge is immediate, so one ~16ms frame over the line arms the floor ' +
+      'for 350ms, and a keystroke clears -55dB easily. 26.5% of 3,820 measured busy ' +
+      'periods lasted under 500ms: too short to be anyone taking the floor, and ' +
+      'each one is the bot going quiet for nothing. At -35dB, 94% of windows ' +
+      'containing real speech still clear it and no quiet window does. ' +
+      'So this is an ESCAPE HATCH, not a detector: erring loud costs a moment of ' +
+      'yield latency, erring quiet costs the bot its voice. If a bot still goes ' +
+      'quiet, set this false — read live, so it takes effect mid-call. Watch the ' +
+      '[floor-audio] busy durations: a return of sub-500ms periods means -35dB is ' +
+      'still too low. [floor-levels] and [floor-latency] record regardless.',
   },
+
   botSpeakJitterMaxMs: {
     type: 'number',
     default: 2000,

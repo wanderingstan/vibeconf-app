@@ -22,6 +22,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -52,7 +53,18 @@ test('the experiment ships OFF now that it has been measured', () => {
   // the DOM path wins until an attack requirement makes the analyser safe. The
   // analyser keeps RECORDING either way (see below), so turning it off does not
   // stop the comparison data accruing.
-  assert.equal(PREFERENCES.fastFloorDetection.default, false);
+  // Back ON, but only because the FLOOR now has its own threshold. It was
+  // briefly defaulted off when the measurement landed; the fix is the loud
+  // threshold rather than abandoning the fast path, since erring loud costs a
+  // moment of yield latency while erring quiet costs the bot its voice.
+  assert.equal(PREFERENCES.fastFloorDetection.default, true);
+  // The floor threshold must stay well clear of the STT gate — conflating the
+  // two is what made it fire on keystrokes.
+  const inject = readFileSync(new URL('../electron-app/page-inject.js', import.meta.url), 'utf8');
+  const m = inject.match(/const FLOOR_SPEECH_DB = (-?\d+)/);
+  assert.ok(m, 'the floor needs its own threshold constant');
+  assert.ok(Number(m[1]) >= -45, `${m[1]}dB is not "genuinely loud" — a keystroke clears it`);
+  assert.match(inject, /noteAudioLevel\(db > FLOOR_SPEECH_DB\)/, 'the floor must not reuse this.speaking');
 });
 
 test('it is read live, so a bot that goes quiet can be rescued mid-call', () => {

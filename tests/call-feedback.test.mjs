@@ -159,24 +159,25 @@ test('the curl helper works in the pop-out window, not just the panel', () => {
   assert.match(fn.slice(0, 700), /Available once the bot is in a call/);
 });
 
-test('each button carries an emoji, and the log does not', () => {
+test('each button carries a distinct emoji, sized to be the target', () => {
   // System emoji here on purpose: this is the troubleshooting window, where
   // colour and instant recognition beat the OS-independent SVG set used for the
   // main UI chrome. Someone clicking these mid-call is matching a feeling to a
-  // picture in about a second.
+  // picture in about a second — so the glyph is the target and the word only
+  // confirms it, which is why it is stacked above and much larger.
   const row = tsScreen.slice(tsScreen.indexOf('class="fb-row"'), tsScreen.indexOf('feedbackStatus'));
-  const buttons = row.match(/<button data-feedback="[^"]+">([^<]+)</g) || [];
-  assert.equal(buttons.length, 7, 'all seven still present');
-  for (const b of buttons) {
-    const label = b.slice(b.indexOf('>') + 1);
-    assert.ok(/^[^\p{L}]+\s/u.test(label), `no emoji on: ${label}`);
-  }
-  // Distinct glyphs — two buttons sharing one defeats the point of having them.
-  const glyphs = buttons.map((b) => b.slice(b.indexOf('>') + 1).split(' ')[0]);
+  const glyphs = [...row.matchAll(/<span class="fb-emoji">([^<]+)<\/span>/g)].map((m) => m[1]);
+  assert.equal(glyphs.length, 7, 'all seven still carry an emoji');
+  // Two buttons sharing a glyph would defeat the point of having them.
   assert.equal(new Set(glyphs).size, 7, `duplicate emoji: ${glyphs.join(' ')}`);
+  for (const g of glyphs) assert.doesNotMatch(g, /\p{L}/u, `${g} is not an emoji`);
 
-  // The emoji is stripped before logging: `kind=` is the machine key and the
-  // label exists so a human reading the log knows what was clicked. Emoji in a
-  // grep is noise.
-  assert.match(panelJs, /replace\(\/\^\[\^\\p\{L\}\]\+\/u, ''\)/);
+  // Bigger than the label, or it is decoration rather than the thing being read.
+  assert.match(panelCss, /\.ts-feedback \.fb-emoji \{[^}]*font-size: 24px/);
+  assert.match(panelCss, /\.ts-feedback \.fb-label \{[^}]*font-size: 11px/);
+  assert.match(panelCss, /\.ts-feedback button \{[^}]*flex-direction: column/);
+
+  // The label element is read directly for the log, rather than stripping emoji
+  // out of textContent — `kind=` is the machine key and emoji in a grep is noise.
+  assert.match(panelJs, /btn\.querySelector\('\.fb-label'\)/);
 });

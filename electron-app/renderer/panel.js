@@ -2192,11 +2192,11 @@ copyCurlBtn.addEventListener('click', () => {
 document.querySelectorAll('[data-feedback]').forEach((btn) => {
   btn.addEventListener('click', () => {
     const kind = btn.dataset.feedback;
-    // Strip the leading emoji for the LOG. It reads well on the button and is
-    // noise in a grep — `kind=` is the machine-readable key, and the label is
-    // there so a human scanning the log knows what was clicked without a lookup
-    // table.
-    const label = btn.textContent.trim().replace(/^[^\p{L}]+/u, '');
+    // Read the label element rather than stripping emoji out of textContent.
+    // The emoji reads well on the button and is noise in a grep — `kind=` is the
+    // machine-readable key, and the label is there so a human scanning the log
+    // knows what was clicked without a lookup table.
+    const label = (btn.querySelector('.fb-label') || btn).textContent.trim();
     api.invoke('call-feedback', { kind, label }).catch((e) => {
       console.warn('[feedback] not recorded:', e && e.message);
     });

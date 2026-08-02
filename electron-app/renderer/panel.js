@@ -767,6 +767,9 @@ setInterval(async () => {
   try {
     const s = await api.invoke('get-call-state');
     renderCallState(s);
+    // Same source of truth as the view above, so the curl helper works in the
+    // pop-out window too (see updateCurlCommand).
+    updateCurlCommand(s && s.roomId);
   } catch { /* ignore */ }
 }, 1000);
 
@@ -2144,7 +2147,23 @@ slackSignOutBtn?.addEventListener('click', async () => {
 // Curl command
 // ---------------------------------------------------------------------------
 
+// Paint the copyable curl command, or say why there isn't one.
+//
+// This used to be driven only by the panel's `meet-detected` / call-status
+// events — which the pop-out troubleshooting window never receives, because it
+// is a second webContents and those broadcasts go to panelView. So in the
+// window where it actually lives, the button was disabled permanently, in a
+// call or out of one, with nothing on screen saying why.
+//
+// It is now driven by the same 1s poll that renders the call state, so both
+// windows agree, and the empty state explains itself instead of presenting a
+// dead control.
 function updateCurlCommand(meetCode) {
+  if (!meetCode) {
+    curlCommand.textContent = 'Available once the bot is in a call — the command needs the room id.';
+    copyCurlBtn.disabled = true;
+    return;
+  }
   const base = syncBaseUrl || 'https://vibeconferencing.com';
   curlCommand.textContent = `curl -X POST "${base}/api/sync/${meetCode}" -H "Content-Type: application/json" -d '{"sender":"${currentBotName}","role":"bot","ownerName":"${currentBotName}","transcript":[{"text":"Hello from curl test."}]}'`;
   copyCurlBtn.disabled = false;

@@ -139,3 +139,22 @@ test('Debug Override sits at the foot of the right column', () => {
   // everything else here, which acts on this call.
   assert.ok(cols.indexOf('Debug Override') > cols.indexOf('devtoolsBtn'));
 });
+
+test('the curl helper works in the pop-out window, not just the panel', () => {
+  // The pop-out is a SECOND webContents. panelView.webContents.send(...)
+  // broadcasts — meet-detected, call-status-changed — never reach it, so a
+  // control driven only by those events is dead there. This one was: disabled
+  // permanently, in a call or out of one, with nothing explaining why.
+  //
+  // The 1s call-state poll runs in both windows, so it is the right driver.
+  const poll = panelJs.slice(panelJs.indexOf("api.invoke('get-call-state')"));
+  assert.match(poll.slice(0, 400), /updateCurlCommand\(s && s\.roomId\)/,
+    'the poll must drive it, or the pop-out never enables the button');
+
+  // And the empty state has to say something. A greyed-out button with no
+  // explanation is indistinguishable from a broken one — which is exactly how
+  // this was reported.
+  const fn = panelJs.slice(panelJs.indexOf('function updateCurlCommand'));
+  assert.match(fn.slice(0, 700), /if \(!meetCode\)/);
+  assert.match(fn.slice(0, 700), /Available once the bot is in a call/);
+});

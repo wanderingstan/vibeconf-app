@@ -177,11 +177,7 @@ const ROBOTIC = [
   'Baymax', 'Chappie', 'Robocop', 'Skynet', 'Astro', 'Talos', 'Terminator',
   // The canonical rule-1 judgement call, and the one the rule is written around.
   'Bender',
-  // Film — confirmed intact through Google's captions on a live test call.
-  // ('Pris' and 'C-3PO' dropped 2026-08-02: the name-transcription audit found
-  // macOS `say` mispronounces them — "pree" (→ heard "chris") and
-  // "ku-negative-three-poe" — so they fail the lowest-common-denominator bar for
-  // a RANDOM suggestion. See scripts/name-transcription-test.mjs.)
+  // Film — confirmed intact through Google's captions on a live test call
   'R2D2',
   // Film — the two-word ones, safer than either word on its own
   'Optimus Prime', 'Iron Giant', 'Johnny Five',
@@ -195,6 +191,21 @@ const ROBOTIC = [
   // SoftBank's Pepper, and one of this project's own bots.
   'Pepper',
 ];
+
+// EXCLUDED — great names we WANTED but had to drop, kept here on purpose so a fan
+// of the name can see it was considered and why it's not offered. A third rule,
+// learned by testing (scripts/name-transcription-test.mjs): a RANDOM suggestion
+// must clear the LOWEST-COMMON-DENOMINATOR bar — pronounce + transcribe cleanly
+// even with a naive voice (macOS `say`) on Google Meet's live captions. A user
+// who deliberately TYPES one of these still gets it; the wizard just won't hand
+// it out unprompted, because the bot would answer to a mangled name out of the
+// box. (These stay COMMENTS, not a data list, so they never enter the draw.)
+//
+//   Robotic (audited 2026-08-02):
+//     C-3PO   — `say` renders it "ku-negative-three-poe"; Meet then captions
+//               "c3po". Pure pronunciation failure, not a Meet miss.
+//     Pris    — `say` says "pree" (French); Meet hears "chris". "Priss" spelling
+//               would fix the voice but collides with the common name Chris.
 
 // Every name, each appearing once. This is the LIST — what exists — and it is
 // what callers should read to ask "is this name in the pool?".

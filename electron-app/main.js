@@ -4436,9 +4436,13 @@ let claudeAuthState = { authed: null, method: null, checkedAt: 0 };
 // per interval to re-learn the same answer. The paths that matter (a join, the
 // panel regaining focus) refresh on demand.
 const CLAUDE_AUTH_POLL_MS = 15 * 60_000;
-// Focus is user-triggered and can fire in bursts when someone alt-tabs, so the
-// on-demand refresh is throttled well below the poll.
-const CLAUDE_AUTH_FOCUS_MAX_AGE_MS = 60_000;
+// Focus is user-triggered and fires in bursts when someone alt-tabs, so the
+// on-demand refresh is throttled hard. 10 minutes, not 1: signing OUT is close
+// to a never-event, and every transition worth catching quickly has its own
+// signal already — markClaudeReady() the instant an agent connects, and a
+// refresh on the join itself. This is a backstop, and a backstop that spawns a
+// login shell should be stingy.
+const CLAUDE_AUTH_FOCUS_MAX_AGE_MS = 10 * 60_000;
 
 // Re-check, unless the cached answer is younger than maxAgeMs. The throttle is
 // what makes this safe to call from anything user-triggered (window focus, a

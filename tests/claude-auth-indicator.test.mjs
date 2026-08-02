@@ -54,7 +54,10 @@ test('the answer is warmed at startup and kept warm on a slow timer', () => {
 test('on-demand refreshes are throttled', () => {
   // Window focus is user-triggered and fires in bursts when someone alt-tabs.
   // Without a floor, each one would spawn a login shell.
-  assert.match(main, /const CLAUDE_AUTH_FOCUS_MAX_AGE_MS = 60_000/);
+  // 10 minutes, not 1. Signing out is close to a never-event, and the transitions
+  // that matter each have a dedicated signal (markClaudeReady on connect, a
+  // refresh on join). A backstop that costs a login shell should be stingy.
+  assert.match(main, /const CLAUDE_AUTH_FOCUS_MAX_AGE_MS = 10 \* 60_000/);
   assert.match(main, /refreshClaudeAuth\(\{ maxAgeMs: CLAUDE_AUTH_FOCUS_MAX_AGE_MS \}\)/);
   assert.match(main, /if \(maxAgeMs && Date\.now\(\) - claudeAuthState\.checkedAt < maxAgeMs\) return claudeAuthState/);
 });

@@ -3377,9 +3377,7 @@ function openGoogleLogin() {
           return checkAuth();
         }).then(data => {
           console.log('[electron] Auth check after login:', data?.authenticated ? `logged in as ${data.user.name}` : 'NOT authenticated');
-          if (panelView && !panelView.webContents.isDestroyed()) {
-            panelView.webContents.send('auth-changed');
-          }
+          broadcastAuthChanged();
         }).catch(err => {
           console.error('[electron] Login cookie error:', err);
         });
@@ -4314,6 +4312,27 @@ let ttsVoiceFallbackActive = false;
 // notification center. Same message within this window is suppressed.
 const ERROR_NOTIFY_DEDUPE_MS = 30_000;
 const recentErrorNotifications = new Map(); // message -> timestamp
+
+// Sign-in state changed — tell every window that shows it.
+//
+// This used to send to panelView only, so signing in from App Settings updated
+// the main window's footer while the settings window you were looking at went on
+// saying you were signed out. Both renderers already listened; only one was ever
+// sent to. Any new window that shows auth state belongs in here.
+function broadcastAuthChanged() {
+  const targets = [
+    panelView,
+    appSettingsWindow,
+    onboardingWindow,   // the wizard's sign-in step shows the same state
+  ];
+  for (const w of targets) {
+    try {
+      if (w && !w.isDestroyed() && !w.webContents.isDestroyed()) {
+        w.webContents.send('auth-changed');
+      }
+    } catch { /* window went away mid-broadcast */ }
+  }
+}
 
 function broadcastError(message) {
   if (panelView && !panelView.webContents.isDestroyed()) {
@@ -7802,9 +7821,7 @@ function setupIPC() {
       store?.delete('vcSessionToken');
     } catch { /* non-fatal */ }
     await session.defaultSession.cookies.remove(baseUrl, 'vc_session');
-    if (panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('auth-changed');
-    }
+    broadcastAuthChanged();
     return { loggedOut: true };
   });
 

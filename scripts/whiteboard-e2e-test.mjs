@@ -1,23 +1,28 @@
 #!/usr/bin/env node
-// share-verify-test.mjs — prove screen sharing actually DELIVERS pixels (#267 step 3).
+// whiteboard-e2e-test.mjs — prove the whiteboard works END TO END, from write to
+// pixels on a viewer's screen (#267 step 3). NOT just "did screen-share toggle".
 //
-// The existing share test only confirms the toggle state ("sharing"). This one
-// proves the content crossed the wire, from the VIEWER's perspective:
-//   1. Bot A puts a unique nonce on the whiteboard and shares it.
+// The existing share test only confirms the toggle state ("sharing"). This walks
+// the WHOLE pipeline and checks it from the VIEWER's perspective:
+//   1. Bot A writes a unique nonce to the whiteboard (→ vibeconferencing.com →
+//      Upstash → the web whiteboard renders it → screen-shared into the call).
 //   2. Bot B (a different participant) screenshots its own call view.
 //   3. A Claude VISION call asserts the nonce text is visible in B's screenshot.
-// If the bot only clicked the button but no pixels reached others, B won't see it.
+// If ANY link breaks — store, render, or share — B won't see it. (The narrower
+// data-only half of this is scripts/whiteboard-roundtrip-test.mjs.)
 //
-// Vision needs ANTHROPIC_API_KEY. Without it the test still captures B's
-// screenshot and prints the path for a manual eyeball (no hard assertion) — so it
-// degrades to a capture-and-look rather than failing.
+// Vision PREFERS the `claude` CLI — it uses the machine's Claude subscription, so
+// no ANTHROPIC_API_KEY is needed (see claudeCliSees below). The API key is only a
+// fallback for a host where the CLI isn't logged in. If NEITHER is available the
+// test still captures B's screenshot and prints the path for a manual eyeball
+// (no hard assertion) — it degrades to capture-and-look rather than failing.
 //
 // PREREQ: two bots running:
 //   scripts/spawn-test-fleet.sh 2
 //
 // Run:
-//   node scripts/share-verify-test.mjs --bots Alice:7901,Jimmy:7902
-//   pnpm test:share-verify -- --bots Alice:7901,Jimmy:7902
+//   node scripts/whiteboard-e2e-test.mjs --bots Alice:7901,Jimmy:7902
+//   pnpm test:whiteboard-e2e -- --bots Alice:7901,Jimmy:7902
 //
 // Exit non-zero on a real failure (share didn't engage, or vision didn't see it).
 
@@ -75,7 +80,7 @@ async function visionSeesText(imagePath, needle) {
     }),
   });
   const data = await resp.json().catch(() => ({}));
-  if (!resp.ok) { console.warn('[share-verify] vision API error:', resp.status, JSON.stringify(data).slice(0, 160)); return null; }
+  if (!resp.ok) { console.warn('[whiteboard-e2e] vision API error:', resp.status, JSON.stringify(data).slice(0, 160)); return null; }
   const text = (data?.content?.[0]?.text || '').trim().toLowerCase();
   return /\byes\b/.test(text);
 }
@@ -136,5 +141,5 @@ async function run() {
 }
 
 run()
-  .catch((err) => { console.error('share-verify-test error:', err && err.message); })
+  .catch((err) => { console.error('whiteboard-e2e-test error:', err && err.message); })
   .finally(() => { const r = report(); process.exit(r.fails > 0 ? 1 : 0); });

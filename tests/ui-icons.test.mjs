@@ -114,8 +114,12 @@ test('panel chrome uses the icon classes, not emoji characters', () => {
     // troubleshooting window only: those seven buttons are scanned mid-call, and
     // colour plus instant recognition matters more there than OS-independent
     // rendering. It is a debug surface, not product chrome. Excluded by region
-    // rather than by weakening the rule, so the rest of the panel stays covered
-    // — including the 🔊 speaker glyph, which appears in both places.
+    // rather than by weakening the rule, so the rest of the panel stays covered.
+    //
+    // Currently precautionary: none of the seven feedback emoji collide with the
+    // five glyphs checked below. It DID collide when Voice used 🔊, and the
+    // exclusion is kept so the next emoji change is a free choice rather than a
+    // test failure that invites weakening the rule itself.
     const markup = panelHtml
       .replace(/<!--[\s\S]*?-->/g, '')
       .replace(/<div class="fb-row">[\s\S]*?<\/div>/, '');

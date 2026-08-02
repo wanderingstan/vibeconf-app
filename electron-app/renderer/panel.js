@@ -80,7 +80,13 @@ const ackLongMinInput = document.getElementById('ackLongMin');
 const ackShortPhrasesInput = document.getElementById('ackShortPhrases');
 const ackLongPhrasesInput = document.getElementById('ackLongPhrases');
 
-let syncBaseUrl = 'http://127.0.0.1:7865';
+// The website, not the local server. This is the base for the curl helper and
+// the room links — things a human runs from somewhere else. It used to fall back
+// to http://127.0.0.1:7865, which made the copied curl command 401 once the
+// local control API started requiring a bearer token (#201): the endpoint it
+// named was real, and the request was rejected. The website accepts these posts
+// unauthenticated and is the path that actually makes sense to hand someone.
+let syncBaseUrl = 'https://vibeconferencing.com';
 // Until get-config lands. Not a plausible name on purpose — see
 // DEFAULT_BOT_NAME in preferences-schema.js (this renderer is sandboxed and
 // cannot require it).
@@ -1615,7 +1621,7 @@ function enterCallState(meetCode) {
   // Update troubleshooting section
   meetCodeInput.value = meetCode;
   roomIdField.style.display = 'block';
-  const base = syncBaseUrl || 'http://127.0.0.1:7865';
+  const base = syncBaseUrl || 'https://vibeconferencing.com';
   roomLink.href = `${base}/room/${meetCode}`;
   roomLink.style.display = 'block';
   updateCurlCommand(meetCode);
@@ -2139,7 +2145,7 @@ slackSignOutBtn?.addEventListener('click', async () => {
 // ---------------------------------------------------------------------------
 
 function updateCurlCommand(meetCode) {
-  const base = syncBaseUrl || 'http://127.0.0.1:7865';
+  const base = syncBaseUrl || 'https://vibeconferencing.com';
   curlCommand.textContent = `curl -X POST "${base}/api/sync/${meetCode}" -H "Content-Type: application/json" -d '{"sender":"${currentBotName}","role":"bot","ownerName":"${currentBotName}","transcript":[{"text":"Hello from curl test."}]}'`;
   copyCurlBtn.disabled = false;
 }
@@ -2198,15 +2204,21 @@ speakTextBtn.addEventListener('click', () => {
   setTimeout(() => { speakTextBtn.textContent = 'Speak using TTS'; }, 3000);
 });
 
+// Named so it is obvious in the transcript and the session log that this turn
+// was injected rather than heard.
+const SIMULATED_SPEAKER = 'Troubleshooting User';
+
 const simulateSpeechBtn = document.getElementById('simulateSpeechBtn');
 const simulateText = document.getElementById('simulateText');
-const simulateSpeaker = document.getElementById('simulateSpeaker');
 const simulateSpeechStatus = document.getElementById('simulateSpeechStatus');
 
 if (simulateSpeechBtn) {
   async function submitSimulatedSpeech() {
     const text = simulateText.value.trim();
-    const speaker = simulateSpeaker.value.trim() || 'Test User';
+    // Fixed, not a field. Nobody varied it, and a stray or blank value silently
+    // changed who the bot thought had spoken — which is the one thing about a
+    // simulated turn that must not be ambiguous when you read it back in the log.
+    const speaker = SIMULATED_SPEAKER;
     if (!text) {
       simulateSpeechStatus.textContent = 'Enter some text first.';
       simulateSpeechStatus.style.color = '#fdd663';
@@ -2279,7 +2291,7 @@ botNameInput.addEventListener('change', () => {
 
 websiteUrlInput.addEventListener('change', () => {
   const url = websiteUrlInput.value.trim().replace(/\/+$/, '');
-  syncBaseUrl = url || 'http://127.0.0.1:7865';
+  syncBaseUrl = url || 'https://vibeconferencing.com';
   // Write to the new key. Also clear the legacy syncBaseUrl so we don't end up
   // with two values diverging — getWebsiteUrl()'s resolution chain prefers
   // websiteUrl anyway, but cleaning legacy makes the precedence visible in
@@ -2613,7 +2625,7 @@ api.on('meet-status', (status) => {
     const match = status.url?.match(/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/);
     if (match) {
       meetCodeInput.value = match[1];
-      const base = syncBaseUrl || 'http://127.0.0.1:7865';
+      const base = syncBaseUrl || 'https://vibeconferencing.com';
       roomLink.href = `${base}/room/${match[1]}`;
       updateCurlCommand(match[1]);
     }

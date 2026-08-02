@@ -1082,12 +1082,23 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
 /* Feedback bar. These get clicked DURING a call, with a couple of seconds of
    attention at most, so they are big, single-click, and never open a dialog. */
 .ts-feedback { margin: 4px 0 8px; }
-.ts-feedback .fb-row { display: flex; flex-wrap: wrap; gap: 6px; }
+/* One row, all seven. They are a scanning target during a call: wrapping to a
+   second line moves them between clicks, so the row shrinks rather than wraps.
+   flex-basis:0 makes the seven share the width evenly regardless of label
+   length, so the row stays a stable grid of targets. */
+.ts-feedback .fb-row { display: flex; flex-wrap: nowrap; gap: 4px; }
 .ts-feedback button {
-  flex: 1 1 auto; min-width: 128px; width: auto;
-  padding: 8px 10px; font-size: 12px; line-height: 1.25;
+  flex: 1 1 0; min-width: 0; width: auto;
+  padding: 8px 4px; font-size: 11px; line-height: 1.2;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   background: #2a2d31; color: #e8eaed;
   border: 1px solid #5f6368; border-radius: 8px; cursor: pointer;
+}
+/* Below the two-column breakpoint the row would squeeze past legibility, so
+   there it is allowed to wrap. */
+@media (max-width: 720px) {
+  .ts-feedback .fb-row { flex-wrap: wrap; }
+  .ts-feedback button { flex: 1 1 auto; min-width: 96px; }
 }
 .ts-feedback button:hover { background: #3c4043; }
 /* Flash green on click. The whole point is confirming the mark landed without

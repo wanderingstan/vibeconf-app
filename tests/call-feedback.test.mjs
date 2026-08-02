@@ -99,3 +99,43 @@ test('the Agent Prompt section and its code are gone', () => {
     assert.ok(!panelJs.includes(sym), `${sym} left behind — it would throw on a null element`);
   }
 });
+
+test('the feedback row stays a single line at full width', () => {
+  // They are a scanning target during a call. Wrapping to a second line moves
+  // buttons between clicks, so the row shrinks instead of wrapping — and
+  // flex-basis:0 keeps the seven evenly sized regardless of label length, so it
+  // stays a stable grid of targets rather than shuffling with the text.
+  assert.match(panelCss, /\.ts-feedback \.fb-row \{[^}]*flex-wrap: nowrap/);
+  assert.match(panelCss, /\.ts-feedback button \{[^}]*flex: 1 1 0/);
+  // Below the two-column breakpoint, squeezing seven buttons is worse than
+  // wrapping them.
+  assert.match(panelCss, /@media \(max-width: 720px\) \{[\s\S]{0,200}flex-wrap: wrap/);
+});
+
+test('the simulated speaker is fixed, not a field', () => {
+  // A stray or blank value silently changed who the bot thought had spoken,
+  // which is the one thing about an injected turn that must be unambiguous when
+  // you read it back.
+  assert.match(panelJs, /const SIMULATED_SPEAKER = 'Troubleshooting User'/);
+  assert.ok(!panelJs.includes('simulateSpeaker'), 'the element reference must go too');
+  assert.ok(!tsScreen.includes('simulateSpeaker'), 'and the orphaned input');
+});
+
+test('the copy-curl command targets something that will accept it', () => {
+  // It pointed at http://127.0.0.1:7865 by default. That endpoint is real, so
+  // the command looked right — and it has 401'd since the local control API
+  // began requiring a bearer token (#201). The website takes these posts
+  // unauthenticated and is the useful target anyway: the point is driving the
+  // bot from somewhere else.
+  assert.ok(!panelJs.includes("syncBaseUrl || 'http://127.0.0.1:7865'"),
+    'the local fallback makes the copied command unusable');
+  assert.match(panelJs, /let syncBaseUrl = 'https:\/\/vibeconferencing\.com'/);
+});
+
+test('Debug Override sits at the foot of the right column', () => {
+  const cols = tsScreen.slice(tsScreen.indexOf('ts-cols'));
+  assert.ok(cols.includes('Debug Override'), 'it belongs inside the columns, not below them');
+  // Last thing in its column: it is machine-wide and persistent, unlike
+  // everything else here, which acts on this call.
+  assert.ok(cols.indexOf('Debug Override') > cols.indexOf('devtoolsBtn'));
+});

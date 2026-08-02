@@ -420,13 +420,13 @@
         <h2>Flag what the bot just did</h2>
         <p class="helper-text" style="margin:0 0 8px">One click marks the session log at this moment. No need to describe it now.</p>
         <div class="fb-row">
-          <button data-feedback="interrupting">Interrupted someone</button>
-          <button data-feedback="too-timid">Too timid / stayed quiet</button>
-          <button data-feedback="not-yielding">Wouldn&#39;t yield</button>
-          <button data-feedback="inactive">Inactive / frozen</button>
-          <button data-feedback="wrong-response">Answered wrongly</button>
-          <button data-feedback="voice">Voice problem</button>
-          <button data-feedback="other">Something else</button>
+          <button data-feedback="interrupting">Interrupted</button>
+          <button data-feedback="too-timid">Too timid</button>
+          <button data-feedback="not-yielding">Won&#39;t yield</button>
+          <button data-feedback="inactive">Frozen</button>
+          <button data-feedback="wrong-response">Wrong answer</button>
+          <button data-feedback="voice">Voice</button>
+          <button data-feedback="other">Other</button>
         </div>
         <span id="feedbackStatus" class="helper-text" style="display:block;margin-top:6px"></span>
       </div>
@@ -467,10 +467,6 @@
           <h2>Simulate Speech</h2>
           <p class="helper-text" style="margin:0 0 8px">Inject a synthetic caption turn into the conversation pipeline, the same path Meet captions use. Bot reacts as if this person had spoken aloud. Useful when you can't speak (coffee shop), want to paste test data, or need to script a flow.</p>
           <div class="field">
-            <label for="simulateSpeaker">Speaker name</label>
-            <input type="text" id="simulateSpeaker" value="Test User" />
-          </div>
-          <div class="field">
             <label for="simulateText">What to say</label>
             <textarea id="simulateText" rows="3" style="width:100%;box-sizing:border-box;resize:vertical"></textarea>
           </div>
@@ -503,18 +499,21 @@
         </div>
           <a id="roomLink" href="#" class="room-link" style="display:none">Open room on vibeconferencing.com</a>
             <button id="devtoolsBtn" style="margin-top:8px">Open DevTools for Call Window</button>
+
+          <!-- Deliberately last in the column: almost nobody should touch it, and
+               it is the one control here that persists machine-wide rather than
+               acting on this call. -->
+          <div class="section">
+            <h2>Debug Override</h2>
+            <div class="field">
+              <label for="websiteUrl">Website URL</label>
+              <input type="text" id="websiteUrl" placeholder="https://vibeconferencing.com" />
+              <div style="font-size:11px;color:#666;margin-top:2px">Leave blank for the production default (vibeconferencing.com). Set to a Vercel preview URL to test against a feature branch. Applies to all bots on this machine.</div>
+            </div>
+          </div>
         </div>
       </div>
 
-      <!-- Debugging override — deliberately last; almost nobody should touch it. -->
-      <div class="section">
-        <h2>Debug Override</h2>
-        <div class="field">
-          <label for="websiteUrl">Website URL</label>
-          <input type="text" id="websiteUrl" placeholder="https://vibeconferencing.com" />
-          <div style="font-size:11px;color:#666;margin-top:2px">Leave blank for the production default (vibeconferencing.com). Set to a Vercel preview URL to test against a feature branch. Applies to all bots on this machine.</div>
-        </div>
-      </div>
     </div>
   </div>
   <!-- Persistent footer that labels + toggles the Meet thumbnail docked directly

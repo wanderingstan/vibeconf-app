@@ -2192,7 +2192,12 @@ copyCurlBtn.addEventListener('click', () => {
 document.querySelectorAll('[data-feedback]').forEach((btn) => {
   btn.addEventListener('click', () => {
     const kind = btn.dataset.feedback;
-    api.invoke('call-feedback', { kind, label: btn.textContent.trim() }).catch((e) => {
+    // Strip the leading emoji for the LOG. It reads well on the button and is
+    // noise in a grep — `kind=` is the machine-readable key, and the label is
+    // there so a human scanning the log knows what was clicked without a lookup
+    // table.
+    const label = btn.textContent.trim().replace(/^[^\p{L}]+/u, '');
+    api.invoke('call-feedback', { kind, label }).catch((e) => {
       console.warn('[feedback] not recorded:', e && e.message);
     });
     // Confirm without stealing attention from the call.
@@ -2200,7 +2205,7 @@ document.querySelectorAll('[data-feedback]').forEach((btn) => {
     setTimeout(() => btn.classList.remove('logged'), 1200);
     const status = document.getElementById('feedbackStatus');
     if (status) {
-      status.textContent = `Marked "${btn.textContent.trim()}" in the log.`;
+      status.textContent = `Marked "${label}" in the log.`;
       clearTimeout(status._t);
       status._t = setTimeout(() => { status.textContent = ''; }, 4000);
     }

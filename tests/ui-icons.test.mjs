@@ -109,7 +109,16 @@ test('panel chrome uses the icon classes, not emoji characters', () => {
     assert.ok(panelHtml.includes(`ui-icon-${name}`), `panel.html lost the ${name} icon`);
     // Comments still talk about the glyphs — strip them before checking that no
     // LIVE markup renders one.
-    const markup = panelHtml.replace(/<!--[\s\S]*?-->/g, '');
+    //
+    // The call-feedback row is a DELIBERATE exception, agreed for the
+    // troubleshooting window only: those seven buttons are scanned mid-call, and
+    // colour plus instant recognition matters more there than OS-independent
+    // rendering. It is a debug surface, not product chrome. Excluded by region
+    // rather than by weakening the rule, so the rest of the panel stays covered
+    // — including the 🔊 speaker glyph, which appears in both places.
+    const markup = panelHtml
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/<div class="fb-row">[\s\S]*?<\/div>/, '');
     assert.ok(!markup.includes(glyph), `panel.html still renders the ${glyph} character`);
   }
   // The gear was an HTML entity rather than a literal, so it needs its own check.

@@ -77,6 +77,9 @@ function fuzzLine(r) {
 const dmg = lastLine('results.jsonl');
 const main = lastLine('results-main.jsonl');
 const wbRoundtrip = lastLine('whiteboard-roundtrip-results.jsonl');
+// Did the live lanes run on the FIXED, publicly-joinable fallback room? (mint
+// failed → exposure risk.) Warned even on a green night — see scheduled-meet-test.
+const meetRoomFallback = (lastLine('meet-room-source.json') || {}).source === 'fallback';
 const slack = lastLine('slack-results.jsonl');
 const whiteboardE2e = lastLine('whiteboard-e2e-results.jsonl');
 const codex = lastLine('codex-smoke-results.jsonl');
@@ -172,6 +175,7 @@ const header = `<b>${esc(`${anyRed ? '🔴' : '🌙'} Nightly ${stamp}`)}</b>`;
 const ctx = [];
 const dver = dmgVersion(); if (dver) ctx.push(`🖥 DMG ${esc(dver)}`);
 const mc = mainCommit(); if (mc) ctx.push(`🔧 main ${esc(mc)}`);
+if (meetRoomFallback) ctx.push('⚠️ live lanes ran on the SHARED fallback Meet room — /call mint failed (sign the test profile into vibeconferencing.com); a fixed, publicly-joinable code appears in logs.');
 const analysisBlock = analysis ? ['', '🔎 <b>Claude analysis</b>', esc(analysis)] : [];
 // Keep under Telegram's 4096-char hard limit — the status lines are the priority,
 // so trim the analysis tail (not the digest) if the whole thing runs long.
@@ -188,7 +192,7 @@ try {
   const resp = await fetch(`https://api.telegram.org/bot${tok}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: CHAT, text, parse_mode: 'HTML', disable_notification: !anyRed }),
+    body: JSON.stringify({ chat_id: CHAT, text, parse_mode: 'HTML', disable_notification: !(anyRed || meetRoomFallback) }),
     signal: AbortSignal.timeout(20000),
   });
   console.log(resp.ok ? '[notify] telegram sent' : `[notify] telegram failed: ${resp.status} ${await resp.text().catch(() => '')}`);

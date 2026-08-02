@@ -15,6 +15,8 @@
     "test:meet:ci": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 2 && node scripts/meet-test.mjs --bots Alice:7901,Jimmy:7902; code=$?; scripts/spawn-test-fleet.sh 2 --kill; exit $code",
     "test:meet:rec": "scripts/record-run.sh --label meet -- pnpm test:meet:ci",
     "test:codex:ci": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 1 && node scripts/smoke-codex-mcp.mjs --base-url=http://127.0.0.1:7901; code=$?; scripts/spawn-test-fleet.sh 1 --kill; exit $code",
+    "test:name-transcription": "node scripts/name-transcription-test.mjs",
+    "test:name-transcription:ci": "VIBECONF_NO_RUN_TAG=1 VIBECONF_BASE_PORT=7911 scripts/spawn-test-fleet.sh 2 && node scripts/name-transcription-test.mjs --bots Alice:7911,Jimmy:7912; code=$?; VIBECONF_BASE_PORT=7911 scripts/spawn-test-fleet.sh 2 --kill; exit $code",
     "test:whiteboard-roundtrip": "node scripts/whiteboard-roundtrip-test.mjs",
     "test:whiteboard-roundtrip:ci": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 2 && node scripts/whiteboard-roundtrip-test.mjs --bots Alice:7901,Jimmy:7902; code=$?; scripts/spawn-test-fleet.sh 2 --kill; exit $code",
     "smoke:health": "node scripts/smoke-app-health.mjs",

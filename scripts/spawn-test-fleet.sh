@@ -48,7 +48,11 @@ set -e
 REPO="${VIBECONF_REPO:-${0:A:h:h}}"
 ELECTRON="$REPO/electron-app"
 NAMES=(Alice Jimmy Cosmo Dizzy)           # display names by index (Alice=-1, Jimmy=-2)
-BASE_PORT=7901
+# Base local-server port for the fleet (bots use BASE_PORT, BASE_PORT+1, …).
+# Override with VIBECONF_BASE_PORT to run a fleet that WON'T collide with the
+# on-push CI smoke or the nightly (both use the 7901 default) — e.g. the long
+# name-transcription audit runs on 7911/7912.
+BASE_PORT="${VIBECONF_BASE_PORT:-7901}"
 
 # Flag parsing (position-independent): a numeric arg = count; --kill / --dmg /
 # --built flags.

@@ -142,6 +142,17 @@ export class Bot {
     return data;
   }
 
+  // Read the CURRENT whiteboard content this bot's app holds. The app's
+  // sync-client polls vibeconferencing.com and applyRemoteWhiteboard()s the
+  // result into local state, so on a DIFFERENT instance this reflects what came
+  // back THROUGH the backend (Upstash) — which is what a cross-instance
+  // write→read round-trip verifies. Returns { content, version, ... } | {}.
+  async readWhiteboard() {
+    const resp = await fetch(`${this.base}/api/sync/${this.room}`);
+    const data = await resp.json().catch(() => ({}));
+    return data?.whiteboard || {};
+  }
+
   async shareWhiteboard({ sustainMs = 4000 } = {}) {
     const started = Date.now();
     await this._sync({ meta: { action: 'share-whiteboard', shareType: 'whiteboard' } });

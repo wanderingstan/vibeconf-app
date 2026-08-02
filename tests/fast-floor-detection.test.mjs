@@ -36,12 +36,23 @@ const srv = (fast) => {
   return s;
 };
 
-test('the experiment ships ON, deliberately, while the users are all test users', () => {
-  // Off would be the cautious default, and was until #116 review: an experiment
-  // nobody runs produces no data, because nobody sets a non-default preference.
-  // Revisit the moment there are real users — the failure mode (bot silently
-  // never speaks) is one an outsider would read as "it's thinking", not as a bug.
-  assert.equal(PREFERENCES.fastFloorDetection.default, true);
+test('the experiment ships OFF now that it has been measured', () => {
+  // It shipped ON deliberately (#116 review): an experiment nobody runs produces
+  // no data, because nobody sets a non-default preference. That worked — the
+  // data arrived, and it argues for off.
+  //
+  // Across 1,501 level windows of real calls the room noise floor never once
+  // reached the -55dB threshold (median -92dB, worst -66dB), so ambient sound was
+  // never the problem. But the rising edge is IMMEDIATE by design, so one ~16ms
+  // frame above threshold arms the floor and holds it 350ms — which a keystroke
+  // or a chair creak will do. 26.5% of 3,820 measured busy periods lasted under
+  // 500ms, too short to be anyone taking the floor.
+  //
+  // A bot that yields to a cough is worse than a bot that yields 400ms later, so
+  // the DOM path wins until an attack requirement makes the analyser safe. The
+  // analyser keeps RECORDING either way (see below), so turning it off does not
+  // stop the comparison data accruing.
+  assert.equal(PREFERENCES.fastFloorDetection.default, false);
 });
 
 test('it is read live, so a bot that goes quiet can be rescued mid-call', () => {

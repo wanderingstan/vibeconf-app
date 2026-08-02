@@ -607,7 +607,7 @@ const PREFERENCES = {
   },
   fastFloorDetection: {
     type: 'boolean',
-    default: true,
+    default: false,
     description:
       'EXPERIMENTAL (#115). Use the Web Audio analyser to decide whether anyone is ' +
       'speaking, instead of waiting on Meet mic-meter DOM mutations. The DOM path ' +

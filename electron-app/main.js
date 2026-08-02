@@ -220,6 +220,13 @@ function notifyConfigChanged(key, value) {
   if (panelView && !panelView.webContents.isDestroyed()) {
     panelView.webContents.send('extension-message', { action: 'config-updated', payload: { key, value } });
   }
+  // #231: switching backends must take effect now, not at the next poll. Going
+  // to codex/other has to clear a stale "signed out" banner immediately, and
+  // coming back to claude has to re-check rather than sit on the `null` we
+  // parked while it wasn't our business.
+  if (key === 'agentBackend') {
+    try { refreshClaudeAuth().catch(() => {}); } catch { /* not ready yet */ }
+  }
 }
 
 function prefValue(key) {
@@ -4474,6 +4481,18 @@ function ensureAgentWorkdir() {
 // only happens when Claude Code is BOTH installed and signed in. So this flag means
 // "installed + authenticated + working", front-loaded during onboarding instead of
 // discovered mid-call. Persisted so we only confirm once.
+// #231: does the APP launch the agent on this machine?
+//
+// The gate is deliberately "are we responsible for launching it", not "is the
+// backend claude" — they happen to coincide today, and phrasing it this way
+// keeps the rule correct if Codex ever gains app-driven launch. Everything the
+// app nags about (Claude Code missing, Claude Code signed out) is only our
+// business when we are the one starting it. Someone driving LM Studio or a
+// hand-rolled MCP client should never be told to install Claude Code.
+function appLaunchesAgent() {
+  try { return prefValue('agentBackend') === 'claude'; } catch { return true; }
+}
+
 // Claude Code sign-in state, cached (#137).
 //
 // The check costs a LOGIN SHELL — `$SHELL -lc 'claude auth status'` — because
@@ -4514,6 +4533,13 @@ const CLAUDE_AUTH_FOCUS_MAX_AGE_MS = 10 * 60_000;
 // what makes this safe to call from anything user-triggered (window focus, a
 // join) without risking a login shell per event.
 async function refreshClaudeAuth({ maxAgeMs = 0 } = {}) {
+  // Not our agent, not our question — and the check costs a login shell, so this
+  // also stops us polling forever on behalf of someone who will never install it.
+  if (!appLaunchesAgent()) {
+    claudeAuthState = { authed: null, method: 'not-managed', checkedAt: Date.now() };
+    broadcastClaudeAuth();
+    return claudeAuthState;
+  }
   // A session that has ever pinged /claude-ready has PROVEN auth by using it —
   // stronger evidence than the CLI's own answer, and free.
   if (claudeReady) {
@@ -4668,7 +4694,13 @@ async function launchClaudeTerminal(meetCode) {
   // Claude Code drives the bot. If the `claude` CLI isn't installed, offer to install it
   // (or copy the command) instead of launching a Terminal into "command not found".
   // Detection failure is non-fatal — we still launch (don't block a user who has it).
+  //
+  // #231: skipped entirely on a machine we don't launch the agent for. Telling a
+  // Codex or LM Studio user to install Claude Code is not a warning, it is noise
+  // about a tool they have decided against — and it is the one case where this
+  // whole feature is wrong.
   try {
+    if (!appLaunchesAgent()) throw { skip: true };
     const { detectClaude } = require('./claude-install.js');
     const det = await detectClaude();
     if (!det.installed) { promptInstallClaude(); return; }
@@ -4690,7 +4722,9 @@ async function launchClaudeTerminal(meetCode) {
         if (a.authed === false && claudeAuthState.authed !== false) notifyClaudeSignInNeeded();
       }).catch(() => {});
     }
-  } catch (e) { console.error('[electron] claude detection failed (continuing to launch):', e.message); }
+  } catch (e) {
+    if (!e || !e.skip) console.error('[electron] claude detection failed (continuing to launch):', e && e.message);
+  }
   // #305: default to this profile's trusted agent dir instead of the untrusted
   // /tmp. An explicit Settings → "Claude Working Directory" still wins.
   const claudeDir = store.get('claudeWorkDir') || ensureAgentWorkdir();
@@ -7243,6 +7277,10 @@ function setupIPC() {
         key: k,
         type: def.type,
         enum: def.enum || null,
+        // #231: optional presentation hints. Absent for every existing pref, so
+        // the renderer must fall back to the raw key/value it used before.
+        label: def.label || null,
+        enumLabels: def.enumLabels || null,
         default: def.default,
         description: def.description || '',
         requiresRestart: !!def.requiresRestart,

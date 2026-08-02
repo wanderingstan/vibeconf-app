@@ -68,19 +68,22 @@ api.invoke('get-app-settings-schema').then(async (fields) => {
       cb.type = 'checkbox'; cb.id = `f_${f.key}`; cb.checked = !!vals[f.key];
       cb.addEventListener('change', () => api.invoke('set-config', f.key, cb.checked));
       const lbl = document.createElement('label');
-      lbl.htmlFor = cb.id; lbl.textContent = f.key;
+      lbl.htmlFor = cb.id; lbl.textContent = f.label || f.key;
       rowc.appendChild(cb); rowc.appendChild(lbl);
       wrap.appendChild(rowc);
     } else {
       const lbl = document.createElement('label');
-      lbl.htmlFor = `f_${f.key}`; lbl.textContent = f.key;
+      lbl.htmlFor = `f_${f.key}`; lbl.textContent = f.label || f.key;
       wrap.appendChild(lbl);
       let input;
       if (f.enum && f.enum.length) {
         input = document.createElement('select');
         for (const opt of f.enum) {
           const o = document.createElement('option');
-          o.value = opt; o.textContent = opt;
+          // #231: a raw enum value presents every option as an equal peer. When
+          // they are not equal — recommended vs experimental vs bring-your-own —
+          // the label has to say so, or the UI misrepresents what is supported.
+          o.value = opt; o.textContent = (f.enumLabels && f.enumLabels[opt]) || opt;
           input.appendChild(o);
         }
         input.value = vals[f.key] != null ? vals[f.key] : (f.default != null ? f.default : '');

@@ -34,8 +34,42 @@ function render() {
   if (step === 'permissions') loadPermissions();
   if (step === 'signin') loadAuth();
   if (step === 'bot') loadEmojiSet();
-  if (step === 'claude') loadClaude();
+  if (step === 'claude') { loadClaude(); loadAgentBackend(); }
 }
+
+// #231: which agent drives bots on this machine. Only 'claude' makes the app
+// responsible for launching it, and only then do the install / sign-in warnings
+// apply — so the rest of this step is irrelevant to anyone who answers otherwise.
+const AGENT_BACKEND_HINT = {
+  claude: '',
+  codex: 'Codex needs a one-time manual setup — see docs/codex.md in the repo. The app won\u2019t launch it for you, and won\u2019t ask about Claude Code again.',
+  other: 'Anything that speaks MCP can drive a bot. The app will give you the connection details instead of managing an agent, and won\u2019t ask about Claude Code again.',
+};
+
+function paintAgentBackendHint() {
+  const sel = $('agentBackend');
+  const hint = $('agentBackendHint');
+  if (!sel || !hint) return;
+  hint.textContent = AGENT_BACKEND_HINT[sel.value] || '';
+  // The install/verify controls are about Claude Code specifically. Leaving them
+  // on screen after someone says they use something else is the same "we assume
+  // Claude" problem this control exists to fix.
+  const managed = sel.value === 'claude';
+  for (const id of ['claudeStatus', 'claudeInstallRow', 'claudeVerifyRow']) {
+    const el = $(id);
+    if (el) el.style.opacity = managed ? '1' : '0.35';
+  }
+}
+
+async function loadAgentBackend() {
+  try {
+    const cfg = await api.invoke('get-config', ['agentBackend']);
+    const sel = $('agentBackend');
+    if (sel && cfg?.agentBackend) sel.value = cfg.agentBackend;
+  } catch { /* leave the default selected */ }
+  paintAgentBackendHint();
+}
+$('agentBackend')?.addEventListener('change', paintAgentBackendHint);
 
 async function saveCurrent() {
   // Whatever is on screen is the choice. Also stops the wheel rewriting a field
@@ -48,6 +82,10 @@ async function saveCurrent() {
       // '' is a real choice ("Don't change it"), so this is set unconditionally
       // rather than guarded by truthiness the way botName is.
       await api.invoke('set-config', 'captionLanguage', $('captionLanguage').value);
+    }
+    if (step === 'claude') {
+      const backend = $('agentBackend')?.value;
+      if (backend) await api.invoke('set-config', 'agentBackend', backend);
     }
     if (step === 'bot') {
       const name = ($('botName').value || '').trim();
@@ -72,7 +110,15 @@ $('nextBtn').addEventListener('click', async () => {
   //
   // Next only, not Skip: Skip is the deliberate "I know, I have another agent"
   // escape hatch, and warning on it would just train people to dismiss warnings.
-  if (steps[i] === 'claude' && !claudeIsGreen) {
+  //
+  // #231: nor does it apply once someone has SAID they use something else. The
+  // warning's premise is "you will have nothing driving your bot" — which is
+  // simply false for a Codex or LM Studio user, and telling them otherwise is
+  // how a warning becomes noise. Skip used to be the only way to express this;
+  // now it can be stated, so it is honoured here.
+  const backendSel = $('agentBackend');
+  const appManagesAgent = !backendSel || backendSel.value === 'claude';
+  if (steps[i] === 'claude' && !claudeIsGreen && appManagesAgent) {
     const proceed = await api.invoke('onboarding:confirm-skip-claude', { installed: claudeState.installed });
     if (!proceed) return;
   }

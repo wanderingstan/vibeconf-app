@@ -298,6 +298,32 @@ const PREFERENCES = {
       'Any emoji not in the chosen set falls back to the native glyph. Reskin the ' +
       'bot\'s face (#316).',
   },
+  agentBackend: {
+    type: 'string',
+    default: 'claude',
+    enum: ['claude', 'codex', 'other'],
+    // Optional presentation hints, honoured by the schema-driven App Settings
+    // renderer. Without them a select shows the raw key and raw enum values,
+    // which here would present three neutral peers — and they are not peers:
+    // one is automated, one is experimental, one is bring-your-own.
+    label: 'Agent backend',
+    enumLabels: {
+      claude: 'Claude Code (recommended)',
+      codex: 'OpenAI Codex (experimental — manual setup)',
+      other: 'Other MCP client (LM Studio, Cline, …)',
+    },
+    description:
+      'Which agent drives the bots on THIS MACHINE. App-level, not per-bot: which ' +
+      'CLI is installed is a property of the machine, and every bot on it is driven ' +
+      'by the same one. "claude" = Claude Code, the path the app automates (it writes ' +
+      'the MCP config, opens the Terminal, and checks sign-in). "codex" = OpenAI Codex ' +
+      'CLI — experimental, and set up by hand per docs/codex.md. "other" = anything ' +
+      'else that speaks MCP (LM Studio, Cline, a hand-rolled client, an agent on ' +
+      'another machine) — the app gives you the connection details and stays out of ' +
+      'the way. ' +
+      'Only "claude" makes the app responsible for launching the agent, so it is the ' +
+      'only value that warns about Claude Code being missing or signed out (#137).',
+  },
   remoteLogging: {
     type: 'boolean',
     default: true,

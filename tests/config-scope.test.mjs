@@ -161,7 +161,10 @@ test('whole-config get(): merged view with app-level winning over stale profile 
 test('APP_LEVEL_KEYS is exactly the decided set (guard against accidental promotion)', () => {
   assert.deepEqual(
     [...APP_LEVEL_KEYS].sort(),
-    ['claudeIntegrationRemoved', 'dangerousMode', 'syncBaseUrl', 'ttsApiKey', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
+    // agentBackend (#231): which agent CLI is installed is a property of the
+    // MACHINE, like dangerousMode — every bot on a laptop is driven by the same
+    // one. Added deliberately; this list exists so that stays a decision.
+    ['agentBackend', 'claudeIntegrationRemoved', 'dangerousMode', 'syncBaseUrl', 'ttsApiKey', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
   );
 });
 

@@ -226,6 +226,21 @@
         <button class="btn cta" id="claudeVerifyBtn">Sign in &amp; verify</button>
         <div class="hint">Opens Claude Code so you can sign in with your subscription. This turns green automatically once it's ready.</div>
       </div>
+
+      <!-- #231: the escape hatch, stated rather than implied. Skipping this step
+           used to be the only way to say "I use something else", and the app went
+           on assuming Claude Code forever — warning about a tool the user had
+           deliberately decided against. Answering here records the intent, and
+           the warnings key off it. -->
+      <div style="margin-top:18px; padding-top:14px; border-top:1px solid #2a2d31">
+        <label for="agentBackend" class="hint" style="display:block; margin-bottom:6px">Using a different agent?</label>
+        <select id="agentBackend" style="width:100%">
+          <option value="claude">Claude Code (recommended)</option>
+          <option value="codex">OpenAI Codex (experimental — manual setup)</option>
+          <option value="other">Other MCP client (LM Studio, Cline, …)</option>
+        </select>
+        <div class="hint" id="agentBackendHint" style="margin-top:6px"></div>
+      </div>
     </section>
 
     <section data-step="done">

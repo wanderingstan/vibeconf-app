@@ -215,8 +215,16 @@ MINTED="$(echo "$JOINROUTE_OUT" | grep -oE 'VIBECONF_MINTED_ROOM=[a-z]{3}-[a-z]{
 if [[ -n "$MINTED" ]]; then
   export VIBECONF_MEET_ROOM="$MINTED"
   echo "=== tonight's meet room: $MINTED (freshly minted via /api/meet/create) ===" | tee -a "$LOG"
+  printf '{"ts":"%s","source":"minted","room":"%s"}\n' "$STAMP" "$MINTED" > "$RESULTS/meet-room-source.json"
 else
-  echo "=== meet room: FALLING BACK to the hard-coded room — /call did not mint one ===" | tee -a "$LOG"
+  # ⚠️ EXPOSURE: with no minted room, every live lane runs on the FIXED,
+  # publicly-joinable fallback room — its code appears in logs/screenshots, so
+  # anyone who sees it could join a live test and interfere. notify-nightly
+  # surfaces this in the Telegram digest (and pushes even on a green night).
+  # Root cause: /call needs a signed-in vibeconferencing.com session — the guest
+  # test profile has none (see setup-test-profiles.sh, "vibeconferencing.com").
+  echo "=== ⚠️  meet room: FALLING BACK to the SHARED hard-coded room — /call did not mint one. Live lanes ran on a FIXED, publicly-joinable Meet; sign the test profile into vibeconferencing.com to mint a fresh per-run room. ===" | tee -a "$LOG"
+  printf '{"ts":"%s","source":"fallback"}\n' "$STAMP" > "$RESULTS/meet-room-source.json"
 fi
 
 # Run the one-shot DMG target — the scheduled run on the always-on Mac mini

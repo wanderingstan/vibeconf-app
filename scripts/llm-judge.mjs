@@ -1,7 +1,7 @@
 // llm-judge.mjs — grade a non-deterministic agent run against a rubric.
 //
 // Mirrors the CLI-first / API-fallback pattern already used by
-// share-verify-test.mjs's vision check:
+// whiteboard-e2e-test.mjs's vision check:
 //   1. `claude -p` (the interactive subscription — no API key, preferred on the mini)
 //   2. Anthropic Messages API (needs ANTHROPIC_API_KEY) with structured JSON output
 //   3. null  → caller records a manual-review fallback (never a false PASS)

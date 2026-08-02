@@ -77,6 +77,7 @@ function fuzzLine(r) {
 const dmg = lastLine('results.jsonl');
 const main = lastLine('results-main.jsonl');
 const slack = lastLine('slack-results.jsonl');
+const whiteboardE2e = lastLine('whiteboard-e2e-results.jsonl');
 const codex = lastLine('codex-smoke-results.jsonl');
 const joinRoute = lastLine('join-route-results.jsonl');
 const fuzz = lastLine('agent-fuzz/results.jsonl');
@@ -85,6 +86,7 @@ const lines = [
   statusLine('DMG meet (gating)', dmg),
   statusLine('main meet', main),
   statusLine('Slack', slack),
+  statusLine("whiteboard e2e", whiteboardE2e),
   statusLine('codex', codex),
   // #105: the /join-call + /call routes. A lane that runs and records but never
   // reports is a lane nobody reads — the whole point is being TOLD when the

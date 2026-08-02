@@ -267,6 +267,24 @@ printf '{"ts":"%s","exit":%s,"stalls":"%s","fails":"%s","log":"%s"}\n' \
   "$STAMP" "$SLACK_CODE" "$sstalls" "$sfails" "$(basename "$LOG")" >> "$RESULTS/slack-results.jsonl"
 echo "=== Slack test exit: $SLACK_CODE (recorded, not gating) ===" | tee -a "$LOG"
 
+# --- Whiteboard SHARE-VERIFY (#267 step 3) — the ONLY lane that proves the
+# whiteboard actually RENDERS and reaches viewers, not just that the share toggle
+# engaged. Bot A puts a nonce on the board + shares; Bot B screenshots its own
+# call view; a `claude -p` VISION read (uses the machine's Claude subscription —
+# no API key) asserts the nonce is visible. It exercises the FULL stack: write →
+# vibeconferencing.com → Upstash → web-whiteboard render → screen-share → pixels.
+# NON-GATING (own results file): it depends on live Meet + the Upstash-backed
+# whiteboard, so a throttled backend can red it without the APP being broken —
+# the Telegram digest's analysis line explains which. ---
+echo "" | tee -a "$LOG"
+echo "=== whiteboard end-to-end (#267 step 3) $STAMP ===" | tee -a "$LOG"
+rec_run whiteboard-e2e -- pnpm test:whiteboard-e2e:ci
+SV_CODE=$?
+svfails=$(grep -oE 'failed steps: +[0-9]+' "$LOG" | tail -1 | grep -oE '[0-9]+$' || echo "?")
+printf '{"ts":"%s","exit":%s,"fails":"%s","log":"%s"}\n' \
+  "$STAMP" "$SV_CODE" "$svfails" "$(basename "$LOG")" >> "$RESULTS/whiteboard-e2e-results.jsonl"
+echo "=== whiteboard-e2e exit: $SV_CODE (recorded, not gating) ===" | tee -a "$LOG"
+
 # --- EXPERIMENTAL: real-agent fuzzing test (#267 item 5) — NEW, take with a grain
 # of salt. Real Claude agents run the 'smoke' mission and an LLM judge grades it.
 # Best-effort and DECOUPLED from the primary signal above: the `|| true` means it

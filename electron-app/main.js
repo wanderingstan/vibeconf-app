@@ -677,7 +677,23 @@ const localServer = new globalThis.LocalServer({
           whiteboard: { content },
         }),
       }).then(async (resp) => {
-        if (resp.ok) return { delivered: true };
+        if (resp.ok) {
+          // A 200 is not enough. The sync server catches a failed whiteboard
+          // write into results.whiteboard = { ok: false, error } and STILL
+          // returns 200 { success: true } — so during the Aug 1 rate limit our
+          // writes were reported delivered and never persisted. The board still
+          // held the previous call's content afterwards, which is how this was
+          // caught: it survived the outage that supposedly wrote over it.
+          let body = null;
+          try { body = await resp.json(); } catch { /* not JSON — treat as delivered */ }
+          const wb = body?.results?.whiteboard;
+          if (wb && wb.ok === false) {
+            const error = `sync server accepted the request but did not store it${wb.error ? `: ${wb.error}` : ''}`;
+            console.error('[local-server] Whiteboard write NOT persisted:', error);
+            return { delivered: false, error };
+          }
+          return { delivered: true };
+        }
         // Body first — the sync server puts the real reason there; the status
         // alone ("500") tells the bot nothing it can act on or repeat aloud.
         let detail = '';

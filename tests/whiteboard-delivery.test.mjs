@@ -39,7 +39,10 @@ test('a non-2xx from the sync server counts as failure', () => {
   // The bug that hid the Aug 1 outage: the push was fetch().catch(), which only
   // catches NETWORK errors. A 500 is a RESOLVED promise, so an outage rejecting
   // every board write logged nothing and still reported success.
-  assert.match(main, /if \(resp\.ok\) return \{ delivered: true \}/);
+  // A 2xx is necessary but not sufficient — see the persistence test below —
+  // so this asserts the branch, not the old one-line early return.
+  assert.match(main, /if \(resp\.ok\) \{/);
+  assert.match(main, /return \{ delivered: true \};/);
   assert.match(main, /const error = `sync server \$\{resp\.status\}/);
   assert.match(main, /return \{ delivered: false, error \}/);
   // And the chain must be returned — falling through to the no-room branch would
@@ -54,4 +57,22 @@ test('the bot is told not to describe an undelivered board as if it were up', ()
   const tool = mcp.slice(mcp.indexOf('wb.delivered === false'));
   assert.match(tool.slice(0, 800), /Nobody in the room can see this/);
   assert.match(tool.slice(0, 800), /send_chat/, 'it needs a fallback, not just bad news');
+});
+
+test('a 200 that did not persist is not delivery', () => {
+  // The sync server catches a failed whiteboard write into
+  // results.whiteboard = { ok: false, error } and still answers
+  // 200 { success: true }. Checking resp.ok alone therefore reported delivered
+  // for writes that were dropped — during the Aug 1 rate limit, every one of
+  // them. Caught because the board still held the PREVIOUS call's content after
+  // writes that claimed to have overwritten it.
+  const main = readFileSync(new URL('../electron-app/main.js', import.meta.url), 'utf8');
+  const ok = main.slice(main.indexOf('}).then(async (resp) => {'));
+  const body = ok.slice(0, 1200);
+  assert.match(body, /body\?\.results\?\.whiteboard/, 'the per-write result has to be read');
+  assert.match(body, /wb\.ok === false/);
+  assert.match(body, /return \{ delivered: false, error \}/);
+  // Explicit `=== false`: a server that omits the field must stay "delivered",
+  // or every older backend starts reporting phantom failures.
+  assert.doesNotMatch(body, /if \(wb && !wb\.ok\)/, 'absent must not read as failed');
 });

@@ -7032,10 +7032,21 @@ function createMainWindow() {
     'not-yielding':
       'A person in the call just flagged that you DID NOT YIELD when they tried to speak. When you hear someone '
       + 'start, stop — even mid-sentence. Keep replies shorter for the next few turns so there are more gaps.',
+    // Two different bugs wear this label, and the agent is the only one who can
+    // tell them apart in the moment. Either it is choosing not to speak, or the
+    // FLOOR GATE believes someone is always talking so it never gets an opening
+    // — measured levels say a transient (a keystroke, a cough) is enough to arm
+    // that, because the rising edge is immediate. Telling it only to "speak up"
+    // would be useless in the second case, so it is pointed at the check and the
+    // levers instead.
     'too-timid':
-      'A person in the call just flagged that you are TOO QUIET. They want to hear from you: speak up on the next '
-      + 'opening rather than waiting to be addressed by name, and do not hold back a useful reply because you are '
-      + 'unsure it is wanted.',
+      'A person in the call just flagged that you are TOO QUIET. Two things cause this, so check which. '
+      + '(1) If you have been holding back: speak up on the next opening rather than waiting to be named. '
+      + '(2) If you keep deciding the floor is busy, the audio gate may be firing on background noise — '
+      + 'call get_room_info and look at whether anyone is really speaking. If it is stuck busy, say so out loud '
+      + 'and offer to fix it: set_preference fastFloorDetection false turns the gate off (read live, takes effect '
+      + 'immediately), or lower bargeInGraceMs so you yield for less time when it does fire. '
+      + 'Ask before changing a preference — it is the human\'s call.',
   };
 
   // One agent notice per kind per window. A frustrated human clicks the same

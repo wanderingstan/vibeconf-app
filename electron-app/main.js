@@ -4436,6 +4436,16 @@ let claudeAuthState = { authed: null, method: null, checkedAt: 0 };
 // per interval to re-learn the same answer. The paths that matter (a join, the
 // panel regaining focus) refresh on demand.
 const CLAUDE_AUTH_POLL_MS = 15 * 60_000;
+// EXCEPT while we know they are signed out. That state is transient — someone is
+// about to fix it — and it is the one window where the answer is genuinely
+// likely to change, so it is worth spending shells on. It also self-terminates:
+// the moment they sign in, the poll drops back to the slow cadence.
+//
+// This is the alternative to putting a dismiss button on the banner. A dismiss
+// hides the warning whether or not the problem was fixed, and the one user it
+// helps most — someone who dismisses and then does NOT sign in — is exactly the
+// user who then hits the failure it exists to prevent.
+const CLAUDE_AUTH_POLL_UNAUTHED_MS = 60_000;
 // Focus is user-triggered and fires in bursts when someone alt-tabs, so the
 // on-demand refresh is throttled hard. 10 minutes, not 1: signing OUT is close
 // to a never-event, and every transition worth catching quickly has its own
@@ -5416,9 +5426,17 @@ app.whenReady().then(async () => {
   // problem the user does not have yet — they may have opened the app to change
   // a setting. The warning belongs where it is actionable, on the join. The
   // panel indicator carries the state in the meantime.
-  refreshClaudeAuth().catch(() => {});
-  const claudeAuthTimer = setInterval(() => { refreshClaudeAuth().catch(() => {}); }, CLAUDE_AUTH_POLL_MS);
-  if (claudeAuthTimer.unref) claudeAuthTimer.unref();
+  // Self-scheduling rather than setInterval, so the cadence can follow the state:
+  // brisk while signed out (transient, about to change), slow otherwise.
+  let claudeAuthTimer = null;
+  const scheduleClaudeAuthPoll = () => {
+    const delay = claudeAuthState.authed === false ? CLAUDE_AUTH_POLL_UNAUTHED_MS : CLAUDE_AUTH_POLL_MS;
+    claudeAuthTimer = setTimeout(() => {
+      refreshClaudeAuth().catch(() => {}).finally(scheduleClaudeAuthPoll);
+    }, delay);
+    if (claudeAuthTimer.unref) claudeAuthTimer.unref();
+  };
+  refreshClaudeAuth().catch(() => {}).finally(scheduleClaudeAuthPoll);
 
   // First-run setup wizard: shown once for the default instance (guarded by the
   // per-profile onboardingComplete flag); re-runnable from the app menu. The

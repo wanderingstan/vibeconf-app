@@ -44,9 +44,14 @@ test('warnings fire only on an explicit false', () => {
 });
 
 test('the answer is warmed at startup and kept warm on a slow timer', () => {
-  assert.match(main, /refreshClaudeAuth\(\)\.catch\(\(\) => \{\}\);/, 'warmed at startup, unawaited');
+  // Unawaited — startup must not block on a login shell. Not anchored on a
+  // trailing ';' any more: the call is now chained to .finally(reschedule).
+  assert.match(main, /refreshClaudeAuth\(\)\.catch\(\(\) => \{\}\)/, 'warmed at startup, unawaited');
+  assert.doesNotMatch(main, /await refreshClaudeAuth\(\)\.catch/, 'and never awaited at startup');
   assert.match(main, /const CLAUDE_AUTH_POLL_MS = 15 \* 60_000/);
-  assert.match(main, /setInterval\(\(\) => \{ refreshClaudeAuth\(\)\.catch/);
+  // Self-scheduling, not setInterval — a fixed interval cannot follow the state.
+  assert.doesNotMatch(main, /setInterval\([^)]*refreshClaudeAuth/);
+  assert.match(main, /claudeAuthTimer = setTimeout\(/);
   // unref so a background poll can't hold the process open at quit.
   assert.match(main, /claudeAuthTimer\.unref/);
 });
@@ -82,4 +87,23 @@ test('the panel carries the state persistently, not as a one-shot dialog', () =>
   // away while the problem stayed.
   const banner = panelHtml.slice(panelHtml.indexOf('id="claudeAuthBanner"'));
   assert.doesNotMatch(banner.slice(0, 600), /dismiss|×|close/i);
+});
+
+test('the poll speeds up while signed out, and only then', () => {
+  // The transient state is the one worth spending login shells on: someone is
+  // about to fix it, and it self-terminates the moment they do. This is the
+  // alternative to a dismiss button — a dismiss hides the warning whether or not
+  // the problem was fixed, and the user it helps most (dismisses, then doesn't
+  // sign in) is exactly the one who then hits the failure it exists to prevent.
+  assert.match(main, /const CLAUDE_AUTH_POLL_UNAUTHED_MS = 60_000/);
+  assert.match(main,
+    /claudeAuthState\.authed === false \? CLAUDE_AUTH_POLL_UNAUTHED_MS : CLAUDE_AUTH_POLL_MS/,
+    'brisk only on an explicit false — unknown must not burn shells either');
+});
+
+test('the poll keeps rescheduling even when a check throws', () => {
+  // In `finally`. Otherwise one failed check ends the chain and the indicator
+  // silently stops updating for the rest of the session.
+  const sched = main.slice(main.indexOf('const scheduleClaudeAuthPoll'));
+  assert.match(sched.slice(0, 500), /\.finally\(scheduleClaudeAuthPoll\)/);
 });

@@ -189,8 +189,15 @@ test('typing beats spinning, and navigating away stops it', () => {
 
 test('famous robots are in the pool, but stay a garnish', () => {
   const lower = new Set(ROBOTIC.map((n) => n.toLowerCase()));
-  for (const n of ['hal', 'tron', 'marvin', 'optimus prime', 'clippy', 'r2d2', 'c-3po']) {
+  for (const n of ['hal', 'tron', 'marvin', 'optimus prime', 'clippy', 'r2d2', 'skynet']) {
     assert.ok(lower.has(n), `${n} should be in the robot list`);
+  }
+  // Dropped by the name-transcription audit (2026-08-02): macOS `say` mangles
+  // these or Meet mistranscribes them, so they must NOT be suggested at random.
+  // They stay documented in bot-names.js's EXCLUDED comment; this guards a
+  // re-add. (C-3PO was the canonical case — `say` reads it "ku-negative-three-poe".)
+  for (const n of ['c-3po', 'pris', 'gort', 'twiki', 'kryten', 'giskard', 'daneel']) {
+    assert.ok(!lower.has(n), `${n} was audited out — should NOT be in the robot list`);
   }
   // A joke name is fun once and tiresome as the usual outcome. Most people
   // should still be handed an ordinary name.

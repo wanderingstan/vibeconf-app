@@ -16,18 +16,39 @@
 //   scripts/spawn-test-fleet.sh 2
 //   node scripts/name-transcription-test.mjs --bots Alice:7901,Jimmy:7902
 //     [--category feminine|masculine|robotic|all]   (default all)
-//     [--limit N]            cap the count (quick pass)
+//     [--limit N]            cap the count (quick pass / one chunk of a chunked run)
 //     [--names "Elena,Milo"] audit an explicit list
 //     [--voice "Samantha"]   macOS `say` voice (default: system voice)
+//     [--skip-done]          skip names already carrying a real verdict in the
+//                            JSONL (resume a chunked run; NO-CAPTION is retried)
 //
 // Results stream to ~/vibeconf-test-results/name-transcription-results.jsonl
 // ({name, category, heard, transcribedName, verdict}) so a long run (all ~418
 // names ≈ an hour) is resumable/inspectable if interrupted.
+//
+// CHUNKED RUNS (the source app crashes after ~10-15 min, too short for 418 names
+// in one shot): run in small batches, each a FRESH fleet, with --skip-done so the
+// batch picks up where the last left off, e.g.
+//   for i in $(seq 1 30); do
+//     scripts/spawn-test-fleet.sh 2   # fresh app pair
+//     node scripts/name-transcription-test.mjs --bots Alice:7901,Jimmy:7902 \
+//       --category all --skip-done --limit 15
+//     scripts/spawn-test-fleet.sh 2 --kill
+//   done
+// Each batch audits ≤15 NEW names, well under the crash window, and the JSONL
+// accretes the full dataset across batches.
+//
+// PRONUNCIATION CHECK: macOS `say` is an imperfect voice — for a tricky name
+// (C-3PO, R2D2) a bad caption could be `say` MISpronouncing it, not Meet
+// MIStranscribing it. For every suspicious verdict (CLOSE/MISS/NO-CAPTION) we
+// render the same `say` audio to ~/vibeconf-test-results/name-audio/<name>.aiff
+// so it can be judged BY EAR whether `say` or Meet is at fault.
 
 import { createRequire } from 'module';
 import { homedir } from 'os';
 import { join } from 'path';
-import { appendFileSync, mkdirSync } from 'fs';
+import { appendFileSync, mkdirSync, readFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { Bot, sleep } from './meet-test-lib.mjs';
 
 const require = createRequire(import.meta.url);
@@ -38,6 +59,7 @@ const ROOM = arg('room', 'paz-sqoa-npe');
 const BOTS = arg('bots', 'Alice:7901,Jimmy:7902').split(',').map((s) => { const [name, port] = s.split(':'); return new Bot(name, Number(port), ROOM); });
 const VOICE = arg('voice', '');                 // '' → the profile's default macOS voice
 const LIMIT = Number(arg('limit', '0')) || 0;
+const SKIP_DONE = process.argv.includes('--skip-done');
 
 // Build the (name, category) work list.
 const CATEGORY = arg('category', 'all').toLowerCase();
@@ -49,11 +71,31 @@ if (arg('names', '')) {
   const pick = CATEGORY === 'all' ? Object.entries(CATS) : [[CATEGORY, CATS[CATEGORY] || []]];
   work = pick.flatMap(([cat, list]) => list.map((name) => ({ name, category: cat })));
 }
-if (LIMIT) work = work.slice(0, LIMIT);
 
 const RESULTS_DIR = process.env.VIBECONF_RESULTS_DIR || join(homedir(), 'vibeconf-test-results');
 try { mkdirSync(RESULTS_DIR, { recursive: true }); } catch { /* exists */ }
 const RESULTS_FILE = join(RESULTS_DIR, 'name-transcription-results.jsonl');
+// Where suspicious names' `say` audio is saved for the by-ear pronunciation check.
+const AUDIO_DIR = join(RESULTS_DIR, 'name-audio');
+
+// --skip-done: resume a chunked run by dropping names that ALREADY have a real
+// verdict (EXACT/CLOSE/MISS) in the JSONL. NO-CAPTION is intentionally NOT
+// counted as done — those are inconclusive (often a crash tail) and get retried.
+if (SKIP_DONE) {
+  const done = new Set();
+  try {
+    for (const line of readFileSync(RESULTS_FILE, 'utf8').split('\n')) {
+      if (!line.trim()) continue;
+      try { const r = JSON.parse(line); if (r.name && r.verdict && r.verdict !== 'NO-CAPTION') done.add(r.name); } catch { /* skip bad line */ }
+    }
+  } catch { /* no prior file — nothing done */ }
+  const before = work.length;
+  work = work.filter((w) => !done.has(w.name));
+  console.log(`--skip-done: ${done.size} name(s) already verdicted; ${before - work.length} skipped, ${work.length} remain`);
+}
+
+// LIMIT applies AFTER skip-done so each chunk audits up to LIMIT *new* names.
+if (LIMIT) work = work.slice(0, LIMIT);
 
 const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
 function levenshtein(a, b) {
@@ -89,6 +131,26 @@ function judge(name, tail) {
   const tol = Math.max(1, Math.round(nName.length * 0.34));   // ~1/3 of the name
   const dist = Math.min(levenshtein(nTail, nName), levenshtein(lead, nName));
   return { verdict: dist <= tol ? 'CLOSE' : 'MISS', transcribedName: lead };
+}
+
+// Pronunciation check: render this name's `say` audio to an .aiff so a human can
+// hear whether `say` MISpronounced it (its fault) vs Meet MIStranscribing a
+// correct utterance (Meet's fault). Same voice the bot spoke with, so it's the
+// SAME audio Meet heard. Only called for suspicious verdicts — cheap, best-effort.
+function saveSayAudio(name, category) {
+  try {
+    mkdirSync(AUDIO_DIR, { recursive: true });
+    const safe = String(name).replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_|_$/g, '');
+    const out = join(AUDIO_DIR, `${category}-${safe}.aiff`);
+    const args = [];
+    if (VOICE) args.push('-v', VOICE);
+    args.push('-o', out, String(name));   // just the NAME — that's what we're judging
+    execFileSync('say', args, { stdio: 'ignore', timeout: 20000 });
+    return out;
+  } catch (e) {
+    console.log(`    (couldn't save audio for ${name}: ${e.message?.split('\n')[0] || e})`);
+    return null;
+  }
 }
 
 async function warmUp(bot) {
@@ -160,16 +222,20 @@ async function run() {
     summary[verdict] = (summary[verdict] || 0) + 1;
     const icon = verdict === 'EXACT' ? '✅' : verdict === 'CLOSE' ? '⚠️' : '❌';
     console.log(`  [${i + 1}/${work.length}] ${icon} ${name} (${category}) → ${verdict}${verdict !== 'EXACT' ? `  heard: "${transcribedName}"` : ''}`);
-    if (verdict !== 'EXACT') flagged.push({ name, category, verdict, transcribedName });
-    try { appendFileSync(RESULTS_FILE, JSON.stringify({ ts: new Date().toISOString(), name, category, verdict, transcribedName, tail: tail.slice(0, 60) }) + '\n'); } catch { /* best-effort */ }
+    // Save the `say` audio for any non-EXACT verdict so pronunciation vs
+    // transcription can be judged by ear (the C-3PO problem).
+    let audio = null;
+    if (verdict !== 'EXACT') { audio = saveSayAudio(name, category); flagged.push({ name, category, verdict, transcribedName, audio }); }
+    try { appendFileSync(RESULTS_FILE, JSON.stringify({ ts: new Date().toISOString(), name, category, verdict, transcribedName, tail: tail.slice(0, 60), ...(audio ? { audio } : {}) }) + '\n'); } catch { /* best-effort */ }
     await drain(listener); // settle the room before the next name
   }
 
   console.log('\n──────── name-transcription summary ────────');
   console.log(`  ✅ EXACT: ${summary.EXACT}   ⚠️ CLOSE: ${summary.CLOSE}   ❌ MISS: ${summary.MISS}   ∅ NO-CAPTION: ${summary['NO-CAPTION']}   (of ${work.length})`);
   if (flagged.length) {
-    console.log('  Names to reconsider (not transcribed EXACTly):');
-    for (const f of flagged) console.log(`    ${f.verdict === 'CLOSE' ? '⚠️' : '❌'} ${f.name} → "${f.transcribedName}"  (heard: "${f.heard.slice(0, 50)}")`);
+    console.log('  Names to reconsider (not transcribed EXACTly) — play the .aiff to hear if `say` or Meet is at fault:');
+    for (const f of flagged) console.log(`    ${f.verdict === 'CLOSE' ? '⚠️' : f.verdict === 'MISS' ? '❌' : '∅'} ${f.name} → "${f.transcribedName}"${f.audio ? `   🔊 ${f.audio}` : ''}`);
+    console.log(`  Audio for the flagged names: ${AUDIO_DIR}`);
   }
   console.log(`  Full results: ${RESULTS_FILE}`);
   // Non-zero only on a hard error; a MISS is DATA, not a test failure (this is an audit).

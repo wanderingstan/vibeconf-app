@@ -48,8 +48,6 @@ copyCallUrlBtn?.addEventListener('click', async () => {
 const meetCodeInput = document.getElementById('meetCode');
 const roomIdField = document.getElementById('roomIdField');
 const roomLink = document.getElementById('roomLink');
-const copyPromptBtn = document.getElementById('copyPromptBtn');
-const agentPromptText = document.getElementById('agentPromptText');
 const transcriptArea = document.getElementById('transcriptArea');
 const errorBar = document.getElementById('errorBar');
 const rawCaptionText = document.getElementById('rawCaptionText');
@@ -1621,7 +1619,6 @@ function enterCallState(meetCode) {
   roomLink.href = `${base}/room/${meetCode}`;
   roomLink.style.display = 'block';
   updateCurlCommand(meetCode);
-  updateAgentPrompt(meetCode);
 }
 
 function exitCallState() {
@@ -2136,70 +2133,6 @@ slackSignOutBtn?.addEventListener('click', async () => {
 // Agent prompt
 // ---------------------------------------------------------------------------
 
-function generateAgentPrompt(meetCode) {
-  const base = syncBaseUrl || 'http://127.0.0.1:7865';
-  const endpoint = `${base}/api/sync/${meetCode}`;
-  const botParam = encodeURIComponent(currentBotName);
-
-  return `You are "${currentBotName}", an AI assistant participating in a Google Meet call.
-
-## How to interact
-
-**Wait for people to speak (long-poll, recommended):**
-\`\`\`bash
-curl -s "${endpoint}?since=TIMESTAMP&wait=55&silence=2&bot=${botParam}" | python3 -m json.tool
-\`\`\`
-This holds the connection open for up to 55 seconds and returns only when someone finishes speaking (2 seconds of silence detected). The \`bot\` parameter excludes your own entries. Use the \`asOf\` value from each response as the next \`since\` parameter.
-
-First call: omit \`?since=\` and \`?wait=\` to get recent history and the initial \`asOf\` timestamp.
-
-Transcript entries are in \`transcript.entries[]\`, each with \`participantName\` (who said it) and \`text\` (what they said).
-
-**Say something in the call:**
-\`\`\`bash
-curl -s -X POST "${endpoint}" \\
-  -H "Content-Type: application/json" \\
-  -d '{"sender":"${currentBotName}","role":"bot","ownerName":"${currentBotName}","transcript":[{"text":"Your message here"}]}'
-\`\`\`
-Your transcript text will be spoken aloud in the Meet call via text-to-speech.
-
-**Update the whiteboard (shared screen):**
-\`\`\`bash
-curl -s -X POST "${endpoint}" \\
-  -H "Content-Type: application/json" \\
-  -d '{"sender":"${currentBotName}","role":"bot","ownerName":"${currentBotName}","whiteboard":{"content":"# Your markdown here"}}'
-\`\`\`
-
-## Interaction loop
-
-Your main loop should be:
-1. GET with \`?wait=55&silence=2\` to block until someone speaks
-2. Read the transcript entries in the response
-3. Decide if you should respond
-4. POST your response (spoken via TTS) and/or whiteboard update
-5. Use \`asOf\` from the response as the next \`since\` value
-6. Repeat from step 1
-
-## Important notes
-- \`ownerName\` is REQUIRED in every POST request
-- \`sender\` must be exactly "${currentBotName}" for the extension to speak your responses
-- Avoid exclamation marks and special characters in text — they can cause shell escaping issues with curl. Use periods instead.
-- When using curl with single quotes, apostrophes in text will break the command. Use double quotes with escaped inner quotes, or avoid contractions.
-- Do NOT use \`sleep\` between polls — the \`wait\` parameter handles blocking server-side
-- Keep responses concise — they will be spoken aloud via TTS
-- Use the whiteboard for structured content (notes, diagrams, action items)
-`;
-}
-
-function updateAgentPrompt(meetCode) {
-  agentPromptText.value = generateAgentPrompt(meetCode);
-}
-
-copyPromptBtn.addEventListener('click', () => {
-  api.copyToClipboard(agentPromptText.value);
-  copyPromptBtn.textContent = 'Copied!';
-  setTimeout(() => { copyPromptBtn.textContent = 'Copy Agent Prompt'; }, 2000);
-});
 
 // ---------------------------------------------------------------------------
 // Curl command
@@ -2220,6 +2153,34 @@ copyCurlBtn.addEventListener('click', () => {
 // ---------------------------------------------------------------------------
 // DevTools
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Call feedback (#…): one click leaves a mark in the session log.
+//
+// Clicked mid-call, so the interaction budget is about a second: no dialog, no
+// confirmation step, no typing. The value is the TIMESTAMP — it puts a marker
+// next to whatever the bot was doing at that moment, which is what turns "it
+// kept interrupting" from a memory into something diagnosable.
+//
+// Fire-and-forget on purpose: a failed log write must never interrupt a call,
+// so the button flashes regardless and the failure lands in the console.
+document.querySelectorAll('[data-feedback]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const kind = btn.dataset.feedback;
+    api.invoke('call-feedback', { kind, label: btn.textContent.trim() }).catch((e) => {
+      console.warn('[feedback] not recorded:', e && e.message);
+    });
+    // Confirm without stealing attention from the call.
+    btn.classList.add('logged');
+    setTimeout(() => btn.classList.remove('logged'), 1200);
+    const status = document.getElementById('feedbackStatus');
+    if (status) {
+      status.textContent = `Marked "${btn.textContent.trim()}" in the log.`;
+      clearTimeout(status._t);
+      status._t = setTimeout(() => { status.textContent = ''; }, 4000);
+    }
+  });
+});
 
 document.getElementById('devtoolsBtn').addEventListener('click', () => {
   api.send('open-devtools');
@@ -2655,7 +2616,6 @@ api.on('meet-status', (status) => {
       const base = syncBaseUrl || 'http://127.0.0.1:7865';
       roomLink.href = `${base}/room/${match[1]}`;
       updateCurlCommand(match[1]);
-      updateAgentPrompt(match[1]);
     }
   }
 });

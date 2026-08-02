@@ -6996,6 +6996,35 @@ function createMainWindow() {
   // Open DevTools on demand from panel — registered once, references the
   // current module-level meetView so it always targets the live one after
   // a partition swap.
+  // Call feedback from the troubleshooting window: a human saying "that was
+  // wrong" at the moment it happened.
+  //
+  // The timestamp is the whole point. Bot misbehaviour is hard to report after
+  // the fact — "it kept interrupting" doesn't locate anything — but a marker in
+  // the session log sits next to the captions, the turn state and the agent
+  // activity for that second, which is enough to reconstruct what happened.
+  //
+  // Deliberately ONE handler, and deliberately structured: the same signal is
+  // meant to reach the agent later so it can adjust mid-call, and that should be
+  // an addition here rather than a second route with its own format.
+  //
+  // Never throws: this is clicked during a live call, and a logging failure must
+  // not surface as an error in front of the room.
+  ipcMain.handle('call-feedback', (_e, { kind, label } = {}) => {
+    try {
+      const k = String(kind || 'unspecified').slice(0, 40);
+      const room = localServer.roomId || '-';
+      const callId = localServer.callId || '-';
+      const status = localServer.callStatus || 'idle';
+      // Prefixed and single-line so it greps cleanly out of a busy session log.
+      console.log(`[feedback] kind=${k} status=${status} room=${room} call=${callId} label=${JSON.stringify(String(label || k))}`);
+      return { ok: true };
+    } catch (err) {
+      console.warn('[feedback] failed to record:', err && err.message);
+      return { ok: false, error: err && err.message };
+    }
+  });
+
   ipcMain.on('open-devtools', () => {
     if (meetView && meetView.webContents) {
       meetView.webContents.openDevTools({ mode: 'detach' });
@@ -7424,8 +7453,12 @@ function setupIPC() {
       return { ok: true };
     }
     const win = new BrowserWindow({
-      width: 560,
-      height: 820,
+      // Two columns (#…): wide enough for both without either being a slot.
+      // The CSS collapses back to one column below 720px, so a user who resizes
+      // this narrow gets a single readable column rather than clipped content.
+      width: 980,
+      height: 860,
+      minWidth: 420,
       title: 'Vibeconferencing — Troubleshooting',
       icon: path.join(__dirname, 'icon.png'),
       webPreferences: {

@@ -1067,3 +1067,29 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
   margin-top: 10px; padding-top: 8px; border-top: 1px solid #3c4043;
   font-size: 11px; color: #9aa0a6;
 }
+
+/* ── Troubleshooting: two columns, and the call-feedback bar ────────────────
+   Only applied inside the troubleshooting screen so the narrow in-app panel
+   (which shares panel.html) is untouched. The pop-out window is widened to
+   match; below that width the columns collapse back to one so a resized or
+   docked window stays usable rather than clipping. */
+.ts-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; align-items: start; }
+@media (max-width: 720px) { .ts-cols { grid-template-columns: 1fr; } }
+/* The first .section in each column has a top border+margin that reads as a
+   stray rule under the column head. */
+.ts-cols > div > .section:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+
+/* Feedback bar. These get clicked DURING a call, with a couple of seconds of
+   attention at most, so they are big, single-click, and never open a dialog. */
+.ts-feedback { margin: 4px 0 8px; }
+.ts-feedback .fb-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.ts-feedback button {
+  flex: 1 1 auto; min-width: 128px; width: auto;
+  padding: 8px 10px; font-size: 12px; line-height: 1.25;
+  background: #2a2d31; color: #e8eaed;
+  border: 1px solid #5f6368; border-radius: 8px; cursor: pointer;
+}
+.ts-feedback button:hover { background: #3c4043; }
+/* Flash green on click. The whole point is confirming the mark landed without
+   stealing attention from the call. */
+.ts-feedback button.logged { background: #1e4620; border-color: #34a853; }

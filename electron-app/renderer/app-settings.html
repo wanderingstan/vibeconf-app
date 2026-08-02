@@ -26,7 +26,7 @@
 <body>
   <div class="as-header">
     <h1>App Settings</h1>
-    <div class="sub">These apply to <strong>every bot on this Mac</strong> (all profiles). Per-bot settings — voice choice, identity, personality — live in each profile's own window.</div>
+    <div class="sub">These apply to <strong>every bot on this machine</strong> (all profiles). Per-bot settings — voice choice, identity, personality — live in each profile's own window.</div>
   </div>
 
   <!-- #366/#381: the vibeconferencing.com user login is app-level (one sign-in
@@ -38,14 +38,14 @@
       <button type="button" id="userSignInBtn" style="display:none;background:#8ab4f8;color:#202124;border:none;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer">Sign in with Google</button>
       <button type="button" id="userSignOutBtn" style="display:none;background:#2a2d31;color:#e8eaed;border:1px solid #5f6368;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer">Log out</button>
     </div>
-    <div class="desc">Your login for the shared whiteboard rooms. One sign-in covers every profile on this Mac.</div>
+    <div class="desc">Your login for the shared whiteboard rooms. One sign-in covers every profile on this machine.</div>
   </div>
 
   <div class="as-section">
     <h2>Voice (ElevenLabs)</h2>
     <label for="ttsApiKey">API key</label>
     <input type="password" id="ttsApiKey" placeholder="sk_..." autocomplete="off" spellcheck="false" />
-    <div class="desc">The machine-wide ElevenLabs secret used for text-to-speech. Without it, bots fall back to the built-in macOS voice.</div>
+    <div class="desc">The machine-wide ElevenLabs secret used for text-to-speech. Without it, bots fall back to the system's built-in voice, if the platform has one.</div>
     <div class="desc">Get a key at <a href="https://elevenlabs.io/app/settings/api-keys" id="ttsKeyLink" class="ext-link">elevenlabs.io ↗</a> — signup is free, and the free tier includes enough characters to try it out.</div>
   </div>
 

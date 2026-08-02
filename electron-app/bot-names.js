@@ -173,7 +173,7 @@ const MASCULINE = [
 //                           is discontinued and wakes nothing.
 const ROBOTIC = [
   // Film
-  'Hal', 'Tron', 'Robby', 'Gort', 'Wally', 'Megatron', 'Jarvis', 'Ultron',
+  'Hal', 'Tron', 'Robby', 'Wally', 'Megatron', 'Jarvis', 'Ultron',
   'Baymax', 'Chappie', 'Robocop', 'Skynet', 'Astro', 'Talos', 'Terminator',
   // The canonical rule-1 judgement call, and the one the rule is written around.
   'Bender',
@@ -182,10 +182,10 @@ const ROBOTIC = [
   // Film — the two-word ones, safer than either word on its own
   'Optimus Prime', 'Iron Giant', 'Johnny Five',
   // Television
-  'Twiki', 'Kryten', 'Marvin', 'Rosie', 'Vicki', 'Ziggy', 'Orac', 'Maeve', 'Dolores',
+  'Marvin', 'Rosie', 'Vicki', 'Ziggy', 'Orac', 'Maeve', 'Dolores',
   'Bernard', 'Roy',
   // Books
-  'Daneel', 'Giskard', 'Multivac', 'Wintermute', 'Deep Thought',
+  'Daneel', 'Multivac', 'Wintermute', 'Deep Thought',
   // Real, or real enough
   'Eliza', 'Watson', 'Turing', 'Clippy', 'Cortana',
   // SoftBank's Pepper, and one of this project's own bots.
@@ -206,6 +206,10 @@ const ROBOTIC = [
 //               "c3po". Pure pronunciation failure, not a Meet miss.
 //     Pris    — `say` says "pree" (French); Meet hears "chris". "Priss" spelling
 //               would fix the voice but collides with the common name Chris.
+//     Gort    — spoken cleanly, Meet still captions "gourd".
+//     Twiki   — Meet hears "twiggy".
+//     Kryten  — Meet hears "critten".
+//     Giskard — Meet hears "just" — the worst mangle of the set.
 
 // Every name, each appearing once. This is the LIST — what exists — and it is
 // what callers should read to ask "is this name in the pool?".

@@ -7016,8 +7016,17 @@ function createMainWindow() {
       const room = localServer.roomId || '-';
       const callId = localServer.callId || '-';
       const status = localServer.callStatus || 'idle';
+      // What the bot was DOING at that instant, captured here rather than left
+      // to be inferred from neighbouring lines. Verified against a real call:
+      // the surrounding log does reconstruct the moment, but only if you read
+      // ten lines either side. These two fields are what separate the reports
+      // from each other — "interrupted" while bot=speaking is a different bug
+      // from "interrupted" while bot=listening, and "frozen" is only meaningful
+      // next to whether anyone was actually talking.
+      const bot = localServer.botState || 'unknown';
+      const speaking = localServer.anyoneSpeaking ? 'yes' : 'no';
       // Prefixed and single-line so it greps cleanly out of a busy session log.
-      console.log(`[feedback] kind=${k} status=${status} room=${room} call=${callId} label=${JSON.stringify(String(label || k))}`);
+      console.log(`[feedback] kind=${k} status=${status} bot=${bot} othersSpeaking=${speaking} room=${room} call=${callId} label=${JSON.stringify(String(label || k))}`);
       return { ok: true };
     } catch (err) {
       console.warn('[feedback] failed to record:', err && err.message);

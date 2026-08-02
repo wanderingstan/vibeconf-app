@@ -48,9 +48,17 @@ test('a click costs one action and never blocks the call', () => {
 
 test('the log line is greppable and carries the call context', () => {
   const h = main.slice(main.indexOf("ipcMain.handle('call-feedback'"));
-  const body = h.slice(0, 1200);
+  // Sliced to the handler's closing brace rather than a character count — a
+  // fixed window silently stops covering the end of the function the moment a
+  // comment is added, which is exactly how this drifted.
+  const body = h.slice(0, h.indexOf('\n  });') + 6);
   assert.match(body, /\[feedback\]/, 'a stable prefix is what makes it findable in a busy log');
-  for (const field of ['kind=', 'status=', 'room=', 'call=']) {
+  // bot= and othersSpeaking= are what separate the reports from each other:
+  // "interrupted" while the bot was speaking is a different bug from the same
+  // click while it was listening, and "frozen" only means something next to
+  // whether anyone was actually talking. Without them the marker needs ten
+  // lines of context either side to interpret.
+  for (const field of ['kind=', 'status=', 'bot=', 'othersSpeaking=', 'room=', 'call=']) {
     assert.ok(body.includes(field), `the marker needs ${field} to be reconstructable`);
   }
   // Never throws: clicked during a live call.

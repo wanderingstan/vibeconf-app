@@ -122,6 +122,10 @@ test('the step asks the question before offering one answer to it', () => {
   // that only makes sense if Claude is already assumed.
   assert.match(onbHtml, /<label for="agentBackend"[^>]*>Agent<\/label>/);
   assert.doesNotMatch(onbHtml, /Using a different agent/);
+  // The app ships on Windows and Linux too, so copy that names one platform is
+  // a string someone has to remember to fork later. "machine" needs no variant.
+  const step = onbHtml.slice(onbHtml.indexOf('data-step="claude"'));
+  assert.doesNotMatch(step.slice(0, step.indexOf('</section>')), /\bMac\b/);
   // Named for the question, not for one of the three answers.
   assert.match(onbJs, /claude: 'Brains'/);
   assert.doesNotMatch(onbJs, /claude: 'Claude Code'/);

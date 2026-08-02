@@ -309,8 +309,8 @@ const PREFERENCES = {
     label: 'Agent backend',
     enumLabels: {
       claude: 'Claude Code (recommended)',
-      codex: 'OpenAI Codex (experimental — manual setup)',
-      other: 'Other MCP client (LM Studio, Cline, …)',
+      codex: 'OpenAI Codex (experimental, manual setup)',
+      other: 'Other MCP client (LM Studio, custom)',
     },
     description:
       'Which agent drives the bots on THIS MACHINE. App-level, not per-bot: which ' +
@@ -318,7 +318,7 @@ const PREFERENCES = {
       'by the same one. "claude" = Claude Code, the path the app automates (it writes ' +
       'the MCP config, opens the Terminal, and checks sign-in). "codex" = OpenAI Codex ' +
       'CLI — experimental, and set up by hand per docs/codex.md. "other" = anything ' +
-      'else that speaks MCP (LM Studio, Cline, a hand-rolled client, an agent on ' +
+      'else that speaks MCP (LM Studio, a hand-rolled client, an agent on ' +
       'another machine) — the app gives you the connection details and stays out of ' +
       'the way. ' +
       'Only "claude" makes the app responsible for launching the agent, so it is the ' +

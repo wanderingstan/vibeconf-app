@@ -174,11 +174,15 @@ const MASCULINE = [
 const ROBOTIC = [
   // Film
   'Hal', 'Tron', 'Robby', 'Gort', 'Wally', 'Megatron', 'Jarvis', 'Ultron',
-  'Baymax', 'Chappie', 'Robocop', 'Skynet', 'Pris', 'Astro', 'Talos', 'Terminator',
+  'Baymax', 'Chappie', 'Robocop', 'Skynet', 'Astro', 'Talos', 'Terminator',
   // The canonical rule-1 judgement call, and the one the rule is written around.
   'Bender',
-  // Film — confirmed intact through Google's captions on a live test call
-  'R2D2', 'C-3PO',
+  // Film — confirmed intact through Google's captions on a live test call.
+  // ('Pris' and 'C-3PO' dropped 2026-08-02: the name-transcription audit found
+  // macOS `say` mispronounces them — "pree" (→ heard "chris") and
+  // "ku-negative-three-poe" — so they fail the lowest-common-denominator bar for
+  // a RANDOM suggestion. See scripts/name-transcription-test.mjs.)
+  'R2D2',
   // Film — the two-word ones, safer than either word on its own
   'Optimus Prime', 'Iron Giant', 'Johnny Five',
   // Television

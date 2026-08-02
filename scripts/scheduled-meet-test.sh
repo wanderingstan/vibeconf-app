@@ -252,6 +252,20 @@ printf '{"ts":"%s","exit":%s,"stalls":"%s","fails":"%s","branch":"main","log":"%
   "$STAMP" "$MAIN_CODE" "$mstalls" "$mfails" "$(basename "$LOG")" >> "$RESULTS/results-main.jsonl"
 echo "=== main-source meet exit: $MAIN_CODE (recorded, not gating) ===" | tee -a "$LOG"
 
+# --- Whiteboard write→read ROUND-TRIP (backend/Upstash) — the DATA-path check
+# under whiteboard-e2e: bot A writes via update_whiteboard, bot B reads it back via
+# read_whiteboard, cross-instance (they share state only through the backend). No
+# screen-share, no vision — so a failure points squarely at the whiteboard store
+# (e.g. Upstash throttling), unambiguously. NON-GATING (own results file). ---
+echo "" | tee -a "$LOG"
+echo "=== whiteboard write/read round-trip (backend/Upstash) $STAMP ===" | tee -a "$LOG"
+rec_run wb-roundtrip -- pnpm test:whiteboard-roundtrip:ci
+WBRT_CODE=$?
+wbfails=$(grep -oE 'failed steps: +[0-9]+' "$LOG" | tail -1 | grep -oE '[0-9]+$' || echo "?")
+printf '{"ts":"%s","exit":%s,"fails":"%s","log":"%s"}\n' \
+  "$STAMP" "$WBRT_CODE" "$wbfails" "$(basename "$LOG")" >> "$RESULTS/whiteboard-roundtrip-results.jsonl"
+echo "=== whiteboard round-trip exit: $WBRT_CODE (recorded, not gating) ===" | tee -a "$LOG"
+
 # --- Slack backend test (test:slack:ci) — the huddle-fleet analog of the meet test
 # (#265). Drives the two SIGNED-IN test-slack profiles through join/speak/hear/chat/
 # whiteboard in a real Slack huddle. Non-gating — own results file. Depends on the

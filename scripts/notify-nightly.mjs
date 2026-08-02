@@ -76,6 +76,7 @@ function fuzzLine(r) {
 
 const dmg = lastLine('results.jsonl');
 const main = lastLine('results-main.jsonl');
+const wbRoundtrip = lastLine('whiteboard-roundtrip-results.jsonl');
 const slack = lastLine('slack-results.jsonl');
 const codex = lastLine('codex-smoke-results.jsonl');
 const joinRoute = lastLine('join-route-results.jsonl');
@@ -84,6 +85,7 @@ const fuzz = lastLine('agent-fuzz/results.jsonl');
 const lines = [
   statusLine('DMG meet (gating)', dmg),
   statusLine('main meet', main),
+  statusLine('whiteboard round-trip', wbRoundtrip),
   statusLine('Slack', slack),
   statusLine('codex', codex),
   // #105: the /join-call + /call routes. A lane that runs and records but never

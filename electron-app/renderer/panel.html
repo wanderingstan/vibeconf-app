@@ -67,6 +67,17 @@
                  lives there. -->
             <button id="openAppSettingsFromBanner" class="notice-action">Choose a voice →</button>
           </div>
+
+          <!-- #137: installed is not the same as signed in. An agent sitting at
+               Claude Code's login prompt looks, from inside the call, exactly
+               like a crashed one — the bot tile appears and then does nothing.
+               A persistent indicator beats a one-shot dialog here: this is a
+               durable state, so it should be visible and self-clearing rather
+               than dismissible and forgotten. Shown ONLY on an explicit false;
+               "couldn't tell" stays silent. -->
+          <div class="hero-notice notice-warn" id="claudeAuthBanner" style="display:none">
+            <span><i class="ui-icon ui-icon-construction ui-icon--lead"></i>Claude Code isn't signed in. Your bot will join calls but nothing will drive it.</span>
+          </div>
         </div>
 
         <!-- PRE-CALL controls, over the foot of the avatar.

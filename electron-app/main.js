@@ -4474,6 +4474,73 @@ function ensureAgentWorkdir() {
 // only happens when Claude Code is BOTH installed and signed in. So this flag means
 // "installed + authenticated + working", front-loaded during onboarding instead of
 // discovered mid-call. Persisted so we only confirm once.
+// Claude Code sign-in state, cached (#137).
+//
+// The check costs a LOGIN SHELL — `$SHELL -lc 'claude auth status'` — because
+// auth can come from environment variables and a GUI app has launchd's minimal
+// env, not the user's. That sources .zprofile/.zshrc, so on a machine with
+// nvm/conda/pyenv it is seconds, not milliseconds. Far too expensive to sit in
+// front of a join, which is the most latency-sensitive thing the app does.
+//
+// So it is answered in advance and kept warm. Tri-state throughout: null means
+// "couldn't tell", and callers must only act on an explicit false — a wrong
+// "please sign in" shown to someone already signed in teaches people to ignore
+// the warning, which is worse than never warning at all.
+let claudeAuthState = { authed: null, method: null, checkedAt: 0 };
+// Slow on purpose. This changes about once in a bot's lifetime — a user signs in
+// and never thinks about it again — so anything faster is spending a login shell
+// per interval to re-learn the same answer. The paths that matter (a join, the
+// panel regaining focus) refresh on demand.
+const CLAUDE_AUTH_POLL_MS = 15 * 60_000;
+// EXCEPT while we know they are signed out. That state is transient — someone is
+// about to fix it — and it is the one window where the answer is genuinely
+// likely to change, so it is worth spending shells on. It also self-terminates:
+// the moment they sign in, the poll drops back to the slow cadence.
+//
+// This is the alternative to putting a dismiss button on the banner. A dismiss
+// hides the warning whether or not the problem was fixed, and the one user it
+// helps most — someone who dismisses and then does NOT sign in — is exactly the
+// user who then hits the failure it exists to prevent.
+const CLAUDE_AUTH_POLL_UNAUTHED_MS = 60_000;
+// Focus is user-triggered and fires in bursts when someone alt-tabs, so the
+// on-demand refresh is throttled hard. 10 minutes, not 1: signing OUT is close
+// to a never-event, and every transition worth catching quickly has its own
+// signal already — markClaudeReady() the instant an agent connects, and a
+// refresh on the join itself. This is a backstop, and a backstop that spawns a
+// login shell should be stingy.
+const CLAUDE_AUTH_FOCUS_MAX_AGE_MS = 10 * 60_000;
+
+// Re-check, unless the cached answer is younger than maxAgeMs. The throttle is
+// what makes this safe to call from anything user-triggered (window focus, a
+// join) without risking a login shell per event.
+async function refreshClaudeAuth({ maxAgeMs = 0 } = {}) {
+  // A session that has ever pinged /claude-ready has PROVEN auth by using it —
+  // stronger evidence than the CLI's own answer, and free.
+  if (claudeReady) {
+    claudeAuthState = { authed: true, method: 'proven', checkedAt: Date.now() };
+    broadcastClaudeAuth();
+    return claudeAuthState;
+  }
+  if (maxAgeMs && Date.now() - claudeAuthState.checkedAt < maxAgeMs) return claudeAuthState;
+  try {
+    const { detectClaudeAuth } = require('./claude-install.js');
+    const r = await detectClaudeAuth();
+    claudeAuthState = { authed: r.authed, method: r.method, checkedAt: Date.now() };
+  } catch {
+    claudeAuthState = { authed: null, method: null, checkedAt: Date.now() };
+  }
+  broadcastClaudeAuth();
+  return claudeAuthState;
+}
+
+function broadcastClaudeAuth() {
+  try {
+    if (panelView && !panelView.webContents.isDestroyed()) {
+      panelView.webContents.send('claude-auth-changed', claudeAuthState);
+    }
+  } catch { /* window went away */ }
+}
+
 let claudeReady = false;
 try { claudeReady = !!store.get('claudeReady'); } catch { /* store not ready */ }
 
@@ -4481,6 +4548,12 @@ function markClaudeReady(source) {
   const was = claudeReady;
   claudeReady = true;
   try { store.set('claudeReady', true); } catch { /* noop */ }
+  // #137: an agent that reached us has DEMONSTRATED sign-in — better evidence
+  // than the CLI's own answer, and it lands the instant someone finishes the
+  // login we asked for. Without this the indicator would keep saying "signed
+  // out" until the next poll, right after the user fixed it.
+  claudeAuthState = { authed: true, method: 'proven', checkedAt: Date.now() };
+  try { broadcastClaudeAuth(); } catch { /* panel not up yet */ }
   if (!was) {
     console.log('[electron] Claude Code confirmed ready (' + (source || '?') + ')');
     try { if (panelView && !panelView.webContents.isDestroyed()) panelView.webContents.send('claude-ready', true); } catch { /* noop */ }
@@ -4557,6 +4630,27 @@ function promptInstallClaude() {
   }).catch(() => { /* dialog dismissed */ });
 }
 
+// Claude Code is installed but signed out (#137). We still spawn the Terminal — that
+// window IS where you sign in — but say so, because the alternative is a bot tile that
+// appears and then does nothing while the room debugs the wrong thing. Non-blocking on
+// purpose: the dialog and the Terminal come up together, and the message names the
+// window to look at rather than describing an error.
+function notifyClaudeSignInNeeded() {
+  const parent = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : null;
+  dialog.showMessageBox(parent, {
+    type: 'info',
+    title: 'Claude Code needs a one-time sign-in',
+    message: 'Sign in to Claude Code in the Terminal window',
+    detail:
+      "Your bot will join the call, but nothing will drive it until Claude Code is signed in.\n\n"
+      + "A Terminal window is opening now. If it asks you to log in, do that first — then the "
+      + "bot starts responding. This is a one-time step.\n\n"
+      + "Until you sign in, the bot looks like it's in the meeting but ignoring everyone.",
+    buttons: ['OK'],
+    noLink: true,
+  }).catch(() => { /* dismissed */ });
+}
+
 async function launchClaudeTerminal(meetCode) {
   const { execFile } = require('child_process');
   // Test fleets drive the bot from the harness over MCP — they have no use for a
@@ -4578,6 +4672,24 @@ async function launchClaudeTerminal(meetCode) {
     const { detectClaude } = require('./claude-install.js');
     const det = await detectClaude();
     if (!det.installed) { promptInstallClaude(); return; }
+    // Installed ≠ signed in (#137). Read the CACHED answer — warming it happens
+    // at startup and on a timer, so this costs nothing on the join path.
+    //
+    // Deliberately not awaited: the check is a login shell, and making the user
+    // wait seconds for their Terminal to appear in order to tell them about a
+    // once-ever setup step is a bad trade. The dialog is non-blocking anyway, so
+    // a refresh started now surfaces a moment later if the cache was stale.
+    if (!claudeReady) {
+      // ONLY on an explicit false. null means "couldn't tell" — never nag on a guess.
+      if (claudeAuthState.authed === false) notifyClaudeSignInNeeded();
+      // Re-check in the background. Auth changes mid-session in exactly the
+      // direction that matters: the dialog's whole purpose is to get someone to
+      // sign in, and a stale false would nag them again next join for doing what
+      // we asked.
+      refreshClaudeAuth().then((a) => {
+        if (a.authed === false && claudeAuthState.authed !== false) notifyClaudeSignInNeeded();
+      }).catch(() => {});
+    }
   } catch (e) { console.error('[electron] claude detection failed (continuing to launch):', e.message); }
   // #305: default to this profile's trusted agent dir instead of the untrusted
   // /tmp. An explicit Settings → "Claude Working Directory" still wins.
@@ -5374,6 +5486,25 @@ app.whenReady().then(async () => {
   // Keep the app up to date on its own. Gated inside: dev builds, .deb installs
   // and named profiles all opt out, and nothing installs during a call.
   startUpdateChecks();
+
+  // #137: answer "is Claude Code signed in?" now, while nobody is waiting, so
+  // the join path can read it instantly instead of paying for a login shell.
+  //
+  // Startup CHECKS but does not warn: a dialog at launch is a nag about a
+  // problem the user does not have yet — they may have opened the app to change
+  // a setting. The warning belongs where it is actionable, on the join. The
+  // panel indicator carries the state in the meantime.
+  // Self-scheduling rather than setInterval, so the cadence can follow the state:
+  // brisk while signed out (transient, about to change), slow otherwise.
+  let claudeAuthTimer = null;
+  const scheduleClaudeAuthPoll = () => {
+    const delay = claudeAuthState.authed === false ? CLAUDE_AUTH_POLL_UNAUTHED_MS : CLAUDE_AUTH_POLL_MS;
+    claudeAuthTimer = setTimeout(() => {
+      refreshClaudeAuth().catch(() => {}).finally(scheduleClaudeAuthPoll);
+    }, delay);
+    if (claudeAuthTimer.unref) claudeAuthTimer.unref();
+  };
+  refreshClaudeAuth().catch(() => {}).finally(scheduleClaudeAuthPoll);
 
   // First-run setup wizard: shown once for the default instance (guarded by the
   // per-profile onboardingComplete flag); re-runnable from the app menu. The
@@ -7298,6 +7429,16 @@ function setupIPC() {
   // banner keys off this rather than off the presence of an ElevenLabs key,
   // which is a different question — see electron-app/voice-status.js.
   ipcMain.handle('get-voice-status', () => currentVoiceStatus());
+
+  // #137: the panel's sign-in indicator. Returns the CACHE immediately and, when
+  // asked, refreshes behind it — so the panel paints instantly and corrects
+  // itself a moment later rather than blocking on a login shell.
+  ipcMain.handle('get-claude-auth-status', (_e, { refresh = false } = {}) => {
+    if (refresh) {
+      refreshClaudeAuth({ maxAgeMs: CLAUDE_AUTH_FOCUS_MAX_AGE_MS }).catch(() => {});
+    }
+    return claudeAuthState;
+  });
 
   ipcMain.handle('create-and-join-meet', async () => createAndJoinMeet());
 

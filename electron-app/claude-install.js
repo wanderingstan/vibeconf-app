@@ -57,4 +57,47 @@ function detectClaude() {
   });
 }
 
-module.exports = { installCommandFor, knownClaudePaths, detectClaude };
+// Is that CLI actually SIGNED IN? (#137)
+//
+// Installed ≠ usable. A user who has just installed Claude Code has usually never
+// logged in, so the Terminal we spawn sits at the auth prompt: the bot tile appears,
+// the agent does nothing, and from the call an unauthenticated agent is
+// indistinguishable from a crashed one. That misread cost a live call several minutes
+// on Jul 29 before the user diagnosed it himself.
+//
+// `claude auth status` answers this as JSON, non-interactively, in well under a second.
+// Two traps, both found by testing rather than reading:
+//   1. It exits 0 whether or not you are logged in — so parse `loggedIn`, never $?.
+//   2. Auth can come from the ENVIRONMENT (ANTHROPIC_API_KEY et al), so the answer
+//      depends on whose env you ask in. A GUI Electron app has launchd's minimal env,
+//      NOT the user's. We must ask the LOGIN SHELL — the same environment the Terminal
+//      we're about to spawn will have — or we'd cheerfully tell a signed-in user to
+//      sign in.
+//
+// Tri-state on purpose: true / false / null = "couldn't tell". Callers must only warn
+// on an explicit false. A wrong "please sign in" shown to someone already signed in is
+// worse than staying quiet, because it teaches people to ignore the warning.
+function detectClaudeAuth({ timeoutMs = 6000 } = {}) {
+  return new Promise((resolve) => {
+    const done = (authed, method = null) => resolve({ authed, method });
+    if (process.platform === 'win32') return done(null); // no login-shell equivalent yet — see #468
+    const shell = process.env.SHELL || '/bin/zsh';
+    execFile(shell, ['-lc', 'claude auth status'], { timeout: timeoutMs }, (err, stdout) => {
+      const raw = String(stdout || '').trim();
+      if (!raw) return done(null);
+      // Be forgiving about anything a login shell prints before the JSON (motd, nvm chatter).
+      const start = raw.indexOf('{');
+      const end = raw.lastIndexOf('}');
+      if (start < 0 || end <= start) return done(null);
+      try {
+        const parsed = JSON.parse(raw.slice(start, end + 1));
+        if (typeof parsed.loggedIn !== 'boolean') return done(null);
+        return done(parsed.loggedIn, parsed.authMethod || null);
+      } catch {
+        return done(null); // unparseable (older CLI, changed format) — stay quiet
+      }
+    });
+  });
+}
+
+module.exports = { installCommandFor, knownClaudePaths, detectClaude, detectClaudeAuth };

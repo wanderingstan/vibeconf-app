@@ -4691,16 +4691,19 @@ async function launchClaudeTerminal(meetCode) {
     console.log('[electron] agent terminal suppressed (--no-agent-terminal)');
     return;
   }
+  // #231: on a machine we don't launch the agent for, launching `claude` is not
+  // a degraded experience, it is the wrong agent — the user runs Codex (or
+  // whatever else) themselves. Return, don't fall through: this used to be a
+  // throw caught by the detection catch below, which skipped the install/auth
+  // nag but still spawned a Claude Terminal on every join.
+  if (!appLaunchesAgent()) {
+    console.log('[electron] agent terminal not launched (agentBackend is not claude)');
+    return;
+  }
   // Claude Code drives the bot. If the `claude` CLI isn't installed, offer to install it
   // (or copy the command) instead of launching a Terminal into "command not found".
   // Detection failure is non-fatal — we still launch (don't block a user who has it).
-  //
-  // #231: skipped entirely on a machine we don't launch the agent for. Telling a
-  // Codex or LM Studio user to install Claude Code is not a warning, it is noise
-  // about a tool they have decided against — and it is the one case where this
-  // whole feature is wrong.
   try {
-    if (!appLaunchesAgent()) throw { skip: true };
     const { detectClaude } = require('./claude-install.js');
     const det = await detectClaude();
     if (!det.installed) { promptInstallClaude(); return; }
@@ -4723,7 +4726,7 @@ async function launchClaudeTerminal(meetCode) {
       }).catch(() => {});
     }
   } catch (e) {
-    if (!e || !e.skip) console.error('[electron] claude detection failed (continuing to launch):', e && e.message);
+    console.error('[electron] claude detection failed (continuing to launch):', e && e.message);
   }
   // #305: default to this profile's trusted agent dir instead of the untrusted
   // /tmp. An explicit Settings → "Claude Working Directory" still wins.

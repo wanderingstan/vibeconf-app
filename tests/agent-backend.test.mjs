@@ -72,9 +72,16 @@ test('a non-Claude machine is neither warned nor polled', () => {
   const refresh = main.slice(main.indexOf('async function refreshClaudeAuth'));
   assert.match(refresh.slice(0, 500), /if \(!appLaunchesAgent\(\)\)/);
   assert.match(refresh.slice(0, 500), /method: 'not-managed'/);
-  // And the install prompt on the join path is skipped too.
+  // And the join path skips the whole launch, not just the install prompt.
+  // This was `throw { skip: true }` swallowed by the detection catch — which
+  // suppressed the nag but fell through and spawned a Claude Terminal at a
+  // user who had said they run something else. A RETURN, not a throw.
   const launch = main.slice(main.indexOf('async function launchClaudeTerminal'));
-  assert.match(launch.slice(0, 2000), /if \(!appLaunchesAgent\(\)\) throw \{ skip: true \}/);
+  const gateAt = launch.indexOf('if (!appLaunchesAgent()) {');
+  assert.ok(gateAt !== -1, 'the launcher gates on appLaunchesAgent');
+  assert.match(launch.slice(gateAt, gateAt + 200), /return;/);
+  assert.ok(gateAt < launch.indexOf('try {'),
+    'the gate is an unconditional early return, outside the non-fatal detection try/catch');
 });
 
 test('switching backends takes effect immediately', () => {

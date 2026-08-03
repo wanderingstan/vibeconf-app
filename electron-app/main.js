@@ -7108,6 +7108,12 @@ function createMainWindow() {
       + 'Ask before changing a preference — it is the human\'s call.',
   };
 
+  // Used when a kind has no canned notice of its own but the human typed
+  // something. Their words are the actionable part; this just frames them.
+  const FEEDBACK_FREEFORM =
+    'A person in the call just flagged something about how you are behaving, in their own words below. '
+    + 'Take it as a live correction: adjust now if you can, and acknowledge it briefly out loud if it warrants that.';
+
   // One agent notice per kind per window. A frustrated human clicks the same
   // button several times in a row — a real run of this produced three
   // "Interrupted" clicks inside one second — and each one would otherwise
@@ -7116,9 +7122,12 @@ function createMainWindow() {
   const FEEDBACK_AGENT_COOLDOWN_MS = 20_000;
   const feedbackNotifiedAt = new Map();
 
-  ipcMain.handle('call-feedback', (_e, { kind, label } = {}) => {
+  ipcMain.handle('call-feedback', (_e, { kind, label, note } = {}) => {
     try {
       const k = String(kind || 'unspecified').slice(0, 40);
+      // Bounded and single-lined: this lands in a line-oriented log, so a
+      // pasted stack trace would otherwise break every downstream grep.
+      const n = String(note || '').replace(/\s+/g, ' ').trim().slice(0, 280);
       const room = localServer.roomId || '-';
       const callId = localServer.callId || '-';
       const status = localServer.callStatus || 'idle';
@@ -7132,19 +7141,25 @@ function createMainWindow() {
       const bot = localServer.botState || 'unknown';
       const speaking = localServer.anyoneSpeaking ? 'yes' : 'no';
       // Prefixed and single-line so it greps cleanly out of a busy session log.
-      console.log(`[feedback] kind=${k} status=${status} bot=${bot} othersSpeaking=${speaking} room=${room} call=${callId} label=${JSON.stringify(String(label || k))}`);
+      console.log(`[feedback] kind=${k} status=${status} bot=${bot} othersSpeaking=${speaking} room=${room} call=${callId}`
+        + ` label=${JSON.stringify(String(label || k))}`
+        + (n ? ` note=${JSON.stringify(n)}` : ''));
 
       // Tell the agent, when there is something it can do and it hasn't just
       // been told. addError is the existing channel for app-to-agent notices
       // (it is how the voice-fallback message reaches it), so this rides a path
       // the agent already reads rather than inventing a second one.
-      const notice = FEEDBACK_TO_AGENT[k];
+      // A note makes 'other' actionable, and it is the only way the agent learns
+      // WHAT was wrong — which is exactly why "wrong answer" sends nothing on its
+      // own. With the human's own words attached, the agent has something to act
+      // on rather than a category to flail at.
+      const notice = FEEDBACK_TO_AGENT[k] || (n ? FEEDBACK_FREEFORM : null);
       let toldAgent = false;
       if (notice && localServer.roomId) {
         const last = feedbackNotifiedAt.get(k) || 0;
         if (Date.now() - last >= FEEDBACK_AGENT_COOLDOWN_MS) {
           feedbackNotifiedAt.set(k, Date.now());
-          localServer.addError(notice);
+          localServer.addError(n ? `${notice}\n\nWhat they typed: "${n}"` : notice);
           toldAgent = true;
           console.log(`[feedback] told the agent: ${k}`);
         } else {

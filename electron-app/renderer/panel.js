@@ -2192,12 +2192,14 @@ copyCurlBtn.addEventListener('click', () => {
 document.querySelectorAll('[data-feedback]').forEach((btn) => {
   btn.addEventListener('click', () => {
     const kind = btn.dataset.feedback;
+    const noteEl = document.getElementById('feedbackNote');
+    const note = (noteEl?.value || '').trim();
     // Read the label element rather than stripping emoji out of textContent.
     // The emoji reads well on the button and is noise in a grep — `kind=` is the
     // machine-readable key, and the label is there so a human scanning the log
     // knows what was clicked without a lookup table.
     const label = (btn.querySelector('.fb-label') || btn).textContent.trim();
-    api.invoke('call-feedback', { kind, label }).then((r) => {
+    api.invoke('call-feedback', { kind, label, note }).then((r) => {
       // Say whether it reached the BOT, not just the log. Four of the seven
       // kinds have nothing the agent can act on, and repeats inside the cooldown
       // are deliberately log-only — without this the human can't tell the
@@ -2205,17 +2207,37 @@ document.querySelectorAll('[data-feedback]').forEach((btn) => {
       // reasonably keep clicking.
       const status = document.getElementById('feedbackStatus');
       if (status && r && r.toldAgent) {
-        status.textContent = `Marked "${label}" — and told the bot.`;
+        status.textContent = note
+          ? `Marked "${label}" with your note — and told the bot.`
+          : `Marked "${label}" — and told the bot.`;
       }
     }).catch((e) => {
       console.warn('[feedback] not recorded:', e && e.message);
     });
     // Confirm without stealing attention from the call.
+    btn.classList.remove('logged');
+    void btn.offsetWidth;   // reflow, so a repeat click replays the pop
     btn.classList.add('logged');
     setTimeout(() => btn.classList.remove('logged'), 1200);
+    // Kept, not cleared — the same complaint often recurs in one call and
+    // retyping it is the friction these buttons exist to remove. Selected so it
+    // reads as consumed and the next keystroke replaces it.
+    if (noteEl && note) {
+      noteEl.focus();
+      noteEl.select();
+      // Restart the flash even on rapid repeat clicks: without removing the
+      // class first the animation only plays once and the second click looks
+      // like it did nothing.
+      noteEl.classList.remove('sent');
+      void noteEl.offsetWidth;
+      noteEl.classList.add('sent');
+      setTimeout(() => noteEl.classList.remove('sent'), 900);
+    }
     const status = document.getElementById('feedbackStatus');
     if (status) {
-      status.textContent = `Marked "${label}" in the log.`;
+      status.textContent = note
+        ? `Marked "${label}" with your note.`
+        : `Marked "${label}" in the log.`;
       clearTimeout(status._t);
       status._t = setTimeout(() => { status.textContent = ''; }, 4000);
     }

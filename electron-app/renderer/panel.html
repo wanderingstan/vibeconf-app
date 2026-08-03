@@ -427,6 +427,20 @@
           <button data-feedback="voice"><span class="fb-emoji">🗣️</span><span class="fb-label">Voice</span></button>
           <button data-feedback="other"><span class="fb-emoji">❓</span><span class="fb-label">Other</span></button>
         </div>
+        <!-- One field for ALL the buttons, not just Other. A note attached to
+             "Interrupted" ("while I was mid-question about the migration") is
+             far more useful than a bare flag, and it is the same mechanism, so
+             scoping it to Other would be an arbitrary limit. Optional
+             throughout: clicking with it empty files the plain flag, which is
+             the whole point of one-click reporting.
+
+             SELECTED after submit rather than cleared: the same complaint often
+             happens several times in a call, and retyping it is exactly the
+             friction these buttons exist to remove. Selected rather than merely
+             left alone so it is visibly consumed, and so the next keystroke
+             replaces it. -->
+        <input type="text" id="feedbackNote" maxlength="280"
+               placeholder="Optional note — attaches to whichever button you click next" />
         <span id="feedbackStatus" class="helper-text" style="display:block;margin-top:6px"></span>
       </div>
 

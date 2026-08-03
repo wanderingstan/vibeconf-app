@@ -259,3 +259,58 @@ test('nothing is sent to the agent outside a call', () => {
   // correction for something they did not do.
   assert.match(main, /if \(notice && localServer\.roomId\)/);
 });
+
+test('the note field serves every button, and survives submit', () => {
+  // Scoping it to "Other" would be arbitrary: a note on "Interrupted" ("while I
+  // was mid-question") is more useful than a bare flag, same mechanism.
+  assert.match(tsScreen, /id="feedbackNote"/);
+  assert.match(panelJs, /api\.invoke\('call-feedback', \{ kind, label, note \}\)/);
+
+  // KEPT and selected, not cleared. The same complaint recurs within one call,
+  // and retyping it is the friction these buttons exist to remove.
+  const handler = panelJs.slice(panelJs.indexOf("document.querySelectorAll('[data-feedback]')"));
+  const body = handler.slice(0, handler.indexOf('\n});') + 4);
+  assert.match(body, /noteEl\.select\(\)/);
+  assert.doesNotMatch(body, /noteEl\.value = ''/, 'clearing would force a retype');
+
+  // Optional throughout — a click with it empty is still a valid one-click flag.
+  assert.doesNotMatch(body, /if \(!note\) return/, 'an empty note must not block the flag');
+});
+
+test('a typed note is bounded and single-lined before it hits the log', () => {
+  // This lands in a line-oriented log. A pasted stack trace would otherwise
+  // break every downstream grep, including the ones in this suite.
+  const h = main.slice(main.indexOf("ipcMain.handle('call-feedback'"));
+  const body = h.slice(0, h.indexOf('\n  });') + 6);
+  assert.match(body, /replace\(\/\\s\+\/g, ' '\)/, 'newlines must collapse');
+  assert.match(body, /\.slice\(0, 280\)/);
+  assert.match(body, /note=\$\{JSON\.stringify\(n\)\}/, 'quoted, so spaces cannot fake a field');
+  // Absent note must not emit an empty field — a bare `note=""` on every line is
+  // noise in the common case.
+  assert.match(body, /\(n \? ` note=/);
+});
+
+test('a note makes an otherwise-silent kind reach the agent', () => {
+  // "Wrong answer" deliberately sends nothing on its own, because the category
+  // alone invites flailing at a turn the agent cannot identify. With the human's
+  // own words attached it becomes actionable, which is the whole point.
+  const h = main.slice(main.indexOf("ipcMain.handle('call-feedback'"));
+  const body = h.slice(0, h.indexOf('\n  });') + 6);
+  assert.match(body, /FEEDBACK_TO_AGENT\[k\] \|\| \(n \? FEEDBACK_FREEFORM : null\)/);
+  assert.match(body, /What they typed: /, 'their words have to travel, not just the category');
+  assert.match(main, /const FEEDBACK_FREEFORM =/);
+});
+
+test('submitting is visible from the corner of your eye', () => {
+  // Clicked mid-call while looking at a person, not the button. A colour change
+  // alone is easy to doubt, and doubting it means clicking again.
+  assert.match(panelCss, /@keyframes fb-pop/);
+  assert.match(panelCss, /\.ts-feedback button\.logged \{[^}]*animation: fb-pop/);
+  assert.match(panelCss, /@keyframes fb-note-sent/, 'the note flashes too, so it is clear it went along');
+  // A repeat click must replay it — without the reflow the animation only ever
+  // runs once and the second click looks like it did nothing.
+  assert.match(panelJs, /void btn\.offsetWidth/);
+  assert.match(panelJs, /void noteEl\.offsetWidth/);
+  // Movement is the unwelcome part under reduced motion; colour still confirms.
+  assert.match(panelCss, /prefers-reduced-motion: reduce\)[\s\S]{0,200}fb-pop|prefers-reduced-motion[\s\S]{0,200}animation: none/);
+});

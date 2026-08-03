@@ -1112,4 +1112,37 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
 .ts-feedback button:hover { background: #3c4043; }
 /* Flash green on click. The whole point is confirming the mark landed without
    stealing attention from the call. */
-.ts-feedback button.logged { background: #1e4620; border-color: #34a853; }
+/* Submit feedback you can't miss. Mid-call the click is often peripheral —
+   you are looking at the person, not the button — so a colour change alone is
+   easy to doubt, and doubting it means clicking again. A pop plus the flash
+   reads as "that landed" from the corner of your eye. */
+@keyframes fb-pop {
+  0%   { transform: scale(1); }
+  35%  { transform: scale(1.10); }
+  100% { transform: scale(1); }
+}
+.ts-feedback button.logged {
+  background: #1e4620; border-color: #34a853;
+  animation: fb-pop 320ms ease-out;
+}
+/* The note flashes too, so it is obvious the typed text went WITH the click
+   rather than being left behind. */
+@keyframes fb-note-sent {
+  0%   { border-color: #34a853; background: #1e4620; }
+  100% { border-color: #5f6368; background: #2a2d31; }
+}
+.ts-feedback #feedbackNote.sent { animation: fb-note-sent 900ms ease-out; }
+/* Movement is the part that can be unwelcome; the colour still confirms. */
+@media (prefers-reduced-motion: reduce) {
+  .ts-feedback button.logged { animation: none; }
+  .ts-feedback #feedbackNote.sent { animation: none; }
+}
+/* Full width under the row: it belongs to all seven buttons, and anything
+   narrower would read as belonging to whichever one it sat beneath. */
+.ts-feedback #feedbackNote {
+  width: 100%; box-sizing: border-box; margin-top: 8px;
+  padding: 7px 10px; font-size: 12px;
+  background: #2a2d31; color: #e8eaed;
+  border: 1px solid #5f6368; border-radius: 8px;
+}
+.ts-feedback #feedbackNote::placeholder { color: #80868b; }

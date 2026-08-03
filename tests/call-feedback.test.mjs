@@ -330,6 +330,8 @@ test('the confirmation echoes the note back', () => {
   // Built once and shared by both paths (told-the-bot and log-only), so the two
   // confirmations cannot drift apart.
   assert.match(panelJs, /const withNote = \(tail\) =>/);
+  // Two CALL sites — the definition is `withNote = (tail) =>`, which does not
+  // match `withNote(`, so counting it in was wrong.
   const uses = panelJs.match(/withNote\(/g) || [];
-  assert.ok(uses.length >= 3, `expected the helper plus both call sites, saw ${uses.length}`);
+  assert.equal(uses.length, 2, `expected both call sites to use the helper, saw ${uses.length}`);
 });

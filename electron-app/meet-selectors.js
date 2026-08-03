@@ -277,6 +277,20 @@ const MEET = {
     // minutes phrase so the later/final warnings (5 min, 1 min) hit too.
     callEndsRe: /call ends in (\d+) minute/i,
     dismissText: 'dismiss', // its only button (lowercased compare)
+    // #141: "Your screen is still visible to others. Click to resume presenting
+    // or stop screen sharing." Its only control is Close, which the sweeper did
+    // not recognise — so it sat over the call UI for 13 minutes on the
+    // 2026-07-29 call, covering the captions.
+    //
+    // Matched on the distinctive BODY phrase, never on a jsname. Google's
+    // jsname attributes are minified build output and rotate without notice;
+    // this file already carries the scar from indexing on generated structure
+    // (see findSpeakingIndicator's history — it matched "3 empty divs" and went
+    // deaf when Meet re-rendered). aria-label and visible text are the contract.
+    stillVisibleRe: /still visible to others/i,
+    // Labels that mean "this dialog has nothing to decide, just make it go away".
+    // Used two ways: to close the #141 toast, and by the general rule below.
+    closeTexts: ['close', 'close dialog', 'dismiss', 'ok', 'got it'],
     // #61: Meet's idle-timeout prompt — "Are you still there?" with buttons
     // "Leave now" / "Stay in the call". Meet raises it when it sees no input
     // for a couple of minutes and EJECTS the participant if nothing answers.

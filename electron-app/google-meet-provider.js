@@ -153,8 +153,22 @@ function findByJoinAriaLabel() {
 // CATCH-ALL: in Meet, a visible "Got it" button is always a dismissible info
 // modal, so we click any we find. The recording-consent dialog (#130) uses
 // Leave / Join now (not "Got it"), so it's unaffected. Returns true if dismissed.
+// A dialog's "just make this go away" control. Text and aria-label only — the
+// jsname attributes Meet ships are minified build output and change whenever
+// Google rebuilds, which is exactly how this file lost speaker detection once
+// already.
+function findCloseAffordance(dlg) {
+  return [...dlg.querySelectorAll('button, [role="button"]')].find((b) => {
+    const lbl = (b.textContent || '').trim().toLowerCase();
+    const aria = (b.getAttribute('aria-label') || '').trim().toLowerCase();
+    return (MEET.modals.closeTexts.includes(lbl) || MEET.modals.closeTexts.includes(aria)) && isVisible(b);
+  }) || null;
+}
+
 const KNOWN_MODAL_HEADINGS = MEET.modals.knownHeadings; // for clearer logging only — NOT a gate
 let _lastModalDumpAt = 0;
+// #141: distinct dialog titles we've already sampled — one DOM dump each.
+const _unknownModalDumped = new Set();
 function dismissBlockingModals() {
   // Click any visible "Got it" button (label may be nested in a span; match by
   // text or aria-label across all candidates).
@@ -310,6 +324,64 @@ function dismissBlockingModals() {
     }
   }
 
+  // #141: "Your screen is still visible to others. Click to resume presenting
+  // or stop screen sharing." Its only control is Close, which nothing
+  // recognised — so it sat over the call UI for 13 minutes on the 2026-07-29
+  // call, covering the captions and re-dumping its DOM every 15s.
+  //
+  // Worth its own branch even though the general rule below would also catch
+  // it: this one is a KNOWN dialog, so it gets a named log line, and it keeps
+  // working if the general rule is ever tightened. It is also the dialog most
+  // likely to be sitting over Meet's Stop-presenting button, which is the
+  // leading explanation for #68's stop click failing to land.
+  //
+  // Matched on the body phrase, never on a jsname — those are minified build
+  // output and rotate without notice.
+  for (const vdlg of document.querySelectorAll(MEET.modals.anyDialog)) {
+    if (!isVisible(vdlg)) continue;
+    if (!MEET.modals.stillVisibleRe.test(vdlg.textContent || '')) continue;
+    const closeBtn = findCloseAffordance(vdlg);
+    if (closeBtn) {
+      closeBtn.click();
+      console.log('[electron-meet] Dismissed "screen is still visible to others" toast via Close (#141)');
+      return true;
+    }
+    console.warn('[electron-meet] "still visible to others" dialog found but no Close affordance (#141):\n' +
+      (vdlg.outerHTML || '').slice(0, 1500));
+    return false;
+  }
+
+  // General case (#141): a dialog whose ONLY actionable control is a
+  // close/dismiss affordance has nothing to decide, so closing it is always
+  // safe — and it covers the next variant of this without another round trip.
+  //
+  // The safety is in "only". A dialog offering Leave/Join, Stay/Leave now, or
+  // Cancel/Confirm is asking a question, and picking for the user could cost us
+  // the call — those must keep falling through to their own handlers or to the
+  // unknown-modal dump. So this fires only when every visible button is
+  // close-ish.
+  {
+    const gdlg = document.querySelector(MEET.modals.anyDialog);
+    if (gdlg && isVisible(gdlg) && !_settingsDialogInProgress) {
+      const txt = (gdlg.textContent || '').toLowerCase();
+      const isRecordingConsent = txt.includes('being recorded') || txt.includes('taking notes');
+      const buttons = [...gdlg.querySelectorAll('button, [role="button"]')].filter(isVisible);
+      const closeish = (b) => {
+        const lbl = (b.textContent || '').trim().toLowerCase();
+        const aria = (b.getAttribute('aria-label') || '').trim().toLowerCase();
+        return MEET.modals.closeTexts.includes(lbl) || MEET.modals.closeTexts.includes(aria);
+      };
+      if (!isRecordingConsent && buttons.length > 0 && buttons.every(closeish)) {
+        buttons[0].click();
+        const title = ((gdlg.getAttribute('aria-label') || '').trim() ||
+          (gdlg.querySelector('[role="heading"]')?.textContent || '').trim() ||
+          txt.slice(0, 60)) || '(untitled)';
+        console.log('[electron-meet] Closed a dialog whose only control was Close/Dismiss: "' + title + '"');
+        return true;
+      }
+    }
+  }
+
   // No "Got it" found. If a modal dialog is nonetheless sitting open and
   // blocking (and it's not the recording-consent dialog handled elsewhere),
   // dump its DOM (throttled) so we can learn its dismiss button — maybe it uses
@@ -334,13 +406,22 @@ function dismissBlockingModals() {
   if (dlg && isVisible(dlg) && !_settingsDialogInProgress && Date.now() - _lastModalDumpAt > 15000) {
     const txt = (dlg.textContent || '').toLowerCase();
     const isRecordingConsent = txt.includes('being recorded') || txt.includes('taking notes');
+    const title = ((dlg.getAttribute('aria-label') || '').trim() ||
+      (dlg.querySelector('[role="heading"]')?.textContent || '').trim() ||
+      (dlg.textContent || '').trim().slice(0, 80)) || '(untitled)';
+    // #141: ONE sample per distinct title, not one every 15s forever. The
+    // "still visible to others" toast sat open for 13 minutes and dumped ~82KB
+    // of DOM into the session log — 52 copies of the same thing. One is all the
+    // dev team needs to learn the affordance, and the log is the thing we read
+    // to debug everything else.
+    if (!isRecordingConsent && _unknownModalDumped.has(title)) {
+      return false;
+    }
     if (!isRecordingConsent) {
+      _unknownModalDumped.add(title);
       _lastModalDumpAt = Date.now();
       console.warn('[electron-meet] Modal dialog open with no "Got it" button — DOM sample so we can handle it:\n' +
         (dlg.outerHTML || '').slice(0, 2500));
-      const title = ((dlg.getAttribute('aria-label') || '').trim() ||
-        (dlg.querySelector('[role="heading"]')?.textContent || '').trim() ||
-        (dlg.textContent || '').trim().slice(0, 80)) || '(untitled)';
       if (!_unknownModalNotified.has(title)) {
         _unknownModalNotified.add(title);
         const buttons = [...dlg.querySelectorAll('button, [role="button"]')]

@@ -2194,6 +2194,12 @@ document.querySelectorAll('[data-feedback]').forEach((btn) => {
     const kind = btn.dataset.feedback;
     const noteEl = document.getElementById('feedbackNote');
     const note = (noteEl?.value || '').trim();
+    // Echo the note back rather than just saying "with your note". The field
+    // keeps its text after submit, so without seeing the words quoted there is
+    // no way to tell a sent note from one still sitting there unsent — which is
+    // the exact doubt that makes someone click again.
+    const shown = note.length > 48 ? `${note.slice(0, 48).trimEnd()}…` : note;
+    const withNote = (tail) => (note ? `Marked "${label}" · “${shown}”${tail}` : `Marked "${label}"${tail}`);
     // Read the label element rather than stripping emoji out of textContent.
     // The emoji reads well on the button and is noise in a grep — `kind=` is the
     // machine-readable key, and the label is there so a human scanning the log
@@ -2207,9 +2213,7 @@ document.querySelectorAll('[data-feedback]').forEach((btn) => {
       // reasonably keep clicking.
       const status = document.getElementById('feedbackStatus');
       if (status && r && r.toldAgent) {
-        status.textContent = note
-          ? `Marked "${label}" with your note — and told the bot.`
-          : `Marked "${label}" — and told the bot.`;
+        status.textContent = withNote(' — and told the bot.');
       }
     }).catch((e) => {
       console.warn('[feedback] not recorded:', e && e.message);
@@ -2235,9 +2239,7 @@ document.querySelectorAll('[data-feedback]').forEach((btn) => {
     }
     const status = document.getElementById('feedbackStatus');
     if (status) {
-      status.textContent = note
-        ? `Marked "${label}" with your note.`
-        : `Marked "${label}" in the log.`;
+      status.textContent = withNote(' in the log.');
       clearTimeout(status._t);
       status._t = setTimeout(() => { status.textContent = ''; }, 4000);
     }

@@ -314,3 +314,22 @@ test('submitting is visible from the corner of your eye', () => {
   // Movement is the unwelcome part under reduced motion; colour still confirms.
   assert.match(panelCss, /prefers-reduced-motion: reduce\)[\s\S]{0,200}fb-pop|prefers-reduced-motion[\s\S]{0,200}animation: none/);
 });
+
+test('the confirmation echoes the note back', () => {
+  // The field KEEPS its text after submit, so "with your note" is ambiguous:
+  // there is no way to tell a sent note from one still sitting there unsent.
+  // Quoting the words back is what removes that doubt — and the doubt is what
+  // makes someone click again.
+  assert.match(panelJs, /Marked "\$\{label\}" · /, 'the note has to appear, not be described');
+  assert.match(panelJs, /note\.slice\(0, 48\)/, 'truncated — this sits in a one-line status');
+  // Comment-stripped: the comment above the code quotes the old phrasing to
+  // explain what it replaced, and an unstripped check trips on that.
+  const code = panelJs.replace(/^\s*\/\/.*$/gm, '');
+  assert.doesNotMatch(code, /with your note/, 'describing it is what this replaced');
+
+  // Built once and shared by both paths (told-the-bot and log-only), so the two
+  // confirmations cannot drift apart.
+  assert.match(panelJs, /const withNote = \(tail\) =>/);
+  const uses = panelJs.match(/withNote\(/g) || [];
+  assert.ok(uses.length >= 3, `expected the helper plus both call sites, saw ${uses.length}`);
+});

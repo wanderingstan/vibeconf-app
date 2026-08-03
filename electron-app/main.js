@@ -8815,9 +8815,26 @@ function setupIPC() {
   });
 
   // Track our own presenting state from Meet UI (Stop presenting button visible)
-  ipcMain.on(CALL_EVENTS.selfPresenting, (_event, { presenting }) => {
+  ipcMain.on(CALL_EVENTS.selfPresenting, (_event, { presenting, reconcile }) => {
     const wasSharing = localServer.sharing;
     selfPresentingConfirmed = !!presenting;
+
+    // #68: a reconcile tick carries no news — it re-states what is on screen so a
+    // divergence introduced by another writer gets corrected. Meet's DOM is the
+    // only thing that actually knows whether the room can see us, so it wins.
+    //
+    // Logged when it actually corrects something, because a silent correction
+    // hides the bug it is papering over: a run of these means the stop click is
+    // failing (#141's dialog is the known cause), and that is worth seeing.
+    if (reconcile) {
+      if (wasSharing !== !!presenting) {
+        console.warn(`[share] state disagreed with Meet — app said sharing=${wasSharing}, `
+          + `Meet says ${presenting}. Correcting to Meet.`);
+        localServer.setSharing(!!presenting);
+      }
+      return;   // never run the edge-only side effects below
+    }
+
     localServer.setSharing(presenting);
     if (!presenting) {
       // Distinguish an agent-initiated stop (onStopSharing already cleared

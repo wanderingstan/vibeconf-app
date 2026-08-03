@@ -1142,6 +1142,26 @@ function installCallHealthTick() {
     // someone-presenting=false (we're the one presenting).
     if (next.selfPresenting !== last.selfPresenting) {
       meetProvider.emit(CALL_EVENTS.selfPresenting, { presenting: next.selfPresenting });
+    } else {
+      // #68: RECONCILE, not just detect changes.
+      //
+      // `sharing` has other writers — the capture stream ending sets it false
+      // optimistically, which says nothing about whether MEET stopped presenting.
+      // When Meet's stop click doesn't take (blocked by the "still visible to
+      // others" dialog, button missing after a re-render), the app believes the
+      // share is off while Meet is still presenting.
+      //
+      // An edge detector cannot fix that: this probe still sees `true`, equal to
+      // the `true` it saw last tick, so it stays silent — watching the truth once
+      // a second and structurally unable to notice anyone disagrees with it.
+      //
+      // So on every tick where nothing CHANGED, re-assert what is actually on
+      // screen. Flagged `reconcile` so the receiver applies the state without
+      // re-running the edge-only side effects (the unexpected-drop warning).
+      meetProvider.emit(CALL_EVENTS.selfPresenting, {
+        presenting: next.selfPresenting,
+        reconcile: true,
+      });
     }
     const someoneElse = !next.selfPresenting && !!next.presenterName;
     const lastSomeoneElse = !last.selfPresenting && !!last.presenterName;

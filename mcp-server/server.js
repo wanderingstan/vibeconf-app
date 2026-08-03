@@ -1548,7 +1548,15 @@ server.tool(
 
     const data = await resp.json();
     if (data.success) {
-      const statusData = await waitForSharingState(roomId, false, { timeoutMs: 7000, intervalMs: 300, stablePolls: 2 });
+      // stablePolls 5 x 300ms = 1.5s, deliberately longer than the app's 1s
+      // Meet-DOM reconcile tick (#68). Two polls (600ms) could sample the window
+      // between our capture stream ending — which sets sharing=false
+      // optimistically — and the first reconcile discovering Meet never actually
+      // stopped presenting. That would confirm "stopped" from the very
+      // optimistic flag this check exists to catch, which is how a bot came to
+      // announce it had stopped while its screen was still up in front of the
+      // room.
+      const statusData = await waitForSharingState(roomId, false, { timeoutMs: 7000, intervalMs: 300, stablePolls: 5 });
       if (statusData.status?.sharing === false) {
         return { content: [{ type: "text", text: "Stopped sharing the whiteboard." }] };
       }

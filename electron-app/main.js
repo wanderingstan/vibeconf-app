@@ -4823,11 +4823,12 @@ async function launchClaudeTerminal(meetCode) {
   const dangerousMode = store.get('dangerousMode');
   const dangerousFlag = dangerousMode ? ' --dangerously-skip-permissions' : '';
   // Model for the launched session (Settings → "Claude Model"). Empty now means
-  // sonnet rather than "no flag, let the CLI pick" — sonnet is the right default
-  // for this workload, and an implicit default that can shift under us is worse
-  // than an explicit one. Accepts an alias (sonnet / opus / haiku) or a full model
-  // id; sanitized in claude-model.js, since this is interpolated into an
-  // AppleScript-wrapped shell command. See tests/claude-model.test.mjs.
+  // opus rather than "no flag, let the CLI pick" — an implicit default that can
+  // shift under us is worse than an explicit one, and opus is statistically
+  // tied with sonnet on latency (#responsiveness audit) so it's a fine pick.
+  // Accepts an alias (sonnet / opus / haiku) or a full model id; sanitized in
+  // claude-model.js, since this is interpolated into an AppleScript-wrapped
+  // shell command. See tests/claude-model.test.mjs.
   const { claudeModelFlag } = require('./claude-model.js');
   const modelFlag = claudeModelFlag(store.get('claudeModel'));
   const claudeCmd = `claude${dangerousFlag}${modelFlag}${mcpFlags} \\"/join-call ${meetCode} ${botName.replace(/"/g, '')}\\"`;

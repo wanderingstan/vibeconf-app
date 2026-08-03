@@ -49,6 +49,14 @@ function briefToolInput(input) {
   return '';
 }
 
+// The model that authored an assistant entry, or null. '<synthetic>' entries
+// (Claude Code's own summarization/compaction turns) aren't the bot replying,
+// so they don't count as a model observation.
+function entryModel(entry) {
+  const model = entry && entry.type === 'assistant' && entry.message && entry.message.model;
+  return (model && model !== '<synthetic>') ? model : null;
+}
+
 // One transcript JSONL entry -> 0..N display lines. An assistant turn can carry
 // both reasoning text and tool calls, so it may yield several lines.
 function formatEntry(entry) {
@@ -83,7 +91,7 @@ function formatEntry(entry) {
 }
 
 class TranscriptTailer {
-  constructor({ onLines } = {}) {
+  constructor({ onLines, onModel } = {}) {
     this.path = null;
     this.sessionId = null;
     this.offset = 0;
@@ -91,10 +99,14 @@ class TranscriptTailer {
     this.lines = [];
     this.watcher = null;
     this.poll = null;
+    this.model = null;
     this.onLines = onLines || (() => {});
+    this.onModel = onModel || (() => {});
   }
 
   // Point the tailer at a (new) transcript. Idempotent for the same path.
+  // Model tracking survives a rebind (a fresh transcript from the same driving
+  // session is still the same model) — only reset when the model itself changes.
   bind(transcriptPath, sessionId) {
     if (!transcriptPath) return;
     if (transcriptPath === this.path) { this.sessionId = sessionId; return; }
@@ -131,6 +143,8 @@ class TranscriptTailer {
         if (!line.trim()) continue;
         let entry; try { entry = JSON.parse(line); } catch { continue; }
         for (const l of formatEntry(entry)) seeded.push(l);
+        const model = entryModel(entry);
+        if (model && model !== this.model) { this.model = model; this.onModel(model); }
       }
       this.lines = seeded.slice(-MAX_LINES);
       if (this.lines.length) this.onLines(this.getLines());
@@ -156,6 +170,8 @@ class TranscriptTailer {
         if (!line.trim()) continue;
         let entry; try { entry = JSON.parse(line); } catch { continue; }
         for (const l of formatEntry(entry)) { this.lines.push(l); changed = true; }
+        const model = entryModel(entry);
+        if (model && model !== this.model) { this.model = model; this.onModel(model); }
       }
       if (this.lines.length > MAX_LINES) this.lines = this.lines.slice(-MAX_LINES);
       if (changed) this.onLines(this.getLines());
@@ -170,4 +186,4 @@ class TranscriptTailer {
   }
 }
 
-module.exports = { TranscriptTailer, formatEntry, MAX_LINES };
+module.exports = { TranscriptTailer, formatEntry, entryModel, MAX_LINES };

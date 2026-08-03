@@ -41,6 +41,7 @@ PAT = {
     'synth':   re.compile(r'\[electron\] TTS synthesized: (.{0,40}?)\s*→'),
     'sent':    re.compile(r'\[electron\] Sent play-tts to Meet view'),
     'capraw':  re.compile(r'\[caption-raw\] t\d+ LIVE'),
+    'model':   re.compile(r'\[agent\] model=(\S+)'),
 }
 
 def audit_file(path):
@@ -73,6 +74,17 @@ def audit_file(path):
             if m:
                 events.append((t, kind, m.groups() if m.groups() else ()))
                 break
+    # Which model authored each reply — logged as a change-only marker (#agent
+    # model=), so a cycle inherits whatever model was most recently announced
+    # at-or-before its speak time, not necessarily one right next to it.
+    model_events = [(t, g[0]) for (t, kind, g) in events if kind == 'model']
+    def model_at(t):
+        best = None
+        for mt, m in model_events:
+            if mt <= t: best = m
+            else: break
+        return best
+
     # walk resolves with reason=silence; build cycles
     for i, (t, kind, g) in enumerate(events):
         if kind != 'resolve' or g[0] != 'silence': continue
@@ -106,6 +118,7 @@ def audit_file(path):
                 cyc['t_synth'] = tj
             elif kj == 'sent' and 't_synth' in cyc and 't_sent' not in cyc:
                 cyc['t_sent'] = tj; break
+        cyc['model'] = model_at(cyc.get('t_speak', t))
         if 't_stop' in cyc: cycles.append(cyc)
     return cycles
 
@@ -164,6 +177,26 @@ def main(patterns):
                 s = stats([fn(c) for c in sub])
                 if not s: continue
                 print(f"{b:34s} {lname:28s} {s['n']:4d} {s['avg']:7.0f} {s['med']:7.0f} {s['p90']:7.0f}")
+
+    # Per-model breakdown (#agent model= marker, read straight from the driving
+    # session's own transcript — see agent-transcript.js). Cycles from before
+    # that marker existed carry model=None and are dropped here, not zeroed out.
+    models = sorted({c['model'] for c in all_cycles if c.get('model')})
+    if len(models) > 1:
+        print(f"\n{'model':20s} {'leg':28s} {'n':>4s} {'avg':>7s} {'med':>7s} {'p90':>7s}")
+        print('-' * 90)
+        key_legs = {
+            'B2 overshoot': lambda c: c['gate_elapsed']-c['gate_thr'] if 'gate_elapsed' in c else None,
+            'E synth': lambda c: ms(c['t_synth']-c['t_speak']) if 't_synth' in c and 't_speak' in c else None,
+            'D claude': lambda c: c.get('claude_ms'),
+            'TOTAL stop→audio': lambda c: ms(c['t_sent']-c['t_stop']) if 't_sent' in c else None,
+        }
+        for mdl in models:
+            sub = [c for c in all_cycles if c.get('model') == mdl]
+            for lname, fn in key_legs.items():
+                s = stats([fn(c) for c in sub])
+                if not s: continue
+                print(f"{mdl:20s} {lname:28s} {s['n']:4d} {s['avg']:7.0f} {s['med']:7.0f} {s['p90']:7.0f}")
     print()
     return all_cycles
 

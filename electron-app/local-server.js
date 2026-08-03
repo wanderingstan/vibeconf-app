@@ -216,12 +216,22 @@ class LocalServer {
     // work (🧑‍💻), not just listening (🙂). Detect NEW lines and surface them.
     this._workingQuietTimer = null;
     this._workingSince = 0; // #339: dwell-clock start for the 🤔→🧑‍💻 escalation
-    this._agentTailer = new TranscriptTailer({ onLines: (lines) => {
-      const prevLast = this.agentLog.length ? this.agentLog[this.agentLog.length - 1] : null;
-      this.agentLog = lines;
-      const last = lines.length ? lines[lines.length - 1] : null;
-      if (last && last !== prevLast) this._onAgentActivity(last);
-    } });
+    this._agentTailer = new TranscriptTailer({
+      onLines: (lines) => {
+        const prevLast = this.agentLog.length ? this.agentLog[this.agentLog.length - 1] : null;
+        this.agentLog = lines;
+        const last = lines.length ? lines[lines.length - 1] : null;
+        if (last && last !== prevLast) this._onAgentActivity(last);
+      },
+      // Which model is actually authoring replies for the driving session — read
+      // straight from its own transcript, so it's correct regardless of launch
+      // path (app-spawned with --model, or an existing session that ran
+      // /join-call). Logged (not just held in memory) so latency-audit.py can
+      // group cycles by model the same way it already groups by build.
+      onModel: (model) => {
+        console.log(ts(), `🧠 [agent] model=${model}`);
+      },
+    });
 
     // Room state (single room — the active call)
     this.roomId = null;

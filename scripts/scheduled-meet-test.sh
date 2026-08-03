@@ -41,6 +41,26 @@ LOG="$RESULTS/run-$STAMP.log"
 
 cd "$REPO" || { echo "repo not found: $REPO"; exit 3; }
 
+# --- The digest MUST fire however the run ends. It used to be a plain command at
+# the very end, so anything that stopped the run early — the 30-min watchdog's
+# kill -TERM, a lane teardown's pkill catching the parent, a crash — skipped it and
+# the night went SILENT, exactly when an alert matters most (2026-08-03: the run
+# died right after agent-fuzz, before notify, and no Telegram was sent). Now the
+# digest runs from the EXIT trap below, and a TERM/INT is converted to an exit so
+# that trap still fires. Guarded so a TERM→EXIT sequence sends exactly once. ---
+_DIGEST_SENT=0
+send_digest() {
+  [[ "$_DIGEST_SENT" == 1 ]] && return
+  _DIGEST_SENT=1
+  echo "" | tee -a "$LOG"
+  echo "=== Telegram digest (via EXIT trap — fires on normal end OR early kill) ===" | tee -a "$LOG"
+  node scripts/notify-nightly.mjs 2>&1 | tee -a "$LOG" || true
+}
+# A signal (watchdog kill -TERM, stray pkill, Ctrl-C) becomes a normal exit so the
+# EXIT trap — and thus send_digest — still runs. Can't catch SIGKILL, but the
+# watchdog only KILLs 10s after its TERM, leaving the trap time to send.
+trap 'exit 143' TERM INT
+
 # --- Hard global watchdog — a stuck lane must NEVER wedge the schedule again. On
 # 2026-07-21 a run hung indefinitely (the join loop waits forever for an admission
 # that never comes in the unattended 2-guest meet); because launchd won't start an
@@ -69,7 +89,10 @@ if [[ "${VIBECONF_NO_WATCHDOG:-0}" != "1" ]]; then
   _watchdog_pid=$!
   # On any normal exit, stand the watchdog down and sweep any lingering test fleets (a
   # wedged lane skips its own teardown; this guarantees no zombie fleet survives a run).
-  trap 'kill "$_watchdog_pid" 2>/dev/null; pkill -f "profile=test-meet-guest" 2>/dev/null; pkill -f "profile=test-slack" 2>/dev/null' EXIT
+  trap 'send_digest; kill "$_watchdog_pid" 2>/dev/null; pkill -f "profile=test-meet-guest" 2>/dev/null; pkill -f "profile=test-slack" 2>/dev/null' EXIT
+else
+  # No watchdog, but the digest still must fire on any exit.
+  trap 'send_digest' EXIT
 fi
 
 # --- optional screen recording of each live-call lane. OFF by default; set
@@ -335,10 +358,10 @@ echo "=== codex smoke exit: $CODEX_CODE (recorded, not gating) ===" | tee -a "$L
 # --- Telegram digest — post a one-message summary of tonight's results to Stan's
 # DM. This cron isn't a Claude session, so notify-nightly.mjs hits the Bot API
 # directly with the existing bot token (~/.claude/channels/telegram/.env). Green
-# digests are sent silently; a red run pings. Best-effort — the script always exits
-# 0, so it never touches the gating $CODE. Disable with VIBECONF_NOTIFY=0. ---
-echo "" | tee -a "$LOG"
-node scripts/notify-nightly.mjs 2>&1 | tee -a "$LOG" || true
+# digests are sent silently; a red run pings. Best-effort — never touches $CODE.
+# NOT called inline anymore: send_digest() runs from the EXIT trap (see top), so
+# the digest fires even when the run is killed before reaching here. Disable with
+# VIBECONF_NOTIFY=0. ---
 
 # Keep only the last 30 full logs (history line in results.jsonl is permanent).
 ls -1t "$RESULTS"/run-*.log 2>/dev/null | tail -n +31 | xargs rm -f 2>/dev/null || true

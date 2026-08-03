@@ -5036,16 +5036,28 @@ if (isDefaultInstance) {
 // bot reports (no cross-session noise), and it works for BOTH launch paths
 // (app-spawned OR an existing session that ran /join-call). The app tails that
 // transcript onto the debug overlay (gated by the debugOverlay toggle).
+//
+// It also warns in-terminal when a bot joins a call on Fable (#responsiveness
+// audit: Fable averages ~17s stop→audio vs ~8s for Sonnet/Opus, almost entirely
+// think time) — via the join_call tool call itself, so it fires exactly once
+// per join, for whoever's actually watching that terminal.
 const AGENT_HOOK_CONTENT = `#!/usr/bin/env node
 // Auto-installed by Vibeconferencing — reports the Claude session's transcript
-// path to the local bot server for the debug-overlay agent-activity tail.
+// path to the local bot server for the debug-overlay agent-activity tail, and
+// warns (once per join_call) when the joining model is Fable.
 // Never blocks or breaks the agent: swallows all errors, exits 0 fast.
 const http = require('http');
+const fs = require('fs');
+// process.exit() can truncate a stdout write to a pipe that hasn't flushed yet
+// — a real Node gotcha, not hypothetical. Every exit path funnels through
+// done(), which waits on this if maybeWarnSlowModel started a write.
+let pendingWrite = null;
 let raw = '';
 process.stdin.on('data', (c) => { raw += c; });
 process.stdin.on('end', () => {
   let d = {};
   try { d = JSON.parse(raw); } catch (e) {}
+  maybeWarnSlowModel(d);
   const transcriptPath = d.transcript_path;
   if (!transcriptPath) return done();
   const port = process.env.VIBECONF_LOCAL_PORT || '7865';
@@ -5059,7 +5071,50 @@ process.stdin.on('end', () => {
   req.on('timeout', () => { req.destroy(); done(); });
   req.write(body); req.end();
 });
-function done() { process.exit(0); }
+
+// A PostToolUse hook's stdout JSON can carry a systemMessage shown to the user
+// in-terminal (not fed to the model, and non-blocking — the tool already ran).
+// Only checked on join_call itself, so this fires once per join, not once per
+// tool call.
+function maybeWarnSlowModel(d) {
+  try {
+    if (d.tool_name !== 'mcp__vibeconferencing__join_call') return;
+    const model = lastRealModel(d.transcript_path);
+    if (model && model.toLowerCase().includes('fable')) {
+      pendingWrite = new Promise((resolve) => {
+        process.stdout.write(JSON.stringify({
+          systemMessage: '⚠️ Joining on ' + model + ' — response latency tends to run much higher than Sonnet/Opus (~17s vs ~8s avg in our audits), almost entirely model think time. Switch with /model if responsiveness matters here.',
+        }), resolve);
+      });
+    }
+  } catch (e) { /* never let a warning attempt block the join */ }
+}
+
+// The model on the most recent real (non-<synthetic>) assistant turn, read
+// from the tail of the transcript. The turn that IS this join_call call is
+// always the last one at this point, so a small tail read is enough.
+function lastRealModel(transcriptPath) {
+  if (!transcriptPath) return null;
+  const size = fs.statSync(transcriptPath).size;
+  const tailBytes = Math.min(size, 65536);
+  const fd = fs.openSync(transcriptPath, 'r');
+  const buf = Buffer.alloc(tailBytes);
+  fs.readSync(fd, buf, 0, tailBytes, size - tailBytes);
+  fs.closeSync(fd);
+  const lines = buf.toString('utf-8').split('\\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].trim()) continue;
+    let entry; try { entry = JSON.parse(lines[i]); } catch (e) { continue; }
+    const model = entry && entry.type === 'assistant' && entry.message && entry.message.model;
+    if (model && model !== '<synthetic>') return model;
+  }
+  return null;
+}
+
+function done() {
+  if (pendingWrite) { pendingWrite.then(() => process.exit(0)); return; }
+  process.exit(0);
+}
 setTimeout(done, 1500); // never hang the agent
 `;
 

@@ -30,6 +30,17 @@ function uiIcon(name, variant = '') {
 const IS_TROUBLESHOOTING_WINDOW =
   new URLSearchParams(window.location.search).get('screen') === 'troubleshooting';
 
+// Any pop-out window: panel.html is loaded with ?screen=<name> for each of them.
+//
+// Deliberately a CLASS rather than a list of names. Anything scoped to "the
+// panel inside the main window" must exclude all satellites, and an explicit
+// list silently omits the next one added — which is exactly what happened when
+// the 🧠 brain window arrived: it reported its own (tall) content height to
+// main, which duly resized the MAIN window to match, leaving a large empty band
+// below the avatar. The symptom appeared in a completely different window from
+// the change that caused it.
+const IS_POPOUT_WINDOW = new URLSearchParams(window.location.search).has('screen');
+
 const joinBtn = document.getElementById('joinBtn');
 const meetUrlInput = document.getElementById('meetUrl');
 const callUrlDisplay = document.getElementById('callUrlDisplay');
@@ -1034,7 +1045,9 @@ function paintMoreVoicesLink(platform) {
 let _lastReportedHeight = 0;
 let _heightTimer = 0;
 function reportContentHeight() {
-  if (IS_TROUBLESHOOTING_WINDOW) return; // sizing the main window is not ours to do
+  // Sizing the main window is not a pop-out's business — it measures its OWN
+  // content, and main would apply that to the main window.
+  if (IS_POPOUT_WINDOW) return;
   // setTimeout, NOT requestAnimationFrame: rAF stops entirely for an occluded
   // view, so a call starting while the window sits behind another app would
   // never report its taller in-call height — and the bot's-view region would be

@@ -7781,7 +7781,17 @@ function setupIPC() {
 
   // The panel measured itself → resize the window to fit (plus the bot's-view
   // region while in a call). See applyWindowHeight.
-  ipcMain.on('panel-content-height', (_event, h) => {
+  ipcMain.on('panel-content-height', (event, h) => {
+    // Only the panel inside the main window may size that window. Every pop-out
+    // (troubleshooting, 🧠 brain) loads the SAME panel.html, so each one has this
+    // channel and reports its own content height — and the brain window, being
+    // tall, resized the main window and left a large empty band under the avatar.
+    //
+    // The renderer guards this too, but the guard has to be repeated in every new
+    // pop-out and was missed once already. Checking the SENDER here cannot be
+    // forgotten by a future window, because the check does not live in it.
+    if (!panelView || panelView.webContents.isDestroyed()
+      || event.sender !== panelView.webContents) return;
     const n = Math.round(Number(h) || 0);
     if (!n || n === panelContentHeight) return;
     panelContentHeight = n;

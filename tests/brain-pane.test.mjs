@@ -152,3 +152,27 @@ test('renaming a bot retitles the satellites too, not just the main window', () 
   }
   assert.match(body, /isDestroyed\(\)/, 'a closed window must not throw');
 });
+
+test('a pop-out window must not resize the MAIN window', () => {
+  // Observed: opening 🧠 during a call grew the main window to ~696px, leaving a
+  // large empty band below the avatar — the old bot's-view region reappearing,
+  // apparently out of nowhere.
+  //
+  // Cause: every pop-out loads the SAME panel.html, so each one has the
+  // 'panel-content-height' channel and measures its own (tall) content. The
+  // renderer guard named the troubleshooting window explicitly, so the brain
+  // window — added later — sailed straight past it.
+  //
+  // Fixed on BOTH sides. The renderer guard is now a class ("is this any
+  // pop-out?") rather than a list of names, and main checks the sender, which a
+  // future pop-out cannot forget because the check does not live in it.
+  assert.match(panelJs, /const IS_POPOUT_WINDOW = new URLSearchParams\(window\.location\.search\)\.has\('screen'\)/);
+  const fn = panelJs.slice(panelJs.indexOf('function reportContentHeight'));
+  assert.match(fn.slice(0, 400), /if \(IS_POPOUT_WINDOW\) return;/);
+  assert.doesNotMatch(fn.slice(0, 400), /IS_TROUBLESHOOTING_WINDOW/,
+    'a name list silently omits the next window added');
+
+  const h = main.slice(main.indexOf("ipcMain.on('panel-content-height'"));
+  assert.match(h.slice(0, h.indexOf('});')), /event\.sender !== panelView\.webContents/,
+    'main must reject height reports from anything but the docked panel');
+});

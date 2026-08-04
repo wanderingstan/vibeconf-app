@@ -5529,7 +5529,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '44';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '45';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
@@ -8721,7 +8721,12 @@ function setupIPC() {
   });
 
   // --- Meet window management ---
-  ipcMain.on('join-meet', (_event, meetUrl) => { joinMeetUrl(meetUrl); });
+  // opts.onboardingCall runs the spawned agent through /onboarding-call instead
+  // of /join-call — the guided setup, joining a call that already exists rather
+  // than creating one.
+  ipcMain.on('join-meet', (_event, meetUrl, opts) => {
+    joinMeetUrl(meetUrl, { onboardingCall: !!(opts && opts.onboardingCall) });
+  });
 
   ipcMain.on('open-external-url', (_event, url) => { openExternalUrl(url); });
 

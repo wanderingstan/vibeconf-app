@@ -1798,11 +1798,27 @@ joinBtn.addEventListener('click', async () => {
 });
 
 setupCallBtn?.addEventListener('click', async () => {
-  // Same "start a fresh call" request as joinBtn, plus onboardingCall so the
-  // spawned agent runs /onboarding-call instead of /join-call. Triggered from
-  // Settings, not the main screen, so switch back to the main screen first —
-  // that's where the "joining…" state and the in-call UI actually render.
+  // Triggered from Settings, not the main screen, so switch back first — that's
+  // where the "joining…" state and the in-call UI actually render.
   showScreen(mainScreen);
+
+  // If a call is already going, SET UP IN IT rather than creating a second one.
+  //
+  // The main button has always worked this way ("Add <bot> to call" when a call
+  // is detected); this one did not, so pressing Setup while sitting in a call
+  // opened a brand-new Meet and left the user in the wrong room — with the
+  // person they were talking to still in the old one.
+  //
+  // Only a DETECTED call counts, not manualUrlEntry: that flag means the user
+  // opened the URL field themselves, which is a request to type one, not
+  // evidence a call exists.
+  const existing = detectedCallUrl;
+  if (existing && isJoinableUrl(existing)) {
+    setJoinPhase('joining');
+    api.send('join-meet', existing, { onboardingCall: true });
+    return;
+  }
+
   setJoinPhase('starting');
   try {
     const r = await api.invoke('create-and-join-meet', { onboardingCall: true });

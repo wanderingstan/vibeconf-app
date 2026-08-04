@@ -211,3 +211,34 @@ test('suggested names come from the curated pool, minus the taken ones', () => {
   assert.match(body, /\[\.\.\.taken, \.\.\.picks\]/, 'no repeats within one list either');
   assert.match(mcp, /suggest_bot_names/);
 });
+
+test('setup joins a call in progress instead of opening a second one', () => {
+  // The main button has always switched to "Add <bot> to call" when a call is
+  // detected. Setup did not, so pressing it mid-call opened a brand-new Meet and
+  // left the user in the wrong room — with whoever they were talking to still in
+  // the old one.
+  const panelJs = readFileSync(join(root, 'electron-app/renderer/panel.js'), 'utf8');
+  const h = panelJs.slice(panelJs.indexOf("setupCallBtn?.addEventListener('click'"));
+  const body = h.slice(0, h.indexOf('\n});'));
+  assert.match(body, /const existing = detectedCallUrl;/);
+  assert.match(body, /api\.send\('join-meet', existing, \{ onboardingCall: true \}\)/);
+  // Only a DETECTED call counts. manualUrlEntry means the user opened the URL
+  // field themselves — a request to type one, not evidence a call exists.
+  // Comments stripped first: the code explains that distinction in prose, and
+  // matching the prose would defeat the check.
+  const code = body.replace(/^\s*\/\/.*$/gm, '');
+  assert.doesNotMatch(code, /manualUrlEntry/);
+  // And the join must reach the onboarding agent, not the ordinary one.
+  const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
+  assert.match(main, /ipcMain\.on\('join-meet', \(_event, meetUrl, opts\)/);
+  assert.match(main, /onboardingCall: !!\(opts && opts\.onboardingCall\)/);
+});
+
+test('the skill checks for an existing call before starting one', () => {
+  // Covers the hand-typed /onboarding-call path, where no button made the choice.
+  const step = skill.slice(skill.indexOf('## Step 1:'), skill.indexOf('## Step 2:'));
+  assert.match(step, /`get_room_info` FIRST, before `start_call`/);
+  assert.match(step, /detected Google Meet URLs/);
+  assert.match(step, /join_call` that room instead of creating one/);
+  assert.match(step, /Setting yourself up is not a reason to move the meeting/);
+});

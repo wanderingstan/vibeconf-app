@@ -15,10 +15,19 @@ This is `/call`'s sibling (same room mechanics, different walkthrough). If you h
 `get_room_info` status polling, mode table, chat, whiteboard sharing) all applies here
 unchanged. This skill only covers what's different: the scripted walkthrough.
 
-## Step 1: Start the call
+## Step 1: Get into a call — joining one that exists, or starting a fresh one
 
-Same as `/call`: call `start_call` (`bot_name` only if `$ARGUMENTS` names one), then wait
-for `Call status: in-call` via `get_room_info`.
+`get_room_info` FIRST, before `start_call`.
+
+- Already `in-call`? You are where you need to be. Skip to Step 2.
+- Not in a call, but it reports **detected Google Meet URLs**? Someone has a call open right
+  now. `join_call` that room instead of creating one.
+- Nothing detected? `start_call` (`bot_name` only if `$ARGUMENTS` names one), then wait for
+  `Call status: in-call`.
+
+Creating a second Meet when one is already open is worse than it sounds: the user ends up in
+a different room from the person they were talking to, and the call they were actually in
+carries on without them. Setting yourself up is not a reason to move the meeting.
 
 ## Step 2: Say what's about to happen
 

@@ -486,7 +486,6 @@ body[data-titlebar] #settingsScreen .settings-head button { -webkit-app-region: 
   font-size: 12px;
   line-height: 1.5;
 }
-.settings-intro strong { color: #e8eaed; font-weight: 600; }
 /* The guided-setup call keeps the full-width .primary shape it has everywhere
    else, so it still reads as the same act as "Call Jimmy now". */
 .settings-intro button { margin-top: 10px; }

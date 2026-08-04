@@ -56,6 +56,20 @@ send_digest() {
   echo "=== Telegram digest (via EXIT trap — fires on normal end OR early kill) ===" | tee -a "$LOG"
   node scripts/notify-nightly.mjs 2>&1 | tee -a "$LOG" || true
 }
+# Real-user call digest — independent of the test-suite digest above (own
+# Telegram message, own failure isolation: a broken call-digest run must never
+# swallow the test-suite results, and vice versa). Reads from the local
+# archive scripts/archive-logs.mjs keeps continuously fed on this machine, not
+# from anything this test run itself produced, so it doesn't depend on the
+# rest of tonight's run succeeding.
+_CALL_DIGEST_SENT=0
+send_call_digest() {
+  [[ "$_CALL_DIGEST_SENT" == 1 ]] && return
+  _CALL_DIGEST_SENT=1
+  echo "" | tee -a "$LOG"
+  echo "=== Real-call digest (via EXIT trap) ===" | tee -a "$LOG"
+  node scripts/nightly-call-digest.mjs 2>&1 | tee -a "$LOG" || true
+}
 # A signal (watchdog kill -TERM, stray pkill, Ctrl-C) becomes a normal exit so the
 # EXIT trap — and thus send_digest — still runs. Can't catch SIGKILL, but the
 # watchdog only KILLs 10s after its TERM, leaving the trap time to send.
@@ -89,10 +103,10 @@ if [[ "${VIBECONF_NO_WATCHDOG:-0}" != "1" ]]; then
   _watchdog_pid=$!
   # On any normal exit, stand the watchdog down and sweep any lingering test fleets (a
   # wedged lane skips its own teardown; this guarantees no zombie fleet survives a run).
-  trap 'send_digest; kill "$_watchdog_pid" 2>/dev/null; pkill -f "profile=test-meet-guest" 2>/dev/null; pkill -f "profile=test-slack" 2>/dev/null' EXIT
+  trap 'send_digest; send_call_digest; kill "$_watchdog_pid" 2>/dev/null; pkill -f "profile=test-meet-guest" 2>/dev/null; pkill -f "profile=test-slack" 2>/dev/null' EXIT
 else
   # No watchdog, but the digest still must fire on any exit.
-  trap 'send_digest' EXIT
+  trap 'send_digest; send_call_digest' EXIT
 fi
 
 # --- optional screen recording of each live-call lane. OFF by default; set
@@ -355,13 +369,13 @@ printf '{"ts":"%s","exit":%s,"log":"%s"}\n' "$STAMP" "$CODEX_CODE" "$(basename "
   >> "$RESULTS/codex-smoke-results.jsonl"
 echo "=== codex smoke exit: $CODEX_CODE (recorded, not gating) ===" | tee -a "$LOG"
 
-# --- Telegram digest — post a one-message summary of tonight's results to Stan's
-# DM. This cron isn't a Claude session, so notify-nightly.mjs hits the Bot API
-# directly with the existing bot token (~/.claude/channels/telegram/.env). Green
-# digests are sent silently; a red run pings. Best-effort — never touches $CODE.
-# NOT called inline anymore: send_digest() runs from the EXIT trap (see top), so
-# the digest fires even when the run is killed before reaching here. Disable with
-# VIBECONF_NOTIFY=0. ---
+# --- Telegram digests — two separate messages to Stan's DM: tonight's test-suite
+# results (notify-nightly.mjs) and a real-user call summary (nightly-call-digest.mjs,
+# built from the archive scripts/archive-logs.mjs keeps fed on a */20 cron —
+# independent of tonight's test run, so a broken test suite never blocks it and
+# vice versa). Neither is called inline anymore: send_digest()/send_call_digest()
+# run from the EXIT trap (see top), so both fire even when the run is killed
+# before reaching here. Disable with VIBECONF_NOTIFY=0. ---
 
 # Keep only the last 30 full logs (history line in results.jsonl is permanent).
 ls -1t "$RESULTS"/run-*.log 2>/dev/null | tail -n +31 | xargs rm -f 2>/dev/null || true

@@ -1579,7 +1579,11 @@ const localServer = new globalThis.LocalServer({
       // spend the call waiting for it to answer out loud.
       announceNoVoiceOnce();
     }
-    if (isFinished(status)) _noVoiceAnnouncedFor = null;
+    // Kick off ack-cache prewarming (tts.js) as early in the call lifecycle as
+    // possible — 'navigating' fires well before the agent is ready to speak,
+    // so synthesis happens in the background while the bot is still joining.
+    if (isInCall(status)) prewarmAckCache();
+    if (isFinished(status)) { _noVoiceAnnouncedFor = null; ackCachePrewarmedForCall = false; }
     // Studio sound: if disabled by pref, turn off Meet's voice filter once in-call
     // so non-voice audio (SFX/music via play_audio) passes through. Delay lets the
     // in-call toolbar (More options ⋮) finish rendering. Default leaves it ON.
@@ -4131,6 +4135,29 @@ function enqueueAudio(produceAndSend) {
 // slow chunk-2 synth can't play a stale tail after an interruption.
 let ttsStopGeneration = 0;
 
+// True once this call's ack phrases have been pre-warmed into tts.js's cache
+// — reset per call (not per app launch) because ack phrases and voice/provider
+// are per-bot config (store.get), and prewarming at app startup risked warming
+// under a stale/default config that a later-loading credential or per-bot
+// setting would replace before the first real speak. Fired on the earliest
+// active call status, well before the agent is ready to actually say anything.
+let ackCachePrewarmedForCall = false;
+
+function prewarmAckCache() {
+  if (ackCachePrewarmedForCall) return;
+  ackCachePrewarmedForCall = true;
+  const prefs = require('./preferences-schema').PREFERENCES;
+  const shortPhrases = store?.get('ackShortPhrases') || prefs.ackShortPhrases.default;
+  const longPhrases = store?.get('ackLongPhrases') || prefs.ackLongPhrases.default;
+  const ackPhrases = [...new Set([...shortPhrases, ...longPhrases])];
+  console.log(ts(), `🔥 [tts] pre-warming cache for ${ackPhrases.length} ack phrases`);
+  for (const phrase of ackPhrases) {
+    tts.synthesize(phrase).catch((err) => {
+      console.warn(ts(), '[tts] ack cache prewarm failed for', JSON.stringify(phrase), '—', err.message);
+    });
+  }
+}
+
 function speakText(text, voice, emoji) {
   // Sanitize markdown out of the spoken string only (#160).
   const spokenText = stripMarkdownForTts(text);
@@ -5879,26 +5906,6 @@ app.whenReady().then(async () => {
   }
   if (savedConfig.botName) sync.updateConfig({ botName: savedConfig.botName });
   if (savedConfig.syncBaseUrl) sync.updateConfig({ baseUrl: savedConfig.syncBaseUrl });
-
-  // Pre-warm the ack-phrase TTS cache (tts.js) now, at app startup, rather
-  // than waiting for the first ack of the first call — that first ack is
-  // exactly when the "before the agent responds" latency matters most, so
-  // it shouldn't be the one paying full synthesis cost. Fire-and-forget:
-  // synthesize() already serializes internally, and a failure here (e.g. no
-  // network yet) just means that phrase falls back to normal on-demand
-  // synthesis later, same as if this block didn't run.
-  {
-    const prefs = require('./preferences-schema').PREFERENCES;
-    const shortPhrases = store?.get('ackShortPhrases') || prefs.ackShortPhrases.default;
-    const longPhrases = store?.get('ackLongPhrases') || prefs.ackLongPhrases.default;
-    const ackPhrases = [...new Set([...shortPhrases, ...longPhrases])];
-    console.log(ts(), `🔥 [tts] pre-warming cache for ${ackPhrases.length} ack phrases`);
-    for (const phrase of ackPhrases) {
-      tts.synthesize(phrase).catch((err) => {
-        console.warn(ts(), '[tts] ack cache prewarm failed for', JSON.stringify(phrase), '—', err.message);
-      });
-    }
-  }
 
   // Configure the single session partition (#282). All Meet-specific handlers
   // — CSP stripping, media-permission auto-grant, screen-share source

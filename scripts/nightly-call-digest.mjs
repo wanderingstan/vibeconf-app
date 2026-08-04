@@ -30,6 +30,10 @@
 //                            notify-nightly.mjs)
 //   VIBECONF_TELEGRAM_ENV    override the bot-token .env location
 //   VIBECONF_DISK_WARN_PCT   warn if disk use% >= this (default 80)
+//   VIBECONF_SESSION_ENV     the vc_session credential archive-logs.mjs uses
+//                            (default: ~/.claude/secrets/vibeconf-admin-session.env)
+//   VIBECONF_AUTH_WARN_DAYS  warn when the session JWT expires within this
+//                            many days (default 7)
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -58,6 +62,9 @@ const DIGEST_DIR = path.resolve(process.env.VIBECONF_DIGEST_DIR || path.join(hom
 const CHAT = process.env.VIBECONF_NOTIFY_CHAT || '6785998012'; // Stan's DM, matches notify-nightly.mjs
 const ENV_FILE = process.env.VIBECONF_TELEGRAM_ENV || path.join(homedir(), '.claude/channels/telegram/.env');
 const DISK_WARN_PCT = Number(process.env.VIBECONF_DISK_WARN_PCT || 80);
+const SESSION_ENV_FILE = process.env.VIBECONF_SESSION_ENV
+  || path.join(homedir(), '.claude/secrets/vibeconf-admin-session.env');
+const AUTH_WARN_DAYS = Number(process.env.VIBECONF_AUTH_WARN_DAYS || 7);
 
 // Heuristic real-user filter — see module comment. Case-insensitive.
 const EXCLUDE_PROFILE_PREFIX = /^test-/i;
@@ -140,6 +147,71 @@ function runLatencyAudit(files) {
   }
 }
 
+// latency-audit.py's table is formatted for a wide terminal (44-char leg
+// names + 6 fixed-width numeric columns) — it wraps into an unreadable mess
+// in Telegram's narrow message column (see the screenshot that prompted
+// this). Pull just the headline legs out of that fixed-width table and
+// re-render them as short vertical lines instead of reimplementing the audit.
+//
+// Row format from latency-audit.py's print: `{name:44s} {n:4d} {avg:7.0f}
+// {med:7.0f} {p90:7.0f} {min:6.0f} {max:7.0f}` — fixed column offsets, so a
+// straight substring slice is more robust here than a whitespace split (leg
+// names contain spaces and arrows).
+function parseLatencyRow(line) {
+  if (line.length < 88) return null; // shorter = a "—" (no data) row or non-data line
+  const name = line.slice(0, 44).trim();
+  const n = parseInt(line.slice(45, 49), 10);
+  const avg = parseFloat(line.slice(50, 57));
+  const med = parseFloat(line.slice(58, 65));
+  const p90 = parseFloat(line.slice(66, 73));
+  if (!name || !Number.isFinite(n) || !Number.isFinite(avg)) return null;
+  return { name, n, avg, med, p90 };
+}
+
+const HEADLINE_LEGS = [
+  { match: 'TOTAL stop→audio sent', label: '📊 Total stop→audio' },
+  { match: 'D claude (resolve→first speak)', label: '🧠 Claude think time' },
+  { match: 'TOTAL ours (minus claude)', label: '⚙️ Client-side (ours)' },
+];
+
+function formatCompactLatency(rawTable) {
+  if (!rawTable) return null;
+  const rows = rawTable.split('\n').map(parseLatencyRow).filter(Boolean);
+  const lines = [];
+  for (const { match, label } of HEADLINE_LEGS) {
+    const row = rows.find((r) => r.name === match);
+    if (!row) continue;
+    lines.push(`${label}: ${(row.avg / 1000).toFixed(1)}s avg / ${(row.p90 / 1000).toFixed(1)}s p90 (n=${row.n})`);
+  }
+  return lines.length ? lines.join('\n') : null;
+}
+
+// --- auth expiry (the vc_session cookie archive-logs.mjs runs on) ---------
+
+// Reads the exp claim straight out of the JWT — no signature check needed,
+// we're not authenticating anything here, just reading our own stored value's
+// expiry. archive-logs.mjs is what actually authenticates with it.
+function decodeJwtExp(jwt) {
+  try {
+    const payload = jwt.split('.')[1];
+    const json = Buffer.from(payload, 'base64url').toString('utf-8');
+    const { exp } = JSON.parse(json);
+    return typeof exp === 'number' ? exp : null;
+  } catch { return null; }
+}
+
+function authStatus() {
+  let raw;
+  try { raw = fs.readFileSync(SESSION_ENV_FILE, 'utf-8'); }
+  catch { return { missing: true }; }
+  const m = raw.match(/^VIBECONF_VC_SESSION=(.+)$/m);
+  if (!m) return { missing: true };
+  const exp = decodeJwtExp(m[1].trim());
+  if (exp == null) return { unparseable: true };
+  const daysLeft = (exp * 1000 - Date.now()) / 86_400_000;
+  return { daysLeft, expiresAt: new Date(exp * 1000).toISOString().slice(0, 10), warn: daysLeft <= AUTH_WARN_DAYS };
+}
+
 // --- disk space -----------------------------------------------------------
 
 function diskStatus() {
@@ -189,7 +261,9 @@ async function main() {
   const activeInstances = [...callsPerFile.keys()];
 
   const latencyReport = runLatencyAudit(realFiles);
+  const compactLatency = formatCompactLatency(latencyReport);
   const disk = diskStatus();
+  const auth = authStatus();
 
   const summary = {
     date: targetDate,
@@ -201,6 +275,7 @@ async function main() {
     callCount,
     callsPerInstance: Object.fromEntries(callsPerFile),
     disk,
+    auth,
   };
 
   fs.mkdirSync(path.join(DIGEST_DIR, targetDate), { recursive: true });
@@ -219,8 +294,21 @@ async function main() {
   }
   if (callCount === 0) {
     lines.push(`\n(no real-user calls found for ${targetDate} — check summary.json if this is unexpected)`);
-  } else if (latencyReport) {
-    lines.push(`\n<pre>${latencyReport.trim().slice(0, 3200)}</pre>`);
+  } else if (compactLatency) {
+    lines.push(`\n${compactLatency}`);
+  }
+  // Auth-expiry reminder — the vc_session cookie archive-logs.mjs runs on is a
+  // 30-day JWT borrowed from Stan's own login, not a durable service credential
+  // (LOGS_TOKEN would be that, but it's been 401ing server-side — see #). Once
+  // this expires, archiving silently stops until someone notices and refreshes
+  // it by hand, so nag ahead of that rather than after logs go quiet.
+  if (auth.missing) {
+    lines.push(`\n⚠️ <b>No vc_session credential found</b> at ${SESSION_ENV_FILE} — archive-logs.mjs can't authenticate. Also worth fixing LOGS_TOKEN server-side so this doesn't depend on a personal login at all.`);
+  } else if (auth.unparseable) {
+    lines.push(`\n⚠️ vc_session credential is present but its JWT didn't parse — check ${SESSION_ENV_FILE}.`);
+  } else if (auth.warn) {
+    const already = auth.daysLeft <= 0;
+    lines.push(`\n⚠️ <b>${already ? 'vc_session has expired' : `vc_session expires in ${Math.floor(auth.daysLeft)}d (${auth.expiresAt})`}</b> — archiving ${already ? 'has stopped' : 'will stop'} until it's refreshed (browser devtools → vc_session cookie → paste into ${SESSION_ENV_FILE}). Also: get LOGS_TOKEN working server-side so this doesn't keep depending on a personal login expiring under us.`);
   }
   const digestText = lines.join('\n');
   fs.writeFileSync(path.join(DIGEST_DIR, targetDate, 'digest.txt'), digestText.replace(/<\/?[^>]+>/g, ''));

@@ -6,9 +6,11 @@
 //
 //   1. We cannot see what the agent is doing. Terminal owns the pipe, so the only
 //      window into the session is the transcript file Claude Code happens to
-//      write — an undocumented implementation detail that broke twice in a week
-//      and by Aug 4 stopped being written at all for app-launched agents. The
-//      brain pane went dark and nothing reported an error.
+//      write — an undocumented implementation detail that has broken repeatedly.
+//      (An earlier version of this comment said transcripts had stopped being
+//      written for app-launched agents entirely; that was too strong. A headless
+//      agent wrote a 92-line transcript on 2026-08-04. The failures are
+//      intermittent, which is worse to build on than a clean absence.)
 //   2. We cannot talk TO it. No stdin means the brain pane is read-only, and
 //      call feedback has to route the long way round through the MCP server.
 //   3. Quoting. The command crosses TWO escaping layers (AppleScript string, then
@@ -24,6 +26,43 @@
 // modes below are handled explicitly rather than discovered on a call.
 
 const { spawn } = require('child_process');
+
+// Environment variables that identify a PARENT Claude session, which the bot's
+// agent must not inherit.
+//
+// They leak whenever the app is started from inside a Claude Code session —
+// which is every `pnpm dev` run during development, and never for a user opening
+// the app from the Dock. A difference that exists only in development is exactly
+// the kind that gets diagnosed as a product bug.
+//
+// The concrete damage is visible in the CLI itself. Launched with the marker
+// inherited, the TUI prints:
+//
+//   ⚠ Transcript saving is off — inherited CLAUDE_CODE_CHILD_SESSION marker
+//
+// A bot agent is a session in its own right, not a subtask of whoever happened
+// to launch the app, so strip the identity and let it start clean.
+//
+// A DENYLIST, not a CLAUDE_* wildcard: CLAUDE_CONFIG_DIR and friends are
+// legitimate user configuration, and dropping those would break the very setups
+// most likely to be running a customised install.
+const PARENT_SESSION_VARS = [
+  'CLAUDECODE',
+  'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_CODE_SESSION_ID',
+  'CLAUDE_CODE_BRIDGE_SESSION_ID',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_EXECPATH',
+  'CLAUDE_PID',
+  'CLAUDE_EFFORT',
+];
+
+// Copy of `env` with any parent-session identity removed.
+function cleanAgentEnv(env) {
+  const out = { ...env };
+  for (const k of PARENT_SESSION_VARS) delete out[k];
+  return out;
+}
 
 // Build the agent's argv.
 //
@@ -76,7 +115,7 @@ function headlessBlockedReason({ dangerous }) {
 function spawnHeadlessAgent({ claudePath, args, cwd, env, source, onExit, log = console.log }) {
   const child = spawn(claudePath, args, {
     cwd,
-    env,
+    env: cleanAgentEnv(env),
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
@@ -118,4 +157,4 @@ function spawnHeadlessAgent({ claudePath, args, cwd, env, source, onExit, log = 
   return child;
 }
 
-module.exports = { buildAgentArgs, headlessBlockedReason, spawnHeadlessAgent };
+module.exports = { buildAgentArgs, headlessBlockedReason, spawnHeadlessAgent, cleanAgentEnv, PARENT_SESSION_VARS };

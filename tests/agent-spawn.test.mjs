@@ -2,9 +2,12 @@
 //
 // The Terminal launcher stays the default. This is the path where the app owns
 // the process, which is what makes the activity stream first-hand instead of
-// scraped from a file Claude Code may or may not write (it stopped writing them
-// for app-launched agents on 2026-08-04, and the brain pane went dark with no
-// error anywhere).
+// scraped from a file Claude Code may or may not write. "May or may not" is the
+// operative part: an earlier note here claimed transcripts had stopped entirely
+// for app-launched agents, and that was too strong — a headless agent wrote a
+// 92-line transcript on 2026-08-04. Intermittent is worse to build on than
+// absent, because it looks fine right up until the brain pane goes dark with no
+// error anywhere.
 //
 // Run: node --test tests/agent-spawn.test.mjs
 
@@ -157,4 +160,46 @@ test('the preference is reachable from App Settings', () => {
   const { PREFERENCES } = require('../electron-app/preferences-schema.js');
   assert.notEqual(PREFERENCES.agentHosting.hiddenInSettingsUI, true);
   assert.ok(PREFERENCES.agentHosting.label, 'without a label the UI shows the raw key');
+});
+
+test('the agent does not inherit a parent Claude session identity', () => {
+  // These leak whenever the app is started from inside a Claude Code session —
+  // every `pnpm dev` run, and never for a user opening the app from the Dock. So
+  // the resulting misbehaviour appears in development ONLY, which is how it gets
+  // misdiagnosed as a product bug.
+  //
+  // Observed directly: launched with the marker inherited, the CLI prints
+  // "⚠ Transcript saving is off — inherited CLAUDE_CODE_CHILD_SESSION marker".
+  // The app process was confirmed carrying it, and it was being passed straight
+  // through to the agent.
+  const { cleanAgentEnv } = require('../electron-app/agent-spawn.js');
+  const dirty = {
+    PATH: '/usr/bin', HOME: '/Users/x',
+    CLAUDECODE: '1', CLAUDE_CODE_CHILD_SESSION: '1', CLAUDE_CODE_SESSION_ID: 'abc',
+    CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_PID: '123', CLAUDE_EFFORT: 'high',
+    CLAUDE_CODE_BRIDGE_SESSION_ID: 'z', CLAUDE_CODE_EXECPATH: '/x',
+    VIBECONF_LOCAL_PORT: '7865',
+  };
+  const clean = cleanAgentEnv(dirty);
+  for (const k of Object.keys(dirty)) {
+    if (k.startsWith('CLAUDE')) assert.ok(!(k in clean), `${k} must not reach the agent`);
+  }
+  assert.equal(clean.PATH, '/usr/bin', 'and the rest of the environment survives');
+  assert.equal(clean.VIBECONF_LOCAL_PORT, '7865', 'including our own routing');
+  assert.ok(!('CLAUDECODE' in clean));
+});
+
+test('sanitising is a denylist, not a CLAUDE_* wildcard', () => {
+  // CLAUDE_CONFIG_DIR and friends are legitimate user configuration. A wildcard
+  // would break exactly the customised installs most likely to rely on them.
+  const { cleanAgentEnv } = require('../electron-app/agent-spawn.js');
+  const clean = cleanAgentEnv({ CLAUDE_CONFIG_DIR: '/custom', CLAUDE_CODE_SESSION_ID: 'x' });
+  assert.equal(clean.CLAUDE_CONFIG_DIR, '/custom', 'user config must survive');
+  assert.ok(!('CLAUDE_CODE_SESSION_ID' in clean));
+});
+
+test('the spawn actually uses the sanitised environment', () => {
+  // Easy to define the helper and forget to call it.
+  const spawn = readFileSync(join(root, 'electron-app/agent-spawn.js'), 'utf8');
+  assert.match(spawn, /env: cleanAgentEnv\(env\)/);
 });

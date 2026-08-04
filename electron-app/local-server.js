@@ -1444,6 +1444,36 @@ class LocalServer {
     return { waited, drained };
   }
 
+  // Absolute paths to the sample art the onboarding call shows off:
+  // one smiling face per emoji set, and every background preset.
+  //
+  // Only sets that are actually IMAGES are listed. 'native' is the OS font, so
+  // it has no file to show — the caller says so in words rather than shipping a
+  // broken image for it.
+  visualAssets() {
+    const path = require('path');
+    const fs = require('fs');
+    const ea = require('./emoji-assets.js');
+    const emojiSets = [];
+    for (const set of Object.keys(ea.EMOJI_SETS || {})) {
+      const rel = ea.relPathFor(set, '🙂');
+      if (!rel) continue;
+      const full = path.join(ea.baseDir(__dirname), rel);
+      if (fs.existsSync(full)) emojiSets.push({ set, emoji: '🙂', path: full });
+    }
+    const bgDir = __dirname.includes('.asar')
+      ? path.join(process.resourcesPath, 'backgrounds', 'presets')
+      : path.join(__dirname, 'backgrounds', 'presets');
+    let backgrounds = [];
+    try {
+      backgrounds = fs.readdirSync(bgDir)
+        .filter((f) => f.toLowerCase().endsWith('.svg'))
+        .sort()
+        .map((f) => ({ name: f.replace(/\.svg$/i, ''), path: path.join(bgDir, f) }));
+    } catch { /* none bundled */ }
+    return { emojiSets, backgrounds };
+  }
+
   afterCallWorkPlan() {
     const seconds = Number(this._pref('afterCallWorkSeconds')) || 0;
     // No agent driving means nobody to hand off TO. Matches the app-side gate in
@@ -3714,6 +3744,26 @@ class LocalServer {
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('asset read failed: ' + err.message);
+      }
+      return;
+    }
+
+    // Where the bundled sample art lives, so an agent can SHOW the options
+    // instead of describing them.
+    //
+    // The onboarding call asks people to pick an emoji set and a background.
+    // Both were lists of words — "fluent3d, twemoji, openmoji, noto, native" —
+    // which is exactly the choice a picture answers instantly and prose does
+    // not. The agent cannot guess these paths: each emoji set names its files
+    // differently (1f642.png / 1F642.svg / emoji_u1f642.svg), and a packaged
+    // build resolves them somewhere else entirely.
+    if (url.pathname === '/api/visual-assets' && req.method === 'GET') {
+      try {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, ...this.visualAssets() }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
       }
       return;
     }

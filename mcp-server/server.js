@@ -784,6 +784,34 @@ async function listVoiceboxProfiles() {
   } catch { return []; }
 }
 
+// --- list_visual_assets ---
+server.tool(
+  "list_visual_assets",
+  "Absolute paths to the sample art bundled with the app: one smiling face per emoji set, and every background preset. Use these with update_whiteboard to SHOW the options rather than list their names — write them as ordinary markdown image links, e.g. ![city](/abs/path/city.svg), and lay several out in a table for a grid. Mainly for the guided setup call, where 'pick an emoji set' and 'pick a background' are questions a picture answers instantly. Note the 'native' emoji set is the OS font and has no file here, so describe it in words.",
+  {},
+  async () => {
+    try {
+      const resp = await vfetch(`${BASE_URL}/api/visual-assets`);
+      const data = await resp.json();
+      if (!data.success) {
+        return { content: [{ type: "text", text: `Error: ${data.error || "could not read bundled assets"}` }] };
+      }
+      const lines = [];
+      lines.push("=== Emoji sets (🙂 sample from each) ===");
+      for (const e of data.emojiSets || []) lines.push(`${e.set}: ${e.path}`);
+      lines.push("native: (no file — the operating system's own emoji font)");
+      lines.push("");
+      lines.push("=== Background presets ===");
+      for (const b of data.backgrounds || []) lines.push(`${b.name}: ${b.path}`);
+      lines.push("");
+      lines.push("Embed with update_whiteboard: ![name](/that/path). Several in a markdown table gives you a grid.");
+      return { content: [{ type: "text", text: lines.join("\n") }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error contacting local server: ${err.message}` }] };
+    }
+  },
+);
+
 // --- list_voices ---
 server.tool(
   "list_voices",
@@ -988,7 +1016,7 @@ server.tool(
   "update_whiteboard",
   "Update the shared whiteboard/screen in the Google Meet call. Supports markdown and Mermaid diagrams. Can also load an arbitrary URL (e.g. a website, localhost app, dashboard) instead of markdown content. To show a local image (e.g. a generated image), pass image_path (absolute local file path) — it gets registered with the app's local server and embedded as markdown. Do NOT put a raw file:// URL in a markdown image tag inside 'content' and do NOT hand-build a base64 data URI — the whiteboard renders in a sandboxed browser that can't load file:// URLs (broken image), and inlining base64 wastes huge amounts of context. image_path is the only correct way to show a local image.",
   {
-    content: z.string().optional().describe("Markdown content for the whiteboard. Supports headings, lists, code blocks, and Mermaid diagrams. Do not embed local images here via file:// URLs or base64 data URIs — use the image_path parameter instead."),
+    content: z.string().optional().describe("Markdown content for the whiteboard. Supports headings, lists, code blocks, Mermaid diagrams, and images. For SEVERAL images (a grid of options, a comparison), write ordinary markdown image links to absolute local paths — ![city](/abs/path/city.svg) — and they are registered and rewritten for you, so you control the layout. Base64 data URIs are still not supported. For a single image appended after the text, image_path is simpler."),
     url: z.string().optional().describe("Load an arbitrary URL in the whiteboard window instead of markdown content. Useful for showing websites, localhost apps, or dashboards."),
     image_path: z.string().optional().describe("Absolute local file path to an image (png/jpg/gif/webp/svg/bmp/pdf). The local server registers it and embeds it in the markdown. This is the correct way to show a local/generated image — do not build your own file:// link or base64 data URI. If 'content' is also provided, the image is appended after it."),
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
@@ -1006,6 +1034,39 @@ server.tool(
     // image_path: register with the local server and fold the resulting URL
     // into the markdown content (#157). url mode is unaffected — image_path
     // composes with content, not with url.
+    // Local image paths written straight into the markdown, e.g.
+    // ![city](/abs/path/city.svg) — registered and rewritten here.
+    //
+    // image_path below handles ONE image, appended after the text. That is
+    // useless for a grid: showing eight backgrounds, or one smiley per emoji
+    // set, needs several images laid out in a table. Rewriting in place lets
+    // the agent control the layout and use as many as it likes.
+    if (content) {
+      const localImg = /!\[([^\]]*)\]\((?:file:\/\/)?(\/[^)\s]+)\)/g;
+      const seen = new Map();
+      const paths = [...content.matchAll(localImg)].map((m) => m[2]);
+      for (const p of paths) {
+        if (seen.has(p)) continue;
+        try {
+          const r = await vfetch(`${BASE_URL}/api/whiteboard-asset`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: p }),
+          });
+          const d = await r.json();
+          // A path that will not register is left ALONE rather than dropped:
+          // the board then shows a broken image at that spot, which is a
+          // visible, findable fault. Silently deleting it looks like the agent
+          // simply chose not to show anything.
+          if (d.success && d.url) seen.set(p, d.url);
+        } catch { /* leave it as written */ }
+      }
+      if (seen.size) {
+        content = content.replace(localImg, (whole, alt, p) =>
+          (seen.has(p) ? `![${alt}](${seen.get(p)})` : whole));
+      }
+    }
+
     if (image_path) {
       try {
         const regResp = await vfetch(`${BASE_URL}/api/whiteboard-asset`, {

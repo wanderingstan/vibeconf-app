@@ -3,7 +3,7 @@ name: onboarding-call
 description: Run a guided, live setup call that walks the user through configuring this bot, name, voice, emoji, background, whiteboard style, skills, and after-call routine
 argument-hint: "[meet code] [BotName] (same room/profile routing as /call and /join-call)"
 disable-model-invocation: true
-allowed-tools: Read Glob Edit mcp__vibeconferencing__start_call mcp__vibeconferencing__list_call_instances mcp__vibeconferencing__get_room_info mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__reload_whiteboard mcp__vibeconferencing__set_whiteboard_style mcp__vibeconferencing__read_chat mcp__vibeconferencing__send_chat mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__set_avatar_emoji mcp__vibeconferencing__list_preferences mcp__vibeconferencing__set_preference mcp__vibeconferencing__set_mode mcp__vibeconferencing__leave_call mcp__vibeconferencing__end_session
+allowed-tools: Read Glob Edit mcp__vibeconferencing__start_call mcp__vibeconferencing__list_call_instances mcp__vibeconferencing__get_room_info mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__reload_whiteboard mcp__vibeconferencing__set_whiteboard_style mcp__vibeconferencing__read_chat mcp__vibeconferencing__send_chat mcp__vibeconferencing__list_visual_assets mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__set_avatar_emoji mcp__vibeconferencing__list_preferences mcp__vibeconferencing__set_preference mcp__vibeconferencing__set_mode mcp__vibeconferencing__leave_call mcp__vibeconferencing__end_session
 ---
 
 Run a guided **setup call**: a live Meet where this bot walks the user through configuring
@@ -89,18 +89,40 @@ built-in OS voice as the default rather than blocking on it.
 
 ### 4c. Emoji set
 
-Whiteboard shows the available sets (`fluent3d`, `twemoji`, `openmoji`, `noto`, `native`).
+**Show the sets, do not list them.** "fluent3d, twemoji, openmoji, noto" means nothing to
+anyone; the same four faces side by side answers the question instantly.
+
+`list_visual_assets` gives you a 🙂 from each set as an absolute path. Put them on the board
+as a row of images with the set name under each, e.g. a markdown table with the images in
+one row and the names in the next:
+
+| ![fluent3d](/path/from/list_visual_assets/1f642.png) | ![twemoji](/path/…/1f642.svg) |
+|---|---|
+| fluent3d | twemoji |
+
+`native` has no image — it is the OS's own emoji font — so add it as a final text cell
+saying so ("native — whatever this computer already uses").
+
 Once picked, `set_preference("emojiSet", "<set>")`.
 
 ### 4d. Background
 
-Whiteboard cycles through the preset backgrounds shipped with the app
-(`electron-app/backgrounds/presets/*.svg`: city, clouds, desert, forest, mountains,
-night, ocean, skyline) so they can see each one. Once picked, read the SVG file and
-`set_preference("avatarBackgroundSvg", "<svg source>")`, plus
-`set_preference("avatarBackgroundCaption", "<short label>")` so it's recallable later.
-They can also describe a custom background instead of picking a preset (that's fine, just
-generate/describe SVG source for it the same way you would mid-call today).
+**One grid, all of them at once** — not a slideshow. `list_visual_assets` returns every
+preset with its absolute path; put them in a markdown table as images with the name under
+each, so the whole choice is visible in a glance and they can just say "the forest one".
+
+Make the LAST cell of the grid a text cell rather than an image:
+
+> **…or describe one**
+> Tell me the image you'd like and I'll make it.
+
+That cell is the point of the step: the presets are a starting menu, not the limit, and
+nobody discovers the custom path from a list of eight filenames.
+
+Once picked, read that SVG file and `set_preference("avatarBackgroundSvg", "<svg source>")`,
+plus `set_preference("avatarBackgroundCaption", "<short label>")` so it's recallable later.
+If they describe their own instead, generate the SVG the same way you would mid-call and set
+the caption to their description.
 
 ### 4e. Whiteboard style
 

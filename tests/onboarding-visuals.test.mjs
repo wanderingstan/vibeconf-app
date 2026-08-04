@@ -123,3 +123,19 @@ test("native is a real cell showing the real character", () => {
   assert.match(skill, /\.native-face \{ font-size: 68px/, 'sized to match its neighbours');
   assert.match(mcp, /put the character itself/, 'the tool says so too');
 });
+
+test('the native cell names the platform only when it is known', () => {
+  // First pass here forbade naming the platform outright. That was wrong: the
+  // agent runs on the same machine as the app and its environment states the
+  // OS, so "whatever this Mac already uses (Apple's own)" is BETTER than a
+  // generic label — it tells the user what they will actually get.
+  //
+  // The rule that survives is narrower: do not GUESS. An invented OS or font
+  // vendor is a confident-sounding error in the first minute of use.
+  assert.match(skill, /do not guess/i);
+  assert.match(skill, /whatever this machine already uses/, 'the fallback when it is unknown');
+  assert.match(skill, /your environment tells you its platform/);
+  // The tool description stays neutral — it has no machine to speak of.
+  assert.match(mcp, /operating system's own emoji font/);
+});
+

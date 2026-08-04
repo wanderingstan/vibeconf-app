@@ -121,6 +121,15 @@ draw it. That is precisely what picking "native" means, so the cell is an honest
 rather than a description of one. Wrap it so the CSS above can size it to match its
 neighbours.
 
+Label it for the machine you are actually on. You run on the same computer as the app and
+your environment tells you its platform, so "whatever this Mac already uses (Apple's own)"
+is *better* than a generic label when you genuinely know — it tells the user what they will
+get.
+
+The rule is only: **do not guess.** If the platform is not something you actually know, say
+"whatever this machine already uses" and stop there. Naming the wrong OS, or inventing a
+font vendor, is a confident-sounding error in someone's first minute with the product.
+
 Once picked, `set_preference("emojiSet", "<set>")`.
 
 ### 4d. Background

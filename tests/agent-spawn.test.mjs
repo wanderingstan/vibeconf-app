@@ -145,3 +145,16 @@ test('the preference ships off, and says why it is experimental', () => {
   assert.deepEqual(p.enum, ['terminal', 'headless']);
   assert.match(p.description, /Dangerous Mode/, 'the hard requirement must be discoverable');
 });
+
+test('the preference is reachable from App Settings', () => {
+  // It was per-profile for one commit, and therefore invisible: App Settings
+  // renders app-level schema prefs ONLY (get-app-settings-schema filters on
+  // isAppLevel), so the toggle worked via set_preference and could not be found
+  // by anyone actually using the app. Caught by someone looking for it.
+  const { isAppLevel } = require('../electron-app/config-scope.js');
+  assert.ok(isAppLevel('agentHosting'), 'app-level, or it renders nowhere');
+  assert.ok(isAppLevel('agentBackend'), 'it qualifies this one — they must share a scope');
+  const { PREFERENCES } = require('../electron-app/preferences-schema.js');
+  assert.notEqual(PREFERENCES.agentHosting.hiddenInSettingsUI, true);
+  assert.ok(PREFERENCES.agentHosting.label, 'without a label the UI shows the raw key');
+});

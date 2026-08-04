@@ -29,6 +29,20 @@ const APP_LEVEL_KEYS = new Set([
   // NOT in MIGRATE_KEYS below: auto-promoting one profile's guess machine-wide is
   // the same hazard documented there for dangerousMode.
   'agentBackend',
+  // #242: how that agent is hosted (Terminal window vs headless child). Scoped
+  // app-level for the same reason as agentBackend, which it directly depends on
+  // — it only applies when the backend is "claude", and a setting that qualifies
+  // a machine-wide setting belongs in the same place.
+  //
+  // It was per-profile for one commit, which made it INVISIBLE: App Settings
+  // renders app-level schema prefs only (get-app-settings-schema filters on
+  // isAppLevel), so the toggle existed, worked via set_preference, and could not
+  // be found by anyone using the app normally.
+  //
+  // Not in MIGRATE_KEYS, same hazard as dangerousMode: auto-promoting one
+  // profile's experimental headless setting machine-wide would silently move
+  // every bot off the Terminal path.
+  'agentHosting',
 ]);
 
 // The subset of app-level keys the launch migration may auto-promote from a

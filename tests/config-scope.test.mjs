@@ -164,7 +164,11 @@ test('APP_LEVEL_KEYS is exactly the decided set (guard against accidental promot
     // agentBackend (#231): which agent CLI is installed is a property of the
     // MACHINE, like dangerousMode — every bot on a laptop is driven by the same
     // one. Added deliberately; this list exists so that stays a decision.
-    ['agentBackend', 'claudeIntegrationRemoved', 'dangerousMode', 'syncBaseUrl', 'ttsApiKey', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
+    // agentHosting (#242): qualifies agentBackend — it only applies when the
+    // backend is "claude" — so it must share its scope. It shipped per-profile
+    // for one commit and was invisible in App Settings as a result, since that
+    // window renders app-level prefs only.
+    ['agentBackend', 'agentHosting', 'claudeIntegrationRemoved', 'dangerousMode', 'syncBaseUrl', 'ttsApiKey', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
   );
 });
 

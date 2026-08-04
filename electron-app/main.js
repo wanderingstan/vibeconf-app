@@ -6288,8 +6288,26 @@ allURLs`;
 // close() below doesn't re-prompt itself forever.
 let quitConfirmed = false;
 
+// True once something OTHER than a click on ✕ has decided the app is going away:
+// Cmd-Q, a SIGTERM, macOS logout or shutdown, or the updater installing on quit.
+//
+// This flag is what stops the confirmation from being a hostage. app.quit()
+// closes every window, which fires the same 'close' this handler cancels — so
+// without it the app could not be terminated by a signal at all, and it would
+// sit holding a modal dialog through a system shutdown or block the updater's
+// install-on-quit. Found because SIGTERM stopped working: the old instance
+// survived, the new one hit the single-instance lock and quit, and the port
+// check still said "running" because the OLD app answered it.
+//
+// Confirming is for the ambiguous case — a stray click on a button that sits
+// beside controls you use constantly. Every path below is unambiguous, and a
+// dialog on shutdown is a bug, not a safety net.
+// Set in the existing before-quit handler below rather than by registering a
+// second one — two registrations for the same event are two things to find.
+let appIsQuitting = false;
+
 function confirmQuitBeforeClose(e) {
-  if (quitConfirmed) return;
+  if (quitConfirmed || appIsQuitting) return;
   if (store.get('confirmQuit') === false) return;
   e.preventDefault();
 
@@ -6329,6 +6347,9 @@ app.on('window-all-closed', () => {
 // Close any terminal windows we opened, synchronously, before the process
 // exits — covers Cmd-Q and other quit paths the async close would miss.
 app.on('before-quit', () => {
+  // Every quit that is NOT a click on ✕ passes through here first, so this is
+  // where the confirmation learns to stand down (see confirmQuitBeforeClose).
+  appIsQuitting = true;
   stopAllRunwayFaces('before-quit'); // P2: best-effort end of Runway sessions on quit (fire-and-forget)
   closeAllClaudeTerminalsSync();
 });

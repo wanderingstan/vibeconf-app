@@ -225,3 +225,30 @@ test('the add-to-call toggle is a + that rotates into an ×', () => {
   assert.match(body, /transition: rotate/, 'it must animate, or the rotation is invisible');
   assert.match(body, /display: inline-block/, 'rotate does not apply to an inline box');
 });
+
+test('the quit confirmation cannot hold the app hostage', () => {
+  // app.quit() closes every window, firing the same 'close' the confirmation
+  // cancels. Without an escape the app could not be terminated by a signal at
+  // ALL — and would sit holding a modal dialog through a macOS logout or block
+  // the updater's install-on-quit (autoInstallOnAppQuit is true).
+  //
+  // Found the hard way: SIGTERM stopped killing the dev app. The old instance
+  // survived, the NEW one hit the single-instance lock and quit itself, and a
+  // port check still reported "running" because the OLD app was answering it.
+  assert.match(main, /let appIsQuitting = false;/);
+  // Set inside the EXISTING before-quit handler, not a second registration —
+  // a duplicate made meet-retire.test's indexOf anchor find the wrong one.
+  const bq = main.slice(main.indexOf("app.on('before-quit'"));
+  assert.match(bq.slice(0, bq.indexOf('\n});')), /appIsQuitting = true;/);
+  assert.equal(main.split("app.on('before-quit'").length - 1, 1,
+    'exactly one before-quit registration');
+  const fn = main.slice(main.indexOf('function confirmQuitBeforeClose'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.match(body, /if \(quitConfirmed \|\| appIsQuitting\) return;/,
+    'every unambiguous quit path must skip the dialog');
+  // Ordering is what makes this correct: clicking ✕ fires 'close' FIRST and
+  // before-quit only afterwards, so the flag is still false and the click is
+  // still caught. Cmd-Q, signals and shutdown fire before-quit first.
+  assert.ok(body.indexOf('appIsQuitting') < body.indexOf('preventDefault'),
+    'the escape must be checked before the close is cancelled');
+});

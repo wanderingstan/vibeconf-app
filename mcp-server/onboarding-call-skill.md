@@ -3,7 +3,7 @@ name: onboarding-call
 description: Run a guided, live setup call that walks the user through configuring this bot, name, voice, emoji, background, whiteboard style, skills, and after-call routine
 argument-hint: "[meet code] [BotName] (same room/profile routing as /call and /join-call)"
 disable-model-invocation: true
-allowed-tools: Read Glob Edit mcp__vibeconferencing__start_call mcp__vibeconferencing__list_call_instances mcp__vibeconferencing__get_room_info mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__reload_whiteboard mcp__vibeconferencing__set_whiteboard_style mcp__vibeconferencing__read_chat mcp__vibeconferencing__send_chat mcp__vibeconferencing__suggest_bot_names mcp__vibeconferencing__list_visual_assets mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__set_avatar_emoji mcp__vibeconferencing__list_preferences mcp__vibeconferencing__set_preference mcp__vibeconferencing__set_mode mcp__vibeconferencing__leave_call mcp__vibeconferencing__end_session
+allowed-tools: Read Glob Edit mcp__vibeconferencing__start_call mcp__vibeconferencing__list_call_instances mcp__vibeconferencing__get_room_info mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__reload_whiteboard mcp__vibeconferencing__set_whiteboard_style mcp__vibeconferencing__read_chat mcp__vibeconferencing__send_chat mcp__vibeconferencing__suggest_bot_names mcp__vibeconferencing__list_visual_assets mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__set_avatar_emoji mcp__vibeconferencing__list_preferences mcp__vibeconferencing__set_preference mcp__vibeconferencing__set_caption_language mcp__vibeconferencing__set_mode mcp__vibeconferencing__leave_call mcp__vibeconferencing__end_session
 ---
 
 Run a guided **setup call**: a live Meet where this bot walks the user through configuring
@@ -71,7 +71,63 @@ Work through the steps below **in order**. For each one:
 and see whether the user's still there. If they've left, stop the walkthrough right there,
 apply defaults for whatever's left unset, and skip to Step 5.
 
-### 4a. Name
+### 4a. Language — FIRST, before anything else
+
+Ask what language the call should be in, and set it before you ask them anything else.
+
+This is first for a mechanical reason, not politeness: you hear the room by reading Meet's
+captions, and captions are transcribed in ONE configured language. Set to the wrong one, Meet
+turns correct speech into nonsense and you answer the nonsense — confidently. Every later
+step depends on it, the name step most of all: a name is transcribed through this setting, so
+checking whether "Solene" comes back cleanly means nothing until the language is right.
+
+**Put the list on the board with a NUMBER against each, and write each language in its own
+language.** Someone whose English is limited can still find "Português" and say "seven" —
+numbers in English are the one thing almost everyone can produce, and a list written in
+English is unreadable to exactly the people this step exists for.
+
+| # | Language | # | Language |
+|---|---|---|---|
+| 1 | English (US) | 9 | 中文 (普通话) |
+| 2 | English (UK) | 10 | 한국어 |
+| 3 | Español | 11 | العربية |
+| 4 | Français | 12 | हिन्दी |
+| 5 | Deutsch | 13 | Bahasa Indonesia |
+| 6 | Italiano | 14 | Nederlands |
+| 7 | Português | 15 | Polski |
+| 8 | 日本語 | 16 | Türkçe |
+
+Say, in English and slowly: *"Say the number of your language."* Nothing else — a long
+sentence defeats the purpose.
+
+**If ElevenLabs is available, greet them in a few languages first.** `list_voices`: if it
+lists ElevenLabs voices, a key is configured, and those voices speak other languages
+transparently and pronounce them properly — one voice, any language, no switching. Say a
+short hello in three or four (Spanish, French, Japanese, whichever suit the room) before
+asking for the number.
+
+It is worth the fifteen seconds: someone who does not speak English learns from hearing it,
+rather than from a sentence they cannot parse, that this thing will work in their language.
+It also demonstrates the choice they are about to make.
+
+**Skip it when there is no ElevenLabs key.** The operating system's built-in voices are tied
+to a language: pushing Spanish text through an English system voice produces a mangled
+accent, which advertises the opposite of what you are trying to show. With OS voices, just
+ask for the number.
+
+Then `set_caption_language` with the matching tag: 1 `en-US`, 2 `en-GB`, 3 `es-ES`,
+4 `fr-FR`, 5 `de-DE`, 6 `it-IT`, 7 `pt-BR`, 8 `ja-JP`, 9 `cmn-Hans-CN`, 10 `ko-KR`,
+11 `ar-x-LEVANT`, 12 `hi-IN`, 13 `id-ID`, 14 `nl-NL`, 15 `pl-PL`, 16 `tr-TR`.
+
+If they name a language that is not on the board, just set it — the list is a shortcut for
+people who cannot easily say what they want, not the limit. Meet supports far more, and a
+bare tag like `es` resolves to the first regional variant it offers.
+
+It takes a few seconds (it walks Meet's Settings dialog). Once it lands, **switch to
+speaking that language yourself** for the rest of the call, and prefer a voice suited to it
+at 4c. If they picked English, say so briefly and move on — do not make a ceremony of it.
+
+### 4b. Name
 
 **Offer names first. Do not start by testing the one you happen to have.**
 
@@ -119,7 +175,7 @@ conversation.
 If the rejoin fails for any reason, say so and carry on with the setup — the name is already
 saved either way and applies to the next call regardless.
 
-### 4b. Voice
+### 4c. Voice
 
 `list_voices` to see what's available (ElevenLabs voices, if a key is configured, plus the
 OS's built-in voices). Put the list on the whiteboard. Then actually let them **hear**
@@ -132,7 +188,7 @@ If no ElevenLabs key is configured, say so plainly and offer to open elevenlabs.
 them (mention it; you can't open a browser yourself from here), then continue with the
 built-in OS voice as the default rather than blocking on it.
 
-### 4c. Emoji set
+### 4d. Emoji set
 
 **Show the sets, do not list them.** "fluent3d, twemoji, openmoji, noto" means nothing to
 anyone; the same face in each, side by side, answers the question instantly.
@@ -150,7 +206,7 @@ set_whiteboard_style("table { table-layout: fixed; width: 100% } td { text-align
 ```
 
 `table-layout: fixed` is the part that equalises the columns; the `height` on images is what
-makes four different files look like one set of options. (Step 4e picks a board style
+makes four different files look like one set of options. (Step 4f picks a board style
 properly and replaces this — by then the grids are done.)
 
 `list_visual_assets` gives you a 🙂 from each image set as an absolute path. One row of
@@ -177,13 +233,13 @@ font vendor, is a confident-sounding error in someone's first minute with the pr
 
 Once picked, `set_preference("emojiSet", "<set>")`.
 
-### 4d. Background
+### 4e. Background
 
 **One grid, all of them at once** — not a slideshow. `list_visual_assets` returns every
 preset with its absolute path; put them in a markdown table as images with the name under
 each, so the whole choice is visible in a glance and they can just say "the forest one".
 
-**Restyle for these before drawing the grid**, exactly as in 4c — and with different values,
+**Restyle for these before drawing the grid**, exactly as in 4d — and with different values,
 because these are 16:9 scenes rather than square glyphs. Fixing the height (the emoji rule)
 leaves each one a different width and the columns ragged; fixing the WIDTH is what makes a
 tidy grid:
@@ -207,14 +263,14 @@ plus `set_preference("avatarBackgroundCaption", "<short label>")` so it's recall
 If they describe their own instead, generate the SVG the same way you would mid-call and set
 the caption to their description.
 
-### 4e. Whiteboard style
+### 4f. Whiteboard style
 
 Render the same short sample content in 2-3 different `set_whiteboard_style` presets, one
 after another, so they see real differences rather than describing CSS in the abstract.
 (Unlike the background grid this has to be sequential — the style applies to the whole board,
 so they cannot sit side by side.)
 
-**Offer the describe-it path as an equal option, not a fallback**, exactly as in 4d. Put it
+**Offer the describe-it path as an equal option, not a fallback**, exactly as in 4e. Put it
 on the board alongside the samples so it is visible rather than something you mention once:
 
 > **…or describe the look you want**
@@ -230,7 +286,7 @@ confirming it stuck). If they describe one, apply it and show the same sample co
 so they can see the result and adjust — "warmer", "bigger text" — rather than accepting the
 first attempt out of politeness.
 
-### 4f. What you can do — skills AND connected tools
+### 4g. What you can do — skills AND connected tools
 
 **This is the one step most likely to scroll: post the whiteboard URL to chat here even
 if you didn't need to for earlier steps.**
@@ -249,16 +305,16 @@ for the user to recognise a capability, and "nanobanana" tells them nothing.
 
 Skills alone undersell you badly: a bot listing four slash commands while quietly holding
 Gmail and an image generator reads as far less capable than it is, and the user has no way
-to know what was left out. This is also the material step 4g needs — someone cannot ask for
+to know what was left out. This is also the material step 4h needs — someone cannot ask for
 an emailed summary after each call if nobody mentioned that email is available.
 
 Ask which of it this bot should use, and when. Then `Edit` this bot's own `CLAUDE.md` (in the
 agent's working directory) to record the decision under "## Skills" / "## Tools", so it
 persists across sessions rather than living only in this call's memory.
 
-### 4g. After-call routine
+### 4h. After-call routine
 
-Build this out of what 4f just surfaced — the connected servers are the menu. If Gmail is
+Build this out of what 4g just surfaced — the connected servers are the menu. If Gmail is
 wired up, "a summary in your inbox after every call" is a real offer; if Slack is, so is
 "posted to a channel"; with an image generator, "a diagram of what we covered". Name the
 concrete options rather than asking the open question "what would you like?", which invites

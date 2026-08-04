@@ -21,6 +21,17 @@ const mcp = readFileSync(join(root, 'mcp-server/server.js'), 'utf8');
 require('../electron-app/local-server.js');
 const LocalServer = globalThis.LocalServer;
 
+// Slice a numbered sub-step by its TITLE, not its letter. Steps get renumbered
+// (adding the language step shifted every one of them), and letter-based slices
+// silently start reading the wrong section rather than failing loudly.
+const step = (title) => {
+  const m = skill.match(new RegExp('^### 4[a-z]\\. .*' + title, 'm'));
+  if (!m) throw new Error(`no step titled ${title}`);
+  const from = skill.indexOf(m[0]);
+  const next = skill.indexOf('\n### ', from + 1);
+  return skill.slice(from, next === -1 ? skill.length : next);
+};
+
 test('the app can hand the agent real paths to its own sample art', () => {
   // The agent cannot construct these: every emoji set names its files
   // differently (1f642.png / 1F642.svg / emoji_u1f642.svg), and a packaged
@@ -191,12 +202,12 @@ test('the naming step does not explain the machinery', () => {
   // "so we can hear how Google's live transcript renders it back" is true and
   // irrelevant: the user did not ask, cannot act on it, and it turns picking a
   // name into a technical decision instead of a fun one.
-  const step = skill.slice(skill.indexOf('### 4a. Name'), skill.indexOf('### 4b'));
-  assert.match(step, /Keep the reason to yourself/);
-  assert.match(step, /Do NOT explain transcription, captions, or Google Meet/);
-  assert.match(step, /make sure I catch it when you say it/, 'give the words to use instead');
+  const nameStep = step('Name');
+  assert.match(nameStep, /Keep the reason to yourself/);
+  assert.match(nameStep, /Do NOT explain transcription, captions, or Google Meet/);
+  assert.match(nameStep, /make sure I catch it when you say it/, 'give the words to use instead');
   // The agent still needs to KNOW why, or it cannot do the check.
-  assert.match(step, /read_transcripts/);
+  assert.match(nameStep, /read_transcripts/);
 });
 
 test('suggested names come from the curated pool, minus the taken ones', () => {
@@ -248,15 +259,15 @@ test('whiteboard style offers describe-it, like the background step', () => {
   // arbitrary CSS, so "make it look like a chalkboard" is the NATIVE way to use
   // the tool — and someone with a look in mind will describe it far better than
   // they can pick it out of three samples.
-  const step = skill.slice(skill.indexOf('### 4e. Whiteboard style'), skill.indexOf('### 4f'));
-  assert.match(step, /…or describe the look you want/);
-  assert.match(step, /equal option, not a fallback/);
-  assert.match(step, /Put it\s+on the board/, 'shown, not just mentioned once');
+  const styleStep = step('Whiteboard style');
+  assert.match(styleStep, /…or describe the look you want/);
+  assert.match(styleStep, /equal option, not a fallback/);
+  assert.match(styleStep, /Put it\s+on the board/, 'shown, not just mentioned once');
   // And a described style should be rendered back for adjustment, since the
   // first attempt at someone else's taste is rarely right.
-  assert.match(step, /show the same sample content in it/);
+  assert.match(styleStep, /show the same sample content in it/);
   // The reason it cannot be a grid, so nobody "fixes" it into one later.
-  assert.match(step, /style applies to the whole board/);
+  assert.match(styleStep, /style applies to the whole board/);
 });
 
 test('the capabilities step covers connected MCP servers, not just skills', () => {
@@ -265,16 +276,16 @@ test('the capabilities step covers connected MCP servers, not just skills', () =
   // itself, and the user had no way to know what was left out — which also
   // hollowed out the after-call step, since you cannot ask for an emailed
   // summary if nobody said email was available.
-  const step = skill.slice(skill.indexOf('### 4f.'), skill.indexOf('### 4g.'));
-  assert.match(step, /Connected MCP servers/);
-  assert.match(step, /in your own tool list/, 'the agent already has this — no discovery needed');
-  assert.match(step, /Gmail/);
+  const capStep = step('skills AND connected tools');
+  assert.match(capStep, /Connected MCP servers/);
+  assert.match(capStep, /in your own tool list/, 'the agent already has this — no discovery needed');
+  assert.match(capStep, /Gmail/);
   // Named by capability, not by package: "nanobanana" tells a user nothing.
-  assert.match(step, /what they let you DO rather than what they are\s+called/);
-  assert.match(step, /nanobanana. tells them nothing/);
+  assert.match(capStep, /what they let you DO rather than what they are\s+called/);
+  assert.match(capStep, /nanobanana. tells them nothing/);
 
   // And the after-call step should build on it rather than asking an open question.
-  const after = skill.slice(skill.indexOf('### 4g.'), skill.indexOf('## Step 5'));
+  const after = step('After-call routine');
   assert.match(after, /connected servers are the menu/);
   assert.match(after, /invites\s+a shrug/, 'open questions get shrugs from people who do not know the options');
 });
@@ -289,4 +300,57 @@ test('the wrap-up says how to end the call, and how to invite people', () => {
   assert.match(wrap, /the call does not end itself/);
   // And a newcomer should be greeted rather than walked back through setup.
   assert.match(wrap, /you are a normal call now, not a\s+wizard/);
+});
+
+test('language is chosen FIRST, before the name', () => {
+  // Mechanical, not politeness: the bot hears the room by reading Meet's
+  // captions, which transcribe in ONE configured language. Set wrong, Meet turns
+  // correct speech into nonsense and the bot answers the nonsense. The name step
+  // depends on it directly — checking whether a name comes back cleanly means
+  // nothing until the language is right.
+  const lang = skill.indexOf('### 4a. Language');
+  const name = skill.indexOf('### 4b. Name');
+  assert.ok(lang > -1 && name > lang, 'language must come before the name step');
+  assert.match(skill, /set_caption_language/);
+  assert.match(skill, /allowed-tools:.*mcp__vibeconferencing__set_caption_language/);
+});
+
+test('the language board is usable by someone with little English', () => {
+  const langStep = step('Language');
+  // Numbers are the point: almost anyone can say one in English, and it is the
+  // only reply that does not require the language already being right.
+  assert.match(langStep, /Say the number of your language/);
+  // Each language written in ITS OWN language — a list in English is unreadable
+  // to exactly the people this step exists for.
+  for (const endonym of ['Español', 'Français', '日本語', 'Português', 'العربية', '中文']) {
+    assert.ok(langStep.includes(endonym), `${endonym} should be written in its own script`);
+  }
+  assert.doesNotMatch(langStep, /\| Spanish \|/, 'not the English exonyms');
+  // Concrete tags, so the agent does not invent ones Meet does not accept.
+  for (const tag of ['es-ES', 'ja-JP', 'cmn-Hans-CN', 'pt-BR']) {
+    assert.ok(langStep.includes(tag), `${tag} should be given explicitly`);
+  }
+  // And the list is a shortcut, not a limit.
+  assert.match(langStep, /not on the board, just set it/);
+});
+
+test('picking a language changes what the bot speaks, too', () => {
+  const langStep = step('Language');
+  assert.match(langStep, /switch to\s+speaking that language yourself/);
+  assert.match(langStep, /prefer a voice suited to it/, 'the voice step should follow the language');
+});
+
+test('the multilingual welcome is gated on ElevenLabs being available', () => {
+  // ElevenLabs voices speak other languages transparently and pronounce them
+  // properly — one voice, any language. So a hello in three or four languages
+  // shows a non-English speaker, by ear rather than by a sentence they cannot
+  // read, that this will work for them.
+  const langStep = step('Language');
+  assert.match(langStep, /If ElevenLabs is available, greet them in a few languages first/);
+  assert.match(langStep, /list_voices/, 'that is how availability is detected');
+  // And skipped otherwise, for a concrete reason: OS voices are tied to a
+  // language, so Spanish through an English system voice sounds mangled and
+  // advertises the opposite of the point.
+  assert.match(langStep, /Skip it when there is no ElevenLabs key/);
+  assert.match(langStep, /mangled\s+accent/);
 });

@@ -92,3 +92,34 @@ test('the skill version was bumped, or nobody gets any of this', () => {
   const m = main.match(/const SKILL_VERSION = '(\d+)'/);
   assert.ok(m && Number(m[1]) >= 39, `SKILL_VERSION is ${m && m[1]}, expected >= 39`);
 });
+
+test('both grids restyle before drawing, because markdown cannot size an image', () => {
+  // Observed on a real call: the fluent3d PNG rendered several hundred pixels
+  // wide beside a tiny noto SVG, which reads as "these sets differ in quality"
+  // rather than "these are the same face drawn four ways". The background grid
+  // had it worse — uneven images AND ragged columns, because the table sizes
+  // itself around whatever the widest image happens to be.
+  //
+  // set_whiteboard_style is the only lever: the whiteboard is rendered by the
+  // website, so its stylesheet is not ours to patch, and markdown has no way to
+  // size an image.
+  assert.match(skill, /Size the images first — this is not optional/);
+  assert.match(skill, /table-layout: fixed/, 'the part that equalises the columns');
+  // Emoji are square glyphs: fix the HEIGHT. Backgrounds are 16:9 scenes: fix
+  // the WIDTH. Applying the emoji rule to backgrounds leaves ragged columns,
+  // which is exactly what the second screenshot showed.
+  assert.match(skill, /table img \{ height: 84px/, 'emoji sized by height');
+  assert.match(skill, /table img \{ width: 100%/, 'backgrounds sized by width');
+  assert.match(skill, /Restyle for these before drawing the grid/);
+});
+
+test("native is a real cell showing the real character", () => {
+  // It has no file because it IS the machine's own emoji font — so the honest
+  // preview is the character itself, drawn by the machine. A footnote saying
+  // "native — whatever this computer uses" describes the option instead of
+  // showing it, which is the thing this whole step is fixing.
+  assert.match(skill, /Include `native` as a real cell, not a footnote/);
+  assert.match(skill, /class="native-face">🙂</);
+  assert.match(skill, /\.native-face \{ font-size: 68px/, 'sized to match its neighbours');
+  assert.match(mcp, /put the character itself/, 'the tool says so too');
+});

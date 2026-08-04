@@ -90,18 +90,36 @@ built-in OS voice as the default rather than blocking on it.
 ### 4c. Emoji set
 
 **Show the sets, do not list them.** "fluent3d, twemoji, openmoji, noto" means nothing to
-anyone; the same four faces side by side answers the question instantly.
+anyone; the same face in each, side by side, answers the question instantly.
 
-`list_visual_assets` gives you a 🙂 from each set as an absolute path. Put them on the board
-as a row of images with the set name under each, e.g. a markdown table with the images in
-one row and the names in the next:
+**Size the images first — this is not optional.** The source files have wildly different
+intrinsic sizes (the fluent3d PNG is hundreds of pixels, the noto SVG is tiny) and markdown
+cannot size an image, so a plain grid renders one giant face beside three small ones and
+reads as "these sets differ in quality". Columns end up uneven too, because the table sizes
+itself around whatever the widest image happens to be.
 
-| ![fluent3d](/path/from/list_visual_assets/1f642.png) | ![twemoji](/path/…/1f642.svg) |
-|---|---|
-| fluent3d | twemoji |
+Both problems are CSS, so set it before drawing the grid:
 
-`native` has no image — it is the OS's own emoji font — so add it as a final text cell
-saying so ("native — whatever this computer already uses").
+```
+set_whiteboard_style("table { table-layout: fixed; width: 100% } td { text-align: center; vertical-align: middle; padding: 8px } table img { height: 84px; width: auto; margin: 0 auto } .native-face { font-size: 68px; line-height: 1 }")
+```
+
+`table-layout: fixed` is the part that equalises the columns; the `height` on images is what
+makes four different files look like one set of options. (Step 4e picks a board style
+properly and replaces this — by then the grids are done.)
+
+`list_visual_assets` gives you a 🙂 from each image set as an absolute path. One row of
+images, one row of names:
+
+| ![fluent3d](/path/…/1f642.png) | ![twemoji](/path/…/1f642.svg) | <span class="native-face">🙂</span> |
+|---|---|---|
+| fluent3d | twemoji | native |
+
+**Include `native` as a real cell, not a footnote.** It has no file because it IS the
+computer's own emoji font — so just put the character 🙂 in the cell and let the machine
+draw it. That is precisely what picking "native" means, so the cell is an honest preview
+rather than a description of one. Wrap it so the CSS above can size it to match its
+neighbours.
 
 Once picked, `set_preference("emojiSet", "<set>")`.
 
@@ -110,6 +128,17 @@ Once picked, `set_preference("emojiSet", "<set>")`.
 **One grid, all of them at once** — not a slideshow. `list_visual_assets` returns every
 preset with its absolute path; put them in a markdown table as images with the name under
 each, so the whole choice is visible in a glance and they can just say "the forest one".
+
+**Restyle for these before drawing the grid**, exactly as in 4c — and with different values,
+because these are 16:9 scenes rather than square glyphs. Fixing the height (the emoji rule)
+leaves each one a different width and the columns ragged; fixing the WIDTH is what makes a
+tidy grid:
+
+```
+set_whiteboard_style("table { table-layout: fixed; width: 100% } td { width: 33%; text-align: center; vertical-align: top; padding: 8px } table img { width: 100%; height: auto; display: block }")
+```
+
+Three columns suits eight presets plus the describe-your-own cell: nine cells, a clean 3x3.
 
 Make the LAST cell of the grid a text cell rather than an image:
 

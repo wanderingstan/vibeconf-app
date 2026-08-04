@@ -787,7 +787,7 @@ async function listVoiceboxProfiles() {
 // --- list_visual_assets ---
 server.tool(
   "list_visual_assets",
-  "Absolute paths to the sample art bundled with the app: one smiling face per emoji set, and every background preset. Use these with update_whiteboard to SHOW the options rather than list their names — write them as ordinary markdown image links, e.g. ![city](/abs/path/city.svg), and lay several out in a table for a grid. Mainly for the guided setup call, where 'pick an emoji set' and 'pick a background' are questions a picture answers instantly. Note the 'native' emoji set is the OS font and has no file here, so describe it in words.",
+  "Absolute paths to the sample art bundled with the app: one smiling face per emoji set, and every background preset. Use these with update_whiteboard to SHOW the options rather than list their names — write them as ordinary markdown image links, e.g. ![city](/abs/path/city.svg), and lay several out in a table for a grid. Mainly for the guided setup call, where 'pick an emoji set' and 'pick a background' are questions a picture answers instantly. Note the 'native' set is the OS font and has no file — put the character itself (e.g. 🙂) in that cell and let the machine draw it, which IS what picking native means. Sizes differ wildly between sets (the fluent3d PNG is hundreds of pixels, the noto SVG tiny), and markdown cannot size an image, so normalise with set_whiteboard_style, e.g. `table img { height: 84px; width: auto }`.",
   {},
   async () => {
     try {

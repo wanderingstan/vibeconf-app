@@ -43,6 +43,9 @@ const APP_LEVEL_KEYS = new Set([
   // profile's experimental headless setting machine-wide would silently move
   // every bot off the Terminal path.
   'agentHosting',
+  // Whether the quit dialog appears is about this MACHINE's window, not about
+  // any one bot — every profile shares the same close button habit.
+  'confirmQuit',
 ]);
 
 // The subset of app-level keys the launch migration may auto-promote from a

@@ -176,3 +176,33 @@ test('a pop-out window must not resize the MAIN window', () => {
   assert.match(h.slice(0, h.indexOf('});')), /event\.sender !== panelView\.webContents/,
     'main must reject height reports from anything but the docked panel');
 });
+
+test('closing the main window asks first', () => {
+  // The red ✕ sits a few pixels from controls used constantly, and closing the
+  // main window quits the app. Mid-call that ends the call and stops the agent,
+  // with no undo — an expensive outcome for a slightly-off click.
+  assert.match(main, /mainWindow\.on\('close', confirmQuitBeforeClose\)/);
+  const fn = main.slice(main.indexOf('function confirmQuitBeforeClose'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.match(body, /e\.preventDefault\(\)/, "'close' is cancellable; 'closed' is too late");
+  // Cancel is the default: a stray Return on a dialog you did not expect should
+  // land on the harmless answer, not the irreversible one.
+  assert.match(body, /defaultId: 1/);
+  assert.match(body, /cancelId: 1/);
+  // The stakes differ enormously in and out of a call, so the wording does too.
+  assert.match(body, /localServer\.callStatus === 'in-call'/);
+  assert.match(body, /is in a call\. Quit anyway\?/);
+  // An escape hatch, or the dialog becomes the next thing to complain about.
+  assert.match(body, /checkboxLabel: "Don't ask again"/);
+  assert.match(body, /quitConfirmed/, 'the confirmed close must not re-prompt itself');
+});
+
+test("'don't ask again' plus Cancel means stop nagging, not quit", () => {
+  // Ticking the box and then cancelling is a clear instruction, and it must not
+  // be read as consent to quit.
+  const fn = main.slice(main.indexOf('function confirmQuitBeforeClose'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  const ret = body.indexOf('if (response !== 0) return;');
+  assert.ok(ret > -1, 'a non-Quit answer must return early');
+  assert.ok(ret < body.indexOf('quitConfirmed = true'), 'before anything closes the window');
+});

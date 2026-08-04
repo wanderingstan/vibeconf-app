@@ -203,3 +203,24 @@ test('the spawn actually uses the sanitised environment', () => {
   const spawn = readFileSync(join(root, 'electron-app/agent-spawn.js'), 'utf8');
   assert.match(spawn, /env: cleanAgentEnv\(env\)/);
 });
+
+test('the headless option warns that it needs Dangerous Mode', () => {
+  // Picking headless without Dangerous Mode silently does nothing: the app
+  // refuses and falls back to a Terminal. Without a visible marker in the option
+  // itself, the setting looks like it took effect when it did not — and the only
+  // evidence is a line in a log the user never reads.
+  const { PREFERENCES } = require('../electron-app/preferences-schema.js');
+  const label = PREFERENCES.agentHosting.enumLabels.headless;
+  assert.match(label, /⚠️/, 'the hazard belongs in the option, not only the description');
+  assert.match(label, /Dangerous Mode/i, 'and it must name what is missing');
+});
+
+test('headless does NOT silently enable Dangerous Mode', () => {
+  // The tempting "fix" for the above is to turn it on automatically. That would
+  // be the app granting itself machine-wide --dangerously-skip-permissions
+  // because someone changed a hosting preference — a trust decision the user
+  // never made. Refusing and falling back is the correct behaviour.
+  const spawn = readFileSync(join(root, 'electron-app/agent-spawn.js'), 'utf8');
+  assert.doesNotMatch(spawn, /set\(['"]dangerousMode['"]/);
+  assert.doesNotMatch(main, /store\.set\('dangerousMode'/);
+});

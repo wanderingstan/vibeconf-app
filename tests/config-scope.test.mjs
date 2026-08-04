@@ -168,7 +168,7 @@ test('APP_LEVEL_KEYS is exactly the decided set (guard against accidental promot
     // backend is "claude" — so it must share its scope. It shipped per-profile
     // for one commit and was invisible in App Settings as a result, since that
     // window renders app-level prefs only.
-    ['agentBackend', 'agentHosting', 'claudeIntegrationRemoved', 'dangerousMode', 'syncBaseUrl', 'ttsApiKey', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
+    ['agentBackend', 'agentHosting', 'claudeIntegrationRemoved', 'confirmQuit', 'dangerousMode', 'syncBaseUrl', 'ttsApiKey', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
   );
 });
 

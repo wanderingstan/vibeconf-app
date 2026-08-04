@@ -331,7 +331,11 @@ const PREFERENCES = {
     label: 'Agent hosting',
     enumLabels: {
       terminal: 'Terminal window (default)',
-      headless: 'Headless — app-managed (experimental)',
+      // The ⚠️ is load-bearing, not decoration. Picking headless without
+      // Dangerous Mode silently does nothing — the app refuses and falls back to
+      // a Terminal — so without a visible marker the setting looks like it took
+      // effect when it did not.
+      headless: '⚠️ Headless — needs Dangerous Mode (experimental)',
     },
     requiresRestart: false,
     description:
@@ -349,6 +353,18 @@ const PREFERENCES = {
       + 'on its first tool call; the app refuses headless without it and falls back '
       + 'to a Terminal rather than joining a call with a mute bot. '
       + 'Only applies when Agent backend is "claude".',
+  },
+  confirmQuit: {
+    type: 'boolean',
+    default: true,
+    label: 'Confirm before quitting',
+    requiresRestart: false,
+    description:
+      'Ask before closing the main window, which quits the app. The red close '
+      + 'button sits a few pixels from controls used constantly, and mid-call a '
+      + 'stray click ends the call and stops the bot\'s agent with no undo. The '
+      + 'dialog says which of those two you are doing. Turn off here, or via '
+      + '"Don\'t ask again" in the dialog itself.',
   },
   remoteLogging: {
     type: 'boolean',

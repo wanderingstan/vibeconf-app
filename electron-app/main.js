@@ -6245,6 +6245,46 @@ allURLs`;
   }
 });
 
+// Closing the main window quits the app, and the red ✕ sits a few pixels from
+// controls people use constantly. Mid-call that costs the bot the call and kills
+// its agent — an expensive outcome for a slightly-off click, and one with no undo.
+//
+// Set once the user has confirmed (or asked not to be asked), so the second
+// close() below doesn't re-prompt itself forever.
+let quitConfirmed = false;
+
+function confirmQuitBeforeClose(e) {
+  if (quitConfirmed) return;
+  if (store.get('confirmQuit') === false) return;
+  e.preventDefault();
+
+  // The stakes differ enormously, so the wording should too. Out of a call this
+  // is a mild "are you sure"; in one it is destructive and the dialog says what
+  // is actually lost.
+  const inCall = localServer.callStatus === 'in-call';
+  const name = botWindowName() || 'The bot';
+  dialog.showMessageBox(mainWindow, {
+    type: 'question',
+    buttons: ['Quit', 'Cancel'],
+    // Cancel is the default: a stray Return on an unexpected dialog should be
+    // the harmless answer, not the irreversible one.
+    defaultId: 1,
+    cancelId: 1,
+    message: inCall ? `${name} is in a call. Quit anyway?` : 'Quit Vibeconferencing?',
+    detail: inCall
+      ? 'The bot will leave the call and its agent will be stopped.'
+      : 'Closing this window quits the app.',
+    checkboxLabel: "Don't ask again",
+  }).then(({ response, checkboxChecked }) => {
+    if (response !== 0) return; // Cancel — including the checkbox, which only
+    // takes effect alongside an actual quit. Ticking "don't ask again" and then
+    // cancelling means "stop nagging me", not "quit now".
+    if (checkboxChecked) store.set('confirmQuit', false);
+    quitConfirmed = true;
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
+  }).catch(() => { quitConfirmed = true; if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close(); });
+}
+
 app.on('window-all-closed', () => {
   closeClaudeTerminal();
   localServer.stop();
@@ -7401,6 +7441,9 @@ function createMainWindow() {
   // Load idle placeholder in the Meet view. In Slack mode the surface already
   // loaded app.slack.com (or the channel deep-link) in createSlackSurface.
   if (!slackMode) meetView.webContents.loadURL(getIdleUrl());
+
+  // 'close' (cancellable) before 'closed' (already gone).
+  mainWindow.on('close', confirmQuitBeforeClose);
 
   mainWindow.on('closed', () => {
     mainWindow = null;

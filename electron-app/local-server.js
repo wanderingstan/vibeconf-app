@@ -25,7 +25,7 @@ const { classifyAgent, agentIsAbsent } = require('./agent-liveness.js');
 const { isFinished } = require('./call-phase.js');
 const { getRecentSessionLog, getSessionLogPath } = require('./session-log.js');
 const { shouldIgnoreRejoin } = require('./rejoin-guard.js');
-const { TranscriptTailer } = require('./agent-transcript.js');
+const { TranscriptActivitySource, StreamActivitySource } = require('./agent-activity.js');
 
 // Mime types for the whiteboard asset server (#157). Conservative list —
 // images and PDFs, the formats the whiteboard markdown / window can actually
@@ -224,7 +224,11 @@ class LocalServer {
     // work (🧑‍💻), not just listening (🙂). Detect NEW lines and surface them.
     this._workingQuietTimer = null;
     this._workingSince = 0; // #339: dwell-clock start for the 🤔→🧑‍💻 escalation
-    this._agentTailer = new TranscriptTailer({
+    // #242: the SOURCE is swappable. Today this is the transcript tail; an
+    // app-launched agent will hand us its own event stream instead. Everything
+    // downstream — agentLog, the 🤔→🧑‍💻 escalation, the brain pane — consumes
+    // the callbacks below and cannot tell which transport is behind them.
+    this._agentSource = new TranscriptActivitySource({
       onLines: (lines) => {
         const prevLast = this.agentLog.length ? this.agentLog[this.agentLog.length - 1] : null;
         this.agentLog = lines;
@@ -1218,11 +1222,33 @@ class LocalServer {
     return this.currentCallBotName || this.getConfiguredBotName() || null;
   }
 
+  // #242: switch to the stream transport, for an agent the APP launched and
+  // therefore owns. Returns the source so main can push stdout into it.
+  //
+  // Replacing rather than adding: two live sources would interleave two agents'
+  // activity into one buffer, and the resulting feed would be worse than either
+  // alone — you could not tell which bot said what.
+  useStreamAgentSource() {
+    try { this._agentSource.stop(); } catch { /* already gone */ }
+    this._agentSource = new StreamActivitySource({
+      onLines: (lines) => {
+        const prevLast = this.agentLog.length ? this.agentLog[this.agentLog.length - 1] : null;
+        this.agentLog = lines;
+        const last = lines.length ? lines[lines.length - 1] : null;
+        if (last && last !== prevLast) this._onAgentActivity(last);
+      },
+      onModel: (model) => { console.log(ts(), `🧠 [agent] model=${model}`); },
+    });
+    this._agentSource.bind();
+    console.log(ts(), '[local-server] Agent activity source → stream (app-launched agent)');
+    return this._agentSource;
+  }
+
   // Bind (or rebind) the agent-activity tail to a Claude session transcript.
   // Called from the /api/agent-session route, which the PostToolUse hook hits.
   setAgentSession({ sessionId, transcriptPath } = {}) {
     if (!transcriptPath) return;
-    if (transcriptPath !== this._agentTailer.path) {
+    if (transcriptPath !== this._agentSource.path) {
       console.log('[local-server] Agent session bound:', sessionId || '?', '→', transcriptPath);
       // #125: say so when we bind a path that isn't there. The tailer tolerates
       // it (the 1.5s poll picks up a lazily-created file), so this is a warning
@@ -1234,7 +1260,7 @@ class LocalServer {
         console.warn('[local-server] …but that transcript does not exist yet — agent activity will stay empty until it appears');
       }
     }
-    this._agentTailer.bind(transcriptPath, sessionId);
+    this._agentSource.bind({ transcriptPath, sessionId });
   }
 
   getCallStateSnapshot() {

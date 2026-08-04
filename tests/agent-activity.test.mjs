@@ -1,0 +1,117 @@
+// agent-activity.test.mjs — one activity stream, whatever produced it (#242).
+//
+// Two transports that will never converge: a human's own Claude session (we do
+// not own the process, so we tail the transcript) and an app-launched agent (we
+// own it, so it hands us its events). Everything above — the brain pane, the
+// 🤔→🧑‍💻 escalation, the debug overlay — must not be able to tell which is
+// behind it.
+//
+// The reason this exists rather than "just tail the file": that file is Claude
+// Code's implementation detail. App-launched agents wrote transcripts on Jul 28,
+// wrote them unreliably by Jul 30, and by Aug 4 stopped entirely — a session ran
+// 3½ minutes, spoke 22 times, and its named transcript was never created.
+// Everything downstream died silently.
+//
+// Run: node --test tests/agent-activity.test.mjs
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const { AgentActivitySource, TranscriptActivitySource, StreamActivitySource } =
+  require('../electron-app/agent-activity.js');
+
+const collect = () => {
+  const state = { lines: [], models: [] };
+  const src = new StreamActivitySource({
+    onLines: (l) => { state.lines = l; },
+    onModel: (m) => { state.models.push(m); },
+  });
+  src.bind();
+  return { src, state };
+};
+
+const frame = (o) => JSON.stringify(o) + '\n';
+
+test('both transports satisfy the same contract', () => {
+  for (const Cls of [TranscriptActivitySource, StreamActivitySource]) {
+    const s = new Cls({});
+    assert.ok(s instanceof AgentActivitySource, `${Cls.name} must be a source`);
+    assert.equal(typeof s.bind, 'function');
+    assert.equal(typeof s.stop, 'function');
+    assert.ok(s.kind, 'each source names itself, so a log can say which is live');
+  }
+  assert.notEqual(new TranscriptActivitySource({}).kind, new StreamActivitySource({}).kind);
+});
+
+test('stream events produce the SAME display lines as a transcript would', () => {
+  // The two formats agree — stream-json emits {type:'assistant', message:{content:[…]}},
+  // the same shape the transcript stores — so there is one normaliser, not two
+  // parsers to keep in step. That equivalence is the whole basis of the design.
+  const { src, state } = collect();
+  src.push(frame({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'mcp__vibeconferencing__get_room_info', input: {} }] } }));
+  src.push(frame({ type: 'assistant', message: { content: [{ type: 'text', text: 'Hello there' }] } }));
+  assert.deepEqual(state.lines, ['🔧 get_room_info', '🗣 Hello there']);
+});
+
+test('a chunk split mid-JSON loses nothing', () => {
+  // stdout arrives in arbitrary chunks. A dropped boundary would silently lose
+  // whole tool calls rather than erroring, which is the failure mode this whole
+  // issue is about.
+  const { src, state } = collect();
+  const text = frame({ type: 'assistant', message: { content: [{ type: 'text', text: 'split me' }] } });
+  const cut = Math.floor(text.length * 0.6);
+  src.push(text.slice(0, cut));
+  assert.deepEqual(state.lines, [], 'nothing emitted until the line completes');
+  src.push(text.slice(cut));
+  assert.deepEqual(state.lines, ['🗣 split me']);
+});
+
+test('non-event frames are ignored without a second list of types', () => {
+  // stream-json carries system/hook/result frames. Filtering is formatEntry's
+  // job — a type list here would drift from it the first time either changes.
+  const { src, state } = collect();
+  src.push(frame({ type: 'system', subtype: 'init', session_id: 'x' }));
+  src.push(frame({ type: 'system', subtype: 'hook_started', hook_name: 'SessionStart' }));
+  src.push('not json at all\n');
+  assert.deepEqual(state.lines, [], 'none of that is agent activity');
+});
+
+test('the model is reported once, not per frame', () => {
+  const { src, state } = collect();
+  const say = (text) => frame({ type: 'assistant', message: { model: 'claude-opus-5', content: [{ type: 'text', text }] } });
+  src.push(say('one'));
+  src.push(say('two'));
+  assert.deepEqual(state.models, ['claude-opus-5'], 'a repeat is not a change');
+});
+
+test('the buffer is bounded', () => {
+  // A long call would otherwise grow this without limit, and it is serialised
+  // into every get-call-state response.
+  const { MAX_LINES } = require('../electron-app/agent-transcript.js');
+  const { src, state } = collect();
+  for (let i = 0; i < MAX_LINES + 50; i++) {
+    src.push(frame({ type: 'assistant', message: { content: [{ type: 'text', text: `line ${i}` }] } }));
+  }
+  assert.equal(state.lines.length, MAX_LINES);
+  assert.match(state.lines[state.lines.length - 1], /line \d+$/, 'the NEWEST lines are kept');
+});
+
+test('local-server consumes the interface, not a concrete tailer', () => {
+  const src = readFileSyncSafe('electron-app/local-server.js');
+  assert.match(src, /this\._agentSource = new TranscriptActivitySource/);
+  assert.doesNotMatch(src, /new TranscriptTailer\(/, 'nothing above should name a transport');
+  // And switching transports replaces rather than adds: two live sources would
+  // interleave two agents into one buffer, which is worse than either alone.
+  assert.match(src, /useStreamAgentSource\(\)/);
+  const fn = src.slice(src.indexOf('useStreamAgentSource()'));
+  assert.match(fn.slice(0, 600), /this\._agentSource\.stop\(\)/, 'the old source must be stopped');
+});
+
+function readFileSyncSafe(rel) {
+  const { readFileSync } = require('node:fs');
+  const { join, dirname } = require('node:path');
+  const { fileURLToPath } = require('node:url');
+  return readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', rel), 'utf8');
+}

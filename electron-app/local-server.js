@@ -1415,6 +1415,35 @@ class LocalServer {
   // Reported to the AGENT so its handoff message can be specific — "you have 300
   // seconds" is actionable in a way that "you may have some time" is not. Also
   // the honest answer when the phase is off: it gets told to stop, as today.
+  // Wait for the bot to finish saying what it already said it would say.
+  //
+  // leave_call has cut the bot off mid-sentence repeatedly. The agent's last act
+  // is usually `speak("Bye!")` then `leave_call`, and speak() returns when the
+  // text is QUEUED, not when it has been heard — so the two land within
+  // milliseconds of each other and the goodbye dies in the Meet teardown. From
+  // the room it reads as the bot hanging up on you.
+  //
+  // Two things have to drain, and they are different: pendingBotSpeech is text
+  // waiting for its turn, speakingAloud is audio currently playing (#368).
+  // Either one means "not finished".
+  //
+  // Capped, and the cap matters more than the wait: a stuck TTS must not make
+  // leave_call hang forever. On timeout we leave anyway and say so, because a
+  // bot that will not hang up is worse than one that clips its goodbye.
+  async waitForSpeechDrain(maxMs = 12000, pollMs = 100) {
+    const started = Date.now();
+    const busy = () => this.speakingAloud || (this.pendingBotSpeech || []).length > 0;
+    if (!busy()) return { waited: 0, drained: true };
+    while (busy() && Date.now() - started < maxMs) {
+      await new Promise((r) => setTimeout(r, pollMs));
+    }
+    const waited = Date.now() - started;
+    const drained = !busy();
+    console.log(ts(), '[leave] waited', waited + 'ms for speech to finish —',
+      drained ? 'drained' : 'TIMED OUT, leaving with speech still queued');
+    return { waited, drained };
+  }
+
   afterCallWorkPlan() {
     const seconds = Number(this._pref('afterCallWorkSeconds')) || 0;
     // No agent driving means nobody to hand off TO. Matches the app-side gate in
@@ -4168,11 +4197,15 @@ class LocalServer {
     // Handle leave command
     if (data.meta?.action === 'leave') {
       this.currentCallBotName = null; // #212: clear the per-call name override
+      // Let the goodbye actually be heard. speak() returns once the text is
+      // QUEUED, so an agent that says "Bye!" and immediately calls leave_call
+      // otherwise hangs up over its own voice.
+      const drain = await this.waitForSpeechDrain();
       // Captured BEFORE onLeaveCall, which is what starts the phase — after it
       // the agent-liveness read could race with teardown.
       const plan = this.afterCallWorkPlan();
       this.onLeaveCall();
-      results.leave = { ok: true, afterCallWork: plan };
+      results.leave = { ok: true, afterCallWork: plan, ...(drain.waited ? { waitedForSpeechMs: drain.waited, speechDrained: drain.drained } : {}) };
     }
 
     // The agent says its after-call work is done. Ends the phase early rather

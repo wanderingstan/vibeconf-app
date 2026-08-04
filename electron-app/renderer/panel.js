@@ -129,6 +129,17 @@ function showScreen(screen) {
   try { reportContentHeight(); } catch { /* not wired yet */ }
 }
 
+// A brand-new bot opens straight on Settings (main passes ?startScreen=settings
+// when launched with --open-settings). Landing on "Call now" would be backwards:
+// a fresh bot has no name, voice or face, and this page is where it gets them —
+// including the guided-setup call at the top.
+//
+// Deliberately not the 'screen' param, which marks a POP-OUT window and would
+// stop this panel reporting its height to main.
+if (new URLSearchParams(window.location.search).get('startScreen') === 'settings') {
+  showScreen(settingsScreen);
+}
+
 document.getElementById('openSettingsBtn').addEventListener('click', () => {
   showScreen(settingsScreen);
   // Re-read the signed-in account each time Settings opens — the Google account
@@ -1366,11 +1377,17 @@ function renderProfileMenu(data) {
   const add = document.createElement('div');
   add.textContent = '＋ New bot…';
   add.style.cssText = 'padding:6px 8px;margin-top:4px;border-top:1px solid #5f6368;color:#8ab4f8;cursor:pointer';
-  add.onclick = async (e) => {
-    const additive = e.altKey; // ⌥ → open the new profile in a separate window
+  // No prompt. The name it used to ask for was the profile DIRECTORY, from when
+  // that was also the bot's name — it isn't any more, so this asked people to
+  // name the bot twice, the first time in a field that only takes [A-Za-z0-9._-].
+  // Main picks the next free botN and opens it in its own window on Settings,
+  // where naming it (or starting the guided setup call) is the obvious next step.
+  add.onclick = async () => {
     closeProfileMenu();
-    const name = await inlinePrompt({ title: 'New bot name (letters, numbers, . _ - only):', placeholder: 'e.g. alice', okLabel: 'Create' });
-    if (name) (additive ? doOpenProfileWindow(name) : doSwitchProfile(name));
+    try {
+      const r = await api.invoke('create-new-bot');
+      if (r && r.ok === false) showError('Could not create bot: ' + (r.error || 'unknown'));
+    } catch (e) { showError('Could not create bot: ' + e.message); }
   };
   profileMenu.appendChild(add);
 

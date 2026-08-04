@@ -7176,7 +7176,16 @@ function createMainWindow() {
     },
   });
   mainWindow.addBrowserView(panelView);
-  panelView.webContents.loadFile(path.join(__dirname, 'renderer', 'panel.html'));
+  // --open-settings: a brand-new bot opens straight on its Settings screen.
+  // Creating a bot and landing on "Call now" is backwards — a fresh bot has no
+  // name, voice or face yet, and the first thing anyone wants is to give it one
+  // (or press the guided-setup call that now lives at the top of that page).
+  //
+  // NOT the 'screen' param: that one marks a POP-OUT window (IS_POPOUT_WINDOW),
+  // which would suppress this panel's height reporting and leave the main window
+  // stuck at its startup size.
+  panelView.webContents.loadFile(path.join(__dirname, 'renderer', 'panel.html'),
+    cliArgs['open-settings'] === 'true' ? { search: 'startScreen=settings' } : undefined);
   // The window is hidden until the panel reports its height (showMainWindowOnce).
   // Arm the safety net now, so a renderer that never loads can't leave the app
   // running with no window at all.
@@ -8387,7 +8396,26 @@ function setupIPC() {
   // current window afterward (switch in place, #379); open-profile-window leaves
   // it open (the additive "new window" path). Returns `runningKey` so a switch
   // caller can poll for the target coming up before it closes itself.
-  async function launchOrFocusProfile(name) {
+  // bot2, bot3, … — the first free one.
+  //
+  // Numbered rather than "Untitled": these are directory names, so they must
+  // survive [A-Za-z0-9._-] and be short enough to read in a window title. The
+  // default profile keeps its own name, so counting starts at 2 the way Chrome's
+  // "Person 2" does.
+  //
+  // Picks the first GAP, not max+1: deleting bot3 and adding a bot should reuse
+  // bot3 rather than creep to bot4 forever. Bounded so a pathological profile
+  // list cannot spin.
+  function nextBotProfileName() {
+    const taken = new Set(profileManager.listProfiles(PROFILES_ROOT).map((p) => String(p.name).toLowerCase()));
+    for (let i = 2; i < 1000; i++) {
+      const candidate = `bot${i}`;
+      if (!taken.has(candidate)) return candidate;
+    }
+    return `bot${Date.now()}`; // absurd, but never collides
+  }
+
+  async function launchOrFocusProfile(name, { openSettings = false } = {}) {
     const isDefault = isDefaultName(name);
     if (!profileManager.isValidProfileName(name)) {
       return { ok: false, error: 'Invalid profile name (letters, numbers, . _ - only)' };
@@ -8420,6 +8448,9 @@ function setupIPC() {
       catch (err) { return { ok: false, error: err.message }; }
       args = [`--profile=${name}`, `--local-port=${port}`];
     }
+    // A newly created bot lands on Settings rather than "Call now" — it has no
+    // name, voice or face yet, so that page IS its next step.
+    if (openSettings) args = [...args, '--open-settings=true'];
 
     // #379: open the new profile window where THIS one is, not centered. The main
     // window honors --window-x/y (createMainWindow, as the test launcher uses),
@@ -8491,6 +8522,22 @@ function setupIPC() {
   // and never touches the current call, it's safe to use mid-call.
   ipcMain.handle('open-profile-window', async (_event, name) => {
     return await launchOrFocusProfile(name);
+  });
+
+  // "New bot" — no prompt. Chrome's model: creating a profile is one click, and
+  // naming it comes later (or never).
+  //
+  // The prompt this replaces dates from when the profile DIRECTORY was the bot's
+  // name, so it had to be chosen up front. It isn't any more: the bot's name is
+  // the botName preference, set on the Settings page or in the guided setup call.
+  // Asking for a directory name and calling it "New bot name" made people name
+  // the bot twice, the first time in a field that only accepts [A-Za-z0-9._-].
+  //
+  // Opens the new bot in its OWN window on its Settings screen, so the next step
+  // is right there: name it, or press the guided-setup call at the top.
+  ipcMain.handle('create-new-bot', async () => {
+    const name = nextBotProfileName();
+    return await launchOrFocusProfile(name, { openSettings: true });
   });
 
   // File ▸ New Window — open a genuinely NEW window with no picker/prompt. The app

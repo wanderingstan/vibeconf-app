@@ -324,6 +324,32 @@ const PREFERENCES = {
       'Only "claude" makes the app responsible for launching the agent, so it is the ' +
       'only value that warns about Claude Code being missing or signed out (#137).',
   },
+  agentHosting: {
+    type: 'string',
+    default: 'terminal',
+    enum: ['terminal', 'headless'],
+    label: 'Agent hosting',
+    enumLabels: {
+      terminal: 'Terminal window (default)',
+      headless: 'Headless — app-managed (experimental)',
+    },
+    requiresRestart: false,
+    description:
+      'How the app runs the Claude session that drives this bot. "terminal" opens '
+      + 'Terminal.app and types the command — you can watch the agent think, answer '
+      + 'a prompt, and Ctrl-C it, but the app cannot see its output except through '
+      + 'the transcript file Claude Code happens to write. "headless" spawns the '
+      + 'agent as a child of the app with --output-format stream-json, so its '
+      + 'activity is read directly from its own stdout rather than scraped from a '
+      + 'file (#242) — the brain pane keeps working even when transcripts are not '
+      + 'written, which they were not at all on 2026-08-04. '
+      + 'Experimental because headless has no UI: there is no window to read an '
+      + 'error in and nothing to interrupt. It also REQUIRES Dangerous Mode — a '
+      + 'permission prompt has nowhere to draw, so the agent would stall silently '
+      + 'on its first tool call; the app refuses headless without it and falls back '
+      + 'to a Terminal rather than joining a call with a mute bot. '
+      + 'Only applies when Agent backend is "claude".',
+  },
   remoteLogging: {
     type: 'boolean',
     default: true,

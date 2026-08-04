@@ -4718,10 +4718,17 @@ async function launchClaudeTerminal(meetCode) {
   // Claude Code drives the bot. If the `claude` CLI isn't installed, offer to install it
   // (or copy the command) instead of launching a Terminal into "command not found".
   // Detection failure is non-fatal — we still launch (don't block a user who has it).
+  // Resolved absolute path to the CLI, for the headless path below. A
+  // GUI-launched Electron app inherits launchd's minimal PATH, not the user's,
+  // so a bare `claude` in spawn() is an ENOENT waiting to happen — the Terminal
+  // path never had this problem because the shell it typed into sources a
+  // profile. detectClaude already knows the answer; keep it.
+  let claudeBin = 'claude';
   try {
     const { detectClaude } = require('./claude-install.js');
     const det = await detectClaude();
     if (!det.installed) { promptInstallClaude(); return; }
+    if (det.path) claudeBin = det.path;
     // Installed ≠ signed in (#137). Read the CACHED answer — warming it happens
     // at startup and on a timer, so this costs nothing on the join path.
     //
@@ -4760,6 +4767,10 @@ async function launchClaudeTerminal(meetCode) {
   // pass --mcp-config + --strict-mcp-config so the spawned session targets this
   // app only. The default instance keeps using the global config.
   let mcpFlags = '';
+  // The same path, unescaped. The Terminal launcher needs it wrapped for two
+  // quoting layers; the headless launcher passes argv directly and must NOT get
+  // the escaped form.
+  let mcpConfigPath = '';
   if (!isDefaultInstance) {
     try {
       const mcpServerPath = app.isPackaged
@@ -4818,6 +4829,7 @@ async function launchClaudeTerminal(meetCode) {
       // Inner quotes escaped for the AppleScript `do script "…"` wrapper below;
       // quote the path because the profile userData dir contains spaces.
       mcpFlags = ` --mcp-config \\"${cfgPath}\\" --strict-mcp-config`;
+      mcpConfigPath = cfgPath;
       console.log('[electron] Profile', appProfile, '— launching Claude pinned to port', localServer.port,
         'with', Object.keys(cfg.mcpServers).length, 'MCP server(s):', Object.keys(cfg.mcpServers).join(', '));
     } catch (err) {
@@ -4847,6 +4859,21 @@ async function launchClaudeTerminal(meetCode) {
   const { claudeModelFlag } = require('./claude-model.js');
   const modelFlag = claudeModelFlag(store.get('claudeModel'));
   const claudeCmd = `claude${dangerousFlag}${modelFlag}${mcpFlags} \\"/join-call ${meetCode} ${botName.replace(/"/g, '')}\\"`;
+
+  // #242: run the agent as our own child instead, when asked to. Everything
+  // above (detection, auth nag, workdir, MCP config, bot name) is shared — the
+  // only difference is who owns the process and therefore who can see it work.
+  if (store.get('agentHosting') === 'headless') {
+    const launched = launchClaudeHeadless({
+      meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath,
+    });
+    // Falling through to the Terminal path on refusal is deliberate. The
+    // alternative is joining a call with an agent that never starts, which
+    // presents as a bot sitting silently in the room — the failure this whole
+    // issue exists to stop being invisible.
+    if (launched) return;
+    console.log('[electron] falling back to the Terminal launcher');
+  }
 
   // Open a Terminal window running the command. When Terminal isn't already
   // running, `do script` would spawn TWO windows — the auto-created launch
@@ -4902,7 +4929,86 @@ end tell`;
   });
 }
 
+// The headless agent, when there is one. Module-level for the same reason
+// claudeTerminalWindowIds is: leaving the call has to be able to end it, and an
+// orphaned agent still holding an MCP connection to this app is worse than an
+// orphaned Terminal window — it keeps acting.
+let headlessAgentChild = null;
+
+// Returns true if the agent is now running headlessly, false to fall back.
+function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath }) {
+  const { buildAgentArgs, headlessBlockedReason, spawnHeadlessAgent } = require('./agent-spawn.js');
+
+  const blocked = headlessBlockedReason({ dangerous: dangerousMode });
+  if (blocked) {
+    console.log('[electron] headless agent refused —', blocked);
+    return false;
+  }
+
+  // One agent at a time. A second join while one is live would put two agents on
+  // one bot, both driving the same local server — and both writing into one
+  // activity buffer, which is the interleaving the source abstraction is built
+  // to avoid rather than merge.
+  if (headlessAgentChild) {
+    console.log('[electron] headless agent already running — reusing it');
+    return true;
+  }
+
+  const { resolveClaudeModel } = require('./claude-model.js');
+  const args = buildAgentArgs({
+    meetCode,
+    botName,
+    dangerous: dangerousMode,
+    model: resolveClaudeModel(store.get('claudeModel')),
+    mcpConfigPath,
+  });
+
+  // The stream becomes the activity source BEFORE the spawn, so the very first
+  // event has somewhere to land. It also makes setAgentSession a no-op from here
+  // on — this agent fires the PostToolUse hook itself, and letting that rebind us
+  // to a transcript would wipe the feed one tool call in.
+  const source = localServer.useStreamAgentSource();
+
+  const env = {
+    ...process.env,
+    // Same reason as the Terminal path: the agent-activity hook and the MCP
+    // server must report to THIS app's port, not the default 7865.
+    VIBECONF_LOCAL_PORT: String(localServer.port),
+    // Restore a usable PATH. Electron's is launchd's, and the agent shells out
+    // (git, node, the MCP launcher) far more than the app does.
+    PATH: [process.env.PATH || '', '/opt/homebrew/bin', '/usr/local/bin',
+      path.join(process.env.HOME || '', '.local/bin')].filter(Boolean).join(':'),
+  };
+
+  console.log('[electron] launching headless agent:', claudeBin, args.join(' '));
+  headlessAgentChild = spawnHeadlessAgent({
+    claudePath: claudeBin,
+    args,
+    cwd: claudeDir,
+    env,
+    source,
+    onExit: ({ code, error }) => {
+      headlessAgentChild = null;
+      // A dead agent's last words must not sit in the pane looking live. The
+      // brain pane has no other way to tell — it renders a buffer, and a buffer
+      // that simply stops updating is indistinguishable from a quiet call.
+      if (error) source.push(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: `[agent failed to launch: ${error.code || error.message}]` }] } }) + '\n');
+      else if (code) source.push(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: `[agent exited with code ${code}]` }] } }) + '\n');
+    },
+  });
+  return true;
+}
+
 function closeClaudeTerminal() {
+  // Headless agents have no window to close — end the process instead. SIGTERM
+  // so the session can finish its current turn; the call is already over by the
+  // time this runs, so there is nothing to wait for beyond that.
+  if (headlessAgentChild) {
+    console.log('[electron] ending headless agent');
+    try { headlessAgentChild.kill('SIGTERM'); } catch { /* already gone */ }
+    headlessAgentChild = null;
+  }
+
   if (claudeTerminalWindowIds.length === 0) return;
   const { execFile } = require('child_process');
   const windowIds = [...claudeTerminalWindowIds];
@@ -5773,6 +5879,26 @@ app.whenReady().then(async () => {
   }
   if (savedConfig.botName) sync.updateConfig({ botName: savedConfig.botName });
   if (savedConfig.syncBaseUrl) sync.updateConfig({ baseUrl: savedConfig.syncBaseUrl });
+
+  // Pre-warm the ack-phrase TTS cache (tts.js) now, at app startup, rather
+  // than waiting for the first ack of the first call — that first ack is
+  // exactly when the "before the agent responds" latency matters most, so
+  // it shouldn't be the one paying full synthesis cost. Fire-and-forget:
+  // synthesize() already serializes internally, and a failure here (e.g. no
+  // network yet) just means that phrase falls back to normal on-demand
+  // synthesis later, same as if this block didn't run.
+  {
+    const prefs = require('./preferences-schema').PREFERENCES;
+    const shortPhrases = store?.get('ackShortPhrases') || prefs.ackShortPhrases.default;
+    const longPhrases = store?.get('ackLongPhrases') || prefs.ackLongPhrases.default;
+    const ackPhrases = [...new Set([...shortPhrases, ...longPhrases])];
+    console.log(ts(), `🔥 [tts] pre-warming cache for ${ackPhrases.length} ack phrases`);
+    for (const phrase of ackPhrases) {
+      tts.synthesize(phrase).catch((err) => {
+        console.warn(ts(), '[tts] ack cache prewarm failed for', JSON.stringify(phrase), '—', err.message);
+      });
+    }
+  }
 
   // Configure the single session partition (#282). All Meet-specific handlers
   // — CSP stripping, media-permission auto-grant, screen-share source

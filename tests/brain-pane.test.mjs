@@ -265,6 +265,16 @@ test('the guided-setup button looks and reads like the call it is', () => {
   assert.match(row.slice(0, 120), /class="primary"/);
   assert.doesNotMatch(row.slice(0, 120), /popout-btn/);
 
+  // It sits INSIDE the "you can also just ask the bot" note, because the two are
+  // one thought: both say "you don't have to fill this form in". Under its own
+  // heading further down, the call read as a separate feature — in the one place
+  // someone who has already started editing fields will not look.
+  const note = panelHtml.slice(panelHtml.indexOf('settings-note--action'));
+  const block = note.slice(0, note.indexOf('</div>'));
+  assert.match(block, /or call our guided setup\./);
+  assert.match(block, /id="setupCallBtn"/, 'the button belongs in the note');
+  assert.doesNotMatch(panelHtml, /<h2>Guided setup<\/h2>/, 'the heading is gone');
+
   // Same shape as the main button's "Call Jimmy now": verb first, then the bot.
   assert.match(panelJs, /function updateSetupCallBtnLabel\(\)/);
   const fn = panelJs.slice(panelJs.indexOf('function updateSetupCallBtnLabel'));

@@ -208,20 +208,20 @@
            "Most", not "all", is load-bearing: sign-ins, the Claude model and
            working folder, and the personality file are not preferences the
            agent can set. -->
-      <div class="settings-note">
-        You can also just ask the bot to change <strong>most of these settings</strong> during a call.
-      </div>
+      <!-- The note and the button are ONE thought: both say "you don't have to
+           fill this form in". Under its own "Guided setup" heading the call read
+           as a separate feature further down the page, which is the one place
+           someone who has already started editing fields will not look.
 
-      <!-- Guided setup call: same "start a fresh call" mechanism as the main
+           Guided setup call: same "start a fresh call" mechanism as the main
            screen's "Call now", but tells the spawned agent to run
            /onboarding-call instead of /join-call, so it walks through
            name/voice/emoji/etc live, on the whiteboard, instead of editing
-           these fields by hand. Lives here (not on the main screen) because
-           it's an alternative path through THIS page, not a call-starting
-           action on par with "Call now" — someone who already knows they
-           want to tweak one field shouldn't see it as a peer option. -->
-      <div class="section">
-        <h2>Guided setup</h2>
+           these fields by hand. Here rather than the main screen because it is
+           an alternative path through THIS page, not a call-starting action on
+           par with "Call now". -->
+      <div class="settings-note settings-note--action">
+        You can also just ask the bot to change <strong>most of these settings</strong> during a call, or call our guided setup.
         <!-- .primary, matching "Call Jimmy now": this starts a real call, and in
              the muted .popout-btn style it read as a settings action — the one
              thing it is not. The label is rewritten with the bot's name by

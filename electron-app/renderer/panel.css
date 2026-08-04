@@ -488,6 +488,18 @@ body[data-titlebar] #settingsScreen .settings-head button { -webkit-app-region: 
   line-height: 1.5;
 }
 .settings-note strong { color: #e8eaed; font-weight: 600; }
+/* The variant carrying the guided-setup call. The button is a peer of the
+   sentence, not a footnote to it, so it gets a gap above and no trailing margin
+   pushing the note's own padding open. Left-aligned and auto-width: full-bleed
+   inside this tinted box it would read as the box's own action bar, and this is
+   an offer, not the page's primary control. */
+.settings-note--action { padding-bottom: 11px; }
+.settings-note--action button {
+  width: auto;
+  margin: 9px 0 0;
+  font-size: 12px;
+  padding: 6px 14px;
+}
 
 /* Avatar-background preview. 16:9 to match the camera, so what's shown here is
    framed exactly as the call will frame it. */

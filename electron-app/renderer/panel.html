@@ -139,6 +139,7 @@
                    control doesn't jump. -->
               <button id="botViewToggleBtn" class="join-more botview-toggle-btn" title="See what the bot sees"><i class="ui-icon ui-icon-eyes"></i></button>
               <button id="leaveCallBtn" class="primary danger">Leave Call</button>
+              <button id="openBrainBtn" class="join-more" title="See what the agent is thinking and doing — its live activity feed"><i class="ui-icon ui-icon-brain"></i></button>
               <button id="openTroubleshootingBtn" class="join-more" title="Troubleshooting: live call state, captions, and the agent's view"><i class="ui-icon ui-icon-construction"></i></button>
             </div>
           </div>
@@ -395,6 +396,23 @@
           <div style="font-size:11px;color:#666;margin-top:2px">Used when the user spoke a lot. Gives the agent more time to respond.</div>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- Brain Screen (#242) — a read-only window onto the agent's activity.
+       Renders the SAME feed the app already tails from the Claude session's
+       transcript: 🗣 what it said, 🔧 what tools it ran, 💬 what it was asked.
+       Not a terminal, and deliberately not an input: this is for watching, and
+       a stray keystroke into a live agent is a bad way to learn that. -->
+  <div class="screen" id="brainScreen" style="display:none">
+    <div class="container">
+      <button id="backFromBrainBtn" class="back-btn">&larr; Back</button>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+        <h1 style="margin:0"><i class="ui-icon ui-icon-brain ui-icon--lead"></i>Brain</h1>
+        <span id="brainStatus" class="helper-text"></span>
+      </div>
+      <p class="helper-text" style="margin:6px 0 10px">What the agent driving this bot is thinking and doing, live.</p>
+      <div id="brainFeed" class="brain-feed">Waiting for the agent…</div>
     </div>
   </div>
 

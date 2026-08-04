@@ -42,6 +42,7 @@ export const ICONS = {
   speaker: '1F50A', // 🔊 voice-is-off notice
   folder: '1F4C2', // 📂 open bot profiles folder
   clipboard: '1F4CB', // 📋 open call logs folder
+  brain: '1F9E0',     // 🧠 the agent's activity feed — sibling to 👀 (the bot's eyes)
 };
 
 // Two glyphs are drawn by hand rather than lifted from OpenMoji, because

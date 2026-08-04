@@ -1146,3 +1146,23 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
   border: 1px solid #5f6368; border-radius: 8px;
 }
 .ts-feedback #feedbackNote::placeholder { color: #80868b; }
+
+/* ── Brain pane (#242) ──────────────────────────────────────────────────────
+   A read-only view of the agent's activity feed. Monospace because the lines
+   are already formatted upstream (🗣 / 🔧 / 💬 prefixes and one-lined text) —
+   proportional type would break that alignment for no gain. */
+.brain-feed {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word;
+  background: #202124; color: #e8eaed;
+  border: 1px solid #3c4043; border-radius: 8px;
+  padding: 10px 12px;
+  /* Fills the window: this is the only content on the screen, and a fixed
+     height would waste a pane the user opened specifically to read. */
+  height: calc(100vh - 150px); overflow-y: auto;
+}
+.brain-feed .l-say  { color: #e8eaed; }
+.brain-feed .l-tool { color: #8ab4f8; }
+.brain-feed .l-ask  { color: #fdd663; }
+.brain-feed .l-none { color: #9aa0a6; font-style: italic; }

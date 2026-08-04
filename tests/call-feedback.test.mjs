@@ -168,8 +168,12 @@ test('the curl helper works in the pop-out window, not just the panel', () => {
   // permanently, in a call or out of one, with nothing explaining why.
   //
   // The 1s call-state poll runs in both windows, so it is the right driver.
-  const poll = panelJs.slice(panelJs.indexOf("api.invoke('get-call-state')"));
-  assert.match(poll.slice(0, 400), /updateCurlCommand\(s && s\.roomId\)/,
+  // Anchored on the TROUBLESHOOTING branch specifically. The brain window (#242)
+  // added its own get-call-state call earlier in the same interval, so a plain
+  // indexOf now lands on that one — a first-match anchor is only unambiguous
+  // until someone adds a second caller.
+  const poll = panelJs.slice(panelJs.indexOf("if (troubleshootingScreen.style.display === 'none') return"));
+  assert.match(poll.slice(0, 500), /updateCurlCommand\(s && s\.roomId\)/,
     'the poll must drive it, or the pop-out never enables the button');
 
   // And the empty state has to say something. A greyed-out button with no

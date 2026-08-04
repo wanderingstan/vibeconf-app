@@ -105,6 +105,7 @@ let inCall = false;
 const mainScreen = document.getElementById('mainScreen');
 const settingsScreen = document.getElementById('settingsScreen');
 const troubleshootingScreen = document.getElementById('troubleshootingScreen');
+const brainScreen = document.getElementById('brainScreen');
 
 function showScreen(screen) {
   mainScreen.style.display = 'none';
@@ -138,9 +139,25 @@ document.addEventListener('keydown', (e) => {
 // avatar and the call controls. (The screen's own ⧉ Pop out can't do this: it
 // re-parents the single panelView, which leaves the main window with no panel
 // and falling back to a full-size Meet view.)
+document.getElementById('openBrainBtn')?.addEventListener('click', () => {
+  api.invoke('open-brain-window').catch(() => {});
+});
+
 document.getElementById('openTroubleshootingBtn')?.addEventListener('click', () => {
   api.invoke('open-troubleshooting-window').catch(() => {});
 });
+
+// #242: the brain pane runs as its own window (same panel.html, ?screen=brain),
+// so it can sit beside the Meet window while a call runs — the whole point is
+// watching the agent AND the call at once.
+const IS_BRAIN_WINDOW =
+  new URLSearchParams(location.search).get('screen') === 'brain';
+
+if (IS_BRAIN_WINDOW) {
+  showScreen(brainScreen);
+  const back = document.getElementById('backFromBrainBtn');
+  if (back) back.style.display = 'none';   // nothing to go back to in its own window
+}
 
 if (IS_TROUBLESHOOTING_WINDOW) {
   showScreen(troubleshootingScreen);
@@ -762,7 +779,48 @@ function renderCallState(s) {
   ].join('\n');
 }
 
+// #242: the brain feed. Reuses the SAME agentLog the app already tails from the
+// Claude session's transcript — 🗣 said, 🔧 ran a tool, 💬 was asked — so this is
+// a surface over an existing signal rather than a new pipeline.
+//
+// Read-only, and not by choice: Terminal.app owns the agent process, so the app
+// has no stdin to it. An input box would need #242's headless spawn first, where
+// we own the pipe. Worth stating in the UI rather than leaving people hunting
+// for a prompt that cannot exist yet.
+const BRAIN_LINE_CLASS = { '🗣': 'l-say', '🔧': 'l-tool', '💬': 'l-ask' };
+let _brainLastRendered = '';
+function renderBrain(s) {
+  const feed = document.getElementById('brainFeed');
+  const status = document.getElementById('brainStatus');
+  if (!feed) return;
+  const lines = (s && s.agentLog) || [];
+  const joined = lines.join('\n');
+  if (joined === _brainLastRendered) return;   // don't fight the user's scroll
+  _brainLastRendered = joined;
+
+  if (!lines.length) {
+    feed.innerHTML = '<span class="l-none">No agent session yet. This fills in once a bot is driven by '
+      + 'Claude Code — the app reads the session\u2019s own transcript.</span>';
+    if (status) status.textContent = '';
+    return;
+  }
+  // Pinned to the bottom unless the user has scrolled up to read something —
+  // a live feed that yanks you back to the end is unreadable.
+  const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40;
+  feed.innerHTML = lines.map((l) => {
+    const cls = BRAIN_LINE_CLASS[l.slice(0, 2)] || BRAIN_LINE_CLASS[[...l][0]] || 'l-say';
+    const esc = l.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return `<div class="${cls}">${esc}</div>`;
+  }).join('');
+  if (status) status.textContent = `${lines.length} lines`;
+  if (atBottom) feed.scrollTop = feed.scrollHeight;
+}
+
 setInterval(async () => {
+  if (IS_BRAIN_WINDOW) {
+    try { renderBrain(await api.invoke('get-call-state')); } catch { /* ignore */ }
+    return;
+  }
   if (troubleshootingScreen.style.display === 'none') return; // only poll when visible
   try {
     const s = await api.invoke('get-call-state');

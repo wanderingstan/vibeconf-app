@@ -2218,6 +2218,7 @@ let panelView = null;     // left sidebar BrowserView
 let meetView = null;      // right Meet BrowserView
 let panelPopoutWindow = null; // when popped out, the panelView lives here instead
 let troubleshootingWindow = null; // the ⓘ window — a second copy of panel.html
+let brainWindow = null;           // #242: the 🧠 window — the agent's activity feed
 // Bot-view thumbnail column (feat/bot-view-thumbnail-column). The app is a narrow
 // column; the Meet view is either a shrunk thumbnail below the panel ('thumbnail')
 // or floated into its own large window ('popped'). One button toggles them. See
@@ -7624,6 +7625,37 @@ function setupIPC() {
   // panelView.webContents.send(...) broadcast goes to the panel, not here, so
   // there are no duplicate prompts or state handlers. Only this window's own
   // OUTBOUND calls need suppressing — see IS_TROUBLESHOOTING_WINDOW.
+  // #242: the brain pane — a read-only window onto the agent's activity feed.
+  //
+  // Its own window, like the troubleshooting one and for the same reason: you
+  // watch it WHILE a call runs, so it has to sit beside the Meet window rather
+  // than replacing the panel. Same panel.html with ?screen=brain, so it is a
+  // second webContents — which also means the panel's broadcasts do not reach
+  // it, and it polls get-call-state instead (see the curl-helper bug, #…, for
+  // what happens when something in one of these windows relies on a broadcast).
+  ipcMain.handle('open-brain-window', () => {
+    if (brainWindow && !brainWindow.isDestroyed()) {
+      brainWindow.show();
+      brainWindow.focus();
+      return { ok: true };
+    }
+    const win = new BrowserWindow({
+      width: 620,
+      height: 780,
+      title: 'Vibeconferencing — Brain',
+      icon: path.join(__dirname, 'icon.png'),
+      webPreferences: {
+        preload: path.join(__dirname, 'preload-panel.js'),
+        contextIsolation: true,
+        backgroundThrottling: false, // a live feed must not freeze when unfocused
+      },
+    });
+    brainWindow = win;
+    win.on('closed', () => { brainWindow = null; });
+    win.loadFile(path.join(__dirname, 'renderer', 'panel.html'), { search: 'screen=brain' });
+    return { ok: true };
+  });
+
   ipcMain.handle('open-troubleshooting-window', () => {
     if (troubleshootingWindow && !troubleshootingWindow.isDestroyed()) {
       troubleshootingWindow.show();

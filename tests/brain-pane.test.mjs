@@ -269,11 +269,14 @@ test('the guided-setup button looks and reads like the call it is', () => {
   // one thought: both say "you don't have to fill this form in". Under its own
   // heading further down, the call read as a separate feature — in the one place
   // someone who has already started editing fields will not look.
-  const note = panelHtml.slice(panelHtml.indexOf('settings-note--action'));
+  const note = panelHtml.slice(panelHtml.indexOf('settings-intro'));
   const block = note.slice(0, note.indexOf('</div>'));
   assert.match(block, /or call our guided setup\./);
   assert.match(block, /id="setupCallBtn"/, 'the button belongs in the note');
   assert.doesNotMatch(panelHtml, /<h2>Guided setup<\/h2>/, 'the heading is gone');
+  // Plain form copy, not a callout: the tinted box with an accent border made a
+  // sentence ABOUT the page look like a warning about it.
+  assert.doesNotMatch(panelHtml, /settings-note/, 'no callout styling left');
 
   // Same shape as the main button's "Call Jimmy now": verb first, then the bot.
   assert.match(panelJs, /function updateSetupCallBtnLabel\(\)/);

@@ -33,8 +33,12 @@ test('the 🧠 button sits beside 👀, and uses the drawn icon set', () => {
   assert.match(iconsCss, /\.ui-icon-brain/, 'the icon must be generated, not a literal glyph');
   // Same row and same class as the eyes/troubleshooting buttons, so it inherits
   // their sizing rather than introducing a third button style.
-  const row = panelHtml.slice(panelHtml.indexOf('botViewToggleBtn'), panelHtml.indexOf('openTroubleshootingBtn'));
-  assert.match(row, /openBrainBtn/, 'it belongs in the call-controls row');
+  // 🧠 sits immediately LEFT of 👀 — both are "look inside the bot", so they
+  // pair; 🚧 is a different kind of control and should not sit between them.
+  assert.ok(panelHtml.indexOf('openBrainBtn') < panelHtml.indexOf('botViewToggleBtn'),
+    'the brain button belongs to the left of the eyes');
+  const row = panelHtml.slice(panelHtml.indexOf('openBrainBtn'), panelHtml.indexOf('openTroubleshootingBtn'));
+  assert.match(row, /botview-toggle-btn/, 'and adjacent to it, in the same row');
   assert.match(panelHtml, /<button id="openBrainBtn" class="join-more"/);
 });
 

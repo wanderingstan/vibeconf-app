@@ -64,7 +64,13 @@ test('the experiment ships OFF now that it has been measured', () => {
   const m = inject.match(/const FLOOR_SPEECH_DB = (-?\d+)/);
   assert.ok(m, 'the floor needs its own threshold constant');
   assert.ok(Number(m[1]) >= -45, `${m[1]}dB is not "genuinely loud" — a keystroke clears it`);
-  assert.match(inject, /noteAudioLevel\(db > FLOOR_SPEECH_DB\)/, 'the floor must not reuse this.speaking');
+  // The floor decision must stay independent of the STT gate (this.speaking).
+  // It now runs through `farEnd`, which starts at the floor threshold and is
+  // additionally filtered by the #245 echo guard — so assert the derivation
+  // rather than the literal expression, which has legitimately changed once and
+  // will again.
+  assert.match(inject, /let farEnd = db > FLOOR_SPEECH_DB/);
+  assert.match(inject, /noteAudioLevel\(farEnd\)/, 'the floor must not reuse this.speaking');
 });
 
 test('it is read live, so a bot that goes quiet can be rescued mid-call', () => {

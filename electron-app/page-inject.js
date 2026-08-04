@@ -2301,7 +2301,29 @@
       // floor from the bot", which is a much stronger claim than "there is audio
       // worth transcribing", and it is acted on immediately — the rising edge is
       // instant by design, so one frame is enough to silence the bot.
-      try { noteAudioLevel(db > FLOOR_SPEECH_DB); noteLevelSample(db); } catch { /* never break level monitoring */ }
+      // #245: echo guard. The bot's own voice comes out of a participant's
+      // SPEAKERS, back into their MICROPHONE, and arrives here on their stream —
+      // measured 503ms behind our TTS, loud enough to clear -35dB easily, and
+      // attributed to them, so nothing about the source tells us it is ours.
+      // It made the bot yield to a human who had not spoken.
+      //
+      // Level alone cannot separate them: echo at speaker volume is as loud as
+      // speech. What separates them is CORRELATION — echo tracks our output
+      // envelope, a person does not. So a frame only counts as the far end
+      // talking if OUR output is quiet in that moment. TTS has gaps at every
+      // word and sentence boundary; someone genuinely talking over the bot is
+      // loud during those gaps, and their echo is not.
+      //
+      // The cost is honest: barge-in is detected at the next gap in the bot's
+      // speech rather than instantly, typically within a few hundred ms. That is
+      // a far better trade than yielding to ourselves, which is indistinguishable
+      // from the bot being interrupted by a ghost.
+      let farEnd = db > FLOOR_SPEECH_DB;
+      if (farEnd && ECHO_GUARD_ENABLED) {
+        const own = (typeof mic !== 'undefined' && mic && mic.getAmplitude) ? mic.getAmplitude() : 0;
+        if (own > SELF_LOUD_AMP) { farEnd = false; noteEchoSuppressed(); }
+      }
+      try { noteAudioLevel(farEnd); noteLevelSample(db); } catch { /* never break level monitoring */ }
 
       if (this.speaking && !wasSpeaking) {
         // Started/stopped speaking debug lines suppressed — too noisy in
@@ -2487,6 +2509,29 @@
   // sub-500ms busy periods in [floor-audio]; if they persist, this is still too
   // low.
   const FLOOR_SPEECH_DB = -35;
+
+  // #245: while our own output is above this, far-end audio is treated as echo.
+  // 0.10 of the smoothed 0..1 TTS amplitude — comfortably above the noise in a
+  // gap, comfortably below normal speech level, so the guard opens at every word
+  // boundary rather than only between sentences.
+  const SELF_LOUD_AMP = 0.10;
+  const ECHO_GUARD_ENABLED = true;
+
+  // How often the guard actually fires, sampled rather than logged per frame
+  // (this runs every animation frame). Without a number here we would be
+  // guessing whether the guard is doing anything or quietly disabling barge-in.
+  let _echoSuppressed = 0;
+  let _echoLastLogAt = 0;
+  function noteEchoSuppressed() {
+    _echoSuppressed++;
+    const now = Date.now();
+    if (!_echoLastLogAt) { _echoLastLogAt = now; return; }
+    if (now - _echoLastLogAt < 15000) return;
+    window.postMessage({ __botsInCalls: true, action: 'log', payload: {
+      line: `🔇 [echo-guard] suppressed ${_echoSuppressed} far-end frames in the last ${Math.round((now - _echoLastLogAt) / 1000)}s `
+        + `(our own audio was playing — see #245)` } }, '*');
+    _echoSuppressed = 0; _echoLastLogAt = now;
+  }
   let _audioFloorBusy = false;
   let _audioFloorLastTrueAt = 0;
   let _audioFloorReleaseTimer = null;

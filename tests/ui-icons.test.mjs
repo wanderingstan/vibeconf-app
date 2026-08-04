@@ -15,7 +15,7 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ICONS, MIRRORED, VENDORED, DRAWN, buildCss, iconSvg, cssUrl } from '../scripts/gen-ui-icons.mjs';
+import { ICONS, MIRRORED, VENDORED, DRAWN, drawnSvg, buildCss, iconSvg, cssUrl } from '../scripts/gen-ui-icons.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
@@ -192,4 +192,29 @@ test('the drawn + is the drawn ✕ rotated, by construction', () => {
   const close = nums(DRAWN.close);
   assert.deepEqual([Math.min(...plus), Math.max(...plus)], [5, 19]);
   assert.deepEqual([Math.min(...close), Math.max(...close)], [5, 19]);
+});
+
+test('the drawn icons are not four times heavier than the ones beside them', () => {
+  // What matters is the fraction of the BOX, since every icon is scaled to its
+  // button. The drawn set was 2.6 on a 24 canvas (10.8%) while carrying a
+  // comment claiming that matched OpenMoji's 2-on-72 (2.78%). It did not, and
+  // the difference is plain once a drawn + sits between the drawn-from-OpenMoji
+  // 👀 and 🚧.
+  //
+  // Pinned as a RANGE, not a value: the exact weight is a judgement call, but
+  // drifting back above ~9% brings the mismatch back, and dropping toward
+  // OpenMoji's own 2.78% would make two-stroke glyphs read as faint scratches.
+  const svg = drawnSvg(DRAWN.close);
+  const w = Number(svg.match(/stroke-width="([\d.]+)"/)[1]);
+  const pct = (w / 24) * 100;
+  assert.ok(pct > 5 && pct < 9.5, `${w} on 24 is ${pct.toFixed(1)}% of the box — outside the usable band`);
+});
+
+test('every drawn icon shares one weight', () => {
+  // + is rotated into ×. Different weights would make the rotation read as a
+  // swap to a different icon, which is the whole thing this design avoids.
+  const widths = new Set(Object.values(DRAWN).map(
+    (body) => drawnSvg(body).match(/stroke-width="([\d.]+)"/)[1],
+  ));
+  assert.equal(widths.size, 1, `drawn icons disagree on stroke weight: ${[...widths]}`);
 });

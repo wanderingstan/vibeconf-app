@@ -54,9 +54,8 @@ export const ICONS = {
 // neighbours there are emoji in their own right — ❌ is a big red cross, ✖️ a
 // heavy multiplication sign. Neither reads as "close this".
 //
-// They're still OS-independent art, which is the whole point, and they follow
-// the same stroke idiom as the Bot Settings done-checkmark: round caps, weight
-// ~2.6 on a 24px canvas, which matches OpenMoji's 2-on-72 at these sizes.
+// They're still OS-independent art, which is the whole point: round caps, and
+// the weight below.
 const DRAWN = {
   close: '<path d="M5 5 L19 19 M19 5 L5 19"/>', // ✕ put the bot's view away
   check: '<path d="M4 12 L9.5 17.5 L20 6"/>', // ✓ copied / confirmed
@@ -86,10 +85,33 @@ const VENDORED = {
     '</svg>',
 };
 
+// Stroke weight for every hand-drawn icon, on the 24px canvas they share.
+//
+// What matters is the fraction of the box, since each icon is scaled to its
+// button: 2.0/24 is 8.3%. For comparison, OpenMoji's outlines are 2 on a 72 box,
+// i.e. 2.78% — roughly a third of this.
+//
+// A previous comment here claimed 2.6 "matches OpenMoji's 2-on-72". It does not,
+// and never did: 2.6/24 is 10.8%, nearly four times OpenMoji's. The drawn icons
+// really were heavier than the 👀 and 🚧 beside them, which is visible once a +
+// sits directly between them.
+//
+// Not corrected all the way DOWN to 2.78%, though. That would be 0.67 on this
+// canvas — a hairline, and these glyphs are two or three strokes with nothing
+// else in the box, so they would read as faint scratches where OpenMoji's
+// dense outlines still hold together. 2.0 lands nearer the Octicons gear, which
+// is the fairer reference: it is the only other icon here actually drawn FOR
+// 24px rather than scaled down from 72.
+//
+// Shared by all three deliberately: the panel rotates + into ×, so if those two
+// had different weights the rotation would read as a swap to a different icon,
+// which is the exact effect this design avoids.
+const DRAWN_STROKE = 2.0;
+
 function drawnSvg(body) {
   return (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">' +
-    `<g fill="none" stroke="#000" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">${body}</g>` +
+    `<g fill="none" stroke="#000" stroke-width="${DRAWN_STROKE}" stroke-linecap="round" stroke-linejoin="round">${body}</g>` +
     '</svg>'
   );
 }

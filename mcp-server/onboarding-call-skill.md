@@ -74,6 +74,23 @@ If a name was already chosen by the app's desktop setup wizard before this call 
 skip straight to the transcription check on that name (no need to ask again from scratch),
 just confirm it holds up.
 
+**Your Meet tile will keep the OLD name for the rest of this call — say so, and do not try
+to fix it.** The display name is handed to Meet when you join and cannot change in place.
+The preference IS saved: the new name is yours from the next call onward.
+
+Two things not to do, both of which make it worse:
+
+- **Do not `leave_call` and rejoin.** `/join-call` suggests that, and it is wrong for you:
+  leaving ends your session (the app tears down the agent with the call), so there would be
+  nobody left to rejoin, and the setup call would just stop halfway through.
+- **Do not `join_call` again under the new name without leaving.** That puts a second
+  participant in the room while the first sits there inert — a zombie the user then has to
+  clear up.
+
+Just tell them plainly: *"Your tile will still say <old name> until the next call — the name
+is set when I join. It's saved, so I'll be <new name> from then on."* Then carry on with the
+setup. (#249 tracks making this actually work mid-call.)
+
 ### 4b. Voice
 
 `list_voices` to see what's available (ElevenLabs voices, if a key is configured, plus the

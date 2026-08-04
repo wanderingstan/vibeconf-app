@@ -25,10 +25,18 @@ Parse `$ARGUMENTS` for the room. **Accept either a bare meet code (`xxx-xxxx-xxx
 So if someone says *"rename yourself to Pepper"* or *"you should be Solene, not Otto"*, do **not** claim the change took effect. Instead:
 
 1. Say plainly that the name is set at join time and can't change mid-call.
-2. Offer to `leave_call` and rejoin under the new name — that is the only way to change it.
-3. If they agree, leave, then join again passing the new name as `bot_name`.
+2. Say that changing it means ENDING THIS CALL and starting a fresh one — not "give me a
+   second". Leaving takes your session with it: the app tears the agent down along with the
+   call, so there is no you left to rejoin with. Offer it as the real trade it is.
+3. If they'd rather keep talking, save the name anyway (`set_preference("botName", …)`) and
+   tell them it applies from the next call.
 
-Until you actually rejoin, keep answering to the name on your tile — that's the name everyone in the room can see.
+**Never `join_call` again without leaving first.** It looks like a clever way to get the new
+name on your tile, and it puts a SECOND participant in the room while the first sits there
+inert — a zombie the user has to clear up. (#249 tracks making a mid-call rename actually
+work.)
+
+Until the name genuinely changes, keep answering to the name on your tile — that's the name everyone in the room can see.
 
 Examples:
 - `/join-call abc-defg-hij` -> room code `abc-defg-hij`; drives the sole running profile (or asks which, if several)

@@ -139,3 +139,28 @@ test('the native cell names the platform only when it is known', () => {
   assert.match(mcp, /operating system's own emoji font/);
 });
 
+
+test('neither skill tells the agent to rejoin mid-call', () => {
+  // A guided setup renamed the bot, and the tile kept the old name. /join-call
+  // said to leave and rejoin; the agent refused because leaving would end its
+  // session — and it was RIGHT:
+  //
+  //   leave_call → beginAfterCallWorkOrTeardown → finishCall
+  //              → panel 'leave-requested' → 'leave-meet' → closeClaudeTerminal()
+  //
+  // So the documented remedy cannot work: after leaving there is no agent to
+  // rejoin with. What it did instead — join again WITHOUT leaving — left the old
+  // participant in the room as a zombie. Both branches were bad, which is why
+  // this is #249 and not a wording tweak.
+  // NB: not `join` — that is node:path's join, imported at the top of this file.
+  const joinSkill = readFileSync(join(root, 'mcp-server/join-call-skill.md'), 'utf8');
+  for (const [name, text] of [['onboarding', skill], ['join-call', joinSkill]]) {
+    assert.match(text, /Never `join_call` again without leaving|Do not `join_call` again under the new name/,
+      `${name} must forbid the zombie path`);
+    assert.match(text, /#249/, `${name} should point at the tracking issue`);
+  }
+  // And the onboarding call must not follow the old advice: renaming is step 4a,
+  // so obeying it would kill the agent a third of the way through setup.
+  assert.match(skill, /Do not `leave_call` and rejoin/);
+  assert.match(skill, /leaving ends your session/i);
+});

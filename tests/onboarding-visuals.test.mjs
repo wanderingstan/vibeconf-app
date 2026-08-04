@@ -172,3 +172,42 @@ test('both skills give the rename flow in the order that works', () => {
   assert.match(skill, /rejoin as the very next tool call/);
 });
 
+
+test('the naming step offers options before testing one', () => {
+  // Every new bot now gets a seeded name so it is never "Unnamed bot" — which
+  // made the skill's "if a name was already chosen, skip to the check" branch
+  // fire ALWAYS. The bot opened with "let's check that Bjorn works", so the name
+  // read as decided before the user had seen a single alternative.
+  assert.match(skill, /Offer names first/);
+  assert.match(skill, /suggest_bot_names/);
+  assert.match(skill, /placeholder, not a choice/);
+  // Order matters, not just presence.
+  const offer = skill.indexOf('suggest_bot_names');
+  const check = skill.indexOf('check the name actually works');
+  assert.ok(offer > -1 && check > offer, 'suggest, then verify — not the other way round');
+});
+
+test('the naming step does not explain the machinery', () => {
+  // "so we can hear how Google's live transcript renders it back" is true and
+  // irrelevant: the user did not ask, cannot act on it, and it turns picking a
+  // name into a technical decision instead of a fun one.
+  const step = skill.slice(skill.indexOf('### 4a. Name'), skill.indexOf('### 4b'));
+  assert.match(step, /Keep the reason to yourself/);
+  assert.match(step, /Do NOT explain transcription, captions, or Google Meet/);
+  assert.match(step, /make sure I catch it when you say it/, 'give the words to use instead');
+  // The agent still needs to KNOW why, or it cannot do the check.
+  assert.match(step, /read_transcripts/);
+});
+
+test('suggested names come from the curated pool, minus the taken ones', () => {
+  // Not invented on the spot: the pool exists BECAUSE names differ in how
+  // reliably the bot hears itself addressed, which is not visible from a name.
+  // And two bots answering to one name makes MCP routing by name ambiguous.
+  const server = readFileSync(join(root, 'electron-app/local-server.js'), 'utf8');
+  const route = server.slice(server.indexOf("'/api/name-suggestions'"));
+  const body = route.slice(0, route.indexOf('return;'));
+  assert.match(body, /randomBotName/);
+  assert.match(body, /this\.getTakenBotNames\(\)/);
+  assert.match(body, /\[\.\.\.taken, \.\.\.picks\]/, 'no repeats within one list either');
+  assert.match(mcp, /suggest_bot_names/);
+});

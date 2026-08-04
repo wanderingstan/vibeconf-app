@@ -3,7 +3,7 @@ name: onboarding-call
 description: Run a guided, live setup call that walks the user through configuring this bot, name, voice, emoji, background, whiteboard style, skills, and after-call routine
 argument-hint: "[meet code] [BotName] (same room/profile routing as /call and /join-call)"
 disable-model-invocation: true
-allowed-tools: Read Glob Edit mcp__vibeconferencing__start_call mcp__vibeconferencing__list_call_instances mcp__vibeconferencing__get_room_info mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__reload_whiteboard mcp__vibeconferencing__set_whiteboard_style mcp__vibeconferencing__read_chat mcp__vibeconferencing__send_chat mcp__vibeconferencing__list_visual_assets mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__set_avatar_emoji mcp__vibeconferencing__list_preferences mcp__vibeconferencing__set_preference mcp__vibeconferencing__set_mode mcp__vibeconferencing__leave_call mcp__vibeconferencing__end_session
+allowed-tools: Read Glob Edit mcp__vibeconferencing__start_call mcp__vibeconferencing__list_call_instances mcp__vibeconferencing__get_room_info mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__reload_whiteboard mcp__vibeconferencing__set_whiteboard_style mcp__vibeconferencing__read_chat mcp__vibeconferencing__send_chat mcp__vibeconferencing__suggest_bot_names mcp__vibeconferencing__list_visual_assets mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__set_avatar_emoji mcp__vibeconferencing__list_preferences mcp__vibeconferencing__set_preference mcp__vibeconferencing__set_mode mcp__vibeconferencing__leave_call mcp__vibeconferencing__end_session
 ---
 
 Run a guided **setup call**: a live Meet where this bot walks the user through configuring
@@ -64,15 +64,29 @@ apply defaults for whatever's left unset, and skip to Step 5.
 
 ### 4a. Name
 
-Explain that you're about to say a couple of candidate names out loud so you can both hear
-how Google's live transcript renders them back: a name that doesn't transcribe cleanly is
-worth knowing before it's stuck. Say each candidate 2-3 times, then check the transcript
-(`wait_for_speech` / `read_transcripts`) for how it actually came back. Once they pick one,
-`set_preference("botName", "<name>")`.
+**Offer names first. Do not start by testing the one you happen to have.**
 
-If a name was already chosen by the app's desktop setup wizard before this call started,
-skip straight to the transcription check on that name (no need to ask again from scratch),
-just confirm it holds up.
+A brand-new bot is given a name automatically so it is not called "Unnamed bot" — that is a
+placeholder, not a choice, and the user has not seen it before this moment. Jumping straight
+to "let's check that <name> works" reads as though it has been decided.
+
+1. `suggest_bot_names` and put them on the whiteboard as a grid, with your current name shown
+   as the one you have for now. Say something like *"I've been given <name> — here are some
+   others. Take one of these, or tell me anything you like."*
+2. Let them pick from the board or invent their own. Both are fine; the board exists so
+   nobody has to invent a name cold.
+3. `set_preference("botName", "<name>")`.
+
+Then, and only then, check the name actually works in conversation: say it aloud a couple of
+times and confirm you hear it come back correctly (`wait_for_speech` / `read_transcripts`).
+
+**Keep the reason to yourself.** You are checking that you reliably notice when someone says
+your name — that depends on how the name comes back through the call's captions, which is
+your problem, not theirs. Say *"let me make sure I catch it when you say it"*, then just try
+it. Do NOT explain transcription, captions, or Google Meet: it is machinery the user did not
+ask about and cannot act on, and it makes choosing a name sound like a technical decision
+rather than a fun one. If a name genuinely does not come back reliably, say that plainly —
+*"I keep mishearing that one"* — and offer the alternatives, still without the mechanism.
 
 **Your Meet tile still says the OLD name — Meet takes the display name at join and will not
 change it in place.** You can fix that without ending the call, but only in this exact order:

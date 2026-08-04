@@ -784,6 +784,27 @@ async function listVoiceboxProfiles() {
   } catch { return []; }
 }
 
+// --- suggest_bot_names ---
+server.tool(
+  "suggest_bot_names",
+  "A list of candidate names for this bot, from the app's own curated pool — the same one the panel's name spinner draws from. Use it in the guided setup call so the user PICKS from real options instead of being asked to invent one cold. Names already used by other bots on this machine are excluded. Prefer these over names you make up: the pool is curated for names the bot reliably hears itself called, which is not obvious from a name alone.",
+  {
+    count: z.number().optional().describe("How many to return (default 12, max 24)."),
+  },
+  async ({ count }) => {
+    try {
+      const resp = await vfetch(`${BASE_URL}/api/name-suggestions?count=${count || 12}`);
+      const data = await resp.json();
+      if (!data.success) {
+        return { content: [{ type: "text", text: `Error: ${data.error || "could not get name suggestions"}` }] };
+      }
+      return { content: [{ type: "text", text: (data.names || []).join("\n") }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error contacting local server: ${err.message}` }] };
+    }
+  },
+);
+
 // --- list_visual_assets ---
 server.tool(
   "list_visual_assets",

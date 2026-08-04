@@ -79,7 +79,7 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref, extraRoutes } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
     // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
     // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
@@ -108,6 +108,7 @@ class LocalServer {
     this.onReloadWhiteboard = onReloadWhiteboard || (() => ({ ok: false, error: 'reload not wired' })); // #321 follow-up
     this.whiteboardCss = '';
     this.onLeaveCall = onLeaveCall || (() => {});
+    this.getTakenBotNames = getTakenBotNames || (() => []);
     this.onEndSession = onEndSession || (() => {});
     this.onShareWhiteboard = onShareWhiteboard || (() => {});
     this.onShareTab = onShareTab || (() => {}); // POC (share-agent-tab)
@@ -3757,6 +3758,35 @@ class LocalServer {
     // not. The agent cannot guess these paths: each emoji set names its files
     // differently (1f642.png / 1F642.svg / emoji_u1f642.svg), and a packaged
     // build resolves them somewhere else entirely.
+    // Candidate names for the setup call's naming step.
+    //
+    // Drawn from the app's own curated pool rather than invented on the spot:
+    // that list exists BECAUSE names vary in how reliably the bot hears itself
+    // addressed, and it is the same pool the panel's name spinner draws from, so
+    // the setup call and the spinner offer the same universe of names. Names
+    // already in use on this machine are excluded — two bots answering to one
+    // name makes MCP routing by name ambiguous.
+    if (url.pathname === '/api/name-suggestions' && req.method === 'GET') {
+      try {
+        const { randomBotName } = require('./bot-names.js');
+        const want = Math.min(24, Math.max(1, Number(url.searchParams.get('count')) || 12));
+        const taken = [...this.getTakenBotNames()];
+        const picks = [];
+        // Draw one at a time, adding each to `taken`, so the list has no repeats.
+        for (let i = 0; i < want; i++) {
+          const n = randomBotName({ taken: [...taken, ...picks] });
+          if (!n || picks.includes(n)) continue;
+          picks.push(n);
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, names: picks }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+      return;
+    }
+
     if (url.pathname === '/api/visual-assets' && req.method === 'GET') {
       try {
         res.writeHead(200, { 'Content-Type': 'application/json' });

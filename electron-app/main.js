@@ -387,6 +387,21 @@ function announceNoVoiceOnce() {
 // phase off and reproduces the old teardown-on-leave exactly.
 let _afterCallWorkTimer = null;
 
+// Bot names already spoken for on this machine.
+//
+// Used both when naming a NEW bot and when offering candidates during setup: two
+// bots answering to one name is not merely confusing, since MCP routes by name.
+function takenBotNames() {
+  try {
+    const profileManager = require('./profile-manager.js');
+    return profileManager.listProfiles(PROFILES_ROOT).map((p) => {
+      try {
+        return JSON.parse(fs.readFileSync(path.join(PROFILES_ROOT, p.name, 'config.json'), 'utf-8')).botName;
+      } catch { return null; }
+    }).filter(Boolean);
+  } catch { return []; }
+}
+
 function beginAfterCallWorkOrTeardown(reason) {
   // Through the schema, NOT store.get(): a raw read returns undefined for any
   // profile that has never set this, so `Number(undefined) || 0` disabled the
@@ -623,6 +638,8 @@ const localServer = new globalThis.LocalServer({
   // resolve an omitted bot_name to this instead of a frozen env default, and
   // keeps join_call from ever overwriting it.
   getConfiguredBotName: () => resolvedBotName(),
+  // Candidate names for the setup call's "what should I be called" step.
+  getTakenBotNames: () => takenBotNames(),
   onBotSpeech: (text, voice, emoji) => {
     console.log('[local-server] Bot speech:', text.slice(0, 80), emoji ? `(emoji: ${emoji})` : '');
     // Triage EVAL: pair the fast model's turn-taking verdict with the fact that
@@ -5512,7 +5529,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '43';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '44';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
@@ -8456,12 +8473,7 @@ function setupIPC() {
   function seedNewBotName(profileName) {
     try {
       const { randomBotName } = require('./bot-names.js');
-      const taken = profileManager.listProfiles(PROFILES_ROOT).map((p) => {
-        try {
-          const cfg = JSON.parse(fs.readFileSync(path.join(PROFILES_ROOT, p.name, 'config.json'), 'utf-8'));
-          return cfg.botName;
-        } catch { return null; }
-      }).filter(Boolean);
+      const taken = takenBotNames();
       const dir = path.join(PROFILES_ROOT, profileName);
       fs.mkdirSync(dir, { recursive: true });
       const file = path.join(dir, 'config.json');

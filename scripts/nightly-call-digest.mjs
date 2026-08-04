@@ -6,13 +6,14 @@
 // mini, after archive-logs.mjs has had a chance to accumulate the day's
 // lines; see scripts/scheduled-meet-test.sh for how it's wired in.
 //
-// What "real user" means here: every instance that has ever shipped logs
-// shows up in the archive, including the automated test fleet and Stan's own
-// ad-hoc dev-testing profiles. Excluded from the digest (see EXCLUDE_* below):
-//   - profiles the fleet always uses (test-meet-*, test-slack-*, …)
-//   - hosts that are Stan's own dev machines, not a real user's
-// This is a heuristic, not a ground truth — tune the lists below as new
-// dev/test patterns show up in real data.
+// What "real user" means here: only instances running the "Default" profile
+// count. Every real-world instance seen so far — including Stan's own laptop
+// running a demo call — uses Default; every dev/test instance, automated
+// fleet or Stan's own one-off manual testing alike, uses some other named
+// profile (test-meet-*, tsdemo, corstest, …). This started as a host-based
+// exclusion (assume Stan's own machines are never real) but that wrongly
+// dropped a real demo call he ran from his own laptop — profile is the
+// signal that actually holds up against the data. See REAL_USER_PROFILE.
 //
 // Usage:
 //   node scripts/nightly-call-digest.mjs                 # yesterday (local date)
@@ -34,6 +35,8 @@
 //                            (default: ~/.claude/secrets/vibeconf-admin-session.env)
 //   VIBECONF_AUTH_WARN_DAYS  warn when the session JWT expires within this
 //                            many days (default 7)
+//   VIBECONF_MIN_CALL_MINUTES  minimum call length to count (default 5) —
+//                            filters out drive-bys and failed joins
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -65,10 +68,10 @@ const DISK_WARN_PCT = Number(process.env.VIBECONF_DISK_WARN_PCT || 80);
 const SESSION_ENV_FILE = process.env.VIBECONF_SESSION_ENV
   || path.join(homedir(), '.claude/secrets/vibeconf-admin-session.env');
 const AUTH_WARN_DAYS = Number(process.env.VIBECONF_AUTH_WARN_DAYS || 7);
+const MIN_CALL_SECONDS = Number(process.env.VIBECONF_MIN_CALL_MINUTES || 5) * 60;
 
 // Heuristic real-user filter — see module comment. Case-insensitive.
-const EXCLUDE_PROFILE_PREFIX = /^test-/i;
-const EXCLUDE_HOSTS = new Set(['stans-macbook-pro', 'stans-mac-mini', 'mac', 'smoketest']);
+const REAL_USER_PROFILE = 'default';
 
 // The date this digest covers: --date, or "yesterday" in local time (this
 // runs at 3am, so "yesterday" is the day that just fully completed).
@@ -92,10 +95,8 @@ function parseInstanceId(filename) {
 }
 
 function isRealUserInstance(filename) {
-  const { host, profile } = parseInstanceId(filename);
-  if (EXCLUDE_PROFILE_PREFIX.test(profile)) return false;
-  if (EXCLUDE_HOSTS.has(host.toLowerCase())) return false;
-  return true;
+  const { profile } = parseInstanceId(filename);
+  return profile.toLowerCase() === REAL_USER_PROFILE;
 }
 
 function listRealUserLogFiles() {
@@ -108,30 +109,76 @@ function listRealUserLogFiles() {
 
 // --- call counting ------------------------------------------------------
 
-// `[call] id=<id> room=<room> status=<status> started=<iso>` — no timestamp
-// prefix on this line (unlike most), but it carries its own absolute ISO
-// timestamp, so no relative-time reconstruction is needed to bucket by day.
-const CALL_RE = /\[call\] id=(\S+) room=(\S+) status=(\S+) started=(\S+)/g;
+// `HH:MM:SS.mmm [call] id=<id> room=<room> status=<status> started=<iso>` —
+// every console.log line gets an auto HH:MM:SS.mmm prefix (see the
+// installTimestampedConsole wrapper in local-server.js/main.js), including
+// this one, despite the call site not passing ts() itself. `started=` is an
+// absolute UTC timestamp (this.callStartedAt = new Date().toISOString()),
+// constant across every status-transition line for the same call id.
+const TS_RE = /^(\d{2}:\d{2}:\d{2})\.\d{3}\s/;
+const CALL_RE = /^(\d{2}:\d{2}:\d{2})\.\d{3}\s.*\[call\] id=(\S+) room=(\S+) status=(\S+) started=(\S+)/;
 
-function countCallsForDate(files, date) {
-  const seen = new Set(); // dedupe by call id (a call can log [call] more than once as status changes)
+// A call can log [call] more than once as its status changes (joining →
+// navigating → …), always with the same `started=`. This resolves each
+// call id to its FIRST-seen line (call start) and an approximate end: the
+// next call's start in the same file, or the file's last timestamp if it's
+// the last call — a single Electron instance is only ever in one room at a
+// time, so "the next call started" is a reasonable proxy for "this one
+// ended." Same-day only (no cross-midnight arithmetic) — acceptable for a
+// nightly digest; a call spanning midnight would just look short on one
+// side, not silently miscounted as two different days.
+function localDateOf(isoTimestamp) {
+  const d = new Date(isoTimestamp);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function hmsToSeconds(hms) {
+  const [h, m, s] = hms.split(':').map(Number);
+  return h * 3600 + m * 60 + s;
+}
+
+function countCallsForDate(files, date, minSeconds) {
+  const seen = new Map(); // callId -> { startSec, dropped }
   const perFile = new Map();
+  const shortCallsSkipped = [];
   for (const f of files) {
-    let text;
-    try { text = fs.readFileSync(f, 'utf-8'); } catch { continue; }
-    let m;
-    CALL_RE.lastIndex = 0;
+    let lines;
+    try { lines = fs.readFileSync(f, 'utf-8').split('\n'); } catch { continue; }
+
+    // Last timestamp seen on ANY line (not just [call] lines) — the file's
+    // true end-of-activity boundary, used to bound the LAST call in the file.
+    // Tracking this only on [call] lines was the bug in the first cut: a call
+    // with just one status transition ever logged became its own end too,
+    // computing duration 0 regardless of how long the call actually ran.
+    let lastSeconds = null;
+    const callsInFile = []; // { id, startSec }, in file order (first occurrence only)
+    const idsSeenInFile = new Set();
+    for (const line of lines) {
+      const tsMatch = TS_RE.exec(line);
+      if (tsMatch) lastSeconds = hmsToSeconds(tsMatch[1]);
+
+      const m = CALL_RE.exec(line);
+      if (!m) continue;
+      const [, hms, id, , , started] = m;
+      if (idsSeenInFile.has(id)) continue; // only the first status transition marks "start"
+      idsSeenInFile.add(id);
+      if (localDateOf(started) !== date) continue; // not today's target date — still tracked above for lastSeconds, just not counted
+      callsInFile.push({ id, startSec: hmsToSeconds(hms) });
+    }
+
     let fileCount = 0;
-    while ((m = CALL_RE.exec(text))) {
-      const [, id, , , started] = m;
-      if (!started.startsWith(date)) continue;
-      if (seen.has(id)) continue;
-      seen.add(id);
+    for (let i = 0; i < callsInFile.length; i++) {
+      const { id, startSec } = callsInFile[i];
+      const endSec = i + 1 < callsInFile.length ? callsInFile[i + 1].startSec : lastSeconds;
+      const durationSec = (endSec ?? startSec) - startSec;
+      if (durationSec < minSeconds) { shortCallsSkipped.push({ id, file: path.basename(f), durationSec }); continue; }
+      if (seen.has(id)) continue; // same call id shipped from >1 instance — dedupe globally
+      seen.set(id, { durationSec });
       fileCount++;
     }
     if (fileCount) perFile.set(path.basename(f), fileCount);
   }
-  return { total: seen.size, perFile };
+  return { total: seen.size, perFile, shortCallsSkipped };
 }
 
 // --- latency (reuses scripts/latency-audit.py directly on the archive) -----
@@ -257,7 +304,7 @@ async function main() {
   const realFiles = listRealUserLogFiles();
   const excludedCount = allFiles.length - realFiles.length;
 
-  const { total: callCount, perFile: callsPerFile } = countCallsForDate(realFiles, targetDate);
+  const { total: callCount, perFile: callsPerFile, shortCallsSkipped } = countCallsForDate(realFiles, targetDate, MIN_CALL_SECONDS);
   const activeInstances = [...callsPerFile.keys()];
 
   const latencyReport = runLatencyAudit(realFiles);
@@ -274,6 +321,8 @@ async function main() {
     instancesWithCallsToday: activeInstances.length,
     callCount,
     callsPerInstance: Object.fromEntries(callsPerFile),
+    minCallMinutes: MIN_CALL_SECONDS / 60,
+    shortCallsSkipped,
     disk,
     auth,
   };
@@ -284,7 +333,7 @@ async function main() {
 
   const lines = [];
   lines.push(`<b>Vibeconferencing nightly call digest — ${targetDate}</b>`);
-  lines.push(`${callCount} call${callCount === 1 ? '' : 's'} across ${activeInstances.length} instance${activeInstances.length === 1 ? '' : 's'} (${realFiles.length} real-user instances in archive, ${excludedCount} test/dev excluded)`);
+  lines.push(`${callCount} call${callCount === 1 ? '' : 's'} ≥${MIN_CALL_SECONDS / 60}min across ${activeInstances.length} instance${activeInstances.length === 1 ? '' : 's'} (${realFiles.length} real-user instances in archive, ${excludedCount} test/dev excluded${shortCallsSkipped.length ? `, ${shortCallsSkipped.length} shorter call${shortCallsSkipped.length === 1 ? '' : 's'} filtered out` : ''})`);
   if (disk.error) {
     lines.push(`\n⚠️ Disk check failed: ${disk.error}`);
   } else {

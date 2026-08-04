@@ -115,3 +115,37 @@ function readFileSyncSafe(rel) {
   const { fileURLToPath } = require('node:url');
   return readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', rel), 'utf8');
 }
+
+test("an app-launched agent's own hook must not wipe its own feed", () => {
+  // The realistic two-source case, and the one that would have bitten
+  // immediately: a headlessly-spawned agent fires the PostToolUse hook ITSELF —
+  // it makes mcp__vibeconferencing__ calls, which is exactly what the hook
+  // matches. That POST lands in setAgentSession with a transcript path, and
+  // StreamActivitySource.bind() resets. Without a guard the feed would clear
+  // itself one tool call in and then stay empty, which looks exactly like an
+  // agent doing nothing.
+  require('../electron-app/local-server.js');
+  const LocalServer = globalThis.LocalServer;
+  const s = new LocalServer({ port: 0 });
+
+  assert.equal(s._agentSource.kind, 'transcript', 'default transport is unchanged');
+  const stream = s.useStreamAgentSource();
+  assert.equal(s._agentSource.kind, 'stream');
+
+  stream.push(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'working' }] } }) + '\n');
+  assert.deepEqual(s.agentLog, ['🗣 working']);
+
+  s.setAgentSession({ sessionId: 'x', transcriptPath: '/tmp/whatever.jsonl' });
+  assert.deepEqual(s.agentLog, ['🗣 working'], 'the hook must not clear a stream feed');
+  assert.equal(s._agentSource.kind, 'stream', 'and must not displace the transport we own');
+});
+
+test('a transcript bind still works when no stream source is live', () => {
+  // The guard must not break the path that serves real users today.
+  require('../electron-app/local-server.js');
+  const LocalServer = globalThis.LocalServer;
+  const s = new LocalServer({ port: 0 });
+  s.setAgentSession({ sessionId: 'y', transcriptPath: '/tmp/nope.jsonl' });
+  assert.equal(s._agentSource.kind, 'transcript');
+  assert.equal(s._agentSource.path, '/tmp/nope.jsonl', 'the tail must actually be bound');
+});

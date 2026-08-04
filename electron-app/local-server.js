@@ -1240,6 +1240,7 @@ class LocalServer {
       onModel: (model) => { console.log(ts(), `🧠 [agent] model=${model}`); },
     });
     this._agentSource.bind();
+    this._streamBindNoted = false;
     console.log(ts(), '[local-server] Agent activity source → stream (app-launched agent)');
     return this._agentSource;
   }
@@ -1248,6 +1249,26 @@ class LocalServer {
   // Called from the /api/agent-session route, which the PostToolUse hook hits.
   setAgentSession({ sessionId, transcriptPath } = {}) {
     if (!transcriptPath) return;
+    // #242: an app-launched agent's own stream WINS over any transcript bind.
+    //
+    // That agent fires this hook itself — it makes mcp__vibeconferencing__ calls,
+    // which is exactly what PostToolUse matches — so without this guard its first
+    // tool call would land here and hand its own transcript path to a
+    // StreamActivitySource, whose bind() resets the buffer. The feed would clear
+    // itself one tool call in and then stay empty, which is indistinguishable
+    // from an agent doing nothing.
+    //
+    // Any other Claude session on this machine touching our port fires it too.
+    // Either way the answer is the same: when we own the process, its stdout is
+    // the better source, and a file we do not control must not displace it.
+    if (this._agentSource.kind === 'stream') {
+      if (!this._streamBindNoted) {
+        this._streamBindNoted = true;
+        console.log(ts(), '[local-server] Ignoring transcript bind — this agent is app-launched, '
+          + 'and its own event stream is the source of truth');
+      }
+      return;
+    }
     if (transcriptPath !== this._agentSource.path) {
       console.log('[local-server] Agent session bound:', sessionId || '?', '→', transcriptPath);
       // #125: say so when we bind a path that isn't there. The tailer tolerates

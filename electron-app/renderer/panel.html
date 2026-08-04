@@ -222,7 +222,11 @@
            want to tweak one field shouldn't see it as a peer option. -->
       <div class="section">
         <h2>Guided setup</h2>
-        <button id="setupCallBtn" class="popout-btn" title="Run a guided setup call: pick a name, voice, emoji, and more, live in a call">Call guided setup</button>
+        <!-- .primary, matching "Call Jimmy now": this starts a real call, and in
+             the muted .popout-btn style it read as a settings action — the one
+             thing it is not. The label is rewritten with the bot's name by
+             updateSetupCallBtnLabel(); this text is the pre-paint fallback. -->
+        <button id="setupCallBtn" class="primary" title="Run a guided setup call: pick a name, voice, emoji, and more, live in a call">Call your bot for setup</button>
       </div>
 
       <!-- Name first — it's the bot's identity and the thing the panel shows.

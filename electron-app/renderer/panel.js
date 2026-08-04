@@ -1945,6 +1945,20 @@ function updateBotNameBig() {
   // The pre-call button says the bot's name too ("Call Jimmy now"), so it has
   // to follow a rename. One choke point keeps the two from drifting.
   updateJoinBtnState();
+  // Same for the guided-setup button ("Call Jimmy for setup"). It lives on the
+  // Settings screen, which is exactly where a rename happens — so without this
+  // it would still be offering to call the old name on the very page you just
+  // renamed the bot on.
+  updateSetupCallBtnLabel();
+}
+
+// "Call Jimmy for setup" — deliberately the same shape as the main button's
+// "Call Jimmy now": verb first, then the bot. It IS a call, and it was reading
+// as a settings action because it looked like one.
+function updateSetupCallBtnLabel() {
+  const btn = document.getElementById('setupCallBtn');
+  if (!btn) return;
+  btn.textContent = `Call ${currentBotName || 'your bot'} for setup`;
 }
 
 // (The "● in Meet as Jimmy" sub-line lived here. Removed — the bot's name is

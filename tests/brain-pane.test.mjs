@@ -257,3 +257,27 @@ test('the quit confirmation cannot hold the app hostage', () => {
   assert.ok(body.indexOf('appIsQuitting') < body.indexOf('preventDefault'),
     'the escape must be checked before the close is cancelled');
 });
+
+test('the guided-setup button looks and reads like the call it is', () => {
+  // It starts a real call, but in the muted .popout-btn style it read as a
+  // settings action — the one thing it is not.
+  const row = panelHtml.slice(panelHtml.indexOf('id="setupCallBtn"'));
+  assert.match(row.slice(0, 120), /class="primary"/);
+  assert.doesNotMatch(row.slice(0, 120), /popout-btn/);
+
+  // Same shape as the main button's "Call Jimmy now": verb first, then the bot.
+  assert.match(panelJs, /function updateSetupCallBtnLabel\(\)/);
+  const fn = panelJs.slice(panelJs.indexOf('function updateSetupCallBtnLabel'));
+  assert.match(fn.slice(0, 300), /`Call \$\{currentBotName \|\| 'your bot'\} for setup`/);
+});
+
+test('the setup button follows a rename', () => {
+  // It lives on the Settings screen — exactly where renames happen. Without
+  // this it would sit there offering to call the OLD name on the very page you
+  // just renamed the bot on. updateBotNameBig is the existing choke point that
+  // already keeps the main button in step.
+  const fn = panelJs.slice(panelJs.indexOf('function updateBotNameBig'));
+  const body = fn.slice(0, fn.indexOf('\n}'));
+  assert.match(body, /updateSetupCallBtnLabel\(\)/);
+  assert.match(body, /updateJoinBtnState\(\)/, 'alongside the main button, not instead of it');
+});

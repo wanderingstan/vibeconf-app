@@ -7282,15 +7282,23 @@ function createMainWindow() {
       label: 'File',
       submenu: [
         {
-          // #379: create a brand-new profile and open it in its own window. The
-          // name prompt happens in the panel (inline dialog); a never-seen name
-          // creates the profile. Distinct from "New Window", which opens the
-          // Default profile without creating anything.
-          label: 'New Bot…',
+          // #379: create a brand-new bot and open it in its own window, on its
+          // Settings screen. No ellipsis and no prompt — same one-click path as
+          // the switcher's "＋ New bot", which is the point: two entries that
+          // create a bot should not disagree about how.
+          //
+          // The name it used to ask for was the profile DIRECTORY, from when
+          // that doubled as the bot's name. Now the directory is picked
+          // automatically (botN) and the bot gets a real name from the same pool
+          // the spinner draws from, editable on the page it lands on.
+          //
+          // Routed through the panel because the create/launch helpers live in
+          // setupIPC's scope; the panel just invokes the same handler.
+          label: 'New Bot',
           accelerator: 'CmdOrCtrl+Shift+N',
           click: () => {
             if (panelView && !panelView.webContents.isDestroyed()) {
-              panelView.webContents.send('new-profile-prompt');
+              panelView.webContents.send('new-bot');
             }
           },
         },
@@ -8415,6 +8423,48 @@ function setupIPC() {
     return `bot${Date.now()}`; // absurd, but never collides
   }
 
+  // Give the new bot an actual NAME, not just a directory.
+  //
+  // "bot3" is a folder, and without this the bot would introduce itself as
+  // "Unnamed bot" — a worse first impression than any random name, and one the
+  // user then has to fix before the thing is usable. Drawn from the same pool
+  // the spinner uses, so a new bot arrives as Pepper or Twiki and can be renamed
+  // on the Settings page it opens on, or in the guided setup call.
+  //
+  // Written to the profile's config BEFORE launch rather than passed as
+  // --bot-name: a launch flag is an override with its own provenance tag
+  // ("Alice [launch name]") that does not persist, and this needs to be the
+  // bot's real, stored name.
+  //
+  // Names already in use are excluded, so two bots on one machine don't collide
+  // — which would make MCP routing by name ambiguous, not just confusing.
+  function seedNewBotName(profileName) {
+    try {
+      const { randomBotName } = require('./bot-names.js');
+      const taken = profileManager.listProfiles(PROFILES_ROOT).map((p) => {
+        try {
+          const cfg = JSON.parse(fs.readFileSync(path.join(PROFILES_ROOT, p.name, 'config.json'), 'utf-8'));
+          return cfg.botName;
+        } catch { return null; }
+      }).filter(Boolean);
+      const dir = path.join(PROFILES_ROOT, profileName);
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, 'config.json');
+      // Never clobber: a reused directory name (first-gap allocation) might
+      // still hold a config the user cares about.
+      let existing = {};
+      try { existing = JSON.parse(fs.readFileSync(file, 'utf-8')); } catch { /* new */ }
+      if (existing.botName) return;
+      const botName = randomBotName({ taken });
+      fs.writeFileSync(file, JSON.stringify({ ...existing, botName }, null, 2));
+      console.log('[electron] New bot', profileName, 'named', botName);
+    } catch (err) {
+      // Non-fatal: an unnamed bot is still a working bot, and the Settings page
+      // it opens on is exactly where that gets fixed.
+      console.warn('[electron] could not seed a name for', profileName, '—', err.message);
+    }
+  }
+
   async function launchOrFocusProfile(name, { openSettings = false } = {}) {
     const isDefault = isDefaultName(name);
     if (!profileManager.isValidProfileName(name)) {
@@ -8537,6 +8587,7 @@ function setupIPC() {
   // is right there: name it, or press the guided-setup call at the top.
   ipcMain.handle('create-new-bot', async () => {
     const name = nextBotProfileName();
+    seedNewBotName(name);
     return await launchOrFocusProfile(name, { openSettings: true });
   });
 

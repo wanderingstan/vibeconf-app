@@ -1279,16 +1279,15 @@ async function doOpenProfileWindow(name) {
   } catch (e) { showError('Could not open bot window: ' + e.message); }
 }
 
-// Menu-bar "New Profile…" → prompt for a NEW profile name (a never-seen name
-// creates the profile), then open it additively in its own window. This is the
-// CREATE path — distinct from "New Window", which opens the Default profile.
-api.on('new-profile-prompt', async () => {
-  const name = await inlinePrompt({
-    title: 'New bot name (letters, numbers, . _ - only):',
-    placeholder: 'e.g. alice',
-    okLabel: 'Create',
-  });
-  if (name) doOpenProfileWindow(name);
+// Menu-bar "New Bot" → identical to the switcher's "＋ New bot": auto-named
+// profile, real bot name, opened in its own window on Settings. One behaviour
+// for both entry points; two ways to create a bot that worked differently was
+// the actual problem, not the prompt on its own.
+api.on('new-bot', async () => {
+  try {
+    const r = await api.invoke('create-new-bot');
+    if (r && r.ok === false) showError('Could not create bot: ' + (r.error || 'unknown'));
+  } catch (e) { showError('Could not create bot: ' + e.message); }
 });
 
 // Menu-bar "New Window" → open the next profile that isn't already running (the

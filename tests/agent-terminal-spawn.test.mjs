@@ -33,7 +33,7 @@ const codeOnly = (src) => src.split('\n').filter((l) => !l.trim().startsWith('//
 test('joinMeetUrl takes a spawnAgent option, defaulting to spawning', () => {
   // Default true: the panel paths pass nothing, and they are the ones that need
   // the terminal. A default of false would silently leave those bots driverless.
-  assert.match(main, /function joinMeetUrl\(meetUrl, \{ spawnAgent = true \} = \{\}\)/);
+  assert.match(main, /function joinMeetUrl\(meetUrl, \{ spawnAgent = true, onboardingCall = false \} = \{\}\)/);
 });
 
 test('the terminal launch inside joinMeetUrl is actually gated', () => {
@@ -48,15 +48,16 @@ test('the terminal launch inside joinMeetUrl is actually gated', () => {
 });
 
 test('createAndJoinMeet threads the flag rather than dropping it', () => {
-  assert.match(main, /async function createAndJoinMeet\(\{ openBrowser = true, spawnAgent = true \} = \{\}\)/);
-  assert.match(main, /joinMeetUrl\(r\.json\.meetingUri, \{ spawnAgent \}\)/,
-    'the flag must reach joinMeetUrl, or threading it changes nothing');
+  assert.match(main, /async function createAndJoinMeet\(\{ openBrowser = true, spawnAgent = true, onboardingCall = false \} = \{\}\)/);
+  assert.match(main, /joinMeetUrl\(r\.json\.meetingUri, \{ spawnAgent, onboardingCall \}\)/,
+    'the flags must reach joinMeetUrl, or threading them changes nothing');
 });
 
 test('the panel button still gets its terminal', () => {
-  // It calls createAndJoinMeet with no options, so both defaults apply. If this
+  // It calls createAndJoinMeet with no options (or just onboardingCall for the
+  // Setup button), so the spawnAgent default still applies either way. If this
   // ever starts passing spawnAgent:false, the button silently stops working.
-  assert.match(main, /ipcMain\.handle\('create-and-join-meet', async \(\) => createAndJoinMeet\(\)\)/);
+  assert.match(main, /ipcMain\.handle\('create-and-join-meet', async \(_e, opts\) => createAndJoinMeet\(opts \|\| \{\}\)\)/);
 });
 
 test('/api/call/start defaults to NOT spawning, since its caller is an agent', () => {

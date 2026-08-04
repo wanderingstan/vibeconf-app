@@ -3142,7 +3142,7 @@ function getWebsiteUrl() {
 // request arrived over MCP, because an agent making that request IS the agent;
 // spawning a second one gives the call two drivers that fight over
 // wait_for_speech, which is exactly what happened on 2026-07-29.
-function joinMeetUrl(meetUrl, { spawnAgent = true } = {}) {
+function joinMeetUrl(meetUrl, { spawnAgent = true, onboardingCall = false } = {}) {
   currentMeetUrl = meetUrl;
   loadMeetURL(meetUrl);
 
@@ -3156,7 +3156,7 @@ function joinMeetUrl(meetUrl, { spawnAgent = true } = {}) {
     console.log('[electron] Sync started for room:', meetCode);
   });
   if (spawnAgent) {
-    launchClaudeTerminal(meetCode); // the agent behind the face
+    launchClaudeTerminal(meetCode, { onboardingCall }); // the agent behind the face
   } else {
     console.log('[electron] Agent terminal not spawned — the caller is already an agent');
   }
@@ -3197,7 +3197,11 @@ async function websiteRequest(pathname, { method = 'GET', headers = {}, body = n
 // Claude Code from their phone, who wants the meeting made here and the link
 // handed back so they can join from where they actually are. Opening a browser
 // on an unattended desktop would just leave a stray tab in an empty call.
-async function createAndJoinMeet({ openBrowser = true, spawnAgent = true } = {}) {
+// onboardingCall: run the spawned agent through /onboarding-call instead of
+// /join-call, so it walks the user through name/voice/emoji/etc live rather
+// than having a normal conversation. Only meaningful alongside spawnAgent —
+// the MCP start_call route never sets it (see /api/call/start's spawnAgent:false).
+async function createAndJoinMeet({ openBrowser = true, spawnAgent = true, onboardingCall = false } = {}) {
   // A FRESH key per press. Reusing one returns the SAME room instead of a new
   // one, which is right for a retry of one press and wrong for a second press.
   const idempotencyKey = require('crypto').randomUUID();
@@ -3209,7 +3213,7 @@ async function createAndJoinMeet({ openBrowser = true, spawnAgent = true } = {})
   if (r.status === 200 && r.json?.meetingUri) {
     // Shape only — meetingUri/meetingCode are capabilities, never logged.
     console.log(`[meet-create] room ready (replay=${!!r.json.replay})`);
-    joinMeetUrl(r.json.meetingUri, { spawnAgent });
+    joinMeetUrl(r.json.meetingUri, { spawnAgent, onboardingCall });
     // …and get the HUMAN in too. The bot joins inside the Electron webview;
     // the user joins as themselves in their own browser, with their own
     // camera and Google account. Without this the button puts the bot in an
@@ -4719,7 +4723,7 @@ function notifyClaudeSignInNeeded() {
   }).catch(() => { /* dismissed */ });
 }
 
-async function launchClaudeTerminal(meetCode) {
+async function launchClaudeTerminal(meetCode, { onboardingCall = false } = {}) {
   const { execFile } = require('child_process');
   // Test fleets drive the bot from the harness over MCP — they have no use for a
   // spawned agent, and every start_call left another Terminal window on the
@@ -4885,14 +4889,15 @@ async function launchClaudeTerminal(meetCode) {
   // shell command. See tests/claude-model.test.mjs.
   const { claudeModelFlag } = require('./claude-model.js');
   const modelFlag = claudeModelFlag(store.get('claudeModel'));
-  const claudeCmd = `claude${dangerousFlag}${modelFlag}${mcpFlags} \\"/join-call ${meetCode} ${botName.replace(/"/g, '')}\\"`;
+  const slashCmd = onboardingCall ? 'onboarding-call' : 'join-call';
+  const claudeCmd = `claude${dangerousFlag}${modelFlag}${mcpFlags} \\"/${slashCmd} ${meetCode} ${botName.replace(/"/g, '')}\\"`;
 
   // #242: run the agent as our own child instead, when asked to. Everything
   // above (detection, auth nag, workdir, MCP config, bot name) is shared — the
   // only difference is who owns the process and therefore who can see it work.
   if (store.get('agentHosting') === 'headless') {
     const launched = launchClaudeHeadless({
-      meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath,
+      meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall,
     });
     // Falling through to the Terminal path on refusal is deliberate. The
     // alternative is joining a call with an agent that never starts, which
@@ -4963,7 +4968,7 @@ end tell`;
 let headlessAgentChild = null;
 
 // Returns true if the agent is now running headlessly, false to fall back.
-function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath }) {
+function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall = false }) {
   const { buildAgentArgs, headlessBlockedReason, spawnHeadlessAgent } = require('./agent-spawn.js');
 
   const blocked = headlessBlockedReason({ dangerous: dangerousMode });
@@ -4988,6 +4993,7 @@ function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, cla
     dangerous: dangerousMode,
     model: resolveClaudeModel(store.get('claudeModel')),
     mcpConfigPath,
+    onboardingCall,
   });
 
   // The stream becomes the activity source BEFORE the spawn, so the very first
@@ -5486,6 +5492,35 @@ function ensureClaudeIntegration() {
     }
   } catch (err) {
     console.warn('[electron] /call skill install failed:', err.message);
+  }
+
+  // --- Ensure global skill in ~/.claude/skills/onboarding-call/ ---
+  // /onboarding-call is /call's guided-setup sibling: same "start a brand-new
+  // call" mechanics, but the agent runs a scripted walkthrough (name, voice,
+  // emoji, whiteboard style, skills, after-call routine) instead of a normal
+  // conversation. Triggered by the panel's "Setup" button (setupCallBtn),
+  // which passes onboardingCall through createAndJoinMeet → launchClaudeTerminal
+  // / launchClaudeHeadless → buildAgentArgs, picking this slash command over
+  // /join-call. Same version gate as the other two, own directory.
+  try {
+    const onboardingSkillDir = path.join(claudeDir, 'skills', 'onboarding-call');
+    const onboardingVersionFile = path.join(onboardingSkillDir, '.version');
+    let onboardingInstalled = '';
+    try { onboardingInstalled = fs.readFileSync(onboardingVersionFile, 'utf-8').trim(); } catch { /* not yet */ }
+    if (onboardingInstalled !== SKILL_VERSION) {
+      fs.mkdirSync(onboardingSkillDir, { recursive: true });
+      fs.writeFileSync(path.join(onboardingSkillDir, 'SKILL.md'), fs.readFileSync(
+        isPackaged
+          ? path.join(process.resourcesPath, 'mcp-server', 'onboarding-call-skill.md')
+          : path.join(__dirname, '..', 'mcp-server', 'onboarding-call-skill.md'),
+        'utf-8',
+      ));
+      fs.writeFileSync(onboardingVersionFile, SKILL_VERSION);
+      console.log('[electron] Installed/updated /onboarding-call skill v%s', SKILL_VERSION);
+      changed = true;
+    }
+  } catch (err) {
+    console.warn('[electron] /onboarding-call skill install failed:', err.message);
   }
 
   // Agent-activity overlay hook (independent of the MCP/skill version bumps).
@@ -7948,7 +7983,7 @@ function setupIPC() {
     return claudeAuthState;
   });
 
-  ipcMain.handle('create-and-join-meet', async () => createAndJoinMeet());
+  ipcMain.handle('create-and-join-meet', async (_e, opts) => createAndJoinMeet(opts || {}));
 
   // `description` is served from package.json so the About window renders the
   // product line rather than carrying its own copy of it. One source of truth:

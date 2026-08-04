@@ -71,13 +71,15 @@ function cleanAgentEnv(env) {
 // Code installed. An ARRAY, never a string — the bot name is user-supplied and
 // arrives here unescaped, which through the Terminal path meant stripping quotes
 // out of it and hoping.
-function buildAgentArgs({ meetCode, botName, dangerous, model, mcpConfigPath }) {
+function buildAgentArgs({ meetCode, botName, dangerous, model, mcpConfigPath, onboardingCall = false }) {
   const args = [];
   // -p (print/headless) rather than an interactive session: there is no terminal
   // for an interactive one to draw in. The session still runs as long as the
   // agent keeps working — the /join-call loop only ends when it calls leave_call
-  // — so this is "no UI", not "one shot".
-  args.push('-p', `/join-call ${meetCode} ${botName}`.trim());
+  // — so this is "no UI", not "one shot". onboardingCall runs /onboarding-call
+  // instead, which walks the user through setup rather than free conversation.
+  const slashCmd = onboardingCall ? 'onboarding-call' : 'join-call';
+  args.push('-p', `/${slashCmd} ${meetCode} ${botName}`.trim());
   // The whole point: NDJSON events instead of rendered terminal output.
   // --verbose is not optional here; the CLI rejects stream-json without it
   // ("When using --print, --output-format=stream-json requires --verbose").

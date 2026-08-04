@@ -42,6 +42,7 @@ const IS_TROUBLESHOOTING_WINDOW =
 const IS_POPOUT_WINDOW = new URLSearchParams(window.location.search).has('screen');
 
 const joinBtn = document.getElementById('joinBtn');
+const setupCallBtn = document.getElementById('setupCallBtn');
 const meetUrlInput = document.getElementById('meetUrl');
 const callUrlDisplay = document.getElementById('callUrlDisplay');
 const copyCallUrlBtn = document.getElementById('copyCallUrlBtn');
@@ -919,6 +920,10 @@ function updateJoinBtnState() {
   const addMode = isAddToCallMode();
   const name = currentBotName || 'your bot';
 
+  // Only makes sense for a fresh call, same as "Call <bot> now" itself —
+  // there's nothing to "set up" about a call you're merely joining.
+  if (setupCallBtn) setupCallBtn.style.display = addMode ? 'none' : '';
+
   if (callUrlField) callUrlField.style.display = addMode ? '' : 'none';
   if (manualUrlToggle) {
     // ALWAYS visible, including when a call was auto-detected — collapsing it is
@@ -1773,6 +1778,24 @@ joinBtn.addEventListener('click', async () => {
       setJoinPhase(null); // give the button back if we never made it in
     }
   }, 3000);
+});
+
+setupCallBtn?.addEventListener('click', async () => {
+  // Same "start a fresh call" request as joinBtn, plus onboardingCall so the
+  // spawned agent runs /onboarding-call instead of /join-call.
+  setJoinPhase('starting');
+  try {
+    const r = await api.invoke('create-and-join-meet', { onboardingCall: true });
+    if (r?.ok) {
+      if (r.url) { meetUrlInput.value = r.url; detectedCallUrl = r.url; lastKnownCallUrl = r.url; }
+      setJoinPhase('joining');
+      return;
+    }
+    showError(CREATE_MEET_ERRORS[r?.code] || CREATE_MEET_ERRORS.unknown);
+  } catch (err) {
+    showError('Could not start a setup call: ' + err.message);
+  }
+  setJoinPhase(null);
 });
 
 meetUrlInput.addEventListener('keydown', (e) => {

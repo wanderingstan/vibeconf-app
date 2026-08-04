@@ -105,6 +105,13 @@
             <!-- The helper text that used to sit under this button is now its
                  tooltip — true but not worth permanent screen space. -->
             <button id="joinBtn" class="primary" title="Calls open in Chrome/Safari are detected automatically. You can also type /join-call in any Claude Code session.">Call now</button>
+            <!-- Guided setup call: same "start a fresh call" mechanism as joinBtn,
+                 but tells the spawned agent to run /onboarding-call instead of
+                 /join-call, so it walks the user through name/voice/emoji/etc
+                 live instead of having a normal conversation. Hidden in
+                 add-to-call mode (updateJoinBtnState) and in-call (lives inside
+                 .hero-precall, which the call-state toggle already hides). -->
+            <button id="setupCallBtn" class="join-more" title="Run a guided setup call: pick a name, voice, emoji, and more, live in a call">Setup</button>
             <!-- Manual entry. A disclosure triangle: ▸ to open, rotating to
                  point up when it will collapse. The glyph is in a span so CSS
                  can rotate IT rather than the button's pill. -->

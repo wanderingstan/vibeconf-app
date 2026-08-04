@@ -10,7 +10,7 @@ Run a guided **setup call**: a live Meet where this bot walks the user through c
 itself, instead of having a normal open-ended conversation. Triggered by the panel's
 "Setup" button, or by hand with `/onboarding-call`.
 
-This is `/call`'s sibling (same room mechanics, different Step 3). If you haven't read
+This is `/call`'s sibling (same room mechanics, different walkthrough). If you haven't read
 `/call` or `/join-call`, the tool reference there (`wait_for_speech`, `speak`,
 `get_room_info` status polling, mode table, chat, whiteboard sharing) all applies here
 unchanged. This skill only covers what's different: the scripted walkthrough.
@@ -28,7 +28,19 @@ Before anything else, set expectations: this is a working session, not small tal
 > here. Everything's going up on the whiteboard as we go. Say 'skip' on anything, or just
 > leave the call whenever; I'll use sensible defaults for whatever's left."
 
-## Step 3: Walk the steps
+## Step 3: Put the whiteboard on screen — ONCE, before the first step
+
+Call `share_whiteboard` now, before the first `update_whiteboard`.
+
+This is easy to skip and invisible when you do. `update_whiteboard` only sets the board's
+CONTENT; it does not present it. Without a share you will happily write every step to a
+board nobody can see, the call will look like the bot is saying nothing useful, and you
+will have no way to tell from your side — the tool calls all succeed.
+
+Once per call, not once per step. Re-sharing a board that is already up interrupts the
+presentation everyone is already watching.
+
+## Step 4: Walk the steps
 
 Work through the steps below **in order**. For each one:
 
@@ -48,9 +60,9 @@ Work through the steps below **in order**. For each one:
 
 **Check for an early exit between every step**, not just at the start: call `get_room_info`
 and see whether the user's still there. If they've left, stop the walkthrough right there,
-apply defaults for whatever's left unset, and skip to Step 4.
+apply defaults for whatever's left unset, and skip to Step 5.
 
-### 3a. Name
+### 4a. Name
 
 Explain that you're about to say a couple of candidate names out loud so you can both hear
 how Google's live transcript renders them back: a name that doesn't transcribe cleanly is
@@ -62,7 +74,7 @@ If a name was already chosen by the app's desktop setup wizard before this call 
 skip straight to the transcription check on that name (no need to ask again from scratch),
 just confirm it holds up.
 
-### 3b. Voice
+### 4b. Voice
 
 `list_voices` to see what's available (ElevenLabs voices, if a key is configured, plus the
 OS's built-in voices). Put the list on the whiteboard. Then actually let them **hear**
@@ -75,12 +87,12 @@ If no ElevenLabs key is configured, say so plainly and offer to open elevenlabs.
 them (mention it; you can't open a browser yourself from here), then continue with the
 built-in OS voice as the default rather than blocking on it.
 
-### 3c. Emoji set
+### 4c. Emoji set
 
 Whiteboard shows the available sets (`fluent3d`, `twemoji`, `openmoji`, `noto`, `native`).
 Once picked, `set_preference("emojiSet", "<set>")`.
 
-### 3d. Background
+### 4d. Background
 
 Whiteboard cycles through the preset backgrounds shipped with the app
 (`electron-app/backgrounds/presets/*.svg`: city, clouds, desert, forest, mountains,
@@ -90,14 +102,14 @@ night, ocean, skyline) so they can see each one. Once picked, read the SVG file 
 They can also describe a custom background instead of picking a preset (that's fine, just
 generate/describe SVG source for it the same way you would mid-call today).
 
-### 3e. Whiteboard style
+### 4e. Whiteboard style
 
 Render the same short sample content in 2-3 different `set_whiteboard_style` presets, one
 after another, so they see real differences rather than describing CSS in the abstract.
 Once picked, leave that style set (it's already applied; no further action needed beyond
 confirming it stuck).
 
-### 3f. Skills
+### 4f. Skills
 
 **This is the one step most likely to scroll: post the whiteboard URL to chat here even
 if you didn't need to for earlier steps.** `Glob` the user's `.claude/skills/*/SKILL.md`
@@ -107,7 +119,7 @@ use, and when. Once they answer, `Edit` this bot's own `CLAUDE.md` (in the agent
 directory) to add a "## Skills" section recording the decision, so it persists across
 sessions rather than living only in this call's memory.
 
-### 3g. After-call routine
+### 4g. After-call routine
 
 Whiteboard lists what's realistically available given the tools actually connected to this
 session (e.g. email summary if a Gmail-capable MCP is present, posting notes somewhere if a
@@ -115,7 +127,7 @@ messaging one is). Ask what they'd like done automatically after calls: a summar
 nothing, something else. `Edit` CLAUDE.md to add an "## After-call routine" section with
 the decision.
 
-## Step 4: Wrap up
+## Step 5: Wrap up
 
 `update_whiteboard` with a summary of everything decided (or defaulted). `speak` a short
 close:

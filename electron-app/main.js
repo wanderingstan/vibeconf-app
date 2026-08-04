@@ -4370,8 +4370,28 @@ async function warmElevenLabsVoiceNames() {
   try {
     const { voices } = await listElevenLabsVoices();
     if (voices && voices.length) {
-      elevenLabsIdByName = new Map(voices.map((v) => [String(v.name).toLowerCase(), v.id]));
-      console.log('[elevenlabs] cached', elevenLabsIdByName.size, 'voice names for speak(voice:…)');
+      const map = new Map();
+      for (const v of voices) {
+        const full = String(v.name || '').trim();
+        if (!full) continue;
+        map.set(full.toLowerCase(), v.id);
+        // ALSO index the leading name on its own. ElevenLabs library voices are
+        // named "Chris - Charming, Down-to-Earth" / "River - Relaxed, Neutral,
+        // Informative" — a label, not a name. Nobody says that out loud, and an
+        // agent asked to "use George" sends "George".
+        //
+        // This is what made the first version of this fix useless: it matched
+        // exactly, which is correct against the API and wrong against every real
+        // account. Four more silent utterances before it showed up.
+        const short = full.split(/\s+[-–—]\s+/)[0].trim().toLowerCase();
+        // First wins, so a later voice cannot steal an earlier one's short name.
+        // Deterministic (API order) rather than arbitrary, and the full name
+        // always still resolves for whichever one loses.
+        if (short && short !== full.toLowerCase() && !map.has(short)) map.set(short, v.id);
+      }
+      elevenLabsIdByName = map;
+      console.log('[elevenlabs] cached', voices.length, 'voices as',
+        elevenLabsIdByName.size, 'names for speak(voice:…)');
     }
   } catch { /* best-effort; the id path still works */ }
 }
@@ -5477,7 +5497,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '37';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '38';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}

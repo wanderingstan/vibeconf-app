@@ -295,3 +295,29 @@ test('the setup button follows a rename', () => {
   assert.match(body, /updateSetupCallBtnLabel\(\)/);
   assert.match(body, /updateJoinBtnState\(\)/, 'alongside the main button, not instead of it');
 });
+
+test('the troubleshooting columns can actually shrink', () => {
+  // `1fr` is shorthand for `minmax(auto, 1fr)`, so a track can never shrink
+  // below its content's min-content width. The left column holds pre-wrap
+  // monospace blocks (live call state, the caption feed), and one long
+  // unbreakable token — a URL, a room id, a caption without spaces — pushes
+  // that floor past the window.
+  //
+  // Measured live: tracks resolved to 1204.82px / 117.38px inside a 980px
+  // window, so the right column was a sliver with its content clipped. It read
+  // as "the second column disappeared", a beat after opening — both blocks
+  // start EMPTY, so the columns are even until the first live update lands.
+  //
+  // Pinned because `1fr 1fr` looks obviously correct and will be written again.
+  const css = readFileSync(join(root, 'electron-app/renderer/panel.css'), 'utf8');
+  const rule = css.slice(css.indexOf('.ts-cols { display: grid'));
+  const decl = rule.slice(0, rule.indexOf('}'));
+  assert.match(decl, /grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\)/);
+  assert.doesNotMatch(decl, /grid-template-columns: 1fr 1fr/);
+
+  // The other half: with the track free to shrink, a long token has to BREAK
+  // rather than overflow it. Without this the content spills out of the
+  // narrower track instead of being clipped by a wider one — differently
+  // broken, not fixed.
+  assert.match(css, /\.ts-cols \.call-state-debug,[\s\S]{0,120}overflow-wrap: anywhere/);
+});

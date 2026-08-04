@@ -1082,8 +1082,26 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
    (which shares panel.html) is untouched. The pop-out window is widened to
    match; below that width the columns collapse back to one so a resized or
    docked window stays usable rather than clipping. */
-.ts-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; align-items: start; }
-@media (max-width: 720px) { .ts-cols { grid-template-columns: 1fr; } }
+/* minmax(0, 1fr), NOT 1fr.
+   `1fr` is shorthand for `minmax(auto, 1fr)`, so a track can never shrink below
+   its content's min-content width. This column holds pre-wrap monospace blocks
+   (live call state, the caption feed), and ONE long unbreakable line — a URL, a
+   room id, a caption without spaces — pushes that floor past the window.
+   Measured in the wild: tracks resolved to 1204.82px / 117.38px in a 980px
+   window, so the right column was squeezed to a sliver and its content clipped.
+   It looked like the column had vanished, and it did so a beat after opening —
+   both blocks start empty, so the columns are even until the first live update
+   lands. minmax(0, …) lets the track shrink and hands the overflow to the
+   wrapping rules below, where it belongs. */
+.ts-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 24px; align-items: start; }
+@media (max-width: 720px) { .ts-cols { grid-template-columns: minmax(0, 1fr); } }
+/* The other half of the fix: with the track free to shrink, a long token must
+   actually break rather than overflow it. break-word alone does not touch a
+   single unbroken run of characters — anywhere does. */
+.ts-cols .call-state-debug,
+.ts-cols .caption-feed,
+.ts-cols pre,
+.ts-cols code { overflow-wrap: anywhere; }
 /* The first .section in each column has a top border+margin that reads as a
    stray rule under the column head. */
 .ts-cols > div > .section:first-child { margin-top: 0; padding-top: 0; border-top: none; }

@@ -88,10 +88,13 @@ test('feedback goes through a single handler', () => {
 
 test('the troubleshooting screen is two columns, and degrades to one', () => {
   assert.match(tsScreen, /class="ts-cols"/);
-  assert.match(panelCss, /\.ts-cols \{[^}]*grid-template-columns: 1fr 1fr/);
+  // minmax(0, 1fr), not 1fr — see the shrink test in brain-pane.test.mjs. Bare
+  // 1fr let the left column grow to 1204px inside a 980px window and squeeze
+  // this one to a sliver, which read as "the second column disappeared".
+  assert.match(panelCss, /\.ts-cols \{[^}]*grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\)/);
   // The same panel.html renders the NARROW in-app panel, and this window can be
   // resized. Without the collapse, either would clip rather than reflow.
-  assert.match(panelCss, /@media \(max-width: 720px\)[^}]*\{[^}]*grid-template-columns: 1fr/);
+  assert.match(panelCss, /@media \(max-width: 720px\)[^}]*\{[^}]*grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(main, /width: 980,/, 'the pop-out has to be wide enough for two columns');
 });
 

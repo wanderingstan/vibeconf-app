@@ -230,22 +230,42 @@ confirming it stuck). If they describe one, apply it and show the same sample co
 so they can see the result and adjust — "warmer", "bigger text" — rather than accepting the
 first attempt out of politeness.
 
-### 4f. Skills
+### 4f. What you can do — skills AND connected tools
 
 **This is the one step most likely to scroll: post the whiteboard URL to chat here even
-if you didn't need to for earlier steps.** `Glob` the user's `.claude/skills/*/SKILL.md`
-yourself (this machine's normal skill directory) and put the full list on the whiteboard:
-name and one-line description per skill, not just a name. Ask which ones this bot should
-use, and when. Once they answer, `Edit` this bot's own `CLAUDE.md` (in the agent's working
-directory) to add a "## Skills" section recording the decision, so it persists across
-sessions rather than living only in this call's memory.
+if you didn't need to for earlier steps.**
+
+Two sources, and the second is the one that gets forgotten:
+
+1. **Skills** — `Glob` the user's `.claude/skills/*/SKILL.md` (this machine's normal skill
+   directory) and list name plus a one-line description each, not just names.
+2. **Connected MCP servers** — look at the tools you actually have in THIS session and group
+   them by server: Gmail, Google Calendar, Slack, image generation, a browser, whatever is
+   wired up. You do not need to go looking for these; they are in your own tool list.
+
+List both on the board, together, under what they let you DO rather than what they are
+called — "read and send your email", "generate images", "post to Slack" — since the point is
+for the user to recognise a capability, and "nanobanana" tells them nothing.
+
+Skills alone undersell you badly: a bot listing four slash commands while quietly holding
+Gmail and an image generator reads as far less capable than it is, and the user has no way
+to know what was left out. This is also the material step 4g needs — someone cannot ask for
+an emailed summary after each call if nobody mentioned that email is available.
+
+Ask which of it this bot should use, and when. Then `Edit` this bot's own `CLAUDE.md` (in the
+agent's working directory) to record the decision under "## Skills" / "## Tools", so it
+persists across sessions rather than living only in this call's memory.
 
 ### 4g. After-call routine
 
-Whiteboard lists what's realistically available given the tools actually connected to this
-session (e.g. email summary if a Gmail-capable MCP is present, posting notes somewhere if a
-messaging one is). Ask what they'd like done automatically after calls: a summary email,
-nothing, something else. `Edit` CLAUDE.md to add an "## After-call routine" section with
+Build this out of what 4f just surfaced — the connected servers are the menu. If Gmail is
+wired up, "a summary in your inbox after every call" is a real offer; if Slack is, so is
+"posted to a channel"; with an image generator, "a diagram of what we covered". Name the
+concrete options rather than asking the open question "what would you like?", which invites
+a shrug from someone who does not know what is possible.
+
+Ask what they'd like done automatically after calls: a summary email, nothing, something
+else. `Edit` CLAUDE.md to add an "## After-call routine" section with
 the decision.
 
 ## Step 5: Wrap up
@@ -255,6 +275,22 @@ close:
 
 > "All set, here's what I've got. You can change any of this later just by asking me."
 
+**Then say what happens next, because the call does not end itself.** Two things, both of
+which people otherwise sit and wonder about:
+
+> "Tell me when you're done and I'll drop off — or if you'd like to introduce me to someone,
+> invite them in and we'll carry on."
+
+Leaving is the one that matters: setup is finished, the whiteboard is full, and there is no
+obvious signal that the bot is waiting rather than working. Someone who does not know they
+can simply say "you can go" will close the tab on you, or worse, sit through a silence
+wondering whether something is still running.
+
+The invite half is worth saying because this is the moment a new bot is most fun to show
+someone, and nothing about a setup call suggests you can just add people to it.
+
 Then continue as a normal call would from here: if they keep talking, you can either
-`leave_call` if they're done, or just keep going as a regular conversation (the same loop
-`/join-call` describes) if they want to use the bot for something else right away.
+`leave_call` when they say they're done, or just keep going as a regular conversation (the
+same loop `/join-call` describes) if they want to use the bot for something else right away.
+If someone new joins, greet them by name and carry on — you are a normal call now, not a
+wizard.

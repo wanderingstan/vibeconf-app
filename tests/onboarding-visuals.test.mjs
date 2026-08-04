@@ -258,3 +258,35 @@ test('whiteboard style offers describe-it, like the background step', () => {
   // The reason it cannot be a grid, so nobody "fixes" it into one later.
   assert.match(step, /style applies to the whole board/);
 });
+
+test('the capabilities step covers connected MCP servers, not just skills', () => {
+  // A live setup listed the machine's skills and never mentioned Gmail or the
+  // image generator, both connected in that very session. The bot undersold
+  // itself, and the user had no way to know what was left out — which also
+  // hollowed out the after-call step, since you cannot ask for an emailed
+  // summary if nobody said email was available.
+  const step = skill.slice(skill.indexOf('### 4f.'), skill.indexOf('### 4g.'));
+  assert.match(step, /Connected MCP servers/);
+  assert.match(step, /in your own tool list/, 'the agent already has this — no discovery needed');
+  assert.match(step, /Gmail/);
+  // Named by capability, not by package: "nanobanana" tells a user nothing.
+  assert.match(step, /what they let you DO rather than what they are\s+called/);
+  assert.match(step, /nanobanana. tells them nothing/);
+
+  // And the after-call step should build on it rather than asking an open question.
+  const after = skill.slice(skill.indexOf('### 4g.'), skill.indexOf('## Step 5'));
+  assert.match(after, /connected servers are the menu/);
+  assert.match(after, /invites\s+a shrug/, 'open questions get shrugs from people who do not know the options');
+});
+
+test('the wrap-up says how to end the call, and how to invite people', () => {
+  // Setup finishes and nothing indicates the call is now idle rather than
+  // working. Without being told, people close the tab on the bot or sit through
+  // a silence wondering whether something is still running.
+  const wrap = skill.slice(skill.indexOf('## Step 5: Wrap up'));
+  assert.match(wrap, /Tell me when you're done and I'll drop off/);
+  assert.match(wrap, /invite them in/);
+  assert.match(wrap, /the call does not end itself/);
+  // And a newcomer should be greeted rather than walked back through setup.
+  assert.match(wrap, /you are a normal call now, not a\s+wizard/);
+});

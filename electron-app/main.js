@@ -5063,9 +5063,25 @@ process.stdin.on('end', () => {
   if (!transcriptPath) return done();
   const port = process.env.VIBECONF_LOCAL_PORT || '7865';
   const body = JSON.stringify({ sessionId: d.session_id, transcriptPath });
+  // #201 made the control API require a bearer token, and this hook was not
+  // updated — so every POST here 401'd from Aug 1 and the agent session was
+  // never bound. Nothing surfaced it: the hook swallows all errors by design,
+  // and a hook that silently stops working looks exactly like a hook that has
+  // nothing to report. The visible symptom was the avatar never reaching
+  // 🧑‍💻 working (#339), because that state is driven entirely by this feed.
+  //
+  // Same 0600 file the MCP server reads, keyed by port.
+  let token = '';
+  try {
+    token = fs.readFileSync(
+      require('path').join(require('os').homedir(), '.vibeconferencing', 'local-tokens', port + '.token'),
+      'utf8').trim();
+  } catch (e) { /* no token file — server may be running with auth off */ }
+  const headers = { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) };
+  if (token) headers.authorization = 'Bearer ' + token;
   const req = http.request({
     host: '127.0.0.1', port, path: '/api/agent-session', method: 'POST',
-    headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
+    headers,
     timeout: 500,
   }, (res) => { res.resume(); res.on('end', done); });
   req.on('error', done);

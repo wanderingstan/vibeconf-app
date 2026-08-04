@@ -85,6 +85,14 @@
     // the bot heard them. Suppressed in silent mode (the bot is meant to
     // be a fly on the wall there).
     static HEARING_EMOJI = '\u{1F610}'; // 😐 neutral face
+    // 🫤 the gap between "you stopped talking" and "the turn resolved" — roughly
+    // defaultSilenceSeconds, ~1.4s. The face used to hold 😐 through it, which
+    // is honest but says nothing; the bot is measurably slower to answer than a
+    // human, so the seconds before it starts thinking are exactly where the room
+    // most needs a sign it is on the case. Diagonal mouth reads as "hm, are you
+    // done?" and sits naturally between 😐 and 🤔, so the sequence looks like one
+    // face progressing rather than three unrelated ones.
+    static SETTLING_EMOJI = '\u{1FAE4}'; // 🫤 heard you, waiting to see if you're finished
 
     constructor(width, height) {
       this.canvas = document.createElement('canvas');
@@ -347,8 +355,13 @@
       const stillInGrace = !this.anyoneSpeaking
         && this.lastAnyoneSpeakingFalseAt > 0
         && (Date.now() - this.lastAnyoneSpeakingFalseAt) < HEARING_GRACE_MS;
-      const hearing = ((this.anyoneSpeaking || stillInGrace) && this.mode !== 'silent' && !this.speaking && this.state !== 'thinking' && this.state !== 'speaking' && this.state !== 'yielding')
-        ? VirtualCamera.HEARING_EMOJI : null;
+      const attentive = (this.anyoneSpeaking || stillInGrace) && this.mode !== 'silent'
+        && !this.speaking && this.state !== 'thinking' && this.state !== 'speaking' && this.state !== 'yielding';
+      // Two faces for one window, split on whether they are STILL talking. The
+      // grace half was previously indistinguishable from active listening.
+      const hearing = attentive
+        ? (this.anyoneSpeaking ? VirtualCamera.HEARING_EMOJI : VirtualCamera.SETTLING_EMOJI)
+        : null;
       const activityEmoji = this.state === 'yielding'
         ? (this.yieldingEmojiOverride || VirtualCamera.ACTIVITY_EMOJIS.yielding)
         : VirtualCamera.ACTIVITY_EMOJIS[this.state];
@@ -389,7 +402,7 @@
         const reason = notOnLine ? `callStatus=${this.callStatus} hasEngaged=${this.hasEngaged}` :
           audioPlaying ? `audio playing (state=${this.state}${this.speakingEmojiOverride ? ' override' : ''})` :
           activityEmoji ? `state=${this.state}${this.state === 'yielding' && this.yieldingEmojiOverride ? ' (yielding override)' : ''}` :
-          hearing ? `hearing (anyoneSpeaking=true)` :
+          hearing ? (this.anyoneSpeaking ? `hearing (anyoneSpeaking=true)` : `settling (speech stopped, awaiting turn)`) :
           this.state === 'idle' ? `state=idle${this.idleEmojiOverride ? ' (idle override)' : ' (between turns)'}` :
           `mode=${this.mode}${this.listeningEmojiOverride && this.mode === 'active' ? ' (listening override)' : ' (listening)'}`;
         window.postMessage({

@@ -4187,7 +4187,9 @@ function speakText(text, voice, emoji) {
           voiceboxEngine: profile.preset_engine || profile.default_engine || 'kokoro',
         });
       } else {
-        tts.updateConfig({ provider: 'elevenlabs', voiceId: voice });
+        // A NAME or an id — resolve, because the two branches above both accept
+        // names and an agent has no reason to think this one is different.
+        tts.updateConfig({ provider: 'elevenlabs', voiceId: resolveElevenLabsVoice(voice) });
       }
     }
     // #372: start the mic-unmute NOW so its 300ms settle runs concurrently
@@ -4359,6 +4361,31 @@ async function listVoiceboxProfiles() {
 //
 // `category` ('premade' / 'cloned' / 'professional' / 'generated') lets the UI
 // surface custom/cloned voices distinctly if it wants.
+// ElevenLabs voice NAME (lowercased) → voice_id, for speak()'s voice override.
+// Empty until warmed, and empty is safe: the override falls back to treating the
+// string as an id, which is the behaviour that existed before.
+let elevenLabsIdByName = new Map();
+
+async function warmElevenLabsVoiceNames() {
+  try {
+    const { voices } = await listElevenLabsVoices();
+    if (voices && voices.length) {
+      elevenLabsIdByName = new Map(voices.map((v) => [String(v.name).toLowerCase(), v.id]));
+      console.log('[elevenlabs] cached', elevenLabsIdByName.size, 'voice names for speak(voice:…)');
+    }
+  } catch { /* best-effort; the id path still works */ }
+}
+
+// Resolve whatever speak() was handed into a real voice_id.
+//
+// A NAME wins over treating the string as an id, because ids are opaque
+// 20-character tokens that cannot collide with a human-readable name — so a
+// match here is unambiguous, and a miss still falls through to the old
+// behaviour for anyone who passes a genuine id.
+function resolveElevenLabsVoice(voice) {
+  return elevenLabsIdByName.get(String(voice).toLowerCase()) || voice;
+}
+
 async function listElevenLabsVoices(apiKey) {
   const { classifyVoicesError, classifyVoicesNetworkError } = require('./elevenlabs-errors.js');
   const key = apiKey || store?.get('ttsApiKey');
@@ -5922,6 +5949,15 @@ app.whenReady().then(async () => {
   // a profile name to the voicebox provider (best-effort: silently empty if
   // Voicebox isn't running).
   listVoiceboxProfiles().then((ps) => { voiceboxProfileNameSet = new Set(ps.map((p) => p.name)); voiceboxProfilesById = new Map(ps.map((p) => [p.id, p])); }).catch(() => {});
+  // …and for ElevenLabs voice NAMES. Without this, speak(voice: 'George') sent
+  // "George" to the API as a voice_id and 404'd — the bot simply went silent,
+  // which is how this surfaced (three dead utterances in a guided setup call:
+  // Chris, River, George).
+  //
+  // Names are what an agent has to work with: list_voices returns both, but a
+  // conversation is about "the British one", not nPczCjzI2devNBz1zQrb. The
+  // other two providers already accept names; ElevenLabs was the odd one out.
+  warmElevenLabsVoiceNames();
 
   // P2 real voices: if no ElevenLabs key is stored, load it from a credentials file
   // pointed at by VIBECONF_CREDENTIALS_FILE (de-hardcoded — no baked-in personal

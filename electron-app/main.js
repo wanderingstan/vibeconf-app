@@ -767,6 +767,21 @@ const localServer = new globalThis.LocalServer({
   },
   onJoinCall: (meetCode, botName) => {
     console.log('[local-server] Join call requested by agent:', meetCode, botName);
+    // Joining cancels any pending after-call teardown.
+    //
+    // leave_call arms a timer (afterCallWorkSeconds, 300 by default) that ends
+    // the agent when the wrap-up window expires. Nothing cleared it on a JOIN, so
+    // an agent that left and came back inside that window was still carrying its
+    // own execution date: the timer fired mid-call, tore the call down and killed
+    // the agent, for no reason visible from inside the room.
+    //
+    // That makes leave-then-rejoin viable, which matters — it is the only way to
+    // change the Meet display name, since Meet takes it at join (#249).
+    if (_afterCallWorkTimer) {
+      console.log('[electron] Join during after-call work — cancelling the pending teardown');
+      clearTimeout(_afterCallWorkTimer);
+      _afterCallWorkTimer = null;
+    }
     logSessionHeaderUpdate('roomId', meetCode);
     if (botName) {
       // #212: do NOT persist to the store — that's the user's panel preference
@@ -5497,7 +5512,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '42';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '43';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}

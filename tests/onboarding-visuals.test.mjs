@@ -140,27 +140,35 @@ test('the native cell names the platform only when it is known', () => {
 });
 
 
-test('neither skill tells the agent to rejoin mid-call', () => {
-  // A guided setup renamed the bot, and the tile kept the old name. /join-call
-  // said to leave and rejoin; the agent refused because leaving would end its
-  // session — and it was RIGHT:
+test('a rejoin cancels the pending after-call teardown', () => {
+  // leave_call arms a timer (afterCallWorkSeconds, 300 by default) that ends the
+  // agent when the wrap-up window expires. Nothing cleared it on a JOIN, so an
+  // agent that left and came back inside that window was carrying its own
+  // execution date: the timer fired mid-call, tore the call down and killed the
+  // agent, with no cause visible from inside the room.
   //
-  //   leave_call → beginAfterCallWorkOrTeardown → finishCall
-  //              → panel 'leave-requested' → 'leave-meet' → closeClaudeTerminal()
+  // This is what makes leave-then-rejoin viable, and leave-then-rejoin is the
+  // only way to change the Meet display name — Meet takes it at join (#249).
+  const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
+  const fn = main.slice(main.indexOf('onJoinCall: (meetCode, botName)'));
+  const body = fn.slice(0, fn.indexOf('logSessionHeaderUpdate'));
+  assert.match(body, /clearTimeout\(_afterCallWorkTimer\)/);
+  assert.match(body, /_afterCallWorkTimer = null/);
+});
+
+test('both skills give the rename flow in the order that works', () => {
+  // A guided setup renamed the bot and the tile kept the old name. The agent
+  // would not leave and rejoin (correctly — leaving alone ends its session), so
+  // it joined again WITHOUT leaving and left a zombie participant.
   //
-  // So the documented remedy cannot work: after leaving there is no agent to
-  // rejoin with. What it did instead — join again WITHOUT leaving — left the old
-  // participant in the room as a zombie. Both branches were bad, which is why
-  // this is #249 and not a wording tweak.
-  // NB: not `join` — that is node:path's join, imported at the top of this file.
+  // Leave-then-rejoin is fine; the order is the whole thing.
   const joinSkill = readFileSync(join(root, 'mcp-server/join-call-skill.md'), 'utf8');
   for (const [name, text] of [['onboarding', skill], ['join-call', joinSkill]]) {
-    assert.match(text, /Never `join_call` again without leaving|Do not `join_call` again under the new name/,
-      `${name} must forbid the zombie path`);
-    assert.match(text, /#249/, `${name} should point at the tracking issue`);
+    assert.match(text, /Leave BEFORE (you )?rejoin/i, `${name} must state the order`);
+    assert.match(text, /zombie/, `${name} should say what going the other way costs`);
+    assert.match(text, /after-call work window/, `${name} should explain why it is safe`);
   }
-  // And the onboarding call must not follow the old advice: renaming is step 4a,
-  // so obeying it would kill the agent a third of the way through setup.
-  assert.match(skill, /Do not `leave_call` and rejoin/);
-  assert.match(skill, /leaving ends your session/i);
+  // And promptness matters: the window is finite.
+  assert.match(skill, /rejoin as the very next tool call/);
 });
+

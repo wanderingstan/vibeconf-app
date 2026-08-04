@@ -74,22 +74,27 @@ If a name was already chosen by the app's desktop setup wizard before this call 
 skip straight to the transcription check on that name (no need to ask again from scratch),
 just confirm it holds up.
 
-**Your Meet tile will keep the OLD name for the rest of this call — say so, and do not try
-to fix it.** The display name is handed to Meet when you join and cannot change in place.
-The preference IS saved: the new name is yours from the next call onward.
+**Your Meet tile still says the OLD name — Meet takes the display name at join and will not
+change it in place.** You can fix that without ending the call, but only in this exact order:
 
-Two things not to do, both of which make it worse:
+1. Tell them what is about to happen: *"I'll pop out and straight back in so the name sticks
+   — give me a couple of seconds."*
+2. `leave_call`
+3. `join_call` with the SAME room id, immediately.
 
-- **Do not `leave_call` and rejoin.** `/join-call` suggests that, and it is wrong for you:
-  leaving ends your session (the app tears down the agent with the call), so there would be
-  nobody left to rejoin, and the setup call would just stop halfway through.
-- **Do not `join_call` again under the new name without leaving.** That puts a second
-  participant in the room while the first sits there inert — a zombie the user then has to
-  clear up.
+**Leave BEFORE you rejoin, never the other way round.** Joining again while still in the room
+puts a second participant there and leaves the first sitting inert — a zombie the user has to
+clear up.
 
-Just tell them plainly: *"Your tile will still say <old name> until the next call — the name
-is set when I join. It's saved, so I'll be <new name> from then on."* Then carry on with the
-setup. (#249 tracks making this actually work mid-call.)
+Why this is safe, and why it looks like it should not be: `leave_call` does begin tearing the
+call down, and if you leave and never come back it ends your session. But leaving first opens
+the after-call work window (five minutes by default), and you are alive for all of it — so a
+rejoin inside that window is an ordinary join, and the teardown is cancelled when you come
+back. What you must not do is dawdle: rejoin as the very next tool call, not after a
+conversation.
+
+If the rejoin fails for any reason, say so and carry on with the setup — the name is already
+saved either way and applies to the next call regardless.
 
 ### 4b. Voice
 

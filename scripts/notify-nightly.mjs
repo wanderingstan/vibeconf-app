@@ -18,7 +18,7 @@ import { homedir } from 'os';
 import { execSync, execFileSync } from 'child_process';
 
 const RESULTS = process.env.VIBECONF_RESULTS_DIR || join(homedir(), 'vibeconf-test-results');
-const CHAT = process.env.VIBECONF_NOTIFY_CHAT || '-5140242529'; // shared group
+const CHAT = process.env.VIBECONF_NOTIFY_CHAT || '-1003818025476'; // shared group
 const ENV_FILE = process.env.VIBECONF_TELEGRAM_ENV || join(homedir(), '.claude/channels/telegram/.env');
 
 function lastLine(file) {

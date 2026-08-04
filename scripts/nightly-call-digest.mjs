@@ -62,7 +62,7 @@ const ARCHIVE_DIR = path.resolve(
   process.env.VIBECONF_ARCHIVE_DIR || path.join(REPO_ROOT, '..', 'vibeconferencing', 'logs-archive')
 );
 const DIGEST_DIR = path.resolve(process.env.VIBECONF_DIGEST_DIR || path.join(homedir(), 'vibeconf-call-digests'));
-const CHAT = process.env.VIBECONF_NOTIFY_CHAT || '-5140242529'; // shared group, matches notify-nightly.mjs
+const CHAT = process.env.VIBECONF_NOTIFY_CHAT || '-1003818025476'; // shared group, matches notify-nightly.mjs
 const ENV_FILE = process.env.VIBECONF_TELEGRAM_ENV || path.join(homedir(), '.claude/channels/telegram/.env');
 const DISK_WARN_PCT = Number(process.env.VIBECONF_DISK_WARN_PCT || 80);
 const SESSION_ENV_FILE = process.env.VIBECONF_SESSION_ENV

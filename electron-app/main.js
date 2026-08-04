@@ -1600,6 +1600,20 @@ const localServer = new globalThis.LocalServer({
     }
   },
 
+  // The countdown to the bot taking its turn. Pushed on every arm/re-arm so the
+  // animation always lands on the real moment — the deadline genuinely moves
+  // (name-mention fast-resolve, and the #372 re-arm that corrects a late timer),
+  // and a countdown that finishes at the wrong time is worse than none: the
+  // whole value is that the room learns to trust the endpoint.
+  onSilenceGateChange: (gate) => {
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('extension-message', {
+        action: 'set-silence-gate',
+        payload: gate,   // { deadline, from } or null
+      });
+    }
+  },
+
   onAnyoneSpeakingChange: (anyoneSpeaking) => {
     // Forward to page-inject so the avatar can flash 😐 while someone speaks
     // (signals "I noticed you"). Page-inject suppresses this in silent mode.

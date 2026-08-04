@@ -136,6 +136,9 @@
       // True while at least one participant is currently speaking (from
       // DOMSpeakerTracker). Suppressed when mode='silent'.
       this.anyoneSpeaking = false;
+      // { deadline, from } while the silence gate is pending — drives the
+      // pendulum that returns to level exactly when the bot takes its turn.
+      this.silenceGate = null;
       // When the floor last went quiet. Drives the post-speech grace window
       // (see HEARING_GRACE_MS in the emoji waterfall).
       this.lastAnyoneSpeakingFalseAt = 0;
@@ -616,12 +619,43 @@
       } else {
         this._deadSince = 0;
       }
+      // The turn countdown: a pendulum that swings out and returns to LEVEL at
+      // the exact moment the silence gate fires and the bot takes its turn.
+      //
+      // Level-is-the-endpoint is the point. A fill or a fade has no unmistakable
+      // finish, but "back where it started" does, so the room can learn — without
+      // being told — how long they have before the bot speaks. The bot answers
+      // slower than a human, and those seconds are where people either wait or
+      // talk over it.
+      //
+      // Driven by the server's ABSOLUTE deadline, re-read every frame, because
+      // that deadline moves: name-mention resolves faster, and #372's re-arm
+      // corrects a late timer. A fixed 1.4s sweep would land wrong often enough
+      // to teach the opposite lesson.
+      //
+      // Suppressed while anyone is still speaking — the window only means
+      // anything once the floor is quiet — and while the bot is speaking or
+      // yielding, where other motion already owns the face.
+      let gateTilt = 0;
+      const gate = this.silenceGate;
+      if (gate && !this.anyoneSpeaking && !this.speaking
+          && this.state !== 'speaking' && this.state !== 'yielding') {
+        const span = gate.deadline - gate.from;
+        if (span > 0) {
+          const p = (Date.now() - gate.from) / span;
+          if (p >= 0 && p <= 1) {
+            // One half-cycle: 0 → peak → 0. sin(πp) is exactly that, and its
+            // slope eases in and out on its own, so no extra easing is needed.
+            gateTilt = Math.sin(Math.PI * p) * 0.14; // ~8° peak
+          }
+        }
+      }
       const peeking = ghostRise > 0;
       const agentTiltNow = peeking ? agentTilt * PEEK_TILT_SCALE : agentTilt;
       const peekShift = peeking ? (this._agentJostleDir || 0) * PEEK_SHIFT_PX : 0;
       ctx.translate(cx + thinkSway + peekShift, cy + bob - speakBounce + ghostRise);
-      if (speakTilt || tickTilt || agentTiltNow || deadFlip || mentionTilt) {
-        ctx.rotate(speakTilt + tickTilt + agentTiltNow + deadFlip + mentionTilt);
+      if (speakTilt || tickTilt || agentTiltNow || deadFlip || mentionTilt || gateTilt) {
+        ctx.rotate(speakTilt + tickTilt + agentTiltNow + deadFlip + mentionTilt + gateTilt);
       }
       if (this.speaking) {
         ctx.scale(speakScaleX * tickPop * mentionPop, speakScaleY * tickPop * mentionPop);
@@ -1697,6 +1731,15 @@
           for (const cam of cameras.values()) cam.mode = payload.mode;
           avatarState.mode = payload.mode; // seed future cameras
           console.debug('[bots-in-calls] Bot mode:', payload.mode);
+        }
+        break;
+
+      // The countdown to the bot taking its turn (absolute deadline, or null).
+      // Absolute rather than a duration because the server re-arms: a duration
+      // captured at arm time would be stale the moment the gate is corrected.
+      case 'set-silence-gate':
+        for (const cam of cameras.values()) {
+          cam.silenceGate = payload && payload.deadline ? payload : null;
         }
         break;
 

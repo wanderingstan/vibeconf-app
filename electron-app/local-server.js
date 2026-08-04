@@ -79,7 +79,7 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref, extraRoutes } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
     // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
     // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
@@ -138,6 +138,14 @@ class LocalServer {
     // answer). Drives a purely cosmetic avatar reaction; carries no payload.
     this.onNameMentioned = onNameMentioned || (() => {});
     this.onAnyoneSpeakingChange = onAnyoneSpeakingChange || (() => {}); // boolean
+    // The moment the silence gate will fire, so the avatar can run a countdown
+    // that ENDS exactly when the bot takes its turn. Absolute ms, or null when
+    // no gate is pending. Must be pushed on every re-arm: the deadline moves
+    // (name-mention fast-resolve, and the #372 correction that re-arms earlier),
+    // and a countdown that finishes at the wrong moment teaches the room to
+    // distrust it — worse than showing nothing.
+    this.onSilenceGateChange = onSilenceGateChange || (() => {}); // ({ deadline, from } | null)
+    this._silenceGateAt = null;
     this.onCaptionsChange = onCaptionsChange || (() => {}); // boolean — true=on, false=off (=== deaf)
     this.onWorkingMemoryChange = onWorkingMemoryChange || (() => {}); // ({understanding, stance, updatedAt, updatedBy})
     this.onComprehensionDue = onComprehensionDue || (async () => {}); // async (transcriptText, workingMemory) — background refresh
@@ -2156,6 +2164,7 @@ class LocalServer {
       if (elapsed >= silenceMs) {
         // Silence threshold already met — resolve immediately
         console.log(ts(), '⏱️  [resolve] Silence threshold met (' + Math.round(elapsed) + 'ms ≥ ' + silenceMs + 'ms' + (effSilence < waiter.silence ? ', name-mention fast-resolve' : '') + ') — resolving');
+        this._announceSilenceGate(null);   // no window to show — it resolved on arrival
         this._resolveWaiter(waiter, 'silence');
       } else {
         // Arm (or RE-ARM) the silence timer for the true remaining time.
@@ -2176,15 +2185,38 @@ class LocalServer {
         if (!waiter.silenceTimer || fireAt < (waiter.silenceTimerAt || Infinity) - 25) {
           if (waiter.silenceTimer) clearTimeout(waiter.silenceTimer);
           waiter.silenceTimerAt = fireAt;
+          this._announceSilenceGate(fireAt, silenceStart);
           waiter.silenceTimer = setTimeout(() => {
             waiter.silenceTimer = null;
             waiter.silenceTimerAt = null;
+            this._announceSilenceGate(null);
             // Re-check: someone may have started speaking during the wait
             this._checkWaiters();
           }, remaining);
         }
       }
     }
+  }
+
+  // Tell the avatar when the silence gate will fire, so it can animate a
+  // countdown that lands on the moment rather than guessing a duration.
+  //
+  // Deduped on the deadline: _checkWaiters runs on every caption event, so a
+  // talkative moment would otherwise push dozens of identical announcements a
+  // second. A 25ms slop matches the re-arm guard above — below that the deadline
+  // has not meaningfully moved and re-targeting the animation would only make it
+  // stutter.
+  _announceSilenceGate(deadline, from) {
+    const prev = this._silenceGateAt;
+    if (deadline == null) {
+      if (prev == null) return;
+      this._silenceGateAt = null;
+      try { this.onSilenceGateChange(null); } catch { /* renderer gone */ }
+      return;
+    }
+    if (prev != null && Math.abs(deadline - prev) < 25) return;
+    this._silenceGateAt = deadline;
+    try { this.onSilenceGateChange({ deadline, from: from || Date.now() }); } catch { /* renderer gone */ }
   }
 
   // #222: best-effort check whether `name` is already present in the call —

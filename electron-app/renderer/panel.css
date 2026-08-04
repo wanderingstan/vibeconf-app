@@ -1161,8 +1161,17 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
   /* Fills the window: this is the only content on the screen, and a fixed
      height would waste a pane the user opened specifically to read. */
   height: calc(100vh - 150px); overflow-y: auto;
+  /* The app sets user-select:none globally (it is chrome, not a document), and
+     that was swallowing this feed too. But this pane is EXACTLY the case the
+     global rule is wrong about: it exists to be read and copied out of — a tool
+     input or an error line pasted into an issue is most of its value during
+     debugging. Opt back in, and take the I-beam so it looks selectable. */
+  user-select: text; cursor: text;
 }
 .brain-feed .l-say  { color: #e8eaed; }
 .brain-feed .l-tool { color: #8ab4f8; }
 .brain-feed .l-ask  { color: #fdd663; }
+/* Reasoning. Dimmer than speech and italic — it is the agent's private working,
+   so it should read as an aside rather than compete with what it actually said. */
+.brain-feed .l-think { color: #c58af9; font-style: italic; }
 .brain-feed .l-none { color: #9aa0a6; font-style: italic; }

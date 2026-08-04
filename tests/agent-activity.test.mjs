@@ -149,3 +149,28 @@ test('a transcript bind still works when no stream source is live', () => {
   assert.equal(s._agentSource.kind, 'transcript');
   assert.equal(s._agentSource.path, '/tmp/nope.jsonl', 'the tail must actually be bound');
 });
+
+test('thinking blocks are formatted when non-empty, skipped when empty', () => {
+  // MEASURED 2026-08-04 against CLI 2.1.219: every thinking block the CLI emits
+  // has `signature` set and `thinking` EMPTY — 1,159 of them in a single
+  // session's transcript, zero characters between them. Identical through the
+  // stream transport, with and without --include-partial-messages, and
+  // --thinking-display accepts only summarized|omitted.
+  //
+  // So the empty case is not a defensive edge — it is TODAY'S ONLY CASE, and
+  // without the guard the pane fills with blank 💭 lines. The non-empty case is
+  // asserted so the day the CLI starts populating it, it just works.
+  const { formatEntry } = require('../electron-app/agent-transcript.js');
+  const think = (t) => formatEntry({ type: 'assistant', message: { content: [{ type: 'thinking', thinking: t, signature: 'abc' }] } });
+  assert.deepEqual(think(''), [], "today's shape must produce nothing");
+  assert.deepEqual(think('   '), []);
+  assert.deepEqual(think('weighing two options'), ['💭 weighing two options']);
+});
+
+test('reasoning reaches BOTH transports through the one normaliser', () => {
+  // The payoff of a shared formatEntry: handling thinking once covers the
+  // tailed transcript and the live stream, with no second parser to keep in step.
+  const { src, state } = collect();
+  src.push(frame({ type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'hmm', signature: 's' }] } }));
+  assert.deepEqual(state.lines, ['💭 hmm']);
+});

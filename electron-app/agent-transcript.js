@@ -69,6 +69,25 @@ function formatEntry(entry) {
         for (const block of content) {
           if (block.type === 'text' && block.text && block.text.trim()) {
             out.push('🗣 ' + oneLine(block.text));
+          } else if (block.type === 'thinking') {
+            // Reasoning, when we are given any.
+            //
+            // MEASURED 2026-08-04, CLI 2.1.219: we are not. The block arrives
+            // with `signature` set and `thinking` an EMPTY STRING — 1,159 of them
+            // in one session's transcript, zero characters between them. Same
+            // through the stream transport, with or without
+            // --include-partial-messages (thinking_delta is empty too), and
+            // --thinking-display only accepts summarized|omitted, neither of
+            // which populates it.
+            //
+            // So this is plumbing for a payload the CLI currently withholds. Kept
+            // because it is three lines, it serves BOTH transports through the one
+            // normaliser, and it starts working by itself if that ever changes.
+            // The empty guard is what stops it rendering a column of blank 💭 in
+            // the meantime.
+            if (block.thinking && block.thinking.trim()) {
+              out.push('💭 ' + oneLine(block.thinking));
+            }
           } else if (block.type === 'tool_use') {
             const b = briefToolInput(block.input);
             out.push('🔧 ' + prettyToolName(block.name) + (b ? ': ' + b : ''));

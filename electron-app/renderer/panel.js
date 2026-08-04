@@ -787,7 +787,7 @@ function renderCallState(s) {
 // has no stdin to it. An input box would need #242's headless spawn first, where
 // we own the pipe. Worth stating in the UI rather than leaving people hunting
 // for a prompt that cannot exist yet.
-const BRAIN_LINE_CLASS = { '🗣': 'l-say', '🔧': 'l-tool', '💬': 'l-ask' };
+const BRAIN_LINE_CLASS = { '🗣': 'l-say', '🔧': 'l-tool', '💬': 'l-ask', '💭': 'l-think' };
 let _brainLastRendered = '';
 function renderBrain(s) {
   const feed = document.getElementById('brainFeed');

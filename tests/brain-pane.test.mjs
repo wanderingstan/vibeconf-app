@@ -91,3 +91,25 @@ test('the empty state explains itself', () => {
   assert.match(body, /No agent session yet/);
   assert.match(body, /transcript/, 'say where the content comes from');
 });
+
+test('feed text is selectable, against the app-wide rule', () => {
+  // The app sets user-select:none globally — it is chrome, not a document, and a
+  // slightly-off window drag was selecting the bot's name. This pane is the case
+  // that rule is wrong about: it exists to be read and copied out of, and a tool
+  // input or error line pasted into an issue is most of its debugging value.
+  const css = readFileSync(join(root, 'electron-app/renderer/panel.css'), 'utf8');
+  const block = css.slice(css.indexOf('.brain-feed {'));
+  const body = block.slice(0, block.indexOf('}'));
+  assert.match(body, /user-select: text/);
+  assert.match(body, /cursor: text/, 'and it should LOOK selectable');
+});
+
+test('reasoning renders as its own kind of line, when there is any', () => {
+  // Plumbing for a payload the CLI currently withholds — see the empty-thinking
+  // note in agent-transcript.js. Wired anyway because it is nearly free and
+  // starts working by itself if that changes.
+  const panelJs = readFileSync(join(root, 'electron-app/renderer/panel.js'), 'utf8');
+  assert.match(panelJs, /'💭': 'l-think'/);
+  const css = readFileSync(join(root, 'electron-app/renderer/panel.css'), 'utf8');
+  assert.match(css, /\.brain-feed \.l-think/);
+});

@@ -130,6 +130,15 @@ $('nextBtn').addEventListener('click', async () => {
 $('backBtn').addEventListener('click', () => go(-1));
 $('skipBtn').addEventListener('click', () => go(1));
 
+// Finish the wizard exactly as "Finish" does (saves + closes + shows the main
+// window), then immediately start the guided call instead of leaving the user
+// at an idle panel with just the /join-call instructions.
+$('runSetupCallBtn')?.addEventListener('click', async () => {
+  await saveCurrent();
+  await api.invoke('onboarding:finish');
+  await api.invoke('create-and-join-meet', { onboardingCall: true });
+});
+
 // ── permissions ──────────────────────────────────────────────────────────
 async function loadPermissions() {
   const list = $('permList');

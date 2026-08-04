@@ -251,6 +251,15 @@
       <p class="sub">Start a Google Meet in Chrome or Brave, then in Claude Code type:</p>
       <div class="card"><code style="font-size:15px">/join-call</code></div>
       <p class="hint">Your bot will join and ask to be admitted. Click Admit, then just talk.</p>
+
+      <!-- Everything above set fields by hand; this offers the same setup as a
+           live, guided call instead — a working first look at the bot AND a
+           chance to double-check the name/voice picks just made (e.g. whether
+           Google's transcript actually hears the name back cleanly). Optional:
+           "Finish" alone still works exactly as before. -->
+      <p class="sub" style="margin-top:20px">Prefer to finish setup live, with the bot walking you through it
+        (and confirming things like whether it can hear its own name)?</p>
+      <button type="button" class="btn cta" id="runSetupCallBtn">Start a guided setup call</button>
     </section>
   </main>
 

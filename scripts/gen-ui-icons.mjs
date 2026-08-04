@@ -33,8 +33,12 @@ const OUT = path.join(root, 'electron-app', 'renderer', 'ui-icons.css');
 //   · the 🟢🔴🟡⚪ status dots stay emoji — colour is their entire meaning, and a
 //     monochrome dot would say nothing
 //   · the bot's face (🙂 😐 …) stays emoji — the user picks its set themselves
-//   · → ↗ ▸ ▾ stay text glyphs — they're typography rather than pictures, and ▸
-//     in particular is ROTATED by CSS to point up, which a mask can't be
+//   · → ↗ ▾ stay text glyphs — they're typography rather than pictures
+//
+// (▸ used to be listed here as un-maskable because CSS rotates it. That was
+// wrong on both counts: it is now a drawn + — see DRAWN below — and a masked
+// element rotates perfectly well, since the transform applies to the box and
+// the mask rides along with it.)
 export const ICONS = {
   eyes: '1F440', // 👀 what the bot sees
   construction: '1F6A7', // 🚧 troubleshooting
@@ -56,6 +60,14 @@ export const ICONS = {
 const DRAWN = {
   close: '<path d="M5 5 L19 19 M19 5 L5 19"/>', // ✕ put the bot's view away
   check: '<path d="M4 12 L9.5 17.5 L20 6"/>', // ✓ copied / confirmed
+  // + add the bot to a call. Drawn rather than the text "+" it replaced, which
+  // was a different weight in every OS font and read small beside the drawn
+  // icons flanking it.
+  //
+  // Note the arms are the SAME length as close's: the panel rotates this one 45°
+  // to mean "close", so at that angle it must land on exactly the ✕ above rather
+  // than a second, slightly different cross.
+  plus: '<path d="M12 5 L12 19 M5 12 L19 12"/>',
 };
 
 // Icons vendored from another set, verbatim. OpenMoji's ⚙ is a hairline outline

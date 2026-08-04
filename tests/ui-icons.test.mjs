@@ -15,7 +15,7 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ICONS, MIRRORED, VENDORED, buildCss, iconSvg, cssUrl } from '../scripts/gen-ui-icons.mjs';
+import { ICONS, MIRRORED, VENDORED, DRAWN, buildCss, iconSvg, cssUrl } from '../scripts/gen-ui-icons.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
@@ -177,4 +177,19 @@ test('the bot\'s own face is left to the user\'s emoji set', () => {
   // (emoji-assets.js). It is content, not chrome — the user picks its style.
   assert.match(panelHtml, /agentAvatarEmoji/);
   assert.ok(!/ui-icon/.test(panelHtml.split('agentAvatarEmoji')[1].slice(0, 200)));
+});
+
+test('the drawn + is the drawn ✕ rotated, by construction', () => {
+  // The panel rotates ui-icon-plus 45° to mean "close". At that angle it must
+  // land on the SAME cross as ui-icon-close, which is used elsewhere in the
+  // panel — otherwise the app has two subtly different ✕ marks and the rotation
+  // reads as a slightly wrong icon rather than the same one turned.
+  //
+  // Guaranteed by giving both the same arm length about the same centre:
+  // close spans 5..19 on both diagonals, plus spans 5..19 on both axes.
+  const nums = (d) => (d.match(/[\d.]+/g) || []).map(Number);
+  const plus = nums(DRAWN.plus);
+  const close = nums(DRAWN.close);
+  assert.deepEqual([Math.min(...plus), Math.max(...plus)], [5, 19]);
+  assert.deepEqual([Math.min(...close), Math.max(...close)], [5, 19]);
 });

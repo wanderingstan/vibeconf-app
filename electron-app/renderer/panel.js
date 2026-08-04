@@ -920,10 +920,6 @@ function updateJoinBtnState() {
   const addMode = isAddToCallMode();
   const name = currentBotName || 'your bot';
 
-  // Only makes sense for a fresh call, same as "Call <bot> now" itself —
-  // there's nothing to "set up" about a call you're merely joining.
-  if (setupCallBtn) setupCallBtn.style.display = addMode ? 'none' : '';
-
   if (callUrlField) callUrlField.style.display = addMode ? '' : 'none';
   if (manualUrlToggle) {
     // ALWAYS visible, including when a call was auto-detected — collapsing it is
@@ -1688,6 +1684,10 @@ function enterCallState(meetCode) {
   closeProfileMenu();
   reportContentHeight(); // the in-call card just appeared — the window must grow
   joinBtn.style.display = 'none';
+  // "Run setup call" starts a BRAND-NEW call — nonsensical mid-call, same as
+  // "Call now" itself. Lives in Settings, so it isn't covered by the
+  // .hero-precall/.hero-incall CSS swap and needs its own toggle.
+  if (setupCallBtn) setupCallBtn.style.display = 'none';
 
   // Show which call the bot is actually in (read-only) — for confirming the
   // right room and copying the invite link. Prefer the joined URL; fall back
@@ -1712,6 +1712,7 @@ function exitCallState() {
   document.body.dataset.callState = 'idle'; // #379: pre-call controls return
   reportContentHeight(); // the in-call card just went away — shrink back
   joinBtn.style.display = '';
+  if (setupCallBtn) setupCallBtn.style.display = '';
   // Clears "Joining…" too: leaving covers the case where a join was still in
   // flight (denied admission, host never let the bot in) and would otherwise
   // strand the button disabled.
@@ -1782,7 +1783,10 @@ joinBtn.addEventListener('click', async () => {
 
 setupCallBtn?.addEventListener('click', async () => {
   // Same "start a fresh call" request as joinBtn, plus onboardingCall so the
-  // spawned agent runs /onboarding-call instead of /join-call.
+  // spawned agent runs /onboarding-call instead of /join-call. Triggered from
+  // Settings, not the main screen, so switch back to the main screen first —
+  // that's where the "joining…" state and the in-call UI actually render.
+  showScreen(mainScreen);
   setJoinPhase('starting');
   try {
     const r = await api.invoke('create-and-join-meet', { onboardingCall: true });

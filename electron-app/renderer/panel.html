@@ -105,20 +105,17 @@
             <!-- The helper text that used to sit under this button is now its
                  tooltip — true but not worth permanent screen space. -->
             <button id="joinBtn" class="primary" title="Calls open in Chrome/Safari are detected automatically. You can also type /join-call in any Claude Code session.">Call now</button>
-            <!-- Guided setup call: same "start a fresh call" mechanism as joinBtn,
-                 but tells the spawned agent to run /onboarding-call instead of
-                 /join-call, so it walks the user through name/voice/emoji/etc
-                 live instead of having a normal conversation. Hidden in
-                 add-to-call mode (updateJoinBtnState) and in-call (lives inside
-                 .hero-precall, which the call-state toggle already hides). -->
-            <button id="setupCallBtn" class="join-more" title="Run a guided setup call: pick a name, voice, emoji, and more, live in a call">Setup</button>
             <!-- Manual entry. A + rather than a disclosure triangle, because what
                  it reveals is literally "Add <bot> to call" — so the control can
                  say what it DOES instead of only "there is more below". Rotated
                  45° the same glyph becomes ×, which reads as close/cancel without
-                 swapping characters. The glyph is in a span so CSS can rotate IT
-                 rather than the button's pill. -->
-            <button id="manualUrlToggle" class="join-more" aria-expanded="false" title="Add the bot to a call that's already running. Paste its Meet or Slack URL"><span class="join-caret">+</span></button>
+                 swapping characters.
+                 A DRAWN + (ui-icon-plus), not the text character: that was a
+                 different weight in every OS font and read small beside the drawn
+                 icons either side of it. Its arms match ui-icon-close exactly, so
+                 rotated it lands on the same ✕ used elsewhere in the panel. The
+                 icon carries .join-caret so CSS rotates IT, not the button pill. -->
+            <button id="manualUrlToggle" class="join-more" aria-expanded="false" title="Add the bot to a call that's already running. Paste its Meet or Slack URL"><i class="ui-icon ui-icon-plus join-caret"></i></button>
           </div>
           </div>
 
@@ -213,6 +210,24 @@
            agent can set. -->
       <div class="settings-note">
         You can also just ask the bot to change <strong>most of these settings</strong> during a call.
+      </div>
+
+      <!-- Guided setup call: same "start a fresh call" mechanism as the main
+           screen's "Call now", but tells the spawned agent to run
+           /onboarding-call instead of /join-call, so it walks through
+           name/voice/emoji/etc live, on the whiteboard, instead of editing
+           these fields by hand. Lives here (not on the main screen) because
+           it's an alternative path through THIS page, not a call-starting
+           action on par with "Call now" — someone who already knows they
+           want to tweak one field shouldn't see it as a peer option. -->
+      <div class="section">
+        <h2>Guided setup</h2>
+        <div style="font-size:11px;color:#666;margin-bottom:8px">
+          Prefer to do this live? Start a call where the bot walks you through
+          name, voice, emoji, background, whiteboard style, and more, on the
+          whiteboard, instead of filling in the fields below by hand.
+        </div>
+        <button id="setupCallBtn" class="popout-btn" title="Run a guided setup call: pick a name, voice, emoji, and more, live in a call">Run setup call</button>
       </div>
 
       <!-- Name first — it's the bot's identity and the thing the panel shows.

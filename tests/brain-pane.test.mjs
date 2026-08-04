@@ -210,8 +210,13 @@ test("'don't ask again' plus Cancel means stop nagging, not quit", () => {
 test('the add-to-call toggle is a + that rotates into an ×', () => {
   // What the control reveals is literally "Add <bot> to call", so the glyph can
   // say what it DOES rather than only "there is more below".
+  // A DRAWN + (ui-icon-plus), not the text character: that was a different
+  // weight in every OS font and read small beside the drawn 👀/🧠 either side of
+  // it. As a masked icon it inherits button.join-more's 20px sizing and matches
+  // them exactly.
   const row = panelHtml.slice(panelHtml.indexOf('id="manualUrlToggle"'));
-  assert.match(row.slice(0, 200), /<span class="join-caret">\+<\/span>/);
+  assert.match(row.slice(0, 260), /class="ui-icon ui-icon-plus join-caret"/);
+  assert.doesNotMatch(row.slice(0, 260), />\+</, 'no text glyph left behind');
 
   const css = readFileSync(join(root, 'electron-app/renderer/panel.css'), 'utf8');
   // 45° is the whole trick: a + at 45° IS an ×, so open/close needs no second

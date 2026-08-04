@@ -85,7 +85,7 @@
              Two modes, driven by panel.js:
                · nothing detected → one button, "Call <bot> now". No URL field:
                  asking for a URL up front made the common case look like work.
-               · a call detected (or the user opened ▸) → the URL field appears
+               · a call detected (or the user opened +) → the URL field appears
                  and the button becomes "Add <bot> to call". -->
         <div class="hero-bottom">
           <div class="hero-precall">
@@ -112,10 +112,13 @@
                  add-to-call mode (updateJoinBtnState) and in-call (lives inside
                  .hero-precall, which the call-state toggle already hides). -->
             <button id="setupCallBtn" class="join-more" title="Run a guided setup call: pick a name, voice, emoji, and more, live in a call">Setup</button>
-            <!-- Manual entry. A disclosure triangle: ▸ to open, rotating to
-                 point up when it will collapse. The glyph is in a span so CSS
-                 can rotate IT rather than the button's pill. -->
-            <button id="manualUrlToggle" class="join-more" aria-expanded="false" title="Add the bot to a call that's already running. Paste its Meet or Slack URL"><span class="join-caret">▸</span></button>
+            <!-- Manual entry. A + rather than a disclosure triangle, because what
+                 it reveals is literally "Add <bot> to call" — so the control can
+                 say what it DOES instead of only "there is more below". Rotated
+                 45° the same glyph becomes ×, which reads as close/cancel without
+                 swapping characters. The glyph is in a span so CSS can rotate IT
+                 rather than the button's pill. -->
+            <button id="manualUrlToggle" class="join-more" aria-expanded="false" title="Add the bot to a call that's already running. Paste its Meet or Slack URL"><span class="join-caret">+</span></button>
           </div>
           </div>
 

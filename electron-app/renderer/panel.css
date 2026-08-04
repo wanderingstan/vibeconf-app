@@ -949,18 +949,26 @@ button.join-more:hover:not(:disabled) { background: #3c4043; color: #e8eaed; }
    .is-close class survives only as a state hook for anything that wants it. */
 /* Open state — reads as "this is what's showing the field below". */
 button.join-more[aria-expanded="true"] { color: #8ab4f8; background: rgba(60, 64, 67, 0.9); }
-/* ONE glyph, rotated — ▸ and ▴ are different characters with different optical
-   weights and widths, so swapping them made the control jump. Rotating the same
-   ▸ counter-clockwise lands it pointing up, identical in size, and animates. */
+/* ONE glyph, rotated. Swapping characters (+ for ×, or the old ▸ for ▴) makes
+   the control jump: they have different optical weights and advance widths.
+   Rotating a single glyph keeps the size identical and animates for free.
+   45° is the whole trick here — a + at 45° IS a ×, so "add" turns into "close"
+   with no second character involved. */
 .join-caret {
   display: inline-block;
   transition: rotate 160ms ease;
+  /* The + is a thinner, shorter glyph than the ▸ it replaced. Without these it
+     reads as a smaller control in the same pill, and rotation exaggerates it:
+     a light + at 45° looks like a stray mark rather than a close button. */
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1;
 }
-button.join-more[aria-expanded="true"] .join-caret { rotate: -90deg; }
+button.join-more[aria-expanded="true"] .join-caret { rotate: 45deg; }
 @media (prefers-reduced-motion: reduce) {
   .join-caret { transition: none; }
 }
-/* The in-call 🚧 reuses the same ghost circle as ▸, so the two states have
+/* The in-call 🚧 reuses the same ghost circle as +, so the two states have
    an identical footprint — Leave Call lands exactly where Call now was. */
 
 /* Read-only current-call URL + copy button (in-call). */

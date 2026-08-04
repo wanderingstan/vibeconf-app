@@ -881,8 +881,8 @@ const callUrlField = document.getElementById('callUrlField');
 const manualUrlToggle = document.getElementById('manualUrlToggle');
 
 let detectedCallUrl = null; // the ACTIVE offer — drives the auto-expanded mode
-let manualUrlEntry = false; // the user opened ▸ themselves
-// The last call we were told about, kept even after a dismissal so reopening ▸
+let manualUrlEntry = false; // the user opened + themselves
+// The last call we were told about, kept even after a dismissal so reopening +
 // prefills it. Dismissing means "not right now", not "forget what you saw" —
 // without this, collapsing and reopening seconds later gave an empty box even
 // though the Meet was still sitting there in the browser. Only an undetect
@@ -983,11 +983,11 @@ function noteDetectedCall(url) {
 // The detected call went away (the tab closed, or the user navigated off it —
 // main sends meet-detected/slack-huddle-detected with null). Without this the
 // panel would stay in "Add <bot> to call" forever after the FIRST call it ever
-// saw, with the ▸ toggle hidden and no route back to "Call <bot> now".
+// saw, with the + toggle hidden and no route back to "Call <bot> now".
 function clearDetectedCall() {
   if (!detectedCallUrl) return;
   // Don't wipe a URL the user typed over the detected one — just stop treating
-  // it as detected, which brings the ▸ toggle back.
+  // it as detected, which brings the + toggle back.
   if (meetUrlInput.value.trim() === detectedCallUrl.trim()) meetUrlInput.value = '';
   detectedCallUrl = null;
   lastKnownCallUrl = null; // the call is genuinely gone — nothing to restore
@@ -995,7 +995,7 @@ function clearDetectedCall() {
 }
 
 // Explicit dismissal: empty the field, or press Escape in it. Either way we drop
-// back to the single "Call <bot> now" button. ▸ reopens it.
+// back to the single "Call <bot> now" button. + reopens it.
 function dismissCallUrl() {
   meetUrlInput.value = '';
   detectedCallUrl = null;

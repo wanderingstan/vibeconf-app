@@ -206,3 +206,22 @@ test("'don't ask again' plus Cancel means stop nagging, not quit", () => {
   assert.ok(ret > -1, 'a non-Quit answer must return early');
   assert.ok(ret < body.indexOf('quitConfirmed = true'), 'before anything closes the window');
 });
+
+test('the add-to-call toggle is a + that rotates into an ×', () => {
+  // What the control reveals is literally "Add <bot> to call", so the glyph can
+  // say what it DOES rather than only "there is more below".
+  const row = panelHtml.slice(panelHtml.indexOf('id="manualUrlToggle"'));
+  assert.match(row.slice(0, 200), /<span class="join-caret">\+<\/span>/);
+
+  const css = readFileSync(join(root, 'electron-app/renderer/panel.css'), 'utf8');
+  // 45° is the whole trick: a + at 45° IS an ×, so open/close needs no second
+  // character. Swapping glyphs makes the control jump — different advance
+  // widths and optical weights in the same pill.
+  assert.match(css, /button\.join-more\[aria-expanded="true"\] \.join-caret \{ rotate: 45deg; \}/);
+  // Anchored on the line start: '.bot-hero .join-caret {' also contains
+  // '.join-caret {', and matching that one instead finds a text-shadow rule.
+  const block = css.slice(css.indexOf('\n.join-caret {'));
+  const body = block.slice(0, block.indexOf('}'));
+  assert.match(body, /transition: rotate/, 'it must animate, or the rotation is invisible');
+  assert.match(body, /display: inline-block/, 'rotate does not apply to an inline box');
+});

@@ -242,3 +242,19 @@ test('the skill checks for an existing call before starting one', () => {
   assert.match(step, /join_call` that room instead of creating one/);
   assert.match(step, /Setting yourself up is not a reason to move the meeting/);
 });
+
+test('whiteboard style offers describe-it, like the background step', () => {
+  // Presets are a starting menu, not the limit. set_whiteboard_style takes
+  // arbitrary CSS, so "make it look like a chalkboard" is the NATIVE way to use
+  // the tool — and someone with a look in mind will describe it far better than
+  // they can pick it out of three samples.
+  const step = skill.slice(skill.indexOf('### 4e. Whiteboard style'), skill.indexOf('### 4f'));
+  assert.match(step, /…or describe the look you want/);
+  assert.match(step, /equal option, not a fallback/);
+  assert.match(step, /Put it\s+on the board/, 'shown, not just mentioned once');
+  // And a described style should be rendered back for adjustment, since the
+  // first attempt at someone else's taste is rarely right.
+  assert.match(step, /show the same sample content in it/);
+  // The reason it cannot be a grid, so nobody "fixes" it into one later.
+  assert.match(step, /style applies to the whole board/);
+});

@@ -211,8 +211,24 @@ the caption to their description.
 
 Render the same short sample content in 2-3 different `set_whiteboard_style` presets, one
 after another, so they see real differences rather than describing CSS in the abstract.
+(Unlike the background grid this has to be sequential — the style applies to the whole board,
+so they cannot sit side by side.)
+
+**Offer the describe-it path as an equal option, not a fallback**, exactly as in 4d. Put it
+on the board alongside the samples so it is visible rather than something you mention once:
+
+> **…or describe the look you want**
+> "Warmer, like a paper notebook." "Big and high-contrast." "Something playful."
+
+`set_whiteboard_style` takes arbitrary CSS, so a description IS the native way to use it —
+translating "make it look like a chalkboard" into CSS is the tool's whole purpose. Someone
+who wants a particular look will describe it far better than they can pick it out of three
+samples, and the presets are there for people who would rather not think about it.
+
 Once picked, leave that style set (it's already applied; no further action needed beyond
-confirming it stuck).
+confirming it stuck). If they describe one, apply it and show the same sample content in it
+so they can see the result and adjust — "warmer", "bigger text" — rather than accepting the
+first attempt out of politeness.
 
 ### 4f. Skills
 

@@ -271,7 +271,7 @@ test('the guided-setup button looks and reads like the call it is', () => {
   // someone who has already started editing fields will not look.
   const note = panelHtml.slice(panelHtml.indexOf('settings-intro'));
   const block = note.slice(0, note.indexOf('</div>'));
-  assert.match(block, /change most of these settings during a call, or call our guided setup\./);
+  assert.match(block, /You can ask the bot to change most of these settings during a call, or call our guided setup\./);
   assert.doesNotMatch(block, /<strong>/, 'plain form copy — nothing here needs emphasis');
   assert.match(block, /id="setupCallBtn"/, 'the button belongs in the note');
   assert.doesNotMatch(panelHtml, /<h2>Guided setup<\/h2>/, 'the heading is gone');

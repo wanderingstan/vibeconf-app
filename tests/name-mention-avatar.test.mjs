@@ -101,9 +101,19 @@ test('the bot own speech never reaches updateTurns, so it cannot trigger its own
   assert.match(selectors, /selfSpeaker: 'You'/);
 });
 
-test('the avatar composites a head-tilt + lean-in reaction that snaps in fast and lingers', () => {
+test('the avatar composites a head-tilt + lean-in reaction that snaps in, HOLDS, then drops', () => {
+  // The hold is an explicit phase. It used to be implied by easing a 5-second
+  // decay with cos(p·π/2) — flat at the start in theory, but stretched over five
+  // seconds the flat part is still a slow drift, so the bot appeared to deflate
+  // gradually through most of a sentence instead of holding a pose and relaxing.
+  // Attention is held or it is not; the in-between is what read as a fade.
   assert.match(inject, /MENTION_ATTACK_MS = 150/, 'snaps into the pose almost instantly');
-  assert.match(inject, /MENTION_DECAY_MS = 5000/, 'a state change, not a passing tick — must hold for seconds, not fractions of one');
+  assert.match(inject, /MENTION_HOLD_MS = 900/, 'and then genuinely holds it, not moving');
+  assert.match(inject, /MENTION_RELEASE_MS = 380/, 'before dropping out decisively');
+  // Eases IN, not out: 1-p³ is flat at the start and steep at the end. An
+  // ease-OUT here would leave the long shallow tail this replaces.
+  assert.match(inject, /mentionPulse = 1 - p \* p \* p/);
+  assert.match(inject, /mentionPulse = 1;/, 'the hold phase is a literal 1, not a curve near it');
   assert.match(inject, /mentionTilt = mentionPulse \* \(this\._mentionTiltSign \|\| 1\)/);
   assert.match(inject, /mentionPop = 1 \+ mentionPulse \* 0\.22/);
   // It has to actually reach the rotation and scale, alongside the other pulses.

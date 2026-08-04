@@ -487,24 +487,36 @@
       // pulse above (a passing "noted that" blip), this is meant to read as a
       // STATE CHANGE — the dog-cocks-its-head-and-leans-in moment where it's
       // committed to answering — so it snaps into the pose almost instantly
-      // (MENTION_ATTACK_MS) and then holds/settles back out slowly
-      // (MENTION_DECAY_MS ≈ 5s) rather than bouncing right back like the tick
-      // pulse does. cos(p·π/2) eases the decay so it visibly LINGERS near
-      // peak before falling away, instead of fading evenly from the start.
+      // (MENTION_ATTACK_MS), HOLDS the pose, then drops out of it quickly.
+      //
+      // The hold is an explicit phase now. It used to be implied by easing a
+      // 5-second decay with cos(p·π/2): that curve does start flat, but stretched
+      // over five seconds the flat part is still a slow drift, so what you saw was
+      // the bot gradually deflating for most of a sentence rather than holding a
+      // pose and then relaxing. Attention is held or it is not — the in-between is
+      // what made it read as a fade.
+      //
+      // The release eases IN (1-p³: slow at first, steep at the end), which is the
+      // opposite of the usual ease-out. Ease-out would leave a long shallow tail —
+      // exactly the drift being removed.
       // Tilt direction alternates per-mention (_mentionTiltSign, flipped in
       // the 'name-mentioned' handler) so a run of mentions doesn't hold the
       // same cocked pose every time; _mentionTiltMag (re-rolled randomly per
       // mention) varies the peak tilt AMOUNT so the motion doesn't look like
       // an identical mechanical tic every time — organic, not robotic.
       const MENTION_ATTACK_MS = 150;
-      const MENTION_DECAY_MS = 5000;
+      const MENTION_HOLD_MS = 900;     // fully leaned in, not moving
+      const MENTION_RELEASE_MS = 380;  // and back out, decisively
       const mentionAge = Date.now() - (this._nameMentionPulseAt || 0);
+      const MENTION_HOLD_END = MENTION_ATTACK_MS + MENTION_HOLD_MS;
       let mentionPulse = 0;
       if (mentionAge >= 0 && mentionAge < MENTION_ATTACK_MS) {
         mentionPulse = mentionAge / MENTION_ATTACK_MS;
-      } else if (mentionAge >= MENTION_ATTACK_MS && mentionAge < MENTION_ATTACK_MS + MENTION_DECAY_MS) {
-        const p = (mentionAge - MENTION_ATTACK_MS) / MENTION_DECAY_MS;
-        mentionPulse = Math.cos(p * Math.PI / 2);
+      } else if (mentionAge >= MENTION_ATTACK_MS && mentionAge < MENTION_HOLD_END) {
+        mentionPulse = 1;
+      } else if (mentionAge >= MENTION_HOLD_END && mentionAge < MENTION_HOLD_END + MENTION_RELEASE_MS) {
+        const p = (mentionAge - MENTION_HOLD_END) / MENTION_RELEASE_MS;
+        mentionPulse = 1 - p * p * p;
       }
       const mentionTilt = mentionPulse * (this._mentionTiltSign || 1) * (this._mentionTiltMag || 1) * 0.24; // ~14° peak head-cock, ±30% varied
       const mentionPop = 1 + mentionPulse * 0.22; // ~22% peak lean-in grow

@@ -113,3 +113,42 @@ test('reasoning renders as its own kind of line, when there is any', () => {
   const css = readFileSync(join(root, 'electron-app/renderer/panel.css'), 'utf8');
   assert.match(css, /\.brain-feed \.l-think/);
 });
+
+test('every window title names the BOT, not just the app', () => {
+  // The main window has done this since early on, for a stated reason: with
+  // several bots open, "Vibeconferencing" repeated across the window menu tells
+  // you nothing. The satellite windows never got it — so someone running two
+  // bots and comparing their brains had two windows both titled
+  // "Vibeconferencing — Brain", which is the same problem one level out.
+  assert.match(main, /function windowTitle\(suffix\)/);
+  for (const suffix of ['Brain', 'Troubleshooting', "Bot's view", "Bot's-eye view"]) {
+    const q = suffix.includes("'") ? `"${suffix}"` : `'${suffix}'`;
+    assert.ok(main.includes(`windowTitle(${q})`), `${suffix} window must be named after the bot`);
+  }
+  // No window should carry a hardcoded bot-agnostic title any more.
+  assert.doesNotMatch(main, /title: 'Vibeconferencing — Brain'/);
+  assert.doesNotMatch(main, /title: "Vibeconferencing — Bot's view"/);
+});
+
+test('the name goes first, matching the main window', () => {
+  // "Jimmy — Brain" not "Brain — Jimmy": the app switcher and window menu
+  // truncate from the right, so the distinguishing part has to lead.
+  const fn = main.slice(main.indexOf('function windowTitle(suffix)'));
+  const body = fn.slice(0, fn.indexOf('\n}'));
+  assert.match(body, /`\$\{n\} — \$\{suffix\}`/);
+  assert.match(body, /Vibeconferencing — \$\{suffix\}/, 'and an unnamed bot still gets a sane title');
+});
+
+test('renaming a bot retitles the satellites too, not just the main window', () => {
+  // Titles are set at window CREATION, so without this a rename mid-session
+  // leaves the brain pane labelled with the old name — worse than no name at
+  // all, since it now actively misidentifies which bot you are looking at.
+  assert.match(main, /function applyAllWindowTitles\(\)/);
+  assert.match(main, /if \(key === 'botName'\) applyAllWindowTitles\(\);/);
+  const fn = main.slice(main.indexOf('function applyAllWindowTitles()'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  for (const w of ['brainWindow', 'troubleshootingWindow', 'meetPopoutWindow', 'panelPopoutWindow']) {
+    assert.ok(body.includes(w), `${w} must be retitled on rename`);
+  }
+  assert.match(body, /isDestroyed\(\)/, 'a closed window must not throw');
+});

@@ -1940,7 +1940,7 @@ const localServer = new globalThis.LocalServer({
     } else if (key === 'voiceboxEngine') {
       tts.updateConfig?.({ voiceboxEngine: value });
     } else if (key === 'botName') {
-      applyWindowTitle(); // the window is named after the bot
+      applyAllWindowTitles(); // every window is named after the bot, not just the main one
     } else if (key === 'avatarBackgroundSvg') {
       pushAvatarBackground(value);
       // (The panel re-renders its own avatar — and its switcher thumbnail — off
@@ -6416,6 +6416,47 @@ function broadcastBotViewVisible() {
 // The window title names the BOT, not just the app — with several bots open at
 // once, "Vibeconferencing" three times over in the window menu and app switcher
 // tells you nothing. Falls back to the profile name, then the app name.
+// The bot's name for a title, or '' if we can't work one out.
+//
+// Split out of applyWindowTitle because the SATELLITE windows — 🧠 Brain, the
+// bot's view, troubleshooting — are the case the comment above is really about.
+// Someone running two bots and comparing their brains had two windows both
+// called "Vibeconferencing — Brain", which is precisely the "tells you nothing"
+// problem, just one level out from where it was first fixed.
+function botWindowName() {
+  let name = null;
+  try {
+    name = botNameForAppUI({
+      storedName: store.get('botName'),
+      cliName: cliArgs['bot-name'],
+      profileName: isDefaultInstance ? null : explicitProfile,
+    });
+  } catch { /* store/schema not ready */ }
+  return String(name || appProfile || '').trim();
+}
+
+// "Jimmy — Brain", falling back to "Vibeconferencing — Brain" when unnamed.
+// Name FIRST, matching the main window, so the app switcher sorts and truncates
+// by bot rather than showing a column of identical prefixes.
+function windowTitle(suffix) {
+  const n = botWindowName();
+  return n ? `${n} — ${suffix}` : `Vibeconferencing — ${suffix}`;
+}
+
+// Retitle every open window. Called on rename, so a bot renamed mid-session
+// doesn't leave its satellites labelled with the old name.
+function applyAllWindowTitles() {
+  applyWindowTitle();
+  for (const [win, suffix] of [
+    [brainWindow, 'Brain'],
+    [troubleshootingWindow, 'Troubleshooting'],
+    [meetPopoutWindow, "Bot's view"],
+    [panelPopoutWindow, "Bot's-eye view"],
+  ]) {
+    try { if (win && !win.isDestroyed()) win.setTitle(windowTitle(suffix)); } catch { /* gone */ }
+  }
+}
+
 function applyWindowTitle() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   let name = null;
@@ -6574,7 +6615,7 @@ function ensureHiddenMeetHost() {
     useContentSize: true,
     show: false,
     skipTaskbar: true,
-    title: "Vibeconferencing — Bot's view (hidden)",
+    title: windowTitle("Bot's view (hidden)"),
     webPreferences: { nodeIntegration: false, contextIsolation: true },
   });
   meetHiddenWindow = win;
@@ -6664,7 +6705,7 @@ function setBotViewState(state) {
     }
     const win = new BrowserWindow({
       width: 900, height: 620,
-      title: "Vibeconferencing — Bot's view",
+      title: windowTitle("Bot's view"),
       icon: path.join(__dirname, 'icon.png'),
       parent: mainWindow || undefined,
       webPreferences: { nodeIntegration: false, contextIsolation: true },
@@ -6753,7 +6794,7 @@ function setPanelPoppedOut(out) {
     const win = new BrowserWindow({
       width: PANEL_WIDTH + 80,
       height: 820,
-      title: "Vibeconferencing — Bot's-eye view",
+      title: windowTitle("Bot's-eye view"),
       icon: path.join(__dirname, 'icon.png'),
       parent: mainWindow || undefined, // closes with the app; still freely movable
       webPreferences: { nodeIntegration: false, contextIsolation: true },
@@ -7694,7 +7735,7 @@ function setupIPC() {
     // Live-apply the visual prefs the panel can set here (the agent path goes
     // through applyPref, which already pushes these). #316.
     if (key === 'emojiSet') pushEmojiSet(value);
-    if (key === 'botName') applyWindowTitle();
+    if (key === 'botName') applyAllWindowTitles();
     // The background is settable from Bot Settings now, not just by the agent.
     // Without this the in-call avatar kept the OLD background until the next
     // launch, while the panel preview showed the new one.
@@ -7775,7 +7816,7 @@ function setupIPC() {
     const win = new BrowserWindow({
       width: 620,
       height: 780,
-      title: 'Vibeconferencing — Brain',
+      title: windowTitle('Brain'),
       icon: path.join(__dirname, 'icon.png'),
       webPreferences: {
         preload: path.join(__dirname, 'preload-panel.js'),
@@ -7802,7 +7843,7 @@ function setupIPC() {
       width: 980,
       height: 860,
       minWidth: 420,
-      title: 'Vibeconferencing — Troubleshooting',
+      title: windowTitle('Troubleshooting'),
       icon: path.join(__dirname, 'icon.png'),
       webPreferences: {
         preload: path.join(__dirname, 'preload-panel.js'),

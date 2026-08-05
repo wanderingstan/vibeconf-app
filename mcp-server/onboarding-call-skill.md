@@ -368,3 +368,119 @@ Then continue as a normal call would from here: if they keep talking, you can ei
 same loop `/join-call` describes) if they want to use the bot for something else right away.
 If someone new joins, greet them by name and carry on — you are a normal call now, not a
 wizard.
+
+## Step 6: Offer a demo — because setup only showed them half of it
+
+Don't end on the settings table. Walking the steps quietly taught them a lot — by now they
+have heard the bot in different voices and languages, watched the whiteboard redraw itself
+live, seen it post to chat and resize its own share, and watched it edit its own
+instructions file. That is real, and it is worth naming in one sentence so they know they
+already saw it.
+
+But it is the least interesting half. Nothing in setup shows the bot pulling up a website,
+reading a screen share, writing code mid-call, or playing a game — the things that make
+someone say "oh, it can do *that*". Setup is a form; the demo is the product.
+
+So make one concrete offer and **do** it, rather than describing the menu:
+
+> "Before I go — none of that showed you the fun half. Want me to draw something, or play a
+> quick game on the whiteboard?"
+
+Pick TWO or THREE, not the whole list. A menu of twelve reads as a brochure and gets a
+polite "no thanks"; two specific offers get a yes.
+
+### Only offer what this machine can actually do
+
+**This is the part to get right, and step 4g already did the work** — it inventoried the
+skills and connected MCP servers in THIS session. Offer from that inventory, not from the
+product page. A demo that opens with "watch me generate an image" and then discovers there
+is no image tool is a worse ending than no demo at all: the last thing they see is the bot
+failing at its own showcase.
+
+That is an argument for offering the right *version* of a demo, not for offering less. See
+both entries below — each has a no-install fallback that is worth doing on its own merits.
+
+Two specific traps, both common — and note that **neither one means "skip the demo"**. Each
+has a version that works with nothing installed:
+
+- **Drawing.** A photorealistic image needs an image MCP server (nanobanana or similar), and
+  many installs have none. That is not a reason to drop the offer: *you can write SVG*, and
+  you already did it once in this call if they described their own background at 4e. Hand-
+  written SVG is genuinely good for the things people ask for on a call — a diagram, a logo
+  sketch, a chart, a cartoon — so offer to *draw* rather than to *generate a photo*, and put
+  the result on the board. Then make the upsell, once, in a sentence: *"That's me drawing it
+  by hand. Plug in an image generator and I can do photographic stuff — and with a video
+  model, short clips too."* That lands better than the photo would have, because they just
+  watched you do the hard version.
+- **Sharing a live browser tab** (`share_tab`) needs the Claude-in-Chrome extension
+  installed and connected. Without it the bot can still put a URL on the whiteboard, which
+  is a fine demo in itself — just do not promise a driven, logged-in browser you cannot
+  drive.
+
+  When you *do* have it, **make it a search you then refine out loud** — that is the demo,
+  not the page load. The one that consistently lands: open Google Flights, find a flight
+  from their city to somewhere, then take three follow-ups from the room — "non-stop only",
+  "business class", "leave Friday instead" — and drive each one live while they watch. What
+  sells it is the second and third refinement: a bot that loads a URL is a bookmark, a bot
+  that narrows a search while you talk is a person at the keyboard. Use *their* city; a
+  route they actually fly is worth ten of a generic one.
+
+  There is a better story than flights — **Uber Eats**, where the room picks a cuisine
+  together and it ends in actual food at an actual door — but it is the wrong demo for a
+  setup call: it spends real money, it wants someone's home address minutes after they met
+  you, it needs a logged-in account, and it is slow where flights is over in ninety seconds.
+  Keep flights as the default. Save the food one for a room with several people in it that
+  raises the idea itself, and **never place an order without an explicit spoken yes**.
+  Mentioning it in a sentence — *"and yes, people do actually order lunch this way"* — gets
+  most of the reaction with none of the risk.
+
+The rule is not "only demo what is installed", it is **never promise a capability you do not
+have**. Offer the version you can actually deliver, deliver it, and name what an add-on would
+buy them. Don't check by trying it in front of them, and if you are genuinely unsure, offer
+something else.
+
+### Demos that always work, with nothing else installed
+
+These need only the tools this skill already used, so they are safe on any install and make
+a good default pair:
+
+- 🎮 **A game on the whiteboard** — hangman, twenty questions, a quiz. Reliably the biggest
+  reaction, and it uses nothing but `update_whiteboard` and speech.
+- 📝 **Live notes** — "talk at me for thirty seconds about anything and watch the board."
+  Shows the thing they will actually use it for every day.
+- 🎭 **A persona** — instant, and it demonstrates that tone is theirs to set. Offer one silly
+  and one *useful*, because the useful ones are what actually change how they use the bot:
+  - **Parliamentarian** — runs the meeting by Robert's Rules. Motions, seconds, points of
+    order, the lot.
+  - **Facilitator** — keeps time, makes sure everyone has spoken, calls out when the room has
+    drifted off the agenda.
+  - **Mediator** — neutral, restates each side's position, finds the actual disagreement.
+  - **Pirate / sports commentator** — for the laugh.
+
+  Lead with a useful one. "I can run this as a parliamentarian" reframes the bot from a toy
+  into something they would invite to a real meeting, and the silly one still gets its laugh
+  straight after.
+- 🔊 **Sound effects and voice switching** — a one-liner in three voices.
+- 🎨 **Draw something in SVG** — "name a thing and I'll draw it on the board." No image
+  server required, per the note above.
+- 👀 **Reading their screen share** — ask them to share something and describe what is on it.
+  Needs nothing installed on the bot's side, and it surprises people every time.
+- 🫣 **Looking at the room** — `get_call_screenshot` and describe what you actually see: who
+  is on the call, the hat someone is wearing, the guitar on the wall behind them, that one
+  person's camera is off. This is the demo that most reliably makes people sit up, because
+  up to now the bot has only been a voice, and nothing else in the call signals that it can
+  *see*. Keep it warm and observational — the room, the background, the setup — and comment
+  on what people chose to put in frame rather than on how they look. A bot appraising
+  someone's appearance is the one way this lands badly.
+
+### Then hand them the list
+
+Once the demo lands, `send_chat` the full capability list so they can browse it later:
+
+> https://vibeconferencing.com/what-you-can-ask
+
+Say it is there rather than reading it aloud. The demo is what they remember; the link is
+what they come back to.
+
+Then stop. If they want another, they will ask — and at that point you are just having a
+normal call, which is exactly where this should end up.

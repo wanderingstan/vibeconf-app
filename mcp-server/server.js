@@ -545,8 +545,30 @@ server.tool(
     if (tx?.reason === 'user-speaking') {
       return { content: [{ type: "text", text: "Speech dropped — the user started speaking before your response could play. Call wait_for_speech to hear what they said and respond to their new message instead of repeating this one." }] };
     }
+    // #253: the PREVIOUS speech never reached anyone. Playback happens after the
+    // speak call has already answered, so this is the first honest moment to say
+    // so — and it matters most right here, where the agent is about to build on
+    // a reply the room never heard.
+    const failed = tx?.previousPlaybackFailed;
+    const priorWarning = failed
+      ? `⚠️ Your PREVIOUS speech was NOT heard — audio playback failed (${failed.reason}). `
+        + `Nobody in the room got it. If it still matters, say it again.\n\n`
+      : '';
+
+    // #199: accepted but NOT yet audible. The app queues speech until the bot is
+    // actually in the call, because the virtual mic isn't connected to the other
+    // participants before then — speaking earlier plays into the void. Saying
+    // "Spoken" here is what sent a stranger-drill debug down a TTS rabbit hole
+    // for ~8 minutes while the app sat wedged at 'navigating'.
+    if (data.success && tx?.queuedUntilInCall) {
+      return { content: [{ type: "text", text: priorWarning +
+        `QUEUED, not spoken — the bot is not in the call yet (status: ${tx.callStatus || 'unknown'}), `
+        + `so nobody has heard this. It will play automatically once the bot is in-call; do NOT repeat it. `
+        + `If the status does not reach 'in-call' shortly, the join is stuck — check get_room_info rather `
+        + `than assuming a voice or TTS problem.` }] };
+    }
     if (data.success && tx?.ok !== false) {
-      return { content: [{ type: "text", text: `Spoken: "${text}"` }] };
+      return { content: [{ type: "text", text: priorWarning + `Spoken: "${text}"` }] };
     } else {
       return { content: [{ type: "text", text: `Error: ${data.error || tx?.reason || "Failed to post"}` }] };
     }

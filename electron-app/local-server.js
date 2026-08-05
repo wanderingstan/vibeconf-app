@@ -979,6 +979,9 @@ class LocalServer {
   // of _handlePost so the speak/stash decision is reachable without an HTTP
   // round-trip (see tests/floor-gate-at-audio-start.test.mjs).
   async _applyTranscriptPayload(data, roomId, now) {
+    // #199: set when speech was accepted but the bot is not in the call yet, so
+    // the MCP layer can say "queued" instead of "spoken".
+    let queuedUntilInCall = false;
     // In silent mode, suppress bot speech entirely — don't record or speak.
     // Agent learns its speech was suppressed via results.transcript.reason.
     // #338: some bot utterances are exempt from the barge-in hold — they're
@@ -1109,6 +1112,12 @@ class LocalServer {
         if (this.callStatus !== 'in-call') {
           console.log('[local-server] Queueing bot speech until in-call:', t.text.slice(0, 40));
           this.pendingBotSpeech.push({ text: t.text, voice: t.voice, emoji: t.emoji, urgency: t.urgency });
+          // #199: the caller must not be told "Spoken". It was ACCEPTED and will
+          // play on flush, so this is not an error — but nothing has been heard
+          // yet, and reporting intent as outcome is what cost ~8 minutes of
+          // hunting TTS/keys/captions during the stranger drill (#198) while the
+          // app sat wedged at 'navigating' and every speak returned success.
+          queuedUntilInCall = true;
         }
       }
     }
@@ -1118,7 +1127,17 @@ class LocalServer {
       // reply is queued and will auto-replay) rather than re-derive.
       return { ok: false, reason: 'user-speaking-stashed', sent: 0, entries: [] };
     }
-    return { ok: true, sent: entries.length, entries };
+    return {
+      ok: true,
+      sent: entries.length,
+      entries,
+      // #199 — truthful outcome, not intent.
+      ...(queuedUntilInCall ? { queuedUntilInCall: true, callStatus: this.callStatus } : {}),
+      // #253: tell the agent its PREVIOUS speech never played, at the moment it
+      // speaks again — the point where it would otherwise build on a reply the
+      // room never heard.
+      ...((() => { const f = this.takeRecentPlaybackFailure(); return f ? { previousPlaybackFailed: f } : {}; })()),
+    };
   }
 
   _flushPendingBotSpeech() {
@@ -1767,6 +1786,30 @@ class LocalServer {
   setSomeoneElsePresenting(presenting, presenterName) {
     this.someoneElsePresenting = !!presenting;
     this.presenterName = presenterName || null;
+  }
+
+  // #253: playback happens AFTER the speak POST has already answered, so the
+  // failure cannot be returned inline without making speak block on synthesis.
+  // Record it instead, two ways: as an agent-visible error (get_room_info shows
+  // these), and as a one-shot flag the NEXT speak carries back — which is where
+  // the agent is actually looking.
+  //
+  // The case from Bethany's Aug 4 log: a farewell "played" into an empty room
+  // while the app logged "Meet view not available for audio playback" at info
+  // level, so the agent believed it had spoken.
+  notePlaybackFailure(reason) {
+    this._playbackFailure = { reason: String(reason || 'unknown'), at: Date.now() };
+    this.addError('Audio playback FAILED — that speech was not heard by anyone. Reason: '
+      + this._playbackFailure.reason);
+  }
+
+  // Consumed once, and only while fresh: a failure from ten minutes and three
+  // calls ago is noise, not news.
+  takeRecentPlaybackFailure(maxAgeMs = 120000) {
+    const f = this._playbackFailure;
+    if (!f) return null;
+    this._playbackFailure = null;
+    return (Date.now() - f.at) <= maxAgeMs ? f : null;
   }
 
   addError(message) {

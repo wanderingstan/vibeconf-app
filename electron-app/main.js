@@ -4344,7 +4344,12 @@ function sendPlayTts(base64Audio, emoji, { unmutedAt, expectMore } = {}) {
   return new Promise((resolve) => {
     if (!meetView || meetView.webContents.isDestroyed()) {
       console.error('[electron] Meet view not available for audio playback');
-      return resolve();
+      // #253: it used to end here. The agent had already been told "Spoken",
+      // and nothing downstream contradicted it — so a farewell played into an
+      // empty room and the session believed it had said goodbye.
+      try { localServer.notePlaybackFailure('the Meet view was gone (call ended or torn down)'); }
+      catch { /* local server not up */ }
+      return resolve(false);
     }
     // #372: when the caller already unmuted (speakText does it BEFORE
     // synthesis so the 300ms settle overlaps the synth time), only wait out

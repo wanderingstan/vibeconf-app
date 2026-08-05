@@ -1824,6 +1824,12 @@ async function autoJoin(botName) {
     let admitted = false;
     let waitedSeconds = 0;
     let limboSeconds = 0; // consecutive seconds with neither waiting nor in-call UI
+    // #243: consecutive seconds still showing the pre-join UI AFTER we clicked
+    // join and told the app we were waiting to be admitted. Generous, because a
+    // slow pre-join legitimately lingers for a few seconds; anything past this
+    // is a click that did not take.
+    let stuckOnJoinUISeconds = 0;
+    const STUCK_ON_JOIN_UI_SECONDS = 10;
     // Post-admission, Meet shows a LOADING screen (no waiting/join/in-call UI) that
     // can run 20s+ on a slow join before the in-call toolbar renders. At 15s this
     // false-failed a bot that was still being admitted — it declared "couldn't
@@ -1906,6 +1912,32 @@ async function autoJoin(botName) {
       } else {
         limboSeconds = 0; // reset whenever a known UI is visible
         _denialDomCaptured = false; // allow a fresh capture if we re-enter limbo
+      }
+
+      // #243: we already told the app "Waiting to be admitted..." the moment the
+      // join button was CLICKED. If the join UI is still on screen well after
+      // that, the click did not take and nobody has knocked — most often because
+      // Meet's signed-out pre-join wants a name first and the field is empty, so
+      // "Ask to join" is inert.
+      //
+      // Left alone, the app keeps asserting a knock that never happened. A host
+      // then hunts for an admit prompt that cannot exist: measured at ~9 minutes
+      // of a live call with an external guest present. Say it plainly instead.
+      if (hasJoinUI && !waitingText && !inCallToolbar) {
+        stuckOnJoinUISeconds++;
+        if (stuckOnJoinUISeconds === STUCK_ON_JOIN_UI_SECONDS) {
+          const nameEl = MEET.join.nameInputs.map((sel) => document.querySelector(sel)).find(Boolean);
+          const needsName = !!nameEl && !String(nameEl.value || '').trim();
+          sendStatus('Notice: NOT waiting to be admitted — still on Meet\'s pre-join screen '
+            + stuckOnJoinUISeconds + 's after clicking join, so no request has reached the host. '
+            + (needsName
+              ? 'Meet is asking for a name and the field is empty, which makes "Ask to join" inert. '
+                + 'Nobody will see an admit prompt until that is filled in.'
+              : 'The join button is still on screen and the click did not take.')
+            + ' Do not tell anyone to look for an admit prompt.');
+        }
+      } else {
+        stuckOnJoinUISeconds = 0;
       }
 
       if (waitedSeconds % logEvery === 0) {

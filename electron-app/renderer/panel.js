@@ -1481,6 +1481,10 @@ function renderProfileMenu(data) {
   const add = document.createElement('div');
   add.textContent = '＋ New bot…';
   add.style.cssText = 'padding:6px 8px;margin-top:4px;border-top:1px solid #5f6368;color:#8ab4f8;cursor:pointer';
+  // Hover, like every other row in this menu. It was the only item without it,
+  // so the one entry that CREATES something was also the one that looked inert.
+  add.onmouseenter = () => { add.style.background = '#3c4043'; };
+  add.onmouseleave = () => { add.style.background = ''; };
   // No prompt. The name it used to ask for was the profile DIRECTORY, from when
   // that was also the bot's name — it isn't any more, so this asked people to
   // name the bot twice, the first time in a field that only takes [A-Za-z0-9._-].

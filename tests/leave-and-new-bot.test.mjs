@@ -159,3 +159,16 @@ test('both create-a-bot entry points behave identically', () => {
   assert.match(handler.slice(0, 400), /api\.invoke\('create-new-bot'\)/);
   assert.doesNotMatch(panelJs, /new-profile-prompt/, 'the old prompt path is gone');
 });
+
+test('every row in the bot menu highlights on hover', () => {
+  // "＋ New bot…" was the only entry without a hover handler, so the one item
+  // that CREATES something looked inert while the passive ones (open folder,
+  // open logs) lit up. Asserted across all four rather than for that one item,
+  // since the bug was an inconsistency, not a missing feature.
+  for (const v of ['row', 'folder', 'logs', 'add']) {
+    assert.match(panelJs, new RegExp(`\\b${v}\\.onmouseenter = \\(\\) => \\{ ${v}\\.style\\.background = '#3c4043'; \\};`),
+      `${v} should highlight on hover`);
+    assert.match(panelJs, new RegExp(`\\b${v}\\.onmouseleave = \\(\\) => \\{ ${v}\\.style\\.background = ''; \\};`),
+      `${v} should clear the highlight`);
+  }
+});

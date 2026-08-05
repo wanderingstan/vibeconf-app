@@ -49,6 +49,16 @@ will have no way to tell from your side — the tool calls all succeed.
 Once per call, not once per step. Re-sharing a board that is already up interrupts the
 presentation everyone is already watching.
 
+**The one exception: a share does NOT survive leaving the call.** If you leave and rejoin
+for any reason — the rename in 4b is the one that happens every time — the board's content
+is still there but nothing is being presented, and `update_whiteboard` goes back to writing
+to a screen no one can see. So after any rejoin, `share_whiteboard` again before the next
+step. See 4b.
+
+If you are ever unsure whether the board is actually up, `get_shared_screenshot` tells you
+in one call. Prefer checking to guessing: the failure is silent in both directions, and a
+wrong guess costs either an invisible board or an interrupted one.
+
 ## Step 4: Walk the steps
 
 Work through the steps below **in order**. For each one:
@@ -176,6 +186,12 @@ change it in place.** You can fix that without ending the call, but only in this
    — give me a couple of seconds."*
 2. `leave_call`
 3. `join_call` with the SAME room id, immediately.
+4. **`share_whiteboard` again.** Leaving the call ended your presentation. The board still
+   has everything on it, so nothing looks wrong from your side — `update_whiteboard` keeps
+   succeeding, and you carry on through voice, background and the rest writing to a screen
+   nobody can see. Observed in a real setup call: the bot renamed itself, came back, and
+   never re-shared. Do this as the tool call straight after the rejoin, before you say
+   anything else.
 
 **Leave BEFORE you rejoin, never the other way round.** Joining again while still in the room
 puts a second participant there and leaves the first sitting inert — a zombie the user has to
@@ -220,12 +236,20 @@ itself around whatever the widest image happens to be.
 Both problems are CSS, so set it before drawing the grid:
 
 ```
-set_whiteboard_style("table { table-layout: fixed; width: 100% } td { text-align: center; vertical-align: middle; padding: 8px } table img { height: 84px; width: auto; margin: 0 auto } .native-face { font-size: 68px; line-height: 1 }")
+set_whiteboard_style("table { table-layout: fixed; width: 100% } th, td { text-align: center; vertical-align: middle; padding: 8px; background: transparent } table img { height: 84px; width: auto; margin: 0 auto } .native-face { font-size: 68px; line-height: 1 }")
 ```
 
 `table-layout: fixed` is the part that equalises the columns; the `height` on images is what
 makes four different files look like one set of options. (Step 4f picks a board style
 properly and replaces this — by then the grids are done.)
+
+**`background: transparent` on `th` is not cosmetic fiddling.** A markdown table's first row
+IS its header row, so in the grid below the FACES land in `th` and the names land in `td` —
+and the board's stylesheet gives `th` a grey fill. The result is every emoji sitting in its
+own grey box with the labels underneath on the board's normal background, which reads as
+though the images are broken or still loading. Transparent lets the board's own background
+show through, so the faces sit on it like the rest of the content. Same reason the styles
+apply to `th, td` together rather than `td` alone.
 
 `list_visual_assets` gives you a 🙂 from each image set as an absolute path. One row of
 images, one row of names:
@@ -263,7 +287,7 @@ leaves each one a different width and the columns ragged; fixing the WIDTH is wh
 tidy grid:
 
 ```
-set_whiteboard_style("table { table-layout: fixed; width: 100% } td { width: 33%; text-align: center; vertical-align: top; padding: 8px } table img { width: 100%; height: auto; display: block }")
+set_whiteboard_style("table { table-layout: fixed; width: 100% } th, td { width: 33%; text-align: center; vertical-align: top; padding: 8px; background: transparent } table img { width: 100%; height: auto; display: block }")
 ```
 
 Three columns suits eight presets plus the describe-your-own cell: nine cells, a clean 3x3.
@@ -349,25 +373,12 @@ close:
 
 > "All set, here's what I've got. You can change any of this later just by asking me."
 
-**Then say what happens next, because the call does not end itself.** Two things, both of
-which people otherwise sit and wonder about:
+**Do NOT offer to leave yet, and do not suggest inviting anyone.** Both of those belong at
+the end of Step 6, after the demo. Offering an exit here reads as "we're finished", and the
+demo is the half that makes the bot worth keeping — an offer to drop off, made one sentence
+before it, gets taken. Setup is a form; you have not yet shown them the product.
 
-> "Tell me when you're done and I'll drop off — or if you'd like to introduce me to someone,
-> invite them in and we'll carry on."
-
-Leaving is the one that matters: setup is finished, the whiteboard is full, and there is no
-obvious signal that the bot is waiting rather than working. Someone who does not know they
-can simply say "you can go" will close the tab on you, or worse, sit through a silence
-wondering whether something is still running.
-
-The invite half is worth saying because this is the moment a new bot is most fun to show
-someone, and nothing about a setup call suggests you can just add people to it.
-
-Then continue as a normal call would from here: if they keep talking, you can either
-`leave_call` when they say they're done, or just keep going as a regular conversation (the
-same loop `/join-call` describes) if they want to use the bot for something else right away.
-If someone new joins, greet them by name and carry on — you are a normal call now, not a
-wizard.
+Go straight into Step 6.
 
 ## Step 6: Offer a demo — because setup only showed them half of it
 
@@ -381,13 +392,24 @@ But it is the least interesting half. Nothing in setup shows the bot pulling up 
 reading a screen share, writing code mid-call, or playing a game — the things that make
 someone say "oh, it can do *that*". Setup is a form; the demo is the product.
 
-So make one concrete offer and **do** it, rather than describing the menu:
+**Put it on the whiteboard.** Every step so far had a board, and this one arrives as bare
+speech — so the moment the call finally gets interesting is the moment the screen goes
+stale, still showing the settings summary from Step 5. `update_whiteboard` with the two or
+three things you are offering, as a short titled list ("Things I can do") with an emoji
+each. It makes the offer readable rather than something they have to hold in their head,
+and it lets them point at one instead of remembering what you said.
 
-> "Before I go — none of that showed you the fun half. Want me to draw something, or play a
-> quick game on the whiteboard?"
+Then make one concrete offer aloud and **do** it, rather than describing the menu:
+
+> "None of that showed you the fun half. Want me to draw something, or play a quick game on
+> the whiteboard?"
 
 Pick TWO or THREE, not the whole list. A menu of twelve reads as a brochure and gets a
-polite "no thanks"; two specific offers get a yes.
+polite "no thanks"; two specific offers get a yes. Put the same two or three on the board —
+the board and what you say should match.
+
+Don't open with "before I go". Nothing has suggested you are leaving yet, and saying it
+invites them to end a call one sentence before the best part of it.
 
 ### Only offer what this machine can actually do
 
@@ -482,5 +504,24 @@ Once the demo lands, `send_chat` the full capability list so they can browse it 
 Say it is there rather than reading it aloud. The demo is what they remember; the link is
 what they come back to.
 
-Then stop. If they want another, they will ask — and at that point you are just having a
-normal call, which is exactly where this should end up.
+### Only now: say how the call ends
+
+This is the part Step 5 deliberately held back, because the call does not end itself and
+people otherwise sit wondering. Two things:
+
+> "Tell me when you're done and I'll drop off — or if you'd like to introduce me to someone,
+> invite them in and we'll carry on."
+
+Leaving is the one that matters: setup is finished, the whiteboard is full, and there is no
+obvious signal that the bot is waiting rather than working. Someone who does not know they
+can simply say "you can go" will close the tab on you, or worse, sit through a silence
+wondering whether something is still running.
+
+The invite half lands here and not earlier: they have just watched the fun half, so this is
+the moment a new bot is most worth showing someone — and nothing about a setup call suggests
+you can simply add people to it.
+
+Then stop. If they want another demo, they will ask. From here you are just having a normal
+call: `leave_call` when they say they're done, or keep going as a regular conversation (the
+same loop `/join-call` describes). If someone new joins, greet them by name and carry on —
+you are a normal call now, not a wizard.

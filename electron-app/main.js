@@ -3252,7 +3252,22 @@ function createWhiteboardWindow(roomUrl) {
   return win;
 }
 
-const PANEL_WIDTH = 380;
+// The width of the app's main window — which IS the panel. There is no wider
+// window with a 380px strip down one side; that arrangement is gone.
+//
+// It was called PANEL_WIDTH, from when the main window held the panel beside a
+// full-size Meet view. #103 made 'hidden' the resting state: meetView now lives
+// in a host window the user never sees, and surfaces only as a thumbnail under
+// the panel or as the 👁 popout. So the number stopped meaning "width of one
+// region" and started meaning "width of the whole window" — same value, and
+// nothing renamed it.
+//
+// That cost a reader a wrong mental model of the UI while debugging #254, which
+// is the only reason this comment exists. bot-view-layout.js takes it as
+// `windowWidth` for the same reason. `panelBounds` there is still honestly
+// named: it really is the panel's bounds WITHIN this column, and in the
+// thumbnail state it is shorter than the window.
+const WINDOW_WIDTH = 380;
 
 // Check if already logged in
 // The public website hosts auth (/api/auth/*) and the whiteboard web-rooms.
@@ -6648,7 +6663,7 @@ const botViewLayout = require('./bot-view-layout.js');
 // is also called from createMeetView's dom-ready hook, not just on state change.
 function applyMeetZoom() {
   if (!meetView || meetView.webContents.isDestroyed()) return;
-  const l = botViewLayout.computeLayout(botViewState, { width: PANEL_WIDTH, height: 0 }, { panelWidth: PANEL_WIDTH });
+  const l = botViewLayout.computeLayout(botViewState, { width: WINDOW_WIDTH, height: 0 }, { windowWidth: WINDOW_WIDTH });
   try { meetView.webContents.setZoomFactor(l.meetZoom); } catch { /* view gone */ }
 }
 
@@ -6724,7 +6739,7 @@ function applyWindowHeight() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (panelPopoutWindow) return;      // panel lives elsewhere; its height isn't ours
   if (!panelContentHeight) return;    // nothing measured yet
-  const region = botViewInCall ? botViewLayout.regionHeightFor(PANEL_WIDTH, botViewState) : 0;
+  const region = botViewInCall ? botViewLayout.regionHeightFor(WINDOW_WIDTH, botViewState) : 0;
   let want = panelContentHeight + region;
   try {
     const { screen } = require('electron');
@@ -6836,17 +6851,17 @@ function layoutViews() {
   const l = botViewLayout.computeLayout(
     botViewState,
     { width, height },
-    { panelWidth: PANEL_WIDTH, inCall: botViewInCall },
+    { windowWidth: WINDOW_WIDTH, inCall: botViewInCall },
   );
   // computeLayout reports `clamped` when the panel got too narrow for the zoom
   // trick to hold Meet's virtual viewport steady — Chromium's page zoom bottoms
   // out at 0.25, so below ~294px Meet gets a genuinely narrower viewport and
   // REFLOWS, which breaks caption scraping and every DOM selector. That failure
   // is silent and mid-call, so say something. Once per process; it can only
-  // change if PANEL_WIDTH does.
+  // change if WINDOW_WIDTH does.
   if (l.clamped && !warnedZoomClamped) {
     warnedZoomClamped = true;
-    console.warn(`[electron] PANEL_WIDTH ${PANEL_WIDTH} is below the ~294px floor: `
+    console.warn(`[electron] WINDOW_WIDTH ${WINDOW_WIDTH} is below the ~294px floor: `
       + 'Meet zoom is clamped at its minimum, so Meet will reflow and caption '
       + 'scraping/selectors may break.');
   }
@@ -6875,7 +6890,7 @@ function layoutViews() {
     // clips away entirely. Its webContents keeps running, so idle.html (and any
     // state it holds) survives to the next call.
     if (meetAttached) {
-      meetView.setBounds({ x: 0, y: height, width, height: botViewLayout.regionHeightFor(PANEL_WIDTH) });
+      meetView.setBounds({ x: 0, y: height, width, height: botViewLayout.regionHeightFor(WINDOW_WIDTH) });
     }
   } else if (meetDockable && !meetAttached) {
     mainWindow.addBrowserView(meetView); // re-dock (e.g. after a provider swap)
@@ -6884,7 +6899,7 @@ function layoutViews() {
     meetView.setBounds(l.meetBounds);
     // The zoom is stateful (per-webContents), so set it here too — a resize while
     // in 'thumbnail' keeps the same 380px column, so the zoom is stable, but this
-    // keeps it correct if PANEL_WIDTH ever changes.
+    // keeps it correct if WINDOW_WIDTH ever changes.
     applyMeetZoom();
   }
 
@@ -7132,7 +7147,7 @@ function setPanelPoppedOut(out) {
   if (out && !panelPopoutWindow) {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.removeBrowserView(panelView);
     const win = new BrowserWindow({
-      width: PANEL_WIDTH + 80,
+      width: WINDOW_WIDTH + 80,
       height: 820,
       title: windowTitle("Bot's-eye view"),
       icon: path.join(__dirname, 'icon.png'),
@@ -7318,7 +7333,7 @@ function createMainWindow() {
     // bot-view-layout.js); a button pops it out to its own large window. The
     // size is the app's to decide (see the note above) — only --window-x/-y are
     // honoured, which is all the test launcher passes.
-    width: PANEL_WIDTH,
+    width: WINDOW_WIDTH,
     // A provisional height: the panel reports its real content height as soon as
     // it lays out, and applyWindowHeight shrinks this to fit.
     height: 820,
@@ -7331,12 +7346,12 @@ function createMainWindow() {
     backgroundColor: '#202124',
     // Content-sized, so there is nothing for a user resize to mean: dragging the
     // edge would just be undone by the next content change. The width is a fixed
-    // column the layout assumes (bot-view-layout is built around PANEL_WIDTH),
+    // column the layout assumes (bot-view-layout is built around WINDOW_WIDTH),
     // and the height is derived — so let the app own both.
     resizable: false,
     ...(Number.isFinite(winX) ? { x: winX } : {}),
     ...(Number.isFinite(winY) ? { y: winY } : {}),
-    minWidth: PANEL_WIDTH,
+    minWidth: WINDOW_WIDTH,
     // Low, because out of a call the window is only as tall as the avatar banner
     // + footer. The real floor is MIN_WINDOW_HEIGHT in applyWindowHeight.
     minHeight: MIN_WINDOW_HEIGHT,

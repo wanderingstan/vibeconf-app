@@ -274,7 +274,13 @@ const PREFERENCES = {
       "auto-resolves external references into data URIs so you don't need to " +
       "base64-encode anything. SVG/CSS animations don't tick (rasterized once); " +
       "the emoji's bounce provides motion. Use to display backgrounds, name plates, " +
-      "debug info, or anything SVG can render.",
+      "debug info, or anything SVG can render. "
+      + 'SHORTCUT: point it at an IMAGE FILE with "file:<path>" — '
+      + '"file:/Users/me/art/background.png" — and the app converts it to a '
+      + 'self-contained SVG on write (downscaled and inlined, so moving or deleting '
+      + 'the file later cannot leave a black camera). png/jpg/gif/webp/svg. That is '
+      + 'the easy path when you HAVE an image, including one you just generated; '
+      + 'writing SVG directly stays better for anything vector.',
   },
   avatarBackgroundCaption: {
     type: 'string',

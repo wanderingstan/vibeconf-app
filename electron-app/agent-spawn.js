@@ -87,6 +87,20 @@ function buildAgentArgs({ meetCode, botName, dangerous, model, mcpConfigPath, on
   if (dangerous) args.push('--dangerously-skip-permissions');
   if (model) args.push('--model', model);
   if (mcpConfigPath) args.push('--mcp-config', mcpConfigPath, '--strict-mcp-config');
+  // Claude in Chrome, explicitly. It is not an ordinary MCP server entry the way
+  // nanobanana is — the CLI wires it in itself, registering its own mcpConfig,
+  // allowedTools and system prompt — so inheriting the user's ~/.claude.json
+  // mcpServers above does NOT bring it along, and a bot session ends up without
+  // browser tools even on a machine where the extension is installed and enabled.
+  //
+  // Every skip inside the CLI's chrome wiring is written as
+  // `opts.chrome !== true && ENABLE_CFC !== true && <blocker>`, so passing the
+  // flag explicitly is what gets past those blockers — including the MCP-related
+  // ones this spawn already trips by pinning --strict-mcp-config.
+  //
+  // Harmless where Chrome is absent: the CLI still checks for the extension and
+  // an eligible account, and quietly skips the wiring when either is missing.
+  args.push('--chrome');
   return args;
 }
 

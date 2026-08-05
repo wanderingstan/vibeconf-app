@@ -1174,6 +1174,29 @@ function gatherCallHealthSnapshot() {
   };
 }
 
+// Clears the call-ended watchdog. Assigned by installCallHealthTick (the state
+// lives in its closure) and called by autoJoin, which is module-level.
+//
+// A deliberate leave-and-rejoin — the ONLY way to change the bot's Meet display
+// name — looks exactly like a call ending: the Leave button disappears while the
+// page tears down, navigates and rejoins. Measured 2026-08-04 on a rename: the
+// bot got back in at 20:22:07 and the watchdog declared "in-call UI gone for
+// 12s" at 20:22:10, three seconds later, killing a healthy call. The counter had
+// carried across the rejoin instead of starting fresh.
+//
+// It is a race, which is why renames "always seemed a little sketchy": it only
+// bites when the new page takes long enough to render.
+let resetCallEndedWatchdog = () => {};
+// Set the moment WE click Leave. From then on this page's absence of in-call UI
+// is expected, not a ghost — so its watchdog must stay quiet.
+//
+// This is the piece the join-side reset could not cover. On a rename the OLD
+// page keeps ticking while the NEW one loads: measured 2026-08-04, the Leave
+// button vanished at 21:01:15.5 and the old script fired "in-call UI gone for
+// 12s" at 21:01:26.8, nine seconds AFTER the rejoin had already started and
+// reset the new instance. Two script instances, and the fix was in the wrong one.
+let markDeliberateLeave = () => {};
+
 function installCallHealthTick() {
   let last = {};
   let lastMicReported = 'unknown';
@@ -1182,6 +1205,26 @@ function installCallHealthTick() {
   let _everInCall = false;     // have we ever confirmed admission (seen Leave)?
   let _leaveGoneTicks = 0;     // consecutive ticks with no in-call ground truth
   let _callEndedFired = false; // fire the clean-end signal at most once
+  let _leftOnPurpose = false;  // WE clicked Leave — later absence is not a ghost
+
+  // Every join starts from zero. Without this the ticks accrued while leaving
+  // are still on the clock when the bot comes back, so a rejoin can be killed by
+  // its own predecessor's absence.
+  // We clicked Leave. Everything after that is expected quiet.
+  markDeliberateLeave = () => {
+    if (!_leftOnPurpose) console.log('[electron-meet] left on purpose — call-ended watchdog stood down');
+    _leftOnPurpose = true;
+  };
+
+  resetCallEndedWatchdog = () => {
+    if (_leaveGoneTicks || _callEndedFired || _everInCall) {
+      console.log('[electron-meet] call-ended watchdog reset (join starting)');
+    }
+    _everInCall = false;
+    _leaveGoneTicks = 0;
+    _callEndedFired = false;
+    _leftOnPurpose = false;   // a fresh join is on the hook again
+  };
 
   const tick = () => {
     // Dismiss any blocking Meet onboarding modal before probing the DOM —
@@ -1329,7 +1372,7 @@ function installCallHealthTick() {
       // ~12 consecutive 1s ticks without the Leave button (and not on a
       // join/waiting screen) — long enough to ride out a mid-call re-render,
       // short enough to end the ghost promptly. Fire once.
-      if (_leaveGoneTicks >= 12 && !_callEndedFired) {
+      if (_leaveGoneTicks >= 12 && !_callEndedFired && !_leftOnPurpose) {
         _callEndedFired = true;
         console.warn('[electron-meet] Call ended — in-call UI gone for ' + _leaveGoneTicks + 's (collapsed toolbar / everyone left). Signaling clean leave (#417)');
         sendStatus('Call ended: the meeting is over (in-call controls disappeared).');
@@ -1606,6 +1649,8 @@ async function handleDenialPage(bodyText, stage) {
 
 async function autoJoin(botName) {
   console.log('[electron-meet] ===== AUTO-JOIN STARTING =====');
+  // Before anything else: a join in progress is not a call that ended.
+  resetCallEndedWatchdog();
   sendStatus('Joining Meet...');
 
   try {
@@ -3003,6 +3048,11 @@ ipcRenderer.on('trigger-stop-sharing', () => { meetProvider.stopShare(); });
 // else until Google's server-side timeout reaps it (the bot "didn't leave").
 // Clicking the real button sends Google a clean leave so the tile drops now.
 ipcRenderer.on('trigger-leave-call', () => {
+  // Before the click: this page is leaving deliberately, so its in-call UI is
+  // about to disappear for a reason we already know. Without this the page goes
+  // on counting and reports a ghost call ~12s later — landing in the middle of a
+  // rename's rejoin and kicking the bot straight back out.
+  markDeliberateLeave();
   const clicked = meetProvider.leave();
   console.log('[electron-meet] trigger-leave-call → Leave-call button ' + (clicked ? 'clicked' : 'NOT found'));
 });

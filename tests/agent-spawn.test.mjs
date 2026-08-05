@@ -76,6 +76,17 @@ test('the model and MCP pin survive the transport change', () => {
   assert.ok(!args().includes('--mcp-config'), 'the default instance stays on the global config');
 });
 
+test('Claude in Chrome is asked for explicitly', () => {
+  // Inheriting the user's mcpServers does not bring Chrome along: the CLI wires
+  // it in itself rather than reading it from a config entry, so a bot session on
+  // a machine with the extension installed still had no browser tools. The flag
+  // is also what gets past the CLI's own MCP-related skips, which this spawn
+  // trips by pinning --strict-mcp-config.
+  assert.ok(args().includes('--chrome'));
+  assert.ok(args({ mcpConfigPath: '/tmp/cfg.json' }).includes('--chrome'),
+    'the pinned-config path is exactly the one that was missing it');
+});
+
 test('dangerous mode is passed through, not merely checked', () => {
   assert.ok(args().includes('--dangerously-skip-permissions'));
   assert.ok(!args({ dangerous: false }).includes('--dangerously-skip-permissions'));

@@ -67,6 +67,17 @@ Work through the steps below **in order**. For each one:
 6. Otherwise apply the answer (see per-step notes) and briefly confirm what you set before
    moving to the next step.
 
+**Never ask anyone to say a bare number.** Tested repeatedly on 2026-08-04, at both the
+language and voice steps: saying "one" produced NOTHING in the captions, while "option one",
+"number one" and "Deutsch" all came through immediately. A single short word is the least
+reliable thing a caption engine can settle on, and a step that only accepts one leaves a user
+with no way forward and no idea why.
+
+So whenever you put a numbered list on the board, label the entries **"Option 1", "Option 2"**
+— not "1.", "2." — and ask them to *say the option number*. The label is what does the work:
+someone reading "Option 3" says "option three" without being told to. Printing bare digits
+and then asking for "option three" invites exactly the bare number you cannot hear.
+
 **Check for an early exit between every step**, not just at the start: call `get_room_info`
 and see whether the user's still there. If they've left, stop the walkthrough right there,
 apply defaults for whatever's left unset, and skip to Step 5.
@@ -97,8 +108,13 @@ English is unreadable to exactly the people this step exists for.
 | 7 | Português | 15 | Polski |
 | 8 | 日本語 | 16 | Türkçe |
 
-Say, in English and slowly: *"Say the number of your language."* Nothing else — a long
-sentence defeats the purpose.
+Ask them to **say the language's name, as written on the board** — "Español", "日本語",
+"Deutsch". That is the most reliable answer here and it is already in their own language, so
+it needs no English at all.
+
+Label the entries "Option 1", "Option 2" … per the rule above, and offer that as the
+alternative: *"Say your language, or say the option number."* Short, and slowly. Never ask for
+a bare number — "Deutsch" and "option three" both transcribe; "three" does not.
 
 **If ElevenLabs is available, greet them in a few languages first.** `list_voices`: if it
 lists ElevenLabs voices, a key is configured, and those voices speak other languages
@@ -178,7 +194,9 @@ saved either way and applies to the next call regardless.
 ### 4c. Voice
 
 `list_voices` to see what's available (ElevenLabs voices, if a key is configured, plus the
-OS's built-in voices). Put the list on the whiteboard. Then actually let them **hear**
+OS's built-in voices). Put the list on the whiteboard, labelled **"Option 1", "Option 2" …**
+— this is the step where the bare-number problem was first noticed, and a voice name is often
+harder to say than a language name, so the option number carries more of the weight here. Then actually let them **hear**
 candidates in the call: `speak` a short sample line in each voice via `speak`'s `voice`
 parameter, cycling through 3-4 options as they say "next" / "that one". Once picked,
 `set_voice` (or `set_preference("ttsVoiceId", ...)` / `set_preference("macosVoice", ...)`
@@ -350,3 +368,119 @@ Then continue as a normal call would from here: if they keep talking, you can ei
 same loop `/join-call` describes) if they want to use the bot for something else right away.
 If someone new joins, greet them by name and carry on — you are a normal call now, not a
 wizard.
+
+## Step 6: Offer a demo — because setup only showed them half of it
+
+Don't end on the settings table. Walking the steps quietly taught them a lot — by now they
+have heard the bot in different voices and languages, watched the whiteboard redraw itself
+live, seen it post to chat and resize its own share, and watched it edit its own
+instructions file. That is real, and it is worth naming in one sentence so they know they
+already saw it.
+
+But it is the least interesting half. Nothing in setup shows the bot pulling up a website,
+reading a screen share, writing code mid-call, or playing a game — the things that make
+someone say "oh, it can do *that*". Setup is a form; the demo is the product.
+
+So make one concrete offer and **do** it, rather than describing the menu:
+
+> "Before I go — none of that showed you the fun half. Want me to draw something, or play a
+> quick game on the whiteboard?"
+
+Pick TWO or THREE, not the whole list. A menu of twelve reads as a brochure and gets a
+polite "no thanks"; two specific offers get a yes.
+
+### Only offer what this machine can actually do
+
+**This is the part to get right, and step 4g already did the work** — it inventoried the
+skills and connected MCP servers in THIS session. Offer from that inventory, not from the
+product page. A demo that opens with "watch me generate an image" and then discovers there
+is no image tool is a worse ending than no demo at all: the last thing they see is the bot
+failing at its own showcase.
+
+That is an argument for offering the right *version* of a demo, not for offering less. See
+both entries below — each has a no-install fallback that is worth doing on its own merits.
+
+Two specific traps, both common — and note that **neither one means "skip the demo"**. Each
+has a version that works with nothing installed:
+
+- **Drawing.** A photorealistic image needs an image MCP server (nanobanana or similar), and
+  many installs have none. That is not a reason to drop the offer: *you can write SVG*, and
+  you already did it once in this call if they described their own background at 4e. Hand-
+  written SVG is genuinely good for the things people ask for on a call — a diagram, a logo
+  sketch, a chart, a cartoon — so offer to *draw* rather than to *generate a photo*, and put
+  the result on the board. Then make the upsell, once, in a sentence: *"That's me drawing it
+  by hand. Plug in an image generator and I can do photographic stuff — and with a video
+  model, short clips too."* That lands better than the photo would have, because they just
+  watched you do the hard version.
+- **Sharing a live browser tab** (`share_tab`) needs the Claude-in-Chrome extension
+  installed and connected. Without it the bot can still put a URL on the whiteboard, which
+  is a fine demo in itself — just do not promise a driven, logged-in browser you cannot
+  drive.
+
+  When you *do* have it, **make it a search you then refine out loud** — that is the demo,
+  not the page load. The one that consistently lands: open Google Flights, find a flight
+  from their city to somewhere, then take three follow-ups from the room — "non-stop only",
+  "business class", "leave Friday instead" — and drive each one live while they watch. What
+  sells it is the second and third refinement: a bot that loads a URL is a bookmark, a bot
+  that narrows a search while you talk is a person at the keyboard. Use *their* city; a
+  route they actually fly is worth ten of a generic one.
+
+  There is a better story than flights — **Uber Eats**, where the room picks a cuisine
+  together and it ends in actual food at an actual door — but it is the wrong demo for a
+  setup call: it spends real money, it wants someone's home address minutes after they met
+  you, it needs a logged-in account, and it is slow where flights is over in ninety seconds.
+  Keep flights as the default. Save the food one for a room with several people in it that
+  raises the idea itself, and **never place an order without an explicit spoken yes**.
+  Mentioning it in a sentence — *"and yes, people do actually order lunch this way"* — gets
+  most of the reaction with none of the risk.
+
+The rule is not "only demo what is installed", it is **never promise a capability you do not
+have**. Offer the version you can actually deliver, deliver it, and name what an add-on would
+buy them. Don't check by trying it in front of them, and if you are genuinely unsure, offer
+something else.
+
+### Demos that always work, with nothing else installed
+
+These need only the tools this skill already used, so they are safe on any install and make
+a good default pair:
+
+- 🎮 **A game on the whiteboard** — hangman, twenty questions, a quiz. Reliably the biggest
+  reaction, and it uses nothing but `update_whiteboard` and speech.
+- 📝 **Live notes** — "talk at me for thirty seconds about anything and watch the board."
+  Shows the thing they will actually use it for every day.
+- 🎭 **A persona** — instant, and it demonstrates that tone is theirs to set. Offer one silly
+  and one *useful*, because the useful ones are what actually change how they use the bot:
+  - **Parliamentarian** — runs the meeting by Robert's Rules. Motions, seconds, points of
+    order, the lot.
+  - **Facilitator** — keeps time, makes sure everyone has spoken, calls out when the room has
+    drifted off the agenda.
+  - **Mediator** — neutral, restates each side's position, finds the actual disagreement.
+  - **Pirate / sports commentator** — for the laugh.
+
+  Lead with a useful one. "I can run this as a parliamentarian" reframes the bot from a toy
+  into something they would invite to a real meeting, and the silly one still gets its laugh
+  straight after.
+- 🔊 **Sound effects and voice switching** — a one-liner in three voices.
+- 🎨 **Draw something in SVG** — "name a thing and I'll draw it on the board." No image
+  server required, per the note above.
+- 👀 **Reading their screen share** — ask them to share something and describe what is on it.
+  Needs nothing installed on the bot's side, and it surprises people every time.
+- 🫣 **Looking at the room** — `get_call_screenshot` and describe what you actually see: who
+  is on the call, the hat someone is wearing, the guitar on the wall behind them, that one
+  person's camera is off. This is the demo that most reliably makes people sit up, because
+  up to now the bot has only been a voice, and nothing else in the call signals that it can
+  *see*. Keep it warm and observational — the room, the background, the setup — and comment
+  on what people chose to put in frame rather than on how they look. A bot appraising
+  someone's appearance is the one way this lands badly.
+
+### Then hand them the list
+
+Once the demo lands, `send_chat` the full capability list so they can browse it later:
+
+> https://vibeconferencing.com/what-you-can-ask
+
+Say it is there rather than reading it aloud. The demo is what they remember; the link is
+what they come back to.
+
+Then stop. If they want another, they will ask — and at that point you are just having a
+normal call, which is exactly where this should end up.

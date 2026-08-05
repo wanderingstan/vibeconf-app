@@ -1225,6 +1225,26 @@ const localServer = new globalThis.LocalServer({
       // pref, a preference write) can see the work is already done rather than
       // walking Meet's Settings dialog a second time for the same value.
       _captionLanguageApplied = { room: localServer.roomId, requested: want, resolved: result.language };
+      // PERSIST it as this bot's own language.
+      //
+      // Meet stores its "Language of the meeting" against the shared browser
+      // session, not the bot — so without this the choice leaks and is lost at
+      // the same time. Observed: a bot set to German left Meet in German, and
+      // every bot created afterwards started in German, because an unset
+      // captionLanguage means "leave whatever Meet already has". Meanwhile the
+      // German bot had not saved anything either, so it was only still German
+      // by accident.
+      //
+      // Storing it makes the language the BOT'S property: re-applied on its next
+      // join, which also overwrites whatever another bot left behind.
+      try {
+        if (store && store.get('captionLanguage') !== result.language) {
+          store.set('captionLanguage', result.language);
+          console.log('[local-server] Saved captionLanguage =', result.language, '(this bot, future calls)');
+        }
+      } catch (err) {
+        console.warn('[local-server] Could not save captionLanguage:', err.message);
+      }
     } else console.warn('[local-server] Caption language change failed:', result && result.error);
     return result;
   },
@@ -5559,7 +5579,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '50';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '53';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}

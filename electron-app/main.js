@@ -878,6 +878,8 @@ const localServer = new globalThis.LocalServer({
     // content + style without changing anything. No-op if nothing's shared.
     return reloadWhiteboardWindow('explicit reload');
   },
+  onListFonts: () => listLocalFonts(),
+
   onJoinCall: (meetCode, botName) => {
     console.log('[local-server] Join call requested by agent:', meetCode, botName);
     // Joining cancels any pending after-call teardown.
@@ -2268,6 +2270,35 @@ function setImpaired(on, reason = '') {
   } else {
     console.log('[electron] 🥴 impaired cleared — captions flowing again');
   }
+}
+
+// Installed font families, for the agent to name one exactly.
+//
+// queryLocalFonts() is a RENDERER API, so main borrows a live webContents to
+// call it. That is worth it: `system_profiler SPFontsDataType` is the obvious
+// main-process alternative and takes 14.7 SECONDS on this machine, which is not
+// a thing you can call mid-call. queryLocalFonts returns in milliseconds.
+//
+// Cached, because the answer changes only when someone installs a font, and
+// timed out, because #254's lesson is that anything waiting on a renderer needs
+// a way to give up.
+let _fontCache = null;
+async function listLocalFonts() {
+  if (_fontCache) return _fontCache;
+  const host = [panelView, meetView].find((v) => v && !v.webContents.isDestroyed());
+  if (!host) throw new Error('no renderer available to enumerate fonts');
+  const js = `(async () => {
+    if (!window.queryLocalFonts) return null;
+    const fs = await window.queryLocalFonts();
+    return [...new Set(fs.map((f) => f.family))].sort();
+  })()`;
+  const families = await Promise.race([
+    host.webContents.executeJavaScript(js, true),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('font enumeration timed out')), 5000)),
+  ]);
+  if (!Array.isArray(families)) throw new Error('this build cannot enumerate local fonts');
+  _fontCache = families;
+  return families;
 }
 
 function pushEmojiSet(value) {

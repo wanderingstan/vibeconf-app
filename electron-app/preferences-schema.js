@@ -290,8 +290,15 @@ const PREFERENCES = {
     type: 'string',
     default: 'fluent3d',
     enum: ['native', 'twemoji', 'openmoji', 'noto', 'fluent3d'],
+    enumPattern: /^font:[A-Za-z0-9 _-]{1,120}$/,
     description:
-      'Which emoji graphics the avatar\'s face uses. "native" = the OS emoji font. ' +
+      'How the avatar\'s face is drawn. Either a bundled set, or "font:<Family>" to '
+      + 'use a font INSTALLED ON THIS MACHINE — e.g. "font:UnifontExMono". One value, '
+      + 'so there is no second setting to disagree with this one. For the font form, '
+      + 'call list_fonts for the exact family names available here: a family that is '
+      + 'not installed silently falls back to the system emoji font, which looks like '
+      + 'nothing happened. Any font with emoji coverage works, colour or monochrome. '
+      + 'The bundled sets: "native" = the OS emoji font. ' +
       '"twemoji" = Twitter Twemoji (flat). "openmoji" = OpenMoji (outlined). "noto" = ' +
       'Google Noto Emoji. "fluent3d" = Microsoft Fluent 3D (a curated face set — ' +
       'hand/person emojis fall back to native). All bundled in the app — no network. ' +
@@ -874,7 +881,14 @@ function validate(key, value) {
   if (spec.type === 'string') {
     if (typeof value !== 'string') return { ok: false, error: `Expected string` };
     if (Array.isArray(spec.enum) && !spec.enum.includes(value)) {
-      return { ok: false, error: `Must be one of: ${spec.enum.join(', ')}` };
+      // enumPattern widens a closed list with one open FORM, for a pref that is
+      // "one of these, or a value only the user's machine knows" — emojiSet's
+      // `font:<Family>`. Encoding that in the same key as the bundled sets means
+      // there is no second preference with a precedence rule against this one.
+      if (!(spec.enumPattern instanceof RegExp && spec.enumPattern.test(value))) {
+        const extra = spec.enumPattern ? `, or ${String(spec.enumPattern)}` : '';
+        return { ok: false, error: `Must be one of: ${spec.enum.join(', ')}${extra}` };
+      }
     }
     if (spec.maxLength != null && value.length > spec.maxLength) {
       return { ok: false, error: `String too long (max ${spec.maxLength} chars)` };

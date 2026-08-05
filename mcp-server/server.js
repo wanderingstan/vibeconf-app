@@ -854,6 +854,35 @@ server.tool(
   },
 );
 
+// --- list_fonts ---
+server.tool(
+  "list_fonts",
+  "Font families installed on the machine running the app. Use with set_preference(\"emojiSet\", \"font:<Family>\") to draw the bot's face with a real font instead of the bundled picture sets — e.g. \"font:UnifontExMono\". Call this rather than guessing a name: a family that is not installed falls back to the system emoji font silently, so a typo looks exactly like the feature not working. Names are returned exactly as the system reports them, which is what the preference needs. Not every font has emoji coverage; the interesting ones are those that do.",
+  {},
+  async () => {
+    try {
+      const resp = await vfetch(`${BASE_URL}/api/fonts`);
+      const data = await resp.json();
+      if (!data.success) {
+        return { content: [{ type: "text", text: `Error: ${data.error || "could not list fonts"}` }] };
+      }
+      const fams = data.families || [];
+      if (!fams.length) {
+        return { content: [{ type: "text", text: "No fonts reported. The app may not have a window open to ask." }] };
+      }
+      return {
+        content: [{
+          type: "text",
+          text: `${fams.length} font families installed:\n\n${fams.join("\n")}\n\n`
+            + `Use one with set_preference("emojiSet", "font:<Family>") — exact name, as listed above.`,
+        }],
+      };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error contacting local server: ${err.message}` }] };
+    }
+  },
+);
+
 // --- list_voices ---
 server.tool(
   "list_voices",

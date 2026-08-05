@@ -79,7 +79,7 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, extraRoutes } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
     // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
     // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
@@ -114,6 +114,7 @@ class LocalServer {
     this.onShareTab = onShareTab || (() => {}); // POC (share-agent-tab)
     this.onStopSharing = onStopSharing || (() => {});
     this.onJoinCall = onJoinCall || (() => {});
+    this.onListFonts = onListFonts || (async () => []);
     this.onJoinSlack = onJoinSlack || (() => {});
     this.onLoadUrl = onLoadUrl || (() => {});
     this.onScrollShare = onScrollShare || (async () => ({ ok: false, error: 'not implemented' }));
@@ -3796,6 +3797,21 @@ class LocalServer {
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, names: picks }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+      return;
+    }
+
+    // Font families installed on THIS machine, so the agent can name one exactly
+    // for emojiSet's `font:<Family>` form. A guessed name is not an error anyone
+    // can see — it silently falls back to the system emoji font.
+    if (url.pathname === '/api/fonts' && req.method === 'GET') {
+      try {
+        const families = await this.onListFonts();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, families }));
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false, error: err.message }));

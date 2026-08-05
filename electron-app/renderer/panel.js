@@ -347,7 +347,27 @@ const RESTING_EMOJI = '\u{1F642}'; // 🙂
 // set|emoji → data URI (or null for native / not in the set). Main reads a file
 // per lookup and the blink asks for the same handful over and over, so cache.
 const emojiUriCache = new Map();
+// emojiSet carries either a bundled set name or `font:<Family>` for a font
+// installed on this machine. The panel draws its OWN avatar (and its switcher
+// thumbnail), so it has to understand the font form too — otherwise the call
+// shows the chosen font and the app's own picture of the bot does not, which is
+// exactly how this was first noticed.
+function fontFamilyFromSet(setName) {
+  const m = /^font:(.+)$/.exec(String(setName || ''));
+  return m ? m[1].replace(/[^A-Za-z0-9 _-]/g, '').trim() : '';
+}
+// Keep the platform emoji fonts as the tail so an uninstalled family degrades to
+// a real face instead of tofu.
+const NATIVE_EMOJI_STACK = '"Apple Color Emoji", "Segoe UI Emoji", '
+  + '"Noto Color Emoji", "Twemoji Mozilla", system-ui, sans-serif';
+function emojiFontStackFor(setName) {
+  const fam = fontFamilyFromSet(setName);
+  return fam ? `"${fam}", ${NATIVE_EMOJI_STACK}` : NATIVE_EMOJI_STACK;
+}
+
 async function emojiUriFor(setName, emoji) {
+  // A font is glyphs, not pictures — no data URI, so the glyph path runs.
+  if (fontFamilyFromSet(setName)) return null;
   const key = setName + '|' + emoji;
   if (emojiUriCache.has(key)) return emojiUriCache.get(key);
   let uri = null;
@@ -359,8 +379,9 @@ async function emojiUriFor(setName, emoji) {
 // Draw the face from the CHOSEN EMOJI SET's artwork, exactly like the virtual
 // camera does, so the panel and the call show the same picture. 'native' (or an
 // emoji the set doesn't ship) falls back to the OS glyph already in the markup.
-function paintAvatarEmoji(el, dataUri, emojiChar) {
+function paintAvatarEmoji(el, dataUri, emojiChar, fontStack) {
   const glyph = el.querySelector('.agent-avatar-emoji');
+  if (glyph && fontStack) glyph.style.fontFamily = fontStack;
   let img = el.querySelector('.agent-avatar-emoji-img');
   if (dataUri) {
     if (!img) {
@@ -406,7 +427,7 @@ async function renderAgentAvatar() {
     // Don't stomp a blink or mood that's mid-play — this runs on a 60s timer,
     // so it would otherwise cut ~4% of expressions short (a 2.4s mood inside a
     // 60s window). playFaceSequence lands on the right base itself.
-    if (!facePlaying) paintAvatarEmoji(el, faceUri, face);
+    if (!facePlaying) paintAvatarEmoji(el, faceUri, face, emojiFontStackFor(emojiSet));
   }
   refreshAvatarThumb(svg, emojiSet, restingUri);
   startBlinking(emojiSet);
@@ -659,8 +680,7 @@ async function refreshAvatarThumb(svg, emojiSet, emojiUri) {
       // system font rather than our bundled artwork: macOS, Windows, then the
       // usual Linux packages. Unmatched names are skipped, so listing all of
       // them costs nothing.
-      ctx.font = `${Math.round(face)}px "Apple Color Emoji", "Segoe UI Emoji", `
-        + `"Noto Color Emoji", "Twemoji Mozilla", system-ui, sans-serif`;
+      ctx.font = `${Math.round(face)}px ${emojiFontStackFor(emojiSet)}`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(RESTING_EMOJI, size / 2, size / 2 + face * 0.04);
@@ -1674,7 +1694,23 @@ function loadConfigIntoControls() {
   populateUnifiedVoices(result);
   if (result?.claudeWorkDir) claudeWorkDirInput.value = result.claudeWorkDir;
   if (result?.claudeModel) claudeModelInput.value = result.claudeModel;
-  if (emojiSetInput && result?.emojiSet) emojiSetInput.value = result.emojiSet;
+  if (emojiSetInput && result?.emojiSet) {
+    // A `font:<Family>` value has no matching <option>, and assigning an unknown
+    // value to a <select> leaves it BLANK with selectedIndex -1 — so a font set
+    // from a call would read as "no emoji set chosen". Give it a real option so
+    // the dropdown says what is actually in effect. Rebuilt each time, so it
+    // never accumulates stale entries.
+    const fam = fontFamilyFromSet(result.emojiSet);
+    emojiSetInput.querySelector('option[data-font-option]')?.remove();
+    if (fam) {
+      const opt = document.createElement('option');
+      opt.value = result.emojiSet;
+      opt.textContent = `Font: ${fam}`;
+      opt.setAttribute('data-font-option', '1');
+      emojiSetInput.appendChild(opt);
+    }
+    emojiSetInput.value = result.emojiSet;
+  }
   // '' is a real value here ("leave as Meet has it"), so don't treat it as absent.
   if (captionLanguageInput && result?.captionLanguage !== undefined) {
     captionLanguageInput.value = result.captionLanguage || '';

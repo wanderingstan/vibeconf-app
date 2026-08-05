@@ -551,7 +551,7 @@
       ctx.save();
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.font = `${Math.round(emojiSize)}px serif`;
+      ctx.font = emojiFontStack(Math.round(emojiSize));
 
       // Glow when speaking
       if (this.speaking) {
@@ -1257,6 +1257,23 @@
   let debugOverlayFlagsGlobal = { health: true, captions: false, agentLog: false, experiments: false };
   let debugInfoLatest = null;
   let emojiSetGlobal = 'native'; // 'native' | 'twemoji' — pushed from main (#316)
+  let emojiFontGlobal = '';      // a family installed on the user's machine, or '' for the system font
+
+  // The family name goes straight into the canvas font SHORTHAND, which is CSS.
+  // A name containing a quote, semicolon or brace could close the family and
+  // append declarations, and a malformed shorthand makes ctx.font a silent no-op
+  // — the assignment is simply ignored and the previous font stays, so the face
+  // would render in the wrong font with nothing logged. Strip anything that
+  // isn't plausibly part of a family name, then quote it.
+  function sanitizeFontFamily(name) {
+    const s = String(name == null ? '' : name).replace(/[^A-Za-z0-9 _-]/g, '').trim().slice(0, 120);
+    return s;
+  }
+  function emojiFontStack(px) {
+    // Always keep serif as the tail: an uninstalled family falls through to the
+    // system emoji font rather than rendering tofu.
+    return emojiFontGlobal ? `${px}px "${emojiFontGlobal}", serif` : `${px}px serif`;
+  }
 
   // Emoji image sets (#316): draw the avatar's emoji from a bundled SVG set
   // instead of the OS font. The preload exposes __vibeEmojiSvg(relPath) — it has
@@ -1970,10 +1987,18 @@
         // Which emoji graphics the avatar draws: 'native' (OS font) or 'twemoji'
         // (bundled SVG set, #316). Module-scope var seeds cameras created later.
         if (payload) {
-          emojiSetGlobal = (payload.emojiSet === 'native' || EMOJI_SETS[payload.emojiSet]) ? payload.emojiSet : 'native';
+          // One value answers "how is the face drawn": a bundled set name, or
+          // `font:<Family>` for a font installed on the user's machine. Encoding
+          // the font here rather than in a second preference means there is no
+          // precedence rule between the two to remember, get wrong, or explain.
+          const raw = String(payload.emojiSet == null ? 'native' : payload.emojiSet);
+          const asFont = /^font:(.+)$/.exec(raw);
+          emojiFontGlobal = asFont ? sanitizeFontFamily(asFont[1]) : '';
+          emojiSetGlobal = (!asFont && (raw === 'native' || EMOJI_SETS[raw])) ? raw : 'native';
           avatarState.emojiSet = emojiSetGlobal;
           for (const cam of cameras.values()) cam.emojiSet = emojiSetGlobal;
-          console.log('[bots-in-calls] Emoji set:', emojiSetGlobal);
+          console.log('[bots-in-calls] Emoji set:', emojiSetGlobal,
+            emojiFontGlobal ? '(font: ' + emojiFontGlobal + ')' : '');
         }
         break;
 

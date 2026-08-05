@@ -290,11 +290,14 @@ const PREFERENCES = {
     type: 'string',
     default: 'fluent3d',
     enum: ['native', 'twemoji', 'openmoji', 'noto', 'fluent3d'],
-    enumPattern: /^font:[A-Za-z0-9 _-]{1,120}$/,
+    enumPattern: /^font:[A-Za-z0-9 _-]{1,120}(#[0-9A-Fa-f]{3,8})?$/,
     description:
       'How the avatar\'s face is drawn. Either a bundled set, or "font:<Family>" to '
       + 'use a font INSTALLED ON THIS MACHINE — e.g. "font:UnifontExMono". One value, '
-      + 'so there is no second setting to disagree with this one. For the font form, '
+      + 'so there is no second setting to disagree with this one. A MONOCHROME font '
+      + 'has no colour of its own and draws black by default; add a hex colour to '
+      + 'pick one — "font:UnifontExMono#ffcc00". (A colour font ignores it and keeps '
+      + 'its own colours.) For the font form, '
       + 'call list_fonts for the exact family names available here: a family that is '
       + 'not installed silently falls back to the system emoji font, which looks like '
       + 'nothing happened. Any font with emoji coverage works, colour or monochrome. '

@@ -61,7 +61,49 @@ test('the panel understands the font form too', () => {
 test('a font value resolves to the native draw path in the call', () => {
   const h = inject.slice(inject.indexOf("case 'set-emoji-set':"));
   const body = h.slice(0, h.indexOf('break;'));
-  assert.match(body, /\^font:\(\.\+\)\$/);
+  assert.match(body, /parseEmojiFontValue\(raw\)/);
   assert.match(body, /emojiSetGlobal = \(!asFont &&/,
     'a font must not also select a picture set — they answer the same question');
+});
+
+// A monochrome font has no colour of its own, so it drew in the canvas default:
+// black. The colour rides in the same string for the same reason the family
+// does — one value answering "how is the face drawn".
+test('font:<Family> takes an optional hex colour', () => {
+  for (const ok of ['font:UnifontExMono#ffcc00', 'font:UnifontExMono#fff', 'font:X#ffcc00aa']) {
+    assert.equal(validate('emojiSet', ok).ok, true, `${ok} should be valid`);
+  }
+  for (const bad of ['font:UnifontExMono#zzz', 'font:UnifontExMono#', 'font:X#12']) {
+    assert.equal(validate('emojiSet', bad).ok, false, `${bad} should be rejected`);
+  }
+});
+
+test('the colour is strict hex before it reaches fillStyle', () => {
+  // An invalid fillStyle is IGNORED SILENTLY, exactly like a malformed ctx.font,
+  // so a loose parse would draw the previous colour with nothing logged.
+  assert.match(inject, /\^font:\(\[\^#\]\+\)\(\?:#\(\[0-9A-Fa-f\]\{3,8\}\)\)\?\$/);
+  assert.match(panel, /\^font:\(\[\^#\]\+\)\(\?:#\(\[0-9A-Fa-f\]\{3,8\}\)\)\?\$/);
+  assert.match(inject, /if \(emojiFontColorGlobal\) ctx\.fillStyle = emojiFontColorGlobal;/);
+});
+
+test('avatar styling is module state, so a blink cannot wipe it', () => {
+  // Regression: font and colour were paintAvatarEmoji PARAMETERS, and the blink
+  // path repaints without them — so the styling applied on render and was wiped
+  // by the first blink a second later, which read as "the colour does nothing".
+  assert.match(panel, /let avatarFontStack = '';/);
+  assert.match(panel, /let avatarFontColor = '';/);
+  assert.match(panel, /function paintAvatarEmoji\(el, dataUri, emojiChar\) \{/,
+    'no styling parameters — every repaint path must get it by construction');
+  const fn = panel.slice(panel.indexOf('function paintAvatarEmoji'));
+  assert.match(fn.slice(0, 400), /glyph\.style\.color = avatarFontColor \|\| '';/);
+});
+
+test('an agent-set face repaints the panel now, not on the 60s timer', () => {
+  // The panel and the call disagreeing is what made the font look broken in the
+  // first place; a minute of staleness is the same bug, just quieter.
+  const h = panel.slice(panel.indexOf("if (message?.action !== 'config-updated') return;"));
+  const body = h.slice(0, 1600);  // must reach past the comment block to the focus guard
+  assert.match(body, /changed === 'emojiSet' \|\| changed === 'avatarBackgroundSvg'/);
+  assert.ok(body.indexOf('renderAgentAvatar()') < body.indexOf('activeElement'),
+    'the avatar is a picture, not a form control — it must repaint before the focus guard');
 });

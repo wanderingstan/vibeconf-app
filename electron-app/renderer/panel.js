@@ -352,9 +352,21 @@ const emojiUriCache = new Map();
 // thumbnail), so it has to understand the font form too — otherwise the call
 // shows the chosen font and the app's own picture of the bot does not, which is
 // exactly how this was first noticed.
+function parseFontSet(setName) {
+  const m = /^font:([^#]+)(?:#([0-9A-Fa-f]{3,8}))?$/.exec(String(setName || ''));
+  if (!m) return null;
+  return {
+    family: m[1].replace(/[^A-Za-z0-9 _-]/g, '').trim(),
+    // Strict hex only: an invalid CSS colour is ignored silently, so a typo
+    // would show the previous colour with nothing to explain it.
+    color: m[2] ? '#' + m[2] : '',
+  };
+}
 function fontFamilyFromSet(setName) {
-  const m = /^font:(.+)$/.exec(String(setName || ''));
-  return m ? m[1].replace(/[^A-Za-z0-9 _-]/g, '').trim() : '';
+  return parseFontSet(setName)?.family || '';
+}
+function fontColorFromSet(setName) {
+  return parseFontSet(setName)?.color || '';
 }
 // Keep the platform emoji fonts as the tail so an uninstalled family degrades to
 // a real face instead of tofu.
@@ -379,9 +391,20 @@ async function emojiUriFor(setName, emoji) {
 // Draw the face from the CHOSEN EMOJI SET's artwork, exactly like the virtual
 // camera does, so the panel and the call show the same picture. 'native' (or an
 // emoji the set doesn't ship) falls back to the OS glyph already in the markup.
-function paintAvatarEmoji(el, dataUri, emojiChar, fontStack) {
+// The face's font and colour live at module scope rather than being passed in.
+// They were parameters for one commit, and the BLINK path (playFaceSequence,
+// below) repaints without them — so the styling applied on render and was wiped
+// a couple of seconds later by the first blink, which looked like the colour
+// simply not working. Anything that repaints the face gets the current styling
+// by construction now.
+let avatarFontStack = '';
+let avatarFontColor = '';
+function paintAvatarEmoji(el, dataUri, emojiChar) {
   const glyph = el.querySelector('.agent-avatar-emoji');
-  if (glyph && fontStack) glyph.style.fontFamily = fontStack;
+  if (glyph) {
+    glyph.style.fontFamily = avatarFontStack || '';
+    glyph.style.color = avatarFontColor || '';
+  }
   let img = el.querySelector('.agent-avatar-emoji-img');
   if (dataUri) {
     if (!img) {
@@ -412,6 +435,10 @@ async function renderAgentAvatar() {
     emojiSet = (cfg && cfg.emojiSet) || 'native';
   } catch { /* ignore — fall back to gradient + native glyph */ }
 
+  // Before anything paints: every repaint path reads these.
+  avatarFontStack = emojiFontStackFor(emojiSet);
+  avatarFontColor = fontColorFromSet(emojiSet);
+
   // The thumbnail is a PORTRAIT — always the resting face, never a live state.
   const restingUri = await emojiUriFor(emojiSet, RESTING_EMOJI);
   // …but what's on screen right now may be the bot's live in-call face.
@@ -427,7 +454,7 @@ async function renderAgentAvatar() {
     // Don't stomp a blink or mood that's mid-play — this runs on a 60s timer,
     // so it would otherwise cut ~4% of expressions short (a 2.4s mood inside a
     // 60s window). playFaceSequence lands on the right base itself.
-    if (!facePlaying) paintAvatarEmoji(el, faceUri, face, emojiFontStackFor(emojiSet));
+    if (!facePlaying) paintAvatarEmoji(el, faceUri, face);
   }
   refreshAvatarThumb(svg, emojiSet, restingUri);
   startBlinking(emojiSet);
@@ -681,6 +708,8 @@ async function refreshAvatarThumb(svg, emojiSet, emojiUri) {
       // usual Linux packages. Unmatched names are skipped, so listing all of
       // them costs nothing.
       ctx.font = `${Math.round(face)}px ${emojiFontStackFor(emojiSet)}`;
+      const thumbColor = fontColorFromSet(emojiSet);
+      if (thumbColor) ctx.fillStyle = thumbColor;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(RESTING_EMOJI, size / 2, size / 2 + face * 0.04);
@@ -1737,6 +1766,13 @@ loadConfigIntoControls();
 // silently rots as prefs are added. Re-reading cannot drift.
 api.on('extension-message', (message) => {
   if (message?.action !== 'config-updated') return;
+  // The avatar repaints regardless of the focus guard below: it is a picture,
+  // not a form control, so nothing can be typed into it. Without this the panel
+  // showed the OLD face for up to 60s after an agent changed it mid-call (the
+  // repaint is otherwise on a 60s timer) — the call and the app's own picture of
+  // the bot disagreeing, which is the thing that made the font look broken.
+  const changed = message.payload?.key;
+  if (changed === 'emojiSet' || changed === 'avatarBackgroundSvg') renderAgentAvatar();
   // Don't repaint under someone's hands. A re-read rewrites every control,
   // including the ack-phrase textareas — so an echo triggered by changing the
   // emoji dropdown could wipe a half-typed phrase in a different field. The

@@ -552,6 +552,10 @@
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.font = emojiFontStack(Math.round(emojiSize));
+      // Only for a monochrome font. A COLOUR font ignores fillStyle for its own
+      // glyphs anyway, so setting this is harmless there; leaving it unset when
+      // no colour was asked for preserves the previous behaviour exactly.
+      if (emojiFontColorGlobal) ctx.fillStyle = emojiFontColorGlobal;
 
       // Glow when speaking
       if (this.speaking) {
@@ -1258,6 +1262,7 @@
   let debugInfoLatest = null;
   let emojiSetGlobal = 'native'; // 'native' | 'twemoji' — pushed from main (#316)
   let emojiFontGlobal = '';      // a family installed on the user's machine, or '' for the system font
+  let emojiFontColorGlobal = ''; // fill colour for a monochrome font; '' = leave the canvas default
 
   // The family name goes straight into the canvas font SHORTHAND, which is CSS.
   // A name containing a quote, semicolon or brace could close the family and
@@ -1268,6 +1273,20 @@
   function sanitizeFontFamily(name) {
     const s = String(name == null ? '' : name).replace(/[^A-Za-z0-9 _-]/g, '').trim().slice(0, 120);
     return s;
+  }
+  // `font:<Family>` optionally carries a colour: `font:UnifontExMono#ffcc00`.
+  // A monochrome font has no colour of its own, so without this it draws in
+  // whatever fillStyle happens to be — the canvas default, black. Same reason
+  // the colour rides in this string rather than a preference of its own: it is
+  // part of one answer to "how is the face drawn".
+  //
+  // Validated to strict hex before it reaches fillStyle. An invalid fillStyle is
+  // IGNORED SILENTLY, exactly like a malformed ctx.font, so a typo would draw
+  // the previous colour with nothing logged.
+  function parseEmojiFontValue(raw) {
+    const m = /^font:([^#]+)(?:#([0-9A-Fa-f]{3,8}))?$/.exec(String(raw || ''));
+    if (!m) return null;
+    return { family: sanitizeFontFamily(m[1]), color: m[2] ? '#' + m[2] : '' };
   }
   function emojiFontStack(px) {
     // Always keep serif as the tail: an uninstalled family falls through to the
@@ -1992,13 +2011,15 @@
           // the font here rather than in a second preference means there is no
           // precedence rule between the two to remember, get wrong, or explain.
           const raw = String(payload.emojiSet == null ? 'native' : payload.emojiSet);
-          const asFont = /^font:(.+)$/.exec(raw);
-          emojiFontGlobal = asFont ? sanitizeFontFamily(asFont[1]) : '';
+          const asFont = parseEmojiFontValue(raw);
+          emojiFontGlobal = asFont ? asFont.family : '';
+          emojiFontColorGlobal = asFont ? asFont.color : '';
           emojiSetGlobal = (!asFont && (raw === 'native' || EMOJI_SETS[raw])) ? raw : 'native';
           avatarState.emojiSet = emojiSetGlobal;
           for (const cam of cameras.values()) cam.emojiSet = emojiSetGlobal;
           console.log('[bots-in-calls] Emoji set:', emojiSetGlobal,
-            emojiFontGlobal ? '(font: ' + emojiFontGlobal + ')' : '');
+            emojiFontGlobal ? '(font: ' + emojiFontGlobal
+              + (emojiFontColorGlobal ? ' ' + emojiFontColorGlobal : '') + ')' : '');
         }
         break;
 

@@ -46,6 +46,16 @@ const APP_LEVEL_KEYS = new Set([
   // Whether the quit dialog appears is about this MACHINE's window, not about
   // any one bot — every profile shares the same close button habit.
   'confirmQuit',
+  // The setup wizard asks about this ONCE, in machine terms ("the app can send
+  // its own diagnostic logs… which can include transcript text"), so it has to
+  // BE machine-wide. Per-profile it silently was not: answering "no" bound the
+  // choice to the Default profile, and every bot created afterwards started at
+  // the default of true and shipped transcripts anyway. A privacy answer that
+  // does not carry is worse than not asking.
+  //
+  // It also had nowhere to change it later — App Settings renders app-level
+  // prefs only, so it was set once in the wizard and then unreachable.
+  'remoteLogging',
 ]);
 
 // The subset of app-level keys the launch migration may auto-promote from a
@@ -58,6 +68,19 @@ const APP_LEVEL_KEYS = new Set([
 // a dead host. Those start unset at app level and are set deliberately;
 // old per-profile copies are simply ignored by the routing.
 const MIGRATE_KEYS = ['ttsApiKey'];
+
+// Keys promoted from a per-profile config ONLY when they are false.
+//
+// remoteLogging cannot use MIGRATE_KEYS: promoting whatever one profile happens
+// to hold is the hazard documented above. But the asymmetry here is real rather
+// than convenient — `true` is already the default, so promoting it changes
+// nothing, while `false` is a deliberate opt-out someone chose. Losing that on
+// an upgrade would silently resume shipping transcript text from a machine whose
+// owner had said no.
+//
+// So: if ANY profile says false, the machine says false. Erring toward the more
+// private answer is the only direction that cannot surprise someone unpleasantly.
+const MIGRATE_OPT_OUTS = ['remoteLogging'];
 
 const isAppLevel = (key) => APP_LEVEL_KEYS.has(key);
 
@@ -124,6 +147,18 @@ class ScopedStore {
 // Runs on every launch; a healed profile has nothing left to migrate, so
 // subsequent runs are no-ops.
 function migrateAppLevelKeys(appStore, profileStore, log = console.log) {
+  // Opt-outs first, and they run even for the default instance: the wizard wrote
+  // remoteLogging=false through the SAME store there, so there is nothing to copy
+  // — but a named profile carrying a false must still be able to set it
+  // machine-wide.
+  for (const key of MIGRATE_OPT_OUTS) {
+    try {
+      if (profileStore.get(key) === false && appStore.get(key) !== false) {
+        appStore.set(key, false);
+        log(`[config-scope] Honouring '${key}' opt-out machine-wide`);
+      }
+    } catch { /* non-fatal: the default (on) still applies */ }
+  }
   if (appStore === profileStore) return; // default instance: nothing to split
   for (const key of MIGRATE_KEYS) {
     try {
@@ -145,4 +180,4 @@ function migrateAppLevelKeys(appStore, profileStore, log = console.log) {
   }
 }
 
-module.exports = { APP_LEVEL_KEYS, MIGRATE_KEYS, isAppLevel, ScopedStore, migrateAppLevelKeys };
+module.exports = { APP_LEVEL_KEYS, MIGRATE_KEYS, MIGRATE_OPT_OUTS, isAppLevel, ScopedStore, migrateAppLevelKeys };

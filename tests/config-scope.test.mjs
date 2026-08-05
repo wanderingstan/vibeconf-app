@@ -28,7 +28,10 @@ test('scope map: the decided app-level keys, everything else per-profile', () =>
   for (const k of ['ttsApiKey', 'vcSessionToken', 'vcSessionLoggedOutToken', 'syncBaseUrl', 'websiteUrl', 'dangerousMode']) {
     assert.equal(isAppLevel(k), true, `${k} should be app-level`);
   }
-  for (const k of ['botName', 'ttsVoiceId', 'meetAccountEmail', 'bargeInGraceMs', 'claudeModel', 'remoteLogging', 'avatarThumb']) {
+  // remoteLogging moved to app-level: the setup wizard asks about it once, in
+  // machine terms, so binding the answer to one profile meant every bot created
+  // afterwards silently went back to shipping transcript text.
+  for (const k of ['botName', 'ttsVoiceId', 'meetAccountEmail', 'bargeInGraceMs', 'claudeModel', 'avatarThumb']) {
     assert.equal(isAppLevel(k), false, `${k} should be per-profile`);
   }
 });
@@ -168,7 +171,7 @@ test('APP_LEVEL_KEYS is exactly the decided set (guard against accidental promot
     // backend is "claude" — so it must share its scope. It shipped per-profile
     // for one commit and was invisible in App Settings as a result, since that
     // window renders app-level prefs only.
-    ['agentBackend', 'agentHosting', 'claudeIntegrationRemoved', 'confirmQuit', 'dangerousMode', 'syncBaseUrl', 'ttsApiKey', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
+    ['agentBackend', 'agentHosting', 'claudeIntegrationRemoved', 'confirmQuit', 'dangerousMode', 'remoteLogging', 'syncBaseUrl', 'ttsApiKey', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
   );
 });
 
@@ -183,4 +186,56 @@ test('fresh store: atomic save leaves no temp file and survives a garbage config
   s.set('websiteUrl', 'https://x.example');
   assert.deepEqual(readConfig(dir), { ttsApiKey: 'sk_good', websiteUrl: 'https://x.example' });
   assert.deepEqual(fs.readdirSync(dir).filter((f) => f.endsWith('.tmp')), []);
+});
+
+test('a remoteLogging opt-out is honoured machine-wide, and never reversed', () => {
+  // The wizard asks about logging ONCE, in machine terms ("the app can send its
+  // own diagnostic logs… which can include transcript text"). Stored
+  // per-profile, that answer bound to the Default profile only: every bot made
+  // afterwards started at the default of true and shipped transcripts anyway.
+  //
+  // Promoting the key alone would have been worse than leaving it — the
+  // app-level value starts unset, so an upgrade would silently resume logging
+  // for someone who had said no. Hence the opt-out migration.
+  const base = tmpDir();
+  const prof = tmpDir();
+  fs.writeFileSync(path.join(prof, 'config.json'), JSON.stringify({ remoteLogging: false }));
+  const appStore = new Store(base, { fresh: true });
+  migrateAppLevelKeys(appStore, new Store(prof), () => {});
+  assert.equal(appStore.get('remoteLogging'), false, 'the no must carry to the machine');
+});
+
+test('an opt-IN is not promoted — true is already the default', () => {
+  // Promoting whatever one profile happens to hold is the hazard MIGRATE_KEYS
+  // documents. The asymmetry is the point: false is a deliberate choice, true
+  // changes nothing.
+  const base = tmpDir();
+  const prof = tmpDir();
+  fs.writeFileSync(path.join(prof, 'config.json'), JSON.stringify({ remoteLogging: true }));
+  const appStore = new Store(base, { fresh: true });
+  migrateAppLevelKeys(appStore, new Store(prof), () => {});
+  assert.equal(appStore.get('remoteLogging'), undefined, 'nothing to promote');
+});
+
+test('one profile opting out is enough for the whole machine', () => {
+  // Erring toward the more private answer is the only direction that cannot
+  // surprise someone unpleasantly.
+  const base = tmpDir();
+  const appStore = new Store(base, { fresh: true });
+  appStore.set('remoteLogging', true);
+  const prof = tmpDir();
+  fs.writeFileSync(path.join(prof, 'config.json'), JSON.stringify({ remoteLogging: false }));
+  migrateAppLevelKeys(appStore, new Store(prof), () => {});
+  assert.equal(appStore.get('remoteLogging'), false);
+});
+
+test('the opt-out runs for the default instance too', () => {
+  // There the wizard wrote through the SAME store, so there is nothing to copy —
+  // but the code path must not skip out before checking, or a default-profile
+  // "no" would be dropped by the very migration meant to preserve it.
+  const dir = tmpDir();
+  const only = new Store(dir, { fresh: true });
+  only.set('remoteLogging', false);
+  migrateAppLevelKeys(only, only, () => {});
+  assert.equal(only.get('remoteLogging'), false);
 });

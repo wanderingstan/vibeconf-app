@@ -1174,6 +1174,20 @@ function gatherCallHealthSnapshot() {
   };
 }
 
+// Clears the call-ended watchdog. Assigned by installCallHealthTick (the state
+// lives in its closure) and called by autoJoin, which is module-level.
+//
+// A deliberate leave-and-rejoin — the ONLY way to change the bot's Meet display
+// name — looks exactly like a call ending: the Leave button disappears while the
+// page tears down, navigates and rejoins. Measured 2026-08-04 on a rename: the
+// bot got back in at 20:22:07 and the watchdog declared "in-call UI gone for
+// 12s" at 20:22:10, three seconds later, killing a healthy call. The counter had
+// carried across the rejoin instead of starting fresh.
+//
+// It is a race, which is why renames "always seemed a little sketchy": it only
+// bites when the new page takes long enough to render.
+let resetCallEndedWatchdog = () => {};
+
 function installCallHealthTick() {
   let last = {};
   let lastMicReported = 'unknown';
@@ -1182,6 +1196,18 @@ function installCallHealthTick() {
   let _everInCall = false;     // have we ever confirmed admission (seen Leave)?
   let _leaveGoneTicks = 0;     // consecutive ticks with no in-call ground truth
   let _callEndedFired = false; // fire the clean-end signal at most once
+
+  // Every join starts from zero. Without this the ticks accrued while leaving
+  // are still on the clock when the bot comes back, so a rejoin can be killed by
+  // its own predecessor's absence.
+  resetCallEndedWatchdog = () => {
+    if (_leaveGoneTicks || _callEndedFired || _everInCall) {
+      console.log('[electron-meet] call-ended watchdog reset (join starting)');
+    }
+    _everInCall = false;
+    _leaveGoneTicks = 0;
+    _callEndedFired = false;
+  };
 
   const tick = () => {
     // Dismiss any blocking Meet onboarding modal before probing the DOM —
@@ -1606,6 +1632,8 @@ async function handleDenialPage(bodyText, stage) {
 
 async function autoJoin(botName) {
   console.log('[electron-meet] ===== AUTO-JOIN STARTING =====');
+  // Before anything else: a join in progress is not a call that ended.
+  resetCallEndedWatchdog();
   sendStatus('Joining Meet...');
 
   try {

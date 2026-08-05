@@ -289,7 +289,7 @@ const PREFERENCES = {
   emojiSet: {
     type: 'string',
     default: 'fluent3d',
-    enum: ['native', 'twemoji', 'openmoji', 'noto', 'fluent3d'],
+    enum: ['native', 'twemoji', 'openmoji', 'noto', 'fluent3d', 'redpanda'],
     enumPattern: /^font:[A-Za-z0-9 _-]{1,120}(#[0-9A-Fa-f]{3,8})?$/,
     description:
       'How the avatar\'s face is drawn. Either a bundled set, or "font:<Family>" to '
@@ -304,7 +304,9 @@ const PREFERENCES = {
       + 'The bundled sets: "native" = the OS emoji font. ' +
       '"twemoji" = Twitter Twemoji (flat). "openmoji" = OpenMoji (outlined). "noto" = ' +
       'Google Noto Emoji. "fluent3d" = Microsoft Fluent 3D (a curated face set — ' +
-      'hand/person emojis fall back to native). All bundled in the app — no network. ' +
+      'hand/person emojis fall back to native). "redpanda" = a claymation red panda ' +
+      'librarian character (a curated face set, same fallback behavior as fluent3d). ' +
+      'All bundled in the app — no network. ' +
       'Any emoji not in the chosen set falls back to the native glyph. Reskin the ' +
       'bot\'s face (#316).',
   },

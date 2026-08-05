@@ -83,3 +83,53 @@ test('one dead window cannot stop the others being told', () => {
   assert.match(body, /(wc|webContents)\.isDestroyed\(\)/,
     'a window can outlive its webContents');
 });
+
+// --- the full sweep -------------------------------------------------------
+// The helper alone wasn't the fix; it was the mechanism. These pin the actual
+// classification of all 23 channels main sends to a renderer.
+const COMMANDS = [
+  'leave-requested',        // panel replies 'leave-meet' → teardown would run 3×
+  'new-bot',                // would create three bots
+  'new-window',             // would open three windows
+  'show-settings',          // navigates the MAIN panel; a pop-out jumping is wrong
+  'basic-auth-prompt',      // expects exactly ONE reply per request id
+  'navigate-webview-prompt', // would prompt three times per menu click
+];
+
+test('every state channel broadcasts, so any window rendering it updates', () => {
+  const STATE = ['avatar-emoji', 'bot-view-changed', 'bot-view-visible', 'call-failed',
+    'call-status-changed', 'caption-feed', 'caption-state', 'claude-auth-changed',
+    'extension-message', 'meet-detected', 'meet-mode-changed', 'meet-status',
+    'panel-popout-changed', 'share-window-state', 'slack-huddle-detected',
+    'claude-ready', 'auth-changed'];
+  for (const ch of STATE) {
+    assert.ok(mainCode.includes(`broadcastToRenderers('${ch}'`), `${ch} should broadcast`);
+    assert.ok(!mainCode.includes(`panelView.webContents.send('${ch}'`),
+      `${ch} must not also be sent to one window`);
+  }
+});
+
+test('commands stay addressed, and say why', () => {
+  // Broadcasting these would cause N actions for one intent. Each carries its
+  // reason inline, because the next person will otherwise "finish the job".
+  for (const ch of COMMANDS) {
+    assert.ok(mainCode.includes(`panelView.webContents.send('${ch}'`),
+      `${ch} is a command and must stay addressed`);
+    assert.ok(!mainCode.includes(`broadcastToRenderers('${ch}'`), `${ch} must not broadcast`);
+    const i = main.indexOf(`panelView.webContents.send('${ch}'`);
+    assert.match(main.slice(Math.max(0, i - 420), i), /ADDRESSED, not broadcast \(#229\)/,
+      `${ch} needs the reason recorded above its send`);
+  }
+});
+
+test('no broadcast is gated on one window being alive', () => {
+  // The trap when converting: wrapping a fan-out in `if (panelView && ...)`
+  // means "tell everyone, but only while the main panel happens to exist".
+  // Introduced and caught during the sweep itself.
+  const gated = main.split('\n').map((l, i, arr) => {
+    if (!l.includes('broadcastToRenderers(')) return null;
+    const before = arr.slice(Math.max(0, i - 3), i).join('\n');
+    return /if \(panelView && !panelView\.webContents\.isDestroyed\(\)\)/.test(before) ? i + 1 : null;
+  }).filter(Boolean);
+  assert.deepEqual(gated, [], `broadcasts gated on panelView at line(s) ${gated}`);
+});

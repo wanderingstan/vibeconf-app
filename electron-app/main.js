@@ -217,9 +217,7 @@ function captionLanguageAlreadyApplied(room, language) {
 // result was a panel showing a boot-time snapshot forever, and settings that
 // looked like they had failed to save when they had not (#190, #143).
 function notifyConfigChanged(key, value) {
-  if (panelView && !panelView.webContents.isDestroyed()) {
-    panelView.webContents.send('extension-message', { action: 'config-updated', payload: { key, value } });
-  }
+  broadcastToRenderers('extension-message', { action: 'config-updated', payload: { key, value } });
   // #231: switching backends must take effect now, not at the next poll. Going
   // to codex/other has to clear a stale "signed out" banner immediately, and
   // coming back to claude has to re-check rather than sit on the `null` we
@@ -522,6 +520,9 @@ function finishCall() {
   _teardownDone = false;
   localServer.setCallStatus('call-complete');
   if (panelView && !panelView.webContents.isDestroyed()) {
+  // ADDRESSED, not broadcast (#229). This is a COMMAND: the panel replies with
+  // 'leave-meet', which runs teardown. Three windows would each reply, so the
+  // teardown would run three times.
     panelView.webContents.send('leave-requested');
   } else {
     // No panel to ask. Don't wait out the watchdog for a reply that provably
@@ -1757,9 +1758,7 @@ const localServer = new globalThis.LocalServer({
     // "URL navigated" and "actually admitted" is misleading — especially when
     // entry is denied, since that 15s grace window leaves the button visible
     // while we wait for the denial page to be detected.
-    if (panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('call-status-changed', { status, provider: slackProviderMode ? 'slack' : 'meet' });
-    }
+    broadcastToRenderers('call-status-changed', { status, provider: slackProviderMode ? 'slack' : 'meet' });
   },
 
   // The countdown to the bot taking its turn. Pushed on every arm/re-arm so the
@@ -1799,9 +1798,7 @@ const localServer = new globalThis.LocalServer({
     }
     // Keep the panel's caption badge consistent — this fires for the
     // self-correcting on-state (captions text arrived) as well as toggles.
-    if (panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('caption-state', { on: !!on });
-    }
+    broadcastToRenderers('caption-state', { on: !!on });
   },
 
   // Background working-memory refresh (two-tier experiment). Fired by
@@ -3211,14 +3208,12 @@ function positionShareWindow(win, { force = false } = {}) {
 function broadcastShareWindowState() {
   const exists = !!(whiteboardWindow && !whiteboardWindow.isDestroyed());
   try {
-    if (panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('share-window-state', {
-        exists,
-        visible: exists && shareWindowVisible,
-        // The one combination the toggle must refuse — see shareCaptureMode.
-        lockedVisible: exists && shareWindowVisible && localServer.sharing && shareCaptureMode === 'window',
-      });
-    }
+    broadcastToRenderers('share-window-state', {
+      exists,
+      visible: exists && shareWindowVisible,
+      // The one combination the toggle must refuse — see shareCaptureMode.
+      lockedVisible: exists && shareWindowVisible && localServer.sharing && shareCaptureMode === 'window',
+    });
   } catch { /* panel not up yet */ }
 }
 
@@ -4778,9 +4773,7 @@ function broadcastAuthChanged() {
 }
 
 function broadcastError(message) {
-  if (panelView && !panelView.webContents.isDestroyed()) {
-    panelView.webContents.send('extension-message', { action: 'error', message });
-  }
+  broadcastToRenderers('extension-message', { action: 'error', message });
 
   // If the app isn't in the foreground, surface the error as a system
   // notification so the user finds out without checking the app. We treat
@@ -4960,9 +4953,7 @@ async function refreshClaudeAuth({ maxAgeMs = 0 } = {}) {
 
 function broadcastClaudeAuth() {
   try {
-    if (panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('claude-auth-changed', claudeAuthState);
-    }
+    broadcastToRenderers('claude-auth-changed', claudeAuthState);
   } catch { /* window went away */ }
 }
 
@@ -6561,9 +6552,7 @@ allURLs`;
         if (slackHuddleUrl && slackHuddleUrl !== detectedSlackHuddle) {
           detectedSlackHuddle = slackHuddleUrl;
           console.log('[electron] Slack huddle detected:', slackHuddleUrl);
-          if (panelView && !panelView.webContents.isDestroyed()) {
-            panelView.webContents.send('slack-huddle-detected', { url: slackHuddleUrl });
-          }
+          broadcastToRenderers('slack-huddle-detected', { url: slackHuddleUrl });
           const { Notification } = require('electron');
           if (Notification.isSupported() && !SUPPRESS_NOTIFICATIONS) {
             const n = new Notification({
@@ -6576,16 +6565,14 @@ allURLs`;
           }
         } else if (!slackHuddleUrl && detectedSlackHuddle) {
           detectedSlackHuddle = null;
-          if (panelView && !panelView.webContents.isDestroyed()) panelView.webContents.send('slack-huddle-detected', null);
+          broadcastToRenderers('slack-huddle-detected', null);
         }
 
         if (meetUrl && meetUrl !== detectedMeetUrl) {
           detectedMeetUrl = meetUrl;
           const meetCode = meetUrl.match(/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/)?.[1] || '';
           console.log('[electron] Meet detected:', meetCode);
-          if (panelView && !panelView.webContents.isDestroyed()) {
-            panelView.webContents.send('meet-detected', { url: meetUrl, meetCode });
-          }
+          broadcastToRenderers('meet-detected', { url: meetUrl, meetCode });
           // Show macOS notification
           const { Notification } = require('electron');
           if (Notification.isSupported() && !SUPPRESS_NOTIFICATIONS) {
@@ -6604,9 +6591,7 @@ allURLs`;
           }
         } else if (!meetUrl && detectedMeetUrl) {
           detectedMeetUrl = null;
-          if (panelView && !panelView.webContents.isDestroyed()) {
-            panelView.webContents.send('meet-detected', null);
-          }
+          broadcastToRenderers('meet-detected', null);
         }
       });
     }
@@ -6908,9 +6893,7 @@ function applyWindowHeight() {
 // flag deliberately stays "idle" through joining/waiting-to-be-admitted (the
 // pre-call controls stay up) — which would strand the region without its bar.
 function broadcastBotViewVisible() {
-  if (panelView && !panelView.webContents.isDestroyed()) {
-    panelView.webContents.send('bot-view-visible', { visible: botViewInCall });
-  }
+  broadcastToRenderers('bot-view-visible', { visible: botViewInCall });
 }
 
 // The window title names the BOT, not just the app — with several bots open at
@@ -7260,11 +7243,9 @@ function setBotViewState(state) {
 }
 
 function broadcastBotViewState() {
-  if (panelView && !panelView.webContents.isDestroyed()) {
-    // #103: the panel labels its toggle by what a click WILL do, so it needs to
-    // know which resting state we'd return to — 'hidden' or the legacy thumbnail.
-    panelView.webContents.send('bot-view-changed', { state: botViewState, resting: restingBotViewState() });
-  }
+  // #103: the panel labels its toggle by what a click WILL do, so it needs to
+  // know which resting state we'd return to — 'hidden' or the legacy thumbnail.
+  broadcastToRenderers('bot-view-changed', { state: botViewState, resting: restingBotViewState() });
   sendBannerVisibility();
 }
 
@@ -7318,12 +7299,10 @@ function setPanelPoppedOut(out) {
         mainWindow.addBrowserView(panelView);
       }
       layoutViews();
-      if (panelView && !panelView.webContents.isDestroyed()) {
-        panelView.webContents.send('panel-popout-changed', { poppedOut: false });
-      }
+      broadcastToRenderers('panel-popout-changed', { poppedOut: false });
     });
     layoutViews();
-    panelView.webContents.send('panel-popout-changed', { poppedOut: true });
+    broadcastToRenderers('panel-popout-changed', { poppedOut: true });
     return true;
   }
 
@@ -7350,9 +7329,7 @@ function navigateMeetView(url) {
   if (meetView && !meetView.webContents.isDestroyed()) {
     meetView.webContents.loadURL(url || MEET_HOME_URL);
   }
-  if (panelView && !panelView.webContents.isDestroyed()) {
-    panelView.webContents.send('meet-mode-changed', { partition: SESSION_PARTITION });
-  }
+  broadcastToRenderers('meet-mode-changed', { partition: SESSION_PARTITION });
 }
 
 // --- Runtime provider switch (#264): join a Meet call OR a Slack huddle with no
@@ -7565,6 +7542,9 @@ function createMainWindow() {
           accelerator: 'CmdOrCtrl+Shift+,',
           click: () => {
             if (panelView && !panelView.webContents.isDestroyed()) {
+              // ADDRESSED, not broadcast (#229): a COMMAND to navigate the MAIN
+              // panel to its settings screen. A pop-out jumping to settings is
+              // not what the menu item means.
               panelView.webContents.send('show-settings');
             }
           },
@@ -7646,6 +7626,8 @@ function createMainWindow() {
           accelerator: 'CmdOrCtrl+Shift+N',
           click: () => {
             if (panelView && !panelView.webContents.isDestroyed()) {
+              // ADDRESSED, not broadcast (#229): a COMMAND. The handler calls
+              // create-new-bot, so broadcasting would create three bots.
               panelView.webContents.send('new-bot');
             }
           },
@@ -7660,6 +7642,8 @@ function createMainWindow() {
           accelerator: 'CmdOrCtrl+N',
           click: () => {
             if (panelView && !panelView.webContents.isDestroyed()) {
+              // ADDRESSED, not broadcast (#229): a COMMAND. Broadcasting would
+              // open three windows.
               panelView.webContents.send('new-window');
             }
           },
@@ -7693,6 +7677,8 @@ function createMainWindow() {
               // isn't the focused frame), so you'd have to click it before typing.
               try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.focus(); } catch { /* ignore */ }
               try { panelView.webContents.focus(); } catch { /* ignore */ }
+              // ADDRESSED, not broadcast (#229): a COMMAND that opens a prompt.
+              // Three windows would ask three times for one menu click.
               panelView.webContents.send('navigate-webview-prompt', { currentUrl });
             }
           },
@@ -8043,10 +8029,8 @@ async function _loadMeetURL(meetUrl) {
   // --meet-url CLI launches and any programmatic join), and notify the panel now.
   try {
     localServer.setCurrentUrl(meetUrl);
-    if (panelView && !panelView.webContents.isDestroyed()) {
-      const meetCode = (meetUrl.match(/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/) || [])[1] || '';
-      panelView.webContents.send('meet-detected', { url: meetUrl, meetCode });
-    }
+    const meetCode = (meetUrl.match(/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/) || [])[1] || '';
+    broadcastToRenderers('meet-detected', { url: meetUrl, meetCode });
   } catch { /* non-fatal */ }
 
   // Destroy and recreate the meetView before every join. Clearing storage
@@ -8127,9 +8111,7 @@ async function _loadMeetURL(meetUrl) {
     const url = meetView.webContents.getURL();
     if (url.includes('meet.google.com')) {
       // Notify panel that Meet is loaded
-      if (panelView && !panelView.webContents.isDestroyed()) {
-        panelView.webContents.send('meet-status', { url, ready: true });
-      }
+      broadcastToRenderers('meet-status', { url, ready: true });
       // P2 reload-recovery: a Meet page reload (e.g. the pre-join limbo re-join) silently destroys
       // the renderer's LiveKit connection without a Disconnected event. If the face was on, the
       // freshly-loaded runway-avatar.js has nothing — re-establish once it's had a moment to load.
@@ -8494,9 +8476,7 @@ function setupIPC() {
   // to the panel so its avatar shows the SAME expression the call sees.
   ipcMain.on('avatar-emoji-changed', (_event, emoji) => {
     if (typeof emoji !== 'string' || !emoji) return;
-    if (panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('avatar-emoji', { emoji });
-    }
+    broadcastToRenderers('avatar-emoji', { emoji });
   });
 
   // The panel needs to know whether it must provide its own drag handle.
@@ -9396,6 +9376,8 @@ function setupIPC() {
     if (!panelView || panelView.webContents.isDestroyed()) { callback(); return; } // no UI → cancel (401)
     const id = ++basicAuthSeq;
     pendingBasicAuth.set(id, callback);
+    // ADDRESSED, not broadcast (#229): a COMMAND expecting exactly ONE reply.
+    // Each recipient prompts and posts back a result for the same request id.
     panelView.webContents.send('basic-auth-prompt', {
       id, host: authInfo.host || '', realm: authInfo.realm || '',
     });
@@ -9569,9 +9551,7 @@ function setupIPC() {
         localServer.clearRoom();
         // Reset the panel UI — without this it keeps showing "leave call"
         // even though we never made it into the meeting.
-        if (panelView && !panelView.webContents.isDestroyed()) {
-          panelView.webContents.send('call-failed', { message: status });
-        }
+        broadcastToRenderers('call-failed', { message: status });
       } else if (status.startsWith('Notice:')) {
         // #404: agent-visible notices from the call view (time-limit warning,
         // unhandled-dialog surfacing). Rides status.errors, which the agent
@@ -9712,9 +9692,7 @@ function setupIPC() {
     // Mirror the live caption state into the troubleshooting panel — the
     // "bot's-eye view" of exactly what captions the bot is receiving, so you
     // can compare it in real time against the bot's Meet view.
-    if (panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('caption-feed', { turns });
-    }
+    broadcastToRenderers('caption-feed', { turns });
     // TODO(#178 phase 2): forward settled turns to the remote sync for the
     // webapp room view, replacing the old per-entry sync.postTranscripts feed
     // for captions.
@@ -9726,9 +9704,7 @@ function setupIPC() {
   // tell the agent the room isn't silent — the bot is deaf.
   ipcMain.on(CALL_EVENTS.captionsState, (_event, { on }) => {
     localServer.setCaptionsOn(!!on);
-    if (panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('caption-state', { on: !!on });
-    }
+    broadcastToRenderers('caption-state', { on: !!on });
   });
 
   // Captions report ON but the text stream is frozen (#259) — the bot is deaf
@@ -9781,9 +9757,7 @@ function setupIPC() {
     // would otherwise raise 🥴 during any long bot answer.)
     console.log(`[electron] caption stall (${secs}s, ${info?.nodes ?? '?'} nodes) while a remote is speaking — bot is deaf; escalating + self-healing`);
     localServer.setCaptionsOn(false);
-    if (panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('caption-state', { on: false });
-    }
+    broadcastToRenderers('caption-state', { on: false });
     // D (#259): self-heal — only on CONFIRMED deafness, never during quiet rooms.
     if (meetView && !meetView.webContents.isDestroyed()) {
       sendCallCmd(CALL_COMMANDS.recoverCaptions);
@@ -10032,9 +10006,7 @@ function setupIPC() {
 
   // --- Forward messages from Meet content script to panel ---
   ipcMain.on('to-panel', (_event, message) => {
-    if (panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('extension-message', message);
-    }
+    broadcastToRenderers('extension-message', message);
   });
 
   // --- Forward messages from panel to Meet content script ---

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -253,4 +253,18 @@ test("the self-view mirroring is written down where a set-maker will read it", (
   const d = PREFERENCES.emojiSet.description;
   assert.match(d, /MIRRORS/);
   assert.match(d, /Do not pre-flip/);
+});
+
+test("a bundled set's NOTICE states a count that matches the files on disk", () => {
+  // Provenance notes go stale silently. This one claimed 21 PNGs within a day of
+  // being written, because a follow-up PR added 15 more faces and nobody
+  // reopened the NOTICE. A licence/provenance file that quietly stops being true
+  // is worse than none, since it reads as authoritative.
+  const dir = join(root, 'electron-app/emoji/redpanda');
+  const actual = readdirSync(dir).filter((f) => f.toLowerCase().endsWith('.png')).length;
+  const notice = readFileSync(join(dir, 'NOTICE.md'), 'utf8');
+  const m = notice.match(/Curated set \((\d+) PNGs\)/);
+  assert.ok(m, 'the NOTICE should state how many faces the set has');
+  assert.equal(Number(m[1]), actual,
+    `NOTICE says ${m[1]} PNGs, ${actual} on disk — update electron-app/emoji/redpanda/NOTICE.md`);
 });

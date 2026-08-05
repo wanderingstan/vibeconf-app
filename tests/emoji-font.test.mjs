@@ -172,3 +172,18 @@ test('a failed font load leaves a face, not tofu', () => {
   assert.ok(body.indexOf('document.fonts.add') < body.indexOf('.catch('),
     'add only on success; the tail of the font stack is the fallback');
 });
+
+test('the bundled fonts carry their required attribution', () => {
+  // Twemoji is CC-BY 4.0 and OpenMoji CC BY-SA 4.0: attribution is a LICENCE
+  // CONDITION, not politeness. Deleting the sets took their NOTICE.md files with
+  // them — the same artwork still ships, just as fonts, so the notices must too.
+  const n = readFileSync(join(root, 'electron-app/emoji/fonts/NOTICE.md'), 'utf8');
+  assert.match(n, /CC-BY 4\.0/, 'Twemoji');
+  assert.match(n, /CC BY-SA 4\.0/, 'OpenMoji');
+  assert.match(n, /Apache License 2\.0/, 'Noto');
+  for (const s of ['twemoji', 'openmoji', 'noto']) {
+    assert.match(n, new RegExp(`${s}\\.ttf`), `${s}.ttf must be named in the notice`);
+    assert.ok(existsSync(join(root, 'electron-app/emoji', s, 'NOTICE.md')),
+      `${s} keeps its own notice alongside its sample`);
+  }
+});

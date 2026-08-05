@@ -67,7 +67,7 @@ test('a font value resolves to the native draw path in the call', () => {
   const h = inject.slice(inject.indexOf("case 'set-emoji-set':"));
   const body = h.slice(0, h.indexOf('break;'));
   assert.match(body, /parseEmojiFontValue\(raw\)/);
-  assert.match(body, /emojiSetGlobal = \(!asFont &&/,
+  assert.match(body, /emojiSetGlobal = \(!asFont\s*\n?\s*&&/,
     'a font must not also select a picture set — they answer the same question');
 });
 
@@ -186,4 +186,67 @@ test('the bundled fonts carry their required attribution', () => {
     assert.ok(existsSync(join(root, 'electron-app/emoji', s, 'NOTICE.md')),
       `${s} keeps its own notice alongside its sample`);
   }
+});
+
+// --- external sets: dir:<path> ----------------------------------------------
+// A folder of images, exactly like fluent3d, so anyone (or an agent) can make
+// their own set.
+test('emojiSet accepts dir:<absolute path>', () => {
+  for (const ok of ['dir:/Users/me/taylor', 'dir:~/taylor emoji', 'dir:/a/b-c_d']) {
+    assert.equal(validate('emojiSet', ok).ok, true, `${ok} should be valid`);
+  }
+  for (const bad of ['dir:', 'dir:relative/path', 'dir:/a"b']) {
+    assert.equal(validate('emojiSet', bad).ok, false, `${bad} should be rejected`);
+  }
+});
+
+test('the folder index accepts every convention the bundled sets use', () => {
+  // Each bundled set spells filenames differently, which is a fair sign that
+  // imposing one would just be picking whose set is easy to convert. So the
+  // folder is INDEXED and all of these normalise to the same key.
+  const A = require('../electron-app/emoji-assets.js');
+  const k = A.emojiKeyFromBasename;
+  assert.equal(k('🙂'), '1f642', 'the emoji itself — easiest to produce by hand');
+  assert.equal(k('1f642'), '1f642', 'twemoji / fluent3d');
+  assert.equal(k('1F642-FE0F'), '1f642', 'openmoji — uppercase, FE0F kept');
+  assert.equal(k('emoji_u1f642'), '1f642', 'noto');
+  assert.equal(k('1f9d1-200d-1f4bb'), '1f9d1-200d-1f4bb', 'ZWJ sequences survive');
+  // Not emoji filenames.
+  assert.equal(k('readme'), null);
+  assert.equal(k('id_rsa'), null);
+  assert.equal(k(''), null);
+});
+
+test('only image files are indexed — this path takes a folder from a preference', () => {
+  const A = require('../electron-app/emoji-assets.js');
+  for (const e of ['.png', '.svg', '.webp', '.gif', '.jpg']) assert.ok(A.IMAGE_EXTS.has(e), e);
+  for (const e of ['.txt', '.pem', '.json', '.js']) assert.ok(!A.IMAGE_EXTS.has(e), e);
+  // A cap, because an agent could point this at a huge tree and indexing is sync.
+  const src = readFileSync(join(root, 'electron-app/emoji-assets.js'), 'utf8');
+  assert.match(src, /MAX_INDEXED_FILES = \d+/);
+});
+
+test('a folder that matches nothing is reported, not silent', () => {
+  // Every face falling back to native is indistinguishable from "the setting
+  // didn't take" — the same honesty problem as a mistyped font family.
+  const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
+  assert.match(main, /function warnIfEmptyEmojiDir/);
+  const fn = main.slice(main.indexOf('function warnIfEmptyEmojiDir'));
+  assert.match(fn.slice(0, 900), /addError\(/);
+  assert.match(fn.slice(0, 900), /forgetExternalDir/,
+    'the folder can change on disk between sets — re-index rather than trust the cache');
+});
+
+test('both renderers resolve dir: sets, so the call and the panel agree', () => {
+  assert.match(inject, /globalThis\.__vibeEmojiDirUri/);
+  assert.match(panel, /api\.invoke\('emoji-dir-uri', dir, emoji\)/);
+});
+
+test("the self-view mirroring is written down where a set-maker will read it", () => {
+  // Meet puts matrix(-1,0,0,1,0,0) on the local video element, so custom art
+  // with text looks backwards in get_call_screenshot while everyone else sees it
+  // correctly. Someone WILL try to pre-flip their images to "fix" it.
+  const d = PREFERENCES.emojiSet.description;
+  assert.match(d, /MIRRORS/);
+  assert.match(d, /Do not pre-flip/);
 });

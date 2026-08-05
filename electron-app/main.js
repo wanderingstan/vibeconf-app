@@ -2301,7 +2301,27 @@ async function listLocalFonts() {
   return families;
 }
 
+// A `dir:` set that matches no files is the quiet failure here: every face
+// falls back to the native glyph, which is indistinguishable from "the setting
+// didn't take". Say so, to the log and to the agent.
+function warnIfEmptyEmojiDir(value) {
+  const ea = require('./emoji-assets.js');
+  const dir = ea.parseDirSet(value);
+  if (!dir) return;
+  ea.forgetExternalDir(dir);            // the folder may have changed since last time
+  const { count } = ea.describeExternalDir(dir);
+  console.log(ts(), '[electron] emoji dir', dir, '->', count, 'usable image(s)');
+  if (count === 0) {
+    try {
+      localServer.addError(`Emoji folder "${dir}" has no usable images, so every face stays native. `
+        + 'Files must be images (png/svg/webp/gif/jpg) named after the emoji — "🙂.png", '
+        + '"1f642.png", "1F642.svg" and "emoji_u1f642.png" all work.');
+    } catch { /* best-effort */ }
+  }
+}
+
 function pushEmojiSet(value) {
+  warnIfEmptyEmojiDir(value);
   if (!meetView || meetView.webContents.isDestroyed()) return;
   // Pass the set name through; the renderer validates against its set registry
   // (unknown → native fallback).
@@ -5714,7 +5734,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '54';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '55';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
@@ -8282,6 +8302,10 @@ function setupIPC() {
   // ArrayBuffer for FontFace.
   ipcMain.handle('emoji-font-bytes', (_event, setName) => {
     try { return require('./emoji-assets.js').fontBytesFor(setName, __dirname); } catch { return null; }
+  });
+
+  ipcMain.handle('emoji-dir-uri', (_event, dir, emoji) => {
+    try { return require('./emoji-assets.js').externalDataUri(dir, emoji); } catch { return null; }
   });
 
   // The panel measured itself → resize the window to fit (plus the bot's-view

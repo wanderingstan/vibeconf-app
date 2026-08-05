@@ -403,9 +403,26 @@ async function ensureBundledEmojiFont(setName) {
   } catch { /* the font stack's tail keeps a face on screen */ }
 }
 
+const dirFromSet = (setName) => {
+  const m = /^dir:(.+)$/.exec(String(setName || ''));
+  return m ? m[1].trim() : null;
+};
+
 async function emojiUriFor(setName, emoji) {
   // Glyphs, not pictures — for a user font OR a bundled set font.
   if (fontFamilyFromSet(setName) || EMOJI_FONT_SETS[setName]) return null;
+  // A folder of images the user or an agent made. The panel draws its own
+  // avatar, so it resolves these too — otherwise the call would wear the custom
+  // set and the app's own picture of the bot would not.
+  const dir = dirFromSet(setName);
+  if (dir) {
+    const key = setName + '|' + emoji;
+    if (emojiUriCache.has(key)) return emojiUriCache.get(key);
+    let uri = null;
+    try { uri = await api.invoke('emoji-dir-uri', dir, emoji); } catch { /* native */ }
+    emojiUriCache.set(key, uri);
+    return uri;
+  }
   const key = setName + '|' + emoji;
   if (emojiUriCache.has(key)) return emojiUriCache.get(key);
   let uri = null;

@@ -94,3 +94,25 @@ test('image grids clear the header-cell background', () => {
     assert.match(style[1], /background: transparent/, `${step}: clear the grey th fill`);
   }
 });
+
+test('the emoji step reads the set list instead of remembering one', () => {
+  // redpanda arrived after this step was written, and appeared in the picker on
+  // its own because the step uses list_visual_assets. A hardcoded list would
+  // have quietly kept offering the old four — the failure being that nobody
+  // notices a missing OPTION.
+  const step = skill.slice(idx('### 4d. Emoji set'), idx('### 4e. Background'));
+  assert.match(step, /list_visual_assets/);
+  assert.match(step, /do not hardcode the list/i);
+  assert.match(step, /redpanda/, 'the newest bundled set should be visible in the example');
+  // Six options is two rows of three, not one row of six.
+  assert.ok((step.match(/\|---\|---\|---\|/g) || []).length >= 2,
+    'the example grid should show the real number of options, in rows of three');
+});
+
+test('the tutorial offers to GENERATE a set, by naming the skill that does it', () => {
+  const step = skill.slice(idx('### 4d. Emoji set'), idx('### 4e. Background'));
+  assert.match(step, /\/emoji-set/, 'name the skill — "with an image generator" is not actionable');
+  assert.match(step, /dir:/, 'and the bring-your-own-folder path stays');
+  // Honest about the dependency: the skill needs nanobanana on this machine.
+  assert.match(step, /[Ww]ithout one/, 'say what to do when no generator is connected');
+});

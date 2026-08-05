@@ -224,8 +224,8 @@ built-in OS voice as the default rather than blocking on it.
 
 ### 4d. Emoji set
 
-**Show the sets, do not list them.** "fluent3d, twemoji, openmoji, noto" means nothing to
-anyone; the same face in each, side by side, answers the question instantly.
+**Show the sets, do not list them.** "fluent3d, twemoji, openmoji, noto, redpanda" means
+nothing to anyone; the same face in each, side by side, answers the question instantly.
 
 **Size the images first — this is not optional.** The source files have wildly different
 intrinsic sizes (the fluent3d PNG is hundreds of pixels, the noto SVG is tiny) and markdown
@@ -240,7 +240,7 @@ set_whiteboard_style("table { table-layout: fixed; width: 100% } th, td { text-a
 ```
 
 `table-layout: fixed` is the part that equalises the columns; the `height` on images is what
-makes four different files look like one set of options. (Step 4f picks a board style
+makes files of wildly different sizes look like one set of options. (Step 4f picks a board style
 properly and replaces this — by then the grids are done.)
 
 **`background: transparent` on `th` is not cosmetic fiddling.** A markdown table's first row
@@ -251,12 +251,21 @@ though the images are broken or still loading. Transparent lets the board's own 
 show through, so the faces sit on it like the rest of the content. Same reason the styles
 apply to `th, td` together rather than `td` alone.
 
-`list_visual_assets` gives you a 🙂 from each image set as an absolute path. One row of
-images, one row of names:
+`list_visual_assets` gives you a 🙂 from each image set as an absolute path. **Use whatever
+it returns — do not hardcode the list.** Sets get added (redpanda arrived this way), and a
+grid built from a remembered list quietly stops offering the newest one.
 
-| ![fluent3d](/path/…/1f642.png) | ![twemoji](/path/…/1f642.svg) | <span class="native-face">🙂</span> |
+Images on one row, names on the row beneath. With the bundled sets plus `native` that is
+currently six cells, which is two rows of three — three columns keeps each face big enough
+to actually judge, where six across shrinks them to thumbnails:
+
+| ![fluent3d](/path/…/1f642.png) | ![redpanda](/path/…/1f642.png) | ![twemoji](/path/…/1f642.svg) |
 |---|---|---|
-| fluent3d | twemoji | native |
+| fluent3d | redpanda | twemoji |
+
+| ![openmoji](/path/…/1F642.svg) | ![noto](/path/…/emoji_u1f642.svg) | <span class="native-face">🙂</span> |
+|---|---|---|
+| openmoji | noto | native |
 
 **Include `native` as a real cell, not a footnote.** It has no file because it IS the
 computer's own emoji font — so just put the character 🙂 in the cell and let the machine
@@ -285,10 +294,13 @@ works: the emoji itself (`🙂.png`), lowercase hex (`1f642.png`), uppercase wit
 (`1F642.svg`), or noto style (`emoji_u1f642.png`). png/svg/webp/gif/jpg. A partial set is
 fine — anything with no file keeps the native glyph, so five good faces are a real set.
 
-**You can build one for them.** With an image generator connected, offer it: ask for a
-theme, generate the handful of faces that actually get used, and point the preference at
-the folder. The faces worth doing first are the ones the avatar actually wears — 🙂 idle,
-🤔 thinking, 🧑‍💻 working, 😐 hearing, 😑 ticking, 😔 resting.
+**You can build one for them, and there is a skill for it: `/emoji-set`.** Give it a theme
+description and it generates the faces the avatar actually wears, plus a matching call
+background, then points the bot at them. The bundled `redpanda` set was made exactly this
+way, so it is a fair thing to promise.
+
+It needs an image generator (nanobanana) on this machine. Without one, still mention the
+folder — someone with a mascot or an artist friend can drop in their own PNGs.
 
 One trap, if the art has text or a left/right: Meet MIRRORS the bot's own tile in its
 self-view, so it looks backwards in `get_call_screenshot` and in the Bot's view window

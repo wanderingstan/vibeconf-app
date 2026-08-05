@@ -373,13 +373,39 @@ function fontColorFromSet(setName) {
 const NATIVE_EMOJI_STACK = '"Apple Color Emoji", "Segoe UI Emoji", '
   + '"Noto Color Emoji", "Twemoji Mozilla", system-ui, sans-serif';
 function emojiFontStackFor(setName) {
-  const fam = fontFamilyFromSet(setName);
-  return fam ? `"${fam}", ${NATIVE_EMOJI_STACK}` : NATIVE_EMOJI_STACK;
+  const parts = [];
+  const fam = fontFamilyFromSet(setName);          // a font the user named
+  if (fam) parts.push(`"${fam}"`);
+  if (EMOJI_FONT_SETS[setName]) parts.push(`"${bundledFamilyFor(setName)}"`);
+  parts.push(NATIVE_EMOJI_STACK);
+  return parts.join(', ');
+}
+
+// twemoji / openmoji / noto are colour FONTS now, not thousands of files. The
+// panel draws its own avatar, so it loads them itself — same bytes, same
+// FontFace, just via IPC instead of the Meet preload.
+const EMOJI_FONT_SETS = { twemoji: 1, openmoji: 1, noto: 1 };
+const bundledFamilyFor = (setName) => 'VibeEmoji-' + setName;
+const _fontsAsked = new Set();
+async function ensureBundledEmojiFont(setName) {
+  if (!EMOJI_FONT_SETS[setName] || _fontsAsked.has(setName)) return;
+  _fontsAsked.add(setName);
+  try {
+    const bytes = await api.invoke('emoji-font-bytes', setName);
+    if (!bytes) return;                       // falls through to the OS emoji font
+    const buf = bytes.buffer
+      ? bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+      : bytes;
+    const ff = new FontFace(bundledFamilyFor(setName), buf);
+    await ff.load();
+    document.fonts.add(ff);
+    renderAgentAvatar();                      // repaint now that the face can be drawn
+  } catch { /* the font stack's tail keeps a face on screen */ }
 }
 
 async function emojiUriFor(setName, emoji) {
-  // A font is glyphs, not pictures — no data URI, so the glyph path runs.
-  if (fontFamilyFromSet(setName)) return null;
+  // Glyphs, not pictures — for a user font OR a bundled set font.
+  if (fontFamilyFromSet(setName) || EMOJI_FONT_SETS[setName]) return null;
   const key = setName + '|' + emoji;
   if (emojiUriCache.has(key)) return emojiUriCache.get(key);
   let uri = null;
@@ -434,6 +460,9 @@ async function renderAgentAvatar() {
     svg = (cfg && cfg.avatarBackgroundSvg) || '';
     emojiSet = (cfg && cfg.emojiSet) || 'native';
   } catch { /* ignore — fall back to gradient + native glyph */ }
+
+  // Fire-and-forget: the first call kicks off the load and repaints when ready.
+  ensureBundledEmojiFont(emojiSet);
 
   // Before anything paints: every repaint path reads these.
   avatarFontStack = emojiFontStackFor(emojiSet);

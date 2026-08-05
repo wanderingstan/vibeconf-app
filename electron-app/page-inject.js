@@ -684,7 +684,10 @@
       // bob/breathe/lip-sync transforms are already applied, so the image is just
       // as alive as the glyph). Falls back to the native glyph until the image
       // decodes, or forever if the emoji isn't in the set.
-      const emojiImg = (this.emojiSet && this.emojiSet !== 'native') ? _emojiImage(this.emojiSet, emoji) : null;
+      // Only IMAGE sets (fluent3d) go through drawImage. A font-backed set falls
+      // to fillText below, where emojiFontStack has already put its family first.
+      const emojiImg = (this.emojiSet && this.emojiSet !== 'native' && EMOJI_SETS[this.emojiSet])
+        ? _emojiImage(this.emojiSet, emoji) : null;
       if (emojiImg) {
         ctx.drawImage(emojiImg, -emojiSize / 2, -emojiSize / 2, emojiSize, emojiSize);
       } else {
@@ -1289,9 +1292,14 @@
     return { family: sanitizeFontFamily(m[1]), color: m[2] ? '#' + m[2] : '' };
   }
   function emojiFontStack(px) {
-    // Always keep serif as the tail: an uninstalled family falls through to the
-    // system emoji font rather than rendering tofu.
-    return emojiFontGlobal ? `${px}px "${emojiFontGlobal}", serif` : `${px}px serif`;
+    // Order: a font the USER named, then the bundled set's font, then serif.
+    // serif is always the tail so anything missing falls through to the OS emoji
+    // font rather than rendering tofu.
+    const families = [];
+    if (emojiFontGlobal) families.push(`"${emojiFontGlobal}"`);
+    if (EMOJI_FONT_SETS[emojiSetGlobal]) families.push(`"${_fontFamilyFor(emojiSetGlobal)}"`);
+    families.push('serif');
+    return `${px}px ${families.join(', ')}`;
   }
 
   // Emoji image sets (#316): draw the avatar's emoji from a bundled SVG set
@@ -1317,11 +1325,47 @@
   // so every set here is just { dir, ext } and shares one filename rule.
   const _canon = (e) => _emojiHex(e, { sep: '-', upper: false, dropFe0f: true });
   const EMOJI_SETS = {
-    twemoji:  { dir: 'twemoji',  file: (e) => _emojiHex(e, { sep: '-', upper: false, dropFe0f: true }) + '.svg' },
-    openmoji: { dir: 'openmoji', file: (e) => _emojiHex(e, { sep: '-', upper: true,  dropFe0f: false }) + '.svg' },
-    noto:     { dir: 'noto',     file: (e) => 'emoji_u' + _emojiHex(e, { sep: '_', upper: false, dropFe0f: true }) + '.svg' },
     fluent3d: { dir: 'fluent3d', file: (e) => _canon(e) + '.png' },
   };
+
+  // twemoji / openmoji / noto ship as COLOUR FONTS, not ~11,900 files. Each set
+  // becomes one FontFace loaded from bytes the preload hands over, and the face
+  // is then drawn as a GLYPH — the same code path as 'native', just a different
+  // family. Verified inside the real Meet page: it renders in colour, and CSP
+  // never applies because a FontFace from an ArrayBuffer has no URL to check.
+  //
+  // The family names are ours, not the fonts' own: what matters is that they
+  // cannot collide with something installed on the user's machine, so a glyph
+  // drawn under them provably came from our bytes.
+  const EMOJI_FONT_SETS = { twemoji: 1, openmoji: 1, noto: 1 };
+  const _fontFamilyFor = (setName) => 'VibeEmoji-' + setName;
+  const _fontLoading = new Set();
+  function _ensureEmojiFont(setName) {
+    if (!EMOJI_FONT_SETS[setName]) return;
+    if (_fontLoading.has(setName)) return;             // in flight or done
+    _fontLoading.add(setName);
+    const getBytes = (typeof globalThis !== 'undefined') && globalThis.__vibeEmojiFontBytes;
+    if (!getBytes || typeof FontFace === 'undefined') return;
+    let bytes = null;
+    try { bytes = getBytes(setName); } catch { bytes = null; }
+    if (!bytes) {
+      console.warn('[bots-in-calls] No font bytes for set', setName, '— faces stay native');
+      return;
+    }
+    try {
+      const ff = new FontFace(_fontFamilyFor(setName), bytes);
+      ff.load().then(() => {
+        document.fonts.add(ff);
+        console.log('[bots-in-calls] Emoji font ready:', setName);
+      }).catch((e) => {
+        // Leave it un-added: the font stack falls through to the OS emoji font,
+        // so the bot keeps a face rather than rendering tofu.
+        console.warn('[bots-in-calls] Emoji font failed:', setName, e && e.message);
+      });
+    } catch (e) {
+      console.warn('[bots-in-calls] FontFace rejected for', setName, e && e.message);
+    }
+  }
   function _emojiImage(setName, emoji) {
     const set = EMOJI_SETS[setName];
     const resolve = (typeof globalThis !== 'undefined') && globalThis.__vibeEmojiDataUri;
@@ -2014,7 +2058,9 @@
           const asFont = parseEmojiFontValue(raw);
           emojiFontGlobal = asFont ? asFont.family : '';
           emojiFontColorGlobal = asFont ? asFont.color : '';
-          emojiSetGlobal = (!asFont && (raw === 'native' || EMOJI_SETS[raw])) ? raw : 'native';
+          emojiSetGlobal = (!asFont && (raw === 'native' || EMOJI_SETS[raw] || EMOJI_FONT_SETS[raw]))
+            ? raw : 'native';
+          _ensureEmojiFont(emojiSetGlobal);
           avatarState.emojiSet = emojiSetGlobal;
           for (const cam of cameras.values()) cam.emojiSet = emojiSetGlobal;
           console.log('[bots-in-calls] Emoji set:', emojiSetGlobal,

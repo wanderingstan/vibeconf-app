@@ -8277,6 +8277,13 @@ function setupIPC() {
     try { return require('./emoji-assets.js').dataUriFor(setName, emoji, __dirname); } catch { return null; }
   });
 
+  // The panel draws its own avatar, so it needs the same font bytes the Meet
+  // page gets. Returned as a Buffer; the preload hands the renderer an
+  // ArrayBuffer for FontFace.
+  ipcMain.handle('emoji-font-bytes', (_event, setName) => {
+    try { return require('./emoji-assets.js').fontBytesFor(setName, __dirname); } catch { return null; }
+  });
+
   // The panel measured itself → resize the window to fit (plus the bot's-view
   // region while in a call). See applyWindowHeight.
   ipcMain.on('panel-content-height', (event, h) => {

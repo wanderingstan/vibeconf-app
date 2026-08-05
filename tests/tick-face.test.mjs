@@ -55,21 +55,26 @@ test('the tick face outranks the hearing face, or the blink would never show', (
   assert.ok(iActivity < iHearing, 'activityEmoji must be evaluated before hearing');
 });
 
-test('😑 ships in every bundled emoji set (silent OS fallback otherwise)', () => {
+test('😑 is renderable by every bundled set — as a file, or by that set\'s font', () => {
+  // Was: "😑 ships in every set", checked as a file per set. Three sets are
+  // colour FONTS now, so there is no per-emoji file to look for — the guarantee
+  // moved from "the asset exists" to "the font exists and covers it". Coverage
+  // was measured when the fonts went in: 17/17 of the emoji the avatar uses,
+  // including the ZWJ 🧑‍💻. The risk this test protects against is unchanged: a
+  // missing face falls back to the OS font silently, mid-call.
   const emojiRoot = join(root, 'electron-app/emoji');
-  const sets = readdirSync(emojiRoot, { withFileTypes: true })
-    .filter((d) => d.isDirectory())
-    .map((d) => d.name);
-  assert.ok(sets.length >= 4, `expected the bundled sets, saw ${sets.join(', ')}`);
+  const fontSets = ['twemoji', 'openmoji', 'noto'];
 
-  for (const set of sets) {
-    const files = readdirSync(join(emojiRoot, set));
-    const has = (cp) => files.some((f) => f.toLowerCase().includes(cp));
-    assert.ok(has('1f611'), `${set} is missing 😑 (1f611)`);
-    // Parity: any set that can render the face we replace must render the
-    // replacement, or the blink turns into a glyph swap on that set.
-    if (has('1f610')) assert.ok(has('1f611'), `${set} has 😐 but not 😑`);
+  for (const set of fontSets) {
+    const font = join(emojiRoot, 'fonts', `${set}.ttf`);
+    assert.ok(existsSync(font), `${set} must ship its font (${font})`);
   }
+
+  // fluent3d is still per-file art, so the original check still applies to it.
+  const files = readdirSync(join(emojiRoot, 'fluent3d'));
+  const has = (cp) => files.some((f) => f.toLowerCase().includes(cp));
+  assert.ok(has('1f611'), 'fluent3d is missing 😑 (1f611)');
+  if (has('1f610')) assert.ok(has('1f611'), 'fluent3d has 😐 but not 😑');
 });
 
 test('page-inject no longer uses 👀 as the tick face', () => {

@@ -36,9 +36,47 @@ const EMOJI_SETS = {
   fluent3d: { dir: 'fluent3d', file: (e) => canon(e) + '.png' },
 };
 
+// Sets that ship as a COLOUR FONT rather than one file per emoji.
+//
+// Three sets were ~11,900 SVGs and 76MB; the same artwork as COLRv1/COLR fonts
+// is three files and 8.4MB, and renders in colour on a canvas — measured in the
+// panel AND inside the real Meet page, where the concern was CSP. It never
+// applies: a FontFace built from an ArrayBuffer has no URL, so font-src has
+// nothing to check. Coverage was checked against every emoji the avatar uses,
+// including the ZWJ sequence 🧑‍💻: 17/17.
+//
+// fluent3d is NOT here and stays as images — its 3D style is rendered raster
+// art with no font equivalent.
+//
+// One 🙂 per set survives in the old image dirs on purpose: list_visual_assets
+// hands those paths to the whiteboard for the setup call's picker, and the
+// whiteboard renders on the WEBSITE, which has no access to a font we bundle.
+const EMOJI_FONTS = {
+  twemoji: 'fonts/twemoji.ttf',
+  openmoji: 'fonts/openmoji.ttf',
+  noto: 'fonts/noto.ttf',
+};
+function fontRelPathFor(setName) {
+  return EMOJI_FONTS[setName] || null;
+}
+// The bytes, for FontFace(). Not a data URI: FontFace takes an ArrayBuffer, and
+// base64-ing 4.8MB to immediately decode it again is pure waste.
+function fontBytesFor(setName, dirname = __dirname) {
+  const rel = fontRelPathFor(setName);
+  if (!rel) return null;
+  try {
+    const buf = fs.readFileSync(path.join(baseDir(dirname), rel));
+    // Copy out of Node's pooled Buffer: .buffer is a shared arena, so handing it
+    // straight to FontFace would pass megabytes of unrelated memory and a wrong
+    // length. Passing buf.buffer directly is a real bug, not a style nit.
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+  } catch { return null; }
+}
+
 // 'native' means "use the OS emoji font" — there is no file to resolve.
+// A font-backed set is NOT an image set: it draws glyphs, like native does.
 function isImageSet(setName) {
-  return !!EMOJI_SETS[setName];
+  return !!EMOJI_SETS[setName] && !EMOJI_FONTS[setName];
 }
 
 // Packaged builds ship the emoji dir via extraResources; from source it sits
@@ -91,6 +129,9 @@ function dataUriFor(setName, emoji, dirname = __dirname) {
 }
 
 module.exports = {
+  EMOJI_FONTS,
+  fontRelPathFor,
+  fontBytesFor,
   EMOJI_SETS,
   emojiHex,
   isImageSet,

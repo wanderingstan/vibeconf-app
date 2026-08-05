@@ -101,14 +101,15 @@ test("call end revokes only a grant we made, never the user's own setting", () =
   assert.match(body, /setRemoteLoggingEnabled\(false\)/);
   // And the enable is only claimed when logging was genuinely off.
   const h = main.slice(main.indexOf("ipcMain.handle('share-call-log'"));
-  assert.match(h.slice(0, h.indexOf('\n  });')), /store\?\.get\('remoteLogging'\) === false/);
+  // With the default now OFF, "not explicitly on" is what we enable for.
+  assert.match(h.slice(0, h.indexOf('\n  });')), /store\?\.get\('remoteLogging'\) !== true/);
   // Revoked when the call ends, not left for the next call to notice.
   assert.match(main, /revokeCallLogShare\('call ended'\)/);
 });
 
 test('sharing twice in one call does nothing the second time', () => {
   const fn = main.slice(main.indexOf("ipcMain.handle('share-call-log'"));
-  assert.match(fn.slice(0, 900), /_sharedCallId === callId.*already: true/s);
+  assert.match(fn.slice(0, fn.indexOf('\n  });')), /_sharedCallId === callId.*already: true/s);
 });
 
 test('the button is separate from the feedback buttons, and says what it sends', () => {
@@ -172,7 +173,7 @@ test('only accepted lines are counted', () => {
 
 test('the counter is reset per share, not per session', () => {
   const h = main.slice(main.indexOf("ipcMain.handle('share-call-log'"));
-  assert.match(h.slice(0, 900), /resetSentCount\(\)/);
+  assert.match(h.slice(0, h.indexOf('\n  });')), /resetSentCount\(\)/);
 });
 
 test('the skill points at the button without being able to press it', () => {
@@ -203,4 +204,49 @@ test('feedback is written to the session log, so a shared slice carries it', () 
   assert.match(main, /\[feedback\] kind=\$\{k\} status=\$\{status\}/);
   assert.match(main, /call=\$\{callId\}/, 'tagged with the call, so it lands in that slice');
   assert.match(main, /note=\$\{JSON\.stringify\(n\)\}/, 'and the human words travel with it');
+});
+
+test('remoteLogging defaults OFF, and unset means off everywhere', () => {
+  // The flip (#255) is the point of the whole feature: the logs worth having are
+  // the ones attached to a complaint, and the button now covers those.
+  //
+  // The trap is the READ. Every check was `!== false`, which matches a default
+  // of ON — unset counted as enabled. Left alone after the flip, every unset
+  // install would have carried on shipping, which is exactly the population the
+  // new default exists for.
+  const { PREFERENCES } = require('../electron-app/preferences-schema.js');
+  assert.equal(PREFERENCES.remoteLogging.default, false);
+  assert.doesNotMatch(main, /remoteLogging'\) !== false/,
+    'a !== false test treats unset as ON, which is the old default');
+  assert.match(main, /const remoteLoggingOn = store\?\.get\('remoteLogging'\) === true;/);
+});
+
+test('the share button stands down when everything is already shipped', () => {
+  // With global logging on, the streamer has already sent this call's lines.
+  // Backfilling would upload them twice, and the button would be promising
+  // something already done.
+  const h = main.slice(main.indexOf("ipcMain.handle('share-call-log'"));
+  const body = h.slice(0, h.indexOf('\n  });'));
+  assert.match(body, /alreadyGlobal: true/);
+  // The INVOCATION, not the require() destructuring at the top of the handler —
+  // matching the import made this assert something trivially true.
+  assert.ok(body.indexOf('alreadyGlobal') < body.indexOf('sliceCallLines(callId)'),
+    'check BEFORE slicing and uploading');
+  // And the panel says why rather than leaving a control that silently no-ops.
+  assert.match(panelJs, /if \(st\.globalLogging\)/);
+  assert.match(panelJs, /already shared for every call/);
+  assert.match(panelJs, /App Settings/, 'point at where the setting lives');
+});
+
+test('the button is disabled outside a call', () => {
+  assert.match(panelJs, /shareCallLogBtn\.disabled = !st\.inCall/);
+  assert.match(panelJs, /Available during a call/);
+});
+
+test('the copy says the share covers the wrap-up, not just the call', () => {
+  // It runs to the end of after-call work — the agent's wrap-up belongs to the
+  // same call, and is often where the interesting part is. Confirmed live: the
+  // grant was revoked 46s after the goodbye, when after-call work finished.
+  const row = panelHtml.slice(panelHtml.indexOf('share-log-row'));
+  assert.match(row.slice(0, row.indexOf('</div>')), /end of\s+the bot's wrap-up afterwards/);
 });

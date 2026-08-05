@@ -874,7 +874,23 @@ async function renderShareState() {
   if (!shareCallLogStatus) return;
   let st;
   try { st = await api.invoke('get-call-log-share-state'); } catch { return; }
-  if (!st || !st.sharedCallId) return;   // nothing shared this session — leave the label alone
+  if (!st) return;
+
+  // Nothing for the button to do when everything is already being shipped.
+  // Disabling it with a reason beats leaving a control that would silently
+  // no-op, and it points at where the setting actually lives.
+  if (st.globalLogging) {
+    if (shareCallLogBtn) shareCallLogBtn.disabled = true;
+    shareCallLogStatus.textContent =
+      'Logs are already shared for every call (App Settings → Remote logging). '
+      + 'Turn that off if you would rather share call by call.';
+    return;
+  }
+  if (shareCallLogBtn && !st.sharedCallId) shareCallLogBtn.disabled = !st.inCall;
+  if (!st.sharedCallId) {
+    shareCallLogStatus.textContent = st.inCall ? '' : 'Available during a call.';
+    return;
+  }
   if (st.active) {
     shareCallLogStatus.textContent = st.streaming
       ? `Sharing this call — ${st.sent} lines sent so far.`
@@ -882,6 +898,9 @@ async function renderShareState() {
   } else {
     // The call the grant belonged to has ended.
     shareCallLogStatus.textContent = `Shared that call (${st.sent} lines). Sharing has stopped.`;
+    // (The share runs to the END of the call's wrap-up, not the goodbye — the
+    // agent's after-call work belongs to the same call and is often where the
+    // interesting part is.)
     if (shareCallLogBtn) shareCallLogBtn.disabled = false;   // a NEW call can be shared
   }
 }

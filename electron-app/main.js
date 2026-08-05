@@ -5833,10 +5833,11 @@ app.whenReady().then(async () => {
     const sanitize = (s) => String(s || '').replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '') || 'x';
     const hostShort = sanitize(require('os').hostname().split('.')[0]);
     const instanceId = `${hostShort}--${sanitize(appProfile || 'default')}`;
-    // Default ON (schema default) when the user hasn't set it — only an explicit
-    // `false` keeps logs local. `=== true` would ignore the schema default for
-    // unset installs, so use `!== false`.
-    const remoteLoggingOn = store?.get('remoteLogging') !== false;
+    // Default OFF (#255). Only an explicit `true` ships. The test used to be
+    // `!== false`, matching a default of on — left unchanged after the flip it
+    // would have kept every unset install shipping, which is precisely the
+    // population the new default is for.
+    const remoteLoggingOn = store?.get('remoteLogging') === true;
     configureRemoteLog({
       enabled: remoteLoggingOn,
       endpointBase: () => getWebsiteUrl(),
@@ -7532,6 +7533,10 @@ function createMainWindow() {
       active: !!_sharedCallId && localServer.callId === _sharedCallId,
       streaming: _sharingWeEnabled,
       sent: getSentCount(),
+      // With this on there is nothing for the button to do — the panel says so
+      // rather than offering an action that would be a no-op.
+      globalLogging: store?.get('remoteLogging') === true,
+      inCall: !!localServer.callId,
     };
   });
 
@@ -7540,6 +7545,12 @@ function createMainWindow() {
     const callId = localServer.callId;
     if (!callId) return { ok: false, error: 'not in a call' };
     if (_sharedCallId === callId) return { ok: true, already: true, sent: 0 };
+    // Global logging on means every line of this call has already been shipped
+    // by the streamer. Backfilling would upload the same lines a second time,
+    // and "share this call" would be a promise about something already done.
+    if (store?.get('remoteLogging') === true) {
+      return { ok: true, alreadyGlobal: true, sent: 0 };
+    }
 
     // Backfill FIRST, then stream. The alternative — flag it and send at call
     // end — loses the log exactly when it is most wanted: someone tailing a bot
@@ -7556,7 +7567,7 @@ function createMainWindow() {
     _sharedCallId = callId;
     // Only claim the enable if it was actually off — otherwise the user's
     // standing preference is on and is not ours to turn off later.
-    if (store?.get('remoteLogging') === false) {
+    if (store?.get('remoteLogging') !== true) {
       setRemoteLoggingEnabled(true);
       _sharingWeEnabled = true;
     }

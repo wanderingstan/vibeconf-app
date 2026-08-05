@@ -368,14 +368,20 @@ const PREFERENCES = {
   },
   remoteLogging: {
     type: 'boolean',
-    default: true,
+    default: false,
     description:
-      'Ship this app\'s session log to the backend so it can be read remotely ' +
-      'via get_session_log (instance:…) or the logs CLI — useful for debugging ' +
-      'another machine\'s bots without terminal access. ON by default during ' +
-      'early testing (the team relies on these call logs for optimizing/debugging); ' +
-      'the log may contain transcript text. Set false to keep logs local. ' +
-      'Takes effect immediately (no restart).',
+      'Ship this app\'s session log to the backend continuously, so it can be read '
+      + 'remotely via get_session_log (instance:…) or the logs CLI — useful for '
+      + 'debugging another machine\'s bots without terminal access. The log may '
+      + 'contain transcript text. '
+      + 'OFF by default (#255). It was on through early testing, on the argument '
+      + 'that the team needed the data; the useful logs turned out to be the ones '
+      + 'attached to a complaint, and "📤 Share this call\'s log" in the '
+      + 'troubleshooting window now covers those — one call, chosen in the moment, '
+      + 'by someone who knows what went wrong. Shipping every call forever on the '
+      + 'strength of a checkbox answered once at install is a worse trade for both '
+      + 'sides. Turn it on for a machine you are actively debugging. '
+      + 'Takes effect immediately (no restart).',
   },
   websiteUrl: {
     type: 'string',

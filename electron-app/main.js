@@ -7532,6 +7532,8 @@ function createMainWindow() {
       sharedCallId: _sharedCallId,
       active: !!_sharedCallId && localServer.callId === _sharedCallId,
       streaming: _sharingWeEnabled,
+      // Shared this call, but currently stopped — the button offers to resume.
+      paused: !!_sharedCallId && localServer.callId === _sharedCallId && !_sharingWeEnabled,
       sent: getSentCount(),
       // With this on there is nothing for the button to do — the panel says so
       // rather than offering an action that would be a no-op.
@@ -7544,7 +7546,28 @@ function createMainWindow() {
     const { sliceCallLines, sendLinesNow, setRemoteLoggingEnabled } = require('./session-log.js');
     const callId = localServer.callId;
     if (!callId) return { ok: false, error: 'not in a call' };
-    if (_sharedCallId === callId) return { ok: true, already: true, sent: 0 };
+    const { setRemoteLoggingEnabled: setLog, getSentCount: count } = require('./session-log.js');
+
+    // Second press STOPS sharing, so someone can pause before something they
+    // would rather not send. It cannot unsend — what has gone has gone — but it
+    // does create a real GAP: the streamer drops lines while disabled rather
+    // than buffering them, so the paused stretch is never uploaded at all.
+    if (_sharedCallId === callId && _sharingWeEnabled) {
+      setLog(false);
+      _sharingWeEnabled = false;
+      console.log('[electron] call-log share PAUSED by user —', count(), 'lines sent so far');
+      return { ok: true, stopped: true, sent: count() };
+    }
+
+    // Third press resumes. No backfill: this call's earlier lines already went,
+    // and re-sending them would duplicate. More to the point, the paused stretch
+    // must STAY unsent — excluding it is the entire reason the pause exists.
+    if (_sharedCallId === callId && !_sharingWeEnabled) {
+      setLog(true);
+      _sharingWeEnabled = true;
+      console.log('[electron] call-log share RESUMED — the paused stretch stays unsent');
+      return { ok: true, resumed: true, sent: count() };
+    }
     // Global logging on means every line of this call has already been shipped
     // by the streamer. Backfilling would upload the same lines a second time,
     // and "share this call" would be a promise about something already done.

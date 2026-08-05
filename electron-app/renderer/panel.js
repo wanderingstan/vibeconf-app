@@ -887,15 +887,23 @@ async function renderShareState() {
   }
   if (shareCallLogBtn && !st.sharedCallId) shareCallLogBtn.disabled = !st.inCall;
   if (!st.sharedCallId) {
+    setShareLabel(SHARE_LABEL);
     setShareMsg(st.inCall ? '' : 'Available during a call.');
     return;
   }
   if (st.active) {
+    // The button is a toggle while the call runs: stop before something you
+    // would rather not send, start again after.
+    setShareLabel(st.streaming ? '⏹ Stop sharing' : '📤 Resume sharing');
     setShareMsg(st.streaming
       ? `Sharing this call — ${st.sent} lines sent so far.`
-      : `Shared this call — ${st.sent} lines.`);
+      // "Stopped" not "cancelled": what went cannot come back, and the count
+      // says how much did. The gap is real though — nothing is sent while
+      // stopped, so the paused stretch never leaves the machine.
+      : `Stopped — ${st.sent} lines were sent. Nothing is being sent now.`);
   } else {
     // The call the grant belonged to has ended.
+    setShareLabel(SHARE_LABEL);
     setShareMsg(`Shared that call (${st.sent} lines). Sharing has stopped.`);
     // (The share runs to the END of the call's wrap-up, not the goodbye — the
     // agent's after-call work belongs to the same call and is often where the
@@ -917,6 +925,11 @@ const shareCallLogWhy = document.querySelector('.share-log-why');
 // share" line; anything else replaces it. They are never both true — leaving the
 // invitation up beside "Sharing this call…" would be answering a question the
 // user has already answered.
+const SHARE_LABEL = "📤 Share this call's log";
+function setShareLabel(text) {
+  if (shareCallLogBtn && shareCallLogBtn.textContent !== text) shareCallLogBtn.textContent = text;
+}
+
 function setShareMsg(text) {
   const showing = !!text;
   if (shareCallLogStatus) {
@@ -927,11 +940,11 @@ function setShareMsg(text) {
 }
 shareCallLogBtn?.addEventListener('click', async () => {
   shareCallLogBtn.disabled = true;
-  setShareMsg('Sending…');
+  setShareMsg('Working…');
   try {
     const r = await api.invoke('share-call-log');
-    if (r?.ok && r.already) {
-      setShareMsg('Already shared for this call.');
+    if (r?.ok && r.alreadyGlobal) {
+      setShareMsg('Logs are already shared for every call (App Settings → Remote logging).');
     } else if (r?.ok) {
       // Say what actually happened, including that it keeps going: someone who
       // thinks a snapshot was sent would be surprised to find the rest of the
@@ -939,17 +952,20 @@ shareCallLogBtn?.addEventListener('click', async () => {
       // No count in the click result — renderShareState owns the number from
       // here, so the two cannot disagree. A static "sent 347 lines" sitting
       // beside "sharing the rest of this call" reads as though it has stalled.
-      setShareMsg(r.streaming ? 'Shared. Still sending as the call goes on…' : 'Shared.');
+      setShareMsg(r.stopped ? 'Stopped. What was already sent stays sent.'
+        : r.resumed ? 'Sharing again — the paused part was not sent.'
+        : r.streaming ? 'Shared. Still sending as the call goes on…' : 'Shared.');
     } else {
       // A share that silently did nothing is worse than no button — the user
       // walks away believing the evidence was handed over.
       setShareMsg('Could not send: ' + (r?.error || 'unknown'));
-      shareCallLogBtn.disabled = false;
     }
   } catch (e) {
     setShareMsg('Could not send: ' + e.message);
-    shareCallLogBtn.disabled = false;
   }
+  // Always re-enabled: it is a toggle now, so the next press is always
+  // meaningful — stop, or start again.
+  shareCallLogBtn.disabled = false;
 });
 
 // ---------------------------------------------------------------------------

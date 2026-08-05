@@ -107,9 +107,42 @@ test("call end revokes only a grant we made, never the user's own setting", () =
   assert.match(main, /revokeCallLogShare\('call ended'\)/);
 });
 
-test('sharing twice in one call does nothing the second time', () => {
+test('a second press STOPS sharing, a third resumes it', () => {
+  // Asked for so someone can pause before something they would rather not send.
+  // The pause is real, not cosmetic: the streamer drops lines while disabled
+  // rather than buffering them, so the paused stretch never leaves the machine.
   const fn = main.slice(main.indexOf("ipcMain.handle('share-call-log'"));
-  assert.match(fn.slice(0, fn.indexOf('\n  });')), /_sharedCallId === callId.*already: true/s);
+  const body = fn.slice(0, fn.indexOf('\n  });'));
+  assert.match(body, /_sharedCallId === callId && _sharingWeEnabled[\s\S]{0,300}stopped: true/);
+  assert.match(body, /_sharedCallId === callId && !_sharingWeEnabled[\s\S]{0,300}resumed: true/);
+  // Resuming must NOT backfill: the earlier lines already went, and the paused
+  // stretch has to stay unsent — excluding it is the whole point of pausing.
+  const resume = body.slice(body.indexOf('!_sharingWeEnabled'));
+  assert.doesNotMatch(resume.slice(0, 300), /sliceCallLines/);
+});
+
+test('stopping does not pretend to unsend', () => {
+  // The button can stop the stream; it cannot retract what has gone. Saying
+  // "cancelled" or "undo" would be a promise the feature cannot keep.
+  assert.match(panelJs, /Stopped — \$\{st\.sent\} lines were sent\. Nothing is being sent now\./);
+  assert.match(panelJs, /What was already sent stays sent/);
+  // Scoped to the share code: "cancel" appears elsewhere in the panel for
+  // unrelated controls, and a file-wide check fails on those instead.
+  const share = panelJs.slice(panelJs.indexOf('function setShareMsg'),
+    panelJs.indexOf('// ---------------------------------------------------------------------------\n// Meet URL validation'));
+  assert.doesNotMatch(share, /Cancelled|Undo|Unshare/i);
+});
+
+test('the button says what the next press will do', () => {
+  assert.match(panelJs, /'⏹ Stop sharing'/);
+  assert.match(panelJs, /'📤 Resume sharing'/);
+  assert.match(panelJs, /const SHARE_LABEL = "📤 Share this call's log";/);
+  // A toggle that disables itself after one press is not a toggle.
+  const click = panelJs.slice(panelJs.indexOf("shareCallLogBtn?.addEventListener"));
+  const body = click.slice(0, click.indexOf('\n});'));
+  assert.match(body, /it is a toggle now/);
+  assert.ok(body.lastIndexOf('shareCallLogBtn.disabled = false') > body.indexOf('catch'),
+    're-enabled on every path, not only on error');
 });
 
 test('the button is separate from the feedback buttons, and says what it sends', () => {
@@ -144,14 +177,14 @@ test('the result is reported, including that sharing continues', () => {
   const body = h.slice(0, h.indexOf('\n});'));
   assert.match(body, /Could not send/);
   assert.match(body, /sharing the rest of this call/, 'a snapshot and a stream are different promises');
-  assert.match(body, /Already shared for this call/);
+  assert.match(body, /already shared for every call/, 'the no-op case is global logging now');
 });
 
 test('shared lines are tagged with the call, so they can be found', () => {
   // room alone is ambiguous — the same room can be joined twice.
   assert.match(main, /callId: localServer\.callId \|\| null/, 'callId travels in the log meta');
   const h = main.slice(main.indexOf("ipcMain.handle('share-call-log'"));
-  assert.match(h.slice(0, 1200), /\{ callId, shared: true, sharedAt/);
+  assert.match(h.slice(0, h.indexOf('\n  });')), /\{ callId, shared: true, sharedAt/);
 });
 
 test('the why-line is REPLACED by the stats, not stacked above them', () => {

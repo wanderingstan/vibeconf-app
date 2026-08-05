@@ -60,7 +60,11 @@ test('the panel understands the font form too', () => {
     'glyphs — for a user font OR a bundled set font — must skip the image path');
   assert.match(panel, /emojiFontStackFor\(emojiSet\)/);
   // An unknown <select> value blanks the control, so a font needs a real option.
-  assert.match(panel, /data-font-option/);
+  assert.match(panel, /data-open-option/);
+  // Generic on purpose: this was written for font:, and dir: reintroduced the
+  // same blank dropdown a day later.
+  assert.match(panel, /const openLabel = \(\(\) => \{/);
+  assert.match(panel, /`Folder: \$\{/);
 });
 
 test('a font value resolves to the native draw path in the call', () => {

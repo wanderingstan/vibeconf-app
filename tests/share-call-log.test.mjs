@@ -122,7 +122,7 @@ test('the button is separate from the feedback buttons, and says what it sends',
   // was checking.
   const row = panelHtml.slice(panelHtml.indexOf('share-log-row'));
   const block = row.slice(0, row.indexOf('</div>'));
-  assert.match(block, /including what was\s+said/, 'say what is in it');
+  assert.match(block, /including what was said/, 'say what is in it');
   assert.match(block, /This call only/);
   assert.ok(panelHtml.indexOf('data-feedback="other"') < panelHtml.indexOf('shareCallLogBtn'),
     'it sits apart from the one-click feedback row');
@@ -192,9 +192,11 @@ test('the window says what the feedback buttons do, and do not do', () => {
   // yield" three times is entitled to know nobody is on the other end of it.
   const row = panelHtml.slice(panelHtml.indexOf('share-log-row'));
   const block = row.slice(0, row.indexOf('</div>'));
-  assert.match(block, /tell the bot right now, and it\s+adjusts/, 'credit what they DO do');
-  assert.match(block, /don't reach us/);
-  assert.match(block, /your notes go with it/, 'the two features compose — say so');
+  // Terse on purpose: this sits above a button someone is mid-decision about.
+  // It still has to carry all three facts — the buttons DO something (the bot
+  // reads them), they do NOT reach us, and sharing carries them along.
+  assert.match(block, /go to the bot, not to us/);
+  assert.match(block, /they come with it/, 'the two features compose — say so');
 });
 
 test('feedback is written to the session log, so a shared slice carries it', () => {
@@ -248,5 +250,5 @@ test('the copy says the share covers the wrap-up, not just the call', () => {
   // same call, and is often where the interesting part is. Confirmed live: the
   // grant was revoked 46s after the goodbye, when after-call work finished.
   const row = panelHtml.slice(panelHtml.indexOf('share-log-row'));
-  assert.match(row.slice(0, row.indexOf('</div>')), /end of\s+the bot's wrap-up afterwards/);
+  assert.match(row.slice(0, row.indexOf('</div>')), /through\s+the wrap-up afterwards/);
 });

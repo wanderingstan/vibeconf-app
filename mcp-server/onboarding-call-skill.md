@@ -67,6 +67,17 @@ Work through the steps below **in order**. For each one:
 6. Otherwise apply the answer (see per-step notes) and briefly confirm what you set before
    moving to the next step.
 
+**Never ask anyone to say a bare number.** Tested repeatedly on 2026-08-04, at both the
+language and voice steps: saying "one" produced NOTHING in the captions, while "option one",
+"number one" and "Deutsch" all came through immediately. A single short word is the least
+reliable thing a caption engine can settle on, and a step that only accepts one leaves a user
+with no way forward and no idea why.
+
+So whenever you put a numbered list on the board, label the entries **"Option 1", "Option 2"**
+— not "1.", "2." — and ask them to *say the option number*. The label is what does the work:
+someone reading "Option 3" says "option three" without being told to. Printing bare digits
+and then asking for "option three" invites exactly the bare number you cannot hear.
+
 **Check for an early exit between every step**, not just at the start: call `get_room_info`
 and see whether the user's still there. If they've left, stop the walkthrough right there,
 apply defaults for whatever's left unset, and skip to Step 5.
@@ -98,16 +109,12 @@ English is unreadable to exactly the people this step exists for.
 | 8 | 日本語 | 16 | Türkçe |
 
 Ask them to **say the language's name, as written on the board** — "Español", "日本語",
-"Deutsch". That is the reliable answer and it is already in their own language, so it needs no
-English at all.
+"Deutsch". That is the most reliable answer here and it is already in their own language, so
+it needs no English at all.
 
-**Do not ask for a bare number.** Tested 2026-08-04: repeating "one" produced nothing in the
-captions at all, while "Deutsch" came through immediately and "number one" also worked. A
-single short word is the least reliable thing anyone can say — too little for the captions to
-settle on. The numbers are still worth printing, as a fallback for a name you cannot
-pronounce, but ask for them as *"number five"* rather than *"five"*.
-
-So: *"Say your language, or say 'number' and the number next to it."* Short, and slowly.
+Label the entries "Option 1", "Option 2" … per the rule above, and offer that as the
+alternative: *"Say your language, or say the option number."* Short, and slowly. Never ask for
+a bare number — "Deutsch" and "option three" both transcribe; "three" does not.
 
 **If ElevenLabs is available, greet them in a few languages first.** `list_voices`: if it
 lists ElevenLabs voices, a key is configured, and those voices speak other languages
@@ -187,7 +194,9 @@ saved either way and applies to the next call regardless.
 ### 4c. Voice
 
 `list_voices` to see what's available (ElevenLabs voices, if a key is configured, plus the
-OS's built-in voices). Put the list on the whiteboard. Then actually let them **hear**
+OS's built-in voices). Put the list on the whiteboard, labelled **"Option 1", "Option 2" …**
+— this is the step where the bare-number problem was first noticed, and a voice name is often
+harder to say than a language name, so the option number carries more of the weight here. Then actually let them **hear**
 candidates in the call: `speak` a short sample line in each voice via `speak`'s `voice`
 parameter, cycling through 3-4 options as they say "next" / "that one". Once picked,
 `set_voice` (or `set_preference("ttsVoiceId", ...)` / `set_preference("macosVoice", ...)`

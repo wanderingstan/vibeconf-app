@@ -97,8 +97,17 @@ English is unreadable to exactly the people this step exists for.
 | 7 | Português | 15 | Polski |
 | 8 | 日本語 | 16 | Türkçe |
 
-Say, in English and slowly: *"Say the number of your language."* Nothing else — a long
-sentence defeats the purpose.
+Ask them to **say the language's name, as written on the board** — "Español", "日本語",
+"Deutsch". That is the reliable answer and it is already in their own language, so it needs no
+English at all.
+
+**Do not ask for a bare number.** Tested 2026-08-04: repeating "one" produced nothing in the
+captions at all, while "Deutsch" came through immediately and "number one" also worked. A
+single short word is the least reliable thing anyone can say — too little for the captions to
+settle on. The numbers are still worth printing, as a fallback for a name you cannot
+pronounce, but ask for them as *"number five"* rather than *"five"*.
+
+So: *"Say your language, or say 'number' and the number next to it."* Short, and slowly.
 
 **If ElevenLabs is available, greet them in a few languages first.** `list_voices`: if it
 lists ElevenLabs voices, a key is configured, and those voices speak other languages

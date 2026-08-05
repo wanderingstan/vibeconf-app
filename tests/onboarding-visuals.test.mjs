@@ -317,9 +317,14 @@ test('language is chosen FIRST, before the name', () => {
 
 test('the language board is usable by someone with little English', () => {
   const langStep = step('Language');
-  // Numbers are the point: almost anyone can say one in English, and it is the
-  // only reply that does not require the language already being right.
-  assert.match(langStep, /Say the number of your language/);
+  // Numbers WERE the point — "almost anyone can say one in English". Live
+  // testing killed that: repeating "one" produced nothing in the captions,
+  // while "Deutsch" came through immediately. A single short word is the least
+  // reliable thing a caption engine can settle on.
+  //
+  // The language name is better on both counts: it transcribes, and it is
+  // already written in the user's own language on the board.
+  assert.match(langStep, /say the language's name, as written on the board/);
   // Each language written in ITS OWN language — a list in English is unreadable
   // to exactly the people this step exists for.
   for (const endonym of ['Español', 'Français', '日本語', 'Português', 'العربية', '中文']) {

@@ -105,3 +105,19 @@ test('a caption language is saved to the bot that chose it', () => {
   // Non-fatal: failing to persist must not fail the language change itself.
   assert.match(body, /catch \(err\)[\s\S]{0,120}Could not save captionLanguage/);
 });
+
+test('the language step does not depend on a bare number', () => {
+  // Tested live 2026-08-04: repeating "one" produced NOTHING in the captions,
+  // while "Deutsch" came through immediately and "number one" also worked. A
+  // single short word is the least reliable thing a caption engine can settle
+  // on — and it was the one thing the step asked for.
+  //
+  // The language NAME is better on both counts: it transcribes, and it is
+  // already written in the user's own language on the board, so it needs no
+  // English at all. Numbers stay as a fallback, spoken as "number five".
+  const skill = readFileSync(join(root, 'mcp-server/onboarding-call-skill.md'), 'utf8');
+  const step = skill.slice(skill.indexOf('### 4a. Language'), skill.indexOf('### 4b. Name'));
+  assert.match(step, /say the language's name, as written on the board/);
+  assert.match(step, /Do not ask for a bare number/);
+  assert.match(step, /number five.*rather than.*five/s, 'the fallback needs the word "number"');
+});

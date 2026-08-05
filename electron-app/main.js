@@ -2074,7 +2074,29 @@ const localServer = new globalThis.LocalServer({
   // get/set go to the same Store the panel uses, so changes from the agent and
   // changes from Settings → UI converge on one config.json.
   getPref: (key) => store?.get(key),
-  setPref: (key, value) => store?.set(key, value),
+  setPref: (key, value) => {
+    // `avatarBackgroundSvg` takes SVG source, which is fine for an agent that
+    // WRITES an SVG and useless for one that has an image file — including one
+    // it just generated. So the value also accepts `file:<path>`, converted here
+    // to the same self-contained SVG the "Choose image…" button produces
+    // (downscaled, inlined, no reference that can break when the file moves).
+    //
+    // Same shape as emojiSet's `dir:` and `font:`: one value, an open form for
+    // the thing only the user's machine knows. Converted on WRITE so the stored
+    // preference is always real SVG — nothing downstream needs to know.
+    if (key === 'avatarBackgroundSvg' && /^file:/.test(String(value || ''))) {
+      const filePath = String(value).slice(5).trim();
+      return buildBackgroundSvgFromImage(filePath).then((svg) => {
+        store?.set('avatarBackgroundSvg', svg);
+        try { store?.set('avatarBackgroundCaption', require('path').basename(filePath)); } catch { /* noop */ }
+        pushAvatarBackground(svg);
+        notifyConfigChanged('avatarBackgroundSvg', svg);
+        console.log(ts(), '[electron] Background set from', filePath, '->', svg.length, 'chars of SVG');
+        return svg;
+      });
+    }
+    return store?.set(key, value);
+  },
   applyPref: (key, value) => {
     // An agent's set_preference lands here. The panel re-reads on this, the same
     // way it does for a set-config write, so a value changed mid-call shows up in
@@ -2301,7 +2323,27 @@ async function listLocalFonts() {
   return families;
 }
 
+// A `dir:` set that matches no files is the quiet failure here: every face
+// falls back to the native glyph, which is indistinguishable from "the setting
+// didn't take". Say so, to the log and to the agent.
+function warnIfEmptyEmojiDir(value) {
+  const ea = require('./emoji-assets.js');
+  const dir = ea.parseDirSet(value);
+  if (!dir) return;
+  ea.forgetExternalDir(dir);            // the folder may have changed since last time
+  const { count } = ea.describeExternalDir(dir);
+  console.log(ts(), '[electron] emoji dir', dir, '->', count, 'usable image(s)');
+  if (count === 0) {
+    try {
+      localServer.addError(`Emoji folder "${dir}" has no usable images, so every face stays native. `
+        + 'Files must be images (png/svg/webp/gif/jpg) named after the emoji — "🙂.png", '
+        + '"1f642.png", "1F642.svg" and "emoji_u1f642.png" all work.');
+    } catch { /* best-effort */ }
+  }
+}
+
 function pushEmojiSet(value) {
+  warnIfEmptyEmojiDir(value);
   if (!meetView || meetView.webContents.isDestroyed()) return;
   // Pass the set name through; the renderer validates against its set registry
   // (unknown → native fallback).
@@ -5714,7 +5756,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '54';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '56';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
@@ -5727,7 +5769,7 @@ function ensureClaudeIntegration() {
     const skillContent = fs.readFileSync(skillSourcePath, 'utf-8');
     fs.writeFileSync(skillPath, skillContent);
     fs.writeFileSync(versionFile, SKILL_VERSION);
-    console.log('[electron] Installed/updated skill v%s at %s', SKILL_VERSION, skillPath);
+    console.log(`[electron] Installed/updated skill v${SKILL_VERSION} at ${skillPath}`);
     changed = true;
   } else {
     console.log('[electron] Skill v%s already installed', SKILL_VERSION);
@@ -5751,7 +5793,7 @@ function ensureClaudeIntegration() {
         'utf-8',
       ));
       fs.writeFileSync(callVersionFile, SKILL_VERSION);
-      console.log('[electron] Installed/updated /call skill v%s', SKILL_VERSION);
+      console.log(`[electron] Installed/updated /call skill v${SKILL_VERSION}`);
       changed = true;
     }
   } catch (err) {
@@ -5780,11 +5822,36 @@ function ensureClaudeIntegration() {
         'utf-8',
       ));
       fs.writeFileSync(onboardingVersionFile, SKILL_VERSION);
-      console.log('[electron] Installed/updated /onboarding-call skill v%s', SKILL_VERSION);
+      console.log(`[electron] Installed/updated /onboarding-call skill v${SKILL_VERSION}`);
       changed = true;
     }
   } catch (err) {
     console.warn('[electron] /onboarding-call skill install failed:', err.message);
+  }
+
+  // --- Ensure global skill in ~/.claude/skills/emoji-set/ ---
+  // /emoji-set generates a themed avatar image set (nanobanana) plus a matching
+  // call background, and points a running bot at it via the `dir:`/`file:`
+  // preference forms. Same version gate as the other skills, own directory.
+  try {
+    const emojiSetSkillDir = path.join(claudeDir, 'skills', 'emoji-set');
+    const emojiSetVersionFile = path.join(emojiSetSkillDir, '.version');
+    let emojiSetInstalled = '';
+    try { emojiSetInstalled = fs.readFileSync(emojiSetVersionFile, 'utf-8').trim(); } catch { /* not yet */ }
+    if (emojiSetInstalled !== SKILL_VERSION) {
+      fs.mkdirSync(emojiSetSkillDir, { recursive: true });
+      fs.writeFileSync(path.join(emojiSetSkillDir, 'SKILL.md'), fs.readFileSync(
+        isPackaged
+          ? path.join(process.resourcesPath, 'mcp-server', 'emoji-set-skill.md')
+          : path.join(__dirname, '..', 'mcp-server', 'emoji-set-skill.md'),
+        'utf-8',
+      ));
+      fs.writeFileSync(emojiSetVersionFile, SKILL_VERSION);
+      console.log(`[electron] Installed/updated /emoji-set skill v${SKILL_VERSION}`);
+      changed = true;
+    }
+  } catch (err) {
+    console.warn('[electron] /emoji-set skill install failed:', err.message);
   }
 
   // Agent-activity overlay hook (independent of the MCP/skill version bumps).
@@ -8284,6 +8351,10 @@ function setupIPC() {
     try { return require('./emoji-assets.js').fontBytesFor(setName, __dirname); } catch { return null; }
   });
 
+  ipcMain.handle('emoji-dir-uri', (_event, dir, emoji) => {
+    try { return require('./emoji-assets.js').externalDataUri(dir, emoji); } catch { return null; }
+  });
+
   // The panel measured itself → resize the window to fit (plus the bot's-view
   // region while in a call). See applyWindowHeight.
   ipcMain.on('panel-content-height', (event, h) => {
@@ -8781,7 +8852,19 @@ function setupIPC() {
     try {
       const { randomBotName } = require('./bot-names.js');
       const taken = takenBotNames();
-      const dir = path.join(PROFILES_ROOT, profileName);
+      // The AGENT dir, not the profile dir. The per-profile store has lived at
+      // <profile>/agent/config.json since #305 (the agent's working directory
+      // has to be a trusted Claude workspace, and the config moved in with it).
+      // Seeding the pre-#305 loose path still WORKED — verified — but only
+      // because the legacy migration copies it across on first launch, and that
+      // migration exists to rescue old installs, not to be load-bearing for new
+      // ones. Someone will delete it one day and new bots would quietly go back
+      // to "Unnamed bot".
+      //
+      // It also left a second config.json that LOOKS authoritative and holds the
+      // original name forever: bot8 read "Diego" long after being renamed
+      // Taylor, which cost a real debugging detour.
+      const dir = require('./agent-workdir.js').agentDirFor(path.join(PROFILES_ROOT, profileName));
       fs.mkdirSync(dir, { recursive: true });
       const file = path.join(dir, 'config.json');
       // Never clobber: a reused directory name (first-gap allocation) might

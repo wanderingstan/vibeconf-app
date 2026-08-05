@@ -73,6 +73,88 @@ function fontBytesFor(setName, dirname = __dirname) {
   } catch { return null; }
 }
 
+// ---------------------------------------------------------------------------
+// External sets: `dir:/some/folder` — a folder of images, exactly like
+// fluent3d, so anyone (or an agent) can make their own.
+//
+// NO NAMING CONVENTION IS IMPOSED. The four bundled sets each use a different
+// one, which is a fair sign that picking a winner would just be picking whose
+// set is easy to convert. Instead the folder is INDEXED once and every
+// filename is normalised to the same key, so all of these resolve to 🙂:
+//
+//     🙂.png            the emoji itself — easiest to produce by hand or by agent
+//     1f642.png         lowercase hex, FE0F dropped   (twemoji / fluent3d)
+//     1F642.svg         uppercase hex, FE0F kept      (openmoji)
+//     emoji_u1f642.png  underscore-joined, u-prefixed (noto)
+//
+// Indexing beats trying candidate filenames: one readdir instead of a stat per
+// convention per extension, it is O(1) per lookup afterwards, and it accepts
+// spellings nobody thought to enumerate. An emoji with no file falls back to the
+// native glyph, exactly as a gap in a bundled set does.
+const IMAGE_EXTS = new Set(['.png', '.svg', '.webp', '.gif', '.jpg', '.jpeg', '.apng']);
+
+// A hard cap, because this path takes a directory from a PREFERENCE: an agent
+// could point it at a huge tree, and indexing is synchronous.
+const MAX_INDEXED_FILES = 5000;
+
+// Normalise any of the spellings above to one key. null = not an emoji filename.
+function emojiKeyFromBasename(base) {
+  if (!base) return null;
+  // Non-ASCII means the file is named after the character itself.
+  if (/[^\x00-\x7F]/.test(base)) {
+    const k = canon(base);
+    return /^[0-9a-f]+(-[0-9a-f]+)*$/.test(k) ? k : null;
+  }
+  const s = base.toLowerCase().replace(/^emoji_u/, '').replace(/_/g, '-');
+  if (!/^[0-9a-f]{2,}(-[0-9a-f]+)*$/.test(s)) return null;
+  // Drop FE0F so the openmoji-style and twemoji-style spellings agree.
+  const k = s.split('-').filter((c) => c !== 'fe0f').join('-');
+  return k || null;
+}
+
+const _dirIndexCache = new Map();   // absolute dir -> Map(key -> absolute file)
+function indexExternalDir(dir) {
+  const abs = path.resolve(String(dir || ''));
+  if (_dirIndexCache.has(abs)) return _dirIndexCache.get(abs);
+  const index = new Map();
+  try {
+    const names = fs.readdirSync(abs).sort();   // sorted so collisions resolve the same way every run
+    let seen = 0;
+    for (const name of names) {
+      if (++seen > MAX_INDEXED_FILES) break;
+      const ext = path.extname(name).toLowerCase();
+      if (!IMAGE_EXTS.has(ext)) continue;       // also what stops this reading non-images
+      const key = emojiKeyFromBasename(name.slice(0, -ext.length));
+      if (key && !index.has(key)) index.set(key, path.join(abs, name));
+    }
+  } catch { /* missing or unreadable → an empty index, so every face stays native */ }
+  _dirIndexCache.set(abs, index);
+  return index;
+}
+function forgetExternalDir(dir) {
+  _dirIndexCache.delete(path.resolve(String(dir || '')));
+}
+
+// "dir:/path/to/set" -> "/path/to/set", else null.
+function parseDirSet(setName) {
+  const m = /^dir:(.+)$/.exec(String(setName || ''));
+  return m ? m[1].trim() : null;
+}
+
+// A data URI for one emoji from an external folder, or null for native.
+function externalDataUri(dir, emoji) {
+  const file = indexExternalDir(dir).get(canon(String(emoji || '')));
+  if (!file) return null;
+  try { return readAsDataUri(file); } catch { return null; }
+}
+
+// What the folder actually covers — for reporting back to whoever built it,
+// since a missing file is otherwise a silent fallback to the native glyph.
+function describeExternalDir(dir) {
+  const index = indexExternalDir(dir);
+  return { dir: path.resolve(String(dir || '')), count: index.size, keys: [...index.keys()] };
+}
+
 // 'native' means "use the OS emoji font" — there is no file to resolve.
 // A font-backed set is NOT an image set: it draws glyphs, like native does.
 function isImageSet(setName) {
@@ -129,6 +211,13 @@ function dataUriFor(setName, emoji, dirname = __dirname) {
 }
 
 module.exports = {
+  IMAGE_EXTS,
+  emojiKeyFromBasename,
+  indexExternalDir,
+  forgetExternalDir,
+  parseDirSet,
+  externalDataUri,
+  describeExternalDir,
   EMOJI_FONTS,
   fontRelPathFor,
   fontBytesFor,

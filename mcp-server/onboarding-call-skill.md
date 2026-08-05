@@ -275,6 +275,25 @@ font vendor, is a confident-sounding error in someone's first minute with the pr
 
 Once picked, `set_preference("emojiSet", "<set>")`.
 
+**Someone can bring their own set.** `set_preference("emojiSet", "dir:/path/to/folder")`
+points the face at a folder of images — one file per emoji, exactly like the bundled
+fluent3d set. Worth mentioning only if they seem interested; it is a nice thing to offer
+someone who has a brand, a mascot, or a favourite artist.
+
+No naming convention is imposed. The folder is indexed, so whichever is easiest to produce
+works: the emoji itself (`🙂.png`), lowercase hex (`1f642.png`), uppercase with FE0F
+(`1F642.svg`), or noto style (`emoji_u1f642.png`). png/svg/webp/gif/jpg. A partial set is
+fine — anything with no file keeps the native glyph, so five good faces are a real set.
+
+**You can build one for them.** With an image generator connected, offer it: ask for a
+theme, generate the handful of faces that actually get used, and point the preference at
+the folder. The faces worth doing first are the ones the avatar actually wears — 🙂 idle,
+🤔 thinking, 🧑‍💻 working, 😐 hearing, 😑 ticking, 😔 resting.
+
+One trap, if the art has text or a left/right: Meet MIRRORS the bot's own tile in its
+self-view, so it looks backwards in `get_call_screenshot` and in the Bot's view window
+while everyone else sees it correctly. Do not pre-flip the images to "fix" it.
+
 ### 4e. Background
 
 **One grid, all of them at once** — not a slideshow. `list_visual_assets` returns every

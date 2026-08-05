@@ -686,7 +686,7 @@
       // decodes, or forever if the emoji isn't in the set.
       // Only IMAGE sets (fluent3d) go through drawImage. A font-backed set falls
       // to fillText below, where emojiFontStack has already put its family first.
-      const emojiImg = (this.emojiSet && this.emojiSet !== 'native' && EMOJI_SETS[this.emojiSet])
+      const emojiImg = (this.emojiSet && this.emojiSet !== 'native' && _isImageSetName(this.emojiSet))
         ? _emojiImage(this.emojiSet, emoji) : null;
       if (emojiImg) {
         ctx.drawImage(emojiImg, -emojiSize / 2, -emojiSize / 2, emojiSize, emojiSize);
@@ -1366,7 +1366,32 @@
       console.warn('[bots-in-calls] FontFace rejected for', setName, e && e.message);
     }
   }
+  // `dir:<path>` — a folder of images the user or an agent made, resolved by the
+  // preload (the page has no fs). Same contract as a bundled image set: a data
+  // URI, or null for "not in this set", which falls back to the native glyph.
+  const _dirOf = (setName) => {
+    const m = /^dir:(.+)$/.exec(String(setName || ''));
+    return m ? m[1].trim() : null;
+  };
+  const _isImageSetName = (setName) => !!EMOJI_SETS[setName] || !!_dirOf(setName);
+
   function _emojiImage(setName, emoji) {
+    const dir = _dirOf(setName);
+    if (dir) {
+      const resolveDir = (typeof globalThis !== 'undefined') && globalThis.__vibeEmojiDirUri;
+      if (!resolveDir) return null;
+      const key = 'dir:' + dir + '|' + emoji;
+      if (_emojiImgCache.has(key)) return _emojiImgCache.get(key);
+      _emojiImgCache.set(key, null);
+      let uri = null;
+      try { uri = resolveDir(dir, emoji); } catch { uri = null; }
+      if (!uri) return null;
+      const dimg = new Image();
+      dimg.onload = () => { _emojiImgCache.set(key, dimg); };
+      dimg.onerror = () => { _emojiImgCache.set(key, null); };
+      dimg.src = uri;
+      return null;
+    }
     const set = EMOJI_SETS[setName];
     const resolve = (typeof globalThis !== 'undefined') && globalThis.__vibeEmojiDataUri;
     if (!set || !resolve) return null;
@@ -2058,7 +2083,8 @@
           const asFont = parseEmojiFontValue(raw);
           emojiFontGlobal = asFont ? asFont.family : '';
           emojiFontColorGlobal = asFont ? asFont.color : '';
-          emojiSetGlobal = (!asFont && (raw === 'native' || EMOJI_SETS[raw] || EMOJI_FONT_SETS[raw]))
+          emojiSetGlobal = (!asFont
+            && (raw === 'native' || EMOJI_SETS[raw] || EMOJI_FONT_SETS[raw] || _dirOf(raw)))
             ? raw : 'native';
           _ensureEmojiFont(emojiSetGlobal);
           avatarState.emojiSet = emojiSetGlobal;

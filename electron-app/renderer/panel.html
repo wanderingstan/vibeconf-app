@@ -506,10 +506,16 @@
                to wrap inside, which is what "beside the button" actually means. -->
           <div class="share-log-main">
             <button id="shareCallLogBtn" class="popout-btn">📤 Share this call's log</button>
-            <span class="helper-text share-log-why">Feedback goes only to the bot, not to the
-              developers. Share the call log and bot feedback is included.</span>
+            <!-- One slot, two messages. Before sharing it explains why you would;
+                 once sharing it reports what is happening. They are never both
+                 true, and stacking them would leave a standing invitation above a
+                 line saying the invitation has been accepted. -->
+            <div class="share-log-msg">
+              <span class="helper-text share-log-why">Feedback goes only to the bot, not to the
+                developers. Share the call log and bot feedback is included.</span>
+              <span id="shareCallLogStatus" class="helper-text" style="display:none"></span>
+            </div>
           </div>
-          <span id="shareCallLogStatus" class="helper-text" style="display:block;margin-top:4px"></span>
         </div>
       </div>
 

@@ -127,8 +127,14 @@ test('the button is separate from the feedback buttons, and says what it sends',
   // it shares. Kept as a check that the block did not lose its explanation
   // entirely.
   assert.match(block, /Share the call log/);
+  // Still BELOW the feedback buttons — it is the follow-through to them — but no
+  // longer behind a rule: the sentence beside it is about those buttons, and a
+  // divider made one short section read as two.
   assert.ok(panelHtml.indexOf('data-feedback="other"') < panelHtml.indexOf('shareCallLogBtn'),
-    'it sits apart from the one-click feedback row');
+    'it follows the one-click feedback row');
+  const css2 = readFileSync(join(root, 'electron-app/renderer/panel.css'), 'utf8');
+  const rule = css2.slice(css2.indexOf('.share-log-row {'));
+  assert.doesNotMatch(rule.slice(0, rule.indexOf('}')), /border-top/);
 });
 
 test('the result is reported, including that sharing continues', () => {
@@ -148,6 +154,22 @@ test('shared lines are tagged with the call, so they can be found', () => {
   assert.match(h.slice(0, 1200), /\{ callId, shared: true, sharedAt/);
 });
 
+test('the why-line is REPLACED by the stats, not stacked above them', () => {
+  // They are never both true. Leaving "Share the call log and bot feedback is
+  // included" sitting above "Sharing this call — 144 lines sent so far" answers
+  // a question the user has already answered.
+  assert.match(panelJs, /function setShareMsg\(text\)/);
+  const fn = panelJs.slice(panelJs.indexOf('function setShareMsg'));
+  const body = fn.slice(0, fn.indexOf('\n}'));
+  assert.match(body, /shareCallLogWhy\.style\.display = showing \? 'none' : 'block'/);
+  assert.match(body, /shareCallLogStatus\.style\.display = showing \? 'block' : 'none'/);
+  // Empty text puts the invitation back — e.g. a new call after one was shared.
+  assert.match(body, /const showing = !!text;/);
+  // And every writer goes through it, or the two would drift out of step.
+  const direct = (panelJs.match(/shareCallLogStatus\.textContent/g) || []).length;
+  assert.equal(direct, 1, 'only setShareMsg may write the status');
+});
+
 test('the live count keeps moving, and says when sharing stops', () => {
   // Reported from a real call: the window said "Sent 347 lines, and sharing the
   // rest of this call" and the number never changed. Beside "still sharing",
@@ -155,6 +177,7 @@ test('the live count keeps moving, and says when sharing stops', () => {
   assert.match(panelJs, /async function renderShareState\(\)/);
   assert.match(panelJs, /lines sent so far/);
   assert.match(panelJs, /Sharing has stopped/, 'the grant ends with the call — say so');
+  assert.match(panelJs, /setShareMsg\(st\.streaming/, 'the live line goes through the one writer');
   // Polled with the rest of the troubleshooting view rather than on its own timer.
   const poll = panelJs.slice(panelJs.indexOf("const s = await api.invoke('get-call-state')"));
   assert.match(poll.slice(0, 200), /renderShareState\(\)/);
@@ -211,7 +234,7 @@ test('the window says what the feedback buttons do, and do not do', () => {
   // underneath — the very layout this replaced.
   const css = readFileSync(join(root, 'electron-app/renderer/panel.css'), 'utf8');
   assert.match(css, /\.share-log-main \{ display: flex/);
-  assert.match(css, /\.share-log-main \.share-log-why \{ flex: 1/);
+  assert.match(css, /\.share-log-msg \{ flex: 1; \}/, 'the message column takes the remaining width');
 });
 
 test('feedback is written to the session log, so a shared slice carries it', () => {

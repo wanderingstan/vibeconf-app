@@ -1203,13 +1203,12 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
 .brain-feed .l-think { color: #c58af9; font-style: italic; }
 .brain-feed .l-none { color: #9aa0a6; font-style: italic; }
 
-/* #255 — the share-this-call's-log control. Set apart from the feedback buttons
-   above it: those are private guidance to the bot, this sends transcript text
-   off the machine. The rule sells that separation better than spacing alone. */
+/* #255 — the share-this-call's-log control. A rule used to separate it from the
+   feedback buttons above, on the argument that this one sends data off the
+   machine. Removed: the two belong together — the sentence beside the button is
+   about those buttons — and the line made one short section look like two. */
 .share-log-row {
   margin-top: 12px;
-  padding-top: 10px;
-  border-top: 1px solid #3c4043;
 }
 .share-log-row .helper-text { line-height: 1.45; display: block; }
 /* The explanation sits BESIDE the button in its own column, so it wraps within
@@ -1219,4 +1218,5 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
    meant to avoid. */
 .share-log-main { display: flex; align-items: baseline; gap: 10px; }
 .share-log-main button { flex: 0 0 auto; margin-bottom: 0; }
-.share-log-main .share-log-why { flex: 1; margin: 0; display: block; }
+.share-log-msg { flex: 1; }
+.share-log-msg .helper-text { margin: 0; display: block; }

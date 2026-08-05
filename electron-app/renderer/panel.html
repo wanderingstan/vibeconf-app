@@ -498,12 +498,17 @@
                fix the CALL (the bot reads them and adjusts), and nothing about
                them reaches us. Someone pressing "Won't yield" three times is
                entitled to know that no one is on the other end of it. -->
-          <button id="shareCallLogBtn" class="popout-btn">📤 Share this call's log</button>
-          <!-- Inline, flowing on from the button rather than a paragraph above
-               it: the button is auto-width, so the sentence uses the space
-               beside it instead of costing a line of its own. -->
-          <span class="helper-text share-log-why">Feedback goes only to the bot, not to the
-            developers. Share the call log and bot feedback is included.</span>
+          <!-- Button and explanation as a ROW, not inline text after a button.
+               Inline looked right in the markup and wrong on screen: after a
+               ~200px button in a ~460px column only a word or two fits beside
+               it, so the sentence wrapped underneath and read as a paragraph
+               below the button anyway. A flex row gives the text its own column
+               to wrap inside, which is what "beside the button" actually means. -->
+          <div class="share-log-main">
+            <button id="shareCallLogBtn" class="popout-btn">📤 Share this call's log</button>
+            <span class="helper-text share-log-why">Feedback goes only to the bot, not to the
+              developers. Share the call log and bot feedback is included.</span>
+          </div>
           <span id="shareCallLogStatus" class="helper-text" style="display:block;margin-top:4px"></span>
         </div>
       </div>

@@ -1212,7 +1212,11 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
   border-top: 1px solid #3c4043;
 }
 .share-log-row .helper-text { line-height: 1.45; display: block; }
-/* The explanation sits BESIDE the button, not above it — inline so it uses the
-   space next to an auto-width control instead of costing a line of its own, and
-   wraps underneath only when it runs out of room. */
-.share-log-row .share-log-why { display: inline; margin-left: 8px; }
+/* The explanation sits BESIDE the button in its own column, so it wraps within
+   that column instead of underneath the button. `display: inline` was not
+   enough: after a ~200px button in a ~460px column only a word or two fits on
+   the first line, and the rest falls below — which is the layout this was
+   meant to avoid. */
+.share-log-main { display: flex; align-items: baseline; gap: 10px; }
+.share-log-main button { flex: 0 0 auto; margin-bottom: 0; }
+.share-log-main .share-log-why { flex: 1; margin: 0; display: block; }

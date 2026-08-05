@@ -206,8 +206,12 @@ test('the window says what the feedback buttons do, and do not do', () => {
   // no extra line, and the troubleshooting screen is already long.
   assert.ok(block.indexOf('shareCallLogBtn') < block.indexOf('share-log-why'),
     'the explanation follows the button');
+  // A flex ROW, not inline text: inline gave the sentence whatever was left on
+  // the button's line, which in a ~460px column is a word or two before it wraps
+  // underneath — the very layout this replaced.
   const css = readFileSync(join(root, 'electron-app/renderer/panel.css'), 'utf8');
-  assert.match(css, /\.share-log-why \{ display: inline/);
+  assert.match(css, /\.share-log-main \{ display: flex/);
+  assert.match(css, /\.share-log-main \.share-log-why \{ flex: 1/);
 });
 
 test('feedback is written to the session log, so a shared slice carries it', () => {

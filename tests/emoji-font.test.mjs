@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -42,17 +42,22 @@ test('a font family is sanitised before reaching a CSS font shorthand', () => {
 });
 
 test('an uninstalled family falls back to a real face, not tofu', () => {
-  assert.match(inject, /px "\$\{emojiFontGlobal\}", serif/);
+  // Both stacks are built as a list now — user font, then the bundled set's
+  // font, then the OS emoji font — but the invariant is unchanged: something
+  // that can actually draw a face is always last.
+  const stack = inject.slice(inject.indexOf('function emojiFontStack'));
+  assert.match(stack.slice(0, 600), /families\.push\('serif'\);/);
   assert.match(panel, /const NATIVE_EMOJI_STACK/);
-  assert.match(panel, /`"\$\{fam\}", \$\{NATIVE_EMOJI_STACK\}`/);
+  const pstack = panel.slice(panel.indexOf('function emojiFontStackFor'));
+  assert.match(pstack.slice(0, 400), /parts\.push\(NATIVE_EMOJI_STACK\);/);
 });
 
 test('the panel understands the font form too', () => {
   // The panel draws its OWN avatar and switcher thumbnail. It not knowing the
   // font form is exactly how this was first spotted: the call showed the font
   // and the app's own picture of the bot did not.
-  assert.match(panel, /if \(fontFamilyFromSet\(setName\)\) return null;/,
-    'a font is glyphs, so no image data URI — the glyph path must run');
+  assert.match(panel, /if \(fontFamilyFromSet\(setName\) \|\| EMOJI_FONT_SETS\[setName\]\) return null;/,
+    'glyphs — for a user font OR a bundled set font — must skip the image path');
   assert.match(panel, /emojiFontStackFor\(emojiSet\)/);
   // An unknown <select> value blanks the control, so a font needs a real option.
   assert.match(panel, /data-font-option/);
@@ -106,4 +111,64 @@ test('an agent-set face repaints the panel now, not on the 60s timer', () => {
   assert.match(body, /changed === 'emojiSet' \|\| changed === 'avatarBackgroundSvg'/);
   assert.ok(body.indexOf('renderAgentAvatar()') < body.indexOf('activeElement'),
     'the avatar is a picture, not a form control — it must repaint before the focus guard');
+});
+
+// --- bundled sets as colour fonts -------------------------------------------
+// twemoji / openmoji / noto were ~11,900 SVGs and 76MB. The same artwork as
+// COLR fonts is three files and 8.4MB, drawn as glyphs on the same code path as
+// 'native'. Proven in the real Meet page before any of this was written: the
+// font loads from bytes and renders in colour, and CSP never applies because a
+// FontFace built from an ArrayBuffer has no URL to check.
+test('the three big sets ship as fonts, and fluent3d does not', () => {
+  const A = require('../electron-app/emoji-assets.js');
+  assert.deepEqual(Object.keys(A.EMOJI_FONTS).sort(), ['noto', 'openmoji', 'twemoji']);
+  assert.equal(A.EMOJI_FONTS.fluent3d, undefined,
+    'fluent3d is rendered 3D raster art — no font exists for it');
+  // A font-backed set is NOT an image set: it draws glyphs, like native.
+  assert.equal(A.isImageSet('twemoji'), false);
+  assert.equal(A.isImageSet('fluent3d'), true);
+});
+
+test('the font files are actually bundled', () => {
+  for (const set of ['twemoji', 'openmoji', 'noto']) {
+    const p = join(root, 'electron-app/emoji/fonts', `${set}.ttf`);
+    assert.ok(existsSync(p), `${set}.ttf must ship`);
+    assert.ok(statSync(p).size > 500_000, `${set}.ttf looks truncated`);
+  }
+});
+
+test('font bytes are copied out of the pooled Buffer', () => {
+  // Node's readFileSync returns a view into a SHARED arena. Handing .buffer
+  // straight to FontFace would pass megabytes of unrelated memory with the
+  // wrong length — a real bug, not a style nit.
+  const src = readFileSync(join(root, 'electron-app/emoji-assets.js'), 'utf8');
+  assert.match(src, /buf\.buffer\.slice\(buf\.byteOffset, buf\.byteOffset \+ buf\.byteLength\)/);
+});
+
+test('one sample image per set survives, for the whiteboard picker', () => {
+  // list_visual_assets hands the whiteboard a file path per set, and the
+  // whiteboard renders on the WEBSITE — which has no access to a font we
+  // bundle. Deleting these would silently empty the setup call's picker grid.
+  for (const rel of ['twemoji/1f642.svg', 'openmoji/1F642.svg', 'noto/emoji_u1f642.svg']) {
+    assert.ok(existsSync(join(root, 'electron-app/emoji', rel)), `${rel} must survive`);
+  }
+});
+
+test('the OpenMoji art the UI icons are generated from survives', () => {
+  // scripts/gen-ui-icons.mjs lifts these from emoji/openmoji/. Deleting the set
+  // wholesale broke the icon build — caught by its own test, kept here so the
+  // dependency is visible from the emoji side too.
+  for (const cp of ['1F440', '1F6A7', '1F5A5', '1F50A', '1F4C2', '1F4CB', '1F9E0']) {
+    assert.ok(existsSync(join(root, 'electron-app/emoji/openmoji', `${cp}.svg`)),
+      `${cp}.svg is used by gen-ui-icons.mjs`);
+  }
+});
+
+test('a failed font load leaves a face, not tofu', () => {
+  const fn = inject.slice(inject.indexOf('function _ensureEmojiFont'));
+  const body = fn.slice(0, fn.indexOf('\n  }\n'));
+  assert.match(body, /catch/, 'a broken font must not throw into the draw loop');
+  // Not added to document.fonts on failure → the stack falls through to serif.
+  assert.ok(body.indexOf('document.fonts.add') < body.indexOf('.catch('),
+    'add only on success; the tail of the font stack is the fallback');
 });

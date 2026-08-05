@@ -466,16 +466,82 @@ function revokeCallLogShare(reason) {
   _sharingWeEnabled = false;
 }
 
+// The actual teardown. It lives here, callable from main, rather than only at
+// the end of a main → renderer → main round trip.
+//
+// #254: the round trip was the whole bug. finishCall() set 'call-complete' and
+// sent 'leave-requested' to the panel; only the panel's reply ran clearRoom(),
+// and clearRoom() is what sets 'idle'. So any break in that loop — a destroyed
+// panelView, a renderer that never answers — stranded the session at
+// 'call-complete' forever. Joins only navigate from a settled state, so
+// Bethany Crystal's app accepted SEVEN join_call requests for a new meeting and
+// silently dropped every one, telling her agent "navigating to the call" each
+// time. Recovery needed a quit and relaunch. (This is #229's shape: state that
+// depends on a specific window hearing a message.)
+//
+// Idempotent, because the watchdog and the panel reply race by design and both
+// must be safe.
+let _teardownDone = false;
+function performLeaveTeardown(via) {
+  clearTimeout(_idleWatchdog);
+  _idleWatchdog = null;
+  if (_teardownDone) return;
+  _teardownDone = true;
+  currentMeetUrl = null;
+  detectedMeetUrl = null; // Reset so detection will re-notify about the same Meet
+  // Each step is independent: a throw in one must not strand the rest, because
+  // the whole point is that reaching 'idle' cannot be conditional. clearRoom()
+  // is what sets 'idle', so it goes first — if anything here is going to fail,
+  // the session should already be joinable by the time it does.
+  const step = (name, fn) => {
+    try { fn(); } catch (err) {
+      console.error(ts(), '[electron] teardown step "' + name + '" failed:', err && err.message);
+    }
+  };
+  step('clearRoom', () => localServer.clearRoom());
+  step('closeClaudeTerminal', () => closeClaudeTerminal());
+  step('showIdle', () => showIdle());
+  console.log(ts(), '[electron] Call teardown complete (via ' + via + ') — status',
+    localServer.callStatus);
+  // Identity cache is cleared at *join* time, not here — so it doesn't
+  // matter how the previous call ended (host-ended, app quit, crash).
+}
+
+// How long to let the panel do its own teardown before main does it anyway.
+// Generous: the normal path finishes in well under a second, so anything near
+// this is already a fault, and a late-but-correct teardown beats a wedged app.
+const IDLE_WATCHDOG_MS = 10000;
+let _idleWatchdog = null;
+
 function finishCall() {
   clearTimeout(_afterCallWorkTimer);
   _afterCallWorkTimer = null;
   // #255: a shared-log grant was for THIS call. Revoking here rather than
   // trusting the next call to notice is what keeps "share this one" honest.
   revokeCallLogShare('call ended');
+  _teardownDone = false;
   localServer.setCallStatus('call-complete');
   if (panelView && !panelView.webContents.isDestroyed()) {
     panelView.webContents.send('leave-requested');
+  } else {
+    // No panel to ask. Don't wait out the watchdog for a reply that provably
+    // cannot come.
+    console.warn(ts(), '[electron] No panel to run teardown — doing it here');
+    performLeaveTeardown('no-panel');
+    return;
   }
+  clearTimeout(_idleWatchdog);
+  _idleWatchdog = setTimeout(() => {
+    console.error(ts(), '[electron] #254: panel never completed teardown in '
+      + (IDLE_WATCHDOG_MS / 1000) + 's — forcing idle so the next join is not dropped');
+    try {
+      localServer.addError('Call teardown stalled: the app forced itself back to idle after '
+        + (IDLE_WATCHDOG_MS / 1000) + 's. The previous call may still be open in the Meet view. '
+        + 'Joining a new call should work; if it does not, quit and relaunch.');
+    } catch { /* addError is best-effort */ }
+    performLeaveTeardown('watchdog');
+  }, IDLE_WATCHDOG_MS);
+  if (_idleWatchdog.unref) _idleWatchdog.unref();
 }
 
 // The walk takes a second or two and captions-ready can fire repeatedly in that
@@ -828,6 +894,14 @@ const localServer = new globalThis.LocalServer({
       console.log('[electron] Join during after-call work — cancelling the pending teardown');
       clearTimeout(_afterCallWorkTimer);
       _afterCallWorkTimer = null;
+    }
+    // #254: a join is also the loudest possible signal that the previous call is
+    // over. If teardown was started but never finished, don't make this join
+    // wait out the watchdog (or, before the watchdog existed, wait forever) —
+    // finish it now, then navigate from a settled state.
+    if (localServer.callStatus === 'call-complete' && !_teardownDone) {
+      console.warn(ts(), '[electron] Join arrived with teardown unfinished — completing it first');
+      performLeaveTeardown('join');
     }
     logSessionHeaderUpdate('roomId', meetCode);
     if (botName) {
@@ -7783,7 +7857,24 @@ function showIdle() {
   console.log('[electron] Returned to idle state');
 }
 
+// #254: every caller invokes this fire-and-forget, so before this wrapper a
+// rejection anywhere inside was an unhandled promise rejection — the join had
+// already reported ok, and the failure went nowhere the agent or the user could
+// see it. The navigation genuinely can throw: it clears caches, reads cookies
+// and rebuilds the BrowserView. Same honesty class as #243/#253 — report the
+// outcome, not the attempt.
 async function loadMeetURL(meetUrl) {
+  try {
+    await _loadMeetURL(meetUrl);
+  } catch (err) {
+    const msg = 'Failed to open the Meet page: ' + (err && err.message ? err.message : String(err));
+    console.error(ts(), '[electron] #254:', msg);
+    try { localServer.addError(msg + ' — the bot is not in the call.'); } catch { /* best-effort */ }
+    try { localServer.setCallStatus('idle'); } catch { /* best-effort */ }
+  }
+}
+
+async function _loadMeetURL(meetUrl) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
   chatSpaceWarned = false; // fresh call — allow one Chat-space warning again
@@ -8893,15 +8984,7 @@ function setupIPC() {
 
   ipcMain.on('open-external-url', (_event, url) => { openExternalUrl(url); });
 
-  ipcMain.on('leave-meet', () => {
-    currentMeetUrl = null;
-    detectedMeetUrl = null; // Reset so detection will re-notify about the same Meet
-    localServer.clearRoom();
-    closeClaudeTerminal();
-    showIdle();
-    // Identity cache is cleared at *join* time, not here — so it doesn't
-    // matter how the previous call ended (host-ended, app quit, crash).
-  });
+  ipcMain.on('leave-meet', () => performLeaveTeardown('panel'));
 
   ipcMain.on('get-meet-status', (event) => {
     if (meetView && !meetView.webContents.isDestroyed()) {

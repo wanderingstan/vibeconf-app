@@ -45,8 +45,14 @@ test('no leftover room tracking to tempt a re-add', () => {
 test('leaving a call tears down the app side only', () => {
   // Leaving must still do its local cleanup — this change removes the REMOTE
   // effect, not the local one.
-  const fn = main.slice(main.indexOf("ipcMain.on('leave-meet'"));
-  const body = fn.slice(0, fn.indexOf('\n  });'));
+  //
+  // #254 moved the steps out of the IPC handler and into performLeaveTeardown,
+  // so main can run them itself when the renderer never replies. The handler now
+  // just delegates; the cleanup this test protects is unchanged, so follow it to
+  // its new home rather than asserting on the delegating one-liner.
+  assert.match(main, /ipcMain\.on\('leave-meet', \(\) => performLeaveTeardown\('panel'\)\)/);
+  const fn = main.slice(main.indexOf('function performLeaveTeardown'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
   assert.match(body, /localServer\.clearRoom\(\)/);
   assert.match(body, /closeClaudeTerminal\(\)/);
   assert.match(body, /showIdle\(\)/);

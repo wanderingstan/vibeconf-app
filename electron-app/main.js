@@ -4715,19 +4715,66 @@ const recentErrorNotifications = new Map(); // message -> timestamp
 // the main window's footer while the settings window you were looking at went on
 // saying you were signed out. Both renderers already listened; only one was ever
 // sent to. Any new window that shows auth state belongs in here.
-function broadcastAuthChanged() {
-  const targets = [
-    panelView,
-    appSettingsWindow,
-    onboardingWindow,   // the wizard's sign-in step shows the same state
+// ---------------------------------------------------------------------------
+// #229 — one place that knows which windows exist.
+//
+// Main-process events were addressed to a NAMED window:
+//
+//     panelView.webContents.send('auth-changed');
+//
+// so a renderer could register a perfectly correct listener and never receive
+// anything. Nothing errors; the state is right and the window simply never hears
+// about it, which presents as a broken FEATURE rather than a missing message.
+// That is why each instance cost a debugging session to find (#190, #143, the
+// App Settings sign-in state, and — the expensive one — #254, where teardown
+// waited on a reply from a window that was never asked).
+//
+// The tell was `claude-ready`: its fix was to write the same send three times,
+// one per window. Correctness depended on remembering every window at every call
+// site, and adding a window meant auditing every site to decide whether it
+// belonged there.
+//
+// So: renderer windows are enumerated HERE, once. Anything that is "state the
+// app has changed" broadcasts, and each renderer decides whether it cares —
+// panel.html already does exactly that, since the pop-outs load the same file
+// with ?screen=<name> and guard on it.
+//
+// NOT included: meetView. Its ~33 sends are page-injection COMMANDS (set the
+// emoji set, start a share, apply a caption language) where the destination is
+// part of the meaning. Those stay addressed.
+function rendererWindows() {
+  return [
+    panelView,            // the app's own UI
+    panelPopoutWindow,    // ...when popped out, it lives here instead
+    brainWindow,          // 🧠 — panel.html?screen=brain
+    troubleshootingWindow, // ⓘ — panel.html?screen=troubleshooting
+    appSettingsWindow,    // ⌘, — had ZERO sends and one dead listener
+    onboardingWindow,     // the setup wizard
+    mainWindow,           // the shell (some listeners live here)
   ];
-  for (const w of targets) {
+}
+
+// Send to every live renderer. Guarded PER TARGET: these windows are all
+// user-closable, and one closed window must not stop the others — a real case,
+// not a theoretical one.
+function broadcastToRenderers(channel, ...args) {
+  let delivered = 0;
+  for (const w of rendererWindows()) {
     try {
-      if (w && !w.isDestroyed() && !w.webContents.isDestroyed()) {
-        w.webContents.send('auth-changed');
-      }
+      if (!w || w.isDestroyed?.()) continue;
+      const wc = w.webContents;
+      if (!wc || wc.isDestroyed()) continue;
+      wc.send(channel, ...args);
+      delivered += 1;
     } catch { /* window went away mid-broadcast */ }
   }
+  return delivered;
+}
+
+function broadcastAuthChanged() {
+  // Was a hand-kept list of three windows. It was already missing the pop-outs,
+  // which load panel.html and register the same 'auth-changed' listener.
+  broadcastToRenderers('auth-changed');
 }
 
 function broadcastError(message) {
@@ -4934,9 +4981,9 @@ function markClaudeReady(source) {
   try { broadcastClaudeAuth(); } catch { /* panel not up yet */ }
   if (!was) {
     console.log('[electron] Claude Code confirmed ready (' + (source || '?') + ')');
-    try { if (panelView && !panelView.webContents.isDestroyed()) panelView.webContents.send('claude-ready', true); } catch { /* noop */ }
-    try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('claude-ready', true); } catch { /* noop */ }
-    try { if (onboardingWindow && !onboardingWindow.isDestroyed()) onboardingWindow.webContents.send('claude-ready', true); } catch { /* noop */ }
+    // Three hand-written sends until #229. That triple was the clearest symptom
+    // of the problem: correctness by remembering every window, at every site.
+    broadcastToRenderers('claude-ready', true);
   }
 }
 ipcMain.handle('get-claude-ready', () => claudeReady);

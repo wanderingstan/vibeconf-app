@@ -34,11 +34,20 @@ test('auth changes go through one broadcast, not per-window sends', () => {
 });
 
 test('every window that displays sign-in state is a target', () => {
-  const fn = code.slice(code.indexOf('function broadcastAuthChanged()'));
-  const body = fn.slice(0, fn.indexOf('\n}'));
-  for (const w of ['panelView', 'appSettingsWindow', 'onboardingWindow']) {
-    assert.ok(body.includes(w), `${w} shows auth state and must be told`);
+  // #229 moved the target list out of this function and into ONE registry, so
+  // follow it there. The point is unchanged: a window showing sign-in state must
+  // be told. The old hand-kept list was already missing the pop-outs, which load
+  // panel.html and register the very same 'auth-changed' listener.
+  assert.match(code, /function broadcastAuthChanged\(\) \{[\s\S]{0,400}?broadcastToRenderers\('auth-changed'\)/);
+  const reg = code.slice(code.indexOf('function rendererWindows()'));
+  const body = reg.slice(0, reg.indexOf('\n}'));
+  for (const w of ['panelView', 'appSettingsWindow', 'onboardingWindow',
+                   'brainWindow', 'troubleshootingWindow', 'panelPopoutWindow']) {
+    assert.ok(body.includes(w), `${w} is a renderer and must be in the registry`);
   }
+  // meetView is deliberately NOT a renderer target: its sends are page-injection
+  // commands where the destination is part of the meaning.
+  assert.ok(!body.includes('meetView'), 'meetView stays addressed, not broadcast');
 });
 
 test('both login and logout use it', () => {
@@ -50,10 +59,16 @@ test('both login and logout use it', () => {
 
 test('a destroyed window cannot break the broadcast', () => {
   // These are user-closable windows, so any of them may be gone mid-broadcast.
-  // One dead window must not stop the others being told.
-  const fn = code.slice(code.indexOf('function broadcastAuthChanged()'));
+  // One dead window must not stop the others being told. Now guarded once, in
+  // the shared helper, instead of once per hand-written fan-out.
+  const fn = code.slice(code.indexOf('function broadcastToRenderers('));
   const body = fn.slice(0, fn.indexOf('\n}'));
-  assert.match(body, /isDestroyed\(\)/);
-  assert.match(body, /webContents\.isDestroyed\(\)/, 'the view can outlive its webContents');
+  // Both checks must be present: the WINDOW may be destroyed, and the window can
+  // also outlive its webContents. Matched on the invariant rather than on one
+  // spelling of it — `w.webContents.isDestroyed()` and `const wc = w.webContents;
+  // wc.isDestroyed()` are the same guard.
+  assert.match(body, /w\.isDestroyed\?\.\(\)|w\.isDestroyed\(\)/, 'the window itself');
+  assert.match(body, /(wc|webContents)\.isDestroyed\(\)/, 'the view can outlive its webContents');
   assert.match(body, /try \{/, 'and a throw must not abort the remaining targets');
+  assert.match(body, /continue;/, 'skip the dead one, keep going');
 });

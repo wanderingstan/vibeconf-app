@@ -122,8 +122,11 @@ test('the button is separate from the feedback buttons, and says what it sends',
   // was checking.
   const row = panelHtml.slice(panelHtml.indexOf('share-log-row'));
   const block = row.slice(0, row.indexOf('</div>'));
-  assert.match(block, /including what was said/, 'say what is in it');
-  assert.match(block, /This call only/);
+  // The "what's in it" line was cut as redundant — the sentence above the
+  // button already says feedback travels with the log, and the button says what
+  // it shares. Kept as a check that the block did not lose its explanation
+  // entirely.
+  assert.match(block, /Share the call log/);
   assert.ok(panelHtml.indexOf('data-feedback="other"') < panelHtml.indexOf('shareCallLogBtn'),
     'it sits apart from the one-click feedback row');
 });
@@ -195,8 +198,8 @@ test('the window says what the feedback buttons do, and do not do', () => {
   // Terse on purpose: this sits above a button someone is mid-decision about.
   // It still has to carry all three facts — the buttons DO something (the bot
   // reads them), they do NOT reach us, and sharing carries them along.
-  assert.match(block, /go to the bot, not to us/);
-  assert.match(block, /they come with it/, 'the two features compose — say so');
+  assert.match(block, /only to the bot, not to the developers/);
+  assert.match(block, /bot feedback is included/, 'the two features compose — say so');
 });
 
 test('feedback is written to the session log, so a shared slice carries it', () => {
@@ -245,10 +248,13 @@ test('the button is disabled outside a call', () => {
   assert.match(panelJs, /Available during a call/);
 });
 
-test('the copy says the share covers the wrap-up, not just the call', () => {
-  // It runs to the end of after-call work — the agent's wrap-up belongs to the
-  // same call, and is often where the interesting part is. Confirmed live: the
-  // grant was revoked 46s after the goodbye, when after-call work finished.
-  const row = panelHtml.slice(panelHtml.indexOf('share-log-row'));
-  assert.match(row.slice(0, row.indexOf('</div>')), /through\s+the wrap-up afterwards/);
+test('sharing runs to the end of the wrap-up, not the goodbye', () => {
+  // The agent's after-call work belongs to the same call and is often where the
+  // interesting part is. Confirmed live: the grant was revoked 46s after the
+  // goodbye, when after-call work finished. No longer stated in the UI (the copy
+  // was cut back), so this pins the BEHAVIOUR instead — revocation hangs off
+  // finishCall, which runs after the wrap-up, not off leave.
+  assert.match(main, /revokeCallLogShare\('call ended'\)/);
+  const fc = main.slice(main.indexOf('function finishCall'));
+  assert.match(fc.slice(0, fc.indexOf('\n}')), /revokeCallLogShare/);
 });

@@ -459,7 +459,7 @@
            Log-only today; the same signal is meant to reach the agent later so
            it can adjust mid-call, which is why it goes through one handler. -->
       <div class="section ts-feedback">
-        <h2>Flag what the bot just did</h2>
+        <h2>Bot feedback</h2>
         <div class="fb-row">
           <button data-feedback="interrupting"><span class="fb-emoji">😫</span><span class="fb-label">Interrupted</span></button>
           <button data-feedback="too-timid"><span class="fb-emoji">🤐</span><span class="fb-label">Too timid</span></button>
@@ -498,11 +498,9 @@
                fix the CALL (the bot reads them and adjusts), and nothing about
                them reaches us. Someone pressing "Won't yield" three times is
                entitled to know that no one is on the other end of it. -->
-          <span class="helper-text">These go to the bot, not to us. Share the log and
-            they come with it.</span>
+          <span class="helper-text">Feedback goes only to the bot, not to the developers.
+            Share the call log and bot feedback is included.</span>
           <button id="shareCallLogBtn" class="popout-btn">📤 Share this call's log</button>
-          <span class="helper-text">This call only, including what was said, through
-            the wrap-up afterwards.</span>
           <span id="shareCallLogStatus" class="helper-text" style="display:block;margin-top:4px"></span>
         </div>
       </div>

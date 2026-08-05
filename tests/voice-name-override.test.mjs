@@ -134,7 +134,12 @@ test('the onboarding call shares the whiteboard before writing to it', () => {
   assert.match(skill, /Once per call, not once per step/, 're-sharing interrupts the presentation');
   // Renumbering must be complete — two "Step 4"s would send the agent to the
   // wrong place on an early exit.
-  const steps = [...skill.matchAll(/^## Step (\d)/gm)].map((m) => m[1]);
-  assert.deepEqual(steps, ['1', '2', '3', '4', '5']);
+  // Sequential from 1, no duplicates — the property that matters. A fixed list
+  // ['1'..'5'] broke the moment a legitimate Step 6 was added, which is a test
+  // asserting "nobody may extend this" rather than "the numbering is coherent".
+  // The original bug was TWO "Step 4"s, sending an early exit to the wrong place.
+  const steps = [...skill.matchAll(/^## Step (\d)/gm)].map((m) => Number(m[1]));
+  assert.ok(steps.length >= 5, `expected the walkthrough's steps, found ${steps.length}`);
+  assert.deepEqual(steps, steps.map((_, i) => i + 1), `steps must run 1..n in order: ${steps}`);
   assert.doesNotMatch(skill, /^### 3[a-g]\./m, 'subsections follow their parent step');
 });

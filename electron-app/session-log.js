@@ -14,6 +14,11 @@ const MAX_RETAINED_SESSIONS = 100;
 
 let _filePath = null;
 let _logStream = null;
+// #255: lines the backend has accepted since the counter was last reset. Reset
+// when a call-log share is granted, so the troubleshooting window can show the
+// share GROWING rather than a frozen number beside "still sharing" — which reads
+// as though it has stalled.
+let _sentCount = 0;
 
 // --- Remote log shipping (opt-in) -----------------------------------------
 // When enabled, every teed line is also queued and periodically POSTed to the
@@ -81,6 +86,7 @@ async function _flushRemote() {
     // On other 4xx (bad token / payload) DROP the batch — requeuing would loop
     // forever. On 5xx / network error (caught below) we requeue so a blip recovers.
     if (!resp.ok && resp.status >= 500) throw new Error(`HTTP ${resp.status}`);
+    _sentCount += batch.length;   // #255: only lines the backend ACCEPTED
     _failures = 0;   // recovered — back to the normal cadence
   } catch (e) {
     // Write the failure straight to the file stream (NOT console) to avoid
@@ -297,6 +303,76 @@ function getSessionLogPath() {
   return _filePath;
 }
 
+
+// ── Sharing ONE call's log (#255) ────────────────────────────────────────────
+//
+// The session log spans the whole app run, so "share this call" must not mean
+// "ship the file": that would hand over earlier calls the user never agreed to.
+//
+// Call boundaries are already in the content. Since #292 every call opens with
+//
+//   [call] id=<room>-<utc> room=<room> status=navigating started=<iso>
+//
+// minted on the first transition into an active state and cleared at the end,
+// one per call, explicitly so a single session log can be split by call. So a
+// slice is: that call's marker line, up to the next marker (or end of file).
+// Anchoring on the marker rather than a byte offset is what guarantees the slice
+// cannot begin before the call did.
+function sliceCallLines(callId, logPath = getSessionLogPath()) {
+  if (!callId || !logPath) return [];
+  let text = '';
+  try { text = require('fs').readFileSync(logPath, 'utf-8'); } catch { return []; }
+  const lines = text.split('\n');
+  // A marker for a DIFFERENT call ends the slice. Matching `[call] id=` alone
+  // would also match this call's own later status lines, truncating it at the
+  // first transition — so the boundary test is "a marker whose id is not ours".
+  const isMarker = (l) => /\[call\] id=\S+/.test(l);
+  const isOurs = (l) => l.includes(`[call] id=${callId} `) || l.includes(`[call] id=${callId}\n`) || l.includes(`[call] id=${callId}`);
+  const start = lines.findIndex((l) => isMarker(l) && isOurs(l));
+  if (start === -1) return [];
+  const out = [];
+  for (let i = start; i < lines.length; i++) {
+    if (i > start && isMarker(lines[i]) && !isOurs(lines[i])) break;
+    if (lines[i].length) out.push(lines[i]);
+  }
+  return out;
+}
+
+// POST a batch immediately, independent of the streaming queue and of whether
+// streaming is enabled — that independence is the point: this is a one-off grant
+// for a single call, not a change to the standing preference.
+//
+// Returns { ok, sent, error } rather than throwing: the caller is a button, and
+// a share that silently did nothing is worse than no button at all.
+async function sendLinesNow(lines, extraMeta = {}) {
+  if (!_remote) return { ok: false, sent: 0, error: 'remote logging not configured' };
+  if (!lines || !lines.length) return { ok: false, sent: 0, error: 'nothing to send' };
+  const base = (_remote.endpointBase() || '').replace(/\/$/, '');
+  if (!base) return { ok: false, sent: 0, error: 'no backend URL' };
+  const headers = { 'Content-Type': 'application/json' };
+  if (_remote.token) headers['x-vibe-logs-token'] = _remote.token;
+  const sess = _remote.sessionToken ? _remote.sessionToken() : '';
+  if (sess) headers['Cookie'] = 'vc_session=' + sess;
+  const meta = { ...(_remote.meta ? _remote.meta() : {}), ...extraMeta };
+  let sent = 0;
+  // Chunked at the same batch size the streamer uses — a long call can exceed
+  // whatever the backend accepts in one request.
+  for (let i = 0; i < lines.length; i += REMOTE_MAX_BATCH) {
+    const batch = lines.slice(i, i + REMOTE_MAX_BATCH);
+    try {
+      const resp = await fetch(`${base}/api/logs/${encodeURIComponent(_remote.instanceId)}`, {
+        method: 'POST', headers, body: JSON.stringify({ lines: batch, meta }),
+      });
+      if (!resp.ok) return { ok: false, sent, error: `HTTP ${resp.status}` };
+      sent += batch.length;
+      _sentCount += batch.length;
+    } catch (e) {
+      return { ok: false, sent, error: (e && e.message) || 'network error' };
+    }
+  }
+  return { ok: true, sent, error: null };
+}
+
 module.exports = {
   initSessionLog,
   logSessionHeaderUpdate,
@@ -304,4 +380,8 @@ module.exports = {
   getSessionLogPath,
   configureRemoteLog,
   setRemoteLoggingEnabled,
+  sliceCallLines,
+  sendLinesNow,
+  getSentCount: () => _sentCount,
+  resetSentCount: () => { _sentCount = 0; },
 };

@@ -459,7 +459,7 @@
            Log-only today; the same signal is meant to reach the agent later so
            it can adjust mid-call, which is why it goes through one handler. -->
       <div class="section ts-feedback">
-        <h2>Flag what the bot just did</h2>
+        <h2>Bot feedback</h2>
         <div class="fb-row">
           <button data-feedback="interrupting"><span class="fb-emoji">😫</span><span class="fb-label">Interrupted</span></button>
           <button data-feedback="too-timid"><span class="fb-emoji">🤐</span><span class="fb-label">Too timid</span></button>
@@ -484,6 +484,39 @@
         <input type="text" id="feedbackNote" maxlength="280"
                placeholder="Optional note — attaches to whichever button you click next" />
         <span id="feedbackStatus" class="helper-text" style="display:block;margin-top:6px"></span>
+
+        <!-- #255: hand over this ONE call's log.
+             Separate from the buttons above on purpose. Those are private
+             guidance to the bot; this sends transcript text off the machine, and
+             an action with that consequence must be its own deliberate click,
+             never a side effect of reporting a problem.
+             The label says what is sent, in one line, rather than linking to a
+             policy nobody opens. -->
+        <div class="share-log-row">
+          <!-- What the buttons above do, and do not do. Saying it here rather
+               than beside them because this is the follow-through: the buttons
+               fix the CALL (the bot reads them and adjusts), and nothing about
+               them reaches us. Someone pressing "Won't yield" three times is
+               entitled to know that no one is on the other end of it. -->
+          <!-- Button and explanation as a ROW, not inline text after a button.
+               Inline looked right in the markup and wrong on screen: after a
+               ~200px button in a ~460px column only a word or two fits beside
+               it, so the sentence wrapped underneath and read as a paragraph
+               below the button anyway. A flex row gives the text its own column
+               to wrap inside, which is what "beside the button" actually means. -->
+          <div class="share-log-main">
+            <button id="shareCallLogBtn" class="popout-btn">📤 Share this call's log</button>
+            <!-- One slot, two messages. Before sharing it explains why you would;
+                 once sharing it reports what is happening. They are never both
+                 true, and stacking them would leave a standing invitation above a
+                 line saying the invitation has been accepted. -->
+            <div class="share-log-msg">
+              <span class="helper-text share-log-why">Feedback goes only to the bot, not to the
+                developers. Share the call log and bot feedback is included.</span>
+              <span id="shareCallLogStatus" class="helper-text" style="display:none"></span>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="ts-cols">

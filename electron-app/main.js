@@ -439,9 +439,39 @@ function beginAfterCallWorkOrTeardown(reason) {
 // End of the lifecycle: the app-side teardown finally runs. Routed through the
 // panel because that is where the existing leave path lives — showIdle, the
 // terminal close and clearRoom all hang off it.
+// #255 — sharing ONE call's log.
+//
+// Deliberately NOT a preference. remoteLogging is an app-level setting someone
+// chose; this is a one-call grant made in the moment, and the two must not
+// share storage or teardown. Keeping the grant in memory makes the scoping
+// structural rather than a matter of remembering to clean up: a crash or
+// force-quit cannot leave sharing switched on, and there is nothing to
+// reconcile at the next launch.
+//
+// _sharedCallId  — which call the user granted (so a second press is a no-op)
+// _sharingWeEnabled — did OUR grant turn streaming on? Only then may call end
+//                     turn it off. If remoteLogging was already on, the user's
+//                     standing preference must survive the call.
+let _sharedCallId = null;
+let _sharingWeEnabled = false;
+
+function revokeCallLogShare(reason) {
+  if (!_sharedCallId) return;
+  if (_sharingWeEnabled) {
+    const { setRemoteLoggingEnabled } = require('./session-log.js');
+    setRemoteLoggingEnabled(false);
+    console.log('[electron] call-log share ended (' + reason + ') — streaming back off');
+  }
+  _sharedCallId = null;
+  _sharingWeEnabled = false;
+}
+
 function finishCall() {
   clearTimeout(_afterCallWorkTimer);
   _afterCallWorkTimer = null;
+  // #255: a shared-log grant was for THIS call. Revoking here rather than
+  // trusting the next call to notice is what keeps "share this one" honest.
+  revokeCallLogShare('call ended');
   localServer.setCallStatus('call-complete');
   if (panelView && !panelView.webContents.isDestroyed()) {
     panelView.webContents.send('leave-requested');
@@ -5529,7 +5559,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '49';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '50';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
@@ -5803,10 +5833,11 @@ app.whenReady().then(async () => {
     const sanitize = (s) => String(s || '').replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '') || 'x';
     const hostShort = sanitize(require('os').hostname().split('.')[0]);
     const instanceId = `${hostShort}--${sanitize(appProfile || 'default')}`;
-    // Default ON (schema default) when the user hasn't set it — only an explicit
-    // `false` keeps logs local. `=== true` would ignore the schema default for
-    // unset installs, so use `!== false`.
-    const remoteLoggingOn = store?.get('remoteLogging') !== false;
+    // Default OFF (#255). Only an explicit `true` ships. The test used to be
+    // `!== false`, matching a default of on — left unchanged after the flip it
+    // would have kept every unset install shipping, which is precisely the
+    // population the new default is for.
+    const remoteLoggingOn = store?.get('remoteLogging') === true;
     configureRemoteLog({
       enabled: remoteLoggingOn,
       endpointBase: () => getWebsiteUrl(),
@@ -5828,6 +5859,10 @@ app.whenReady().then(async () => {
         host: hostShort,
         port: localServer.port,
         room: localServer.roomId || null,
+        // #255: which CALL these lines belong to, so a slice shared from the
+        // feedback row can be found later. room alone is ambiguous — the same
+        // room can be joined twice.
+        callId: localServer.callId || null,
         callStatus: localServer.callStatus || null,
       }),
     });
@@ -7489,6 +7524,81 @@ function createMainWindow() {
   //   voice / other — nothing the agent controls
   // A message the agent cannot act on is context spent to make the human feel
   // heard, and it is the human's own call log that does that job.
+  // Live state for the troubleshooting window: a share that keeps streaming
+  // should show a growing count, not a frozen one beside "still sharing".
+  ipcMain.handle('get-call-log-share-state', () => {
+    const { getSentCount } = require('./session-log.js');
+    return {
+      sharedCallId: _sharedCallId,
+      active: !!_sharedCallId && localServer.callId === _sharedCallId,
+      streaming: _sharingWeEnabled,
+      // Shared this call, but currently stopped — the button offers to resume.
+      paused: !!_sharedCallId && localServer.callId === _sharedCallId && !_sharingWeEnabled,
+      sent: getSentCount(),
+      // With this on there is nothing for the button to do — the panel says so
+      // rather than offering an action that would be a no-op.
+      globalLogging: store?.get('remoteLogging') === true,
+      inCall: !!localServer.callId,
+    };
+  });
+
+  ipcMain.handle('share-call-log', async () => {
+    const { sliceCallLines, sendLinesNow, setRemoteLoggingEnabled } = require('./session-log.js');
+    const callId = localServer.callId;
+    if (!callId) return { ok: false, error: 'not in a call' };
+    const { setRemoteLoggingEnabled: setLog, getSentCount: count } = require('./session-log.js');
+
+    // Second press STOPS sharing, so someone can pause before something they
+    // would rather not send. It cannot unsend — what has gone has gone — but it
+    // does create a real GAP: the streamer drops lines while disabled rather
+    // than buffering them, so the paused stretch is never uploaded at all.
+    if (_sharedCallId === callId && _sharingWeEnabled) {
+      setLog(false);
+      _sharingWeEnabled = false;
+      console.log('[electron] call-log share PAUSED by user —', count(), 'lines sent so far');
+      return { ok: true, stopped: true, sent: count() };
+    }
+
+    // Third press resumes. No backfill: this call's earlier lines already went,
+    // and re-sending them would duplicate. More to the point, the paused stretch
+    // must STAY unsent — excluding it is the entire reason the pause exists.
+    if (_sharedCallId === callId && !_sharingWeEnabled) {
+      setLog(true);
+      _sharingWeEnabled = true;
+      console.log('[electron] call-log share RESUMED — the paused stretch stays unsent');
+      return { ok: true, resumed: true, sent: count() };
+    }
+    // Global logging on means every line of this call has already been shipped
+    // by the streamer. Backfilling would upload the same lines a second time,
+    // and "share this call" would be a promise about something already done.
+    if (store?.get('remoteLogging') === true) {
+      return { ok: true, alreadyGlobal: true, sent: 0 };
+    }
+
+    // Backfill FIRST, then stream. The alternative — flag it and send at call
+    // end — loses the log exactly when it is most wanted: someone tailing a bot
+    // misbehaving right now, and any call where the app crashes before it ends.
+    const { resetSentCount } = require('./session-log.js');
+    resetSentCount();   // count this share, not the whole session
+    const lines = sliceCallLines(callId);
+    const res = await sendLinesNow(lines, { callId, shared: true, sharedAt: new Date().toISOString() });
+    if (!res.ok) {
+      console.warn('[electron] call-log share failed:', res.error);
+      return { ok: false, error: res.error, sent: res.sent };
+    }
+
+    _sharedCallId = callId;
+    // Only claim the enable if it was actually off — otherwise the user's
+    // standing preference is on and is not ours to turn off later.
+    if (store?.get('remoteLogging') !== true) {
+      setRemoteLoggingEnabled(true);
+      _sharingWeEnabled = true;
+    }
+    console.log('[electron] Shared', res.sent, 'log lines for call', callId,
+      _sharingWeEnabled ? '— and streaming the rest of this call' : '(streaming was already on)');
+    return { ok: true, sent: res.sent, streaming: _sharingWeEnabled };
+  });
+
   const FEEDBACK_TO_AGENT = {
     interrupting:
       'A person in the call just flagged that you TALKED OVER them. Stop speaking if you are mid-utterance, '

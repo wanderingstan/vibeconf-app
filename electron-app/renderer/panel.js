@@ -848,6 +848,7 @@ setInterval(async () => {
   try {
     const s = await api.invoke('get-call-state');
     renderCallState(s);
+    renderShareState();
     // Same source of truth as the view above, so the curl helper works in the
     // pop-out window too (see updateCurlCommand).
     updateCurlCommand(s && s.roomId);
@@ -861,6 +862,110 @@ api.on('show-settings', () => showScreen(settingsScreen));
 api.on('leave-requested', () => {
   api.send('leave-meet');
   exitCallState();
+});
+
+// Live share state, polled with the rest of the troubleshooting view.
+//
+// The count has to keep moving while the call does: the share is a stream, not
+// a snapshot, and a frozen number next to "still sharing" looks like a stall.
+// It also has to say when it STOPS, since the grant ends with the call and
+// nothing else in the window would show that.
+async function renderShareState() {
+  if (!shareCallLogStatus) return;
+  let st;
+  try { st = await api.invoke('get-call-log-share-state'); } catch { return; }
+  if (!st) return;
+
+  // Nothing for the button to do when everything is already being shipped.
+  // Disabling it with a reason beats leaving a control that would silently
+  // no-op, and it points at where the setting actually lives.
+  if (st.globalLogging) {
+    if (shareCallLogBtn) shareCallLogBtn.disabled = true;
+    setShareMsg('Logs are already shared for every call (App Settings → Remote logging). '
+      + 'Turn that off if you would rather share call by call.');
+    return;
+  }
+  if (shareCallLogBtn && !st.sharedCallId) shareCallLogBtn.disabled = !st.inCall;
+  if (!st.sharedCallId) {
+    setShareLabel(SHARE_LABEL);
+    setShareMsg(st.inCall ? '' : 'Available during a call.');
+    return;
+  }
+  if (st.active) {
+    // The button is a toggle while the call runs: stop before something you
+    // would rather not send, start again after.
+    setShareLabel(st.streaming ? '⏹ Stop sharing' : '📤 Resume sharing');
+    setShareMsg(st.streaming
+      ? `Sharing this call. ${st.sent} lines sent so far.`
+      // "Stopped" not "cancelled": what went cannot come back, and the count
+      // says how much did. The gap is real though — nothing is sent while
+      // stopped, so the paused stretch never leaves the machine.
+      : `Stopped. ${st.sent} lines were sent; nothing is being sent now.`);
+  } else {
+    // The call the grant belonged to has ended.
+    setShareLabel(SHARE_LABEL);
+    setShareMsg(`Shared that call (${st.sent} lines). Sharing has stopped.`);
+    // (The share runs to the END of the call's wrap-up, not the goodbye — the
+    // agent's after-call work belongs to the same call and is often where the
+    // interesting part is.)
+    if (shareCallLogBtn) shareCallLogBtn.disabled = false;   // a NEW call can be shared
+  }
+}
+
+// #255 — share this ONE call's log.
+//
+// Its own control, not a tick-box on the feedback buttons: those stay on the
+// machine as guidance to the bot, this sends transcript text off it. Reporting a
+// problem must never quietly ship a log as a side effect.
+const shareCallLogBtn = document.getElementById('shareCallLogBtn');
+const shareCallLogStatus = document.getElementById('shareCallLogStatus');
+const shareCallLogWhy = document.querySelector('.share-log-why');
+
+// The slot beside the button holds ONE message. Empty text restores the "why
+// share" line; anything else replaces it. They are never both true — leaving the
+// invitation up beside "Sharing this call…" would be answering a question the
+// user has already answered.
+const SHARE_LABEL = "📤 Share this call's log";
+function setShareLabel(text) {
+  if (shareCallLogBtn && shareCallLogBtn.textContent !== text) shareCallLogBtn.textContent = text;
+}
+
+function setShareMsg(text) {
+  const showing = !!text;
+  if (shareCallLogStatus) {
+    shareCallLogStatus.textContent = text || '';
+    shareCallLogStatus.style.display = showing ? 'block' : 'none';
+  }
+  if (shareCallLogWhy) shareCallLogWhy.style.display = showing ? 'none' : 'block';
+}
+shareCallLogBtn?.addEventListener('click', async () => {
+  shareCallLogBtn.disabled = true;
+  setShareMsg('Working…');
+  try {
+    const r = await api.invoke('share-call-log');
+    if (r?.ok && r.alreadyGlobal) {
+      setShareMsg('Logs are already shared for every call (App Settings → Remote logging).');
+    } else if (r?.ok) {
+      // Say what actually happened, including that it keeps going: someone who
+      // thinks a snapshot was sent would be surprised to find the rest of the
+      // call followed it.
+      // No count in the click result — renderShareState owns the number from
+      // here, so the two cannot disagree. A static "sent 347 lines" sitting
+      // beside "sharing the rest of this call" reads as though it has stalled.
+      setShareMsg(r.stopped ? 'Stopped. What was already sent stays sent.'
+        : r.resumed ? 'Sharing again. The paused part was not sent.'
+        : r.streaming ? 'Shared. Still sending as the call goes on…' : 'Shared.');
+    } else {
+      // A share that silently did nothing is worse than no button — the user
+      // walks away believing the evidence was handed over.
+      setShareMsg('Could not send: ' + (r?.error || 'unknown'));
+    }
+  } catch (e) {
+    setShareMsg('Could not send: ' + e.message);
+  }
+  // Always re-enabled: it is a toggle now, so the next press is always
+  // meaningful — stop, or start again.
+  shareCallLogBtn.disabled = false;
 });
 
 // ---------------------------------------------------------------------------

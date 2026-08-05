@@ -1202,3 +1202,21 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
    so it should read as an aside rather than compete with what it actually said. */
 .brain-feed .l-think { color: #c58af9; font-style: italic; }
 .brain-feed .l-none { color: #9aa0a6; font-style: italic; }
+
+/* #255 — the share-this-call's-log control. A rule used to separate it from the
+   feedback buttons above, on the argument that this one sends data off the
+   machine. Removed: the two belong together — the sentence beside the button is
+   about those buttons — and the line made one short section look like two. */
+.share-log-row {
+  margin-top: 12px;
+}
+.share-log-row .helper-text { line-height: 1.45; display: block; }
+/* The explanation sits BESIDE the button in its own column, so it wraps within
+   that column instead of underneath the button. `display: inline` was not
+   enough: after a ~200px button in a ~460px column only a word or two fits on
+   the first line, and the rest falls below — which is the layout this was
+   meant to avoid. */
+.share-log-main { display: flex; align-items: baseline; gap: 10px; }
+.share-log-main button { flex: 0 0 auto; margin-bottom: 0; }
+.share-log-msg { flex: 1; }
+.share-log-msg .helper-text { margin: 0; display: block; }

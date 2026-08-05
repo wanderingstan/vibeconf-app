@@ -5769,7 +5769,7 @@ function ensureClaudeIntegration() {
     const skillContent = fs.readFileSync(skillSourcePath, 'utf-8');
     fs.writeFileSync(skillPath, skillContent);
     fs.writeFileSync(versionFile, SKILL_VERSION);
-    console.log('[electron] Installed/updated skill v%s at %s', SKILL_VERSION, skillPath);
+    console.log(`[electron] Installed/updated skill v${SKILL_VERSION} at ${skillPath}`);
     changed = true;
   } else {
     console.log('[electron] Skill v%s already installed', SKILL_VERSION);
@@ -5793,7 +5793,7 @@ function ensureClaudeIntegration() {
         'utf-8',
       ));
       fs.writeFileSync(callVersionFile, SKILL_VERSION);
-      console.log('[electron] Installed/updated /call skill v%s', SKILL_VERSION);
+      console.log(`[electron] Installed/updated /call skill v${SKILL_VERSION}`);
       changed = true;
     }
   } catch (err) {
@@ -5822,7 +5822,7 @@ function ensureClaudeIntegration() {
         'utf-8',
       ));
       fs.writeFileSync(onboardingVersionFile, SKILL_VERSION);
-      console.log('[electron] Installed/updated /onboarding-call skill v%s', SKILL_VERSION);
+      console.log(`[electron] Installed/updated /onboarding-call skill v${SKILL_VERSION}`);
       changed = true;
     }
   } catch (err) {
@@ -5847,7 +5847,7 @@ function ensureClaudeIntegration() {
         'utf-8',
       ));
       fs.writeFileSync(emojiSetVersionFile, SKILL_VERSION);
-      console.log('[electron] Installed/updated /emoji-set skill v%s', SKILL_VERSION);
+      console.log(`[electron] Installed/updated /emoji-set skill v${SKILL_VERSION}`);
       changed = true;
     }
   } catch (err) {

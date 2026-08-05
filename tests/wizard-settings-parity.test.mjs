@@ -69,3 +69,16 @@ test('remoteLogging is machine-wide, matching how the wizard asks it', () => {
   assert.ok(MIGRATE_OPT_OUTS.includes('remoteLogging'),
     'promoting it without carrying existing opt-outs would silently resume logging');
 });
+
+test('the skill tells the bot to announce logging changes', () => {
+  // remoteLogging decides whether transcript text leaves the machine, it is
+  // app-level (so a per-call request silently changes it for every bot,
+  // permanently), and it is invisible from inside the room. Silence is the wrong
+  // default for all three reasons.
+  const skill = readFileSync(join(root, 'mcp-server/join-call-skill.md'), 'utf8');
+  assert.match(skill, /Say it out loud if you change logging/);
+  assert.match(skill, /MACHINE-WIDE and permanent/);
+  // Both directions — turning it ON is the one people would actually mind.
+  assert.match(skill, /say it when you turn it ON as well/);
+  assert.match(skill, /only when\s+asked/, 'not on its own initiative');
+});

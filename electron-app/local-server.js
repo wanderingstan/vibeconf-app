@@ -309,7 +309,8 @@ class LocalServer {
     this.localProfile = null;   // optional app profile name for multi-agent local runs
     this.detectedMeetUrls = [];  // Meet URLs found in browser tabs (when not in a call)
     this.detectedSlackHuddleUrl = null; // app.slack.com/client/<team>/<channel> when a huddle is live in a browser tab
-    this.participants = [];      // [{ name, speaking }] from DOM speaker tracker
+    this.participants = [];      // [{ name, speaking, isPseudo }] from DOM speaker tracker
+    this.screenShares = [];      // [{ name, id }] — every screen share in the people pane
     this.someoneElsePresenting = false;  // another participant is screen sharing
     this.presenterName = null;   // name of the person presenting (if any)
 
@@ -1754,6 +1755,12 @@ class LocalServer {
         console.warn(ts(), '[auto-leave] onLeaveCall failed:', err.message);
       }
     }, playDelayMs);
+  }
+
+  // Every screen share currently up, from the people pane. Replaces the list
+  // wholesale so an ended share disappears.
+  setScreenShares(shares) {
+    this.screenShares = Array.isArray(shares) ? shares : [];
   }
 
   setSomeoneElsePresenting(presenting, presenterName) {
@@ -3297,7 +3304,16 @@ class LocalServer {
       chat: { messages: [], count: 0 },
       chatUnread: this.chatUnread,
       members: this.members,
-      participants: this.participants,
+      // WHO IS IN THE ROOM. Pseudo-tiles are filtered here rather than upstream:
+      // they must stay in this.participants because anyoneSpeaking is derived
+      // from it and a "Merged audio" tile can be where two co-located people's
+      // speech actually registers. But it is not a person, and reporting it as
+      // one had the bot addressing "Merged audio" as a participant.
+      participants: (this.participants || []).filter((p) => !p.isPseudo),
+      // Everyone sharing their screen right now, from the people pane (#…).
+      // Unlike presenterName this can hold MORE THAN ONE, and it still works
+      // while the bot itself is presenting.
+      screenShares: this.screenShares || [],
       detectedMeetUrls: this.detectedMeetUrls,
       detectedSlackHuddleUrl: this.detectedSlackHuddleUrl,
       currentMeetUrl: this.currentUrl,

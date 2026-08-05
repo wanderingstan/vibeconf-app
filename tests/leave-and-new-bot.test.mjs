@@ -186,9 +186,30 @@ test('the dev launcher encodes what went wrong by hand', () => {
   //    spawned agent got an MCP server that died on ERR_MODULE_NOT_FOUND, so
   //    the bot joined with no tools and fell back to launching the installed app.
   assert.match(sh, /for d in electron-app mcp-server/);
-  // 3. Restarting mid-call drops the bot and kills its agent.
-  assert.match(sh, /a call is LIVE/);
-  assert.match(sh, /--force/);
+  // 3. Killing the app mid-call drops the bot and kills its agent.
+  //
+  //    Two follow-on bugs, both found by using the thing:
+  //
+  //    (a) --stop skipped the check entirely. The guard went on the START path
+  //        only, while --stop is the command actually reached for, so the one
+  //        command whose whole job is killing the app was the one that never
+  //        asked whether it should.
+  //    (b) "busy" was a local guess — the literal string 'in-call' — which let
+  //        through a bot mid-JOIN and, worse, an agent in after-call-work still
+  //        writing its wrap-up. call-phase.js already defines this; the script
+  //        asks it rather than keeping a second opinion.
+  assert.match(sh, /guard_busy\(\) \{/);
+  assert.match(sh, /call-phase\.js/, 'busy-ness comes from the app, not a copy');
+  assert.doesNotMatch(sh, /STATUS" = "in-call"/, 'no hand-rolled phase check');
+  // BOTH entry points must guard.
+  const stopBlock = sh.slice(sh.indexOf('if [ "$STOP" = 1 ]'));
+  assert.match(stopBlock.slice(0, 200), /guard_busy "stopping"/);
+  const startBlock = sh.slice(sh.indexOf('if [ -n "$(running_pid)" ]; then'));
+  assert.match(startBlock.slice(0, 200), /guard_busy 'restarting'/);
+  assert.match(sh, /--force/, 'the escape hatch survives');
+  // If node can't answer, fall back to a copy of the same list rather than
+  // failing open — failing open is how this class of bug started.
+  assert.match(sh, /BUSY_FALLBACK="navigating joining waiting-to-be-admitted in-call after-call-work"/);
   // 4. Detached with a known log, or it dies with the shell / blocks it.
   assert.match(sh, /nohup env/);
   assert.match(sh, /disown/);

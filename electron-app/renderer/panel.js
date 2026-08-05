@@ -848,6 +848,7 @@ setInterval(async () => {
   try {
     const s = await api.invoke('get-call-state');
     renderCallState(s);
+    renderShareState();
     // Same source of truth as the view above, so the curl helper works in the
     // pop-out window too (see updateCurlCommand).
     updateCurlCommand(s && s.roomId);
@@ -862,6 +863,28 @@ api.on('leave-requested', () => {
   api.send('leave-meet');
   exitCallState();
 });
+
+// Live share state, polled with the rest of the troubleshooting view.
+//
+// The count has to keep moving while the call does: the share is a stream, not
+// a snapshot, and a frozen number next to "still sharing" looks like a stall.
+// It also has to say when it STOPS, since the grant ends with the call and
+// nothing else in the window would show that.
+async function renderShareState() {
+  if (!shareCallLogStatus) return;
+  let st;
+  try { st = await api.invoke('get-call-log-share-state'); } catch { return; }
+  if (!st || !st.sharedCallId) return;   // nothing shared this session — leave the label alone
+  if (st.active) {
+    shareCallLogStatus.textContent = st.streaming
+      ? `Sharing this call — ${st.sent} lines sent so far.`
+      : `Shared this call — ${st.sent} lines.`;
+  } else {
+    // The call the grant belonged to has ended.
+    shareCallLogStatus.textContent = `Shared that call (${st.sent} lines). Sharing has stopped.`;
+    if (shareCallLogBtn) shareCallLogBtn.disabled = false;   // a NEW call can be shared
+  }
+}
 
 // #255 — share this ONE call's log.
 //
@@ -881,8 +904,12 @@ shareCallLogBtn?.addEventListener('click', async () => {
       // Say what actually happened, including that it keeps going: someone who
       // thinks a snapshot was sent would be surprised to find the rest of the
       // call followed it.
-      shareCallLogStatus.textContent = `Sent ${r.sent} lines`
-        + (r.streaming ? ', and sharing the rest of this call.' : '.');
+      // No count in the click result — renderShareState owns the number from
+      // here, so the two cannot disagree. A static "sent 347 lines" sitting
+      // beside "sharing the rest of this call" reads as though it has stalled.
+      shareCallLogStatus.textContent = r.streaming
+        ? 'Shared. Still sending as the call goes on…'
+        : 'Shared.';
     } else {
       // A share that silently did nothing is worse than no button — the user
       // walks away believing the evidence was handed over.

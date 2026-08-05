@@ -5559,7 +5559,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '49';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '50';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
@@ -7523,6 +7523,18 @@ function createMainWindow() {
   //   voice / other — nothing the agent controls
   // A message the agent cannot act on is context spent to make the human feel
   // heard, and it is the human's own call log that does that job.
+  // Live state for the troubleshooting window: a share that keeps streaming
+  // should show a growing count, not a frozen one beside "still sharing".
+  ipcMain.handle('get-call-log-share-state', () => {
+    const { getSentCount } = require('./session-log.js');
+    return {
+      sharedCallId: _sharedCallId,
+      active: !!_sharedCallId && localServer.callId === _sharedCallId,
+      streaming: _sharingWeEnabled,
+      sent: getSentCount(),
+    };
+  });
+
   ipcMain.handle('share-call-log', async () => {
     const { sliceCallLines, sendLinesNow, setRemoteLoggingEnabled } = require('./session-log.js');
     const callId = localServer.callId;
@@ -7532,6 +7544,8 @@ function createMainWindow() {
     // Backfill FIRST, then stream. The alternative — flag it and send at call
     // end — loses the log exactly when it is most wanted: someone tailing a bot
     // misbehaving right now, and any call where the app crashes before it ends.
+    const { resetSentCount } = require('./session-log.js');
+    resetSentCount();   // count this share, not the whole session
     const lines = sliceCallLines(callId);
     const res = await sendLinesNow(lines, { callId, shared: true, sharedAt: new Date().toISOString() });
     if (!res.ok) {

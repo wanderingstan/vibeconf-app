@@ -116,9 +116,13 @@ test('the button is separate from the feedback buttons, and says what it sends',
   // text off the machine, so it must be its own deliberate click rather than a
   // side effect of reporting a problem.
   assert.match(panelHtml, /id="shareCallLogBtn"/);
+  // Sliced to the block's end, not a fixed character count: copy gets added
+  // here (it just did), and a fixed window silently stops covering the thing it
+  // was checking.
   const row = panelHtml.slice(panelHtml.indexOf('share-log-row'));
-  assert.match(row.slice(0, 600), /including what was\s+said/, 'say what is in it');
-  assert.match(row.slice(0, 600), /This call only/);
+  const block = row.slice(0, row.indexOf('</div>'));
+  assert.match(block, /including what was\s+said/, 'say what is in it');
+  assert.match(block, /This call only/);
   assert.ok(panelHtml.indexOf('data-feedback="other"') < panelHtml.indexOf('shareCallLogBtn'),
     'it sits apart from the one-click feedback row');
 });
@@ -138,4 +142,65 @@ test('shared lines are tagged with the call, so they can be found', () => {
   assert.match(main, /callId: localServer\.callId \|\| null/, 'callId travels in the log meta');
   const h = main.slice(main.indexOf("ipcMain.handle('share-call-log'"));
   assert.match(h.slice(0, 1200), /\{ callId, shared: true, sharedAt/);
+});
+
+test('the live count keeps moving, and says when sharing stops', () => {
+  // Reported from a real call: the window said "Sent 347 lines, and sharing the
+  // rest of this call" and the number never changed. Beside "still sharing",
+  // a frozen count reads as a stall.
+  assert.match(panelJs, /async function renderShareState\(\)/);
+  assert.match(panelJs, /lines sent so far/);
+  assert.match(panelJs, /Sharing has stopped/, 'the grant ends with the call — say so');
+  // Polled with the rest of the troubleshooting view rather than on its own timer.
+  const poll = panelJs.slice(panelJs.indexOf("const s = await api.invoke('get-call-state')"));
+  assert.match(poll.slice(0, 200), /renderShareState\(\)/);
+  // The click result no longer carries a count, so the two cannot disagree.
+  const click = panelJs.slice(panelJs.indexOf("shareCallLogBtn?.addEventListener"));
+  const body = click.slice(0, click.indexOf('\n});'));
+  assert.doesNotMatch(body, /\$\{r\.sent\}/, 'one owner for the number');
+});
+
+test('only accepted lines are counted', () => {
+  // Counting what we POSTed rather than what landed would overstate the share
+  // whenever the backend rejected a batch.
+  const sl = readFileSync(join(root, 'electron-app/session-log.js'), 'utf8');
+  const flush = sl.slice(sl.indexOf('async function _flushRemote'));
+  const ok = flush.indexOf('_sentCount += batch.length');
+  const guard = flush.indexOf('if (!resp.ok && resp.status >= 500) throw');
+  assert.ok(ok > guard, 'count after the response is known good, not before');
+});
+
+test('the counter is reset per share, not per session', () => {
+  const h = main.slice(main.indexOf("ipcMain.handle('share-call-log'"));
+  assert.match(h.slice(0, 900), /resetSentCount\(\)/);
+});
+
+test('the skill points at the button without being able to press it', () => {
+  // Consent has to be the user's click: this sends transcript text off the
+  // machine. The bot can say the button exists when it has visibly misbehaved.
+  const skill = readFileSync(join(root, 'mcp-server/join-call-skill.md'), 'utf8');
+  assert.match(skill, /Share this call's log button in the troubleshooting window/);
+  assert.match(skill, /You cannot press it, and should not ask to/);
+  assert.match(skill, /Do not raise it on a call that is going fine/, 'not a data-fishing prompt');
+});
+
+test('the window says what the feedback buttons do, and do not do', () => {
+  // They are NOT inert — an addError notice reaches the agent, which adjusts for
+  // the rest of the call, and that works with logging off. What they do not do
+  // is reach the developers: nothing is transmitted. Someone pressing "Won't
+  // yield" three times is entitled to know nobody is on the other end of it.
+  const row = panelHtml.slice(panelHtml.indexOf('share-log-row'));
+  const block = row.slice(0, row.indexOf('</div>'));
+  assert.match(block, /tell the bot right now, and it\s+adjusts/, 'credit what they DO do');
+  assert.match(block, /don't reach us/);
+  assert.match(block, /your notes go with it/, 'the two features compose — say so');
+});
+
+test('feedback is written to the session log, so a shared slice carries it', () => {
+  // This is what makes the pairing real rather than a slogan: the [feedback]
+  // line lands in the same log, tagged with the same callId, so it falls inside
+  // the shared slice along with the note.
+  assert.match(main, /\[feedback\] kind=\$\{k\} status=\$\{status\}/);
+  assert.match(main, /call=\$\{callId\}/, 'tagged with the call, so it lands in that slice');
+  assert.match(main, /note=\$\{JSON\.stringify\(n\)\}/, 'and the human words travel with it');
 });

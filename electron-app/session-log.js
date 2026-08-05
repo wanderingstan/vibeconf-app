@@ -14,6 +14,11 @@ const MAX_RETAINED_SESSIONS = 100;
 
 let _filePath = null;
 let _logStream = null;
+// #255: lines the backend has accepted since the counter was last reset. Reset
+// when a call-log share is granted, so the troubleshooting window can show the
+// share GROWING rather than a frozen number beside "still sharing" — which reads
+// as though it has stalled.
+let _sentCount = 0;
 
 // --- Remote log shipping (opt-in) -----------------------------------------
 // When enabled, every teed line is also queued and periodically POSTed to the
@@ -81,6 +86,7 @@ async function _flushRemote() {
     // On other 4xx (bad token / payload) DROP the batch — requeuing would loop
     // forever. On 5xx / network error (caught below) we requeue so a blip recovers.
     if (!resp.ok && resp.status >= 500) throw new Error(`HTTP ${resp.status}`);
+    _sentCount += batch.length;   // #255: only lines the backend ACCEPTED
     _failures = 0;   // recovered — back to the normal cadence
   } catch (e) {
     // Write the failure straight to the file stream (NOT console) to avoid
@@ -359,6 +365,7 @@ async function sendLinesNow(lines, extraMeta = {}) {
       });
       if (!resp.ok) return { ok: false, sent, error: `HTTP ${resp.status}` };
       sent += batch.length;
+      _sentCount += batch.length;
     } catch (e) {
       return { ok: false, sent, error: (e && e.message) || 'network error' };
     }
@@ -375,4 +382,6 @@ module.exports = {
   setRemoteLoggingEnabled,
   sliceCallLines,
   sendLinesNow,
+  getSentCount: () => _sentCount,
+  resetSentCount: () => { _sentCount = 0; },
 };

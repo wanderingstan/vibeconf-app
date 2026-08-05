@@ -23,6 +23,10 @@ const APP_LEVEL_KEYS = new Set([
   'syncBaseUrl', // legacy website/sync host override
   'websiteUrl', // website host override (preview deploys etc.)
   'dangerousMode', // machine-level trust decision
+  // Whether we've ever sent an Apple Event (which is what raises the Automation
+  // prompt). macOS grants Automation to the app bundle, not the profile, so a
+  // second profile asking again would be asking about a decision already made.
+  'automationProbed',
   'claudeIntegrationRemoved', // "leave no trace" opt-out — ~/.claude is machine-global
   // #231: which agent CLI is installed is a property of the MACHINE, like
   // dangerousMode. Every bot on a laptop is driven by the same one. Deliberately

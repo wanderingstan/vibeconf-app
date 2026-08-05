@@ -2672,6 +2672,21 @@ function openAboutWindow() {
 // `onboardingComplete` flag) and re-runnable from the app menu. Pure step logic
 // lives in onboarding-flow.js; the renderer is renderer/onboarding.html.
 let onboardingWindow = null;
+
+// Startup work that would raise a macOS permission prompt, held back while the
+// wizard is up so the asking happens on its Permissions step instead of in a
+// stack of system dialogs over an unread window. Drained when the wizard ends —
+// by finishing OR by being closed, since abandoning setup must not leave the app
+// permanently missing its browser detection until the next launch. Idempotent:
+// every deferred start guards against running twice.
+const deferredStarts = [];
+function runDeferredStarts() {
+  while (deferredStarts.length) {
+    const fn = deferredStarts.shift();
+    try { fn(); } catch (err) { console.error('[electron] Deferred start failed:', err && err.message); }
+  }
+}
+
 function createOnboardingWindow() {
   if (onboardingWindow && !onboardingWindow.isDestroyed()) {
     onboardingWindow.show(); onboardingWindow.focus(); return;
@@ -2695,7 +2710,7 @@ function createOnboardingWindow() {
     onboardingWindow.moveTop();
     onboardingWindow.focus();
   });
-  onboardingWindow.on('closed', () => { onboardingWindow = null; });
+  onboardingWindow.on('closed', () => { onboardingWindow = null; runDeferredStarts(); });
 }
 
 // Probe (and, on first send, trigger) the macOS "Automation" permission by sending
@@ -5937,12 +5952,20 @@ app.whenReady().then(async () => {
   // isDefaultInstance gate is what actually keeps --profile instances from
   // auto-showing it — the flag is not in APP_LEVEL_KEYS, so each profile has
   // its own copy and would otherwise re-run the wizard on first launch.
-  if (isDefaultInstance && !store.get('onboardingComplete')) {
+  // Anything below that triggers a macOS TCC prompt is deferred while the wizard
+  // is up. First launch used to fire the microphone ask, a screen-capture probe
+  // and browser-automation AppleScript within the same tick — three or four
+  // system dialogs stacked on the wizard before the user had read a word about
+  // what any of them were for. The wizard has a Permissions step that names each
+  // one and its reason; that step should be where they're asked. See
+  // startPermissionPrompts(), called from onboarding:finish.
+  const onboardingPending = isDefaultInstance && !store.get('onboardingComplete');
+  if (onboardingPending) {
     createOnboardingWindow();
   }
 
   // Request microphone permission (needed for audio pipeline even with virtual mic)
-  if (process.platform === 'darwin') {
+  if (process.platform === 'darwin' && !onboardingPending) {
     try {
       const micAccess = systemPreferences.getMediaAccessStatus('microphone');
       console.log('[electron] Microphone permission:', micAccess);
@@ -5964,7 +5987,12 @@ app.whenReady().then(async () => {
     console.log('[electron] Screen recording permission at launch:', screenAccess);
     localServer.setPermission('screenRecording', screenAccess);
 
-    if (screenAccess !== 'granted' && SUPPRESS_NOTIFICATIONS) {
+    if (screenAccess !== 'granted' && onboardingPending) {
+      // First run: the wizard's Permissions step asks for this, with a sentence
+      // saying why. Probing here would raise the system prompt (and, if already
+      // denied, a blocking dialog) on top of a wizard the user hasn't read yet.
+      console.log('[electron] Deferring screen-capture probe until the setup wizard asks');
+    } else if (screenAccess !== 'granted' && SUPPRESS_NOTIFICATIONS) {
       // Headless/test instance (e.g. a CI runner or the agent-less test fleet):
       // there's no interactive user and the smoke doesn't share, so skip both the
       // capture probe AND — critically — the blocking dialog below. Under a
@@ -6156,6 +6184,10 @@ app.whenReady().then(async () => {
 
   function startMeetDetection() {
     if (meetDetectionInterval) return;
+    // Polling sends the same Apple Events the wizard's Grant button does, so
+    // once this runs the Automation decision has been put to the user either
+    // way, and the wizard can read the real status instead of assuming unknown.
+    if (process.platform === 'darwin') { try { store.set('automationProbed', true); } catch { /* ignore */ } }
     const { execFile } = require('child_process');
     let pollInFlight = false;
 
@@ -6359,7 +6391,11 @@ allURLs`;
     meetDetectionInterval = setInterval(pollForMeet, 5000);
   }
 
-  startMeetDetection();
+  // Not while the wizard is up: the first poll fires immediately and sends Apple
+  // Events to System Events, Chrome, Brave and Safari, which is a TCC prompt per
+  // browser — the bulk of the first-run pile-up. onboarding:finish starts it.
+  if (!onboardingPending) startMeetDetection();
+  else deferredStarts.push(startMeetDetection);
 
   // IPC: join detected meet and launch Claude
   ipcMain.on('join-detected-meet', (_event, { url, meetCode }) => {
@@ -8262,7 +8298,14 @@ function setupIPC() {
     for (const key of ['microphone', 'camera', 'screen']) {
       if (wanted.has(key)) statusMap[key] = systemPreferences.getMediaAccessStatus(key);
     }
-    if (wanted.has('automation')) statusMap.automation = await probeBrowserAutomation();
+    // Automation is the odd one out: there is no way to READ its status without
+    // sending an Apple Event, and sending one is what raises the prompt. So
+    // merely opening this step used to prompt, before the user pressed anything.
+    // Until the first probe, report it unknown — that renders the Grant button,
+    // and pressing Grant does the probe. Afterwards the status is free to read.
+    if (wanted.has('automation')) {
+      statusMap.automation = store.get('automationProbed') ? await probeBrowserAutomation() : undefined;
+    }
     return flow.permissionsSummary(statusMap);
   });
 
@@ -8299,6 +8342,7 @@ function setupIPC() {
         // and prompts when not-determined (thumbnail must be non-trivial, #… ).
         try { await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 192, height: 192 } }); } catch { /* prompt only */ }
       } else if (key === 'automation') {
+        try { store.set('automationProbed', true); } catch { /* ignore */ }
         await probeBrowserAutomation();
       }
     } catch (err) { console.warn('[onboarding] request-permission', key, err && err.message); }
@@ -8352,6 +8396,7 @@ function setupIPC() {
     try { store.set('onboardingComplete', true); } catch { /* ignore */ }
     if (onboardingWindow && !onboardingWindow.isDestroyed()) onboardingWindow.close();
     if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); }
+    runDeferredStarts();
     return { ok: true };
   });
 

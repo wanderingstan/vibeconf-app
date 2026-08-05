@@ -172,3 +172,24 @@ test('every row in the bot menu highlights on hover', () => {
       `${v} should clear the highlight`);
   }
 });
+
+test('the dev launcher encodes what went wrong by hand', () => {
+  // Four failure modes, all of which cost a confusing test round during live
+  // testing, and none of which failed loudly at the time.
+  const sh = readFileSync(join(root, 'scripts/dev.sh'), 'utf8');
+  // 1. The parent Claude session's identity leaks into the app, which turns off
+  //    Claude Code's transcript saving — a dev-only difference that presents as
+  //    a product bug.
+  assert.match(sh, /-u CLAUDE_CODE_CHILD_SESSION/);
+  assert.doesNotMatch(sh, /-u CLAUDE_CONFIG_DIR/, 'a CLAUDE_* wildcard would break real config');
+  // 2. A worktree needs BOTH node_modules. Missing mcp-server's meant every
+  //    spawned agent got an MCP server that died on ERR_MODULE_NOT_FOUND, so
+  //    the bot joined with no tools and fell back to launching the installed app.
+  assert.match(sh, /for d in electron-app mcp-server/);
+  // 3. Restarting mid-call drops the bot and kills its agent.
+  assert.match(sh, /a call is LIVE/);
+  assert.match(sh, /--force/);
+  // 4. Detached with a known log, or it dies with the shell / blocks it.
+  assert.match(sh, /nohup env/);
+  assert.match(sh, /disown/);
+});

@@ -863,6 +863,38 @@ api.on('leave-requested', () => {
   exitCallState();
 });
 
+// #255 — share this ONE call's log.
+//
+// Its own control, not a tick-box on the feedback buttons: those stay on the
+// machine as guidance to the bot, this sends transcript text off it. Reporting a
+// problem must never quietly ship a log as a side effect.
+const shareCallLogBtn = document.getElementById('shareCallLogBtn');
+const shareCallLogStatus = document.getElementById('shareCallLogStatus');
+shareCallLogBtn?.addEventListener('click', async () => {
+  shareCallLogBtn.disabled = true;
+  shareCallLogStatus.textContent = 'Sending…';
+  try {
+    const r = await api.invoke('share-call-log');
+    if (r?.ok && r.already) {
+      shareCallLogStatus.textContent = 'Already shared for this call.';
+    } else if (r?.ok) {
+      // Say what actually happened, including that it keeps going: someone who
+      // thinks a snapshot was sent would be surprised to find the rest of the
+      // call followed it.
+      shareCallLogStatus.textContent = `Sent ${r.sent} lines`
+        + (r.streaming ? ', and sharing the rest of this call.' : '.');
+    } else {
+      // A share that silently did nothing is worse than no button — the user
+      // walks away believing the evidence was handed over.
+      shareCallLogStatus.textContent = 'Could not send: ' + (r?.error || 'unknown');
+      shareCallLogBtn.disabled = false;
+    }
+  } catch (e) {
+    shareCallLogStatus.textContent = 'Could not send: ' + e.message;
+    shareCallLogBtn.disabled = false;
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Meet URL validation
 // ---------------------------------------------------------------------------

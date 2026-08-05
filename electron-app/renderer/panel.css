@@ -1202,3 +1202,13 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
    so it should read as an aside rather than compete with what it actually said. */
 .brain-feed .l-think { color: #c58af9; font-style: italic; }
 .brain-feed .l-none { color: #9aa0a6; font-style: italic; }
+
+/* #255 — the share-this-call's-log control. Set apart from the feedback buttons
+   above it: those are private guidance to the bot, this sends transcript text
+   off the machine. The rule sells that separation better than spacing alone. */
+.share-log-row {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #3c4043;
+}
+.share-log-row .helper-text { line-height: 1.45; }

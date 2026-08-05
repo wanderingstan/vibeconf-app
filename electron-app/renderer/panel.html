@@ -484,6 +484,20 @@
         <input type="text" id="feedbackNote" maxlength="280"
                placeholder="Optional note — attaches to whichever button you click next" />
         <span id="feedbackStatus" class="helper-text" style="display:block;margin-top:6px"></span>
+
+        <!-- #255: hand over this ONE call's log.
+             Separate from the buttons above on purpose. Those are private
+             guidance to the bot; this sends transcript text off the machine, and
+             an action with that consequence must be its own deliberate click,
+             never a side effect of reporting a problem.
+             The label says what is sent, in one line, rather than linking to a
+             policy nobody opens. -->
+        <div class="share-log-row">
+          <button id="shareCallLogBtn" class="popout-btn">📤 Share this call's log</button>
+          <span class="helper-text">Sends this call's diagnostic log, including what was
+            said, so the problem can be traced. This call only.</span>
+          <span id="shareCallLogStatus" class="helper-text" style="display:block;margin-top:4px"></span>
+        </div>
       </div>
 
       <div class="ts-cols">

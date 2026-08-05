@@ -439,9 +439,39 @@ function beginAfterCallWorkOrTeardown(reason) {
 // End of the lifecycle: the app-side teardown finally runs. Routed through the
 // panel because that is where the existing leave path lives — showIdle, the
 // terminal close and clearRoom all hang off it.
+// #255 — sharing ONE call's log.
+//
+// Deliberately NOT a preference. remoteLogging is an app-level setting someone
+// chose; this is a one-call grant made in the moment, and the two must not
+// share storage or teardown. Keeping the grant in memory makes the scoping
+// structural rather than a matter of remembering to clean up: a crash or
+// force-quit cannot leave sharing switched on, and there is nothing to
+// reconcile at the next launch.
+//
+// _sharedCallId  — which call the user granted (so a second press is a no-op)
+// _sharingWeEnabled — did OUR grant turn streaming on? Only then may call end
+//                     turn it off. If remoteLogging was already on, the user's
+//                     standing preference must survive the call.
+let _sharedCallId = null;
+let _sharingWeEnabled = false;
+
+function revokeCallLogShare(reason) {
+  if (!_sharedCallId) return;
+  if (_sharingWeEnabled) {
+    const { setRemoteLoggingEnabled } = require('./session-log.js');
+    setRemoteLoggingEnabled(false);
+    console.log('[electron] call-log share ended (' + reason + ') — streaming back off');
+  }
+  _sharedCallId = null;
+  _sharingWeEnabled = false;
+}
+
 function finishCall() {
   clearTimeout(_afterCallWorkTimer);
   _afterCallWorkTimer = null;
+  // #255: a shared-log grant was for THIS call. Revoking here rather than
+  // trusting the next call to notice is what keeps "share this one" honest.
+  revokeCallLogShare('call ended');
   localServer.setCallStatus('call-complete');
   if (panelView && !panelView.webContents.isDestroyed()) {
     panelView.webContents.send('leave-requested');
@@ -5828,6 +5858,10 @@ app.whenReady().then(async () => {
         host: hostShort,
         port: localServer.port,
         room: localServer.roomId || null,
+        // #255: which CALL these lines belong to, so a slice shared from the
+        // feedback row can be found later. room alone is ambiguous — the same
+        // room can be joined twice.
+        callId: localServer.callId || null,
         callStatus: localServer.callStatus || null,
       }),
     });
@@ -7489,6 +7523,34 @@ function createMainWindow() {
   //   voice / other — nothing the agent controls
   // A message the agent cannot act on is context spent to make the human feel
   // heard, and it is the human's own call log that does that job.
+  ipcMain.handle('share-call-log', async () => {
+    const { sliceCallLines, sendLinesNow, setRemoteLoggingEnabled } = require('./session-log.js');
+    const callId = localServer.callId;
+    if (!callId) return { ok: false, error: 'not in a call' };
+    if (_sharedCallId === callId) return { ok: true, already: true, sent: 0 };
+
+    // Backfill FIRST, then stream. The alternative — flag it and send at call
+    // end — loses the log exactly when it is most wanted: someone tailing a bot
+    // misbehaving right now, and any call where the app crashes before it ends.
+    const lines = sliceCallLines(callId);
+    const res = await sendLinesNow(lines, { callId, shared: true, sharedAt: new Date().toISOString() });
+    if (!res.ok) {
+      console.warn('[electron] call-log share failed:', res.error);
+      return { ok: false, error: res.error, sent: res.sent };
+    }
+
+    _sharedCallId = callId;
+    // Only claim the enable if it was actually off — otherwise the user's
+    // standing preference is on and is not ours to turn off later.
+    if (store?.get('remoteLogging') === false) {
+      setRemoteLoggingEnabled(true);
+      _sharingWeEnabled = true;
+    }
+    console.log('[electron] Shared', res.sent, 'log lines for call', callId,
+      _sharingWeEnabled ? '— and streaming the rest of this call' : '(streaming was already on)');
+    return { ok: true, sent: res.sent, streaming: _sharingWeEnabled };
+  });
+
   const FEEDBACK_TO_AGENT = {
     interrupting:
       'A person in the call just flagged that you TALKED OVER them. Stop speaking if you are mid-utterance, '

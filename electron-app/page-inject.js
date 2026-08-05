@@ -1326,6 +1326,7 @@
   const _canon = (e) => _emojiHex(e, { sep: '-', upper: false, dropFe0f: true });
   const EMOJI_SETS = {
     fluent3d: { dir: 'fluent3d', file: (e) => _canon(e) + '.png' },
+    redpanda: { dir: 'redpanda', file: (e) => _canon(e) + '.png' },
   };
 
   // twemoji / openmoji / noto ship as COLOUR FONTS, not ~11,900 files. Each set

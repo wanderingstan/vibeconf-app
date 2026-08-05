@@ -5,7 +5,12 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   // Send messages to main process
-  send: (channel, data) => ipcRenderer.send(channel, data),
+  // VARIADIC. It forwarded only the first argument, so any send with two
+  // payloads silently lost the second: `api.send('join-meet', url, {
+  // onboardingCall: true })` arrived in main as (url, undefined), and the
+  // guided setup ran an ordinary /join-call. Nothing errored — the bot joined
+  // and behaved normally, just not as a setup call.
+  send: (channel, ...args) => ipcRenderer.send(channel, ...args),
 
   // Listen for messages from main process
   on: (channel, callback) => {

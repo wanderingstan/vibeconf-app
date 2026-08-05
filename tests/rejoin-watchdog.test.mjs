@@ -67,3 +67,41 @@ test('the watchdog still ends a genuinely dead call', () => {
   assert.match(provider, /_leaveGoneTicks >= 12 && !_callEndedFired/);
   assert.match(provider, /if \(hasLeave\) \{ _everInCall = true; _leaveGoneTicks = 0; \}/);
 });
+
+test('the preload forwards EVERY argument, not just the first', () => {
+  // `send: (channel, data) => ...` silently dropped the second payload, so
+  // api.send('join-meet', url, { onboardingCall: true }) reached main as
+  // (url, undefined) and the guided setup ran an ordinary /join-call. Nothing
+  // errored: the bot joined and behaved normally, just not as a setup call.
+  //
+  // It only bit when a call was ALREADY detected — the create-a-call path
+  // carries the flag differently — which is why it passed its first test.
+  const preload = readFileSync(join(root, 'electron-app/preload-panel.js'), 'utf8');
+  assert.match(preload, /send: \(channel, \.\.\.args\) => ipcRenderer\.send\(channel, \.\.\.args\)/);
+  assert.doesNotMatch(preload, /send: \(channel, data\) =>/);
+});
+
+test('the setup button still asks for the onboarding flow', () => {
+  const panelJs = readFileSync(join(root, 'electron-app/renderer/panel.js'), 'utf8');
+  assert.match(panelJs, /api\.send\('join-meet', existing, \{ onboardingCall: true \}\)/);
+  const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
+  assert.match(main, /ipcMain\.on\('join-meet', \(_event, meetUrl, opts\)/);
+  assert.match(main, /onboardingCall: !!\(opts && opts\.onboardingCall\)/);
+});
+
+test('a caption language is saved to the bot that chose it', () => {
+  // Meet stores "Language of the meeting" against the shared browser session,
+  // not the bot. Observed: a bot set to German left Meet in German, and every
+  // bot created afterwards started in German — an unset captionLanguage means
+  // "leave whatever Meet already has". The German bot had saved nothing either,
+  // so it was only still German by coincidence.
+  const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
+  const fn = main.slice(main.indexOf('onSetCaptionLanguage: async'));
+  const body = fn.slice(0, fn.indexOf('\n  onSetShareAudio'));
+  assert.match(body, /store\.set\('captionLanguage', result\.language\)/);
+  // The RESOLVED tag, not the requested one: "es" resolves to "es-ES", and
+  // saving the request would re-walk the dialog on every join.
+  assert.doesNotMatch(body, /store\.set\('captionLanguage', want\)/);
+  // Non-fatal: failing to persist must not fail the language change itself.
+  assert.match(body, /catch \(err\)[\s\S]{0,120}Could not save captionLanguage/);
+});

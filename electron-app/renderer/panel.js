@@ -403,9 +403,26 @@ async function ensureBundledEmojiFont(setName) {
   } catch { /* the font stack's tail keeps a face on screen */ }
 }
 
+const dirFromSet = (setName) => {
+  const m = /^dir:(.+)$/.exec(String(setName || ''));
+  return m ? m[1].trim() : null;
+};
+
 async function emojiUriFor(setName, emoji) {
   // Glyphs, not pictures — for a user font OR a bundled set font.
   if (fontFamilyFromSet(setName) || EMOJI_FONT_SETS[setName]) return null;
+  // A folder of images the user or an agent made. The panel draws its own
+  // avatar, so it resolves these too — otherwise the call would wear the custom
+  // set and the app's own picture of the bot would not.
+  const dir = dirFromSet(setName);
+  if (dir) {
+    const key = setName + '|' + emoji;
+    if (emojiUriCache.has(key)) return emojiUriCache.get(key);
+    let uri = null;
+    try { uri = await api.invoke('emoji-dir-uri', dir, emoji); } catch { /* native */ }
+    emojiUriCache.set(key, uri);
+    return uri;
+  }
   const key = setName + '|' + emoji;
   if (emojiUriCache.has(key)) return emojiUriCache.get(key);
   let uri = null;
@@ -1753,18 +1770,26 @@ function loadConfigIntoControls() {
   if (result?.claudeWorkDir) claudeWorkDirInput.value = result.claudeWorkDir;
   if (result?.claudeModel) claudeModelInput.value = result.claudeModel;
   if (emojiSetInput && result?.emojiSet) {
-    // A `font:<Family>` value has no matching <option>, and assigning an unknown
-    // value to a <select> leaves it BLANK with selectedIndex -1 — so a font set
-    // from a call would read as "no emoji set chosen". Give it a real option so
-    // the dropdown says what is actually in effect. Rebuilt each time, so it
-    // never accumulates stale entries.
-    const fam = fontFamilyFromSet(result.emojiSet);
-    emojiSetInput.querySelector('option[data-font-option]')?.remove();
-    if (fam) {
+    // emojiSet has two OPEN forms — `font:<Family>` and `dir:<path>` — and
+    // neither has a matching <option>. Assigning an unknown value to a <select>
+    // leaves it BLANK with selectedIndex -1, so a face set from a call would
+    // read as "no emoji set chosen". Synthesise an option for whichever form is
+    // in effect. Deliberately generic: this was written for font: and a folder
+    // set reintroduced the exact same blank dropdown a day later.
+    const openLabel = (() => {
+      const fam = fontFamilyFromSet(result.emojiSet);
+      if (fam) return `Font: ${fam}`;
+      const dir = dirFromSet(result.emojiSet);
+      if (dir) return `Folder: ${dir.replace(/\/+$/, '').split('/').pop() || dir}`;
+      return null;
+    })();
+    emojiSetInput.querySelector('option[data-open-option]')?.remove();
+    if (openLabel) {
       const opt = document.createElement('option');
       opt.value = result.emojiSet;
-      opt.textContent = `Font: ${fam}`;
-      opt.setAttribute('data-font-option', '1');
+      opt.textContent = openLabel;
+      opt.title = result.emojiSet;      // the full path, on hover
+      opt.setAttribute('data-open-option', '1');
       emojiSetInput.appendChild(opt);
     }
     emojiSetInput.value = result.emojiSet;

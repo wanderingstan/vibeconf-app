@@ -214,3 +214,28 @@ test('the dev launcher encodes what went wrong by hand', () => {
   assert.match(sh, /nohup env/);
   assert.match(sh, /disown/);
 });
+
+test('a new bot is seeded into the AGENT dir, where the store actually reads', () => {
+  // The per-profile store has lived at <profile>/agent/config.json since #305:
+  // the agent's working directory has to be a trusted Claude workspace, and the
+  // config moved in with it. seedNewBotName wrote the pre-#305 loose path.
+  //
+  // That WORKED — verified by launching a profile seeded the old way, which came
+  // up named — but only via the legacy migration, which exists to rescue old
+  // installs. Depending on it means the day someone deletes that migration, new
+  // bots quietly go back to "Unnamed bot" and the cause is three files away.
+  //
+  // It also left a second config.json that looks authoritative and keeps the
+  // ORIGINAL name forever: bot8's loose file still read "Diego" long after the
+  // bot was renamed Taylor, which cost a real debugging detour.
+  const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
+  const fn = main.slice(main.indexOf('function seedNewBotName'));
+  const body = fn.slice(0, fn.indexOf('\n  }\n'));
+  assert.match(body, /agentDirFor\(path\.join\(PROFILES_ROOT, profileName\)\)/,
+    'seed into the agent dir, not the profile dir');
+  assert.doesNotMatch(body, /const dir = path\.join\(PROFILES_ROOT, profileName\);/,
+    'the loose path is the pre-#305 location the store no longer reads');
+  // The never-clobber guard is the reason this is safe on a reused directory
+  // name (profile names are allocated first-gap), so it must survive.
+  assert.match(body, /if \(existing\.botName\) return;/);
+});

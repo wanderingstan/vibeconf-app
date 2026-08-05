@@ -274,7 +274,13 @@ const PREFERENCES = {
       "auto-resolves external references into data URIs so you don't need to " +
       "base64-encode anything. SVG/CSS animations don't tick (rasterized once); " +
       "the emoji's bounce provides motion. Use to display backgrounds, name plates, " +
-      "debug info, or anything SVG can render.",
+      "debug info, or anything SVG can render. "
+      + 'SHORTCUT: point it at an IMAGE FILE with "file:<path>" — '
+      + '"file:/Users/me/art/background.png" — and the app converts it to a '
+      + 'self-contained SVG on write (downscaled and inlined, so moving or deleting '
+      + 'the file later cannot leave a black camera). png/jpg/gif/webp/svg. That is '
+      + 'the easy path when you HAVE an image, including one you just generated; '
+      + 'writing SVG directly stays better for anything vector.',
   },
   avatarBackgroundCaption: {
     type: 'string',
@@ -290,7 +296,7 @@ const PREFERENCES = {
     type: 'string',
     default: 'fluent3d',
     enum: ['native', 'twemoji', 'openmoji', 'noto', 'fluent3d', 'redpanda'],
-    enumPattern: /^font:[A-Za-z0-9 _-]{1,120}(#[0-9A-Fa-f]{3,8})?$/,
+    enumPattern: /^(font:[A-Za-z0-9 _-]{1,120}(#[0-9A-Fa-f]{3,8})?|dir:[~/][^\n"']{0,400})$/,
     description:
       'How the avatar\'s face is drawn. Either a bundled set, or "font:<Family>" to '
       + 'use a font INSTALLED ON THIS MACHINE — e.g. "font:UnifontExMono". One value, '
@@ -298,7 +304,20 @@ const PREFERENCES = {
       + 'has no colour of its own and draws black by default; add a hex colour to '
       + 'pick one — "font:UnifontExMono#ffcc00". (A colour font ignores it and keeps '
       + 'its own colours.) For the font form, '
-      + 'call list_fonts for the exact family names available here: a family that is '
+      + 'Or "dir:<path>" for a FOLDER OF IMAGES you (or an agent) made — one file '
+      + 'per emoji, like the bundled fluent3d set: "dir:/Users/me/taylor-emoji". '
+      + 'No naming convention is imposed; the folder is indexed and any of these '
+      + 'work, whichever is easiest to produce: the emoji itself ("🙂.png"), '
+      + 'lowercase hex ("1f642.png"), uppercase with FE0F ("1F642.svg"), or noto '
+      + 'style ("emoji_u1f642.png"). png/svg/webp/gif/jpg. An emoji with no file '
+      + 'falls back to the native glyph, exactly like a gap in a bundled set, so a '
+      + 'partial set is fine — the faces you supply are the ones that change. '
+      + 'NOTE for art with text or a left/right: Meet MIRRORS the bot\'s own tile in '
+      + 'its self-view, so your art looks backwards in get_call_screenshot and in the '
+      + "Bot's view window. Everyone else sees it the right way round — the flip is a "
+      + 'CSS transform on the local video element, which cannot change what is '
+      + 'transmitted. Do not pre-flip your images to compensate. '
+      + 'For a font, call list_fonts for the exact family names available here: a family that is '
       + 'not installed silently falls back to the system emoji font, which looks like '
       + 'nothing happened. Any font with emoji coverage works, colour or monochrome. '
       + 'The bundled sets: "native" = the OS emoji font. ' +

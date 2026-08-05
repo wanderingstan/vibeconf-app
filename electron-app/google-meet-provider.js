@@ -644,6 +644,23 @@ function setCameraOff(off) {
 // DOM, so a plain querySelectorAll count stays > 0 and falsely reads as "people
 // pane open". getClientRects() is empty for display:none elements, so it's a
 // reliable visibility test.
+// Is this people-pane tile a screen share rather than a person?
+//
+// Meet marks it with the literal word in the tile's status row, appended after
+// any badges. The class on that row is a minified token that changes between
+// builds; the word does not, so match on text.
+//
+// Localised in a non-English Meet UI, which is why this is not the only defence:
+// keying participants by device id means an unrecognised share tile becomes a
+// harmless extra entry rather than something that displaces a real person.
+function isPresentationTile(item) {
+  try {
+    const row = item.querySelector(MEET.people.presentationRow);
+    if (!row) return false;
+    return row.textContent.toLowerCase().includes(MEET.people.presentationText);
+  } catch { return false; }
+}
+
 function visiblePeopleTileCount() {
   let n = 0;
   for (const el of document.querySelectorAll(MEET.people.tile)) {
@@ -1134,13 +1151,25 @@ function gatherCallHealthSnapshot() {
     ? domSpeakerTracker.getParticipantList()
     : [];
 
+  // Everyone currently sharing, from the PEOPLE PANE rather than the toolbar.
+  //
+  // The toolbar has one slot: its label is "<name> is presenting", so it can
+  // name exactly one person however many are sharing, and a two-presenter
+  // phrasing ("2 people are presenting") would not even match the regex — it
+  // would read as nobody presenting. The people pane lists every share as its
+  // own tile, so it can say who, and how many.
+  const screenShares = (typeof domSpeakerTracker !== 'undefined' && domSpeakerTracker.getScreenShares)
+    ? domSpeakerTracker.getScreenShares()
+    : [];
+
   return {
     micHealth,
     chatUnread: hasUnreadChat(),
     chatPaneOpen: isChatPaneOpen(),
     peoplePaneOpen: visiblePeopleTileCount() > 0,
     selfPresenting,
-    presenterName, // null when nobody else is presenting
+    presenterName, // null when nobody else is presenting (toolbar; single slot)
+    screenShares,  // [{ name, id }] — every share, including the bot's own
     participants,
   };
 }
@@ -1244,6 +1273,16 @@ function installCallHealthTick() {
         reconcile: true,
       });
     }
+    // Screen shares, from the people pane. Emitted independently of the toolbar
+    // events above because it answers a question they cannot: the toolbar names
+    // ONE presenter (latest wins, measured live with three shares up), and it
+    // reports nobody at all while the bot is presenting, since self-presenting
+    // deliberately suppresses someone-else.
+    const sharesKey = JSON.stringify(next.screenShares || []);
+    if (sharesKey !== JSON.stringify(last.screenShares || [])) {
+      meetProvider.emit(CALL_EVENTS.screenSharesUpdated, next.screenShares || []);
+    }
+
     const someoneElse = !next.selfPresenting && !!next.presenterName;
     const lastSomeoneElse = !last.selfPresenting && !!last.presenterName;
     if (someoneElse !== lastSomeoneElse || next.presenterName !== last.presenterName) {
@@ -1855,6 +1894,9 @@ function findPeopleButton() {
 class DOMSpeakerTracker {
   constructor() {
     this.participants = new Map();
+    // [{ name, id }] for every screen share in the people pane. Rebuilt on each
+    // scan so an ended share disappears rather than lingering.
+    this.screenShares = [];
     this.observer = null;
     this.isTracking = false;
     this.checkInterval = null;
@@ -1895,7 +1937,10 @@ class DOMSpeakerTracker {
   _logHealth() {
     if (!this.isTracking) return;
     const parts = [];
-    for (const [name, info] of this.participants) {
+    // info.name, not the map key: the key is Meet's device id now, and a health
+    // line reading "spaces/…/devices/567[spk=0]" would be unreadable.
+    for (const [, info] of this.participants) {
+      const name = info.name;
       const itemLive = info.item ? document.contains(info.item) : false;
       const mut = info._hbSubtreeMut || 0;    // tile mutations since last beat (the detection signal)
       info._hbSubtreeMut = 0;
@@ -1951,9 +1996,46 @@ class DOMSpeakerTracker {
     }
     if (region) this._warnedNoInCallRegion = false;
     const items = (region || document).querySelectorAll(MEET.people.tile);
+    const shares = [];
     for (const item of items) {
       const name = item.getAttribute('aria-label');
       if (!name) continue;
+
+      // A SCREEN SHARE, not a person. Meet gives each share its own listitem
+      // carrying the sharer's name, so this list mixes people and presentations.
+      //
+      // Measured live 2026-08-04: with one person presenting, the pane held
+      // three tiles for two people — the person (devices/555) and their share
+      // (devices/567), both labelled "Stan James". Keyed by name, the share
+      // overwrote the person, and because a share tile never pulses, that
+      // participant read as silent for the ENTIRE call: 0 speaking flags,
+      // wait_for_speech timing out at peakSpeakers=0, barge-in blind. Captions
+      // still worked, so the bot answered them and nothing looked broken.
+      if (isPresentationTile(item)) {
+        shares.push({ name, id: item.getAttribute(MEET.people.idAttr) || null });
+        continue;
+      }
+
+      // Not every listitem is a PERSON, but some non-people still carry audio.
+      //
+      // Meet renders pseudo-tiles in the same list: a "Merged audio" tile
+      // appears when two participants share one microphone (co-located, or the
+      // same person joined twice), carrying a data-cohort-id and NO participant
+      // id. It was being reported to the agent as somebody in the room.
+      //
+      // Marked rather than dropped. Dropping it would have been the same bug in
+      // a new place: if the merged tile is where those participants' speaking
+      // signal lives, discarding it makes them undetectable. So it stays tracked
+      // for speech and is filtered out of the list the agent sees.
+      const pid = item.getAttribute(MEET.people.idAttr);
+      const isPseudo = MEET.people.requireIdForPerson && !pid;
+      if (isPseudo) {
+        if (!this._loggedPseudoTiles) this._loggedPseudoTiles = new Set();
+        if (!this._loggedPseudoTiles.has(name)) {
+          this._loggedPseudoTiles.add(name);
+          console.log('[speaker-tracker] tile tracked for audio but not a person:', name);
+        }
+      }
       // Register every participant tile. Detection is mutation-rate based
       // (_checkSpeakingChange), so we no longer need to locate a specific
       // indicator element — which also means a Meet DOM change can't make us
@@ -1965,19 +2047,36 @@ class DOMSpeakerTracker {
       // counted as someone-is-speaking and cancel the silence timer.
       const isSelf = item.textContent.includes(MEET.people.selfMarker);
 
-      if (!this.participants.has(name)) {
+      // Keyed by Meet's own per-device id where it exists, falling back to the
+      // name. Two people CAN share a display name, and the name-keyed map merged
+      // them into one entry — the presentation case just made that reproducible.
+      const key = pid || name;
+
+      if (!this.participants.has(key)) {
         if (isSelf) {
           console.log('[speaker-tracker] Identified self tile:', name);
         }
-        this.participants.set(name, {
-          speaking: false, isSelf, item,
+        this.participants.set(key, {
+          name, isPseudo, speaking: false, isSelf, item,
           mutTimes: [], lastTrueAt: 0, lastChange: Date.now(),
         });
       } else {
-        const info = this.participants.get(name);
+        const info = this.participants.get(key);
         info.item = item;
         info.isSelf = isSelf;
+        info.isPseudo = isPseudo;
+        info.name = name;   // a rename keeps the same device id
       }
+    }
+
+    // Shares are state, not people. Recomputed from scratch each scan so a share
+    // that ENDS disappears — an incremental update would leave a phantom
+    // presenter on the board after someone stopped sharing.
+    const before = JSON.stringify(this.screenShares || []);
+    this.screenShares = shares;
+    if (JSON.stringify(shares) !== before) {
+      console.log('[speaker-tracker] screen shares:',
+        shares.length ? shares.map((s) => s.name).join(', ') : '(none)');
     }
   }
 
@@ -2011,7 +2110,7 @@ class DOMSpeakerTracker {
   // to node swaps.
   _checkSpeakingChange(element) {
     const now = Date.now();
-    for (const [name, info] of this.participants) {
+    for (const [, info] of this.participants) {
       if (!info.item) continue;
       // Only count mutations that occur strictly WITHIN this tile — not on an
       // ancestor (e.g. a body-level class change), which isn't tile-specific
@@ -2019,7 +2118,7 @@ class DOMSpeakerTracker {
       if (info.item === element || info.item.contains(element)) {
         (info.mutTimes || (info.mutTimes = [])).push(now);
         info._hbSubtreeMut = (info._hbSubtreeMut || 0) + 1;
-        this._evaluateSpeaking(info, name, now, 'observer');
+        this._evaluateSpeaking(info, info.name, now, 'observer');
       }
     }
   }
@@ -2104,21 +2203,35 @@ class DOMSpeakerTracker {
 
   _pollSpeakingState() {
     const now = Date.now();
-    for (const [name, info] of this.participants) {
+    for (const [, info] of this.participants) {
       if (!info.item) continue;
-      this._evaluateSpeaking(info, name, now, 'poll');
+      this._evaluateSpeaking(info, info.name, now, 'poll');
     }
   }
 
   getSpeakingNames() {
-    return Array.from(this.participants.entries())
-      .filter(([_, info]) => info.speaking)
-      .map(([name]) => name);
+    return Array.from(this.participants.values())
+      .filter((info) => info.speaking)
+      .map((info) => info.name);
   }
 
+  // Everyone sharing right now, newest scan wins. Empty when nobody is.
+  getScreenShares() {
+    return (this.screenShares || []).map((s) => ({ name: s.name, id: s.id }));
+  }
+
+  // Everything the tracker watches, pseudo-tiles included and FLAGGED.
+  //
+  // They must stay in this list: anyoneSpeaking / activeSpeakerCount are derived
+  // from it, and a merged-audio tile may be exactly where two co-located
+  // people's speech shows up. Filtering happens at the reporting edge, where the
+  // question is "who is in the room" rather than "is anyone talking".
   getParticipantList() {
-    return Array.from(this.participants.entries())
-      .map(([name, info]) => ({ name, speaking: info.speaking, isSelf: !!info.isSelf }));
+    return Array.from(this.participants.values())
+      .map((info) => ({
+        name: info.name, speaking: info.speaking,
+        isSelf: !!info.isSelf, isPseudo: !!info.isPseudo,
+      }));
   }
 }
 

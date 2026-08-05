@@ -805,6 +805,27 @@ server.tool(
   },
 );
 
+// "Screen sharing:" line for get_room_info.
+//
+// Reads the people pane, which lists every share as its own entry, rather than
+// the toolbar's single "<name> is presenting" slot. Measured live with three
+// shares up at once: the toolbar named only the most recent, and named nobody
+// while the bot was presenting.
+function formatScreenShares(status, data) {
+  const shares = Array.isArray(data?.screenShares) ? data.screenShares : [];
+  if (!shares.length) {
+    // Fall back to the toolbar signal rather than asserting "no": on a Meet
+    // build where the people-pane markup has moved, silence is better than a
+    // confident wrong answer.
+    if (status.sharing) return 'Screen sharing: yes (by you)';
+    if (status.presenterName) return `Screen sharing: yes, by ${status.presenterName}`;
+    return 'Screen sharing: nobody';
+  }
+  const names = shares.map((s) => s.name).filter(Boolean);
+  return `Screen sharing: ${names.length} — ${names.join(', ')}`
+    + (status.sharing ? ' (one of them is you)' : '');
+}
+
 // --- list_visual_assets ---
 server.tool(
   "list_visual_assets",
@@ -2424,7 +2445,12 @@ server.tool(
       `Mode: ${status.mode || 'active'} (active=responds freely, passive=only when named, silent=listens but never speaks)`,
       status.localServerUrl ? `Local server: ${status.localServerUrl} (MCP base URL for this app instance)` : null,
       status.localProfile ? `Profile: ${status.localProfile}` : null,
-      `Screen sharing: ${status.sharing ? 'yes (by bot)' : 'no'}`,
+      // Everyone sharing, not just the bot. This used to read "Screen sharing:
+      // no" while somebody was mid-presentation, which is not a gap but a wrong
+      // answer. The people-pane list can hold several at once; the toolbar
+      // (presenterName) names one, latest-wins, and says nothing at all while
+      // the bot itself is presenting.
+      formatScreenShares(status, data),
     ].filter(Boolean));
 
     if (status.whiteboardUrl) {

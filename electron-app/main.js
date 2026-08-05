@@ -9507,6 +9507,10 @@ function setupIPC() {
     localServer.setParticipants(participants || []);
   });
 
+  ipcMain.on(CALL_EVENTS.screenSharesUpdated, (_event, shares) => {
+    localServer.setScreenShares(shares || []);
+  });
+
   ipcMain.on(CALL_EVENTS.chatUnread, (_event, { unread }) => {
     localServer.setChatUnread(!!unread);
   });

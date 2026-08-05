@@ -99,6 +99,31 @@ const MEET = {
     // a region labelled "In call" — scope participant scanning to it so invited /
     // knocking people aren't counted as present (#276).
     inCallRegion: '[role="region"][aria-label="In call" i]',
+    // A tile's IDENTITY. aria-label is the display name, which is not unique:
+    // Meet gives a screen share its own listitem carrying the SAME aria-label as
+    // the person sharing, and two people can simply share a name. Keying on the
+    // name meant the second tile silently replaced the first — measured live on
+    // 2026-08-04, the presentation tile displaced the person's, and since a
+    // presentation tile never pulses, that participant became permanently
+    // "not speaking" for the whole call.
+    idAttr: 'data-participant-id',
+    // Marks a tile as a SCREEN SHARE rather than a person. Meet appends the
+    // literal word as a text node inside the status row, after any badges:
+    //   <div class="d93U2d qrLqp">…Visitor badge…Presentation</div>
+    // Matched on the status row's text rather than the class, since the class is
+    // a minified token that changes between Meet builds while the word does not.
+    // Localised in a non-English Meet UI, so treated as a HINT: the structural
+    // signal (a duplicate identity that never pulses) still stands alone.
+    presentationRow: '.d93U2d',
+    // Substring, lowercased, because Meet words it differently for the bot's own
+    // share than for everyone else's — measured live with three shares up at
+    // once: "Your presentation" for self, "Presentation" for the others.
+    presentationText: 'presentation',
+    // Real participants carry Meet's per-device id. Pseudo-tiles do not: a
+    // "Merged audio" listitem (data-cohort-id, no participant id) was being
+    // reported as a person in the room, alongside the humans. Structural, so it
+    // holds in any UI language.
+    requireIdForPerson: true,
     labelledButton: '[role="button"][aria-labelledby]',
     buttonFallback: 'button[aria-label^="People" i], [role="button"][aria-label^="People" i]',
     labelPrefix: 'People',

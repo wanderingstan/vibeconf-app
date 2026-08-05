@@ -145,6 +145,12 @@ async function loadPermissions() {
   let state;
   try { state = await api.invoke('onboarding:get-permissions'); } catch { list.textContent = 'Could not read permissions.'; return; }
   list.innerHTML = '';
+  // Both remaining permissions are macOS-only, so everywhere else this list is
+  // empty. An empty step reads as a broken page; say so instead.
+  if (!state.rows.length) {
+    list.innerHTML = '<div class="hint">Nothing to grant on this system &mdash; the permissions this step covers are macOS-only.</div>';
+    return;
+  }
   for (const p of state.rows) {
     const row = document.createElement('div'); row.className = 'prow';
     const meta = document.createElement('div'); meta.className = 'meta';

@@ -33,13 +33,16 @@ test('the wizard-pending flag is what gates showing the wizard', () => {
   );
 });
 
-test('the microphone prompt is skipped while the wizard is up', () => {
-  // The status READ is fine and should stay — getMediaAccessStatus never
-  // prompts, and the local server reports it. It's askForMediaAccess that
-  // raises the dialog.
-  const block = main.slice(main.indexOf("// Request microphone permission"));
-  const guard = block.slice(0, block.indexOf('askForMediaAccess'));
-  assert.match(guard, /!onboardingPending/, 'the mic ask must be behind the wizard-pending guard');
+// Deferring the microphone prompt to the wizard was the first fix. Deleting it
+// was the right one: testing showed nothing consumes the permission, so the
+// wizard shouldn't offer the row either. See onboarding-flow.test.mjs for the
+// evidence. This asserts the app cannot ask for mic or camera AT ALL.
+test('nothing in the app ever asks for microphone or camera', () => {
+  assert.doesNotMatch(main, /askForMediaAccess\(\s*['"]microphone['"]/);
+  assert.doesNotMatch(main, /askForMediaAccess\(\s*['"]camera['"]/);
+  const flow = readFileSync(join(root, 'electron-app/onboarding-flow.js'), 'utf8');
+  const keys = [...flow.matchAll(/^\s*\{ key: '([a-z]+)'/gm)].map((m) => m[1]);
+  assert.deepEqual(keys.sort(), ['automation', 'screen'], 'the wizard offers no mic/camera row');
 });
 
 test('the screen-capture probe is skipped while the wizard is up', () => {

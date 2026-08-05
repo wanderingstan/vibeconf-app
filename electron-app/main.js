@@ -5964,22 +5964,13 @@ app.whenReady().then(async () => {
     createOnboardingWindow();
   }
 
-  // Request microphone permission (needed for audio pipeline even with virtual mic)
-  if (process.platform === 'darwin' && !onboardingPending) {
-    try {
-      const micAccess = systemPreferences.getMediaAccessStatus('microphone');
-      console.log('[electron] Microphone permission:', micAccess);
-      if (micAccess !== 'granted') {
-        systemPreferences.askForMediaAccess('microphone').then((granted) => {
-          console.log('[electron] Microphone permission after prompt:', granted ? 'granted' : 'denied');
-        }).catch(err => {
-          console.error('[electron] Microphone permission prompt failed:', err.message);
-        });
-      }
-    } catch (err) {
-      console.error('[electron] Microphone permission check failed:', err.message);
-    }
-  }
+  // No microphone ask. The comment here used to claim it was "needed for the audio
+  // pipeline even with virtual mic"; it wasn't. The bot's mic is an AudioContext
+  // (VirtualMic in page-inject.js) and getUserMedia is intercepted before it ever
+  // reaches Chromium, so no capture device is opened. Verified on a signed build
+  // with Microphone DENIED: the bot joined a Meet and was heard speaking.
+  // Deferring this prompt to the wizard was the first fix; deleting it is the
+  // right one, and the wizard no longer offers the row either.
 
   // Check screen recording permission (needed for whiteboard share)
   if (process.platform === 'darwin') {
@@ -8295,7 +8286,7 @@ function setupIPC() {
     // (osascript on Windows), and both render as a row the user can't act on.
     const wanted = new Set(flow.permissionsFor(process.platform).map((p) => p.key));
     const statusMap = {};
-    for (const key of ['microphone', 'camera', 'screen']) {
+    for (const key of ['screen']) {
       if (wanted.has(key)) statusMap[key] = systemPreferences.getMediaAccessStatus(key);
     }
     // Automation is the odd one out: there is no way to READ its status without
@@ -8335,9 +8326,7 @@ function setupIPC() {
 
   ipcMain.handle('onboarding:request-permission', async (_e, key) => {
     try {
-      if (key === 'microphone') await systemPreferences.askForMediaAccess('microphone');
-      else if (key === 'camera') await systemPreferences.askForMediaAccess('camera');
-      else if (key === 'screen') {
+      if (key === 'screen') {
         // A real capture attempt registers the app in the Screen Recording list
         // and prompts when not-determined (thumbnail must be non-trivial, #… ).
         try { await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 192, height: 192 } }); } catch { /* prompt only */ }
@@ -8351,7 +8340,6 @@ function setupIPC() {
 
   ipcMain.handle('onboarding:open-system-settings', (_e, key) => {
     const pane = {
-      microphone: 'Privacy_Microphone', camera: 'Privacy_Camera',
       screen: 'Privacy_ScreenCapture', automation: 'Privacy_Automation',
     }[key] || 'Privacy';
     shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${pane}`);

@@ -1212,6 +1212,7 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
   border-top: 1px solid #3c4043;
 }
 .share-log-row .helper-text { line-height: 1.45; display: block; }
-/* The "what the buttons do" line sits ABOVE the button, so it needs the gap
-   under it rather than the button carrying one. */
-.share-log-row .helper-text:first-child { margin-bottom: 8px; }
+/* The explanation sits BESIDE the button, not above it — inline so it uses the
+   space next to an auto-width control instead of costing a line of its own, and
+   wraps underneath only when it runs out of room. */
+.share-log-row .share-log-why { display: inline; margin-left: 8px; }

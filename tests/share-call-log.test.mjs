@@ -198,8 +198,16 @@ test('the window says what the feedback buttons do, and do not do', () => {
   // Terse on purpose: this sits above a button someone is mid-decision about.
   // It still has to carry all three facts — the buttons DO something (the bot
   // reads them), they do NOT reach us, and sharing carries them along.
-  assert.match(block, /only to the bot, not to the developers/);
+  // \s+ across the phrase: this copy re-wraps whenever it is edited, and a
+  // literal-space regex fails on the line break rather than on the content.
+  assert.match(block, /only to the bot, not to the\s+developers/);
   assert.match(block, /bot feedback is included/, 'the two features compose — say so');
+  // Beside the button, not above it: inline against an auto-width control costs
+  // no extra line, and the troubleshooting screen is already long.
+  assert.ok(block.indexOf('shareCallLogBtn') < block.indexOf('share-log-why'),
+    'the explanation follows the button');
+  const css = readFileSync(join(root, 'electron-app/renderer/panel.css'), 'utf8');
+  assert.match(css, /\.share-log-why \{ display: inline/);
 });
 
 test('feedback is written to the session log, so a shared slice carries it', () => {

@@ -124,13 +124,17 @@ test('a second press STOPS sharing, a third resumes it', () => {
 test('stopping does not pretend to unsend', () => {
   // The button can stop the stream; it cannot retract what has gone. Saying
   // "cancelled" or "undo" would be a promise the feature cannot keep.
-  assert.match(panelJs, /Stopped — \$\{st\.sent\} lines were sent\. Nothing is being sent now\./);
+  assert.match(panelJs, /Stopped\. \$\{st\.sent\} lines were sent; nothing is being sent now\./);
   assert.match(panelJs, /What was already sent stays sent/);
   // Scoped to the share code: "cancel" appears elsewhere in the panel for
   // unrelated controls, and a file-wide check fails on those instead.
   const share = panelJs.slice(panelJs.indexOf('function setShareMsg'),
     panelJs.indexOf('// ---------------------------------------------------------------------------\n// Meet URL validation'));
   assert.doesNotMatch(share, /Cancelled|Undo|Unshare/i);
+  // No em-dashes in copy (a standing preference). Checked on the STRINGS only —
+  // the comments around them are not copy.
+  const strings = [...share.matchAll(/setShareMsg\(([^;]*)\)/g)].map((m) => m[1]).join(' ');
+  assert.doesNotMatch(strings, /—/, 'em-dash in user-visible copy');
 });
 
 test('the button says what the next press will do', () => {
@@ -209,7 +213,7 @@ test('the live count keeps moving, and says when sharing stops', () => {
   // a frozen count reads as a stall.
   assert.match(panelJs, /async function renderShareState\(\)/);
   assert.match(panelJs, /lines sent so far/);
-  assert.match(panelJs, /Sharing has stopped/, 'the grant ends with the call — say so');
+  assert.match(panelJs, /Sharing has stopped/, 'the grant ends with the call, so say so');
   assert.match(panelJs, /setShareMsg\(st\.streaming/, 'the live line goes through the one writer');
   // Polled with the rest of the troubleshooting view rather than on its own timer.
   const poll = panelJs.slice(panelJs.indexOf("const s = await api.invoke('get-call-state')"));

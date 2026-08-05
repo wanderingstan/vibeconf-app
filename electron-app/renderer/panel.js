@@ -896,11 +896,11 @@ async function renderShareState() {
     // would rather not send, start again after.
     setShareLabel(st.streaming ? '⏹ Stop sharing' : '📤 Resume sharing');
     setShareMsg(st.streaming
-      ? `Sharing this call — ${st.sent} lines sent so far.`
+      ? `Sharing this call. ${st.sent} lines sent so far.`
       // "Stopped" not "cancelled": what went cannot come back, and the count
       // says how much did. The gap is real though — nothing is sent while
       // stopped, so the paused stretch never leaves the machine.
-      : `Stopped — ${st.sent} lines were sent. Nothing is being sent now.`);
+      : `Stopped. ${st.sent} lines were sent; nothing is being sent now.`);
   } else {
     // The call the grant belonged to has ended.
     setShareLabel(SHARE_LABEL);
@@ -953,7 +953,7 @@ shareCallLogBtn?.addEventListener('click', async () => {
       // here, so the two cannot disagree. A static "sent 347 lines" sitting
       // beside "sharing the rest of this call" reads as though it has stalled.
       setShareMsg(r.stopped ? 'Stopped. What was already sent stays sent.'
-        : r.resumed ? 'Sharing again — the paused part was not sent.'
+        : r.resumed ? 'Sharing again. The paused part was not sent.'
         : r.streaming ? 'Shared. Still sending as the call goes on…' : 'Shared.');
     } else {
       // A share that silently did nothing is worse than no button — the user

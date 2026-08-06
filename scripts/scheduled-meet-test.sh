@@ -267,6 +267,9 @@ fi
 # Run the one-shot DMG target — the scheduled run on the always-on Mac mini
 # drives the PACKAGED app so it tests the exact artifact an average user runs
 # (no source-vs-package fidelity gap). Capture everything, preserve exit code.
+# Record WHICH version this lane tests (post self-update) so promote.sh can gate
+# a release promotion on "the nightly for THIS exact version was green" (#release).
+DMG_VER=$(defaults read /Applications/Vibeconferencing.app/Contents/Info.plist CFBundleShortVersionString 2>/dev/null || echo unknown)
 rec_run dmg-meet -- pnpm test:meet:dmg
 CODE=$?   # exit code of the lane (recorded if VIBECONF_RECORD=1)
 
@@ -278,8 +281,8 @@ stalls=$(grep -oE '\([0-9]+ real stall' "$LOG" | tail -1 | grep -oE '[0-9]+' || 
 fails=$(grep -oE 'failed steps: +[0-9]+' "$LOG" | tail -1 | grep -oE '[0-9]+$' || echo "?")
 overlaps=$(grep -oE 'cross-bot speak overlaps \(<1.2s\): [0-9]+' "$LOG" | tail -1 | grep -oE '[0-9]+$' || echo "?")
 
-printf '{"ts":"%s","exit":%s,"stalls":"%s","fails":"%s","overlaps":"%s","log":"%s"}\n' \
-  "$STAMP" "$CODE" "$stalls" "$fails" "$overlaps" "$(basename "$LOG")" >> "$RESULTS/results.jsonl"
+printf '{"ts":"%s","ver":"%s","exit":%s,"stalls":"%s","fails":"%s","overlaps":"%s","log":"%s"}\n' \
+  "$STAMP" "$DMG_VER" "$CODE" "$stalls" "$fails" "$overlaps" "$(basename "$LOG")" >> "$RESULTS/results.jsonl"
 
 # --- main-source meet regression run (test:meet:ci) — same two-bot meet-test, but
 # against the SOURCE checkout on `main` instead of the installed DMG. The DMG run

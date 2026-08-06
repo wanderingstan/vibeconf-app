@@ -168,7 +168,9 @@ function analyzeFailures() {
     'Write a SHORT root-cause read for a Telegram alert:',
     '- 2-4 sentences on the single most likely root cause (identify the COMMON',
     '  cause; do not restate every failed step).',
-    '- Tag it: [code regression] / [environment/Google-Meet flakiness] / [test-infra] / [unknown].',
+    '- Tag it: [code regression] / [environment/platform flakiness] / [test-infra] / [unknown].',
+    '  For the platform tag, name the ACTUAL platform that failed — e.g. Slack, Google Meet,',
+    '  network, Upstash. Do NOT default to "Google Meet": a Slack-lane failure is Slack flakiness.',
     '- One line for the most useful next step, if obvious.',
     'Plain text only, no markdown, under ~120 words.',
   ].join('\n');

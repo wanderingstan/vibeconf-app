@@ -139,12 +139,25 @@ rec_run() {  # rec_run <lane> -- <cmd...> : run cmd (tee'd to $LOG), return its 
   local code=${pipestatus[1]:-$?}
   kill -INT "$rpid" 2>/dev/null; wait "$rpid" 2>/dev/null
   if [[ "$REC_KEEP" == "all" || ( "$REC_KEEP" == "fails" && "$code" != "0" ) ]]; then
-    echo "=== 📹 recording kept: $mov ($(du -h "$mov" 2>/dev/null | cut -f1)) ===" | tee -a "$LOG"
+    # screencapture silently produces NO file when the shell running it lacks Screen
+    # Recording permission (the launchd context usually does). Don't claim a recording
+    # was "kept" when nothing landed — that sent someone chasing a .mov that never
+    # existed. Only claim it for a real (>10KB) file; otherwise say plainly that it
+    # failed and why, so the digest/analysis never points at a ghost recording.
+    if [[ -s "$mov" ]] && (( $(stat -f%z "$mov" 2>/dev/null || echo 0) > 10240 )); then
+      echo "=== 📹 recording kept: $mov ($(du -h "$mov" 2>/dev/null | cut -f1)) ===" | tee -a "$LOG"
+    else
+      rm -f "$mov"
+      echo "=== ⚠️ recording FAILED for '$lane' — screencapture produced no file (Screen Recording permission missing for the launchd shell). No .mov to pull. ===" | tee -a "$LOG"
+    fi
   else
     rm -f "$mov"
   fi
-  # Prune: keep only the newest REC_MAX recordings.
-  ls -1t "$REC_DIR"/*.mov 2>/dev/null | tail -n +$((REC_MAX + 1)) | xargs rm -f 2>/dev/null || true
+  # Prune: keep only the newest REC_MAX recordings. (N)=nullglob so an empty dir
+  # doesn't raise zsh's "no matches found" (which spammed launchd.err every run);
+  # (om)=order by mtime, newest first, so we keep [1..REC_MAX] and drop the rest.
+  local recs=( "$REC_DIR"/*.mov(Nom) )
+  (( ${#recs} > REC_MAX )) && rm -f -- "${(@)recs[REC_MAX+1,-1]}"
   return $code
 }
 

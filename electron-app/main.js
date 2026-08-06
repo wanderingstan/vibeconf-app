@@ -2529,7 +2529,14 @@ function autoUpdaterInstance() {
   // used to be force-enabled here because the RUNNING version always had a
   // prerelease component — with clean semver it no longer does, so this line is
   // now a belt-and-suspenders guard rather than a workaround.)
-  autoUpdater.allowPrerelease = false;
+  // Channel switch (#release): the 'candidate' update channel (Stan + Seth) opts
+  // into GitHub PRERELEASE builds — the release-candidates tested before promotion;
+  // 'release' (default — real users) sees only promoted releases. Promoted versions
+  // are clean semver (no prerelease component), so a 'release' client is never
+  // offered an rc even after its GitHub prerelease flag is flipped. Fail safe to
+  // 'release' if the pref/store isn't readable yet.
+  try { autoUpdater.allowPrerelease = prefValue('updateChannel') === 'candidate'; }
+  catch { autoUpdater.allowPrerelease = false; }
   // Stage the download, but never restart on our own: installing is gated on
   // not being in a call, and the user gets the last word either way.
   autoUpdater.autoDownload = true;

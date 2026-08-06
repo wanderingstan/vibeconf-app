@@ -47,6 +47,13 @@ const APP_LEVEL_KEYS = new Set([
   // profile's experimental headless setting machine-wide would silently move
   // every bot off the Terminal path.
   'agentHosting',
+  // The update CHANNEL is a property of the app BINARY, which every profile on
+  // this machine shares — there is ONE updater, so "profile A on candidate,
+  // profile B on release" is meaningless. Per-profile it would also be INVISIBLE
+  // (App Settings renders app-level schema prefs only, via isAppLevel) — the exact
+  // trap documented for agentHosting just above. Not in MIGRATE_KEYS: a fresh pref
+  // defaulting to 'release', nothing to promote.
+  'updateChannel',
   // Whether the quit dialog appears is about this MACHINE's window, not about
   // any one bot — every profile shares the same close button habit.
   'confirmQuit',

@@ -175,7 +175,11 @@ test('APP_LEVEL_KEYS is exactly the decided set (guard against accidental promot
     // whether the user has ever been shown the Automation prompt. macOS grants
     // Automation to the app bundle, so a second profile has no separate decision
     // to make and must not ask again.
-    ['agentBackend', 'agentHosting', 'automationProbed', 'claudeIntegrationRemoved', 'confirmQuit', 'dangerousMode', 'remoteLogging', 'syncBaseUrl', 'ttsApiKey', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
+    // updateChannel (#release): the update channel is a property of the shared app
+    // BINARY/updater — one per machine, so "profile A on candidate, B on release" is
+    // meaningless — and per-profile it would be invisible in App Settings (same trap
+    // as agentHosting). Promoted deliberately.
+    ['agentBackend', 'agentHosting', 'automationProbed', 'claudeIntegrationRemoved', 'confirmQuit', 'dangerousMode', 'remoteLogging', 'syncBaseUrl', 'ttsApiKey', 'updateChannel', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
   );
 });
 

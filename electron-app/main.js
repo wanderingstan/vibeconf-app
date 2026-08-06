@@ -3073,6 +3073,20 @@ async function focusInShare(wc, selector) {
     if (!el) return { ok: false, error: 'no element matches ' + ${JSON.stringify(JSON.stringify(selector))} };
     if (typeof el.focus !== 'function') return { ok: false, error: 'element cannot be focused' };
     el.focus();
+    // #101: place the caret at the END. DOM .focus() on a field that already has
+    // text leaves the caret at index 0, so type_share would insert at the front
+    // (and a following select-all/replace could no-op). Wrapped so a field type
+    // that doesn't support selection (e.g. number/email inputs) can't break the
+    // focus that already succeeded.
+    try {
+      if (typeof el.setSelectionRange === 'function' && typeof el.value === 'string') {
+        el.setSelectionRange(el.value.length, el.value.length);
+      } else if (el.isContentEditable) {
+        const r = document.createRange();
+        r.selectNodeContents(el); r.collapse(false);
+        const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+      }
+    } catch (e) { /* selection unsupported on this field — focus still succeeded */ }
     return { ok: document.activeElement === el, error: 'element did not take focus' };
   })()`;
   try {

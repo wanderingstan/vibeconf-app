@@ -341,6 +341,7 @@ const PREFERENCES = {
     // flips the release's prerelease flag off; because promoted versions are clean
     // semver with no prerelease component, a 'release' client then accepts them.
     label: 'Update channel',
+    description: "Which builds this Mac auto-updates to. 'Candidate' gets new release-candidates before they're promoted to everyone — for testers who want them early.",
     enumLabels: {
       release: 'Release (stable — promoted builds only)',
       candidate: 'Candidate (prerelease — test builds before promotion)',

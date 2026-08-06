@@ -166,6 +166,34 @@ echo "node: $(command -v node) $(node -v 2>/dev/null)" | tee -a "$LOG"
 echo "pnpm: $(command -v pnpm) $(pnpm -v 2>/dev/null)" | tee -a "$LOG"
 echo "" | tee -a "$LOG"
 
+# --- Recording preflight (Stan) — a test OF the recording: screencapture silently
+# produces NO file when THIS (launchd) shell lacks Screen Recording permission, so
+# the keep-on-fail recordings were empty ghosts nobody noticed. Prove up front that
+# a real capture lands (>10KB in a 2s grab), record a result line the digest reads,
+# and log it — so a broken recorder is REPORTED, not discovered later as empty
+# .movs. Only when recording is enabled. Uses the same start→SIGINT→finalize dance
+# as rec_run. ---
+if [[ "$REC" == "1" ]]; then
+  mkdir -p "$REC_DIR"
+  _rectest="$REC_DIR/.preflight-$STAMP.mov"
+  screencapture -v -k "$_rectest" >/dev/null 2>&1 &
+  _rpid=$!
+  sleep 2
+  kill -INT "$_rpid" 2>/dev/null
+  for _ in {1..6}; do kill -0 "$_rpid" 2>/dev/null || break; sleep 0.5; done
+  kill -KILL "$_rpid" 2>/dev/null; wait "$_rpid" 2>/dev/null
+  _recbytes=$(stat -f%z "$_rectest" 2>/dev/null || echo 0)
+  rm -f "$_rectest"
+  if (( _recbytes > 10240 )); then
+    echo "=== ✅ recording preflight: screencapture OK (${_recbytes} bytes / 2s) ===" | tee -a "$LOG"
+    printf '{"ts":"%s","ok":true,"bytes":%s}\n'  "$STAMP" "$_recbytes" >> "$RESULTS/recording-health-results.jsonl"
+  else
+    echo "=== 🔴 recording preflight: screencapture produced ${_recbytes} bytes — Screen Recording permission is MISSING for the launchd shell; kept .mov recordings will be empty ===" | tee -a "$LOG"
+    printf '{"ts":"%s","ok":false,"bytes":%s}\n' "$STAMP" "$_recbytes" >> "$RESULTS/recording-health-results.jsonl"
+  fi
+  echo "" | tee -a "$LOG"
+fi
+
 # --- Self-update the artifacts before testing (Stan): pull latest `main` so the
 # SOURCE lanes test HEAD, and install the latest published DMG so the DMG-meet lane
 # tests the current build. Both best-effort — any failure logs and the run

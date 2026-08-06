@@ -104,6 +104,12 @@ const whiteboardE2e = lastLine('whiteboard-e2e-results.jsonl');
 const codex = lastLine('codex-smoke-results.jsonl');
 const joinRoute = lastLine('join-route-results.jsonl');
 const fuzz = lastLine('agent-fuzz/results.jsonl');
+// Recording preflight: did screencapture actually produce a non-empty file? (null
+// = recording disabled → nothing to say.) A broken recorder isn't a product RED —
+// it's an observability gap — so it warns + pushes like the fallback-room notice
+// rather than counting as a lane failure.
+const recHealth = lastLine('recording-health-results.jsonl');
+const recBroken = recHealth ? recHealth.ok === false : false;
 
 const lines = [
   statusLine('DMG meet (gating)', dmg),
@@ -168,7 +174,9 @@ function analyzeFailures() {
     'Write a SHORT root-cause read for a Telegram alert:',
     '- 2-4 sentences on the single most likely root cause (identify the COMMON',
     '  cause; do not restate every failed step).',
-    '- Tag it: [code regression] / [environment/Google-Meet flakiness] / [test-infra] / [unknown].',
+    '- Tag it: [code regression] / [environment/platform flakiness] / [test-infra] / [unknown].',
+    '  For the platform tag, name the ACTUAL platform that failed — e.g. Slack, Google Meet,',
+    '  network, Upstash. Do NOT default to "Google Meet": a Slack-lane failure is Slack flakiness.',
     '- One line for the most useful next step, if obvious.',
     'Plain text only, no markdown, under ~120 words.',
   ].join('\n');
@@ -199,6 +207,7 @@ const ctx = [];
 const dver = dmgVersion(); if (dver) ctx.push(`🖥 DMG ${esc(dver)}`);
 const mc = mainCommit(); if (mc) ctx.push(`🔧 main ${esc(mc)}`);
 if (meetRoomFallback) ctx.push('⚠️ live lanes ran on the SHARED fallback Meet room — /call mint failed (sign the test profile into vibeconferencing.com); a fixed, publicly-joinable code appears in logs.');
+if (recBroken) ctx.push(`⚠️ screen-recording is BROKEN on the runner — the preflight capture produced ${recHealth?.bytes ?? 0} bytes (Screen Recording permission missing for the launchd shell). Any kept .mov is empty; grant the permission or set VIBECONF_RECORD=0.`);
 const analysisBlock = analysis ? ['', '🔎 <b>Claude analysis</b>', esc(analysis)] : [];
 // Keep under Telegram's 4096-char hard limit — the status lines are the priority,
 // so trim the analysis tail (not the digest) if the whole thing runs long.
@@ -215,7 +224,7 @@ try {
   const resp = await fetch(`https://api.telegram.org/bot${tok}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: CHAT, text, parse_mode: 'HTML', disable_notification: !(anyRed || meetRoomFallback) }),
+    body: JSON.stringify({ chat_id: CHAT, text, parse_mode: 'HTML', disable_notification: !(anyRed || meetRoomFallback || recBroken) }),
     signal: AbortSignal.timeout(20000),
   });
   console.log(resp.ok ? '[notify] telegram sent' : `[notify] telegram failed: ${resp.status} ${await resp.text().catch(() => '')}`);

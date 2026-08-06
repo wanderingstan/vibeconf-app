@@ -139,12 +139,25 @@ rec_run() {  # rec_run <lane> -- <cmd...> : run cmd (tee'd to $LOG), return its 
   local code=${pipestatus[1]:-$?}
   kill -INT "$rpid" 2>/dev/null; wait "$rpid" 2>/dev/null
   if [[ "$REC_KEEP" == "all" || ( "$REC_KEEP" == "fails" && "$code" != "0" ) ]]; then
-    echo "=== 📹 recording kept: $mov ($(du -h "$mov" 2>/dev/null | cut -f1)) ===" | tee -a "$LOG"
+    # screencapture silently produces NO file when the shell running it lacks Screen
+    # Recording permission (the launchd context usually does). Don't claim a recording
+    # was "kept" when nothing landed — that sent someone chasing a .mov that never
+    # existed. Only claim it for a real (>10KB) file; otherwise say plainly that it
+    # failed and why, so the digest/analysis never points at a ghost recording.
+    if [[ -s "$mov" ]] && (( $(stat -f%z "$mov" 2>/dev/null || echo 0) > 10240 )); then
+      echo "=== 📹 recording kept: $mov ($(du -h "$mov" 2>/dev/null | cut -f1)) ===" | tee -a "$LOG"
+    else
+      rm -f "$mov"
+      echo "=== ⚠️ recording FAILED for '$lane' — screencapture produced no file (Screen Recording permission missing for the launchd shell). No .mov to pull. ===" | tee -a "$LOG"
+    fi
   else
     rm -f "$mov"
   fi
-  # Prune: keep only the newest REC_MAX recordings.
-  ls -1t "$REC_DIR"/*.mov 2>/dev/null | tail -n +$((REC_MAX + 1)) | xargs rm -f 2>/dev/null || true
+  # Prune: keep only the newest REC_MAX recordings. (N)=nullglob so an empty dir
+  # doesn't raise zsh's "no matches found" (which spammed launchd.err every run);
+  # (om)=order by mtime, newest first, so we keep [1..REC_MAX] and drop the rest.
+  local recs=( "$REC_DIR"/*.mov(Nom) )
+  (( ${#recs} > REC_MAX )) && rm -f -- "${(@)recs[REC_MAX+1,-1]}"
   return $code
 }
 
@@ -152,6 +165,34 @@ echo "=== meet-test scheduled run $STAMP ===" | tee "$LOG"
 echo "node: $(command -v node) $(node -v 2>/dev/null)" | tee -a "$LOG"
 echo "pnpm: $(command -v pnpm) $(pnpm -v 2>/dev/null)" | tee -a "$LOG"
 echo "" | tee -a "$LOG"
+
+# --- Recording preflight (Stan) — a test OF the recording: screencapture silently
+# produces NO file when THIS (launchd) shell lacks Screen Recording permission, so
+# the keep-on-fail recordings were empty ghosts nobody noticed. Prove up front that
+# a real capture lands (>10KB in a 2s grab), record a result line the digest reads,
+# and log it — so a broken recorder is REPORTED, not discovered later as empty
+# .movs. Only when recording is enabled. Uses the same start→SIGINT→finalize dance
+# as rec_run. ---
+if [[ "$REC" == "1" ]]; then
+  mkdir -p "$REC_DIR"
+  _rectest="$REC_DIR/.preflight-$STAMP.mov"
+  screencapture -v -k "$_rectest" >/dev/null 2>&1 &
+  _rpid=$!
+  sleep 2
+  kill -INT "$_rpid" 2>/dev/null
+  for _ in {1..6}; do kill -0 "$_rpid" 2>/dev/null || break; sleep 0.5; done
+  kill -KILL "$_rpid" 2>/dev/null; wait "$_rpid" 2>/dev/null
+  _recbytes=$(stat -f%z "$_rectest" 2>/dev/null || echo 0)
+  rm -f "$_rectest"
+  if (( _recbytes > 10240 )); then
+    echo "=== ✅ recording preflight: screencapture OK (${_recbytes} bytes / 2s) ===" | tee -a "$LOG"
+    printf '{"ts":"%s","ok":true,"bytes":%s}\n'  "$STAMP" "$_recbytes" >> "$RESULTS/recording-health-results.jsonl"
+  else
+    echo "=== 🔴 recording preflight: screencapture produced ${_recbytes} bytes — Screen Recording permission is MISSING for the launchd shell; kept .mov recordings will be empty ===" | tee -a "$LOG"
+    printf '{"ts":"%s","ok":false,"bytes":%s}\n' "$STAMP" "$_recbytes" >> "$RESULTS/recording-health-results.jsonl"
+  fi
+  echo "" | tee -a "$LOG"
+fi
 
 # --- Self-update the artifacts before testing (Stan): pull latest `main` so the
 # SOURCE lanes test HEAD, and install the latest published DMG so the DMG-meet lane

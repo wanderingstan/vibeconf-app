@@ -4087,11 +4087,11 @@ function configureMeetSession(sess) {
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing — supports --meet-url, --bot-name, --sync-url,
-// --website-url, --local-port, --profile, --devtools
+// --website-url, --local-port, --profile, --devtools, --bot-view
 // ---------------------------------------------------------------------------
 
 // Flags that take a value; used to catch the silently-ignored space form below.
-const KNOWN_VALUE_FLAGS = new Set(['profile', 'local-port', 'website-url', 'meet-url', 'bot-name']);
+const KNOWN_VALUE_FLAGS = new Set(['profile', 'local-port', 'website-url', 'meet-url', 'bot-name', 'bot-view']);
 
 function parseCLIArgs() {
   const args = process.argv.slice(1); // skip electron binary
@@ -7695,6 +7695,17 @@ function createMainWindow() {
             }
           },
         },
+        {
+          // Force the bot's-view window OPEN (popped out). It's hidden by default
+          // (the 👀 button toggles it), so a screen recording of an automated run
+          // films the desktop, not the call. DETERMINISTIC (always 'popped', not a
+          // toggle) so it's safe to trigger from AppleScript for testing —
+          // `tell app "System Events" to click menu item "Show Bot's View"…` — and
+          // the resulting window has a stable title ("<name> — Bot's view").
+          label: "Show Bot's View",
+          accelerator: 'CmdOrCtrl+Shift+B',
+          click: () => { try { setBotViewState('popped'); } catch (err) { console.warn('[electron] Show Bot\'s View failed:', err.message); } },
+        },
         { type: 'separator' },
         {
           // Was a link in the panel's pre-call card. It's a testing shortcut, not
@@ -7981,7 +7992,13 @@ function createMainWindow() {
   // ensureHiddenMeetHost briefly shows its window to establish a display
   // surface, and doing that mid-construction fights the main window for focus.
   setTimeout(() => {
-    try { setBotViewState(restingBotViewState()); }
+    // --bot-view=<popped|thumbnail|hidden> forces the INITIAL state. The view is
+    // hidden by default (👀 toggles it), so a screen recording of an unattended
+    // test run films the desktop, not the call — launching with --bot-view=popped
+    // pops the bot's-view window (titled "<name> — Bot's view") out so it's
+    // filmable/positionable. Invalid/absent → the normal resting state.
+    const launchView = botViewLayout.STATES.includes(cliArgs['bot-view']) ? cliArgs['bot-view'] : restingBotViewState();
+    try { setBotViewState(launchView); }
     catch (err) { console.warn('[electron] initial bot-view state failed:', err.message); }
   }, 0);
 

@@ -221,6 +221,14 @@ fi
 # Open detached DevTools on each spawned app (handy for live DOM debugging).
 (( DEVTOOLS )) && EXTRA_ARGS="$EXTRA_ARGS --devtools=true"
 
+# When RECORDING (nightly sets VIBECONF_RECORD=1) — or an explicit VIBECONF_BOT_VIEW
+# — POP each bot's-view window OUT at launch (#275), so the screencapture films the
+# bots' actual call views instead of the desktop. Off by default: no reason to open
+# windows for a non-recorded run. The window title is "<name> — Bot's view".
+if [[ "${VIBECONF_RECORD:-0}" == "1" || -n "${VIBECONF_BOT_VIEW:-}" ]]; then
+  EXTRA_ARGS="$EXTRA_ARGS --bot-view=${VIBECONF_BOT_VIEW:-popped}"
+fi
+
 # Packaged-app modes exercise the real artifact (asar, build.files) — no
 # source-vs-package fidelity gap. --dmg = the INSTALLED app (/Applications); the
 # exact thing users run. --built = the freshly-BUILT app under electron-app/dist
@@ -384,6 +392,40 @@ for i in $(seq 1 $N); do
     sleep 1
   done
 done
+
+# When we popped the bot's-view windows (above), tile them side-by-side so a screen
+# recording captures them cleanly instead of stacked. BEST-EFFORT: moving another
+# app's windows needs Accessibility permission for System Events — if that isn't
+# granted this quietly no-ops and the windows just stay at their default spots (the
+# --bot-view flag already did the essential part). macOS-only, like the rest here.
+# NOTE (Stan): bots recording their OWN calls will eventually supersede screen-
+# recording for IN-CALL capture; screen recording stays essential for OUT-OF-CALL
+# app behavior — so this positioning is deliberately light, not a precision rig.
+if [[ "${VIBECONF_RECORD:-0}" == "1" || -n "${VIBECONF_BOT_VIEW:-}" ]]; then
+  osascript 2>/dev/null <<'OSA' || true
+  tell application "System Events"
+    set vp to {}
+    repeat with pr in (every application process whose background only is false)
+      try
+        repeat with w in (every window of pr whose name contains "Bot's view")
+          set end of vp to w
+        end repeat
+      end try
+    end repeat
+    set n to (count of vp)
+    if n > 0 then
+      set sw to 860
+      set sh to 560
+      repeat with i from 1 to n
+        try
+          set position of (item i of vp) to {(((i - 1) * (sw + 12)) + 20), 40}
+          set size of (item i of vp) to {sw, sh}
+        end try
+      end repeat
+    end if
+  end tell
+OSA
+fi
 
 echo ""
 echo "✓ Fleet up. Drive it with:"

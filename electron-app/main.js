@@ -3539,35 +3539,45 @@ async function checkAuth() {
 // Trusted people can be pre-assigned a working ElevenLabs key on the website,
 // keyed by their vibeconferencing.com account email. This is the app's half.
 //
-// Consent still guards the case that actually needs it — REPLACING a key
-// someone already chose — but there's nothing to protect by making an empty
-// slot ask first. Nobody has an opinion to override yet, and the entire pitch
-// of the feature is zero setup, so an unset key is filled in silently and
-// announced after the fact rather than held behind a click.
+// Stateless by design — no separate "did they accept or decline" flag to get
+// stuck or contradict itself (an earlier draft tracked one and it caused
+// exactly that: a decline that also hid the one place left to undo it, and a
+// stale accept that survived past the situation that produced it). Instead,
+// two rules, both derived fresh from comparing the CURRENT key to the
+// grant's key — never from history:
+//   1. The current key differs from the gift (including "no key at all") →
+//      an offer to use it is available. Typing your own key IS the decline;
+//      there's nothing else to click, so there's no separate "not now".
+//   2. The key slot is EMPTY specifically at the moment it's DISPLAYED to
+//      someone (app launch, or a Settings/onboarding pane regaining focus —
+//      see the fillIfEmpty callers in app-settings.js and onboarding.js) →
+//      filled in automatically, announced after the fact. A LIVE clear (rule
+//      1) is left empty on purpose, so clearing the field to type your own
+//      key doesn't get silently fought.
 //
-// Last grant fetched from the server, or null. Read by App Settings so the
-// switch-offer banner reflects reality without a round-trip on every paint.
+// Last grant fetched from the server, or null. Read by Settings/onboarding so
+// the offer reflects reality without a round-trip on every paint.
 let ttsGrant = null;
 
-// Apply a grant's key as the server-owned TTS key. Shared by the auto-accept
-// path (no BYO key in the way) and the explicit accept-tts-grant IPC (used
-// when a BYO key exists and the person chose to switch).
+// Apply a grant's key as the server-owned TTS key. Shared by the launch-time
+// auto-fill (rule 2) and the explicit accept-tts-grant IPC (rule 1's button).
 function applyGrant(grant) {
   tts.updateConfig({ apiKey: grant.apiKey });
   stt.updateConfig({ apiKey: grant.apiKey });
   store.set('ttsApiKey', grant.apiKey);
   store.set('ttsApiKeySource', 'gifted');
-  store.set('ttsGiftStatus', 'accepted');
-  verifyElevenLabsKey(grant.apiKey);
+  verifyElevenLabsKey(grant.apiKey, { announce: true });
   broadcastToRenderers('tts-grant-changed');
 }
 
 // GET /api/tts-grant (session-auth'd). Expected shape from the website:
 //   { granted: boolean, claimed: boolean, apiKey?: string }
-// granted=false: no gift for this account. claimed=true: already accepted
-// (server-side bookkeeping; the app's own ttsGiftStatus is the primary
-// re-prompt guard, this is a second source of truth). Best-effort: a failed
-// check just means no offer appears, same as no grant.
+// granted=false: no gift for this account. claimed=true: the server has
+// delivered this grant to SOME client before — admin-facing bookkeeping only
+// (see api/admin/tts-grants.ts on the website side), not read by the app at
+// all: it goes true after the very first fetch and stays true forever, so it
+// can't distinguish anything the app needs to act on.
+// Best-effort: a failed check just means no offer appears, same as no grant.
 async function checkTtsGrant() {
   try {
     const r = await websiteRequest('/api/tts-grant');
@@ -3575,12 +3585,10 @@ async function checkTtsGrant() {
   } catch {
     ttsGrant = null;
   }
-  const status = store?.get('ttsGiftStatus');
-  const offerable = ttsGrant?.granted && !ttsGrant?.claimed && status !== 'accepted' && status !== 'declined';
-  if (offerable && !store?.get('ttsApiKey')) {
-    // Nothing to clobber — apply it now. App Settings shows "this key was a
-    // gift" once it's live rather than asking permission for a no-op choice.
-    console.log('[electron] Auto-accepted gifted ElevenLabs key (#273, no prior key set)');
+  // App launch IS a "displayed, and it's empty" moment (rule 2) — the panel
+  // is the first thing shown.
+  if (ttsGrant?.granted && !store?.get('ttsApiKey')) {
+    console.log('[electron] Auto-applied gifted ElevenLabs key (#273, key slot was empty at launch)');
     applyGrant(ttsGrant);
   } else {
     broadcastToRenderers('tts-grant-changed');
@@ -3590,8 +3598,7 @@ async function checkTtsGrant() {
 
 // Logout / account-switch (#273): a gifted key is per-ACCOUNT, not per-machine
 // like a BYO key, so it must not survive into whoever (or however) is signed
-// in next. A BYO key is left alone — only the gifted one and its bookkeeping
-// are cleared.
+// in next. A BYO key is left alone — only the gifted one is cleared.
 function clearGiftedTtsKey() {
   try {
     if (store?.get('ttsApiKeySource') === 'gifted') {
@@ -3600,7 +3607,6 @@ function clearGiftedTtsKey() {
       broadcastToRenderers('voice-status-changed');
     }
     store?.delete('ttsApiKeySource');
-    store?.delete('ttsGiftStatus');
     ttsGrant = null;
     broadcastToRenderers('tts-grant-changed');
   } catch { /* non-fatal */ }
@@ -4718,8 +4724,11 @@ let elevenLabsIdByName = new Map();
 let elevenLabsKeyProblem = null;
 
 // Check a key against ElevenLabs and record what is wrong with it, if anything.
-// Used both at startup (for a key stored long ago) and the moment one is pasted.
-async function verifyElevenLabsKey(apiKey) {
+// Used both at startup (for a key stored long ago) and the moment one is pasted
+// or accepted as a gift. `announce`: only the "a key just became active" call
+// sites (paste, gift accept) pass true — the startup re-verify of an
+// already-working key must NOT re-announce on every launch.
+async function verifyElevenLabsKey(apiKey, { announce = false } = {}) {
   try {
     const { error } = await listElevenLabsVoices(apiKey);
     // Only KEY problems stick. A timeout or a rate-limit says nothing about the
@@ -4732,6 +4741,15 @@ async function verifyElevenLabsKey(apiKey) {
     } else if (!error) {
       // A working key also refreshes the name cache, so "use George" resolves.
       warmElevenLabsVoiceNames().catch(() => {});
+      if (announce) {
+        // Spoken out loud AND shown in Settings — pasting a key is exactly the
+        // moment someone can't tell whether anything happened, since nothing
+        // in the app makes a sound until a bot is in a call. Text kept in sync
+        // with the visual notice in app-settings.js/.html.
+        broadcastToRenderers('elevenlabs-key-validated', {
+          message: "ElevenLabs key is now active. Select a voice in your bot's preferences.",
+        });
+      }
     }
   } catch { elevenLabsKeyProblem = null; }
   broadcastToRenderers('voice-status-changed');
@@ -8649,30 +8667,17 @@ function setupIPC() {
   // which is a different question — see electron-app/voice-status.js.
   ipcMain.handle('get-voice-status', () => currentVoiceStatus());
 
-  // #273: App Settings' gift-offer banner. Returns what's cached from the last
-  // checkTtsGrant() (at launch or login) plus enough local state to decide
-  // whether to show "accept", "already accepted", or nothing.
-  ipcMain.handle('get-tts-grant', () => ({
-    grant: ttsGrant,
-    status: store?.get('ttsGiftStatus') || null, // 'accepted' | 'declined' | null
-    source: store?.get('ttsApiKeySource') || null, // 'byo' | 'gifted' | null
-    hasByoKey: !!store?.get('ttsApiKey') && store?.get('ttsApiKeySource') !== 'gifted',
-  }));
+  // #273: last grant fetched from the server, for Settings/onboarding to
+  // compare against the current key (see the note above applyGrant — the
+  // decision is derived fresh from that comparison, not from stored history).
+  ipcMain.handle('get-tts-grant', () => ({ grant: ttsGrant }));
 
-  // Explicit accept: the only path left needing a click is REPLACING a BYO
-  // key someone already chose (the empty-slot case is auto-applied by
-  // checkTtsGrant instead — see #273 note above applyGrant).
+  // Apply it as the server-owned key. Used both for the manual "use it"/
+  // "switch" button (rule 1) and the fillIfEmpty auto-apply on pane display
+  // (rule 2) — same action either way, just a different trigger.
   ipcMain.handle('accept-tts-grant', () => {
     if (!ttsGrant?.granted || !ttsGrant?.apiKey) return { ok: false };
     applyGrant(ttsGrant);
-    return { ok: true };
-  });
-
-  // Decline without touching whatever key (if any) is already set — the offer
-  // just stops asking.
-  ipcMain.handle('decline-tts-grant', () => {
-    store.set('ttsGiftStatus', 'declined');
-    broadcastToRenderers('tts-grant-changed');
     return { ok: true };
   });
 
@@ -10064,13 +10069,20 @@ function setupIPC() {
         //   · the key is rejected outright (wrong/old format) — nothing works
         //   · the key is fine but lacks voices_read — speaking still works, only
         //     the voice LIST is unavailable, so a voice id must be set by hand
-        verifyElevenLabsKey(config.apiKey);
+        verifyElevenLabsKey(config.apiKey, { announce: true });
       } else {
         store.delete('ttsApiKey');
         store.delete('ttsApiKeySource');
         elevenLabsKeyProblem = null;
         broadcastToRenderers('voice-status-changed');
       }
+      // #273: whatever just happened to the key (pasted, cleared), tell any
+      // open Settings/onboarding pane so its "use gifted key" offer reflects
+      // the new value right away — a LIVE clear stays empty rather than
+      // auto-refilling (see the note above applyGrant), it just becomes
+      // offerable again immediately instead of waiting for the pane to
+      // regain focus.
+      broadcastToRenderers('tts-grant-changed');
     }
     if (config.voiceId) {
       store.set('ttsVoiceId', config.voiceId);

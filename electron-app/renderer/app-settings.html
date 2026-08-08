@@ -41,16 +41,18 @@
     <div class="desc">Your login for the shared whiteboard rooms. One sign-in covers every profile on this machine.</div>
   </div>
 
-  <!-- #273: only shown when there's already a BYO key AND the server reports
-       an unclaimed grant — replacing a chosen key is the one case that still
-       needs a click. An empty slot is filled in automatically instead (see
-       ttsGiftedNotice below); hidden by default. -->
+  <!-- #273: shown whenever the current key differs from a standing grant
+       (including no key at all) — stateless, always available, no separate
+       decline needed: typing your own key over it IS the "no". An empty slot
+       is instead filled in automatically when this pane is first shown (see
+       fillIfEmpty in app-settings.js) — this banner only covers the case
+       that still needs a click, replacing a key already in the field. Hidden
+       by default. -->
   <div class="as-section" id="giftSection" style="display:none">
     <h2>Voice key gift</h2>
-    <div class="desc" id="giftDesc">You've been gifted a voice key — switch from your own?</div>
-    <div style="margin-top:8px;display:flex;gap:8px">
-      <button type="button" id="giftAcceptBtn" style="background:#8ab4f8;color:#202124;border:none;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer">Switch to gifted key</button>
-      <button type="button" id="giftDeclineBtn" style="background:#2a2d31;color:#e8eaed;border:1px solid #5f6368;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer">Keep my key</button>
+    <div class="desc" id="giftDesc">You've been gifted a voice key.</div>
+    <div style="margin-top:8px">
+      <button type="button" id="giftAcceptBtn" style="background:#8ab4f8;color:#202124;border:none;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer">Use it</button>
     </div>
   </div>
 
@@ -58,6 +60,10 @@
     <h2>Voice (ElevenLabs)</h2>
     <label for="ttsApiKey">API key</label>
     <input type="password" id="ttsApiKey" placeholder="sk_..." autocomplete="off" spellcheck="false" />
+    <!-- Fires once, right after a paste verifies clean — pairs with the spoken
+         confirmation in panel.js. Fades on its own rather than sitting forever,
+         since ttsKeyProblem below already covers the persistent state. -->
+    <div class="desc" id="ttsKeyValidated" style="display:none;color:#81c995">✓ Key verified and active.</div>
     <!-- Auto-applied when the slot was empty (see checkTtsGrant, #273) — this
          is the after-the-fact notice, not a prompt. -->
     <div class="desc" id="ttsGiftedNotice" style="display:none;color:#81c995">✓ This is a gifted key — a voice with zero setup.</div>

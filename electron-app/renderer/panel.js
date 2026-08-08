@@ -2885,6 +2885,16 @@ async function previewVoiceSample(opts) {
   } catch { /* ignore — preview is best-effort */ }
 }
 
+// A key just became active (paste or gift accept, #273) — the only feedback
+// otherwise is a silent color change in Settings, easy to miss since nothing
+// else in the app makes a sound until a bot is in a call. Spoken here (the
+// panel, not app-settings) because it's the one window that's always open,
+// so a gift auto-accepted at launch — before anyone opened Settings — still
+// gets announced.
+api.on('elevenlabs-key-validated', ({ message }) => {
+  previewVoiceSample({ provider: 'elevenlabs', text: message });
+});
+
 unifiedVoiceSelect?.addEventListener('change', () => {
   const val = unifiedVoiceSelect.value || '';
   const sep = val.indexOf(':');

@@ -1,9 +1,9 @@
 ---
 name: onboarding-call
-description: Run a guided, live setup call that walks the user through configuring this bot, name, voice, emoji, background, whiteboard style, skills, and after-call routine
+description: Run a guided, live setup call that walks the user through configuring this bot, name, personality, voice, emoji, background, whiteboard style, skills, and after-call routine
 argument-hint: "[meet code] [BotName] (same room/profile routing as /call and /join-call)"
 disable-model-invocation: true
-allowed-tools: Read Glob Edit mcp__vibeconferencing__start_call mcp__vibeconferencing__list_call_instances mcp__vibeconferencing__get_room_info mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__reload_whiteboard mcp__vibeconferencing__set_whiteboard_style mcp__vibeconferencing__read_chat mcp__vibeconferencing__send_chat mcp__vibeconferencing__suggest_bot_names mcp__vibeconferencing__list_visual_assets mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__set_avatar_emoji mcp__vibeconferencing__list_preferences mcp__vibeconferencing__set_preference mcp__vibeconferencing__set_caption_language mcp__vibeconferencing__set_mode mcp__vibeconferencing__leave_call mcp__vibeconferencing__end_session
+allowed-tools: Read Glob Edit mcp__vibeconferencing__start_call mcp__vibeconferencing__list_call_instances mcp__vibeconferencing__get_room_info mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__reload_whiteboard mcp__vibeconferencing__set_whiteboard_style mcp__vibeconferencing__read_chat mcp__vibeconferencing__send_chat mcp__vibeconferencing__suggest_bot_names mcp__vibeconferencing__list_visual_assets mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__set_avatar_emoji mcp__vibeconferencing__list_preferences mcp__vibeconferencing__set_preference mcp__vibeconferencing__set_caption_language mcp__vibeconferencing__set_mode mcp__vibeconferencing__start_recording mcp__vibeconferencing__stop_recording mcp__vibeconferencing__leave_call mcp__vibeconferencing__end_session
 ---
 
 Run a guided **setup call**: a live Meet where this bot walks the user through configuring
@@ -17,10 +17,30 @@ unchanged. This skill only covers what's different: the scripted walkthrough.
 
 `/join-call` and `/call` both check the `onboardingCallComplete` preference and redirect
 here automatically when it's unset — so most runs of this skill are a bot's first time, with
-everything still at its default. Not accounted for yet: a run where it's already `true`,
-meaning someone is intentionally re-running this to update something, not starting from
-zero. Treat that as future work, not something to improvise around today — walk the steps
-the same way either way for now.
+everything still at its default.
+
+**Check `list_preferences` for `onboardingCallComplete` before Step 2.** If it's unset or
+`false`, this is a first run: proceed exactly as Steps 2 onward describe.
+
+If it's already `true`, someone is intentionally re-running this to change something, not
+starting from zero — and walking all of 4a-4i again from scratch is a chore for someone who
+just wants a new voice. Instead, once the board is up (Step 3), open with a menu of what can
+be reconfigured, listing the SAME items Step 4's sub-steps cover, by name, so they can name
+one instead of sitting through all of them:
+
+> **What would you like to change?**
+> 🌐 Language 　 ✏️ Name 　 🔊 Voice 　 🎭 Personality / role 　 😀 Emoji 　 🖼️ Background
+> 🎨 Whiteboard style 　 🧰 Skills & tools 　 📋 After-call routine 　 …or anything else
+
+> "Welcome back! I'm already set up — want to change something specific, or run through
+> everything again?"
+
+Route their answer straight to the matching lettered step below (4a-4i) and run just that
+one, using the exact procedure in that step's section — same board, same tool calls, same
+defaults-on-skip. If they'd rather redo the whole thing, walk 4a-4i in order same as a first
+run. Either way, still finish with Step 5 and Step 6 — the wrap-up and demo apply regardless
+of how much actually changed, though for a single quick change it is fine to keep Step 6
+brief rather than repeating the full menu they just used to get here.
 
 ## Step 1: Get into a call — joining one that exists, or starting a fresh one
 
@@ -38,7 +58,10 @@ carries on without them. Setting yourself up is not a reason to move the meeting
 
 ## Step 2: Say what's about to happen
 
-Before anything else, set expectations: this is a working session, not small talk.
+Before anything else, set expectations: this is a working session, not small talk. Use the
+line below on a first run. On a returning run (`onboardingCallComplete` already `true`), say
+instead that setup's already done and you're just here to change something — the "not fully
+configured yet" framing is wrong for someone who configured you last time.
 
 > "Hi! I'm not fully configured yet, so let's set that up together while you're both
 > here. Everything's going up on the whiteboard as we go. Say 'skip' on anything, or just
@@ -229,7 +252,35 @@ If no ElevenLabs key is configured, say so plainly and offer to open elevenlabs.
 them (mention it; you can't open a browser yourself from here), then continue with the
 built-in OS voice as the default rather than blocking on it.
 
-### 4d. Emoji set
+### 4d. Personality / role
+
+Now that they've heard the bot's actual voice, ask whether they want anything beyond the
+default: a personality, a tone, or a role to play, rather than plain Claude (or whichever
+agent is actually running underneath — say the real one, not "Claude", if it's different).
+
+Most people will say no, and that is a fine, fast answer — do not push past it. Put a few
+concrete examples on the board rather than asking the open question cold, since "what
+personality do you want" invites a shrug from someone who has never been asked:
+
+> **Keep me as I am** — the default, no persona
+> 🏛️ **Parliamentarian** — runs meetings by the rules, motions and all
+> 🕰️ **Facilitator** — keeps time, makes sure everyone's spoken
+> ⚖️ **Mediator** — neutral, restates each side, finds the actual disagreement
+> 🏴‍☠️ **Something for fun** — a pirate, a sports commentator, whatever they like
+> **…or describe your own**
+
+> "One more thing — do you want me to have a particular personality, or play some kind of
+> role? Totally optional — I can also just stay as I am."
+
+If they pick or describe one, `Edit` this bot's own `CLAUDE.md` to record it under a
+"## Personality" section, in enough detail that a future session reading the file — not this
+call — knows how to act: not just the label ("Parliamentarian") but what that means in
+practice (formal tone, calls for motions and seconds, keeps a running agenda). This is what
+makes it stick after the call ends, unlike the persona demo in Step 6, which only changes
+tone for the rest of THIS conversation. If they decline, skip the edit entirely — an empty
+or default "## Personality" section is noise, not a decision worth recording.
+
+### 4e. Emoji set
 
 **Show the sets, do not list them.** "fluent3d, twemoji, openmoji, noto, redpanda" means
 nothing to anyone; the same face in each, side by side, answers the question instantly.
@@ -247,7 +298,7 @@ set_whiteboard_style("table { table-layout: fixed; width: 100% } th, td { text-a
 ```
 
 `table-layout: fixed` is the part that equalises the columns; the `height` on images is what
-makes files of wildly different sizes look like one set of options. (Step 4f picks a board style
+makes files of wildly different sizes look like one set of options. (Step 4g picks a board style
 properly and replaces this — by then the grids are done.)
 
 **`background: transparent` on `th` is not cosmetic fiddling.** A markdown table's first row
@@ -313,13 +364,13 @@ One trap, if the art has text or a left/right: Meet MIRRORS the bot's own tile i
 self-view, so it looks backwards in `get_call_screenshot` and in the Bot's view window
 while everyone else sees it correctly. Do not pre-flip the images to "fix" it.
 
-### 4e. Background
+### 4f. Background
 
 **One grid, all of them at once** — not a slideshow. `list_visual_assets` returns every
 preset with its absolute path; put them in a markdown table as images with the name under
 each, so the whole choice is visible in a glance and they can just say "the forest one".
 
-**Restyle for these before drawing the grid**, exactly as in 4d — and with different values,
+**Restyle for these before drawing the grid**, exactly as in 4e — and with different values,
 because these are 16:9 scenes rather than square glyphs. Fixing the height (the emoji rule)
 leaves each one a different width and the columns ragged; fixing the WIDTH is what makes a
 tidy grid:
@@ -343,14 +394,14 @@ plus `set_preference("avatarBackgroundCaption", "<short label>")` so it's recall
 If they describe their own instead, generate the SVG the same way you would mid-call and set
 the caption to their description.
 
-### 4f. Whiteboard style
+### 4g. Whiteboard style
 
 Render the same short sample content in 2-3 different `set_whiteboard_style` presets, one
 after another, so they see real differences rather than describing CSS in the abstract.
 (Unlike the background grid this has to be sequential — the style applies to the whole board,
 so they cannot sit side by side.)
 
-**Offer the describe-it path as an equal option, not a fallback**, exactly as in 4e. Put it
+**Offer the describe-it path as an equal option, not a fallback**, exactly as in 4f. Put it
 on the board alongside the samples so it is visible rather than something you mention once:
 
 > **…or describe the look you want**
@@ -366,7 +417,7 @@ confirming it stuck). If they describe one, apply it and show the same sample co
 so they can see the result and adjust — "warmer", "bigger text" — rather than accepting the
 first attempt out of politeness.
 
-### 4g. What you can do — skills AND connected tools
+### 4h. What you can do — skills AND connected tools
 
 **This is the one step most likely to scroll: post the whiteboard URL to chat here even
 if you didn't need to for earlier steps.**
@@ -385,16 +436,16 @@ for the user to recognise a capability, and "nanobanana" tells them nothing.
 
 Skills alone undersell you badly: a bot listing four slash commands while quietly holding
 Gmail and an image generator reads as far less capable than it is, and the user has no way
-to know what was left out. This is also the material step 4h needs — someone cannot ask for
+to know what was left out. This is also the material step 4i needs — someone cannot ask for
 an emailed summary after each call if nobody mentioned that email is available.
 
 Ask which of it this bot should use, and when. Then `Edit` this bot's own `CLAUDE.md` (in the
 agent's working directory) to record the decision under "## Skills" / "## Tools", so it
 persists across sessions rather than living only in this call's memory.
 
-### 4h. After-call routine
+### 4i. After-call routine
 
-Build this out of what 4g just surfaced — the connected servers are the menu. If Gmail is
+Build this out of what 4h just surfaced — the connected servers are the menu. If Gmail is
 wired up, "a summary in your inbox after every call" is a real offer; if Slack is, so is
 "posted to a channel"; with an image generator, "a diagram of what we covered". Name the
 concrete options rather than asking the open question "what would you like?", which invites
@@ -419,7 +470,7 @@ before it, gets taken. Setup is a form; you have not yet shown them the product.
 Also call `set_preference("onboardingCallComplete", true)` here — silently, no need to
 announce it. This is what `/join-call` and `/call` check to decide whether a *future*
 call should redirect here automatically instead of joining normally; do it once the
-walkthrough itself is done (every step in 4a-4h asked or skipped), not earlier, and not
+walkthrough itself is done (every step in 4a-4i asked or skipped), not earlier, and not
 conditionally on how much was actually configured — skipping every step still counts as
 having been through onboarding once.
 
@@ -437,28 +488,32 @@ But it is the least interesting half. Nothing in setup shows the bot pulling up 
 reading a screen share, writing code mid-call, or playing a game — the things that make
 someone say "oh, it can do *that*". Setup is a form; the demo is the product.
 
-**Put it on the whiteboard.** Every step so far had a board, and this one arrives as bare
-speech — so the moment the call finally gets interesting is the moment the screen goes
-stale, still showing the settings summary from Step 5. `update_whiteboard` with the two or
-three things you are offering, as a short titled list ("Things I can do") with an emoji
-each. It makes the offer readable rather than something they have to hold in their head,
-and it lets them point at one instead of remembering what you said.
+**Put the whole menu on the whiteboard.** Every step so far had a board, and this one
+arrives as bare speech — so the moment the call finally gets interesting is the moment the
+screen goes stale, still showing the settings summary from Step 5. `update_whiteboard` with
+a real menu, not a teaser: a titled list ("Things I can do"), grouped into a handful of
+short categories with an emoji per line, drawn from the full set in "Demos that always work"
+below plus the wider list this step ends with. A full board reads as "look how much is
+here", not as a wall of text, as long as it stays grouped and each line stays short — this
+is the one moment in the call where filling the board is the right call, because it is the
+last thing they will look at before you say goodbye.
 
-Then make one concrete offer aloud and **do** it, rather than describing the menu:
+Then pick ONE thing off the board and **do** it live, rather than describing the whole menu
+aloud:
 
 > "None of that showed you the fun half. Want me to draw something, or play a quick game on
 > the whiteboard?"
 
-Pick TWO or THREE, not the whole list. A menu of twelve reads as a brochure and gets a
-polite "no thanks"; two specific offers get a yes. Put the same two or three on the board —
-the board and what you say should match.
+The board can be expansive; the live demo can't. Doing five things back to back turns a
+setup call into a product tour nobody asked for — one good demo sells the rest of the board
+better than reading it aloud would.
 
 Don't open with "before I go". Nothing has suggested you are leaving yet, and saying it
 invites them to end a call one sentence before the best part of it.
 
 ### Only offer what this machine can actually do
 
-**This is the part to get right, and step 4g already did the work** — it inventoried the
+**This is the part to get right, and step 4h already did the work** — it inventoried the
 skills and connected MCP servers in THIS session. Offer from that inventory, not from the
 product page. A demo that opens with "watch me generate an image" and then discovers there
 is no image tool is a worse ending than no demo at all: the last thing they see is the bot
@@ -472,7 +527,7 @@ has a version that works with nothing installed:
 
 - **Drawing.** A photorealistic image needs an image MCP server (nanobanana or similar), and
   many installs have none. That is not a reason to drop the offer: *you can write SVG*, and
-  you already did it once in this call if they described their own background at 4e. Hand-
+  you already did it once in this call if they described their own background at 4f. Hand-
   written SVG is genuinely good for the things people ask for on a call — a diagram, a logo
   sketch, a chart, a cartoon — so offer to *draw* rather than to *generate a photo*, and put
   the result on the board. Then make the upsell, once, in a sentence: *"That's me drawing it
@@ -513,6 +568,14 @@ a good default pair:
 
 - 🎮 **A game on the whiteboard** — hangman, twenty questions, a quiz. Reliably the biggest
   reaction, and it uses nothing but `update_whiteboard` and speech.
+- 🗺️ **Diagrams** — `update_whiteboard` renders Mermaid, so a mind map, a flowchart, or a
+  data chart (pie, bar) is one tool call away, no image server required. The demo that lands
+  best: ask them to describe something with real structure — how their team is organized,
+  the steps in a process they just mentioned, the decision they're stuck on — and turn it
+  into a live flowchart or mind map while they watch, then take one follow-up ("add a step
+  for review", "split that box in two") and redraw it on the spot. A diagram that already
+  existed is a screenshot; one built from what they just said, and then revised on request,
+  is the actual demo.
 - 📝 **Live notes** — "talk at me for thirty seconds about anything and watch the board."
   Shows the thing they will actually use it for every day.
 - 🎭 **A persona** — instant, and it demonstrates that tone is theirs to set. Offer one silly
@@ -539,6 +602,25 @@ a good default pair:
   *see*. Keep it warm and observational — the room, the background, the setup — and comment
   on what people chose to put in frame rather than on how they look. A bot appraising
   someone's appearance is the one way this lands badly.
+- 🎥 **Recording the call** — `start_recording` / `stop_recording` save the bot's own voice,
+  everyone else's audio, and the bot's video, muxed into one `call-recording.mp4` at the end.
+  Works mid-call, not just at the start; mention it can be started any time someone realizes
+  the conversation is worth keeping.
+
+### The rest of the board — put these up even if you don't demo them
+
+These fill out the menu without needing a live demo. List them because they are true of
+every install, not because you are about to do all of them:
+
+- 📄 **Read a screen share, a chat message, or the call transcript** — "what did I say about
+  that earlier?" works because the bot can look back at what already happened in the call.
+- 💬 **Change how it behaves mid-call** — voices, languages, active/passive/silent listening,
+  a hard stop time to watch for. All of this is just asking; nothing to install.
+- ✍️ **Take live notes** — see "Live notes" above; worth its own board line too, since it's
+  the thing people actually use daily.
+- 🐙 **Contribute on GitHub** — Vibeconferencing is open source. If something is missing or
+  broken, they can open an issue or a PR directly:
+  `github.com/wanderingstan/vibeconf-app`.
 
 ### Then hand them the list
 
@@ -546,8 +628,10 @@ Once the demo lands, `send_chat` the full capability list so they can browse it 
 
 > https://vibeconferencing.com/what-you-can-ask
 
-Say it is there rather than reading it aloud. The demo is what they remember; the link is
-what they come back to.
+Say it is there rather than reading it aloud — it has more than fits the board, including
+things that need an add-on (image/video generation, driving a live browser tab, emailed
+summaries). The demo and the board are what they remember; the link is what they come back
+to for the rest.
 
 ### Only now: say how the call ends
 

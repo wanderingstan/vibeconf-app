@@ -1763,7 +1763,14 @@ function loadConfigIntoControls() {
   // #366/#381: the ElevenLabs key field moved to App Settings — no input here to
   // fill. The onboarding banner still reflects whether a key is configured.
   refreshVoiceBanner(); // #381 — only when nothing can speak at all
-  if (result?.ttsVoiceId) ttsVoiceIdInput.value = result.ttsVoiceId;
+  if (result?.ttsVoiceId) {
+    ttsVoiceIdInput.value = result.ttsVoiceId;
+    // A stored id must be VISIBLE on load, whether or not the voice list works.
+    // populateUnifiedVoices re-evaluates this too, but it races the config read
+    // and may have already run with an empty field.
+    const f = document.getElementById('ttsVoiceIdField');
+    if (f) f.style.display = '';
+  }
   // #340: one unified picker merging macOS + ElevenLabs + Voicebox. Pre-selects
   // from the saved provider/voice; defaults to Daniel (tts.js's real default).
   populateUnifiedVoices(result);
@@ -2768,10 +2775,22 @@ const WHITELISTED_MACOS_STANDARD = ['Daniel', 'Samantha', 'Karen'];
 // discoverable any other way.
 function showElevenVoiceError(error) {
   const el = document.getElementById('elevenVoiceError');
-  if (!el) return;
-  if (!error) { el.style.display = 'none'; el.textContent = ''; return; }
-  el.textContent = '⚠ ' + error.message;
-  el.style.display = 'block';
+  if (el) {
+    if (!error) { el.style.display = 'none'; el.textContent = ''; }
+    else { el.textContent = '⚠ ' + error.message; el.style.display = 'block'; }
+  }
+  // The voice-id field is the way IN when the list is unavailable, so it appears
+  // exactly then — and stays visible whenever it already holds a value.
+  //
+  // That second rule is not politeness. A setting that is in effect but not
+  // rendered is how a bot ends up speaking in a voice nobody can find in the UI;
+  // the same shape cost real time twice this week (an emojiSet the dropdown
+  // couldn't display, a botName in a config the app no longer read).
+  const field = document.getElementById('ttsVoiceIdField');
+  if (field) {
+    const hasValue = !!(ttsVoiceIdInput && ttsVoiceIdInput.value.trim());
+    field.style.display = (error || hasValue) ? '' : 'none';
+  }
 }
 
 // Pass the saved config on initial load to pre-select; call with no arg to

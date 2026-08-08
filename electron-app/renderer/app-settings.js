@@ -44,6 +44,31 @@ ttsInput.addEventListener('change', () => {
   api.send('update-tts-config', { apiKey: ttsInput.value.trim() });
 });
 
+// A stored key that no longer authenticates is invisible otherwise: every
+// ElevenLabs call fails, the bot quietly falls back to a system voice, and the
+// only symptom is "it won't let me pick an ElevenLabs voice" somewhere else
+// entirely. main does the classifying (one copy of the rule); this just paints.
+const ttsKeyProblemEl = document.getElementById('ttsKeyProblem');
+function paintKeyProblem(status) {
+  if (!ttsKeyProblemEl) return;
+  const msg = status?.keyProblem?.message;
+  ttsKeyProblemEl.textContent = msg || '';
+  ttsKeyProblemEl.style.display = msg ? '' : 'none';
+}
+api.invoke('get-voice-status').then(paintKeyProblem).catch(() => {});
+// Re-check when the window regains focus: the usual fix is pasting a new key,
+// and it is re-validated at the next startup, so this keeps a stale warning from
+// sitting there after the problem is gone.
+window.addEventListener('focus', () => {
+  api.invoke('get-voice-status').then(paintKeyProblem).catch(() => {});
+});
+// Pasting a key triggers a check against ElevenLabs; main broadcasts when it has
+// an answer. Without this the verdict would only appear on the next focus or
+// restart, which is exactly the delay that made a dead key hard to attribute.
+api.on('voice-status-changed', () => {
+  api.invoke('get-voice-status').then(paintKeyProblem).catch(() => {});
+});
+
 // Open the "get a key" link in the real browser instead of navigating this window.
 document.getElementById('ttsKeyLink').addEventListener('click', (e) => {
   e.preventDefault();

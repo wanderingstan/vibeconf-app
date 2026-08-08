@@ -45,6 +45,10 @@
     <h2>Voice (ElevenLabs)</h2>
     <label for="ttsApiKey">API key</label>
     <input type="password" id="ttsApiKey" placeholder="sk_..." autocomplete="off" spellcheck="false" />
+    <!-- A key can be PRESENT and dead. Shown where the key is EDITED, because
+         until now the only way to discover a dead one was to try picking a voice
+         and read the failure. -->
+    <div class="desc" id="ttsKeyProblem" style="display:none;color:#f28b82"></div>
     <div class="desc">The machine-wide ElevenLabs secret used for text-to-speech. Without it, bots fall back to the system's built-in voice, if the platform has one.</div>
     <div class="desc">Get a key at <a href="https://elevenlabs.io/app/settings/api-keys" id="ttsKeyLink" class="ext-link">elevenlabs.io ↗</a> — signup is free, and the free tier includes enough characters to try it out.</div>
   </div>

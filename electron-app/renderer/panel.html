@@ -247,6 +247,19 @@
              lacks `voices_read` 401s the list call while TTS still works, which
              otherwise looks identical to "no key set". -->
         <div id="elevenVoiceError" style="display:none;font-size:11px;color:#fdd663;margin-top:4px;line-height:1.4"></div>
+        <!-- The way in when the LIST is unavailable. A key scoped without
+             `voices_read` can synthesise but not enumerate, so pasting an id is
+             the only route to an ElevenLabs voice — which makes this belong
+             beside the picker it substitutes for, not in a separate section, and
+             certainly not behind an "Advanced" disclosure as it was.
+             Shown when the list failed, OR when it already holds a value:
+             hiding a setting that is IN EFFECT is how a bot ends up using a
+             voice nobody can find in the UI. -->
+        <div class="field" id="ttsVoiceIdField" style="display:none;margin-top:8px">
+          <label for="ttsVoiceId">ElevenLabs Voice ID</label>
+          <input type="text" id="ttsVoiceId" placeholder="CwhRBWXzGAHq8TQ4Fs17" />
+          <div style="font-size:11px;color:#666;margin-top:2px">Paste the id from the end of the voice's page URL on elevenlabs.io. Overrides the picker above.</div>
+        </div>
         <div style="font-size:11px;color:#666;margin-top:2px">
           Every voice available right now, best first. ElevenLabs voices appear once a key is set in <strong>App Settings</strong> (⌘,); Voicebox voices when its local app is running.
           <a href="#" id="refreshVoicesBtn" style="color:#8ab4f8;text-decoration:underline">Refresh voices</a><!--
@@ -384,13 +397,6 @@
              moved to App Settings (⌘,) since #366/#381. Only the per-profile
              custom Voice ID override stays here. -->
         <div class="helper-text" style="margin:0 0 8px">The ElevenLabs API key is machine-wide. Set it in <strong>App Settings</strong> (⌘,).</div>
-        <details style="margin:2px 0 8px">
-          <summary style="font-size:11px;color:#9aa0a6;cursor:pointer">Advanced: custom ElevenLabs Voice ID</summary>
-          <div class="field" style="margin-top:6px">
-            <input type="text" id="ttsVoiceId" placeholder="CwhRBWXzGAHq8TQ4Fs17" />
-            <div style="font-size:11px;color:#666;margin-top:2px">For a cloned/private voice not shown in the picker. When set, it overrides the ElevenLabs voice chosen above.</div>
-          </div>
-        </details>
       </div>
 
       <div class="section">

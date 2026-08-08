@@ -46,7 +46,7 @@ test('a name that is not known falls back to treating it as an id', () => {
 test('the lookup is case-insensitive', () => {
   // "george" is what someone says out loud; "George" is what the API lists.
   const fn = main.slice(main.indexOf('function warmElevenLabsVoiceNames'));
-  assert.match(fn.slice(0, 900), /full\.toLowerCase\(\)/, 'keys are stored lowercased');
+  assert.match(fn.slice(0, 2200), /full\.toLowerCase\(\)/, 'keys are stored lowercased');
   const res = main.slice(main.indexOf('function resolveElevenLabsVoice'));
   assert.match(res.slice(0, 300), /String\(voice\)\.toLowerCase\(\)/, 'and looked up lowercased');
 });

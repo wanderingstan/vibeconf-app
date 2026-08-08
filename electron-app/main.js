@@ -325,12 +325,20 @@ function setCallRecording({ on } = {}) {
 }
 
 function currentVoiceStatus() {
-  return resolveVoice({
+  const status = resolveVoice({
     ttsApiKey: store?.get('ttsApiKey'),
     ttsProvider: store?.get('ttsProvider'),
     voiceboxProfileId: store?.get('voiceboxProfileId'),
     platform: process.platform,
   });
+  // A key can be PRESENT and dead. resolveVoice only asks whether one is set,
+  // which is the right question for "can this bot make a sound" (it can — the
+  // OS voice covers it) and the wrong one for "is your ElevenLabs key working".
+  // Carried alongside rather than folded in, so canSpeak keeps meaning what it
+  // means and Settings can show the key problem where the key is EDITED.
+  return elevenLabsKeyProblem
+    ? { ...status, keyProblem: { kind: elevenLabsKeyProblem.kind, message: elevenLabsKeyProblem.message } }
+    : status;
 }
 
 // A bot with no voice used to join and simply never make a sound — indis­tin­guish­able,
@@ -4631,10 +4639,47 @@ async function listVoiceboxProfiles() {
 // Empty until warmed, and empty is safe: the override falls back to treating the
 // string as an id, which is the behaviour that existed before.
 let elevenLabsIdByName = new Map();
+// Last key-related ElevenLabs failure, or null. Read by Settings so a dead key
+// is visible where it is EDITED, not only where it is used.
+let elevenLabsKeyProblem = null;
+
+// Check a key against ElevenLabs and record what is wrong with it, if anything.
+// Used both at startup (for a key stored long ago) and the moment one is pasted.
+async function verifyElevenLabsKey(apiKey) {
+  try {
+    const { error } = await listElevenLabsVoices(apiKey);
+    // Only KEY problems stick. A timeout or a rate-limit says nothing about the
+    // key and would be a false accusation sitting in Settings.
+    const keyKinds = ['legacy_key', 'invalid_key', 'unauthorized', 'missing_permissions'];
+    elevenLabsKeyProblem = (error && keyKinds.includes(error.kind)) ? error : null;
+    if (elevenLabsKeyProblem) {
+      console.warn(ts(), '[electron] ElevenLabs key problem:', error.kind, '-', error.message);
+      try { localServer.addError(error.message); } catch { /* server not up yet */ }
+    } else if (!error) {
+      // A working key also refreshes the name cache, so "use George" resolves.
+      warmElevenLabsVoiceNames().catch(() => {});
+    }
+  } catch { elevenLabsKeyProblem = null; }
+  broadcastToRenderers('voice-status-changed');
+  return elevenLabsKeyProblem;
+}
 
 async function warmElevenLabsVoiceNames() {
   try {
-    const { voices } = await listElevenLabsVoices();
+    // A stored key that no longer authenticates used to be invisible here: the
+    // warm swallowed the error, so the only way to find out was to try picking a
+    // voice and read the failure — meanwhile every ElevenLabs call quietly fell
+    // back to a system voice. Classified by the same helper the paste path uses,
+    // so there is one copy of "what counts as a key problem".
+    const { voices, error } = await listElevenLabsVoices();
+    const keyKinds = ['legacy_key', 'invalid_key', 'unauthorized', 'missing_permissions'];
+    if (error && keyKinds.includes(error.kind)) {
+      console.warn(ts(), '[electron] ElevenLabs key problem at startup:', error.kind, '-', error.message);
+      try { localServer.addError(error.message); } catch { /* server not up yet */ }
+      elevenLabsKeyProblem = error;
+    } else if (!error) {
+      elevenLabsKeyProblem = null;
+    }
     if (voices && voices.length) {
       const map = new Map();
       for (const v of voices) {
@@ -9900,8 +9945,21 @@ function setupIPC() {
       stt.updateConfig({ apiKey: config.apiKey });
       if (config.apiKey) {
         store.set('ttsApiKey', config.apiKey);
+        // Test it NOW, not at the next startup. A key is pasted once and then
+        // trusted forever, so a bad one is discovered later and somewhere else
+        // entirely — "it won't let me pick an ElevenLabs voice", with nothing
+        // pointing back at the key. Checking here puts the answer next to the
+        // field the person is still looking at.
+        //
+        // Both failure modes matter and they need DIFFERENT advice:
+        //   · the key is rejected outright (wrong/old format) — nothing works
+        //   · the key is fine but lacks voices_read — speaking still works, only
+        //     the voice LIST is unavailable, so a voice id must be set by hand
+        verifyElevenLabsKey(config.apiKey);
       } else {
         store.delete('ttsApiKey');
+        elevenLabsKeyProblem = null;
+        broadcastToRenderers('voice-status-changed');
       }
     }
     if (config.voiceId) {

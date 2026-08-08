@@ -15,11 +15,24 @@ const {
   looksLikeElevenLabsKey, nextStep, prevStep, stepProgress,
 } = require('../electron-app/onboarding-flow.js');
 
+test('the voice step links to the ElevenLabs key-permissions help page', () => {
+  // The single most common way this step goes wrong: a key created with the
+  // wrong permissions saves fine and looks valid, but Text to Speech access
+  // missing means the bot can't speak, and Voices read access missing means
+  // there's nothing to pick from — either way it's silent about why.
+  const html = readFileSync(join(root, 'electron-app/renderer/onboarding.html'), 'utf8');
+  assert.match(html, /id="keyPermissionsLink"/);
+  const js = readFileSync(join(root, 'electron-app/renderer/onboarding.js'), 'utf8');
+  assert.match(js, /\$\('keyPermissionsLink'\)\?\.addEventListener\('click'/);
+  assert.match(js, /onboarding:open-url', 'https:\/\/vibeconferencing\.com\/onboarding\/elevenlabs-key-setup'/);
+});
+
 test('steps include sign-in and are ordered welcome→done', () => {
   assert.equal(STEPS[0], 'welcome');
   assert.equal(STEPS[STEPS.length - 1], 'done');
   assert.ok(STEPS.includes('signin'), 'has the vibeconferencing.com sign-in step');
-  assert.ok(STEPS.includes('permissions') && STEPS.includes('logging') && STEPS.includes('bot'));
+  assert.ok(STEPS.includes('permissions') && STEPS.includes('logging'));
+  assert.ok(!STEPS.includes('bot'), 'bot name/emoji are now set live in the guided onboarding call, not the wizard');
   assert.ok(STEPS.includes('claude'), 'has the Claude Code install step');
   assert.ok(STEPS.indexOf('claude') < STEPS.indexOf('done'), 'claude comes before done');
 });

@@ -219,13 +219,29 @@ test('the onboarding wizard asks for the language alongside the voice', () => {
   // listening in English. It belongs in the same step as the voice: one is how
   // the bot speaks, the other how it hears.
   const html = readFileSync(join(root, 'electron-app/renderer/onboarding.html'), 'utf8');
-  const voiceStep = html.slice(html.indexOf('data-step="voice"'), html.indexOf('data-step="bot"'));
+  const voiceStep = html.slice(html.indexOf('data-step="voice"'), html.indexOf('data-step="claude"'));
   assert.match(voiceStep, /id="captionLanguage"/, 'the picker belongs in the voice step');
 
   const js = readFileSync(join(root, 'electron-app/renderer/onboarding.js'), 'utf8');
-  // Saved UNCONDITIONALLY: '' is a real choice ("Don't change it"), so a
-  // truthiness guard like botName's would make that choice unsaveable.
+  // Saved unconditionally, same as before — no guard needed now that every
+  // option is a real language (no more falsy "don't change it" choice to skip).
   assert.match(js, /set-config', 'captionLanguage', \$\('captionLanguage'\)\.value/);
   // And prefilled, so re-running the wizard doesn't silently reset it.
   assert.match(js, /savedVoiceCfg\.captionLanguage/);
+});
+
+test('the wizard forces a real language choice, unlike the Settings picker', () => {
+  // #see onboarding.html's captionLanguage note: an unset language is what
+  // caused real problems in the field. The wizard is a one-time first-run
+  // choice, so — unlike the Settings picker, which legitimately offers
+  // "leave Meet alone" for later changes — it doesn't offer that escape hatch,
+  // and defaults to English rather than landing on nothing selected.
+  const html = readFileSync(join(root, 'electron-app/renderer/onboarding.html'), 'utf8');
+  const voiceStep = html.slice(html.indexOf('data-step="voice"'), html.indexOf('data-step="claude"'));
+  assert.doesNotMatch(voiceStep, /<option value="">/, 'the wizard must not offer an unset/leave-as-is language');
+  assert.match(voiceStep, /<option value="en-US">English<\/option>/);
+
+  const js = readFileSync(join(root, 'electron-app/renderer/onboarding.js'), 'utf8');
+  assert.match(js, /savedVoiceCfg\.captionLanguage \|\| 'en-US'/,
+    'an unset saved preference should default the picker to English, not nothing');
 });

@@ -12,6 +12,19 @@ This is the command form of the app's "Call &lt;bot&gt; now" button. Use it when
 **no call yet**. If a call already exists and you just want the bot in it, use
 `/join-call` instead — that's the whole difference between the two.
 
+## Step 0: First, check whether this bot has ever been through onboarding
+
+Call `list_preferences` and find `onboardingCallComplete`. This tracks whether this bot's
+name, voice, emoji and background have ever actually been set, live, by the guided
+onboarding call (`mcp-server/onboarding-call-skill.md`) — not whether the app's first-run
+setup dialog was dismissed, which is a separate, unrelated flag.
+
+- **`false`** (the default): this bot has never been through that walkthrough. Don't start
+  an ordinary call — follow `mcp-server/onboarding-call-skill.md` from its Step 1 onward
+  instead, passing the same `$ARGUMENTS` through unchanged (its Step 1 starts a fresh call
+  exactly as Step 1 below would). Stop reading this skill here.
+- **`true`**: this bot has already been onboarded. Continue with the normal call below.
+
 ## Step 1: Start the call
 
 Call `start_call`. Pass `bot_name` only if `$ARGUMENTS` names one — it selects which

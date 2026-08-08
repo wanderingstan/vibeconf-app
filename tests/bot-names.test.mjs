@@ -118,17 +118,22 @@ test('the suggestion is made in main, not the renderer', () => {
   assert.match(main, /listProfiles\(PROFILES_ROOT\)/, 'the taken list should be the real one');
 });
 
-test('the wizard pre-fills only when the bot has no name yet', () => {
-  // Re-running the wizard for a named bot must not rename it.
+test('the wizard silently names an unnamed bot, and never renames one that has a name', () => {
+  // Naming moved to the guided onboarding call (bot/voice/emoji/background are
+  // now all set live, in-call — not in this dialog). But a bot still needs SOME
+  // name to show on its Meet tile before that call ever runs, so the wizard
+  // still picks one on load, silently, rather than leaving "Unnamed bot".
   //
-  // This assertion USED TO PIN THE BUG: it asserted the literal expression
-  // `savedVoiceCfg.botName || await suggestName()`, which reads correctly and is
-  // wrong, because get-config fills botName with its schema default. The test
-  // passed for exactly the reason the feature didn't work. Assert the BEHAVIOUR
-  // — a real name is kept, the default is not — not the spelling.
-  assert.match(wizard, /unnamed \? await suggestName\(\) : saved/);
+  // This assertion USED TO PIN A DIFFERENT BUG: it asserted the literal
+  // expression `savedVoiceCfg.botName || await suggestName()`, which reads
+  // correctly and is wrong, because get-config fills botName with its schema
+  // default. The test passed for exactly the reason the feature didn't work.
+  // Assert the BEHAVIOUR — a real name is kept, the default is not — not the
+  // spelling.
+  assert.match(wizard, /if \(unnamed\) \{/);
   assert.match(wizard, /saved === DEFAULT_BOT_NAME/);
-  // And a failed suggestion degrades to the old empty field rather than blocking.
+  // And a failed suggestion degrades to leaving the default alone, rather than
+  // blocking the wizard's initial load.
   const fn = wizard.slice(wizard.indexOf('async function suggestName'));
   assert.match(fn.slice(0, fn.indexOf('\n}')), /catch \{ return ''; \}/);
 });
@@ -140,51 +145,11 @@ test('a suggestion never hands back the name it was asked to replace', () => {
   assert.match(main, /\.\.\.taken, \.\.\.\(Array\.isArray\(exclude\) \? exclude : \[\]\)/);
 });
 
-test('the spinner exists and toggles Spin/Stop', () => {
+test('the wizard has no name-spinner UI left — naming moved to the guided call', () => {
   const html = readFileSync(join(root, 'electron-app/renderer/onboarding.html'), 'utf8');
-  assert.match(html, /id="botNameShuffle"/);
-  assert.match(html, />Spin</, 'starts as Spin');
-  // The input is width:100%, so it needs a flex row to share the line — and the
-  // button needs a min-width so Spin↔Stop doesn't resize it mid-spin.
-  assert.match(html, /class="field-row"/);
-  assert.match(html, /min-width: 92px/);
-  assert.match(wizard, /btn\.textContent = 'Stop'/);
-  assert.match(wizard, /btn\.textContent = 'Spin'/);
-});
-
-test('Stop keeps exactly the name on screen', () => {
-  // No deceleration, no settling elsewhere. A wheel that coasts past what you
-  // were looking at when you clicked is infuriating — and here it would mean the
-  // button lied about what you were choosing.
-  const fn = wizard.slice(wizard.indexOf('function stopSpin'));
-  const body = fn.slice(0, fn.indexOf('\n}'));
-  assert.match(body, /clearInterval\(spinTimer\)/);
-  assert.ok(!/botName'\)\.value =/.test(body), 'stopping must not change the field');
-});
-
-test('the spin speed sits at the reaction-time cusp', () => {
-  // Tuned so you can ALMOST stop on a name you liked. Simple reaction time is
-  // ~250ms, so at ~220ms the wheel advances about one name while you react.
-  const m = wizard.match(/const SPIN_MS = (\d+)/);
-  assert.ok(m, 'SPIN_MS should exist');
-  const ms = Number(m[1]);
-  assert.ok(ms >= 180 && ms <= 300, `${ms}ms is outside the cusp: <180 is pure luck, >300 is easy to aim`);
-});
-
-test('one batch per spin, not an IPC per frame', () => {
-  // At ~4.5 names/sec a round trip per frame would make the wheel stutter.
-  assert.match(wizard, /suggestNames\(SPIN_BATCH/);
-  assert.match(main, /names\.push\(randomBotName\(\{ taken: \[\.\.\.avoid, \.\.\.names\] \}\)\)/,
-    'a batch must not repeat a name back-to-back');
-});
-
-test('typing beats spinning, and navigating away stops it', () => {
-  // Otherwise the wheel overwrites what someone has begun to type, and a spin
-  // left running keeps rewriting a field nobody is looking at.
-  assert.match(wizard, /\$\('botName'\)\?\.addEventListener\('focus', stopSpin\)/);
-  assert.match(wizard, /\$\('botName'\)\?\.addEventListener\('keydown', stopSpin\)/);
-  const save = wizard.slice(wizard.indexOf('async function saveCurrent'));
-  assert.match(save.slice(0, 300), /stopSpin\(\);/);
+  assert.doesNotMatch(html, /id="botNameShuffle"/);
+  assert.doesNotMatch(html, /data-step="bot"/);
+  assert.doesNotMatch(wizard, /spinTimer|SPIN_MS|startSpin|stopSpin/);
 });
 
 test('famous robots are in the pool, but stay a garnish', () => {

@@ -154,14 +154,34 @@ const PREFERENCES = {
     default: false,
     hiddenInSettingsUI: true,
     description:
-      'Debug: record the call\'s audio to disk, one file per track — the bot\'s ' +
-      'own outgoing audio plus each remote WebRTC track Meet delivers — with a ' +
-      'manifest that time-aligns them. Built to diagnose "heard-nothing" stalls: ' +
-      'it captures what each mic actually carried, to compare against captions. ' +
-      'Meet gives each remote participant its own track (measured), so "remote-*" ' +
-      'tracks are per-participant — labeled by arrival order, not name. OFF by ' +
+      'Automatically record every call to disk — one audio file per track (the bot\'s ' +
+      'own outgoing audio plus each remote WebRTC track Meet delivers) PLUS a ' +
+      'video track of the bot\'s own Meet view, with a manifest that time-aligns ' +
+      'everything. Meet gives each remote participant its own track (measured), so ' +
+      '"remote-*" tracks are per-participant — labeled by arrival order, not name. ' +
+      'When recording is active a small visible status window appears (elapsed ' +
+      'time + Stop button) — that is expected UI, not a side effect, and it is ' +
+      'also how the room is shown recording is happening. When the recording ' +
+      'stops, audio and video are automatically muxed into one call-recording.mp4. OFF by ' +
       'default; verbose on disk. Env VIBECONF_RECORD_CALL=1 ' +
-      'forces it on (used by the test fleet so a nightly stall comes with audio).',
+      'forces it on (used by the test fleet so a nightly stall comes with a recording).',
+  },
+  keepCallRecordingTracks: {
+    type: 'boolean',
+    default: false,
+    label: 'Keep call recording tracks',
+    description:
+      'After a call recording finishes producing call-recording.mp4 (and, if a ' +
+      'whiteboard share happened, call-recording-share.mp4), also keep the raw ' +
+      'per-track files it was built from — call-recording-tracks/ (one audio file ' +
+      'per participant, plus video.webm and share.webm) and manifest.json. OFF by ' +
+      'default: once the merge succeeds, call-recording-tracks/ is deleted, since ' +
+      'almost everyone only ever wants the merged video(s), not the raw tracks they ' +
+      'came from. Turn this on to keep those too — useful for diagnosing the ' +
+      'recording itself (per-track timing, a specific participant\'s audio, a failed ' +
+      'mux) rather than just watching what happened on the call. A merge that fails ' +
+      'or is skipped (no ffmpeg, no video captured) never deletes the raw tracks ' +
+      'regardless of this setting — they are all that is left in that case.',
   },
   studioSound: {
     type: 'boolean',

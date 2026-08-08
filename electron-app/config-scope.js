@@ -76,6 +76,14 @@ const APP_LEVEL_KEYS = new Set([
   // No separate "has this account answered the offer" flag exists alongside
   // it — deliberately stateless, see the note above applyGrant in main.js.
   'ttsApiKeySource',
+  // Whether call recordings' raw per-track files are kept after merging is a
+  // disk-space/retention choice about this MACHINE, not any one bot's
+  // personality — and, same trap as agentHosting/updateChannel/remoteLogging
+  // above, App Settings renders app-level schema prefs only, so a per-profile
+  // 'keepCallRecordingTracks' would have a real label and still be
+  // unreachable from the UI. New pref, no per-profile legacy value to
+  // migrate — not in MIGRATE_KEYS or MIGRATE_OPT_OUTS.
+  'keepCallRecordingTracks',
 ]);
 
 // The subset of app-level keys the launch migration may auto-promote from a

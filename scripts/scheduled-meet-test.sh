@@ -48,12 +48,19 @@ cd "$REPO" || { echo "repo not found: $REPO"; exit 3; }
 # died right after agent-fuzz, before notify, and no Telegram was sent). Now the
 # digest runs from the EXIT trap below, and a TERM/INT is converted to an exit so
 # that trap still fires. Guarded so a TERM→EXIT sequence sends exactly once. ---
-_DIGEST_SENT=0
+# FILE sentinels, not shell variables: the watchdog runs in a SUBSHELL (a fork), so
+# a variable it sets is invisible to the parent's EXIT trap and vice-versa. A file
+# both can read makes "send exactly once" work across that boundary — and, crucially,
+# lets the WATCHDOG send the digest ITSELF before it starts killing. (2026-08-08 bug:
+# a watchdog-killed run went SILENT because the watchdog's pkill -P / kill -KILL
+# reaped the EXIT trap's `node notify` child before it could send.)
+_DIGEST_SENT="/tmp/vibeconf-digest-${STAMP}.sent"
+_CALL_DIGEST_SENT="/tmp/vibeconf-calldigest-${STAMP}.sent"
 send_digest() {
-  [[ "$_DIGEST_SENT" == 1 ]] && return
-  _DIGEST_SENT=1
+  [[ -e "$_DIGEST_SENT" ]] && return
+  : > "$_DIGEST_SENT"
   echo "" | tee -a "$LOG"
-  echo "=== Telegram digest (via EXIT trap — fires on normal end OR early kill) ===" | tee -a "$LOG"
+  echo "=== Telegram digest (fires on normal end OR — via the watchdog — an early kill) ===" | tee -a "$LOG"
   node scripts/notify-nightly.mjs 2>&1 | tee -a "$LOG" || true
 }
 # Real-user call digest — independent of the test-suite digest above (own
@@ -62,17 +69,16 @@ send_digest() {
 # archive scripts/archive-logs.mjs keeps continuously fed on this machine, not
 # from anything this test run itself produced, so it doesn't depend on the
 # rest of tonight's run succeeding.
-_CALL_DIGEST_SENT=0
 send_call_digest() {
-  [[ "$_CALL_DIGEST_SENT" == 1 ]] && return
-  _CALL_DIGEST_SENT=1
+  [[ -e "$_CALL_DIGEST_SENT" ]] && return
+  : > "$_CALL_DIGEST_SENT"
   echo "" | tee -a "$LOG"
-  echo "=== Real-call digest (via EXIT trap) ===" | tee -a "$LOG"
+  echo "=== Real-call digest ===" | tee -a "$LOG"
   node scripts/nightly-call-digest.mjs 2>&1 | tee -a "$LOG" || true
 }
-# A signal (watchdog kill -TERM, stray pkill, Ctrl-C) becomes a normal exit so the
-# EXIT trap — and thus send_digest — still runs. Can't catch SIGKILL, but the
-# watchdog only KILLs 10s after its TERM, leaving the trap time to send.
+# A stray pkill / Ctrl-C becomes a normal exit so the EXIT trap — and thus
+# send_digest — still runs. The WATCHDOG can't rely on that (its own pkill/kill-KILL
+# reaps the trap's notify child), so it sends its own digest before killing, below.
 trap 'exit 143' TERM INT
 
 # --- Hard global watchdog — a stuck lane must NEVER wedge the schedule again. On
@@ -93,6 +99,11 @@ if [[ "${VIBECONF_NO_WATCHDOG:-0}" != "1" ]]; then
       sleep 15; _w=$(( _w + 15 ))
     done
     echo "$(date +%Y-%m-%dT%H-%M-%S) ⏰ watchdog: run $STAMP exceeded ${GLOBAL_TIMEOUT}s — force-killing (pid $_run_pid)" >>"$RESULTS/watchdog.log"
+    # Send the digest FIRST — while the run is still alive — so a wedged night still
+    # alerts (that's the whole point of the watchdog: tell us it wedged). The kills
+    # below would otherwise reap the EXIT trap's notify child before it sends
+    # (2026-08-08). The file sentinel dedupes with the trap so it goes out once.
+    send_digest; send_call_digest
     kill -TERM "$_run_pid" 2>/dev/null                # stop the run advancing first…
     pkill -f 'profile=test-meet-guest' 2>/dev/null    # …then sweep test fleets (reparented to init)…
     pkill -f 'profile=test-slack'      2>/dev/null

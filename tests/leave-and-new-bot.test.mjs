@@ -126,7 +126,7 @@ test('seeding never clobbers an existing config', () => {
   const fn = main.slice(main.indexOf('function seedNewBotName'));
   const body = fn.slice(0, fn.indexOf('\n  }\n'));
   assert.match(body, /if \(existing\.botName\) return;/);
-  assert.match(body, /\{ \.\.\.existing, botName \}/, 'merge, never overwrite the file');
+  assert.match(body, /\{ \.\.\.existing, botName, onboardingCallComplete: false \}/, 'merge, never overwrite the file');
 });
 
 test('a new bot does not take a name another bot is already using', () => {

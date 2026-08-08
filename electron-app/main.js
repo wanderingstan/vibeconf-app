@@ -6129,6 +6129,10 @@ app.whenReady().then(async () => {
     const agentDir = aw.agentDirFor(profileDir);
     const newCfgPath = path.join(agentDir, 'config.json');
     const oldCfgPath = path.join(profileDir, 'config.json');
+    // Captured BEFORE the migration below can create newCfgPath — otherwise
+    // a profile with only a legacy loose config would look brand new by the
+    // time onboardingCallComplete is decided further down.
+    const isBrandNewProfile = !fs.existsSync(newCfgPath) && !fs.existsSync(oldCfgPath);
     let profileConfigDir = agentDir;
     try {
       fs.mkdirSync(agentDir, { recursive: true });
@@ -6156,6 +6160,18 @@ app.whenReady().then(async () => {
     const profileStore = new Store(profileConfigDir);
     migrateAppLevelKeys(appLevelStore, profileStore);
     store = new ScopedStore(appLevelStore, profileStore);
+
+    // `onboardingCallComplete`'s schema default is true — see
+    // preferences-schema.js — so every profile that predates this preference
+    // (or that this code simply never touches) reads as already onboarded,
+    // with no migration needed. A profile only needs to be told OTHERWISE at
+    // the one moment it's genuinely brand new: no config.json anywhere for
+    // it yet, meaning nothing (not even a "New bot" pre-seed — see
+    // seedNewBotName, which stamps this explicitly for that path) has ever
+    // run for this profile before.
+    if (isBrandNewProfile && profileStore.get('onboardingCallComplete') === undefined) {
+      profileStore.set('onboardingCallComplete', false);
+    }
   }
 
   // #366: inherit (or donate) the shared vibeconferencing.com login before
@@ -9083,7 +9099,11 @@ function setupIPC() {
       try { existing = JSON.parse(fs.readFileSync(file, 'utf-8')); } catch { /* new */ }
       if (existing.botName) return;
       const botName = randomBotName({ taken });
-      fs.writeFileSync(file, JSON.stringify({ ...existing, botName }, null, 2));
+      // onboardingCallComplete defaults to true (preferences-schema.js) so
+      // pre-existing profiles read as already onboarded with no migration
+      // needed — which means a genuinely NEW bot has to say otherwise
+      // explicitly, right here, at the one moment it's actually created.
+      fs.writeFileSync(file, JSON.stringify({ ...existing, botName, onboardingCallComplete: false }, null, 2));
       console.log('[electron] New bot', profileName, 'named', botName);
     } catch (err) {
       // Non-fatal: an unnamed bot is still a working bot, and the Settings page

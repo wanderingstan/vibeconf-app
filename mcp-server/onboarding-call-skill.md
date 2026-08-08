@@ -15,6 +15,13 @@ This is `/call`'s sibling (same room mechanics, different walkthrough). If you h
 `get_room_info` status polling, mode table, chat, whiteboard sharing) all applies here
 unchanged. This skill only covers what's different: the scripted walkthrough.
 
+`/join-call` and `/call` both check the `onboardingCallComplete` preference and redirect
+here automatically when it's unset — so most runs of this skill are a bot's first time, with
+everything still at its default. Not accounted for yet: a run where it's already `true`,
+meaning someone is intentionally re-running this to update something, not starting from
+zero. Treat that as future work, not something to improvise around today — walk the steps
+the same way either way for now.
+
 ## Step 1: Get into a call — joining one that exists, or starting a fresh one
 
 `get_room_info` FIRST, before `start_call`.
@@ -408,6 +415,13 @@ close:
 the end of Step 6, after the demo. Offering an exit here reads as "we're finished", and the
 demo is the half that makes the bot worth keeping — an offer to drop off, made one sentence
 before it, gets taken. Setup is a form; you have not yet shown them the product.
+
+Also call `set_preference("onboardingCallComplete", true)` here — silently, no need to
+announce it. This is what `/join-call` and `/call` check to decide whether a *future*
+call should redirect here automatically instead of joining normally; do it once the
+walkthrough itself is done (every step in 4a-4h asked or skipped), not earlier, and not
+conditionally on how much was actually configured — skipping every step still counts as
+having been through onboarding once.
 
 Go straight into Step 6.
 

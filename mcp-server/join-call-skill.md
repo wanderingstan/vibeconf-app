@@ -8,6 +8,20 @@ allowed-tools: Bash Read mcp__vibeconferencing__get_room_info mcp__vibeconferenc
 
 Join the user's current Google Meet call as an AI bot participant.
 
+## Step 0: First, check whether this bot has ever been through onboarding
+
+Call `list_preferences` and find `onboardingCallComplete`. This is separate from the app's
+first-run setup dialog — it tracks whether this bot's name, voice, emoji and background have
+ever actually been set, live, by the guided onboarding call
+(`mcp-server/onboarding-call-skill.md`).
+
+- **`false`** (the default): this bot has never been through that walkthrough. Don't run a
+  normal join — hand off to the onboarding call instead. Follow
+  `mcp-server/onboarding-call-skill.md` from its Step 1 onward, passing the same
+  `$ARGUMENTS` through unchanged (it does its own room detection/join, using exactly the
+  same rules as Step 1 below). Stop reading this skill here.
+- **`true`**: this bot has already been onboarded. Continue with the normal join below.
+
 ## Step 1: Determine the room code and bot name
 
 Parse `$ARGUMENTS` for the room. **Accept either a bare meet code (`xxx-xxxx-xxx`) OR a full Meet URL** — most people will paste the call's URL, not a code. If it's a `https://meet.google.com/xxx-xxxx-xxx` URL, **extract the `xxx-xxxx-xxx` code** from it and use that (strip any `?`/`#` query). If found (either form), use it directly and skip detection. Any remaining non-code argument is the bot name.

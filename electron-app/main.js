@@ -3535,6 +3535,77 @@ async function checkAuth() {
   });
 }
 
+// ── ElevenLabs key gifting (#273) ───────────────────────────────────────────
+// Trusted people can be pre-assigned a working ElevenLabs key on the website,
+// keyed by their vibeconferencing.com account email. This is the app's half.
+//
+// Consent still guards the case that actually needs it — REPLACING a key
+// someone already chose — but there's nothing to protect by making an empty
+// slot ask first. Nobody has an opinion to override yet, and the entire pitch
+// of the feature is zero setup, so an unset key is filled in silently and
+// announced after the fact rather than held behind a click.
+//
+// Last grant fetched from the server, or null. Read by App Settings so the
+// switch-offer banner reflects reality without a round-trip on every paint.
+let ttsGrant = null;
+
+// Apply a grant's key as the server-owned TTS key. Shared by the auto-accept
+// path (no BYO key in the way) and the explicit accept-tts-grant IPC (used
+// when a BYO key exists and the person chose to switch).
+function applyGrant(grant) {
+  tts.updateConfig({ apiKey: grant.apiKey });
+  stt.updateConfig({ apiKey: grant.apiKey });
+  store.set('ttsApiKey', grant.apiKey);
+  store.set('ttsApiKeySource', 'gifted');
+  store.set('ttsGiftStatus', 'accepted');
+  verifyElevenLabsKey(grant.apiKey);
+  broadcastToRenderers('tts-grant-changed');
+}
+
+// GET /api/tts-grant (session-auth'd). Expected shape from the website:
+//   { granted: boolean, claimed: boolean, apiKey?: string }
+// granted=false: no gift for this account. claimed=true: already accepted
+// (server-side bookkeeping; the app's own ttsGiftStatus is the primary
+// re-prompt guard, this is a second source of truth). Best-effort: a failed
+// check just means no offer appears, same as no grant.
+async function checkTtsGrant() {
+  try {
+    const r = await websiteRequest('/api/tts-grant');
+    ttsGrant = (r.status === 200 && r.json) ? r.json : null;
+  } catch {
+    ttsGrant = null;
+  }
+  const status = store?.get('ttsGiftStatus');
+  const offerable = ttsGrant?.granted && !ttsGrant?.claimed && status !== 'accepted' && status !== 'declined';
+  if (offerable && !store?.get('ttsApiKey')) {
+    // Nothing to clobber — apply it now. App Settings shows "this key was a
+    // gift" once it's live rather than asking permission for a no-op choice.
+    console.log('[electron] Auto-accepted gifted ElevenLabs key (#273, no prior key set)');
+    applyGrant(ttsGrant);
+  } else {
+    broadcastToRenderers('tts-grant-changed');
+  }
+  return ttsGrant;
+}
+
+// Logout / account-switch (#273): a gifted key is per-ACCOUNT, not per-machine
+// like a BYO key, so it must not survive into whoever (or however) is signed
+// in next. A BYO key is left alone — only the gifted one and its bookkeeping
+// are cleared.
+function clearGiftedTtsKey() {
+  try {
+    if (store?.get('ttsApiKeySource') === 'gifted') {
+      store.delete('ttsApiKey');
+      elevenLabsKeyProblem = null;
+      broadcastToRenderers('voice-status-changed');
+    }
+    store?.delete('ttsApiKeySource');
+    store?.delete('ttsGiftStatus');
+    ttsGrant = null;
+    broadcastToRenderers('tts-grant-changed');
+  } catch { /* non-fatal */ }
+}
+
 // ── Liveness heartbeat ──────────────────────────────────────────────────────
 // The app runs for hours or days, so /api/auth/me (fired once at launch) can't
 // tell the backend whether an install is still alive. This ping is that signal,
@@ -3714,6 +3785,9 @@ function openGoogleLogin() {
         }).then(data => {
           console.log('[electron] Auth check after login:', data?.authenticated ? `logged in as ${data.user.name}` : 'NOT authenticated');
           broadcastAuthChanged();
+          // #273: a fresh sign-in may belong to a trusted email with a gift
+          // waiting — check right away rather than at next launch.
+          if (data?.authenticated) checkTtsGrant();
         }).catch(err => {
           console.error('[electron] Login cookie error:', err);
         });
@@ -6432,6 +6506,9 @@ app.whenReady().then(async () => {
   checkAuth().then(data => {
     if (data.authenticated) {
       console.log('[electron] Already logged in as', data.user.name);
+      // #273: an already-logged-in launch is exactly when a grant made since
+      // the last run needs to surface — nothing else re-checks it.
+      checkTtsGrant();
     } else {
       console.log('[electron] Not logged in — user can click Log in button');
     }
@@ -8572,6 +8649,33 @@ function setupIPC() {
   // which is a different question — see electron-app/voice-status.js.
   ipcMain.handle('get-voice-status', () => currentVoiceStatus());
 
+  // #273: App Settings' gift-offer banner. Returns what's cached from the last
+  // checkTtsGrant() (at launch or login) plus enough local state to decide
+  // whether to show "accept", "already accepted", or nothing.
+  ipcMain.handle('get-tts-grant', () => ({
+    grant: ttsGrant,
+    status: store?.get('ttsGiftStatus') || null, // 'accepted' | 'declined' | null
+    source: store?.get('ttsApiKeySource') || null, // 'byo' | 'gifted' | null
+    hasByoKey: !!store?.get('ttsApiKey') && store?.get('ttsApiKeySource') !== 'gifted',
+  }));
+
+  // Explicit accept: the only path left needing a click is REPLACING a BYO
+  // key someone already chose (the empty-slot case is auto-applied by
+  // checkTtsGrant instead — see #273 note above applyGrant).
+  ipcMain.handle('accept-tts-grant', () => {
+    if (!ttsGrant?.granted || !ttsGrant?.apiKey) return { ok: false };
+    applyGrant(ttsGrant);
+    return { ok: true };
+  });
+
+  // Decline without touching whatever key (if any) is already set — the offer
+  // just stops asking.
+  ipcMain.handle('decline-tts-grant', () => {
+    store.set('ttsGiftStatus', 'declined');
+    broadcastToRenderers('tts-grant-changed');
+    return { ok: true };
+  });
+
   // #137: the panel's sign-in indicator. Returns the CACHE immediately and, when
   // asked, refreshes behind it — so the panel paints instantly and corrects
   // itself a moment later rather than blocking on a login shell.
@@ -9253,6 +9357,7 @@ function setupIPC() {
       store?.delete('vcSessionToken');
     } catch { /* non-fatal */ }
     await session.defaultSession.cookies.remove(baseUrl, 'vc_session');
+    clearGiftedTtsKey(); // #273: a gift belongs to the account that's leaving
     broadcastAuthChanged();
     return { loggedOut: true };
   });
@@ -9945,6 +10050,10 @@ function setupIPC() {
       stt.updateConfig({ apiKey: config.apiKey });
       if (config.apiKey) {
         store.set('ttsApiKey', config.apiKey);
+        // #273: typing/pasting here is always the person's OWN key — the gifted
+        // path sets ttsApiKey through accept-tts-grant, not this handler. Mark
+        // provenance so a later logout knows not to touch it.
+        store.set('ttsApiKeySource', 'byo');
         // Test it NOW, not at the next startup. A key is pasted once and then
         // trusted forever, so a bad one is discovered later and somewhere else
         // entirely — "it won't let me pick an ElevenLabs voice", with nothing
@@ -9958,6 +10067,7 @@ function setupIPC() {
         verifyElevenLabsKey(config.apiKey);
       } else {
         store.delete('ttsApiKey');
+        store.delete('ttsApiKeySource');
         elevenLabsKeyProblem = null;
         broadcastToRenderers('voice-status-changed');
       }

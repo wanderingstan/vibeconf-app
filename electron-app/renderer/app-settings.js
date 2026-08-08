@@ -36,6 +36,46 @@ userSignOutBtn.addEventListener('click', async () => {
 api.on('auth-changed', () => refreshUser());
 refreshUser();
 
+// --- #273: gifted ElevenLabs key. An empty key slot is filled in
+// automatically by main (checkTtsGrant) — nothing to confirm there, only to
+// announce (ttsGiftedNotice below). The one case that still needs a click is
+// REPLACING a key someone already chose; that's what this prompt is for. ---
+const giftSection = document.getElementById('giftSection');
+const giftAcceptBtn = document.getElementById('giftAcceptBtn');
+const giftDeclineBtn = document.getElementById('giftDeclineBtn');
+const ttsGiftedNotice = document.getElementById('ttsGiftedNotice');
+function paintGift({ grant, status, source, hasByoKey } = {}) {
+  if (ttsGiftedNotice) ttsGiftedNotice.style.display = (source === 'gifted') ? '' : 'none';
+  if (!giftSection) return;
+  const offerable = grant?.granted && !grant?.claimed && status !== 'accepted' && status !== 'declined' && hasByoKey;
+  giftSection.style.display = offerable ? '' : 'none';
+}
+async function refreshGift() {
+  try {
+    const state = await api.invoke('get-tts-grant');
+    paintGift(state);
+    // The key itself may have just been auto-applied by main — repaint the
+    // field so it doesn't sit empty until the next window focus.
+    if (state?.source === 'gifted') {
+      const c = await api.invoke('get-config', ['ttsApiKey']);
+      if (c && c.ttsApiKey) ttsInput.value = c.ttsApiKey;
+    }
+  } catch { /* non-fatal */ }
+}
+giftAcceptBtn?.addEventListener('click', async () => {
+  giftAcceptBtn.disabled = true;
+  try {
+    await api.invoke('accept-tts-grant');
+    const c = await api.invoke('get-config', ['ttsApiKey']);
+    if (c && c.ttsApiKey) ttsInput.value = c.ttsApiKey;
+  } finally {
+    giftAcceptBtn.disabled = false;
+  }
+});
+giftDeclineBtn?.addEventListener('click', () => { api.invoke('decline-tts-grant'); });
+api.on('tts-grant-changed', refreshGift);
+refreshGift();
+
 // --- ElevenLabs key: reuse update-tts-config (keeps TTS + STT in sync, mirrors
 // the panel's Text-to-Speech field exactly). ---
 const ttsInput = document.getElementById('ttsApiKey');

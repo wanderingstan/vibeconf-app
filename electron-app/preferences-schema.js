@@ -140,6 +140,34 @@ const PREFERENCES = {
       "The bot's display name in Meet calls. Takes effect on the next call.",
     requiresRestart: true,
   },
+  onboardingCallComplete: {
+    type: 'boolean',
+    // Default TRUE, deliberately backwards from how a "have you done X yet"
+    // flag would normally default. A brand-new, never-configured bot needs
+    // this false — but that has to be written explicitly, at the moment the
+    // bot is actually created (main.js: seedNewBotName, and the brand-new-
+    // profile check in the startup block), not left to fall through to a
+    // schema default. Defaulting to false here would mean every profile that
+    // predates this preference — every bot real people have been running for
+    // weeks — reads as never-onboarded the moment this shipped, and gets
+    // shoved into a surprise guided call it doesn't need. Defaulting to true
+    // makes "unknown" mean "assume already configured", which is the safe
+    // direction to be wrong in.
+    default: true,
+    hiddenInSettingsUI: true,
+    description:
+      "Whether this bot has ever finished the live guided onboarding call " +
+      "(mcp-server/onboarding-call-skill.md) — the walkthrough that sets its " +
+      'name, voice, emoji and background live, in-call. Distinct from the ' +
+      "Electron dialog wizard's own `onboardingComplete` store flag, which only " +
+      'tracks that dialog being dismissed and says nothing about whether the ' +
+      'live call ever ran. Explicitly set to false only when a bot is newly ' +
+      'created (main.js), and set to true by the onboarding-call skill itself ' +
+      'at the end of its walkthrough (Step 5, once every question has been ' +
+      'asked or skipped). Read by join-call-skill.md and call-skill.md to ' +
+      'redirect a bot that has never done this into the guided call instead ' +
+      'of a normal join/call.',
+  },
   logRawCaptions: {
     type: 'boolean',
     default: false,

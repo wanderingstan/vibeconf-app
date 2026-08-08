@@ -322,6 +322,7 @@ $('elKeyGiftBtn')?.addEventListener('click', async () => {
   }
 });
 $('getKeyLink').addEventListener('click', (e) => { e.preventDefault(); api.invoke('onboarding:open-url', 'https://elevenlabs.io/app/settings/api-keys'); });
+$('keyPermissionsLink')?.addEventListener('click', (e) => { e.preventDefault(); api.invoke('onboarding:open-url', 'https://vibeconferencing.com/onboarding/elevenlabs-key-setup'); });
 
 // A suggested name for a brand-new bot, picked at random from the same pool the
 // old in-wizard name spinner drew from. Main picks it — it knows which names

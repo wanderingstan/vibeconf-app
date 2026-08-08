@@ -128,6 +128,12 @@
       </div>
       <div class="hint" id="elKeyGiftedNotice" style="display:none;color:#81c995">✓ This is a gifted key — a voice with zero setup.</div>
       <div class="hint">Don't have one? <a href="#" id="getKeyLink">Get a free key at elevenlabs.io →</a></div>
+      <!-- The single most common way this step goes wrong: a key created with
+           the wrong permissions saves fine and looks valid, but the bot can't
+           speak (missing Text to Speech access) or has nothing to pick from
+           (missing Voices read access) — see onboarding/elevenlabs-key-setup.html
+           in the vibeconferencing website repo. -->
+      <div class="hint">Getting an error, or no voices to pick from? <a href="#" id="keyPermissionsLink">See which permissions the key needs →</a></div>
 
       <!-- The other half of the step: the language the bot LISTENS in.
            The bot reads the room through Meet's captions, so this decides

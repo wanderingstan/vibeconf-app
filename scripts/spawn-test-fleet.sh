@@ -393,39 +393,15 @@ for i in $(seq 1 $N); do
   done
 done
 
-# When we popped the bot's-view windows (above), tile them side-by-side so a screen
-# recording captures them cleanly instead of stacked. BEST-EFFORT: moving another
-# app's windows needs Accessibility permission for System Events — if that isn't
-# granted this quietly no-ops and the windows just stay at their default spots (the
-# --bot-view flag already did the essential part). macOS-only, like the rest here.
-# NOTE (Stan): bots recording their OWN calls will eventually supersede screen-
-# recording for IN-CALL capture; screen recording stays essential for OUT-OF-CALL
-# app behavior — so this positioning is deliberately light, not a precision rig.
-if [[ "${VIBECONF_RECORD:-0}" == "1" || -n "${VIBECONF_BOT_VIEW:-}" ]]; then
-  osascript 2>/dev/null <<'OSA' || true
-  tell application "System Events"
-    set vp to {}
-    repeat with pr in (every application process whose background only is false)
-      try
-        repeat with w in (every window of pr whose name contains "Bot's view")
-          set end of vp to w
-        end repeat
-      end try
-    end repeat
-    set n to (count of vp)
-    if n > 0 then
-      set sw to 860
-      set sh to 560
-      repeat with i from 1 to n
-        try
-          set position of (item i of vp) to {(((i - 1) * (sw + 12)) + 20), 40}
-          set size of (item i of vp) to {sw, sh}
-        end try
-      end repeat
-    end if
-  end tell
-OSA
-fi
+# NOTE: the --bot-view=popped flag above already opens each bot's-view window so a
+# screen recording films it. We deliberately do NOT reposition/tile those windows.
+# That needed Accessibility permission for System Events and, UN-granted in the
+# headless launchd context, it didn't fail fast — it intermittently BLOCKED, hanging
+# the fleet spawn and wedging the whole nightly until the 30-min watchdog
+# (2026-08-08: 5 of 6 lanes got past it, the 6th hung → silent night). Not worth it:
+# bot-own-call-recording will supersede in-call screen capture anyway, and screen
+# recording's durable value is OUT-OF-call behavior, which needs no window juggling.
+# Windows just open at their default (possibly overlapping) positions.
 
 echo ""
 echo "✓ Fleet up. Drive it with:"

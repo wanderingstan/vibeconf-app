@@ -27,6 +27,12 @@ function lastLine(file) {
     return lines.length ? JSON.parse(lines[lines.length - 1]) : null;
   } catch { return null; }
 }
+function allLines(file) {
+  try {
+    return readFileSync(join(RESULTS, file), 'utf8').trim().split('\n').filter(Boolean)
+      .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  } catch { return []; }
+}
 function botToken() {
   try {
     const m = readFileSync(ENV_FILE, 'utf8').match(/^TELEGRAM_BOT_TOKEN=(.+)$/m);
@@ -127,6 +133,10 @@ const lines = [
 const anyRed = lines.some((l) => l.startsWith('🔴'));
 const anyYellow = lines.some((l) => l.startsWith('🟡'));
 const stamp = dmg?.ts || main?.ts || slack?.ts || '(unknown)';
+// Recording links uploaded to Drive THIS run (rec_run → rclone). Only failing
+// lanes keep recordings (REC_KEEP=fails), so this is naturally the interesting set
+// — a red night's digest links straight to the .mov of what went wrong.
+const recLinks = allLines('recording-uploads.jsonl').filter((r) => r.ts === stamp && r.link);
 
 // --- Claude analysis (only on a red night) ---------------------------------
 // When something failed, hand the failing log lines to `claude -p` for a short
@@ -211,7 +221,10 @@ if (recBroken) ctx.push(`⚠️ screen-recording is BROKEN on the runner — the
 const analysisBlock = analysis ? ['', '🔎 <b>Claude analysis</b>', esc(analysis)] : [];
 // Keep under Telegram's 4096-char hard limit — the status lines are the priority,
 // so trim the analysis tail (not the digest) if the whole thing runs long.
-let text = [header, ...ctx, ...lines.map(esc), ...analysisBlock].join('\n');
+const recBlock = recLinks.length
+  ? ['', '📹 <b>Recordings</b>', ...recLinks.map((r) => `<a href="${esc(r.link)}">▶ ${esc(r.lane)}</a>`)]
+  : [];
+let text = [header, ...ctx, ...lines.map(esc), ...recBlock, ...analysisBlock].join('\n');
 if (text.length > 4090) text = text.slice(0, 4087) + '…';
 
 if (process.env.VIBECONF_NOTIFY === '0') { console.log('[notify] disabled'); process.exit(0); }

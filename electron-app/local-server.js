@@ -3642,7 +3642,7 @@ class LocalServer {
       return;
     }
 
-    // #209: debug call-audio recording on/off (start_debug_recording MCP tool).
+    // #209: call recording on/off (start_recording MCP tool).
     if (url.pathname === '/api/call/record' && req.method === 'POST') {
       let on = true;
       try {

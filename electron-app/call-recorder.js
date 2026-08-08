@@ -1,10 +1,19 @@
-// call-recorder.js — writes per-track call audio to disk, for debugging.
+// call-recorder.js — writes per-track call audio (and, now, one video track)
+// to disk, for debugging.
 //
 // WHY: when a bot "hears nothing" and the call goes red, we have caption
 // timeouts but no record of what each mic actually carried. A time-aligned
 // audio track per source turns "the bot went deaf, no idea why" into "here is
 // the remote track — it was silent" or "it was full of audio the bot never
 // captioned". That is the diagnostic the meet-test stalls have been missing.
+//
+// VIDEO: this class is deliberately format-agnostic — chunk() just appends
+// MediaRecorder timeslice chunks to a named file, so the bot's own Meet-view
+// video (captured separately by call-recording-window.js via getDisplayMedia)
+// rides the exact same path as one more "track" named 'video', landing at
+// video.webm alongside bot.webm/remote-*.webm. The optional `kind` param lets
+// call-media-merge.js tell the video track apart from audio tracks without
+// guessing from the name.
 //
 // SEPARATION: measured (#209), Meet DOES hand each remote participant its own
 // WebRTC track — in a 3-party call the two remote tracks came out with near-zero
@@ -55,17 +64,22 @@ class CallRecordingSession {
     this.names.set(String(track), String(name));
   }
 
-  _track(name, mime, startWallClock) {
+  _track(name, mime, startWallClock, kind) {
     let t = this.tracks.get(name);
     if (!t) {
       // Never let a track name reach the filesystem unsanitized.
       const safe = String(name).replace(/[^a-zA-Z0-9._-]/g, '_') || 'track';
       const ext = /ogg/i.test(mime || '') ? 'ogg' : 'webm';
       const file = path.join(this.dir, `${safe}.${ext}`);
+      // kind is optional: callers that don't pass it get the obvious default
+      // inferred from the track name, so existing audio callers (page-inject.js)
+      // need no change.
+      const resolvedKind = kind || (name === 'video' || /^video\//i.test(mime || '') ? 'video' : 'audio');
       t = {
         name, file, base: `${safe}.${ext}`,
         fd: fs.openSync(file, 'w'),
         mime: mime || 'audio/webm',
+        kind: resolvedKind,
         bytes: 0, chunks: 0,
         // startWallClock (from the renderer, at MediaRecorder.start()) is the
         // PRECISE anchor: the webm's t=0 in absolute wall-clock ms, on the same
@@ -83,9 +97,10 @@ class CallRecordingSession {
 
   // Append one MediaRecorder chunk. `buffer` is a Buffer (decoded upstream).
   // startWallClock: wall-clock ms at the track's MediaRecorder.start() (its t=0).
-  chunk(name, seq, buffer, mime, startWallClock) {
+  // kind: optional 'audio'|'video' — inferred from the name/mime when omitted.
+  chunk(name, seq, buffer, mime, startWallClock, kind) {
     if (this.closed || !buffer || !buffer.length) return;
-    const t = this._track(name, mime, startWallClock);
+    const t = this._track(name, mime, startWallClock, kind);
     if (t.capped) return;
     if (Number.isInteger(seq)) {
       if (t.lastSeq >= 0 && seq !== t.lastSeq + 1) t.seqGaps++;
@@ -135,6 +150,7 @@ class CallRecordingSession {
         name: this.names.get(t.name) || null, // attributed participant, when known
         file: t.base,
         mime: t.mime,
+        kind: t.kind, // 'audio' | 'video' — call-media-merge.js uses this, not the name
         bytes: t.bytes,
         chunks: t.chunks,
         startWallClock: t.startWallClock, // absolute wall-clock ms at the track's t=0

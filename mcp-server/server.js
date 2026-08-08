@@ -1416,10 +1416,10 @@ server.tool(
   }
 );
 
-// --- start_debug_recording (#209) ---
+// --- start_recording (#209) ---
 server.tool(
-  "start_debug_recording",
-  "DEBUG tool: record the current call's audio to disk, one file per track — the bot's own voice plus each remote participant's audio (Meet sends them separately), with a manifest that names tracks and time-aligns them. Built to diagnose why a bot 'heard nothing': you get the actual audio each mic carried, to compare against captions. Requires an active call. This is NOT the future user-facing recording (that will capture video + all machine sound) — this is per-track audio for debugging. Auto-runs on every call when the recordCallAudio pref / VIBECONF_RECORD_CALL is set; this tool starts it on demand otherwise.",
+  "start_recording",
+  "Record the current call to disk — one audio file per track (the bot's own voice plus each remote participant's audio, which Meet sends separately) PLUS a video track of the bot's own Meet view, with a manifest that names tracks and time-aligns them. Once recording stops, audio and video are automatically muxed into one playable call-recording.mp4. A small visible status window (elapsed time + Stop button) appears while recording is active — that's expected. Requires an active call. Recording can be started (and stopped, via stop_recording) at ANY point during a live call, not just at launch. Auto-runs on every call when the recordCallAudio pref / VIBECONF_RECORD_CALL is set; this tool starts it on demand otherwise.",
   {
     bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance."),
   },
@@ -1438,7 +1438,7 @@ server.tool(
         const notice = data.announced
           ? " I spoke a notice so the room knows it's being recorded — no need to announce it again."
           : "";
-        return { content: [{ type: "text", text: `Recording the call's audio (one file per track).${notice} Saving to:\n${data.dir}` }] };
+        return { content: [{ type: "text", text: `Recording the call (audio, one file per track, + video of the bot's own view).${notice} Saving to:\n${data.dir}` }] };
       }
       const why = data.code === 'not-in-call'
         ? "Not in a call — join or start one first, then record."
@@ -1450,10 +1450,10 @@ server.tool(
   }
 );
 
-// --- stop_debug_recording (#209) ---
+// --- stop_recording (#209) ---
 server.tool(
-  "stop_debug_recording",
-  "Stop the debug call-audio recording started by start_debug_recording (or by the recordCallAudio pref) and finalize the files + manifest. Returns where they were saved. Recording also stops automatically when the bot leaves the call.",
+  "stop_recording",
+  "Stop the call recording started by start_recording (or by the recordCallAudio pref) — finalizes the per-track audio + video files and manifest, then automatically muxes them into one playable call-recording.mp4. Returns where they were saved. Can be called at any point mid-call (not just at the end). Recording also stops automatically when the bot leaves the call.",
   {
     bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance."),
   },

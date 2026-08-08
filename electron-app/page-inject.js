@@ -170,6 +170,12 @@
       this.debugOverlayFlags = debugOverlayFlagsGlobal;
       this.emojiSet = avatarState.emojiSet || emojiSetGlobal;
       this.debugInfo = debugInfoLatest;
+      // Recording indicator — unlike the debug overlay this is USER-facing
+      // (consent/awareness), not diagnostic chrome, so it's drawn unconditionally
+      // whenever recording is active rather than gated behind debugOverlayEnabled.
+      // Seeded from the module-level global so a camera created mid-recording
+      // (camera toggle, Meet reload) still shows it immediately.
+      this.isRecording = isRecordingGlobal;
       // Persistent overrides from agent's set_avatar_emoji calls. null = use
       // default for that state. Seeded from avatarState so a camera created
       // mid-call keeps the configured emoji instead of reverting to defaults.
@@ -695,9 +701,57 @@
       }
       ctx.restore();
 
+      // Unlike the debug overlay below, this is user-facing (consent/awareness
+      // that the call is being recorded) — always drawn when isRecording is
+      // true, not gated behind the panel's debug-overlay checkbox. Wrapped for
+      // the same reason: a bug here must never black out the actual camera frame.
+      if (this.isRecording) { try { this._renderRecordingIndicator(); } catch (e) { /* overlay-only */ } }
+
       // Wrapped: the overlay is diagnostic chrome — a bug in it must never black
       // out the bot's actual camera frame (which already rendered above).
       if (this.debugOverlayEnabled) { try { this._renderDebugOverlay(); } catch (e) { /* overlay-only */ } }
+    }
+
+    _renderRecordingIndicator() {
+      const { ctx, canvas } = this;
+      const text = '\u{1F534} Recording';
+      // Google Sans, not the debug overlay's monospace — this is a user-facing
+      // label, not a diagnostic readout, so it should match the app's own UI
+      // font (panel.css's body font-family) rather than look like debug text.
+      const font = '600 22px "Google Sans", Roboto, Arial, sans-serif';
+      // Top-left, not bottom-left: Meet draws its own participant-name label in
+      // the bottom-left of the tile, which would collide with (and visually
+      // compete against) an indicator there. Extra inset (vs. the debug
+      // overlay's 24/16) because Meet crops the camera feed to fit the current
+      // window/tile size — a tighter corner position is more likely to survive
+      // that crop, though nothing here can guarantee it always will.
+      const insetX = 40;
+      const insetY = 40;
+      ctx.save();
+      ctx.font = font;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      // Same "text on TV" treatment as the debug overlay (dark stroke outline
+      // + soft shadow) for contrast over any avatar background, then a solid
+      // red fill — this is the whole point of the indicator, so it should read
+      // as unambiguously red, not blend into the frame.
+      ctx.lineJoin = 'round';
+      ctx.miterLimit = 2;
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.9)';
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
+      ctx.shadowBlur = 3;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 1;
+      const x = insetX;
+      const y = insetY;
+      ctx.strokeText(text, x, y);
+      ctx.fillStyle = '#ea4335'; // matches the app's existing red accent (debug overlay's STALE/DEAF color)
+      ctx.save();
+      ctx.shadowColor = 'transparent';
+      ctx.fillText(text, x, y);
+      ctx.restore();
+      ctx.restore();
     }
 
     _renderDebugOverlay() {
@@ -1263,6 +1317,11 @@
   // sensibly.
   let debugOverlayFlagsGlobal = { health: true, captions: false, agentLog: false, experiments: false };
   let debugInfoLatest = null;
+  // Same latching reasoning as debugOverlayEnabledGlobal above, but for the
+  // recording indicator: 'start-recording' can arrive before any VirtualCamera
+  // exists (recording auto-starts on join, same tick a fresh Meet session
+  // spins up its camera), so this must be readable at construction time.
+  let isRecordingGlobal = false;
   let emojiSetGlobal = 'native'; // 'native' | 'twemoji' — pushed from main (#316)
   let emojiFontGlobal = '';      // a family installed on the user's machine, or '' for the system font
   let emojiFontColorGlobal = ''; // fill colour for a monochrome font; '' = leave the canvas default
@@ -2979,8 +3038,15 @@
 
   window.addEventListener('message', (event) => {
     if (event.source !== window || !event.data?.__botsInCalls) return;
-    if (event.data.action === 'start-recording') callRecorder.start(event.data.payload || {});
-    else if (event.data.action === 'stop-recording') callRecorder.stop();
+    if (event.data.action === 'start-recording') {
+      callRecorder.start(event.data.payload || {});
+      isRecordingGlobal = true;
+      for (const cam of cameras.values()) cam.isRecording = true;
+    } else if (event.data.action === 'stop-recording') {
+      callRecorder.stop();
+      isRecordingGlobal = false;
+      for (const cam of cameras.values()) cam.isRecording = false;
+    }
   });
 
   // ---------------------------------------------------------------------------

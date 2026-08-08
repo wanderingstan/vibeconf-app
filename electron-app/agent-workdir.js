@@ -122,8 +122,12 @@ code: the same room hosts many calls, so the room code alone would make every
 call overwrite the last one.
 
 This is the standard place for everything a call produces — the summary below
-today, and transcripts and audio recordings as those arrive. One folder per call
-keeps a call's artifacts together and makes it obvious what to delete.
+today, and transcripts and recordings as those arrive. When call recording is
+on, this is where \`call-recording-tracks/\` (one audio file per
+participant, plus the bot's own \`video.webm\` and, if a whiteboard share
+happened, \`share.webm\`) and the merged \`call-recording.mp4\` / \`call-recording-share.mp4\` land.
+One folder per call keeps a call's artifacts together and makes it obvious
+what to delete.
 
 By default: **write a short summary of the call.**
 

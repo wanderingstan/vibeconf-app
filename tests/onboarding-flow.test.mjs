@@ -19,7 +19,8 @@ test('steps include sign-in and are ordered welcome→done', () => {
   assert.equal(STEPS[0], 'welcome');
   assert.equal(STEPS[STEPS.length - 1], 'done');
   assert.ok(STEPS.includes('signin'), 'has the vibeconferencing.com sign-in step');
-  assert.ok(STEPS.includes('permissions') && STEPS.includes('logging') && STEPS.includes('bot'));
+  assert.ok(STEPS.includes('permissions') && STEPS.includes('logging'));
+  assert.ok(!STEPS.includes('bot'), 'bot name/emoji are now set live in the guided onboarding call, not the wizard');
   assert.ok(STEPS.includes('claude'), 'has the Claude Code install step');
   assert.ok(STEPS.indexOf('claude') < STEPS.indexOf('done'), 'claude comes before done');
 });

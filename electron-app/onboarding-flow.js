@@ -70,7 +70,14 @@ function permissionsFor(platform = process.platform) {
 
 // The wizard's steps, in order. `signin` (vibeconferencing.com) is skippable, but
 // skipping disables the shared whiteboard — the wizard says so and lets you go on.
-const STEPS = ['welcome', 'permissions', 'signin', 'logging', 'voice', 'bot', 'claude', 'done'];
+//
+// Bot name, voice, emoji and background used to be steps here. They're now set
+// live by the guided onboarding call (mcp-server/onboarding-call-skill.md),
+// which can hear the answer and confirm it (e.g. whether the bot's name is
+// recognizable in its own transcript) — something a dialog box can't do. What's
+// left is exactly what CAN'T happen inside a call: permissions, the ElevenLabs
+// key (a credential, not spoken), signing in, and installing the agent.
+const STEPS = ['welcome', 'permissions', 'signin', 'logging', 'voice', 'claude', 'done'];
 
 // Normalize a raw permission status into { granted, needsAttention, status }.
 // macOS media statuses: 'granted' | 'denied' | 'restricted' | 'not-determined'.

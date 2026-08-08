@@ -152,10 +152,16 @@ test('mergeCallMedia with video but zero audio re-encodes the video to call-reco
 // being fully intact. Every merge output must be a re-encoded, widely
 // playable h264 stream, never a raw copy of the VP9 capture.
 test('merged output is always re-encoded to h264, never a raw VP9 copy — video-only, one audio track, and multi-audio-track cases', { skip: !HAVE_FFMPEG }, async () => {
-  const probeVideoCodec = (file) => execSync(
-    `ffprobe -v error -select_streams v -show_entries stream=codec_name -of csv=p=0 "${file}"`,
-    { encoding: 'utf8' },
-  ).trim();
+  // ffmpeg-static (the binary these tests actually resolve to via
+  // FFMPEG_BIN) doesn't bundle ffprobe — only ffmpeg — so read the codec off
+  // ffmpeg's own stream-info banner (always printed to stderr, even on a
+  // successful `-f null -` decode) instead of shelling out to a tool that
+  // isn't guaranteed to exist.
+  const probeVideoCodec = (file) => {
+    const out = execSync(`"${FFMPEG_BIN}" -i "${file}" -f null - 2>&1`, { encoding: 'utf8' });
+    const m = out.match(/Video:\s*([a-zA-Z0-9_]+)/);
+    return m ? m[1] : null;
+  };
 
   // video only
   {
@@ -320,7 +326,7 @@ test('padStartMs prepends black video via tpad before muxing', { skip: !HAVE_FFM
   // re-encoded at the same length. A loose bound (not exact-frame) since
   // container/keyframe rounding varies by ffmpeg build.
   const probe = execSync(
-    `ffmpeg -i "${outFile}" -hide_banner -f null - 2>&1 | grep -o "Duration: [0-9:.]*" | head -1`,
+    `"${FFMPEG_BIN}" -i "${outFile}" -hide_banner -f null - 2>&1 | grep -o "Duration: [0-9:.]*" | head -1`,
     { encoding: 'utf8' },
   );
   const m = probe.match(/Duration: (\d+):(\d+):(\d+\.\d+)/);

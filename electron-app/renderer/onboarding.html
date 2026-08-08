@@ -153,6 +153,15 @@
       <p class="sub">The default Mac voice is robotic. For a natural voice, paste an ElevenLabs API key (a free tier is plenty to start), then pick a voice below.</p>
       <label for="elKey">ElevenLabs API key <span style="color:#9aa0a6">(optional)</span></label>
       <input type="password" id="elKey" placeholder="sk_..." autocomplete="off" spellcheck="false" />
+      <!-- #273: an empty field is auto-filled the moment this step is shown
+           (see loadVoiceGift in onboarding.js) — this only covers the case
+           that still needs a click, replacing a key already in the field.
+           Hidden by default. -->
+      <div id="elKeyGiftSection" style="display:none;margin-top:6px">
+        <div class="hint" id="elKeyGiftDesc" style="color:#81c995">You've been gifted a voice key.</div>
+        <button type="button" id="elKeyGiftBtn" style="margin-top:4px;background:#8ab4f8;color:#202124;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer">Use it</button>
+      </div>
+      <div class="hint" id="elKeyGiftedNotice" style="display:none;color:#81c995">✓ This is a gifted key — a voice with zero setup.</div>
       <div class="hint">Don't have one? <a href="#" id="getKeyLink">Get a free key at elevenlabs.io →</a></div>
       <label for="voiceSelect">Voice <span style="color:#9aa0a6">(plays a sample when you pick one)</span></label>
       <select id="voiceSelect"><option value="mac:Daniel">Daniel (default)</option></select>

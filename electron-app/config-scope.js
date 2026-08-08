@@ -67,6 +67,15 @@ const APP_LEVEL_KEYS = new Set([
   // It also had nowhere to change it later — App Settings renders app-level
   // prefs only, so it was set once in the wizard and then unreachable.
   'remoteLogging',
+  // #273: provenance of the current ttsApiKey — 'byo' (pasted by the user) or
+  // 'gifted' (applied from a per-account grant). Lives at app level, same as
+  // ttsApiKey itself, but is NOT in MIGRATE_KEYS: a gift is tied to the
+  // logged-in account, not the machine, so it must not silently spread from
+  // one profile's acceptance. It is cleared on logout/account-switch instead
+  // (see clearGiftedTtsKey in main.js), unlike the BYO key it may sit beside.
+  // No separate "has this account answered the offer" flag exists alongside
+  // it — deliberately stateless, see the note above applyGrant in main.js.
+  'ttsApiKeySource',
 ]);
 
 // The subset of app-level keys the launch migration may auto-promote from a

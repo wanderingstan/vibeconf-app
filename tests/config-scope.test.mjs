@@ -179,7 +179,11 @@ test('APP_LEVEL_KEYS is exactly the decided set (guard against accidental promot
     // BINARY/updater — one per machine, so "profile A on candidate, B on release" is
     // meaningless — and per-profile it would be invisible in App Settings (same trap
     // as agentHosting). Promoted deliberately.
-    ['agentBackend', 'agentHosting', 'automationProbed', 'claudeIntegrationRemoved', 'confirmQuit', 'dangerousMode', 'remoteLogging', 'syncBaseUrl', 'ttsApiKey', 'updateChannel', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
+    // ttsApiKeySource (#273): provenance of a gifted ElevenLabs key. App-level
+    // like ttsApiKey itself, but NOT in MIGRATE_KEYS — a gift is tied to the
+    // logged-in account, not the machine, and is cleared on logout instead
+    // (clearGiftedTtsKey in main.js).
+    ['agentBackend', 'agentHosting', 'automationProbed', 'claudeIntegrationRemoved', 'confirmQuit', 'dangerousMode', 'remoteLogging', 'syncBaseUrl', 'ttsApiKey', 'ttsApiKeySource', 'updateChannel', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
   );
 });
 

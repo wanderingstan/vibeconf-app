@@ -39,6 +39,7 @@ function render() {
   if (step === 'signin') loadAuth();
   if (step === 'bot') loadEmojiSet();
   if (step === 'claude') { loadClaude(); loadAgentBackend(); }
+  if (step === 'voice') loadVoiceGift();
 }
 
 // #231: which agent drives bots on this machine. Only 'claude' makes the app
@@ -384,10 +385,74 @@ function persistSelectedVoice() {
 $('voiceSelect').addEventListener('change', () => { persistSelectedVoice(); previewSelectedVoice(); });
 // Re-list voices (unlocks ElevenLabs voices) once a key is entered; persist the
 // key first so the audition path (synth-voice-sample reads the stored key) works.
-$('elKey').addEventListener('change', async () => {
-  const key = ($('elKey').value || '').trim();
-  try { await api.invoke('set-config', 'ttsApiKey', key); } catch {}
+// update-tts-config rather than a bare set-config (#273): same path the panel
+// and App Settings use, so a key typed here also gets verified, announced, and
+// marked ttsApiKeySource:'byo' — without that mark, pasting your OWN key over
+// a gifted one here would leave it looking gifted, and logging out would wipe
+// a key you actually typed yourself (see clearGiftedTtsKey in main.js).
+$('elKey').addEventListener('change', () => {
+  api.send('update-tts-config', { apiKey: ($('elKey').value || '').trim() });
   populateVoices();
+  // Repaint immediately from the already-fetched grant (no need to re-fetch —
+  // a local edit doesn't change what the SERVER granted, only whether it
+  // matches). A live clear stays empty rather than auto-refilling; see the
+  // note on paintElKeyGift below.
+  paintElKeyGift(lastTtsGrant, ($('elKey').value || '').trim());
+});
+// #273: same stateless rule as App Settings (see the note above applyGrant in
+// main.js) — an empty field is filled in automatically the moment this STEP
+// is shown (not on a live edit, so clearing the field to type your own key
+// isn't fought); a field holding something else gets a one-click offer.
+// Signin comes before this step in the wizard, so by the time someone reaches
+// it they're either signed in (a grant may exist) or skipped signin (no grant
+// — this just quietly does nothing).
+let lastTtsGrant = null;
+function paintElKeyGift(grant, currentKey) {
+  const isGiftActive = !!grant?.granted && currentKey === grant.apiKey;
+  const notice = $('elKeyGiftedNotice');
+  if (notice) notice.style.display = isGiftActive ? '' : 'none';
+  const section = $('elKeyGiftSection');
+  if (!section) return;
+  const offerable = !!grant?.granted && !isGiftActive;
+  section.style.display = offerable ? '' : 'none';
+  if (offerable) {
+    $('elKeyGiftDesc').textContent = currentKey
+      ? "You've been gifted a voice key — use it instead?"
+      : "You've been gifted a voice key — zero setup, ready to speak.";
+    $('elKeyGiftBtn').textContent = currentKey ? 'Use gifted key' : 'Use it';
+  }
+}
+async function loadVoiceGift() {
+  try {
+    const { grant } = await api.invoke('get-tts-grant');
+    lastTtsGrant = grant;
+    let currentKey = ($('elKey').value || '').trim();
+    if (grant?.granted && !currentKey) {
+      const r = await api.invoke('accept-tts-grant');
+      if (r?.ok) {
+        const cfg = await api.invoke('get-config', ['ttsApiKey']);
+        currentKey = cfg?.ttsApiKey || '';
+        $('elKey').value = currentKey;
+        populateVoices();
+      }
+    }
+    paintElKeyGift(grant, currentKey);
+  } catch { /* non-fatal */ }
+}
+$('elKeyGiftBtn')?.addEventListener('click', async () => {
+  const btn = $('elKeyGiftBtn');
+  btn.disabled = true;
+  try {
+    const r = await api.invoke('accept-tts-grant');
+    if (r?.ok) {
+      const cfg = await api.invoke('get-config', ['ttsApiKey']);
+      $('elKey').value = cfg?.ttsApiKey || '';
+      populateVoices();
+      paintElKeyGift(lastTtsGrant, $('elKey').value);
+    }
+  } finally {
+    btn.disabled = false;
+  }
 });
 $('getKeyLink').addEventListener('click', (e) => { e.preventDefault(); api.invoke('onboarding:open-url', 'https://elevenlabs.io/app/settings/api-keys'); });
 $('voiceboxLink').addEventListener('click', (e) => { e.preventDefault(); api.invoke('onboarding:open-url', 'https://github.com/jamiepine/voicebox'); });

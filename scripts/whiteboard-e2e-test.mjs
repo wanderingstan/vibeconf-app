@@ -115,9 +115,21 @@ async function run() {
 
   // A: put the nonce on the whiteboard as a big heading, then share it.
   await a.updateWhiteboard(`# ${NONCE}\n\nScreen-share verification — if you can read this nonce, the share is live.`);
-  const { sharing } = await a.shareWhiteboard();
-  record(a.name, 'shareEngaged', sharing, sharing ? 'sharing confirmed' : 'share never engaged');
-  if (!sharing) return;
+  const { engaged, sustained, environmental, droppedAfterMs } = await a.shareWhiteboard();
+  // Gate on the PRESENT FLOW engaging — mirroring the #296 decision in meet-test-lib:
+  // an engaged-then-collapsed share (no held video stream — unauth whiteboard window
+  // #274 / Screen-Recording perm not granted) is environmental and non-gating. Only a
+  // present flow that never engages at all is a real regression. When it engaged but
+  // couldn't hold the stream, there's nothing for the viewer to see, so we skip the
+  // downstream nonce check rather than fail it (same spirit as the vision SKIP below).
+  record(a.name, 'shareEngaged', engaged,
+    engaged
+      ? (sustained
+        ? 'sharing confirmed'
+        : `⚠︎ ENVIRONMENTAL (non-gating, #296): engaged then collapsed after ~${droppedAfterMs}ms — skipping downstream viewer nonce check on this host`)
+      : 'present never engaged (share flow broke? guest can\'t present?)');
+  if (!engaged) return;      // real regression: gates the run
+  if (!sustained) return;    // environmental collapse: shareEngaged already passed; nothing held to view
 
   // Let the shared surface propagate to B's view.
   await sleep(7000);

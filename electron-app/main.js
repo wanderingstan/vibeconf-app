@@ -2892,6 +2892,10 @@ async function offerStagedUpdate() {
     console.log(ts(), '[updates] install cancelled — a call started while asking');
     return;
   }
+  // On macOS, autoUpdater.quitAndInstall() closes all windows before calling
+  // app.quit(), so the 'before-quit' handler that normally sets this flag
+  // fires too late to suppress the close-window quit-confirmation dialog.
+  appIsQuitting = true;
   autoUpdaterInstance().quitAndInstall();
 }
 

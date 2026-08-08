@@ -418,6 +418,7 @@ const PREFERENCES = {
   remoteLogging: {
     type: 'boolean',
     default: false,
+    label: 'Remote logging',
     description:
       'Ship this app\'s session log to the backend continuously, so it can be read '
       + 'remotely via get_session_log (instance:…) or the logs CLI — useful for '

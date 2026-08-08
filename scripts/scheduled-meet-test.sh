@@ -146,6 +146,22 @@ rec_run() {  # rec_run <lane> -- <cmd...> : run cmd (tee'd to $LOG), return its 
     # failed and why, so the digest/analysis never points at a ghost recording.
     if [[ -s "$mov" ]] && (( $(stat -f%z "$mov" 2>/dev/null || echo 0) > 10240 )); then
       echo "=== 📹 recording kept: $mov ($(du -h "$mov" 2>/dev/null | cut -f1)) ===" | tee -a "$LOG"
+      # Upload the kept recording to the shared Drive folder and capture a shareable
+      # LINK for the digest, so a red night points straight at the .mov. Best-effort:
+      # needs `rclone` + the configured remote (VIBECONF_RCLONE_REMOTE, default
+      # "Vibeconf Shared Files") — no-ops cleanly otherwise (e.g. a dev machine).
+      # Braces around the remote name avoid zsh's `:r` modifier eating a spaced name.
+      local _remote="${VIBECONF_RCLONE_REMOTE:-Vibeconf Shared Files}"
+      if command -v rclone >/dev/null 2>&1 && rclone listremotes 2>/dev/null | grep -qxF "${_remote}:"; then
+        local _base; _base="$(basename "$mov")"
+        if rclone copy "$mov" "${_remote}:" 2>>"$LOG"; then
+          local _link; _link="$(rclone link "${_remote}:${_base}" 2>/dev/null)"
+          [[ -n "$_link" ]] && echo "=== ☁️ uploaded to Drive: $_link ===" | tee -a "$LOG"
+          printf '{"ts":"%s","lane":"%s","file":"%s","link":"%s"}\n' "$STAMP" "$lane" "$_base" "${_link:-}" >> "$RESULTS/recording-uploads.jsonl"
+        else
+          echo "=== ⚠️ Drive upload failed for $_base (see log) ===" | tee -a "$LOG"
+        fi
+      fi
     else
       rm -f "$mov"
       echo "=== ⚠️ recording FAILED for '$lane' — screencapture produced no file (Screen Recording permission missing for the launchd shell). No .mov to pull. ===" | tee -a "$LOG"

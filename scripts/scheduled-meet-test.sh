@@ -56,9 +56,32 @@ cd "$REPO" || { echo "repo not found: $REPO"; exit 3; }
 # reaped the EXIT trap's `node notify` child before it could send.)
 _DIGEST_SENT="/tmp/vibeconf-digest-${STAMP}.sent"
 _CALL_DIGEST_SENT="/tmp/vibeconf-calldigest-${STAMP}.sent"
+# --- Drive uploads run ASYNC (backgrounded in rec_run) so a slow push never sits on
+# the run's critical path or crowds the global watchdog (2026-08-08: a keep=all night
+# uploaded ~420MB inline and tripped the 30-min timer). The digest JOINS the in-flight
+# uploads first, so the recording links still land in the Telegram message. The join is
+# BOUNDED by VIBECONF_UPLOAD_JOIN_TIMEOUT so a hung rclone can't re-introduce the very
+# stall we moved off the critical path. Note: the watchdog's own send_digest runs in a
+# FORK where _UPLOAD_PIDS is still empty (it was forked before any lane ran), so it never
+# waits — correct: once we're over time, send with whatever links have already landed. ---
+_UPLOAD_PIDS=()
+UPLOAD_JOIN_TIMEOUT="${VIBECONF_UPLOAD_JOIN_TIMEOUT:-120}"
+wait_for_uploads() {
+  (( ${#_UPLOAD_PIDS} )) || return 0
+  local n=${#_UPLOAD_PIDS}
+  echo "=== ⏳ joining $n Drive upload(s) before the digest (≤${UPLOAD_JOIN_TIMEOUT}s) ===" | tee -a "$LOG"
+  # One overall deadline: after the timeout, TERM any still-running uploads, then reap
+  # them all (wait avoids zombies and returns instantly for already-finished jobs).
+  ( sleep "$UPLOAD_JOIN_TIMEOUT"; for p in "${_UPLOAD_PIDS[@]}"; do kill -TERM "$p" 2>/dev/null; done ) &
+  local _killer=$!
+  local pid; for pid in "${_UPLOAD_PIDS[@]}"; do wait "$pid" 2>/dev/null; done
+  kill "$_killer" 2>/dev/null; wait "$_killer" 2>/dev/null
+  _UPLOAD_PIDS=()
+}
 send_digest() {
   [[ -e "$_DIGEST_SENT" ]] && return
   : > "$_DIGEST_SENT"
+  wait_for_uploads   # let async Drive uploads finish so their links make the digest
   echo "" | tee -a "$LOG"
   echo "=== Telegram digest (fires on normal end OR — via the watchdog — an early kill) ===" | tee -a "$LOG"
   node scripts/notify-nightly.mjs 2>&1 | tee -a "$LOG" || true
@@ -165,13 +188,21 @@ rec_run() {  # rec_run <lane> -- <cmd...> : run cmd (tee'd to $LOG), return its 
       local _remote="${VIBECONF_RCLONE_REMOTE:-Vibeconf Shared Files}"
       if command -v rclone >/dev/null 2>&1 && rclone listremotes 2>/dev/null | grep -qxF "${_remote}:"; then
         local _base; _base="$(basename "$mov")"
-        if rclone copy "$mov" "${_remote}:" 2>>"$LOG"; then
-          local _link; _link="$(rclone link "${_remote}:${_base}" 2>/dev/null)"
-          [[ -n "$_link" ]] && echo "=== ☁️ uploaded to Drive: $_link ===" | tee -a "$LOG"
-          printf '{"ts":"%s","lane":"%s","file":"%s","link":"%s"}\n' "$STAMP" "$lane" "$_base" "${_link:-}" >> "$RESULTS/recording-uploads.jsonl"
-        else
-          echo "=== ⚠️ Drive upload failed for $_base (see log) ===" | tee -a "$LOG"
-        fi
+        # ASYNC: background the copy+link so the next lane starts immediately instead of
+        # blocking on a multi-hundred-MB Drive push. send_digest → wait_for_uploads joins
+        # these (bounded) before reading recording-uploads.jsonl, so links still land in
+        # the digest. The .mov is already finalized above, so it's safe to read here; even
+        # if the prune below unlinks an older .mov mid-copy, the open fd keeps reading it.
+        {
+          if rclone copy "$mov" "${_remote}:" 2>>"$LOG"; then
+            _link="$(rclone link "${_remote}:${_base}" 2>/dev/null)"
+            [[ -n "$_link" ]] && echo "=== ☁️ uploaded to Drive: $_link ===" | tee -a "$LOG"
+            printf '{"ts":"%s","lane":"%s","file":"%s","link":"%s"}\n' "$STAMP" "$lane" "$_base" "${_link:-}" >> "$RESULTS/recording-uploads.jsonl"
+          else
+            echo "=== ⚠️ Drive upload failed for $_base (see log) ===" | tee -a "$LOG"
+          fi
+        } &
+        _UPLOAD_PIDS+=($!)
       fi
     else
       rm -f "$mov"

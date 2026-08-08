@@ -6,10 +6,15 @@
 // This module has no Electron dependency — it just shells out to ffmpeg over
 // files already on disk — so it's fully testable with plain Node.
 //
-// These tests use the REAL ffmpeg from PATH (the dev-mode fallback) since a
-// bundled ffmpeg-static binary isn't fetched in this sandbox (postinstall
-// scripts are blocked) — skip everything ffmpeg-dependent if it's unavailable,
-// same as CI would if ffmpeg weren't preinstalled on the runner.
+// These tests use whatever real ffmpeg resolveFfmpegPath() itself resolves to
+// (the bundled ffmpeg-static binary when its postinstall has run, PATH
+// otherwise) — skip everything ffmpeg-dependent if neither is available. The
+// test helpers below deliberately use that SAME resolved binary, not a bare
+// `ffmpeg` shell lookup: a bare lookup could silently hit a different,
+// possibly more minimal ffmpeg on PATH than the one call-media-merge.js
+// itself would use, which is exactly the kind of mismatch that once caused
+// these tests to fail in CI (PATH ffmpeg missing the libvpx-vp9 encoder these
+// fixtures need) while resolveFfmpegPath()'s own binary had it all along.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -35,19 +40,20 @@ const HAVE_FFMPEG = ffmpegAvailable();
 const HAVE_FFMPEG_ON_PATH = (() => {
   try { execSync('command -v ffmpeg', { stdio: 'ignore' }); return true; } catch { return false; }
 })();
+const FFMPEG_BIN = resolveFfmpegPath(); // same binary mergeCallMedia() itself will use — see note above
 
 // A short, real, silent video ffmpeg can actually decode — used as the
 // "video.webm" track in tests that need one.
 function writeFakeVideo(file, { seconds = 0.5 } = {}) {
   execSync(
-    `ffmpeg -y -f lavfi -i color=c=black:s=16x16:r=5:d=${seconds} -c:v libvpx-vp9 "${file}"`,
+    `"${FFMPEG_BIN}" -y -f lavfi -i color=c=black:s=16x16:r=5:d=${seconds} -c:v libvpx-vp9 "${file}"`,
     { stdio: 'ignore' },
   );
 }
 
 function writeFakeAudio(file, { seconds = 0.5 } = {}) {
   execSync(
-    `ffmpeg -y -f lavfi -i anullsrc=r=48000:cl=mono -t ${seconds} -c:a libopus "${file}"`,
+    `"${FFMPEG_BIN}" -y -f lavfi -i anullsrc=r=48000:cl=mono -t ${seconds} -c:a libopus "${file}"`,
     { stdio: 'ignore' },
   );
 }

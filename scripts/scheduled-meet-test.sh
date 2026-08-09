@@ -147,10 +147,10 @@ REC_MAX="${VIBECONF_RECORD_MAX:-5}"
 # policy as the screen .movs (see rec_run → collect_call_recordings). ---
 REC_CALLS="${VIBECONF_RECORD_CALLS:-0}"
 CALLREC_DIR="$RESULTS/call-recordings"
-if [[ "$REC_CALLS" == "1" ]]; then
-  export VIBECONF_RECORD_CALL=1
-  echo "=== 🎙️  per-call recording ENABLED (VIBECONF_RECORD_CALL=1) — every test bot records its own call audio/video ===" | tee -a "$LOG"
-fi
+# Export the trigger recordCallEnabled() honors so every spawned bot records. The
+# confirmation LINE is logged after the header below, NOT here: the header's
+# `tee "$LOG"` (no -a) truncates the log, so anything tee'd before it is wiped.
+[[ "$REC_CALLS" == "1" ]] && export VIBECONF_RECORD_CALL=1
 
 collect_call_recordings() {  # <lane> <exit-code> <since-marker-file> : harvest the
   # merged call-recording*.mp4 files the test fleet wrote DURING this lane (mtime
@@ -176,10 +176,13 @@ collect_call_recordings() {  # <lane> <exit-code> <since-marker-file> : harvest 
     mkdir -p "$dest"
     local f kept=0
     for f in "${recs[@]}"; do
-      # Flatten into one dir; prefix with the callId (its parent dir) so recordings
-      # from different calls/bots in the same lane never collide.
+      # Flatten into one dir. Prefix with the PROFILE (unique per bot) AND the callId
+      # so two bots never collide — the callId alone isn't enough: both bots in one
+      # room fall back to the same room+second callId, so a callId-only name made the
+      # second bot's recording overwrite the first (logged "2 files", kept 1).
       local callid; callid="$(basename "$(dirname "$f")")"
-      cp "$f" "$dest/${callid}__$(basename "$f")" 2>/dev/null && (( kept++ ))
+      local prof; prof="${f#$profroot/}"; prof="${prof%%/*}"
+      cp "$f" "$dest/${prof}__${callid}__$(basename "$f")" 2>/dev/null && (( kept++ ))
     done
     if (( kept > 0 )); then
       echo "=== 🎙️  call recordings kept: $dest ($kept file(s), $(du -sh "$dest" 2>/dev/null | cut -f1)) ===" | tee -a "$LOG"
@@ -278,6 +281,7 @@ rec_run() {  # rec_run <lane> -- <cmd...> : run cmd (tee'd to $LOG), return its 
 echo "=== meet-test scheduled run $STAMP ===" | tee "$LOG"
 echo "node: $(command -v node) $(node -v 2>/dev/null)" | tee -a "$LOG"
 echo "pnpm: $(command -v pnpm) $(pnpm -v 2>/dev/null)" | tee -a "$LOG"
+[[ "$REC_CALLS" == "1" ]] && echo "=== 🎙️  per-call recording ENABLED (VIBECONF_RECORD_CALL=1) — every test bot records its own call audio/video ===" | tee -a "$LOG"
 echo "" | tee -a "$LOG"
 
 # --- Recording preflight (Stan) — a test OF the recording: screencapture silently

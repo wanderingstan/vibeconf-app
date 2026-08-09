@@ -70,6 +70,22 @@ launchctl unload ~/Library/LaunchAgents/com.vibeconferencing.meet-test.plist
 rm ~/Library/LaunchAgents/com.vibeconferencing.meet-test.plist
 ```
 
+## Recording artifacts (set in the plist's `EnvironmentVariables`)
+The wrapper can preserve two kinds of recording per run, both under
+`~/vibeconf-test-results/` and both governed by the same keep/prune policy:
+
+- **`VIBECONF_RECORD=1`** — screen-records each live-call lane to
+  `recordings/<lane>-<ts>.mov` (what the machine displayed).
+- **`VIBECONF_RECORD_CALLS=1`** — turns on the app's own **per-participant call
+  recording** for every test bot (exported to the fleet as `VIBECONF_RECORD_CALL`).
+  After each lane the wrapper harvests the bots' merged
+  `call-recording*.mp4` out of the throwaway test profiles into
+  `call-recordings/<lane>-<ts>/` (this exercises the real recording feature
+  end-to-end, and gives us the actual call audio/video from a failing night).
+- **`VIBECONF_RECORD_KEEP`** — `fails` (default) keeps only FAILING runs' artifacts;
+  `all` keeps every run. Newest **`VIBECONF_RECORD_MAX`** (default 5) kept per kind,
+  older pruned. Both kinds upload to the shared Drive (`rclone`) when configured.
+
 ## Notes / caveats
 - **Same machine as a real bot?** The fleet uses ports 7901+ and dedicated
   `test-meet-*` / `test-slack-*` profiles, distinct from the real Jimmy (7865) / Samantha (7866), so a

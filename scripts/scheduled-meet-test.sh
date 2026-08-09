@@ -134,20 +134,105 @@ REC_DIR="$RESULTS/recordings"
 REC_KEEP="${VIBECONF_RECORD_KEEP:-fails}"
 REC_MAX="${VIBECONF_RECORD_MAX:-5}"
 
-rec_run() {  # rec_run <lane> -- <cmd...> : run cmd (tee'd to $LOG), return its exit,
-             # recording the screen and keeping the .mov per policy.
+# --- optional PER-PARTICIPANT CALL RECORDING (the recordCallAudio feature: each
+# bot records its OWN audio+video of the call to
+# <profile>/agent/calls/<id>/call-recording*.mp4). Distinct from the screen .mov
+# above — this is the app's real recording feature, exercised end-to-end. OFF by
+# default; set VIBECONF_RECORD_CALLS=1 (the mini's LaunchAgent does) to turn it on
+# for every live-call lane. Enabled by exporting the SAME env recordCallEnabled()
+# already honors — VIBECONF_RECORD_CALL — which inherits down through
+# pnpm → meet-test → spawn-test-fleet → each Electron bot, so no harness wiring is
+# needed. The produced .mp4s are harvested out of the throwaway test profiles and
+# KEPT under $RESULTS/call-recordings/ using the SAME keep/prune/Drive-upload
+# policy as the screen .movs (see rec_run → collect_call_recordings). ---
+REC_CALLS="${VIBECONF_RECORD_CALLS:-0}"
+CALLREC_DIR="$RESULTS/call-recordings"
+if [[ "$REC_CALLS" == "1" ]]; then
+  export VIBECONF_RECORD_CALL=1
+  echo "=== 🎙️  per-call recording ENABLED (VIBECONF_RECORD_CALL=1) — every test bot records its own call audio/video ===" | tee -a "$LOG"
+fi
+
+collect_call_recordings() {  # <lane> <exit-code> <since-marker-file> : harvest the
+  # merged call-recording*.mp4 files the test fleet wrote DURING this lane (mtime
+  # newer than the marker) out of the isolated test profiles, keep per policy, and
+  # prune — a direct analog of the .mov handling in rec_run.
+  [[ "$REC_CALLS" == "1" ]] || return 0
+  local lane="$1" code="$2" marker="$3"
+  local profroot="$HOME/Library/Application Support/Vibeconferencing/profiles"
+  [[ -d "$profroot" ]] || return 0
+  # Let `find` do the globbing (literal $profroot root) so zsh's nomatch never
+  # aborts the run when a profile has no calls/ dir yet. -newer keys off the marker
+  # dropped at lane start, so we pick up ONLY this lane's recordings.
+  local recs=( "${(@f)$(find "$profroot" -type f -path '*/agent/calls/*' -name 'call-recording*.mp4' -newer "$marker" 2>/dev/null)}" )
+  recs=( ${recs:#} )   # drop the empty element find yields when nothing matched
+  if (( ${#recs} == 0 )); then
+    # Only note the absence on a lane that actually failed — a green lane with no
+    # kept recording is the normal keep=fails case, not something to flag.
+    [[ "$code" != "0" ]] && echo "=== 🎙️  no call recording produced by '$lane' (bots may have been killed before the merge finished) ===" | tee -a "$LOG"
+    return 0
+  fi
+  if [[ "$REC_KEEP" == "all" || ( "$REC_KEEP" == "fails" && "$code" != "0" ) ]]; then
+    local dest="$CALLREC_DIR/${lane}-${STAMP}"
+    mkdir -p "$dest"
+    local f kept=0
+    for f in "${recs[@]}"; do
+      # Flatten into one dir; prefix with the callId (its parent dir) so recordings
+      # from different calls/bots in the same lane never collide.
+      local callid; callid="$(basename "$(dirname "$f")")"
+      cp "$f" "$dest/${callid}__$(basename "$f")" 2>/dev/null && (( kept++ ))
+    done
+    if (( kept > 0 )); then
+      echo "=== 🎙️  call recordings kept: $dest ($kept file(s), $(du -sh "$dest" 2>/dev/null | cut -f1)) ===" | tee -a "$LOG"
+      # Upload to the same shared Drive folder as the .movs — best-effort, no-ops
+      # cleanly without rclone/the remote. Braces guard the spaced remote name.
+      local _remote="${VIBECONF_RCLONE_REMOTE:-Vibeconf Shared Files}"
+      if command -v rclone >/dev/null 2>&1 && rclone listremotes 2>/dev/null | grep -qxF "${_remote}:"; then
+        if rclone copy "$dest" "${_remote}:${lane}-${STAMP}-calls/" 2>>"$LOG"; then
+          # Grab a shareable link to the uploaded FOLDER so the digest can point a
+          # red night straight at the call's own audio/video (analog of the .mov link).
+          local _clink; _clink="$(rclone link "${_remote}:${lane}-${STAMP}-calls" 2>/dev/null)"
+          [[ -n "$_clink" ]] && echo "=== ☁️  call recordings uploaded to Drive: $_clink ===" | tee -a "$LOG" \
+            || echo "=== ☁️  call recordings uploaded to Drive: ${lane}-${STAMP}-calls/ ===" | tee -a "$LOG"
+          printf '{"ts":"%s","lane":"%s","files":%s,"dir":"%s","link":"%s"}\n' "$STAMP" "$lane" "$kept" "${lane}-${STAMP}-calls" "${_clink:-}" >> "$RESULTS/call-recording-uploads.jsonl"
+        else
+          echo "=== ⚠️  call-recording Drive upload failed for '$lane' (see log) ===" | tee -a "$LOG"
+        fi
+      fi
+    fi
+  fi
+  # Always remove the SOURCE recordings this lane produced (kept or not) so the
+  # throwaway test profiles don't grow without bound — call videos are large. The
+  # kept COPY under $RESULTS survives. Drop the now-empty calls/<id> dirs too.
+  for f in "${recs[@]}"; do rm -f "$f" 2>/dev/null; rmdir "$(dirname "$f")" 2>/dev/null; done
+  # Prune the collected call-recording dirs to the newest REC_MAX (mirror the .mov
+  # prune): (N)=nullglob, (om)=newest-first, (/)=dirs only.
+  local dirs=( "$CALLREC_DIR"/*(Nom/) )
+  (( ${#dirs} > REC_MAX )) && rm -rf -- "${(@)dirs[REC_MAX+1,-1]}"
+}
+
+rec_run() {  # rec_run <lane> -- <cmd...> : run cmd (tee'd to $LOG), return its exit.
+             # VIBECONF_RECORD=1 → also screen-record the lane, keep the .mov per
+             # policy. VIBECONF_RECORD_CALLS=1 → also harvest the bots' own
+             # per-participant call recordings, independent of the screen recording.
   local lane="$1"; shift
   [[ "${1:-}" == "--" ]] && shift
+  # Drop a start marker so collect_call_recordings picks up ONLY the recordings
+  # this lane produces (by mtime), not ones an earlier lane left this run.
+  local _cr_marker=""
+  [[ "$REC_CALLS" == "1" ]] && { _cr_marker="$(mktemp -t vibeconf-cr-${lane} 2>/dev/null)" || _cr_marker=""; }
+  local code
   if [[ "$REC" != "1" ]]; then
     "$@" 2>&1 | tee -a "$LOG"
-    return ${pipestatus[1]:-$?}
+    code=${pipestatus[1]:-$?}
+    [[ -n "$_cr_marker" ]] && { collect_call_recordings "$lane" "$code" "$_cr_marker"; rm -f "$_cr_marker"; }
+    return $code
   fi
   mkdir -p "$REC_DIR"
   local mov="$REC_DIR/${lane}-${STAMP}.mov"
   screencapture -v -k "$mov" >/dev/null 2>&1 &
   local rpid=$!
   "$@" 2>&1 | tee -a "$LOG"
-  local code=${pipestatus[1]:-$?}
+  code=${pipestatus[1]:-$?}   # `code` was declared local at the top of rec_run
   kill -INT "$rpid" 2>/dev/null; wait "$rpid" 2>/dev/null
   if [[ "$REC_KEEP" == "all" || ( "$REC_KEEP" == "fails" && "$code" != "0" ) ]]; then
     # screencapture silently produces NO file when the shell running it lacks Screen
@@ -185,6 +270,8 @@ rec_run() {  # rec_run <lane> -- <cmd...> : run cmd (tee'd to $LOG), return its 
   # (om)=order by mtime, newest first, so we keep [1..REC_MAX] and drop the rest.
   local recs=( "$REC_DIR"/*.mov(Nom) )
   (( ${#recs} > REC_MAX )) && rm -f -- "${(@)recs[REC_MAX+1,-1]}"
+  # Harvest the bots' per-participant call recordings (independent of the .mov).
+  [[ -n "$_cr_marker" ]] && { collect_call_recordings "$lane" "$code" "$_cr_marker"; rm -f "$_cr_marker"; }
   return $code
 }
 

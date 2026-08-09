@@ -12,16 +12,16 @@
   <div class="screen" id="mainScreen">
     <div class="container">
       <!-- ══ ZONE 1: BOT ═══════════════════════════════════════════════════
-           The bot IS the page. A full-bleed avatar banner — flush to the
+           The bot IS the page. A full-bleed avatar banner, flush to the
            window's top, left and right edges (it escapes .container's padding
-           with negative margins) — carrying everything else on top of it:
+           with negative margins), carrying everything else on top of it:
            name centred at the top, ⚙ pinned top-right, and the call controls
            along the bottom. Everything else about the bot lives behind the ⚙. -->
       <div class="bot-hero">
         <!-- The art layer: the bot's background-as-avatar (its
              avatarBackgroundSvg + idle emoji) or its captured virtual-camera
              snapshot, so the panel previews how it looks on camera (#289).
-             Absolutely filling the banner, and the only thing that clips —
+             Absolutely filling the banner, and the only thing that clips:
              the hero itself must NOT clip, or the bot-switcher dropdown would
              be cut off at its edge. -->
         <div id="agentAvatar" class="agent-avatar hero-art"><span id="agentAvatarEmoji" class="agent-avatar-emoji">🙂</span></div>
@@ -33,26 +33,26 @@
                as "swap" without hinting that a list would appear. -->
           <div class="agent-name-row">
             <button id="profileMenuBtn" class="agent-namebtn" title="Switch bot. Replaces this window with another bot. ⌥-click a bot to open it in a separate window instead. Hidden during a call.">
-              <span id="botNameBig" class="agent-name">—</span>
+              <span id="botNameBig" class="agent-name">…</span>
               <span class="agent-caret" aria-hidden="true">▾</span>
             </button>
             <!-- Bot switcher dropdown (#282), anchored under the name row. -->
             <div id="profileMenu" class="profile-menu"></div>
           </div>
-          <!-- Settings gear — opens THIS bot's settings (voice, behavior).
+          <!-- Settings gear. Opens THIS bot's settings (voice, behavior).
                Machine-wide config is App Settings (⌘,). Pinned to the corner,
                out of the centred name's way. -->
           <button id="openSettingsBtn" class="agent-gear" title="This bot's settings (voice, acknowledgments, behavior). Machine-wide settings are in App Settings, ⌘,."><i class="ui-icon ui-icon-gear"></i></button>
         </div>
 
         <!-- Notices land across the bot's face rather than as bars shoved into
-             the page — that pushed the layout around and read as furniture.
+             the page; that pushed the layout around and read as furniture.
              Over the avatar they're unmissable and cost no space. One shared
              stack so two at once sit under each other instead of colliding. -->
         <div class="hero-notices">
           <div class="error-bar hero-notice" id="errorBar" style="display:none"><span id="errorText"></span><button class="error-close" id="errorClose">&times;</button></div>
 
-          <!-- #381: shown only when the bot genuinely cannot make a sound —
+          <!-- #381: shown only when the bot genuinely cannot make a sound:
                a platform with no built-in voice (Linux, #21) and neither an
                ElevenLabs key nor a Voicebox profile.
                NOT shown merely because there's no ElevenLabs key: on macOS and
@@ -70,7 +70,7 @@
 
           <!-- #137: installed is not the same as signed in. An agent sitting at
                Claude Code's login prompt looks, from inside the call, exactly
-               like a crashed one — the bot tile appears and then does nothing.
+               like a crashed one: the bot tile appears and then does nothing.
                A persistent indicator beats a one-shot dialog here: this is a
                durable state, so it should be visible and self-clearing rather
                than dismissible and forgotten. Shown ONLY on an explicit false;
@@ -95,7 +95,7 @@
           </div>
           <div class="join-row">
             <!-- 👀 sits left of the main button in BOTH states. Before a call it
-                 is the only way to see what the bot's browser is doing — ⌘⇧L
+                 is the only way to see what the bot's browser is doing. ⌘⇧L
                  navigates first, so it can't be used to inspect the CURRENT
                  state. Two elements rather than one moved around: the pre-call
                  and in-call rows are separate blocks the stylesheet swaps, so a
@@ -103,10 +103,10 @@
                  via .botview-toggle-btn. -->
             <button class="join-more botview-toggle-btn" title="See what the bot sees"><i class="ui-icon ui-icon-eyes"></i></button>
             <!-- The helper text that used to sit under this button is now its
-                 tooltip — true but not worth permanent screen space. -->
+                 tooltip: true but not worth permanent screen space. -->
             <button id="joinBtn" class="primary" title="Calls open in Chrome/Safari are detected automatically. You can also type /join-call in any Claude Code session.">Call now</button>
             <!-- Manual entry. A + rather than a disclosure triangle, because what
-                 it reveals is literally "Add <bot> to call" — so the control can
+                 it reveals is literally "Add <bot> to call", so the control can
                  say what it DOES instead of only "there is more below". Rotated
                  45° the same glyph becomes ×, which reads as close/cancel without
                  swapping characters.
@@ -120,16 +120,16 @@
           </div>
 
           <!-- IN-CALL: the same footprint as the pre-call controls, in the same
-               place on the banner — Leave sits exactly where Call was, so
+               place on the banner: Leave sits exactly where Call was, so
                joining a call doesn't reflow (or resize) anything. -->
           <div class="hero-incall">
-            <!-- Which call the bot is in — for confirming the room and copying
+            <!-- Which call the bot is in, for confirming the room and copying
                  the invite link. (The old "● in Meet as Jimmy" line above this
                  was removed: the name is already the banner's headline.) -->
             <!-- Rehomed from the bot's-view bar, which is gone along with the
                  view region it used to cap. Its own line rather than a fourth
                  pill in the row below: it only exists while a board window does,
-                 so the line costs nothing the rest of the time — and it keeps
+                 so the line costs nothing the rest of the time, and it keeps
                  its text label, which a bare 🖥 among icons could not carry.
                  Hides itself; see applyShareWindowState. -->
             <button id="shareWindowToggleBtn" class="share-window-btn" style="display:none" title="The window the room sees while the bot presents. Normally hidden. Show it to click around the board yourself."><i class="ui-icon ui-icon-screen ui-icon--lead"></i><span class="share-window-label">Show share</span></button>
@@ -141,10 +141,10 @@
               <!-- Watch the bot. Now that the Meet view is hidden by default,
                    this is the ONLY way to see what the bot is doing, so it
                    belongs beside Leave Call rather than in the bar under the
-                   panel — mirroring the ⓘ on the other side. Its title flips
+                   panel, mirroring the ⓘ on the other side. Its title flips
                    with state (applyBotViewLabel); the glyph stays put so the
                    control doesn't jump. -->
-              <button id="openBrainBtn" class="join-more" title="See what the agent is thinking and doing — its live activity feed"><i class="ui-icon ui-icon-brain"></i></button>
+              <button id="openBrainBtn" class="join-more" title="See what the agent is thinking and doing: its live activity feed"><i class="ui-icon ui-icon-brain"></i></button>
               <button id="botViewToggleBtn" class="join-more botview-toggle-btn" title="See what the bot sees"><i class="ui-icon ui-icon-eyes"></i></button>
               <button id="leaveCallBtn" class="primary danger">Leave Call</button>
               <button id="openTroubleshootingBtn" class="join-more" title="Troubleshooting: live call state, captions, and the agent's view"><i class="ui-icon ui-icon-construction"></i></button>
@@ -154,7 +154,7 @@
           <!-- App identity, on the banner rather than under it: product ·
                version · your vibeconferencing.com login. Living inside the
                banner is what lets the avatar fill the whole window in the
-               small (pre-call) state — as its own row below, it left a band of
+               small (pre-call) state. As its own row below, it left a band of
                grey above and below itself. -->
           <div class="app-footer" title="Vibeconferencing, and your vibeconferencing.com login (for the shared whiteboard rooms; signing in once covers all bots).">
             <span class="app-footer-name">Vibeconferencing</span>
@@ -180,7 +180,7 @@
       <div class="settings-head">
         <div id="settingsAvatar" class="agent-avatar settings-avatar"><span class="agent-avatar-emoji">🙂</span></div>
         <!-- Which PROFILE these settings write to. With several bots open at
-             once the windows look alike, and everything below is per-profile —
+             once the windows look alike, and everything below is per-profile,
              so name the profile here rather than leaving it to the tooltip on
              the main screen. -->
         <div class="settings-title">
@@ -188,8 +188,8 @@
           <div id="settingsProfileName" class="settings-profile" title="The on-disk bot profile these settings belong to. Each bot profile has its own preferences, Google login, and storage.">…</div>
         </div>
         <!-- A checkmark, not an ✕ (iOS-style "done" affordance): leaving this
-             screen COMMITS what you changed — every control here saves as you
-             touch it — so the glyph should read as confirmation, not discard.
+             screen COMMITS what you changed (every control here saves as you
+             touch it), so the glyph should read as confirmation, not discard.
              Drawn art rather than the ✓ character: the glyph's weight and
              baseline vary by platform font, and this needs to sit optically
              centred in a 36px circle on both macOS and Windows.
@@ -223,13 +223,13 @@
       <div class="settings-intro">
         You can ask the bot to change most of these settings during a call, or call our guided setup.
         <!-- .primary, matching "Call Jimmy now": this starts a real call, and in
-             the muted .popout-btn style it read as a settings action — the one
+             the muted .popout-btn style it read as a settings action, the one
              thing it is not. The label is rewritten with the bot's name by
              updateSetupCallBtnLabel(); this text is the pre-paint fallback. -->
         <button id="setupCallBtn" class="primary" title="Run a guided setup call: pick a name, voice, emoji, and more, live in a call">Call your bot for setup</button>
       </div>
 
-      <!-- Name first — it's the bot's identity and the thing the panel shows.
+      <!-- Name first: it's the bot's identity and the thing the panel shows.
            (It used to be buried in a "Bot Google Identity" section behind a
            guest-vs-account explainer; that's an edge case, and a signed-in bot
            self-evidently uses its Google name.) -->
@@ -249,7 +249,7 @@
         <div id="elevenVoiceError" style="display:none;font-size:11px;color:#fdd663;margin-top:4px;line-height:1.4"></div>
         <!-- The way in when the LIST is unavailable. A key scoped without
              `voices_read` can synthesise but not enumerate, so pasting an id is
-             the only route to an ElevenLabs voice — which makes this belong
+             the only route to an ElevenLabs voice, which makes this belong
              beside the picker it substitutes for, not in a separate section, and
              certainly not behind an "Advanced" disclosure as it was.
              Shown when the list failed, OR when it already holds a value:
@@ -274,7 +274,7 @@
            nonsense and answers it. Applied on join; Meet has no host-level
            control, so each bot sets its own.
 
-           Only Meet's non-BETA languages are listed — the BETA ones work but
+           Only Meet's non-BETA languages are listed. The BETA ones work but
            transcribe less reliably, and this is the bot's hearing. Any tag can
            still be set via the preference or set_caption_language. -->
       <div class="field">
@@ -318,10 +318,10 @@
 
       <!-- Avatar background. The bot can already set this mid-call via
            set_preference, but that means authoring SVG; this is the
-           old-fashioned path — see what's set, drop an image in, clear it. -->
+           old-fashioned path: see what's set, drop an image in, clear it. -->
       <div class="field">
         <label>Avatar Background</label>
-        <!-- Two layers: the background art, and the bot's face over it — so this
+        <!-- Two layers: the background art, and the bot's face over it, so this
              previews the whole picture the call shows, not just the backdrop.
              Separate elements because each is repainted independently (change
              the emoji set and the art must survive, and vice versa). -->
@@ -339,8 +339,8 @@
         </div>
       </div>
 
-      <!-- Optional platform logins. Both are edge cases — Meet works as a guest,
-           and huddles are the only reason to touch Slack — so this is just the
+      <!-- Optional platform logins. Both are edge cases (Meet works as a guest,
+           and huddles are the only reason to touch Slack), so this is just the
            buttons plus one line of why. The guest-vs-account explainer that used
            to live here is gone; signing in visibly overrides the name above. -->
       <div class="section">
@@ -430,7 +430,7 @@
     </div>
   </div>
 
-  <!-- Brain Screen (#242) — a read-only window onto the agent's activity.
+  <!-- Brain Screen (#242): a read-only window onto the agent's activity.
        Renders the SAME feed the app already tails from the Claude session's
        transcript: 🗣 what it said, 🔧 what tools it ran, 💬 what it was asked.
        Not a terminal, and deliberately not an input: this is for watching, and
@@ -489,7 +489,7 @@
              left alone so it is visibly consumed, and so the next keystroke
              replaces it. -->
         <input type="text" id="feedbackNote" maxlength="280"
-               placeholder="Optional note — attaches to whichever button you click next" />
+               placeholder="Optional note, attaches to whichever button you click next" />
         <span id="feedbackStatus" class="helper-text" style="display:block;margin-top:6px"></span>
 
         <!-- #255: hand over this ONE call's log.

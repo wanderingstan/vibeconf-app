@@ -1,13 +1,13 @@
-// svg-cover.js — make an INLINE <svg> behave like `object-fit: cover`.
+// svg-cover.js: make an INLINE <svg> behave like `object-fit: cover`.
 //
 // The panel's bot-box avatar is a square (54×54). Backgrounds are authored
 // landscape (the virtual camera is 16:9), so a landscape SVG dropped into a
-// square box needs to be scaled up and center-cropped — not letterboxed.
+// square box needs to be scaled up and center-cropped, not letterboxed.
 //
 // `object-fit` does NOT apply to inline <svg>. It only affects replaced
 // elements (<img>, <video>, <canvas>). We inject the background via innerHTML,
 // so the CSS rule `.agent-avatar-bg svg { object-fit: cover }` was inert, and
-// the SVG fell back to its default preserveAspectRatio of "xMidYMid meet" —
+// the SVG fell back to its default preserveAspectRatio of "xMidYMid meet",
 // which is `contain`. Hence the letterboxing.
 //
 // The SVG-native spelling of cover is `preserveAspectRatio="xMidYMid slice"`.
@@ -18,7 +18,7 @@
 // on a canvas because there the source is a rasterized image. Two renderers, one
 // rule: preserve aspect, fill the box, crop the overflow, keep it centered.
 //
-// preserveAspectRatio has NO effect without a viewBox — the SVG just stretches
+// preserveAspectRatio has NO effect without a viewBox: the SVG just stretches
 // to the CSS width/height. So when the author omitted one but gave width/height,
 // we synthesize a viewBox from them. If we can't establish intrinsic dimensions
 // at all, we leave the element alone rather than guess.
@@ -37,7 +37,7 @@
       };
       const w = num(svgEl.getAttribute('width'));
       const h = num(svgEl.getAttribute('height'));
-      if (!w || !h) return false; // no intrinsic aspect — nothing to preserve
+      if (!w || !h) return false; // no intrinsic aspect, nothing to preserve
       svgEl.setAttribute('viewBox', `0 0 ${w} ${h}`);
     }
 
@@ -59,7 +59,7 @@
 
   root.coverFitSvg = coverFitSvg;
   root.coverFitFirstSvg = coverFitFirstSvg;
-  // Node (tests) — the renderer loads this as a classic <script>, where `module`
+  // Node (tests). The renderer loads this as a classic <script>, where `module`
   // does not exist.
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = { coverFitSvg, coverFitFirstSvg, COVER };

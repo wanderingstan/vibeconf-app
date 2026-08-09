@@ -1,4 +1,4 @@
-// elevenlabs-errors.js — turn an ElevenLabs API failure into something a user
+// elevenlabs-errors.js: turn an ElevenLabs API failure into something a user
 // can act on.
 //
 // Why this exists: ElevenLabs API keys are SCOPED. A key can be perfectly valid
@@ -7,7 +7,7 @@
 // that case looked identical to "no key set" and "account has no voices": the
 // user pasted a working key, saw no voices appear, and got no explanation.
 //
-// The API distinguishes these for us — a 401 body carries
+// The API distinguishes these for us: a 401 body carries
 // `detail.status` ('missing_permissions' | 'invalid_api_key' | …) and a
 // `detail.message` naming the specific permission. Pure + testable; the fetch
 // lives in main.js.
@@ -45,7 +45,7 @@ function parseDetail(body) {
  *
  * `kind` is for code to branch on; `message` is written to be shown to a user
  * as-is. Anything unrecognized falls through to a generic 'http' rather than
- * being swallowed — an unexplained failure the user can see beats silence.
+ * being swallowed; an unexplained failure the user can see beats silence.
  */
 function classifyVoicesError(httpStatus, body) {
   const { status, code, message } = parseDetail(body);
@@ -62,7 +62,7 @@ function classifyVoicesError(httpStatus, body) {
       permission,
       message:
         `Your ElevenLabs key is missing the "${permission}" permission, so the app can't list your voices. ` +
-        'Speaking may still work — this blocks the LIST, not synthesis (a scoped key can be missing ' +
+        'Speaking may still work: this blocks the LIST, not synthesis (a scoped key can be missing ' +
         'that permission too). You can still use an ElevenLabs voice without the list: paste its id into ' +
         '"ElevenLabs Voice ID" in Bot Settings. The id is the last part of the voice\'s page URL on ' +
         'elevenlabs.io. ' +
@@ -72,7 +72,7 @@ function classifyVoicesError(httpStatus, body) {
   }
 
   // A key from before ElevenLabs moved to `sk_`-prefixed keys. It is not a typo
-  // and it will never work again, so "check for a typo" is the wrong advice —
+  // and it will never work again, so "check for a typo" is the wrong advice:
   // the only fix is generating a new one. Seen in the field: a key stored long
   // ago kept failing every ElevenLabs call, and the app only revealed it when
   // someone tried to pick a voice.
@@ -80,7 +80,7 @@ function classifyVoicesError(httpStatus, body) {
     return {
       kind: 'legacy_key',
       message:
-        'Your ElevenLabs API key is in the OLD format, which ElevenLabs no longer accepts — '
+        'Your ElevenLabs API key is in the OLD format, which ElevenLabs no longer accepts. '
         + 'every request with it fails, so no ElevenLabs voice can be used. It cannot be repaired; '
         + 'generate a new one at elevenlabs.io → Profile → API Keys (new keys start with "sk_") '
         + 'and paste it into Bot Settings.',
@@ -100,7 +100,7 @@ function classifyVoicesError(httpStatus, body) {
   }
 
   if (httpStatus === 429) {
-    return { kind: 'rate_limited', message: 'ElevenLabs is rate-limiting this key — try again in a moment.' };
+    return { kind: 'rate_limited', message: 'ElevenLabs is rate-limiting this key. Try again in a moment.' };
   }
 
   return {
@@ -109,11 +109,11 @@ function classifyVoicesError(httpStatus, body) {
   };
 }
 
-// Network-level failure (DNS, offline, abort/timeout) — no HTTP status to read.
+// Network-level failure (DNS, offline, abort/timeout): no HTTP status to read.
 function classifyVoicesNetworkError(err) {
   const name = String(err?.name || '');
   if (name === 'AbortError') {
-    return { kind: 'timeout', message: "ElevenLabs didn't respond in time — voices couldn't be listed." };
+    return { kind: 'timeout', message: "ElevenLabs didn't respond in time, so voices couldn't be listed." };
   }
   return { kind: 'network', message: `Couldn't reach ElevenLabs to list voices (${err?.message || 'network error'}).` };
 }

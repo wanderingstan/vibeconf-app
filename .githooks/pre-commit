@@ -1,0 +1,31 @@
+#!/bin/sh
+# Pre-commit checks. OPT-IN: nothing installs this for you. Run
+# `pnpm hooks:install` to point core.hooksPath here, `git config --unset
+# core.hooksPath` to back it out.
+#
+# Two things to know before you install it:
+#
+#  - core.hooksPath is a single value, not a search path. Setting it locally
+#    SHADOWS a global one, so if you have global hooks (vibe-check installs
+#    some), they stop running in this repo while this is set.
+#  - Any branch that predates the em-dash cleanup still has em-dashes in the
+#    guarded files, so commits there will be blocked until the branch is
+#    rebased on it.
+#
+# CI (the copy-lint job) enforces the same check either way, so installing this
+# is a convenience, not a requirement.
+#
+# Skip everything once with `git commit --no-verify`.
+
+set -e
+
+# Em-dash guard (scripts/check-em-dashes.mjs). Only the staged files are checked,
+# so a commit is never blocked by an em-dash someone else left in a file you did
+# not touch. It reads those files from the WORKING TREE, not the index, so a
+# partial `git add -p` can report a line you did not stage. CI checks the real
+# committed tree, so that is the copy to trust.
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+if [ -n "$staged" ]; then
+  # shellcheck disable=SC2086
+  echo "$staged" | tr '\n' '\0' | xargs -0 node scripts/check-em-dashes.mjs
+fi

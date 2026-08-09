@@ -1,12 +1,12 @@
-// call-recording-window.js (renderer) — drives getDisplayMedia() + MediaRecorder
+// call-recording-window.js (renderer): drives getDisplayMedia() + MediaRecorder
 // for a frame-capture window (electron-app/call-recording-window.js, main
 // process side). Reused for BOTH capture tracks:
-//   - track=video, controls=1 — the visible Meet-view status window (elapsed
+//   - track=video, controls=1: the visible Meet-view status window (elapsed
 //     time + Stop button, which asks main to stop the WHOLE recording).
-//   - track=share, controls=0 — the hidden whiteboard-share side capture, no
+//   - track=share, controls=0: the hidden whiteboard-share side capture, no
 //     UI, normally driven by main telling it to stop; self-finalizes quietly
 //     (no message to main asking it to stop the WHOLE recording) if its
-//     source frame disappears some other way — see the 'ended' handler below.
+//     source frame disappears some other way. See the 'ended' handler below.
 //
 // Chunk pipeline mirrors page-inject.js's existing per-track AUDIO recorder
 // (callRecorder IIFE, ~line 2856): 1s timeslices, base64-encode, ship over IPC.
@@ -26,8 +26,8 @@
   const stopBtn = document.getElementById('stopBtn');
 
   if (!SHOW_CONTROLS) {
-    // Background capture (the whiteboard-share track): no status UI needed —
-    // this window is never shown — but the elements still exist in the DOM,
+    // Background capture (the whiteboard-share track): no status UI needed,
+    // this window is never shown, but the elements still exist in the DOM,
     // so just hide the whole row rather than maintaining a second HTML file.
     document.body.style.display = 'none';
   }
@@ -108,11 +108,11 @@
     };
     // If the stream ends on its own (e.g. the source frame went away), don't
     // leave the window stuck in a "recording" state. What that SHOULD mean
-    // differs by window: for the 'video' window it's the whole call ending —
+    // differs by window: for the 'video' window it's the whole call ending, so
     // ask main to stop the WHOLE recording, same as the Stop button. For the
     // 'share' window it just means the whiteboard share itself ended (its
     // source frame is whiteboardWindow, which can close for reasons that have
-    // nothing to do with the recording continuing) — self-finalize quietly
+    // nothing to do with the recording continuing), so self-finalize quietly
     // instead of taking the audio+video recording down with it. Only the
     // normal, main-initiated stop path (stopShareCaptureIfActive) is supposed
     // to end this window; this is strictly the unexpected/self-heal case.
@@ -135,10 +135,10 @@
     }
   }
 
-  // Stop button (only wired when SHOW_CONTROLS — the 'video' track): ask MAIN
+  // Stop button (only wired when SHOW_CONTROLS, the 'video' track): ask MAIN
   // to stop the WHOLE recording (audio + video + any live share capture), the
   // same path start_recording/stop_recording and the call-end
-  // teardown use — not just this window's own capture — so everything
+  // teardown use, not just this window's own capture, so everything
   // finalizes and merges together. The 'share' capture has no button: its
   // stop is entirely driven by the share ending or the recording stopping.
   function requestStop() {
@@ -150,12 +150,12 @@
   }
   if (SHOW_CONTROLS) stopBtn.addEventListener('click', requestStop);
 
-  // Stop the recorder, wait for the FINAL dataavailable/stop event — closing
-  // the window before that would truncate the last ~1s of this track — then
+  // Stop the recorder, wait for the FINAL dataavailable/stop event (closing
+  // the window before that would truncate the last ~1s of this track), then
   // ack so whoever's waiting (normally main's stopFrameCaptureWindow) knows
   // it's safe to close us. Shared by the two ways a stop can happen: main
   // telling us to ('frame-capture-stop', below) and this window's own
-  // unexpected-source-ended self-heal (the 'share' branch above) — main isn't
+  // unexpected-source-ended self-heal (the 'share' branch above). Main isn't
   // necessarily waiting on the ack in the self-heal case (it didn't initiate
   // this stop), which is fine: it's a no-op if nothing's listening, and the
   // next real stopShareCaptureIfActive()/stopCallRecording() pass finds the
@@ -181,7 +181,7 @@
     }
   }
 
-  // Main tells us to stop (as part of stopCallRecording, or — for 'share' —
+  // Main tells us to stop (as part of stopCallRecording, or, for 'share',
   // onStopSharing tearing down the share via stopShareCaptureIfActive).
   window.electronAPI.on('frame-capture-stop', stopRecorderAndAck);
 

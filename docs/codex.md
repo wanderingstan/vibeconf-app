@@ -94,8 +94,8 @@ This was the most common failure mode early on. Open the troubleshooting screen 
 |---|---|
 | `🟢 listening (1 waiter)` | Codex is in the loop, waiting for you to speak. All good. |
 | `🟡 between waits (Xs)` | Codex just received a transcript and is processing / about to speak. Normal. |
-| `🔴 stale 2m ago — agent likely stopped the wait_for_speech loop` | Codex fell out of the loop. Tell it: *"Continue the wait_for_speech loop until I ask you to leave."* |
-| `⚪ no wait_for_speech yet — agent may not have started the loop` | Codex joined but never started listening. Same fix as above. |
+| `🔴 stale 2m ago, agent likely stopped the wait_for_speech loop` | Codex fell out of the loop. Tell it: *"Continue the wait_for_speech loop until I ask you to leave."* |
+| `⚪ no wait_for_speech yet, agent may not have started the loop` | Codex joined but never started listening. Same fix as above. |
 
 The bot's avatar emoji also reflects state — see [modes-and-states.md](modes-and-states.md) for the full mapping.
 

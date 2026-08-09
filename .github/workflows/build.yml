@@ -34,6 +34,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Em-dash guard on the app's own copy (scripts/check-em-dashes.mjs). A local
+  # pre-commit hook runs the same check, but a hook is per-clone and skippable
+  # with --no-verify, so this is the copy that actually holds. No deps and no
+  # build, so it runs on the cheap ubuntu runner and reports in seconds.
+  #
+  # Legitimate em-dashes are marked in-line with `em-dash-ok`; there is
+  # deliberately no PR label or commit-message escape, because the point is that
+  # the exception is visible in the code where it applies.
+  copy-lint:
+    name: copy lint (em-dashes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+      - name: Check for em-dashes in app copy
+        run: node scripts/check-em-dashes.mjs
+
   # Run the unit suite alongside the platform builds. The build jobs only compile
   # the installer — they never ran `node --test`, so a change that broke a unit
   # test (e.g. a skill's allowed-tools drifting out of sync) could merge green.

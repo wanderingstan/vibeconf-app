@@ -1418,7 +1418,7 @@ const localServer = new globalThis.LocalServer({
           console.error('[electron] Whiteboard share: never engaged after',
             Math.round(PRESENT_RETRY_MS / 1000) + 's and ' + attempt + ' attempts — giving up');
           localServer.setSharing(false);
-          localServer.addError('Screen share never started — Meet did not accept the Present-now trigger.');
+          localServer.addError('Screen share never started: Meet did not accept the Present-now trigger.');
         })();
         // #189: drop the board-only URL into Meet chat the first time the
         // whiteboard is shared this call, so participants can open it in
@@ -2467,7 +2467,7 @@ sync.updateConfig({
       broadcastError(`Whiteboard unavailable — the sync server is returning ${status} for room state.`);
     } else {
       console.log('[sync] board reads recovered');
-      try { localServer.addError('The shared whiteboard is readable again — the board works normally now.'); }
+      try { localServer.addError('The shared whiteboard is readable again; the board works normally now.'); }
       catch { /* best-effort */ }
     }
   },
@@ -2776,7 +2776,7 @@ function announceManualUpdateDownloading(version) {
   dialog.showMessageBox(mainWindow, {
     type: 'info',
     message: `Update available: Vibeconferencing ${version}`,
-    detail: "It's downloading in the background now — you'll get a prompt to install "
+    detail: "It's downloading in the background now, and you'll get a prompt to install "
       + 'when it\'s ready, and you can keep working until then.',
     buttons: ['OK'],
   });
@@ -2917,7 +2917,7 @@ async function checkForUpdates({ silentWhenCurrent = true } = {}) {
         await dialog.showMessageBox(mainWindow, {
           type: 'info',
           message: 'Another window is already handling updates.',
-          detail: `${who ? `The "${who}" window` : 'Another window'} is checking for this machine — `
+          detail: `${who ? `The "${who}" window` : 'Another window'} is checking for this machine; `
             + 'only one does at a time, so several bots never download the same build at once. '
             + 'Close it and this window will take over.',
           buttons: ['OK'],
@@ -4882,7 +4882,7 @@ function speakText(text, voice, emoji) {
           // the agent sees it on its next wait_for_speech lull).
           if (ttsVoiceFallbackActive) {
             ttsVoiceFallbackActive = false;
-            localServer.addError('Voice restored — ElevenLabs is working again; back to your normal voice.');
+            localServer.addError('Voice restored: ElevenLabs is working again, back to your normal voice.');
           }
         } catch (err) {
           console.error('[electron] TTS error' + chunkTag + ':', err.message);
@@ -4911,7 +4911,7 @@ function speakText(text, voice, emoji) {
               if (!ttsVoiceFallbackActive) {
                 ttsVoiceFallbackActive = true;
                 const why = err.code === 'quota_exceeded' ? 'ElevenLabs quota exhausted' : `ElevenLabs unavailable (${(err.message || '').slice(0, 60)})`;
-                localServer.addError(`Voice changed: ${why} — now speaking in the built-in ${SYSTEM_VOICE_LABEL} fallback voice, which sounds noticeably different. Your words still play; you may briefly acknowledge the voice change if it fits.`);
+                localServer.addError(`Voice changed: ${why}. Now speaking in the built-in ${SYSTEM_VOICE_LABEL} fallback voice, which sounds noticeably different. Your words still play; you may briefly acknowledge the voice change if it fits.`);
               }
             }
           } catch (fbErr) {
@@ -6037,7 +6037,7 @@ function maybeWarnSlowModel(d) {
     if (model && model.toLowerCase().includes('fable')) {
       pendingWrite = new Promise((resolve) => {
         process.stdout.write(JSON.stringify({
-          systemMessage: '⚠️ Joining on ' + model + ' — response latency tends to run much higher than Sonnet/Opus (~17s vs ~8s avg in our audits), almost entirely model think time. Switch with /model if responsiveness matters here.',
+          systemMessage: '⚠️ Joining on ' + model + ': response latency tends to run much higher than Sonnet/Opus (~17s vs ~8s avg in our audits), almost entirely model think time. Switch with /model if responsiveness matters here.',
         }), resolve);
       });
     }
@@ -7414,7 +7414,7 @@ function applyWindowTitle() {
     });
   } catch { /* store/schema not ready */ }
   name = String(name || appProfile || '').trim();
-  try { mainWindow.setTitle(name ? `${name} — Vibeconferencing` : 'Vibeconferencing'); } catch { /* gone */ }
+  try { mainWindow.setTitle(name ? `${name} · Vibeconferencing` : 'Vibeconferencing'); } catch { /* gone */ }
 }
 
 let warnedZoomClamped = false;
@@ -8490,7 +8490,7 @@ async function loadMeetURL(meetUrl) {
   } catch (err) {
     const msg = 'Failed to open the Meet page: ' + (err && err.message ? err.message : String(err));
     console.error(ts(), '[electron] #254:', msg);
-    try { localServer.addError(msg + ' — the bot is not in the call.'); } catch { /* best-effort */ }
+    try { localServer.addError(msg + '. The bot is not in the call.'); } catch { /* best-effort */ }
     try { localServer.setCallStatus('idle'); } catch { /* best-effort */ }
   }
 }

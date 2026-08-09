@@ -1,4 +1,4 @@
-// app-settings.js — renderer for the App Settings window (#381). Machine-wide
+// app-settings.js: renderer for the App Settings window (#381). Machine-wide
 // config shared across all profiles. Uses the SAME IPC the panel uses, and the
 // scoped store routes app-level keys to the shared config, so there's no new
 // persistence path here.
@@ -6,7 +6,7 @@
 const api = window.electronAPI;
 
 // --- User (vibeconferencing.com) login: same check-auth / login / logout IPCs
-// the panel uses (#366/#381 — moved here as an app-level credential). ---
+// the panel uses (#366/#381, moved here as an app-level credential). ---
 const userStatus = document.getElementById('userStatus');
 const userSignInBtn = document.getElementById('userSignInBtn');
 const userSignOutBtn = document.getElementById('userSignOutBtn');
@@ -42,15 +42,15 @@ const ttsInput = document.getElementById('ttsApiKey');
 api.invoke('get-config', ['ttsApiKey']).then((c) => { if (c && c.ttsApiKey) ttsInput.value = c.ttsApiKey; });
 ttsInput.addEventListener('change', () => {
   // main re-broadcasts 'tts-grant-changed' after processing this (paste or
-  // clear), which repaints the gift offer below — no need to do it here too.
+  // clear), which repaints the gift offer below, so no need to do it here too.
   api.send('update-tts-config', { apiKey: ttsInput.value.trim() });
 });
 
-// --- #273: gifted ElevenLabs key. Stateless by design — no accepted/declined
+// --- #273: gifted ElevenLabs key. Stateless by design: no accepted/declined
 // flag to get stuck: whether to offer or auto-fill is derived fresh, every
 // time, from comparing the CURRENT key to the grant's key. Two rules:
 //   1. Current key differs from the gift (including "no key at all") → show
-//      a button to apply it. Always available, never permanently dismissed —
+//      a button to apply it. Always available, never permanently dismissed,
 //      typing your own key is how you say no; there's nothing else to click.
 //   2. The field is EMPTY specifically at the moment this pane is DISPLAYED
 //      (initial load or regaining focus, not a live edit mid-session) → fill
@@ -68,8 +68,8 @@ function paintGift(grant, currentKey) {
   giftSection.style.display = offerable ? '' : 'none';
   if (offerable && giftDesc) {
     giftDesc.textContent = currentKey
-      ? "You've been gifted a voice key — use it instead?"
-      : "You've been gifted a voice key — zero setup, ready to speak.";
+      ? "You've been gifted a voice key. Use it instead?"
+      : "You've been gifted a voice key: zero setup, ready to speak.";
     giftAcceptBtn.textContent = currentKey ? 'Use gifted key' : 'Use it';
   }
 }
@@ -93,7 +93,7 @@ giftAcceptBtn?.addEventListener('click', async () => {
   finally { giftAcceptBtn.disabled = false; }
 });
 // main broadcasts this after any change to the grant or the applied key
-// (accept, or a manual paste that now matches/differs) — never auto-fills,
+// (accept, or a manual paste that now matches/differs). It never auto-fills,
 // since only a genuine "pane just displayed" moment should do that.
 api.on('tts-grant-changed', () => refreshGift());
 window.addEventListener('focus', () => refreshGift({ fillIfEmpty: true }));
@@ -126,7 +126,7 @@ api.on('voice-status-changed', () => {
 
 // The spoken confirmation (panel.js) is the primary signal; this is the paired
 // visual for whoever's looking at THIS window when it happens. Fades on its
-// own — unlike ttsKeyProblem, there's nothing ongoing to keep showing once the
+// own. Unlike ttsKeyProblem, there's nothing ongoing to keep showing once the
 // person has seen it.
 const ttsKeyValidatedEl = document.getElementById('ttsKeyValidated');
 api.on('elevenlabs-key-validated', () => {
@@ -173,7 +173,7 @@ api.invoke('get-app-settings-schema').then(async (fields) => {
         for (const opt of f.enum) {
           const o = document.createElement('option');
           // #231: a raw enum value presents every option as an equal peer. When
-          // they are not equal — recommended vs experimental vs bring-your-own —
+          // they are not equal (recommended vs experimental vs bring-your-own),
           // the label has to say so, or the UI misrepresents what is supported.
           o.value = opt; o.textContent = (f.enumLabels && f.enumLabels[opt]) || opt;
           input.appendChild(o);

@@ -1,11 +1,11 @@
-// onboarding.js — renderer for the first-run setup wizard. The pure step/permission
+// onboarding.js: renderer for the first-run setup wizard. The pure step/permission
 // model lives in electron-app/onboarding-flow.js and is surfaced over IPC
 // (onboarding:*); config reads/writes reuse get-config/set-config; sign-in reuses
 // check-auth/login/logout; voice preview reuses play-speech-test.
 const api = window.electronAPI;
 
 // Mirrors DEFAULT_BOT_NAME in electron-app/preferences-schema.js. The renderer
-// can't require() it, so a test pins the two together — if they drift, the
+// can't require() it, so a test pins the two together: if they drift, the
 // wizard silently stops suggesting names again.
 const DEFAULT_BOT_NAME = 'Unnamed bot';
 
@@ -14,12 +14,12 @@ const TITLE = {
   welcome: 'Welcome', permissions: 'Permissions', signin: 'Sign in',
   // 'Brains' rather than 'Claude Code' (#231): the step now asks which agent
   // drives the bot, and naming it after one of the three answers made the other
-  // two look like afterthoughts. The step KEY stays 'claude' — it is referenced
+  // two look like afterthoughts. The step KEY stays 'claude': it is referenced
   // by SKIPPABLE, the skip-confirm and the section's data-step.
   logging: 'Call logging', voice: 'Voice key', claude: 'Brains', done: 'All set',
 };
 // claude is skippable (you CAN finish without it, but the bot won't run until it's
-// installed) — the step says so; signin/voice are the other optional steps.
+// installed), and the step says so; signin/voice are the other optional steps.
 const SKIPPABLE = new Set(['signin', 'voice', 'claude']);
 let i = 0;
 
@@ -43,7 +43,7 @@ function render() {
 
 // #231: which agent drives bots on this machine. Only 'claude' makes the app
 // responsible for launching it, and only then do the install / sign-in warnings
-// apply — so the rest of this step is irrelevant to anyone who answers otherwise.
+// apply, so the rest of this step is irrelevant to anyone who answers otherwise.
 const AGENT_BACKEND_HINT = {
   claude: '',
   codex: 'Codex needs a one-time manual setup. See docs/codex.md in the repo. The app won\u2019t launch it for you, and won\u2019t ask about Claude Code again.',
@@ -97,7 +97,7 @@ async function go(delta) {
 
 $('nextBtn').addEventListener('click', async () => {
   // Moving off the Claude step without Claude Code is the one way to finish this
-  // wizard and still have nothing that works — the app is a bot host, and without
+  // wizard and still have nothing that works. The app is a bot host, and without
   // an agent driving it there is nothing to drive. Say so once, rather than
   // letting it be discovered later as "the app is broken".
   //
@@ -105,7 +105,7 @@ $('nextBtn').addEventListener('click', async () => {
   // escape hatch, and warning on it would just train people to dismiss warnings.
   //
   // #231: nor does it apply once someone has SAID they use something else. The
-  // warning's premise is "you will have nothing driving your bot" — which is
+  // warning's premise is "you will have nothing driving your bot", which is
   // simply false for a Codex or LM Studio user, and telling them otherwise is
   // how a warning becomes noise. Skip used to be the only way to express this;
   // now it can be stated, so it is honoured here.
@@ -165,7 +165,7 @@ async function loadPermissions() {
 // ── sign-in ──────────────────────────────────────────────────────────────
 // Login opens vibeconferencing.com in a browser; the app receives the token
 // asynchronously when the user finishes. So a single check right after the
-// click is too early — poll until signed in (and re-check on window focus, for
+// click is too early, so poll until signed in (and re-check on window focus, for
 // when the user completes login and switches back to this window).
 let authPollTimer = null;
 function stopAuthPoll() { if (authPollTimer) { clearInterval(authPollTimer); authPollTimer = null; } }
@@ -192,7 +192,7 @@ $('signOutBtn').addEventListener('click', async () => { try { await api.invoke('
 window.addEventListener('focus', () => { if (steps[i] === 'signin') loadAuth(); });
 
 // ── logging consent ──────────────────────────────────────────────────────
-// Highlight the chosen button via a `.selected` class — never by adding/removing
+// Highlight the chosen button via a `.selected` class, never by adding/removing
 // `.btn`, which also carries `flex:1` (removing it made the buttons different widths).
 function paintLog(v) {
   $('logState').textContent = v === true ? 'Logging is ON.' : v === false ? 'Logging is OFF.' : 'Not set.';
@@ -210,7 +210,7 @@ function paintClaude(st) {
   claudeState = { installed: !!st.installed, ready: !!st.ready };
   const status = $('claudeStatus'), installRow = $('claudeInstallRow'), verifyRow = $('claudeVerifyRow');
   if (st.ready) {
-    status.textContent = 'Ready ✓ — Claude Code is installed and signed in.';
+    status.textContent = 'Ready ✓. Claude Code is installed and signed in.';
     status.style.color = '#137333';
     installRow.style.display = 'none'; verifyRow.style.display = 'none';
   } else if (st.installed) {
@@ -228,14 +228,14 @@ async function loadClaude() {
   try { st = await api.invoke('onboarding:claude-status'); } catch { /* noop */ }
   paintClaude(st);
   // If it's installed but not confirmed yet, silently verify your sign-in in the
-  // background (headless `claude -p`) — turns green with no click if you're signed in.
+  // background (headless `claude -p`): turns green with no click if you're signed in.
   // The "Sign in & verify" button stays put in case you're not (needs interactive /login).
   if (st.installed && !st.ready) {
-    $('claudeStatus').textContent = 'Installed — checking your Claude sign-in…';
+    $('claudeStatus').textContent = 'Installed. Checking your Claude sign-in…';
     let r = null;
     try { r = await api.invoke('onboarding:auto-verify-claude'); } catch { /* noop */ }
     // If the background check was started, give its hook a moment to ping; if it hasn't
-    // greened by then you're likely not signed in — revert to the "Sign in & verify" prompt.
+    // greened by then you're likely not signed in, so revert to the "Sign in & verify" prompt.
     if (r && r.started) {
       setTimeout(() => { if (steps[i] === 'claude' && !claudeIsGreen) paintClaude({ installed: true, ready: false }); }, 20000);
     } else if (!claudeIsGreen) {
@@ -256,25 +256,25 @@ window.addEventListener('focus', () => { if (steps[i] === 'claude') loadClaude()
 // picking the actual voice now happens live in the guided onboarding call.
 // Persist via update-tts-config (same as the panel and App Settings), not a
 // bare set-config, so a key typed here also gets verified, announced, and
-// marked ttsApiKeySource:'byo' — without that mark, pasting your OWN key over
+// marked ttsApiKeySource:'byo'. Without that mark, pasting your OWN key over
 // a gifted one here would leave it looking gifted, and logging out would wipe
 // a key you actually typed yourself (see clearGiftedTtsKey in main.js).
 let savedVoiceCfg = null;
 $('elKey').addEventListener('change', () => {
   api.send('update-tts-config', { apiKey: ($('elKey').value || '').trim() });
-  // Repaint immediately from the already-fetched grant (no need to re-fetch —
+  // Repaint immediately from the already-fetched grant (no need to re-fetch,
   // a local edit doesn't change what the SERVER granted, only whether it
   // matches). A live clear stays empty rather than auto-refilling; see the
   // note on paintElKeyGift below.
   paintElKeyGift(lastTtsGrant, ($('elKey').value || '').trim());
 });
 // #273: same stateless rule as App Settings (see the note above applyGrant in
-// main.js) — an empty field is filled in automatically the moment this STEP
+// main.js): an empty field is filled in automatically the moment this STEP
 // is shown (not on a live edit, so clearing the field to type your own key
 // isn't fought); a field holding something else gets a one-click offer.
 // Signin comes before this step in the wizard, so by the time someone reaches
 // it they're either signed in (a grant may exist) or skipped signin (no grant
-// — this just quietly does nothing).
+// so this just quietly does nothing).
 let lastTtsGrant = null;
 function paintElKeyGift(grant, currentKey) {
   const isGiftActive = !!grant?.granted && currentKey === grant.apiKey;
@@ -286,8 +286,8 @@ function paintElKeyGift(grant, currentKey) {
   section.style.display = offerable ? '' : 'none';
   if (offerable) {
     $('elKeyGiftDesc').textContent = currentKey
-      ? "You've been gifted a voice key — use it instead?"
-      : "You've been gifted a voice key — zero setup, ready to speak.";
+      ? "You've been gifted a voice key. Use it instead?"
+      : "You've been gifted a voice key: zero setup, ready to speak.";
     $('elKeyGiftBtn').textContent = currentKey ? 'Use gifted key' : 'Use it';
   }
 }
@@ -325,7 +325,7 @@ $('getKeyLink').addEventListener('click', (e) => { e.preventDefault(); api.invok
 $('keyPermissionsLink')?.addEventListener('click', (e) => { e.preventDefault(); api.invoke('onboarding:open-url', 'https://vibeconferencing.com/onboarding/elevenlabs-key-setup'); });
 
 // A suggested name for a brand-new bot, picked at random from the same pool the
-// old in-wizard name spinner drew from. Main picks it — it knows which names
+// old in-wizard name spinner drew from. Main picks it, since it knows which names
 // are already in use, and two wizards open at once must not land on the same
 // one. There's no UI step for this anymore (the guided onboarding call is where
 // naming now happens live), but a bot still needs SOME name to show on its Meet
@@ -344,10 +344,10 @@ async function suggestName(exclude = []) {
     savedVoiceCfg = await api.invoke('get-config', ['botName', 'ttsApiKey', 'remoteLogging', 'captionLanguage']);
     if (savedVoiceCfg) {
       // Silently name the bot if it has none yet, so it isn't stuck as "Unnamed
-      // bot" until the guided call runs (which is optional — "Finish" alone
+      // bot" until the guided call runs (which is optional: "Finish" alone
       // still works). "no name yet" CANNOT be tested with `saved || suggestName()`:
       // get-config fills unset prefs with their schema default, so botName comes
-      // back as the string 'Unnamed bot' rather than undefined — always truthy.
+      // back as the string 'Unnamed bot' rather than undefined, always truthy.
       // Compare against the default instead.
       const saved = (savedVoiceCfg.botName || '').trim();
       const unnamed = !saved || saved === DEFAULT_BOT_NAME;
@@ -356,7 +356,7 @@ async function suggestName(exclude = []) {
         if (name) await api.invoke('set-config', 'botName', name);
       }
       // No empty option to fall back to anymore (#see the wizard's captionLanguage
-      // note) — an unset preference defaults the picker to English rather than
+      // note): an unset preference defaults the picker to English rather than
       // landing on nothing selected.
       if ($('captionLanguage')) $('captionLanguage').value = savedVoiceCfg.captionLanguage || 'en-US';
       $('elKey').value = savedVoiceCfg.ttsApiKey || '';

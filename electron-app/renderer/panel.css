@@ -10,7 +10,7 @@ body {
   background: #202124;
   color: #e8eaed;
   /* This is an app surface, not a document. Selecting the bot's name or a
-     button label achieves nothing and actively gets in the way — the banner's
+     button label achieves nothing and actively gets in the way; the banner's
      top strip is a window drag handle, so a slightly-off drag was selecting
      "Jimmy" instead of moving the window. Real text is opted back in below. */
   user-select: none;
@@ -39,7 +39,7 @@ pre,
 
 /* A flex column, but NOT full-height: the window is now sized to fit this
    content (main.js listens for panel-content-height), so a `min-height: 100vh`
-   would be circular — the content would always be exactly as tall as the window
+   would be circular; the content would always be exactly as tall as the window
    it is supposed to be measuring. */
 .container {
   padding: 16px;
@@ -48,7 +48,7 @@ pre,
 }
 /* The banner is flush to the bottom edge too when nothing follows it, so the
    avatar fills the whole window pre-call. (Settings/troubleshooting keep their
-   bottom padding — their content genuinely ends there.) */
+   bottom padding; their content genuinely ends there.) */
 #mainScreen .container { padding-bottom: 0; }
 
 h1 {
@@ -143,7 +143,7 @@ button:disabled {
   cursor: default;
 }
 /* Opacity alone wasn't enough on the accent-blue primary: at 0.5 over the dark
-   hero it still read as a live, pressable button — which is exactly wrong while
+   hero it still read as a live, pressable button, which is exactly wrong while
    the bot is mid-join. Drop the accent entirely so the control goes grey and
    flat, the way a disabled button is expected to look. */
 button.primary:disabled {
@@ -237,7 +237,7 @@ button.primary:disabled {
 /* ── Notice stack ──────────────────────────────────────────────────────────
    Anything the app needs to tell you sits HERE, across the bot's face, rather
    than in the page flow. A banner in the flow pushes the avatar and the call
-   controls around every time it appears — and these appear on a timer you don't
+   controls around every time it appears, and these appear on a timer you don't
    control, so the layout would shift under your cursor.
 
    One shared stack rather than each notice positioning itself: two at once
@@ -271,7 +271,7 @@ button.primary:disabled {
   background: rgba(59, 24, 24, 0.82);
   border: 1px solid rgba(242, 139, 130, 0.45);
 }
-/* Warnings — amber, and not an error: something is off, nothing is broken. */
+/* Warnings are amber, and not an error: something is off, nothing is broken. */
 .notice-warn {
   display: none;              /* JS flips this to flex */
   align-items: center;
@@ -358,7 +358,7 @@ button.notice-action:hover:not(:disabled) { background: #aecbfa; }
 /* ── App footer ── the app's own identity, demoted to one quiet line: product ·
    version · your vibeconferencing.com login. It FLOWS (no margin-top:auto) so
    it sits directly under the avatar banner rather than being pushed to the
-   bottom of a tall window — with the window sized to its content, that's the
+   bottom of a tall window; with the window sized to its content, that's the
    same place, and it stays put in-call when the call card appears. */
 .app-footer {
   /* The hero-bottom block is anchored to the banner's foot, so growing this gap
@@ -368,7 +368,7 @@ button.notice-action:hover:not(:disabled) { background: #aecbfa; }
   align-items: center;
   gap: 5px;
   font-size: 11px;
-  /* On the artwork now, not on the panel background — the old #5f6368 would be
+  /* On the artwork now, not on the panel background; the old #5f6368 would be
      invisible against a dark avatar. Dim white + a shadow reads on anything
      while staying clearly secondary to the call button above it. */
   color: rgba(232, 234, 237, 0.62);
@@ -376,7 +376,7 @@ button.notice-action:hover:not(:disabled) { background: #aecbfa; }
   min-width: 0;
 }
 .app-footer-name { flex: 0 0 auto; }
-/* Product + version sit at the left edge, your login at the right — the two are
+/* Product + version sit at the left edge, your login at the right; the two are
    unrelated, and splitting them reads as a status bar rather than a sentence.
    (The "·" that used to join them went with the change; it only made sense
    while they were adjacent.) It still ellipsises rather than pushing the
@@ -408,7 +408,7 @@ button.notice-action:hover:not(:disabled) { background: #aecbfa; }
   background: #3c4043;
 }
 
-/* Bot Settings heading — the bot's own avatar next to the title, so this screen
+/* Bot Settings heading: the bot's own avatar next to the title, so this screen
    is visibly about THIS BOT and not the machine-wide App Settings. */
 .settings-head {
   position: relative;
@@ -417,15 +417,15 @@ button.notice-action:hover:not(:disabled) { background: #aecbfa; }
   gap: 10px;
   margin-bottom: 14px;
 }
-/* Mirrors button.agent-gear on the main screen — same corner, same ghost
-   treatment — so entering and leaving settings are the same gesture.
+/* Mirrors button.agent-gear on the main screen, same corner, same ghost
+   treatment, so entering and leaving settings are the same gesture.
    FIXED, not absolute: Settings is a long scrolling page, and a close button
    that scrolls away is a close button you have to hunt for. It stays put and
    content passes under it, which is why it carries its own backdrop. */
 button.screen-close {
   /* The SAME offsets as .hero-top .agent-gear (top/right 8px). That strip
      starts at the window's content origin and spans its full width, so an
-     absolute 8px there and a fixed 8px here land on the same pixel — which is
+     absolute 8px there and a fixed 8px here land on the same pixel, which is
      the point: the button you press to leave is where the one you pressed to
      enter was. Safe at 8px on both platforms because it's top-RIGHT, away from
      the macOS traffic lights; Windows' caption buttons are dodged below. */
@@ -435,7 +435,7 @@ button.screen-close {
   border: none; cursor: pointer;
   font-size: 19px; line-height: 1; border-radius: 50%;
   /* Filled blue, iOS-style: this is the affirmative "done" action, and it's the
-     same #8ab4f8/#202124 pairing as button.primary — one blue in the app rather
+     same #8ab4f8/#202124 pairing as button.primary: one blue in the app rather
      than a second one imported from iOS. Opaque, so no backdrop-filter is
      needed to keep text scrolling underneath from showing through.
      iOS greys this out until something has changed; we don't track a dirty
@@ -445,14 +445,14 @@ button.screen-close {
 }
 button.screen-close:hover:not(:disabled) { background: #aecbfa; color: #202124; }
 /* (A 146px dodge lived here for the Windows caption-button overlay. Windows has
-   a standard title bar again — see titleBarOptions in main.js — so nothing
+   a standard title bar again (see titleBarOptions in main.js), so nothing
    floats over this button any more. macOS needs no nudge: controls are
    top-left.) */
 
 /* Frameless: the header runs to the window's edges and carries its own inset,
    the same shape as the banner on the main screen. Doing it with CONTAINER
-   padding instead left a dead strip exactly level with the window controls —
-   the one place you'd reach for to drag — while the area just below it worked.
+   padding instead left a dead strip exactly level with the window controls,
+   the one place you'd reach for to drag, while the area just below it worked.
    Owning the space means the header can be the drag handle for all of it.
    The inset is vertical because this heading is left-aligned, unlike the
    centred bot name, so it can't simply pass beside the macOS traffic lights. */
@@ -469,16 +469,16 @@ body[data-titlebar] #settingsScreen .settings-head button { -webkit-app-region: 
 .settings-title { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .settings-profile {
   font-size: 11px; color: #9aa0a6; line-height: 1.2;
-  /* A long profile name must not push the close button off — truncate instead. */
+  /* A long profile name must not push the close button off: truncate instead. */
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
 /* Standing note at the top of Bot Settings. Informational, not a warning, so it
-   borrows the accent blue rather than the amber/red notice treatment — and it
+   borrows the accent blue rather than the amber/red notice treatment, and it
    sits flat against the page instead of floating like .hero-notice, since it is
    permanent furniture rather than something that appeared and can be dismissed. */
-/* The line at the top of Bot Settings. Plain form copy — same size and colour
-   as a field label — not a callout. It used to be a tinted box with an accent
+/* The line at the top of Bot Settings. Plain form copy (same size and colour
+   as a field label), not a callout. It used to be a tinted box with an accent
    border, which made a sentence about the page look like a warning about it. */
 .settings-intro {
   margin: 0 0 14px;
@@ -506,7 +506,7 @@ body[data-titlebar] #settingsScreen .settings-head button { -webkit-app-region: 
 }
 /* No background set: show the same default gradient the camera falls back to,
    so the preview shows the look rather than describing it. Matches the
-   .agent-avatar default — see the note there. */
+   .agent-avatar default; see the note there. */
 .avatar-bg-preview.is-default {
   background: linear-gradient(160deg, #1a237e 0%, #283593 50%, #1565c0 100%);
 }
@@ -515,7 +515,7 @@ body[data-titlebar] #settingsScreen .settings-head button { -webkit-app-region: 
    "slice", and these make it fill the box for the crop to act on. */
 .avatar-bg-preview-art svg { width: 100%; height: 100%; display: block; }
 /* The face, centred over the art. 77cqh mirrors the camera's own
-   `emojiSize = min(w, h) * 0.77` (page-inject.js) — on a 16:9 box the height IS
+   `emojiSize = min(w, h) * 0.77` (page-inject.js): on a 16:9 box the height IS
    the min, so the preview shows the face at the size the call will. */
 .avatar-bg-preview-face {
   position: absolute; inset: 0;
@@ -600,7 +600,7 @@ button.auth-action-btn:hover:not(:disabled) {
   color: #aecbfa;
 }
 
-/* Live caption feed — the bot's-eye view (#troubleshooting) */
+/* Live caption feed: the bot's-eye view (#troubleshooting) */
 .caption-feed .cap-line {
   padding: 1px 0;
   line-height: 1.35;
@@ -641,7 +641,7 @@ button.auth-action-btn:hover:not(:disabled) {
 }
 .popout-btn:hover { background: #3c4043; border-color: #8ab4f8; color: #aecbfa; }
 
-/* Sign-ins section — which Google account is actually signed in */
+/* Sign-ins section: which Google account is actually signed in */
 .account-email {
   font-size: 12px;
   margin: 0 0 8px;
@@ -660,16 +660,16 @@ button.auth-action-btn:hover:not(:disabled) {
 }
 .text-link:hover { color: #aecbfa; text-decoration: underline; }
 
-/* ── Bot identity — the full-bleed avatar banner ────────────────────────────
+/* ── Bot identity: the full-bleed avatar banner ─────────────────────────────
    The avatar IS the masthead: flush to the window's top / left / right edges,
    with the name, ⚙ and the call controls laid over it. The negative margins
    cancel .container's 16px padding on three sides.
 
-   NOT `overflow: hidden` — the bot-switcher dropdown hangs below the name and
+   NOT `overflow: hidden`: the bot-switcher dropdown hangs below the name and
    would be clipped at the banner's edge. Only .hero-art clips.
 
    SQUARE. Full width either way (the negative margins), so a 1:1 ratio makes it
-   as tall as the window is wide — much more room for the face than the old 16:9
+   as tall as the window is wide, much more room for the face than the old 16:9
    slab. Background art is authored 16:9 and gets centre-cropped to fit, which is
    the same cover-fit the camera applies.
 
@@ -691,7 +691,7 @@ button.auth-action-btn:hover:not(:disabled) {
   justify-content: space-between;
 }
 /* Scrims: the name and buttons sit on top of arbitrary user art, so darken the
-   two edges they occupy. Purely decorative — under the controls, over the art. */
+   two edges they occupy. Purely decorative: under the controls, over the art. */
 .bot-hero::before,
 .bot-hero::after {
   content: ''; position: absolute; left: 0; right: 0; z-index: 3;
@@ -700,7 +700,7 @@ button.auth-action-btn:hover:not(:disabled) {
 .bot-hero::before {
   top: 0; height: 92px;
   /* 0.35, down from 0.55. At 0.55 this composited to roughly #1C364E over a
-     #4079AF sky — near black exactly where the artwork is most saturated, so a
+     #4079AF sky, near black exactly where the artwork is most saturated, so a
      blue-sky background read as washed out at the top of the window. The old
      value only looked fine because the stock background was near-black anyway.
      0.35 still separates the name and gear from light artwork. */
@@ -721,7 +721,7 @@ body[data-titlebar] .hero-top {
   -webkit-app-region: drag;
   /* Clears the window controls now floating over the banner. They miss the name
      horizontally (macOS traffic lights sit at x 13–70, the name is centred), so
-     this only has to stop the two reading as cramped — not fully clear them. */
+     this only has to stop the two reading as cramped, not fully clear them. */
   padding-top: 18px;
 }
 body[data-titlebar] .hero-top button,
@@ -731,19 +731,19 @@ body[data-titlebar] .hero-top .profile-menu { -webkit-app-region: no-drag; }
 body[data-menu-open] .hero-top { -webkit-app-region: no-drag; }
 
 /* (The gear used to slide 146px clear of the Windows caption overlay. Windows
-   has a standard title bar again — see titleBarOptions in main.js — so the gear
+   has a standard title bar again (see titleBarOptions in main.js), so the gear
    sits in the corner on every platform.) */
 /* The name is centred across the FULL banner width; the gear is pinned to the
    corner and taken out of the flow so it can't push the name off-centre. */
 .hero-top .agent-name-row { flex: 1 1 auto; justify-content: center; min-width: 0; }
 .hero-top .agent-gear { position: absolute; top: 8px; right: 8px; }
-/* Only 5px below the status line — it's the quietest thing on screen and reads
+/* Only 5px below the status line: it's the quietest thing on screen and reads
    better tucked against the edge than floating above it. */
 .hero-bottom { padding: 0 12px 5px; }
 .hero-bottom .field { margin-bottom: 8px; }
 .hero-bottom .field label { color: #e8eaed; text-shadow: 0 1px 2px rgba(0,0,0,0.6); }
 
-/* The art layer — fills the banner and is the only thing that clips.
+/* The art layer: fills the banner and is the only thing that clips.
    container-type lets the face size itself as a fraction of the banner (cqmin)
    rather than a hardcoded px, so it tracks the panel width. */
 .agent-avatar.hero-art {
@@ -752,8 +752,8 @@ body[data-menu-open] .hero-top { -webkit-app-region: no-drag; }
   border-radius: 0;
   z-index: 0;
   container-type: size;
-  /* OPTICAL centring. The overlays aren't symmetric — the call button plus the
-     status line are ~25px taller than the name row above — so a face centred in
+  /* OPTICAL centring. The overlays aren't symmetric: the call button plus the
+     status line are ~25px taller than the name row above, so a face centred in
      the box reads as sitting low. Padding the bottom of the flex box lifts the
      face by half of it, splitting the difference. Done with padding rather than
      a transform because `translate` and `scale` are already spoken for by the
@@ -779,7 +779,7 @@ body[data-menu-open] .hero-top { -webkit-app-region: no-drag; }
 .agent-avatar-bg { position: absolute; inset: 0; }
 /* object-fit only affects REPLACED elements, so it works on <img> and does
    nothing at all on an inline <svg>. The svg gets cover-fitted in JS instead,
-   via preserveAspectRatio="xMidYMid slice" — see renderer/svg-cover.js. */
+   via preserveAspectRatio="xMidYMid slice"; see renderer/svg-cover.js. */
 .agent-avatar-bg img { width: 100%; height: 100%; display: block; object-fit: cover; }
 .agent-avatar-bg svg { width: 100%; height: 100%; display: block; }
 .agent-avatar-emoji { position: relative; font-size: 46px; line-height: 1; }
@@ -789,7 +789,7 @@ body[data-menu-open] .hero-top { -webkit-app-region: no-drag; }
    below, and the face wants a little air from them.
 
    67.37% is not arbitrary: at the 380px banner it renders the face at 256 CSS
-   px — EXACTLY the native size of the Fluent 3D artwork. A CSS size equal to
+   px, EXACTLY the native size of the Fluent 3D artwork. A CSS size equal to
    the source size means an integer scale factor at every device pixel ratio
    (1.00x / 2.00x / 3.00x) rather than the 2.078x that 70% produced on retina.
    Costs 10px of face (3.8%) and nothing else. If PANEL_WIDTH ever moves, this
@@ -807,7 +807,7 @@ body[data-menu-open] .hero-top { -webkit-app-region: no-drag; }
    The two periods are deliberately NOT equal: they drift in and out of phase,
    which is what keeps it from looking like a metronome.
 
-   `translate` and `scale` as INDIVIDUAL properties, not `transform` — two
+   `translate` and `scale` as INDIVIDUAL properties, not `transform`: two
    animations on one `transform` would clobber each other. Percentage translate
    is relative to the element's own size, which is exactly the camera's
    "fraction of emojiSize". ease-in-out is a close approximation of a sine. */
@@ -860,15 +860,15 @@ button.agent-namebtn:hover:not(:disabled) { background: #3c4043; }
   font-family: 'Google Sans', Roboto, sans-serif;
   font-size: 26px; font-weight: 700; color: #e8eaed; letter-spacing: 0.3px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  /* Sits on the user's own artwork — a shadow keeps it readable on anything. */
+  /* Sits on the user's own artwork, so a shadow keeps it readable on anything. */
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
 }
 .agent-caret { flex: 0 0 auto; font-size: 13px; color: #e8eaed; text-shadow: 0 1px 3px rgba(0,0,0,0.8); }
 button.agent-namebtn:hover:not(:disabled) .agent-caret { color: #e8eaed; }
-/* Bot settings gear — sits next to the name, ghost-icon treatment. Stays
+/* Bot settings gear: sits next to the name, ghost-icon treatment. Stays
    visible in-call (unlike the switcher). */
 /* Same 36px circle as button.screen-close, which is what replaces it on the
-   Settings screen — they're the two halves of one round trip, so they should be
+   Settings screen: they're the two halves of one round trip, so they should be
    the same target. Sized by an explicit box rather than font-size + padding: the
    ⚙ icon and the ✕ glyph have quite different shape-to-em ratios, so matching
    their font sizes would NOT have matched their buttons. */
@@ -887,7 +887,7 @@ button.agent-gear:hover:not(:disabled) { background: #3c4043; color: #e8eaed; }
    follows the actual painted shape. */
 .bot-hero .ui-icon { filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.8)); }
 /* (.join-caret had its own text-shadow here while it was a text glyph. It is a
-   masked icon now, so it is covered by the .ui-icon rule above — text-shadow
+   masked icon now, so it is covered by the .ui-icon rule above; text-shadow
    would paint nothing, there being no text.) */
 /* #379: the switcher SWITCHES the current window (replaces this bot), which only
    makes sense pre-call. In-call, the name must STILL be visible (it's the
@@ -900,7 +900,7 @@ body[data-call-state="in-call"] button.agent-namebtn:hover:not(:disabled) { back
 /* ── Call zone ── join/leave tools, grouped as a card distinct from the Bot
    card above. Two entirely separate views (pre-call / in-call) driven by the
    SAME body[data-call-state] flag that gates the Leave/Troubleshooting
-   controls — never both at once. */
+   controls, never both at once. */
 /* No box. With the bot masthead and the app footer both unboxed, a bordered
    card around the only remaining zone just drew a rectangle around the button. */
 /* Pre-call and in-call controls occupy the SAME slot on the banner, so Leave
@@ -908,17 +908,17 @@ body[data-call-state="in-call"] button.agent-namebtn:hover:not(:disabled) { back
 .hero-incall { display: none; }
 body[data-call-state="in-call"] .hero-precall { display: none; }
 body[data-call-state="in-call"] .hero-incall { display: block; }
-/* Leave Call — the primary action's shape, in red. */
+/* Leave Call: the primary action's shape, in red. */
 button.primary.danger { background: #d93025; color: #fff; }
 button.primary.danger:hover:not(:disabled) { background: #e8544a; }
 /* Primary action + the ⋯ that reveals manual URL entry, on one line. The
    primary flexes so it stays the obvious target; ⋯ is a fixed ghost square. */
-/* Centred, and each control sized to its own content — a full-width button for
+/* Centred, and each control sized to its own content: a full-width button for
    two words read as a heavy slab across the avatar. */
 .join-row { display: flex; align-items: stretch; justify-content: center; gap: 6px; }
 .join-row .primary {
   /* `width: auto` is doing the work, not `flex`. The global `button` rule sets
-     width:100%, and with flex-basis:auto that width IS the flex base size — so
+     width:100%, and with flex-basis:auto that width IS the flex base size, so
      the button kept filling the row no matter what flex-grow said. */
   width: auto;
   flex: 0 1 auto;
@@ -948,14 +948,14 @@ button.join-more {
 }
 button.join-more:hover:not(:disabled) { background: #3c4043; color: #e8eaed; }
 /* The bot's-view toggle swaps 👀 for ✕ once the view is popped out. Both are
-   drawn art in the same icon box now, so neither needs a size correction — the
+   drawn art in the same icon box now, so neither needs a size correction: the
    .is-close class survives only as a state hook for anything that wants it. */
-/* Open state — reads as "this is what's showing the field below". */
+/* Open state: reads as "this is what's showing the field below". */
 button.join-more[aria-expanded="true"] { color: #8ab4f8; background: rgba(60, 64, 67, 0.9); }
 /* ONE glyph, rotated. Swapping icons (+ for ×, or the old ▸ for ▴) makes the
    control jump: different optical weights and advance widths in the same pill.
    Rotating a single glyph keeps the size identical and animates for free.
-   45° is the whole trick — a + at 45° IS a ×, so "add" turns into "close" with
+   45° is the whole trick: a + at 45° IS a ×, so "add" turns into "close" with
    nothing swapped.
    The glyph is a drawn mask (ui-icon-plus), so it inherits the 20px sizing that
    button.join-more gives every icon and matches the 👀 and 🧠 beside it. The
@@ -970,7 +970,7 @@ button.join-more[aria-expanded="true"] .join-caret { rotate: 45deg; }
   .join-caret { transition: none; }
 }
 /* The in-call 🚧 reuses the same ghost circle as +, so the two states have
-   an identical footprint — Leave Call lands exactly where Call now was. */
+   an identical footprint: Leave Call lands exactly where Call now was. */
 
 /* Read-only current-call URL + copy button (in-call). */
 /* Centred as a PAIR, matching the name above and the buttons below. */
@@ -980,7 +980,7 @@ button.join-more[aria-expanded="true"] .join-caret { rotate: 45deg; }
      and shoved the copy button to the far edge. It still SHRINKS (and so still
      ellipsises) when a link is too long for the banner. */
   flex: 0 1 auto; min-width: 0;
-  /* On the artwork now — needs the same shadow treatment as the status line. */
+  /* On the artwork now, so it needs the same shadow treatment as the status line. */
   font-size: 12px; color: #e8eaed;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -993,7 +993,7 @@ button.join-more[aria-expanded="true"] .join-caret { rotate: 45deg; }
 }
 .call-url-copy:hover { background: #3c4043; color: #e8eaed; }
 
-/* #305 — the bot's effective working dir under the Claude Working Directory field. */
+/* #305: the bot's effective working dir under the Claude Working Directory field. */
 .workdir-path {
   flex: 1 1 auto;
   min-width: 0;
@@ -1040,18 +1040,18 @@ button.join-more[aria-expanded="true"] .join-caret { rotate: 45deg; }
 
 /* ── Chrome icon sizes ────────────────────────────────────────────────────────
    ui-icons.css sizes an icon relative to its text (1.15em), which is right when
-   one leads a label. The icon-only buttons have no text to be relative TO —
+   one leads a label. The icon-only buttons have no text to be relative TO,
    their font-size was picked for an emoji glyph, which carries a lot of padding
    inside its em box that these outlines don't. So the standalone ones get an
    explicit pixel box instead, sized to the button rather than to a font.
 
    OpenMoji's outlines are 2px strokes on a 72px canvas, so they turn to mush
-   below ~16px — these are all at or above that on purpose. */
+   below ~16px; these are all at or above that on purpose. */
 /* 20, not 24: the gear is Octicons art, whose glyph fills its canvas edge to
    edge, where the OpenMoji outlines around it leave a wide margin. At the same
    box it reads a size larger than every other icon on the banner. */
 button.agent-gear .ui-icon { width: 20px; height: 20px; vertical-align: 0; }
-/* The Done check spans ~half its 36px circle — it's the only affordance on that
+/* The Done check spans ~half its 36px circle: it's the only affordance on that
    screen, so it carries more weight than the icons packed into the call row. */
 .screen-close .ui-icon { width: 26px; height: 26px; vertical-align: 0; }
 button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
@@ -1070,7 +1070,7 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
 }
 
 
-/* User (vibeconferencing.com) login — de-emphasized, transitional (#289) */
+/* User (vibeconferencing.com) login: de-emphasized, transitional (#289) */
 .user-id-line {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   margin-top: 10px; padding-top: 8px; border-top: 1px solid #3c4043;
@@ -1085,11 +1085,11 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
 /* minmax(0, 1fr), NOT 1fr.
    `1fr` is shorthand for `minmax(auto, 1fr)`, so a track can never shrink below
    its content's min-content width. This column holds pre-wrap monospace blocks
-   (live call state, the caption feed), and ONE long unbreakable line — a URL, a
-   room id, a caption without spaces — pushes that floor past the window.
+   (live call state, the caption feed), and ONE long unbreakable line (a URL, a
+   room id, a caption without spaces) pushes that floor past the window.
    Measured in the wild: tracks resolved to 1204.82px / 117.38px in a 980px
    window, so the right column was squeezed to a sliver and its content clipped.
-   It looked like the column had vanished, and it did so a beat after opening —
+   It looked like the column had vanished, and it did so a beat after opening,
    both blocks start empty, so the columns are even until the first live update
    lands. minmax(0, …) lets the track shrink and hands the overflow to the
    wrapping rules below, where it belongs. */
@@ -1097,7 +1097,7 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
 @media (max-width: 720px) { .ts-cols { grid-template-columns: minmax(0, 1fr); } }
 /* The other half of the fix: with the track free to shrink, a long token must
    actually break rather than overflow it. break-word alone does not touch a
-   single unbroken run of characters — anywhere does. */
+   single unbroken run of characters; anywhere does. */
 .ts-cols .call-state-debug,
 .ts-cols .caption-feed,
 .ts-cols pre,
@@ -1139,8 +1139,8 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
 .ts-feedback button:hover { background: #3c4043; }
 /* Flash green on click. The whole point is confirming the mark landed without
    stealing attention from the call. */
-/* Submit feedback you can't miss. Mid-call the click is often peripheral —
-   you are looking at the person, not the button — so a colour change alone is
+/* Submit feedback you can't miss. Mid-call the click is often peripheral:
+   you are looking at the person, not the button, so a colour change alone is
    easy to doubt, and doubting it means clicking again. A pop plus the flash
    reads as "that landed" from the corner of your eye. */
 @keyframes fb-pop {
@@ -1176,7 +1176,7 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
 
 /* ── Brain pane (#242) ──────────────────────────────────────────────────────
    A read-only view of the agent's activity feed. Monospace because the lines
-   are already formatted upstream (🗣 / 🔧 / 💬 prefixes and one-lined text) —
+   are already formatted upstream (🗣 / 🔧 / 💬 prefixes and one-lined text),
    proportional type would break that alignment for no gain. */
 .brain-feed {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -1190,7 +1190,7 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
   height: calc(100vh - 150px); overflow-y: auto;
   /* The app sets user-select:none globally (it is chrome, not a document), and
      that was swallowing this feed too. But this pane is EXACTLY the case the
-     global rule is wrong about: it exists to be read and copied out of — a tool
+     global rule is wrong about: it exists to be read and copied out of, a tool
      input or an error line pasted into an issue is most of its value during
      debugging. Opt back in, and take the I-beam so it looks selectable. */
   user-select: text; cursor: text;
@@ -1198,15 +1198,15 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
 .brain-feed .l-say  { color: #e8eaed; }
 .brain-feed .l-tool { color: #8ab4f8; }
 .brain-feed .l-ask  { color: #fdd663; }
-/* Reasoning. Dimmer than speech and italic — it is the agent's private working,
+/* Reasoning. Dimmer than speech and italic: it is the agent's private working,
    so it should read as an aside rather than compete with what it actually said. */
 .brain-feed .l-think { color: #c58af9; font-style: italic; }
 .brain-feed .l-none { color: #9aa0a6; font-style: italic; }
 
-/* #255 — the share-this-call's-log control. A rule used to separate it from the
+/* #255: the share-this-call's-log control. A rule used to separate it from the
    feedback buttons above, on the argument that this one sends data off the
-   machine. Removed: the two belong together — the sentence beside the button is
-   about those buttons — and the line made one short section look like two. */
+   machine. Removed: the two belong together (the sentence beside the button is
+   about those buttons) and the line made one short section look like two. */
 .share-log-row {
   margin-top: 12px;
 }
@@ -1214,7 +1214,7 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
 /* The explanation sits BESIDE the button in its own column, so it wraps within
    that column instead of underneath the button. `display: inline` was not
    enough: after a ~200px button in a ~460px column only a word or two fits on
-   the first line, and the rest falls below — which is the layout this was
+   the first line, and the rest falls below, which is the layout this was
    meant to avoid. */
 .share-log-main { display: flex; align-items: baseline; gap: 10px; }
 .share-log-main button { flex: 0 0 auto; margin-bottom: 0; }

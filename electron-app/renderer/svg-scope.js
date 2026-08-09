@@ -1,4 +1,4 @@
-// svg-scope.js — give each inline copy of an SVG its own id namespace.
+// svg-scope.js: give each inline copy of an SVG its own id namespace.
 //
 // The panel injects the SAME background SVG into several places at once: the
 // masthead tile, the Bot Settings heading tile, and the Settings background
@@ -10,7 +10,7 @@
 // masthead copy lives inside #mainScreen, which is display:none while the
 // Settings screen is up, and a paint server inside a display:none subtree
 // paints nothing. So a background whose sky is `fill="url(#sky)"` renders as
-// EMPTY on the Settings screen while its literal-fill shapes render normally —
+// EMPTY on the Settings screen while its literal-fill shapes render normally,
 // the reported "black sky and no clouds", with the hills still there.
 //
 // Rewriting ids per copy removes the collision entirely, which is more robust
@@ -37,7 +37,7 @@
     return svg
       .replace(ID_ATTR_RE, (full, pre, q, id) =>
         defined.has(id) ? `${pre}${q}${renamed(id)}${q}` : full)
-      // Paint servers, masks, clips, filters — `fill="url(#sky)"` and friends.
+      // Paint servers, masks, clips, filters: `fill="url(#sky)"` and friends.
       .replace(URL_REF_RE, (full, q, id) =>
         defined.has(id) ? `url(${q}#${renamed(id)}${q})` : full)
       // <use href="#cloud">, and the legacy xlink spelling.

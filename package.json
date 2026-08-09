@@ -6,6 +6,7 @@
   "license": "MIT",
   "scripts": {
     "test": "node --test tests/*.test.mjs",
+    "lint:copy": "node scripts/check-em-dashes.mjs",
     "test:unit": "node --test tests/*.test.mjs",
     "test:fleet": "scripts/spawn-test-fleet.sh",
     "test:meet": "node scripts/meet-test.mjs",
@@ -37,6 +38,7 @@
     "test:join-route:ci": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 1 && node scripts/join-route-test.mjs --base-url=http://127.0.0.1:7901 --bot-name=Alice --include-start-call; code=$?; scripts/spawn-test-fleet.sh 1 --kill; exit $code",
     "dev": "scripts/dev.sh",
     "dev:stop": "scripts/dev.sh --stop",
-    "promote": "scripts/promote.sh"
+    "promote": "scripts/promote.sh",
+    "hooks:install": "git config core.hooksPath .githooks"
   }
 }

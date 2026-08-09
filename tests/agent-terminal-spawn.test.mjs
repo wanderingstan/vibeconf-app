@@ -33,7 +33,7 @@ const codeOnly = (src) => src.split('\n').filter((l) => !l.trim().startsWith('//
 test('joinMeetUrl takes a spawnAgent option, defaulting to spawning', () => {
   // Default true: the panel paths pass nothing, and they are the ones that need
   // the terminal. A default of false would silently leave those bots driverless.
-  assert.match(main, /function joinMeetUrl\(meetUrl, \{ spawnAgent = true, onboardingCall = false \} = \{\}\)/);
+  assert.match(main, /function joinMeetUrl\(meetUrl, \{ spawnAgent = true, onboardingCall = false, calendarEvent = null \} = \{\}\)/);
 });
 
 test('the terminal launch inside joinMeetUrl is actually gated', () => {

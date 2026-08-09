@@ -3693,7 +3693,11 @@ function getWebsiteUrl() {
 // request arrived over MCP, because an agent making that request IS the agent;
 // spawning a second one gives the call two drivers that fight over
 // wait_for_speech, which is exactly what happened on 2026-07-29.
-function joinMeetUrl(meetUrl, { spawnAgent = true, onboardingCall = false } = {}) {
+// calendarEvent: the matched Google Calendar event, when this join was
+// triggered by one (#299) — recorded on the local server (setRoom clears any
+// prior one first) so get_room_info can tell the spawned agent WHY it's
+// here, instead of it walking into the call cold.
+function joinMeetUrl(meetUrl, { spawnAgent = true, onboardingCall = false, calendarEvent = null } = {}) {
   currentMeetUrl = meetUrl;
   loadMeetURL(meetUrl);
 
@@ -3701,6 +3705,7 @@ function joinMeetUrl(meetUrl, { spawnAgent = true, onboardingCall = false } = {}
   if (!match) return;
   const meetCode = match[1];
   localServer.setRoom(meetCode);
+  localServer.setCalendarEventContext(calendarEvent);
   sync.updateConfig({ roomId: meetCode, baseUrl: getWebsiteUrl() });
   sync.ensureRoom().then(() => {
     sync.startPolling();
@@ -7124,7 +7129,7 @@ allURLs`;
     store.set('joinedCalendarEventIds', { ...joinedIds, [event.id]: Date.now() });
     console.log(`[calendar] Auto-joining calendar event "${event.summary || event.id}"`);
     activateMeetProvider(); // no-op if already on a live Meet view
-    joinMeetUrl(meetUrl, { spawnAgent: true });
+    joinMeetUrl(meetUrl, { spawnAgent: true, calendarEvent: event });
   }
 
   // Schedules (rather than immediately performing) the join for a just-

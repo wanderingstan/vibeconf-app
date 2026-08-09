@@ -16,10 +16,14 @@
        VIBECONF_RECORD_CALLS — turn on the app's PER-PARTICIPANT call recording for
                                every test bot (each records its own audio+video to
                                <profile>/agent/calls/<id>/call-recording*.mp4).
-       VIBECONF_RECORD_KEEP  — fails (default) keeps only FAILING runs' artifacts;
-                               all keeps every run. Applies to BOTH the .mov and the
-                               harvested call recordings; newest VIBECONF_RECORD_MAX
-                               (default 5) kept, older pruned. -->
+       VIBECONF_RECORD_KEEP  — retention for BOTH the .mov and the harvested call
+                               recordings. `nightly` keeps EVERY lane's recording for
+                               the current run, then reaps the prior run's GREENS at
+                               the next run's start while keeping its FAILURES — so
+                               last night's lanes are all inspectable for a day and
+                               only failures persist. (`fails` = only failures kept;
+                               `all` = everything kept.) Newest VIBECONF_RECORD_MAX
+                               (default 5) kept per kind. -->
   <key>EnvironmentVariables</key>
   <dict>
     <key>VIBECONF_RECORD</key>
@@ -27,7 +31,7 @@
     <key>VIBECONF_RECORD_CALLS</key>
     <string>1</string>
     <key>VIBECONF_RECORD_KEEP</key>
-    <string>fails</string>
+    <string>nightly</string>
   </dict>
 
   <key>ProgramArguments</key>

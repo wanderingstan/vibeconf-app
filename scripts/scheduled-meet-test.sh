@@ -152,6 +152,47 @@ CALLREC_DIR="$RESULTS/call-recordings"
 # `tee "$LOG"` (no -a) truncates the log, so anything tee'd before it is wiped.
 [[ "$REC_CALLS" == "1" ]] && export VIBECONF_RECORD_CALL=1
 
+# --- Keep policy (VIBECONF_RECORD_KEEP), shared by the screen .mov AND the call
+# recordings. Three modes:
+#   fails   — keep only FAILING lanes' recordings; delete greens immediately.
+#   all     — keep every lane's recording (bounded to the newest REC_MAX).
+#   nightly — keep EVERY lane's recording for the CURRENT run, but at the START of
+#             the NEXT run reap the prior run's GREENS while keeping its FAILURES.
+#             So every lane from last night is inspectable for a day, and only
+#             failures persist beyond the next 3am run. Failures are tagged `.FAIL`
+#             in the name (so the reap can tell them apart) and capped to the newest
+#             REC_MAX; greens are kept LOCALLY only (not uploaded to Drive — no point
+#             pushing every green nightly; a red night still uploads its failure).
+# Two shared predicates keep rec_run and collect_call_recordings in lockstep. ---
+rec_keep_locally() {  # <exit-code> — should this lane's recording be kept on disk?
+  [[ "$REC_KEEP" == "all" || "$REC_KEEP" == "nightly" || ( "$REC_KEEP" == "fails" && "$1" != "0" ) ]]
+}
+rec_upload() {        # <exit-code> — should it also go to Drive? (greens only in all-mode)
+  [[ "$REC_KEEP" == "all" || "$1" != "0" ]]
+}
+
+reap_prior_recordings() {  # nightly-mode only. Runs ONCE at the start of a run, when
+  # everything already on disk is by definition from a PRIOR run: delete the GREENS
+  # (names without `.FAIL`), keep the FAILURES, then cap survivors to newest REC_MAX.
+  [[ "$REC_KEEP" == "nightly" ]] || return 0
+  local reaped=0 kept_fail=0 m d
+  if [[ -d "$REC_DIR" ]]; then
+    for m in "$REC_DIR"/*.mov(N); do
+      if [[ "$m" == *.FAIL.mov ]]; then (( kept_fail++ )); else rm -f "$m"; (( reaped++ )); fi
+    done
+    local fmovs=( "$REC_DIR"/*.FAIL.mov(Nom) )
+    (( ${#fmovs} > REC_MAX )) && rm -f -- "${(@)fmovs[REC_MAX+1,-1]}"
+  fi
+  if [[ -d "$CALLREC_DIR" ]]; then
+    for d in "$CALLREC_DIR"/*(N/); do
+      if [[ "$d" == *.FAIL ]]; then (( kept_fail++ )); else rm -rf "$d"; (( reaped++ )); fi
+    done
+    local fdirs=( "$CALLREC_DIR"/*.FAIL(Nom/) )
+    (( ${#fdirs} > REC_MAX )) && rm -rf -- "${(@)fdirs[REC_MAX+1,-1]}"
+  fi
+  (( reaped + kept_fail > 0 )) && echo "=== 🧹 recording retention (nightly): reaped $reaped prior green recording(s), kept $kept_fail failure(s) ===" | tee -a "$LOG"
+}
+
 collect_call_recordings() {  # <lane> <exit-code> <since-marker-file> : harvest the
   # merged call-recording*.mp4 files the test fleet wrote DURING this lane (mtime
   # newer than the marker) out of the isolated test profiles, keep per policy, and
@@ -171,8 +212,11 @@ collect_call_recordings() {  # <lane> <exit-code> <since-marker-file> : harvest 
     [[ "$code" != "0" ]] && echo "=== 🎙️  no call recording produced by '$lane' (bots may have been killed before the merge finished) ===" | tee -a "$LOG"
     return 0
   fi
-  if [[ "$REC_KEEP" == "all" || ( "$REC_KEEP" == "fails" && "$code" != "0" ) ]]; then
+  if rec_keep_locally "$code"; then
+    # In nightly mode, tag a FAILING lane's dir `.FAIL` so reap_prior_recordings
+    # keeps it next run (greens have no tag and get reaped).
     local dest="$CALLREC_DIR/${lane}-${STAMP}"
+    [[ "$REC_KEEP" == "nightly" && "$code" != "0" ]] && dest="${dest}.FAIL"
     mkdir -p "$dest"
     local f kept=0
     for f in "${recs[@]}"; do
@@ -186,10 +230,10 @@ collect_call_recordings() {  # <lane> <exit-code> <since-marker-file> : harvest 
     done
     if (( kept > 0 )); then
       echo "=== 🎙️  call recordings kept: $dest ($kept file(s), $(du -sh "$dest" 2>/dev/null | cut -f1)) ===" | tee -a "$LOG"
-      # Upload to the same shared Drive folder as the .movs — best-effort, no-ops
-      # cleanly without rclone/the remote. Braces guard the spaced remote name.
+      # Upload to the shared Drive folder — only for failures (or in all-mode); nightly
+      # greens stay local. Best-effort, no-ops cleanly without rclone/the remote.
       local _remote="${VIBECONF_RCLONE_REMOTE:-Vibeconf Shared Files}"
-      if command -v rclone >/dev/null 2>&1 && rclone listremotes 2>/dev/null | grep -qxF "${_remote}:"; then
+      if rec_upload "$code" && command -v rclone >/dev/null 2>&1 && rclone listremotes 2>/dev/null | grep -qxF "${_remote}:"; then
         if rclone copy "$dest" "${_remote}:${lane}-${STAMP}-calls/" 2>>"$LOG"; then
           # Grab a shareable link to the uploaded FOLDER so the digest can point a
           # red night straight at the call's own audio/video (analog of the .mov link).
@@ -207,10 +251,13 @@ collect_call_recordings() {  # <lane> <exit-code> <since-marker-file> : harvest 
   # throwaway test profiles don't grow without bound — call videos are large. The
   # kept COPY under $RESULTS survives. Drop the now-empty calls/<id> dirs too.
   for f in "${recs[@]}"; do rm -f "$f" 2>/dev/null; rmdir "$(dirname "$f")" 2>/dev/null; done
-  # Prune the collected call-recording dirs to the newest REC_MAX (mirror the .mov
-  # prune): (N)=nullglob, (om)=newest-first, (/)=dirs only.
-  local dirs=( "$CALLREC_DIR"/*(Nom/) )
-  (( ${#dirs} > REC_MAX )) && rm -rf -- "${(@)dirs[REC_MAX+1,-1]}"
+  # Prune to newest REC_MAX (mirror the .mov prune): (N)=nullglob, (om)=newest-first,
+  # (/)=dirs only. Skipped in nightly mode — there the reap at run-start does the
+  # capping (per outcome), and we must NOT drop this run's greens mid-run.
+  if [[ "$REC_KEEP" != "nightly" ]]; then
+    local dirs=( "$CALLREC_DIR"/*(Nom/) )
+    (( ${#dirs} > REC_MAX )) && rm -rf -- "${(@)dirs[REC_MAX+1,-1]}"
+  fi
 }
 
 rec_run() {  # rec_run <lane> -- <cmd...> : run cmd (tee'd to $LOG), return its exit.
@@ -237,21 +284,24 @@ rec_run() {  # rec_run <lane> -- <cmd...> : run cmd (tee'd to $LOG), return its 
   "$@" 2>&1 | tee -a "$LOG"
   code=${pipestatus[1]:-$?}   # `code` was declared local at the top of rec_run
   kill -INT "$rpid" 2>/dev/null; wait "$rpid" 2>/dev/null
-  if [[ "$REC_KEEP" == "all" || ( "$REC_KEEP" == "fails" && "$code" != "0" ) ]]; then
+  if rec_keep_locally "$code"; then
     # screencapture silently produces NO file when the shell running it lacks Screen
     # Recording permission (the launchd context usually does). Don't claim a recording
     # was "kept" when nothing landed — that sent someone chasing a .mov that never
     # existed. Only claim it for a real (>10KB) file; otherwise say plainly that it
     # failed and why, so the digest/analysis never points at a ghost recording.
     if [[ -s "$mov" ]] && (( $(stat -f%z "$mov" 2>/dev/null || echo 0) > 10240 )); then
+      # In nightly mode, tag a FAILING lane's .mov `.FAIL` so reap_prior_recordings
+      # keeps it next run (greens have no tag and get reaped).
+      [[ "$REC_KEEP" == "nightly" && "$code" != "0" ]] && { mv "$mov" "${mov%.mov}.FAIL.mov" 2>/dev/null && mov="${mov%.mov}.FAIL.mov"; }
       echo "=== 📹 recording kept: $mov ($(du -h "$mov" 2>/dev/null | cut -f1)) ===" | tee -a "$LOG"
-      # Upload the kept recording to the shared Drive folder and capture a shareable
-      # LINK for the digest, so a red night points straight at the .mov. Best-effort:
+      # Upload the kept recording to Drive + capture a shareable LINK for the digest —
+      # only for failures (or in all-mode); nightly greens stay local. Best-effort:
       # needs `rclone` + the configured remote (VIBECONF_RCLONE_REMOTE, default
       # "Vibeconf Shared Files") — no-ops cleanly otherwise (e.g. a dev machine).
       # Braces around the remote name avoid zsh's `:r` modifier eating a spaced name.
       local _remote="${VIBECONF_RCLONE_REMOTE:-Vibeconf Shared Files}"
-      if command -v rclone >/dev/null 2>&1 && rclone listremotes 2>/dev/null | grep -qxF "${_remote}:"; then
+      if rec_upload "$code" && command -v rclone >/dev/null 2>&1 && rclone listremotes 2>/dev/null | grep -qxF "${_remote}:"; then
         local _base; _base="$(basename "$mov")"
         if rclone copy "$mov" "${_remote}:" 2>>"$LOG"; then
           local _link; _link="$(rclone link "${_remote}:${_base}" 2>/dev/null)"
@@ -268,11 +318,13 @@ rec_run() {  # rec_run <lane> -- <cmd...> : run cmd (tee'd to $LOG), return its 
   else
     rm -f "$mov"
   fi
-  # Prune: keep only the newest REC_MAX recordings. (N)=nullglob so an empty dir
-  # doesn't raise zsh's "no matches found" (which spammed launchd.err every run);
-  # (om)=order by mtime, newest first, so we keep [1..REC_MAX] and drop the rest.
-  local recs=( "$REC_DIR"/*.mov(Nom) )
-  (( ${#recs} > REC_MAX )) && rm -f -- "${(@)recs[REC_MAX+1,-1]}"
+  # Prune to newest REC_MAX. (N)=nullglob so an empty dir doesn't raise zsh's "no
+  # matches found"; (om)=newest-first. Skipped in nightly mode — the reap at run-start
+  # caps per outcome there, and we must NOT drop this run's greens mid-run.
+  if [[ "$REC_KEEP" != "nightly" ]]; then
+    local recs=( "$REC_DIR"/*.mov(Nom) )
+    (( ${#recs} > REC_MAX )) && rm -f -- "${(@)recs[REC_MAX+1,-1]}"
+  fi
   # Harvest the bots' per-participant call recordings (independent of the .mov).
   [[ -n "$_cr_marker" ]] && { collect_call_recordings "$lane" "$code" "$_cr_marker"; rm -f "$_cr_marker"; }
   return $code
@@ -311,6 +363,10 @@ if [[ "$REC" == "1" ]]; then
   fi
   echo "" | tee -a "$LOG"
 fi
+
+# Nightly-mode retention: reap the PRIOR run's green recordings (keep its failures)
+# before this run produces any of its own. No-op unless VIBECONF_RECORD_KEEP=nightly.
+reap_prior_recordings
 
 # --- Self-update the artifacts before testing (Stan): pull latest `main` so the
 # SOURCE lanes test HEAD, and install the latest published DMG so the DMG-meet lane

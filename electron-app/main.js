@@ -6497,6 +6497,24 @@ function removeCodexIntegration() {
   return result.changed;
 }
 
+// Live "is it actually there" checks for the menu — deliberately independent
+// of the leave-no-trace store flags (those only gate re-install at boot; they
+// drift from ground truth if the user hand-edits the config files).
+function isClaudeIntegrationInstalled() {
+  const home = process.env.HOME || process.env.USERPROFILE;
+  const claudeJsonPath = path.join(home, '.claude.json');
+  const { readClaudeConfigSafe } = require('./claude-config.js');
+  const { config, readable } = readClaudeConfigSafe(claudeJsonPath);
+  return readable && !!config.mcpServers?.vibeconferencing;
+}
+
+function isCodexIntegrationInstalled() {
+  const home = process.env.HOME || process.env.USERPROFILE;
+  const configPath = codexConfigPath(home);
+  const { content, readable } = readCodexConfigSafe(configPath);
+  return readable && !!currentCodexMcpServerPath(content);
+}
+
 app.whenReady().then(async () => {
   // P2: force plain system DNS (no DoH). Chromium's built-in resolver does Secure DNS by
   // default, which can't resolve LiveKit's dynamic media/TURN hosts (*.host/.turn.livekit.cloud)
@@ -8362,7 +8380,14 @@ function createMainWindow() {
   applyWindowTitle();
 
   // --- macOS menu bar ---
-  const template = [
+  // A function, not a one-shot array, because the Claude/Codex integration
+  // items reflect live install state (isClaudeIntegrationInstalled /
+  // isCodexIntegrationInstalled) and need to be rebuilt after the user
+  // toggles either one — see the two click handlers below.
+  function buildAppMenuTemplate() {
+    const claudeInstalled = isClaudeIntegrationInstalled();
+    const codexInstalled = isCodexIntegrationInstalled();
+    return [
     {
       label: app.name,
       submenu: [
@@ -8398,7 +8423,7 @@ function createMainWindow() {
           click: () => createOnboardingWindow(),
         },
         { type: 'separator' },
-        {
+        claudeInstalled ? {
           // "Leave no trace" (F&F): remove EVERYTHING the app wrote into the
           // user's Claude Code setup, and remember the choice so the next
           // launch doesn't silently re-install it.
@@ -8422,6 +8447,7 @@ function createMainWindow() {
               if (response === 1) {
                 uninstallClaudeIntegration();
                 try { store?.set('claudeIntegrationRemoved', true); } catch { /* non-fatal */ }
+                refreshAppMenu();
                 dialog.showMessageBox(mainWindow, {
                   type: 'info',
                   message: 'Claude integration removed. No trace left. Restart Claude Code to apply.',
@@ -8429,20 +8455,20 @@ function createMainWindow() {
               }
             });
           },
-        },
-        {
+        } : {
           label: 'Install Claude Integration',
           click: () => {
             const { dialog } = require('electron');
             try { store?.delete('claudeIntegrationRemoved'); } catch { /* non-fatal */ }
             ensureClaudeIntegration();
+            refreshAppMenu();
             dialog.showMessageBox(mainWindow, {
               type: 'info',
               message: 'Claude integration installed. Restart Claude Code to pick it up.',
             });
           },
         },
-        {
+        codexInstalled ? {
           label: 'Uninstall Codex Integration...',
           click: () => {
             const { dialog } = require('electron');
@@ -8460,6 +8486,7 @@ function createMainWindow() {
               if (response === 1) {
                 removeCodexIntegration();
                 try { store?.set('codexIntegrationRemoved', true); } catch { /* non-fatal */ }
+                refreshAppMenu();
                 dialog.showMessageBox(mainWindow, {
                   type: 'info',
                   message: 'Codex integration removed. Restart Codex to apply.',
@@ -8467,13 +8494,13 @@ function createMainWindow() {
               }
             });
           },
-        },
-        {
+        } : {
           label: 'Install Codex Integration',
           click: () => {
             const { dialog } = require('electron');
             try { store?.delete('codexIntegrationRemoved'); } catch { /* non-fatal */ }
             ensureCodexIntegration();
+            refreshAppMenu();
             dialog.showMessageBox(mainWindow, {
               type: 'info',
               message: 'Codex integration installed. Restart Codex to pick it up.',
@@ -8608,8 +8635,12 @@ function createMainWindow() {
         { role: 'close' },
       ],
     },
-  ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+    ];
+  }
+  function refreshAppMenu() {
+    Menu.setApplicationMenu(Menu.buildFromTemplate(buildAppMenuTemplate()));
+  }
+  refreshAppMenu();
 
   // --- Call view (right) ---
   // Single partition (#282) — no "restore previous mode" anymore. Sign-in

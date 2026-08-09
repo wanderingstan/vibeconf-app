@@ -24,17 +24,57 @@ const { spawn, execSync } = require('child_process');
 
 let _ffmpegPath = undefined; // memoized (undefined = not yet resolved, null = none found)
 
+// Common locations for a manually-installed ffmpeg that a GUI-launched app's
+// PATH won't see (below) — see the big comment on step 3.
+const KNOWN_FFMPEG_PATHS = [
+  '/opt/homebrew/bin/ffmpeg', // Homebrew, Apple Silicon
+  '/usr/local/bin/ffmpeg', // Homebrew, Intel — also the common Linux manual-install spot
+];
+
+// The frame rate `tpad` padding is generated at, in the padStartMs branch
+// below. `tpad` doesn't hold one still frame for the pad duration — it
+// generates and encodes one frame per timestamp at whatever rate the input
+// stream *declares*, and that declared rate cannot be trusted: MediaRecorder
+// webm timestamps are irregular (same root cause as the raw-copy note in
+// mergeCallMedia's own doc comment, "ffprobe reporting r_frame_rate=16000/1")
+// and container muxers pick a nominal tbr/tbn from them that can land
+// anywhere — observed in the wild: share.webm (the whiteboard capture,
+// page-inject.js's `captureStream(5)` — genuinely 5fps content) reporting
+// "1k tbr". Padding a real ~56-minute gap at a naively-trusted 1000fps meant
+// generating and x264-encoding ~3.4 MILLION black frames — 40 minutes of
+// wall-clock time for what should be instant, since every one of those
+// frames is identical. An explicit `fps=` filter ahead of `tpad` forces a
+// real, fixed rate regardless of what the input's metadata claims, so the
+// frame count actually matches the padded duration. 5 matches the real
+// whiteboard capture rate above, so it costs nothing in quality for the one
+// thing padStartMs is used for today (call-recording-share.mp4) while
+// keeping tpad's frame count sane no matter what a future input declares.
+const PAD_NORMALIZE_FPS = 5;
+
 // Where the real ffmpeg binary comes from — in priority order:
 //   1. The bundled `ffmpeg-static` binary. This is what a distributed build
 //      (dmg/nsis/AppImage) actually ships and runs — it must NOT depend on the
-//      end user having ffmpeg installed or on PATH.
+//      end user having ffmpeg installed or on PATH. Requires ffmpeg-static's
+//      own postinstall script to have actually run at `pnpm install` time —
+//      see `onlyBuiltDependencies` in package.json; pnpm blocks install
+//      scripts for anything not listed there, which is exactly how this
+//      silently regressed once (the package installed, but its script never
+//      ran, so no binary was ever downloaded — this whole path resolved to
+//      nothing and merges quietly fell through to steps 2/3 or failed).
 //   2. `command -v ffmpeg` on PATH — a dev-mode convenience only (e.g. running
 //      from source before `pnpm install` has pulled ffmpeg-static in, or on a
 //      platform ffmpeg-static doesn't publish a binary for). Never the primary
 //      mechanism for a packaged build.
+//   3. Known install locations, checked directly rather than via PATH. A
+//      macOS app launched from Finder/Dock (as opposed to a Terminal) does
+//      NOT inherit the user's shell PATH — it gets Launch Services' minimal
+//      default (`/usr/bin:/bin:/usr/sbin:/sbin`), so step 2 fails even when
+//      `ffmpeg` is genuinely installed via Homebrew and works fine from a
+//      terminal. This step exists specifically to survive step 1 failing
+//      again in the future without silently losing the ability to merge.
 // mergeCallMedia goes through this one resolver so there is exactly one place
 // that knows how to find ffmpeg.
-function resolveFfmpegPath({ execSyncFn = execSync, requireFn = require } = {}) {
+function resolveFfmpegPath({ execSyncFn = execSync, requireFn = require, existsSyncFn = fs.existsSync } = {}) {
   if (_ffmpegPath !== undefined) return _ffmpegPath;
 
   try {
@@ -47,7 +87,7 @@ function resolveFfmpegPath({ execSyncFn = execSync, requireFn = require } = {}) 
       if (bundled.includes('app.asar') && !bundled.includes('app.asar.unpacked')) {
         bundled = bundled.replace('app.asar', 'app.asar.unpacked');
       }
-      if (fs.existsSync(bundled)) {
+      if (existsSyncFn(bundled)) {
         _ffmpegPath = bundled;
         return _ffmpegPath;
       }
@@ -57,9 +97,11 @@ function resolveFfmpegPath({ execSyncFn = execSync, requireFn = require } = {}) 
   try {
     execSyncFn('command -v ffmpeg', { stdio: ['ignore', 'pipe', 'ignore'] });
     _ffmpegPath = 'ffmpeg'; // let the shell/PATH resolve it at spawn time
-  } catch {
-    _ffmpegPath = null;
-  }
+    return _ffmpegPath;
+  } catch { /* not on this process's PATH — fall through to step 3 */ }
+
+  const known = KNOWN_FFMPEG_PATHS.find((p) => existsSyncFn(p));
+  _ffmpegPath = known || null;
   return _ffmpegPath;
 }
 
@@ -174,7 +216,10 @@ async function mergeCallMedia(callDir, {
     // Padding needs the video stream FILTERED (tpad reads its own frame
     // size/rate from the input, so no ffprobe step is needed) — that rules
     // out '-c:v copy' for this branch, unlike the unpadded cases below.
-    const videoFilter = `[0:v]tpad=start_duration=${padSec}:color=black[vout]`;
+    // `fps=` runs BEFORE `tpad` so the pad is generated at a real, fixed rate
+    // rather than whatever (possibly bogus) rate the input declares — see
+    // PAD_NORMALIZE_FPS above.
+    const videoFilter = `[0:v]fps=${PAD_NORMALIZE_FPS},tpad=start_duration=${padSec}:color=black[vout]`;
     if (audioTracks.length === 0) {
       args.push('-filter_complex', videoFilter, '-map', '[vout]', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', outPath);
     } else if (audioTracks.length === 1) {

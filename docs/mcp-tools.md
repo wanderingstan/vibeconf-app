@@ -95,3 +95,62 @@ loop:
 ```
 
 **Two-bot collaboration:** each bot has its own MCP server, its own local-server port, its own profile. They see the same Meet captions and same whiteboard (via the shared remote sync) — coordinate verbally just like humans would.
+
+## Previously undocumented tools
+
+One-line index, grouped; the canonical description for each is its `server.tool(…)` registration.
+
+### Starting and routing
+
+| Tool | What |
+|---|---|
+| **`start_call`** | Start a BRAND-NEW call: creates a fresh Google Meet that anyone with the link can join, sends the bot into it, and opens the user's own… |
+| **`list_call_instances`** | List the Vibeconferencing app instances (profiles) currently running on this machine — each is a separate bot on its own local-server port. |
+
+### Showing and driving the share
+
+| Tool | What |
+|---|---|
+| **`start_share`** | Start screen-sharing into the Google Meet call so participants can see it. |
+| **`share_tab`** | Share a SPECIFIC browser tab into the Google Meet by its URL — ideal for showing the room the exact page you're browsing with the Chrome… |
+| **`set_share_size`** | Resize the shared board. |
+| **`set_share_title_bar`** | Show or hide the title bar on the window you are screen-sharing. |
+| **`set_share_audio`** | Mute or unmute the sound coming from what you're screen-sharing, without stopping the share. |
+| **`click_share`** | Click inside whatever the bot is screen-sharing — a real mouse event, so the page reacts exactly as it would to a person. |
+| **`type_share`** | Type into whatever the bot is screen-sharing — real key events, so autocomplete, validation and keyboard shortcuts all behave normally. |
+| **`inspect_dom`** | Inspect the live DOM of the bot's Google Meet call, or of whatever it's currently screen-sharing into the call — returns the matched… |
+| **`get_shared_screenshot`** | Capture a screenshot of the bot's OWN shared screen — the whiteboard it's currently presenting into the call — and save it to a temporary… |
+| **`read_whiteboard`** | Read the current contents of the shared whiteboard — the markdown/Mermaid source text, not a screenshot. |
+| **`set_whiteboard_style`** | Restyle the shared whiteboard with custom CSS — colors, fonts, spacing, backgrounds. |
+| **`reload_whiteboard`** | Force the shared whiteboard to refresh WITHOUT changing its content — re-fetches the board's current content + styling and re-renders it. |
+
+### Sound
+
+| Tool | What |
+|---|---|
+| **`play_audio`** | Play an audio file INTO the Google Meet call through the bot's virtual mic — everyone hears it. |
+
+### Recording
+
+| Tool | What |
+|---|---|
+| **`start_recording`** | Record the current call to disk — one audio file per track (the bot's own voice plus each remote participant's audio, which Meet sends separately) plus video of the bot's own Meet view, muxed to one mp4 on stop… |
+| **`stop_recording`** | Stop the call recording started by start_recording (or by the recordCallAudio pref) — finalizes the per-track audio + video files and… |
+
+### Working memory (active listening)
+
+| Tool | What |
+|---|---|
+| **`get_working_memory`** | Read the bot's private working memory for this call: 'understanding' (the running read of what's being discussed) and 'stance' (its point of view)… |
+| **`post_understanding`** | Update the bot's private working memory for this call. |
+| **`bank_probe`** | Active listening: stash a SHORT (2–6 word) interjection the bot may say at the next natural opening in the conversation |
+
+### Logs and setup
+
+| Tool | What |
+|---|---|
+| **`get_call_log`** | Get just one call's slice of this machine's session log — the events between that call's start and end markers, with no earlier or later… |
+| **`list_log_instances`** | List remote Vibeconferencing instances that are shipping their session logs to the backend (machines/bots with the remoteLogging pref on). |
+| **`suggest_bot_names`** | A list of candidate names for this bot, from the app's own curated pool — the same one the panel's name spinner draws from. |
+| **`list_visual_assets`** | Absolute paths to the sample art bundled with the app: one smiling face per emoji set, and every background preset. |
+| **`list_fonts`** | Font families installed on the machine running the app. |

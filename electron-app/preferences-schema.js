@@ -150,7 +150,7 @@ const PREFERENCES = {
       'meeting. Alternatively, put `vibeconf` (or `vibeconf:<bot name>` to ' +
       "target this specific bot) in the event's title or description. Requires " +
       'the user to be logged into vibeconferencing.com with Calendar access ' +
-      'connected — see startCalendarPolling in main.js.',
+      'connected. See startCalendarPolling in main.js.',
   },
   onboardingCallComplete: {
     type: 'boolean',

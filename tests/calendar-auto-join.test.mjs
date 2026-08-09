@@ -16,8 +16,10 @@ const require = createRequire(import.meta.url);
 const {
   matchesCalendarEvent,
   isEventUpcoming,
+  msUntilStart,
   evictStaleEventIds,
   selectEventToJoin,
+  selectUpcomingMatches,
   resolveMeetUrl,
   DEFAULT_LOOKAHEAD_MS,
   DEFAULT_DEDUPE_MAX_AGE_MS,
@@ -149,6 +151,22 @@ test('isEventUpcoming: false for a missing/unparseable start', () => {
   assert.equal(isEventUpcoming(makeEvent({ start: 'not-a-date' }), now), false);
 });
 
+// ── msUntilStart: the shared delta both isEventUpcoming and main.js's actual
+//    join-scheduling setTimeout delay are computed from ──────────────────
+
+test('msUntilStart: positive for a future start, negative for a past one', () => {
+  const now = Date.parse('2026-08-08T10:00:00Z');
+  assert.equal(msUntilStart(makeEvent({ start: '2026-08-08T10:05:00Z' }), now), 5 * 60 * 1000);
+  assert.equal(msUntilStart(makeEvent({ start: '2026-08-08T09:55:00Z' }), now), -5 * 60 * 1000);
+});
+
+test('msUntilStart: null for a missing/unparseable start', () => {
+  const now = Date.parse('2026-08-08T10:00:00Z');
+  assert.equal(msUntilStart(makeEvent({ start: undefined }), now), null);
+  assert.equal(msUntilStart(makeEvent({ start: 'not-a-date' }), now), null);
+  assert.equal(msUntilStart(null, now), null);
+});
+
 // ── evictStaleEventIds ───────────────────────────────────────────────────
 
 test('evictStaleEventIds: drops entries older than maxAgeMs, keeps recent ones', () => {
@@ -253,6 +271,49 @@ test('selectEventToJoin: returns null/0 for an empty events list', () => {
   });
   assert.equal(event, null);
   assert.equal(extraMatchCount, 0);
+});
+
+// ── selectUpcomingMatches ───────────────────────────────────────────────
+
+test('selectUpcomingMatches: includes a match well beyond the 5-minute join window', () => {
+  const now = Date.now();
+  const events = [makeEvent({
+    id: 'evt-far',
+    attendees: ['bot@example.com'],
+    start: new Date(now + 6 * 60 * 60 * 1000).toISOString(), // 6h out
+  })];
+  const matches = selectUpcomingMatches(events, { calendarIdentityEmail: 'bot@example.com', botName: 'Jimmy', now });
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].id, 'evt-far');
+});
+
+test('selectUpcomingMatches: excludes events outside the 24h lookahead', () => {
+  const now = Date.now();
+  const events = [makeEvent({
+    attendees: ['bot@example.com'],
+    start: new Date(now + 25 * 60 * 60 * 1000).toISOString(),
+  })];
+  const matches = selectUpcomingMatches(events, { calendarIdentityEmail: 'bot@example.com', botName: 'Jimmy', now });
+  assert.equal(matches.length, 0);
+});
+
+test('selectUpcomingMatches: excludes events well in the past (not symmetric with the wide lookahead)', () => {
+  const now = Date.now();
+  const events = [makeEvent({
+    attendees: ['bot@example.com'],
+    start: new Date(now - 20 * 60 * 60 * 1000).toISOString(), // 20h ago
+  })];
+  const matches = selectUpcomingMatches(events, { calendarIdentityEmail: 'bot@example.com', botName: 'Jimmy', now });
+  assert.equal(matches.length, 0);
+});
+
+test('selectUpcomingMatches: sorted soonest-first and ignores non-matching events', () => {
+  const now = Date.now();
+  const soon = makeEvent({ id: 'soon', attendees: ['bot@example.com'], start: new Date(now + 60 * 60 * 1000).toISOString() });
+  const later = makeEvent({ id: 'later', attendees: ['bot@example.com'], start: new Date(now + 5 * 60 * 60 * 1000).toISOString() });
+  const other = makeEvent({ id: 'other', attendees: ['someone-else@example.com'], start: new Date(now + 30 * 60 * 1000).toISOString() });
+  const matches = selectUpcomingMatches([later, other, soon], { calendarIdentityEmail: 'bot@example.com', botName: 'Jimmy', now });
+  assert.deepEqual(matches.map((e) => e.id), ['soon', 'later']);
 });
 
 // ── resolveMeetUrl ───────────────────────────────────────────────────────

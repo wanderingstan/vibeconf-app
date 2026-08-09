@@ -20,7 +20,7 @@ const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEv
 const { CallRecordingSession } = require('./call-recorder.js');
 const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWindow } = require('./call-recording-window.js');
 const { mergeCallMedia } = require('./call-media-merge.js');
-const { evictStaleEventIds, selectEventToJoin, resolveMeetUrl: resolveCalendarMeetUrl } = require('./calendar-auto-join.js');
+const { evictStaleEventIds, selectEventToJoin, selectUpcomingMatches, matchesCalendarEvent, isEventUpcoming, msUntilStart, resolveMeetUrl: resolveCalendarMeetUrl } = require('./calendar-auto-join.js');
 const { createMergeProgressWindow, closeMergeProgressWindow } = require('./call-recording-merge-window.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
 // The call-provider contract. main.js is the consumer side: it subscribes to
@@ -2721,6 +2721,12 @@ async function pushAvatarBackground(svgSource) {
 
 let store;
 let meetAccountEmailPinned = false; // true when --meet-account-email pinned the account (#282)
+// Calendar auto-join (#299): this bot's matching events within the next 24h,
+// for the panel's "upcoming meeting" notice. Written by
+// pushUpcomingCalendarEvents (inside the whenReady closure, where the poll
+// runs); read by the get-upcoming-calendar-events IPC handler in setupIPC —
+// a SEPARATE top-level function, so this can't be a local of either.
+let latestUpcomingCalendarEvents = [];
 let mainWindow = null;   // single window that holds both views
 let panelView = null;     // left sidebar BrowserView
 let meetView = null;      // right Meet BrowserView
@@ -7076,29 +7082,170 @@ allURLs`;
   // silence.
   let lastCalendarPollState = null;
 
-  // Join, at most, one matching event per tick. Dedupe is recorded BEFORE the
-  // join is attempted (not after it succeeds) — a failed join shouldn't
-  // retry-loop every poll cycle for the same event; occasionally missing one
-  // on a transient error is the better failure mode.
+  // eventId -> Timeout handle for a join scheduled to fire at the event's
+  // actual start time (see scheduleCalendarJoin below). Deliberately IN
+  // MEMORY ONLY, not persisted: on an app restart, any event that hasn't
+  // actually joined yet (only actually-joined events go into the persisted
+  // joinedCalendarEventIds store, at the moment the timer fires — not here,
+  // at scheduling time) should be re-detected and re-scheduled from
+  // scratch, not silently skipped because a schedule "happened" in a
+  // process that no longer exists.
+  const scheduledCalendarJoins = new Map();
+
+  // Recomputes the module-scope latestUpcomingCalendarEvents (declared near
+  // the other cross-closure state, ~line 2723 — setupIPC's
+  // get-upcoming-calendar-events handler reads it from there, and is a
+  // separate top-level function that can't see this closure's locals) every
+  // poll tick, and pushes proactively to the panel so its "upcoming
+  // meeting" notice updates without a refresh.
+  function pushUpcomingCalendarEvents(events) {
+    latestUpcomingCalendarEvents = events;
+    if (panelView && !panelView.webContents.isDestroyed()) {
+      panelView.webContents.send('calendar-upcoming', { events });
+    }
+  }
+
+  // Fires at (or a hair past) the event's real start time — see
+  // scheduleCalendarJoin. This is the ONLY place joinedCalendarEventIds gets
+  // written, and it writes right before actually attempting the join, not
+  // at scheduling time — a failed join shouldn't retry-loop every poll cycle
+  // for the same event, but a join that was merely SCHEDULED and never fired
+  // (e.g. the app quit first) should be reconsidered on the next run, not
+  // treated as handled.
+  function performScheduledCalendarJoin(event, meetUrl) {
+    scheduledCalendarJoins.delete(event.id);
+    const joinedIds = evictStaleEventIds(store.get('joinedCalendarEventIds') || {}, Date.now());
+    store.set('joinedCalendarEventIds', { ...joinedIds, [event.id]: Date.now() });
+    console.log(`[calendar] Auto-joining calendar event "${event.summary || event.id}"`);
+    activateMeetProvider(); // no-op if already on a live Meet view
+    joinMeetUrl(meetUrl, { spawnAgent: true });
+  }
+
+  // Schedules (rather than immediately performing) the join for a just-
+  // matched event, timed to fire at its actual start — not up to 5 minutes
+  // early just because that's when it first entered the lookahead window.
+  // Idempotent: a later poll tick re-seeing the same still-pending event is
+  // a no-op (scheduledCalendarJoins already has it), so this is safe to call
+  // every time selectEventToJoin picks the same event across polls.
+  function scheduleCalendarJoin(event, meetUrl) {
+    if (scheduledCalendarJoins.has(event.id)) return;
+    const delayMs = Math.max(0, msUntilStart(event, Date.now()) || 0);
+    console.log(`[calendar] Scheduling auto-join for "${event.summary || event.id}" in ${Math.round(delayMs / 1000)}s`);
+    const timer = setTimeout(() => performScheduledCalendarJoin(event, meetUrl), delayMs);
+    scheduledCalendarJoins.set(event.id, timer);
+  }
+
+  // Near-term fix for "the bot that should join isn't even running": ANY
+  // currently-running profile sees the SAME upcoming-events list (all
+  // profiles on this machine share one vibeconferencing.com login, so the
+  // event data isn't per-bot) — so on every poll tick, this profile also
+  // checks events against every OTHER locally-configured profile's identity/
+  // tag, not just its own, and launches (or focuses, if already running —
+  // launchOrFocusProfile handles both) whichever one actually matches.
+  //
+  // Deliberately does NOT hand off the specific event/timer across the
+  // process boundary — the newly-launched (or focused) profile's own
+  // startCalendarPolling() re-fetches, re-matches, and re-schedules on its
+  // own very first poll, a few seconds later, well inside the 5-minute
+  // window. Reuses that profile's entire already-built pipeline instead of
+  // inventing a cross-process handoff protocol.
+  //
+  // Real gap this does NOT close (see the tracked "parent process" issue):
+  // if literally no profile is running at all, nothing is executing to
+  // notice anything, for any profile, including this cross-check. This is
+  // only a fix for "at least one bot happens to be open".
+  function checkOtherProfilesForCalendarMatch(events) {
+    if (!events.length) return;
+    let otherNames;
+    try {
+      otherNames = profileManager.listProfileNames(PROFILES_ROOT).filter((n) => n !== appProfile);
+    } catch { return; }
+    if (!otherNames.length) return;
+
+    const now = Date.now();
+    // Separate dedupe namespace from joinedCalendarEventIds (that one means
+    // "I actually joined this"; this one means "I already launched/focused
+    // another profile for this event") — keyed by `eventId:profileName` so
+    // two different other-profiles matching the same event don't collide.
+    const launched = evictStaleEventIds(store.get('launchedForOtherProfileEventIds') || {}, now);
+    let launchedChanged = false;
+
+    for (const name of otherNames) {
+      let fields;
+      try { fields = profileManager.readConfigFields(path.join(PROFILES_ROOT, name)); } catch { continue; }
+      if (!fields.calendarIdentityEmail && !fields.botName) continue; // nothing to match against
+      for (const e of events) {
+        if (!e || !e.id || !isEventUpcoming(e, now)) continue;
+        if (!matchesCalendarEvent(e, { calendarIdentityEmail: fields.calendarIdentityEmail, botName: fields.botName })) continue;
+        const dedupeKey = `${e.id}:${name}`;
+        if (Object.prototype.hasOwnProperty.call(launched, dedupeKey)) continue;
+        launched[dedupeKey] = now;
+        launchedChanged = true;
+        console.log(`[calendar] Event "${e.summary || e.id}" matches profile "${name}" (not this one) — launching/focusing it.`);
+        launchOrFocusProfile(name).catch((err) => {
+          console.warn(`[calendar] Failed to launch/focus profile "${name}" for calendar match:`, err.message);
+        });
+      }
+    }
+    if (launchedChanged) store.set('launchedForOtherProfileEventIds', launched);
+  }
+
+  // Schedule, at most, one matching event's join per tick — a persisted
+  // dedupe entry only exists once a join has actually fired (see
+  // performScheduledCalendarJoin); scheduledCalendarJoins covers the "already
+  // has a pending timer" case in between.
   function handleCalendarEvents(events) {
+    checkOtherProfilesForCalendarMatch(events);
+
     const calendarIdentityEmail = store.get('calendarIdentityEmail') || '';
     const botName = resolvedBotName();
     const joinedIds = evictStaleEventIds(store.get('joinedCalendarEventIds') || {}, Date.now());
     // Persist the evicted map even if nothing matches this tick, so the
     // store doesn't grow unbounded while the app sits idle.
     store.set('joinedCalendarEventIds', joinedIds);
+    // Selection must also skip events already scheduled (but not yet
+    // actually joined) — merge that in-memory set with the persisted one
+    // purely for this lookup; the two stay otherwise independent.
+    const excludeIds = { ...joinedIds };
+    for (const id of scheduledCalendarJoins.keys()) excludeIds[id] = true;
+
+    // Visibility for testing/debugging: only when the poll actually returned
+    // something, so this stays silent during normal idle stretches (the
+    // common case) but shows exactly why an event a user is watching for
+    // didn't fire — too far outside the lookahead window, doesn't match the
+    // identity/tag, or already handled — rather than a poll that "saw" the
+    // event but said nothing at all.
+    if (events.length > 0) {
+      const now = Date.now();
+      const summaries = events.map((e) => {
+        const delta = e ? msUntilStart(e, now) : null;
+        const minutesUntil = delta === null ? null : Math.round(delta / 60000);
+        const matched = matchesCalendarEvent(e, { calendarIdentityEmail, botName });
+        const upcoming = isEventUpcoming(e, now);
+        const already = !!(e && e.id && Object.prototype.hasOwnProperty.call(excludeIds, e.id));
+        const reason = already ? 'already handled/scheduled' : !upcoming ? 'outside 5m window' : !matched ? 'no identity/tag match' : 'MATCH';
+        return `"${(e && e.summary) || (e && e.id) || '(untitled)'}" (raw start="${e && e.start}", starts ${minutesUntil == null ? '?' : minutesUntil + 'm'} from now, ${reason})`;
+      });
+      console.log(`[calendar] Poll saw ${events.length} event(s): ${summaries.join('; ')}`);
+    }
+
+    // Display-only: everything matching within the next 24h, independent of
+    // the 5-minute join-scheduling gate below — this is what the panel's
+    // "upcoming meeting" notice shows, and it deliberately includes events
+    // the 5-minute logic hasn't (and won't yet) act on.
+    pushUpcomingCalendarEvents(selectUpcomingMatches(events, { calendarIdentityEmail, botName, now: Date.now() }));
 
     const { event, extraMatchCount } = selectEventToJoin(events, {
       calendarIdentityEmail,
       botName,
-      joinedIds,
+      joinedIds: excludeIds,
       now: Date.now(),
     });
     if (!event) return;
 
     if (extraMatchCount > 0) {
       console.warn(`[calendar] ${extraMatchCount} additional matching event(s) this tick — `
-        + 'only joining one, the rest will be reconsidered next poll.');
+        + 'only scheduling one, the rest will be reconsidered next poll.');
     }
 
     const meetUrl = resolveCalendarMeetUrl(event.hangoutLink);
@@ -7109,11 +7256,7 @@ allURLs`;
       return;
     }
 
-    console.log(`[calendar] Auto-joining calendar event "${event.summary || event.id}"`);
-    // Record BEFORE attempting the join (see comment above the function).
-    store.set('joinedCalendarEventIds', { ...joinedIds, [event.id]: Date.now() });
-    activateMeetProvider(); // no-op if already on a live Meet view
-    joinMeetUrl(meetUrl, { spawnAgent: true });
+    scheduleCalendarJoin(event, meetUrl);
   }
 
   function startCalendarPolling() {
@@ -8863,6 +9006,21 @@ function setupIPC() {
     }
     return vals;
   });
+
+  // The Name field shows blank + a generic "Unnamed bot" placeholder when
+  // botName is unset, even though the rest of the app (title bar, tray, ...)
+  // already falls back to resolvedBotName()'s storedName -> cliName ->
+  // profileName chain and shows something real (e.g. a "test-calendar"
+  // profile displays as "Test Calendar"). Exposes that same resolved name so
+  // the panel can use it as the placeholder — informative without pretending
+  // the name was actually set.
+  ipcMain.handle('get-resolved-bot-name', () => resolvedBotName());
+
+  // Calendar auto-join (#299): the panel calls this on load to paint the
+  // "upcoming meeting" notice immediately, without waiting for the next
+  // ~60s poll tick — pushUpcomingCalendarEvents (via 'calendar-upcoming')
+  // keeps it live after that.
+  ipcMain.handle('get-upcoming-calendar-events', () => latestUpcomingCalendarEvents);
 
   // (The switcher thumbnail used to be stolen from the live camera feed here —
   // an edge-triggered capture plus a poll ladder plus 4h staleness gating, all to

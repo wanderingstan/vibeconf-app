@@ -72,6 +72,16 @@ function matchesCalendarEvent(event, { calendarIdentityEmail, botName } = {}) {
   return matchesIdentityEmail(event, calendarIdentityEmail) || matchesVibeconfTag(event, botName);
 }
 
+// Milliseconds from `now` until `event.start` (negative if already started).
+// null if start is missing/unparseable. Shared by isEventUpcoming's window
+// check and main.js's join-scheduling (the actual setTimeout delay), so both
+// compute the same thing one way.
+function msUntilStart(event, now) {
+  if (!event || !event.start) return null;
+  const startMs = new Date(event.start).getTime();
+  return Number.isNaN(startMs) ? null : startMs - now;
+}
+
 // Is `event.start` within `lookaheadMs` of `now`? Separate from the matching
 // predicate on purpose (per the plan) so it can be tested independent of
 // wall-clock time — `now` is always passed in, never read from Date.now()
@@ -82,12 +92,16 @@ function matchesCalendarEvent(event, { calendarIdentityEmail, botName } = {}) {
 // out is not. Events already well in the past (e.g. yesterday's recurring
 // instance the API still echoed back) are excluded via a small grace window
 // so a bot doesn't auto-join something that's long over.
-function isEventUpcoming(event, now, lookaheadMs = DEFAULT_LOOKAHEAD_MS) {
-  if (!event || !event.start) return false;
-  const startMs = new Date(event.start).getTime();
-  if (Number.isNaN(startMs)) return false;
-  const pastGraceMs = lookaheadMs; // symmetric: as late as the lookahead is early
-  return startMs - now <= lookaheadMs && now - startMs <= pastGraceMs;
+// `pastGraceMs` defaults to symmetric with `lookaheadMs` (as late as it is
+// early) — right for the 5-minute join-scheduling check this was designed
+// for. A caller using a much wider `lookaheadMs` purely for display (see
+// selectUpcomingMatches below) should pass an explicit, much smaller
+// `pastGraceMs` — otherwise a 24h lookahead would also mean showing an event
+// as "upcoming" up to 24h AFTER it started.
+function isEventUpcoming(event, now, lookaheadMs = DEFAULT_LOOKAHEAD_MS, pastGraceMs = lookaheadMs) {
+  const delta = msUntilStart(event, now);
+  if (delta === null) return false;
+  return delta <= lookaheadMs && -delta <= pastGraceMs;
 }
 
 // Evict dedupe entries older than maxAgeMs. `idMap` is a plain object
@@ -122,6 +136,28 @@ function selectEventToJoin(events, { calendarIdentityEmail, botName, joinedIds, 
   return { event: candidates[0], extraMatchCount: candidates.length - 1 };
 }
 
+// All matching events within a WIDE lookahead window (default 24h), sorted
+// soonest-first — for showing "your bot's upcoming meetings" in the UI. This
+// is deliberately separate from selectEventToJoin: that one only ever picks
+// a single actionable (within DEFAULT_LOOKAHEAD_MS) event to actually join;
+// this one is for display only, never used to arm a join timer, so it
+// doesn't touch the dedupe map — an event already joined/in-progress is
+// still fine to list as "upcoming" a moment before its bot leaves it,
+// callers that care can cross-reference joinedIds themselves.
+function selectUpcomingMatches(events, {
+  calendarIdentityEmail, botName, now, lookaheadMs = 24 * 60 * 60 * 1000,
+  // Small, NOT symmetric with the 24h lookahead — otherwise a meeting from
+  // 20 hours ago would still read as "upcoming". Matches the join-gate's own
+  // 5-minute grace, so a meeting that just started still shows briefly.
+  pastGraceMs = DEFAULT_LOOKAHEAD_MS,
+} = {}) {
+  return (events || [])
+    .filter((e) => e && e.id
+      && isEventUpcoming(e, now, lookaheadMs, pastGraceMs)
+      && matchesCalendarEvent(e, { calendarIdentityEmail, botName }))
+    .sort((a, b) => msUntilStart(a, now) - msUntilStart(b, now));
+}
+
 // hangoutLink from the API is expected to already be a full
 // https://meet.google.com/xxx-xxxx-xxx URL. Fall back to constructing one
 // from a bare meet code if it's ever passed without the scheme/host — same
@@ -139,7 +175,9 @@ module.exports = {
   DEFAULT_DEDUPE_MAX_AGE_MS,
   matchesCalendarEvent,
   isEventUpcoming,
+  msUntilStart,
   evictStaleEventIds,
   selectEventToJoin,
+  selectUpcomingMatches,
   resolveMeetUrl,
 };

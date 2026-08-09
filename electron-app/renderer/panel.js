@@ -77,6 +77,7 @@ const slackSignOutBtn = document.getElementById('slackSignOutBtn');
 
 // Settings
 const botNameInput = document.getElementById('botName');
+const calendarIdentityEmailInput = document.getElementById('calendarIdentityEmail'); // #299
 const websiteUrlInput = document.getElementById('websiteUrl');
 const ttsApiKeyInput = document.getElementById('ttsApiKey');
 const ttsVoiceIdInput = document.getElementById('ttsVoiceId');
@@ -1733,6 +1734,35 @@ api.on('claude-auth-changed', paintClaudeAuth);
 window.addEventListener('focus', () => refreshClaudeAuthBanner(true));
 refreshClaudeAuthBanner();
 
+// Calendar auto-join (#299): "your next matching meeting" notice. Wide
+// visibility window (up to 24h out, see calendar-auto-join.js's
+// selectUpcomingMatches) — this is purely informational, distinct from the
+// tight 5-minute window that actually arms the join timer in main.js.
+const calendarUpcomingBanner = document.getElementById('calendarUpcomingBanner');
+const calendarUpcomingText = document.getElementById('calendarUpcomingText');
+function formatUpcomingDelta(ms) {
+  if (ms <= 60 * 1000) return 'starting now';
+  const minutes = Math.round(ms / 60000);
+  if (minutes < 60) return `in ${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  return `in ${hours}h`;
+}
+function paintCalendarUpcoming(events) {
+  const next = Array.isArray(events) && events.length ? events[0] : null;
+  if (!calendarUpcomingBanner || !calendarUpcomingText) return;
+  if (!next) {
+    calendarUpcomingBanner.style.display = 'none';
+    return;
+  }
+  const delta = new Date(next.start).getTime() - Date.now();
+  const title = next.summary || 'Untitled event';
+  const localTime = new Date(next.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  calendarUpcomingText.textContent = `${localTime} meeting: "${title}" ${formatUpcomingDelta(Math.max(delta, 0))}`;
+  calendarUpcomingBanner.style.display = 'flex';
+}
+api.on('calendar-upcoming', ({ events }) => paintCalendarUpcoming(events));
+api.invoke('get-upcoming-calendar-events').then(paintCalendarUpcoming).catch(() => {});
+
 // Load every config value this window displays, and paint the controls from it.
 //
 // EXTRACTED so it can run more than once. It used to be a bare call at startup,
@@ -1742,8 +1772,20 @@ refreshClaudeAuthBanner();
 // bot in the wizard saw "Unnamed bot" in Settings and reasonably concluded the
 // save had failed, when it had worked (#190, #143).
 function loadConfigIntoControls() {
-  return api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'ttsProvider', 'claudeWorkDir', 'claudeModel', 'emojiSet', 'captionLanguage', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
-  if (result?.botName) { botNameInput.value = result.botName; currentBotName = result.botName; }
+  return api.invoke('get-config', ['botName', 'calendarIdentityEmail', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'ttsProvider', 'claudeWorkDir', 'claudeModel', 'emojiSet', 'captionLanguage', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
+  if (result?.botName) {
+    botNameInput.value = result.botName;
+    currentBotName = result.botName;
+  } else {
+    // No explicit name set — show what the rest of the app already falls back
+    // to (resolvedBotName's storedName -> cliName -> profileName chain) as
+    // the placeholder, instead of the generic "Unnamed bot". Field stays
+    // genuinely empty; this is informative, not a silent pre-fill.
+    api.invoke('get-resolved-bot-name').then((name) => {
+      if (name && !botNameInput.value) botNameInput.placeholder = name;
+    }).catch(() => { /* keep the generic placeholder */ });
+  }
+  calendarIdentityEmailInput.value = result?.calendarIdentityEmail || '';
   rememberedMeetName = result?.lastMeetName || null;   // #282 remembered names
   rememberedSlackName = result?.lastSlackName || null;
   refreshSlackIdentity();
@@ -2172,6 +2214,13 @@ function refreshAccountEmail(mode) {
     if (r && r.signedIn && r.email) {
       meetAccountEmail.textContent = '✓ Signed in as ' + r.email;
       meetAccountEmail.className = 'account-email email-ok';
+      // #299 convenience: a signed-in bot's own Google account is a natural
+      // default calendar-invite identity — fill it in, but only if the field
+      // is still empty, so this never clobbers something the user set by hand.
+      if (calendarIdentityEmailInput && !calendarIdentityEmailInput.value.trim()) {
+        calendarIdentityEmailInput.value = r.email;
+        api.invoke('set-config', 'calendarIdentityEmail', r.email);
+      }
     } else if (r && r.signedIn) {
       // Auth cookies present but we couldn't read the email — signed in for sure.
       meetAccountEmail.textContent = '✓ Signed in to Google (could not read which account)';
@@ -2722,15 +2771,48 @@ speechBtn.addEventListener('click', () => {
 // ---------------------------------------------------------------------------
 
 botNameInput.addEventListener('change', () => {
-  // Emptying the field falls back to the unconfigured name rather than
-  // silently re-adopting whatever the old default happened to be.
-  const name = botNameInput.value.trim() || 'Unnamed bot';
-  currentBotName = name;
-  botNameDisplay = null; // a typed/saved name is a real identity — drop any fallback tag
-  api.invoke('set-config', 'botName', name);
-  api.send('to-meet', { action: 'set-config', payload: { botName: name } });
-  updateBotNameBig();
-  refreshBotIdentity(); // keep the guest "👤 Guest 'Name'" line in sync
+  const typed = botNameInput.value.trim();
+  if (typed) {
+    currentBotName = typed;
+    botNameDisplay = null; // a typed/saved name is a real identity — drop any fallback tag
+    api.invoke('set-config', 'botName', typed);
+    api.send('to-meet', { action: 'set-config', payload: { botName: typed } });
+    updateBotNameBig();
+    refreshBotIdentity(); // keep the guest "👤 Guest 'Name'" line in sync
+    return;
+  }
+  // Emptying the field CLEARS the stored name rather than persisting the
+  // literal fallback text as if it were a real one — a prior version of this
+  // handler saved the string "Unnamed bot" itself into botName, which then
+  // read back as a genuine 'stored' identity (bot-name.js's clean()/
+  // resolveBotNameWithSource only fall through on an EMPTY value, not on the
+  // literal word "Unnamed bot") and permanently overrode the real fallback
+  // (e.g. a named profile's humanized name) with the generic label
+  // everywhere in the app. Clearing lets resolveBotName's storedName ->
+  // cliName -> profileName -> "Unnamed bot" chain run for real, and
+  // get-bot-name-info re-fetches so the headline/placeholder reflect
+  // whatever that chain resolves to immediately, not a stale value.
+  api.invoke('set-config', 'botName', '');
+  api.send('to-meet', { action: 'set-config', payload: { botName: '' } });
+  api.invoke('get-bot-name-info').then((info) => {
+    currentBotName = info?.name || 'Unnamed bot';
+    botNameDisplay = info?.display || null;
+    if (info?.name) botNameInput.placeholder = info.name;
+    updateBotNameBig();
+    refreshBotIdentity();
+  }).catch(() => {
+    currentBotName = 'Unnamed bot';
+    botNameDisplay = null;
+    updateBotNameBig();
+    refreshBotIdentity();
+  });
+});
+
+// #299: no validation on this — it's a free-text guest email that never needs
+// to resolve to a real mailbox, and calendar-auto-join.js's matching is
+// already trim+lowercase-tolerant, so there's nothing meaningful to reject.
+calendarIdentityEmailInput.addEventListener('change', () => {
+  api.invoke('set-config', 'calendarIdentityEmail', calendarIdentityEmailInput.value.trim());
 });
 
 websiteUrlInput.addEventListener('change', () => {

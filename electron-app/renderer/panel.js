@@ -2298,6 +2298,16 @@ function updateBotNameBig() {
   // it would still be offering to call the old name on the very page you just
   // renamed the bot on.
   updateSetupCallBtnLabel();
+  // And the Settings screen's own heading ("Jimmy Settings") — same page,
+  // same reasoning: a rename should not leave the title above it stale.
+  updateSettingsHeading();
+}
+
+// "Jimmy Settings" — same shape and fallback as updateSetupCallBtnLabel, so a
+// bot with no name yet reads the same way in both places.
+function updateSettingsHeading() {
+  const el = document.getElementById('settingsHeading');
+  if (el) el.textContent = `${currentBotName || 'your bot'} Settings`;
 }
 
 // "Call Jimmy for setup" — deliberately the same shape as the main button's

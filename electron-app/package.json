@@ -109,7 +109,8 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "electron"
+      "electron",
+      "ffmpeg-static"
     ]
   }
 }

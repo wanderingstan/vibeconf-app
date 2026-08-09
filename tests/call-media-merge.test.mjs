@@ -58,13 +58,25 @@ function writeFakeAudio(file, { seconds = 0.5 } = {}) {
   );
 }
 
-test('resolveFfmpegPath returns null when neither the bundled binary nor PATH have one', () => {
+// Real, on-disk locations resolveFfmpegPath()'s step 3 checks directly — see
+// KNOWN_FFMPEG_PATHS in call-media-merge.js. Computed here (not imported,
+// call-media-merge.js doesn't export the list) so these tests can tell
+// whether step 3 is even reachable in THIS environment before asserting on it.
+const HAVE_KNOWN_PATH_FFMPEG = ['/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg']
+  .some((p) => fs.existsSync(p));
+
+test('resolveFfmpegPath returns null when nothing is found anywhere (bundled, PATH, or known install paths)', () => {
   _resetFfmpegAvailabilityCache();
   const fakeExecSync = () => { throw new Error('not found'); };
   const fakeRequire = () => { throw new Error('ffmpeg-static not installed'); };
-  // Simulates: ffmpeg-static isn't installed/downloaded AND nothing on PATH —
-  // the "truly no ffmpeg anywhere" case that must degrade cleanly, not throw.
-  assert.equal(resolveFfmpegPath({ execSyncFn: fakeExecSync, requireFn: fakeRequire }), null);
+  const fakeExistsSync = () => false; // also blocks step 3's direct file checks
+  // Simulates: ffmpeg-static isn't installed/downloaded, nothing on PATH, and
+  // no known install location has it either — the "truly no ffmpeg anywhere"
+  // case that must degrade cleanly, not throw.
+  assert.equal(
+    resolveFfmpegPath({ execSyncFn: fakeExecSync, requireFn: fakeRequire, existsSyncFn: fakeExistsSync }),
+    null,
+  );
   _resetFfmpegAvailabilityCache(); // restore for later tests
 });
 
@@ -75,6 +87,26 @@ test('resolveFfmpegPath falls back to PATH when the bundled binary is unavailabl
   // scenario this repo is actually in right now.
   const resolved = resolveFfmpegPath({ requireFn: fakeRequire });
   assert.equal(resolved, HAVE_FFMPEG_ON_PATH ? 'ffmpeg' : null);
+  _resetFfmpegAvailabilityCache();
+});
+
+// Regression test: a GUI app launched from Finder/Dock (rather than a
+// terminal) does NOT inherit the user's shell PATH — it gets macOS Launch
+// Services' minimal default, which excludes Homebrew's /opt/homebrew/bin and
+// /usr/local/bin. `command -v ffmpeg` genuinely fails in that process even
+// though ffmpeg is installed and working. Step 3 exists to survive exactly
+// that case by checking well-known install locations directly rather than via
+// PATH — this is what actually broke a real recording once: the bundled
+// binary's postinstall hadn't run (see the package.json onlyBuiltDependencies
+// note in call-media-merge.js) and this fallback didn't exist yet, so the
+// merge silently had nowhere left to turn.
+test('resolveFfmpegPath falls back to a known install path when the bundled binary is unavailable AND PATH lookup fails', { skip: !HAVE_KNOWN_PATH_FFMPEG }, () => {
+  _resetFfmpegAvailabilityCache();
+  const fakeRequire = () => { throw new Error('ffmpeg-static not installed'); };
+  const fakeExecSync = () => { throw new Error('not found on PATH'); }; // simulates the Finder-launch PATH problem
+  const resolved = resolveFfmpegPath({ execSyncFn: fakeExecSync, requireFn: fakeRequire });
+  assert.ok(resolved && resolved !== 'ffmpeg', `expected a known-path binary, got ${resolved}`);
+  assert.ok(fs.existsSync(resolved));
   _resetFfmpegAvailabilityCache();
 });
 
@@ -333,6 +365,57 @@ test('padStartMs prepends black video via tpad before muxing', { skip: !HAVE_FFM
   assert.ok(m, `could not parse duration from: ${probe}`);
   const durationSec = Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
   assert.ok(durationSec > 1.0, `expected padded duration > 1.0s, got ${durationSec}`);
+});
+
+// Regression test for a real incident: a real call's share.webm (the
+// whiteboard capture — genuinely 5fps content, page-inject.js's
+// `captureStream(5)`) had MediaRecorder's usual irregular timestamps mux down
+// to a container-reported "1k tbr" — not real, just what ffmpeg inferred from
+// the irregular timestamps. `tpad` trusted that declared rate to pad a real
+// ~56-minute gap, so it generated and x264-encoded ~3.4 million black frames
+// for something that should've been instant: ~40 minutes of wall-clock time.
+// Reproduced here at test scale: a short fixture is deliberately muxed with
+// an inflated declared rate (`-r 1000` on a sub-second source), then padded —
+// PAD_NORMALIZE_FPS must keep the padding's frame count tied to a real fixed
+// rate (5fps) rather than the input's bogus one, or this test's frame count
+// assertion (not just a timing guess, which would be flaky) catches it.
+test('padStartMs normalizes to a real frame rate before padding, even when the input declares a bogus one', { skip: !HAVE_FFMPEG }, async () => {
+  const dir = tmpDir();
+  // A short, real, decodable video whose CONTAINER declares 1000fps — same
+  // shape as the real share.webm incident, at test scale.
+  execSync(
+    `"${FFMPEG_BIN}" -y -f lavfi -i color=c=black:s=16x16:r=1000:d=0.05 -c:v libvpx-vp9 "${path.join(dir, 'share.webm')}"`,
+    { stdio: 'ignore' },
+  );
+  const declaredRate = execSync(
+    `"${FFMPEG_BIN}" -i "${path.join(dir, 'share.webm')}" -hide_banner -f null - 2>&1 | grep -o "[0-9.]*k\\{0,1\\} fps" | head -1`,
+    { encoding: 'utf8' },
+  ).trim();
+  // ffmpeg abbreviates round thousands ("1k fps" rather than "1000 fps") in
+  // its stream-info banner — this just confirms the fixture actually
+  // reproduces the bogus-declared-rate shape before relying on it below.
+  assert.match(declaredRate, /^1k fps$/, `fixture setup didn't produce the expected bogus rate — got "${declaredRate}"`);
+
+  const r = await mergeCallMedia(dir, {
+    tracksDir: dir,
+    tracks: [{ track: 'share', file: 'share.webm', kind: 'share' }],
+    videoTrackName: 'share',
+    outputName: 'call-recording-share.mp4',
+    padStartMs: 3000, // at the (bogus) declared 1000fps this alone would be 3000 frames; at 5fps it's 15
+  });
+  assert.equal(r.ok, true);
+  const outFile = path.join(dir, 'call-recording-share.mp4');
+  assert.ok(fs.existsSync(outFile));
+
+  const frameCountOut = execSync(
+    `"${FFMPEG_BIN}" -i "${outFile}" -hide_banner -f null - 2>&1 | grep -o "frame=[ ]*[0-9]*" | tail -1`,
+    { encoding: 'utf8' },
+  );
+  const frameCount = Number((frameCountOut.match(/frame=\s*(\d+)/) || [])[1]);
+  assert.ok(Number.isFinite(frameCount) && frameCount > 0, `could not parse frame count from: ${frameCountOut}`);
+  // At PAD_NORMALIZE_FPS=5, ~3.05s of total output should be roughly 15
+  // frames — nowhere near the 3000+ a naive tpad-at-1000fps would produce.
+  assert.ok(frameCount < 100, `expected frame count normalized to ~5fps (well under 100), got ${frameCount}`);
 });
 
 test('padStartMs=0 (the default) never invokes the tpad filter path (main call-recording.mp4 unaffected)', { skip: !HAVE_FFMPEG }, async () => {

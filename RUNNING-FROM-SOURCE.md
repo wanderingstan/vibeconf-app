@@ -65,13 +65,15 @@ Profiled app instances store data under their own user-data directory and skip t
 
 ### Codex MCP setup
 
-After starting the app instance that Codex should control, install the Codex MCP config from the repo root:
+The default app instance installs Codex MCP config automatically when **Agent backend** is set to **OpenAI Codex**. Restart Codex after changing that setting so it reloads `~/.codex/config.toml`.
+
+For a profiled Codex app instance or custom port, install the Codex MCP config from the repo root:
 
 ```bash
 npm run install:codex-mcp -- --base-url=http://127.0.0.1:7866 --bot-name=Codex
 ```
 
-Use the `Local server:` value from `get_room_info` as `--base-url`. The installer writes `~/.codex/config.toml` with a `vibeconferencing` MCP server entry pointing at this checkout's `mcp-server/server.js`, then Codex must be restarted to load the tool server.
+Use the `Local server:` value from `get_room_info` as `--base-url`. The app and installer write `~/.codex/config.toml` with a `vibeconferencing` MCP server entry pointing at this checkout's `mcp-server/server.js`, then Codex must be restarted to load the tool server.
 
 For a no-write preview:
 

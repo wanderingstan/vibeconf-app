@@ -188,7 +188,7 @@ test('APP_LEVEL_KEYS is exactly the decided set (guard against accidental promot
     // bot's personality, and same invisibility trap as agentHosting/
     // updateChannel/remoteLogging above — per-profile it would have a real
     // label and still never appear in App Settings.
-    ['agentBackend', 'agentHosting', 'automationProbed', 'claudeIntegrationRemoved', 'confirmQuit', 'dangerousMode', 'keepCallRecordingTracks', 'remoteLogging', 'syncBaseUrl', 'ttsApiKey', 'ttsApiKeySource', 'updateChannel', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
+    ['agentBackend', 'agentHosting', 'automationProbed', 'claudeIntegrationRemoved', 'codexIntegrationRemoved', 'confirmQuit', 'dangerousMode', 'keepCallRecordingTracks', 'remoteLogging', 'syncBaseUrl', 'ttsApiKey', 'ttsApiKeySource', 'updateChannel', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
   );
 });
 

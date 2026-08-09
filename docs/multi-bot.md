@@ -53,7 +53,7 @@ The MCP server reads `VIBECONF_BASE_URL` at spawn to decide which local app it's
 
 **For Claude Code (second instance):** edit `~/.claude/mcp_settings.json` (or the relevant per-project config) to add a second MCP server entry pointing at port 7866. Or use the [Codex installer template](#codex-cli) as a reference.
 
-**For Codex CLI:** there's a ready-made installer:
+**For Codex CLI:** the default app can install Codex MCP config automatically when Agent backend is set to Codex. For this second profiled app on port 7866, use the ready-made installer to point Codex at the profile:
 
 ```bash
 # from repo root

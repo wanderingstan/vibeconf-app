@@ -46,7 +46,7 @@ function render() {
 // apply — so the rest of this step is irrelevant to anyone who answers otherwise.
 const AGENT_BACKEND_HINT = {
   claude: '',
-  codex: 'Codex needs a one-time manual setup. See docs/codex.md in the repo. The app won\u2019t launch it for you, and won\u2019t ask about Claude Code again.',
+  codex: 'The app will add its MCP server to Codex. Restart Codex after setup; the app won\u2019t launch it for you or ask about Claude Code.',
   other: 'Anything that speaks MCP can drive a bot. The app will give you the connection details instead of managing an agent, and won\u2019t ask about Claude Code again.',
 };
 

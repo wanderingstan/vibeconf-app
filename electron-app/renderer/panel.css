@@ -284,6 +284,19 @@ button.primary:disabled {
   background: rgba(58, 47, 28, 0.86);
   border: 1px solid rgba(138, 109, 59, 0.7);
 }
+/* Info — blue, calm: FYI, not a problem to fix. */
+.notice-info {
+  display: none;              /* JS flips this to flex */
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: #cfe3fb;
+  background: rgba(28, 42, 58, 0.86);
+  border: 1px solid rgba(59, 95, 138, 0.7);
+}
 button.notice-action {
   width: auto; margin: 0; flex: 0 0 auto;
   background: #8ab4f8; border: none; color: #202124;
@@ -714,6 +727,10 @@ button.auth-action-btn:hover:not(:disabled) {
 .hero-top {
   display: flex; align-items: flex-start;
   padding: 10px 10px 0;
+  /* Own stacking context, above .hero-notices (z-index: 5) — the bot switcher
+     dropdown lives in here and must never be obscured by a notice banner
+     opening below it. */
+  z-index: 6;
 }
 /* No OS title bar → this strip becomes the window's drag handle. Whatever is
    interactive inside it must opt back out, or it stops being clickable. */

@@ -509,8 +509,25 @@ class LocalServer {
     this.currentUrl = url || null;
   }
 
+  // Calendar auto-join (#299): the matched Google Calendar event, when this
+  // join was triggered by one — so the spawned agent can see WHY it's here
+  // (the event's title/description/start) via get_room_info, instead of
+  // walking into a call cold. Call AFTER setRoom (setRoom clears this).
+  setCalendarEventContext(event) {
+    if (!event) { this.calendarEventContext = null; return; }
+    this.calendarEventContext = {
+      summary: event.summary || null,
+      description: event.description || null,
+      start: event.start || null,
+    };
+  }
+
   setRoom(roomId) {
     this.roomId = roomId;
+    // Calendar auto-join (#299): set via setCalendarEventContext, right after
+    // setRoom, only when this join was calendar-triggered — cleared here so a
+    // manual join (or the next calendar join) never inherits a stale one.
+    this.calendarEventContext = null;
     this.transcripts = [];
     this.turns = new Map();
     this._turnAlias = new Map();
@@ -1322,6 +1339,9 @@ class LocalServer {
       localServerUrl: this.getLocalServerUrl(),
       localServerPort: this.port,
       localProfile: this.localProfile,
+      // Calendar auto-join (#299): only present when this join was matched
+      // from a Google Calendar event — see setCalendarEventContext.
+      calendarEventContext: this.calendarEventContext || null,
       botState: this.botState,
       anyoneSpeaking: this.anyoneSpeaking,
       // #343: concurrent-speaker count (interruptibility signal) + the busiest
@@ -3396,6 +3416,11 @@ class LocalServer {
         // whiteboard (#177).
         screenShareUrl: this.getWhiteboardLoadedUrl(),
         sessionLogPath: getSessionLogPath(),
+        // Calendar auto-join (#299): only present when this join was matched
+        // from a Google Calendar event — see setCalendarEventContext. This is
+        // how get_room_info tells the agent WHY it's here, instead of it
+        // walking into a call cold.
+        calendarEventContext: this.calendarEventContext || null,
       },
     };
   }

@@ -2504,6 +2504,19 @@ server.tool(
       formatScreenShares(status, data),
     ].filter(Boolean));
 
+    // Calendar auto-join (#299): only present when this join was matched from
+    // a Google Calendar event — gives the agent the meeting's actual title/
+    // description/start time up front, instead of walking into the call cold
+    // and having to ask what it's for.
+    const cal = status.calendarEventContext;
+    if (cal && (cal.summary || cal.description)) {
+      const calLines = [`Calendar context: this call was auto-joined from a calendar invite.`];
+      if (cal.summary) calLines.push(`  Title: ${cal.summary}`);
+      if (cal.start) calLines.push(`  Start: ${cal.start}`);
+      if (cal.description) calLines.push(`  Description: ${cal.description}`);
+      sections.push(calLines.join('\n'));
+    }
+
     if (status.whiteboardUrl) {
       sections.push(`Whiteboard URL (just the board, no room UI): ${status.whiteboardUrl} (share this in chat so participants can view the whiteboard)`);
     }

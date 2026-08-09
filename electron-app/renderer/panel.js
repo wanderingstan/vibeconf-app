@@ -2201,12 +2201,40 @@ api.invoke('get-share-window').then(applyShareWindowState).catch(() => {});
 // Bot Google identity — guest vs account mode (#170)
 // ---------------------------------------------------------------------------
 
+// #299: when the bot is actually signed in to Google, that account's own
+// address IS its calendar identity — there's no such thing as a bot that's
+// both signed in AND wants a different placeholder email, so the field is
+// forced to match and locked rather than merely pre-filled. Guest-mode bots
+// (or a signed-in bot whose email isn't known yet, see the fallback above)
+// keep the field free-text, same as before #299 added this.
+const calendarIdentityEmailCaption = document.getElementById('calendarIdentityEmailCaption');
+function lockCalendarIdentityToAccount(email) {
+  if (!calendarIdentityEmailInput) return;
+  if (calendarIdentityEmailInput.value !== email) {
+    calendarIdentityEmailInput.value = email;
+    api.invoke('set-config', 'calendarIdentityEmail', email);
+  }
+  calendarIdentityEmailInput.readOnly = true;
+  calendarIdentityEmailInput.title = 'Locked to the bot\'s signed-in Google account. Sign out to set a custom calendar invite email.';
+  if (calendarIdentityEmailCaption) {
+    calendarIdentityEmailCaption.textContent = `Locked to this bot's signed-in Google account (${email}) — that's already a valid calendar invite address. Sign out above to use a custom one instead.`;
+  }
+}
+function unlockCalendarIdentity() {
+  if (!calendarIdentityEmailInput) return;
+  calendarIdentityEmailInput.readOnly = false;
+  calendarIdentityEmailInput.title = '';
+  if (calendarIdentityEmailCaption) {
+    calendarIdentityEmailCaption.innerHTML = 'Add this address as a guest on a Google Calendar event to have this bot join it automatically. It doesn\'t need to be a real, working email. You can also put <code>vibeconf</code> (or <code>vibeconf:&lt;this bot\'s name&gt;</code>) in the event\'s title or description instead. Filled in automatically from "Sign in to Google as bot" above, if used.';
+  }
+}
+
 const meetAccountEmail = document.getElementById('meetAccountEmail');
 // Show WHICH Google account the bot is actually signed in as — surfaces the gap
 // that hid #250 (mode said "account" while the bot was silently logged out).
 function refreshAccountEmail(mode) {
   if (!meetAccountEmail) return;
-  if (mode !== 'account') { meetAccountEmail.style.display = 'none'; return; }
+  if (mode !== 'account') { meetAccountEmail.style.display = 'none'; unlockCalendarIdentity(); return; }
   meetAccountEmail.style.display = '';
   meetAccountEmail.textContent = 'Checking signed-in account…';
   meetAccountEmail.className = 'account-email';
@@ -2214,24 +2242,21 @@ function refreshAccountEmail(mode) {
     if (r && r.signedIn && r.email) {
       meetAccountEmail.textContent = '✓ Signed in as ' + r.email;
       meetAccountEmail.className = 'account-email email-ok';
-      // #299 convenience: a signed-in bot's own Google account is a natural
-      // default calendar-invite identity — fill it in, but only if the field
-      // is still empty, so this never clobbers something the user set by hand.
-      if (calendarIdentityEmailInput && !calendarIdentityEmailInput.value.trim()) {
-        calendarIdentityEmailInput.value = r.email;
-        api.invoke('set-config', 'calendarIdentityEmail', r.email);
-      }
+      lockCalendarIdentityToAccount(r.email);
     } else if (r && r.signedIn) {
       // Auth cookies present but we couldn't read the email — signed in for sure.
       meetAccountEmail.textContent = '✓ Signed in to Google (could not read which account)';
       meetAccountEmail.className = 'account-email email-ok';
+      unlockCalendarIdentity();
     } else {
       meetAccountEmail.textContent = '⚠ Mode is "account" but no Google session detected. The bot may not be signed in. If joins require admission, click "Sign in to Google as bot".';
       meetAccountEmail.className = 'account-email email-bad';
+      unlockCalendarIdentity();
     }
   }).catch(() => {
     meetAccountEmail.textContent = '(could not read signed-in account)';
     meetAccountEmail.className = 'account-email';
+    unlockCalendarIdentity();
   });
 }
 

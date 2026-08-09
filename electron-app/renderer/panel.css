@@ -727,6 +727,10 @@ button.auth-action-btn:hover:not(:disabled) {
 .hero-top {
   display: flex; align-items: flex-start;
   padding: 10px 10px 0;
+  /* Own stacking context, above .hero-notices (z-index: 5) — the bot switcher
+     dropdown lives in here and must never be obscured by a notice banner
+     opening below it. */
+  z-index: 6;
 }
 /* No OS title bar → this strip becomes the window's drag handle. Whatever is
    interactive inside it must opt back out, or it stops being clickable. */

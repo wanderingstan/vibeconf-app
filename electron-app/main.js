@@ -2727,6 +2727,12 @@ let meetAccountEmailPinned = false; // true when --meet-account-email pinned the
 // runs); read by the get-upcoming-calendar-events IPC handler in setupIPC —
 // a SEPARATE top-level function, so this can't be a local of either.
 let latestUpcomingCalendarEvents = [];
+// launchOrFocusProfile is a local of setupIPC() (it needs isDefaultName/
+// scanRunningInstances, also locals there) — checkOtherProfilesForCalendarMatch
+// runs in the whenReady closure and can't see it directly. setupIPC() runs
+// before calendar polling starts (see the setupIPC() call site), so this ref
+// is populated well before anything tries to call it.
+let launchOrFocusProfileRef = null;
 let mainWindow = null;   // single window that holds both views
 let panelView = null;     // left sidebar BrowserView
 let meetView = null;      // right Meet BrowserView
@@ -7182,9 +7188,11 @@ allURLs`;
         launched[dedupeKey] = now;
         launchedChanged = true;
         console.log(`[calendar] Event "${e.summary || e.id}" matches profile "${name}" (not this one) — launching/focusing it.`);
-        launchOrFocusProfile(name).catch((err) => {
-          console.warn(`[calendar] Failed to launch/focus profile "${name}" for calendar match:`, err.message);
-        });
+        if (launchOrFocusProfileRef) {
+          launchOrFocusProfileRef(name).catch((err) => {
+            console.warn(`[calendar] Failed to launch/focus profile "${name}" for calendar match:`, err.message);
+          });
+        }
       }
     }
     if (launchedChanged) store.set('launchedForOtherProfileEventIds', launched);
@@ -9747,6 +9755,7 @@ function setupIPC() {
       return { ok: false, error: err.message };
     }
   }
+  launchOrFocusProfileRef = launchOrFocusProfile;
 
   // #379: SWITCH IN PLACE. Launch/focus the target, then close THIS window so we
   // end on a single window. (The pre-#379 behavior left both windows open, which
@@ -10070,6 +10079,18 @@ function setupIPC() {
     } catch (err) {
       console.warn('[electron] get-meet-account-email DOM read failed:', err.message);
     }
+
+    // The live DOM scan only works while the meetView is actually showing a
+    // google.com page — most of the time (idle panel, not mid-call) it isn't,
+    // so `email` comes back null even for a bot that's been signed in and
+    // bound for weeks. Fall back to the persisted binding (chip-sourced when
+    // it was set, see above) rather than reporting "signed in, but which
+    // account?" every time the panel just happens to load off a Meet page.
+    if (!email && store) {
+      const bound = store.get('meetAccountEmail');
+      if (bound) email = bound;
+    }
+
     // Remember the last Meet display name for this profile (the signed-in Google
     // name). Stable, so the profile selector + idle sub-line can show it without
     // a live call (#282). Display-only — distinct from the authuser-pinning email.

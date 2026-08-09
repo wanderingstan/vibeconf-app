@@ -1,7 +1,7 @@
 // calendar-auto-join.test.mjs — pure matching/selection/eviction logic behind
 // calendar-triggered auto-join (#299): a bot auto-joins an upcoming Google
 // Calendar event where it's been "invited" via a placeholder guest email or a
-// vibeconf/vibeconf:<botName> tag in the title or description.
+// #vibeconf:<botName> tag in the title or description.
 //
 // This module has no Electron dependency (the HTTP call + the actual join
 // live in main.js's startCalendarPolling/handleCalendarEvents), so it's fully
@@ -71,44 +71,70 @@ test('matchesCalendarEvent: no match when attendees list does not include the id
   );
 });
 
-// ── matchesCalendarEvent: vibeconf tag ──────────────────────────────────────
+// ── matchesCalendarEvent: #vibeconf:<botName> tag ───────────────────────────
 
-test('matchesCalendarEvent: bare "vibeconf" in summary matches any bot', () => {
-  const event = makeEvent({ summary: 'Design review (vibeconf)' });
-  assert.equal(matchesCalendarEvent(event, { calendarIdentityEmail: '', botName: 'Jimmy' }), true);
-});
-
-test('matchesCalendarEvent: bare "vibeconf" in description matches any bot', () => {
-  const event = makeEvent({ summary: 'Design review', description: 'notes: vibeconf should join' });
-  assert.equal(matchesCalendarEvent(event, { calendarIdentityEmail: '', botName: 'Jimmy' }), true);
-});
-
-test('matchesCalendarEvent: "vibeconf:<botName>" targets only the matching bot', () => {
-  const event = makeEvent({ summary: '1:1 vibeconf:Jimmy' });
+test('matchesCalendarEvent: "#vibeconf:<botName>" in the summary targets only the matching bot', () => {
+  const event = makeEvent({ summary: '1:1 #vibeconf:Jimmy' });
   assert.equal(matchesCalendarEvent(event, { calendarIdentityEmail: '', botName: 'Jimmy' }), true);
   assert.equal(matchesCalendarEvent(event, { calendarIdentityEmail: '', botName: 'Rex' }), false);
 });
 
-test('matchesCalendarEvent: "vibeconf:<botName>" comparison is case-insensitive and trims', () => {
-  const event = makeEvent({ summary: 'Standup vibeconf:JIMMY' });
+test('matchesCalendarEvent: "#vibeconf:<botName>" in the description also matches', () => {
+  const event = makeEvent({ summary: 'Design review', description: 'notes: #vibeconf:Jimmy should join' });
+  assert.equal(matchesCalendarEvent(event, { calendarIdentityEmail: '', botName: 'Jimmy' }), true);
+});
+
+test('matchesCalendarEvent: "#vibeconf:<botName>" comparison is case-insensitive and trims', () => {
+  const event = makeEvent({ summary: 'Standup #vibeconf:JIMMY' });
   assert.equal(matchesCalendarEvent(event, { calendarIdentityEmail: '', botName: '  jimmy  ' }), true);
 });
 
-test('matchesCalendarEvent: "vibeconf:othername" does not match a different bot', () => {
-  const event = makeEvent({ summary: 'Standup vibeconf:Rex' });
+test('matchesCalendarEvent: "#vibeconf:othername" does not match a different bot', () => {
+  const event = makeEvent({ summary: 'Standup #vibeconf:Rex' });
   assert.equal(matchesCalendarEvent(event, { calendarIdentityEmail: '', botName: 'Jimmy' }), false);
 });
 
-test('matchesCalendarEvent: no "vibeconf" substring anywhere → no match', () => {
+test('matchesCalendarEvent: no "#vibeconf:" tag anywhere → no match', () => {
   const event = makeEvent({ summary: 'Totally unrelated meeting', description: 'nothing here' });
   assert.equal(matchesCalendarEvent(event, { calendarIdentityEmail: '', botName: 'Jimmy' }), false);
+});
+
+// Bot names are free text a user typed, not a lookup-able slug — multi-word
+// names must work directly, tolerant of extra/irregular whitespace.
+test('matchesCalendarEvent: a multi-word bot name matches, whitespace and all', () => {
+  const event = makeEvent({ summary: 'Weekly sync #vibeconf:Mr Roboto' });
+  assert.equal(matchesCalendarEvent(event, { calendarIdentityEmail: '', botName: 'Mr Roboto' }), true);
+});
+
+test('matchesCalendarEvent: multi-word name tolerates extra internal whitespace', () => {
+  const event = makeEvent({ summary: '#vibeconf:Mr   Roboto weekly sync' });
+  assert.equal(matchesCalendarEvent(event, { calendarIdentityEmail: '', botName: 'Mr Roboto' }), true);
+});
+
+test('matchesCalendarEvent: a short name does not match as a prefix of a longer one', () => {
+  const event = makeEvent({ summary: 'Standup #vibeconf:Rexford' });
+  assert.equal(matchesCalendarEvent(event, { calendarIdentityEmail: '', botName: 'Rex' }), false);
+});
+
+// #299 regression: a bare "vibeconf" substring must NOT match — this used to
+// be a wildcard ("matches any bot"), which false-positived on any event that
+// merely mentioned the product by name.
+test('matchesCalendarEvent: mentioning the product name (no #tag) does not match', () => {
+  const productMention = makeEvent({ summary: 'Vibeconferencing planning sync' });
+  assert.equal(matchesCalendarEvent(productMention, { calendarIdentityEmail: '', botName: 'Jimmy' }), false);
+
+  const appMention = makeEvent({ summary: 'Test: vibeconf-app release review' });
+  assert.equal(matchesCalendarEvent(appMention, { calendarIdentityEmail: '', botName: 'Jimmy' }), false);
+
+  const bareWord = makeEvent({ summary: 'vibeconf standup', description: 'notes: vibeconf should join' });
+  assert.equal(matchesCalendarEvent(bareWord, { calendarIdentityEmail: '', botName: 'Jimmy' }), false);
 });
 
 test('matchesCalendarEvent: either signal alone is sufficient (OR, not AND)', () => {
   const emailOnly = makeEvent({ attendees: ['bot@example.com'], summary: 'Nothing special' });
   assert.equal(matchesCalendarEvent(emailOnly, { calendarIdentityEmail: 'bot@example.com', botName: 'Jimmy' }), true);
 
-  const tagOnly = makeEvent({ attendees: [], summary: 'vibeconf standup' });
+  const tagOnly = makeEvent({ attendees: [], summary: '#vibeconf:Jimmy standup' });
   assert.equal(matchesCalendarEvent(tagOnly, { calendarIdentityEmail: 'bot@example.com', botName: 'Jimmy' }), true);
 });
 

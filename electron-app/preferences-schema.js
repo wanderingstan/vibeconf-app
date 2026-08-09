@@ -147,10 +147,10 @@ const PREFERENCES = {
     description:
       "Add this email as a guest on a Google Calendar event (it doesn't need to " +
       'be a real/working address) to have this bot automatically join that ' +
-      'meeting. Alternatively, put `vibeconf` (or `vibeconf:<bot name>` to ' +
-      "target this specific bot) in the event's title or description. Requires " +
-      'the user to be logged into vibeconferencing.com with Calendar access ' +
-      'connected. See startCalendarPolling in main.js.',
+      "meeting. Alternatively, put `#vibeconf:<this bot's name>` in the " +
+      "event's title or description. Requires the user to be logged into " +
+      'vibeconferencing.com with Calendar access connected. See ' +
+      'startCalendarPolling in main.js.',
   },
   onboardingCallComplete: {
     type: 'boolean',

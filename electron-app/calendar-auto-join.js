@@ -15,8 +15,13 @@
 //   1. calendarIdentityEmail (a per-profile pref, preferences-schema.js) is
 //      present as a guest on the event — doesn't need to resolve to a real
 //      mailbox, Google Calendar accepts arbitrary guest addresses.
-//   2. `vibeconf` (any bot) or `vibeconf:<botName>` (this bot specifically)
-//      appears in the event's title or description.
+//   2. `#vibeconf:<botName>` appears in the event's title or description.
+//      Originally a bare `vibeconf` (no name) matched EVERY bot, but that was
+//      a plain substring test — any event that merely mentioned the product
+//      by name ("Vibeconferencing planning", "vibeconf-app release") matched
+//      every single bot as a false positive. The leading `#` and required
+//      `:<botName>` make this an unambiguous, deliberately-typed marker
+//      instead of prose that can collide with it.
 
 // Default lookahead: only ever treat an event as actionable if it starts
 // within this many ms of `now`. Passed as a param (not baked into
@@ -38,6 +43,17 @@ function norm(s) {
   return (s || '').toString().trim().toLowerCase();
 }
 
+// Trim + lowercase + collapse internal whitespace runs to one space — for
+// comparing free-text (a bot name, an event's title/description) where
+// "Mr  Roboto" and "Mr Roboto" should read as the same thing.
+function normLoose(s) {
+  return norm(s).replace(/\s+/g, ' ');
+}
+
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 // Does `calendarIdentityEmail` appear (case-insensitively) among the event's
 // attendee addresses?
 function matchesIdentityEmail(event, calendarIdentityEmail) {
@@ -47,23 +63,22 @@ function matchesIdentityEmail(event, calendarIdentityEmail) {
   return attendees.some((a) => norm(a) === email);
 }
 
-// Does a bare `vibeconf` (any bot) or `vibeconf:<botName>` (this bot,
-// case-insensitive/trim-normalized — botName is free-text display text, not
-// a fixed slug, so nothing fancier than lowercase+trim is warranted) appear
-// in the event's title or description?
+// Does `#vibeconf:<botName>` appear in the event's title or description?
+// botName is free-text a user typed (often multiple words — "Mr Roboto"), not
+// a fixed slug someone could look up, so this matches the LITERAL name
+// directly rather than parsing a delimited token out of the text: build a
+// regex from the bot's own (whitespace-collapsed, case-insensitive) name and
+// look for it right after the tag. A negative lookahead stops a short name
+// from matching inside a longer one ("Rex" inside "Rexford"). No bare/
+// wildcard form: a bot name is always required, so this can never fire on an
+// event that merely happens to mention the product.
 function matchesVibeconfTag(event, botName) {
-  const haystack = `${event && event.summary ? event.summary : ''} ${event && event.description ? event.description : ''}`.toLowerCase();
-  if (!haystack.includes('vibeconf')) return false;
-  // Bare "vibeconf" anywhere (not immediately followed by ":<something>")
-  // targets every bot. "vibeconf:<slug>" targets only the bot whose botName
-  // normalizes to that slug.
-  const taggedMatch = haystack.match(/vibeconf:([^\s,;)]+)/i);
-  if (!taggedMatch) {
-    // Plain "vibeconf" mention with no ":slug" suffix — matches any bot.
-    return true;
-  }
-  const slug = norm(taggedMatch[1]);
-  return slug === norm(botName);
+  const name = normLoose(botName);
+  if (!name) return false;
+  const haystack = normLoose(`${event && event.summary ? event.summary : ''} ${event && event.description ? event.description : ''}`);
+  const pattern = escapeRegExp(name).replace(/ /g, '\\s+');
+  const re = new RegExp(`#vibeconf:\\s*${pattern}(?![a-z0-9])`, 'i');
+  return re.test(haystack);
 }
 
 // The main matching predicate. Pure, deterministic, no Electron/IO.

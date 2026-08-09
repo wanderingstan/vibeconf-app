@@ -2225,7 +2225,7 @@ function unlockCalendarIdentity() {
   calendarIdentityEmailInput.readOnly = false;
   calendarIdentityEmailInput.title = '';
   if (calendarIdentityEmailCaption) {
-    calendarIdentityEmailCaption.innerHTML = 'Add this address as a guest on a Google Calendar event to have this bot join it automatically. It doesn\'t need to be a real, working email. You can also put <code>vibeconf</code> (or <code>vibeconf:&lt;this bot\'s name&gt;</code>) in the event\'s title or description instead. Filled in automatically from "Sign in to Google as bot" above, if used.';
+    calendarIdentityEmailCaption.innerHTML = 'Add this address as a guest on a Google Calendar event to have this bot join it automatically. It doesn\'t need to be a real, working email. You can also put <code>#vibeconf:&lt;this bot\'s name&gt;</code> in the event\'s title or description instead. Filled in automatically from "Sign in to Google as bot" above, if used.';
   }
 }
 

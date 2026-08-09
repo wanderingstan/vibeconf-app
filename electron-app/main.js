@@ -7077,9 +7077,9 @@ allURLs`;
   // --- Calendar auto-join (#299): poll vibeconferencing.com for this user's
   // upcoming Google Calendar events and auto-join any where this bot profile
   // has been "invited" — a placeholder guest email (calendarIdentityEmail
-  // pref) or a `vibeconf`/`vibeconf:<botName>` tag in the event title or
-  // description. See calendar-auto-join.js for the pure matching/selection/
-  // eviction logic this glues together with IO.
+  // pref) or a `#vibeconf:<botName>` tag in the event title or description.
+  // See calendar-auto-join.js for the pure matching/selection/eviction logic
+  // this glues together with IO.
   let calendarPollInterval = null;
   let calendarPollInFlight = false;
   // Tracks the last-seen poll outcome so state-change transitions (e.g.

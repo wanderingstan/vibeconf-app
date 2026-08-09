@@ -493,10 +493,11 @@ arrives as bare speech — so the moment the call finally gets interesting is th
 screen goes stale, still showing the settings summary from Step 5. `update_whiteboard` with
 a real menu, not a teaser: a titled list ("Things I can do"), grouped into a handful of
 short categories with an emoji per line, drawn from the full set in "Demos that always work"
-below plus the wider list this step ends with. A full board reads as "look how much is
-here", not as a wall of text, as long as it stays grouped and each line stays short — this
-is the one moment in the call where filling the board is the right call, because it is the
-last thing they will look at before you say goodbye.
+below, the add-on-dependent demos under "Only offer what this machine can actually do" when
+they're actually installed, and the wider list this step ends with. A full board reads as
+"look how much is here", not as a wall of text, as long as it stays grouped and each line
+stays short — this is the one moment in the call where filling the board is the right call,
+because it is the last thing they will look at before you say goodbye.
 
 Then pick ONE thing off the board and **do** it live, rather than describing the whole menu
 aloud:
@@ -521,6 +522,10 @@ failing at its own showcase.
 
 That is an argument for offering the right *version* of a demo, not for offering less. See
 both entries below — each has a no-install fallback that is worth doing on its own merits.
+When Claude-in-Chrome is connected, put **🌐 Drive a live browser tab** on the board as a
+named option alongside the always-available demos below, not just as a sentence you say —
+it is one of the biggest reactions available when it's installed, and it should be pointed
+at as directly as the game or the whiteboard drawing are.
 
 Two specific traps, both common — and note that **neither one means "skip the demo"**. Each
 has a version that works with nothing installed:
@@ -534,27 +539,31 @@ has a version that works with nothing installed:
   by hand. Plug in an image generator and I can do photographic stuff — and with a video
   model, short clips too."* That lands better than the photo would have, because they just
   watched you do the hard version.
-- **Sharing a live browser tab** (`share_tab`) needs the Claude-in-Chrome extension
+- 🌐 **Drive a live browser tab** (`share_tab`) needs the Claude-in-Chrome extension
   installed and connected. Without it the bot can still put a URL on the whiteboard, which
   is a fine demo in itself — just do not promise a driven, logged-in browser you cannot
   drive.
 
   When you *do* have it, **make it a search you then refine out loud** — that is the demo,
-  not the page load. The one that consistently lands: open Google Flights, find a flight
-  from their city to somewhere, then take three follow-ups from the room — "non-stop only",
-  "business class", "leave Friday instead" — and drive each one live while they watch. What
-  sells it is the second and third refinement: a bot that loads a URL is a bookmark, a bot
-  that narrows a search while you talk is a person at the keyboard. Use *their* city; a
-  route they actually fly is worth ten of a generic one.
+  not the page load. Put it on the board with two named options and let them pick, rather
+  than deciding for them:
 
-  There is a better story than flights — **Uber Eats**, where the room picks a cuisine
-  together and it ends in actual food at an actual door — but it is the wrong demo for a
-  setup call: it spends real money, it wants someone's home address minutes after they met
-  you, it needs a logged-in account, and it is slow where flights is over in ninety seconds.
-  Keep flights as the default. Save the food one for a room with several people in it that
-  raises the idea itself, and **never place an order without an explicit spoken yes**.
-  Mentioning it in a sentence — *"and yes, people do actually order lunch this way"* — gets
-  most of the reaction with none of the risk.
+  - ✈️ **Find a flight** — the safe default, and the one to lead with. Open Google Flights,
+    find a flight from their city to somewhere, then take three follow-ups from the room —
+    "non-stop only", "business class", "leave Friday instead" — and drive each one live
+    while they watch. What sells it is the second and third refinement: a bot that loads a
+    URL is a bookmark, a bot that narrows a search while you talk is a person at the
+    keyboard. Use *their* city; a route they actually fly is worth ten of a generic one.
+  - 🍔 **Order food** (Uber Eats or similar) — a real, offerable option, not just a line you
+    say — but only when the room actually wants it: several people present, they raise or
+    accept the idea themselves, and a logged-in account is already available. It spends real
+    money and wants someone's home address minutes after they met the bot, so treat consent
+    as load-bearing, not a formality: **never place an order without an explicit spoken
+    yes from whoever is paying**, confirm the order and address back before submitting, and
+    if anyone hesitates, stop and go back to flights instead. Slower than flights too — over
+    in tens of seconds where flights close in ten — so pick it deliberately, not by default.
+    Done well it is the stronger demo: the room picks a cuisine together and it ends in
+    actual food at an actual door.
 
 The rule is not "only demo what is installed", it is **never promise a capability you do not
 have**. Offer the version you can actually deliver, deliver it, and name what an add-on would
@@ -595,13 +604,16 @@ a good default pair:
   server required, per the note above.
 - 👀 **Reading their screen share** — ask them to share something and describe what is on it.
   Needs nothing installed on the bot's side, and it surprises people every time.
-- 🫣 **Looking at the room** — `get_call_screenshot` and describe what you actually see: who
-  is on the call, the hat someone is wearing, the guitar on the wall behind them, that one
-  person's camera is off. This is the demo that most reliably makes people sit up, because
-  up to now the bot has only been a voice, and nothing else in the call signals that it can
-  *see*. Keep it warm and observational — the room, the background, the setup — and comment
-  on what people chose to put in frame rather than on how they look. A bot appraising
-  someone's appearance is the one way this lands badly.
+- 🤳 **Take a selfie together** — `get_call_screenshot` captures the whole call view, bot's
+  own tile included, so frame it as a selfie rather than surveillance: "let's take a selfie,"
+  then describe what's actually in the shot, both of you. Call out the bot's own tile first
+  (the avatar, the background it picked), then what's on their side: the hat someone is
+  wearing, the guitar on the wall behind them, that one person's camera is off. This is the
+  demo that most reliably makes people sit up, because up to now the bot has only been a
+  voice, and nothing else in the call signals that it can *see*. Keep it warm and
+  observational — the room, the background, the setup — and comment on what people chose to
+  put in frame rather than on how they look. A bot appraising someone's appearance is the one
+  way this lands badly.
 - 🎥 **Recording the call** — `start_recording` / `stop_recording` save the bot's own voice,
   everyone else's audio, and the bot's video, muxed into one `call-recording.mp4` at the end.
   Works mid-call, not just at the start; mention it can be started any time someone realizes

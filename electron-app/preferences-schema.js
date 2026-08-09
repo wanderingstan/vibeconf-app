@@ -406,7 +406,7 @@ const PREFERENCES = {
     label: 'Agent backend',
     enumLabels: {
       claude: 'Claude Code (recommended)',
-      codex: 'OpenAI Codex (experimental, manual setup)',
+      codex: 'OpenAI Codex (experimental)',
       other: 'Other MCP client (LM Studio, custom)',
     },
     description:
@@ -414,7 +414,7 @@ const PREFERENCES = {
       'CLI is installed is a property of the machine, and every bot on it is driven ' +
       'by the same one. "claude" = Claude Code, the path the app automates (it writes ' +
       'the MCP config, opens the Terminal, and checks sign-in). "codex" = OpenAI Codex ' +
-      'CLI — experimental, and set up by hand per docs/codex.md. "other" = anything ' +
+      'CLI — experimental; the app writes its MCP config, but does not launch it. "other" = anything ' +
       'else that speaks MCP (LM Studio, a hand-rolled client, an agent on ' +
       'another machine) — the app gives you the connection details and stays out of ' +
       'the way. ' +

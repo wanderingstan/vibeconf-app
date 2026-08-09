@@ -28,6 +28,7 @@ const APP_LEVEL_KEYS = new Set([
   // second profile asking again would be asking about a decision already made.
   'automationProbed',
   'claudeIntegrationRemoved', // "leave no trace" opt-out — ~/.claude is machine-global
+  'codexIntegrationRemoved', // "leave no trace" opt-out — ~/.codex is machine-global
   // #231: which agent CLI is installed is a property of the MACHINE, like
   // dangerousMode. Every bot on a laptop is driven by the same one. Deliberately
   // NOT in MIGRATE_KEYS below: auto-promoting one profile's guess machine-wide is

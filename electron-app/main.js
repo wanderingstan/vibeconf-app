@@ -22,6 +22,13 @@ const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWin
 const { mergeCallMedia } = require('./call-media-merge.js');
 const { createMergeProgressWindow, closeMergeProgressWindow } = require('./call-recording-merge-window.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
+const {
+  codexConfigPath,
+  readCodexConfigSafe,
+  installCodexMcpConfig,
+  uninstallCodexMcpConfig,
+  currentCodexMcpServerPath,
+} = require('./codex-config.js');
 // The call-provider contract. main.js is the consumer side: it subscribes to
 // CALL_EVENTS (provider → app) and issues CALL_COMMANDS (app → provider) by
 // constant rather than raw channel string, so the contract is shared on both
@@ -48,6 +55,27 @@ function mcpNodeLauncher() {
     command: process.execPath,
     env: { ELECTRON_RUN_AS_NODE: '1' },
   };
+}
+
+function bundledMcpServerRoot() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'mcp-server')
+    : path.join(__dirname, '..', 'mcp-server');
+}
+
+function bundledMcpServerPath() {
+  return path.join(bundledMcpServerRoot(), 'server.js');
+}
+
+function mcpServerDepsPresent(mcpServerRoot = bundledMcpServerRoot()) {
+  return app.isPackaged || (
+    fs.existsSync(path.join(mcpServerRoot, 'node_modules', '@modelcontextprotocol', 'sdk')) &&
+    fs.existsSync(path.join(mcpServerRoot, 'node_modules', 'zod')));
+}
+
+function runningFromGitWorktree() {
+  if (app.isPackaged) return false;
+  try { return fs.statSync(path.join(__dirname, '..', '.git')).isFile(); } catch { return false; }
 }
 
 // Let the shared board play sound unprompted. Now that the whiteboard window's
@@ -227,6 +255,9 @@ function notifyConfigChanged(key, value) {
   // parked while it wasn't our business.
   if (key === 'agentBackend') {
     try { refreshClaudeAuth().catch(() => {}); } catch { /* not ready yet */ }
+    if (value === 'codex' && isDefaultInstance && store?.get('codexIntegrationRemoved') !== true) {
+      try { ensureCodexIntegration(); } catch (err) { console.warn('[electron] Codex integration install failed:', err.message); }
+    }
   }
 }
 
@@ -6144,10 +6175,8 @@ function ensureClaudeIntegration() {
 
   // Determine paths based on whether we're packaged or in dev
   const isPackaged = app.isPackaged;
-  const mcpServerRoot = isPackaged
-    ? path.join(process.resourcesPath, 'mcp-server')
-    : path.join(__dirname, '..', 'mcp-server');
-  const mcpServerPath = path.join(mcpServerRoot, 'server.js');
+  const mcpServerRoot = bundledMcpServerRoot();
+  const mcpServerPath = bundledMcpServerPath();
   const appLaunchCmd = isPackaged
     ? 'open -a Vibeconferencing'
     : `cd ${__dirname} && npx electron .`;
@@ -6157,17 +6186,12 @@ function ensureClaudeIntegration() {
   // source checkout has none until someone installs them in mcp-server/.
   const serverEntryExists = fs.existsSync(mcpServerPath);
   // The server needs BOTH the MCP SDK and zod to boot — check both, not just the SDK.
-  const serverDepsPresent = isPackaged || (
-    fs.existsSync(path.join(mcpServerRoot, 'node_modules', '@modelcontextprotocol', 'sdk')) &&
-    fs.existsSync(path.join(mcpServerRoot, 'node_modules', 'zod')));
+  const serverDepsPresent = mcpServerDepsPresent(mcpServerRoot);
 
   // A linked git worktree (`.git` is a file, not a dir) is a removable
   // checkout — repointing durable config at one strands the entry when the
   // worktree goes away.
-  let isTempWorktree = false;
-  if (!isPackaged) {
-    try { isTempWorktree = fs.statSync(path.join(__dirname, '..', '.git')).isFile(); } catch {}
-  }
+  const isTempWorktree = runningFromGitWorktree();
 
   let changed = false;
 
@@ -6371,6 +6395,88 @@ function uninstallClaudeIntegration() {
   removeAgentActivityHook();
 
   console.log('[electron] Claude integration uninstalled.');
+}
+
+// ---------------------------------------------------------------------------
+// Codex integration (MCP config only)
+// ---------------------------------------------------------------------------
+
+function ensureCodexIntegration() {
+  const home = process.env.HOME || process.env.USERPROFILE;
+  const configPath = codexConfigPath(home);
+  const mcpServerRoot = bundledMcpServerRoot();
+  const mcpServerPath = bundledMcpServerPath();
+  const serverEntryExists = fs.existsSync(mcpServerPath);
+  const serverDepsPresent = mcpServerDepsPresent(mcpServerRoot);
+
+  if (!serverEntryExists) {
+    console.warn('[electron] Codex MCP server entrypoint missing at', mcpServerPath,
+      '- leaving Codex config untouched');
+    return false;
+  }
+  if (!serverDepsPresent) {
+    console.warn('[electron] mcp-server deps not installed (no node_modules/@modelcontextprotocol/sdk).',
+      'Run `npm install` (or pnpm) in', mcpServerRoot, '- leaving Codex config untouched');
+    return false;
+  }
+
+  const { content: existingCodexConfig, readable } = readCodexConfigSafe(configPath);
+  if (!readable) {
+    console.warn('[electron] ~/.codex/config.toml exists but is unreadable -',
+      'leaving Codex MCP config untouched to avoid clobbering other servers');
+    return false;
+  }
+
+  const currentServerPath = currentCodexMcpServerPath(existingCodexConfig);
+  const existingServerOk = !!currentServerPath && fs.existsSync(currentServerPath);
+  if (runningFromGitWorktree() && existingServerOk && currentServerPath !== mcpServerPath) {
+    console.warn('[electron] running from a git worktree - keeping existing Codex MCP server path',
+      currentServerPath, 'instead of repointing durable config at', mcpServerPath);
+    return false;
+  }
+
+  const localBaseUrl = `http://127.0.0.1:${DEFAULT_PORT}`;
+  const configuredBotName = resolvedBotName();
+  const nodeLauncher = mcpNodeLauncher();
+  const result = installCodexMcpConfig({
+    configPath,
+    command: nodeLauncher.command,
+    args: [mcpServerPath],
+    env: {
+      ...nodeLauncher.env,
+      VIBECONF_ROOM_ID: '',
+      VIBECONF_BOT_NAME: configuredBotName,
+      VIBECONF_BASE_URL: localBaseUrl,
+    },
+  });
+
+  if (!result.ok) {
+    console.warn('[electron] Codex MCP config not updated:', result.reason || 'unknown error');
+    return false;
+  }
+  if (result.changed) {
+    console.log('[electron] Updated Codex MCP config -> local server at', localBaseUrl, 'botName:', configuredBotName);
+    if (result.backupPath) console.log('[electron] Backed up previous Codex config:', result.backupPath);
+    console.log('[electron] Codex integration installed. Restart Codex to pick up MCP changes.');
+    return true;
+  }
+  console.log('[electron] Codex MCP config already pointing to local server');
+  return false;
+}
+
+function removeCodexIntegration() {
+  const home = process.env.HOME || process.env.USERPROFILE;
+  const result = uninstallCodexMcpConfig({ configPath: codexConfigPath(home) });
+  if (!result.ok) {
+    console.warn('[electron] Codex MCP config not removed:', result.reason || 'unknown error');
+    return false;
+  }
+  if (result.changed) {
+    console.log('[electron] Removed Codex MCP config from ~/.codex/config.toml');
+    if (result.backupPath) console.log('[electron] Backed up previous Codex config:', result.backupPath);
+  }
+  console.log('[electron] Codex integration uninstalled.');
+  return result.changed;
 }
 
 app.whenReady().then(async () => {
@@ -6586,21 +6692,26 @@ app.whenReady().then(async () => {
     console.warn('[electron] Failed to configure remote logging:', err.message);
   }
 
-  // Check/install the machine-global Claude integration (~/.claude.json MCP entry,
-  // the /join-call skill, the agent-activity hook). This content is app-level, not
-  // profile-level — it always points bare-terminal `claude` at the fallback port
+  // Check/install the machine-global agent integration. This content is app-level,
+  // not profile-level — it always points bare-terminal agents at the fallback port
   // (DEFAULT_PORT). We run it from the single default instance purely as a
   // single-writer election so N running profiles don't race on the same global
   // files; named instances skip it (and self-pin their own --mcp-config instead).
   if (!isDefaultInstance) {
-    console.log('[electron] Skipping global Claude integration for named profile:', appProfile);
-  } else if (store.get('claudeIntegrationRemoved') === true) {
+    console.log('[electron] Skipping global agent integration for named profile:', appProfile);
+  } else if (prefValue('agentBackend') === 'codex') {
+    if (store.get('codexIntegrationRemoved') === true) {
+      console.log('[electron] Codex integration NOT installed (user uninstalled it - leave-no-trace flag set)');
+    } else {
+      ensureCodexIntegration();
+    }
+  } else if (prefValue('agentBackend') === 'claude' && store.get('claudeIntegrationRemoved') === true) {
     // "Leave no trace": the user explicitly uninstalled the Claude integration
     // (menu → Uninstall Claude Integration). Without this gate the next launch
     // would silently re-write ~/.claude.json / the skill / the hook, undoing
     // the uninstall. Re-enable via menu → Install Claude Integration.
     console.log('[electron] Claude integration NOT installed (user uninstalled it — leave-no-trace flag set)');
-  } else {
+  } else if (prefValue('agentBackend') === 'claude') {
     ensureClaudeIntegration();
   }
 
@@ -8053,6 +8164,44 @@ function createMainWindow() {
             dialog.showMessageBox(mainWindow, {
               type: 'info',
               message: 'Claude integration installed. Restart Claude Code to pick it up.',
+            });
+          },
+        },
+        {
+          label: 'Uninstall Codex Integration...',
+          click: () => {
+            const { dialog } = require('electron');
+            dialog.showMessageBox(mainWindow, {
+              type: 'question',
+              buttons: ['Cancel', 'Uninstall'],
+              defaultId: 0,
+              title: 'Uninstall Codex Integration',
+              message: 'Remove the Vibeconferencing MCP server from Codex?',
+              detail:
+                'Removes only the vibeconferencing MCP server block from ~/.codex/config.toml.\n\n' +
+                'It will NOT be reinstalled on the next launch. The app itself keeps working; ' +
+                'use "Install Codex Integration" to bring it back.',
+            }).then(({ response }) => {
+              if (response === 1) {
+                removeCodexIntegration();
+                try { store?.set('codexIntegrationRemoved', true); } catch { /* non-fatal */ }
+                dialog.showMessageBox(mainWindow, {
+                  type: 'info',
+                  message: 'Codex integration removed. Restart Codex to apply.',
+                });
+              }
+            });
+          },
+        },
+        {
+          label: 'Install Codex Integration',
+          click: () => {
+            const { dialog } = require('electron');
+            try { store?.delete('codexIntegrationRemoved'); } catch { /* non-fatal */ }
+            ensureCodexIntegration();
+            dialog.showMessageBox(mainWindow, {
+              type: 'info',
+              message: 'Codex integration installed. Restart Codex to pick it up.',
             });
           },
         },

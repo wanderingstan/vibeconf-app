@@ -20,6 +20,7 @@ const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEv
 const { CallRecordingSession } = require('./call-recorder.js');
 const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWindow } = require('./call-recording-window.js');
 const { mergeCallMedia } = require('./call-media-merge.js');
+const { evictStaleEventIds, selectEventToJoin, resolveMeetUrl: resolveCalendarMeetUrl } = require('./calendar-auto-join.js');
 const { createMergeProgressWindow, closeMergeProgressWindow } = require('./call-recording-merge-window.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
 // The call-provider contract. main.js is the consumer side: it subscribes to
@@ -7060,6 +7061,124 @@ allURLs`;
   // browser — the bulk of the first-run pile-up. onboarding:finish starts it.
   if (!onboardingPending) startMeetDetection();
   else deferredStarts.push(startMeetDetection);
+
+  // --- Calendar auto-join (#299): poll vibeconferencing.com for this user's
+  // upcoming Google Calendar events and auto-join any where this bot profile
+  // has been "invited" — a placeholder guest email (calendarIdentityEmail
+  // pref) or a `vibeconf`/`vibeconf:<botName>` tag in the event title or
+  // description. See calendar-auto-join.js for the pure matching/selection/
+  // eviction logic this glues together with IO.
+  let calendarPollInterval = null;
+  let calendarPollInFlight = false;
+  // Tracks the last-seen poll outcome so state-change transitions (e.g.
+  // connected → not-connected) log once instead of every ~60s tick — same
+  // idle-log-suppression spirit as startMeetDetection's "poll found nothing"
+  // silence.
+  let lastCalendarPollState = null;
+
+  // Join, at most, one matching event per tick. Dedupe is recorded BEFORE the
+  // join is attempted (not after it succeeds) — a failed join shouldn't
+  // retry-loop every poll cycle for the same event; occasionally missing one
+  // on a transient error is the better failure mode.
+  function handleCalendarEvents(events) {
+    const calendarIdentityEmail = store.get('calendarIdentityEmail') || '';
+    const botName = resolvedBotName();
+    const joinedIds = evictStaleEventIds(store.get('joinedCalendarEventIds') || {}, Date.now());
+    // Persist the evicted map even if nothing matches this tick, so the
+    // store doesn't grow unbounded while the app sits idle.
+    store.set('joinedCalendarEventIds', joinedIds);
+
+    const { event, extraMatchCount } = selectEventToJoin(events, {
+      calendarIdentityEmail,
+      botName,
+      joinedIds,
+      now: Date.now(),
+    });
+    if (!event) return;
+
+    if (extraMatchCount > 0) {
+      console.warn(`[calendar] ${extraMatchCount} additional matching event(s) this tick — `
+        + 'only joining one, the rest will be reconsidered next poll.');
+    }
+
+    const meetUrl = resolveCalendarMeetUrl(event.hangoutLink);
+    if (!meetUrl) {
+      console.warn(`[calendar] Matched event "${event.summary || event.id}" but its hangoutLink `
+        + `("${event.hangoutLink}") isn't a recognizable Meet URL — skipping, still marking as handled.`);
+      store.set('joinedCalendarEventIds', { ...joinedIds, [event.id]: Date.now() });
+      return;
+    }
+
+    console.log(`[calendar] Auto-joining calendar event "${event.summary || event.id}"`);
+    // Record BEFORE attempting the join (see comment above the function).
+    store.set('joinedCalendarEventIds', { ...joinedIds, [event.id]: Date.now() });
+    activateMeetProvider(); // no-op if already on a live Meet view
+    joinMeetUrl(meetUrl, { spawnAgent: true });
+  }
+
+  function startCalendarPolling() {
+    if (calendarPollInterval) return;
+
+    async function pollCalendar() {
+      if (calendarPollInFlight) return;
+      // Reuse the exact in-call guard startMeetDetection uses — no reason to
+      // poll or auto-join while already in a call.
+      if (localServer.callStatus === 'in-call') return;
+      calendarPollInFlight = true;
+      try {
+        const r = await websiteRequest('/api/calendar/upcoming');
+
+        if (r.status === 200 && r.json && r.json.ok) {
+          if (lastCalendarPollState !== 'ok') {
+            console.log('[calendar] Connected — polling for auto-join events');
+            lastCalendarPollState = 'ok';
+          }
+          handleCalendarEvents(r.json.events || []);
+          return;
+        }
+
+        // Every path below is expected/transient (not signed in, Calendar not
+        // connected yet, offline, upstream hiccup) — skip this poll quietly,
+        // and log only on a STATE CHANGE so an idle app isn't shipping a log
+        // line every ~60s tick.
+        let state = 'unknown';
+        let message = `unexpected response (status ${r.status})`;
+        if (r.status === 401) {
+          state = 'signed-out';
+          message = 'not signed in';
+        } else if (r.json && r.json.code === 'calendar-not-connected') {
+          state = 'not-connected';
+          message = 'signed in, but Calendar access not yet connected';
+        } else if (r.json && r.json.code === 'google-api-error') {
+          state = 'google-api-error';
+          message = `Google API error: ${r.json.detail || 'unknown'}`;
+        } else if (r.status === 0) {
+          state = 'offline';
+          message = `offline/network error: ${r.error || 'unknown'}`;
+        }
+        if (state !== lastCalendarPollState) {
+          console.log(`[calendar] Poll skipped (${message})`);
+          lastCalendarPollState = state;
+        }
+      } catch (err) {
+        if (lastCalendarPollState !== 'error') {
+          console.error('[calendar] Poll failed:', err && err.message);
+          lastCalendarPollState = 'error';
+        }
+      } finally {
+        calendarPollInFlight = false;
+      }
+    }
+
+    console.log('[electron] Calendar auto-join polling started');
+    pollCalendar();
+    calendarPollInterval = setInterval(pollCalendar, 60000);
+  }
+
+  // Same onboarding-deferral reasoning as startMeetDetection: don't let a
+  // background poll (and a possible surprise auto-join) interrupt the wizard.
+  if (!onboardingPending) startCalendarPolling();
+  else deferredStarts.push(startCalendarPolling);
 
   // IPC: join detected meet and launch Claude
   ipcMain.on('join-detected-meet', (_event, { url, meetCode }) => {

@@ -140,6 +140,18 @@ const PREFERENCES = {
       "The bot's display name in Meet calls. Takes effect on the next call.",
     requiresRestart: true,
   },
+  calendarIdentityEmail: {
+    type: 'string',
+    default: '',
+    label: 'Calendar invite email',
+    description:
+      "Add this email as a guest on a Google Calendar event (it doesn't need to " +
+      'be a real/working address) to have this bot automatically join that ' +
+      'meeting. Alternatively, put `vibeconf` (or `vibeconf:<bot name>` to ' +
+      "target this specific bot) in the event's title or description. Requires " +
+      'the user to be logged into vibeconferencing.com with Calendar access ' +
+      'connected — see startCalendarPolling in main.js.',
+  },
   onboardingCallComplete: {
     type: 'boolean',
     // Default TRUE, deliberately backwards from how a "have you done X yet"

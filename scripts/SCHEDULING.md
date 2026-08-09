@@ -82,9 +82,19 @@ The wrapper can preserve two kinds of recording per run, both under
   `call-recording*.mp4` out of the throwaway test profiles into
   `call-recordings/<lane>-<ts>/` (this exercises the real recording feature
   end-to-end, and gives us the actual call audio/video from a failing night).
-- **`VIBECONF_RECORD_KEEP`** — `fails` (default) keeps only FAILING runs' artifacts;
-  `all` keeps every run. Newest **`VIBECONF_RECORD_MAX`** (default 5) kept per kind,
-  older pruned. Both kinds upload to the shared Drive (`rclone`) when configured.
+- **`VIBECONF_RECORD_KEEP`** — retention policy, applies to both kinds:
+  - `fails` — keep only FAILING lanes' artifacts (greens deleted immediately).
+  - `all` — keep every lane's artifact.
+  - `nightly` (**what the mini uses**) — keep EVERY lane's recording for the current
+    run, then at the START of the next run reap the prior run's GREENS while keeping
+    its FAILURES. So you can inspect any of last night's lanes for a day, and only
+    failures persist beyond the next 3am run. Failures are tagged `.FAIL` in the name
+    and capped to the newest `VIBECONF_RECORD_MAX`; greens are kept locally only.
+
+  Newest **`VIBECONF_RECORD_MAX`** (default 5) kept per kind. A **failing** lane's
+  artifact uploads to the shared Drive (`rclone`) when configured, so a red night's
+  digest links straight to it; greens stay local (except in `all` mode, which uploads
+  everything).
 
 ## Notes / caveats
 - **Same machine as a real bot?** The fleet uses ports 7901+ and dedicated

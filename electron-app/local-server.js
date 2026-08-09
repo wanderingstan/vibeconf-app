@@ -23,7 +23,7 @@ function localTokenPath(port) { return path.join(AUTH_TOKEN_DIR, `${port}.token`
 const prefsSchema = require('./preferences-schema.js');
 const { classifyAgent, agentIsAbsent } = require('./agent-liveness.js');
 const { isFinished } = require('./call-phase.js');
-const { getRecentSessionLog, getSessionLogPath } = require('./session-log.js');
+const { getRecentSessionLog, getSessionLogPath, sliceCallLines } = require('./session-log.js');
 const { shouldIgnoreRejoin } = require('./rejoin-guard.js');
 const { TranscriptActivitySource, StreamActivitySource } = require('./agent-activity.js');
 
@@ -3691,6 +3691,31 @@ class LocalServer {
       const result = getRecentSessionLog({ lines, grep });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: true, ...result }));
+      return;
+    }
+
+    // Per-call log slice (#287) — the after-call-work counterpart to the
+    // "share this call's log" button (#255). Unlike that button, this doesn't
+    // upload anywhere: it just returns the lines, so an agent can read/save
+    // them like any other after-call artifact. Accepts any callId, not just
+    // the currently-active one, since after-call work runs post-hangup once
+    // this.callId has already been cleared.
+    if (url.pathname === '/api/call-log' && req.method === 'GET') {
+      const callId = url.searchParams.get('callId');
+      if (!callId) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'callId is required' }));
+        return;
+      }
+      const lines = sliceCallLines(callId, getSessionLogPath());
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        callId,
+        filePath: getSessionLogPath(),
+        content: lines.join('\n'),
+        lineCount: lines.length,
+      }));
       return;
     }
 

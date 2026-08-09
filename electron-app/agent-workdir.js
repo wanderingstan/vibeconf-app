@@ -127,7 +127,10 @@ on, this is where \`call-recording-tracks/\` (one audio file per
 participant, plus the bot's own \`video.webm\` and, if a whiteboard share
 happened, \`share.webm\`) and the merged \`call-recording.mp4\` / \`call-recording-share.mp4\` land.
 One folder per call keeps a call's artifacts together and makes it obvious
-what to delete.
+what to delete. \`get_call_log({ call_id })\` returns just this call's slice of
+the session log (no earlier or later calls mixed in) — worth saving as
+\`calls/<call-id>/session-log.txt\` if you're debugging something that went
+wrong, though most calls don't need it.
 
 By default: **write a short summary of the call.**
 

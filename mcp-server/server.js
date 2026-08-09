@@ -270,6 +270,37 @@ server.tool(
   }
 );
 
+// --- get_call_log ---
+// Returns just ONE call's slice of this machine's session log (#287), bounded
+// by the `[call] id=...` markers written at call start/end (#292). This is the
+// after-call-work counterpart to the "share this call's log" UI button (#255):
+// same underlying slice, but returned directly instead of uploaded, so an
+// agent can save it (e.g. calls/<call-id>/session-log.txt) alongside a
+// summary, or a script can pull it for offline analysis. Call IDs come from
+// get_room_info / call-status responses seen earlier in the call — this
+// works for any past call ID, not just the currently-active one, since
+// after-call work runs post-hangup once the live call ID has been cleared.
+server.tool(
+  "get_call_log",
+  "Get just one call's slice of this machine's session log — the events between that call's start and end markers, with no earlier or later calls mixed in. This is for after-call work (e.g. saving a log alongside a call summary) or scripts that need one call's events; unlike get_session_log it returns exactly one call, not a recent-lines window. Pass the call_id seen earlier (e.g. from get_room_info) — works for past calls too, not just the current one.",
+  {
+    call_id: z.string().describe("The call ID to slice out, e.g. 'abc-defg-hij-20260809T164900Z' (from get_room_info or a `[call] id=...` log line)."),
+  },
+  async ({ call_id }) => {
+    const url = `${BASE_URL}/api/call-log?callId=${encodeURIComponent(call_id)}`;
+    const resp = await vfetch(url);
+    const data = await resp.json();
+    if (!data.success) {
+      return { content: [{ type: "text", text: `Error: ${data.error || "Unknown error"}` }] };
+    }
+    if (!data.lineCount) {
+      return { content: [{ type: "text", text: `No log lines found for call_id "${call_id}". Check the ID matches a '[call] id=...' marker in the session log.` }] };
+    }
+    const header = `Call log: ${call_id} (${data.lineCount} lines, ${data.filePath})\n---\n`;
+    return { content: [{ type: "text", text: header + data.content }] };
+  }
+);
+
 // --- list_log_instances ---
 // List remote bots currently shipping session logs to the backend (remoteLogging
 // pref on). Returns instance IDs to pass to get_session_log({ instance }).

@@ -29,7 +29,9 @@ setup dialog was dismissed, which is a separate, unrelated flag.
 
 Call `start_call`. Pass `bot_name` only if `$ARGUMENTS` names one — it selects which
 **profile** to drive when several app instances are running, exactly as it does for
-`/join-call`. With one instance running, omit it.
+`/join-call`. It is an address only: the bot joins under its profile's own configured
+name, never under the string you passed. With one instance running (or a session the
+app launched, which is pinned to its own instance), omit it.
 
 ```
 /call             → start a call with the sole running bot

@@ -27,6 +27,7 @@ import { execSync, execFileSync } from "child_process";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
+import { resolveInstance, joinNameFromRouting } from "./instance-routing.js";
 
 let ROOM_ID = process.env.VIBECONF_ROOM_ID || "";
 let BOT_NAME = process.env.VIBECONF_BOT_NAME || "Unnamed bot";
@@ -35,6 +36,16 @@ let BOT_NAME = process.env.VIBECONF_BOT_NAME || "Unnamed bot";
 // single agent session can target any running profile regardless of which port
 // the app baked into the MCP config (#301). Reassigned in routeToInstance().
 let BASE_URL = process.env.VIBECONF_BASE_URL || "http://127.0.0.1:7865";
+// The port this session was EXPLICITLY pinned to, captured before anything can
+// re-bind BASE_URL. The app writes VIBECONF_BASE_URL into each profile's own MCP
+// config, so when it's set we know which instance this terminal belongs to and
+// can skip the "which profile did you mean?" prompt. Null when unset — the
+// default 7865 happens to be the default profile's port, and inferring from that
+// would silently pick a profile the user never named.
+const PINNED_PORT = (() => {
+  const m = String(process.env.VIBECONF_BASE_URL || "").match(/:(\d+)/);
+  return m ? Number(m[1]) : null;
+})();
 // Backend (Vercel) base — used for REMOTE session logs shipped by other machines
 // (get_session_log with an `instance` arg / list_log_instances). Distinct from
 // BASE_URL, which is this machine's local Electron app.
@@ -114,6 +125,10 @@ async function discoverInstances() {
         // The default profile reports null — normalize so it's addressable as "default".
         profile: s.localProfile || "default",
         botName: s.currentCallBotName || s.configuredBotName || null,
+        // Kept separate from botName: this is the profile's OWN display name (what
+        // the panel is set to), which is what a profile-addressed join should join
+        // under — not currentCallBotName, a per-call override from a past call.
+        configuredBotName: (s.configuredBotName || "").trim() || null,
         callStatus: s.callStatus || null,
         roomId: d.roomId || null,
       };
@@ -122,36 +137,23 @@ async function discoverInstances() {
   return results.filter(Boolean);
 }
 
-// Resolve which running instance a name targets. name = profile (preferred) or bot
-// name. Backward-compatible: a single running instance is used as-is (the name is
-// then just the display name); discovery turning up nothing keeps the current
-// BASE_URL (env default) so existing single-instance setups are unaffected.
-function resolveInstance(name, instances) {
-  if (instances.length === 0) return { keep: true }; // nothing discovered → don't touch BASE_URL
-  if (name) {
-    const n = String(name).trim().toLowerCase();
-    const byProfile = instances.find((i) => (i.profile || "").toLowerCase() === n);
-    const byBot = instances.find((i) => (i.botName || "").toLowerCase() === n);
-    if (byProfile || byBot) return { instance: byProfile || byBot };
-    if (instances.length === 1) return { instance: instances[0] }; // sole instance; name is a display name
-    const list = instances.map((i) => `${i.profile} (:${i.port}${i.botName ? `, ${i.botName}` : ""})`).join(", ");
-    return { error: `No running instance for profile "${name}". Running: ${list}. Launch that profile, or use one of these names.` };
-  }
-  if (instances.length === 1) return { instance: instances[0] };
-  const list = instances.map((i) => `${i.profile} (:${i.port}${i.botName ? `, ${i.botName}` : ""})`).join(", ");
-  return { error: `Multiple app instances running — specify which by profile name: ${list}.` };
-}
+// resolveInstance lives in ./instance-routing.js (pure, unit-tested). Behaviour:
+// name = profile (preferred) or display name. Backward-compatible — a single
+// running instance is used as-is (the name is then just the display name), and
+// discovery turning up nothing keeps the current BASE_URL (env default) so
+// existing single-instance setups are unaffected.
 
 // Bind this session's BASE_URL to the instance the name targets. Returns
-// { ok, instance? } or { error }.
+// { ok, instance?, matchedBy? } or { error }. matchedBy tells the caller whether
+// the name was an ADDRESS (a profile) or a label — see instance-routing.js.
 async function routeToInstance(name) {
   let instances;
   try { instances = await discoverInstances(); }
   catch { return { ok: true }; } // discovery failed → keep current BASE_URL, let the join surface a real error
-  const r = resolveInstance(name, instances);
+  const r = resolveInstance(name, instances, { pinnedPort: PINNED_PORT });
   if (r.error) return { error: r.error };
   if (r.keep) return { ok: true };
-  if (r.instance) { BASE_URL = r.instance.baseUrl; return { ok: true, instance: r.instance }; }
+  if (r.instance) { BASE_URL = r.instance.baseUrl; return { ok: true, instance: r.instance, matchedBy: r.matchedBy }; }
   return { ok: true };
 }
 
@@ -201,6 +203,14 @@ async function resolveBotName(name) {
   if (explicit) return explicit;
   const configured = await fetchConfiguredBotName();
   return configured || BOT_NAME;
+}
+
+// The display name to join under. joinNameFromRouting decides it from the routed
+// instance (see instance-routing.js — a profile-matched name is an ADDRESS and
+// must not overwrite that profile's own name); only when routing says nothing do
+// we fall back to the cached configured name / env default.
+async function displayNameForJoin(argName, routed) {
+  return joinNameFromRouting(argName, routed) || (await resolveBotName(null));
 }
 
 const server = new McpServer({
@@ -1398,7 +1408,7 @@ server.tool(
   "start_call",
   "Start a BRAND-NEW call: creates a fresh Google Meet that anyone with the link can join, sends the bot into it, and opens the user's own browser to it. This is the /call command, and it mirrors the app's \"Call <bot> now\" button. Use it when there is no existing call — to put the bot into a call that ALREADY exists, use join_call instead. If the user is NOT at the machine running the app — driving you from a phone, or from a remote session — pass open_browser: false, and you will get the meeting link back to hand them.",
   {
-    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance."),
+    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance, or the one this session is pinned to."),
     open_browser: z.boolean().optional().describe("Whether to open a browser to the meeting ON THE MACHINE RUNNING THE APP. Default true, which is right when the user is sitting at it. Pass false when they are remote (on their phone, in a remote session): no stray tab opens on the unattended desktop, and the response includes the join link so you can give it to them."),
   },
   async ({ bot_name, open_browser }) => {
@@ -1452,7 +1462,7 @@ server.tool(
   "start_recording",
   "Record the current call to disk — one audio file per track (the bot's own voice plus each remote participant's audio, which Meet sends separately) PLUS a video track of the bot's own Meet view, with a manifest that names tracks and time-aligns them. Once recording stops, audio and video are automatically muxed into one playable call-recording.mp4. A small visible status window (elapsed time + Stop button) appears while recording is active — that's expected. Requires an active call. Recording can be started (and stopped, via stop_recording) at ANY point during a live call, not just at launch. Auto-runs on every call when the recordCallAudio pref / VIBECONF_RECORD_CALL is set; this tool starts it on demand otherwise.",
   {
-    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance."),
+    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance, or the one this session is pinned to."),
   },
   async ({ bot_name }) => {
     try {
@@ -1486,7 +1496,7 @@ server.tool(
   "stop_recording",
   "Stop the call recording started by start_recording (or by the recordCallAudio pref) — finalizes the per-track audio + video files and manifest, then automatically muxes them into one playable call-recording.mp4. Returns where they were saved. Can be called at any point mid-call (not just at the end). Recording also stops automatically when the bot leaves the call.",
   {
-    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance."),
+    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance, or the one this session is pinned to."),
   },
   async ({ bot_name }) => {
     try {
@@ -2627,7 +2637,7 @@ server.tool(
 // --- list_call_instances ---
 server.tool(
   "list_call_instances",
-  "List the Vibeconferencing app instances (profiles) currently running on this machine — each is a separate bot on its own local-server port. Returns profile name, port, bot name, and call status. join_call's bot_name selects the instance by PROFILE name (so `/join-call <code> Alice` drives the 'Alice' profile's app). Use this to see what you can target, or when join_call reports the name is ambiguous/not found.",
+  "List the Vibeconferencing app instances (profiles) currently running on this machine — each is a separate bot on its own local-server port. Returns profile name, port, bot name, and call status. join_call's bot_name selects the instance by PROFILE name (so `/join-call <code> alice2` drives the 'alice2' profile's app, joining under that profile's own display name). Use this to see what you can target, or when join_call reports the name is ambiguous/not found.",
   {},
   async () => {
     const instances = await discoverInstances();
@@ -2646,7 +2656,7 @@ server.tool(
   "Tell the Vibeconferencing app to join a call — a Google Meet OR a Slack huddle. Use this when the app is running but idle. For Meet, pass the meet code; the app navigates and joins. For Slack, pass the huddle URL (app.slack.com/client/<team>/<channel>); the app switches to the Slack provider and auto-joins the huddle.",
   {
     room_id: z.string().describe("Meet code (e.g. abc-defg-hij) OR a Slack huddle URL (https://app.slack.com/client/<team>/<channel>)."),
-    bot_name: z.string().optional().describe("Bot display name in Meet. Omit to use the bot name configured for this MCP instance (set via the app's panel or VIBECONF_BOT_NAME env). Only pass this to explicitly override — don't pass a literal default like 'Unnamed bot', that overrides the user's preference."),
+    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running (see list_call_instances) — the profile keeps its own display name, so `/join-call <code> alice2` joins as whatever alice2 is named. If the name matches no profile and only one instance is running, it is used as a one-off Meet display name instead. Omit to use the sole running instance, or the one this session is pinned to, under its configured name — don't pass a literal default like 'Unnamed bot', that overrides the user's preference."),
     force: z.boolean().optional().describe("Rebuild the session even if the bot is already in this call. Default false, which makes a repeat join a harmless no-op. Only pass true when the live session is genuinely wedged and you mean to drop and rejoin — it tears down the working call. It also skips the same-name collision check."),
   },
   async ({ room_id, bot_name, force }) => {
@@ -2659,7 +2669,7 @@ server.tool(
       const routedNote = routed.instance
         ? ` (profile "${routed.instance.profile}" on port ${routed.instance.port})`
         : "";
-      const joinedBotName = await resolveBotName(bot_name);
+      const joinedBotName = await displayNameForJoin(bot_name, routed);
       // If the lock is set but the bot name changed, check whether the
       // previous call is actually still in progress. The local-server is
       // the source of truth — handles every call-end path (explicit

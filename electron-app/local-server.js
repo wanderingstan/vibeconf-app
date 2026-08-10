@@ -245,6 +245,14 @@ class LocalServer {
       onModel: (model) => {
         console.log(ts(), `🧠 [agent] model=${model}`);
       },
+      // Per-turn context size, read off the driving session's own usage report
+      // (#345). `input` is the full prompt the model processed for the turn —
+      // fresh + cache reads + cache writes — so this is the direct test of the
+      // context-growth-slows-replies hypothesis; latency-audit.py buckets
+      // D-claude against it.
+      onUsage: (u) => {
+        console.log(ts(), `📊 [context] input=${u.input} (fresh=${u.fresh} cacheRead=${u.cacheRead} cacheWrite=${u.cacheCreate}) output=${u.output}`);
+      },
     });
 
     // Room state (single room — the active call)
@@ -1277,6 +1285,9 @@ class LocalServer {
         if (last && last !== prevLast) this._onAgentActivity(last);
       },
       onModel: (model) => { console.log(ts(), `🧠 [agent] model=${model}`); },
+      onUsage: (u) => {
+        console.log(ts(), `📊 [context] input=${u.input} (fresh=${u.fresh} cacheRead=${u.cacheRead} cacheWrite=${u.cacheCreate}) output=${u.output}`);
+      },
     });
     this._agentSource.bind();
     this._streamBindNoted = false;
@@ -3125,6 +3136,16 @@ class LocalServer {
     }
 
     const response = this._buildResponse(waiter.since, waiter.bot, waiter.startTime);
+    // Size of the variable part of what this round hands the agent (#12): the
+    // MCP layer wraps these entries in fixed prose, so entry chars are the
+    // per-round payload trend. A snowballing re-delivery bug shows up here as
+    // entries/chars climbing round over round; the 📊 [context] marker carries
+    // the full context size the model actually processed.
+    {
+      const respEntries = (response.transcript && response.transcript.entries) || [];
+      const respChars = respEntries.reduce((n, e) => n + String(e.text || '').length, 0);
+      console.log(ts(), `📦 [payload] round → ${respEntries.length} entries, ${respChars} chars, reason=${reason}`);
+    }
     // Tag so the MCP layer / skill know this is a "bank and loop, do NOT speak"
     // surface rather than a real turn.
     if (reason === 'background_tick') response.backgroundTick = true;

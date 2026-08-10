@@ -79,7 +79,7 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, extraRoutes } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onChromeShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScreenshareScroll, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onScreenshareClick, onScreenshareType, onScreenshareReadPage, onScreenshareEval, onScreenshareFind, onScreenshareReadConsole, onScreenshareReadNetwork, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
     // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
     // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
@@ -111,17 +111,17 @@ class LocalServer {
     this.getTakenBotNames = getTakenBotNames || (() => []);
     this.onEndSession = onEndSession || (() => {});
     this.onShareWhiteboard = onShareWhiteboard || (() => {});
-    this.onShareTab = onShareTab || (() => {}); // POC (share-agent-tab)
+    this.onChromeShareTab = onChromeShareTab || (() => {}); // POC (share-agent-tab)
     this.onStopSharing = onStopSharing || (() => {});
     this.onJoinCall = onJoinCall || (() => {});
     this.onListFonts = onListFonts || (async () => []);
     this.onJoinSlack = onJoinSlack || (() => {});
     this.onLoadUrl = onLoadUrl || (() => {});
-    this.onScrollShare = onScrollShare || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onScreenshareScroll = onScreenshareScroll || (async () => ({ ok: false, error: 'not implemented' }));
     this.onSetShareSize = onSetShareSize || (async () => ({ ok: false, error: 'not implemented' }));
     this.onSetShareTitleBar = onSetShareTitleBar || (async () => ({ ok: false, error: 'not implemented' }));
-    this.onShareClick = onShareClick || (async () => ({ ok: false, error: 'not implemented' }));
-    this.onShareType = onShareType || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onScreenshareClick = onScreenshareClick || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onScreenshareType = onScreenshareType || (async () => ({ ok: false, error: 'not implemented' }));
     this.onSetShareAudio = onSetShareAudio || (async () => ({ ok: false, error: 'not implemented' }));
     this.onSetCaptionLanguage = onSetCaptionLanguage || (async () => ({ ok: false, error: 'not implemented' }));
     this.onPlayAudio = onPlayAudio || (() => {});
@@ -130,7 +130,11 @@ class LocalServer {
     // browser. Backs the /call command, mirroring the panel's "Call <bot> now".
     this.onStartCall = onStartCall || (async () => ({ ok: false, code: 'unsupported' }));
     this.onRecord = onRecord || (async () => ({ ok: false, code: 'unsupported' })); // #209
-    this.onInspectDom = onInspectDom || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onScreenshareReadPage = onScreenshareReadPage || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onScreenshareEval = onScreenshareEval || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onScreenshareFind = onScreenshareFind || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onScreenshareReadConsole = onScreenshareReadConsole || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onScreenshareReadNetwork = onScreenshareReadNetwork || (async () => ({ ok: false, error: 'not implemented' }));
     this.onBotStateChange = onBotStateChange || (() => {}); // 'idle' | 'listening' | 'ticking' | 'thinking' | 'speaking' | 'yielding'
     this.onModeChange = onModeChange || (() => {});        // 'active' | 'passive' | 'silent'
     this.onCallStatusChange = onCallStatusChange || (() => {}); // see call-phase.js for the lifecycle
@@ -169,7 +173,7 @@ class LocalServer {
     this.getWebsiteUrl = getWebsiteUrl || (() => ''); // host where /room/:id renders
     // What URL is currently loaded in the whiteboard window? Surfaced so an
     // agent (or the panel) can confirm what's actually being shared — useful
-    // after update_whiteboard({url}) and scroll_share (#169).
+    // after update_whiteboard({url}) and screenshare_scroll (#169).
     this.getWhiteboardLoadedUrl = getWhiteboardLoadedUrl || (() => null);
     // The user's persistent panel/store botName preference (#212). Read live so
     // the MCP can resolve an omitted bot_name to the panel preference instead of
@@ -4423,8 +4427,8 @@ class LocalServer {
     }
 
     // Handle share/stop whiteboard commands
-    if (data.meta?.action === 'share-tab') { // POC (share-agent-tab)
-      this.onShareTab(data.meta.url, data.meta.appName);
+    if (data.meta?.action === 'chrome-share-tab') { // POC (share-agent-tab)
+      this.onChromeShareTab(data.meta.url, data.meta.appName);
       results.shareTab = { ok: true };
     }
     if (data.meta?.action === 'share-whiteboard') {
@@ -4467,9 +4471,9 @@ class LocalServer {
     }
 
     // Handle scroll-share command (scroll the shared whiteboard window)
-    if (data.meta?.action === 'scroll-share') {
-      const r = await this.onScrollShare({ direction: data.meta.direction, amount: data.meta.amount });
-      results.scrollShare = r || { ok: true };
+    if (data.meta?.action === 'screenshare-scroll') {
+      const r = await this.onScreenshareScroll({ direction: data.meta.direction, amount: data.meta.amount });
+      results.screenshareScroll = r || { ok: true };
     }
 
     // Handle set-share-audio — silence/restore the shared surface's sound
@@ -4483,15 +4487,15 @@ class LocalServer {
     }
 
     // Drive the shared board: click and type into whatever it is showing.
-    if (data.meta?.action === 'share-click') {
-      results.shareClick = await this.onShareClick({
+    if (data.meta?.action === 'screenshare-click') {
+      results.screenshareClick = await this.onScreenshareClick({
         selector: data.meta.selector, x: data.meta.x, y: data.meta.y,
         button: data.meta.button, clickCount: data.meta.clickCount,
       });
     }
 
-    if (data.meta?.action === 'share-type') {
-      results.shareType = await this.onShareType({
+    if (data.meta?.action === 'screenshare-type') {
+      results.screenshareType = await this.onScreenshareType({
         text: data.meta.text, key: data.meta.key,
         modifiers: data.meta.modifiers, selector: data.meta.selector,
       });
@@ -4510,13 +4514,36 @@ class LocalServer {
 
     // Handle inspect-dom command — read-only DOM extraction from the Meet view
     // or the shared whiteboard window, for debugging/introspection.
-    if (data.meta?.action === 'inspect-dom') {
-      results.inspectDom = await this.onInspectDom({
+    if (data.meta?.action === 'screenshare-read-page') {
+      results.screenshareReadPage = await this.onScreenshareReadPage({
         target: data.meta.target,
         selector: data.meta.selector,
         maxElements: data.meta.maxElements,
         maxChars: data.meta.maxChars,
       });
+    }
+
+    // Sandboxed JS eval against the share surface (#244).
+    if (data.meta?.action === 'screenshare-eval') {
+      results.screenshareEval = await this.onScreenshareEval({ expression: data.meta.expression });
+    }
+
+    // Locate an element on the share surface by description (#244).
+    if (data.meta?.action === 'screenshare-find') {
+      results.screenshareFind = await this.onScreenshareFind({
+        description: data.meta.description,
+        max_results: data.meta.maxResults,
+      });
+    }
+
+    // Read the share surface's buffered console messages (#244).
+    if (data.meta?.action === 'screenshare-read-console') {
+      results.screenshareReadConsole = await this.onScreenshareReadConsole({ limit: data.meta.limit });
+    }
+
+    // Read the share surface's buffered network requests (#244).
+    if (data.meta?.action === 'screenshare-read-network') {
+      results.screenshareReadNetwork = await this.onScreenshareReadNetwork({ limit: data.meta.limit });
     }
 
     // Handle set-mode command — persistent bot behavior mode

@@ -39,7 +39,7 @@ test('the rename flow re-shares the whiteboard after rejoining', () => {
 test('Step 3 warns that a share does not survive leaving', () => {
   const step3 = skill.slice(idx('## Step 3:'), idx('## Step 4:'));
   assert.match(step3, /does NOT survive leaving/);
-  assert.match(step3, /get_shared_screenshot/, 'give a way to check rather than guess');
+  assert.match(step3, /screenshare_screenshot/, 'give a way to check rather than guess');
   // The original rule must survive: re-sharing an already-presented board is
   // disruptive, so this is an exception, not a licence to share every step.
   assert.match(step3, /Once per call, not once per step/);

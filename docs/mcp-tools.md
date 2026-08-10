@@ -42,7 +42,23 @@ All tools accept an optional `room_id` argument. If omitted, the MCP server uses
 | **`update_whiteboard`** | Set whiteboard content. Supports markdown + Mermaid. Can also load an arbitrary URL (website, localhost app, dashboard) via the `url` field instead of `content`. Pass `image_path` (absolute) to embed a local image — it gets registered with the local server and embedded automatically. |
 | **`share_whiteboard`** | Start screen-sharing the whiteboard window into Meet. Optional flag to share the whole screen instead. |
 | **`stop_sharing`** | Stop screen-sharing. |
-| **`scroll_share`** | Scroll the content currently being shared. Useful when a long URL is loaded. `direction: down/up/top/bottom`. Only affects shared URLs, not markdown content. |
+
+## Screen share manipulation (`screenshare_*` / `chrome_*`)
+
+Two different automation targets: `screenshare_*` tools manipulate the bot's own Electron share surface (whiteboard, or any URL loaded into it) directly. `chrome_*` tools hand a real Chrome tab off to the Claude-in-Chrome extension, which then owns manipulation of that tab.
+
+| Tool | What |
+|---|---|
+| **`screenshare_scroll`** | Scroll the content currently being shared. Useful when a long URL is loaded. `direction: down/up/top/bottom`. Only affects shared URLs, not markdown content. |
+| **`screenshare_click`** | Click inside the shared surface — a real mouse event. Prefer a `selector` (found via `screenshare_read_page`) over raw `x`/`y`. |
+| **`screenshare_type`** | Type into the shared surface — real key events. Pass `text` or a single `key`, optional `modifiers`, optional `selector` to focus a field first. |
+| **`screenshare_read_page`** | Read the live DOM of the bot's Meet call or its share surface — returns matched elements' outerHTML. Read-only. |
+| **`screenshare_screenshot`** | Capture a screenshot of the bot's own shared screen (what participants are actually seeing). |
+| **`screenshare_find`** | Locate an element on the share surface by a plain-language description instead of a CSS selector. Returns ranked candidates with a selector (if it has an id) and center x/y. |
+| **`screenshare_eval`** | Run JavaScript in the share surface and return the result. Sandboxed to that page's own context. |
+| **`screenshare_read_console`** | Read recent console messages captured from the share surface (buffered continuously while something is shared). |
+| **`screenshare_read_network`** | Read recent network requests captured from the share surface (buffered continuously while something is shared). |
+| **`chrome_share_tab`** | Share a specific Chrome tab (by URL) into the call, live. macOS only for now. Once shared, manipulation is via the `mcp__claude-in-chrome__*` tools, not this server. |
 
 ## Avatar & camera
 

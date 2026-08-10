@@ -1664,7 +1664,7 @@ server.tool(
   startShareHandler
 );
 
-// --- share_tab (POC: share the tab you're browsing) ---
+// --- chrome_share_tab (POC: share the tab you're browsing) ---
 // The SAME agent drives a Chrome tab (via the claude-in-chrome extension) and
 // this bot, so it already knows the tab's URL — pass it here. The app activates
 // that tab and screen-shares its window into the call, live. Reuses the
@@ -1674,7 +1674,7 @@ async function shareTabHandler({ room_id, url, app_name }) {
   // is macOS-only for now. On Windows/Linux, fail LOUD and CLEAR (not with a
   // cryptic "osascript not found") and point at the portable alternatives.
   if (process.platform !== "darwin") {
-    return { content: [{ type: "text", text: "Sharing a specific browser tab (share_tab) is macOS-only right now — it uses AppleScript to find and isolate the tab, which Windows/Linux don't support yet. On this platform, tell the user and use start_share with share_type 'screen' to share the whole screen, or the whiteboard, instead." }] };
+    return { content: [{ type: "text", text: "Sharing a specific browser tab (chrome_share_tab) is macOS-only right now — it uses AppleScript to find and isolate the tab, which Windows/Linux don't support yet. On this platform, tell the user and use start_share with share_type 'screen' to share the whole screen, or the whiteboard, instead." }] };
   }
   const roomId = room_id || ROOM_ID;
   if (!roomId) return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
@@ -1684,7 +1684,7 @@ async function shareTabHandler({ room_id, url, app_name }) {
   const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(botSyncPayload(BOT_NAME, { meta: { action: "share-tab", url, appName: app_name } })),
+    body: JSON.stringify(botSyncPayload(BOT_NAME, { meta: { action: "chrome-share-tab", url, appName: app_name } })),
   });
   const data = await resp.json();
   if (!data.success) return { content: [{ type: "text", text: `Error: ${data.error || "Failed to share tab"}` }] };
@@ -1700,7 +1700,7 @@ async function shareTabHandler({ room_id, url, app_name }) {
   return { content: [{ type: "text", text: "Share request sent but the app isn't presenting yet — the tab may not be open in Chrome, or the Meet UI needs focus. Tell the user." }] };
 }
 server.tool(
-  "share_tab",
+  "chrome_share_tab",
   "Share a SPECIFIC browser tab into the Google Meet by its URL — ideal for showing the room the exact page you're browsing with the Chrome tools. Pass the tab's `url`; the app finds that tab in Chrome, makes it active, and screen-shares its window live (participants see it update as you navigate). Prefer this over start_share('screen') when you want to present one page rather than the whole desktop. macOS only for now (uses AppleScript to locate the tab); Windows support tracked separately.",
   {
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
@@ -1752,9 +1752,9 @@ server.tool(
   }
 );
 
-// --- scroll_share ---
+// --- screenshare_scroll ---
 server.tool(
-  "scroll_share",
+  "screenshare_scroll",
   "Scroll the content currently being screen-shared into the call — useful when you've loaded a long website (via update_whiteboard with a url) or posted markdown longer than the viewport and want to move down. Scrolls smoothly. Direction: 'down'/'up' move ~one screenful, 'top'/'bottom' jump to the ends. Works on whatever is in the share, URL or markdown alike.",
   {
     direction: z.enum(["down", "up", "top", "bottom"]).optional().describe("Scroll direction. Default: down."),
@@ -1770,11 +1770,11 @@ server.tool(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
-        meta: { action: "scroll-share", direction, amount },
+        meta: { action: "screenshare-scroll", direction, amount },
       })),
     });
     const data = await resp.json();
-    const r = data.results?.scrollShare;
+    const r = data.results?.screenshareScroll;
     if (r?.ok) {
       return { content: [{ type: "text", text: `Scrolled ${direction || 'down'}.` }] };
     }
@@ -1841,10 +1841,10 @@ server.tool(
   }
 );
 
-// --- click_share ---
+// --- screenshare_click ---
 server.tool(
-  "click_share",
-  "Click inside whatever the bot is screen-sharing — a real mouse event, so the page reacts exactly as it would to a person. Use it to drive an app on the board: press a button, open a menu, follow a link, tick a checkbox. PREFER selector over x/y: pass a CSS selector and the click lands on that element's centre, which you can find with inspect_dom. Raw x/y is for content with no addressable elements (a canvas, a map, an embedded viewer) — and note those coordinates are CSS pixels IN THE PAGE, which are NOT screenshot pixels: get_shared_screenshot is 2x on a Retina host, so halve what you measure there. Whatever you click, the room sees it happen.",
+  "screenshare_click",
+  "Click inside whatever the bot is screen-sharing — a real mouse event, so the page reacts exactly as it would to a person. Use it to drive an app on the board: press a button, open a menu, follow a link, tick a checkbox. PREFER selector over x/y: pass a CSS selector and the click lands on that element's centre, which you can find with screenshare_read_page. Raw x/y is for content with no addressable elements (a canvas, a map, an embedded viewer) — and note those coordinates are CSS pixels IN THE PAGE, which are NOT screenshot pixels: screenshare_screenshot is 2x on a Retina host, so halve what you measure there. Whatever you click, the room sees it happen.",
   {
     selector: z.string().optional().describe("CSS selector to click, e.g. 'button.submit', '#next', 'a[href=\"/docs\"]'. Clicks the element's centre and scrolls it into view first. Preferred over x/y."),
     x: z.number().optional().describe("X in CSS pixels within the shared page. Only when no selector fits."),
@@ -1863,21 +1863,21 @@ server.tool(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
-        meta: { action: "share-click", selector, x, y, button, clickCount: double ? 2 : 1 },
+        meta: { action: "screenshare-click", selector, x, y, button, clickCount: double ? 2 : 1 },
       })),
     });
     const data = await resp.json();
-    const r = data.results?.shareClick;
+    const r = data.results?.screenshareClick;
     if (r?.ok) {
-      return { content: [{ type: "text", text: `Clicked ${r.selector ? r.selector + " " : ""}at (${r.x}, ${r.y}). Check the result with get_shared_screenshot or inspect_dom.` }] };
+      return { content: [{ type: "text", text: `Clicked ${r.selector ? r.selector + " " : ""}at (${r.x}, ${r.y}). Check the result with screenshare_screenshot or screenshare_read_page.` }] };
     }
     return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "Failed to click"}` }] };
   }
 );
 
-// --- type_share ---
+// --- screenshare_type ---
 server.tool(
-  "type_share",
+  "screenshare_type",
   "Type into whatever the bot is screen-sharing — real key events, so autocomplete, validation and keyboard shortcuts all behave normally. Pass text to type it, or key to press a single named key (Enter, Tab, Escape, Backspace, ArrowDown, Home...). Add modifiers for a shortcut (['cmd'] + text 'a' selects all). Pass selector to focus a field first — without it keys go to whatever the page already has focused, which for a freshly loaded page is nothing, and the text vanishes. A newline inside text presses Enter, so you can fill a field and submit in one call. The room sees every keystroke land.",
   {
     text: z.string().optional().describe("Text to type, character by character. A \n presses Enter."),
@@ -1894,14 +1894,14 @@ server.tool(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
-        meta: { action: "share-type", text, key, modifiers, selector },
+        meta: { action: "screenshare-type", text, key, modifiers, selector },
       })),
     });
     const data = await resp.json();
-    const r = data.results?.shareType;
+    const r = data.results?.screenshareType;
     if (r?.ok) {
       const what = r.key ? `Pressed ${r.key}` : `Typed ${JSON.stringify(r.typed)}`;
-      return { content: [{ type: "text", text: `${what}${r.selector ? " into " + r.selector : ""}. Check the result with get_shared_screenshot or inspect_dom.` }] };
+      return { content: [{ type: "text", text: `${what}${r.selector ? " into " + r.selector : ""}. Check the result with screenshare_screenshot or screenshare_read_page.` }] };
     }
     return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "Failed to type"}` }] };
   }
@@ -1938,9 +1938,9 @@ server.tool(
   }
 );
 
-// --- inspect_dom ---
+// --- screenshare_read_page ---
 server.tool(
-  "inspect_dom",
+  "screenshare_read_page",
   "Inspect the live DOM of the bot's Google Meet call, or of whatever it's currently screen-sharing into the call — returns the matched elements' outerHTML. Read-only. Use it to debug what's actually on screen: locate a modal and its dismiss button, find why a share rendered blank, or check Meet's UI state. Pair with get_call_screenshot (pixels) for a fuller picture.",
   {
     selector: z.string().describe("CSS selector to query, e.g. '[role=dialog]', 'button', '.some-class'. Defaults to 'body'."),
@@ -1960,11 +1960,11 @@ server.tool(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
-        meta: { action: "inspect-dom", target: tgt, selector: sel, maxElements: max_elements, maxChars: max_chars },
+        meta: { action: "screenshare-read-page", target: tgt, selector: sel, maxElements: max_elements, maxChars: max_chars },
       })),
     });
     const data = await resp.json();
-    const r = data.results?.inspectDom;
+    const r = data.results?.screenshareReadPage;
     if (!r) {
       return { content: [{ type: "text", text: `Error: ${data.error || "No response from app"}` }] };
     }
@@ -1977,6 +1977,131 @@ server.tool(
     const header = `Matched ${r.total} element(s) for '${sel}' in the ${tgt} DOM; showing ${r.returned}:`;
     const body = r.html.map((h, i) => `--- [${i + 1}] ---\n${h}`).join("\n\n");
     return { content: [{ type: "text", text: `${header}\n\n${body}` }] };
+  }
+);
+
+// --- screenshare_find ---
+server.tool(
+  "screenshare_find",
+  "Locate an element in the share surface by a natural-language description instead of a CSS selector — 'the submit button', 'the search box', 'the second result link'. Returns candidate matches ranked by how well they match, each with a selector (when the element has an id) and its center x/y (for screenshare_click when no selector is available, e.g. a canvas overlay). Read-only. Use this before screenshare_click/screenshare_type when you don't already know the selector.",
+  {
+    description: z.string().describe("What to find, in plain language, e.g. 'the Sign In button' or 'the email input field'."),
+    max_results: z.number().optional().describe("Max candidates to return (default 5, max 20)."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ description, max_results, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
+        meta: { action: "screenshare-find", description, maxResults: max_results },
+      })),
+    });
+    const data = await resp.json();
+    const r = data.results?.screenshareFind;
+    if (!r?.ok) {
+      return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "find failed"}` }] };
+    }
+    if (!r.matches.length) {
+      return { content: [{ type: "text", text: `No elements matched '${description}'.` }] };
+    }
+    const body = r.matches.map((m, i) =>
+      `[${i + 1}] <${m.tag}>${m.ariaLabel ? ` aria-label="${m.ariaLabel}"` : ""}${m.selector ? ` selector="${m.selector}"` : ""} at (${m.x}, ${m.y}), ${m.width}x${m.height} — "${m.text}"`
+    ).join("\n");
+    return { content: [{ type: "text", text: `${r.matches.length} match(es) for '${description}':\n\n${body}` }] };
+  }
+);
+
+// --- screenshare_eval ---
+server.tool(
+  "screenshare_eval",
+  "Run JavaScript in the share surface (whatever's currently being screen-shared) and return the result. Sandboxed to that page's own context — it cannot reach the app or the OS. Use it for anything the other screenshare_* tools don't cover directly: reading a value off the page (localStorage, a global variable), computing something from the DOM, or driving an app via its own JS API. The room does not see this happen (unlike screenshare_click/screenshare_type) — only its visible side effects, if any.",
+  {
+    expression: z.string().describe("JavaScript to evaluate, e.g. 'document.title' or '(() => { ...; return x; })()'. The last expression's value is returned; must be JSON-serializable (or a Promise that resolves to one)."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ expression, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
+        meta: { action: "screenshare-eval", expression },
+      })),
+    });
+    const data = await resp.json();
+    const r = data.results?.screenshareEval;
+    if (!r?.ok) {
+      return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "eval failed"}` }] };
+    }
+    return { content: [{ type: "text", text: `Result:\n${JSON.stringify(r.result, null, 2)}` }] };
+  }
+);
+
+// --- screenshare_read_console ---
+server.tool(
+  "screenshare_read_console",
+  "Read recent console messages (log/warn/error/info) from the share surface — buffered continuously while something is shared, so you can call this AFTER a click/type/eval to see what it triggered, not just at the moment it happened. Read-only. Use it to debug a web app you're driving on the board: did that click throw, is a script failing to load.",
+  {
+    limit: z.number().optional().describe("Max most-recent messages to return (default 50, max 200)."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ limit, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
+        meta: { action: "screenshare-read-console", limit },
+      })),
+    });
+    const data = await resp.json();
+    const r = data.results?.screenshareReadConsole;
+    if (!r?.ok) {
+      return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "no console log available"}` }] };
+    }
+    if (!r.returned) {
+      return { content: [{ type: "text", text: "No console messages captured yet." }] };
+    }
+    const body = r.entries.map(e => `[${e.timestamp}] ${e.level.toUpperCase()}: ${e.message}`).join("\n");
+    return { content: [{ type: "text", text: `Showing ${r.returned} of ${r.total} captured message(s):\n\n${body}` }] };
+  }
+);
+
+// --- screenshare_read_network ---
+server.tool(
+  "screenshare_read_network",
+  "Read recent network requests (method, URL, status, timing) made by the share surface — buffered continuously while something is shared. Read-only. Use it to debug a web app on the board: did that API call succeed, is a resource 404ing, how long did a request take.",
+  {
+    limit: z.number().optional().describe("Max most-recent requests to return (default 50, max 200)."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ limit, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
+        meta: { action: "screenshare-read-network", limit },
+      })),
+    });
+    const data = await resp.json();
+    const r = data.results?.screenshareReadNetwork;
+    if (!r?.ok) {
+      return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "no network log available"}` }] };
+    }
+    if (!r.returned) {
+      return { content: [{ type: "text", text: "No network requests captured yet." }] };
+    }
+    const body = r.entries.map(e =>
+      `[${e.timestamp}] ${e.method} ${e.url} → ${e.status ?? `ERROR (${e.error})`}${e.durationMs != null ? ` (${e.durationMs}ms)` : ""}`
+    ).join("\n");
+    return { content: [{ type: "text", text: `Showing ${r.returned} of ${r.total} captured request(s):\n\n${body}` }] };
   }
 );
 
@@ -2090,7 +2215,7 @@ server.tool(
 // --- get_call_screenshot ---
 server.tool(
   "get_call_screenshot",
-  "Capture a screenshot of the current Meet view as the bot sees it — participant tiles, names, mic icons, who's speaking, captions, ANOTHER participant's shared screen, and the surrounding Google Meet chrome — saved to a temporary file. Returns the absolute path to the PNG. Use this for visual context about what's happening in the call. IMPORTANT: this is the Meet view, so it does NOT show the bot's OWN screen share — Meet never shows you your own presentation. To see what YOU are presenting (your shared whiteboard), use get_shared_screenshot instead. After getting the path, read the file with your normal image-reading tool to look at it.",
+  "Capture a screenshot of the current Meet view as the bot sees it — participant tiles, names, mic icons, who's speaking, captions, ANOTHER participant's shared screen, and the surrounding Google Meet chrome — saved to a temporary file. Returns the absolute path to the PNG. Use this for visual context about what's happening in the call. IMPORTANT: this is the Meet view, so it does NOT show the bot's OWN screen share — Meet never shows you your own presentation. To see what YOU are presenting (your shared whiteboard), use screenshare_screenshot instead. After getting the path, read the file with your normal image-reading tool to look at it.",
   {
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
@@ -2108,9 +2233,9 @@ server.tool(
   }
 );
 
-// --- get_shared_screenshot ---
+// --- screenshare_screenshot ---
 server.tool(
-  "get_shared_screenshot",
+  "screenshare_screenshot",
   "Capture a screenshot of the bot's OWN shared screen — the whiteboard it's currently presenting into the call — and save it to a temporary file. Returns the absolute path to the PNG. Use this to see what participants are actually seeing on your shared screen (get_call_screenshot only shows the Meet view, which can't show you your own share). Fails if you're not currently sharing. After getting the path, read the file with your normal image-reading tool to look at it.",
   {
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
@@ -2556,7 +2681,7 @@ server.tool(
     }
     const shareUrl = status.screenShareUrl || status.whiteboardLoadedUrl; // #177 rename; tolerate old field
     if (shareUrl) {
-      sections.push(`Currently sharing: ${shareUrl} (what's rendering in the screen share now, post-update_whiteboard / scroll_share)`);
+      sections.push(`Currently sharing: ${shareUrl} (what's rendering in the screen share now, post-update_whiteboard / screenshare_scroll)`);
     }
 
     // #244: surface the current avatar background so the bot can recall it

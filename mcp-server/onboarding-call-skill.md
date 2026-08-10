@@ -85,7 +85,7 @@ is still there but nothing is being presented, and `update_whiteboard` goes back
 to a screen no one can see. So after any rejoin, `share_whiteboard` again before the next
 step. See 4b.
 
-If you are ever unsure whether the board is actually up, `get_shared_screenshot` tells you
+If you are ever unsure whether the board is actually up, `screenshare_screenshot` tells you
 in one call. Prefer checking to guessing: the failure is silent in both directions, and a
 wrong guess costs either an invisible board or an interrupted one.
 
@@ -539,7 +539,7 @@ has a version that works with nothing installed:
   by hand. Plug in an image generator and I can do photographic stuff — and with a video
   model, short clips too."* That lands better than the photo would have, because they just
   watched you do the hard version.
-- 🌐 **Drive a live browser tab** (`share_tab`) needs the Claude-in-Chrome extension
+- 🌐 **Drive a live browser tab** (`chrome_share_tab`) needs the Claude-in-Chrome extension
   installed and connected. Without it the bot can still put a URL on the whiteboard, which
   is a fine demo in itself — just do not promise a driven, logged-in browser you cannot
   drive.

@@ -3416,44 +3416,78 @@ function shareWebContents() {
 // nothing across navigation by design — a fresh page gets a fresh overlay,
 // re-created lazily on the next click/type. Best-effort throughout: a failure
 // here must never break the click/type it's illustrating.
-const VC_OVERLAY_CSS = `
-#__vcCursor{position:fixed;left:0;top:0;z-index:2147483647;pointer-events:none;width:18px;height:22px;opacity:0;background-repeat:no-repeat;background-size:contain;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='18' height='22'%3E%3Cpath d='M1 1 L1 17 L5.5 13.2 L8.5 19.5 L11 18.3 L8 12 L14 12 Z' fill='white' stroke='black' stroke-width='1.3' stroke-linejoin='round'/%3E%3C/svg%3E");transition:left 130ms ease-out,top 130ms ease-out,opacity 200ms ease-out;}
-#__vcRipple{position:fixed;left:0;top:0;z-index:2147483646;pointer-events:none;width:26px;height:26px;margin-left:-13px;margin-top:-13px;border-radius:50%;border:2px solid #4285f4;opacity:0;transform:scale(0.4);}
-#__vcRipple.fire{animation:__vcRippleAnim 450ms ease-out;}
-@keyframes __vcRippleAnim{0%{opacity:0.9;transform:scale(0.4);}100%{opacity:0;transform:scale(1.7);}}
-#__vcHighlight{position:fixed;z-index:2147483645;pointer-events:none;border:2px solid #4285f4;border-radius:4px;opacity:0;box-shadow:0 0 0 3px rgba(66,133,244,0.25);transition:opacity 200ms ease-out;}
-`.trim();
-
-// Idempotent: safe to inline before every click/type, cheap when the overlay
-// nodes already exist (the common case).
+// Deliberately built WITHOUT a <style> tag or any external/data-URI resource:
+// a lot of real-world sites (banks, e-commerce, anything security-conscious —
+// Uber Eats among them) run a CSP that blocks inline stylesheets (style-src)
+// and/or data: image sources (img-src), which would make an injected
+// <style>-based overlay silently invisible — unstyled 0×0 divs, no error, no
+// signal anything went wrong. Direct CSSOM property assignment (el.style.foo
+// = ...) is NOT governed by style-src (it's a scripting API, not a
+// stylesheet), and clip-path with literal polygon() points draws the arrow
+// without loading anything, so it's unaffected by img-src too.
 function vcEnsureOverlayJs() {
   return `(() => {
-    if (!document.getElementById('__vcOverlayStyle')) {
-      const s = document.createElement('style');
-      s.id = '__vcOverlayStyle';
-      s.textContent = ${JSON.stringify(VC_OVERLAY_CSS)};
-      document.head.appendChild(s);
-    }
-    for (const id of ['__vcCursor', '__vcRipple', '__vcHighlight']) {
-      if (!document.getElementById(id)) {
-        document.documentElement.appendChild(Object.assign(document.createElement('div'), { id }));
-      }
-    }
+    if (window.__vcCursor) return;
+    const mk = (styles) => {
+      const el = document.createElement('div');
+      Object.assign(el.style, { position: 'fixed', left: '0px', top: '0px', pointerEvents: 'none' }, styles);
+      document.documentElement.appendChild(el);
+      return el;
+    };
+    // Sized and colored to read clearly at video-call resolution against ANY
+    // page background — a subtle white arrow was tried first and was
+    // basically invisible on light pages (#244 testing).
+    //
+    // The clip-path polygon below is the actual pointer shape (points taken
+    // from a standard arrow-cursor icon, viewBox 0-13 x 0-20: tip(0,0),
+    // (0,18), (6.9,14.5), (10.8,20), (14.6,19), (10.8,13.5), (20,13.5) —
+    // reduced to percentages of ITS OWN bounding box). The div's width:height
+    // (18:28 ≈ 0.64) matches that box's own ratio (13:20 = 0.65) — a prior
+    // attempt guessed dimensions instead of deriving them and the shape came
+    // out visibly squashed (#244 testing).
+    //
+    // box-shadow would give a glow too, but clip-path clips box-shadow along
+    // with the element — filter: drop-shadow() renders on the POST-CLIP
+    // shape instead, so it's the only way to glow around a clipped shape.
+    window.__vcCursor = mk({
+      zIndex: '2147483647', width: '18px', height: '28px', opacity: '0',
+      background: '#ff5a1f',
+      clipPath: 'polygon(0% 0%, 0% 90%, 34.6% 72.5%, 53.8% 100%, 73.1% 95%, 53.8% 67.5%, 100% 67.5%)',
+      filter: 'drop-shadow(0 0 1.5px #ffffff) drop-shadow(0 0 1.5px #ffffff) drop-shadow(0 0 6px rgba(255,90,31,0.9)) drop-shadow(0 0 11px rgba(255,90,31,0.6))',
+      transition: 'left 130ms ease-out, top 130ms ease-out, opacity 200ms ease-out',
+    });
+    window.__vcRipple = mk({
+      zIndex: '2147483646', width: '40px', height: '40px',
+      marginLeft: '-20px', marginTop: '-20px', borderRadius: '50%',
+      border: '4px solid #ff5a1f', boxShadow: '0 0 0 1px rgba(255,255,255,0.9)',
+      opacity: '0', transform: 'scale(0.4)',
+    });
+    window.__vcHighlight = mk({
+      zIndex: '2147483645', border: '3px solid #ff5a1f', borderRadius: '4px',
+      opacity: '0', boxShadow: '0 0 0 4px rgba(255,90,31,0.35), 0 0 0 1px rgba(255,255,255,0.9)',
+      transition: 'opacity 200ms ease-out',
+    });
   })();`;
 }
 
 // Move the arrow to (x, y) and fire a click ripple there. Coordinates are the
-// same CSS-pixel viewport space screenshare_click already resolves to.
+// same CSS-pixel viewport space screenshare_click already resolves to. Held
+// visible for 30s — even a couple of seconds read as an instant flash in
+// testing (#244); the arrow just marks "here's where the last click landed"
+// until the NEXT click/type moves it or the timer runs out, whichever first.
 function vcClickScript(x, y) {
   return `${vcEnsureOverlayJs()}
   (() => {
-    const c = document.getElementById('__vcCursor');
-    const r = document.getElementById('__vcRipple');
+    const c = window.__vcCursor, r = window.__vcRipple;
     c.style.left = ${JSON.stringify(x + 'px')}; c.style.top = ${JSON.stringify(y + 'px')}; c.style.opacity = '1';
+    r.style.transition = 'none';
     r.style.left = ${JSON.stringify(x + 'px')}; r.style.top = ${JSON.stringify(y + 'px')};
-    r.classList.remove('fire'); void r.offsetWidth; r.classList.add('fire');
+    r.style.opacity = '0.9'; r.style.transform = 'scale(0.4)';
+    void r.offsetWidth; // force a reflow so the next assignment actually transitions
+    r.style.transition = 'opacity 700ms ease-out, transform 700ms ease-out';
+    r.style.opacity = '0'; r.style.transform = 'scale(1.8)';
     clearTimeout(window.__vcFadeTimer);
-    window.__vcFadeTimer = setTimeout(() => { c.style.opacity = '0'; }, 900);
+    window.__vcFadeTimer = setTimeout(() => { c.style.opacity = '0'; }, 30000);
   })();`;
 }
 
@@ -3466,7 +3500,7 @@ function vcTypeScript(selector) {
   return `${vcEnsureOverlayJs()}
   (() => {
     const el = ${sel} ? document.querySelector(${sel}) : document.activeElement;
-    const h = document.getElementById('__vcHighlight');
+    const h = window.__vcHighlight;
     if (!el || el === document.body || el === document.documentElement) return;
     const r = el.getBoundingClientRect();
     h.style.left = (r.left - 3) + 'px';
@@ -3475,7 +3509,7 @@ function vcTypeScript(selector) {
     h.style.height = (r.height + 6) + 'px';
     h.style.opacity = '1';
     clearTimeout(window.__vcHighlightTimer);
-    window.__vcHighlightTimer = setTimeout(() => { h.style.opacity = '0'; }, 900);
+    window.__vcHighlightTimer = setTimeout(() => { h.style.opacity = '0'; }, 30000);
   })();`;
 }
 
@@ -3877,6 +3911,9 @@ function createWhiteboardWindow(roomUrl) {
   // avoid accidentally picking the main app window (which holds the Meet
   // view) and triggering Meet's infinity-mirror warning (#158/#137).
   win.on('page-title-updated', (e) => { e.preventDefault(); });
+  // Captured now, not read off win.webContents in the 'closed' handler below —
+  // webContents is already destroyed by the time 'closed' fires.
+  const wcId = win.webContents.id;
   installShareNetworkListeners();
   installShareConsoleListener(win.webContents);
   win.loadURL(roomUrl);
@@ -3916,8 +3953,11 @@ function createWhiteboardWindow(roomUrl) {
       mainWindow?.removeListener('move', follow);
       mainWindow?.removeListener('resize', follow);
     } catch { /* main window already gone */ }
-    shareConsoleLogs.delete(win.webContents.id);
-    shareNetworkLogs.delete(win.webContents.id);
+    // webContents is already destroyed by the time 'closed' fires — read its
+    // id up front (wcId, captured above right after the window was created)
+    // rather than here.
+    shareConsoleLogs.delete(wcId);
+    shareNetworkLogs.delete(wcId);
     whiteboardWindow = null;
     shareCaptureMode = null;
     broadcastShareWindowState();

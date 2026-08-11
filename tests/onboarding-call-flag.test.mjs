@@ -86,8 +86,11 @@ test('the onboarding-call skill sets the flag once the walkthrough is actually d
   // skipped) — not in Step 1-4, where the walkthrough could still be
   // abandoned partway and shouldn't count as complete.
   const setIdx = step5.indexOf('set_preference("onboardingCallComplete"');
-  const step4hIdx = onboardingSkill.indexOf('### 4h. After-call routine');
-  assert.ok(setIdx > 0 && step4hIdx > 0);
+  // Matched by title, not by letter: the sub-step letters shift whenever one is
+  // inserted (this was 4h until "Personality / role" and "What you can do"
+  // arrived and pushed it to 4i).
+  const lastSubstepIdx = onboardingSkill.search(/^### 4[a-z]\. After-call routine\b/m);
+  assert.ok(setIdx > 0 && lastSubstepIdx > 0);
   // Step 5 starts after 4h in the file, so finding it inside the Step 5 slice
   // at all is sufficient proof of ordering; also check it isn't in 4a-4h.
   const walkthrough = onboardingSkill.slice(onboardingSkill.indexOf('## Step 4:'), onboardingSkill.indexOf('## Step 5:'));
@@ -95,14 +98,24 @@ test('the onboarding-call skill sets the flag once the walkthrough is actually d
     'must not be set mid-walkthrough, where a skip/abandon would leave it wrongly true');
 });
 
-test('re-running onboarding when already complete is explicitly deferred, not silently ignored', () => {
-  // #see the wizard rework conversation: re-running this skill on an
-  // already-onboarded bot should one day behave differently (an update, not a
-  // fresh start), but that behavior isn't designed yet. The skill should say
-  // so rather than silently doing nothing different — a future reader must be
-  // able to tell "not designed yet" from "forgotten".
+test('re-running onboarding when already complete offers a menu, not the whole walkthrough', () => {
+  // This was once a placeholder asserting the skill said "future work" — the
+  // behavior was deliberately left undesigned. It has since been designed: a
+  // re-run is someone changing ONE thing, and marching them through all of
+  // 4a-4i to get a new voice is the chore the menu exists to avoid. Assert the
+  // real behavior now, so the branch can't quietly rot back to a fresh start.
   assert.match(onboardingSkill, /onboardingCallComplete/);
-  assert.match(onboardingSkill, /future work/i);
+  const reRun = onboardingSkill.slice(
+    onboardingSkill.indexOf('If it\'s already `true`'),
+    onboardingSkill.indexOf('## Step 1:'),
+  );
+  assert.ok(reRun.length > 0, 'the skill must still branch on the flag already being true');
+  // Prose is hard-wrapped, so any phrase long enough to be worth pinning can
+  // have a newline anywhere inside it — match on whitespace, not on spaces.
+  assert.match(reRun, /menu\s+of\s+what\s+can\s+be\s+reconfigured/,
+    'a re-run opens with a menu, so they can name one item');
+  assert.match(reRun, /SAME\s+items\s+Step\s+4's\s+sub-steps\s+cover/,
+    'the menu must track Step 4, not drift into a second hand-maintained list');
 });
 
 test('a bot created via the "New bot" button is explicitly stamped false at creation', () => {

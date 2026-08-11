@@ -5859,6 +5859,11 @@ function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, cla
       // that simply stops updating is indistinguishable from a quiet call.
       if (error) source.push(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: `[agent failed to launch: ${error.code || error.message}]` }] } }) + '\n');
       else if (code) source.push(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: `[agent exited with code ${code}]` }] } }) + '\n');
+      // Hand the activity feed back to the transcript tail. A dead stream
+      // source otherwise blocks setAgentSession for the rest of the app's
+      // life, and the next terminal-driven session's model/context markers
+      // silently vanish (observed on the 2026-08-10 Seth call).
+      localServer.releaseStreamAgentSource();
     },
   });
   return true;

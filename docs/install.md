@@ -7,7 +7,7 @@ Vibeconferencing is macOS-only (Apple Silicon). Two install paths: a signed DMG 
 - macOS on Apple Silicon (M1/M2/M3/M4)
 - A Google account that can join the Meet calls you want the bot in
 - An MCP-speaking agent (Claude Code, Codex CLI, etc.) installed and working
-- Chrome or Brave (used by the Electron app's embedded Meet view — Safari/Firefox not supported)
+- Any browser for joining your own Meet. **Auto-detecting** your open call scans Chrome, Brave, and Safari tabs (`electron-app/main.js` `browserScanBlock`); Firefox can't be scanned (no AppleScript tab API) — paste the Meet link into the app instead. The bot's own Meet view renders inside the app (Electron), not in your browser.
 
 ## Install from DMG (recommended)
 

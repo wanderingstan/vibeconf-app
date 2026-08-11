@@ -57,6 +57,31 @@ function entryModel(entry) {
   return (model && model !== '<synthetic>') ? model : null;
 }
 
+// Token usage off an assistant entry, or null. `input` is the FULL prompt the
+// model processed for that turn — fresh tokens plus cache reads plus cache
+// writes — i.e. the per-round context size. This is the ground truth for "how
+// big is the prompt we hand the agent each round" (#345): the API reports it
+// per turn and the transcript already carries it; nothing else in the app can
+// see it. One API turn can span several JSONL entries (one per content block)
+// sharing the same message id and usage, so callers dedupe on `msgId`.
+function entryUsage(entry) {
+  if (!entry || entry.type !== 'assistant' || !entry.message) return null;
+  if (entry.message.model === '<synthetic>') return null;
+  const u = entry.message.usage;
+  if (!u) return null;
+  const fresh = u.input_tokens || 0;
+  const cacheRead = u.cache_read_input_tokens || 0;
+  const cacheCreate = u.cache_creation_input_tokens || 0;
+  return {
+    msgId: entry.message.id || null,
+    input: fresh + cacheRead + cacheCreate,
+    fresh,
+    cacheRead,
+    cacheCreate,
+    output: u.output_tokens || 0,
+  };
+}
+
 // One transcript JSONL entry -> 0..N display lines. An assistant turn can carry
 // both reasoning text and tool calls, so it may yield several lines.
 function formatEntry(entry) {
@@ -110,7 +135,7 @@ function formatEntry(entry) {
 }
 
 class TranscriptTailer {
-  constructor({ onLines, onModel } = {}) {
+  constructor({ onLines, onModel, onUsage } = {}) {
     this.path = null;
     this.sessionId = null;
     this.offset = 0;
@@ -119,8 +144,10 @@ class TranscriptTailer {
     this.watcher = null;
     this.poll = null;
     this.model = null;
+    this._usageMsgId = null;
     this.onLines = onLines || (() => {});
     this.onModel = onModel || (() => {});
+    this.onUsage = onUsage || (() => {});
   }
 
   // Point the tailer at a (new) transcript. Idempotent for the same path.
@@ -191,6 +218,10 @@ class TranscriptTailer {
         for (const l of formatEntry(entry)) { this.lines.push(l); changed = true; }
         const model = entryModel(entry);
         if (model && model !== this.model) { this.model = model; this.onModel(model); }
+        // Live entries only (not _seed): seeding replays history and would spam
+        // one stale 📊 line per past turn on every mid-session attach.
+        const usage = entryUsage(entry);
+        if (usage && usage.msgId !== this._usageMsgId) { this._usageMsgId = usage.msgId; this.onUsage(usage); }
       }
       if (this.lines.length > MAX_LINES) this.lines = this.lines.slice(-MAX_LINES);
       if (changed) this.onLines(this.getLines());
@@ -205,4 +236,4 @@ class TranscriptTailer {
   }
 }
 
-module.exports = { TranscriptTailer, formatEntry, entryModel, MAX_LINES };
+module.exports = { TranscriptTailer, formatEntry, entryModel, entryUsage, MAX_LINES };

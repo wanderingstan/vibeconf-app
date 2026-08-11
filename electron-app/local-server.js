@@ -79,11 +79,15 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, extraRoutes } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
     // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
     // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
     this.extraRoutes = extraRoutes || null;
+    // Where the bot's workdir (and its CLAUDE.md) lives — a thunk because
+    // Electron's userData path isn't known at construction in every caller.
+    // Optional: tests and headless embedders run without one.
+    this.getAgentWorkdir = getAgentWorkdir || (() => null);
     this.appVersion = appVersion || null;
     // Release (installed .app/DMG) vs running from source (pnpm dev). Surfaced so
     // both the human (panel) and an agent (no-room status) can tell which build
@@ -1548,7 +1552,26 @@ class LocalServer {
     // No agent driving means nobody to hand off TO. Matches the app-side gate in
     // beginAfterCallWorkOrTeardown so the two can't disagree about what happens.
     const hasAgent = !agentIsAbsent(this.agentState());
-    return { enabled: seconds > 0 && hasAgent, seconds: seconds > 0 && hasAgent ? seconds : 0 };
+    const enabled = seconds > 0 && hasAgent;
+    const plan = { enabled, seconds: enabled ? seconds : 0 };
+    // Ship the workdir CLAUDE.md's "## After the call" section with the plan.
+    // Only app-spawned agents cd into the workdir and load that file; a
+    // terminal-driven session never sees it, and without this it ends the
+    // session immediately ("nothing to do") — the Seth-call failure where the
+    // summary and log copy were silently skipped. Inlining the duties makes
+    // leave_call self-contained for every transport.
+    if (enabled) {
+      try {
+        const workdir = this.getAgentWorkdir();
+        if (workdir) {
+          plan.workdir = workdir;
+          const claudeMd = fs.readFileSync(path.join(workdir, 'CLAUDE.md'), 'utf-8');
+          const duties = require('./agent-workdir.js').afterCallSection(claudeMd);
+          if (duties) plan.duties = duties;
+        }
+      } catch { /* no workdir / no CLAUDE.md — the note falls back to pointing at it */ }
+    }
+    return plan;
   }
 
   // Is anyone driving this bot? See agent-liveness.js for why wait_for_speech's

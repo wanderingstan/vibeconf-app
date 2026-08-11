@@ -78,6 +78,28 @@ function perProfileSubset(config, appLevelKeys) {
   return out;
 }
 
+// Extract the "## After the call" section from a bot CLAUDE.md — heading
+// included, up to (not including) the next h2. Null when absent or blank.
+//
+// Exists because only app-spawned agents cd into the workdir and auto-load
+// CLAUDE.md; a terminal-driven session never sees it, and on the 2026-08-10
+// Seth call that meant the whole after-call checklist (summary, log copy) was
+// silently skipped — leave_call's note said "its CLAUDE.md says what that is"
+// to an agent with no CLAUDE.md in context. The local-server now ships this
+// section inside the afterCallWork plan so the MCP note can inline the actual
+// duties, whoever is driving.
+function afterCallSection(claudeMdText) {
+  const text = String(claudeMdText || '');
+  const m = /^## After the call[ \t]*$/m.exec(text);
+  if (!m) return null;
+  const rest = text.slice(m.index);
+  const next = /\n## /.exec(rest.slice(1)); // skip past the matched heading's own newline-less start
+  const section = (next ? rest.slice(0, next.index + 1) : rest).trim();
+  // A heading with no body is "no duties" — same as the section being absent.
+  const body = section.replace(/^## After the call[ \t]*\n?/, '').trim();
+  return body ? section : null;
+}
+
 // The starter CLAUDE.md seeded into the bot's agent dir (#305/#291). Because the
 // launched session cd's into that dir, Claude Code auto-loads this file as the
 // bot's standing instructions at the start of EVERY call — so it's the bot's
@@ -159,5 +181,5 @@ knowledge, the people it works with, things it should never do.
 
 module.exports = {
   agentDirFor, defaultBotSettings, withTrustedProject, isProjectTrusted, perProfileSubset,
-  defaultClaudeMd,
+  defaultClaudeMd, afterCallSection,
 };

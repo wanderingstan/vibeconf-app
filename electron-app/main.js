@@ -989,6 +989,9 @@ let triageEndpointDown = false;
 const localServer = new globalThis.LocalServer({
   appVersion: app.getVersion(),
   packaged: app.isPackaged, // release (installed .app/DMG) vs running from source
+  // The bot workdir, so afterCallWorkPlan can inline CLAUDE.md's after-call
+  // duties for sessions that don't run in that directory (terminal-driven).
+  getAgentWorkdir: () => require('./agent-workdir.js').agentDirFor(app.getPath('userData')),
 
   // Claude-ready feedback loop: a launched Claude session's SessionStart hook POSTs here
   // once it's up — which only happens when Claude Code is BOTH installed and signed in

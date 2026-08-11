@@ -174,3 +174,39 @@ test('reasoning reaches BOTH transports through the one normaliser', () => {
   src.push(frame({ type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'hmm', signature: 's' }] } }));
   assert.deepEqual(state.lines, ['💭 hmm']);
 });
+
+test('a DEAD stream agent releases the feed so the next session can bind', () => {
+  // The 2026-08-10 Seth call: the app-spawned agent's brief join exited, Stan
+  // drove the real call from a terminal, and the dead stream source kept
+  // winning setAgentSession's guard — model/context markers went dark for the
+  // rest of the call, silently (the guard's one-time notice had already
+  // fired). main's onExit now calls releaseStreamAgentSource(), which must
+  // hand the transport back to the transcript tail.
+  require('../electron-app/local-server.js');
+  const LocalServer = globalThis.LocalServer;
+  const s = new LocalServer({ port: 0 });
+
+  s.useStreamAgentSource();
+  assert.equal(s._agentSource.kind, 'stream');
+
+  s.releaseStreamAgentSource();
+  assert.equal(s._agentSource.kind, 'transcript', 'exit hands the feed back to the tail');
+
+  // And the next driving session's transcript bind must actually take.
+  const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');
+  const { tmpdir } = require('node:os');
+  const { join } = require('node:path');
+  const dir = mkdtempSync(join(tmpdir(), 'agent-activity-release-'));
+  const path = join(dir, 'transcript.jsonl');
+  writeFileSync(path, '');
+  s.setAgentSession({ sessionId: 'next', transcriptPath: path });
+  assert.equal(s._agentSource.kind, 'transcript');
+  assert.equal(s._agentSource.path, path, 'the terminal session binds where the dead stream used to squat');
+
+  // Idempotent: releasing when the tail already owns the feed is a no-op.
+  s.releaseStreamAgentSource();
+  assert.equal(s._agentSource.path, path, 'release without a stream source must not rebuild the tail');
+
+  s._agentSource.stop();
+  rmSync(dir, { recursive: true, force: true });
+});

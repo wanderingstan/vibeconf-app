@@ -653,10 +653,21 @@ function afterCallWorkNote(plan) {
   if (!plan || !plan.enabled) {
     return ' Your work here is done — exit the conversation loop.';
   }
+  // The bot's after-call duties live in the workdir CLAUDE.md, which only
+  // app-spawned agents auto-load (they cd into the workdir; a terminal-driven
+  // session runs wherever it was launched). The local-server therefore ships
+  // the actual "## After the call" section in the plan, and it is inlined
+  // here so EVERY transport sees the same checklist. On the 2026-08-10 Seth
+  // call the old "its CLAUDE.md says what that is" phrasing left a
+  // terminal-driven agent with nothing in context — it ended the session in
+  // 0.6s and the summary + log copy were silently skipped.
+  const duties = plan.duties
+    ? `Your after-call duties, from the bot's CLAUDE.md${plan.workdir ? ` (workdir: ${plan.workdir} — file paths below are relative to it)` : ''}:\n\n${plan.duties}\n\n`
+    : `Use them for whatever wrap-up this bot is meant to do — its CLAUDE.md says what that is (a summary, a receipt, notes filed somewhere)${plan.workdir ? `; if you don't have that file in context, read it at ${plan.workdir}/CLAUDE.md` : ''}.\n\n`;
   return ` You are now in AFTER-CALL WORK. You have up to ${plan.seconds} seconds, and you are still running.\n\n`
     + 'The call is over but its state is NOT gone: read_transcripts, read_whiteboard and get_room_info all still '
-    + 'work, and still describe the call that just ended. Use them for whatever wrap-up this bot is meant to do — '
-    + 'its CLAUDE.md says what that is (a summary, a receipt, notes filed somewhere).\n\n'
+    + 'work, and still describe the call that just ended. '
+    + duties
     + 'Do NOT call speak or send_chat: you have left the meeting, so nobody will hear or see it.\n\n'
     + 'Call end_session as soon as you are finished. That releases the app immediately instead of making it wait out '
     + 'the whole window. If there is nothing to do, call it now.';

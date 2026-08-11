@@ -119,6 +119,11 @@
       // when they all notice the same silence gap at once.
       this._tickTiltSign = 1;
       this._tickTiltMag = 1;
+      // Thinking sway envelope (#290) — see the render loop. 0 means "not
+      // swaying"; both are wall-clock stamps, so neither needs a value here
+      // beyond the falsy start.
+      this._swaySince = 0;
+      this._swayLeftAt = 0;
       // Seed persistent state from the module-level avatarState, NOT hardcoded
       // defaults. A camera can be created mid-call — e.g. turning the camera on
       // makes the host page re-acquire the video stream, spawning a fresh
@@ -465,10 +470,54 @@
       const speakScaleX = baseScale * (1 - speakOpen * 0.10); // slight squeeze
       const speakBounce = speakOpen * (emojiSize * 0.06);
       const speakTilt = this.speaking ? Math.sin(this.frameCount * 0.3) * 0.05 : 0;
-      // Thinking state: gentle side-to-side sway
-      const thinkSway = this.state === 'thinking'
-        ? Math.sin(t * 1.2) * 8
-        : 0;
+      // Thinking state: gentle side-to-side sway.
+      //
+      // #290 — "the animation into 🤔 has a jump." It did, and it was this line.
+      // The sway used to be `state === 'thinking' ? sin(t * 1.2) * 8 : 0` against
+      // the FREE-RUNNING clock `t`. That clock's phase has nothing to do with
+      // when the state changes, so at the instant the bot entered thinking the
+      // term went from exactly 0 to sin(whatever) * 8 — an arbitrary value
+      // anywhere in ±8px, applied as a horizontal translate. The head teleported
+      // sideways, on average ~5px, in a single frame. Leaving thinking snapped it
+      // back the same way. Twice per turn, every turn, which is exactly the
+      // "becomes jarring after a while" in the report.
+      //
+      // The fix is to make the sway both START and END at zero:
+      //
+      //   1. PHASE is anchored to the moment thinking began, so the first frame
+      //      is sin(0) = 0 — the face is exactly where it already was.
+      //   2. AMPLITUDE ramps in over SWAY_RAMP_MS, and ramps back out on exit
+      //      rather than being cut, so leaving is as smooth as arriving.
+      //
+      // Wall-clock rather than frameCount, like the tick pulse below: an occluded
+      // or throttled view drops frames, and a frame-counted envelope would then
+      // ramp in slow motion.
+      //
+      // 0.72 rad/s preserves the original rate exactly (frameCount * 0.02 * 1.2
+      // at 30fps), so the sway itself feels unchanged — only its edges do.
+      const SWAY_PX = 8;
+      const SWAY_RATE = 0.72;   // rad/s — the pre-#290 rate, kept deliberately
+      const SWAY_RAMP_MS = 400;
+      const swayNow = Date.now();
+      if (this.state === 'thinking') {
+        if (!this._swaySince) this._swaySince = swayNow;
+        this._swayLeftAt = 0;              // re-entered before the ramp-out finished
+      } else if (this._swaySince) {
+        if (!this._swayLeftAt) this._swayLeftAt = swayNow;
+        if (swayNow - this._swayLeftAt >= SWAY_RAMP_MS) {
+          this._swaySince = 0;             // fully faded; stop tracking
+          this._swayLeftAt = 0;
+        }
+      }
+      let thinkSway = 0;
+      if (this._swaySince) {
+        const elapsed = swayNow - this._swaySince;
+        const fadeIn = Math.min(1, elapsed / SWAY_RAMP_MS);
+        const fadeOut = this._swayLeftAt
+          ? Math.max(0, 1 - (swayNow - this._swayLeftAt) / SWAY_RAMP_MS)
+          : 1;
+        thinkSway = Math.sin((elapsed / 1000) * SWAY_RATE) * SWAY_PX * fadeIn * fadeOut;
+      }
       // Background-tick "noted that" pulse — a quick head-tilt + pop that eases
       // out over ~700ms when the avatar enters thinking (set in 'set-bot-state').
       // Framerate-robust via wall-clock. sin gives a smooth 0→1→0.

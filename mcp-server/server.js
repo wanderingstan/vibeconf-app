@@ -28,6 +28,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { resolveInstance, joinNameFromRouting } from "./instance-routing.js";
+import { parseMeetRoomId } from "./meet-room.js";
 
 let ROOM_ID = process.env.VIBECONF_ROOM_ID || "";
 let BOT_NAME = process.env.VIBECONF_BOT_NAME || "Unnamed bot";
@@ -2664,9 +2665,9 @@ server.tool(
 // --- join_call ---
 server.tool(
   "join_call",
-  "Tell the Vibeconferencing app to join a call — a Google Meet OR a Slack huddle. Use this when the app is running but idle. For Meet, pass the meet code; the app navigates and joins. For Slack, pass the huddle URL (app.slack.com/client/<team>/<channel>); the app switches to the Slack provider and auto-joins the huddle.",
+  "Tell the Vibeconferencing app to join a call — a Google Meet OR a Slack huddle. Use this when the app is running but idle. For Meet, pass the meet code OR the full Meet URL (either is accepted); the app navigates and joins. For Slack, pass the huddle URL (app.slack.com/client/<team>/<channel>); the app switches to the Slack provider and auto-joins the huddle.",
   {
-    room_id: z.string().describe("Meet code (e.g. abc-defg-hij) OR a Slack huddle URL (https://app.slack.com/client/<team>/<channel>)."),
+    room_id: z.string().describe("Meet code (e.g. abc-defg-hij), a full Meet URL (https://meet.google.com/abc-defg-hij, query string and all), OR a Slack huddle URL (https://app.slack.com/client/<team>/<channel>)."),
     bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running (see list_call_instances) — the profile keeps its own display name, so `/join-call <code> alice2` joins as whatever alice2 is named. If the name matches no profile and only one instance is running, it is used as a one-off Meet display name instead. Omit to use the sole running instance, or the one this session is pinned to, under its configured name — don't pass a literal default like 'Unnamed bot', that overrides the user's preference."),
     force: z.boolean().optional().describe("Rebuild the session even if the bot is already in this call. Default false, which makes a repeat join a harmless no-op. Only pass true when the live session is genuinely wedged and you mean to drop and rejoin — it tears down the working call. It also skips the same-name collision check."),
   },
@@ -2740,6 +2741,18 @@ server.tool(
         }
         return { content: [{ type: "text", text: `Couldn't join the Slack huddle: ${sdata.results?.join?.error || sdata.error || 'unknown error'}.` }] };
       }
+
+      // Meet: accept a pasted URL, not just the bare code (#314).
+      //
+      // The URL→code extraction has always existed, but only in the /join-call
+      // skill — so it covered Claude Code and nothing else. The raw tool is the
+      // front door for every other integrator (Codex, Cursor, hand-rolled
+      // clients), and a URL is what people actually have in their clipboard.
+      // Reassigning room_id here keeps the whole rest of the join (and the room
+      // id echoed back to the agent) on the canonical code.
+      const parsedRoom = parseMeetRoomId(room_id);
+      if (!parsedRoom.ok) return { content: [{ type: "text", text: parsedRoom.error }] };
+      room_id = parsedRoom.roomId;
 
       const resp = await vfetch(`${BASE_URL}/api/sync/${room_id}`, {
         method: "POST",

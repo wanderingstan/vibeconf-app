@@ -30,7 +30,11 @@ Parse `$ARGUMENTS` for the room. **Accept either a bare meet code (`xxx-xxxx-xxx
 
 **The name argument selects which PROFILE to drive.** Multiple Vibeconferencing app instances can run at once — each profile is its own bot (its own name, personality, and logins) on its own local-server port. The name you pass becomes `join_call`'s `bot_name`, and the MCP uses it to **route to the running app instance whose profile matches that name**. So `/join-call <code> Alice` drives the "Alice" profile's app regardless of which port the MCP started on. Call `list_call_instances` to see which profiles are currently running and targetable.
 
-**If no name is in `$ARGUMENTS`:** if exactly one app instance is running, it's used as-is (the name is then just the display name). If several are running, `join_call` returns the list of available profiles — pass one, or ask the user which to drive. Falls back to the configured `botName` preference (default: "Jimmy") for the display name when only one instance is running and no name is given.
+**A profile name is an address, not a display name.** When the name matches a running profile, the bot joins under **that profile's own configured name**, not the string you typed. So profiles `alice1`, `alice2` and `alice3` can all be named "Alice" in their panels, and `/join-call <code> alice2` puts "Alice" on the Meet tile. That's what lets the same character run several calls at once — one profile and one terminal per call, since a single instance holds a single call.
+
+Matching order: profile first, then display name, and only then (with a single instance running) as a one-off display-name override. A display name shared by several running instances is **refused** rather than guessed at — pass the profile name, since picking the wrong instance would yank it out of the call it's already in.
+
+**If no name is in `$ARGUMENTS`:** if exactly one app instance is running, it's used as-is (the name is then just the display name). If the session was launched by the app it's pinned to its own instance, which is used even when sibling profiles are running. Otherwise, with several running, `join_call` returns the list of available profiles — pass one, or ask the user which to drive. The display name falls back to that instance's configured `botName` preference (default: "Jimmy").
 
 > Note: a *profile* now IS the agent — its name, personality, and logins travel together. The older "load a persona/character from CLAUDE.md" model is being phased out in favor of the profile, so treat the name as the profile/agent to drive, not a separate persona.
 
@@ -58,6 +62,7 @@ Examples:
 - `/join-call https://meet.google.com/abc-defg-hij Alice` -> code `abc-defg-hij`, drive the "Alice" profile
 - `/join-call abc-defg-hij Alice` -> room code `abc-defg-hij`, drive the "Alice" profile
 - `/join-call Alice` -> auto-detect room, drive the "Alice" profile
+- `/join-call abc-defg-hij alice2` -> drive the "alice2" profile, joining as whatever alice2 is named (e.g. "Alice")
 - `/join-call https://app.slack.com/client/T0.../C0... Alice` -> join that **Slack huddle** with the "Alice" profile
 - `/join-call` -> auto-detect room; drives the sole running profile (or asks which, if several)
 

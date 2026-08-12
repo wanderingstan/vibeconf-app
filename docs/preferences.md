@@ -62,6 +62,7 @@ Live-tunable thresholds that shape the bot's conversational rhythm. All read on 
 | `captionDropoutGraceMs` | number | `2000` | Reserved for caption-dropout detection (#187); not currently wired into logic. |
 | `defaultSilenceSeconds` | number | `2` | Default silence threshold for `wait_for_speech` if the agent doesn't pass one. Higher = bot patiently lets users compose longer thoughts; lower = snappier. |
 | `defaultMaxWaitForSpeechSec` | number | `55` | Maximum seconds `wait_for_speech` long-polls before returning empty. Default just under typical HTTP timeouts. Raise only if you have a reason. |
+| `speakingDetectionMode` | string | `either` | Which per-participant speaking signal the DOM tracker's verdict comes from: `mutation` (count tile mutations, 3 in 1200ms — ~300-600ms late), `meter` (read Meet's mic meter as a level from `background-position-x` — flips on the first sample after onset), or `either` (OR of the two). Both signals always run and always log, so this only picks the verdict. A meter that hasn't been found or hasn't moved yet reports nothing and falls back to mutation counting, so no setting makes the tracker deafer. See #142. |
 
 **A/B testing different feels.** Set up two profiles with different values, switch with `--profile=<name>`, talk to each. Saved per-profile so swaps are durable.
 

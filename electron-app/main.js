@@ -9074,6 +9074,7 @@ async function _loadMeetURL(meetUrl) {
         body.startsWith('[bots-in-calls]') || body.startsWith('[captions]') ||
         body.startsWith('[chat]') || body.startsWith('[speaker-tracker]') ||
         body.startsWith('[speaker-health]') || body.startsWith('[caption-health]') ||
+        body.startsWith('[speaker-meter]') || body.startsWith('[meter-latency]') ||
         body.startsWith('[runway-avatar]') ||
         body.startsWith('[caption-stall]')) {
       if (level === 2) console.warn(message);

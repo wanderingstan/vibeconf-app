@@ -763,6 +763,32 @@ const PREFERENCES = {
       'arriving before the bot decides the captions have dropped out (and ' +
       'surfaces that to the agent as a warning). See issue #187.',
   },
+  speakingDetectionMode: {
+    type: 'string',
+    default: 'either',
+    enum: ['either', 'meter', 'mutation'],
+    enumLabels: {
+      either: 'Either signal (fastest rising edge)',
+      meter: 'Meter level only',
+      mutation: 'Mutation counting only (pre-#142)',
+    },
+    description:
+      'Which per-participant speaking signal the DOM tracker takes its verdict '
+      + 'from. Both always run and both are always logged, so this only picks the '
+      + 'verdict — the comparison keeps accruing whatever it is set to. '
+      + '"mutation" is the original: count tile mutations, 3 inside a 1200ms '
+      + 'window, which lands ~300-600ms after speech starts because Meet churns '
+      + 'the meter at 5-10Hz. "meter" reads the mic meter as a LEVEL — Meet '
+      + 'animates background-position-x across a sprite of bars, so one number '
+      + 'is the loudness — and can flip on the first sample after onset. '
+      + '"either" ORs them: earliest rising edge, and the mutation counter still '
+      + 'covers anything the meter misses. A meter that has not been found or '
+      + 'has not moved yet reports nothing and falls back to mutation counting, '
+      + 'so no setting here can make the tracker deafer than it was before the '
+      + 'meter signal existed. Watch [meter-latency] for the lead the meter '
+      + 'actually delivers and [speaker-health] mtr= for meters reading blind. '
+      + 'Read live (picked up on the tracker\'s 2s scan).',
+  },
   fastFloorDetection: {
     type: 'boolean',
     default: true,

@@ -20,7 +20,7 @@ const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEv
 const { CallRecordingSession } = require('./call-recorder.js');
 const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWindow } = require('./call-recording-window.js');
 const { mergeCallMedia } = require('./call-media-merge.js');
-const { evictStaleEventIds, selectEventToJoin, selectUpcomingMatches, matchesCalendarEvent, isEventUpcoming, msUntilStart, resolveMeetUrl: resolveCalendarMeetUrl } = require('./calendar-auto-join.js');
+const { evictStaleEventIds, selectEventToJoin, selectUpcomingMatches, matchesCalendarEvent, isEventUpcoming, msUntilStart, eventDedupeKey, resolveMeetUrl: resolveCalendarMeetUrl } = require('./calendar-auto-join.js');
 const { createMergeProgressWindow, closeMergeProgressWindow } = require('./call-recording-merge-window.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
 const {
@@ -7234,7 +7234,7 @@ allURLs`;
   // silence.
   let lastCalendarPollState = null;
 
-  // eventId -> Timeout handle for a join scheduled to fire at the event's
+  // eventDedupeKey -> Timeout handle for a join scheduled to fire at the event's
   // actual start time (see scheduleCalendarJoin below). Deliberately IN
   // MEMORY ONLY, not persisted: on an app restart, any event that hasn't
   // actually joined yet (only actually-joined events go into the persisted
@@ -7265,9 +7265,9 @@ allURLs`;
   // (e.g. the app quit first) should be reconsidered on the next run, not
   // treated as handled.
   function performScheduledCalendarJoin(event, meetUrl) {
-    scheduledCalendarJoins.delete(event.id);
+    scheduledCalendarJoins.delete(eventDedupeKey(event));
     const joinedIds = evictStaleEventIds(store.get('joinedCalendarEventIds') || {}, Date.now());
-    store.set('joinedCalendarEventIds', { ...joinedIds, [event.id]: Date.now() });
+    store.set('joinedCalendarEventIds', { ...joinedIds, [eventDedupeKey(event)]: Date.now() });
     console.log(`[calendar] Auto-joining calendar event "${event.summary || event.id}"`);
     activateMeetProvider(); // no-op if already on a live Meet view
     joinMeetUrl(meetUrl, { spawnAgent: true, calendarEvent: event });
@@ -7280,11 +7280,12 @@ allURLs`;
   // a no-op (scheduledCalendarJoins already has it), so this is safe to call
   // every time selectEventToJoin picks the same event across polls.
   function scheduleCalendarJoin(event, meetUrl) {
-    if (scheduledCalendarJoins.has(event.id)) return;
+    const key = eventDedupeKey(event);
+    if (scheduledCalendarJoins.has(key)) return;
     const delayMs = Math.max(0, msUntilStart(event, Date.now()) || 0);
     console.log(`[calendar] Scheduling auto-join for "${event.summary || event.id}" in ${Math.round(delayMs / 1000)}s`);
     const timer = setTimeout(() => performScheduledCalendarJoin(event, meetUrl), delayMs);
-    scheduledCalendarJoins.set(event.id, timer);
+    scheduledCalendarJoins.set(key, timer);
   }
 
   // Near-term fix for "the bot that should join isn't even running": ANY
@@ -7317,8 +7318,11 @@ allURLs`;
     const now = Date.now();
     // Separate dedupe namespace from joinedCalendarEventIds (that one means
     // "I actually joined this"; this one means "I already launched/focused
-    // another profile for this event") — keyed by `eventId:profileName` so
-    // two different other-profiles matching the same event don't collide.
+    // another profile for this event") — keyed by
+    // `<eventDedupeKey>:profileName` so two different other-profiles matching
+    // the same event don't collide, and (same reason as joinedCalendarEventIds
+    // — see eventDedupeKey) so yesterday's occurrence of a recurring meeting
+    // can't suppress today's launch.
     const launched = evictStaleEventIds(store.get('launchedForOtherProfileEventIds') || {}, now);
     let launchedChanged = false;
 
@@ -7329,7 +7333,7 @@ allURLs`;
       for (const e of events) {
         if (!e || !e.id || !isEventUpcoming(e, now)) continue;
         if (!matchesCalendarEvent(e, { calendarIdentityEmail: fields.calendarIdentityEmail, botName: fields.botName })) continue;
-        const dedupeKey = `${e.id}:${name}`;
+        const dedupeKey = `${eventDedupeKey(e)}:${name}`;
         if (Object.prototype.hasOwnProperty.call(launched, dedupeKey)) continue;
         launched[dedupeKey] = now;
         launchedChanged = true;
@@ -7360,8 +7364,11 @@ allURLs`;
     // Selection must also skip events already scheduled (but not yet
     // actually joined) — merge that in-memory set with the persisted one
     // purely for this lookup; the two stay otherwise independent.
+    // Both maps are keyed by eventDedupeKey (id + occurrence start), never the
+    // bare event id — see eventDedupeKey for why a recurring series' id alone
+    // would make "joined once" mean "never join again".
     const excludeIds = { ...joinedIds };
-    for (const id of scheduledCalendarJoins.keys()) excludeIds[id] = true;
+    for (const key of scheduledCalendarJoins.keys()) excludeIds[key] = true;
 
     // Visibility for testing/debugging: only when the poll actually returned
     // something, so this stays silent during normal idle stretches (the
@@ -7376,7 +7383,7 @@ allURLs`;
         const minutesUntil = delta === null ? null : Math.round(delta / 60000);
         const matched = matchesCalendarEvent(e, { calendarIdentityEmail, botName });
         const upcoming = isEventUpcoming(e, now);
-        const already = !!(e && e.id && Object.prototype.hasOwnProperty.call(excludeIds, e.id));
+        const already = !!(e && e.id && Object.prototype.hasOwnProperty.call(excludeIds, eventDedupeKey(e)));
         const reason = already ? 'already handled/scheduled' : !upcoming ? 'outside 5m window' : !matched ? 'no identity/tag match' : 'MATCH';
         return `"${(e && e.summary) || (e && e.id) || '(untitled)'}" (raw start="${e && e.start}", starts ${minutesUntil == null ? '?' : minutesUntil + 'm'} from now, ${reason})`;
       });
@@ -7406,7 +7413,7 @@ allURLs`;
     if (!meetUrl) {
       console.warn(`[calendar] Matched event "${event.summary || event.id}" but its hangoutLink `
         + `("${event.hangoutLink}") isn't a recognizable Meet URL — skipping, still marking as handled.`);
-      store.set('joinedCalendarEventIds', { ...joinedIds, [event.id]: Date.now() });
+      store.set('joinedCalendarEventIds', { ...joinedIds, [eventDedupeKey(event)]: Date.now() });
       return;
     }
 

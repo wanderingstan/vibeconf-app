@@ -17,6 +17,7 @@ const {
   matchesCalendarEvent,
   isEventUpcoming,
   msUntilStart,
+  eventDedupeKey,
   evictStaleEventIds,
   selectEventToJoin,
   selectUpcomingMatches,
@@ -250,7 +251,7 @@ test('selectEventToJoin: skips events already recorded in joinedIds', () => {
   const { event } = selectEventToJoin(events, {
     calendarIdentityEmail: 'bot@example.com',
     botName: 'Jimmy',
-    joinedIds: { 'evt-1': now - 1000 },
+    joinedIds: { [eventDedupeKey(makeEvent({ id: 'evt-1', start: '2026-08-08T10:02:00Z' }))]: now - 1000 },
     now,
   });
   assert.equal(event, null);
@@ -356,4 +357,71 @@ test('resolveMeetUrl: returns null for empty/unrecognizable input', () => {
   assert.equal(resolveMeetUrl(''), null);
   assert.equal(resolveMeetUrl(null), null);
   assert.equal(resolveMeetUrl('not a meet link'), null);
+});
+
+// ── eventDedupeKey ──────────────────────────────────────────────────────────
+// The 2026-08-11 miss: yesterday's standup was joined at 17:00, today's 16:30
+// instance came back with the SAME id (the backend mapped it from the
+// series-constant iCalUID), and at 23h30m the dedupe entry was still inside
+// the 24h retention — so today read as already-handled and no bot joined.
+
+test('eventDedupeKey: two occurrences sharing one series id get different keys', () => {
+  const monday = makeEvent({ id: 'series@google.com', start: '2026-08-10T23:00:00Z' });
+  const tuesday = makeEvent({ id: 'series@google.com', start: '2026-08-11T22:30:00Z' });
+  assert.notEqual(eventDedupeKey(monday), eventDedupeKey(tuesday));
+});
+
+test('eventDedupeKey: the same occurrence is one key across polls', () => {
+  const a = makeEvent({ id: 'evt-1', start: '2026-08-11T22:30:00Z' });
+  const b = makeEvent({ id: 'evt-1', start: '2026-08-11T22:30:00Z', summary: 'renamed since last poll' });
+  assert.equal(eventDedupeKey(a), eventDedupeKey(b));
+});
+
+test('eventDedupeKey: equivalent start renderings collapse to one key', () => {
+  const z = makeEvent({ id: 'evt-1', start: '2026-08-11T22:30:00Z' });
+  const offset = makeEvent({ id: 'evt-1', start: '2026-08-11T16:30:00-06:00' });
+  assert.equal(eventDedupeKey(z), eventDedupeKey(offset));
+});
+
+test('eventDedupeKey: distinct events at the same instant stay distinct', () => {
+  const a = makeEvent({ id: 'evt-a', start: '2026-08-11T22:30:00Z' });
+  const b = makeEvent({ id: 'evt-b', start: '2026-08-11T22:30:00Z' });
+  assert.notEqual(eventDedupeKey(a), eventDedupeKey(b));
+});
+
+test('eventDedupeKey: an unparseable start still yields a stable key', () => {
+  const a = makeEvent({ id: 'evt-1', start: 'not-a-date' });
+  const b = makeEvent({ id: 'evt-1', start: 'not-a-date' });
+  assert.equal(eventDedupeKey(a), eventDedupeKey(b));
+  assert.notEqual(eventDedupeKey(a), eventDedupeKey(makeEvent({ id: 'evt-1', start: '2026-08-11T22:30:00Z' })));
+});
+
+test('selectEventToJoin: yesterday\'s occurrence does not suppress today\'s', () => {
+  // Exactly the 2026-08-11 shape: one series id, yesterday's entry still
+  // inside the 24h retention when today's instance comes up.
+  const now = Date.parse('2026-08-11T22:28:00Z');
+  const yesterday = makeEvent({ id: 'series@google.com', start: '2026-08-10T23:00:00Z', attendees: ['bot@example.com'] });
+  const today = makeEvent({ id: 'series@google.com', start: '2026-08-11T22:30:00Z', attendees: ['bot@example.com'] });
+  const joinedIds = { [eventDedupeKey(yesterday)]: Date.parse('2026-08-10T23:00:00Z') };
+  assert.ok(now - joinedIds[eventDedupeKey(yesterday)] < DEFAULT_DEDUPE_MAX_AGE_MS, 'entry is still live');
+
+  const { event } = selectEventToJoin([today], {
+    calendarIdentityEmail: 'bot@example.com',
+    botName: 'Jimmy',
+    joinedIds,
+    now,
+  });
+  assert.equal(event && event.start, today.start);
+});
+
+test('selectEventToJoin: today\'s occurrence, once joined, is not re-joined', () => {
+  const now = Date.parse('2026-08-11T22:28:00Z');
+  const today = makeEvent({ id: 'series@google.com', start: '2026-08-11T22:30:00Z', attendees: ['bot@example.com'] });
+  const { event } = selectEventToJoin([today], {
+    calendarIdentityEmail: 'bot@example.com',
+    botName: 'Jimmy',
+    joinedIds: { [eventDedupeKey(today)]: now - 1000 },
+    now,
+  });
+  assert.equal(event, null);
 });

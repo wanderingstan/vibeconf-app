@@ -218,8 +218,9 @@ function detectTerminalEmulator({ exists, candidates = TERMINAL_EMULATORS } = {}
   return null;
 }
 
-// Decide the shape from what is installed. Single place so the policy is
-// testable and stated once, rather than smeared through main.js.
+// Decide the shape from what is installed, and what the user asked for. Single
+// place so the policy is testable and stated once, rather than smeared through
+// main.js.
 //
 //   emulator + tmux  → 'tmux'    (best: visible AND survives/reattaches)
 //   emulator, no tmux→ 'direct'  (the ordinary desktop case)
@@ -228,10 +229,27 @@ function detectTerminalEmulator({ exists, candidates = TERMINAL_EMULATORS } = {}
 //
 // Preferring tmux when BOTH exist is a judgement call worth stating: the user
 // sees the same window either way, and the difference only shows up when
-// something goes wrong (window closed by accident, X restarted), where the
-// tmux shape recovers and the direct one does not.
-function chooseAgentTerminalPlan({ emulator, hasTmux }) {
-  if (emulator && hasTmux) return 'tmux';
+// something goes wrong (window closed by accident, X restarted), where the tmux
+// shape recovers and the direct one does not.
+//
+// allowTmux is the linuxAgentTmux preference, and it DEFAULTS OFF. tmux brings a
+// status bar, its own scrollback and Ctrl-B keybindings, and inheriting all of
+// that because you merely happen to have tmux installed is an unwelcome
+// surprise on a machine you are just playing on. Opt in where the recovery
+// property is worth it (the unattended box), rather than imposing it everywhere.
+//
+// IT GATES ONLY THE VIEWPORT SHAPE. With no terminal emulator there is no
+// window for tmux to change the feel of, and 'tmux-detached' is then the only
+// way to have a session anyone can type at — the property #324 depends on to
+// clear a wedge. Gating that too would mean a headless box silently having no
+// agent by default, which is the #317 shape all over again, and it would make
+// the cloud-TA case depend on remembering a preference.
+//
+// So the preference means "do not wrap my terminal window in tmux", which is the
+// annoyance it was asked for. It does not mean "never run tmux": on a machine
+// with no terminal at all, the choice is a detached session or nothing.
+function chooseAgentTerminalPlan({ emulator, hasTmux, allowTmux = false }) {
+  if (emulator && hasTmux && allowTmux !== false) return 'tmux';
   if (emulator) return 'direct';
   if (hasTmux) return 'tmux-detached';
   return null;

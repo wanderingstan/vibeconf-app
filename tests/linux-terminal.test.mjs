@@ -28,15 +28,37 @@ test('tmux is an upgrade, not a requirement — an emulator alone still yields a
   assert.equal(chooseAgentTerminalPlan({ emulator: TERMINAL_EMULATORS[0], hasTmux: false }), 'direct');
 });
 
-test('tmux wins when both are present — it recovers where direct cannot', () => {
-  assert.equal(chooseAgentTerminalPlan({ emulator: TERMINAL_EMULATORS[0], hasTmux: true }), 'tmux');
+test('tmux is OPT-IN: installed but not asked for still gives a plain terminal', () => {
+  // The default. Inheriting tmux's status bar, scrollback and Ctrl-B bindings
+  // just because tmux happens to be installed is a surprise on a machine
+  // someone is only playing on.
+  assert.equal(chooseAgentTerminalPlan({ emulator: TERMINAL_EMULATORS[0], hasTmux: true }), 'direct');
+});
+
+test('opting in gives the tmux viewport shape', () => {
+  assert.equal(chooseAgentTerminalPlan({ emulator: TERMINAL_EMULATORS[0], hasTmux: true, allowTmux: true }), 'tmux');
+});
+
+test('opting in does nothing when tmux is not installed', () => {
+  assert.equal(chooseAgentTerminalPlan({ emulator: TERMINAL_EMULATORS[0], hasTmux: false, allowTmux: true }), 'direct');
 });
 
 test('no emulator but tmux is the #324 box: detached, not a failure', () => {
   // The cloud TA machine has no X and no terminal emulator. A detached session
   // is the ONLY way to get something a human can later type at over SSH, which
   // is what headless hosting cannot offer.
-  assert.equal(chooseAgentTerminalPlan({ emulator: null, hasTmux: true }), 'tmux-detached');
+  assert.equal(chooseAgentTerminalPlan({ emulator: null, hasTmux: true, allowTmux: true }), 'tmux-detached');
+});
+
+test('the preference gates the VIEWPORT only, not the detached last resort', () => {
+  // Deliberate asymmetry, and the reason the preference is worded "wrap my
+  // terminal in tmux" rather than "never run tmux". With no emulator there is
+  // no window whose feel tmux could change, and gating this too would mean a
+  // headless box silently having NO agent by default — #317's shape again —
+  // and would make the cloud-TA case depend on remembering a setting.
+  assert.equal(chooseAgentTerminalPlan({ emulator: null, hasTmux: true, allowTmux: false }), 'tmux-detached');
+  assert.equal(chooseAgentTerminalPlan({ emulator: null, hasTmux: true }), 'tmux-detached',
+    'and that holds at the default, which is off');
 });
 
 test('neither available returns null, so the caller can fall back loudly', () => {
@@ -230,4 +252,18 @@ test('xfce4-terminal keeps -x, which is the flag that actually runs anything', (
   // string), which would present as a terminal that opens to a bare shell and
   // an agent that never starts — #317 all over again.
   assert.equal(TERMINAL_EMULATORS.find((e) => e.bin === 'xfce4-terminal').execFlag, '-x');
+});
+
+test('the preference exists, defaults OFF, and is app-level', () => {
+  // App-level, not per-profile: tmux is installed once per MACHINE. Per-profile
+  // it would also be invisible — App Settings renders app-level schema prefs
+  // only (isAppLevel), the trap documented on agentHosting.
+  const { PREFERENCES } = require(join(root, 'electron-app/preferences-schema.js'));
+  const { isAppLevel } = require(join(root, 'electron-app/config-scope.js'));
+  const p = PREFERENCES.linuxAgentTmux;
+  assert.ok(p, 'linuxAgentTmux should exist');
+  assert.equal(p.type, 'boolean');
+  assert.equal(p.default, false, 'opt-in, not opt-out');
+  assert.ok(isAppLevel('linuxAgentTmux'), 'app-level, or it renders nowhere');
+  assert.match(p.label, /Linux/, 'the label must say it does nothing on macOS/Windows');
 });

@@ -5932,7 +5932,11 @@ function launchClaudeLinuxTerminal({ meetCode, botName, claudeDir, dangerousMode
 
   const emulator = detectTerminalEmulator({ exists: binaryExists });
   const hasTmux = binaryExists('tmux');
-  const plan = chooseAgentTerminalPlan({ emulator, hasTmux });
+  // linuxAgentTmux, default OFF: a plain terminal unless someone opts in. It
+  // gates only the viewport shape — with no emulator, a detached session is the
+  // only way to have an agent anyone can type at, so that case ignores it.
+  const allowTmux = store.get('linuxAgentTmux') === true;
+  const plan = chooseAgentTerminalPlan({ emulator, hasTmux, allowTmux });
   if (!plan) return false; // caller falls back to headless, then errors loudly
 
   const argv = [claudeBin, ...buildInteractiveAgentArgs({

@@ -188,7 +188,12 @@ test('APP_LEVEL_KEYS is exactly the decided set (guard against accidental promot
     // bot's personality, and same invisibility trap as agentHosting/
     // updateChannel/remoteLogging above — per-profile it would have a real
     // label and still never appear in App Settings.
-    ['agentBackend', 'agentHosting', 'automationProbed', 'claudeIntegrationRemoved', 'codexIntegrationRemoved', 'confirmQuit', 'dangerousMode', 'keepCallRecordingTracks', 'remoteLogging', 'syncBaseUrl', 'ttsApiKey', 'ttsApiKeySource', 'updateChannel', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
+    // linuxAgentTmux (#329): which terminal tooling this MACHINE has, and
+    // whether to wrap the agent terminal in tmux, is installed-once-per-box —
+    // it qualifies agentHosting the way agentHosting qualifies agentBackend, so
+    // it shares their scope. Same invisibility trap otherwise. Not in
+    // MIGRATE_KEYS: a fresh pref defaulting to false, nothing to promote.
+    ['agentBackend', 'agentHosting', 'automationProbed', 'claudeIntegrationRemoved', 'codexIntegrationRemoved', 'confirmQuit', 'dangerousMode', 'keepCallRecordingTracks', 'linuxAgentTmux', 'remoteLogging', 'syncBaseUrl', 'ttsApiKey', 'ttsApiKeySource', 'updateChannel', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
   );
 });
 

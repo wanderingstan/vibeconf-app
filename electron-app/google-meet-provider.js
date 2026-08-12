@@ -2651,6 +2651,9 @@ window.addEventListener('message', (event) => {
   if (event.data.action === 'record-name') {
     ipcRenderer.send('call-record-name', event.data.payload || {});
   }
+  if (event.data.action === 'record-speaker-event') {
+    ipcRenderer.send('call-record-speaker', event.data.payload || {});
+  }
   if (event.data.action === 'record-started') {
     ipcRenderer.send('page-inject-log', `[call-record] renderer started recording (room ${event.data.payload?.room || '?'})`);
   }

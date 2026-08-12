@@ -267,6 +267,21 @@ class LocalServer {
     // Remembering them lets a replay of aged-out history be dropped outright.
     this._retiredFps = new Set();
     this.maxRetiredFps = 2000;
+    // #12 delivery ledger. Every defense above works on INGEST, and each one
+    // has been beaten by a path nobody predicted (six recurrences: 07-22,
+    // 07-27, 07-29, 08-03, 08-04, 08-11). The one thing that stays true across
+    // all of them is the symptom: the agent is handed words it was already
+    // handed. So audit the OUTPUT — what _resolveWaiter actually ships — rather
+    // than any particular ingest path. Also the answer to "what are the agents
+    // even seeing?": the 📨 lines are a verbatim record of every round.
+    //
+    // Keyed on the same normalized fingerprint as the ingest defenses, so a
+    // re-inserted replay (fresh turnId, fresh firstSeen, therefore invisible to
+    // every other field) still collides with its earlier self here.
+    this._deliveredFps = new Map(); // fp -> { at, text }
+    this.maxDeliveredFps = 4000;
+    this._replayDeliveryFired = false;
+    this.replayDeliveryCount = 0;
     // #12 regression alarm. The three replay paths were closed in beta-66, but
     // #402 closed an earlier set on 2026-07-08 and looked healthy for two weeks
     // before the 2026-07-22 call showed it had been recurring throughout —
@@ -524,6 +539,9 @@ class LocalServer {
     this._retiredFps = new Set();
     this._replayAlarmFired = false;
     this.replayAlarmCount = 0;
+    this._deliveredFps = new Map();
+    this._replayDeliveryFired = false;
+    this.replayDeliveryCount = 0;
     this.whiteboard = { content: '', version: 0, lastModified: null, lastEditor: null };
     this.members = [];
     this.sharing = false;
@@ -580,6 +598,9 @@ class LocalServer {
     this._retiredFps = new Set();
     this._replayAlarmFired = false;
     this.replayAlarmCount = 0;
+    this._deliveredFps = new Map();
+    this._replayDeliveryFired = false;
+    this.replayDeliveryCount = 0;
     this.members = [];
     this.sharing = false;
     this.participants = [];
@@ -2008,6 +2029,70 @@ class LocalServer {
     }
   }
 
+  // #12: disclose — and audit — exactly what each wait_for_speech round hands
+  // the agent. Two jobs in one pass:
+  //
+  //   1. TRANSPARENCY. One 📨 line per delivered entry, verbatim. Until now the
+  //      only record of a round was the 📦 count, so "what did the bot actually
+  //      hear?" was unanswerable after the fact and every #12 sighting had to be
+  //      reconstructed from ingest-side breadcrumbs.
+  //   2. REPLAY DETECTION AT THE BOUNDARY. Any entry whose normalized text was
+  //      already delivered this call is marked ⚠️  REPEAT with the age of the
+  //      first delivery. This is deliberately mechanism-blind: it does not care
+  //      which ingest hole let the replay through, only that the agent is being
+  //      told the same thing twice — which is the actual user-visible bug.
+  //
+  // Legitimate re-delivery is excluded by construction: a turn whose captions
+  // are still growing ships a LONGER text each round, so it never fingerprints
+  // to its earlier self. Only an exact-word repeat trips this.
+  _auditDelivery(entries, reason) {
+    if (!entries || !entries.length) return;
+    const now = Date.now();
+    let repeats = 0;
+    for (const e of entries) {
+      const text = String(e.text || '').trim();
+      if (!text) continue;
+      const fp = this._turnFp(e.participantName, text);
+      const prior = this._deliveredFps.get(fp);
+      // Short utterances genuinely recur ("Yeah.", "Right?") — flagging those
+      // would bury the real signal in noise. The replayed history that matters
+      // is always a full utterance.
+      const auditable = text.length >= 40;
+      let mark = '';
+      if (prior && auditable) {
+        repeats++;
+        const agoS = Math.round((now - prior.at) / 1000);
+        mark = ` ⚠️  REPEAT (first delivered ${Math.floor(agoS / 60)}m${agoS % 60}s ago)`;
+      }
+      if (!prior) this._deliveredFps.set(fp, { at: now });
+      console.log(ts(), `📨 [delivered] ${e.participantName}: ${JSON.stringify(text)}${mark}`);
+    }
+    // FIFO bound — Maps iterate in insertion order.
+    while (this._deliveredFps.size > this.maxDeliveredFps) {
+      this._deliveredFps.delete(this._deliveredFps.keys().next().value);
+    }
+    if (!repeats) return;
+
+    this.replayDeliveryCount += repeats;
+    console.warn(
+      ts(), '🔁 [#12] REPLAY DELIVERED:', repeats,
+      'entr' + (repeats === 1 ? 'y' : 'ies'), 'the agent had already been given',
+      '(reason=' + reason + ', session total ' + this.replayDeliveryCount + ')',
+    );
+    // Surface once into get_room_info's "Recent Errors" so the bot driving the
+    // call can call it out live — the same escalation path as the lastUpdated
+    // alarm, which the 08-11 call proved is not enough on its own: it never
+    // fired, yet the whole room saw the replay.
+    if (!this._replayDeliveryFired) {
+      this._replayDeliveryFired = true;
+      this.addError(
+        `caption replay (#12): ${repeats} already-delivered utterance(s) were handed to the agent ` +
+        `again as new speech. Treat repeated lines as artifacts, and capture this session log ` +
+        `before the call ends — grep for "📨 [delivered]".`,
+      );
+    }
+  }
+
   // #12: keep the replay bookkeeping in step with the maxTurns prune. Dropped
   // ids must leave _turnFps/_turnAlias (they can never match again, and stale
   // aliases would route live growth into a turn we no longer hold), and their
@@ -2079,20 +2164,50 @@ class LocalServer {
     }, 0);
     const replayMode = unknownCount >= 3;
 
+    // #12: the ≥3 threshold was the hole that survived every previous fix. Meet
+    // does not always re-render the whole container — on the 2026-08-11 call it
+    // re-identified a TRICKLE of old nodes, one or two per poll. That is below
+    // the burst threshold, so recovery never armed, and those turns re-inserted
+    // as brand-new speech (fresh turnId AND fresh firstSeen, so invisible to
+    // every other guard) and were re-delivered as if just spoken.
+    //
+    // Position is the honest signal, and it needs no threshold: Meet's caption
+    // container is chronological, so genuinely new speech can only appear at the
+    // BOTTOM. An unknown turn with a turn we already know BELOW it is history
+    // that changed identity — never new speech — so recovery is safe to arm for
+    // it no matter how few of them arrived.
+    //
+    // This is also why the old comment's fear (swallowing a genuine repeat of
+    // "Yeah.") does not apply here: a real repeat is new speech, so it arrives
+    // at the bottom, where this rule stays disarmed.
+    let lastKnownIdx = -1;
+    for (let i = incoming.length - 1; i >= 0; i--) {
+      const t = incoming[i];
+      if (!t || typeof t.turnId !== 'number') continue;
+      const eff = this._turnAlias.get(t.turnId) ?? t.turnId;
+      if (this.turns.has(eff)) { lastKnownIdx = i; break; }
+    }
+
     // #12: per-speaker candidate index for the prefix fallback below, built
     // once per batch (newest turn first) and normalized lazily — the fallback
     // used to look at one turn per speaker, so scanning them all must not turn
     // a 200-turn replay snapshot into 200 full re-normalizations of the map.
-    const speakerTurns = new Map(); // speaker -> [[id, turn], ...] newest firstSeen first
-    const normCache = new Map();    // canonical turnId -> normalized fingerprint of its text
-    if (replayMode) {
+    // #12: built lazily rather than under `if (replayMode)` — recovery can now
+    // arm positionally on a batch that never reaches the burst threshold, and a
+    // poll where nothing is unknown must still not pay for the index.
+    let speakerTurns = null; // speaker -> [[id, turn], ...] newest firstSeen first
+    const speakerIndex = () => {
+      if (speakerTurns) return speakerTurns;
+      speakerTurns = new Map();
       for (const [id, t] of this.turns) {
         const list = speakerTurns.get(t.speaker) || [];
         list.push([id, t]);
         speakerTurns.set(t.speaker, list);
       }
       for (const list of speakerTurns.values()) list.sort((a, b) => b[1].firstSeen - a[1].firstSeen);
-    }
+      return speakerTurns;
+    };
+    const normCache = new Map();    // canonical turnId -> normalized fingerprint of its text
     const normOf = (id, turn) => {
       let n = normCache.get(id);
       if (n === undefined) { n = this._turnFp(turn.speaker, turn.text); normCache.set(id, n); }
@@ -2117,7 +2232,10 @@ class LocalServer {
       // container re-rendered and this is a REPLAY of a turn we've already
       // ingested, so alias instead of inserting a duplicate.
       let effId = this._turnAlias.get(inc.turnId) ?? inc.turnId;
-      if (replayMode && !this.turns.has(effId)) {
+      // #12: burst evidence (many unknowns at once) OR positional evidence (a
+      // known turn sits below this one, so it cannot be new speech).
+      const recoveryArmed = replayMode || i < lastKnownIdx;
+      if (recoveryArmed && !this.turns.has(effId)) {
         const fp = this._turnFp(inc.speaker, inc.text);
         let match = (this._turnFps.get(fp) || []).find(
           (id) => this.turns.has(id) && !claimedThisBatch.has(id)
@@ -2134,7 +2252,7 @@ class LocalServer {
           // whole call kept re-arriving on 2026-07-22 despite the #402 alias.
           const normInc = this._turnFp(inc.speaker, inc.text);
           const speakerLen = String(inc.speaker).length;
-          for (const [id, t] of (speakerTurns.get(inc.speaker) || [])) {
+          for (const [id, t] of (speakerIndex().get(inc.speaker) || [])) {
             if (claimedThisBatch.has(id) || !this.turns.has(id)) continue;
             const normOld = normOf(id, t);
             if (Math.min(normInc.length, normOld.length) > speakerLen + 12 &&
@@ -3184,6 +3302,7 @@ class LocalServer {
       const respEntries = (response.transcript && response.transcript.entries) || [];
       const respChars = respEntries.reduce((n, e) => n + String(e.text || '').length, 0);
       console.log(ts(), `📦 [payload] round → ${respEntries.length} entries, ${respChars} chars, reason=${reason}`);
+      this._auditDelivery(respEntries, reason);
     }
     // Tag so the MCP layer / skill know this is a "bank and loop, do NOT speak"
     // surface rather than a real turn.

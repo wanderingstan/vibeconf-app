@@ -95,6 +95,13 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "backgrounds",
+        "to": "backgrounds",
+        "filter": [
+          "**/*"
+        ]
       }
     ]
   },

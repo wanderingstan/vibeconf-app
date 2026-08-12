@@ -7,12 +7,17 @@
 // The setting lives in the panel (Settings → "Claude Model") as a free-text field
 // so a full model id works as well as an alias. Empty used to mean "pass no
 // --model flag and let Claude pick", which in practice meant a coin flip on
-// whichever model the CLI defaulted to that week. Sonnet is the right default for
-// this workload, so empty now means sonnet.
+// whichever model the CLI defaulted to that week.
+//
+// Opus is the default (#responsiveness audit): Sonnet and Opus land in the same
+// ~8.2-8.3s stop→audio ballpark, statistically tied on latency, so the choice
+// between them comes down to cost/quality rather than speed — Fable is the one
+// to avoid here (~17s avg, almost entirely think time; see the join-time
+// warning in main.js's agent-activity hook).
 
 // The default model for a launched session. One place, so main.js, the panel's
 // placeholder, and the tests can't drift apart.
-const DEFAULT_CLAUDE_MODEL = 'sonnet';
+const DEFAULT_CLAUDE_MODEL = 'opus';
 
 // Only characters that can appear in an alias ("sonnet") or a full model id
 // ("claude-sonnet-4-5-20250929"). Everything else is dropped rather than escaped:

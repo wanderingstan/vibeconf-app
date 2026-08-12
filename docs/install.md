@@ -7,7 +7,10 @@ Vibeconferencing is macOS-only (Apple Silicon). Two install paths: a signed DMG 
 - macOS on Apple Silicon (M1/M2/M3/M4)
 - A Google account that can join the Meet calls you want the bot in
 - An MCP-speaking agent (Claude Code, Codex CLI, etc.) installed and working
-- Chrome or Brave (used by the Electron app's embedded Meet view — Safari/Firefox not supported)
+<!-- source: electron-app/main.js /browserScanBlock\('Google Chrome'\)[\s\S]*browserScanBlock\('Safari'\)[\s\S]*browserScanBlock\('Brave Browser'\)/ -->
+<!-- source: electron-app/main.js /Firefox is not supported — it has no AppleScript tab API\./ -->
+<!-- source: electron-app/main.js /You can also just paste the Meet link into the app/ -->
+- Any browser for joining your own Meet. **Auto-detecting** your open call scans Chrome, Brave, and Safari tabs (`electron-app/main.js` `browserScanBlock`); Firefox can't be scanned (no AppleScript tab API) — paste the Meet link into the app instead. The bot's own Meet view renders inside the app (Electron), not in your browser.
 
 ## Install from DMG (recommended)
 
@@ -20,6 +23,7 @@ Vibeconferencing is macOS-only (Apple Silicon). Two install paths: a signed DMG 
    - **Screen & System Audio Recording** — required *only if* you want the bot to share its whiteboard window into the call. Without it, the bot can still join, speak, listen, and update the whiteboard — it just can't present the whiteboard onto Meet.
 5. Sign in to vibeconferencing.com when the panel prompts — needed for the shared whiteboard. The sign-in opens in your default browser and hands a token back to the app.
 
+<!-- source: electron-app/main.js /const skillDir = path\.join\(claudeDir, 'skills', 'join-call'\);[\s\S]*fs\.writeFileSync\(skillPath, skillContent\);[\s\S]*ensureClaudeIntegration\(\);/ -->
 The first launch will auto-install the Claude Code integration (writes `~/.claude/skills/join-call/`). Restart Claude Code afterward so it picks up the new MCP tools and slash command.
 
 ## Install from source
@@ -38,6 +42,7 @@ pnpm dev                  # launches the app pointed at your checkout
 Source-build caveats:
 - Not signed / not notarized — macOS may require right-click → Open the first time.
 - Permissions are scoped to the *dev binary path*, not `/Applications/Vibeconferencing.app`. A fresh checkout means re-granting Mic/Camera/Screen Recording.
+<!-- source: electron-app/main.js /const DEFAULT_PORT = 7865;/ -->
 - **Don't run the signed DMG app and `pnpm dev` simultaneously** — both bind to `127.0.0.1:7865` by default. Use `--profile=<name> --local-port=<n>` to coexist (see [Multi-bot setups](multi-bot.md)).
 
 ## Verifying the install

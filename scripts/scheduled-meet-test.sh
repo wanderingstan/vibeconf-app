@@ -41,6 +41,69 @@ LOG="$RESULTS/run-$STAMP.log"
 
 cd "$REPO" || { echo "repo not found: $REPO"; exit 3; }
 
+# --- The digest MUST fire however the run ends. It used to be a plain command at
+# the very end, so anything that stopped the run early — the 30-min watchdog's
+# kill -TERM, a lane teardown's pkill catching the parent, a crash — skipped it and
+# the night went SILENT, exactly when an alert matters most (2026-08-03: the run
+# died right after agent-fuzz, before notify, and no Telegram was sent). Now the
+# digest runs from the EXIT trap below, and a TERM/INT is converted to an exit so
+# that trap still fires. Guarded so a TERM→EXIT sequence sends exactly once. ---
+# FILE sentinels, not shell variables: the watchdog runs in a SUBSHELL (a fork), so
+# a variable it sets is invisible to the parent's EXIT trap and vice-versa. A file
+# both can read makes "send exactly once" work across that boundary — and, crucially,
+# lets the WATCHDOG send the digest ITSELF before it starts killing. (2026-08-08 bug:
+# a watchdog-killed run went SILENT because the watchdog's pkill -P / kill -KILL
+# reaped the EXIT trap's `node notify` child before it could send.)
+_DIGEST_SENT="/tmp/vibeconf-digest-${STAMP}.sent"
+_CALL_DIGEST_SENT="/tmp/vibeconf-calldigest-${STAMP}.sent"
+# --- Drive uploads run ASYNC (backgrounded in rec_run) so a slow push never sits on
+# the run's critical path or crowds the global watchdog (2026-08-08: a keep=all night
+# uploaded ~420MB inline and tripped the 30-min timer). The digest JOINS the in-flight
+# uploads first, so the recording links still land in the Telegram message. The join is
+# BOUNDED by VIBECONF_UPLOAD_JOIN_TIMEOUT so a hung rclone can't re-introduce the very
+# stall we moved off the critical path. Note: the watchdog's own send_digest runs in a
+# FORK where _UPLOAD_PIDS is still empty (it was forked before any lane ran), so it never
+# waits — correct: once we're over time, send with whatever links have already landed. ---
+_UPLOAD_PIDS=()
+UPLOAD_JOIN_TIMEOUT="${VIBECONF_UPLOAD_JOIN_TIMEOUT:-120}"
+wait_for_uploads() {
+  (( ${#_UPLOAD_PIDS} )) || return 0
+  local n=${#_UPLOAD_PIDS}
+  echo "=== ⏳ joining $n Drive upload(s) before the digest (≤${UPLOAD_JOIN_TIMEOUT}s) ===" | tee -a "$LOG"
+  # One overall deadline: after the timeout, TERM any still-running uploads, then reap
+  # them all (wait avoids zombies and returns instantly for already-finished jobs).
+  ( sleep "$UPLOAD_JOIN_TIMEOUT"; for p in "${_UPLOAD_PIDS[@]}"; do kill -TERM "$p" 2>/dev/null; done ) &
+  local _killer=$!
+  local pid; for pid in "${_UPLOAD_PIDS[@]}"; do wait "$pid" 2>/dev/null; done
+  kill "$_killer" 2>/dev/null; wait "$_killer" 2>/dev/null
+  _UPLOAD_PIDS=()
+}
+send_digest() {
+  [[ -e "$_DIGEST_SENT" ]] && return
+  : > "$_DIGEST_SENT"
+  wait_for_uploads   # let async Drive uploads finish so their links make the digest
+  echo "" | tee -a "$LOG"
+  echo "=== Telegram digest (fires on normal end OR — via the watchdog — an early kill) ===" | tee -a "$LOG"
+  node scripts/notify-nightly.mjs 2>&1 | tee -a "$LOG" || true
+}
+# Real-user call digest — independent of the test-suite digest above (own
+# Telegram message, own failure isolation: a broken call-digest run must never
+# swallow the test-suite results, and vice versa). Reads from the local
+# archive scripts/archive-logs.mjs keeps continuously fed on this machine, not
+# from anything this test run itself produced, so it doesn't depend on the
+# rest of tonight's run succeeding.
+send_call_digest() {
+  [[ -e "$_CALL_DIGEST_SENT" ]] && return
+  : > "$_CALL_DIGEST_SENT"
+  echo "" | tee -a "$LOG"
+  echo "=== Real-call digest ===" | tee -a "$LOG"
+  node scripts/nightly-call-digest.mjs 2>&1 | tee -a "$LOG" || true
+}
+# A stray pkill / Ctrl-C becomes a normal exit so the EXIT trap — and thus
+# send_digest — still runs. The WATCHDOG can't rely on that (its own pkill/kill-KILL
+# reaps the trap's notify child), so it sends its own digest before killing, below.
+trap 'exit 143' TERM INT
+
 # --- Hard global watchdog — a stuck lane must NEVER wedge the schedule again. On
 # 2026-07-21 a run hung indefinitely (the join loop waits forever for an admission
 # that never comes in the unattended 2-guest meet); because launchd won't start an
@@ -59,6 +122,11 @@ if [[ "${VIBECONF_NO_WATCHDOG:-0}" != "1" ]]; then
       sleep 15; _w=$(( _w + 15 ))
     done
     echo "$(date +%Y-%m-%dT%H-%M-%S) ⏰ watchdog: run $STAMP exceeded ${GLOBAL_TIMEOUT}s — force-killing (pid $_run_pid)" >>"$RESULTS/watchdog.log"
+    # Send the digest FIRST — while the run is still alive — so a wedged night still
+    # alerts (that's the whole point of the watchdog: tell us it wedged). The kills
+    # below would otherwise reap the EXIT trap's notify child before it sends
+    # (2026-08-08). The file sentinel dedupes with the trap so it goes out once.
+    send_digest; send_call_digest
     kill -TERM "$_run_pid" 2>/dev/null                # stop the run advancing first…
     pkill -f 'profile=test-meet-guest' 2>/dev/null    # …then sweep test fleets (reparented to init)…
     pkill -f 'profile=test-slack'      2>/dev/null
@@ -69,7 +137,10 @@ if [[ "${VIBECONF_NO_WATCHDOG:-0}" != "1" ]]; then
   _watchdog_pid=$!
   # On any normal exit, stand the watchdog down and sweep any lingering test fleets (a
   # wedged lane skips its own teardown; this guarantees no zombie fleet survives a run).
-  trap 'kill "$_watchdog_pid" 2>/dev/null; pkill -f "profile=test-meet-guest" 2>/dev/null; pkill -f "profile=test-slack" 2>/dev/null' EXIT
+  trap 'send_digest; send_call_digest; kill "$_watchdog_pid" 2>/dev/null; pkill -f "profile=test-meet-guest" 2>/dev/null; pkill -f "profile=test-slack" 2>/dev/null' EXIT
+else
+  # No watchdog, but the digest still must fire on any exit.
+  trap 'send_digest; send_call_digest' EXIT
 fi
 
 # --- optional screen recording of each live-call lane. OFF by default; set
@@ -86,35 +157,247 @@ REC_DIR="$RESULTS/recordings"
 REC_KEEP="${VIBECONF_RECORD_KEEP:-fails}"
 REC_MAX="${VIBECONF_RECORD_MAX:-5}"
 
-rec_run() {  # rec_run <lane> -- <cmd...> : run cmd (tee'd to $LOG), return its exit,
-             # recording the screen and keeping the .mov per policy.
+# --- optional PER-PARTICIPANT CALL RECORDING (the recordCallAudio feature: each
+# bot records its OWN audio+video of the call to
+# <profile>/agent/calls/<id>/call-recording*.mp4). Distinct from the screen .mov
+# above — this is the app's real recording feature, exercised end-to-end. OFF by
+# default; set VIBECONF_RECORD_CALLS=1 (the mini's LaunchAgent does) to turn it on
+# for every live-call lane. Enabled by exporting the SAME env recordCallEnabled()
+# already honors — VIBECONF_RECORD_CALL — which inherits down through
+# pnpm → meet-test → spawn-test-fleet → each Electron bot, so no harness wiring is
+# needed. The produced .mp4s are harvested out of the throwaway test profiles and
+# KEPT under $RESULTS/call-recordings/ using the SAME keep/prune/Drive-upload
+# policy as the screen .movs (see rec_run → collect_call_recordings). ---
+REC_CALLS="${VIBECONF_RECORD_CALLS:-0}"
+CALLREC_DIR="$RESULTS/call-recordings"
+# Export the trigger recordCallEnabled() honors so every spawned bot records. The
+# confirmation LINE is logged after the header below, NOT here: the header's
+# `tee "$LOG"` (no -a) truncates the log, so anything tee'd before it is wiped.
+[[ "$REC_CALLS" == "1" ]] && export VIBECONF_RECORD_CALL=1
+
+# --- Keep policy (VIBECONF_RECORD_KEEP), shared by the screen .mov AND the call
+# recordings. Three modes:
+#   fails   — keep only FAILING lanes' recordings; delete greens immediately.
+#   all     — keep every lane's recording (bounded to the newest REC_MAX).
+#   nightly — keep EVERY lane's recording for the CURRENT run, but at the START of
+#             the NEXT run reap the prior run's GREENS while keeping its FAILURES.
+#             So every lane from last night is inspectable for a day, and only
+#             failures persist beyond the next 3am run. Failures are tagged `.FAIL`
+#             in the name (so the reap can tell them apart) and capped to the newest
+#             REC_MAX; greens are kept LOCALLY only (not uploaded to Drive — no point
+#             pushing every green nightly; a red night still uploads its failure).
+# Two shared predicates keep rec_run and collect_call_recordings in lockstep. ---
+rec_keep_locally() {  # <exit-code> — should this lane's recording be kept on disk?
+  [[ "$REC_KEEP" == "all" || "$REC_KEEP" == "nightly" || ( "$REC_KEEP" == "fails" && "$1" != "0" ) ]]
+}
+rec_upload() {        # <exit-code> — should it also go to Drive? (greens only in all-mode)
+  [[ "$REC_KEEP" == "all" || "$1" != "0" ]]
+}
+
+reap_prior_recordings() {  # nightly-mode only. Runs ONCE at the start of a run, when
+  # everything already on disk is by definition from a PRIOR run: delete the GREENS
+  # (names without `.FAIL`), keep the FAILURES, then cap survivors to newest REC_MAX.
+  [[ "$REC_KEEP" == "nightly" ]] || return 0
+  local reaped=0 kept_fail=0 m d
+  if [[ -d "$REC_DIR" ]]; then
+    for m in "$REC_DIR"/*.mov(N); do
+      if [[ "$m" == *.FAIL.mov ]]; then (( kept_fail++ )); else rm -f "$m"; (( reaped++ )); fi
+    done
+    local fmovs=( "$REC_DIR"/*.FAIL.mov(Nom) )
+    (( ${#fmovs} > REC_MAX )) && rm -f -- "${(@)fmovs[REC_MAX+1,-1]}"
+  fi
+  if [[ -d "$CALLREC_DIR" ]]; then
+    for d in "$CALLREC_DIR"/*(N/); do
+      if [[ "$d" == *.FAIL ]]; then (( kept_fail++ )); else rm -rf "$d"; (( reaped++ )); fi
+    done
+    local fdirs=( "$CALLREC_DIR"/*.FAIL(Nom/) )
+    (( ${#fdirs} > REC_MAX )) && rm -rf -- "${(@)fdirs[REC_MAX+1,-1]}"
+  fi
+  (( reaped + kept_fail > 0 )) && echo "=== 🧹 recording retention (nightly): reaped $reaped prior green recording(s), kept $kept_fail failure(s) ===" | tee -a "$LOG"
+}
+
+collect_call_recordings() {  # <lane> <exit-code> <since-marker-file> : harvest the
+  # merged call-recording*.mp4 files the test fleet wrote DURING this lane (mtime
+  # newer than the marker) out of the isolated test profiles, keep per policy, and
+  # prune — a direct analog of the .mov handling in rec_run.
+  [[ "$REC_CALLS" == "1" ]] || return 0
+  local lane="$1" code="$2" marker="$3"
+  local profroot="$HOME/Library/Application Support/Vibeconferencing/profiles"
+  [[ -d "$profroot" ]] || return 0
+  # Let `find` do the globbing (literal $profroot root) so zsh's nomatch never
+  # aborts the run when a profile has no calls/ dir yet. -newer keys off the marker
+  # dropped at lane start, so we pick up ONLY this lane's recordings.
+  local recs=( "${(@f)$(find "$profroot" -type f -path '*/agent/calls/*' -name 'call-recording*.mp4' -newer "$marker" 2>/dev/null)}" )
+  recs=( ${recs:#} )   # drop the empty element find yields when nothing matched
+  if (( ${#recs} == 0 )); then
+    # Only note the absence on a lane that actually failed — a green lane with no
+    # kept recording is the normal keep=fails case, not something to flag.
+    [[ "$code" != "0" ]] && echo "=== 🎙️  no call recording produced by '$lane' (bots may have been killed before the merge finished) ===" | tee -a "$LOG"
+    return 0
+  fi
+  if rec_keep_locally "$code"; then
+    # In nightly mode, tag a FAILING lane's dir `.FAIL` so reap_prior_recordings
+    # keeps it next run (greens have no tag and get reaped).
+    local dest="$CALLREC_DIR/${lane}-${STAMP}"
+    [[ "$REC_KEEP" == "nightly" && "$code" != "0" ]] && dest="${dest}.FAIL"
+    mkdir -p "$dest"
+    local f kept=0
+    for f in "${recs[@]}"; do
+      # Flatten into one dir. Prefix with the PROFILE (unique per bot) AND the callId
+      # so two bots never collide — the callId alone isn't enough: both bots in one
+      # room fall back to the same room+second callId, so a callId-only name made the
+      # second bot's recording overwrite the first (logged "2 files", kept 1).
+      local callid; callid="$(basename "$(dirname "$f")")"
+      local prof; prof="${f#$profroot/}"; prof="${prof%%/*}"
+      cp "$f" "$dest/${prof}__${callid}__$(basename "$f")" 2>/dev/null && (( kept++ ))
+    done
+    if (( kept > 0 )); then
+      echo "=== 🎙️  call recordings kept: $dest ($kept file(s), $(du -sh "$dest" 2>/dev/null | cut -f1)) ===" | tee -a "$LOG"
+      # Upload to the shared Drive folder — only for failures (or in all-mode); nightly
+      # greens stay local. Best-effort, no-ops cleanly without rclone/the remote.
+      local _remote="${VIBECONF_RCLONE_REMOTE:-Vibeconf Shared Files}"
+      if rec_upload "$code" && command -v rclone >/dev/null 2>&1 && rclone listremotes 2>/dev/null | grep -qxF "${_remote}:"; then
+        if rclone copy "$dest" "${_remote}:${lane}-${STAMP}-calls/" 2>>"$LOG"; then
+          # Grab a shareable link to the uploaded FOLDER so the digest can point a
+          # red night straight at the call's own audio/video (analog of the .mov link).
+          local _clink; _clink="$(rclone link "${_remote}:${lane}-${STAMP}-calls" 2>/dev/null)"
+          [[ -n "$_clink" ]] && echo "=== ☁️  call recordings uploaded to Drive: $_clink ===" | tee -a "$LOG" \
+            || echo "=== ☁️  call recordings uploaded to Drive: ${lane}-${STAMP}-calls/ ===" | tee -a "$LOG"
+          printf '{"ts":"%s","lane":"%s","files":%s,"dir":"%s","link":"%s"}\n' "$STAMP" "$lane" "$kept" "${lane}-${STAMP}-calls" "${_clink:-}" >> "$RESULTS/call-recording-uploads.jsonl"
+        else
+          echo "=== ⚠️  call-recording Drive upload failed for '$lane' (see log) ===" | tee -a "$LOG"
+        fi
+      fi
+    fi
+  fi
+  # Always remove the SOURCE recordings this lane produced (kept or not) so the
+  # throwaway test profiles don't grow without bound — call videos are large. The
+  # kept COPY under $RESULTS survives. Drop the now-empty calls/<id> dirs too.
+  for f in "${recs[@]}"; do rm -f "$f" 2>/dev/null; rmdir "$(dirname "$f")" 2>/dev/null; done
+  # Prune to newest REC_MAX (mirror the .mov prune): (N)=nullglob, (om)=newest-first,
+  # (/)=dirs only. Skipped in nightly mode — there the reap at run-start does the
+  # capping (per outcome), and we must NOT drop this run's greens mid-run.
+  if [[ "$REC_KEEP" != "nightly" ]]; then
+    local dirs=( "$CALLREC_DIR"/*(Nom/) )
+    (( ${#dirs} > REC_MAX )) && rm -rf -- "${(@)dirs[REC_MAX+1,-1]}"
+  fi
+}
+
+rec_run() {  # rec_run <lane> -- <cmd...> : run cmd (tee'd to $LOG), return its exit.
+             # VIBECONF_RECORD=1 → also screen-record the lane, keep the .mov per
+             # policy. VIBECONF_RECORD_CALLS=1 → also harvest the bots' own
+             # per-participant call recordings, independent of the screen recording.
   local lane="$1"; shift
   [[ "${1:-}" == "--" ]] && shift
+  # Drop a start marker so collect_call_recordings picks up ONLY the recordings
+  # this lane produces (by mtime), not ones an earlier lane left this run.
+  local _cr_marker=""
+  [[ "$REC_CALLS" == "1" ]] && { _cr_marker="$(mktemp -t vibeconf-cr-${lane} 2>/dev/null)" || _cr_marker=""; }
+  local code
   if [[ "$REC" != "1" ]]; then
     "$@" 2>&1 | tee -a "$LOG"
-    return ${pipestatus[1]:-$?}
+    code=${pipestatus[1]:-$?}
+    [[ -n "$_cr_marker" ]] && { collect_call_recordings "$lane" "$code" "$_cr_marker"; rm -f "$_cr_marker"; }
+    return $code
   fi
   mkdir -p "$REC_DIR"
   local mov="$REC_DIR/${lane}-${STAMP}.mov"
   screencapture -v -k "$mov" >/dev/null 2>&1 &
   local rpid=$!
   "$@" 2>&1 | tee -a "$LOG"
-  local code=${pipestatus[1]:-$?}
+  code=${pipestatus[1]:-$?}   # `code` was declared local at the top of rec_run
   kill -INT "$rpid" 2>/dev/null; wait "$rpid" 2>/dev/null
-  if [[ "$REC_KEEP" == "all" || ( "$REC_KEEP" == "fails" && "$code" != "0" ) ]]; then
-    echo "=== 📹 recording kept: $mov ($(du -h "$mov" 2>/dev/null | cut -f1)) ===" | tee -a "$LOG"
+  if rec_keep_locally "$code"; then
+    # screencapture silently produces NO file when the shell running it lacks Screen
+    # Recording permission (the launchd context usually does). Don't claim a recording
+    # was "kept" when nothing landed — that sent someone chasing a .mov that never
+    # existed. Only claim it for a real (>10KB) file; otherwise say plainly that it
+    # failed and why, so the digest/analysis never points at a ghost recording.
+    if [[ -s "$mov" ]] && (( $(stat -f%z "$mov" 2>/dev/null || echo 0) > 10240 )); then
+      # In nightly mode, tag a FAILING lane's .mov `.FAIL` so reap_prior_recordings
+      # keeps it next run (greens have no tag and get reaped).
+      [[ "$REC_KEEP" == "nightly" && "$code" != "0" ]] && { mv "$mov" "${mov%.mov}.FAIL.mov" 2>/dev/null && mov="${mov%.mov}.FAIL.mov"; }
+      echo "=== 📹 recording kept: $mov ($(du -h "$mov" 2>/dev/null | cut -f1)) ===" | tee -a "$LOG"
+      # Upload the kept recording to Drive + capture a shareable LINK for the digest —
+      # only for failures (or in all-mode); nightly greens stay local. Best-effort:
+      # needs `rclone` + the configured remote (VIBECONF_RCLONE_REMOTE, default
+      # "Vibeconf Shared Files") — no-ops cleanly otherwise (e.g. a dev machine).
+      # Braces around the remote name avoid zsh's `:r` modifier eating a spaced name.
+      local _remote="${VIBECONF_RCLONE_REMOTE:-Vibeconf Shared Files}"
+      if rec_upload "$code" && command -v rclone >/dev/null 2>&1 && rclone listremotes 2>/dev/null | grep -qxF "${_remote}:"; then
+        local _base; _base="$(basename "$mov")"
+        # ASYNC: background the copy+link so the next lane starts immediately instead of
+        # blocking on a multi-hundred-MB Drive push. send_digest → wait_for_uploads joins
+        # these (bounded) before reading recording-uploads.jsonl, so links still land in
+        # the digest. The .mov is already finalized above, so it's safe to read here; even
+        # if the prune below unlinks an older .mov mid-copy, the open fd keeps reading it.
+        {
+          if rclone copy "$mov" "${_remote}:" 2>>"$LOG"; then
+            _link="$(rclone link "${_remote}:${_base}" 2>/dev/null)"
+            [[ -n "$_link" ]] && echo "=== ☁️ uploaded to Drive: $_link ===" | tee -a "$LOG"
+            printf '{"ts":"%s","lane":"%s","file":"%s","link":"%s"}\n' "$STAMP" "$lane" "$_base" "${_link:-}" >> "$RESULTS/recording-uploads.jsonl"
+          else
+            echo "=== ⚠️ Drive upload failed for $_base (see log) ===" | tee -a "$LOG"
+          fi
+        } &
+        _UPLOAD_PIDS+=($!)
+      fi
+    else
+      rm -f "$mov"
+      echo "=== ⚠️ recording FAILED for '$lane' — screencapture produced no file (Screen Recording permission missing for the launchd shell). No .mov to pull. ===" | tee -a "$LOG"
+    fi
   else
     rm -f "$mov"
   fi
-  # Prune: keep only the newest REC_MAX recordings.
-  ls -1t "$REC_DIR"/*.mov 2>/dev/null | tail -n +$((REC_MAX + 1)) | xargs rm -f 2>/dev/null || true
+  # Prune to newest REC_MAX. (N)=nullglob so an empty dir doesn't raise zsh's "no
+  # matches found"; (om)=newest-first. Skipped in nightly mode — the reap at run-start
+  # caps per outcome there, and we must NOT drop this run's greens mid-run.
+  if [[ "$REC_KEEP" != "nightly" ]]; then
+    local recs=( "$REC_DIR"/*.mov(Nom) )
+    (( ${#recs} > REC_MAX )) && rm -f -- "${(@)recs[REC_MAX+1,-1]}"
+  fi
+  # Harvest the bots' per-participant call recordings (independent of the .mov).
+  [[ -n "$_cr_marker" ]] && { collect_call_recordings "$lane" "$code" "$_cr_marker"; rm -f "$_cr_marker"; }
   return $code
 }
 
 echo "=== meet-test scheduled run $STAMP ===" | tee "$LOG"
 echo "node: $(command -v node) $(node -v 2>/dev/null)" | tee -a "$LOG"
 echo "pnpm: $(command -v pnpm) $(pnpm -v 2>/dev/null)" | tee -a "$LOG"
+[[ "$REC_CALLS" == "1" ]] && echo "=== 🎙️  per-call recording ENABLED (VIBECONF_RECORD_CALL=1) — every test bot records its own call audio/video ===" | tee -a "$LOG"
 echo "" | tee -a "$LOG"
+
+# --- Recording preflight (Stan) — a test OF the recording: screencapture silently
+# produces NO file when THIS (launchd) shell lacks Screen Recording permission, so
+# the keep-on-fail recordings were empty ghosts nobody noticed. Prove up front that
+# a real capture lands (>10KB in a 2s grab), record a result line the digest reads,
+# and log it — so a broken recorder is REPORTED, not discovered later as empty
+# .movs. Only when recording is enabled. Uses the same start→SIGINT→finalize dance
+# as rec_run. ---
+if [[ "$REC" == "1" ]]; then
+  mkdir -p "$REC_DIR"
+  _rectest="$REC_DIR/.preflight-$STAMP.mov"
+  screencapture -v -k "$_rectest" >/dev/null 2>&1 &
+  _rpid=$!
+  sleep 2
+  kill -INT "$_rpid" 2>/dev/null
+  for _ in {1..6}; do kill -0 "$_rpid" 2>/dev/null || break; sleep 0.5; done
+  kill -KILL "$_rpid" 2>/dev/null; wait "$_rpid" 2>/dev/null
+  _recbytes=$(stat -f%z "$_rectest" 2>/dev/null || echo 0)
+  rm -f "$_rectest"
+  if (( _recbytes > 10240 )); then
+    echo "=== ✅ recording preflight: screencapture OK (${_recbytes} bytes / 2s) ===" | tee -a "$LOG"
+    printf '{"ts":"%s","ok":true,"bytes":%s}\n'  "$STAMP" "$_recbytes" >> "$RESULTS/recording-health-results.jsonl"
+  else
+    echo "=== 🔴 recording preflight: screencapture produced ${_recbytes} bytes — Screen Recording permission is MISSING for the launchd shell; kept .mov recordings will be empty ===" | tee -a "$LOG"
+    printf '{"ts":"%s","ok":false,"bytes":%s}\n' "$STAMP" "$_recbytes" >> "$RESULTS/recording-health-results.jsonl"
+  fi
+  echo "" | tee -a "$LOG"
+fi
+
+# Nightly-mode retention: reap the PRIOR run's green recordings (keep its failures)
+# before this run produces any of its own. No-op unless VIBECONF_RECORD_KEEP=nightly.
+reap_prior_recordings
 
 # --- Self-update the artifacts before testing (Stan): pull latest `main` so the
 # SOURCE lanes test HEAD, and install the latest published DMG so the DMG-meet lane
@@ -215,13 +498,24 @@ MINTED="$(echo "$JOINROUTE_OUT" | grep -oE 'VIBECONF_MINTED_ROOM=[a-z]{3}-[a-z]{
 if [[ -n "$MINTED" ]]; then
   export VIBECONF_MEET_ROOM="$MINTED"
   echo "=== tonight's meet room: $MINTED (freshly minted via /api/meet/create) ===" | tee -a "$LOG"
+  printf '{"ts":"%s","source":"minted","room":"%s"}\n' "$STAMP" "$MINTED" > "$RESULTS/meet-room-source.json"
 else
-  echo "=== meet room: FALLING BACK to the hard-coded room — /call did not mint one ===" | tee -a "$LOG"
+  # ⚠️ EXPOSURE: with no minted room, every live lane runs on the FIXED,
+  # publicly-joinable fallback room — its code appears in logs/screenshots, so
+  # anyone who sees it could join a live test and interfere. notify-nightly
+  # surfaces this in the Telegram digest (and pushes even on a green night).
+  # Root cause: /call needs a signed-in vibeconferencing.com session — the guest
+  # test profile has none (see setup-test-profiles.sh, "vibeconferencing.com").
+  echo "=== ⚠️  meet room: FALLING BACK to the SHARED hard-coded room — /call did not mint one. Live lanes ran on a FIXED, publicly-joinable Meet; sign the test profile into vibeconferencing.com to mint a fresh per-run room. ===" | tee -a "$LOG"
+  printf '{"ts":"%s","source":"fallback"}\n' "$STAMP" > "$RESULTS/meet-room-source.json"
 fi
 
 # Run the one-shot DMG target — the scheduled run on the always-on Mac mini
 # drives the PACKAGED app so it tests the exact artifact an average user runs
 # (no source-vs-package fidelity gap). Capture everything, preserve exit code.
+# Record WHICH version this lane tests (post self-update) so promote.sh can gate
+# a release promotion on "the nightly for THIS exact version was green" (#release).
+DMG_VER=$(defaults read /Applications/Vibeconferencing.app/Contents/Info.plist CFBundleShortVersionString 2>/dev/null || echo unknown)
 rec_run dmg-meet -- pnpm test:meet:dmg
 CODE=$?   # exit code of the lane (recorded if VIBECONF_RECORD=1)
 
@@ -233,8 +527,8 @@ stalls=$(grep -oE '\([0-9]+ real stall' "$LOG" | tail -1 | grep -oE '[0-9]+' || 
 fails=$(grep -oE 'failed steps: +[0-9]+' "$LOG" | tail -1 | grep -oE '[0-9]+$' || echo "?")
 overlaps=$(grep -oE 'cross-bot speak overlaps \(<1.2s\): [0-9]+' "$LOG" | tail -1 | grep -oE '[0-9]+$' || echo "?")
 
-printf '{"ts":"%s","exit":%s,"stalls":"%s","fails":"%s","overlaps":"%s","log":"%s"}\n' \
-  "$STAMP" "$CODE" "$stalls" "$fails" "$overlaps" "$(basename "$LOG")" >> "$RESULTS/results.jsonl"
+printf '{"ts":"%s","ver":"%s","exit":%s,"stalls":"%s","fails":"%s","overlaps":"%s","log":"%s"}\n' \
+  "$STAMP" "$DMG_VER" "$CODE" "$stalls" "$fails" "$overlaps" "$(basename "$LOG")" >> "$RESULTS/results.jsonl"
 
 # --- main-source meet regression run (test:meet:ci) — same two-bot meet-test, but
 # against the SOURCE checkout on `main` instead of the installed DMG. The DMG run
@@ -252,6 +546,20 @@ printf '{"ts":"%s","exit":%s,"stalls":"%s","fails":"%s","branch":"main","log":"%
   "$STAMP" "$MAIN_CODE" "$mstalls" "$mfails" "$(basename "$LOG")" >> "$RESULTS/results-main.jsonl"
 echo "=== main-source meet exit: $MAIN_CODE (recorded, not gating) ===" | tee -a "$LOG"
 
+# --- Whiteboard write→read ROUND-TRIP (backend/Upstash) — the DATA-path check
+# under whiteboard-e2e: bot A writes via update_whiteboard, bot B reads it back via
+# read_whiteboard, cross-instance (they share state only through the backend). No
+# screen-share, no vision — so a failure points squarely at the whiteboard store
+# (e.g. Upstash throttling), unambiguously. NON-GATING (own results file). ---
+echo "" | tee -a "$LOG"
+echo "=== whiteboard write/read round-trip (backend/Upstash) $STAMP ===" | tee -a "$LOG"
+rec_run wb-roundtrip -- pnpm test:whiteboard-roundtrip:ci
+WBRT_CODE=$?
+wbfails=$(grep -oE 'failed steps: +[0-9]+' "$LOG" | tail -1 | grep -oE '[0-9]+$' || echo "?")
+printf '{"ts":"%s","exit":%s,"fails":"%s","log":"%s"}\n' \
+  "$STAMP" "$WBRT_CODE" "$wbfails" "$(basename "$LOG")" >> "$RESULTS/whiteboard-roundtrip-results.jsonl"
+echo "=== whiteboard round-trip exit: $WBRT_CODE (recorded, not gating) ===" | tee -a "$LOG"
+
 # --- Slack backend test (test:slack:ci) — the huddle-fleet analog of the meet test
 # (#265). Drives the two SIGNED-IN test-slack profiles through join/speak/hear/chat/
 # whiteboard in a real Slack huddle. Non-gating — own results file. Depends on the
@@ -266,6 +574,24 @@ sfails=$(grep -oE 'failed steps: +[0-9]+' "$LOG" | tail -1 | grep -oE '[0-9]+$' 
 printf '{"ts":"%s","exit":%s,"stalls":"%s","fails":"%s","log":"%s"}\n' \
   "$STAMP" "$SLACK_CODE" "$sstalls" "$sfails" "$(basename "$LOG")" >> "$RESULTS/slack-results.jsonl"
 echo "=== Slack test exit: $SLACK_CODE (recorded, not gating) ===" | tee -a "$LOG"
+
+# --- Whiteboard SHARE-VERIFY (#267 step 3) — the ONLY lane that proves the
+# whiteboard actually RENDERS and reaches viewers, not just that the share toggle
+# engaged. Bot A puts a nonce on the board + shares; Bot B screenshots its own
+# call view; a `claude -p` VISION read (uses the machine's Claude subscription —
+# no API key) asserts the nonce is visible. It exercises the FULL stack: write →
+# vibeconferencing.com → Upstash → web-whiteboard render → screen-share → pixels.
+# NON-GATING (own results file): it depends on live Meet + the Upstash-backed
+# whiteboard, so a throttled backend can red it without the APP being broken —
+# the Telegram digest's analysis line explains which. ---
+echo "" | tee -a "$LOG"
+echo "=== whiteboard end-to-end (#267 step 3) $STAMP ===" | tee -a "$LOG"
+rec_run whiteboard-e2e -- pnpm test:whiteboard-e2e:ci
+SV_CODE=$?
+svfails=$(grep -oE 'failed steps: +[0-9]+' "$LOG" | tail -1 | grep -oE '[0-9]+$' || echo "?")
+printf '{"ts":"%s","exit":%s,"fails":"%s","log":"%s"}\n' \
+  "$STAMP" "$SV_CODE" "$svfails" "$(basename "$LOG")" >> "$RESULTS/whiteboard-e2e-results.jsonl"
+echo "=== whiteboard-e2e exit: $SV_CODE (recorded, not gating) ===" | tee -a "$LOG"
 
 # --- EXPERIMENTAL: real-agent fuzzing test (#267 item 5) — NEW, take with a grain
 # of salt. Real Claude agents run the 'smoke' mission and an LLM judge grades it.
@@ -292,13 +618,13 @@ printf '{"ts":"%s","exit":%s,"log":"%s"}\n' "$STAMP" "$CODEX_CODE" "$(basename "
   >> "$RESULTS/codex-smoke-results.jsonl"
 echo "=== codex smoke exit: $CODEX_CODE (recorded, not gating) ===" | tee -a "$LOG"
 
-# --- Telegram digest — post a one-message summary of tonight's results to Stan's
-# DM. This cron isn't a Claude session, so notify-nightly.mjs hits the Bot API
-# directly with the existing bot token (~/.claude/channels/telegram/.env). Green
-# digests are sent silently; a red run pings. Best-effort — the script always exits
-# 0, so it never touches the gating $CODE. Disable with VIBECONF_NOTIFY=0. ---
-echo "" | tee -a "$LOG"
-node scripts/notify-nightly.mjs 2>&1 | tee -a "$LOG" || true
+# --- Telegram digests — two separate messages to Stan's DM: tonight's test-suite
+# results (notify-nightly.mjs) and a real-user call summary (nightly-call-digest.mjs,
+# built from the archive scripts/archive-logs.mjs keeps fed on a */20 cron —
+# independent of tonight's test run, so a broken test suite never blocks it and
+# vice versa). Neither is called inline anymore: send_digest()/send_call_digest()
+# run from the EXIT trap (see top), so both fire even when the run is killed
+# before reaching here. Disable with VIBECONF_NOTIFY=0. ---
 
 # Keep only the last 30 full logs (history line in results.jsonl is permanent).
 ls -1t "$RESULTS"/run-*.log 2>/dev/null | tail -n +31 | xargs rm -f 2>/dev/null || true

@@ -15,16 +15,17 @@ const { URL } = require('url');
 // (session logs / transcripts / working memory) or drive the bot. Defense is a
 // random per-launch bearer token written to a 0600 file that only same-user local
 // processes (our MCP server) can read — a browser page can't read local files, so
-// it can't obtain the token. ENFORCEMENT is gated behind VIBECONF_REQUIRE_TOKEN so
-// this lands dark (zero behavior change) until the MCP client side is wired +
-// validated live; the token file is always written so the client can read it.
+// it can't obtain the token. ENFORCEMENT is now ON by default (#201); set
+// VIBECONF_REQUIRE_TOKEN=0 for the legacy open server. It landed dark first so
+// the MCP client side could be wired and validated live.
 const AUTH_TOKEN_DIR = path.join(os.homedir(), '.vibeconferencing', 'local-tokens');
 function localTokenPath(port) { return path.join(AUTH_TOKEN_DIR, `${port}.token`); }
 const prefsSchema = require('./preferences-schema.js');
 const { classifyAgent, agentIsAbsent } = require('./agent-liveness.js');
-const { getRecentSessionLog, getSessionLogPath } = require('./session-log.js');
+const { isFinished } = require('./call-phase.js');
+const { getRecentSessionLog, getSessionLogPath, sliceCallLines } = require('./session-log.js');
 const { shouldIgnoreRejoin } = require('./rejoin-guard.js');
-const { TranscriptTailer } = require('./agent-transcript.js');
+const { TranscriptActivitySource, StreamActivitySource } = require('./agent-activity.js');
 
 // Mime types for the whiteboard asset server (#157). Conservative list —
 // images and PDFs, the formats the whiteboard markdown / window can actually
@@ -78,11 +79,15 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onAnyoneSpeakingChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getPref, setPref, applyPref, extraRoutes } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
     // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
     // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
     this.extraRoutes = extraRoutes || null;
+    // Where the bot's workdir (and its CLAUDE.md) lives — a thunk because
+    // Electron's userData path isn't known at construction in every caller.
+    // Optional: tests and headless embedders run without one.
+    this.getAgentWorkdir = getAgentWorkdir || (() => null);
     this.appVersion = appVersion || null;
     // Release (installed .app/DMG) vs running from source (pnpm dev). Surfaced so
     // both the human (panel) and an agent (no-room status) can tell which build
@@ -107,10 +112,13 @@ class LocalServer {
     this.onReloadWhiteboard = onReloadWhiteboard || (() => ({ ok: false, error: 'reload not wired' })); // #321 follow-up
     this.whiteboardCss = '';
     this.onLeaveCall = onLeaveCall || (() => {});
+    this.getTakenBotNames = getTakenBotNames || (() => []);
+    this.onEndSession = onEndSession || (() => {});
     this.onShareWhiteboard = onShareWhiteboard || (() => {});
     this.onShareTab = onShareTab || (() => {}); // POC (share-agent-tab)
     this.onStopSharing = onStopSharing || (() => {});
     this.onJoinCall = onJoinCall || (() => {});
+    this.onListFonts = onListFonts || (async () => []);
     this.onJoinSlack = onJoinSlack || (() => {});
     this.onLoadUrl = onLoadUrl || (() => {});
     this.onScrollShare = onScrollShare || (async () => ({ ok: false, error: 'not implemented' }));
@@ -125,11 +133,25 @@ class LocalServer {
     // Start a brand-new call: create a room, send the bot in, open the human's
     // browser. Backs the /call command, mirroring the panel's "Call <bot> now".
     this.onStartCall = onStartCall || (async () => ({ ok: false, code: 'unsupported' }));
+    this.onRecord = onRecord || (async () => ({ ok: false, code: 'unsupported' })); // #209
     this.onInspectDom = onInspectDom || (async () => ({ ok: false, error: 'not implemented' }));
     this.onBotStateChange = onBotStateChange || (() => {}); // 'idle' | 'listening' | 'ticking' | 'thinking' | 'speaking' | 'yielding'
     this.onModeChange = onModeChange || (() => {});        // 'active' | 'passive' | 'silent'
-    this.onCallStatusChange = onCallStatusChange || (() => {}); // 'idle' | 'navigating' | 'joining' | 'waiting-to-be-admitted' | 'in-call' | 'left'
+    this.onCallStatusChange = onCallStatusChange || (() => {}); // see call-phase.js for the lifecycle
+    // Fired at most once per caption turn, the first time it contains the
+    // bot's own name — the moment someone else directly addresses the bot
+    // (the same detection that lets a passive/silent bot wake up and
+    // answer). Drives a purely cosmetic avatar reaction; carries no payload.
+    this.onNameMentioned = onNameMentioned || (() => {});
     this.onAnyoneSpeakingChange = onAnyoneSpeakingChange || (() => {}); // boolean
+    // The moment the silence gate will fire, so the avatar can run a countdown
+    // that ENDS exactly when the bot takes its turn. Absolute ms, or null when
+    // no gate is pending. Must be pushed on every re-arm: the deadline moves
+    // (name-mention fast-resolve, and the #372 correction that re-arms earlier),
+    // and a countdown that finishes at the wrong moment teaches the room to
+    // distrust it — worse than showing nothing.
+    this.onSilenceGateChange = onSilenceGateChange || (() => {}); // ({ deadline, from } | null)
+    this._silenceGateAt = null;
     this.onCaptionsChange = onCaptionsChange || (() => {}); // boolean — true=on, false=off (=== deaf)
     this.onWorkingMemoryChange = onWorkingMemoryChange || (() => {}); // ({understanding, stance, updatedAt, updatedBy})
     this.onComprehensionDue = onComprehensionDue || (async () => {}); // async (transcriptText, workingMemory) — background refresh
@@ -208,12 +230,11 @@ class LocalServer {
     // work (🧑‍💻), not just listening (🙂). Detect NEW lines and surface them.
     this._workingQuietTimer = null;
     this._workingSince = 0; // #339: dwell-clock start for the 🤔→🧑‍💻 escalation
-    this._agentTailer = new TranscriptTailer({ onLines: (lines) => {
-      const prevLast = this.agentLog.length ? this.agentLog[this.agentLog.length - 1] : null;
-      this.agentLog = lines;
-      const last = lines.length ? lines[lines.length - 1] : null;
-      if (last && last !== prevLast) this._onAgentActivity(last);
-    } });
+    // #242: the SOURCE is swappable. Today this is the transcript tail; an
+    // app-launched agent will hand us its own event stream instead. Everything
+    // downstream — agentLog, the 🤔→🧑‍💻 escalation, the brain pane — consumes
+    // the callbacks below and cannot tell which transport is behind them.
+    this._agentSource = new TranscriptActivitySource(this._agentSourceCallbacks());
 
     // Room state (single room — the active call)
     this.roomId = null;
@@ -270,7 +291,7 @@ class LocalServer {
     this.maxTranscripts = 500;
 
     // Call status tracking
-    this.callStatus = 'idle';    // idle, navigating, joining, waiting-to-be-admitted, in-call, left
+    this.callStatus = 'idle';    // lifecycle + predicates live in call-phase.js
     this.sharing = false;
     this.errors = [];            // recent errors (max 10)
 
@@ -278,7 +299,8 @@ class LocalServer {
     this.localProfile = null;   // optional app profile name for multi-agent local runs
     this.detectedMeetUrls = [];  // Meet URLs found in browser tabs (when not in a call)
     this.detectedSlackHuddleUrl = null; // app.slack.com/client/<team>/<channel> when a huddle is live in a browser tab
-    this.participants = [];      // [{ name, speaking }] from DOM speaker tracker
+    this.participants = [];      // [{ name, speaking, isPseudo }] from DOM speaker tracker
+    this.screenShares = [];      // [{ name, id }] — every screen share in the people pane
     this.someoneElsePresenting = false;  // another participant is screen sharing
     this.presenterName = null;   // name of the person presenting (if any)
 
@@ -476,8 +498,25 @@ class LocalServer {
     this.currentUrl = url || null;
   }
 
+  // Calendar auto-join (#299): the matched Google Calendar event, when this
+  // join was triggered by one — so the spawned agent can see WHY it's here
+  // (the event's title/description/start) via get_room_info, instead of
+  // walking into a call cold. Call AFTER setRoom (setRoom clears this).
+  setCalendarEventContext(event) {
+    if (!event) { this.calendarEventContext = null; return; }
+    this.calendarEventContext = {
+      summary: event.summary || null,
+      description: event.description || null,
+      start: event.start || null,
+    };
+  }
+
   setRoom(roomId) {
     this.roomId = roomId;
+    // Calendar auto-join (#299): set via setCalendarEventContext, right after
+    // setRoom, only when this join was calendar-triggered — cleared here so a
+    // manual join (or the next calendar join) never inherits a stale one.
+    this.calendarEventContext = null;
     this.transcripts = [];
     this.turns = new Map();
     this._turnAlias = new Map();
@@ -744,7 +783,10 @@ class LocalServer {
     // 'in-call' fires when Meet's UI is up, but the bot's mic track isn't
     // reliably connected to other participants until the people pane is
     // populated (a stronger 'fully wired up' signal). See _flushPendingBotSpeech.
-    if (status === 'idle' || status === 'left') {
+    // Teardown-ish cleanup waits for the END of the lifecycle. During
+    // after-call-work the call is over but the agent is still working, and
+    // dropping its state there is exactly what this phase exists to prevent.
+    if (isFinished(status)) {
       this.callId = null;
       this.callStartedAt = null;
       if (this.pendingBotSpeech.length > 0) {
@@ -785,6 +827,14 @@ class LocalServer {
     const url = `http://127.0.0.1:${this.port}/asset/${token}`;
     console.log(ts(), '🖼️  [asset] registered', token, '→', absPath);
     return { token, url, mime };
+  }
+
+  // #221: whether room state can currently be READ back from the sync server.
+  // A write can succeed while this is false — the content is stored and nobody
+  // can fetch it — which is exactly the failure that went unnoticed on Aug 1.
+  // Set by the sync poll, read by the whiteboard write path.
+  setBoardReadHealthy(healthy) {
+    this.boardReadHealthy = healthy !== false;
   }
 
   applyRemoteWhiteboard(whiteboard) {
@@ -935,6 +985,9 @@ class LocalServer {
   // of _handlePost so the speak/stash decision is reachable without an HTTP
   // round-trip (see tests/floor-gate-at-audio-start.test.mjs).
   async _applyTranscriptPayload(data, roomId, now) {
+    // #199: set when speech was accepted but the bot is not in the call yet, so
+    // the MCP layer can say "queued" instead of "spoken".
+    let queuedUntilInCall = false;
     // In silent mode, suppress bot speech entirely — don't record or speak.
     // Agent learns its speech was suppressed via results.transcript.reason.
     // #338: some bot utterances are exempt from the barge-in hold — they're
@@ -1065,6 +1118,12 @@ class LocalServer {
         if (this.callStatus !== 'in-call') {
           console.log('[local-server] Queueing bot speech until in-call:', t.text.slice(0, 40));
           this.pendingBotSpeech.push({ text: t.text, voice: t.voice, emoji: t.emoji, urgency: t.urgency });
+          // #199: the caller must not be told "Spoken". It was ACCEPTED and will
+          // play on flush, so this is not an error — but nothing has been heard
+          // yet, and reporting intent as outcome is what cost ~8 minutes of
+          // hunting TTS/keys/captions during the stranger drill (#198) while the
+          // app sat wedged at 'navigating' and every speak returned success.
+          queuedUntilInCall = true;
         }
       }
     }
@@ -1074,7 +1133,17 @@ class LocalServer {
       // reply is queued and will auto-replay) rather than re-derive.
       return { ok: false, reason: 'user-speaking-stashed', sent: 0, entries: [] };
     }
-    return { ok: true, sent: entries.length, entries };
+    return {
+      ok: true,
+      sent: entries.length,
+      entries,
+      // #199 — truthful outcome, not intent.
+      ...(queuedUntilInCall ? { queuedUntilInCall: true, callStatus: this.callStatus } : {}),
+      // #253: tell the agent its PREVIOUS speech never played, at the moment it
+      // speaks again — the point where it would otherwise build on a reply the
+      // room never heard.
+      ...((() => { const f = this.takeRecentPlaybackFailure(); return f ? { previousPlaybackFailed: f } : {}; })()),
+    };
   }
 
   _flushPendingBotSpeech() {
@@ -1181,11 +1250,96 @@ class LocalServer {
     return this.currentCallBotName || this.getConfiguredBotName() || null;
   }
 
+  // The one set of callbacks every agent-activity transport feeds (#242).
+  // Factored out so the constructor, useStreamAgentSource and
+  // releaseStreamAgentSource can't drift apart.
+  _agentSourceCallbacks() {
+    return {
+      onLines: (lines) => {
+        const prevLast = this.agentLog.length ? this.agentLog[this.agentLog.length - 1] : null;
+        this.agentLog = lines;
+        const last = lines.length ? lines[lines.length - 1] : null;
+        if (last && last !== prevLast) this._onAgentActivity(last);
+      },
+      // Which model is actually authoring replies for the driving session — read
+      // straight from its own transcript, so it's correct regardless of launch
+      // path (app-spawned with --model, or an existing session that ran
+      // /join-call). Logged (not just held in memory) so latency-audit.py can
+      // group cycles by model the same way it already groups by build.
+      onModel: (model) => {
+        console.log(ts(), `🧠 [agent] model=${model}`);
+      },
+      // Per-turn context size, read off the driving session's own usage report
+      // (#345). `input` is the full prompt the model processed for the turn —
+      // fresh + cache reads + cache writes — so this is the direct test of the
+      // context-growth-slows-replies hypothesis; latency-audit.py buckets
+      // D-claude against it.
+      onUsage: (u) => {
+        console.log(ts(), `📊 [context] input=${u.input} (fresh=${u.fresh} cacheRead=${u.cacheRead} cacheWrite=${u.cacheCreate}) output=${u.output}`);
+      },
+    };
+  }
+
+  // #242: switch to the stream transport, for an agent the APP launched and
+  // therefore owns. Returns the source so main can push stdout into it.
+  //
+  // Replacing rather than adding: two live sources would interleave two agents'
+  // activity into one buffer, and the resulting feed would be worse than either
+  // alone — you could not tell which bot said what.
+  useStreamAgentSource() {
+    try { this._agentSource.stop(); } catch { /* already gone */ }
+    this._agentSource = new StreamActivitySource(this._agentSourceCallbacks());
+    this._agentSource.bind();
+    this._streamBindNoted = false;
+    console.log(ts(), '[local-server] Agent activity source → stream (app-launched agent)');
+    return this._agentSource;
+  }
+
+  // The stream transport's agent has EXITED — hand the feed back to the
+  // transcript tail so the next driving session (a terminal /join-call) can
+  // bind. Without this, the dead stream source kept winning setAgentSession's
+  // "stream beats transcript" guard for the rest of the app's life: on the
+  // 2026-08-10 Seth call, the app-spawned agent's brief join died at 17:13,
+  // Stan drove the real call from a terminal, and every 🧠 model / 📊 context
+  // marker went dark for 19 minutes — the guard's one-time notice had already
+  // fired, so the rejection was silent, and latency-audit attributed the whole
+  // call to the dead agent's model.
+  //
+  // Only main's onExit calls this, and only for the child it owns; a LIVE
+  // stream agent is never displaced.
+  releaseStreamAgentSource() {
+    if (this._agentSource.kind !== 'stream') return;
+    try { this._agentSource.stop(); } catch { /* already gone */ }
+    this._agentSource = new TranscriptActivitySource(this._agentSourceCallbacks());
+    this._streamBindNoted = false;
+    console.log(ts(), '[local-server] Agent activity source → transcript tail (stream agent exited)');
+  }
+
   // Bind (or rebind) the agent-activity tail to a Claude session transcript.
   // Called from the /api/agent-session route, which the PostToolUse hook hits.
   setAgentSession({ sessionId, transcriptPath } = {}) {
     if (!transcriptPath) return;
-    if (transcriptPath !== this._agentTailer.path) {
+    // #242: an app-launched agent's own stream WINS over any transcript bind.
+    //
+    // That agent fires this hook itself — it makes mcp__vibeconferencing__ calls,
+    // which is exactly what PostToolUse matches — so without this guard its first
+    // tool call would land here and hand its own transcript path to a
+    // StreamActivitySource, whose bind() resets the buffer. The feed would clear
+    // itself one tool call in and then stay empty, which is indistinguishable
+    // from an agent doing nothing.
+    //
+    // Any other Claude session on this machine touching our port fires it too.
+    // Either way the answer is the same: when we own the process, its stdout is
+    // the better source, and a file we do not control must not displace it.
+    if (this._agentSource.kind === 'stream') {
+      if (!this._streamBindNoted) {
+        this._streamBindNoted = true;
+        console.log(ts(), '[local-server] Ignoring transcript bind — this agent is app-launched, '
+          + 'and its own event stream is the source of truth');
+      }
+      return;
+    }
+    if (transcriptPath !== this._agentSource.path) {
       console.log('[local-server] Agent session bound:', sessionId || '?', '→', transcriptPath);
       // #125: say so when we bind a path that isn't there. The tailer tolerates
       // it (the 1.5s poll picks up a lazily-created file), so this is a warning
@@ -1197,7 +1351,7 @@ class LocalServer {
         console.warn('[local-server] …but that transcript does not exist yet — agent activity will stay empty until it appears');
       }
     }
-    this._agentTailer.bind(transcriptPath, sessionId);
+    this._agentSource.bind({ transcriptPath, sessionId });
   }
 
   getCallStateSnapshot() {
@@ -1216,6 +1370,9 @@ class LocalServer {
       localServerUrl: this.getLocalServerUrl(),
       localServerPort: this.port,
       localProfile: this.localProfile,
+      // Calendar auto-join (#299): only present when this join was matched
+      // from a Google Calendar event — see setCalendarEventContext.
+      calendarEventContext: this.calendarEventContext || null,
       botState: this.botState,
       anyoneSpeaking: this.anyoneSpeaking,
       // #343: concurrent-speaker count (interruptibility signal) + the busiest
@@ -1322,6 +1479,99 @@ class LocalServer {
         isBot: botNames.has((p.name || '').toLowerCase()),
       })),
     };
+  }
+
+  // What happens when this bot's participation ends: does it get an after-call
+  // work phase, and how long. Read at the moment of leaving rather than cached,
+  // since both inputs can change mid-call.
+  //
+  // Reported to the AGENT so its handoff message can be specific — "you have 300
+  // seconds" is actionable in a way that "you may have some time" is not. Also
+  // the honest answer when the phase is off: it gets told to stop, as today.
+  // Wait for the bot to finish saying what it already said it would say.
+  //
+  // leave_call has cut the bot off mid-sentence repeatedly. The agent's last act
+  // is usually `speak("Bye!")` then `leave_call`, and speak() returns when the
+  // text is QUEUED, not when it has been heard — so the two land within
+  // milliseconds of each other and the goodbye dies in the Meet teardown. From
+  // the room it reads as the bot hanging up on you.
+  //
+  // Two things have to drain, and they are different: pendingBotSpeech is text
+  // waiting for its turn, speakingAloud is audio currently playing (#368).
+  // Either one means "not finished".
+  //
+  // Capped, and the cap matters more than the wait: a stuck TTS must not make
+  // leave_call hang forever. On timeout we leave anyway and say so, because a
+  // bot that will not hang up is worse than one that clips its goodbye.
+  async waitForSpeechDrain(maxMs = 12000, pollMs = 100) {
+    const started = Date.now();
+    const busy = () => this.speakingAloud || (this.pendingBotSpeech || []).length > 0;
+    if (!busy()) return { waited: 0, drained: true };
+    while (busy() && Date.now() - started < maxMs) {
+      await new Promise((r) => setTimeout(r, pollMs));
+    }
+    const waited = Date.now() - started;
+    const drained = !busy();
+    console.log(ts(), '[leave] waited', waited + 'ms for speech to finish —',
+      drained ? 'drained' : 'TIMED OUT, leaving with speech still queued');
+    return { waited, drained };
+  }
+
+  // Absolute paths to the sample art the onboarding call shows off:
+  // one smiling face per emoji set, and every background preset.
+  //
+  // Only sets that are actually IMAGES are listed. 'native' is the OS font, so
+  // it has no file to show — the caller says so in words rather than shipping a
+  // broken image for it.
+  visualAssets() {
+    const path = require('path');
+    const fs = require('fs');
+    const ea = require('./emoji-assets.js');
+    const emojiSets = [];
+    for (const set of Object.keys(ea.EMOJI_SETS || {})) {
+      const rel = ea.relPathFor(set, '🙂');
+      if (!rel) continue;
+      const full = path.join(ea.baseDir(__dirname), rel);
+      if (fs.existsSync(full)) emojiSets.push({ set, emoji: '🙂', path: full });
+    }
+    const bgDir = __dirname.includes('.asar')
+      ? path.join(process.resourcesPath, 'backgrounds', 'presets')
+      : path.join(__dirname, 'backgrounds', 'presets');
+    let backgrounds = [];
+    try {
+      backgrounds = fs.readdirSync(bgDir)
+        .filter((f) => f.toLowerCase().endsWith('.svg'))
+        .sort()
+        .map((f) => ({ name: f.replace(/\.svg$/i, ''), path: path.join(bgDir, f) }));
+    } catch { /* none bundled */ }
+    return { emojiSets, backgrounds };
+  }
+
+  afterCallWorkPlan() {
+    const seconds = Number(this._pref('afterCallWorkSeconds')) || 0;
+    // No agent driving means nobody to hand off TO. Matches the app-side gate in
+    // beginAfterCallWorkOrTeardown so the two can't disagree about what happens.
+    const hasAgent = !agentIsAbsent(this.agentState());
+    const enabled = seconds > 0 && hasAgent;
+    const plan = { enabled, seconds: enabled ? seconds : 0 };
+    // Ship the workdir CLAUDE.md's "## After the call" section with the plan.
+    // Only app-spawned agents cd into the workdir and load that file; a
+    // terminal-driven session never sees it, and without this it ends the
+    // session immediately ("nothing to do") — the Seth-call failure where the
+    // summary and log copy were silently skipped. Inlining the duties makes
+    // leave_call self-contained for every transport.
+    if (enabled) {
+      try {
+        const workdir = this.getAgentWorkdir();
+        if (workdir) {
+          plan.workdir = workdir;
+          const claudeMd = fs.readFileSync(path.join(workdir, 'CLAUDE.md'), 'utf-8');
+          const duties = require('./agent-workdir.js').afterCallSection(claudeMd);
+          if (duties) plan.duties = duties;
+        }
+      } catch { /* no workdir / no CLAUDE.md — the note falls back to pointing at it */ }
+    }
+    return plan;
   }
 
   // Is anyone driving this bot? See agent-liveness.js for why wait_for_speech's
@@ -1552,7 +1802,7 @@ class LocalServer {
       clearTimeout(w.timer);
       clearTimeout(w.silenceTimer);
       clearTimeout(w.tickTimer);
-      w.resolve({ success: true, autoLeft: true, asOf: new Date().toISOString(), transcript: { entries: [] } });
+      w.resolve({ success: true, autoLeft: true, afterCallWork: this.afterCallWorkPlan(), asOf: new Date().toISOString(), transcript: { entries: [] } });
     }
     this.waiters = [];
     try { this.onLeaveCall(); } catch (err) { console.warn(ts(), '[call-ended] onLeaveCall failed:', err.message); }
@@ -1581,7 +1831,7 @@ class LocalServer {
       clearTimeout(w.timer);
       clearTimeout(w.silenceTimer);
       clearTimeout(w.tickTimer);
-      w.resolve({ success: true, autoLeft: true, asOf: new Date().toISOString(), transcript: { entries: [] } });
+      w.resolve({ success: true, autoLeft: true, afterCallWork: this.afterCallWorkPlan(), asOf: new Date().toISOString(), transcript: { entries: [] } });
     }
     this.waiters = [];
 
@@ -1597,9 +1847,39 @@ class LocalServer {
     }, playDelayMs);
   }
 
+  // Every screen share currently up, from the people pane. Replaces the list
+  // wholesale so an ended share disappears.
+  setScreenShares(shares) {
+    this.screenShares = Array.isArray(shares) ? shares : [];
+  }
+
   setSomeoneElsePresenting(presenting, presenterName) {
     this.someoneElsePresenting = !!presenting;
     this.presenterName = presenterName || null;
+  }
+
+  // #253: playback happens AFTER the speak POST has already answered, so the
+  // failure cannot be returned inline without making speak block on synthesis.
+  // Record it instead, two ways: as an agent-visible error (get_room_info shows
+  // these), and as a one-shot flag the NEXT speak carries back — which is where
+  // the agent is actually looking.
+  //
+  // The case from Bethany's Aug 4 log: a farewell "played" into an empty room
+  // while the app logged "Meet view not available for audio playback" at info
+  // level, so the agent believed it had spoken.
+  notePlaybackFailure(reason) {
+    this._playbackFailure = { reason: String(reason || 'unknown'), at: Date.now() };
+    this.addError('Audio playback FAILED — that speech was not heard by anyone. Reason: '
+      + this._playbackFailure.reason);
+  }
+
+  // Consumed once, and only while fresh: a failure from ten minutes and three
+  // calls ago is noise, not news.
+  takeRecentPlaybackFailure(maxAgeMs = 120000) {
+    const f = this._playbackFailure;
+    if (!f) return null;
+    this._playbackFailure = null;
+    return (Date.now() - f.at) <= maxAgeMs ? f : null;
   }
 
   addError(message) {
@@ -1751,6 +2031,24 @@ class LocalServer {
     }
   }
 
+  // Fire onNameMentioned at most once per caption turn, the first time its
+  // text contains the bot's own name — a purely cosmetic "I heard that" avatar
+  // signal, separate from the passive/silent name-gate in _checkWaiters (#343)
+  // which decides whether to actually respond. Flagged on the turn object
+  // rather than fired on every updateTurns() call: a turn keeps growing as the
+  // speaker keeps talking, and re-triggering the animation on every caption
+  // tick while the name stays in view would make it fire many times for one
+  // mention instead of once at the moment it first appears.
+  _maybeSignalNameMention(turn, text) {
+    if (turn._nameMentionSignaled) return;
+    const myName = (this.getEffectiveBotName() || '').toLowerCase();
+    if (!myName) return;
+    if (String(text || '').toLowerCase().includes(myName)) {
+      turn._nameMentionSignaled = true;
+      this.onNameMentioned();
+    }
+  }
+
   updateTurns(incoming) {
     if (!this.roomId || !Array.isArray(incoming) || incoming.length === 0) return;
     // If caption turns with text are arriving, captions are definitionally ON —
@@ -1867,7 +2165,7 @@ class LocalServer {
 
       const existing = this.turns.get(effId);
       if (!existing) {
-        this.turns.set(effId, {
+        const newTurn = {
           id: `${this.roomId}-turn-${effId}`,
           speaker: inc.speaker,
           text: inc.text,
@@ -1875,11 +2173,13 @@ class LocalServer {
           lastUpdated: now,
           settled: !isBottommost,
           source: 'caption',
-        });
+        };
+        this.turns.set(effId, newTurn);
         this._recordTurnFp(inc.speaker, inc.text, effId);
         changed = true;
         this._logRawCaption(effId, inc.speaker, inc.text, isBottommost);
         if (!isBottommost) this._logHeard(inc.speaker, inc.text); // arrived already final
+        this._maybeSignalNameMention(newTurn, inc.text);
       } else {
         // #268: separate a real TEXT change (new content the agent hasn't seen)
         // from a settle-flag flip (same text, just finalized). Only a text change
@@ -1908,6 +2208,7 @@ class LocalServer {
           // version fingerprint-matches this same turn.
           this._recordTurnFp(existing.speaker, inc.text, effId);
           this._logRawCaption(effId, inc.speaker, inc.text, isBottommost);
+          if (textChanged) this._maybeSignalNameMention(existing, existing.text);
         }
         if (!existing.settled && !isBottommost) {
           existing.settled = true;
@@ -2091,6 +2392,7 @@ class LocalServer {
       if (elapsed >= silenceMs) {
         // Silence threshold already met — resolve immediately
         console.log(ts(), '⏱️  [resolve] Silence threshold met (' + Math.round(elapsed) + 'ms ≥ ' + silenceMs + 'ms' + (effSilence < waiter.silence ? ', name-mention fast-resolve' : '') + ') — resolving');
+        this._announceSilenceGate(null);   // no window to show — it resolved on arrival
         this._resolveWaiter(waiter, 'silence');
       } else {
         // Arm (or RE-ARM) the silence timer for the true remaining time.
@@ -2111,15 +2413,38 @@ class LocalServer {
         if (!waiter.silenceTimer || fireAt < (waiter.silenceTimerAt || Infinity) - 25) {
           if (waiter.silenceTimer) clearTimeout(waiter.silenceTimer);
           waiter.silenceTimerAt = fireAt;
+          this._announceSilenceGate(fireAt, silenceStart);
           waiter.silenceTimer = setTimeout(() => {
             waiter.silenceTimer = null;
             waiter.silenceTimerAt = null;
+            this._announceSilenceGate(null);
             // Re-check: someone may have started speaking during the wait
             this._checkWaiters();
           }, remaining);
         }
       }
     }
+  }
+
+  // Tell the avatar when the silence gate will fire, so it can animate a
+  // countdown that lands on the moment rather than guessing a duration.
+  //
+  // Deduped on the deadline: _checkWaiters runs on every caption event, so a
+  // talkative moment would otherwise push dozens of identical announcements a
+  // second. A 25ms slop matches the re-arm guard above — below that the deadline
+  // has not meaningfully moved and re-targeting the animation would only make it
+  // stutter.
+  _announceSilenceGate(deadline, from) {
+    const prev = this._silenceGateAt;
+    if (deadline == null) {
+      if (prev == null) return;
+      this._silenceGateAt = null;
+      try { this.onSilenceGateChange(null); } catch { /* renderer gone */ }
+      return;
+    }
+    if (prev != null && Math.abs(deadline - prev) < 25) return;
+    this._silenceGateAt = deadline;
+    try { this.onSilenceGateChange({ deadline, from: from || Date.now() }); } catch { /* renderer gone */ }
   }
 
   // #222: best-effort check whether `name` is already present in the call —
@@ -2850,6 +3175,16 @@ class LocalServer {
     }
 
     const response = this._buildResponse(waiter.since, waiter.bot, waiter.startTime);
+    // Size of the variable part of what this round hands the agent (#12): the
+    // MCP layer wraps these entries in fixed prose, so entry chars are the
+    // per-round payload trend. A snowballing re-delivery bug shows up here as
+    // entries/chars climbing round over round; the 📊 [context] marker carries
+    // the full context size the model actually processed.
+    {
+      const respEntries = (response.transcript && response.transcript.entries) || [];
+      const respChars = respEntries.reduce((n, e) => n + String(e.text || '').length, 0);
+      console.log(ts(), `📦 [payload] round → ${respEntries.length} entries, ${respChars} chars, reason=${reason}`);
+    }
     // Tag so the MCP layer / skill know this is a "bank and loop, do NOT speak"
     // surface rather than a real turn.
     if (reason === 'background_tick') response.backgroundTick = true;
@@ -3067,6 +3402,11 @@ class LocalServer {
     return {
       success: true,
       roomId: this.roomId,
+      // The per-join call id (room code + start timestamp, minted in setRoom).
+      // roomId alone repeats across every call in the same room, so it cannot
+      // name a per-call artifact folder; this can. Surfaced through
+      // get_room_info so the bot's CLAUDE.md can point at calls/<call-id>/.
+      callId: this.callId,
       asOf: new Date().toISOString(),
       waited: !!startTime,
       elapsed,
@@ -3088,7 +3428,16 @@ class LocalServer {
       chat: { messages: [], count: 0 },
       chatUnread: this.chatUnread,
       members: this.members,
-      participants: this.participants,
+      // WHO IS IN THE ROOM. Pseudo-tiles are filtered here rather than upstream:
+      // they must stay in this.participants because anyoneSpeaking is derived
+      // from it and a "Merged audio" tile can be where two co-located people's
+      // speech actually registers. But it is not a person, and reporting it as
+      // one had the bot addressing "Merged audio" as a participant.
+      participants: (this.participants || []).filter((p) => !p.isPseudo),
+      // Everyone sharing their screen right now, from the people pane (#…).
+      // Unlike presenterName this can hold MORE THAN ONE, and it still works
+      // while the bot itself is presenting.
+      screenShares: this.screenShares || [],
       detectedMeetUrls: this.detectedMeetUrls,
       detectedSlackHuddleUrl: this.detectedSlackHuddleUrl,
       currentMeetUrl: this.currentUrl,
@@ -3127,6 +3476,11 @@ class LocalServer {
         // whiteboard (#177).
         screenShareUrl: this.getWhiteboardLoadedUrl(),
         sessionLogPath: getSessionLogPath(),
+        // Calendar auto-join (#299): only present when this join was matched
+        // from a Google Calendar event — see setCalendarEventContext. This is
+        // how get_room_info tells the agent WHY it's here, instead of it
+        // walking into a call cold.
+        calendarEventContext: this.calendarEventContext || null,
       },
     };
   }
@@ -3201,10 +3555,22 @@ class LocalServer {
   }
 
   async _handleRequest(req, res) {
-    // #356: enforcement is gated so this change lands dark. Off (default) →
-    // behavior is byte-for-byte the legacy wildcard-CORS, no-auth server. On →
-    // wildcard CORS is withdrawn and sensitive routes require the bearer token.
-    const requireAuth = !!process.env.VIBECONF_REQUIRE_TOKEN;
+    // #356: enforcement landed dark and is now ON by default (#201). Set
+    // VIBECONF_REQUIRE_TOKEN=0 to fall back to the legacy wildcard-CORS, no-auth
+    // server if something local turns out to need it.
+    //
+    // What flipped this: two macOS user accounts each assign profile ports from
+    // their OWN registry, but 127.0.0.1 is machine-wide — so an agent in account
+    // B could connect to account A's app and drive it. With no auth that is
+    // SILENT: the agent joins and speaks into the wrong app while the bot in
+    // front of the user sits mute, no error on either side. The token makes the
+    // wrong app answer 401 instead, which is a bug report rather than a mystery.
+    //
+    // Safe to require because the local server only serves /api/* and /asset/* —
+    // /room/:id (the board a browser opens) is rendered by the website, not here.
+    // The only HTTP client is the MCP server, a same-user Node process that reads
+    // the 0600 token file per request.
+    const requireAuth = process.env.VIBECONF_REQUIRE_TOKEN !== '0';
     const reqPath = (() => { try { return new URL(req.url, `http://127.0.0.1:${this.port}`).pathname; } catch { return req.url || ''; } })();
 
     // CORS headers for local requests.
@@ -3361,6 +3727,20 @@ class LocalServer {
       return;
     }
 
+    // #209: call recording on/off (start_recording MCP tool).
+    if (url.pathname === '/api/call/record' && req.method === 'POST') {
+      let on = true;
+      try {
+        const parsed = JSON.parse((await this._readBody(req)) || '{}');
+        if (parsed && parsed.on === false) on = false;
+      } catch { /* no body — default to on */ }
+      let result;
+      try { result = await this.onRecord({ on }); } catch (err) { result = { ok: false, code: 'error', detail: err.message }; }
+      res.writeHead(result?.ok ? 200 : 409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result || { ok: false, code: 'unknown' }));
+      return;
+    }
+
     // Session log endpoint (#173). Returns recent stdout/stderr from the
     // current session so agents can post-mortem mid-call weirdness via the
     // get_session_log MCP tool. Optional query params: lines=N (default 200),
@@ -3371,6 +3751,31 @@ class LocalServer {
       const result = getRecentSessionLog({ lines, grep });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: true, ...result }));
+      return;
+    }
+
+    // Per-call log slice (#287) — the after-call-work counterpart to the
+    // "share this call's log" button (#255). Unlike that button, this doesn't
+    // upload anywhere: it just returns the lines, so an agent can read/save
+    // them like any other after-call artifact. Accepts any callId, not just
+    // the currently-active one, since after-call work runs post-hangup once
+    // this.callId has already been cleared.
+    if (url.pathname === '/api/call-log' && req.method === 'GET') {
+      const callId = url.searchParams.get('callId');
+      if (!callId) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'callId is required' }));
+        return;
+      }
+      const lines = sliceCallLines(callId, getSessionLogPath());
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        callId,
+        filePath: getSessionLogPath(),
+        content: lines.join('\n'),
+        lineCount: lines.length,
+      }));
       return;
     }
 
@@ -3510,6 +3915,70 @@ class LocalServer {
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('asset read failed: ' + err.message);
+      }
+      return;
+    }
+
+    // Where the bundled sample art lives, so an agent can SHOW the options
+    // instead of describing them.
+    //
+    // The onboarding call asks people to pick an emoji set and a background.
+    // Both were lists of words — "fluent3d, twemoji, openmoji, noto, native" —
+    // which is exactly the choice a picture answers instantly and prose does
+    // not. The agent cannot guess these paths: each emoji set names its files
+    // differently (1f642.png / 1F642.svg / emoji_u1f642.svg), and a packaged
+    // build resolves them somewhere else entirely.
+    // Candidate names for the setup call's naming step.
+    //
+    // Drawn from the app's own curated pool rather than invented on the spot:
+    // that list exists BECAUSE names vary in how reliably the bot hears itself
+    // addressed, and it is the same pool the panel's name spinner draws from, so
+    // the setup call and the spinner offer the same universe of names. Names
+    // already in use on this machine are excluded — two bots answering to one
+    // name makes MCP routing by name ambiguous.
+    if (url.pathname === '/api/name-suggestions' && req.method === 'GET') {
+      try {
+        const { randomBotName } = require('./bot-names.js');
+        const want = Math.min(24, Math.max(1, Number(url.searchParams.get('count')) || 12));
+        const taken = [...this.getTakenBotNames()];
+        const picks = [];
+        // Draw one at a time, adding each to `taken`, so the list has no repeats.
+        for (let i = 0; i < want; i++) {
+          const n = randomBotName({ taken: [...taken, ...picks] });
+          if (!n || picks.includes(n)) continue;
+          picks.push(n);
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, names: picks }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+      return;
+    }
+
+    // Font families installed on THIS machine, so the agent can name one exactly
+    // for emojiSet's `font:<Family>` form. A guessed name is not an error anyone
+    // can see — it silently falls back to the system emoji font.
+    if (url.pathname === '/api/fonts' && req.method === 'GET') {
+      try {
+        const families = await this.onListFonts();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, families }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+      return;
+    }
+
+    if (url.pathname === '/api/visual-assets' && req.method === 'GET') {
+      try {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, ...this.visualAssets() }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
       }
       return;
     }
@@ -3870,13 +4339,33 @@ class LocalServer {
       this.whiteboard.version++;
       this.whiteboard.lastModified = now;
       this.whiteboard.lastEditor = data.sender;
+      // Await the push and report what it actually did (#221).
+      //
+      // This used to set ok:true from mutating local memory alone and fire the
+      // push off unwatched, so a bot got a success — and a plausible incrementing
+      // version number — for content that never reached the board anyone was
+      // looking at. On the call this was invisible: the bot had no reason to
+      // retry, mention it, or fall back to chat. It believed it had presented.
+      //
+      // `delivered` is tri-state on purpose: true = the shared board has it,
+      // false = it does not and here is why, null = there is no room, so there
+      // is no shared board to miss.
+      const push = await this.onWhiteboardUpdate(data.whiteboard.content, data.sender);
+      const delivered = push?.delivered ?? null;
+      // A successful write to an unreadable board is still a board nobody sees,
+      // so `readable: false` rides alongside `delivered` rather than replacing
+      // it — the two failures are independent and the bot needs to tell them
+      // apart ("it didn't save" vs "it saved and nobody can see it").
+      const readable = this.boardReadHealthy !== false;
       results.whiteboard = {
-        ok: true,
+        ok: delivered !== false,
+        delivered,
+        readable,
         version: this.whiteboard.version,
         lastModified: now,
         lastEditor: data.sender,
+        ...(delivered === false ? { error: push.error } : {}),
       };
-      this.onWhiteboardUpdate(data.whiteboard.content, data.sender);
     }
 
     // Custom whiteboard styling (#321): relay CSS to the remote sync so the
@@ -3973,8 +4462,24 @@ class LocalServer {
     // Handle leave command
     if (data.meta?.action === 'leave') {
       this.currentCallBotName = null; // #212: clear the per-call name override
+      // Let the goodbye actually be heard. speak() returns once the text is
+      // QUEUED, so an agent that says "Bye!" and immediately calls leave_call
+      // otherwise hangs up over its own voice.
+      const drain = await this.waitForSpeechDrain();
+      // Captured BEFORE onLeaveCall, which is what starts the phase — after it
+      // the agent-liveness read could race with teardown.
+      const plan = this.afterCallWorkPlan();
       this.onLeaveCall();
-      results.leave = { ok: true };
+      results.leave = { ok: true, afterCallWork: plan, ...(drain.waited ? { waitedForSpeechMs: drain.waited, speechDrained: drain.drained } : {}) };
+    }
+
+    // The agent says its after-call work is done. Ends the phase early rather
+    // than burning the whole backstop, which is the difference between a bot
+    // that wraps up in 20s and one that ties up a terminal for 5 minutes.
+    if (data.meta?.action === 'end-session') {
+      const wasActive = this.callStatus === 'after-call-work';
+      if (wasActive) this.onEndSession();
+      results.endSession = { ok: true, wasActive };
     }
 
     // Handle share/stop whiteboard commands

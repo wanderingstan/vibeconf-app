@@ -82,7 +82,14 @@ export class Bot {
   // ~4-5s once live; this is NOT a 30s cold-start — that earlier reading was just
   // both bots sitting idle in warm-up while nobody spoke). Capped so a bot that
   // never reaches in-call still proceeds. Env: VIBECONF_WARMUP_MAX_MS / _SETTLE_MS.
-  async warmUp({ maxMs = Number(process.env.VIBECONF_WARMUP_MAX_MS) || 20000,
+  //
+  // 40s (was 20s): Google Meet's GUEST-join latency is variable — usually ~8-15s,
+  // but on slower nights it runs 25-31s (verified 2026-07-31: a pre-#160 build and
+  // latest main BOTH joined at ~23-31s under the same Meet conditions, so this is
+  // Google-side latency, not a regression). A 20s cap false-reported "not in-call"
+  // on those nights and cascaded into downstream failures; 40s absorbs the tail
+  // while still bounding a genuinely-stuck join.
+  async warmUp({ maxMs = Number(process.env.VIBECONF_WARMUP_MAX_MS) || 40000,
                 settleMs = Number(process.env.VIBECONF_WARMUP_SETTLE_MS) || 5000 } = {}) {
     const t0 = Date.now();
     let inCall = false;
@@ -96,6 +103,19 @@ export class Bot {
     log(this.name, 'warmUp', { ms: waited, ok: true,
       note: inCall ? `in-call after ${waited - settleMs}ms (+${settleMs}ms settle)` : `not in-call in ${maxMs}ms — proceeding` });
     return { inCall, waitedMs: waited };
+  }
+
+  // Poll until in-call (no settle). For gating OPTIONAL steps that HARD-require
+  // in-call — e.g. the caption-language round trip, a per-call Meet setting that
+  // errors "Not in a call" if the bot hasn't joined yet. Returns a bool so callers
+  // can skip loudly rather than hard-fail when Google's guest-join is slow.
+  async waitInCall({ maxMs = 40000 } = {}) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < maxMs) {
+      try { if ((await this.status()).callStatus === 'in-call') return true; } catch { /* retry */ }
+      await sleep(1000);
+    }
+    return false;
   }
 
   async speak(text, { emoji, voice } = {}) {
@@ -120,6 +140,17 @@ export class Bot {
     const { data, ms } = await this._sync({ whiteboard: { content } });
     log(this.name, 'updateWhiteboard', { ms, ok: data?.success !== false, note: `v${data?.results?.whiteboard?.version ?? '?'}` });
     return data;
+  }
+
+  // Read the CURRENT whiteboard content this bot's app holds. The app's
+  // sync-client polls vibeconferencing.com and applyRemoteWhiteboard()s the
+  // result into local state, so on a DIFFERENT instance this reflects what came
+  // back THROUGH the backend (Upstash) — which is what a cross-instance
+  // write→read round-trip verifies. Returns { content, version, ... } | {}.
+  async readWhiteboard() {
+    const resp = await fetch(`${this.base}/api/sync/${this.room}`);
+    const data = await resp.json().catch(() => ({}));
+    return data?.whiteboard || {};
   }
 
   async shareWhiteboard({ sustainMs = 4000 } = {}) {
@@ -152,7 +183,7 @@ export class Bot {
       }
     }
     const ms = Date.now() - started;
-    // #296: distinguish a REAL share-API regression from the known ENVIRONMENTAL
+    // #282: distinguish a REAL share-API regression from the known ENVIRONMENTAL
     // "no video stream" collapse. Present engaging and then dropping for lack of a
     // held video stream is a local-env failure — the shared whiteboard window has
     // nothing renderable (unauthenticated view #274, or Screen-Recording perm not
@@ -168,7 +199,7 @@ export class Bot {
     log(this.name, 'shareWhiteboard', {
       ms, ok,
       note: !engaged ? 'NOT sharing after 6s — present never engaged (share flow broke? guest can\'t present?)'
-        : !sustained ? `⚠︎ ENVIRONMENTAL (non-gating, #296): engaged then collapsed after ~${droppedAfterMs}ms — no held video stream (unauth whiteboard window #274 / Screen-Recording perm). Present flow itself worked.`
+        : !sustained ? `⚠︎ ENVIRONMENTAL (non-gating, #282): engaged then collapsed after ~${droppedAfterMs}ms — no held video stream (unauth whiteboard window #274 / Screen-Recording perm). Present flow itself worked.`
           : `sharing held for ${sustainMs}ms`,
       meta: { engaged, sustained, droppedAfterMs, environmental },
     });
@@ -308,8 +339,22 @@ export class Bot {
   // --- chat (Meet text chat) ---
 
   async sendChat(text) {
-    const { data, ms } = await this._post('/api/chat', JSON.stringify({ action: 'send', text }));
-    log(this.name, 'sendChat', { ms, ok: data?.success !== false, note: data?.error || `"${text.slice(0, 40)}"` });
+    // Meet's chat input intermittently fails to clear/send on a flaky pane (the
+    // send reports "input not cleared") — a transient Meet hiccup, not a broken
+    // chat path: the same send succeeds moments later (seen 2026-07-31, one
+    // sendChat failed then an identical one passed in the same run). Retry once
+    // after a short settle before recording a failure.
+    const send = () => this._post('/api/chat', JSON.stringify({ action: 'send', text }));
+    let { data, ms } = await send();
+    let retried = false;
+    if (data?.success === false) {
+      retried = true;
+      await sleep(1500); // let the chat pane settle before the single retry
+      ({ data, ms } = await send());
+    }
+    const ok = data?.success !== false;
+    const suffix = retried ? (ok ? ' (ok on retry)' : ' (failed twice)') : '';
+    log(this.name, 'sendChat', { ms, ok, note: (data?.error || `"${text.slice(0, 40)}"`) + suffix });
     return data;
   }
 
@@ -347,6 +392,44 @@ export class Bot {
     const { data, ms } = await this._sync({ meta: { action: 'leave' } });
     log(this.name, 'leave', { ms, ok: data?.success !== false });
     return data;
+  }
+
+  // Where this bot is in its lifecycle (call-phase.js), plus the call identity.
+  //
+  // NOT called status(): that name is taken by the richer per-room reader above,
+  // and a second definition would silently replace it — every existing caller
+  // would quietly lose captionsOn / botState / anyoneSpeaking / sharing.
+  //
+  // Reads /api/sync/no-room because the per-room response omits callId.
+  async lifecycle() {
+    try {
+      const resp = await fetch(`${this.base}/api/sync/no-room`, { signal: AbortSignal.timeout(2500) });
+      const d = await resp.json();
+      return { callStatus: d?.status?.callStatus || null, roomId: d?.roomId || null, callId: d?.callId || null };
+    } catch { return { callStatus: null, roomId: null, callId: null }; }
+  }
+
+  // Poll until the bot reaches a lifecycle phase, or give up. Phases are driven
+  // by real Meet state and a leave click, so they take a second or two to settle.
+  async waitForPhase(phase, timeoutMs = 20000) {
+    const deadline = Date.now() + timeoutMs;
+    let last = null;
+    while (Date.now() < deadline) {
+      const s = await this.lifecycle();
+      last = s.callStatus;
+      if (last === phase) { log(this.name, 'waitForPhase', { ok: true, note: phase }); return true; }
+      await sleep(1000);
+    }
+    log(this.name, 'waitForPhase', { ok: false, note: `wanted ${phase}, still ${last}` });
+    return false;
+  }
+
+  // End the after-call-work phase, the way an agent does when its wrap-up is done.
+  async endSession() {
+    const { data, ms } = await this._sync({ meta: { action: 'end-session' } });
+    const r = data?.results?.endSession;
+    log(this.name, 'endSession', { ms, ok: !!r?.ok, note: r?.wasActive ? 'ended an active phase' : 'no phase was running' });
+    return r;
   }
 
   // Reachability check before a run.

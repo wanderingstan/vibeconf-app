@@ -85,6 +85,14 @@
     // the bot heard them. Suppressed in silent mode (the bot is meant to
     // be a fly on the wall there).
     static HEARING_EMOJI = '\u{1F610}'; // 😐 neutral face
+    // 🫤 the gap between "you stopped talking" and "the turn resolved" — roughly
+    // defaultSilenceSeconds, ~1.4s. The face used to hold 😐 through it, which
+    // is honest but says nothing; the bot is measurably slower to answer than a
+    // human, so the seconds before it starts thinking are exactly where the room
+    // most needs a sign it is on the case. Diagonal mouth reads as "hm, are you
+    // done?" and sits naturally between 😐 and 🤔, so the sequence looks like one
+    // face progressing rather than three unrelated ones.
+    static SETTLING_EMOJI = '\u{1FAE4}'; // 🫤 heard you, waiting to see if you're finished
 
     constructor(width, height) {
       this.canvas = document.createElement('canvas');
@@ -97,6 +105,25 @@
       // when main.js pushes a new activity line (overlay-independent); the head
       // snaps to this lean and holds until the next line.
       this._agentJostleDir = 0;    // hash-derived lean direction, -1..1
+      // "Heard my name" reaction — see 'name-mentioned' below. _mentionTiltSign
+      // ALTERNATES each mention (so consecutive mentions stay visually
+      // distinguishable as separate events); _mentionTiltMag is re-rolled
+      // randomly each time so the tilt amplitude varies and doesn't look like
+      // an identical mechanical tic. _nameMentionPulseAt is read via `|| 0` so
+      // it needs no explicit init (mirrors _tickPulseAt).
+      this._mentionTiltSign = 1;
+      this._mentionTiltMag = 1;
+      // Background-tick "noted that" pulse — see 'set-bot-state' below.
+      // Direction + size are re-rolled randomly on every firing (not just
+      // seeded once here) so multiple bots on one call don't tilt in lockstep
+      // when they all notice the same silence gap at once.
+      this._tickTiltSign = 1;
+      this._tickTiltMag = 1;
+      // Thinking sway envelope (#290) — see the render loop. 0 means "not
+      // swaying"; both are wall-clock stamps, so neither needs a value here
+      // beyond the falsy start.
+      this._swaySince = 0;
+      this._swayLeftAt = 0;
       // Seed persistent state from the module-level avatarState, NOT hardcoded
       // defaults. A camera can be created mid-call — e.g. turning the camera on
       // makes the host page re-acquire the video stream, spawning a fresh
@@ -114,6 +141,9 @@
       // True while at least one participant is currently speaking (from
       // DOMSpeakerTracker). Suppressed when mode='silent'.
       this.anyoneSpeaking = false;
+      // { deadline, from } while the silence gate is pending — drives the
+      // pendulum that returns to level exactly when the bot takes its turn.
+      this.silenceGate = null;
       // When the floor last went quiet. Drives the post-speech grace window
       // (see HEARING_GRACE_MS in the emoji waterfall).
       this.lastAnyoneSpeakingFalseAt = 0;
@@ -145,6 +175,12 @@
       this.debugOverlayFlags = debugOverlayFlagsGlobal;
       this.emojiSet = avatarState.emojiSet || emojiSetGlobal;
       this.debugInfo = debugInfoLatest;
+      // Recording indicator — unlike the debug overlay this is USER-facing
+      // (consent/awareness), not diagnostic chrome, so it's drawn unconditionally
+      // whenever recording is active rather than gated behind debugOverlayEnabled.
+      // Seeded from the module-level global so a camera created mid-recording
+      // (camera toggle, Meet reload) still shows it immediately.
+      this.isRecording = isRecordingGlobal;
       // Persistent overrides from agent's set_avatar_emoji calls. null = use
       // default for that state. Seeded from avatarState so a camera created
       // mid-call keeps the configured emoji instead of reverting to defaults.
@@ -333,8 +369,13 @@
       const stillInGrace = !this.anyoneSpeaking
         && this.lastAnyoneSpeakingFalseAt > 0
         && (Date.now() - this.lastAnyoneSpeakingFalseAt) < HEARING_GRACE_MS;
-      const hearing = ((this.anyoneSpeaking || stillInGrace) && this.mode !== 'silent' && !this.speaking && this.state !== 'thinking' && this.state !== 'speaking' && this.state !== 'yielding')
-        ? VirtualCamera.HEARING_EMOJI : null;
+      const attentive = (this.anyoneSpeaking || stillInGrace) && this.mode !== 'silent'
+        && !this.speaking && this.state !== 'thinking' && this.state !== 'speaking' && this.state !== 'yielding';
+      // Two faces for one window, split on whether they are STILL talking. The
+      // grace half was previously indistinguishable from active listening.
+      const hearing = attentive
+        ? (this.anyoneSpeaking ? VirtualCamera.HEARING_EMOJI : VirtualCamera.SETTLING_EMOJI)
+        : null;
       const activityEmoji = this.state === 'yielding'
         ? (this.yieldingEmojiOverride || VirtualCamera.ACTIVITY_EMOJIS.yielding)
         : VirtualCamera.ACTIVITY_EMOJIS[this.state];
@@ -375,7 +416,7 @@
         const reason = notOnLine ? `callStatus=${this.callStatus} hasEngaged=${this.hasEngaged}` :
           audioPlaying ? `audio playing (state=${this.state}${this.speakingEmojiOverride ? ' override' : ''})` :
           activityEmoji ? `state=${this.state}${this.state === 'yielding' && this.yieldingEmojiOverride ? ' (yielding override)' : ''}` :
-          hearing ? `hearing (anyoneSpeaking=true)` :
+          hearing ? (this.anyoneSpeaking ? `hearing (anyoneSpeaking=true)` : `settling (speech stopped, awaiting turn)`) :
           this.state === 'idle' ? `state=idle${this.idleEmojiOverride ? ' (idle override)' : ' (between turns)'}` :
           `mode=${this.mode}${this.listeningEmojiOverride && this.mode === 'active' ? ' (listening override)' : ' (listening)'}`;
         window.postMessage({
@@ -429,18 +470,111 @@
       const speakScaleX = baseScale * (1 - speakOpen * 0.10); // slight squeeze
       const speakBounce = speakOpen * (emojiSize * 0.06);
       const speakTilt = this.speaking ? Math.sin(this.frameCount * 0.3) * 0.05 : 0;
-      // Thinking state: gentle side-to-side sway
-      const thinkSway = this.state === 'thinking'
-        ? Math.sin(t * 1.2) * 8
-        : 0;
+      // Thinking state: gentle side-to-side sway.
+      //
+      // #290 — "the animation into 🤔 has a jump." It did, and it was this line.
+      // The sway used to be `state === 'thinking' ? sin(t * 1.2) * 8 : 0` against
+      // the FREE-RUNNING clock `t`. That clock's phase has nothing to do with
+      // when the state changes, so at the instant the bot entered thinking the
+      // term went from exactly 0 to sin(whatever) * 8 — an arbitrary value
+      // anywhere in ±8px, applied as a horizontal translate. The head teleported
+      // sideways, on average ~5px, in a single frame. Leaving thinking snapped it
+      // back the same way. Twice per turn, every turn, which is exactly the
+      // "becomes jarring after a while" in the report.
+      //
+      // The fix is to make the sway both START and END at zero:
+      //
+      //   1. PHASE is anchored to the moment thinking began, so the first frame
+      //      is sin(0) = 0 — the face is exactly where it already was.
+      //   2. AMPLITUDE ramps in over SWAY_RAMP_MS, and ramps back out on exit
+      //      rather than being cut, so leaving is as smooth as arriving.
+      //
+      // Wall-clock rather than frameCount, like the tick pulse below: an occluded
+      // or throttled view drops frames, and a frame-counted envelope would then
+      // ramp in slow motion.
+      //
+      // 0.72 rad/s preserves the original rate exactly (frameCount * 0.02 * 1.2
+      // at 30fps), so the sway itself feels unchanged — only its edges do.
+      const SWAY_PX = 8;
+      const SWAY_RATE = 0.72;   // rad/s — the pre-#290 rate, kept deliberately
+      const SWAY_RAMP_MS = 400;
+      const swayNow = Date.now();
+      if (this.state === 'thinking') {
+        if (!this._swaySince) this._swaySince = swayNow;
+        this._swayLeftAt = 0;              // re-entered before the ramp-out finished
+      } else if (this._swaySince) {
+        if (!this._swayLeftAt) this._swayLeftAt = swayNow;
+        if (swayNow - this._swayLeftAt >= SWAY_RAMP_MS) {
+          this._swaySince = 0;             // fully faded; stop tracking
+          this._swayLeftAt = 0;
+        }
+      }
+      let thinkSway = 0;
+      if (this._swaySince) {
+        const elapsed = swayNow - this._swaySince;
+        const fadeIn = Math.min(1, elapsed / SWAY_RAMP_MS);
+        const fadeOut = this._swayLeftAt
+          ? Math.max(0, 1 - (swayNow - this._swayLeftAt) / SWAY_RAMP_MS)
+          : 1;
+        thinkSway = Math.sin((elapsed / 1000) * SWAY_RATE) * SWAY_PX * fadeIn * fadeOut;
+      }
       // Background-tick "noted that" pulse — a quick head-tilt + pop that eases
       // out over ~700ms when the avatar enters thinking (set in 'set-bot-state').
       // Framerate-robust via wall-clock. sin gives a smooth 0→1→0.
+      //
+      // Multi-bot calls all hear the same silence gap at roughly the same
+      // real-world moment, so every bot used to enter 'thinking' — and fire
+      // this pulse — in perfect lockstep, which read as synchronized rather
+      // than as several independent bots each noticing on their own. Each
+      // bot is a separate process with no shared state, so the only fix is
+      // per-process randomness: 'set-bot-state' jitters the START time and
+      // rerolls a random direction (_tickTiltSign) + size (_tickTiltMag) on
+      // every firing, so bots visibly drift out of sync with each other.
       const PULSE_MS = 700;
       const pulseAge = Date.now() - (this._tickPulseAt || 0);
       const tickPulse = (pulseAge >= 0 && pulseAge < PULSE_MS) ? Math.sin((pulseAge / PULSE_MS) * Math.PI) : 0;
-      const tickTilt = tickPulse * 0.16; // ~9° peak head tilt
+      const tickTilt = tickPulse * (this._tickTiltSign || 1) * (this._tickTiltMag || 1) * 0.16; // ~9° peak head tilt, direction+size randomized per-fire
       const tickPop = 1 + tickPulse * 0.12; // ~12% peak enlarge
+
+      // "Heard my name" reaction — another participant's speech named the bot
+      // directly (set on 'name-mentioned', fired from local-server the first
+      // time a caption turn contains the bot's own name). Unlike the tick
+      // pulse above (a passing "noted that" blip), this is meant to read as a
+      // STATE CHANGE — the dog-cocks-its-head-and-leans-in moment where it's
+      // committed to answering — so it snaps into the pose almost instantly
+      // (MENTION_ATTACK_MS), HOLDS the pose, then drops out of it quickly.
+      //
+      // The hold is an explicit phase now. It used to be implied by easing a
+      // 5-second decay with cos(p·π/2): that curve does start flat, but stretched
+      // over five seconds the flat part is still a slow drift, so what you saw was
+      // the bot gradually deflating for most of a sentence rather than holding a
+      // pose and then relaxing. Attention is held or it is not — the in-between is
+      // what made it read as a fade.
+      //
+      // The release eases IN (1-p³: slow at first, steep at the end), which is the
+      // opposite of the usual ease-out. Ease-out would leave a long shallow tail —
+      // exactly the drift being removed.
+      // Tilt direction alternates per-mention (_mentionTiltSign, flipped in
+      // the 'name-mentioned' handler) so a run of mentions doesn't hold the
+      // same cocked pose every time; _mentionTiltMag (re-rolled randomly per
+      // mention) varies the peak tilt AMOUNT so the motion doesn't look like
+      // an identical mechanical tic every time — organic, not robotic.
+      const MENTION_ATTACK_MS = 150;
+      const MENTION_HOLD_MS = 900;     // fully leaned in, not moving
+      const MENTION_RELEASE_MS = 380;  // and back out, decisively
+      const mentionAge = Date.now() - (this._nameMentionPulseAt || 0);
+      const MENTION_HOLD_END = MENTION_ATTACK_MS + MENTION_HOLD_MS;
+      let mentionPulse = 0;
+      if (mentionAge >= 0 && mentionAge < MENTION_ATTACK_MS) {
+        mentionPulse = mentionAge / MENTION_ATTACK_MS;
+      } else if (mentionAge >= MENTION_ATTACK_MS && mentionAge < MENTION_HOLD_END) {
+        mentionPulse = 1;
+      } else if (mentionAge >= MENTION_HOLD_END && mentionAge < MENTION_HOLD_END + MENTION_RELEASE_MS) {
+        const p = (mentionAge - MENTION_HOLD_END) / MENTION_RELEASE_MS;
+        mentionPulse = 1 - p * p * p;
+      }
+      const mentionTilt = mentionPulse * (this._mentionTiltSign || 1) * (this._mentionTiltMag || 1) * 0.24; // ~14° peak head-cock, ±30% varied
+      const mentionPop = 1 + mentionPulse * 0.22; // ~22% peak lean-in grow
 
       // #326 — head rotation driven by agent log activity (proof-of-life). Each
       // new activity line (pushed by main.js, overlay-independent) snaps the head
@@ -472,7 +606,11 @@
       ctx.save();
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.font = `${Math.round(emojiSize)}px serif`;
+      ctx.font = emojiFontStack(Math.round(emojiSize));
+      // Only for a monochrome font. A COLOUR font ignores fillStyle for its own
+      // glyphs anyway, so setting this is harmless there; leaving it unset when
+      // no colour was asked for preserves the previous behaviour exactly.
+      if (emojiFontColorGlobal) ctx.fillStyle = emojiFontColorGlobal;
 
       // Glow when speaking
       if (this.speaking) {
@@ -494,19 +632,19 @@
       // to center. So the rise reads as "arriving in the room," not "still trying
       // to get in."
       //
-      // Timing (1s/5.6s -> 4s/11.2s): the old rise reached center well
-      // before the spawned agent finished starting up in its terminal, so the face
-      // looked settled and ready while nothing was actually listening yet. Slower
-      // keeps it visibly still-arriving for about as long as the agent takes.
+      // Timing (1s/5.6s -> 4s/11.2s -> 2s/11.2s): the old rise reached center
+      // well before the spawned agent finished starting up in its terminal,
+      // so the face looked settled and ready while nothing was actually
+      // listening yet. The 4s hold fixed that but read as sluggish once the
+      // ease-in made the liftoff itself feel deliberate rather than abrupt —
+      // 2s is enough to register the peeking pose as intentional without the
+      // whole entrance feeling slow.
       //
       // Note it is a canned timer, not a readiness signal — if it still finishes
       // early, the honest fix is to drive it from claudeReady (main.js POSTs
       // /claude-ready when the spawned session is actually up) rather than to keep
       // stretching these numbers.
-      // 4s, not a beat: the peeking pose is the joke, and at 1-2s most people
-      // never registered it before the face started moving. Long enough to be
-      // seen and read as deliberate.
-      const RISE_HOLD_MS = 4000;
+      const RISE_HOLD_MS = 2000;
       const RISE_DURATION_MS = 11200;
       let ghostRise = 0;
       // The rise is an ARRIVAL animation: the bot peeking over the edge while its
@@ -518,7 +656,11 @@
         if (this.callStatus === 'in-call') {
           if (!this._riseSince) this._riseSince = Date.now(); // stamp on entry
           const p = Math.max(0, Math.min(1, (Date.now() - this._riseSince - RISE_HOLD_MS) / RISE_DURATION_MS));
-          const eased = 1 - Math.pow(1 - p, 3); // easeOutCubic — quick lift, gentle settle
+          // easeInCubic, not easeOutCubic: a slow start reads as a deliberate
+          // liftoff — the previous easeOutCubic started at full speed, which
+          // read as a jolt right as the rise began. No ease-out is needed at
+          // the tail either; it can arrive at center at full speed.
+          const eased = Math.pow(p, 3);
           ghostRise = (1 - eased) * (h - cy);
         } else {
           ghostRise = h - cy;   // not admitted yet — hold peeking at the bottom edge
@@ -548,23 +690,59 @@
       } else {
         this._deadSince = 0;
       }
+      // The turn countdown: a pendulum that swings out and returns to LEVEL at
+      // the exact moment the silence gate fires and the bot takes its turn.
+      //
+      // Level-is-the-endpoint is the point. A fill or a fade has no unmistakable
+      // finish, but "back where it started" does, so the room can learn — without
+      // being told — how long they have before the bot speaks. The bot answers
+      // slower than a human, and those seconds are where people either wait or
+      // talk over it.
+      //
+      // Driven by the server's ABSOLUTE deadline, re-read every frame, because
+      // that deadline moves: name-mention resolves faster, and #372's re-arm
+      // corrects a late timer. A fixed 1.4s sweep would land wrong often enough
+      // to teach the opposite lesson.
+      //
+      // Suppressed while anyone is still speaking — the window only means
+      // anything once the floor is quiet — and while the bot is speaking or
+      // yielding, where other motion already owns the face.
+      let gateTilt = 0;
+      const gate = this.silenceGate;
+      if (gate && !this.anyoneSpeaking && !this.speaking
+          && this.state !== 'speaking' && this.state !== 'yielding') {
+        const span = gate.deadline - gate.from;
+        if (span > 0) {
+          const p = (Date.now() - gate.from) / span;
+          if (p >= 0 && p <= 1) {
+            // One half-cycle: 0 → peak → 0. sin(πp) is exactly that, and its
+            // slope eases in and out on its own, so no extra easing is needed.
+            gateTilt = Math.sin(Math.PI * p) * 0.14; // ~8° peak
+          }
+        }
+      }
       const peeking = ghostRise > 0;
       const agentTiltNow = peeking ? agentTilt * PEEK_TILT_SCALE : agentTilt;
       const peekShift = peeking ? (this._agentJostleDir || 0) * PEEK_SHIFT_PX : 0;
       ctx.translate(cx + thinkSway + peekShift, cy + bob - speakBounce + ghostRise);
-      if (speakTilt || tickTilt || agentTiltNow || deadFlip) ctx.rotate(speakTilt + tickTilt + agentTiltNow + deadFlip);
+      if (speakTilt || tickTilt || agentTiltNow || deadFlip || mentionTilt || gateTilt) {
+        ctx.rotate(speakTilt + tickTilt + agentTiltNow + deadFlip + mentionTilt + gateTilt);
+      }
       if (this.speaking) {
-        ctx.scale(speakScaleX * tickPop, speakScaleY * tickPop);
+        ctx.scale(speakScaleX * tickPop * mentionPop, speakScaleY * tickPop * mentionPop);
       } else {
         // Idle/listening/thinking breathing — keeps the glyph subtly alive
         // without the loud jaw motion of the speaking path. (#223)
-        ctx.scale(breathe * tickPop, breathe * tickPop);
+        ctx.scale(breathe * tickPop * mentionPop, breathe * tickPop * mentionPop);
       }
       // Twemoji set (#316): draw the bundled SVG centered at the origin (all the
       // bob/breathe/lip-sync transforms are already applied, so the image is just
       // as alive as the glyph). Falls back to the native glyph until the image
       // decodes, or forever if the emoji isn't in the set.
-      const emojiImg = (this.emojiSet && this.emojiSet !== 'native') ? _emojiImage(this.emojiSet, emoji) : null;
+      // Only IMAGE sets (fluent3d) go through drawImage. A font-backed set falls
+      // to fillText below, where emojiFontStack has already put its family first.
+      const emojiImg = (this.emojiSet && this.emojiSet !== 'native' && _isImageSetName(this.emojiSet))
+        ? _emojiImage(this.emojiSet, emoji) : null;
       if (emojiImg) {
         ctx.drawImage(emojiImg, -emojiSize / 2, -emojiSize / 2, emojiSize, emojiSize);
       } else {
@@ -572,9 +750,57 @@
       }
       ctx.restore();
 
+      // Unlike the debug overlay below, this is user-facing (consent/awareness
+      // that the call is being recorded) — always drawn when isRecording is
+      // true, not gated behind the panel's debug-overlay checkbox. Wrapped for
+      // the same reason: a bug here must never black out the actual camera frame.
+      if (this.isRecording) { try { this._renderRecordingIndicator(); } catch (e) { /* overlay-only */ } }
+
       // Wrapped: the overlay is diagnostic chrome — a bug in it must never black
       // out the bot's actual camera frame (which already rendered above).
       if (this.debugOverlayEnabled) { try { this._renderDebugOverlay(); } catch (e) { /* overlay-only */ } }
+    }
+
+    _renderRecordingIndicator() {
+      const { ctx, canvas } = this;
+      const text = '\u{1F534} Recording';
+      // Google Sans, not the debug overlay's monospace — this is a user-facing
+      // label, not a diagnostic readout, so it should match the app's own UI
+      // font (panel.css's body font-family) rather than look like debug text.
+      const font = '600 22px "Google Sans", Roboto, Arial, sans-serif';
+      // Top-left, not bottom-left: Meet draws its own participant-name label in
+      // the bottom-left of the tile, which would collide with (and visually
+      // compete against) an indicator there. Extra inset (vs. the debug
+      // overlay's 24/16) because Meet crops the camera feed to fit the current
+      // window/tile size — a tighter corner position is more likely to survive
+      // that crop, though nothing here can guarantee it always will.
+      const insetX = 40;
+      const insetY = 40;
+      ctx.save();
+      ctx.font = font;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      // Same "text on TV" treatment as the debug overlay (dark stroke outline
+      // + soft shadow) for contrast over any avatar background, then a solid
+      // red fill — this is the whole point of the indicator, so it should read
+      // as unambiguously red, not blend into the frame.
+      ctx.lineJoin = 'round';
+      ctx.miterLimit = 2;
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.9)';
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
+      ctx.shadowBlur = 3;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 1;
+      const x = insetX;
+      const y = insetY;
+      ctx.strokeText(text, x, y);
+      ctx.fillStyle = '#ea4335'; // matches the app's existing red accent (debug overlay's STALE/DEAF color)
+      ctx.save();
+      ctx.shadowColor = 'transparent';
+      ctx.fillText(text, x, y);
+      ctx.restore();
+      ctx.restore();
     }
 
     _renderDebugOverlay() {
@@ -1140,7 +1366,49 @@
   // sensibly.
   let debugOverlayFlagsGlobal = { health: true, captions: false, agentLog: false, experiments: false };
   let debugInfoLatest = null;
+  // Same latching reasoning as debugOverlayEnabledGlobal above, but for the
+  // recording indicator: 'start-recording' can arrive before any VirtualCamera
+  // exists (recording auto-starts on join, same tick a fresh Meet session
+  // spins up its camera), so this must be readable at construction time.
+  let isRecordingGlobal = false;
   let emojiSetGlobal = 'native'; // 'native' | 'twemoji' — pushed from main (#316)
+  let emojiFontGlobal = '';      // a family installed on the user's machine, or '' for the system font
+  let emojiFontColorGlobal = ''; // fill colour for a monochrome font; '' = leave the canvas default
+
+  // The family name goes straight into the canvas font SHORTHAND, which is CSS.
+  // A name containing a quote, semicolon or brace could close the family and
+  // append declarations, and a malformed shorthand makes ctx.font a silent no-op
+  // — the assignment is simply ignored and the previous font stays, so the face
+  // would render in the wrong font with nothing logged. Strip anything that
+  // isn't plausibly part of a family name, then quote it.
+  function sanitizeFontFamily(name) {
+    const s = String(name == null ? '' : name).replace(/[^A-Za-z0-9 _-]/g, '').trim().slice(0, 120);
+    return s;
+  }
+  // `font:<Family>` optionally carries a colour: `font:UnifontExMono#ffcc00`.
+  // A monochrome font has no colour of its own, so without this it draws in
+  // whatever fillStyle happens to be — the canvas default, black. Same reason
+  // the colour rides in this string rather than a preference of its own: it is
+  // part of one answer to "how is the face drawn".
+  //
+  // Validated to strict hex before it reaches fillStyle. An invalid fillStyle is
+  // IGNORED SILENTLY, exactly like a malformed ctx.font, so a typo would draw
+  // the previous colour with nothing logged.
+  function parseEmojiFontValue(raw) {
+    const m = /^font:([^#]+)(?:#([0-9A-Fa-f]{3,8}))?$/.exec(String(raw || ''));
+    if (!m) return null;
+    return { family: sanitizeFontFamily(m[1]), color: m[2] ? '#' + m[2] : '' };
+  }
+  function emojiFontStack(px) {
+    // Order: a font the USER named, then the bundled set's font, then serif.
+    // serif is always the tail so anything missing falls through to the OS emoji
+    // font rather than rendering tofu.
+    const families = [];
+    if (emojiFontGlobal) families.push(`"${emojiFontGlobal}"`);
+    if (EMOJI_FONT_SETS[emojiSetGlobal]) families.push(`"${_fontFamilyFor(emojiSetGlobal)}"`);
+    families.push('serif');
+    return `${px}px ${families.join(', ')}`;
+  }
 
   // Emoji image sets (#316): draw the avatar's emoji from a bundled SVG set
   // instead of the OS font. The preload exposes __vibeEmojiSvg(relPath) — it has
@@ -1165,12 +1433,74 @@
   // so every set here is just { dir, ext } and shares one filename rule.
   const _canon = (e) => _emojiHex(e, { sep: '-', upper: false, dropFe0f: true });
   const EMOJI_SETS = {
-    twemoji:  { dir: 'twemoji',  file: (e) => _emojiHex(e, { sep: '-', upper: false, dropFe0f: true }) + '.svg' },
-    openmoji: { dir: 'openmoji', file: (e) => _emojiHex(e, { sep: '-', upper: true,  dropFe0f: false }) + '.svg' },
-    noto:     { dir: 'noto',     file: (e) => 'emoji_u' + _emojiHex(e, { sep: '_', upper: false, dropFe0f: true }) + '.svg' },
     fluent3d: { dir: 'fluent3d', file: (e) => _canon(e) + '.png' },
+    redpanda: { dir: 'redpanda', file: (e) => _canon(e) + '.png' },
   };
+
+  // twemoji / openmoji / noto ship as COLOUR FONTS, not ~11,900 files. Each set
+  // becomes one FontFace loaded from bytes the preload hands over, and the face
+  // is then drawn as a GLYPH — the same code path as 'native', just a different
+  // family. Verified inside the real Meet page: it renders in colour, and CSP
+  // never applies because a FontFace from an ArrayBuffer has no URL to check.
+  //
+  // The family names are ours, not the fonts' own: what matters is that they
+  // cannot collide with something installed on the user's machine, so a glyph
+  // drawn under them provably came from our bytes.
+  const EMOJI_FONT_SETS = { twemoji: 1, openmoji: 1, noto: 1 };
+  const _fontFamilyFor = (setName) => 'VibeEmoji-' + setName;
+  const _fontLoading = new Set();
+  function _ensureEmojiFont(setName) {
+    if (!EMOJI_FONT_SETS[setName]) return;
+    if (_fontLoading.has(setName)) return;             // in flight or done
+    _fontLoading.add(setName);
+    const getBytes = (typeof globalThis !== 'undefined') && globalThis.__vibeEmojiFontBytes;
+    if (!getBytes || typeof FontFace === 'undefined') return;
+    let bytes = null;
+    try { bytes = getBytes(setName); } catch { bytes = null; }
+    if (!bytes) {
+      console.warn('[bots-in-calls] No font bytes for set', setName, '— faces stay native');
+      return;
+    }
+    try {
+      const ff = new FontFace(_fontFamilyFor(setName), bytes);
+      ff.load().then(() => {
+        document.fonts.add(ff);
+        console.log('[bots-in-calls] Emoji font ready:', setName);
+      }).catch((e) => {
+        // Leave it un-added: the font stack falls through to the OS emoji font,
+        // so the bot keeps a face rather than rendering tofu.
+        console.warn('[bots-in-calls] Emoji font failed:', setName, e && e.message);
+      });
+    } catch (e) {
+      console.warn('[bots-in-calls] FontFace rejected for', setName, e && e.message);
+    }
+  }
+  // `dir:<path>` — a folder of images the user or an agent made, resolved by the
+  // preload (the page has no fs). Same contract as a bundled image set: a data
+  // URI, or null for "not in this set", which falls back to the native glyph.
+  const _dirOf = (setName) => {
+    const m = /^dir:(.+)$/.exec(String(setName || ''));
+    return m ? m[1].trim() : null;
+  };
+  const _isImageSetName = (setName) => !!EMOJI_SETS[setName] || !!_dirOf(setName);
+
   function _emojiImage(setName, emoji) {
+    const dir = _dirOf(setName);
+    if (dir) {
+      const resolveDir = (typeof globalThis !== 'undefined') && globalThis.__vibeEmojiDirUri;
+      if (!resolveDir) return null;
+      const key = 'dir:' + dir + '|' + emoji;
+      if (_emojiImgCache.has(key)) return _emojiImgCache.get(key);
+      _emojiImgCache.set(key, null);
+      let uri = null;
+      try { uri = resolveDir(dir, emoji); } catch { uri = null; }
+      if (!uri) return null;
+      const dimg = new Image();
+      dimg.onload = () => { _emojiImgCache.set(key, dimg); };
+      dimg.onerror = () => { _emojiImgCache.set(key, null); };
+      dimg.src = uri;
+      return null;
+    }
     const set = EMOJI_SETS[setName];
     const resolve = (typeof globalThis !== 'undefined') && globalThis.__vibeEmojiDataUri;
     if (!set || !resolve) return null;
@@ -1473,6 +1803,14 @@
   // muted, rather than surprising the room with sound already suppressed.
   let shareAudioGain = null;
   let shareAudioMuted = false;
+  // The RAW shared audio track (the tab/screen's actual sound, before the mute
+  // gain). Exposed so the call recorder can save it as its own track (#209),
+  // mirroring __vibeMicTrack. Recording the raw source, not the published
+  // (post-mute) track, so the shared content's audio is captured even when the
+  // bot has muted it into the call. Cleared when the share ends.
+  let currentShareAudioTrack = null;
+  window.__vibeShareTrack = () =>
+    (currentShareAudioTrack && currentShareAudioTrack.readyState === 'live') ? currentShareAudioTrack : null;
 
   function applyShareAudioMute() {
     if (!shareAudioGain) return false;
@@ -1487,6 +1825,10 @@
   function installShareAudioGain(stream) {
     const raw = stream.getAudioTracks()[0];
     if (!raw) { shareAudioGain = null; return null; }
+    // Expose the raw track for recording, whether or not the gain graph below
+    // succeeds — a share that can't be muted can still be recorded.
+    currentShareAudioTrack = raw;
+    raw.addEventListener('ended', () => { if (currentShareAudioTrack === raw) currentShareAudioTrack = null; });
     try {
       const ctx = new AudioContext();
       const gain = ctx.createGain();
@@ -1590,7 +1932,19 @@
             // Brief "noted that" pulse on entering thinking — this is what a
             // background_tick (#245) causes, so the avatar tilts+pops to signal
             // the slow model just surfaced. Harmless before a normal response too.
-            if (payload.state === 'thinking' && cam.state !== 'thinking') cam._tickPulseAt = Date.now();
+            //
+            // Jittered start + re-rolled direction/size so multiple bots on the
+            // same call — which all notice the same silence gap at roughly the
+            // same instant — don't visibly tilt in perfect lockstep. TICK_JITTER_MS
+            // delays the pulse's start (Date.now() in the future is fine: the
+            // render loop's pulseAge just stays negative, so nothing shows,
+            // until real time catches up to it).
+            if (payload.state === 'thinking' && cam.state !== 'thinking') {
+              const TICK_JITTER_MS = 250;
+              cam._tickPulseAt = Date.now() + Math.random() * TICK_JITTER_MS;
+              cam._tickTiltSign = Math.random() < 0.5 ? -1 : 1;
+              cam._tickTiltMag = 0.7 + Math.random() * 0.6; // ±30% around the base peak tilt
+            }
             cam.state = payload.state;
             // hasEngaged = "a real agent backend is driving us", which is the
             // meaning of 🫥 vs a face: 🫥 = in the call but unattended. ANY
@@ -1618,6 +1972,15 @@
         }
         break;
 
+      // The countdown to the bot taking its turn (absolute deadline, or null).
+      // Absolute rather than a duration because the server re-arms: a duration
+      // captured at arm time would be stale the moment the gate is corrected.
+      case 'set-silence-gate':
+        for (const cam of cameras.values()) {
+          cam.silenceGate = payload && payload.deadline ? payload : null;
+        }
+        break;
+
       case 'set-anyone-speaking':
         if (typeof payload?.anyoneSpeaking === 'boolean') {
           for (const cam of cameras.values()) {
@@ -1635,6 +1998,24 @@
         }
         break;
 
+      case 'name-mentioned': {
+        // Another participant's speech named the bot directly — the same
+        // detection that lets a passive/silent bot wake up and answer (#343).
+        // Brief head-tilt + "leaning in" grow, like a dog cocking its head at
+        // the sound of its name. Side still ALTERNATES (not random) so back-
+        // to-back mentions stay visually distinguishable as separate events;
+        // the peak-tilt SIZE is re-rolled randomly each time so the motion
+        // doesn't look like a mechanical, identical-amplitude tic.
+        const mag = 0.7 + Math.random() * 0.6; // ±30% around the base peak tilt
+        for (const cam of cameras.values()) {
+          cam._nameMentionPulseAt = Date.now();
+          cam._mentionTiltSign = -(cam._mentionTiltSign || 1);
+          cam._mentionTiltMag = mag;
+        }
+        console.debug('[bots-in-calls] Name mentioned — avatar reaction fired');
+        break;
+      }
+
       case 'play-join-chime':
         // Replaces the old canned "Hello I am X" welcome — short two-tone
         // ping when admission completes so the user knows the bot is in the
@@ -1650,12 +2031,14 @@
       // the 'set-bot-state' handler above, so 🫥 means "no agent driving yet".)
 
       case 'set-call-status':
-        // Forwarded from local-server: 'idle' | 'navigating' | 'joining' |
-        // 'waiting-to-be-admitted' | 'in-call' | 'left'. Used to show 🫥
-        // before the bot is actually in the call.
+        // Forwarded from local-server; see electron-app/call-phase.js for the
+        // lifecycle. Used to show 🫥 before the bot is actually in the call.
         if (payload?.status) {
+          // A finished call re-gates engagement so the NEXT one starts at 🫥
+          // again. 'after-call-work' is deliberately absent: the agent is still
+          // working, and blanking its face mid-wrap-up would say it had gone.
           const resets = payload.status === 'idle' || payload.status === 'navigating' ||
-            payload.status === 'joining' || payload.status === 'left';
+            payload.status === 'joining' || payload.status === 'call-complete';
           for (const cam of cameras.values()) {
             cam.callStatus = payload.status;
             // New-call markers reset the engagement gate — show 🫥 again
@@ -1813,10 +2196,23 @@
         // Which emoji graphics the avatar draws: 'native' (OS font) or 'twemoji'
         // (bundled SVG set, #316). Module-scope var seeds cameras created later.
         if (payload) {
-          emojiSetGlobal = (payload.emojiSet === 'native' || EMOJI_SETS[payload.emojiSet]) ? payload.emojiSet : 'native';
+          // One value answers "how is the face drawn": a bundled set name, or
+          // `font:<Family>` for a font installed on the user's machine. Encoding
+          // the font here rather than in a second preference means there is no
+          // precedence rule between the two to remember, get wrong, or explain.
+          const raw = String(payload.emojiSet == null ? 'native' : payload.emojiSet);
+          const asFont = parseEmojiFontValue(raw);
+          emojiFontGlobal = asFont ? asFont.family : '';
+          emojiFontColorGlobal = asFont ? asFont.color : '';
+          emojiSetGlobal = (!asFont
+            && (raw === 'native' || EMOJI_SETS[raw] || EMOJI_FONT_SETS[raw] || _dirOf(raw)))
+            ? raw : 'native';
+          _ensureEmojiFont(emojiSetGlobal);
           avatarState.emojiSet = emojiSetGlobal;
           for (const cam of cameras.values()) cam.emojiSet = emojiSetGlobal;
-          console.log('[bots-in-calls] Emoji set:', emojiSetGlobal);
+          console.log('[bots-in-calls] Emoji set:', emojiSetGlobal,
+            emojiFontGlobal ? '(font: ' + emojiFontGlobal
+              + (emojiFontColorGlobal ? ' ' + emojiFontColorGlobal : '') + ')' : '');
         }
         break;
 
@@ -2140,6 +2536,9 @@
 
       // Speech detection threshold — set low for now to ensure speakingLog gets populated.
       // Tune upward once we see real per-participant levels in a multi-person call.
+      // NOTE: this gates STT RECORDING. The turn-taking floor uses its own, much
+      // louder threshold below — the two questions are different, and conflating
+      // them is what made the floor fire on keystrokes.
       const wasSpeaking = this.speaking;
       this.speaking = db > -55;
 
@@ -2148,7 +2547,34 @@
       }
 
       // #115: publish the fast floor signal alongside the existing STT gating.
-      try { noteAudioLevel(this.speaking); noteLevelSample(db); } catch { /* never break level monitoring */ }
+      //
+      // Deliberately NOT this.speaking. The floor answers "is someone taking the
+      // floor from the bot", which is a much stronger claim than "there is audio
+      // worth transcribing", and it is acted on immediately — the rising edge is
+      // instant by design, so one frame is enough to silence the bot.
+      // #245: echo guard. The bot's own voice comes out of a participant's
+      // SPEAKERS, back into their MICROPHONE, and arrives here on their stream —
+      // measured 503ms behind our TTS, loud enough to clear -35dB easily, and
+      // attributed to them, so nothing about the source tells us it is ours.
+      // It made the bot yield to a human who had not spoken.
+      //
+      // Level alone cannot separate them: echo at speaker volume is as loud as
+      // speech. What separates them is CORRELATION — echo tracks our output
+      // envelope, a person does not. So a frame only counts as the far end
+      // talking if OUR output is quiet in that moment. TTS has gaps at every
+      // word and sentence boundary; someone genuinely talking over the bot is
+      // loud during those gaps, and their echo is not.
+      //
+      // The cost is honest: barge-in is detected at the next gap in the bot's
+      // speech rather than instantly, typically within a few hundred ms. That is
+      // a far better trade than yielding to ourselves, which is indistinguishable
+      // from the bot being interrupted by a ghost.
+      let farEnd = db > FLOOR_SPEECH_DB;
+      if (farEnd && ECHO_GUARD_ENABLED) {
+        const own = (typeof mic !== 'undefined' && mic && mic.getAmplitude) ? mic.getAmplitude() : 0;
+        if (own > SELF_LOUD_AMP) { farEnd = false; noteEchoSuppressed(); }
+      }
+      try { noteAudioLevel(farEnd); noteLevelSample(db); } catch { /* never break level monitoring */ }
 
       if (this.speaking && !wasSpeaking) {
         // Started/stopped speaking debug lines suppressed — too noisy in
@@ -2312,6 +2738,51 @@
   }
 
   const AUDIO_FLOOR_RELEASE_MS = 350;
+
+  // How loud something must be to take the floor from a speaking bot.
+  //
+  // 20dB above the STT gate (-55dB), and chosen from measurement rather than
+  // taste. Across 1,501 level windows of real calls: the room noise floor never
+  // reached -55dB (median -92dB), so ambient sound was never the problem — but
+  // the rising edge is immediate, so one ~16ms frame over the line arms the
+  // floor and holds it 350ms. A keystroke or chair creak clears -55dB easily,
+  // and 26.5% of 3,820 measured busy periods lasted under 500ms: too short to be
+  // anyone taking the floor, each one a bot going quiet for nothing.
+  //
+  // At -35dB, 94% of windows containing real speech still clear it, and no quiet
+  // window does. That makes this an ESCAPE HATCH rather than a detector: normal
+  // turn-taking rides the DOM mic-meter as before, and this is the fast path for
+  // someone who audibly wants in. Erring loud is the right error — being slow to
+  // yield costs a moment, yielding to a cough costs the bot its voice.
+  //
+  // NOT verified: that a keystroke stays under -35dB. The 15s percentiles this
+  // was derived from smooth transients away. The number to watch is the count of
+  // sub-500ms busy periods in [floor-audio]; if they persist, this is still too
+  // low.
+  const FLOOR_SPEECH_DB = -35;
+
+  // #245: while our own output is above this, far-end audio is treated as echo.
+  // 0.10 of the smoothed 0..1 TTS amplitude — comfortably above the noise in a
+  // gap, comfortably below normal speech level, so the guard opens at every word
+  // boundary rather than only between sentences.
+  const SELF_LOUD_AMP = 0.10;
+  const ECHO_GUARD_ENABLED = true;
+
+  // How often the guard actually fires, sampled rather than logged per frame
+  // (this runs every animation frame). Without a number here we would be
+  // guessing whether the guard is doing anything or quietly disabling barge-in.
+  let _echoSuppressed = 0;
+  let _echoLastLogAt = 0;
+  function noteEchoSuppressed() {
+    _echoSuppressed++;
+    const now = Date.now();
+    if (!_echoLastLogAt) { _echoLastLogAt = now; return; }
+    if (now - _echoLastLogAt < 15000) return;
+    window.postMessage({ __botsInCalls: true, action: 'log', payload: {
+      line: `🔇 [echo-guard] suppressed ${_echoSuppressed} far-end frames in the last ${Math.round((now - _echoLastLogAt) / 1000)}s `
+        + `(our own audio was playing — see #245)` } }, '*');
+    _echoSuppressed = 0; _echoLastLogAt = now;
+  }
   let _audioFloorBusy = false;
   let _audioFloorLastTrueAt = 0;
   let _audioFloorReleaseTimer = null;
@@ -2486,6 +2957,184 @@
 
   // Expose for debugging from console
   window.__botsInCallsAudioCapture = audioCaptureManager;
+
+  // ---------------------------------------------------------------------------
+  // CallRecorder (#209) — per-track call audio to disk, for debugging.
+  //
+  // Records the bot's OWN outgoing audio (its TTS mic) and every remote WebRTC
+  // track the AudioCaptureManager holds, each with its own MediaRecorder, and
+  // streams the webm/opus chunks to main (call-recorder.js appends one file per
+  // track + a manifest). Meet hands each remote participant its OWN WebRTC track
+  // — measured independent in a 3-party call (#209) — so "remote-*" tracks are
+  // genuinely per-participant, not one shared mix. They're labeled by arrival
+  // order, not name; Meet can also emit extra/initially-silent tracks.
+  //
+  // Dormant until main sends 'start-recording' (gated on the recordCallAudio
+  // pref / VIBECONF_RECORD_CALL). The poll re-attaches: the bot mic may not
+  // exist at start, and a participant can join after.
+  // ---------------------------------------------------------------------------
+  const callRecorder = (() => {
+    const TIMESLICE_MS = 1000;
+    const recorders = new Map(); // trackName -> { rec, track, seq, paId }
+    const votes = new Map();     // trackName -> { name: count }  (#209 attribution)
+    const bestName = new Map();  // trackName -> current best name
+    let recording = false;
+    let pollTimer = null;
+    let selfName = null;         // the bot's OWN name — never attribute it to a remote
+
+    const post = (action, payload) =>
+      window.postMessage({ __botsInCalls: true, action, payload }, '*');
+
+    // Attribution: the DOMSpeakerTracker (provider) posts 'speaker-active' with
+    // the REAL participant name when Meet's people-pane shows them speaking. When
+    // exactly one recorded remote track is making sound at that moment, that
+    // track is that speaker — vote it. Only sole-speaker moments count, so
+    // overlap never mis-attributes. Best guess is pushed to main as it firms up.
+    function voteFromDom(name) {
+      if (!recording || !name || name === selfName) return; // never attribute the bot's own voice
+      const active = [];
+      for (const [tname, st] of recorders) {
+        if (!st.paId) continue; // the bot's own track has no participant id
+        const pa = audioCaptureManager.participants.get(st.paId);
+        if (pa && pa.speaking) active.push(tname);
+      }
+      if (active.length !== 1) return; // ambiguous — need a sole speaker
+      const t = active[0];
+      let tally = votes.get(t);
+      if (!tally) { tally = {}; votes.set(t, tally); }
+      tally[name] = (tally[name] || 0) + 1;
+      let best = null, max = 0;
+      for (const nm in tally) { if (tally[nm] > max) { max = tally[nm]; best = nm; } }
+      if (best && bestName.get(t) !== best) {
+        bestName.set(t, best);
+        post('record-name', { track: t, name: best });
+      }
+    }
+
+    window.addEventListener('message', (event) => {
+      if (event.source !== window || !event.data?.__botsInCalls) return;
+      if (event.data.action === 'speaker-active') {
+        const { name, speaking, at } = event.data.payload || {};
+        if (!name) return;
+        // Persist the speaker timeline (start AND stop) to disk alongside the
+        // audio: Meet mixes participants into shared slots, so the tracks alone
+        // don't say who spoke when — but this DOM-derived, wall-clock-stamped
+        // log does, and merge-call-audio.mjs turns it into who-spoke-when
+        // annotations over the merged call audio (#209).
+        if (recording) post('record-speaker-event', { name, speaking: !!speaking, at: at || Date.now() });
+        if (speaking) voteFromDom(name);
+      }
+    });
+
+    function pickMime() {
+      for (const m of ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus']) {
+        try { if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m; } catch { /* old engine */ }
+      }
+      return 'audio/webm';
+    }
+
+    function recordTrack(name, track, paId = null) {
+      if (!recording || !track || track.readyState === 'ended' || recorders.has(name)) return;
+      const mime = pickMime();
+      let rec;
+      try {
+        rec = new MediaRecorder(new MediaStream([track]), { mimeType: mime });
+      } catch (err) {
+        post('log', { line: `[call-record] cannot record ${name}: ${err.message}` });
+        return;
+      }
+      const state = { rec, track, seq: 0, paId, startWallClock: 0 };
+      recorders.set(name, state);
+      rec.ondataavailable = (e) => {
+        if (!e.data || !e.data.size) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          const b64 = String(reader.result).split(',')[1];
+          // startWallClock: wall-clock ms at the instant this track's recorder
+          // started, i.e. the t=0 of its webm timeline. Captured HERE in the
+          // renderer (not on chunk arrival at main) so a sample at internal time
+          // t maps to an absolute wall clock of startWallClock + t — the anchor
+          // that aligns audio with the transcript's Date.now() stamps (#209).
+          if (b64) post('record-chunk', { track: name, seq: state.seq++, mime, dataBase64: b64, startWallClock: state.startWallClock });
+        };
+        reader.readAsDataURL(e.data);
+      };
+      track.addEventListener('ended', () => stopTrack(name));
+      // Stamp the wall clock immediately before start() — this is the track
+      // timeline's true origin, on the same clock as every other call event.
+      try { state.startWallClock = Date.now(); rec.start(TIMESLICE_MS); }
+      catch (err) { post('log', { line: `[call-record] start failed ${name}: ${err.message}` }); }
+    }
+
+    function stopTrack(name) {
+      const s = recorders.get(name);
+      if (!s) return;
+      try { if (s.rec.state !== 'inactive') s.rec.stop(); } catch { /* already inactive */ }
+      recorders.delete(name);
+    }
+
+    let lastShareId = null, shareCount = 0;
+    function attachAll() {
+      if (!recording) return;
+      try {
+        const bot = window.__vibeMicTrack && window.__vibeMicTrack();
+        if (bot) recordTrack('bot', bot);
+      } catch { /* bot mic not up yet — poll retries */ }
+      try {
+        for (const [id, pa] of audioCaptureManager.participants) {
+          if (pa && pa.track) recordTrack(`remote-${id}`, pa.track, id);
+        }
+      } catch { /* manager is a stub (Slack) — nothing to attach */ }
+      // The shared tab/screen's own audio, when a share is live. A fresh id means
+      // a new share session (they come and go mid-call) → a new track name, so
+      // separate shares land in separate files instead of concatenating into one.
+      //
+      // Named 'share-audio', NOT 'share': call-recording-window.js already claims
+      // the bare 'share' name for the shared surface's VIDEO capture (#288, which
+      // landed after this was written). CallRecordingSession keys tracks by name
+      // and opens one fd per name, so reusing 'share' would append two unrelated
+      // webm byte streams into a single share.webm — a corrupt file, plus whichever
+      // stream registered first would decide the per-kind byte cap for both.
+      try {
+        const share = window.__vibeShareTrack && window.__vibeShareTrack();
+        if (share) {
+          if (share.id !== lastShareId) { lastShareId = share.id; shareCount++; }
+          recordTrack(shareCount === 1 ? 'share-audio' : `share-audio-${shareCount}`, share);
+        }
+      } catch { /* no share / not exposed — nothing to attach */ }
+    }
+
+    return {
+      start(meta) {
+        if (recording) return;
+        recording = true;
+        selfName = (meta && meta.botName) || null;
+        post('record-started', { ...(meta || {}), at: Date.now() });
+        attachAll();
+        pollTimer = setInterval(attachAll, 1500);
+      },
+      stop() {
+        if (!recording) return;
+        recording = false;
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        for (const name of [...recorders.keys()]) stopTrack(name);
+        post('record-stopped', { at: Date.now() });
+      },
+    };
+  })();
+
+  window.addEventListener('message', (event) => {
+    if (event.source !== window || !event.data?.__botsInCalls) return;
+    if (event.data.action === 'start-recording') {
+      callRecorder.start(event.data.payload || {});
+      isRecordingGlobal = true;
+      for (const cam of cameras.values()) cam.isRecording = true;
+    } else if (event.data.action === 'stop-recording') {
+      callRecorder.stop();
+      isRecordingGlobal = false;
+      for (const cam of cameras.values()) cam.isRecording = false;
+    }
+  });
 
   // ---------------------------------------------------------------------------
   // SpeakerAttributedTranscription — combines Web Speech API (global STT)

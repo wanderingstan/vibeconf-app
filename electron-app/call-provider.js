@@ -68,6 +68,10 @@ const CALL_EVENTS = {
   // Presenting / screen share.
   selfPresenting: 'self-presenting',
   someonePresenting: 'someone-presenting',
+  // Every screen share in the people pane. Distinct from someonePresenting,
+  // which reads the toolbar: that names ONE presenter (latest wins) and reports
+  // none at all while the bot is presenting.
+  screenSharesUpdated: 'screen-shares-updated',
   screenShareStopped: 'screen-share-stopped',
   screenShareError: 'screen-share-error',
   // Mic / TTS / lifecycle.

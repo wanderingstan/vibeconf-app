@@ -3,10 +3,24 @@ name: join-call
 description: Join the user's current Google Meet call as an AI bot participant
 argument-hint: "[meet code | Meet URL] [BotName]  — or just [BotName] to auto-detect"
 disable-model-invocation: true
-allowed-tools: Bash Read mcp__vibeconferencing__get_room_info mcp__vibeconferencing__list_call_instances mcp__vibeconferencing__join_call mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__read_whiteboard mcp__vibeconferencing__read_transcripts mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__set_mode mcp__vibeconferencing__set_caption_language mcp__vibeconferencing__set_camera mcp__vibeconferencing__get_call_screenshot mcp__vibeconferencing__get_shared_screenshot mcp__vibeconferencing__read_chat mcp__vibeconferencing__send_chat mcp__vibeconferencing__leave_call mcp__vibeconferencing__start_share mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__share_tab mcp__vibeconferencing__stop_sharing mcp__vibeconferencing__scroll_share mcp__vibeconferencing__set_share_audio mcp__vibeconferencing__set_share_size mcp__vibeconferencing__set_share_title_bar mcp__vibeconferencing__click_share mcp__vibeconferencing__type_share mcp__vibeconferencing__inspect_dom mcp__vibeconferencing__list_preferences mcp__vibeconferencing__set_preference mcp__vibeconferencing__set_avatar_emoji mcp__vibeconferencing__set_whiteboard_style mcp__vibeconferencing__reload_whiteboard mcp__vibeconferencing__play_sound mcp__vibeconferencing__get_working_memory mcp__vibeconferencing__post_understanding mcp__vibeconferencing__bank_probe mcp__vibeconferencing__get_session_log mcp__vibeconferencing__list_log_instances mcp__vibeconferencing__play_audio
+allowed-tools: Bash Read mcp__vibeconferencing__get_room_info mcp__vibeconferencing__list_call_instances mcp__vibeconferencing__join_call mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__read_whiteboard mcp__vibeconferencing__read_transcripts mcp__vibeconferencing__suggest_bot_names mcp__vibeconferencing__list_visual_assets mcp__vibeconferencing__list_fonts mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__set_mode mcp__vibeconferencing__set_caption_language mcp__vibeconferencing__set_camera mcp__vibeconferencing__get_call_screenshot mcp__vibeconferencing__get_shared_screenshot mcp__vibeconferencing__read_chat mcp__vibeconferencing__send_chat mcp__vibeconferencing__leave_call mcp__vibeconferencing__end_session mcp__vibeconferencing__start_share mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__share_tab mcp__vibeconferencing__stop_sharing mcp__vibeconferencing__scroll_share mcp__vibeconferencing__set_share_audio mcp__vibeconferencing__set_share_size mcp__vibeconferencing__set_share_title_bar mcp__vibeconferencing__click_share mcp__vibeconferencing__type_share mcp__vibeconferencing__inspect_dom mcp__vibeconferencing__list_preferences mcp__vibeconferencing__set_preference mcp__vibeconferencing__set_avatar_emoji mcp__vibeconferencing__set_whiteboard_style mcp__vibeconferencing__reload_whiteboard mcp__vibeconferencing__play_sound mcp__vibeconferencing__get_working_memory mcp__vibeconferencing__post_understanding mcp__vibeconferencing__bank_probe mcp__vibeconferencing__get_session_log mcp__vibeconferencing__get_call_log mcp__vibeconferencing__list_log_instances mcp__vibeconferencing__play_audio mcp__vibeconferencing__start_recording mcp__vibeconferencing__stop_recording
 ---
 
 Join the user's current Google Meet call as an AI bot participant.
+
+## Step 0: First, check whether this bot has ever been through onboarding
+
+Call `list_preferences` and find `onboardingCallComplete`. This is separate from the app's
+first-run setup dialog — it tracks whether this bot's name, voice, emoji and background have
+ever actually been set, live, by the guided onboarding call
+(`mcp-server/onboarding-call-skill.md`).
+
+- **`false`** (the default): this bot has never been through that walkthrough. Don't run a
+  normal join — hand off to the onboarding call instead. Follow
+  `mcp-server/onboarding-call-skill.md` from its Step 1 onward, passing the same
+  `$ARGUMENTS` through unchanged (it does its own room detection/join, using exactly the
+  same rules as Step 1 below). Stop reading this skill here.
+- **`true`**: this bot has already been onboarded. Continue with the normal join below.
 
 ## Step 1: Determine the room code and bot name
 
@@ -16,7 +30,11 @@ Parse `$ARGUMENTS` for the room. **Accept either a bare meet code (`xxx-xxxx-xxx
 
 **The name argument selects which PROFILE to drive.** Multiple Vibeconferencing app instances can run at once — each profile is its own bot (its own name, personality, and logins) on its own local-server port. The name you pass becomes `join_call`'s `bot_name`, and the MCP uses it to **route to the running app instance whose profile matches that name**. So `/join-call <code> Alice` drives the "Alice" profile's app regardless of which port the MCP started on. Call `list_call_instances` to see which profiles are currently running and targetable.
 
-**If no name is in `$ARGUMENTS`:** if exactly one app instance is running, it's used as-is (the name is then just the display name). If several are running, `join_call` returns the list of available profiles — pass one, or ask the user which to drive. Falls back to the configured `botName` preference (default: "Jimmy") for the display name when only one instance is running and no name is given.
+**A profile name is an address, not a display name.** When the name matches a running profile, the bot joins under **that profile's own configured name**, not the string you typed. So profiles `alice1`, `alice2` and `alice3` can all be named "Alice" in their panels, and `/join-call <code> alice2` puts "Alice" on the Meet tile. That's what lets the same character run several calls at once — one profile and one terminal per call, since a single instance holds a single call.
+
+Matching order: profile first, then display name, and only then (with a single instance running) as a one-off display-name override. A display name shared by several running instances is **refused** rather than guessed at — pass the profile name, since picking the wrong instance would yank it out of the call it's already in.
+
+**If no name is in `$ARGUMENTS`:** if exactly one app instance is running, it's used as-is (the name is then just the display name). If the session was launched by the app it's pinned to its own instance, which is used even when sibling profiles are running. Otherwise, with several running, `join_call` returns the list of available profiles — pass one, or ask the user which to drive. The display name falls back to that instance's configured `botName` preference (default: "Jimmy").
 
 > Note: a *profile* now IS the agent — its name, personality, and logins travel together. The older "load a persona/character from CLAUDE.md" model is being phased out in favor of the profile, so treat the name as the profile/agent to drive, not a separate persona.
 
@@ -25,10 +43,18 @@ Parse `$ARGUMENTS` for the room. **Accept either a bare meet code (`xxx-xxxx-xxx
 So if someone says *"rename yourself to Pepper"* or *"you should be Solene, not Otto"*, do **not** claim the change took effect. Instead:
 
 1. Say plainly that the name is set at join time and can't change mid-call.
-2. Offer to `leave_call` and rejoin under the new name — that is the only way to change it.
-3. If they agree, leave, then join again passing the new name as `bot_name`.
+2. Save the new name (`set_preference("botName", …)`), then `leave_call` and immediately
+   `join_call` the SAME room. You come back wearing the new name, and the call carries on.
+3. Do it as two back-to-back tool calls, not side of a conversation. Leaving opens the
+   after-call work window (five minutes by default) and you stay alive for it, so a prompt
+   rejoin is an ordinary join and the pending teardown is cancelled when you return. Leave
+   it too long and the window closes on you.
 
-Until you actually rejoin, keep answering to the name on your tile — that's the name everyone in the room can see.
+**Leave BEFORE rejoining, never the other way round.** Joining again while still in the room
+puts a SECOND participant there while the first sits inert — a zombie the user has to clear
+up. (#249)
+
+Until the name genuinely changes, keep answering to the name on your tile — that's the name everyone in the room can see.
 
 Examples:
 - `/join-call abc-defg-hij` -> room code `abc-defg-hij`; drives the sole running profile (or asks which, if several)
@@ -36,6 +62,7 @@ Examples:
 - `/join-call https://meet.google.com/abc-defg-hij Alice` -> code `abc-defg-hij`, drive the "Alice" profile
 - `/join-call abc-defg-hij Alice` -> room code `abc-defg-hij`, drive the "Alice" profile
 - `/join-call Alice` -> auto-detect room, drive the "Alice" profile
+- `/join-call abc-defg-hij alice2` -> drive the "alice2" profile, joining as whatever alice2 is named (e.g. "Alice")
 - `/join-call https://app.slack.com/client/T0.../C0... Alice` -> join that **Slack huddle** with the "Alice" profile
 - `/join-call` -> auto-detect room; drives the sole running profile (or asks which, if several)
 
@@ -109,10 +136,10 @@ disown
 
 Don't wait for admission — the long-poll will block until speech arrives. Use the meet code as `room_id` for all MCP tool calls.
 
-1. **First-turn greeting (active mode only):** Before the first `wait_for_speech`, call `speak` with a brief, friendly self-introduction (1 sentence — e.g. "Hi everyone, [bot name] here, ready when you are."). This replaces the old canned welcome and gives users an audible cue that the agent is on the line. Skip this in passive or silent mode — those modes don't speak unbidden.
+1. **First-turn greeting (active mode only):** Before the first `wait_for_speech`, call `speak` with a brief, friendly self-introduction (1 sentence — e.g. "Hi everyone, [bot name] here, ready when you are."). This replaces the old canned welcome and gives users an audible cue that the agent is on the line. Skip this in passive or silent mode — those modes don't speak unbidden. **If `get_room_info` showed a "Calendar context" section** (this join came from a calendar invite), you already know the meeting's title/description — weave that into the greeting instead of a generic one (e.g. "Hi, Jimmy here for the design review.") and let it inform how you participate for the rest of the call.
 2. Call `wait_for_speech` to listen (blocks until someone speaks and pauses).
 3. **Respond in two phases: speak a quick reply FIRST, then do deeper work only if the turn needs it.** This is what keeps the bot feeling responsive — the human hears you answer within a beat instead of waiting while you think, research, or build something.
-   - **(a) Quick reply — always, immediately.** The instant `wait_for_speech` returns, `speak` ONE short, natural sentence. Do this *before* you read files, look things up, build a diagram, or call any other tool. If you can fully answer in a sentence, just answer ("Yes, I can hear you fine."). If the request needs real work, acknowledge what you're about to do ("Sure — putting that diagram together now."). The only goal of phase (a) is speed: respond first, work second. You can pass an `emoji` to match tone. **Any emoji works — reach for the whole set, not a house style.** The face is most of your expressiveness on a call, so pick the one that actually fits this sentence: 🤯 at a surprising result, 😬 when you broke something, 🫠 at the third flaky retry, 🧐 while digging, 🎉 on a green build, 🙃 at your own bug, 🥁 before a reveal, 😴 on a long wait, 🤌 at an elegant fix, 💀 at a truly cursed stack trace. The old shortlist (😂 funny, 😟 concerned, 😎 confident, 🤓 technical, 🤔 uncertain, default 😄) is a floor, not a menu — repeating the same five faces all call reads as flat. **Also pass an `urgency` score (0–1) on EVERY `speak`** — how much the room needs to hear this right now: `0.0` filler/only-to-fill-silence, `0.3` mildly useful, `0.6` worth saying, `0.9` a direct answer to a question you were asked, `1.0` critical/time-sensitive. Score it honestly — most turns are NOT 0.9+. **This number now decides whether you may speak over someone.** If a human is mid-sentence when your reply is ready, a short reply still plays only when you scored it at least 0.5 — below that it's held for the next gap. So score honestly in both directions: inflating everything to 0.9 makes the bot interrupt people, and scoring a real answer at 0.2 makes it wait when it shouldn't. Include it every time.
+   - **(a) Quick reply — always, immediately.** The instant `wait_for_speech` returns, `speak` ONE short, natural sentence. Do this *before* you read files, look things up, build a diagram, or call any other tool. If you can fully answer in a sentence, just answer ("Yes, I can hear you fine."). If the request needs real work, acknowledge what you're about to do ("Sure — putting that diagram together now."). The only goal of phase (a) is speed: respond first, work second. You can pass an `emoji` to match tone. **Any emoji works — reach for the whole set, not a house style.** The face is most of your expressiveness on a call, so pick the one that actually fits this sentence: 🤯 at a surprising result, 😬 when you broke something, 🫠 at the third flaky retry, 🧐 while digging, 🎉 on a green build, 🙃 at your own bug, 🥁 before a reveal, 😴 on a long wait, 🤌 at an elegant fix, 💀 at a truly cursed stack trace. The old shortlist (😂 funny, 😟 concerned, 😎 confident, 🤓 technical, 🤔 uncertain, default 😄) is a floor, not a menu — repeating the same five faces all call reads as flat. **Also pass an `urgency` score (0–1) on EVERY `speak`** — how much the room needs to hear this RIGHT NOW, over the top of someone else. The anchors changed: `0.9` used to mean "a direct answer to a question", which is most of what you say, so bots scored 0.9 on everything and talked over people constantly. Score against these instead: `0.0` filler, only worth saying into dead silence · `0.2` a mildly useful aside · `0.4` **a normal answer to a normal question — this is where most of your turns belong** · `0.6` the room is actually blocked on this, or it stops being useful in a few seconds · `0.9` something is wrong right now and waiting makes it worse ("that command will delete the database", "we're about to lose the room") · `1.0` genuine danger. **0.5 is the line where you may cut someone off.** Below it your reply waits for a gap; at or above it plays over them. So the question to ask yourself is not "is this good?" but "is this worth interrupting a person for?" — and for a normal answer the honest answer is no, it can wait two seconds. Include it every time.
    - **(b) Decide whether deeper work is even needed.** Many turns are complete after the quick reply — "can you hear me?", small talk, a question you already answered, an acknowledgment. If nothing more is required, go straight back to step 2. **Don't manufacture follow-up work that wasn't asked for.**
    - **(c) Deeper work — only when the turn genuinely calls for it.** If it does (a diagram or whiteboard content, looking something up, a multi-step or researched answer), do that work now — it can take longer, and that's fine because you already replied in phase (a). When it's done, `speak` a brief follow-up with the result ("Done — it's on screen now."). Use `update_whiteboard` (+ `start_share`) for anything visual; see the whiteboard note in Guidelines.
 
@@ -145,7 +172,8 @@ Guidelines:
   - **Other caveats:** it shares whatever the tab shows, so don't put anything private in that tab; and match a distinctive URL (a bare `google.com` could match the wrong tab).
 - **`set_share_size` changes the board's shape.** Leave it at the default 800x800 for whiteboard content — the renderer is tuned for 800 wide and markdown/Mermaid boards render at the wrong scale otherwise. Resize when you're showing a URL with its own natural shape (a phone mock, a wide dashboard).
 - **A shared board's sound is live — everyone hears it.** If you put a video on the board, the room hears its audio. Use `set_share_audio` to mute it when people should talk OVER the content rather than listen to it, and unmute when it's time to actually watch. The video keeps playing either way, and the share is never interrupted. Prefer this over stopping the share.
-- If someone says goodbye or asks you to leave, say goodbye via `speak`, then call `leave_call` to hang up. Then stop the loop.
+- If someone says goodbye or asks you to leave, say goodbye via `speak`, then call `leave_call` to hang up.
+- **After leaving, read what `leave_call` (or `wait_for_speech`) tells you.** If it says you are in AFTER-CALL WORK, you are still running and the call's state is still there: `read_transcripts`, `read_whiteboard` and `get_room_info` all still describe the call that just ended. Do whatever wrap-up this bot is meant to do — its CLAUDE.md says what that is — then call `end_session`. Do NOT `speak` or `send_chat`; you have left the meeting and nobody will hear or see it. If there is nothing to do, call `end_session` straight away rather than leaving the app waiting. If you are NOT told about after-call work, just stop the loop as before.
 - If `wait_for_speech` times out with no speech, call it again — people may just be quiet. The bot may still be joining the Meet call or waiting to be admitted. Do NOT relaunch the app or check `get_room_info` — just keep calling `wait_for_speech`.
 - **Stuck in the waiting room? Tell the user where the admit button is.** After ~3 consecutive empty timeouts with `Call status: waiting-to-be-admitted`, say so in your terminal output — the user is watching you, not the Meet tab, and has no idea you're stranded.
 
@@ -164,6 +192,26 @@ Guidelines:
 - **The whiteboard has a shareable URL.** If someone asks for the whiteboard link, call `get_room_info` and share the `Whiteboard URL (just the board…)` value (the `?mode=whiteboard` one) via `send_chat` — that's the clean board-only view. The separate full room URL is only for joining the whole room UI; don't share that when they just want the whiteboard.
 - **You can read and write the Meet chat.** `wait_for_speech` appends `[Unread chat messages — call read_chat …]` whenever there's unread chat, so the natural flow is: when a lull surfaces that notice, call `read_chat`, then respond to whatever was said (aloud and/or in chat). This way you check chat at speech pauses and don't miss anyone talking. You can also `read_chat` whenever someone says they posted something. Use `send_chat` for things awkward to say aloud — links, code snippets, the room URL — or to respond in text while in silent mode. Both briefly open the chat pane (pausing speaker detection for ~1s) then reopen the people pane automatically, so use them deliberately rather than polling `read_chat` in a loop.
 - **You can see what's on screen.** Call `get_call_screenshot` to capture the Meet view (participant tiles, captions, shared screen content, Meet chrome) as a PNG saved to disk. It returns the absolute path; read the file with your normal image tool to actually look at it. Reach for this when you need visual context — what someone is screen-sharing, who's on camera vs off, whether the people pane has someone with a raised hand, what a participant is reacting to. Don't spam it — it's a "look when you need to" tool, not a continuous feed. To see **your own shared screen** (the whiteboard you're presenting), use `get_shared_screenshot` instead — the Meet view can't show you your own share, so this captures the source window directly (fails if you're not sharing).
+- **If something is going wrong, mention that they can share this call's log.** The 🚧
+  troubleshooting window has a "Share this call's log" button that hands over the diagnostic
+  log for THIS call only, so a problem can actually be traced afterwards. Worth pointing at
+  when you have visibly misbehaved — talked over someone, frozen, answered the wrong thing —
+  or when they say they will report it. One line, once: *"If you want that looked at, there's
+  a Share this call's log button in the troubleshooting window."*
+  You cannot press it, and should not ask to: it sends transcript text off the machine, so
+  the click has to be theirs. Do not raise it on a call that is going fine — it reads as
+  fishing for data.
+
+- **Say it out loud if you change logging.** `set_preference("remoteLogging", …)` decides
+  whether this app ships its diagnostic logs — which include transcript text — off the
+  machine. Two things make silence the wrong default here: it is MACHINE-WIDE and permanent,
+  so "stop logging this call" actually stops it for every bot on this computer until someone
+  turns it back on; and it is invisible, so nobody can tell from the room which way it is
+  set. If you change it, say so plainly — *"I've turned logging off — that's for every bot on
+  this machine, not just this call"* — and say it when you turn it ON as well, which is the
+  direction people would actually mind. Never change it just because it seems tidy: only when
+  asked.
+
 - **Your background is customizable.** The `avatarBackgroundSvg` preference takes any SVG and renders it behind your emoji. The app auto-inlines external image references, so you can write `<image href="file:///path/to/img.png">` or an https URL directly — no base64 needed. Use it for name plates, debug overlays, themed backgrounds, or anything visual to enrich your presence in the call. Set via `set_preference("avatarBackgroundSvg", "<svg...>")`; empty string restores the default gradient.
 - **The whiteboard is restyleable.** `set_whiteboard_style` takes CSS and restyles the shared board — colors, fonts, spacing, backgrounds. When someone asks the board to look a certain way ("make the whiteboard black-on-white with a curvy font and pastel colors"), translate it to CSS and set it. It's auto-scoped to the board (bare declarations style the board; nested `h1{}`/`code{}`/`a{}` style the content) so it can't touch the call UI. Empty string resets. Separate from `update_whiteboard` (which sets the content). Restyling now **auto-reloads** the shared board so the current content inherits it immediately; if a board ever looks stale, `reload_whiteboard` forces a refresh without changing content.
 - **Your emoji style is switchable.** The `emojiSet` preference picks which emoji graphics your face uses: `fluent3d` (glossy Microsoft 3D — the default), `twemoji`, `openmoji`, `noto`, or `native` (the OS font). Change it live mid-call — e.g. if someone says "show me your 3D face" or "switch to flat emojis" — via `set_preference("emojiSet", "twemoji")`. Takes effect immediately.

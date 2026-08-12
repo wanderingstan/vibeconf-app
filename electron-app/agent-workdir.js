@@ -32,6 +32,14 @@ function defaultBotSettings() {
     permissions: {
       allow: [
         'mcp__vibeconferencing__*',
+        // After-call work writes into this directory — call notes, summaries,
+        // receipts. By then the call is over and nobody is watching the
+        // terminal, so a permission prompt would hang the wrap-up silently
+        // rather than ask anyone. Bounded by the workspace: this dir IS the
+        // session's cwd, and writes outside it still prompt.
+        'Write',
+        'Edit',
+        'Read',
       ],
     },
   };
@@ -70,6 +78,28 @@ function perProfileSubset(config, appLevelKeys) {
   return out;
 }
 
+// Extract the "## After the call" section from a bot CLAUDE.md — heading
+// included, up to (not including) the next h2. Null when absent or blank.
+//
+// Exists because only app-spawned agents cd into the workdir and auto-load
+// CLAUDE.md; a terminal-driven session never sees it, and on the 2026-08-10
+// Seth call that meant the whole after-call checklist (summary, log copy) was
+// silently skipped — leave_call's note said "its CLAUDE.md says what that is"
+// to an agent with no CLAUDE.md in context. The local-server now ships this
+// section inside the afterCallWork plan so the MCP note can inline the actual
+// duties, whoever is driving.
+function afterCallSection(claudeMdText) {
+  const text = String(claudeMdText || '');
+  const m = /^## After the call[ \t]*$/m.exec(text);
+  if (!m) return null;
+  const rest = text.slice(m.index);
+  const next = /\n## /.exec(rest.slice(1)); // skip past the matched heading's own newline-less start
+  const section = (next ? rest.slice(0, next.index + 1) : rest).trim();
+  // A heading with no body is "no duties" — same as the section being absent.
+  const body = section.replace(/^## After the call[ \t]*\n?/, '').trim();
+  return body ? section : null;
+}
+
 // The starter CLAUDE.md seeded into the bot's agent dir (#305/#291). Because the
 // launched session cd's into that dir, Claude Code auto-loads this file as the
 // bot's standing instructions at the start of EVERY call — so it's the bot's
@@ -99,6 +129,50 @@ itself, so renaming the bot never means editing this file.)
 - Use the whiteboard for anything visual — diagrams, code, structured notes.
 - When you're unsure, say so briefly rather than guessing confidently.
 
+## After the call
+When a call ends you may get an AFTER-CALL WORK phase: you are still running, and
+the call's transcript, whiteboard and room info are all still readable even
+though you have left the meeting. This section is what you do with that time.
+
+### Where call artifacts go
+
+**One folder per call: \`calls/<call-id>/\`, relative to this directory.**
+
+\`get_room_info\` prints the call id — use it verbatim. It is the room code plus
+the call's start time (e.g. \`abc-defg-hij-20260801T143000Z\`), NOT the bare room
+code: the same room hosts many calls, so the room code alone would make every
+call overwrite the last one.
+
+This is the standard place for everything a call produces — the summary below
+today, and transcripts and recordings as those arrive. When call recording is
+on, this is where \`call-recording-tracks/\` (one audio file per
+participant, plus the bot's own \`video.webm\` and, if a whiteboard share
+happened, \`share.webm\`) and the merged \`call-recording.mp4\` / \`call-recording-share.mp4\` land.
+One folder per call keeps a call's artifacts together and makes it obvious
+what to delete. \`get_call_log({ call_id })\` returns just this call's slice of
+the session log (no earlier or later calls mixed in) — worth saving as
+\`calls/<call-id>/session-log.txt\` if you're debugging something that went
+wrong, though most calls don't need it.
+
+By default: **write a short summary of the call.**
+
+1. \`get_room_info\` for the call id, then \`read_transcripts\` for what was said.
+2. Write \`calls/<call-id>/summary.md\` — a few lines of what the call was about,
+   any decisions, and anything someone asked you to remember or follow up. Skip
+   the blow-by-blow; write what you would want to read in a month.
+3. Call \`end_session\`. Do it as soon as you are done — the app holds the room
+   and your terminal open until you do.
+
+If the call produced nothing worth keeping (a test, a two-line hello), write
+nothing and call \`end_session\` straight away. An empty note is worse than none.
+
+Never \`speak\` or \`send_chat\` in this phase — you have left the meeting, so
+nobody would hear or see it.
+
+Change any of this. Summaries into a different shape, a receipt posted somewhere,
+tickets filed, nothing at all — this is the bot's own file, and after-call work is
+whatever you write here.
+
 ## Make it yours
 Add anything that should shape this bot: topics it cares about, tone, domain
 knowledge, the people it works with, things it should never do.
@@ -107,5 +181,5 @@ knowledge, the people it works with, things it should never do.
 
 module.exports = {
   agentDirFor, defaultBotSettings, withTrustedProject, isProjectTrusted, perProfileSubset,
-  defaultClaudeMd,
+  defaultClaudeMd, afterCallSection,
 };

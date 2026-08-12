@@ -4,10 +4,19 @@
 // check-auth/login/logout; voice preview reuses play-speech-test.
 const api = window.electronAPI;
 
+// Mirrors DEFAULT_BOT_NAME in electron-app/preferences-schema.js. The renderer
+// can't require() it, so a test pins the two together — if they drift, the
+// wizard silently stops suggesting names again.
+const DEFAULT_BOT_NAME = 'Unnamed bot';
+
 const steps = [...document.querySelectorAll('section[data-step]')].map((s) => s.dataset.step);
 const TITLE = {
   welcome: 'Welcome', permissions: 'Permissions', signin: 'Sign in',
-  logging: 'Call logging', voice: 'Voice', bot: 'Your bot', claude: 'Claude Code', done: 'All set',
+  // 'Brains' rather than 'Claude Code' (#231): the step now asks which agent
+  // drives the bot, and naming it after one of the three answers made the other
+  // two look like afterthoughts. The step KEY stays 'claude' — it is referenced
+  // by SKIPPABLE, the skip-confirm and the section's data-step.
+  logging: 'Call logging', voice: 'Voice key', claude: 'Brains', done: 'All set',
 };
 // claude is skippable (you CAN finish without it, but the bot won't run until it's
 // installed) — the step says so; signin/voice are the other optional steps.
@@ -28,24 +37,54 @@ function render() {
   $('nextBtn').textContent = i === steps.length - 1 ? 'Finish' : 'Next';
   if (step === 'permissions') loadPermissions();
   if (step === 'signin') loadAuth();
-  if (step === 'bot') loadEmojiSet();
-  if (step === 'claude') loadClaude();
+  if (step === 'claude') { loadClaude(); loadAgentBackend(); }
+  if (step === 'voice') loadVoiceGift();
 }
 
+// #231: which agent drives bots on this machine. Only 'claude' makes the app
+// responsible for launching it, and only then do the install / sign-in warnings
+// apply — so the rest of this step is irrelevant to anyone who answers otherwise.
+const AGENT_BACKEND_HINT = {
+  claude: '',
+  codex: 'The app will add its MCP server to Codex. Restart Codex after setup; the app won\u2019t launch it for you or ask about Claude Code.',
+  other: 'Anything that speaks MCP can drive a bot. The app will give you the connection details instead of managing an agent, and won\u2019t ask about Claude Code again.',
+};
+
+function paintAgentBackendHint() {
+  const sel = $('agentBackend');
+  const hint = $('agentBackendHint');
+  if (!sel || !hint) return;
+  hint.textContent = AGENT_BACKEND_HINT[sel.value] || '';
+  // HIDDEN, not dimmed. Dimming still shows someone an install button for a
+  // product they just said they aren't using, and invites a click that would do
+  // the wrong thing. loadClaude() manages the rows INSIDE this block, so hiding
+  // the wrapper leaves that logic untouched.
+  const setup = $('claudeSetup');
+  if (setup) setup.style.display = sel.value === 'claude' ? '' : 'none';
+}
+
+async function loadAgentBackend() {
+  try {
+    const cfg = await api.invoke('get-config', ['agentBackend']);
+    const sel = $('agentBackend');
+    if (sel && cfg?.agentBackend) sel.value = cfg.agentBackend;
+  } catch { /* leave the default selected */ }
+  paintAgentBackendHint();
+}
+$('agentBackend')?.addEventListener('change', paintAgentBackendHint);
+
 async function saveCurrent() {
+  // Whatever is on screen is the choice.
   const step = steps[i];
   try {
     if (step === 'voice') {
       await api.invoke('set-config', 'ttsApiKey', ($('elKey').value || '').trim());
-      // '' is a real choice ("Don't change it"), so this is set unconditionally
-      // rather than guarded by truthiness the way botName is.
+      // '' is a real choice ("Don't change it"), so this is set unconditionally.
       await api.invoke('set-config', 'captionLanguage', $('captionLanguage').value);
     }
-    if (step === 'bot') {
-      const name = ($('botName').value || '').trim();
-      if (name) await api.invoke('set-config', 'botName', name);
-      const emojiSet = $('emojiSet').value;
-      if (emojiSet) await api.invoke('set-config', 'emojiSet', emojiSet);
+    if (step === 'claude') {
+      const backend = $('agentBackend')?.value;
+      if (backend) await api.invoke('set-config', 'agentBackend', backend);
     }
   } catch (e) { console.warn('save failed', e); }
 }
@@ -64,7 +103,15 @@ $('nextBtn').addEventListener('click', async () => {
   //
   // Next only, not Skip: Skip is the deliberate "I know, I have another agent"
   // escape hatch, and warning on it would just train people to dismiss warnings.
-  if (steps[i] === 'claude' && !claudeIsGreen) {
+  //
+  // #231: nor does it apply once someone has SAID they use something else. The
+  // warning's premise is "you will have nothing driving your bot" — which is
+  // simply false for a Codex or LM Studio user, and telling them otherwise is
+  // how a warning becomes noise. Skip used to be the only way to express this;
+  // now it can be stated, so it is honoured here.
+  const backendSel = $('agentBackend');
+  const appManagesAgent = !backendSel || backendSel.value === 'claude';
+  if (steps[i] === 'claude' && !claudeIsGreen && appManagesAgent) {
     const proceed = await api.invoke('onboarding:confirm-skip-claude', { installed: claudeState.installed });
     if (!proceed) return;
   }
@@ -74,12 +121,27 @@ $('nextBtn').addEventListener('click', async () => {
 $('backBtn').addEventListener('click', () => go(-1));
 $('skipBtn').addEventListener('click', () => go(1));
 
+// Finish the wizard exactly as "Finish" does (saves + closes + shows the main
+// window), then immediately start the guided call instead of leaving the user
+// at an idle panel with just the /join-call instructions.
+$('runSetupCallBtn')?.addEventListener('click', async () => {
+  await saveCurrent();
+  await api.invoke('onboarding:finish');
+  await api.invoke('create-and-join-meet', { onboardingCall: true });
+});
+
 // ── permissions ──────────────────────────────────────────────────────────
 async function loadPermissions() {
   const list = $('permList');
   let state;
   try { state = await api.invoke('onboarding:get-permissions'); } catch { list.textContent = 'Could not read permissions.'; return; }
   list.innerHTML = '';
+  // Both remaining permissions are macOS-only, so everywhere else this list is
+  // empty. An empty step reads as a broken page; say so instead.
+  if (!state.rows.length) {
+    list.innerHTML = '<div class="hint">Nothing to grant on this system &mdash; the permissions this step covers are macOS-only.</div>';
+    return;
+  }
   for (const p of state.rows) {
     const row = document.createElement('div'); row.className = 'prow';
     const meta = document.createElement('div'); meta.className = 'meta';
@@ -140,15 +202,6 @@ function paintLog(v) {
 $('logYes').addEventListener('click', async () => { await api.invoke('set-config', 'remoteLogging', true); paintLog(true); });
 $('logNo').addEventListener('click', async () => { await api.invoke('set-config', 'remoteLogging', false); paintLog(false); });
 
-// ── emoji set (chosen alongside the bot name) ──────────────────────────────
-async function loadEmojiSet() {
-  try {
-    const cur = await api.invoke('get-config', 'emojiSet');
-    const val = (cur && typeof cur === 'object') ? cur.emojiSet : cur;
-    if (val) $('emojiSet').value = val;
-  } catch { /* leave default */ }
-}
-
 // ── Claude Code (install + sign-in via the /claude-ready feedback loop) ─────
 let claudeIsGreen = false;
 let claudeState = { installed: false, ready: false };
@@ -198,140 +251,117 @@ api.on('claude-ready', () => { if (steps[i] === 'claude') paintClaude({ installe
 // Re-check when returning from the Terminal (install finished / signed in).
 window.addEventListener('focus', () => { if (steps[i] === 'claude') loadClaude(); });
 
-// ── voice picker ───────────────────────────────────────────────────────────
-// Mirrors the panel's unified picker: merge the OS's built-in voices (`say` on
-// macOS, SAPI on Windows) + ElevenLabs + Voicebox into
-// one dropdown, value = "mac:<name>" / "el:<id>" / "vb:<id>". Persist via
-// update-tts-config (same as the panel) and audition through the local speakers
-// via synth-voice-sample (NOT play-speech-test — that only plays into a live call).
+// ── ElevenLabs key ───────────────────────────────────────────────────────
+// The key is a credential, not something spoken, so it stays a wizard field;
+// picking the actual voice now happens live in the guided onboarding call.
+// Persist via update-tts-config (same as the panel and App Settings), not a
+// bare set-config, so a key typed here also gets verified, announced, and
+// marked ttsApiKeySource:'byo' — without that mark, pasting your OWN key over
+// a gifted one here would leave it looking gifted, and logging out would wipe
+// a key you actually typed yourself (see clearGiftedTtsKey in main.js).
 let savedVoiceCfg = null;
-async function populateVoices(cfg) {
-  const sel = $('voiceSelect');
-  if (!sel) return;
-  const apiKey = ($('elKey').value || '').trim();
-  const [systemResult, voicebox, elevenResult] = await Promise.all([
-    api.invoke('list-system-voices').catch(() => ({ platform: '', voices: [] })),
-    api.invoke('list-voicebox-profiles').catch(() => []),
-    apiKey
-      ? api.invoke('list-elevenlabs-voices', apiKey).catch(() => ({ voices: [], error: null }))
-      : Promise.resolve({ voices: [], error: null }),
-  ]);
-  // A scoped key missing `voices_read` lists nothing while TTS still works —
-  // say so here, or the wizard silently looks like the key didn't take.
-  const eleven = elevenResult?.voices || [];
-  const elErr = $('elVoiceError');
-  if (elErr) {
-    elErr.textContent = elevenResult?.error ? '⚠ ' + elevenResult.error.message : '';
-    elErr.style.display = elevenResult?.error ? 'block' : 'none';
+$('elKey').addEventListener('change', () => {
+  api.send('update-tts-config', { apiKey: ($('elKey').value || '').trim() });
+  // Repaint immediately from the already-fetched grant (no need to re-fetch —
+  // a local edit doesn't change what the SERVER granted, only whether it
+  // matches). A live clear stays empty rather than auto-refilling; see the
+  // note on paintElKeyGift below.
+  paintElKeyGift(lastTtsGrant, ($('elKey').value || '').trim());
+});
+// #273: same stateless rule as App Settings (see the note above applyGrant in
+// main.js) — an empty field is filled in automatically the moment this STEP
+// is shown (not on a live edit, so clearing the field to type your own key
+// isn't fought); a field holding something else gets a one-click offer.
+// Signin comes before this step in the wizard, so by the time someone reaches
+// it they're either signed in (a grant may exist) or skipped signin (no grant
+// — this just quietly does nothing).
+let lastTtsGrant = null;
+function paintElKeyGift(grant, currentKey) {
+  const isGiftActive = !!grant?.granted && currentKey === grant.apiKey;
+  const notice = $('elKeyGiftedNotice');
+  if (notice) notice.style.display = isGiftActive ? '' : 'none';
+  const section = $('elKeyGiftSection');
+  if (!section) return;
+  const offerable = !!grant?.granted && !isGiftActive;
+  section.style.display = offerable ? '' : 'none';
+  if (offerable) {
+    $('elKeyGiftDesc').textContent = currentKey
+      ? "You've been gifted a voice key — use it instead?"
+      : "You've been gifted a voice key — zero setup, ready to speak.";
+    $('elKeyGiftBtn').textContent = currentKey ? 'Use gifted key' : 'Use it';
   }
-  let selected = sel.value;
-  if (cfg) {
-    const p = cfg.ttsProvider || ''; const vb = cfg.voiceboxProfileId || '';
-    const el = cfg.ttsVoiceId || ''; const mac = cfg.macosVoice || 'Daniel';
-    if (p === 'voicebox' && vb) selected = 'vb:' + vb;
-    else if (p === 'elevenlabs' && el) selected = 'el:' + el;
-    else if (p === 'macos-say') selected = 'mac:' + mac;
-    else if (el && apiKey) selected = 'el:' + el;
-    else selected = 'mac:' + mac;
-  }
-  sel.innerHTML = '';
-  const addGroup = (label, items) => {
-    if (!items.length) return;
-    const og = document.createElement('optgroup'); og.label = label;
-    for (const it of items) {
-      const o = document.createElement('option');
-      o.value = it.value; o.textContent = it.text;
-      if (it.engine) o.dataset.engine = it.engine;
-      if (it.value === selected) o.selected = true;
-      og.appendChild(o);
-    }
-    sel.appendChild(og);
-  };
-  addGroup('Voicebox (local)', (Array.isArray(voicebox) ? voicebox : []).map((p) => ({
-    value: 'vb:' + p.id,
-    text: `${p.name} (${p.preset_engine || p.default_engine || 'engine'})`,
-    engine: p.preset_engine || p.default_engine || '',
-  })));
-  addGroup('ElevenLabs', (Array.isArray(eleven) ? eleven : []).map((v) => ({
-    value: 'el:' + v.id,
-    text: v.category && v.category !== 'premade' ? `${v.name} · ${v.category}` : v.name,
-  })));
-  const sysList = Array.isArray(systemResult?.voices) ? systemResult.voices : [];
-  const osName = systemResult?.platform === 'win32' ? 'Windows'
-    : systemResult?.platform === 'darwin' ? 'macOS' : 'system';
-  // main tiers them (0 Premium / 1 Enhanced-or-SAPI / 2 plain); the regex is the
-  // fallback for the shape older builds returned.
-  const tierOf = (v) => (v.tier != null ? v.tier : /\(Premium\)/i.test(v.name) ? 0 : /\(Enhanced\)/i.test(v.name) ? 1 : 2);
-  // Keep in sync with WHITELISTED_MACOS_STANDARD in panel.js / mcp-server/server.js.
-  const white = (n) => ['Daniel', 'Samantha', 'Karen'].some((w) => n === w || n.startsWith(w + ' '));
-  addGroup(`Built-in (${osName})`, sysList
-    .filter((v) => tierOf(v) < 2 || white(v.name))
-    .map((v) => ({ value: 'mac:' + v.name, text: `${v.name} (${v.locale})` })));
-  addGroup('Other built-in (lower quality)', sysList
-    .filter((v) => tierOf(v) === 2 && !white(v.name))
-    .map((v) => ({ value: 'mac:' + v.name, text: `${v.name} (${v.locale})` })));
-  if (!sel.options.length) sel.innerHTML = '<option value="mac:Daniel">Daniel (default)</option>';
 }
-
-function voiceSampleText() {
-  const o = $('voiceSelect').selectedOptions[0];
-  // ElevenLabs names read like "Brian - Deep, Resonant and Comforting". EL speaks
-  // the dash as a hyphen (no pause), so turn a space-delimited dash into ". " —
-  // a sentence break between the name and its description.
-  const name = (o ? o.textContent : '')
-    .replace(/\s*[·(].*$/, '')
-    .replace(/\s+[-–—]+\s+/g, '. ')
-    .trim();
-  return `Hello, my name is ${name || 'your voice assistant'}.`;
-}
-function currentVoiceOpts(extra) {
-  const val = $('voiceSelect').value || '';
-  const sep = val.indexOf(':'); const kind = val.slice(0, sep); const id = val.slice(sep + 1);
-  if (kind === 'vb') {
-    const engine = $('voiceSelect').selectedOptions[0]?.dataset.engine || 'kokoro';
-    return { provider: 'voicebox', voiceboxProfileId: id, voiceboxEngine: engine, ...extra };
-  }
-  if (kind === 'el') return { provider: 'elevenlabs', voiceId: id, ...extra };
-  return { provider: 'macos-say', macosVoice: id, ...extra };
-}
-let _sample = null;
-async function previewSelectedVoice() {
+async function loadVoiceGift() {
   try {
-    if (_sample) { try { _sample.pause(); } catch {} _sample = null; }
-    const r = await api.invoke('synth-voice-sample', currentVoiceOpts({ text: voiceSampleText() }));
-    if (r?.ok && r.dataUrl) { _sample = new Audio(r.dataUrl); _sample.play().catch(() => {}); }
-  } catch {}
+    const { grant } = await api.invoke('get-tts-grant');
+    lastTtsGrant = grant;
+    let currentKey = ($('elKey').value || '').trim();
+    if (grant?.granted && !currentKey) {
+      const r = await api.invoke('accept-tts-grant');
+      if (r?.ok) {
+        const cfg = await api.invoke('get-config', ['ttsApiKey']);
+        currentKey = cfg?.ttsApiKey || '';
+        $('elKey').value = currentKey;
+      }
+    }
+    paintElKeyGift(grant, currentKey);
+  } catch { /* non-fatal */ }
 }
-function persistSelectedVoice() {
-  // voiceboxProfileId:'' clears any prior Voicebox pick so providers don't fight.
-  const opts = currentVoiceOpts({});
-  if (opts.provider !== 'voicebox') opts.voiceboxProfileId = '';
-  api.send('update-tts-config', opts);
-}
-// Same convention as the preferences panel: picking a voice persists it AND
-// auditions it immediately — no separate "play" button.
-$('voiceSelect').addEventListener('change', () => { persistSelectedVoice(); previewSelectedVoice(); });
-// Re-list voices (unlocks ElevenLabs voices) once a key is entered; persist the
-// key first so the audition path (synth-voice-sample reads the stored key) works.
-$('elKey').addEventListener('change', async () => {
-  const key = ($('elKey').value || '').trim();
-  try { await api.invoke('set-config', 'ttsApiKey', key); } catch {}
-  populateVoices();
+$('elKeyGiftBtn')?.addEventListener('click', async () => {
+  const btn = $('elKeyGiftBtn');
+  btn.disabled = true;
+  try {
+    const r = await api.invoke('accept-tts-grant');
+    if (r?.ok) {
+      const cfg = await api.invoke('get-config', ['ttsApiKey']);
+      $('elKey').value = cfg?.ttsApiKey || '';
+      paintElKeyGift(lastTtsGrant, $('elKey').value);
+    }
+  } finally {
+    btn.disabled = false;
+  }
 });
 $('getKeyLink').addEventListener('click', (e) => { e.preventDefault(); api.invoke('onboarding:open-url', 'https://elevenlabs.io/app/settings/api-keys'); });
-$('voiceboxLink').addEventListener('click', (e) => { e.preventDefault(); api.invoke('onboarding:open-url', 'https://github.com/jamiepine/voicebox'); });
+$('keyPermissionsLink')?.addEventListener('click', (e) => { e.preventDefault(); api.invoke('onboarding:open-url', 'https://vibeconferencing.com/onboarding/elevenlabs-key-setup'); });
+
+// A suggested name for a brand-new bot, picked at random from the same pool the
+// old in-wizard name spinner drew from. Main picks it — it knows which names
+// are already in use, and two wizards open at once must not land on the same
+// one. There's no UI step for this anymore (the guided onboarding call is where
+// naming now happens live), but a bot still needs SOME name to show on its Meet
+// tile before that call runs, so one is chosen silently rather than left as the
+// schema default "Unnamed bot".
+async function suggestName(exclude = []) {
+  try {
+    const r = await api.invoke('onboarding:suggest-bot-name', { exclude });
+    return (r && r.name) || '';
+  } catch { return ''; }
+}
 
 // ── initial load ─────────────────────────────────────────────────────────
 (async () => {
   try {
-    savedVoiceCfg = await api.invoke('get-config', ['botName', 'ttsApiKey', 'remoteLogging', 'ttsProvider', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'captionLanguage']);
+    savedVoiceCfg = await api.invoke('get-config', ['botName', 'ttsApiKey', 'remoteLogging', 'captionLanguage']);
     if (savedVoiceCfg) {
-      $('botName').value = savedVoiceCfg.botName || '';
-      if ($('captionLanguage')) $('captionLanguage').value = savedVoiceCfg.captionLanguage || '';
+      // Silently name the bot if it has none yet, so it isn't stuck as "Unnamed
+      // bot" until the guided call runs (which is optional — "Finish" alone
+      // still works). "no name yet" CANNOT be tested with `saved || suggestName()`:
+      // get-config fills unset prefs with their schema default, so botName comes
+      // back as the string 'Unnamed bot' rather than undefined — always truthy.
+      // Compare against the default instead.
+      const saved = (savedVoiceCfg.botName || '').trim();
+      const unnamed = !saved || saved === DEFAULT_BOT_NAME;
+      if (unnamed) {
+        const name = await suggestName();
+        if (name) await api.invoke('set-config', 'botName', name);
+      }
+      // No empty option to fall back to anymore (#see the wizard's captionLanguage
+      // note) — an unset preference defaults the picker to English rather than
+      // landing on nothing selected.
+      if ($('captionLanguage')) $('captionLanguage').value = savedVoiceCfg.captionLanguage || 'en-US';
       $('elKey').value = savedVoiceCfg.ttsApiKey || '';
       paintLog(savedVoiceCfg.remoteLogging);
     }
   } catch (e) { console.warn('initial load failed', e); }
-  populateVoices(savedVoiceCfg);
   render();
 })();

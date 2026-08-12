@@ -30,7 +30,19 @@ function uiIcon(name, variant = '') {
 const IS_TROUBLESHOOTING_WINDOW =
   new URLSearchParams(window.location.search).get('screen') === 'troubleshooting';
 
+// Any pop-out window: panel.html is loaded with ?screen=<name> for each of them.
+//
+// Deliberately a CLASS rather than a list of names. Anything scoped to "the
+// panel inside the main window" must exclude all satellites, and an explicit
+// list silently omits the next one added — which is exactly what happened when
+// the 🧠 brain window arrived: it reported its own (tall) content height to
+// main, which duly resized the MAIN window to match, leaving a large empty band
+// below the avatar. The symptom appeared in a completely different window from
+// the change that caused it.
+const IS_POPOUT_WINDOW = new URLSearchParams(window.location.search).has('screen');
+
 const joinBtn = document.getElementById('joinBtn');
+const setupCallBtn = document.getElementById('setupCallBtn');
 const meetUrlInput = document.getElementById('meetUrl');
 const callUrlDisplay = document.getElementById('callUrlDisplay');
 const copyCallUrlBtn = document.getElementById('copyCallUrlBtn');
@@ -48,8 +60,6 @@ copyCallUrlBtn?.addEventListener('click', async () => {
 const meetCodeInput = document.getElementById('meetCode');
 const roomIdField = document.getElementById('roomIdField');
 const roomLink = document.getElementById('roomLink');
-const copyPromptBtn = document.getElementById('copyPromptBtn');
-const agentPromptText = document.getElementById('agentPromptText');
 const transcriptArea = document.getElementById('transcriptArea');
 const errorBar = document.getElementById('errorBar');
 const rawCaptionText = document.getElementById('rawCaptionText');
@@ -67,6 +77,7 @@ const slackSignOutBtn = document.getElementById('slackSignOutBtn');
 
 // Settings
 const botNameInput = document.getElementById('botName');
+const calendarIdentityEmailInput = document.getElementById('calendarIdentityEmail'); // #299
 const websiteUrlInput = document.getElementById('websiteUrl');
 const ttsApiKeyInput = document.getElementById('ttsApiKey');
 const ttsVoiceIdInput = document.getElementById('ttsVoiceId');
@@ -82,11 +93,21 @@ const ackLongMinInput = document.getElementById('ackLongMin');
 const ackShortPhrasesInput = document.getElementById('ackShortPhrases');
 const ackLongPhrasesInput = document.getElementById('ackLongPhrases');
 
-let syncBaseUrl = 'http://127.0.0.1:7865';
+// The website, not the local server. This is the base for the curl helper and
+// the room links — things a human runs from somewhere else. It used to fall back
+// to http://127.0.0.1:7865, which made the copied curl command 401 once the
+// local control API started requiring a bearer token (#201): the endpoint it
+// named was real, and the request was rejected. The website accepts these posts
+// unauthenticated and is the path that actually makes sense to hand someone.
+let syncBaseUrl = 'https://vibeconferencing.com';
 // Until get-config lands. Not a plausible name on purpose — see
 // DEFAULT_BOT_NAME in preferences-schema.js (this renderer is sandboxed and
 // cannot require it).
 let currentBotName = 'Unnamed bot';
+// The headline may show a provenance tag the plain name must not carry (e.g.
+// "Alice [CLI name]" for a launched test bot) — currentBotName stays clean for
+// the "Call X now" button and the curl examples; this drives botNameBig only.
+let botNameDisplay = null;
 let appProfileName = null; // app profile (stable heading identity, #282); null for the default instance
 let inCall = false;
 
@@ -97,6 +118,7 @@ let inCall = false;
 const mainScreen = document.getElementById('mainScreen');
 const settingsScreen = document.getElementById('settingsScreen');
 const troubleshootingScreen = document.getElementById('troubleshootingScreen');
+const brainScreen = document.getElementById('brainScreen');
 
 function showScreen(screen) {
   mainScreen.style.display = 'none';
@@ -106,6 +128,17 @@ function showScreen(screen) {
   // Screens differ a lot in height (Settings is long) and the window is sized to
   // fit — remeasure. Defined below; ignore on the very first paint.
   try { reportContentHeight(); } catch { /* not wired yet */ }
+}
+
+// A brand-new bot opens straight on Settings (main passes ?startScreen=settings
+// when launched with --open-settings). Landing on "Call now" would be backwards:
+// a fresh bot has no name, voice or face, and this page is where it gets them —
+// including the guided-setup call at the top.
+//
+// Deliberately not the 'screen' param, which marks a POP-OUT window and would
+// stop this panel reporting its height to main.
+if (new URLSearchParams(window.location.search).get('startScreen') === 'settings') {
+  showScreen(settingsScreen);
 }
 
 document.getElementById('openSettingsBtn').addEventListener('click', () => {
@@ -130,9 +163,25 @@ document.addEventListener('keydown', (e) => {
 // avatar and the call controls. (The screen's own ⧉ Pop out can't do this: it
 // re-parents the single panelView, which leaves the main window with no panel
 // and falling back to a full-size Meet view.)
+document.getElementById('openBrainBtn')?.addEventListener('click', () => {
+  api.invoke('open-brain-window').catch(() => {});
+});
+
 document.getElementById('openTroubleshootingBtn')?.addEventListener('click', () => {
   api.invoke('open-troubleshooting-window').catch(() => {});
 });
+
+// #242: the brain pane runs as its own window (same panel.html, ?screen=brain),
+// so it can sit beside the Meet window while a call runs — the whole point is
+// watching the agent AND the call at once.
+const IS_BRAIN_WINDOW =
+  new URLSearchParams(location.search).get('screen') === 'brain';
+
+if (IS_BRAIN_WINDOW) {
+  showScreen(brainScreen);
+  const back = document.getElementById('backFromBrainBtn');
+  if (back) back.style.display = 'none';   // nothing to go back to in its own window
+}
 
 if (IS_TROUBLESHOOTING_WINDOW) {
   showScreen(troubleshootingScreen);
@@ -299,7 +348,82 @@ const RESTING_EMOJI = '\u{1F642}'; // 🙂
 // set|emoji → data URI (or null for native / not in the set). Main reads a file
 // per lookup and the blink asks for the same handful over and over, so cache.
 const emojiUriCache = new Map();
+// emojiSet carries either a bundled set name or `font:<Family>` for a font
+// installed on this machine. The panel draws its OWN avatar (and its switcher
+// thumbnail), so it has to understand the font form too — otherwise the call
+// shows the chosen font and the app's own picture of the bot does not, which is
+// exactly how this was first noticed.
+function parseFontSet(setName) {
+  const m = /^font:([^#]+)(?:#([0-9A-Fa-f]{3,8}))?$/.exec(String(setName || ''));
+  if (!m) return null;
+  return {
+    family: m[1].replace(/[^A-Za-z0-9 _-]/g, '').trim(),
+    // Strict hex only: an invalid CSS colour is ignored silently, so a typo
+    // would show the previous colour with nothing to explain it.
+    color: m[2] ? '#' + m[2] : '',
+  };
+}
+function fontFamilyFromSet(setName) {
+  return parseFontSet(setName)?.family || '';
+}
+function fontColorFromSet(setName) {
+  return parseFontSet(setName)?.color || '';
+}
+// Keep the platform emoji fonts as the tail so an uninstalled family degrades to
+// a real face instead of tofu.
+const NATIVE_EMOJI_STACK = '"Apple Color Emoji", "Segoe UI Emoji", '
+  + '"Noto Color Emoji", "Twemoji Mozilla", system-ui, sans-serif';
+function emojiFontStackFor(setName) {
+  const parts = [];
+  const fam = fontFamilyFromSet(setName);          // a font the user named
+  if (fam) parts.push(`"${fam}"`);
+  if (EMOJI_FONT_SETS[setName]) parts.push(`"${bundledFamilyFor(setName)}"`);
+  parts.push(NATIVE_EMOJI_STACK);
+  return parts.join(', ');
+}
+
+// twemoji / openmoji / noto are colour FONTS now, not thousands of files. The
+// panel draws its own avatar, so it loads them itself — same bytes, same
+// FontFace, just via IPC instead of the Meet preload.
+const EMOJI_FONT_SETS = { twemoji: 1, openmoji: 1, noto: 1 };
+const bundledFamilyFor = (setName) => 'VibeEmoji-' + setName;
+const _fontsAsked = new Set();
+async function ensureBundledEmojiFont(setName) {
+  if (!EMOJI_FONT_SETS[setName] || _fontsAsked.has(setName)) return;
+  _fontsAsked.add(setName);
+  try {
+    const bytes = await api.invoke('emoji-font-bytes', setName);
+    if (!bytes) return;                       // falls through to the OS emoji font
+    const buf = bytes.buffer
+      ? bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+      : bytes;
+    const ff = new FontFace(bundledFamilyFor(setName), buf);
+    await ff.load();
+    document.fonts.add(ff);
+    renderAgentAvatar();                      // repaint now that the face can be drawn
+  } catch { /* the font stack's tail keeps a face on screen */ }
+}
+
+const dirFromSet = (setName) => {
+  const m = /^dir:(.+)$/.exec(String(setName || ''));
+  return m ? m[1].trim() : null;
+};
+
 async function emojiUriFor(setName, emoji) {
+  // Glyphs, not pictures — for a user font OR a bundled set font.
+  if (fontFamilyFromSet(setName) || EMOJI_FONT_SETS[setName]) return null;
+  // A folder of images the user or an agent made. The panel draws its own
+  // avatar, so it resolves these too — otherwise the call would wear the custom
+  // set and the app's own picture of the bot would not.
+  const dir = dirFromSet(setName);
+  if (dir) {
+    const key = setName + '|' + emoji;
+    if (emojiUriCache.has(key)) return emojiUriCache.get(key);
+    let uri = null;
+    try { uri = await api.invoke('emoji-dir-uri', dir, emoji); } catch { /* native */ }
+    emojiUriCache.set(key, uri);
+    return uri;
+  }
   const key = setName + '|' + emoji;
   if (emojiUriCache.has(key)) return emojiUriCache.get(key);
   let uri = null;
@@ -311,8 +435,20 @@ async function emojiUriFor(setName, emoji) {
 // Draw the face from the CHOSEN EMOJI SET's artwork, exactly like the virtual
 // camera does, so the panel and the call show the same picture. 'native' (or an
 // emoji the set doesn't ship) falls back to the OS glyph already in the markup.
+// The face's font and colour live at module scope rather than being passed in.
+// They were parameters for one commit, and the BLINK path (playFaceSequence,
+// below) repaints without them — so the styling applied on render and was wiped
+// a couple of seconds later by the first blink, which looked like the colour
+// simply not working. Anything that repaints the face gets the current styling
+// by construction now.
+let avatarFontStack = '';
+let avatarFontColor = '';
 function paintAvatarEmoji(el, dataUri, emojiChar) {
   const glyph = el.querySelector('.agent-avatar-emoji');
+  if (glyph) {
+    glyph.style.fontFamily = avatarFontStack || '';
+    glyph.style.color = avatarFontColor || '';
+  }
   let img = el.querySelector('.agent-avatar-emoji-img');
   if (dataUri) {
     if (!img) {
@@ -342,6 +478,13 @@ async function renderAgentAvatar() {
     svg = (cfg && cfg.avatarBackgroundSvg) || '';
     emojiSet = (cfg && cfg.emojiSet) || 'native';
   } catch { /* ignore — fall back to gradient + native glyph */ }
+
+  // Fire-and-forget: the first call kicks off the load and repaints when ready.
+  ensureBundledEmojiFont(emojiSet);
+
+  // Before anything paints: every repaint path reads these.
+  avatarFontStack = emojiFontStackFor(emojiSet);
+  avatarFontColor = fontColorFromSet(emojiSet);
 
   // The thumbnail is a PORTRAIT — always the resting face, never a live state.
   const restingUri = await emojiUriFor(emojiSet, RESTING_EMOJI);
@@ -611,8 +754,9 @@ async function refreshAvatarThumb(svg, emojiSet, emojiUri) {
       // system font rather than our bundled artwork: macOS, Windows, then the
       // usual Linux packages. Unmatched names are skipped, so listing all of
       // them costs nothing.
-      ctx.font = `${Math.round(face)}px "Apple Color Emoji", "Segoe UI Emoji", `
-        + `"Noto Color Emoji", "Twemoji Mozilla", system-ui, sans-serif`;
+      ctx.font = `${Math.round(face)}px ${emojiFontStackFor(emojiSet)}`;
+      const thumbColor = fontColorFromSet(emojiSet);
+      if (thumbColor) ctx.fillStyle = thumbColor;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(RESTING_EMOJI, size / 2, size / 2 + face * 0.04);
@@ -754,11 +898,56 @@ function renderCallState(s) {
   ].join('\n');
 }
 
+// #242: the brain feed. Reuses the SAME agentLog the app already tails from the
+// Claude session's transcript — 🗣 said, 🔧 ran a tool, 💬 was asked — so this is
+// a surface over an existing signal rather than a new pipeline.
+//
+// Read-only, and not by choice: Terminal.app owns the agent process, so the app
+// has no stdin to it. An input box would need #242's headless spawn first, where
+// we own the pipe. Worth stating in the UI rather than leaving people hunting
+// for a prompt that cannot exist yet.
+const BRAIN_LINE_CLASS = { '🗣': 'l-say', '🔧': 'l-tool', '💬': 'l-ask', '💭': 'l-think' };
+let _brainLastRendered = '';
+function renderBrain(s) {
+  const feed = document.getElementById('brainFeed');
+  const status = document.getElementById('brainStatus');
+  if (!feed) return;
+  const lines = (s && s.agentLog) || [];
+  const joined = lines.join('\n');
+  if (joined === _brainLastRendered) return;   // don't fight the user's scroll
+  _brainLastRendered = joined;
+
+  if (!lines.length) {
+    feed.innerHTML = '<span class="l-none">No agent session yet. This fills in once a bot is driven by '
+      + 'Claude Code — the app reads the session\u2019s own transcript.</span>';
+    if (status) status.textContent = '';
+    return;
+  }
+  // Pinned to the bottom unless the user has scrolled up to read something —
+  // a live feed that yanks you back to the end is unreadable.
+  const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40;
+  feed.innerHTML = lines.map((l) => {
+    const cls = BRAIN_LINE_CLASS[l.slice(0, 2)] || BRAIN_LINE_CLASS[[...l][0]] || 'l-say';
+    const esc = l.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return `<div class="${cls}">${esc}</div>`;
+  }).join('');
+  if (status) status.textContent = `${lines.length} lines`;
+  if (atBottom) feed.scrollTop = feed.scrollHeight;
+}
+
 setInterval(async () => {
+  if (IS_BRAIN_WINDOW) {
+    try { renderBrain(await api.invoke('get-call-state')); } catch { /* ignore */ }
+    return;
+  }
   if (troubleshootingScreen.style.display === 'none') return; // only poll when visible
   try {
     const s = await api.invoke('get-call-state');
     renderCallState(s);
+    renderShareState();
+    // Same source of truth as the view above, so the curl helper works in the
+    // pop-out window too (see updateCurlCommand).
+    updateCurlCommand(s && s.roomId);
   } catch { /* ignore */ }
 }, 1000);
 
@@ -769,6 +958,110 @@ api.on('show-settings', () => showScreen(settingsScreen));
 api.on('leave-requested', () => {
   api.send('leave-meet');
   exitCallState();
+});
+
+// Live share state, polled with the rest of the troubleshooting view.
+//
+// The count has to keep moving while the call does: the share is a stream, not
+// a snapshot, and a frozen number next to "still sharing" looks like a stall.
+// It also has to say when it STOPS, since the grant ends with the call and
+// nothing else in the window would show that.
+async function renderShareState() {
+  if (!shareCallLogStatus) return;
+  let st;
+  try { st = await api.invoke('get-call-log-share-state'); } catch { return; }
+  if (!st) return;
+
+  // Nothing for the button to do when everything is already being shipped.
+  // Disabling it with a reason beats leaving a control that would silently
+  // no-op, and it points at where the setting actually lives.
+  if (st.globalLogging) {
+    if (shareCallLogBtn) shareCallLogBtn.disabled = true;
+    setShareMsg('Logs are already shared for every call (App Settings → Remote logging). '
+      + 'Turn that off if you would rather share call by call.');
+    return;
+  }
+  if (shareCallLogBtn && !st.sharedCallId) shareCallLogBtn.disabled = !st.inCall;
+  if (!st.sharedCallId) {
+    setShareLabel(SHARE_LABEL);
+    setShareMsg(st.inCall ? '' : 'Available during a call.');
+    return;
+  }
+  if (st.active) {
+    // The button is a toggle while the call runs: stop before something you
+    // would rather not send, start again after.
+    setShareLabel(st.streaming ? '⏹ Stop sharing' : '📤 Resume sharing');
+    setShareMsg(st.streaming
+      ? `Sharing this call. ${st.sent} lines sent so far.`
+      // "Stopped" not "cancelled": what went cannot come back, and the count
+      // says how much did. The gap is real though — nothing is sent while
+      // stopped, so the paused stretch never leaves the machine.
+      : `Stopped. ${st.sent} lines were sent; nothing is being sent now.`);
+  } else {
+    // The call the grant belonged to has ended.
+    setShareLabel(SHARE_LABEL);
+    setShareMsg(`Shared that call (${st.sent} lines). Sharing has stopped.`);
+    // (The share runs to the END of the call's wrap-up, not the goodbye — the
+    // agent's after-call work belongs to the same call and is often where the
+    // interesting part is.)
+    if (shareCallLogBtn) shareCallLogBtn.disabled = false;   // a NEW call can be shared
+  }
+}
+
+// #255 — share this ONE call's log.
+//
+// Its own control, not a tick-box on the feedback buttons: those stay on the
+// machine as guidance to the bot, this sends transcript text off it. Reporting a
+// problem must never quietly ship a log as a side effect.
+const shareCallLogBtn = document.getElementById('shareCallLogBtn');
+const shareCallLogStatus = document.getElementById('shareCallLogStatus');
+const shareCallLogWhy = document.querySelector('.share-log-why');
+
+// The slot beside the button holds ONE message. Empty text restores the "why
+// share" line; anything else replaces it. They are never both true — leaving the
+// invitation up beside "Sharing this call…" would be answering a question the
+// user has already answered.
+const SHARE_LABEL = "📤 Share this call's log";
+function setShareLabel(text) {
+  if (shareCallLogBtn && shareCallLogBtn.textContent !== text) shareCallLogBtn.textContent = text;
+}
+
+function setShareMsg(text) {
+  const showing = !!text;
+  if (shareCallLogStatus) {
+    shareCallLogStatus.textContent = text || '';
+    shareCallLogStatus.style.display = showing ? 'block' : 'none';
+  }
+  if (shareCallLogWhy) shareCallLogWhy.style.display = showing ? 'none' : 'block';
+}
+shareCallLogBtn?.addEventListener('click', async () => {
+  shareCallLogBtn.disabled = true;
+  setShareMsg('Working…');
+  try {
+    const r = await api.invoke('share-call-log');
+    if (r?.ok && r.alreadyGlobal) {
+      setShareMsg('Logs are already shared for every call (App Settings → Remote logging).');
+    } else if (r?.ok) {
+      // Say what actually happened, including that it keeps going: someone who
+      // thinks a snapshot was sent would be surprised to find the rest of the
+      // call followed it.
+      // No count in the click result — renderShareState owns the number from
+      // here, so the two cannot disagree. A static "sent 347 lines" sitting
+      // beside "sharing the rest of this call" reads as though it has stalled.
+      setShareMsg(r.stopped ? 'Stopped. What was already sent stays sent.'
+        : r.resumed ? 'Sharing again. The paused part was not sent.'
+        : r.streaming ? 'Shared. Still sending as the call goes on…' : 'Shared.');
+    } else {
+      // A share that silently did nothing is worse than no button — the user
+      // walks away believing the evidence was handed over.
+      setShareMsg('Could not send: ' + (r?.error || 'unknown'));
+    }
+  } catch (e) {
+    setShareMsg('Could not send: ' + e.message);
+  }
+  // Always re-enabled: it is a toggle now, so the next press is always
+  // meaningful — stop, or start again.
+  shareCallLogBtn.disabled = false;
 });
 
 // ---------------------------------------------------------------------------
@@ -800,8 +1093,8 @@ const callUrlField = document.getElementById('callUrlField');
 const manualUrlToggle = document.getElementById('manualUrlToggle');
 
 let detectedCallUrl = null; // the ACTIVE offer — drives the auto-expanded mode
-let manualUrlEntry = false; // the user opened ▸ themselves
-// The last call we were told about, kept even after a dismissal so reopening ▸
+let manualUrlEntry = false; // the user opened + themselves
+// The last call we were told about, kept even after a dismissal so reopening +
 // prefills it. Dismissing means "not right now", not "forget what you saw" —
 // without this, collapsing and reopening seconds later gave an empty box even
 // though the Meet was still sitting there in the browser. Only an undetect
@@ -898,11 +1191,11 @@ function noteDetectedCall(url) {
 // The detected call went away (the tab closed, or the user navigated off it —
 // main sends meet-detected/slack-huddle-detected with null). Without this the
 // panel would stay in "Add <bot> to call" forever after the FIRST call it ever
-// saw, with the ▸ toggle hidden and no route back to "Call <bot> now".
+// saw, with the + toggle hidden and no route back to "Call <bot> now".
 function clearDetectedCall() {
   if (!detectedCallUrl) return;
   // Don't wipe a URL the user typed over the detected one — just stop treating
-  // it as detected, which brings the ▸ toggle back.
+  // it as detected, which brings the + toggle back.
   if (meetUrlInput.value.trim() === detectedCallUrl.trim()) meetUrlInput.value = '';
   detectedCallUrl = null;
   lastKnownCallUrl = null; // the call is genuinely gone — nothing to restore
@@ -910,7 +1203,7 @@ function clearDetectedCall() {
 }
 
 // Explicit dismissal: empty the field, or press Escape in it. Either way we drop
-// back to the single "Call <bot> now" button. ▸ reopens it.
+// back to the single "Call <bot> now" button. + reopens it.
 function dismissCallUrl() {
   meetUrlInput.value = '';
   detectedCallUrl = null;
@@ -965,7 +1258,9 @@ function paintMoreVoicesLink(platform) {
 let _lastReportedHeight = 0;
 let _heightTimer = 0;
 function reportContentHeight() {
-  if (IS_TROUBLESHOOTING_WINDOW) return; // sizing the main window is not ours to do
+  // Sizing the main window is not a pop-out's business — it measures its OWN
+  // content, and main would apply that to the main window.
+  if (IS_POPOUT_WINDOW) return;
   // setTimeout, NOT requestAnimationFrame: rAF stops entirely for an occluded
   // view, so a call starting while the window sits behind another app would
   // never report its taller in-call height — and the bot's-view region would be
@@ -1185,16 +1480,15 @@ async function doOpenProfileWindow(name) {
   } catch (e) { showError('Could not open bot window: ' + e.message); }
 }
 
-// Menu-bar "New Profile…" → prompt for a NEW profile name (a never-seen name
-// creates the profile), then open it additively in its own window. This is the
-// CREATE path — distinct from "New Window", which opens the Default profile.
-api.on('new-profile-prompt', async () => {
-  const name = await inlinePrompt({
-    title: 'New bot name (letters, numbers, . _ - only):',
-    placeholder: 'e.g. alice',
-    okLabel: 'Create',
-  });
-  if (name) doOpenProfileWindow(name);
+// Menu-bar "New Bot" → identical to the switcher's "＋ New bot": auto-named
+// profile, real bot name, opened in its own window on Settings. One behaviour
+// for both entry points; two ways to create a bot that worked differently was
+// the actual problem, not the prompt on its own.
+api.on('new-bot', async () => {
+  try {
+    const r = await api.invoke('create-new-bot');
+    if (r && r.ok === false) showError('Could not create bot: ' + (r.error || 'unknown'));
+  } catch (e) { showError('Could not create bot: ' + e.message); }
 });
 
 // Menu-bar "New Window" → open the next profile that isn't already running (the
@@ -1283,11 +1577,21 @@ function renderProfileMenu(data) {
   const add = document.createElement('div');
   add.textContent = '＋ New bot…';
   add.style.cssText = 'padding:6px 8px;margin-top:4px;border-top:1px solid #5f6368;color:#8ab4f8;cursor:pointer';
-  add.onclick = async (e) => {
-    const additive = e.altKey; // ⌥ → open the new profile in a separate window
+  // Hover, like every other row in this menu. It was the only item without it,
+  // so the one entry that CREATES something was also the one that looked inert.
+  add.onmouseenter = () => { add.style.background = '#3c4043'; };
+  add.onmouseleave = () => { add.style.background = ''; };
+  // No prompt. The name it used to ask for was the profile DIRECTORY, from when
+  // that was also the bot's name — it isn't any more, so this asked people to
+  // name the bot twice, the first time in a field that only takes [A-Za-z0-9._-].
+  // Main picks the next free botN and opens it in its own window on Settings,
+  // where naming it (or starting the guided setup call) is the obvious next step.
+  add.onclick = async () => {
     closeProfileMenu();
-    const name = await inlinePrompt({ title: 'New bot name (letters, numbers, . _ - only):', placeholder: 'e.g. alice', okLabel: 'Create' });
-    if (name) (additive ? doOpenProfileWindow(name) : doSwitchProfile(name));
+    try {
+      const r = await api.invoke('create-new-bot');
+      if (r && r.ok === false) showError('Could not create bot: ' + (r.error || 'unknown'));
+    } catch (e) { showError('Could not create bot: ' + e.message); }
   };
   profileMenu.appendChild(add);
 
@@ -1409,12 +1713,91 @@ document.getElementById('openAppSettingsFromBanner')?.addEventListener('click', 
 // The key lives in the separate App Settings window, so re-check on focus.
 window.addEventListener('focus', refreshVoiceBanner);
 
-api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'ttsProvider', 'claudeWorkDir', 'claudeModel', 'emojiSet', 'captionLanguage', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
-  if (result?.botName) { botNameInput.value = result.botName; currentBotName = result.botName; }
+// #137: Claude Code installed but signed out. Strictly `=== false` — the state
+// is tri-state and `null` means the check could not tell, which must stay
+// silent. Warning someone who IS signed in is worse than not warning at all,
+// because it teaches people that this banner is noise.
+const claudeAuthBanner = document.getElementById('claudeAuthBanner');
+function paintClaudeAuth(state) {
+  if (claudeAuthBanner) claudeAuthBanner.style.display = state?.authed === false ? 'flex' : 'none';
+}
+// `refresh` asks main to re-check behind the answer it hands back, so the panel
+// paints from cache immediately and corrects itself a moment later. Main
+// throttles it, so alt-tabbing cannot spawn a login shell per focus event.
+function refreshClaudeAuthBanner(refresh = false) {
+  return api.invoke('get-claude-auth-status', { refresh }).then(paintClaudeAuth).catch(() => {});
+}
+// Pushed when main re-checks, and — the case that matters — the moment an agent
+// connects, so finishing the sign-in clears this immediately rather than at the
+// next poll.
+api.on('claude-auth-changed', paintClaudeAuth);
+window.addEventListener('focus', () => refreshClaudeAuthBanner(true));
+refreshClaudeAuthBanner();
+
+// Calendar auto-join (#299): "your next matching meeting" notice. Wide
+// visibility window (up to 24h out, see calendar-auto-join.js's
+// selectUpcomingMatches) — this is purely informational, distinct from the
+// tight 5-minute window that actually arms the join timer in main.js.
+const calendarUpcomingBanner = document.getElementById('calendarUpcomingBanner');
+const calendarUpcomingText = document.getElementById('calendarUpcomingText');
+function formatUpcomingDelta(ms) {
+  if (ms <= 60 * 1000) return 'starting now';
+  const minutes = Math.round(ms / 60000);
+  if (minutes < 60) return `in ${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  return `in ${hours}h`;
+}
+function paintCalendarUpcoming(events) {
+  const next = Array.isArray(events) && events.length ? events[0] : null;
+  if (!calendarUpcomingBanner || !calendarUpcomingText) return;
+  if (!next) {
+    calendarUpcomingBanner.style.display = 'none';
+    return;
+  }
+  const delta = new Date(next.start).getTime() - Date.now();
+  const title = next.summary || 'Untitled event';
+  const localTime = new Date(next.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  calendarUpcomingText.textContent = `${localTime} meeting: "${title}" ${formatUpcomingDelta(Math.max(delta, 0))}`;
+  calendarUpcomingBanner.style.display = 'flex';
+}
+api.on('calendar-upcoming', ({ events }) => paintCalendarUpcoming(events));
+api.invoke('get-upcoming-calendar-events').then(paintCalendarUpcoming).catch(() => {});
+
+// Load every config value this window displays, and paint the controls from it.
+//
+// EXTRACTED so it can run more than once. It used to be a bare call at startup,
+// which meant the panel showed a boot-time snapshot forever: anything written
+// afterwards — by the onboarding wizard, by set_preference from an agent, by
+// another window — left the controls showing stale values. Someone naming their
+// bot in the wizard saw "Unnamed bot" in Settings and reasonably concluded the
+// save had failed, when it had worked (#190, #143).
+function loadConfigIntoControls() {
+  return api.invoke('get-config', ['botName', 'calendarIdentityEmail', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'ttsProvider', 'claudeWorkDir', 'claudeModel', 'emojiSet', 'captionLanguage', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
+  if (result?.botName) {
+    botNameInput.value = result.botName;
+    currentBotName = result.botName;
+  } else {
+    // No explicit name set — show what the rest of the app already falls back
+    // to (resolvedBotName's storedName -> cliName -> profileName chain) as
+    // the placeholder, instead of the generic "Unnamed bot". Field stays
+    // genuinely empty; this is informative, not a silent pre-fill.
+    api.invoke('get-resolved-bot-name').then((name) => {
+      if (name && !botNameInput.value) botNameInput.placeholder = name;
+    }).catch(() => { /* keep the generic placeholder */ });
+  }
+  calendarIdentityEmailInput.value = result?.calendarIdentityEmail || '';
   rememberedMeetName = result?.lastMeetName || null;   // #282 remembered names
   rememberedSlackName = result?.lastSlackName || null;
   refreshSlackIdentity();
   try { updateBotNameBig(); } catch { /* defined below; ignore on first paint */ }
+  // The headline shows the RESOLVED name with a provenance tag for launched/named
+  // test bots ("Alice [CLI name]") — the biggest cue when monitoring tests — while
+  // currentBotName stays the plain name the button and curl examples need.
+  api.invoke('get-bot-name-info').then((info) => {
+    if (info?.name) currentBotName = info.name;
+    botNameDisplay = info?.display || null;
+    try { updateBotNameBig(); } catch { /* ignore */ }
+  }).catch(() => { /* older main without the handler — headline stays as-is */ });
   // Prefer the new websiteUrl key; fall back to legacy syncBaseUrl so users with
   // older configs still see their existing override populated in the field.
   const effectiveUrl = result?.websiteUrl || result?.syncBaseUrl || '';
@@ -1422,13 +1805,44 @@ api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', '
   // #366/#381: the ElevenLabs key field moved to App Settings — no input here to
   // fill. The onboarding banner still reflects whether a key is configured.
   refreshVoiceBanner(); // #381 — only when nothing can speak at all
-  if (result?.ttsVoiceId) ttsVoiceIdInput.value = result.ttsVoiceId;
+  if (result?.ttsVoiceId) {
+    ttsVoiceIdInput.value = result.ttsVoiceId;
+    // A stored id must be VISIBLE on load, whether or not the voice list works.
+    // populateUnifiedVoices re-evaluates this too, but it races the config read
+    // and may have already run with an empty field.
+    const f = document.getElementById('ttsVoiceIdField');
+    if (f) f.style.display = '';
+  }
   // #340: one unified picker merging macOS + ElevenLabs + Voicebox. Pre-selects
   // from the saved provider/voice; defaults to Daniel (tts.js's real default).
   populateUnifiedVoices(result);
   if (result?.claudeWorkDir) claudeWorkDirInput.value = result.claudeWorkDir;
   if (result?.claudeModel) claudeModelInput.value = result.claudeModel;
-  if (emojiSetInput && result?.emojiSet) emojiSetInput.value = result.emojiSet;
+  if (emojiSetInput && result?.emojiSet) {
+    // emojiSet has two OPEN forms — `font:<Family>` and `dir:<path>` — and
+    // neither has a matching <option>. Assigning an unknown value to a <select>
+    // leaves it BLANK with selectedIndex -1, so a face set from a call would
+    // read as "no emoji set chosen". Synthesise an option for whichever form is
+    // in effect. Deliberately generic: this was written for font: and a folder
+    // set reintroduced the exact same blank dropdown a day later.
+    const openLabel = (() => {
+      const fam = fontFamilyFromSet(result.emojiSet);
+      if (fam) return `Font: ${fam}`;
+      const dir = dirFromSet(result.emojiSet);
+      if (dir) return `Folder: ${dir.replace(/\/+$/, '').split('/').pop() || dir}`;
+      return null;
+    })();
+    emojiSetInput.querySelector('option[data-open-option]')?.remove();
+    if (openLabel) {
+      const opt = document.createElement('option');
+      opt.value = result.emojiSet;
+      opt.textContent = openLabel;
+      opt.title = result.emojiSet;      // the full path, on hover
+      opt.setAttribute('data-open-option', '1');
+      emojiSetInput.appendChild(opt);
+    }
+    emojiSetInput.value = result.emojiSet;
+  }
   // '' is a real value here ("leave as Meet has it"), so don't treat it as absent.
   if (captionLanguageInput && result?.captionLanguage !== undefined) {
     captionLanguageInput.value = result.captionLanguage || '';
@@ -1441,7 +1855,41 @@ api.invoke('get-config', ['botName', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', '
 
   // Check auth status after config is loaded (so we know the server URL)
   checkAuthStatus();
+}).catch(() => {});
+}
+
+loadConfigIntoControls();
+
+// Re-read whenever something else writes config. main sends this from BOTH write
+// paths — set-config (the wizard, this panel) and applyPref (an agent's
+// set_preference) — so the controls track reality no matter who changed it.
+//
+// Re-reading everything rather than applying message.payload on purpose: a
+// targeted update has to know which control shows which key, and that mapping
+// silently rots as prefs are added. Re-reading cannot drift.
+api.on('extension-message', (message) => {
+  if (message?.action !== 'config-updated') return;
+  // The avatar repaints regardless of the focus guard below: it is a picture,
+  // not a form control, so nothing can be typed into it. Without this the panel
+  // showed the OLD face for up to 60s after an agent changed it mid-call (the
+  // repaint is otherwise on a 60s timer) — the call and the app's own picture of
+  // the bot disagreeing, which is the thing that made the font look broken.
+  const changed = message.payload?.key;
+  if (changed === 'emojiSet' || changed === 'avatarBackgroundSvg') renderAgentAvatar();
+  // Don't repaint under someone's hands. A re-read rewrites every control,
+  // including the ack-phrase textareas — so an echo triggered by changing the
+  // emoji dropdown could wipe a half-typed phrase in a different field. The
+  // panel re-reads on open and on focus anyway, so skipping here costs nothing.
+  const el = document.activeElement;
+  const editing = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
+  if (editing) return;
+  loadConfigIntoControls();
 });
+
+// Catch up on anything written while this window was in the background — the
+// wizard and App Settings are separate windows, and an agent can write at any
+// time. Pairs with the focus-time voice-banner refresh just above.
+window.addEventListener('focus', () => { loadConfigIntoControls(); });
 
 // #366/#381: the user (vibeconferencing.com) login moved OUT of the profile
 // Settings pane — it's app-level, so it lives in App Settings (⌘,). It also
@@ -1536,6 +1984,10 @@ function enterCallState(meetCode) {
   closeProfileMenu();
   reportContentHeight(); // the in-call card just appeared — the window must grow
   joinBtn.style.display = 'none';
+  // "Run setup call" starts a BRAND-NEW call — nonsensical mid-call, same as
+  // "Call now" itself. Lives in Settings, so it isn't covered by the
+  // .hero-precall/.hero-incall CSS swap and needs its own toggle.
+  if (setupCallBtn) setupCallBtn.style.display = 'none';
 
   // Show which call the bot is actually in (read-only) — for confirming the
   // right room and copying the invite link. Prefer the joined URL; fall back
@@ -1548,11 +2000,10 @@ function enterCallState(meetCode) {
   // Update troubleshooting section
   meetCodeInput.value = meetCode;
   roomIdField.style.display = 'block';
-  const base = syncBaseUrl || 'http://127.0.0.1:7865';
+  const base = syncBaseUrl || 'https://vibeconferencing.com';
   roomLink.href = `${base}/room/${meetCode}`;
   roomLink.style.display = 'block';
   updateCurlCommand(meetCode);
-  updateAgentPrompt(meetCode);
 }
 
 function exitCallState() {
@@ -1561,6 +2012,7 @@ function exitCallState() {
   document.body.dataset.callState = 'idle'; // #379: pre-call controls return
   reportContentHeight(); // the in-call card just went away — shrink back
   joinBtn.style.display = '';
+  if (setupCallBtn) setupCallBtn.style.display = '';
   // Clears "Joining…" too: leaving covers the case where a join was still in
   // flight (denied admission, host never let the bot in) and would otherwise
   // strand the button disabled.
@@ -1627,6 +2079,43 @@ joinBtn.addEventListener('click', async () => {
       setJoinPhase(null); // give the button back if we never made it in
     }
   }, 3000);
+});
+
+setupCallBtn?.addEventListener('click', async () => {
+  // Triggered from Settings, not the main screen, so switch back first — that's
+  // where the "joining…" state and the in-call UI actually render.
+  showScreen(mainScreen);
+
+  // If a call is already going, SET UP IN IT rather than creating a second one.
+  //
+  // The main button has always worked this way ("Add <bot> to call" when a call
+  // is detected); this one did not, so pressing Setup while sitting in a call
+  // opened a brand-new Meet and left the user in the wrong room — with the
+  // person they were talking to still in the old one.
+  //
+  // Only a DETECTED call counts, not manualUrlEntry: that flag means the user
+  // opened the URL field themselves, which is a request to type one, not
+  // evidence a call exists.
+  const existing = detectedCallUrl;
+  if (existing && isJoinableUrl(existing)) {
+    setJoinPhase('joining');
+    api.send('join-meet', existing, { onboardingCall: true });
+    return;
+  }
+
+  setJoinPhase('starting');
+  try {
+    const r = await api.invoke('create-and-join-meet', { onboardingCall: true });
+    if (r?.ok) {
+      if (r.url) { meetUrlInput.value = r.url; detectedCallUrl = r.url; lastKnownCallUrl = r.url; }
+      setJoinPhase('joining');
+      return;
+    }
+    showError(CREATE_MEET_ERRORS[r?.code] || CREATE_MEET_ERRORS.unknown);
+  } catch (err) {
+    showError('Could not start a setup call: ' + err.message);
+  }
+  setJoinPhase(null);
 });
 
 meetUrlInput.addEventListener('keydown', (e) => {
@@ -1712,12 +2201,40 @@ api.invoke('get-share-window').then(applyShareWindowState).catch(() => {});
 // Bot Google identity — guest vs account mode (#170)
 // ---------------------------------------------------------------------------
 
+// #299: when the bot is actually signed in to Google, that account's own
+// address IS its calendar identity — there's no such thing as a bot that's
+// both signed in AND wants a different placeholder email, so the field is
+// forced to match and locked rather than merely pre-filled. Guest-mode bots
+// (or a signed-in bot whose email isn't known yet, see the fallback above)
+// keep the field free-text, same as before #299 added this.
+const calendarIdentityEmailCaption = document.getElementById('calendarIdentityEmailCaption');
+function lockCalendarIdentityToAccount(email) {
+  if (!calendarIdentityEmailInput) return;
+  if (calendarIdentityEmailInput.value !== email) {
+    calendarIdentityEmailInput.value = email;
+    api.invoke('set-config', 'calendarIdentityEmail', email);
+  }
+  calendarIdentityEmailInput.readOnly = true;
+  calendarIdentityEmailInput.title = 'Locked to the bot\'s signed-in Google account. Sign out to set a custom calendar invite email.';
+  if (calendarIdentityEmailCaption) {
+    calendarIdentityEmailCaption.textContent = `Locked to this bot's signed-in Google account (${email}) — that's already a valid calendar invite address. Sign out above to use a custom one instead.`;
+  }
+}
+function unlockCalendarIdentity() {
+  if (!calendarIdentityEmailInput) return;
+  calendarIdentityEmailInput.readOnly = false;
+  calendarIdentityEmailInput.title = '';
+  if (calendarIdentityEmailCaption) {
+    calendarIdentityEmailCaption.innerHTML = 'Add this address as a guest on a Google Calendar event to have this bot join it automatically. It doesn\'t need to be a real, working email. You can also put <code>#vibeconf:&lt;this bot\'s name&gt;</code> in the event\'s title or description instead. Filled in automatically from "Sign in to Google as bot" above, if used.';
+  }
+}
+
 const meetAccountEmail = document.getElementById('meetAccountEmail');
 // Show WHICH Google account the bot is actually signed in as — surfaces the gap
 // that hid #250 (mode said "account" while the bot was silently logged out).
 function refreshAccountEmail(mode) {
   if (!meetAccountEmail) return;
-  if (mode !== 'account') { meetAccountEmail.style.display = 'none'; return; }
+  if (mode !== 'account') { meetAccountEmail.style.display = 'none'; unlockCalendarIdentity(); return; }
   meetAccountEmail.style.display = '';
   meetAccountEmail.textContent = 'Checking signed-in account…';
   meetAccountEmail.className = 'account-email';
@@ -1725,17 +2242,21 @@ function refreshAccountEmail(mode) {
     if (r && r.signedIn && r.email) {
       meetAccountEmail.textContent = '✓ Signed in as ' + r.email;
       meetAccountEmail.className = 'account-email email-ok';
+      lockCalendarIdentityToAccount(r.email);
     } else if (r && r.signedIn) {
       // Auth cookies present but we couldn't read the email — signed in for sure.
       meetAccountEmail.textContent = '✓ Signed in to Google (could not read which account)';
       meetAccountEmail.className = 'account-email email-ok';
+      unlockCalendarIdentity();
     } else {
       meetAccountEmail.textContent = '⚠ Mode is "account" but no Google session detected. The bot may not be signed in. If joins require admission, click "Sign in to Google as bot".';
       meetAccountEmail.className = 'account-email email-bad';
+      unlockCalendarIdentity();
     }
   }).catch(() => {
     meetAccountEmail.textContent = '(could not read signed-in account)';
     meetAccountEmail.className = 'account-email';
+    unlockCalendarIdentity();
   });
 }
 
@@ -1768,10 +2289,34 @@ function updateBotNameBig() {
   if (!botNameBig) return;
   // Friendly name first (the Bot Name preference); fall back to the on-disk
   // profile name only if there isn't one, so the heading is never empty.
-  botNameBig.textContent = currentBotName || appProfileName || 'Default';
+  botNameBig.textContent = botNameDisplay || currentBotName || appProfileName || 'Default';
   // The pre-call button says the bot's name too ("Call Jimmy now"), so it has
   // to follow a rename. One choke point keeps the two from drifting.
   updateJoinBtnState();
+  // Same for the guided-setup button ("Call Jimmy for setup"). It lives on the
+  // Settings screen, which is exactly where a rename happens — so without this
+  // it would still be offering to call the old name on the very page you just
+  // renamed the bot on.
+  updateSetupCallBtnLabel();
+  // And the Settings screen's own heading ("Jimmy Settings") — same page,
+  // same reasoning: a rename should not leave the title above it stale.
+  updateSettingsHeading();
+}
+
+// "Jimmy Settings" — same shape and fallback as updateSetupCallBtnLabel, so a
+// bot with no name yet reads the same way in both places.
+function updateSettingsHeading() {
+  const el = document.getElementById('settingsHeading');
+  if (el) el.textContent = `${currentBotName || 'your bot'} Settings`;
+}
+
+// "Call Jimmy for setup" — deliberately the same shape as the main button's
+// "Call Jimmy now": verb first, then the bot. It IS a call, and it was reading
+// as a settings action because it looked like one.
+function updateSetupCallBtnLabel() {
+  const btn = document.getElementById('setupCallBtn');
+  if (!btn) return;
+  btn.textContent = `Call ${currentBotName || 'your bot'} for setup`;
 }
 
 // (The "● in Meet as Jimmy" sub-line lived here. Removed — the bot's name is
@@ -2067,77 +2612,29 @@ slackSignOutBtn?.addEventListener('click', async () => {
 // Agent prompt
 // ---------------------------------------------------------------------------
 
-function generateAgentPrompt(meetCode) {
-  const base = syncBaseUrl || 'http://127.0.0.1:7865';
-  const endpoint = `${base}/api/sync/${meetCode}`;
-  const botParam = encodeURIComponent(currentBotName);
-
-  return `You are "${currentBotName}", an AI assistant participating in a Google Meet call.
-
-## How to interact
-
-**Wait for people to speak (long-poll, recommended):**
-\`\`\`bash
-curl -s "${endpoint}?since=TIMESTAMP&wait=55&silence=2&bot=${botParam}" | python3 -m json.tool
-\`\`\`
-This holds the connection open for up to 55 seconds and returns only when someone finishes speaking (2 seconds of silence detected). The \`bot\` parameter excludes your own entries. Use the \`asOf\` value from each response as the next \`since\` parameter.
-
-First call: omit \`?since=\` and \`?wait=\` to get recent history and the initial \`asOf\` timestamp.
-
-Transcript entries are in \`transcript.entries[]\`, each with \`participantName\` (who said it) and \`text\` (what they said).
-
-**Say something in the call:**
-\`\`\`bash
-curl -s -X POST "${endpoint}" \\
-  -H "Content-Type: application/json" \\
-  -d '{"sender":"${currentBotName}","role":"bot","ownerName":"${currentBotName}","transcript":[{"text":"Your message here"}]}'
-\`\`\`
-Your transcript text will be spoken aloud in the Meet call via text-to-speech.
-
-**Update the whiteboard (shared screen):**
-\`\`\`bash
-curl -s -X POST "${endpoint}" \\
-  -H "Content-Type: application/json" \\
-  -d '{"sender":"${currentBotName}","role":"bot","ownerName":"${currentBotName}","whiteboard":{"content":"# Your markdown here"}}'
-\`\`\`
-
-## Interaction loop
-
-Your main loop should be:
-1. GET with \`?wait=55&silence=2\` to block until someone speaks
-2. Read the transcript entries in the response
-3. Decide if you should respond
-4. POST your response (spoken via TTS) and/or whiteboard update
-5. Use \`asOf\` from the response as the next \`since\` value
-6. Repeat from step 1
-
-## Important notes
-- \`ownerName\` is REQUIRED in every POST request
-- \`sender\` must be exactly "${currentBotName}" for the extension to speak your responses
-- Avoid exclamation marks and special characters in text — they can cause shell escaping issues with curl. Use periods instead.
-- When using curl with single quotes, apostrophes in text will break the command. Use double quotes with escaped inner quotes, or avoid contractions.
-- Do NOT use \`sleep\` between polls — the \`wait\` parameter handles blocking server-side
-- Keep responses concise — they will be spoken aloud via TTS
-- Use the whiteboard for structured content (notes, diagrams, action items)
-`;
-}
-
-function updateAgentPrompt(meetCode) {
-  agentPromptText.value = generateAgentPrompt(meetCode);
-}
-
-copyPromptBtn.addEventListener('click', () => {
-  api.copyToClipboard(agentPromptText.value);
-  copyPromptBtn.textContent = 'Copied!';
-  setTimeout(() => { copyPromptBtn.textContent = 'Copy Agent Prompt'; }, 2000);
-});
 
 // ---------------------------------------------------------------------------
 // Curl command
 // ---------------------------------------------------------------------------
 
+// Paint the copyable curl command, or say why there isn't one.
+//
+// This used to be driven only by the panel's `meet-detected` / call-status
+// events — which the pop-out troubleshooting window never receives, because it
+// is a second webContents and those broadcasts go to panelView. So in the
+// window where it actually lives, the button was disabled permanently, in a
+// call or out of one, with nothing on screen saying why.
+//
+// It is now driven by the same 1s poll that renders the call state, so both
+// windows agree, and the empty state explains itself instead of presenting a
+// dead control.
 function updateCurlCommand(meetCode) {
-  const base = syncBaseUrl || 'http://127.0.0.1:7865';
+  if (!meetCode) {
+    curlCommand.textContent = 'Available once the bot is in a call — the command needs the room id.';
+    copyCurlBtn.disabled = true;
+    return;
+  }
+  const base = syncBaseUrl || 'https://vibeconferencing.com';
   curlCommand.textContent = `curl -X POST "${base}/api/sync/${meetCode}" -H "Content-Type: application/json" -d '{"sender":"${currentBotName}","role":"bot","ownerName":"${currentBotName}","transcript":[{"text":"Hello from curl test."}]}'`;
   copyCurlBtn.disabled = false;
 }
@@ -2151,6 +2648,73 @@ copyCurlBtn.addEventListener('click', () => {
 // ---------------------------------------------------------------------------
 // DevTools
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Call feedback (#…): one click leaves a mark in the session log.
+//
+// Clicked mid-call, so the interaction budget is about a second: no dialog, no
+// confirmation step, no typing. The value is the TIMESTAMP — it puts a marker
+// next to whatever the bot was doing at that moment, which is what turns "it
+// kept interrupting" from a memory into something diagnosable.
+//
+// Fire-and-forget on purpose: a failed log write must never interrupt a call,
+// so the button flashes regardless and the failure lands in the console.
+document.querySelectorAll('[data-feedback]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const kind = btn.dataset.feedback;
+    const noteEl = document.getElementById('feedbackNote');
+    const note = (noteEl?.value || '').trim();
+    // Echo the note back rather than just saying "with your note". The field
+    // keeps its text after submit, so without seeing the words quoted there is
+    // no way to tell a sent note from one still sitting there unsent — which is
+    // the exact doubt that makes someone click again.
+    const shown = note.length > 48 ? `${note.slice(0, 48).trimEnd()}…` : note;
+    const withNote = (tail) => (note ? `Marked "${label}" · “${shown}”${tail}` : `Marked "${label}"${tail}`);
+    // Read the label element rather than stripping emoji out of textContent.
+    // The emoji reads well on the button and is noise in a grep — `kind=` is the
+    // machine-readable key, and the label is there so a human scanning the log
+    // knows what was clicked without a lookup table.
+    const label = (btn.querySelector('.fb-label') || btn).textContent.trim();
+    api.invoke('call-feedback', { kind, label, note }).then((r) => {
+      // Say whether it reached the BOT, not just the log. Four of the seven
+      // kinds have nothing the agent can act on, and repeats inside the cooldown
+      // are deliberately log-only — without this the human can't tell the
+      // difference between "noted" and "the bot is adjusting", and would
+      // reasonably keep clicking.
+      const status = document.getElementById('feedbackStatus');
+      if (status && r && r.toldAgent) {
+        status.textContent = withNote(' — and told the bot.');
+      }
+    }).catch((e) => {
+      console.warn('[feedback] not recorded:', e && e.message);
+    });
+    // Confirm without stealing attention from the call.
+    btn.classList.remove('logged');
+    void btn.offsetWidth;   // reflow, so a repeat click replays the pop
+    btn.classList.add('logged');
+    setTimeout(() => btn.classList.remove('logged'), 1200);
+    // Kept, not cleared — the same complaint often recurs in one call and
+    // retyping it is the friction these buttons exist to remove. Selected so it
+    // reads as consumed and the next keystroke replaces it.
+    if (noteEl && note) {
+      noteEl.focus();
+      noteEl.select();
+      // Restart the flash even on rapid repeat clicks: without removing the
+      // class first the animation only plays once and the second click looks
+      // like it did nothing.
+      noteEl.classList.remove('sent');
+      void noteEl.offsetWidth;
+      noteEl.classList.add('sent');
+      setTimeout(() => noteEl.classList.remove('sent'), 900);
+    }
+    const status = document.getElementById('feedbackStatus');
+    if (status) {
+      status.textContent = withNote(' in the log.');
+      clearTimeout(status._t);
+      status._t = setTimeout(() => { status.textContent = ''; }, 4000);
+    }
+  });
+});
 
 document.getElementById('devtoolsBtn').addEventListener('click', () => {
   api.send('open-devtools');
@@ -2168,15 +2732,21 @@ speakTextBtn.addEventListener('click', () => {
   setTimeout(() => { speakTextBtn.textContent = 'Speak using TTS'; }, 3000);
 });
 
+// Named so it is obvious in the transcript and the session log that this turn
+// was injected rather than heard.
+const SIMULATED_SPEAKER = 'Troubleshooting User';
+
 const simulateSpeechBtn = document.getElementById('simulateSpeechBtn');
 const simulateText = document.getElementById('simulateText');
-const simulateSpeaker = document.getElementById('simulateSpeaker');
 const simulateSpeechStatus = document.getElementById('simulateSpeechStatus');
 
 if (simulateSpeechBtn) {
   async function submitSimulatedSpeech() {
     const text = simulateText.value.trim();
-    const speaker = simulateSpeaker.value.trim() || 'Test User';
+    // Fixed, not a field. Nobody varied it, and a stray or blank value silently
+    // changed who the bot thought had spoken — which is the one thing about a
+    // simulated turn that must not be ambiguous when you read it back in the log.
+    const speaker = SIMULATED_SPEAKER;
     if (!text) {
       simulateSpeechStatus.textContent = 'Enter some text first.';
       simulateSpeechStatus.style.color = '#fdd663';
@@ -2236,19 +2806,53 @@ speechBtn.addEventListener('click', () => {
 // ---------------------------------------------------------------------------
 
 botNameInput.addEventListener('change', () => {
-  // Emptying the field falls back to the unconfigured name rather than
-  // silently re-adopting whatever the old default happened to be.
-  const name = botNameInput.value.trim() || 'Unnamed bot';
-  currentBotName = name;
-  api.invoke('set-config', 'botName', name);
-  api.send('to-meet', { action: 'set-config', payload: { botName: name } });
-  updateBotNameBig();
-  refreshBotIdentity(); // keep the guest "👤 Guest 'Name'" line in sync
+  const typed = botNameInput.value.trim();
+  if (typed) {
+    currentBotName = typed;
+    botNameDisplay = null; // a typed/saved name is a real identity — drop any fallback tag
+    api.invoke('set-config', 'botName', typed);
+    api.send('to-meet', { action: 'set-config', payload: { botName: typed } });
+    updateBotNameBig();
+    refreshBotIdentity(); // keep the guest "👤 Guest 'Name'" line in sync
+    return;
+  }
+  // Emptying the field CLEARS the stored name rather than persisting the
+  // literal fallback text as if it were a real one — a prior version of this
+  // handler saved the string "Unnamed bot" itself into botName, which then
+  // read back as a genuine 'stored' identity (bot-name.js's clean()/
+  // resolveBotNameWithSource only fall through on an EMPTY value, not on the
+  // literal word "Unnamed bot") and permanently overrode the real fallback
+  // (e.g. a named profile's humanized name) with the generic label
+  // everywhere in the app. Clearing lets resolveBotName's storedName ->
+  // cliName -> profileName -> "Unnamed bot" chain run for real, and
+  // get-bot-name-info re-fetches so the headline/placeholder reflect
+  // whatever that chain resolves to immediately, not a stale value.
+  api.invoke('set-config', 'botName', '');
+  api.send('to-meet', { action: 'set-config', payload: { botName: '' } });
+  api.invoke('get-bot-name-info').then((info) => {
+    currentBotName = info?.name || 'Unnamed bot';
+    botNameDisplay = info?.display || null;
+    if (info?.name) botNameInput.placeholder = info.name;
+    updateBotNameBig();
+    refreshBotIdentity();
+  }).catch(() => {
+    currentBotName = 'Unnamed bot';
+    botNameDisplay = null;
+    updateBotNameBig();
+    refreshBotIdentity();
+  });
+});
+
+// #299: no validation on this — it's a free-text guest email that never needs
+// to resolve to a real mailbox, and calendar-auto-join.js's matching is
+// already trim+lowercase-tolerant, so there's nothing meaningful to reject.
+calendarIdentityEmailInput.addEventListener('change', () => {
+  api.invoke('set-config', 'calendarIdentityEmail', calendarIdentityEmailInput.value.trim());
 });
 
 websiteUrlInput.addEventListener('change', () => {
   const url = websiteUrlInput.value.trim().replace(/\/+$/, '');
-  syncBaseUrl = url || 'http://127.0.0.1:7865';
+  syncBaseUrl = url || 'https://vibeconferencing.com';
   // Write to the new key. Also clear the legacy syncBaseUrl so we don't end up
   // with two values diverging — getWebsiteUrl()'s resolution chain prefers
   // websiteUrl anyway, but cleaning legacy makes the precedence visible in
@@ -2288,10 +2892,22 @@ const WHITELISTED_MACOS_STANDARD = ['Daniel', 'Samantha', 'Karen'];
 // discoverable any other way.
 function showElevenVoiceError(error) {
   const el = document.getElementById('elevenVoiceError');
-  if (!el) return;
-  if (!error) { el.style.display = 'none'; el.textContent = ''; return; }
-  el.textContent = '⚠ ' + error.message;
-  el.style.display = 'block';
+  if (el) {
+    if (!error) { el.style.display = 'none'; el.textContent = ''; }
+    else { el.textContent = '⚠ ' + error.message; el.style.display = 'block'; }
+  }
+  // The voice-id field is the way IN when the list is unavailable, so it appears
+  // exactly then — and stays visible whenever it already holds a value.
+  //
+  // That second rule is not politeness. A setting that is in effect but not
+  // rendered is how a bot ends up speaking in a voice nobody can find in the UI;
+  // the same shape cost real time twice this week (an emojiSet the dropdown
+  // couldn't display, a botName in a config the app no longer read).
+  const field = document.getElementById('ttsVoiceIdField');
+  if (field) {
+    const hasValue = !!(ttsVoiceIdInput && ttsVoiceIdInput.value.trim());
+    field.style.display = (error || hasValue) ? '' : 'none';
+  }
 }
 
 // Pass the saved config on initial load to pre-select; call with no arg to
@@ -2385,6 +3001,16 @@ async function previewVoiceSample(opts) {
     }
   } catch { /* ignore — preview is best-effort */ }
 }
+
+// A key just became active (paste or gift accept, #273) — the only feedback
+// otherwise is a silent color change in Settings, easy to miss since nothing
+// else in the app makes a sound until a bot is in a call. Spoken here (the
+// panel, not app-settings) because it's the one window that's always open,
+// so a gift auto-accepted at launch — before anyone opened Settings — still
+// gets announced.
+api.on('elevenlabs-key-validated', ({ message }) => {
+  previewVoiceSample({ provider: 'elevenlabs', text: message });
+});
 
 unifiedVoiceSelect?.addEventListener('change', () => {
   const val = unifiedVoiceSelect.value || '';
@@ -2582,22 +3208,25 @@ api.on('meet-status', (status) => {
     const match = status.url?.match(/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/);
     if (match) {
       meetCodeInput.value = match[1];
-      const base = syncBaseUrl || 'http://127.0.0.1:7865';
+      const base = syncBaseUrl || 'https://vibeconferencing.com';
       roomLink.href = `${base}/room/${match[1]}`;
       updateCurlCommand(match[1]);
-      updateAgentPrompt(match[1]);
     }
   }
 });
 
 api.on('call-status-changed', ({ status, provider }) => {
   // Authoritative call-state signal from the local server. Only show Leave Call
-  // once we're actually in the meeting; hide it on idle/left.
+  // once we're actually in the meeting; hide it once the bot has left.
   if (status === 'in-call') {
     callProvider = provider || 'meet';
     const code = meetCodeInput.value || '';
     enterCallState(code);
-  } else if (status === 'idle' || status === 'left') {
+    // after-call-work counts as out of the call: the bot HAS left the meeting,
+    // so "Leave Call" is no longer the action on offer even though the agent is
+    // still busy. (call-phase.js owns this vocabulary; the renderer is context-
+    // isolated and can't require it, so the values are spelled out.)
+  } else if (status === 'idle' || status === 'call-complete' || status === 'after-call-work') {
     callProvider = null;
     exitCallState();
   }

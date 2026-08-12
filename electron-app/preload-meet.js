@@ -79,7 +79,20 @@ try {
 try {
   const emojiAssets = require('./emoji-assets.js');
   globalThis.__vibeEmojiDataUri = (relPath) => emojiAssets.dataUriForRelPath(relPath, __dirname);
-} catch { globalThis.__vibeEmojiDataUri = () => null; }
+  // The three big sets ship as colour FONTS now, not thousands of files. Hand
+  // page-inject the raw bytes; it builds a FontFace and draws glyphs. Bytes, not
+  // a URL, is also what keeps Meet's CSP out of it — verified in a live call.
+  globalThis.__vibeEmojiFontBytes = (setName) => emojiAssets.fontBytesFor(setName, __dirname);
+  // `dir:<path>` sets — a folder of images the user or an agent made. Resolved
+  // here for the same reason the bundled art is: the page has no fs.
+  globalThis.__vibeEmojiDirUri = (dir, emoji) => emojiAssets.externalDataUri(dir, emoji);
+  globalThis.__vibeEmojiDirCount = (dir) => emojiAssets.describeExternalDir(dir).count;
+} catch {
+  globalThis.__vibeEmojiDataUri = () => null;
+  globalThis.__vibeEmojiFontBytes = () => null;
+  globalThis.__vibeEmojiDirUri = () => null;
+  globalThis.__vibeEmojiDirCount = () => 0;
+}
 
 // P2: forward Runway-face control to runway-avatar.js (which listens for source:'runway-avatar').
 ipcRenderer.on('runway-avatar', (_event, payload) => {

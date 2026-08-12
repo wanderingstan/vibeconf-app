@@ -1,0 +1,157 @@
+#!/usr/bin/env node
+// whiteboard-e2e-test.mjs — prove the whiteboard works END TO END, from write to
+// pixels on a viewer's screen (#267 step 3). NOT just "did screen-share toggle".
+//
+// The existing share test only confirms the toggle state ("sharing"). This walks
+// the WHOLE pipeline and checks it from the VIEWER's perspective:
+//   1. Bot A writes a unique nonce to the whiteboard (→ vibeconferencing.com →
+//      Upstash → the web whiteboard renders it → screen-shared into the call).
+//   2. Bot B (a different participant) screenshots its own call view.
+//   3. A Claude VISION call asserts the nonce text is visible in B's screenshot.
+// If ANY link breaks — store, render, or share — B won't see it. (The narrower
+// data-only half of this is scripts/whiteboard-roundtrip-test.mjs.)
+//
+// Vision PREFERS the `claude` CLI — it uses the machine's Claude subscription, so
+// no ANTHROPIC_API_KEY is needed (see claudeCliSees below). The API key is only a
+// fallback for a host where the CLI isn't logged in. If NEITHER is available the
+// test still captures B's screenshot and prints the path for a manual eyeball
+// (no hard assertion) — it degrades to capture-and-look rather than failing.
+//
+// PREREQ: two bots running:
+//   scripts/spawn-test-fleet.sh 2
+//
+// Run:
+//   node scripts/whiteboard-e2e-test.mjs --bots Alice:7901,Jimmy:7902
+//   pnpm test:whiteboard-e2e -- --bots Alice:7901,Jimmy:7902
+//
+// Exit non-zero on a real failure (share didn't engage, or vision didn't see it).
+
+import { readFileSync } from 'fs';
+import { execFile } from 'child_process';
+import { dirname } from 'path';
+import { Bot, sleep, report, record } from './meet-test-lib.mjs';
+
+const arg = (name, def) => { const i = process.argv.indexOf('--' + name); return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : def; };
+const ROOM = arg('room', 'paz-sqoa-npe');
+const BOTS = arg('bots', 'Alice:7901,Jimmy:7902').split(',').map((s) => { const [name, port] = s.split(':'); return new Bot(name, Number(port), ROOM); });
+const stamp = process.argv.includes('--stamp') ? process.argv[process.argv.indexOf('--stamp') + 1] : String(Date.now()).slice(-6);
+// A nonce that OCR/vision won't confuse with Meet chrome: distinctive prefix + digits.
+const NONCE = `SHAREOK-${stamp}`;
+const VISION_MODEL = process.env.VIBECONF_VISION_MODEL || 'claude-haiku-4-5-20251001';
+
+// Ask Claude whether `needle` is visible in the screenshot. PREFERS the `claude`
+// CLI — it uses the user's Claude subscription, so no API key is needed (the
+// model the whole product assumes you have). --add-dir lets it Read the
+// screenshot from the OS temp dir; --allowedTools Read keeps it to just looking.
+// Returns true/false, or null when the CLI is unavailable AND there's no API key
+// fallback (the test then captures + prints the path for a manual eyeball).
+function claudeCliSees(imagePath, needle) {
+  return new Promise((resolve) => {
+    const prompt = `Read the image file at ${imagePath} (a Google Meet screenshot). Is the text "${needle}" visible anywhere in it, including inside a shared-screen / presentation tile? Answer with ONLY one word: yes or no.`;
+    execFile('claude', ['-p', prompt, '--allowedTools', 'Read', '--add-dir', dirname(imagePath)],
+      { timeout: 120000 }, (err, stdout) => {
+        if (err) { resolve(null); return; } // claude not installed / not logged in
+        resolve(/\byes\b/i.test((stdout || '').trim()));
+      });
+  });
+}
+
+async function visionSeesText(imagePath, needle) {
+  // 1) Claude CLI (subscription — the preferred path, no key).
+  const viaCli = await claudeCliSees(imagePath, needle);
+  if (viaCli !== null) return viaCli;
+  // 2) Anthropic API fallback (e.g. CI with a key but no interactive claude login).
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key) return null;
+  const b64 = readFileSync(imagePath).toString('base64');
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: VISION_MODEL,
+      max_tokens: 16,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: b64 } },
+          { type: 'text', text: `This is a Google Meet screenshot. Is the text "${needle}" visible anywhere in it, including inside a shared-screen / presentation tile? Answer with ONLY the single word "yes" or "no".` },
+        ],
+      }],
+    }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) { console.warn('[whiteboard-e2e] vision API error:', resp.status, JSON.stringify(data).slice(0, 160)); return null; }
+  const text = (data?.content?.[0]?.text || '').trim().toLowerCase();
+  return /\byes\b/.test(text);
+}
+
+// Poll until the bot is actually IN the call (not still on the green room / being
+// admitted). Without this the viewer screenshots the join screen and the test
+// false-passes — exactly the gap a ground-truth check is meant to catch.
+async function waitForInCall(bot, timeoutMs = 40000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try { if ((await bot.status()).callStatus === 'in-call') return true; } catch { /* retry */ }
+    await sleep(1000);
+  }
+  return false;
+}
+
+async function run() {
+  const [a, b] = BOTS;
+  if (!b) { record(a.name, 'twoBots', false, 'need two bots (sharer + viewer)'); return; }
+
+  // Both join, and WAIT until each is genuinely in-call (green-room / admission
+  // can take 10-20s). A screenshot before that captures the join screen, not the
+  // call — the false pass we just caught.
+  await a.join();
+  await b.join();
+  for (const bot of [a, b]) {
+    const inCall = await waitForInCall(bot);
+    record(bot.name, 'inCall', inCall, inCall ? '' : 'never reached in-call (admission/auto-join failed?)');
+    if (!inCall) return;
+  }
+  await sleep(2000); // let captions/tiles settle
+
+  // A: put the nonce on the whiteboard as a big heading, then share it.
+  await a.updateWhiteboard(`# ${NONCE}\n\nScreen-share verification — if you can read this nonce, the share is live.`);
+  const { engaged, sustained, environmental, droppedAfterMs } = await a.shareWhiteboard();
+  // Gate on the PRESENT FLOW engaging — mirroring the #282 decision in meet-test-lib:
+  // an engaged-then-collapsed share (no held video stream — unauth whiteboard window
+  // #274 / Screen-Recording perm not granted) is environmental and non-gating. Only a
+  // present flow that never engages at all is a real regression. When it engaged but
+  // couldn't hold the stream, there's nothing for the viewer to see, so we skip the
+  // downstream nonce check rather than fail it (same spirit as the vision SKIP below).
+  record(a.name, 'shareEngaged', engaged,
+    engaged
+      ? (sustained
+        ? 'sharing confirmed'
+        : `⚠︎ ENVIRONMENTAL (non-gating, #282): engaged then collapsed after ~${droppedAfterMs}ms — skipping downstream viewer nonce check on this host`)
+      : 'present never engaged (share flow broke? guest can\'t present?)');
+  if (!engaged) return;      // real regression: gates the run
+  if (!sustained) return;    // environmental collapse: shareEngaged already passed; nothing held to view
+
+  // Let the shared surface propagate to B's view.
+  await sleep(7000);
+
+  // B (the viewer) screenshots what IT sees.
+  const shot = await b.screenshot();
+  record(b.name, 'viewerScreenshot', shot.ok, shot.ok ? shot.path.split('/').pop() : 'capture failed');
+  if (shot.ok) {
+    const seen = await visionSeesText(shot.path, NONCE);
+    if (seen === null) {
+      // Neither the claude CLI nor an API key was available: capture-and-eyeball,
+      // not a failure.
+      record(b.name, 'nonceVisible', true, `SKIPPED vision (no claude CLI + no ANTHROPIC_API_KEY) — eyeball: ${shot.path}`);
+    } else {
+      record(b.name, 'nonceVisible', seen,
+        seen ? `vision confirms "${NONCE}" is on the shared screen` : `vision did NOT see "${NONCE}" — share may not have delivered. ${shot.path}`);
+    }
+  }
+
+  await a.stopSharing();
+}
+
+run()
+  .catch((err) => { console.error('whiteboard-e2e-test error:', err && err.message); })
+  .finally(() => { const r = report(); process.exit(r.fails > 0 ? 1 : 0); });

@@ -1,8 +1,9 @@
 // claude-model.test.mjs — the `--model` flag for the launched Claude session.
 //
-// Two jobs. The boring one: blank now means `sonnet` rather than "pass no flag and
+// Two jobs. The boring one: blank now means `opus` rather than "pass no flag and
 // let the CLI decide", because an implicit default that shifts under us is worse
-// than an explicit one.
+// than an explicit one. (Opus, not Sonnet — the #responsiveness audit found the
+// two statistically tied on latency; Opus is the pick on other grounds.)
 //
 // The one that actually matters: this value is interpolated into a shell command
 // that is itself inside an AppleScript string —
@@ -27,13 +28,13 @@ const require = createRequire(import.meta.url);
 const { DEFAULT_CLAUDE_MODEL, resolveClaudeModel, claudeModelFlag } = require('../electron-app/claude-model.js');
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-test('the default is sonnet', () => {
-  assert.equal(DEFAULT_CLAUDE_MODEL, 'sonnet');
+test('the default is opus', () => {
+  assert.equal(DEFAULT_CLAUDE_MODEL, 'opus');
 });
 
 test('blank / unset resolves to the default — this is the change', () => {
   for (const empty of ['', '   ', null, undefined]) {
-    assert.equal(resolveClaudeModel(empty), 'sonnet', `${JSON.stringify(empty)} → sonnet`);
+    assert.equal(resolveClaudeModel(empty), 'opus', `${JSON.stringify(empty)} → opus`);
   }
 });
 
@@ -62,16 +63,16 @@ test('shell metacharacters are stripped, not escaped', () => {
 
 test('a value that sanitizes to nothing falls back to the default, never to an empty flag', () => {
   // `--model ''` or a bare `--model` followed by the next flag would be worse than
-  // simply using sonnet.
+  // simply using opus.
   for (const hostile of ['"', '$( )', ';;;', '!!!', '   ;   ']) {
     const got = resolveClaudeModel(hostile);
-    assert.equal(got, 'sonnet', `${JSON.stringify(hostile)} → sonnet, got ${JSON.stringify(got)}`);
+    assert.equal(got, 'opus', `${JSON.stringify(hostile)} → opus, got ${JSON.stringify(got)}`);
   }
 });
 
 test('the flag is always emitted, and is a single safe argument', () => {
-  assert.equal(claudeModelFlag(''), ' --model sonnet');
-  assert.equal(claudeModelFlag('opus'), ' --model opus');
+  assert.equal(claudeModelFlag(''), ' --model opus');
+  assert.equal(claudeModelFlag('sonnet'), ' --model sonnet');
   assert.equal(claudeModelFlag('$(id)'), ' --model id');
   // Exactly one leading space, one flag, one value, no shell-significant chars.
   for (const raw of ['', 'opus', 'claude-sonnet-4-5-20250929', '"; echo pwned; #']) {
@@ -91,6 +92,6 @@ test('main.js uses the helper and no longer builds the flag conditionally', () =
 test('the panel no longer tells the user that blank means Claude’s default', () => {
   const html = readFileSync(join(root, 'electron-app/renderer/panel.html'), 'utf8');
   assert.doesNotMatch(html, /Blank = Claude's default/);
-  assert.match(html, /Blank = <code>sonnet<\/code>/);
-  assert.match(html, /placeholder="sonnet"/, 'the placeholder now states a fact, not a hint');
+  assert.match(html, /Blank = <code>opus<\/code>/);
+  assert.match(html, /placeholder="opus"/, 'the placeholder now states a fact, not a hint');
 });

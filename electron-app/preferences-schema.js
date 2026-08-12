@@ -101,6 +101,22 @@ const PREFERENCES = {
   // This is the bot's hearing, not a display preference — it reads the room
   // through the caption region, so a mismatch means it hears nonsense and
   // answers the nonsense rather than falling silent.
+  afterCallWorkSeconds: {
+    type: 'number',
+    default: 300,
+    min: 0,
+    max: 1800,
+    description:
+      "How long the bot's agent may keep working after it leaves a call, in seconds. "
+      + 'The call\'s room, transcript and tools all stay available during this window, so the '
+      + 'agent can summarise, file notes, or write a receipt before the app tears the call down. '
+      + 'What it actually does is in the bot\'s CLAUDE.md, under "After the call". '
+      + 'This is a BACKSTOP, not a schedule: an agent that finishes early calls end_session and '
+      + 'the app tears down immediately, so the usual cost is seconds, not the whole window. It '
+      + 'only runs to the limit when an agent never reports back. Skipped entirely when no agent '
+      + 'is driving the bot, since there would be nobody to do the work. Set 0 to turn the phase '
+      + 'off and tear down the moment the bot leaves.',
+  },
   captionLanguage: {
     type: 'string',
     default: '',
@@ -124,6 +140,46 @@ const PREFERENCES = {
       "The bot's display name in Meet calls. Takes effect on the next call.",
     requiresRestart: true,
   },
+  calendarIdentityEmail: {
+    type: 'string',
+    default: '',
+    label: 'Calendar invite email',
+    description:
+      "Add this email as a guest on a Google Calendar event (it doesn't need to " +
+      'be a real/working address) to have this bot automatically join that ' +
+      "meeting. Alternatively, put `#vibeconf:<this bot's name>` in the " +
+      "event's title or description. Requires the user to be logged into " +
+      'vibeconferencing.com with Calendar access connected. See ' +
+      'startCalendarPolling in main.js.',
+  },
+  onboardingCallComplete: {
+    type: 'boolean',
+    // Default TRUE, deliberately backwards from how a "have you done X yet"
+    // flag would normally default. A brand-new, never-configured bot needs
+    // this false — but that has to be written explicitly, at the moment the
+    // bot is actually created (main.js: seedNewBotName, and the brand-new-
+    // profile check in the startup block), not left to fall through to a
+    // schema default. Defaulting to false here would mean every profile that
+    // predates this preference — every bot real people have been running for
+    // weeks — reads as never-onboarded the moment this shipped, and gets
+    // shoved into a surprise guided call it doesn't need. Defaulting to true
+    // makes "unknown" mean "assume already configured", which is the safe
+    // direction to be wrong in.
+    default: true,
+    hiddenInSettingsUI: true,
+    description:
+      "Whether this bot has ever finished the live guided onboarding call " +
+      "(mcp-server/onboarding-call-skill.md) — the walkthrough that sets its " +
+      'name, voice, emoji and background live, in-call. Distinct from the ' +
+      "Electron dialog wizard's own `onboardingComplete` store flag, which only " +
+      'tracks that dialog being dismissed and says nothing about whether the ' +
+      'live call ever ran. Explicitly set to false only when a bot is newly ' +
+      'created (main.js), and set to true by the onboarding-call skill itself ' +
+      'at the end of its walkthrough (Step 5, once every question has been ' +
+      'asked or skipped). Read by join-call-skill.md and call-skill.md to ' +
+      'redirect a bot that has never done this into the guided call instead ' +
+      'of a normal join/call.',
+  },
   logRawCaptions: {
     type: 'boolean',
     default: false,
@@ -132,6 +188,40 @@ const PREFERENCES = {
       '([caption-raw]) — every partial as Meet captions grow, marked LIVE vs ' +
       'settled. The messy data needed to test utterance-completeness detection ' +
       '(#243). Verbose; turn ON only when collecting test data, OFF for normal use.',
+  },
+  recordCallAudio: {
+    type: 'boolean',
+    default: false,
+    hiddenInSettingsUI: true,
+    description:
+      'Automatically record every call to disk — one audio file per track (the bot\'s ' +
+      'own outgoing audio plus each remote WebRTC track Meet delivers) PLUS a ' +
+      'video track of the bot\'s own Meet view, with a manifest that time-aligns ' +
+      'everything. Meet gives each remote participant its own track (measured), so ' +
+      '"remote-*" tracks are per-participant — labeled by arrival order, not name. ' +
+      'When recording is active a small visible status window appears (elapsed ' +
+      'time + Stop button) — that is expected UI, not a side effect, and it is ' +
+      'also how the room is shown recording is happening. When the recording ' +
+      'stops, audio and video are automatically muxed into one call-recording.mp4. OFF by ' +
+      'default; verbose on disk. Env VIBECONF_RECORD_CALL=1 ' +
+      'forces it on (used by the test fleet so a nightly stall comes with a recording).',
+  },
+  keepCallRecordingTracks: {
+    type: 'boolean',
+    default: false,
+    label: 'Keep call recording tracks',
+    description:
+      'After a call recording finishes producing call-recording.mp4 (and, if a ' +
+      'whiteboard share happened, call-recording-share.mp4), also keep the raw ' +
+      'per-track files it was built from — call-recording-tracks/ (one audio file ' +
+      'per participant, plus video.webm and share.webm) and manifest.json. OFF by ' +
+      'default: once the merge succeeds, call-recording-tracks/ is deleted, since ' +
+      'almost everyone only ever wants the merged video(s), not the raw tracks they ' +
+      'came from. Turn this on to keep those too — useful for diagnosing the ' +
+      'recording itself (per-track timing, a specific participant\'s audio, a failed ' +
+      'mux) rather than just watching what happened on the call. A merge that fails ' +
+      'or is skipped (no ffmpeg, no video captured) never deletes the raw tracks ' +
+      'regardless of this setting — they are all that is left in that case.',
   },
   studioSound: {
     type: 'boolean',
@@ -244,7 +334,13 @@ const PREFERENCES = {
       "auto-resolves external references into data URIs so you don't need to " +
       "base64-encode anything. SVG/CSS animations don't tick (rasterized once); " +
       "the emoji's bounce provides motion. Use to display backgrounds, name plates, " +
-      "debug info, or anything SVG can render.",
+      "debug info, or anything SVG can render. "
+      + 'SHORTCUT: point it at an IMAGE FILE with "file:<path>" — '
+      + '"file:/Users/me/art/background.png" — and the app converts it to a '
+      + 'self-contained SVG on write (downscaled and inlined, so moving or deleting '
+      + 'the file later cannot leave a black camera). png/jpg/gif/webp/svg. That is '
+      + 'the easy path when you HAVE an image, including one you just generated; '
+      + 'writing SVG directly stays better for anything vector.',
   },
   avatarBackgroundCaption: {
     type: 'string',
@@ -259,25 +355,143 @@ const PREFERENCES = {
   emojiSet: {
     type: 'string',
     default: 'fluent3d',
-    enum: ['native', 'twemoji', 'openmoji', 'noto', 'fluent3d'],
+    enum: ['native', 'twemoji', 'openmoji', 'noto', 'fluent3d', 'redpanda'],
+    enumPattern: /^(font:[A-Za-z0-9 _-]{1,120}(#[0-9A-Fa-f]{3,8})?|dir:[~/][^\n"']{0,400})$/,
     description:
-      'Which emoji graphics the avatar\'s face uses. "native" = the OS emoji font. ' +
+      'How the avatar\'s face is drawn. Either a bundled set, or "font:<Family>" to '
+      + 'use a font INSTALLED ON THIS MACHINE — e.g. "font:UnifontExMono". One value, '
+      + 'so there is no second setting to disagree with this one. A MONOCHROME font '
+      + 'has no colour of its own and draws black by default; add a hex colour to '
+      + 'pick one — "font:UnifontExMono#ffcc00". (A colour font ignores it and keeps '
+      + 'its own colours.) For the font form, '
+      + 'Or "dir:<path>" for a FOLDER OF IMAGES you (or an agent) made — one file '
+      + 'per emoji, like the bundled fluent3d set: "dir:/Users/me/taylor-emoji". '
+      + 'No naming convention is imposed; the folder is indexed and any of these '
+      + 'work, whichever is easiest to produce: the emoji itself ("🙂.png"), '
+      + 'lowercase hex ("1f642.png"), uppercase with FE0F ("1F642.svg"), or noto '
+      + 'style ("emoji_u1f642.png"). png/svg/webp/gif/jpg. An emoji with no file '
+      + 'falls back to the native glyph, exactly like a gap in a bundled set, so a '
+      + 'partial set is fine — the faces you supply are the ones that change. '
+      + 'NOTE for art with text or a left/right: Meet MIRRORS the bot\'s own tile in '
+      + 'its self-view, so your art looks backwards in get_call_screenshot and in the '
+      + "Bot's view window. Everyone else sees it the right way round — the flip is a "
+      + 'CSS transform on the local video element, which cannot change what is '
+      + 'transmitted. Do not pre-flip your images to compensate. '
+      + 'For a font, call list_fonts for the exact family names available here: a family that is '
+      + 'not installed silently falls back to the system emoji font, which looks like '
+      + 'nothing happened. Any font with emoji coverage works, colour or monochrome. '
+      + 'The bundled sets: "native" = the OS emoji font. ' +
       '"twemoji" = Twitter Twemoji (flat). "openmoji" = OpenMoji (outlined). "noto" = ' +
       'Google Noto Emoji. "fluent3d" = Microsoft Fluent 3D (a curated face set — ' +
-      'hand/person emojis fall back to native). All bundled in the app — no network. ' +
+      'hand/person emojis fall back to native). "redpanda" = a claymation red panda ' +
+      'librarian character (a curated face set, same fallback behavior as fluent3d). ' +
+      'All bundled in the app — no network. ' +
       'Any emoji not in the chosen set falls back to the native glyph. Reskin the ' +
       'bot\'s face (#316).',
   },
-  remoteLogging: {
+  updateChannel: {
+    type: 'string',
+    default: 'release',
+    enum: ['release', 'candidate'],
+    // Which GitHub releases this install auto-updates to. 'release' (default — real
+    // users) takes only PROMOTED releases: electron-updater's allowPrerelease stays
+    // OFF, so GitHub-prerelease builds are invisible. 'candidate' (Stan + Seth) turns
+    // allowPrerelease ON, so it also picks up the prerelease release-candidates BEFORE
+    // they're promoted — burn them in, then promote. Promotion (scripts/promote.sh)
+    // flips the release's prerelease flag off; because promoted versions are clean
+    // semver with no prerelease component, a 'release' client then accepts them.
+    label: 'Update channel',
+    description: "Which builds this Mac auto-updates to. 'Candidate' gets new release-candidates before they're promoted to everyone — for testers who want them early.",
+    enumLabels: {
+      release: 'Release (stable — promoted builds only)',
+      candidate: 'Candidate (prerelease — test builds before promotion)',
+    },
+  },
+  agentBackend: {
+    type: 'string',
+    default: 'claude',
+    enum: ['claude', 'codex', 'other'],
+    // Optional presentation hints, honoured by the schema-driven App Settings
+    // renderer. Without them a select shows the raw key and raw enum values,
+    // which here would present three neutral peers — and they are not peers:
+    // one is automated, one is experimental, one is bring-your-own.
+    label: 'Agent backend',
+    enumLabels: {
+      claude: 'Claude Code (recommended)',
+      codex: 'OpenAI Codex (experimental)',
+      other: 'Other MCP client (LM Studio, custom)',
+    },
+    description:
+      'Which agent drives the bots on THIS MACHINE. App-level, not per-bot: which ' +
+      'CLI is installed is a property of the machine, and every bot on it is driven ' +
+      'by the same one. "claude" = Claude Code, the path the app automates (it writes ' +
+      'the MCP config, opens the Terminal, and checks sign-in). "codex" = OpenAI Codex ' +
+      'CLI — experimental; the app writes its MCP config, but does not launch it. "other" = anything ' +
+      'else that speaks MCP (LM Studio, a hand-rolled client, an agent on ' +
+      'another machine) — the app gives you the connection details and stays out of ' +
+      'the way. ' +
+      'Only "claude" makes the app responsible for launching the agent, so it is the ' +
+      'only value that warns about Claude Code being missing or signed out (#137).',
+  },
+  agentHosting: {
+    type: 'string',
+    default: 'terminal',
+    enum: ['terminal', 'headless'],
+    label: 'Agent hosting',
+    enumLabels: {
+      terminal: 'Terminal window (default)',
+      // The ⚠️ is load-bearing, not decoration. Picking headless without
+      // Dangerous Mode silently does nothing — the app refuses and falls back to
+      // a Terminal — so without a visible marker the setting looks like it took
+      // effect when it did not.
+      headless: '⚠️ Headless — needs Dangerous Mode (experimental)',
+    },
+    requiresRestart: false,
+    description:
+      'How the app runs the Claude session that drives this bot. "terminal" opens '
+      + 'Terminal.app and types the command — you can watch the agent think, answer '
+      + 'a prompt, and Ctrl-C it, but the app cannot see its output except through '
+      + 'the transcript file Claude Code happens to write. "headless" spawns the '
+      + 'agent as a child of the app with --output-format stream-json, so its '
+      + 'activity is read directly from its own stdout rather than scraped from a '
+      + 'file (#242) — the brain pane keeps working even when transcripts are not '
+      + 'written, which they were not at all on 2026-08-04. '
+      + 'Experimental because headless has no UI: there is no window to read an '
+      + 'error in and nothing to interrupt. It also REQUIRES Dangerous Mode — a '
+      + 'permission prompt has nowhere to draw, so the agent would stall silently '
+      + 'on its first tool call; the app refuses headless without it and falls back '
+      + 'to a Terminal rather than joining a call with a mute bot. '
+      + 'Only applies when Agent backend is "claude".',
+  },
+  confirmQuit: {
     type: 'boolean',
     default: true,
+    label: 'Confirm before quitting',
+    requiresRestart: false,
     description:
-      'Ship this app\'s session log to the backend so it can be read remotely ' +
-      'via get_session_log (instance:…) or the logs CLI — useful for debugging ' +
-      'another machine\'s bots without terminal access. ON by default during ' +
-      'early testing (the team relies on these call logs for optimizing/debugging); ' +
-      'the log may contain transcript text. Set false to keep logs local. ' +
-      'Takes effect immediately (no restart).',
+      'Ask before closing the main window, which quits the app. The red close '
+      + 'button sits a few pixels from controls used constantly, and mid-call a '
+      + 'stray click ends the call and stops the bot\'s agent with no undo. The '
+      + 'dialog says which of those two you are doing. Turn off here, or via '
+      + '"Don\'t ask again" in the dialog itself.',
+  },
+  remoteLogging: {
+    type: 'boolean',
+    default: false,
+    label: 'Remote logging',
+    description:
+      'Ship this app\'s session log to the backend continuously, so it can be read '
+      + 'remotely via get_session_log (instance:…) or the logs CLI — useful for '
+      + 'debugging another machine\'s bots without terminal access. The log may '
+      + 'contain transcript text. '
+      + 'OFF by default (#255). It was on through early testing, on the argument '
+      + 'that the team needed the data; the useful logs turned out to be the ones '
+      + 'attached to a complaint, and "📤 Share this call\'s log" in the '
+      + 'troubleshooting window now covers those — one call, chosen in the moment, '
+      + 'by someone who knows what went wrong. Shipping every call forever on the '
+      + 'strength of a checkbox answered once at install is a worse trade for both '
+      + 'sides. Turn it on for a machine you are actively debugging. '
+      + 'Takes effect immediately (no restart).',
   },
   websiteUrl: {
     type: 'string',
@@ -553,23 +767,27 @@ const PREFERENCES = {
     type: 'boolean',
     default: true,
     description:
-      'EXPERIMENTAL (#115). Use the Web Audio analyser to decide whether anyone is ' +
-      'speaking, instead of waiting on Meet mic-meter DOM mutations. The DOM path ' +
-      'needs 3 mutations in a 1200ms window, so it lands ~400-700ms after speech ' +
-      'starts; the analyser already samples every animation frame (~16ms) and is ' +
-      'the signal every turn-taking gate actually wants. EITHER signal counts as ' +
+      'Use the Web Audio analyser as a fast path for someone taking the floor from ' +
+      'a speaking bot, alongside Meet\'s mic-meter DOM signal. The DOM path needs 3 ' +
+      'mutations in a 1200ms window, so it lands ~400-700ms after speech starts; ' +
+      'the analyser samples every animation frame (~16ms). EITHER signal counts as ' +
       'busy, so the DOM path still covers what the analyser misses. ' +
-      'ON while the userbase is test users only, because the experiment needs real ' +
-      'call data and nobody runs with a non-default preference. KNOWN RISK: the ' +
-      '-55dB threshold is inherited from STT gating (where its own comment says it ' +
-      'was "set low for now"), and Meet applies noise suppression + VAD before ' +
-      'animating the meter we are replacing — so a raw level check may fire on a ' +
-      'fan or a keyboard. The failure is the bot believing someone is ALWAYS ' +
-      'talking and never speaking at all, which reads as thinking rather than as a ' +
-      'bug. If a bot goes quiet, set this false — it is read live, so it takes ' +
-      'effect mid-call. Watch the [floor-levels] and [floor-latency] log lines; ' +
-      'they record regardless of this setting.',
+      'The floor uses its OWN threshold (FLOOR_SPEECH_DB, -35dB), well above the ' +
+      '-55dB STT gate, and that separation is the whole point. Measured across ' +
+      '1,501 level windows of real calls: the room noise floor never reached even ' +
+      '-55dB (median -92dB), so ambient sound was never the problem — but the ' +
+      'rising edge is immediate, so one ~16ms frame over the line arms the floor ' +
+      'for 350ms, and a keystroke clears -55dB easily. 26.5% of 3,820 measured busy ' +
+      'periods lasted under 500ms: too short to be anyone taking the floor, and ' +
+      'each one is the bot going quiet for nothing. At -35dB, 94% of windows ' +
+      'containing real speech still clear it and no quiet window does. ' +
+      'So this is an ESCAPE HATCH, not a detector: erring loud costs a moment of ' +
+      'yield latency, erring quiet costs the bot its voice. If a bot still goes ' +
+      'quiet, set this false — read live, so it takes effect mid-call. Watch the ' +
+      '[floor-audio] busy durations: a return of sub-500ms periods means -35dB is ' +
+      'still too low. [floor-levels] and [floor-latency] record regardless.',
   },
+
   botSpeakJitterMaxMs: {
     type: 'number',
     default: 2000,
@@ -766,7 +984,14 @@ function validate(key, value) {
   if (spec.type === 'string') {
     if (typeof value !== 'string') return { ok: false, error: `Expected string` };
     if (Array.isArray(spec.enum) && !spec.enum.includes(value)) {
-      return { ok: false, error: `Must be one of: ${spec.enum.join(', ')}` };
+      // enumPattern widens a closed list with one open FORM, for a pref that is
+      // "one of these, or a value only the user's machine knows" — emojiSet's
+      // `font:<Family>`. Encoding that in the same key as the bundled sets means
+      // there is no second preference with a precedence rule against this one.
+      if (!(spec.enumPattern instanceof RegExp && spec.enumPattern.test(value))) {
+        const extra = spec.enumPattern ? `, or ${String(spec.enumPattern)}` : '';
+        return { ok: false, error: `Must be one of: ${spec.enum.join(', ')}${extra}` };
+      }
     }
     if (spec.maxLength != null && value.length > spec.maxLength) {
       return { ok: false, error: `String too long (max ${spec.maxLength} chars)` };

@@ -48,7 +48,11 @@ set -e
 REPO="${VIBECONF_REPO:-${0:A:h:h}}"
 ELECTRON="$REPO/electron-app"
 NAMES=(Alice Jimmy Cosmo Dizzy)           # display names by index (Alice=-1, Jimmy=-2)
-BASE_PORT=7901
+# Base local-server port for the fleet (bots use BASE_PORT, BASE_PORT+1, …).
+# Override with VIBECONF_BASE_PORT to run a fleet that WON'T collide with the
+# on-push CI smoke or the nightly (both use the 7901 default) — e.g. the long
+# name-transcription audit runs on 7911/7912.
+BASE_PORT="${VIBECONF_BASE_PORT:-7901}"
 
 # Flag parsing (position-independent): a numeric arg = count; --kill / --dmg /
 # --built flags.
@@ -60,6 +64,7 @@ SLACK=0
 SLACK_URL=""
 GOOGLE=0
 DEVTOOLS=0
+RECORD_CALLS=0           # --record-calls: force call audio+video recording on for every spawned bot
 WITH_AGENTS=0            # --with-agents: attach a real Claude agent per bot (#267 item 5)
 FUZZ_ROOM=""            # --room=CODE   passed to spawn-agents.mjs
 FUZZ_MISSION=""         # --mission=KEY passed to spawn-agents.mjs
@@ -72,11 +77,12 @@ for a in "$@"; do
     --slack-url=*) SLACK_URL="${a#--slack-url=}" ;;
     --google)      GOOGLE=1 ;;
     --devtools)    DEVTOOLS=1 ;;
+    --record-calls) RECORD_CALLS=1 ;;
     --with-agents) WITH_AGENTS=1 ;;
     --room=*)      FUZZ_ROOM="${a#--room=}" ;;
     --mission=*)   FUZZ_MISSION="${a#--mission=}" ;;
     <->)           N="$a" ;;   # zsh: <-> matches an integer
-    *) echo "usage: $0 [count] [--dmg|--built] [--slack --slack-url=URL] [--google] [--devtools] [--with-agents --room=CODE --mission=KEY] [--kill]"; exit 1 ;;
+    *) echo "usage: $0 [count] [--dmg|--built] [--slack --slack-url=URL] [--google] [--devtools] [--record-calls] [--with-agents --room=CODE --mission=KEY] [--kill]"; exit 1 ;;
   esac
 done
 if (( N < 1 || N > 4 )); then echo "count must be 1–4"; exit 1; fi
@@ -216,6 +222,19 @@ if (( SLACK )); then
 fi
 # Open detached DevTools on each spawned app (handy for live DOM debugging).
 (( DEVTOOLS )) && EXTRA_ARGS="$EXTRA_ARGS --devtools=true"
+# Force call audio+video recording on for every spawned bot (see main.js's
+# --record-calls=true flag / VIBECONF_RECORD_CALL) — independent of the
+# --record-calls flag below, this doesn't decide whether a bot-view window
+# pops open (that's still VIBECONF_RECORD/VIBECONF_BOT_VIEW, below).
+(( RECORD_CALLS )) && EXTRA_ARGS="$EXTRA_ARGS --record-calls=true"
+
+# When RECORDING (nightly sets VIBECONF_RECORD=1) — or an explicit VIBECONF_BOT_VIEW
+# — POP each bot's-view window OUT at launch (#275), so the screencapture films the
+# bots' actual call views instead of the desktop. Off by default: no reason to open
+# windows for a non-recorded run. The window title is "<name> — Bot's view".
+if [[ "${VIBECONF_RECORD:-0}" == "1" || -n "${VIBECONF_BOT_VIEW:-}" ]]; then
+  EXTRA_ARGS="$EXTRA_ARGS --bot-view=${VIBECONF_BOT_VIEW:-popped}"
+fi
 
 # Packaged-app modes exercise the real artifact (asar, build.files) — no
 # source-vs-package fidelity gap. --dmg = the INSTALLED app (/Applications); the
@@ -289,6 +308,21 @@ if (( ! SLACK )) && [[ -z "${VIBECONF_NO_RUN_TAG:-}" ]]; then
 fi
 
 BOTS_ARG=""
+# Put every test profile's CLAUDE.md back to the shipped default before the run.
+#
+# CLAUDE.md is seeded once and never overwritten, so a test profile otherwise
+# accumulates whatever anyone left in it and a run depends on history nobody
+# remembers. It also keeps the real-agent missions honest about features that
+# live in that file (after-call work, #139): the test should read what a fresh
+# install gets, not a profile that happens to have been patched.
+#
+# The script refuses anything not named test-*, so a bad PROFILE_BASE can't
+# reach a real bot. Failure is fatal — a run that silently skipped the reset
+# would grade the wrong instructions.
+for i in $(seq 1 $N); do
+  node "$(dirname "$0")/reset-test-profile-instructions.mjs" "${PROFILE_BASE}-$i"
+done
+
 for i in $(seq 1 $N); do
   profile="${PROFILE_BASE}-$i"
   port=$((BASE_PORT + i - 1))
@@ -324,17 +358,26 @@ for i in $(seq 1 $N); do
   # (not just the default instance) it would pop up over these freshly-created
   # guest profiles mid-test. Idempotent merge — writes only when something changed.
   node -e 'const fs=require("fs");const p=process.argv[1]+"/config.json";let c={};try{c=JSON.parse(fs.readFileSync(p,"utf8"))}catch{}let d=false;if(c.ttsProvider!=="macos-say"){c.ttsProvider="macos-say";d=true;}if(c.onboardingComplete!==true){c.onboardingComplete=true;d=true;}if(d)fs.writeFileSync(p,JSON.stringify(c,null,2));' "$PROFDIR"
+  # VIBECONF_REQUIRE_TOKEN=0: #201 made the local-server control API require a
+  # Bearer token by default. The agent-less harness drives that API directly and
+  # has no token, so with auth on every call returns {"error":"unauthorized"} and
+  # the whole run cascades. Test bots are local, isolated, single-purpose — the
+  # legacy no-auth server is correct here. (Passed as an ENV var, not a CLI flag,
+  # because that's what local-server reads; see the launch notes below for how it
+  # reaches each launch mode.)
   if (( PKG )); then
-    # open -n = new instance (profiles bypass the single-instance lock). It
-    # returns immediately and runs detached; we wait/kill by port below, and the
-    # app writes its own session log under the profile's userData
-    # (…/profiles/testN/logs), so no stdout redirect needed. Launch by explicit
-    # bundle PATH ("$APP") so we run exactly the chosen copy (installed vs built),
-    # not whatever LaunchServices resolves the app NAME to.
-    # ${=WINFLAGS}: zsh word-splits the flags into separate argv entries.
-    open -n "$APP" --args --profile="$profile" --local-port="$port" --bot-name="$name" ${=ACCT_FLAG} ${=WINFLAGS} ${=EXTRA_ARGS}
+    # Launch the bundle's executable DIRECTLY (not `open -n`) so the env reaches
+    # the app: `open -n --args` gets a FRESH LaunchServices environment and drops
+    # caller env vars (that's why other test-only config is CLI flags). --profile
+    # still bypasses the single-instance lock, so this is a separate instance just
+    # like `open -n` gave us. Explicit bundle PATH ("$APP") runs exactly the chosen
+    # copy (installed vs built). ${=WINFLAGS}: zsh word-splits into argv entries.
+    _exec="$APP/Contents/MacOS/$(defaults read "$APP/Contents/Info.plist" CFBundleExecutable)"
+    VIBECONF_REQUIRE_TOKEN=0 "$_exec" --profile="$profile" --local-port="$port" --bot-name="$name" ${=ACCT_FLAG} ${=WINFLAGS} ${=EXTRA_ARGS} \
+      >"/tmp/vibeconf-$profile.log" 2>&1 &
   else
-    nohup zsh -c "cd '$ELECTRON' && pnpm dev -- --profile=$profile --local-port=$port --bot-name=$name $ACCT_FLAG $WINFLAGS $EXTRA_ARGS" \
+    # Source: pnpm dev inherits the shell env, so the inline var reaches the app.
+    nohup zsh -c "cd '$ELECTRON' && VIBECONF_REQUIRE_TOKEN=0 pnpm dev -- --profile=$profile --local-port=$port --bot-name=$name $ACCT_FLAG $WINFLAGS $EXTRA_ARGS" \
       >"/tmp/vibeconf-$profile.log" 2>&1 &
   fi
   BOTS_ARG+="${BOTS_ARG:+,}$name:$port"
@@ -345,13 +388,27 @@ echo "▶ Waiting for local-servers…"
 for i in $(seq 1 $N); do
   port=$((BASE_PORT + i - 1))
   for attempt in $(seq 1 40); do
-    if curl -sf "http://127.0.0.1:$port/api/sync/no-room" >/dev/null 2>&1; then
+    # -m 5: bound each probe. The socket can be OPEN (server listening) while the
+    # app's main thread is wedged (e.g. blocked on a modal dialog) and never
+    # responds — without a max-time the readiness loop hangs indefinitely instead
+    # of giving up. (Belt-and-suspenders alongside the headless dialog-skip fix.)
+    if curl -sf -m 5 "http://127.0.0.1:$port/api/sync/no-room" >/dev/null 2>&1; then
       echo "  ✓ port $port up"; break
     fi
     if (( attempt == 40 )); then echo "  ✗ port $port never came up — see /tmp/vibeconf-test$i.log"; fi
     sleep 1
   done
 done
+
+# NOTE: the --bot-view=popped flag above already opens each bot's-view window so a
+# screen recording films it. We deliberately do NOT reposition/tile those windows.
+# That needed Accessibility permission for System Events and, UN-granted in the
+# headless launchd context, it didn't fail fast — it intermittently BLOCKED, hanging
+# the fleet spawn and wedging the whole nightly until the 30-min watchdog
+# (2026-08-08: 5 of 6 lanes got past it, the 6th hung → silent night). Not worth it:
+# bot-own-call-recording will supersede in-call screen capture anyway, and screen
+# recording's durable value is OUT-OF-call behavior, which needs no window juggling.
+# Windows just open at their default (possibly overlapping) positions.
 
 echo ""
 echo "✓ Fleet up. Drive it with:"

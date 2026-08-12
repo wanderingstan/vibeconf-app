@@ -153,8 +153,22 @@ function findByJoinAriaLabel() {
 // CATCH-ALL: in Meet, a visible "Got it" button is always a dismissible info
 // modal, so we click any we find. The recording-consent dialog (#130) uses
 // Leave / Join now (not "Got it"), so it's unaffected. Returns true if dismissed.
+// A dialog's "just make this go away" control. Text and aria-label only — the
+// jsname attributes Meet ships are minified build output and change whenever
+// Google rebuilds, which is exactly how this file lost speaker detection once
+// already.
+function findCloseAffordance(dlg) {
+  return [...dlg.querySelectorAll('button, [role="button"]')].find((b) => {
+    const lbl = (b.textContent || '').trim().toLowerCase();
+    const aria = (b.getAttribute('aria-label') || '').trim().toLowerCase();
+    return (MEET.modals.closeTexts.includes(lbl) || MEET.modals.closeTexts.includes(aria)) && isVisible(b);
+  }) || null;
+}
+
 const KNOWN_MODAL_HEADINGS = MEET.modals.knownHeadings; // for clearer logging only — NOT a gate
 let _lastModalDumpAt = 0;
+// #141: distinct dialog titles we've already sampled — one DOM dump each.
+const _unknownModalDumped = new Set();
 function dismissBlockingModals() {
   // Click any visible "Got it" button (label may be nested in a span; match by
   // text or aria-label across all candidates).
@@ -310,6 +324,64 @@ function dismissBlockingModals() {
     }
   }
 
+  // #141: "Your screen is still visible to others. Click to resume presenting
+  // or stop screen sharing." Its only control is Close, which nothing
+  // recognised — so it sat over the call UI for 13 minutes on the 2026-07-29
+  // call, covering the captions and re-dumping its DOM every 15s.
+  //
+  // Worth its own branch even though the general rule below would also catch
+  // it: this one is a KNOWN dialog, so it gets a named log line, and it keeps
+  // working if the general rule is ever tightened. It is also the dialog most
+  // likely to be sitting over Meet's Stop-presenting button, which is the
+  // leading explanation for #68's stop click failing to land.
+  //
+  // Matched on the body phrase, never on a jsname — those are minified build
+  // output and rotate without notice.
+  for (const vdlg of document.querySelectorAll(MEET.modals.anyDialog)) {
+    if (!isVisible(vdlg)) continue;
+    if (!MEET.modals.stillVisibleRe.test(vdlg.textContent || '')) continue;
+    const closeBtn = findCloseAffordance(vdlg);
+    if (closeBtn) {
+      closeBtn.click();
+      console.log('[electron-meet] Dismissed "screen is still visible to others" toast via Close (#141)');
+      return true;
+    }
+    console.warn('[electron-meet] "still visible to others" dialog found but no Close affordance (#141):\n' +
+      (vdlg.outerHTML || '').slice(0, 1500));
+    return false;
+  }
+
+  // General case (#141): a dialog whose ONLY actionable control is a
+  // close/dismiss affordance has nothing to decide, so closing it is always
+  // safe — and it covers the next variant of this without another round trip.
+  //
+  // The safety is in "only". A dialog offering Leave/Join, Stay/Leave now, or
+  // Cancel/Confirm is asking a question, and picking for the user could cost us
+  // the call — those must keep falling through to their own handlers or to the
+  // unknown-modal dump. So this fires only when every visible button is
+  // close-ish.
+  {
+    const gdlg = document.querySelector(MEET.modals.anyDialog);
+    if (gdlg && isVisible(gdlg) && !_settingsDialogInProgress) {
+      const txt = (gdlg.textContent || '').toLowerCase();
+      const isRecordingConsent = txt.includes('being recorded') || txt.includes('taking notes');
+      const buttons = [...gdlg.querySelectorAll('button, [role="button"]')].filter(isVisible);
+      const closeish = (b) => {
+        const lbl = (b.textContent || '').trim().toLowerCase();
+        const aria = (b.getAttribute('aria-label') || '').trim().toLowerCase();
+        return MEET.modals.closeTexts.includes(lbl) || MEET.modals.closeTexts.includes(aria);
+      };
+      if (!isRecordingConsent && buttons.length > 0 && buttons.every(closeish)) {
+        buttons[0].click();
+        const title = ((gdlg.getAttribute('aria-label') || '').trim() ||
+          (gdlg.querySelector('[role="heading"]')?.textContent || '').trim() ||
+          txt.slice(0, 60)) || '(untitled)';
+        console.log('[electron-meet] Closed a dialog whose only control was Close/Dismiss: "' + title + '"');
+        return true;
+      }
+    }
+  }
+
   // No "Got it" found. If a modal dialog is nonetheless sitting open and
   // blocking (and it's not the recording-consent dialog handled elsewhere),
   // dump its DOM (throttled) so we can learn its dismiss button — maybe it uses
@@ -334,13 +406,22 @@ function dismissBlockingModals() {
   if (dlg && isVisible(dlg) && !_settingsDialogInProgress && Date.now() - _lastModalDumpAt > 15000) {
     const txt = (dlg.textContent || '').toLowerCase();
     const isRecordingConsent = txt.includes('being recorded') || txt.includes('taking notes');
+    const title = ((dlg.getAttribute('aria-label') || '').trim() ||
+      (dlg.querySelector('[role="heading"]')?.textContent || '').trim() ||
+      (dlg.textContent || '').trim().slice(0, 80)) || '(untitled)';
+    // #141: ONE sample per distinct title, not one every 15s forever. The
+    // "still visible to others" toast sat open for 13 minutes and dumped ~82KB
+    // of DOM into the session log — 52 copies of the same thing. One is all the
+    // dev team needs to learn the affordance, and the log is the thing we read
+    // to debug everything else.
+    if (!isRecordingConsent && _unknownModalDumped.has(title)) {
+      return false;
+    }
     if (!isRecordingConsent) {
+      _unknownModalDumped.add(title);
       _lastModalDumpAt = Date.now();
       console.warn('[electron-meet] Modal dialog open with no "Got it" button — DOM sample so we can handle it:\n' +
         (dlg.outerHTML || '').slice(0, 2500));
-      const title = ((dlg.getAttribute('aria-label') || '').trim() ||
-        (dlg.querySelector('[role="heading"]')?.textContent || '').trim() ||
-        (dlg.textContent || '').trim().slice(0, 80)) || '(untitled)';
       if (!_unknownModalNotified.has(title)) {
         _unknownModalNotified.add(title);
         const buttons = [...dlg.querySelectorAll('button, [role="button"]')]
@@ -563,6 +644,23 @@ function setCameraOff(off) {
 // DOM, so a plain querySelectorAll count stays > 0 and falsely reads as "people
 // pane open". getClientRects() is empty for display:none elements, so it's a
 // reliable visibility test.
+// Is this people-pane tile a screen share rather than a person?
+//
+// Meet marks it with the literal word in the tile's status row, appended after
+// any badges. The class on that row is a minified token that changes between
+// builds; the word does not, so match on text.
+//
+// Localised in a non-English Meet UI, which is why this is not the only defence:
+// keying participants by device id means an unrecognised share tile becomes a
+// harmless extra entry rather than something that displaces a real person.
+function isPresentationTile(item) {
+  try {
+    const row = item.querySelector(MEET.people.presentationRow);
+    if (!row) return false;
+    return row.textContent.toLowerCase().includes(MEET.people.presentationText);
+  } catch { return false; }
+}
+
 function visiblePeopleTileCount() {
   let n = 0;
   for (const el of document.querySelectorAll(MEET.people.tile)) {
@@ -1053,16 +1151,51 @@ function gatherCallHealthSnapshot() {
     ? domSpeakerTracker.getParticipantList()
     : [];
 
+  // Everyone currently sharing, from the PEOPLE PANE rather than the toolbar.
+  //
+  // The toolbar has one slot: its label is "<name> is presenting", so it can
+  // name exactly one person however many are sharing, and a two-presenter
+  // phrasing ("2 people are presenting") would not even match the regex — it
+  // would read as nobody presenting. The people pane lists every share as its
+  // own tile, so it can say who, and how many.
+  const screenShares = (typeof domSpeakerTracker !== 'undefined' && domSpeakerTracker.getScreenShares)
+    ? domSpeakerTracker.getScreenShares()
+    : [];
+
   return {
     micHealth,
     chatUnread: hasUnreadChat(),
     chatPaneOpen: isChatPaneOpen(),
     peoplePaneOpen: visiblePeopleTileCount() > 0,
     selfPresenting,
-    presenterName, // null when nobody else is presenting
+    presenterName, // null when nobody else is presenting (toolbar; single slot)
+    screenShares,  // [{ name, id }] — every share, including the bot's own
     participants,
   };
 }
+
+// Clears the call-ended watchdog. Assigned by installCallHealthTick (the state
+// lives in its closure) and called by autoJoin, which is module-level.
+//
+// A deliberate leave-and-rejoin — the ONLY way to change the bot's Meet display
+// name — looks exactly like a call ending: the Leave button disappears while the
+// page tears down, navigates and rejoins. Measured 2026-08-04 on a rename: the
+// bot got back in at 20:22:07 and the watchdog declared "in-call UI gone for
+// 12s" at 20:22:10, three seconds later, killing a healthy call. The counter had
+// carried across the rejoin instead of starting fresh.
+//
+// It is a race, which is why renames "always seemed a little sketchy": it only
+// bites when the new page takes long enough to render.
+let resetCallEndedWatchdog = () => {};
+// Set the moment WE click Leave. From then on this page's absence of in-call UI
+// is expected, not a ghost — so its watchdog must stay quiet.
+//
+// This is the piece the join-side reset could not cover. On a rename the OLD
+// page keeps ticking while the NEW one loads: measured 2026-08-04, the Leave
+// button vanished at 21:01:15.5 and the old script fired "in-call UI gone for
+// 12s" at 21:01:26.8, nine seconds AFTER the rejoin had already started and
+// reset the new instance. Two script instances, and the fix was in the wrong one.
+let markDeliberateLeave = () => {};
 
 function installCallHealthTick() {
   let last = {};
@@ -1072,6 +1205,26 @@ function installCallHealthTick() {
   let _everInCall = false;     // have we ever confirmed admission (seen Leave)?
   let _leaveGoneTicks = 0;     // consecutive ticks with no in-call ground truth
   let _callEndedFired = false; // fire the clean-end signal at most once
+  let _leftOnPurpose = false;  // WE clicked Leave — later absence is not a ghost
+
+  // Every join starts from zero. Without this the ticks accrued while leaving
+  // are still on the clock when the bot comes back, so a rejoin can be killed by
+  // its own predecessor's absence.
+  // We clicked Leave. Everything after that is expected quiet.
+  markDeliberateLeave = () => {
+    if (!_leftOnPurpose) console.log('[electron-meet] left on purpose — call-ended watchdog stood down');
+    _leftOnPurpose = true;
+  };
+
+  resetCallEndedWatchdog = () => {
+    if (_leaveGoneTicks || _callEndedFired || _everInCall) {
+      console.log('[electron-meet] call-ended watchdog reset (join starting)');
+    }
+    _everInCall = false;
+    _leaveGoneTicks = 0;
+    _callEndedFired = false;
+    _leftOnPurpose = false;   // a fresh join is on the hook again
+  };
 
   const tick = () => {
     // Dismiss any blocking Meet onboarding modal before probing the DOM —
@@ -1142,7 +1295,37 @@ function installCallHealthTick() {
     // someone-presenting=false (we're the one presenting).
     if (next.selfPresenting !== last.selfPresenting) {
       meetProvider.emit(CALL_EVENTS.selfPresenting, { presenting: next.selfPresenting });
+    } else {
+      // #68: RECONCILE, not just detect changes.
+      //
+      // `sharing` has other writers — the capture stream ending sets it false
+      // optimistically, which says nothing about whether MEET stopped presenting.
+      // When Meet's stop click doesn't take (blocked by the "still visible to
+      // others" dialog, button missing after a re-render), the app believes the
+      // share is off while Meet is still presenting.
+      //
+      // An edge detector cannot fix that: this probe still sees `true`, equal to
+      // the `true` it saw last tick, so it stays silent — watching the truth once
+      // a second and structurally unable to notice anyone disagrees with it.
+      //
+      // So on every tick where nothing CHANGED, re-assert what is actually on
+      // screen. Flagged `reconcile` so the receiver applies the state without
+      // re-running the edge-only side effects (the unexpected-drop warning).
+      meetProvider.emit(CALL_EVENTS.selfPresenting, {
+        presenting: next.selfPresenting,
+        reconcile: true,
+      });
     }
+    // Screen shares, from the people pane. Emitted independently of the toolbar
+    // events above because it answers a question they cannot: the toolbar names
+    // ONE presenter (latest wins, measured live with three shares up), and it
+    // reports nobody at all while the bot is presenting, since self-presenting
+    // deliberately suppresses someone-else.
+    const sharesKey = JSON.stringify(next.screenShares || []);
+    if (sharesKey !== JSON.stringify(last.screenShares || [])) {
+      meetProvider.emit(CALL_EVENTS.screenSharesUpdated, next.screenShares || []);
+    }
+
     const someoneElse = !next.selfPresenting && !!next.presenterName;
     const lastSomeoneElse = !last.selfPresenting && !!last.presenterName;
     if (someoneElse !== lastSomeoneElse || next.presenterName !== last.presenterName) {
@@ -1189,7 +1372,7 @@ function installCallHealthTick() {
       // ~12 consecutive 1s ticks without the Leave button (and not on a
       // join/waiting screen) — long enough to ride out a mid-call re-render,
       // short enough to end the ghost promptly. Fire once.
-      if (_leaveGoneTicks >= 12 && !_callEndedFired) {
+      if (_leaveGoneTicks >= 12 && !_callEndedFired && !_leftOnPurpose) {
         _callEndedFired = true;
         console.warn('[electron-meet] Call ended — in-call UI gone for ' + _leaveGoneTicks + 's (collapsed toolbar / everyone left). Signaling clean leave (#417)');
         sendStatus('Call ended: the meeting is over (in-call controls disappeared).');
@@ -1466,6 +1649,8 @@ async function handleDenialPage(bodyText, stage) {
 
 async function autoJoin(botName) {
   console.log('[electron-meet] ===== AUTO-JOIN STARTING =====');
+  // Before anything else: a join in progress is not a call that ended.
+  resetCallEndedWatchdog();
   sendStatus('Joining Meet...');
 
   try {
@@ -1639,6 +1824,12 @@ async function autoJoin(botName) {
     let admitted = false;
     let waitedSeconds = 0;
     let limboSeconds = 0; // consecutive seconds with neither waiting nor in-call UI
+    // #243: consecutive seconds still showing the pre-join UI AFTER we clicked
+    // join and told the app we were waiting to be admitted. Generous, because a
+    // slow pre-join legitimately lingers for a few seconds; anything past this
+    // is a click that did not take.
+    let stuckOnJoinUISeconds = 0;
+    const STUCK_ON_JOIN_UI_SECONDS = 10;
     // Post-admission, Meet shows a LOADING screen (no waiting/join/in-call UI) that
     // can run 20s+ on a slow join before the in-call toolbar renders. At 15s this
     // false-failed a bot that was still being admitted — it declared "couldn't
@@ -1723,6 +1914,32 @@ async function autoJoin(botName) {
         _denialDomCaptured = false; // allow a fresh capture if we re-enter limbo
       }
 
+      // #243: we already told the app "Waiting to be admitted..." the moment the
+      // join button was CLICKED. If the join UI is still on screen well after
+      // that, the click did not take and nobody has knocked — most often because
+      // Meet's signed-out pre-join wants a name first and the field is empty, so
+      // "Ask to join" is inert.
+      //
+      // Left alone, the app keeps asserting a knock that never happened. A host
+      // then hunts for an admit prompt that cannot exist: measured at ~9 minutes
+      // of a live call with an external guest present. Say it plainly instead.
+      if (hasJoinUI && !waitingText && !inCallToolbar) {
+        stuckOnJoinUISeconds++;
+        if (stuckOnJoinUISeconds === STUCK_ON_JOIN_UI_SECONDS) {
+          const nameEl = MEET.join.nameInputs.map((sel) => document.querySelector(sel)).find(Boolean);
+          const needsName = !!nameEl && !String(nameEl.value || '').trim();
+          sendStatus('Notice: NOT waiting to be admitted — still on Meet\'s pre-join screen '
+            + stuckOnJoinUISeconds + 's after clicking join, so no request has reached the host. '
+            + (needsName
+              ? 'Meet is asking for a name and the field is empty, which makes "Ask to join" inert. '
+                + 'Nobody will see an admit prompt until that is filled in.'
+              : 'The join button is still on screen and the click did not take.')
+            + ' Do not tell anyone to look for an admit prompt.');
+        }
+      } else {
+        stuckOnJoinUISeconds = 0;
+      }
+
       if (waitedSeconds % logEvery === 0) {
         console.log('[electron-meet] Still waiting to be admitted (', waitedSeconds, 's )');
         sendStatus(`Waiting to be admitted (${Math.floor(waitedSeconds / 60)}m ${waitedSeconds % 60}s)...`);
@@ -1754,6 +1971,9 @@ function findPeopleButton() {
 class DOMSpeakerTracker {
   constructor() {
     this.participants = new Map();
+    // [{ name, id }] for every screen share in the people pane. Rebuilt on each
+    // scan so an ended share disappears rather than lingering.
+    this.screenShares = [];
     this.observer = null;
     this.isTracking = false;
     this.checkInterval = null;
@@ -1794,7 +2014,10 @@ class DOMSpeakerTracker {
   _logHealth() {
     if (!this.isTracking) return;
     const parts = [];
-    for (const [name, info] of this.participants) {
+    // info.name, not the map key: the key is Meet's device id now, and a health
+    // line reading "spaces/…/devices/567[spk=0]" would be unreadable.
+    for (const [, info] of this.participants) {
+      const name = info.name;
       const itemLive = info.item ? document.contains(info.item) : false;
       const mut = info._hbSubtreeMut || 0;    // tile mutations since last beat (the detection signal)
       info._hbSubtreeMut = 0;
@@ -1850,9 +2073,46 @@ class DOMSpeakerTracker {
     }
     if (region) this._warnedNoInCallRegion = false;
     const items = (region || document).querySelectorAll(MEET.people.tile);
+    const shares = [];
     for (const item of items) {
       const name = item.getAttribute('aria-label');
       if (!name) continue;
+
+      // A SCREEN SHARE, not a person. Meet gives each share its own listitem
+      // carrying the sharer's name, so this list mixes people and presentations.
+      //
+      // Measured live 2026-08-04: with one person presenting, the pane held
+      // three tiles for two people — the person (devices/555) and their share
+      // (devices/567), both labelled "Stan James". Keyed by name, the share
+      // overwrote the person, and because a share tile never pulses, that
+      // participant read as silent for the ENTIRE call: 0 speaking flags,
+      // wait_for_speech timing out at peakSpeakers=0, barge-in blind. Captions
+      // still worked, so the bot answered them and nothing looked broken.
+      if (isPresentationTile(item)) {
+        shares.push({ name, id: item.getAttribute(MEET.people.idAttr) || null });
+        continue;
+      }
+
+      // Not every listitem is a PERSON, but some non-people still carry audio.
+      //
+      // Meet renders pseudo-tiles in the same list: a "Merged audio" tile
+      // appears when two participants share one microphone (co-located, or the
+      // same person joined twice), carrying a data-cohort-id and NO participant
+      // id. It was being reported to the agent as somebody in the room.
+      //
+      // Marked rather than dropped. Dropping it would have been the same bug in
+      // a new place: if the merged tile is where those participants' speaking
+      // signal lives, discarding it makes them undetectable. So it stays tracked
+      // for speech and is filtered out of the list the agent sees.
+      const pid = item.getAttribute(MEET.people.idAttr);
+      const isPseudo = MEET.people.requireIdForPerson && !pid;
+      if (isPseudo) {
+        if (!this._loggedPseudoTiles) this._loggedPseudoTiles = new Set();
+        if (!this._loggedPseudoTiles.has(name)) {
+          this._loggedPseudoTiles.add(name);
+          console.log('[speaker-tracker] tile tracked for audio but not a person:', name);
+        }
+      }
       // Register every participant tile. Detection is mutation-rate based
       // (_checkSpeakingChange), so we no longer need to locate a specific
       // indicator element — which also means a Meet DOM change can't make us
@@ -1864,19 +2124,36 @@ class DOMSpeakerTracker {
       // counted as someone-is-speaking and cancel the silence timer.
       const isSelf = item.textContent.includes(MEET.people.selfMarker);
 
-      if (!this.participants.has(name)) {
+      // Keyed by Meet's own per-device id where it exists, falling back to the
+      // name. Two people CAN share a display name, and the name-keyed map merged
+      // them into one entry — the presentation case just made that reproducible.
+      const key = pid || name;
+
+      if (!this.participants.has(key)) {
         if (isSelf) {
           console.log('[speaker-tracker] Identified self tile:', name);
         }
-        this.participants.set(name, {
-          speaking: false, isSelf, item,
+        this.participants.set(key, {
+          name, isPseudo, speaking: false, isSelf, item,
           mutTimes: [], lastTrueAt: 0, lastChange: Date.now(),
         });
       } else {
-        const info = this.participants.get(name);
+        const info = this.participants.get(key);
         info.item = item;
         info.isSelf = isSelf;
+        info.isPseudo = isPseudo;
+        info.name = name;   // a rename keeps the same device id
       }
+    }
+
+    // Shares are state, not people. Recomputed from scratch each scan so a share
+    // that ENDS disappears — an incremental update would leave a phantom
+    // presenter on the board after someone stopped sharing.
+    const before = JSON.stringify(this.screenShares || []);
+    this.screenShares = shares;
+    if (JSON.stringify(shares) !== before) {
+      console.log('[speaker-tracker] screen shares:',
+        shares.length ? shares.map((s) => s.name).join(', ') : '(none)');
     }
   }
 
@@ -1910,7 +2187,7 @@ class DOMSpeakerTracker {
   // to node swaps.
   _checkSpeakingChange(element) {
     const now = Date.now();
-    for (const [name, info] of this.participants) {
+    for (const [, info] of this.participants) {
       if (!info.item) continue;
       // Only count mutations that occur strictly WITHIN this tile — not on an
       // ancestor (e.g. a body-level class change), which isn't tile-specific
@@ -1918,7 +2195,7 @@ class DOMSpeakerTracker {
       if (info.item === element || info.item.contains(element)) {
         (info.mutTimes || (info.mutTimes = [])).push(now);
         info._hbSubtreeMut = (info._hbSubtreeMut || 0) + 1;
-        this._evaluateSpeaking(info, name, now, 'observer');
+        this._evaluateSpeaking(info, info.name, now, 'observer');
       }
     }
   }
@@ -1959,6 +2236,13 @@ class DOMSpeakerTracker {
       this._applyDebugBorder(info, isSpeaking);
       meetProvider.emit(CALL_EVENTS.speakingChanged, { name, speaking: isSpeaking });
       meetProvider.emit(CALL_EVENTS.participantsUpdated, this.getParticipantList());
+      // #209: feed the page-world CallRecorder the real participant NAME so it can
+      // attribute recorded tracks. Scoped action (not the vestigial
+      // dom-speaker-change, which the provider round-trips into speakingChanged).
+      try {
+        window.postMessage({ __botsInCalls: true, __fromExtension: true,
+          action: 'speaker-active', payload: { name, speaking: isSpeaking, at: Date.now() } }, '*');
+      } catch { /* page not ready — next change re-posts */ }
     } else if (info.speaking && source === 'poll') {
       // Re-assert active speech so local-server's silence timer keeps resetting.
       meetProvider.emit(CALL_EVENTS.speakingChanged, { name, speaking: true });
@@ -1996,21 +2280,35 @@ class DOMSpeakerTracker {
 
   _pollSpeakingState() {
     const now = Date.now();
-    for (const [name, info] of this.participants) {
+    for (const [, info] of this.participants) {
       if (!info.item) continue;
-      this._evaluateSpeaking(info, name, now, 'poll');
+      this._evaluateSpeaking(info, info.name, now, 'poll');
     }
   }
 
   getSpeakingNames() {
-    return Array.from(this.participants.entries())
-      .filter(([_, info]) => info.speaking)
-      .map(([name]) => name);
+    return Array.from(this.participants.values())
+      .filter((info) => info.speaking)
+      .map((info) => info.name);
   }
 
+  // Everyone sharing right now, newest scan wins. Empty when nobody is.
+  getScreenShares() {
+    return (this.screenShares || []).map((s) => ({ name: s.name, id: s.id }));
+  }
+
+  // Everything the tracker watches, pseudo-tiles included and FLAGGED.
+  //
+  // They must stay in this list: anyoneSpeaking / activeSpeakerCount are derived
+  // from it, and a merged-audio tile may be exactly where two co-located
+  // people's speech shows up. Filtering happens at the reporting edge, where the
+  // question is "who is in the room" rather than "is anyone talking".
   getParticipantList() {
-    return Array.from(this.participants.entries())
-      .map(([name, info]) => ({ name, speaking: info.speaking, isSelf: !!info.isSelf }));
+    return Array.from(this.participants.values())
+      .map((info) => ({
+        name: info.name, speaking: info.speaking,
+        isSelf: !!info.isSelf, isPseudo: !!info.isPseudo,
+      }));
   }
 }
 
@@ -2339,6 +2637,25 @@ window.addEventListener('message', (event) => {
     if (t?.text && t?.speaker) {
       ipcRenderer.send('post-transcripts', [t]);
     }
+  }
+
+  // #209: call audio recording — the renderer captures each track, main writes
+  // it to disk (call-recorder.js). Forward the streamed chunks and the end
+  // signal; main owns the session (dir + files + manifest).
+  if (event.data.action === 'record-chunk') {
+    ipcRenderer.send('call-record-chunk', event.data.payload);
+  }
+  if (event.data.action === 'record-stopped') {
+    ipcRenderer.send('call-record-stopped', event.data.payload || {});
+  }
+  if (event.data.action === 'record-name') {
+    ipcRenderer.send('call-record-name', event.data.payload || {});
+  }
+  if (event.data.action === 'record-speaker-event') {
+    ipcRenderer.send('call-record-speaker', event.data.payload || {});
+  }
+  if (event.data.action === 'record-started') {
+    ipcRenderer.send('page-inject-log', `[call-record] renderer started recording (room ${event.data.payload?.room || '?'})`);
   }
 });
 
@@ -2766,8 +3083,25 @@ ipcRenderer.on('trigger-stop-sharing', () => { meetProvider.stopShare(); });
 // else until Google's server-side timeout reaps it (the bot "didn't leave").
 // Clicking the real button sends Google a clean leave so the tile drops now.
 ipcRenderer.on('trigger-leave-call', () => {
+  // Before the click: this page is leaving deliberately, so its in-call UI is
+  // about to disappear for a reason we already know. Without this the page goes
+  // on counting and reports a ghost call ~12s later — landing in the middle of a
+  // rename's rejoin and kicking the bot straight back out.
+  markDeliberateLeave();
   const clicked = meetProvider.leave();
   console.log('[electron-meet] trigger-leave-call → Leave-call button ' + (clicked ? 'clicked' : 'NOT found'));
+});
+
+// #209: main tells the page-world CallRecorder to start/stop. Main owns the
+// decision (recordCallAudio pref / VIBECONF_RECORD_CALL) and the on-disk
+// session; the page just captures tracks and streams chunks back.
+ipcRenderer.on('trigger-record', (_event, { recording, room, startedAt, botName } = {}) => {
+  window.postMessage({
+    __botsInCalls: true,
+    __fromExtension: true,
+    action: recording ? 'start-recording' : 'stop-recording',
+    payload: { room, startedAt, botName },
+  }, '*');
 });
 
 // ---------------------------------------------------------------------------

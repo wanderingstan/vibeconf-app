@@ -28,7 +28,7 @@
 // (formatEntry, already written) and two ways of getting entries to it — not
 // two parsers that must be kept in step.
 
-const { TranscriptTailer, formatEntry, entryModel, MAX_LINES } = require('./agent-transcript.js');
+const { TranscriptTailer, formatEntry, entryModel, entryUsage, MAX_LINES } = require('./agent-transcript.js');
 
 // Shared contract for both transports.
 //
@@ -37,13 +37,16 @@ const { TranscriptTailer, formatEntry, entryModel, MAX_LINES } = require('./agen
 //                     (the brain pane, the overlay) and the tailer can only
 //                     ever produce a buffer anyway: it re-reads a file.
 //   onModel(model)  — which model is authoring, when the source can tell.
+//   onUsage(usage)  — per-turn token usage (context size), when the source can
+//                     tell. Drives the 📊 [context] session-log marker (#345).
 //
 // A source is bound, then later replaced or stopped. Nothing above holds a
 // reference to the concrete type.
 class AgentActivitySource {
-  constructor({ onLines, onModel } = {}) {
+  constructor({ onLines, onModel, onUsage } = {}) {
     this.onLines = onLines || (() => {});
     this.onModel = onModel || (() => {});
+    this.onUsage = onUsage || (() => {});
   }
   // eslint-disable-next-line no-unused-vars
   bind(_arg) { throw new Error('bind() not implemented'); }
@@ -61,6 +64,7 @@ class TranscriptActivitySource extends AgentActivitySource {
     this._tailer = new TranscriptTailer({
       onLines: (lines) => this.onLines(lines),
       onModel: (model) => this.onModel(model),
+      onUsage: (usage) => this.onUsage(usage),
     });
   }
   get kind() { return 'transcript'; }
@@ -81,6 +85,7 @@ class StreamActivitySource extends AgentActivitySource {
     this._lines = [];
     this._partial = '';
     this._model = null;
+    this._usageMsgId = null;
   }
   get kind() { return 'stream'; }
 
@@ -106,6 +111,8 @@ class StreamActivitySource extends AgentActivitySource {
       if (out.length) { this._lines.push(...out); changed = true; }
       const model = entryModel(entry);
       if (model && model !== this._model) { this._model = model; this.onModel(model); }
+      const usage = entryUsage(entry);
+      if (usage && usage.msgId !== this._usageMsgId) { this._usageMsgId = usage.msgId; this.onUsage(usage); }
     }
     if (!changed) return;
     if (this._lines.length > MAX_LINES) this._lines = this._lines.slice(-MAX_LINES);

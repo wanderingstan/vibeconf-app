@@ -27,6 +27,8 @@ import { execSync, execFileSync } from "child_process";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
+import { resolveInstance, joinNameFromRouting } from "./instance-routing.js";
+import { parseMeetRoomId } from "./meet-room.js";
 
 let ROOM_ID = process.env.VIBECONF_ROOM_ID || "";
 let BOT_NAME = process.env.VIBECONF_BOT_NAME || "Unnamed bot";
@@ -35,6 +37,16 @@ let BOT_NAME = process.env.VIBECONF_BOT_NAME || "Unnamed bot";
 // single agent session can target any running profile regardless of which port
 // the app baked into the MCP config (#301). Reassigned in routeToInstance().
 let BASE_URL = process.env.VIBECONF_BASE_URL || "http://127.0.0.1:7865";
+// The port this session was EXPLICITLY pinned to, captured before anything can
+// re-bind BASE_URL. The app writes VIBECONF_BASE_URL into each profile's own MCP
+// config, so when it's set we know which instance this terminal belongs to and
+// can skip the "which profile did you mean?" prompt. Null when unset — the
+// default 7865 happens to be the default profile's port, and inferring from that
+// would silently pick a profile the user never named.
+const PINNED_PORT = (() => {
+  const m = String(process.env.VIBECONF_BASE_URL || "").match(/:(\d+)/);
+  return m ? Number(m[1]) : null;
+})();
 // Backend (Vercel) base — used for REMOTE session logs shipped by other machines
 // (get_session_log with an `instance` arg / list_log_instances). Distinct from
 // BASE_URL, which is this machine's local Electron app.
@@ -114,6 +126,10 @@ async function discoverInstances() {
         // The default profile reports null — normalize so it's addressable as "default".
         profile: s.localProfile || "default",
         botName: s.currentCallBotName || s.configuredBotName || null,
+        // Kept separate from botName: this is the profile's OWN display name (what
+        // the panel is set to), which is what a profile-addressed join should join
+        // under — not currentCallBotName, a per-call override from a past call.
+        configuredBotName: (s.configuredBotName || "").trim() || null,
         callStatus: s.callStatus || null,
         roomId: d.roomId || null,
       };
@@ -122,36 +138,23 @@ async function discoverInstances() {
   return results.filter(Boolean);
 }
 
-// Resolve which running instance a name targets. name = profile (preferred) or bot
-// name. Backward-compatible: a single running instance is used as-is (the name is
-// then just the display name); discovery turning up nothing keeps the current
-// BASE_URL (env default) so existing single-instance setups are unaffected.
-function resolveInstance(name, instances) {
-  if (instances.length === 0) return { keep: true }; // nothing discovered → don't touch BASE_URL
-  if (name) {
-    const n = String(name).trim().toLowerCase();
-    const byProfile = instances.find((i) => (i.profile || "").toLowerCase() === n);
-    const byBot = instances.find((i) => (i.botName || "").toLowerCase() === n);
-    if (byProfile || byBot) return { instance: byProfile || byBot };
-    if (instances.length === 1) return { instance: instances[0] }; // sole instance; name is a display name
-    const list = instances.map((i) => `${i.profile} (:${i.port}${i.botName ? `, ${i.botName}` : ""})`).join(", ");
-    return { error: `No running instance for profile "${name}". Running: ${list}. Launch that profile, or use one of these names.` };
-  }
-  if (instances.length === 1) return { instance: instances[0] };
-  const list = instances.map((i) => `${i.profile} (:${i.port}${i.botName ? `, ${i.botName}` : ""})`).join(", ");
-  return { error: `Multiple app instances running — specify which by profile name: ${list}.` };
-}
+// resolveInstance lives in ./instance-routing.js (pure, unit-tested). Behaviour:
+// name = profile (preferred) or display name. Backward-compatible — a single
+// running instance is used as-is (the name is then just the display name), and
+// discovery turning up nothing keeps the current BASE_URL (env default) so
+// existing single-instance setups are unaffected.
 
 // Bind this session's BASE_URL to the instance the name targets. Returns
-// { ok, instance? } or { error }.
+// { ok, instance?, matchedBy? } or { error }. matchedBy tells the caller whether
+// the name was an ADDRESS (a profile) or a label — see instance-routing.js.
 async function routeToInstance(name) {
   let instances;
   try { instances = await discoverInstances(); }
   catch { return { ok: true }; } // discovery failed → keep current BASE_URL, let the join surface a real error
-  const r = resolveInstance(name, instances);
+  const r = resolveInstance(name, instances, { pinnedPort: PINNED_PORT });
   if (r.error) return { error: r.error };
   if (r.keep) return { ok: true };
-  if (r.instance) { BASE_URL = r.instance.baseUrl; return { ok: true, instance: r.instance }; }
+  if (r.instance) { BASE_URL = r.instance.baseUrl; return { ok: true, instance: r.instance, matchedBy: r.matchedBy }; }
   return { ok: true };
 }
 
@@ -201,6 +204,14 @@ async function resolveBotName(name) {
   if (explicit) return explicit;
   const configured = await fetchConfiguredBotName();
   return configured || BOT_NAME;
+}
+
+// The display name to join under. joinNameFromRouting decides it from the routed
+// instance (see instance-routing.js — a profile-matched name is an ADDRESS and
+// must not overwrite that profile's own name); only when routing says nothing do
+// we fall back to the cached configured name / env default.
+async function displayNameForJoin(argName, routed) {
+  return joinNameFromRouting(argName, routed) || (await resolveBotName(null));
 }
 
 const server = new McpServer({
@@ -267,6 +278,37 @@ server.tool(
     const label = isRemote ? `Remote log: ${instance}` : (data.filePath ? `Session log: ${data.filePath}` : '');
     const header = label ? `${label} (${data.returnedLines}/${data.totalLines} lines${data.truncated ? ', truncated' : ''})\n---\n` : '';
     return { content: [{ type: "text", text: header + (data.content || '(empty)') }] };
+  }
+);
+
+// --- get_call_log ---
+// Returns just ONE call's slice of this machine's session log (#287), bounded
+// by the `[call] id=...` markers written at call start/end (#292). This is the
+// after-call-work counterpart to the "share this call's log" UI button (#255):
+// same underlying slice, but returned directly instead of uploaded, so an
+// agent can save it (e.g. calls/<call-id>/session-log.txt) alongside a
+// summary, or a script can pull it for offline analysis. Call IDs come from
+// get_room_info / call-status responses seen earlier in the call — this
+// works for any past call ID, not just the currently-active one, since
+// after-call work runs post-hangup once the live call ID has been cleared.
+server.tool(
+  "get_call_log",
+  "Get just one call's slice of this machine's session log — the events between that call's start and end markers, with no earlier or later calls mixed in. This is for after-call work (e.g. saving a log alongside a call summary) or scripts that need one call's events; unlike get_session_log it returns exactly one call, not a recent-lines window. Pass the call_id seen earlier (e.g. from get_room_info) — works for past calls too, not just the current one.",
+  {
+    call_id: z.string().describe("The call ID to slice out, e.g. 'abc-defg-hij-20260809T164900Z' (from get_room_info or a `[call] id=...` log line)."),
+  },
+  async ({ call_id }) => {
+    const url = `${BASE_URL}/api/call-log?callId=${encodeURIComponent(call_id)}`;
+    const resp = await vfetch(url);
+    const data = await resp.json();
+    if (!data.success) {
+      return { content: [{ type: "text", text: `Error: ${data.error || "Unknown error"}` }] };
+    }
+    if (!data.lineCount) {
+      return { content: [{ type: "text", text: `No log lines found for call_id "${call_id}". Check the ID matches a '[call] id=...' marker in the session log.` }] };
+    }
+    const header = `Call log: ${call_id} (${data.lineCount} lines, ${data.filePath})\n---\n`;
+    return { content: [{ type: "text", text: header + data.content }] };
   }
 );
 
@@ -621,10 +663,21 @@ function afterCallWorkNote(plan) {
   if (!plan || !plan.enabled) {
     return ' Your work here is done — exit the conversation loop.';
   }
+  // The bot's after-call duties live in the workdir CLAUDE.md, which only
+  // app-spawned agents auto-load (they cd into the workdir; a terminal-driven
+  // session runs wherever it was launched). The local-server therefore ships
+  // the actual "## After the call" section in the plan, and it is inlined
+  // here so EVERY transport sees the same checklist. On the 2026-08-10 Seth
+  // call the old "its CLAUDE.md says what that is" phrasing left a
+  // terminal-driven agent with nothing in context — it ended the session in
+  // 0.6s and the summary + log copy were silently skipped.
+  const duties = plan.duties
+    ? `Your after-call duties, from the bot's CLAUDE.md${plan.workdir ? ` (workdir: ${plan.workdir} — file paths below are relative to it)` : ''}:\n\n${plan.duties}\n\n`
+    : `Use them for whatever wrap-up this bot is meant to do — its CLAUDE.md says what that is (a summary, a receipt, notes filed somewhere)${plan.workdir ? `; if you don't have that file in context, read it at ${plan.workdir}/CLAUDE.md` : ''}.\n\n`;
   return ` You are now in AFTER-CALL WORK. You have up to ${plan.seconds} seconds, and you are still running.\n\n`
     + 'The call is over but its state is NOT gone: read_transcripts, read_whiteboard and get_room_info all still '
-    + 'work, and still describe the call that just ended. Use them for whatever wrap-up this bot is meant to do — '
-    + 'its CLAUDE.md says what that is (a summary, a receipt, notes filed somewhere).\n\n'
+    + 'work, and still describe the call that just ended. '
+    + duties
     + 'Do NOT call speak or send_chat: you have left the meeting, so nobody will hear or see it.\n\n'
     + 'Call end_session as soon as you are finished. That releases the app immediately instead of making it wait out '
     + 'the whole window. If there is nothing to do, call it now.';
@@ -1367,7 +1420,7 @@ server.tool(
   "start_call",
   "Start a BRAND-NEW call: creates a fresh Google Meet that anyone with the link can join, sends the bot into it, and opens the user's own browser to it. This is the /call command, and it mirrors the app's \"Call <bot> now\" button. Use it when there is no existing call — to put the bot into a call that ALREADY exists, use join_call instead. If the user is NOT at the machine running the app — driving you from a phone, or from a remote session — pass open_browser: false, and you will get the meeting link back to hand them.",
   {
-    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance."),
+    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance, or the one this session is pinned to."),
     open_browser: z.boolean().optional().describe("Whether to open a browser to the meeting ON THE MACHINE RUNNING THE APP. Default true, which is right when the user is sitting at it. Pass false when they are remote (on their phone, in a remote session): no stray tab opens on the unattended desktop, and the response includes the join link so you can give it to them."),
   },
   async ({ bot_name, open_browser }) => {
@@ -1416,12 +1469,12 @@ server.tool(
   }
 );
 
-// --- start_debug_recording (#209) ---
+// --- start_recording (#209) ---
 server.tool(
-  "start_debug_recording",
-  "DEBUG tool: record the current call's audio to disk, one file per track — the bot's own voice plus each remote participant's audio (Meet sends them separately), with a manifest that names tracks and time-aligns them. Built to diagnose why a bot 'heard nothing': you get the actual audio each mic carried, to compare against captions. Requires an active call. This is NOT the future user-facing recording (that will capture video + all machine sound) — this is per-track audio for debugging. Auto-runs on every call when the recordCallAudio pref / VIBECONF_RECORD_CALL is set; this tool starts it on demand otherwise.",
+  "start_recording",
+  "Record the current call to disk — one audio file per track (the bot's own voice plus each remote participant's audio, which Meet sends separately) PLUS a video track of the bot's own Meet view, with a manifest that names tracks and time-aligns them. Once recording stops, audio and video are automatically muxed into one playable call-recording.mp4. A small visible status window (elapsed time + Stop button) appears while recording is active — that's expected. Requires an active call. Recording can be started (and stopped, via stop_recording) at ANY point during a live call, not just at launch. Auto-runs on every call when the recordCallAudio pref / VIBECONF_RECORD_CALL is set; this tool starts it on demand otherwise.",
   {
-    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance."),
+    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance, or the one this session is pinned to."),
   },
   async ({ bot_name }) => {
     try {
@@ -1438,7 +1491,7 @@ server.tool(
         const notice = data.announced
           ? " I spoke a notice so the room knows it's being recorded — no need to announce it again."
           : "";
-        return { content: [{ type: "text", text: `Recording the call's audio (one file per track).${notice} Saving to:\n${data.dir}` }] };
+        return { content: [{ type: "text", text: `Recording the call (audio, one file per track, + video of the bot's own view).${notice} Saving to:\n${data.dir}` }] };
       }
       const why = data.code === 'not-in-call'
         ? "Not in a call — join or start one first, then record."
@@ -1450,12 +1503,12 @@ server.tool(
   }
 );
 
-// --- stop_debug_recording (#209) ---
+// --- stop_recording (#209) ---
 server.tool(
-  "stop_debug_recording",
-  "Stop the debug call-audio recording started by start_debug_recording (or by the recordCallAudio pref) and finalize the files + manifest. Returns where they were saved. Recording also stops automatically when the bot leaves the call.",
+  "stop_recording",
+  "Stop the call recording started by start_recording (or by the recordCallAudio pref) — finalizes the per-track audio + video files and manifest, then automatically muxes them into one playable call-recording.mp4. Returns where they were saved. Can be called at any point mid-call (not just at the end). Recording also stops automatically when the bot leaves the call.",
   {
-    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance."),
+    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance, or the one this session is pinned to."),
   },
   async ({ bot_name }) => {
     try {
@@ -2504,6 +2557,19 @@ server.tool(
       formatScreenShares(status, data),
     ].filter(Boolean));
 
+    // Calendar auto-join (#299): only present when this join was matched from
+    // a Google Calendar event — gives the agent the meeting's actual title/
+    // description/start time up front, instead of walking into the call cold
+    // and having to ask what it's for.
+    const cal = status.calendarEventContext;
+    if (cal && (cal.summary || cal.description)) {
+      const calLines = [`Calendar context: this call was auto-joined from a calendar invite.`];
+      if (cal.summary) calLines.push(`  Title: ${cal.summary}`);
+      if (cal.start) calLines.push(`  Start: ${cal.start}`);
+      if (cal.description) calLines.push(`  Description: ${cal.description}`);
+      sections.push(calLines.join('\n'));
+    }
+
     if (status.whiteboardUrl) {
       sections.push(`Whiteboard URL (just the board, no room UI): ${status.whiteboardUrl} (share this in chat so participants can view the whiteboard)`);
     }
@@ -2583,7 +2649,7 @@ server.tool(
 // --- list_call_instances ---
 server.tool(
   "list_call_instances",
-  "List the Vibeconferencing app instances (profiles) currently running on this machine — each is a separate bot on its own local-server port. Returns profile name, port, bot name, and call status. join_call's bot_name selects the instance by PROFILE name (so `/join-call <code> Alice` drives the 'Alice' profile's app). Use this to see what you can target, or when join_call reports the name is ambiguous/not found.",
+  "List the Vibeconferencing app instances (profiles) currently running on this machine — each is a separate bot on its own local-server port. Returns profile name, port, bot name, and call status. join_call's bot_name selects the instance by PROFILE name (so `/join-call <code> alice2` drives the 'alice2' profile's app, joining under that profile's own display name). Use this to see what you can target, or when join_call reports the name is ambiguous/not found.",
   {},
   async () => {
     const instances = await discoverInstances();
@@ -2599,10 +2665,10 @@ server.tool(
 // --- join_call ---
 server.tool(
   "join_call",
-  "Tell the Vibeconferencing app to join a call — a Google Meet OR a Slack huddle. Use this when the app is running but idle. For Meet, pass the meet code; the app navigates and joins. For Slack, pass the huddle URL (app.slack.com/client/<team>/<channel>); the app switches to the Slack provider and auto-joins the huddle.",
+  "Tell the Vibeconferencing app to join a call — a Google Meet OR a Slack huddle. Use this when the app is running but idle. For Meet, pass the meet code OR the full Meet URL (either is accepted); the app navigates and joins. For Slack, pass the huddle URL (app.slack.com/client/<team>/<channel>); the app switches to the Slack provider and auto-joins the huddle.",
   {
-    room_id: z.string().describe("Meet code (e.g. abc-defg-hij) OR a Slack huddle URL (https://app.slack.com/client/<team>/<channel>)."),
-    bot_name: z.string().optional().describe("Bot display name in Meet. Omit to use the bot name configured for this MCP instance (set via the app's panel or VIBECONF_BOT_NAME env). Only pass this to explicitly override — don't pass a literal default like 'Unnamed bot', that overrides the user's preference."),
+    room_id: z.string().describe("Meet code (e.g. abc-defg-hij), a full Meet URL (https://meet.google.com/abc-defg-hij, query string and all), OR a Slack huddle URL (https://app.slack.com/client/<team>/<channel>)."),
+    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running (see list_call_instances) — the profile keeps its own display name, so `/join-call <code> alice2` joins as whatever alice2 is named. If the name matches no profile and only one instance is running, it is used as a one-off Meet display name instead. Omit to use the sole running instance, or the one this session is pinned to, under its configured name — don't pass a literal default like 'Unnamed bot', that overrides the user's preference."),
     force: z.boolean().optional().describe("Rebuild the session even if the bot is already in this call. Default false, which makes a repeat join a harmless no-op. Only pass true when the live session is genuinely wedged and you mean to drop and rejoin — it tears down the working call. It also skips the same-name collision check."),
   },
   async ({ room_id, bot_name, force }) => {
@@ -2615,7 +2681,7 @@ server.tool(
       const routedNote = routed.instance
         ? ` (profile "${routed.instance.profile}" on port ${routed.instance.port})`
         : "";
-      const joinedBotName = await resolveBotName(bot_name);
+      const joinedBotName = await displayNameForJoin(bot_name, routed);
       // If the lock is set but the bot name changed, check whether the
       // previous call is actually still in progress. The local-server is
       // the source of truth — handles every call-end path (explicit
@@ -2675,6 +2741,18 @@ server.tool(
         }
         return { content: [{ type: "text", text: `Couldn't join the Slack huddle: ${sdata.results?.join?.error || sdata.error || 'unknown error'}.` }] };
       }
+
+      // Meet: accept a pasted URL, not just the bare code (#314).
+      //
+      // The URL→code extraction has always existed, but only in the /join-call
+      // skill — so it covered Claude Code and nothing else. The raw tool is the
+      // front door for every other integrator (Codex, Cursor, hand-rolled
+      // clients), and a URL is what people actually have in their clipboard.
+      // Reassigning room_id here keeps the whole rest of the join (and the room
+      // id echoed back to the agent) on the canonical code.
+      const parsedRoom = parseMeetRoomId(room_id);
+      if (!parsedRoom.ok) return { content: [{ type: "text", text: parsedRoom.error }] };
+      room_id = parsedRoom.roomId;
 
       const resp = await vfetch(`${BASE_URL}/api/sync/${room_id}`, {
         method: "POST",

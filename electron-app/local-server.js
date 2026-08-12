@@ -23,7 +23,7 @@ function localTokenPath(port) { return path.join(AUTH_TOKEN_DIR, `${port}.token`
 const prefsSchema = require('./preferences-schema.js');
 const { classifyAgent, agentIsAbsent } = require('./agent-liveness.js');
 const { isFinished } = require('./call-phase.js');
-const { getRecentSessionLog, getSessionLogPath } = require('./session-log.js');
+const { getRecentSessionLog, getSessionLogPath, sliceCallLines } = require('./session-log.js');
 const { shouldIgnoreRejoin } = require('./rejoin-guard.js');
 const { TranscriptActivitySource, StreamActivitySource } = require('./agent-activity.js');
 
@@ -79,11 +79,15 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, extraRoutes } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
     // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
     // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
     this.extraRoutes = extraRoutes || null;
+    // Where the bot's workdir (and its CLAUDE.md) lives — a thunk because
+    // Electron's userData path isn't known at construction in every caller.
+    // Optional: tests and headless embedders run without one.
+    this.getAgentWorkdir = getAgentWorkdir || (() => null);
     this.appVersion = appVersion || null;
     // Release (installed .app/DMG) vs running from source (pnpm dev). Surfaced so
     // both the human (panel) and an agent (no-room status) can tell which build
@@ -230,22 +234,7 @@ class LocalServer {
     // app-launched agent will hand us its own event stream instead. Everything
     // downstream — agentLog, the 🤔→🧑‍💻 escalation, the brain pane — consumes
     // the callbacks below and cannot tell which transport is behind them.
-    this._agentSource = new TranscriptActivitySource({
-      onLines: (lines) => {
-        const prevLast = this.agentLog.length ? this.agentLog[this.agentLog.length - 1] : null;
-        this.agentLog = lines;
-        const last = lines.length ? lines[lines.length - 1] : null;
-        if (last && last !== prevLast) this._onAgentActivity(last);
-      },
-      // Which model is actually authoring replies for the driving session — read
-      // straight from its own transcript, so it's correct regardless of launch
-      // path (app-spawned with --model, or an existing session that ran
-      // /join-call). Logged (not just held in memory) so latency-audit.py can
-      // group cycles by model the same way it already groups by build.
-      onModel: (model) => {
-        console.log(ts(), `🧠 [agent] model=${model}`);
-      },
-    });
+    this._agentSource = new TranscriptActivitySource(this._agentSourceCallbacks());
 
     // Room state (single room — the active call)
     this.roomId = null;
@@ -509,8 +498,25 @@ class LocalServer {
     this.currentUrl = url || null;
   }
 
+  // Calendar auto-join (#299): the matched Google Calendar event, when this
+  // join was triggered by one — so the spawned agent can see WHY it's here
+  // (the event's title/description/start) via get_room_info, instead of
+  // walking into a call cold. Call AFTER setRoom (setRoom clears this).
+  setCalendarEventContext(event) {
+    if (!event) { this.calendarEventContext = null; return; }
+    this.calendarEventContext = {
+      summary: event.summary || null,
+      description: event.description || null,
+      start: event.start || null,
+    };
+  }
+
   setRoom(roomId) {
     this.roomId = roomId;
+    // Calendar auto-join (#299): set via setCalendarEventContext, right after
+    // setRoom, only when this join was calendar-triggered — cleared here so a
+    // manual join (or the next calendar join) never inherits a stale one.
+    this.calendarEventContext = null;
     this.transcripts = [];
     this.turns = new Map();
     this._turnAlias = new Map();
@@ -1244,6 +1250,36 @@ class LocalServer {
     return this.currentCallBotName || this.getConfiguredBotName() || null;
   }
 
+  // The one set of callbacks every agent-activity transport feeds (#242).
+  // Factored out so the constructor, useStreamAgentSource and
+  // releaseStreamAgentSource can't drift apart.
+  _agentSourceCallbacks() {
+    return {
+      onLines: (lines) => {
+        const prevLast = this.agentLog.length ? this.agentLog[this.agentLog.length - 1] : null;
+        this.agentLog = lines;
+        const last = lines.length ? lines[lines.length - 1] : null;
+        if (last && last !== prevLast) this._onAgentActivity(last);
+      },
+      // Which model is actually authoring replies for the driving session — read
+      // straight from its own transcript, so it's correct regardless of launch
+      // path (app-spawned with --model, or an existing session that ran
+      // /join-call). Logged (not just held in memory) so latency-audit.py can
+      // group cycles by model the same way it already groups by build.
+      onModel: (model) => {
+        console.log(ts(), `🧠 [agent] model=${model}`);
+      },
+      // Per-turn context size, read off the driving session's own usage report
+      // (#345). `input` is the full prompt the model processed for the turn —
+      // fresh + cache reads + cache writes — so this is the direct test of the
+      // context-growth-slows-replies hypothesis; latency-audit.py buckets
+      // D-claude against it.
+      onUsage: (u) => {
+        console.log(ts(), `📊 [context] input=${u.input} (fresh=${u.fresh} cacheRead=${u.cacheRead} cacheWrite=${u.cacheCreate}) output=${u.output}`);
+      },
+    };
+  }
+
   // #242: switch to the stream transport, for an agent the APP launched and
   // therefore owns. Returns the source so main can push stdout into it.
   //
@@ -1252,19 +1288,31 @@ class LocalServer {
   // alone — you could not tell which bot said what.
   useStreamAgentSource() {
     try { this._agentSource.stop(); } catch { /* already gone */ }
-    this._agentSource = new StreamActivitySource({
-      onLines: (lines) => {
-        const prevLast = this.agentLog.length ? this.agentLog[this.agentLog.length - 1] : null;
-        this.agentLog = lines;
-        const last = lines.length ? lines[lines.length - 1] : null;
-        if (last && last !== prevLast) this._onAgentActivity(last);
-      },
-      onModel: (model) => { console.log(ts(), `🧠 [agent] model=${model}`); },
-    });
+    this._agentSource = new StreamActivitySource(this._agentSourceCallbacks());
     this._agentSource.bind();
     this._streamBindNoted = false;
     console.log(ts(), '[local-server] Agent activity source → stream (app-launched agent)');
     return this._agentSource;
+  }
+
+  // The stream transport's agent has EXITED — hand the feed back to the
+  // transcript tail so the next driving session (a terminal /join-call) can
+  // bind. Without this, the dead stream source kept winning setAgentSession's
+  // "stream beats transcript" guard for the rest of the app's life: on the
+  // 2026-08-10 Seth call, the app-spawned agent's brief join died at 17:13,
+  // Stan drove the real call from a terminal, and every 🧠 model / 📊 context
+  // marker went dark for 19 minutes — the guard's one-time notice had already
+  // fired, so the rejection was silent, and latency-audit attributed the whole
+  // call to the dead agent's model.
+  //
+  // Only main's onExit calls this, and only for the child it owns; a LIVE
+  // stream agent is never displaced.
+  releaseStreamAgentSource() {
+    if (this._agentSource.kind !== 'stream') return;
+    try { this._agentSource.stop(); } catch { /* already gone */ }
+    this._agentSource = new TranscriptActivitySource(this._agentSourceCallbacks());
+    this._streamBindNoted = false;
+    console.log(ts(), '[local-server] Agent activity source → transcript tail (stream agent exited)');
   }
 
   // Bind (or rebind) the agent-activity tail to a Claude session transcript.
@@ -1322,6 +1370,9 @@ class LocalServer {
       localServerUrl: this.getLocalServerUrl(),
       localServerPort: this.port,
       localProfile: this.localProfile,
+      // Calendar auto-join (#299): only present when this join was matched
+      // from a Google Calendar event — see setCalendarEventContext.
+      calendarEventContext: this.calendarEventContext || null,
       botState: this.botState,
       anyoneSpeaking: this.anyoneSpeaking,
       // #343: concurrent-speaker count (interruptibility signal) + the busiest
@@ -1501,7 +1552,26 @@ class LocalServer {
     // No agent driving means nobody to hand off TO. Matches the app-side gate in
     // beginAfterCallWorkOrTeardown so the two can't disagree about what happens.
     const hasAgent = !agentIsAbsent(this.agentState());
-    return { enabled: seconds > 0 && hasAgent, seconds: seconds > 0 && hasAgent ? seconds : 0 };
+    const enabled = seconds > 0 && hasAgent;
+    const plan = { enabled, seconds: enabled ? seconds : 0 };
+    // Ship the workdir CLAUDE.md's "## After the call" section with the plan.
+    // Only app-spawned agents cd into the workdir and load that file; a
+    // terminal-driven session never sees it, and without this it ends the
+    // session immediately ("nothing to do") — the Seth-call failure where the
+    // summary and log copy were silently skipped. Inlining the duties makes
+    // leave_call self-contained for every transport.
+    if (enabled) {
+      try {
+        const workdir = this.getAgentWorkdir();
+        if (workdir) {
+          plan.workdir = workdir;
+          const claudeMd = fs.readFileSync(path.join(workdir, 'CLAUDE.md'), 'utf-8');
+          const duties = require('./agent-workdir.js').afterCallSection(claudeMd);
+          if (duties) plan.duties = duties;
+        }
+      } catch { /* no workdir / no CLAUDE.md — the note falls back to pointing at it */ }
+    }
+    return plan;
   }
 
   // Is anyone driving this bot? See agent-liveness.js for why wait_for_speech's
@@ -3105,6 +3175,16 @@ class LocalServer {
     }
 
     const response = this._buildResponse(waiter.since, waiter.bot, waiter.startTime);
+    // Size of the variable part of what this round hands the agent (#12): the
+    // MCP layer wraps these entries in fixed prose, so entry chars are the
+    // per-round payload trend. A snowballing re-delivery bug shows up here as
+    // entries/chars climbing round over round; the 📊 [context] marker carries
+    // the full context size the model actually processed.
+    {
+      const respEntries = (response.transcript && response.transcript.entries) || [];
+      const respChars = respEntries.reduce((n, e) => n + String(e.text || '').length, 0);
+      console.log(ts(), `📦 [payload] round → ${respEntries.length} entries, ${respChars} chars, reason=${reason}`);
+    }
     // Tag so the MCP layer / skill know this is a "bank and loop, do NOT speak"
     // surface rather than a real turn.
     if (reason === 'background_tick') response.backgroundTick = true;
@@ -3396,6 +3476,11 @@ class LocalServer {
         // whiteboard (#177).
         screenShareUrl: this.getWhiteboardLoadedUrl(),
         sessionLogPath: getSessionLogPath(),
+        // Calendar auto-join (#299): only present when this join was matched
+        // from a Google Calendar event — see setCalendarEventContext. This is
+        // how get_room_info tells the agent WHY it's here, instead of it
+        // walking into a call cold.
+        calendarEventContext: this.calendarEventContext || null,
       },
     };
   }
@@ -3642,7 +3727,7 @@ class LocalServer {
       return;
     }
 
-    // #209: debug call-audio recording on/off (start_debug_recording MCP tool).
+    // #209: call recording on/off (start_recording MCP tool).
     if (url.pathname === '/api/call/record' && req.method === 'POST') {
       let on = true;
       try {
@@ -3666,6 +3751,31 @@ class LocalServer {
       const result = getRecentSessionLog({ lines, grep });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: true, ...result }));
+      return;
+    }
+
+    // Per-call log slice (#287) — the after-call-work counterpart to the
+    // "share this call's log" button (#255). Unlike that button, this doesn't
+    // upload anywhere: it just returns the lines, so an agent can read/save
+    // them like any other after-call artifact. Accepts any callId, not just
+    // the currently-active one, since after-call work runs post-hangup once
+    // this.callId has already been cleared.
+    if (url.pathname === '/api/call-log' && req.method === 'GET') {
+      const callId = url.searchParams.get('callId');
+      if (!callId) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'callId is required' }));
+        return;
+      }
+      const lines = sliceCallLines(callId, getSessionLogPath());
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        callId,
+        filePath: getSessionLogPath(),
+        content: lines.join('\n'),
+        lineCount: lines.length,
+      }));
       return;
     }
 

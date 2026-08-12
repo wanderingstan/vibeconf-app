@@ -119,6 +119,11 @@
       // when they all notice the same silence gap at once.
       this._tickTiltSign = 1;
       this._tickTiltMag = 1;
+      // Thinking sway envelope (#290) — see the render loop. 0 means "not
+      // swaying"; both are wall-clock stamps, so neither needs a value here
+      // beyond the falsy start.
+      this._swaySince = 0;
+      this._swayLeftAt = 0;
       // Seed persistent state from the module-level avatarState, NOT hardcoded
       // defaults. A camera can be created mid-call — e.g. turning the camera on
       // makes the host page re-acquire the video stream, spawning a fresh
@@ -170,6 +175,12 @@
       this.debugOverlayFlags = debugOverlayFlagsGlobal;
       this.emojiSet = avatarState.emojiSet || emojiSetGlobal;
       this.debugInfo = debugInfoLatest;
+      // Recording indicator — unlike the debug overlay this is USER-facing
+      // (consent/awareness), not diagnostic chrome, so it's drawn unconditionally
+      // whenever recording is active rather than gated behind debugOverlayEnabled.
+      // Seeded from the module-level global so a camera created mid-recording
+      // (camera toggle, Meet reload) still shows it immediately.
+      this.isRecording = isRecordingGlobal;
       // Persistent overrides from agent's set_avatar_emoji calls. null = use
       // default for that state. Seeded from avatarState so a camera created
       // mid-call keeps the configured emoji instead of reverting to defaults.
@@ -459,10 +470,54 @@
       const speakScaleX = baseScale * (1 - speakOpen * 0.10); // slight squeeze
       const speakBounce = speakOpen * (emojiSize * 0.06);
       const speakTilt = this.speaking ? Math.sin(this.frameCount * 0.3) * 0.05 : 0;
-      // Thinking state: gentle side-to-side sway
-      const thinkSway = this.state === 'thinking'
-        ? Math.sin(t * 1.2) * 8
-        : 0;
+      // Thinking state: gentle side-to-side sway.
+      //
+      // #290 — "the animation into 🤔 has a jump." It did, and it was this line.
+      // The sway used to be `state === 'thinking' ? sin(t * 1.2) * 8 : 0` against
+      // the FREE-RUNNING clock `t`. That clock's phase has nothing to do with
+      // when the state changes, so at the instant the bot entered thinking the
+      // term went from exactly 0 to sin(whatever) * 8 — an arbitrary value
+      // anywhere in ±8px, applied as a horizontal translate. The head teleported
+      // sideways, on average ~5px, in a single frame. Leaving thinking snapped it
+      // back the same way. Twice per turn, every turn, which is exactly the
+      // "becomes jarring after a while" in the report.
+      //
+      // The fix is to make the sway both START and END at zero:
+      //
+      //   1. PHASE is anchored to the moment thinking began, so the first frame
+      //      is sin(0) = 0 — the face is exactly where it already was.
+      //   2. AMPLITUDE ramps in over SWAY_RAMP_MS, and ramps back out on exit
+      //      rather than being cut, so leaving is as smooth as arriving.
+      //
+      // Wall-clock rather than frameCount, like the tick pulse below: an occluded
+      // or throttled view drops frames, and a frame-counted envelope would then
+      // ramp in slow motion.
+      //
+      // 0.72 rad/s preserves the original rate exactly (frameCount * 0.02 * 1.2
+      // at 30fps), so the sway itself feels unchanged — only its edges do.
+      const SWAY_PX = 8;
+      const SWAY_RATE = 0.72;   // rad/s — the pre-#290 rate, kept deliberately
+      const SWAY_RAMP_MS = 400;
+      const swayNow = Date.now();
+      if (this.state === 'thinking') {
+        if (!this._swaySince) this._swaySince = swayNow;
+        this._swayLeftAt = 0;              // re-entered before the ramp-out finished
+      } else if (this._swaySince) {
+        if (!this._swayLeftAt) this._swayLeftAt = swayNow;
+        if (swayNow - this._swayLeftAt >= SWAY_RAMP_MS) {
+          this._swaySince = 0;             // fully faded; stop tracking
+          this._swayLeftAt = 0;
+        }
+      }
+      let thinkSway = 0;
+      if (this._swaySince) {
+        const elapsed = swayNow - this._swaySince;
+        const fadeIn = Math.min(1, elapsed / SWAY_RAMP_MS);
+        const fadeOut = this._swayLeftAt
+          ? Math.max(0, 1 - (swayNow - this._swayLeftAt) / SWAY_RAMP_MS)
+          : 1;
+        thinkSway = Math.sin((elapsed / 1000) * SWAY_RATE) * SWAY_PX * fadeIn * fadeOut;
+      }
       // Background-tick "noted that" pulse — a quick head-tilt + pop that eases
       // out over ~700ms when the avatar enters thinking (set in 'set-bot-state').
       // Framerate-robust via wall-clock. sin gives a smooth 0→1→0.
@@ -695,9 +750,57 @@
       }
       ctx.restore();
 
+      // Unlike the debug overlay below, this is user-facing (consent/awareness
+      // that the call is being recorded) — always drawn when isRecording is
+      // true, not gated behind the panel's debug-overlay checkbox. Wrapped for
+      // the same reason: a bug here must never black out the actual camera frame.
+      if (this.isRecording) { try { this._renderRecordingIndicator(); } catch (e) { /* overlay-only */ } }
+
       // Wrapped: the overlay is diagnostic chrome — a bug in it must never black
       // out the bot's actual camera frame (which already rendered above).
       if (this.debugOverlayEnabled) { try { this._renderDebugOverlay(); } catch (e) { /* overlay-only */ } }
+    }
+
+    _renderRecordingIndicator() {
+      const { ctx, canvas } = this;
+      const text = '\u{1F534} Recording';
+      // Google Sans, not the debug overlay's monospace — this is a user-facing
+      // label, not a diagnostic readout, so it should match the app's own UI
+      // font (panel.css's body font-family) rather than look like debug text.
+      const font = '600 22px "Google Sans", Roboto, Arial, sans-serif';
+      // Top-left, not bottom-left: Meet draws its own participant-name label in
+      // the bottom-left of the tile, which would collide with (and visually
+      // compete against) an indicator there. Extra inset (vs. the debug
+      // overlay's 24/16) because Meet crops the camera feed to fit the current
+      // window/tile size — a tighter corner position is more likely to survive
+      // that crop, though nothing here can guarantee it always will.
+      const insetX = 40;
+      const insetY = 40;
+      ctx.save();
+      ctx.font = font;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      // Same "text on TV" treatment as the debug overlay (dark stroke outline
+      // + soft shadow) for contrast over any avatar background, then a solid
+      // red fill — this is the whole point of the indicator, so it should read
+      // as unambiguously red, not blend into the frame.
+      ctx.lineJoin = 'round';
+      ctx.miterLimit = 2;
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.9)';
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
+      ctx.shadowBlur = 3;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 1;
+      const x = insetX;
+      const y = insetY;
+      ctx.strokeText(text, x, y);
+      ctx.fillStyle = '#ea4335'; // matches the app's existing red accent (debug overlay's STALE/DEAF color)
+      ctx.save();
+      ctx.shadowColor = 'transparent';
+      ctx.fillText(text, x, y);
+      ctx.restore();
+      ctx.restore();
     }
 
     _renderDebugOverlay() {
@@ -1263,6 +1366,11 @@
   // sensibly.
   let debugOverlayFlagsGlobal = { health: true, captions: false, agentLog: false, experiments: false };
   let debugInfoLatest = null;
+  // Same latching reasoning as debugOverlayEnabledGlobal above, but for the
+  // recording indicator: 'start-recording' can arrive before any VirtualCamera
+  // exists (recording auto-starts on join, same tick a fresh Meet session
+  // spins up its camera), so this must be readable at construction time.
+  let isRecordingGlobal = false;
   let emojiSetGlobal = 'native'; // 'native' | 'twemoji' — pushed from main (#316)
   let emojiFontGlobal = '';      // a family installed on the user's machine, or '' for the system font
   let emojiFontColorGlobal = ''; // fill colour for a monochrome font; '' = leave the canvas default
@@ -2979,8 +3087,15 @@
 
   window.addEventListener('message', (event) => {
     if (event.source !== window || !event.data?.__botsInCalls) return;
-    if (event.data.action === 'start-recording') callRecorder.start(event.data.payload || {});
-    else if (event.data.action === 'stop-recording') callRecorder.stop();
+    if (event.data.action === 'start-recording') {
+      callRecorder.start(event.data.payload || {});
+      isRecordingGlobal = true;
+      for (const cam of cameras.values()) cam.isRecording = true;
+    } else if (event.data.action === 'stop-recording') {
+      callRecorder.stop();
+      isRecordingGlobal = false;
+      for (const cam of cameras.values()) cam.isRecording = false;
+    }
   });
 
   // ---------------------------------------------------------------------------

@@ -183,7 +183,12 @@ test('APP_LEVEL_KEYS is exactly the decided set (guard against accidental promot
     // like ttsApiKey itself, but NOT in MIGRATE_KEYS — a gift is tied to the
     // logged-in account, not the machine, and is cleared on logout instead
     // (clearGiftedTtsKey in main.js).
-    ['agentBackend', 'agentHosting', 'automationProbed', 'claudeIntegrationRemoved', 'confirmQuit', 'dangerousMode', 'remoteLogging', 'syncBaseUrl', 'ttsApiKey', 'ttsApiKeySource', 'updateChannel', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
+    // keepCallRecordingTracks: whether to keep raw per-track recording files
+    // after merging is a disk-retention choice about the MACHINE, not any one
+    // bot's personality, and same invisibility trap as agentHosting/
+    // updateChannel/remoteLogging above — per-profile it would have a real
+    // label and still never appear in App Settings.
+    ['agentBackend', 'agentHosting', 'automationProbed', 'claudeIntegrationRemoved', 'codexIntegrationRemoved', 'confirmQuit', 'dangerousMode', 'keepCallRecordingTracks', 'remoteLogging', 'syncBaseUrl', 'ttsApiKey', 'ttsApiKeySource', 'updateChannel', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
   );
 });
 

@@ -3,7 +3,7 @@ name: call
 description: Start a brand-new call with your bot — creates a Meet, sends the bot in, and opens your browser to it
 argument-hint: "[BotName] [remote]  — bot picks which bot when several run; remote if you're not at the app's machine"
 disable-model-invocation: true
-allowed-tools: mcp__vibeconferencing__start_call mcp__vibeconferencing__list_call_instances mcp__vibeconferencing__get_room_info mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__read_whiteboard mcp__vibeconferencing__read_transcripts mcp__vibeconferencing__suggest_bot_names mcp__vibeconferencing__list_visual_assets mcp__vibeconferencing__list_fonts mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__set_mode mcp__vibeconferencing__set_caption_language mcp__vibeconferencing__set_camera mcp__vibeconferencing__get_call_screenshot mcp__vibeconferencing__get_shared_screenshot mcp__vibeconferencing__read_chat mcp__vibeconferencing__send_chat mcp__vibeconferencing__leave_call mcp__vibeconferencing__end_session mcp__vibeconferencing__start_share mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__share_tab mcp__vibeconferencing__stop_sharing mcp__vibeconferencing__scroll_share mcp__vibeconferencing__inspect_dom mcp__vibeconferencing__list_preferences mcp__vibeconferencing__set_preference mcp__vibeconferencing__set_avatar_emoji mcp__vibeconferencing__set_whiteboard_style mcp__vibeconferencing__reload_whiteboard mcp__vibeconferencing__play_sound mcp__vibeconferencing__get_working_memory mcp__vibeconferencing__post_understanding mcp__vibeconferencing__bank_probe mcp__vibeconferencing__click_share mcp__vibeconferencing__get_session_log mcp__vibeconferencing__list_log_instances mcp__vibeconferencing__play_audio mcp__vibeconferencing__set_share_audio mcp__vibeconferencing__set_share_size mcp__vibeconferencing__set_share_title_bar mcp__vibeconferencing__type_share mcp__vibeconferencing__start_debug_recording mcp__vibeconferencing__stop_debug_recording
+allowed-tools: mcp__vibeconferencing__start_call mcp__vibeconferencing__list_call_instances mcp__vibeconferencing__get_room_info mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__read_whiteboard mcp__vibeconferencing__read_transcripts mcp__vibeconferencing__suggest_bot_names mcp__vibeconferencing__list_visual_assets mcp__vibeconferencing__list_fonts mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__set_mode mcp__vibeconferencing__set_caption_language mcp__vibeconferencing__set_camera mcp__vibeconferencing__get_call_screenshot mcp__vibeconferencing__get_shared_screenshot mcp__vibeconferencing__read_chat mcp__vibeconferencing__send_chat mcp__vibeconferencing__leave_call mcp__vibeconferencing__end_session mcp__vibeconferencing__start_share mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__share_tab mcp__vibeconferencing__stop_sharing mcp__vibeconferencing__scroll_share mcp__vibeconferencing__inspect_dom mcp__vibeconferencing__list_preferences mcp__vibeconferencing__set_preference mcp__vibeconferencing__set_avatar_emoji mcp__vibeconferencing__set_whiteboard_style mcp__vibeconferencing__reload_whiteboard mcp__vibeconferencing__play_sound mcp__vibeconferencing__get_working_memory mcp__vibeconferencing__post_understanding mcp__vibeconferencing__bank_probe mcp__vibeconferencing__click_share mcp__vibeconferencing__get_session_log mcp__vibeconferencing__get_call_log mcp__vibeconferencing__list_log_instances mcp__vibeconferencing__play_audio mcp__vibeconferencing__set_share_audio mcp__vibeconferencing__set_share_size mcp__vibeconferencing__set_share_title_bar mcp__vibeconferencing__type_share mcp__vibeconferencing__start_recording mcp__vibeconferencing__stop_recording
 ---
 
 Start a **brand-new** call with the bot, then talk to it.
@@ -12,11 +12,26 @@ This is the command form of the app's "Call &lt;bot&gt; now" button. Use it when
 **no call yet**. If a call already exists and you just want the bot in it, use
 `/join-call` instead — that's the whole difference between the two.
 
+## Step 0: First, check whether this bot has ever been through onboarding
+
+Call `list_preferences` and find `onboardingCallComplete`. This tracks whether this bot's
+name, voice, emoji and background have ever actually been set, live, by the guided
+onboarding call (`mcp-server/onboarding-call-skill.md`) — not whether the app's first-run
+setup dialog was dismissed, which is a separate, unrelated flag.
+
+- **`false`** (the default): this bot has never been through that walkthrough. Don't start
+  an ordinary call — follow `mcp-server/onboarding-call-skill.md` from its Step 1 onward
+  instead, passing the same `$ARGUMENTS` through unchanged (its Step 1 starts a fresh call
+  exactly as Step 1 below would). Stop reading this skill here.
+- **`true`**: this bot has already been onboarded. Continue with the normal call below.
+
 ## Step 1: Start the call
 
 Call `start_call`. Pass `bot_name` only if `$ARGUMENTS` names one — it selects which
 **profile** to drive when several app instances are running, exactly as it does for
-`/join-call`. With one instance running, omit it.
+`/join-call`. It is an address only: the bot joins under its profile's own configured
+name, never under the string you passed. With one instance running (or a session the
+app launched, which is pinned to its own instance), omit it.
 
 ```
 /call             → start a call with the sole running bot

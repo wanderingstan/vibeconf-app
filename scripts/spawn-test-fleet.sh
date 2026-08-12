@@ -64,6 +64,7 @@ SLACK=0
 SLACK_URL=""
 GOOGLE=0
 DEVTOOLS=0
+RECORD_CALLS=0           # --record-calls: force call audio+video recording on for every spawned bot
 WITH_AGENTS=0            # --with-agents: attach a real Claude agent per bot (#267 item 5)
 FUZZ_ROOM=""            # --room=CODE   passed to spawn-agents.mjs
 FUZZ_MISSION=""         # --mission=KEY passed to spawn-agents.mjs
@@ -76,11 +77,12 @@ for a in "$@"; do
     --slack-url=*) SLACK_URL="${a#--slack-url=}" ;;
     --google)      GOOGLE=1 ;;
     --devtools)    DEVTOOLS=1 ;;
+    --record-calls) RECORD_CALLS=1 ;;
     --with-agents) WITH_AGENTS=1 ;;
     --room=*)      FUZZ_ROOM="${a#--room=}" ;;
     --mission=*)   FUZZ_MISSION="${a#--mission=}" ;;
     <->)           N="$a" ;;   # zsh: <-> matches an integer
-    *) echo "usage: $0 [count] [--dmg|--built] [--slack --slack-url=URL] [--google] [--devtools] [--with-agents --room=CODE --mission=KEY] [--kill]"; exit 1 ;;
+    *) echo "usage: $0 [count] [--dmg|--built] [--slack --slack-url=URL] [--google] [--devtools] [--record-calls] [--with-agents --room=CODE --mission=KEY] [--kill]"; exit 1 ;;
   esac
 done
 if (( N < 1 || N > 4 )); then echo "count must be 1–4"; exit 1; fi
@@ -220,6 +222,11 @@ if (( SLACK )); then
 fi
 # Open detached DevTools on each spawned app (handy for live DOM debugging).
 (( DEVTOOLS )) && EXTRA_ARGS="$EXTRA_ARGS --devtools=true"
+# Force call audio+video recording on for every spawned bot (see main.js's
+# --record-calls=true flag / VIBECONF_RECORD_CALL) — independent of the
+# --record-calls flag below, this doesn't decide whether a bot-view window
+# pops open (that's still VIBECONF_RECORD/VIBECONF_BOT_VIEW, below).
+(( RECORD_CALLS )) && EXTRA_ARGS="$EXTRA_ARGS --record-calls=true"
 
 # When RECORDING (nightly sets VIBECONF_RECORD=1) — or an explicit VIBECONF_BOT_VIEW
 # — POP each bot's-view window OUT at launch (#275), so the screencapture films the

@@ -36,10 +36,10 @@ test('the enum names what actually exists', () => {
 });
 
 test('the options are not presented as equal peers', () => {
-  // They are not equal: one is automated, one is experimental and needs manual
-  // setup, one is bring-your-own. A raw enum value would imply parity that does
-  // not exist — Codex has had minimal validation (its smoke test checks that
-  // tools/list works, not that a bot holds up in a call).
+  // They are not equal: one is fully managed, one is experimental and
+  // app-configured but not launched, one is bring-your-own. A raw enum value
+  // would imply parity that does not exist — Codex has had minimal validation
+  // (its smoke test checks that tools/list works, not that a bot holds up in a call).
   const labels = PREFERENCES.agentBackend.enumLabels;
   assert.match(labels.claude, /recommended/i);
   assert.match(labels.codex, /experimental/i);
@@ -91,6 +91,16 @@ test('switching backends takes effect immediately', () => {
   const notify = main.slice(main.indexOf('function notifyConfigChanged'));
   assert.match(notify.slice(0, 700), /key === 'agentBackend'/);
   assert.match(notify.slice(0, 700), /refreshClaudeAuth\(\)/);
+  assert.match(notify.slice(0, 900), /ensureCodexIntegration\(\)/);
+});
+
+test('Codex integration is app-managed but not app-launched', () => {
+  assert.match(main, /function ensureCodexIntegration\(\)/);
+  assert.match(main, /installCodexMcpConfig/);
+  assert.match(main, /prefValue\('agentBackend'\) === 'codex'/);
+  assert.match(main, /codexIntegrationRemoved/);
+  assert.match(onbJs, /The app will add its MCP server to Codex/);
+  assert.match(onbHtml, /OpenAI Codex \(experimental\)/);
 });
 
 test('onboarding can state the choice, rather than only skipping', () => {

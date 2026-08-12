@@ -528,6 +528,7 @@ async function stopCallRecording() {
 
   let tracks = 0;
   let manifest = null;
+  const finishedSession = activeRecording; // kept for removeRecoveryNote() after the merges (#343)
   try {
     manifest = activeRecording.stop();
     tracks = manifest.tracks.length;
@@ -615,7 +616,13 @@ async function stopCallRecording() {
     // are the ONLY copy of that material, so they're never removed in that
     // case regardless of the pref.
     const allAttemptedMergesOk = !!mainMerge?.ok && (!shareTrack || !!shareMerge?.ok);
+    // #343: the recovery note's PRESENCE is what marks a recording as
+    // unfinished, so it comes off here and nowhere earlier — this is the first
+    // moment there is genuinely nothing left to do by hand. A skipped merge (no
+    // ffmpeg, no video, cancelled) deliberately KEEPS it: the raw tracks are
+    // then the only copy, and the note is what says so and how to finish them.
     if (allAttemptedMergesOk) {
+      try { finishedSession?.removeRecoveryNote(); } catch { /* best-effort */ }
       let keepTracks = false;
       try { keepTracks = !!prefValue('keepCallRecordingTracks'); } catch { /* default: don't keep */ }
       if (!keepTracks) {
@@ -630,6 +637,35 @@ async function stopCallRecording() {
   }
 
   return { ok: true, dir, tracks };
+}
+
+// #343: the cheap half of stopping a recording, done SYNCHRONOUSLY, for the
+// exits that cannot await anything — 'before-quit' above all.
+//
+// The split that makes this possible: closing the track fds and writing
+// manifest.json are a handful of sync fs calls, while the ffmpeg merge is
+// minutes of CPU. Holding up a quit for the merge would be absurd, but skipping
+// the manifest was quietly catastrophic — it carries each track's
+// startWallClock, the only thing that aligns the tracks to each other and to the
+// transcript, and it cannot be reconstructed from the webm files afterwards. So
+// quitting mid-recording used to leave a folder of orphan files that NOTHING
+// could turn back into a recording.
+//
+// Now it leaves a complete, mergeable set plus the RECOVERY.md explaining how to
+// finish it (see call-recorder.js's _writeRecoveryNote). The last ~1s of video
+// is lost with the capture window, which is the right trade for a quit.
+function finalizeRecordingSync(reason) {
+  if (!activeRecording) return;
+  const session = activeRecording;
+  activeRecording = null; // before stop(), so nothing re-enters on the way out
+  stopRecordingStatsPush();
+  try {
+    const m = session.stop();
+    console.log(`[call-record] ${reason}: finalized ${m.tracks.length} track(s) in ${session.dir} `
+      + '(merge skipped — see RECOVERY.md in that folder to finish it)');
+  } catch (err) {
+    console.warn('[call-record] could not finalize recording on ' + reason + ':', err && err.message);
+  }
 }
 
 // Explicit on/off for the start_recording / stop_recording MCP
@@ -7705,6 +7741,11 @@ app.on('before-quit', () => {
   // where the confirmation learns to stand down (see confirmQuitBeforeClose).
   appIsQuitting = true;
   stopAllRunwayFaces('before-quit'); // P2: best-effort end of Runway sessions on quit (fire-and-forget)
+  // #343: sync, and deliberately NOT the full stopCallRecording() — see
+  // finalizeRecordingSync. Quitting must not wait on an ffmpeg merge, but it
+  // costs nothing to leave the tracks closed and the manifest written, which is
+  // the difference between a recoverable recording and an unrecoverable one.
+  finalizeRecordingSync('quit');
   closeAllClaudeTerminalsSync();
 });
 

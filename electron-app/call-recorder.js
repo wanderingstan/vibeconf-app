@@ -55,6 +55,18 @@ const DEFAULT_MAX_TRACK_BYTES = MAX_TRACK_BYTES_BY_KIND.audio; // fallback for a
 // act (stop + start a fresh recording) instead of finding out afterward.
 const CAP_WARN_RATIO = 0.9;
 
+// #343: how often chunk() may refresh manifest.json. The fields that make a
+// recording RECOVERABLE (each track's startWallClock) are fixed the moment a
+// track is created and are written then, unthrottled — this interval only keeps
+// the running bytes/chunks counts roughly current, which nothing depends on for
+// recovery. Slow on purpose: chunks arrive every second per track, and there is
+// no reason to rewrite the file that often.
+const MANIFEST_REFRESH_MS = 15000;
+
+// Dropped in the recording directory at start, removed once every merge has
+// succeeded. See _writeRecoveryNote().
+const RECOVERY_NOTE = 'RECOVERY.md';
+
 class CallRecordingSession {
   // dir: per-call output directory (created if missing).
   // meta: { room, botName, startedAt } — startedAt anchors every track's offset.
@@ -77,7 +89,9 @@ class CallRecordingSession {
     this.capWarnRatio = capWarnRatio;
     this.tracks = new Map(); // track name -> state
     this.names = new Map();  // track name -> attributed participant name (#209)
+    this._lastManifestWrite = 0;
     fs.mkdirSync(dir, { recursive: true });
+    this._writeRecoveryNote();
   }
 
   // Attribution: the renderer votes track -> participant name (via Meet's DOM
@@ -85,7 +99,14 @@ class CallRecordingSession {
   // Stored live so the manifest has it even if stop() races the last vote.
   setName(track, name) {
     if (this.closed || !track || !name) return;
+    const prev = this.names.get(String(track));
     this.names.set(String(track), String(name));
+    // #343: attribution should survive a crash too. Only on an actual change,
+    // and still throttled — the renderer re-sends its current best guess as the
+    // vote firms up, so most calls here set the same name again.
+    if (prev !== String(name) && Date.now() - this._lastManifestWrite >= MANIFEST_REFRESH_MS) {
+      this._writeManifest();
+    }
   }
 
   // Append one speaker start/stop to speaker-events.jsonl (wall-clock stamped),
@@ -132,6 +153,9 @@ class CallRecordingSession {
         warnedNearCap: false, // fires once, at CAP_WARN_RATIO — see chunk()
       };
       this.tracks.set(name, t);
+      // #343: unthrottled, because this is the moment startWallClock becomes
+      // known and a crash one second later would otherwise lose it forever.
+      this._writeManifest();
     }
     return t;
   }
@@ -165,6 +189,9 @@ class CallRecordingSession {
     fs.writeSync(t.fd, buffer);
     t.bytes += buffer.length;
     t.chunks++;
+    // Keep the on-disk counts roughly current (#343). Throttled hard — see
+    // MANIFEST_REFRESH_MS for why this one doesn't need to be prompt.
+    if (Date.now() - this._lastManifestWrite >= MANIFEST_REFRESH_MS) this._writeManifest();
   }
 
   // Bytes written across every track so far (#328). The per-track totals are
@@ -177,7 +204,100 @@ class CallRecordingSession {
     return n;
   }
 
+  // Write manifest.json NOW, rather than only at stop() (#343).
+  //
+  // The manifest is not just an index of filenames: each track's startWallClock
+  // is the only thing that time-aligns the tracks to each other and to the
+  // transcript, it lives in memory, and the webm files' own timestamps start at
+  // t=0 rather than at wall clock. So if the process died before stop() ran, the
+  // recording was not merely unmerged, it was UNRECOVERABLE — both recovery
+  // paths (scripts/finish-call-recording.mjs, scripts/merge-call-audio.mjs)
+  // require a manifest, and no offline tool could reconstruct one.
+  //
+  // Cheap enough to do repeatedly: a small JSON blob, and the values that matter
+  // most for recovery are fixed when a track is created, which is exactly when
+  // this is called (plus a slow throttle from chunk() to keep byte counts roughly
+  // current). Best-effort by design: a recording must never stop because a
+  // bookkeeping write failed.
+  _writeManifest() {
+    try {
+      fs.writeFileSync(path.join(this.dir, 'manifest.json'), JSON.stringify(this.manifest(), null, 2));
+      this._lastManifestWrite = Date.now();
+    } catch { /* dir may be gone in a teardown race — the track files still exist */ }
+  }
+
+  // A plain-text note dropped in the recording directory saying what these files
+  // are and how to finish them by hand (#343). Its PRESENCE is the signal: the
+  // normal path removes it once every merge has succeeded, so a tracks directory
+  // that still has one is a recording that never completed.
+  //
+  // This is what covers the exits no teardown handler can: a crash, a force
+  // quit, power loss. Before it, those left a folder of orphan webm files with
+  // nothing to explain them.
+  _writeRecoveryNote() {
+    const finalized = this.closed;
+    const body = `# Unfinished call recording
+
+This folder holds the raw per-track capture for a call${this.callId ? ` (\`${this.callId}\`)` : ''}${this.room ? ` in room \`${this.room}\`` : ''}, recorded ${new Date(this.startedAt).toISOString()}.
+
+**This file existing means the recording never fully completed.** The app removes
+it once the merge has succeeded, so if you are reading it, one of these happened:
+
+- the app quit, crashed, or lost power mid-recording
+- the merge into \`.mp4\` failed, was cancelled, or was skipped (no ffmpeg installed,
+  or no video was captured)
+
+The raw material is fine either way. Nothing here is corrupt, it just has not
+been combined yet.
+
+## Finishing it by hand
+
+Needs \`ffmpeg\` on your PATH. From the repo root:
+
+\`\`\`
+node scripts/finish-call-recording.mjs "${this.dir}"
+\`\`\`
+
+That produces \`call-recording.mp4\` (and \`call-recording-share.mp4\` if this call
+had a whiteboard share) in the parent folder, exactly as the app would have, and
+deletes this note on success.
+
+For audio only, plus a subtitle track naming who was speaking:
+
+\`\`\`
+node scripts/merge-call-audio.mjs "${this.dir}"
+\`\`\`
+
+## What is in here
+
+- \`manifest.json\` — the track index. **Do not delete it**: each track's
+  \`startWallClock\` is what aligns the tracks to each other and to the transcript,
+  and it cannot be recovered from the media files, whose timestamps start at zero.
+- \`*.webm\` — one file per audio track, plus \`video.webm\` (the bot's Meet view)
+  and \`share.webm\` (a shared whiteboard) when those were captured.
+- \`speaker-events.jsonl\` — who-spoke-when, wall-clock stamped.
+${finalized
+    ? '\nThe tracks were closed cleanly and the manifest is complete, so only the\nmerge is outstanding.\n'
+    : '\nWritten when recording STARTED. If the app is still running and recording,\nthis is expected and the file will be removed when the call finishes.\n'}`;
+    try {
+      fs.writeFileSync(path.join(this.dir, RECOVERY_NOTE), body);
+    } catch { /* best-effort — never block a recording on the note */ }
+  }
+
+  // Called once the recording is genuinely done: tracks finalized AND every
+  // merge that was attempted succeeded. Only main.js knows that, hence a public
+  // method rather than something stop() could decide on its own.
+  removeRecoveryNote() {
+    try { fs.rmSync(path.join(this.dir, RECOVERY_NOTE), { force: true }); }
+    catch { /* nothing to clean up */ }
+  }
+
   // Finalize: close every file and write the manifest. Idempotent.
+  //
+  // Everything here is SYNCHRONOUS on purpose (#343): closeSync + writeFileSync,
+  // no merge, no awaits. That is what lets 'before-quit' finalize a recording
+  // inline without holding up the quit. The expensive part, ffmpeg, is the
+  // caller's problem and is what the recovery note exists to defer.
   stop() {
     if (this.closed) return this.manifest();
     this.closed = true;
@@ -187,9 +307,8 @@ class CallRecordingSession {
     }
     if (this._speakerFd) { try { fs.closeSync(this._speakerFd); } catch { /* already closed */ } this._speakerFd = null; }
     const m = this.manifest();
-    try {
-      fs.writeFileSync(path.join(this.dir, 'manifest.json'), JSON.stringify(m, null, 2));
-    } catch { /* dir may be gone in a teardown race — the audio files still exist */ }
+    this._writeManifest();
+    this._writeRecoveryNote(); // rewritten: tracks are closed, only the merge is left
     return m;
   }
 
@@ -229,4 +348,7 @@ class CallRecordingSession {
   }
 }
 
-module.exports = { CallRecordingSession, MAX_TRACK_BYTES_BY_KIND, DEFAULT_MAX_TRACK_BYTES, CAP_WARN_RATIO };
+module.exports = {
+  CallRecordingSession, MAX_TRACK_BYTES_BY_KIND, DEFAULT_MAX_TRACK_BYTES, CAP_WARN_RATIO,
+  MANIFEST_REFRESH_MS, RECOVERY_NOTE,
+};

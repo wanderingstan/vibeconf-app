@@ -20,7 +20,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const { buildAgentArgs, headlessBlockedReason } = require('../electron-app/agent-spawn.js');
+const { buildAgentArgs, buildInteractiveAgentArgs, headlessBlockedReason } = require('../electron-app/agent-spawn.js');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
 
 const args = (over = {}) => buildAgentArgs({
@@ -234,4 +234,78 @@ test('headless does NOT silently enable Dangerous Mode', () => {
   const spawn = readFileSync(join(root, 'electron-app/agent-spawn.js'), 'utf8');
   assert.doesNotMatch(spawn, /set\(['"]dangerousMode['"]/);
   assert.doesNotMatch(main, /store\.set\('dangerousMode'/);
+});
+
+// --- the interactive sibling, for a session that HAS a terminal (#329) ---
+
+const iargs = (over = {}) => buildInteractiveAgentArgs({
+  meetCode: 'abc-defg-hij', botName: 'Jimmy', dangerous: true, model: 'opus', ...over,
+});
+
+test('interactive does NOT pass -p — that is what makes it typeable', () => {
+  // The property #324 actually needs: the only known recovery from the
+  // `navigating` wedge was a human issuing join_call with force: true, and a
+  // -p session has no input. Headless can show a stuck agent, not unstick one.
+  const a = iargs();
+  assert.equal(a.includes('-p'), false);
+  assert.equal(a.includes('--output-format'), false, 'NDJSON is for the headless parser, not a human');
+  assert.equal(a.includes('--verbose'), false);
+});
+
+test('the slash command is the trailing positional, one element', () => {
+  // The macOS Terminal path interpolates this into an AppleScript-wrapped shell
+  // string and copes by stripping quotes out of the bot name. Nothing here
+  // strips anything, so the name must survive intact.
+  const nasty = 'Bob "The Bot" O\'Neill; rm -rf /';
+  const a = iargs({ botName: nasty });
+  assert.equal(a[a.length - 1], `/join-call abc-defg-hij ${nasty}`);
+  assert.equal(a.filter((x) => x.includes(nasty)).length, 1);
+});
+
+test('onboarding runs the onboarding slash command instead', () => {
+  assert.match(iargs({ onboardingCall: true }).at(-1), /^\/onboarding-call /);
+});
+
+test('interactive carries the same pinning flags as the Terminal path', () => {
+  // --strict-mcp-config without --mcp-config would strip every server; they
+  // travel together or not at all.
+  const a = iargs({ mcpConfigPath: '/tmp/x/mcp-config.json' });
+  assert.equal(a[a.indexOf('--mcp-config') + 1], '/tmp/x/mcp-config.json');
+  assert.ok(a.includes('--strict-mcp-config'));
+  const none = iargs({ mcpConfigPath: '' });
+  assert.equal(none.includes('--strict-mcp-config'), false);
+});
+
+test('interactive omits --chrome, matching the macOS Terminal path', () => {
+  // Deliberate: the two visible-terminal hosts should behave identically.
+  // Turning Chrome wiring on for terminal sessions is a change worth making on
+  // both platforms at once, not a Linux-only quirk.
+  assert.equal(iargs().includes('--chrome'), false);
+  assert.ok(buildAgentArgs({ meetCode: 'a', botName: 'b' }).includes('--chrome'),
+    'headless still passes it');
+});
+
+test('Linux never falls through to the AppleScript launcher', () => {
+  // The #317 bug: on Linux every path below the platform branch is osascript,
+  // which fails ENOENT, gets swallowed, and presents as a bot that joined with
+  // no agent. The branch must return on every path.
+  const branch = main.slice(main.indexOf("if (process.platform === 'linux') {"),
+    main.indexOf('// Open a Terminal window running the command'));
+  assert.ok(branch.length > 0, 'the Linux branch must sit before the AppleScript path');
+  assert.match(branch, /launchClaudeLinuxTerminal/);
+  assert.match(branch, /launchClaudeHeadless/, 'terminal → headless → loud error, per #329');
+  assert.match(branch, /showMessageBox|console\.error/, 'the final failure must be loud');
+  assert.equal(branch.includes('osascript'), false);
+});
+
+test('leaving a call tears down BOTH Linux shapes, not just one', () => {
+  // The tmux session is what holds the agent; the viewport is only a window
+  // onto it. Killing the viewport alone leaves an agent running and still
+  // holding an MCP connection — the orphan hazard, which on Linux we can
+  // actually close because the session name is ours.
+  const fn = main.slice(main.indexOf('function closeClaudeTerminal'),
+    main.indexOf('function closeClaudeTerminal') + 2500);
+  assert.match(fn, /linuxTmuxSession/, 'the tmux session must be killed');
+  assert.match(fn, /buildKillSessionArgs/);
+  assert.match(fn, /linuxTerminalChild/, 'and the no-tmux emulator child too');
 });

@@ -104,6 +104,38 @@ function buildAgentArgs({ meetCode, botName, dangerous, model, mcpConfigPath, on
   return args;
 }
 
+// The same argv, for a session that DOES have a terminal to draw in (#329).
+//
+// Sibling of buildAgentArgs, not a variant of it: same inputs, different mode,
+// and the differences are exactly the things that depend on there being a UI.
+//
+//   - No -p. This is an interactive session, so the slash command is a trailing
+//     POSITIONAL argument, which is what the macOS Terminal path has always
+//     sent. That is also what makes the session typeable, the property #324
+//     needs to clear a `navigating` wedge with join_call force: true.
+//   - No --output-format stream-json --verbose. Those exist to turn rendered
+//     output into NDJSON we can parse; here a human reads the rendering.
+//   - No --chrome. Deliberately matching the macOS Terminal path's flag set
+//     rather than the headless one, so the two visible-terminal hosts behave
+//     identically. If Chrome wiring should be on for terminal sessions, that is
+//     a change worth making on BOTH platforms at once, not a Linux-only quirk.
+//
+// An ARRAY, like its sibling, and for the same reason: the bot name is
+// user-supplied and arrives unescaped. The macOS path interpolates it into an
+// AppleScript-wrapped shell string and copes by stripping quotes out of it
+// (`botName.replace(/"/g, '')`). Nothing here needs to strip anything.
+function buildInteractiveAgentArgs({ meetCode, botName, dangerous, model, mcpConfigPath, onboardingCall = false }) {
+  const args = [];
+  if (dangerous) args.push('--dangerously-skip-permissions');
+  if (model) args.push('--model', model);
+  if (mcpConfigPath) args.push('--mcp-config', mcpConfigPath, '--strict-mcp-config');
+  const slashCmd = onboardingCall ? 'onboarding-call' : 'join-call';
+  // Trailing positional, after the flags — one element however many spaces or
+  // quotes the bot name contains.
+  args.push(`/${slashCmd} ${meetCode} ${botName}`.trim());
+  return args;
+}
+
 // Headless CANNOT prompt for permission.
 //
 // Interactively, a permission request draws a prompt and waits for a keypress.
@@ -173,4 +205,7 @@ function spawnHeadlessAgent({ claudePath, args, cwd, env, source, onExit, log = 
   return child;
 }
 
-module.exports = { buildAgentArgs, headlessBlockedReason, spawnHeadlessAgent, cleanAgentEnv, PARENT_SESSION_VARS };
+module.exports = {
+  buildAgentArgs, buildInteractiveAgentArgs, headlessBlockedReason, spawnHeadlessAgent,
+  cleanAgentEnv, PARENT_SESSION_VARS,
+};

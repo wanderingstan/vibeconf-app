@@ -38,12 +38,34 @@
   let elapsedTimer = null;
   let mediaRecorder = null;
   let stopRequested = false;
+  // #328: pushed from main every couple of seconds. null until the first push
+  // lands, which is why renderElapsed() shows time alone rather than "0 MB" —
+  // a zero here would read as "nothing is being written", the exact worry the
+  // size display exists to answer.
+  let sizeBytes = null;
 
   function fmtElapsed(ms) {
     const totalSec = Math.max(0, Math.floor(ms / 1000));
     const m = String(Math.floor(totalSec / 60)).padStart(2, '0');
     const s = String(totalSec % 60).padStart(2, '0');
     return `${m}:${s}`;
+  }
+
+  // Decimal units (MB = 1e6), matching what Finder/Explorer report for the same
+  // file — the point is to be comparable to what the user sees on disk, not to
+  // be binary-exact.
+  function fmtBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes < 0) return '';
+    if (bytes < 1e6) return `${Math.round(bytes / 1e3)} KB`;
+    if (bytes < 1e9) return `${Math.round(bytes / 1e6)} MB`;
+    return `${(bytes / 1e9).toFixed(2)} GB`;
+  }
+
+  function renderElapsed() {
+    if (!SHOW_CONTROLS) return;
+    const time = fmtElapsed(performance.now() - startedAt);
+    const size = sizeBytes === null ? '' : fmtBytes(sizeBytes);
+    elapsedEl.textContent = size ? `${time} · ${size}` : time;
   }
 
   function setError(message) {
@@ -129,9 +151,8 @@
     mediaRecorder.start(TIMESLICE_MS);
 
     if (SHOW_CONTROLS) {
-      elapsedTimer = setInterval(() => {
-        elapsedEl.textContent = fmtElapsed(performance.now() - startedAt);
-      }, 500);
+      renderElapsed();
+      elapsedTimer = setInterval(renderElapsed, 500);
     }
   }
 
@@ -184,6 +205,27 @@
   // Main tells us to stop (as part of stopCallRecording, or — for 'share' —
   // onStopSharing tearing down the share via stopShareCaptureIfActive).
   window.electronAPI.on('frame-capture-stop', stopRecorderAndAck);
+
+  // #328: main's periodic size push. Only the visible 'video' window has a UI
+  // to put it in, and main only ever sends it there. Bytes are the WHOLE
+  // recording's (every audio track + video + any share capture), not this
+  // window's own track — the question being answered is "how much disk is this
+  // call eating", which no single track answers.
+  window.electronAPI.on('recording-stats', (stats) => {
+    if (!SHOW_CONTROLS || !stats || stopRequested) return;
+    sizeBytes = Number.isFinite(stats.bytes) ? stats.bytes : null;
+    renderElapsed();
+    // The note line is shared with setError(); an error ends the elapsed timer
+    // and is the more important message, so never overwrite one.
+    if (!dot.classList.contains('error')) {
+      const free = Number.isFinite(stats.freeBytes) ? fmtBytes(stats.freeBytes) : '';
+      note.textContent = free ? `${free} free on disk` : '';
+    }
+    if (stats.dir) {
+      // Hover anywhere on the row to see where this is being written.
+      document.body.title = stats.dir;
+    }
+  });
 
   start();
 })();

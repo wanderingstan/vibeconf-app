@@ -167,6 +167,16 @@ class CallRecordingSession {
     t.chunks++;
   }
 
+  // Bytes written across every track so far (#328). The per-track totals are
+  // already maintained by chunk(); this just sums them, so it's cheap enough to
+  // poll on a timer and — unlike stat()ing the directory — costs no filesystem
+  // work and stays accurate while the fds are still open.
+  totalBytes() {
+    let n = 0;
+    for (const t of this.tracks.values()) n += t.bytes;
+    return n;
+  }
+
   // Finalize: close every file and write the manifest. Idempotent.
   stop() {
     if (this.closed) return this.manifest();

@@ -30,7 +30,7 @@ test('three states; the button toggles the RESTING one against popped', () => {
 });
 
 test('the whole point: the thumbnail holds Meet\'s virtual width at the pinned target', () => {
-  const thumb = L.computeLayout('thumbnail', { width: 380, height: 800 }, { panelWidth: 380 });
+  const thumb = L.computeLayout('thumbnail', { width: 380, height: 800 }, { windowWidth: 380 });
   // virtual width = device width / zoom.
   const thumbVirtual = thumb.meetBounds.width / thumb.meetZoom;
   assert.ok(Math.abs(thumbVirtual - L.MEET_TARGET_CSS_WIDTH) < 1,
@@ -41,7 +41,7 @@ test('the whole point: the thumbnail holds Meet\'s virtual width at the pinned t
 });
 
 test('thumbnail: narrow column, panel on top, Meet 16:9 below', () => {
-  const l = L.computeLayout('thumbnail', { width: 380, height: 900 }, { panelWidth: 380 });
+  const l = L.computeLayout('thumbnail', { width: 380, height: 900 }, { windowWidth: 380 });
   assert.equal(l.meetInOwnWindow, false);
   // Meet region is a 16:9 box at column width.
   assert.equal(l.meetBounds.width, 380);
@@ -58,7 +58,7 @@ test('thumbnail: narrow column, panel on top, Meet 16:9 below', () => {
 });
 
 test('popped: Meet leaves the main window and the panel takes the whole column', () => {
-  const l = L.computeLayout('popped', { width: 380, height: 900 }, { panelWidth: 380 });
+  const l = L.computeLayout('popped', { width: 380, height: 900 }, { windowWidth: 380 });
   assert.equal(l.meetInOwnWindow, true);
   assert.equal(l.meetBounds, null, 'no Meet in the main window');
   // The region used to hold a "Popped out" placard. Popping the view out then
@@ -74,8 +74,8 @@ test('popped: Meet leaves the main window and the panel takes the whole column',
 test('popped and hidden lay out identically — both give the column to the panel', () => {
   // The only difference between them is WHERE Meet lives (a visible window vs a
   // never-shown one), which is main.js's business, not the column's.
-  const popped = L.computeLayout('popped', { width: 380, height: 900 }, { panelWidth: 380 });
-  const hidden = L.computeLayout('hidden', { width: 380, height: 900 }, { panelWidth: 380 });
+  const popped = L.computeLayout('popped', { width: 380, height: 900 }, { windowWidth: 380 });
+  const hidden = L.computeLayout('hidden', { width: 380, height: 900 }, { windowWidth: 380 });
   assert.deepEqual(popped.panelBounds, hidden.panelBounds);
   assert.equal(popped.meetBounds, null);
   assert.equal(hidden.meetBounds, null);
@@ -84,8 +84,8 @@ test('popped and hidden lay out identically — both give the column to the pane
 });
 
 test('thumbnail still reserves the region — only popped/hidden give it back', () => {
-  const thumb = L.computeLayout('thumbnail', { width: 380, height: 900 }, { panelWidth: 380 });
-  const popped = L.computeLayout('popped', { width: 380, height: 900 }, { panelWidth: 380 });
+  const thumb = L.computeLayout('thumbnail', { width: 380, height: 900 }, { windowWidth: 380 });
+  const popped = L.computeLayout('popped', { width: 380, height: 900 }, { windowWidth: 380 });
   assert.deepEqual(thumb.meetBounds, { x: 0, y: 900 - 214, width: 380, height: 214 });
   assert.equal(thumb.placeholderBounds, null);
   assert.ok(popped.panelBounds.height > thumb.panelBounds.height,
@@ -93,8 +93,8 @@ test('thumbnail still reserves the region — only popped/hidden give it back', 
 });
 
 test('the main window is always a narrow column, in both states', () => {
-  assert.equal(L.windowWidthFor('thumbnail', { panelWidth: 380 }), 380);
-  assert.equal(L.windowWidthFor('popped', { panelWidth: 380 }), 380);
+  assert.equal(L.windowWidthFor('thumbnail', { windowWidth: 380 }), 380);
+  assert.equal(L.windowWidthFor('popped', { windowWidth: 380 }), 380);
 });
 
 test('the zoom is clamped at the Chromium floor, and says when layout is no longer exact', () => {
@@ -111,7 +111,7 @@ test('the zoom is clamped at the Chromium floor, and says when layout is no long
 test('degenerate sizes never produce negative bounds', () => {
   for (const size of [{ width: 0, height: 0 }, { width: 100, height: 50 }, {}]) {
     for (const state of L.STATES) {
-      const l = L.computeLayout(state, size, { panelWidth: 380 });
+      const l = L.computeLayout(state, size, { windowWidth: 380 });
       for (const b of [l.panelBounds, l.meetBounds, l.placeholderBounds]) {
         if (!b) continue;
         assert.ok(b.width >= 0 && b.height >= 0, `${state} @ ${JSON.stringify(size)} → non-negative bounds`);
@@ -125,7 +125,7 @@ test('degenerate sizes never produce negative bounds', () => {
 
 test('out of a call, the panel gets the whole column and there is no region', () => {
   for (const state of L.STATES) {
-    const l = L.computeLayout(state, { width: 380, height: 800 }, { panelWidth: 380, inCall: false });
+    const l = L.computeLayout(state, { width: 380, height: 800 }, { windowWidth: 380, inCall: false });
     assert.equal(l.regionHidden, true, `${state}: region is hidden out of a call`);
     assert.equal(l.meetBounds, null, `${state}: nothing docked`);
     assert.equal(l.placeholderBounds, null, `${state}: not even the popped-out placeholder`);
@@ -135,8 +135,8 @@ test('out of a call, the panel gets the whole column and there is no region', ()
 });
 
 test('in a call, the region comes back exactly as before', () => {
-  const inCall = L.computeLayout('thumbnail', { width: 380, height: 800 }, { panelWidth: 380, inCall: true });
-  const legacy = L.computeLayout('thumbnail', { width: 380, height: 800 }, { panelWidth: 380 });
+  const inCall = L.computeLayout('thumbnail', { width: 380, height: 800 }, { windowWidth: 380, inCall: true });
+  const legacy = L.computeLayout('thumbnail', { width: 380, height: 800 }, { windowWidth: 380 });
   assert.deepEqual(inCall.meetBounds, legacy.meetBounds);
   assert.deepEqual(inCall.panelBounds, legacy.panelBounds);
   assert.ok(!inCall.regionHidden);
@@ -144,14 +144,14 @@ test('in a call, the region comes back exactly as before', () => {
 
 test('omitting inCall keeps the old behaviour, so existing callers are unaffected', () => {
   assert.equal(L.showRegion({}), true);
-  assert.equal(L.showRegion({ panelWidth: 380 }), true);
+  assert.equal(L.showRegion({ windowWidth: 380 }), true);
   assert.equal(L.showRegion({ inCall: false }), false);
   assert.equal(L.showRegion({ inCall: true }), true);
 });
 
 test('a hidden region still reports a usable zoom (applyMeetZoom reads it)', () => {
   for (const state of L.STATES) {
-    const l = L.computeLayout(state, { width: 380, height: 800 }, { panelWidth: 380, inCall: false });
+    const l = L.computeLayout(state, { width: 380, height: 800 }, { windowWidth: 380, inCall: false });
     assert.ok(l.meetZoom >= L.MIN_ZOOM && l.meetZoom <= L.MAX_ZOOM, `${state}: zoom stays in range`);
   }
 });
@@ -170,7 +170,7 @@ test('a hidden region still reports a usable zoom (applyMeetZoom reads it)', () 
 // out loud that it couldn't read the screen. 'hidden' gives it real pixels.
 
 test('hidden renders at full size and zoom 1 — the whole point of #103', () => {
-  const h = L.computeLayout('hidden', { width: 380, height: 800 }, { panelWidth: 380 });
+  const h = L.computeLayout('hidden', { width: 380, height: 800 }, { windowWidth: 380 });
   assert.equal(h.meetZoom, 1, 'no zoom compensation: nothing is being squeezed into a column');
   assert.equal(h.meetInOwnWindow, true, 'it lives in its own (never-shown) host window');
   assert.equal(h.meetBounds, null, 'nothing to lay out inside the main window');
@@ -180,7 +180,7 @@ test('hidden renders at full size and zoom 1 — the whole point of #103', () =>
 
 test('hidden gives the panel the entire column', () => {
   const height = 800;
-  const h = L.computeLayout('hidden', { width: 380, height }, { panelWidth: 380 });
+  const h = L.computeLayout('hidden', { width: 380, height }, { windowWidth: 380 });
   assert.deepEqual(h.panelBounds, { x: 0, y: 0, width: 380, height },
     'no 16:9 slab is reserved for a view nobody can see');
   assert.equal(L.regionHeightFor(380, 'hidden'), 0);
@@ -201,7 +201,7 @@ test('only thumbnail reserves height — hidden and popped must not resize the w
 });
 
 test('hidden beats thumbnail on captured pixels by a wide margin', () => {
-  const thumb = L.computeLayout('thumbnail', { width: 380, height: 800 }, { panelWidth: 380 });
+  const thumb = L.computeLayout('thumbnail', { width: 380, height: 800 }, { windowWidth: 380 });
   const thumbPx = thumb.meetBounds.width * thumb.meetBounds.height;
   const hiddenPx = L.HIDDEN_SIZE.width * L.HIDDEN_SIZE.height;
   assert.ok(hiddenPx / thumbPx > 8,
@@ -215,14 +215,14 @@ test('hidden beats thumbnail on captured pixels by a wide margin', () => {
 test('hidden stays own-window OUT of a call too', () => {
   // The host persists between calls so the capture surface (and Meet) survive
   // the gap; the out-of-call branch must not report it as dockable.
-  const h = L.computeLayout('hidden', { width: 380, height: 800 }, { panelWidth: 380, inCall: false });
+  const h = L.computeLayout('hidden', { width: 380, height: 800 }, { windowWidth: 380, inCall: false });
   assert.equal(h.meetInOwnWindow, true);
   assert.equal(h.meetZoom, 1, 'and must not fall back to the thumbnail zoom');
   assert.equal(h.meetBounds, null);
 });
 
 test('thumbnail is unchanged — the legacy path still works exactly as before', () => {
-  const t = L.computeLayout('thumbnail', { width: 380, height: 800 }, { panelWidth: 380 });
+  const t = L.computeLayout('thumbnail', { width: 380, height: 800 }, { windowWidth: 380 });
   assert.equal(t.meetInOwnWindow, false);
   assert.ok(t.meetBounds, 'still docked in the column');
   const virtual = t.meetBounds.width / t.meetZoom;

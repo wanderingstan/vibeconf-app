@@ -27,6 +27,8 @@ import { execSync, execFileSync } from "child_process";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
+import { resolveInstance, joinNameFromRouting } from "./instance-routing.js";
+import { parseMeetRoomId } from "./meet-room.js";
 
 let ROOM_ID = process.env.VIBECONF_ROOM_ID || "";
 let BOT_NAME = process.env.VIBECONF_BOT_NAME || "Unnamed bot";
@@ -35,6 +37,16 @@ let BOT_NAME = process.env.VIBECONF_BOT_NAME || "Unnamed bot";
 // single agent session can target any running profile regardless of which port
 // the app baked into the MCP config (#301). Reassigned in routeToInstance().
 let BASE_URL = process.env.VIBECONF_BASE_URL || "http://127.0.0.1:7865";
+// The port this session was EXPLICITLY pinned to, captured before anything can
+// re-bind BASE_URL. The app writes VIBECONF_BASE_URL into each profile's own MCP
+// config, so when it's set we know which instance this terminal belongs to and
+// can skip the "which profile did you mean?" prompt. Null when unset — the
+// default 7865 happens to be the default profile's port, and inferring from that
+// would silently pick a profile the user never named.
+const PINNED_PORT = (() => {
+  const m = String(process.env.VIBECONF_BASE_URL || "").match(/:(\d+)/);
+  return m ? Number(m[1]) : null;
+})();
 // Backend (Vercel) base — used for REMOTE session logs shipped by other machines
 // (get_session_log with an `instance` arg / list_log_instances). Distinct from
 // BASE_URL, which is this machine's local Electron app.
@@ -114,6 +126,10 @@ async function discoverInstances() {
         // The default profile reports null — normalize so it's addressable as "default".
         profile: s.localProfile || "default",
         botName: s.currentCallBotName || s.configuredBotName || null,
+        // Kept separate from botName: this is the profile's OWN display name (what
+        // the panel is set to), which is what a profile-addressed join should join
+        // under — not currentCallBotName, a per-call override from a past call.
+        configuredBotName: (s.configuredBotName || "").trim() || null,
         callStatus: s.callStatus || null,
         roomId: d.roomId || null,
       };
@@ -122,36 +138,23 @@ async function discoverInstances() {
   return results.filter(Boolean);
 }
 
-// Resolve which running instance a name targets. name = profile (preferred) or bot
-// name. Backward-compatible: a single running instance is used as-is (the name is
-// then just the display name); discovery turning up nothing keeps the current
-// BASE_URL (env default) so existing single-instance setups are unaffected.
-function resolveInstance(name, instances) {
-  if (instances.length === 0) return { keep: true }; // nothing discovered → don't touch BASE_URL
-  if (name) {
-    const n = String(name).trim().toLowerCase();
-    const byProfile = instances.find((i) => (i.profile || "").toLowerCase() === n);
-    const byBot = instances.find((i) => (i.botName || "").toLowerCase() === n);
-    if (byProfile || byBot) return { instance: byProfile || byBot };
-    if (instances.length === 1) return { instance: instances[0] }; // sole instance; name is a display name
-    const list = instances.map((i) => `${i.profile} (:${i.port}${i.botName ? `, ${i.botName}` : ""})`).join(", ");
-    return { error: `No running instance for profile "${name}". Running: ${list}. Launch that profile, or use one of these names.` };
-  }
-  if (instances.length === 1) return { instance: instances[0] };
-  const list = instances.map((i) => `${i.profile} (:${i.port}${i.botName ? `, ${i.botName}` : ""})`).join(", ");
-  return { error: `Multiple app instances running — specify which by profile name: ${list}.` };
-}
+// resolveInstance lives in ./instance-routing.js (pure, unit-tested). Behaviour:
+// name = profile (preferred) or display name. Backward-compatible — a single
+// running instance is used as-is (the name is then just the display name), and
+// discovery turning up nothing keeps the current BASE_URL (env default) so
+// existing single-instance setups are unaffected.
 
 // Bind this session's BASE_URL to the instance the name targets. Returns
-// { ok, instance? } or { error }.
+// { ok, instance?, matchedBy? } or { error }. matchedBy tells the caller whether
+// the name was an ADDRESS (a profile) or a label — see instance-routing.js.
 async function routeToInstance(name) {
   let instances;
   try { instances = await discoverInstances(); }
   catch { return { ok: true }; } // discovery failed → keep current BASE_URL, let the join surface a real error
-  const r = resolveInstance(name, instances);
+  const r = resolveInstance(name, instances, { pinnedPort: PINNED_PORT });
   if (r.error) return { error: r.error };
   if (r.keep) return { ok: true };
-  if (r.instance) { BASE_URL = r.instance.baseUrl; return { ok: true, instance: r.instance }; }
+  if (r.instance) { BASE_URL = r.instance.baseUrl; return { ok: true, instance: r.instance, matchedBy: r.matchedBy }; }
   return { ok: true };
 }
 
@@ -201,6 +204,14 @@ async function resolveBotName(name) {
   if (explicit) return explicit;
   const configured = await fetchConfiguredBotName();
   return configured || BOT_NAME;
+}
+
+// The display name to join under. joinNameFromRouting decides it from the routed
+// instance (see instance-routing.js — a profile-matched name is an ADDRESS and
+// must not overwrite that profile's own name); only when routing says nothing do
+// we fall back to the cached configured name / env default.
+async function displayNameForJoin(argName, routed) {
+  return joinNameFromRouting(argName, routed) || (await resolveBotName(null));
 }
 
 const server = new McpServer({
@@ -267,6 +278,37 @@ server.tool(
     const label = isRemote ? `Remote log: ${instance}` : (data.filePath ? `Session log: ${data.filePath}` : '');
     const header = label ? `${label} (${data.returnedLines}/${data.totalLines} lines${data.truncated ? ', truncated' : ''})\n---\n` : '';
     return { content: [{ type: "text", text: header + (data.content || '(empty)') }] };
+  }
+);
+
+// --- get_call_log ---
+// Returns just ONE call's slice of this machine's session log (#287), bounded
+// by the `[call] id=...` markers written at call start/end (#292). This is the
+// after-call-work counterpart to the "share this call's log" UI button (#255):
+// same underlying slice, but returned directly instead of uploaded, so an
+// agent can save it (e.g. calls/<call-id>/session-log.txt) alongside a
+// summary, or a script can pull it for offline analysis. Call IDs come from
+// get_room_info / call-status responses seen earlier in the call — this
+// works for any past call ID, not just the currently-active one, since
+// after-call work runs post-hangup once the live call ID has been cleared.
+server.tool(
+  "get_call_log",
+  "Get just one call's slice of this machine's session log — the events between that call's start and end markers, with no earlier or later calls mixed in. This is for after-call work (e.g. saving a log alongside a call summary) or scripts that need one call's events; unlike get_session_log it returns exactly one call, not a recent-lines window. Pass the call_id seen earlier (e.g. from get_room_info) — works for past calls too, not just the current one.",
+  {
+    call_id: z.string().describe("The call ID to slice out, e.g. 'abc-defg-hij-20260809T164900Z' (from get_room_info or a `[call] id=...` log line)."),
+  },
+  async ({ call_id }) => {
+    const url = `${BASE_URL}/api/call-log?callId=${encodeURIComponent(call_id)}`;
+    const resp = await vfetch(url);
+    const data = await resp.json();
+    if (!data.success) {
+      return { content: [{ type: "text", text: `Error: ${data.error || "Unknown error"}` }] };
+    }
+    if (!data.lineCount) {
+      return { content: [{ type: "text", text: `No log lines found for call_id "${call_id}". Check the ID matches a '[call] id=...' marker in the session log.` }] };
+    }
+    const header = `Call log: ${call_id} (${data.lineCount} lines, ${data.filePath})\n---\n`;
+    return { content: [{ type: "text", text: header + data.content }] };
   }
 );
 
@@ -517,7 +559,7 @@ server.tool(
     text: z.string().describe("What to say in the call. Will be spoken via TTS."),
     voice: z.string().optional().describe("Override TTS voice for this message (e.g. 'Daniel', 'Karen'). Uses default voice if not specified."),
     emoji: z.string().optional().describe("Single emoji to display on the avatar while speaking this response. Match the tone of what you're saying — e.g. 😂 for funny, 😟 for sympathetic, 😎 confident, 🤓 technical. Falls back to 😄 if not specified."),
-    urgency: z.number().min(0).max(1).optional().describe("How much the room needs to hear THIS, right now — 0.0 to 1.0. Anchors: 0.0 = pure filler, only worth saying into dead silence; 0.3 = mildly useful aside; 0.6 = a solid, worth-saying contribution; 0.9 = a direct answer to a question you were just asked; 1.0 = critical/time-sensitive ('the build is broken', 'we're almost out of time'). Score the message you're sending, honestly — most turns are NOT 0.9+. GATES INTERRUPTION: if someone is speaking when your reply is ready, a short reply plays over them only at 0.5 or above; below that it is held for the next gap. Score honestly — inflating this makes the bot talk over people. Omit if you truly can't judge."),
+    urgency: z.number().min(0).max(1).optional().describe("How much the room needs to hear THIS, RIGHT NOW, over the top of someone else — 0.0 to 1.0. Anchors: 0.0 = filler, only worth saying into dead silence; 0.2 = mildly useful aside; 0.4 = A NORMAL ANSWER TO A NORMAL QUESTION, where most turns belong; 0.6 = the room is blocked on this or it goes stale in seconds; 0.9 = something is wrong right now and waiting makes it worse; 1.0 = genuine danger. GATES INTERRUPTION: 0.5 is the line where you may cut someone off — below it your reply waits for a gap, at or above it plays over them. The question is not 'is this good?' but 'is this worth interrupting a person for?', and for a normal answer that is no. (0.9 previously meant 'a direct answer to a question', so bots scored 0.9 on nearly everything and interrupted constantly.) Omit if you truly can't judge."),
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
   async ({ text, voice, emoji, urgency, room_id }) => {
@@ -545,8 +587,30 @@ server.tool(
     if (tx?.reason === 'user-speaking') {
       return { content: [{ type: "text", text: "Speech dropped — the user started speaking before your response could play. Call wait_for_speech to hear what they said and respond to their new message instead of repeating this one." }] };
     }
+    // #253: the PREVIOUS speech never reached anyone. Playback happens after the
+    // speak call has already answered, so this is the first honest moment to say
+    // so — and it matters most right here, where the agent is about to build on
+    // a reply the room never heard.
+    const failed = tx?.previousPlaybackFailed;
+    const priorWarning = failed
+      ? `⚠️ Your PREVIOUS speech was NOT heard — audio playback failed (${failed.reason}). `
+        + `Nobody in the room got it. If it still matters, say it again.\n\n`
+      : '';
+
+    // #199: accepted but NOT yet audible. The app queues speech until the bot is
+    // actually in the call, because the virtual mic isn't connected to the other
+    // participants before then — speaking earlier plays into the void. Saying
+    // "Spoken" here is what sent a stranger-drill debug down a TTS rabbit hole
+    // for ~8 minutes while the app sat wedged at 'navigating'.
+    if (data.success && tx?.queuedUntilInCall) {
+      return { content: [{ type: "text", text: priorWarning +
+        `QUEUED, not spoken — the bot is not in the call yet (status: ${tx.callStatus || 'unknown'}), `
+        + `so nobody has heard this. It will play automatically once the bot is in-call; do NOT repeat it. `
+        + `If the status does not reach 'in-call' shortly, the join is stuck — check get_room_info rather `
+        + `than assuming a voice or TTS problem.` }] };
+    }
     if (data.success && tx?.ok !== false) {
-      return { content: [{ type: "text", text: `Spoken: "${text}"` }] };
+      return { content: [{ type: "text", text: priorWarning + `Spoken: "${text}"` }] };
     } else {
       return { content: [{ type: "text", text: `Error: ${data.error || tx?.reason || "Failed to post"}` }] };
     }
@@ -599,10 +663,21 @@ function afterCallWorkNote(plan) {
   if (!plan || !plan.enabled) {
     return ' Your work here is done — exit the conversation loop.';
   }
+  // The bot's after-call duties live in the workdir CLAUDE.md, which only
+  // app-spawned agents auto-load (they cd into the workdir; a terminal-driven
+  // session runs wherever it was launched). The local-server therefore ships
+  // the actual "## After the call" section in the plan, and it is inlined
+  // here so EVERY transport sees the same checklist. On the 2026-08-10 Seth
+  // call the old "its CLAUDE.md says what that is" phrasing left a
+  // terminal-driven agent with nothing in context — it ended the session in
+  // 0.6s and the summary + log copy were silently skipped.
+  const duties = plan.duties
+    ? `Your after-call duties, from the bot's CLAUDE.md${plan.workdir ? ` (workdir: ${plan.workdir} — file paths below are relative to it)` : ''}:\n\n${plan.duties}\n\n`
+    : `Use them for whatever wrap-up this bot is meant to do — its CLAUDE.md says what that is (a summary, a receipt, notes filed somewhere)${plan.workdir ? `; if you don't have that file in context, read it at ${plan.workdir}/CLAUDE.md` : ''}.\n\n`;
   return ` You are now in AFTER-CALL WORK. You have up to ${plan.seconds} seconds, and you are still running.\n\n`
     + 'The call is over but its state is NOT gone: read_transcripts, read_whiteboard and get_room_info all still '
-    + 'work, and still describe the call that just ended. Use them for whatever wrap-up this bot is meant to do — '
-    + 'its CLAUDE.md says what that is (a summary, a receipt, notes filed somewhere).\n\n'
+    + 'work, and still describe the call that just ended. '
+    + duties
     + 'Do NOT call speak or send_chat: you have left the meeting, so nobody will hear or see it.\n\n'
     + 'Call end_session as soon as you are finished. That releases the app immediately instead of making it wait out '
     + 'the whole window. If there is nothing to do, call it now.';
@@ -783,6 +858,105 @@ async function listVoiceboxProfiles() {
     return Array.isArray(profiles) ? profiles : [];
   } catch { return []; }
 }
+
+// --- suggest_bot_names ---
+server.tool(
+  "suggest_bot_names",
+  "A list of candidate names for this bot, from the app's own curated pool — the same one the panel's name spinner draws from. Use it in the guided setup call so the user PICKS from real options instead of being asked to invent one cold. Names already used by other bots on this machine are excluded. Prefer these over names you make up: the pool is curated for names the bot reliably hears itself called, which is not obvious from a name alone.",
+  {
+    count: z.number().optional().describe("How many to return (default 12, max 24)."),
+  },
+  async ({ count }) => {
+    try {
+      const resp = await vfetch(`${BASE_URL}/api/name-suggestions?count=${count || 12}`);
+      const data = await resp.json();
+      if (!data.success) {
+        return { content: [{ type: "text", text: `Error: ${data.error || "could not get name suggestions"}` }] };
+      }
+      return { content: [{ type: "text", text: (data.names || []).join("\n") }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error contacting local server: ${err.message}` }] };
+    }
+  },
+);
+
+// "Screen sharing:" line for get_room_info.
+//
+// Reads the people pane, which lists every share as its own entry, rather than
+// the toolbar's single "<name> is presenting" slot. Measured live with three
+// shares up at once: the toolbar named only the most recent, and named nobody
+// while the bot was presenting.
+function formatScreenShares(status, data) {
+  const shares = Array.isArray(data?.screenShares) ? data.screenShares : [];
+  if (!shares.length) {
+    // Fall back to the toolbar signal rather than asserting "no": on a Meet
+    // build where the people-pane markup has moved, silence is better than a
+    // confident wrong answer.
+    if (status.sharing) return 'Screen sharing: yes (by you)';
+    if (status.presenterName) return `Screen sharing: yes, by ${status.presenterName}`;
+    return 'Screen sharing: nobody';
+  }
+  const names = shares.map((s) => s.name).filter(Boolean);
+  return `Screen sharing: ${names.length} — ${names.join(', ')}`
+    + (status.sharing ? ' (one of them is you)' : '');
+}
+
+// --- list_visual_assets ---
+server.tool(
+  "list_visual_assets",
+  "Absolute paths to the sample art bundled with the app: one smiling face per emoji set, and every background preset. Use these with update_whiteboard to SHOW the options rather than list their names — write them as ordinary markdown image links, e.g. ![city](/abs/path/city.svg), and lay several out in a table for a grid. Mainly for the guided setup call, where 'pick an emoji set' and 'pick a background' are questions a picture answers instantly. Note the 'native' set is the OS font and has no file — put the character itself (e.g. 🙂) in that cell and let the machine draw it, which IS what picking native means. Sizes differ wildly between sets (the fluent3d PNG is hundreds of pixels, the noto SVG tiny), and markdown cannot size an image, so normalise with set_whiteboard_style, e.g. `table img { height: 84px; width: auto }`.",
+  {},
+  async () => {
+    try {
+      const resp = await vfetch(`${BASE_URL}/api/visual-assets`);
+      const data = await resp.json();
+      if (!data.success) {
+        return { content: [{ type: "text", text: `Error: ${data.error || "could not read bundled assets"}` }] };
+      }
+      const lines = [];
+      lines.push("=== Emoji sets (🙂 sample from each) ===");
+      for (const e of data.emojiSets || []) lines.push(`${e.set}: ${e.path}`);
+      lines.push("native: (no file — the operating system's own emoji font)");
+      lines.push("");
+      lines.push("=== Background presets ===");
+      for (const b of data.backgrounds || []) lines.push(`${b.name}: ${b.path}`);
+      lines.push("");
+      lines.push("Embed with update_whiteboard: ![name](/that/path). Several in a markdown table gives you a grid.");
+      return { content: [{ type: "text", text: lines.join("\n") }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error contacting local server: ${err.message}` }] };
+    }
+  },
+);
+
+// --- list_fonts ---
+server.tool(
+  "list_fonts",
+  "Font families installed on the machine running the app. Use with set_preference(\"emojiSet\", \"font:<Family>\") to draw the bot's face with a real font instead of the bundled picture sets — e.g. \"font:UnifontExMono\". Call this rather than guessing a name: a family that is not installed falls back to the system emoji font silently, so a typo looks exactly like the feature not working. Names are returned exactly as the system reports them, which is what the preference needs. Not every font has emoji coverage; the interesting ones are those that do.",
+  {},
+  async () => {
+    try {
+      const resp = await vfetch(`${BASE_URL}/api/fonts`);
+      const data = await resp.json();
+      if (!data.success) {
+        return { content: [{ type: "text", text: `Error: ${data.error || "could not list fonts"}` }] };
+      }
+      const fams = data.families || [];
+      if (!fams.length) {
+        return { content: [{ type: "text", text: "No fonts reported. The app may not have a window open to ask." }] };
+      }
+      return {
+        content: [{
+          type: "text",
+          text: `${fams.length} font families installed:\n\n${fams.join("\n")}\n\n`
+            + `Use one with set_preference("emojiSet", "font:<Family>") — exact name, as listed above.`,
+        }],
+      };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error contacting local server: ${err.message}` }] };
+    }
+  },
+);
 
 // --- list_voices ---
 server.tool(
@@ -988,7 +1162,7 @@ server.tool(
   "update_whiteboard",
   "Update the shared whiteboard/screen in the Google Meet call. Supports markdown and Mermaid diagrams. Can also load an arbitrary URL (e.g. a website, localhost app, dashboard) instead of markdown content. To show a local image (e.g. a generated image), pass image_path (absolute local file path) — it gets registered with the app's local server and embedded as markdown. Do NOT put a raw file:// URL in a markdown image tag inside 'content' and do NOT hand-build a base64 data URI — the whiteboard renders in a sandboxed browser that can't load file:// URLs (broken image), and inlining base64 wastes huge amounts of context. image_path is the only correct way to show a local image.",
   {
-    content: z.string().optional().describe("Markdown content for the whiteboard. Supports headings, lists, code blocks, and Mermaid diagrams. Do not embed local images here via file:// URLs or base64 data URIs — use the image_path parameter instead."),
+    content: z.string().optional().describe("Markdown content for the whiteboard. Supports headings, lists, code blocks, Mermaid diagrams, and images. For SEVERAL images (a grid of options, a comparison), write ordinary markdown image links to absolute local paths — ![city](/abs/path/city.svg) — and they are registered and rewritten for you, so you control the layout. Base64 data URIs are still not supported. For a single image appended after the text, image_path is simpler."),
     url: z.string().optional().describe("Load an arbitrary URL in the whiteboard window instead of markdown content. Useful for showing websites, localhost apps, or dashboards."),
     image_path: z.string().optional().describe("Absolute local file path to an image (png/jpg/gif/webp/svg/bmp/pdf). The local server registers it and embeds it in the markdown. This is the correct way to show a local/generated image — do not build your own file:// link or base64 data URI. If 'content' is also provided, the image is appended after it."),
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
@@ -1006,6 +1180,39 @@ server.tool(
     // image_path: register with the local server and fold the resulting URL
     // into the markdown content (#157). url mode is unaffected — image_path
     // composes with content, not with url.
+    // Local image paths written straight into the markdown, e.g.
+    // ![city](/abs/path/city.svg) — registered and rewritten here.
+    //
+    // image_path below handles ONE image, appended after the text. That is
+    // useless for a grid: showing eight backgrounds, or one smiley per emoji
+    // set, needs several images laid out in a table. Rewriting in place lets
+    // the agent control the layout and use as many as it likes.
+    if (content) {
+      const localImg = /!\[([^\]]*)\]\((?:file:\/\/)?(\/[^)\s]+)\)/g;
+      const seen = new Map();
+      const paths = [...content.matchAll(localImg)].map((m) => m[2]);
+      for (const p of paths) {
+        if (seen.has(p)) continue;
+        try {
+          const r = await vfetch(`${BASE_URL}/api/whiteboard-asset`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: p }),
+          });
+          const d = await r.json();
+          // A path that will not register is left ALONE rather than dropped:
+          // the board then shows a broken image at that spot, which is a
+          // visible, findable fault. Silently deleting it looks like the agent
+          // simply chose not to show anything.
+          if (d.success && d.url) seen.set(p, d.url);
+        } catch { /* leave it as written */ }
+      }
+      if (seen.size) {
+        content = content.replace(localImg, (whole, alt, p) =>
+          (seen.has(p) ? `![${alt}](${seen.get(p)})` : whole));
+      }
+    }
+
     if (image_path) {
       try {
         const regResp = await vfetch(`${BASE_URL}/api/whiteboard-asset`, {
@@ -1052,8 +1259,27 @@ server.tool(
 
     const data = await resp.json();
     if (data.success) {
-      const version = data.results?.whiteboard?.version;
-      return { content: [{ type: "text", text: `Whiteboard updated (version ${version}).` }] };
+      const wb = data.results?.whiteboard || {};
+      // #221: a 200 from the app used to mean "I updated my own copy", which is
+      // not what anyone is asking. The board is REMOTE — if the write did not
+      // reach it, nobody in the room sees this, and the bot needs to know that
+      // while it can still say something useful out loud.
+      // Stored, but unreadable — the write worked and the room still sees
+      // nothing. Distinct from a failed write, and the bot should say something
+      // different about it.
+      if (wb.readable === false) {
+        return { content: [{ type: "text", text:
+          `Saved, but the board CANNOT BE DISPLAYED right now — the sync server is failing to serve `
+          + `room state, so the whiteboard is blank for everyone in the call. Do not describe this as `
+          + `if it were on screen: say the board is down and send the content with send_chat.` }] };
+      }
+      if (wb.delivered === false) {
+        return { content: [{ type: "text", text:
+          `The whiteboard did NOT update — ${wb.error || "the shared board could not be reached"}. `
+          + `Nobody in the room can see this content. Do not describe it as if it were on screen: `
+          + `say the board is unavailable and send the content with send_chat instead.` }] };
+      }
+      return { content: [{ type: "text", text: `Whiteboard updated (version ${wb.version}).` }] };
     } else {
       return { content: [{ type: "text", text: `Error: ${data.error || "Failed to update"}` }] };
     }
@@ -1194,7 +1420,7 @@ server.tool(
   "start_call",
   "Start a BRAND-NEW call: creates a fresh Google Meet that anyone with the link can join, sends the bot into it, and opens the user's own browser to it. This is the /call command, and it mirrors the app's \"Call <bot> now\" button. Use it when there is no existing call — to put the bot into a call that ALREADY exists, use join_call instead. If the user is NOT at the machine running the app — driving you from a phone, or from a remote session — pass open_browser: false, and you will get the meeting link back to hand them.",
   {
-    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance."),
+    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance, or the one this session is pinned to."),
     open_browser: z.boolean().optional().describe("Whether to open a browser to the meeting ON THE MACHINE RUNNING THE APP. Default true, which is right when the user is sitting at it. Pass false when they are remote (on their phone, in a remote session): no stray tab opens on the unattended desktop, and the response includes the join link so you can give it to them."),
   },
   async ({ bot_name, open_browser }) => {
@@ -1243,12 +1469,12 @@ server.tool(
   }
 );
 
-// --- start_debug_recording (#209) ---
+// --- start_recording (#209) ---
 server.tool(
-  "start_debug_recording",
-  "DEBUG tool: record the current call's audio to disk, one file per track — the bot's own voice plus each remote participant's audio (Meet sends them separately), with a manifest that names tracks and time-aligns them. Built to diagnose why a bot 'heard nothing': you get the actual audio each mic carried, to compare against captions. Requires an active call. This is NOT the future user-facing recording (that will capture video + all machine sound) — this is per-track audio for debugging. Auto-runs on every call when the recordCallAudio pref / VIBECONF_RECORD_CALL is set; this tool starts it on demand otherwise.",
+  "start_recording",
+  "Record the current call to disk — one audio file per track (the bot's own voice plus each remote participant's audio, which Meet sends separately) PLUS a video track of the bot's own Meet view, with a manifest that names tracks and time-aligns them. Once recording stops, audio and video are automatically muxed into one playable call-recording.mp4. A small visible status window (elapsed time + Stop button) appears while recording is active — that's expected. Requires an active call. Recording can be started (and stopped, via stop_recording) at ANY point during a live call, not just at launch. Auto-runs on every call when the recordCallAudio pref / VIBECONF_RECORD_CALL is set; this tool starts it on demand otherwise.",
   {
-    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance."),
+    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance, or the one this session is pinned to."),
   },
   async ({ bot_name }) => {
     try {
@@ -1265,7 +1491,7 @@ server.tool(
         const notice = data.announced
           ? " I spoke a notice so the room knows it's being recorded — no need to announce it again."
           : "";
-        return { content: [{ type: "text", text: `Recording the call's audio (one file per track).${notice} Saving to:\n${data.dir}` }] };
+        return { content: [{ type: "text", text: `Recording the call (audio, one file per track, + video of the bot's own view).${notice} Saving to:\n${data.dir}` }] };
       }
       const why = data.code === 'not-in-call'
         ? "Not in a call — join or start one first, then record."
@@ -1277,12 +1503,12 @@ server.tool(
   }
 );
 
-// --- stop_debug_recording (#209) ---
+// --- stop_recording (#209) ---
 server.tool(
-  "stop_debug_recording",
-  "Stop the debug call-audio recording started by start_debug_recording (or by the recordCallAudio pref) and finalize the files + manifest. Returns where they were saved. Recording also stops automatically when the bot leaves the call.",
+  "stop_recording",
+  "Stop the call recording started by start_recording (or by the recordCallAudio pref) — finalizes the per-track audio + video files and manifest, then automatically muxes them into one playable call-recording.mp4. Returns where they were saved. Can be called at any point mid-call (not just at the end). Recording also stops automatically when the bot leaves the call.",
   {
-    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance."),
+    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance, or the one this session is pinned to."),
   },
   async ({ bot_name }) => {
     try {
@@ -1529,7 +1755,15 @@ server.tool(
 
     const data = await resp.json();
     if (data.success) {
-      const statusData = await waitForSharingState(roomId, false, { timeoutMs: 7000, intervalMs: 300, stablePolls: 2 });
+      // stablePolls 5 x 300ms = 1.5s, deliberately longer than the app's 1s
+      // Meet-DOM reconcile tick (#68). Two polls (600ms) could sample the window
+      // between our capture stream ending — which sets sharing=false
+      // optimistically — and the first reconcile discovering Meet never actually
+      // stopped presenting. That would confirm "stopped" from the very
+      // optimistic flag this check exists to catch, which is how a bot came to
+      // announce it had stopped while its screen was still up in front of the
+      // room.
+      const statusData = await waitForSharingState(roomId, false, { timeoutMs: 7000, intervalMs: 300, stablePolls: 5 });
       if (statusData.status?.sharing === false) {
         return { content: [{ type: "text", text: "Stopped sharing the whiteboard." }] };
       }
@@ -2315,8 +2549,26 @@ server.tool(
       `Mode: ${status.mode || 'active'} (active=responds freely, passive=only when named, silent=listens but never speaks)`,
       status.localServerUrl ? `Local server: ${status.localServerUrl} (MCP base URL for this app instance)` : null,
       status.localProfile ? `Profile: ${status.localProfile}` : null,
-      `Screen sharing: ${status.sharing ? 'yes (by bot)' : 'no'}`,
+      // Everyone sharing, not just the bot. This used to read "Screen sharing:
+      // no" while somebody was mid-presentation, which is not a gap but a wrong
+      // answer. The people-pane list can hold several at once; the toolbar
+      // (presenterName) names one, latest-wins, and says nothing at all while
+      // the bot itself is presenting.
+      formatScreenShares(status, data),
     ].filter(Boolean));
+
+    // Calendar auto-join (#299): only present when this join was matched from
+    // a Google Calendar event — gives the agent the meeting's actual title/
+    // description/start time up front, instead of walking into the call cold
+    // and having to ask what it's for.
+    const cal = status.calendarEventContext;
+    if (cal && (cal.summary || cal.description)) {
+      const calLines = [`Calendar context: this call was auto-joined from a calendar invite.`];
+      if (cal.summary) calLines.push(`  Title: ${cal.summary}`);
+      if (cal.start) calLines.push(`  Start: ${cal.start}`);
+      if (cal.description) calLines.push(`  Description: ${cal.description}`);
+      sections.push(calLines.join('\n'));
+    }
 
     if (status.whiteboardUrl) {
       sections.push(`Whiteboard URL (just the board, no room UI): ${status.whiteboardUrl} (share this in chat so participants can view the whiteboard)`);
@@ -2397,7 +2649,7 @@ server.tool(
 // --- list_call_instances ---
 server.tool(
   "list_call_instances",
-  "List the Vibeconferencing app instances (profiles) currently running on this machine — each is a separate bot on its own local-server port. Returns profile name, port, bot name, and call status. join_call's bot_name selects the instance by PROFILE name (so `/join-call <code> Alice` drives the 'Alice' profile's app). Use this to see what you can target, or when join_call reports the name is ambiguous/not found.",
+  "List the Vibeconferencing app instances (profiles) currently running on this machine — each is a separate bot on its own local-server port. Returns profile name, port, bot name, and call status. join_call's bot_name selects the instance by PROFILE name (so `/join-call <code> alice2` drives the 'alice2' profile's app, joining under that profile's own display name). Use this to see what you can target, or when join_call reports the name is ambiguous/not found.",
   {},
   async () => {
     const instances = await discoverInstances();
@@ -2413,10 +2665,10 @@ server.tool(
 // --- join_call ---
 server.tool(
   "join_call",
-  "Tell the Vibeconferencing app to join a call — a Google Meet OR a Slack huddle. Use this when the app is running but idle. For Meet, pass the meet code; the app navigates and joins. For Slack, pass the huddle URL (app.slack.com/client/<team>/<channel>); the app switches to the Slack provider and auto-joins the huddle.",
+  "Tell the Vibeconferencing app to join a call — a Google Meet OR a Slack huddle. Use this when the app is running but idle. For Meet, pass the meet code OR the full Meet URL (either is accepted); the app navigates and joins. For Slack, pass the huddle URL (app.slack.com/client/<team>/<channel>); the app switches to the Slack provider and auto-joins the huddle.",
   {
-    room_id: z.string().describe("Meet code (e.g. abc-defg-hij) OR a Slack huddle URL (https://app.slack.com/client/<team>/<channel>)."),
-    bot_name: z.string().optional().describe("Bot display name in Meet. Omit to use the bot name configured for this MCP instance (set via the app's panel or VIBECONF_BOT_NAME env). Only pass this to explicitly override — don't pass a literal default like 'Unnamed bot', that overrides the user's preference."),
+    room_id: z.string().describe("Meet code (e.g. abc-defg-hij), a full Meet URL (https://meet.google.com/abc-defg-hij, query string and all), OR a Slack huddle URL (https://app.slack.com/client/<team>/<channel>)."),
+    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running (see list_call_instances) — the profile keeps its own display name, so `/join-call <code> alice2` joins as whatever alice2 is named. If the name matches no profile and only one instance is running, it is used as a one-off Meet display name instead. Omit to use the sole running instance, or the one this session is pinned to, under its configured name — don't pass a literal default like 'Unnamed bot', that overrides the user's preference."),
     force: z.boolean().optional().describe("Rebuild the session even if the bot is already in this call. Default false, which makes a repeat join a harmless no-op. Only pass true when the live session is genuinely wedged and you mean to drop and rejoin — it tears down the working call. It also skips the same-name collision check."),
   },
   async ({ room_id, bot_name, force }) => {
@@ -2429,7 +2681,7 @@ server.tool(
       const routedNote = routed.instance
         ? ` (profile "${routed.instance.profile}" on port ${routed.instance.port})`
         : "";
-      const joinedBotName = await resolveBotName(bot_name);
+      const joinedBotName = await displayNameForJoin(bot_name, routed);
       // If the lock is set but the bot name changed, check whether the
       // previous call is actually still in progress. The local-server is
       // the source of truth — handles every call-end path (explicit
@@ -2489,6 +2741,18 @@ server.tool(
         }
         return { content: [{ type: "text", text: `Couldn't join the Slack huddle: ${sdata.results?.join?.error || sdata.error || 'unknown error'}.` }] };
       }
+
+      // Meet: accept a pasted URL, not just the bare code (#314).
+      //
+      // The URL→code extraction has always existed, but only in the /join-call
+      // skill — so it covered Claude Code and nothing else. The raw tool is the
+      // front door for every other integrator (Codex, Cursor, hand-rolled
+      // clients), and a URL is what people actually have in their clipboard.
+      // Reassigning room_id here keeps the whole rest of the join (and the room
+      // id echoed back to the agent) on the canonical code.
+      const parsedRoom = parseMeetRoomId(room_id);
+      if (!parsedRoom.ok) return { content: [{ type: "text", text: parsedRoom.error }] };
+      room_id = parsedRoom.roomId;
 
       const resp = await vfetch(`${BASE_URL}/api/sync/${room_id}`, {
         method: "POST",

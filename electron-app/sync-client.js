@@ -8,6 +8,9 @@
 // The room ID is the Google Meet code (e.g., "abc-defg-hij").
 
 class SyncClient {
+  // 5 consecutive failed polls (~5s) before we call the board unreadable.
+  static READ_FAILURE_THRESHOLD = 5;
+
   constructor(config = {}) {
     this.baseUrl = config.baseUrl || 'https://vibeconferencing.com';
     this.botName = config.botName || 'AI Assistant';
@@ -19,6 +22,9 @@ class SyncClient {
     this.isPolling = false;
     this.onBotSpeech = config.onBotSpeech || null; // callback(text)
     this.onWhiteboardUpdate = config.onWhiteboardUpdate || null; // callback(whiteboard)
+    // #221: called when room-state reads start or stop failing.
+    // callback({ healthy, status, consecutive })
+    this.onReadHealthChange = config.onReadHealthChange || null;
     this.lastWhiteboardVersion = null;
     this.postedTranscripts = new Set(); // dedup by text+timestamp
     this.spokenEntryIds = new Set(); // track entries we've already spoken
@@ -34,6 +40,7 @@ class SyncClient {
     }
     if (config.onBotSpeech) this.onBotSpeech = config.onBotSpeech;
     if (config.onWhiteboardUpdate) this.onWhiteboardUpdate = config.onWhiteboardUpdate;
+    if (config.onReadHealthChange) this.onReadHealthChange = config.onReadHealthChange;
   }
 
   // Extract Meet code from a Google Meet URL
@@ -151,9 +158,15 @@ class SyncClient {
       if (!resp.ok) {
         if (resp.status !== 404) {
           console.error('[sync] Poll failed:', resp.status);
+          // #221: this poll reads the SAME room state the whiteboard viewer
+          // reads. When it fails, nobody in the room can see the board — and on
+          // Aug 1 that went on for a whole call while this line logged to a
+          // console nobody was watching. Escalate instead.
+          this._noteReadFailure(resp.status);
         }
         return;
       }
+      this._noteReadSuccess();
 
       const data = await resp.json();
       this.lastPollTime = data.asOf;
@@ -210,6 +223,30 @@ class SyncClient {
   }
 
   // Start polling for bot responses
+  // Reads are healthy until proven otherwise, and it takes a RUN of failures to
+  // count: at a 1s poll a single blip is meaningless, and crying wolf mid-call is
+  // its own harm. 5 consecutive ≈ 5s of genuine unavailability.
+  //
+  // 404 never reaches here — that is "room gone / not signed in", which has its
+  // own handling and is not an outage.
+  _noteReadFailure(status) {
+    this._readFailures = (this._readFailures || 0) + 1;
+    if (this._readFailures < SyncClient.READ_FAILURE_THRESHOLD) return;
+    if (this.readHealthy === false) return;   // already reported; don't repeat
+    this.readHealthy = false;
+    if (this.onReadHealthChange) {
+      this.onReadHealthChange({ healthy: false, status, consecutive: this._readFailures });
+    }
+  }
+
+  _noteReadSuccess() {
+    this._readFailures = 0;
+    if (this.readHealthy === false && this.onReadHealthChange) {
+      this.onReadHealthChange({ healthy: true, status: 200, consecutive: 0 });
+    }
+    this.readHealthy = true;
+  }
+
   startPolling() {
     if (this.isPolling) return;
     this.isPolling = true;

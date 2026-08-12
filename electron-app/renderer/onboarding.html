@@ -28,41 +28,6 @@
       border-radius: 6px; padding: 9px 11px; font-size: 14px; font-family: inherit;
     }
     input:focus { outline: none; border-color: #8ab4f8; }
-    /* Name + "Try another" on one line. The input is width:100%, so it needs a
-       flex parent to share the row; flex:1 lets the button keep its natural size. */
-    .field-row { display: flex; gap: 8px; align-items: stretch; }
-    .field-row input { flex: 1; }
-    /* min-width so the label can swap Spin↔Stop without the button resizing
-       mid-spin, which would make the row twitch on every click. */
-    .field-row .btn { white-space: nowrap; flex: 0 0 auto; min-width: 92px; }
-
-    /* The rolling name.
-       A text input cannot animate its own contents, so the spin plays in an
-       overlay sitting exactly on top of the field. It carries the input's
-       background, which hides the real value underneath; on Stop the overlay
-       goes away and the input shows the name that was last rolled. */
-    .name-wrap { position: relative; flex: 1; display: flex; }
-    .name-wrap input { flex: 1; }
-    .name-roll {
-      position: absolute; inset: 1px; border-radius: 5px;
-      background: #2a2d31; overflow: hidden;
-      display: none; align-items: center; padding: 0 11px;
-      pointer-events: none;   /* the input keeps focus and the caret */
-    }
-    .name-wrap.spinning .name-roll { display: flex; }
-    /* Up from below, a beat on screen, out through the top. */
-    @keyframes name-roll-up {
-      0%   { transform: translateY(90%);  opacity: 0; }
-      25%  { transform: translateY(0);    opacity: 1; }
-      70%  { transform: translateY(0);    opacity: 1; }
-      100% { transform: translateY(-90%); opacity: 0; }
-    }
-    .name-roll span { display: block; animation: name-roll-up var(--roll-ms, 180ms) linear; }
-    /* Motion this fast is exactly what reduced-motion is for: the name still
-       changes, it just stops flying. */
-    @media (prefers-reduced-motion: reduce) {
-      .name-roll span { animation: none; }
-    }
     select {
       width: 100%; background: #2a2d31; color: #e8eaed; border: 1px solid #5f6368;
       border-radius: 6px; padding: 9px 11px; font-size: 14px; font-family: inherit;
@@ -114,13 +79,13 @@
   <main>
     <section data-step="welcome" class="active">
       <h2>Bring your agent into a video call 👋</h2>
-      <p class="sub">In a few quick steps you'll set up permissions, sign in, pick a voice, and name your first bot. Takes about two minutes.</p>
+      <p class="sub">In a few quick steps you'll set up permissions, sign in, and get a voice key ready. Naming the bot, picking its voice, emoji and background all happen live, in a guided call with the bot itself. Takes about two minutes.</p>
       <p class="hint">You can re-run this anytime from the app menu → “Setup Assistant”.</p>
     </section>
 
     <section data-step="permissions">
       <h2>Permissions</h2>
-      <p class="sub">macOS will ask you to confirm each one. Microphone and Camera are required; the other two are recommended.</p>
+      <p class="sub">Both are optional, and you can grant them later. macOS will ask you to confirm each one.</p>
       <div id="permList"></div>
     </section>
 
@@ -149,27 +114,38 @@
     </section>
 
     <section data-step="voice">
-      <h2>Give your bot a good voice</h2>
-      <p class="sub">The default Mac voice is robotic. For a natural voice, paste an ElevenLabs API key (a free tier is plenty to start), then pick a voice below.</p>
+      <h2>Voice key &amp; language</h2>
+      <p class="sub">Built-in voices are adequate; ElevenLabs gives the best experience. Paste a key below (a free tier is plenty to start) — you'll pick the actual voice live, when the bot asks you during its guided setup call.</p>
       <label for="elKey">ElevenLabs API key <span style="color:#9aa0a6">(optional)</span></label>
       <input type="password" id="elKey" placeholder="sk_..." autocomplete="off" spellcheck="false" />
+      <!-- #273: an empty field is auto-filled the moment this step is shown
+           (see loadVoiceGift in onboarding.js) — this only covers the case
+           that still needs a click, replacing a key already in the field.
+           Hidden by default. -->
+      <div id="elKeyGiftSection" style="display:none;margin-top:6px">
+        <div class="hint" id="elKeyGiftDesc" style="color:#81c995">You've been gifted a voice key.</div>
+        <button type="button" id="elKeyGiftBtn" style="margin-top:4px;background:#8ab4f8;color:#202124;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer">Use it</button>
+      </div>
+      <div class="hint" id="elKeyGiftedNotice" style="display:none;color:#81c995">✓ This is a gifted key — a voice with zero setup.</div>
       <div class="hint">Don't have one? <a href="#" id="getKeyLink">Get a free key at elevenlabs.io →</a></div>
-      <label for="voiceSelect">Voice <span style="color:#9aa0a6">(plays a sample when you pick one)</span></label>
-      <select id="voiceSelect"><option value="mac:Daniel">Daniel (default)</option></select>
-      <!-- Why no ElevenLabs voices showed up, when the API told us. The common
-           surprise is a valid key that lacks the `voices_read` scope. -->
-      <div id="elVoiceError" style="display:none;font-size:11px;color:#fdd663;margin-top:4px;line-height:1.4"></div>
-      <div class="hint">Prefer no account? You can download a free premium macOS voice in System&nbsp;Settings → Accessibility → Spoken&nbsp;Content, then pick it here.</div>
-      <div class="hint">Or run <a href="#" id="voiceboxLink">Voicebox</a>, a free open-source local voice engine. Once it's running its voices show up in the list too.</div>
+      <!-- The single most common way this step goes wrong: a key created with
+           the wrong permissions saves fine and looks valid, but the bot can't
+           speak (missing Text to Speech access) or has nothing to pick from
+           (missing Voices read access) — see onboarding/elevenlabs-key-setup.html
+           in the vibeconferencing website repo. -->
+      <div class="hint">Getting an error, or no voices to pick from? <a href="#" id="keyPermissionsLink">See which permissions the key needs →</a></div>
 
-      <!-- The other half of the voice step: the language the bot LISTENS in.
+      <!-- The other half of the step: the language the bot LISTENS in.
            The bot reads the room through Meet's captions, so this decides
            whether it understands anything — a mismatch means it hears nonsense
            and answers the nonsense rather than falling silent. Worth asking here
            rather than leaving to be discovered mid-call. -->
       <label for="captionLanguage" style="margin-top:14px">Language spoken in calls <span style="color:#9aa0a6">(what the bot listens for)</span></label>
+      <!-- No "don't change it" option here (unlike the same picker in Settings):
+           an unset language is what caused real problems in the field — leaving
+           it up to whatever Meet happened to default to. The wizard is a
+           one-time choice, so it forces a real pick, defaulting to English. -->
       <select id="captionLanguage">
-        <option value="">Don't change it</option>
         <option value="en-US">English</option>
         <option value="en-GB">English (UK)</option>
         <option value="de-DE">German</option>
@@ -193,44 +169,53 @@
       <div class="hint">Set this to the language people actually speak in your calls. The bot applies it to Meet's captions each time it joins.</div>
     </section>
 
-    <section data-step="bot">
-      <h2>Name your bot</h2>
-      <p class="sub">What should your bot be called, and how should its on-camera face look?</p>
-      <label for="botName">Bot name</label>
-      <div class="field-row">
-        <div class="name-wrap" id="botNameWrap">
-          <input type="text" id="botName" placeholder="Unnamed bot" />
-          <div class="name-roll" id="botNameRoll" aria-hidden="true"></div>
-        </div>
-        <button type="button" class="btn ghost" id="botNameShuffle" title="Spin for a name">Spin</button>
-      </div>
-      <label for="emojiSet" style="margin-top:14px">Emoji style <span style="color:#9aa0a6">(the bot's face on the virtual camera)</span></label>
-      <select id="emojiSet">
-        <option value="fluent3d">Fluent 3D — glossy (default)</option>
-        <option value="twemoji">Twemoji — flat</option>
-        <option value="openmoji">OpenMoji — outlined</option>
-        <option value="noto">Noto — Google</option>
-        <option value="native">Native — your OS</option>
-      </select>
-    </section>
-
+    <!-- #231: the QUESTION comes first, and the Claude-specific setup is one
+         possible answer to it. This step used to assume Claude Code and offer
+         "something else" as an afterthought below the install button, which is
+         backwards: choosing a different agent should remove the Claude setup
+         entirely, not leave it on screen to be ignored. -->
     <section data-step="claude">
-      <h2>Install Claude Code</h2>
-      <p class="sub">Your bot is driven by <b>Claude Code</b> — the <code>claude</code> command. It's a self-contained install (no Node.js needed) and uses your existing Claude subscription.</p>
-      <div id="claudeStatus" class="card">Checking…</div>
-      <div id="claudeInstallRow" style="margin-top:12px; display:none">
-        <button class="btn cta" id="claudeInstallBtn">Install Claude Code</button>
-        <div class="hint">Runs the official installer from claude.ai in a Terminal — <a href="#" id="claudeCopyLink">or copy the command</a>.</div>
-      </div>
-      <div id="claudeVerifyRow" style="margin-top:12px; display:none">
-        <button class="btn cta" id="claudeVerifyBtn">Sign in &amp; verify</button>
-        <div class="hint">Opens Claude Code so you can sign in with your subscription. This turns green automatically once it's ready.</div>
+      <h2>What drives your bot?</h2>
+      <p class="sub">Your bot is a face and a voice in the call. An AI agent supplies the thinking. Pick the one you'll use on this machine.</p>
+      <label for="agentBackend" style="display:block; margin-bottom:6px">Agent</label>
+      <select id="agentBackend" style="width:100%">
+        <option value="claude">Claude Code (recommended)</option>
+        <option value="codex">OpenAI Codex (experimental)</option>
+        <option value="other">Other MCP client (LM Studio, custom)</option>
+      </select>
+      <div class="hint" id="agentBackendHint" style="margin-top:8px"></div>
+
+      <!-- Everything below is Claude Code specific, and is hidden outright for
+           any other backend. -->
+      <div id="claudeSetup">
+        <p class="sub" style="margin-top:16px">Claude Code is the <code>claude</code> command. It's a self-contained install (no Node.js needed) that uses your existing Claude subscription.</p>
+        <div id="claudeStatus" class="card">Checking…</div>
+        <div id="claudeInstallRow" style="margin-top:12px; display:none">
+          <button class="btn cta" id="claudeInstallBtn">Install Claude Code</button>
+          <div class="hint">Runs the official installer from claude.ai in a Terminal — <a href="#" id="claudeCopyLink">or copy the command</a>.</div>
+        </div>
+        <div id="claudeVerifyRow" style="margin-top:12px; display:none">
+          <button class="btn cta" id="claudeVerifyBtn">Sign in &amp; verify</button>
+          <div class="hint">Opens Claude Code so you can sign in with your subscription. This turns green automatically once it's ready.</div>
+        </div>
       </div>
     </section>
 
     <section data-step="done">
       <h2>You're all set 🎉</h2>
-      <p class="sub">Start a Google Meet in Chrome or Brave, then in Claude Code type:</p>
+
+      <!-- The bot's name, voice, emoji and background are all still unset at
+           this point — this call is where that happens, live, with the bot
+           able to confirm things a dialog box can't (e.g. whether Google's
+           transcript actually hears its name back cleanly). Optional: "Finish"
+           alone still works, and a random name/default look are used until
+           this call runs. -->
+      <p class="sub">Ready to name your bot, and pick its voice, emoji, and background — live, with the bot itself?</p>
+      <button type="button" class="btn cta" id="runSetupCallBtn">Start a guided setup call</button>
+
+      <!-- A tip for advanced users, not a step of the flow itself — most people
+           finish via the guided call above, not by typing a slash command. -->
+      <p class="sub" style="margin-top:24px">Prefer to skip the call? Start a Google Meet in Chrome or Brave, then in Claude Code type:</p>
       <div class="card"><code style="font-size:15px">/join-call</code></div>
       <p class="hint">Your bot will join and ask to be admitted. Click Admit, then just talk.</p>
     </section>

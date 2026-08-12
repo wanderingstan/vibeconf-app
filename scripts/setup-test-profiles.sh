@@ -1,17 +1,21 @@
 #!/bin/zsh
 # setup-test-profiles.sh — one-time setup of the SIGNED-IN test profiles (#282).
-# Guest profiles (test-meet-guest-*) need no setup — the fleet creates and reaps
-# them. But the Google (test-meet-google-*) and Slack (test-slack-*) profiles
-# need a human to sign in ONCE; their login then persists in the profile's single
-# `session` partition across runs.
+# The Google (test-meet-google-*) and Slack (test-slack-*) profiles need a human
+# to sign in ONCE; their login persists in the profile's `session` partition. The
+# guest profiles (test-meet-guest-*) need no GOOGLE login (that's the point — they
+# test the guest Meet-join path) — BUT one of them now needs a one-time
+# vibeconferencing.com (OUR server) login so the nightly can mint a fresh room per
+# run instead of falling back to the fixed, publicly-joinable hard-coded room.
+# That login is the APP-USER session, separate from the bot's Meet login (the
+# OAuth opens in the system browser), so the bot still joins Meet as a guest.
 #
-# Launches each signed-in profile (pinning its Google account via
-# --meet-account-email) and prints a checklist of which account to sign into.
+# Launches each profile and prints a checklist of what to sign into.
 # See docs/testing-profiles.md for the full picture.
 #
-#   scripts/setup-test-profiles.sh            # both classes, from SOURCE (default)
+#   scripts/setup-test-profiles.sh            # everything, from SOURCE (default)
 #   scripts/setup-test-profiles.sh --google   # just the test-meet-google-* profiles
 #   scripts/setup-test-profiles.sh --slack     # just the test-slack-* profiles
+#   scripts/setup-test-profiles.sh --vibeconf  # just the vibeconferencing.com login (room minting)
 #   scripts/setup-test-profiles.sh --installed # use the installed /Applications app
 #   scripts/setup-test-profiles.sh --built     # use the freshly-built electron-app/dist app
 #
@@ -30,18 +34,19 @@ set -e
 REPO="${VIBECONF_REPO:-${0:A:h:h}}"
 ELECTRON="$REPO/electron-app"
 
-DO_GOOGLE=0; DO_SLACK=0; MODE="source"
+DO_GOOGLE=0; DO_SLACK=0; DO_VIBECONF=0; MODE="source"
 for a in "$@"; do
   case "$a" in
     --google)    DO_GOOGLE=1 ;;
     --slack)     DO_SLACK=1 ;;
+    --vibeconf)  DO_VIBECONF=1 ;;
     --built)     MODE="built" ;;
     --installed|--dmg) MODE="installed" ;;
-    *) echo "usage: $0 [--google] [--slack] [--installed|--built]"; exit 1 ;;
+    *) echo "usage: $0 [--google] [--slack] [--vibeconf] [--installed|--built]"; exit 1 ;;
   esac
 done
-# Default: set up both classes.
-(( DO_GOOGLE || DO_SLACK )) || { DO_GOOGLE=1; DO_SLACK=1; }
+# Default: set up everything.
+(( DO_GOOGLE || DO_SLACK || DO_VIBECONF )) || { DO_GOOGLE=1; DO_SLACK=1; DO_VIBECONF=1; }
 
 # Resolve the packaged app only when not running from source.
 APP=""
@@ -121,6 +126,23 @@ launch_slack() {
   STEPS+=("$profile: sign into Slack as $acct in the embedded view")
 }
 
+# vibeconferencing.com (OUR server) login — the APP-USER session, separate from
+# the bot's Google/Meet login. It enables /api/meet/create so the nightly mints a
+# FRESH room per run instead of falling back to the fixed, publicly-joinable
+# hard-coded room. Crucially the OAuth opens in the SYSTEM BROWSER
+# (shell.openExternal in openGoogleLogin), so it does NOT put a Google session in
+# the bot's Meet partition — the bot still joins Meet as a guest. The resulting
+# vc_session token persists in the profile AND donates to the shared app token
+# (syncSharedLoginCookie), so the other test profiles pick it up too — one login
+# is enough. We sign in the guest minting profile (test-meet-guest-1), the one
+# join-route's /call mint runs on.
+launch_vibeconf() {
+  local profile="$1" port="$2"
+  echo "  • $profile  → sign into vibeconferencing.com (our server)   (port $port)"
+  launch "$profile" "$port"
+  STEPS+=("$profile: click \"Sign in\" in the panel to log into vibeconferencing.com; finish the Google login in the BROWSER window that opens. This is the APP-USER login on our server — NOT the bot's Meet login, so the bot stays a Meet guest. Enables per-run room minting (kills the hard-coded-room fallback).")
+}
+
 echo "▶ Setting up signed-in test profiles (mode: $MODE${APP:+ — $APP})"
 [[ "$MODE" == "source" ]] && echo "  (running the branch code via pnpm dev — logins land in the new 'session' partition)"
 echo
@@ -136,6 +158,12 @@ if (( DO_SLACK )); then
   echo "Slack profiles:"
   launch_slack test-slack-1 7903 "$SLACKTEST1_ACCOUNT"
   launch_slack test-slack-2 7904 "$SLACKTEST2_ACCOUNT"
+  echo
+fi
+
+if (( DO_VIBECONF )); then
+  echo "vibeconferencing.com login (enables per-run Meet room minting → no more hard-coded-room fallback):"
+  launch_vibeconf test-meet-guest-1 7905
   echo
 fi
 

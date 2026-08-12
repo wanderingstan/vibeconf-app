@@ -112,15 +112,15 @@ function meetZoomForWidth(deviceWidth, targetCss = MEET_TARGET_CSS_WIDTH) {
 // changes: the Meet thumbnail when docked, a "popped out" placeholder when Meet
 // has floated into its own window. meetInOwnWindow is true only for 'popped'.
 function computeLayout(state, contentSize, opts = {}) {
-  const panelWidth = opts.panelWidth || 380;
+  const windowWidth = opts.windowWidth || 380;
   const height = Math.max(0, (contentSize && contentSize.height) || 0);
 
   // Same geometry for both states: panel on top, a 16:9 region at the bottom.
-  const { zoom, clamped } = meetZoomForWidth(panelWidth);
-  const regionHeight = Math.round(panelWidth * 9 / 16);
+  const { zoom, clamped } = meetZoomForWidth(windowWidth);
+  const regionHeight = Math.round(windowWidth * 9 / 16);
   const panelHeight = Math.max(0, height - regionHeight);
-  const region = { x: 0, y: panelHeight, width: panelWidth, height: regionHeight };
-  const panelBounds = { x: 0, y: 0, width: panelWidth, height: panelHeight };
+  const region = { x: 0, y: panelHeight, width: windowWidth, height: regionHeight };
+  const panelBounds = { x: 0, y: 0, width: windowWidth, height: panelHeight };
 
   // Out of a call there is nothing for the bot's view to show — it was just a
   // permanent "This is the bot's view" placard eating a 16:9 slab of the window.
@@ -129,7 +129,7 @@ function computeLayout(state, contentSize, opts = {}) {
   // still-attached view keeps painting at its old bounds).
   if (!showRegion(opts)) {
     return {
-      panelBounds: { x: 0, y: 0, width: panelWidth, height },
+      panelBounds: { x: 0, y: 0, width: windowWidth, height },
       meetBounds: null,
       placeholderBounds: null,
       meetZoom: state === 'popped' ? POPPED_ZOOM : (state === 'hidden' ? HIDDEN_ZOOM : zoom),
@@ -147,7 +147,7 @@ function computeLayout(state, contentSize, opts = {}) {
     // out of a call. No placeholder either: a "popped out" placard would be a
     // lie, since nothing popped out and there is nothing to go and look at.
     return {
-      panelBounds: { x: 0, y: 0, width: panelWidth, height },
+      panelBounds: { x: 0, y: 0, width: windowWidth, height },
       meetBounds: null,
       placeholderBounds: null,
       meetZoom: HIDDEN_ZOOM,
@@ -164,7 +164,7 @@ function computeLayout(state, contentSize, opts = {}) {
     // placard, which meant popping the view out cost you half the panel window to
     // be told, in words, what the button you just pressed had already done.
     return {
-      panelBounds: { x: 0, y: 0, width: panelWidth, height },
+      panelBounds: { x: 0, y: 0, width: windowWidth, height },
       meetBounds: null,
       placeholderBounds: null,
       meetZoom: POPPED_ZOOM, // applied in the popped window
@@ -188,7 +188,7 @@ function computeLayout(state, contentSize, opts = {}) {
 // Height of the bot's-view region (the 16:9 slab under the panel). Exported so
 // main.js can size the window to "panel content + region" without re-deriving
 // the ratio. Zero when the region is hidden — see computeLayout.
-function regionHeightFor(panelWidth = 380, state) {
+function regionHeightFor(windowWidth = 380, state) {
   // 'hidden' has no region at all — Meet is in a window nobody sees, so the
   // column must not reserve a 16:9 slab for it.
   //
@@ -200,14 +200,14 @@ function regionHeightFor(panelWidth = 380, state) {
   //
   // Only 'thumbnail' actually puts something in the column.
   if (state === 'hidden' || state === 'popped') return 0;
-  return Math.round(panelWidth * 9 / 16);
+  return Math.round(windowWidth * 9 / 16);
 }
 
-// The MAIN window is ALWAYS a narrow column now (panel + optional Meet thumbnail),
-// so its content width is the panel width in both states. Kept as a function so
-// main.js has one place to ask, and in case a future state wants a different shape.
+// The MAIN window is ALWAYS a narrow column (panel + optional Meet thumbnail), so
+// its content width is the same in every state. Kept as a function so main.js has
+// one place to ask, and in case a future state wants a different shape.
 function windowWidthFor(state, opts = {}) {
-  return (opts.panelWidth || 380); // always a column
+  return (opts.windowWidth || 380); // always a column
 }
 
 module.exports = {

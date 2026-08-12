@@ -198,8 +198,17 @@ test('the tool is whitelisted and documented', () => {
 test('the skill teaches the phase, and the installed copy will be replaced', () => {
   assert.match(skill, /AFTER-CALL WORK/);
   assert.match(skill, /end_session/);
-  // The installed skill is app-owned and only reinstalls when the version changes.
-  assert.match(main, /const SKILL_VERSION = '36'/);
+  // The installed skill is app-owned and only reinstalls when the version
+  // changes, so a skill edit that forgets the bump never reaches anyone.
+  //
+  // Asserts a FLOOR rather than a literal. Pinning the exact number meant every
+  // skill edit also edited this line, and two PRs already collided by both
+  // bumping 32 -> 33 — which merged cleanly and silently dropped one of the two
+  // changes. A floor still catches a decrement and still fails if someone
+  // removes the constant, without inviting a merge conflict per edit.
+  const v = main.match(/const SKILL_VERSION = '(\d+)'/);
+  assert.ok(v, 'SKILL_VERSION must exist — it is what makes an updated skill install');
+  assert.ok(Number(v[1]) >= 37, `SKILL_VERSION went backwards: ${v[1]}`);
 });
 
 test('the bot template says what after-call work is for', () => {

@@ -48,7 +48,11 @@ set -e
 REPO="${VIBECONF_REPO:-${0:A:h:h}}"
 ELECTRON="$REPO/electron-app"
 NAMES=(Alice Jimmy Cosmo Dizzy)           # display names by index (Alice=-1, Jimmy=-2)
-BASE_PORT=7901
+# Base local-server port for the fleet (bots use BASE_PORT, BASE_PORT+1, …).
+# Override with VIBECONF_BASE_PORT to run a fleet that WON'T collide with the
+# on-push CI smoke or the nightly (both use the 7901 default) — e.g. the long
+# name-transcription audit runs on 7911/7912.
+BASE_PORT="${VIBECONF_BASE_PORT:-7901}"
 
 # Flag parsing (position-independent): a numeric arg = count; --kill / --dmg /
 # --built flags.
@@ -60,6 +64,7 @@ SLACK=0
 SLACK_URL=""
 GOOGLE=0
 DEVTOOLS=0
+RECORD_CALLS=0           # --record-calls: force call audio+video recording on for every spawned bot
 WITH_AGENTS=0            # --with-agents: attach a real Claude agent per bot (#267 item 5)
 FUZZ_ROOM=""            # --room=CODE   passed to spawn-agents.mjs
 FUZZ_MISSION=""         # --mission=KEY passed to spawn-agents.mjs
@@ -72,11 +77,12 @@ for a in "$@"; do
     --slack-url=*) SLACK_URL="${a#--slack-url=}" ;;
     --google)      GOOGLE=1 ;;
     --devtools)    DEVTOOLS=1 ;;
+    --record-calls) RECORD_CALLS=1 ;;
     --with-agents) WITH_AGENTS=1 ;;
     --room=*)      FUZZ_ROOM="${a#--room=}" ;;
     --mission=*)   FUZZ_MISSION="${a#--mission=}" ;;
     <->)           N="$a" ;;   # zsh: <-> matches an integer
-    *) echo "usage: $0 [count] [--dmg|--built] [--slack --slack-url=URL] [--google] [--devtools] [--with-agents --room=CODE --mission=KEY] [--kill]"; exit 1 ;;
+    *) echo "usage: $0 [count] [--dmg|--built] [--slack --slack-url=URL] [--google] [--devtools] [--record-calls] [--with-agents --room=CODE --mission=KEY] [--kill]"; exit 1 ;;
   esac
 done
 if (( N < 1 || N > 4 )); then echo "count must be 1–4"; exit 1; fi
@@ -216,6 +222,19 @@ if (( SLACK )); then
 fi
 # Open detached DevTools on each spawned app (handy for live DOM debugging).
 (( DEVTOOLS )) && EXTRA_ARGS="$EXTRA_ARGS --devtools=true"
+# Force call audio+video recording on for every spawned bot (see main.js's
+# --record-calls=true flag / VIBECONF_RECORD_CALL) — independent of the
+# --record-calls flag below, this doesn't decide whether a bot-view window
+# pops open (that's still VIBECONF_RECORD/VIBECONF_BOT_VIEW, below).
+(( RECORD_CALLS )) && EXTRA_ARGS="$EXTRA_ARGS --record-calls=true"
+
+# When RECORDING (nightly sets VIBECONF_RECORD=1) — or an explicit VIBECONF_BOT_VIEW
+# — POP each bot's-view window OUT at launch (#275), so the screencapture films the
+# bots' actual call views instead of the desktop. Off by default: no reason to open
+# windows for a non-recorded run. The window title is "<name> — Bot's view".
+if [[ "${VIBECONF_RECORD:-0}" == "1" || -n "${VIBECONF_BOT_VIEW:-}" ]]; then
+  EXTRA_ARGS="$EXTRA_ARGS --bot-view=${VIBECONF_BOT_VIEW:-popped}"
+fi
 
 # Packaged-app modes exercise the real artifact (asar, build.files) — no
 # source-vs-package fidelity gap. --dmg = the INSTALLED app (/Applications); the
@@ -380,6 +399,16 @@ for i in $(seq 1 $N); do
     sleep 1
   done
 done
+
+# NOTE: the --bot-view=popped flag above already opens each bot's-view window so a
+# screen recording films it. We deliberately do NOT reposition/tile those windows.
+# That needed Accessibility permission for System Events and, UN-granted in the
+# headless launchd context, it didn't fail fast — it intermittently BLOCKED, hanging
+# the fleet spawn and wedging the whole nightly until the 30-min watchdog
+# (2026-08-08: 5 of 6 lanes got past it, the 6th hung → silent night). Not worth it:
+# bot-own-call-recording will supersede in-call screen capture anyway, and screen
+# recording's durable value is OUT-OF-call behavior, which needs no window juggling.
+# Windows just open at their default (possibly overlapping) positions.
 
 echo ""
 echo "✓ Fleet up. Drive it with:"

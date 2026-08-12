@@ -49,6 +49,39 @@ function briefToolInput(input) {
   return '';
 }
 
+// The model that authored an assistant entry, or null. '<synthetic>' entries
+// (Claude Code's own summarization/compaction turns) aren't the bot replying,
+// so they don't count as a model observation.
+function entryModel(entry) {
+  const model = entry && entry.type === 'assistant' && entry.message && entry.message.model;
+  return (model && model !== '<synthetic>') ? model : null;
+}
+
+// Token usage off an assistant entry, or null. `input` is the FULL prompt the
+// model processed for that turn — fresh tokens plus cache reads plus cache
+// writes — i.e. the per-round context size. This is the ground truth for "how
+// big is the prompt we hand the agent each round" (#345): the API reports it
+// per turn and the transcript already carries it; nothing else in the app can
+// see it. One API turn can span several JSONL entries (one per content block)
+// sharing the same message id and usage, so callers dedupe on `msgId`.
+function entryUsage(entry) {
+  if (!entry || entry.type !== 'assistant' || !entry.message) return null;
+  if (entry.message.model === '<synthetic>') return null;
+  const u = entry.message.usage;
+  if (!u) return null;
+  const fresh = u.input_tokens || 0;
+  const cacheRead = u.cache_read_input_tokens || 0;
+  const cacheCreate = u.cache_creation_input_tokens || 0;
+  return {
+    msgId: entry.message.id || null,
+    input: fresh + cacheRead + cacheCreate,
+    fresh,
+    cacheRead,
+    cacheCreate,
+    output: u.output_tokens || 0,
+  };
+}
+
 // One transcript JSONL entry -> 0..N display lines. An assistant turn can carry
 // both reasoning text and tool calls, so it may yield several lines.
 function formatEntry(entry) {
@@ -61,6 +94,25 @@ function formatEntry(entry) {
         for (const block of content) {
           if (block.type === 'text' && block.text && block.text.trim()) {
             out.push('🗣 ' + oneLine(block.text));
+          } else if (block.type === 'thinking') {
+            // Reasoning, when we are given any.
+            //
+            // MEASURED 2026-08-04, CLI 2.1.219: we are not. The block arrives
+            // with `signature` set and `thinking` an EMPTY STRING — 1,159 of them
+            // in one session's transcript, zero characters between them. Same
+            // through the stream transport, with or without
+            // --include-partial-messages (thinking_delta is empty too), and
+            // --thinking-display only accepts summarized|omitted, neither of
+            // which populates it.
+            //
+            // So this is plumbing for a payload the CLI currently withholds. Kept
+            // because it is three lines, it serves BOTH transports through the one
+            // normaliser, and it starts working by itself if that ever changes.
+            // The empty guard is what stops it rendering a column of blank 💭 in
+            // the meantime.
+            if (block.thinking && block.thinking.trim()) {
+              out.push('💭 ' + oneLine(block.thinking));
+            }
           } else if (block.type === 'tool_use') {
             const b = briefToolInput(block.input);
             out.push('🔧 ' + prettyToolName(block.name) + (b ? ': ' + b : ''));
@@ -83,7 +135,7 @@ function formatEntry(entry) {
 }
 
 class TranscriptTailer {
-  constructor({ onLines } = {}) {
+  constructor({ onLines, onModel, onUsage } = {}) {
     this.path = null;
     this.sessionId = null;
     this.offset = 0;
@@ -91,10 +143,16 @@ class TranscriptTailer {
     this.lines = [];
     this.watcher = null;
     this.poll = null;
+    this.model = null;
+    this._usageMsgId = null;
     this.onLines = onLines || (() => {});
+    this.onModel = onModel || (() => {});
+    this.onUsage = onUsage || (() => {});
   }
 
   // Point the tailer at a (new) transcript. Idempotent for the same path.
+  // Model tracking survives a rebind (a fresh transcript from the same driving
+  // session is still the same model) — only reset when the model itself changes.
   bind(transcriptPath, sessionId) {
     if (!transcriptPath) return;
     if (transcriptPath === this.path) { this.sessionId = sessionId; return; }
@@ -131,6 +189,8 @@ class TranscriptTailer {
         if (!line.trim()) continue;
         let entry; try { entry = JSON.parse(line); } catch { continue; }
         for (const l of formatEntry(entry)) seeded.push(l);
+        const model = entryModel(entry);
+        if (model && model !== this.model) { this.model = model; this.onModel(model); }
       }
       this.lines = seeded.slice(-MAX_LINES);
       if (this.lines.length) this.onLines(this.getLines());
@@ -156,6 +216,12 @@ class TranscriptTailer {
         if (!line.trim()) continue;
         let entry; try { entry = JSON.parse(line); } catch { continue; }
         for (const l of formatEntry(entry)) { this.lines.push(l); changed = true; }
+        const model = entryModel(entry);
+        if (model && model !== this.model) { this.model = model; this.onModel(model); }
+        // Live entries only (not _seed): seeding replays history and would spam
+        // one stale 📊 line per past turn on every mid-session attach.
+        const usage = entryUsage(entry);
+        if (usage && usage.msgId !== this._usageMsgId) { this._usageMsgId = usage.msgId; this.onUsage(usage); }
       }
       if (this.lines.length > MAX_LINES) this.lines = this.lines.slice(-MAX_LINES);
       if (changed) this.onLines(this.getLines());
@@ -170,4 +236,4 @@ class TranscriptTailer {
   }
 }
 
-module.exports = { TranscriptTailer, formatEntry, MAX_LINES };
+module.exports = { TranscriptTailer, formatEntry, entryModel, entryUsage, MAX_LINES };

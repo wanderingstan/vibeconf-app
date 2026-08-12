@@ -18,13 +18,66 @@ const { resolveVoice } = require('./voice-status.js');
 const { isInCall, isFinished, isCallComplete } = require('./call-phase.js');
 const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEventsFor } = require('./share-surface.js');
 const { CallRecordingSession } = require('./call-recorder.js');
+const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWindow } = require('./call-recording-window.js');
+const { mergeCallMedia } = require('./call-media-merge.js');
+const { evictStaleEventIds, selectEventToJoin, selectUpcomingMatches, matchesCalendarEvent, isEventUpcoming, msUntilStart, eventDedupeKey, resolveMeetUrl: resolveCalendarMeetUrl } = require('./calendar-auto-join.js');
+const { createMergeProgressWindow, closeMergeProgressWindow } = require('./call-recording-merge-window.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
+const {
+  codexConfigPath,
+  readCodexConfigSafe,
+  installCodexMcpConfig,
+  uninstallCodexMcpConfig,
+  currentCodexMcpServerPath,
+} = require('./codex-config.js');
 // The call-provider contract. main.js is the consumer side: it subscribes to
 // CALL_EVENTS (provider → app) and issues CALL_COMMANDS (app → provider) by
 // constant rather than raw channel string, so the contract is shared on both
 // sides of the IPC wire (provider impl in google-meet-provider.js). Values are
 // byte-identical to the prior literals — same wire.
 const { CALL_EVENTS, CALL_COMMANDS } = require('./call-provider.js');
+
+// How Claude Code should launch our stdio MCP server.
+//
+// It used to be the bare string 'node', which silently requires the user to
+// have Node on PATH. macOS ships none, and Claude Code's own native installer
+// (~/.local/share/claude/...) doesn't bring one — so a non-developer who does
+// everything right gets `spawn node ENOENT` and a bot that never appears.
+// This never showed up in our own testing because every machine we test on has
+// Homebrew node, and that's machine-wide: a fresh macOS *account* still sees it.
+//
+// Electron already contains a Node runtime, so use ours. ELECTRON_RUN_AS_NODE
+// makes the app binary behave exactly like `node <script>`. It costs nothing
+// (already on disk), pins a known-good version, and adds no new fragility —
+// args[0] already points inside the app bundle, so the config was always tied
+// to the app's existence.
+function mcpNodeLauncher() {
+  return {
+    command: process.execPath,
+    env: { ELECTRON_RUN_AS_NODE: '1' },
+  };
+}
+
+function bundledMcpServerRoot() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'mcp-server')
+    : path.join(__dirname, '..', 'mcp-server');
+}
+
+function bundledMcpServerPath() {
+  return path.join(bundledMcpServerRoot(), 'server.js');
+}
+
+function mcpServerDepsPresent(mcpServerRoot = bundledMcpServerRoot()) {
+  return app.isPackaged || (
+    fs.existsSync(path.join(mcpServerRoot, 'node_modules', '@modelcontextprotocol', 'sdk')) &&
+    fs.existsSync(path.join(mcpServerRoot, 'node_modules', 'zod')));
+}
+
+function runningFromGitWorktree() {
+  if (app.isPackaged) return false;
+  try { return fs.statSync(path.join(__dirname, '..', '.git')).isFile(); } catch { return false; }
+}
 
 // Let the shared board play sound unprompted. Now that the whiteboard window's
 // audio is captured into the screen share, a board pointed at a page with a
@@ -196,8 +249,16 @@ function captionLanguageAlreadyApplied(room, language) {
 // result was a panel showing a boot-time snapshot forever, and settings that
 // looked like they had failed to save when they had not (#190, #143).
 function notifyConfigChanged(key, value) {
-  if (panelView && !panelView.webContents.isDestroyed()) {
-    panelView.webContents.send('extension-message', { action: 'config-updated', payload: { key, value } });
+  broadcastToRenderers('extension-message', { action: 'config-updated', payload: { key, value } });
+  // #231: switching backends must take effect now, not at the next poll. Going
+  // to codex/other has to clear a stale "signed out" banner immediately, and
+  // coming back to claude has to re-check rather than sit on the `null` we
+  // parked while it wasn't our business.
+  if (key === 'agentBackend') {
+    try { refreshClaudeAuth().catch(() => {}); } catch { /* not ready yet */ }
+    if (value === 'codex' && isDefaultInstance && store?.get('codexIntegrationRemoved') !== true) {
+      try { ensureCodexIntegration(); } catch (err) { console.warn('[electron] Codex integration install failed:', err.message); }
+    }
   }
 }
 
@@ -212,9 +273,43 @@ function prefValue(key) {
 // at a time — the bot is only ever in one.
 let activeRecording = null;
 
-// Spoken when an explicit start_debug_recording begins, so participants are told
-// the call is being recorded (consent). Short on purpose.
-const RECORDING_NOTICE = "Just so everyone knows — I'm now recording this call's audio for debugging.";
+// The video half (#209-video): a small visible control window (see
+// call-recording-window.js) that answers its OWN session's getDisplayMedia()
+// with meetView's live frame and streams the resulting MediaRecorder chunks
+// back here as one more 'video' track on activeRecording. null whenever video
+// capture isn't running — startCallRecording() always tries to create this
+// alongside activeRecording, but it degrades to audio-only on any failure
+// (no ffmpeg, no display-media support, window creation error, etc.) without
+// affecting the audio recording at all.
+let activeRecordingWindow = null;
+
+// The whiteboard-share side-capture (extension, see call-recording-window.js's
+// createShareCaptureWindow): a full-resolution recording of the bot's own
+// whiteboard-window share content, independent of and in addition to the
+// video track above (which only shows Meet's lower-res call-layout render of
+// it). Only ever running while BOTH a call recording is active AND a
+// whiteboard share is live — see maybeStartShareCapture()/
+// stopShareCaptureIfActive() below, hooked into onShareWhiteboard's
+// display-media handler and onStopSharing/stopCallRecording respectively.
+// Lands at <dir>/share.webm, kept separate from video.webm rather than muxed
+// in as a second video track (multi-video-track containers aren't reliably
+// playable across players/tools).
+let activeShareCaptureWindow = null;
+
+// The AbortController for whichever ffmpeg merge is currently running inside
+// stopCallRecording() (see call-recording-merge-window.js's "Preparing
+// recording…" window). null whenever no merge is in flight — including
+// between the main and share merges, briefly, and always outside
+// stopCallRecording() entirely. The 'merge-cancel-requested' IPC handler
+// (setupIPC) just calls .abort() on whatever this currently points to, so a
+// stray/late cancel click with nothing running is a harmless no-op.
+let activeMergeAbortController = null;
+
+// Spoken when an explicit start_recording begins, so participants are told
+// the call is being recorded (consent). Short on purpose. Just "recording this
+// call" — not "audio for debugging": that description is stale now that this
+// captures video too and is a real feature, not only a debug tool.
+const RECORDING_NOTICE = "Just so everyone knows — I'm now recording this call.";
 
 function recordCallEnabled() {
   // Env wins so the test fleet can force it on without touching config.
@@ -222,15 +317,43 @@ function recordCallEnabled() {
   try { return !!prefValue('recordCallAudio'); } catch { return false; }
 }
 
-// force=true is the explicit request (start_debug_recording MCP tool): record
+// force=true is the explicit request (start_recording MCP tool): record
 // even when the recordCallAudio pref is off. The auto path (bot-joined) leaves
 // force=false so it stays gated. Returns a small status for the MCP tool.
+// A call can be recorded, stopped, and recorded again (start_recording /
+// stop_recording can be called at any point, more than once, in the same
+// call). Every recording within a call shares the same callDir — without
+// this, a second recording would reuse the exact same call-recording-tracks/
+// dir and call-recording.mp4 name as the first, and CallRecordingSession
+// opens track files with 'w' (truncating), so the second recording starting
+// would silently clobber the first's raw tracks the moment its first chunk
+// arrives, and the second merge would overwrite the first's output file.
+// '' for the call's first recording (keeps today's plain names for the
+// overwhelmingly common case); '-2', '-3', ... for each later recording in
+// the SAME call, so nothing already on disk is ever touched. Checks for the
+// MERGED output files too, not just the tracks dir: keepCallRecordingTracks
+// defaults OFF, so a successful first recording's tracks dir is typically
+// already gone by the time a second recording starts — only its
+// call-recording.mp4 survives — and checking the tracks dir alone would miss
+// that and let the second recording's merge silently overwrite it.
+function nextRecordingSuffix(callDir) {
+  let n = 1;
+  while (true) {
+    const suffix = n === 1 ? '' : `-${n}`;
+    const inUse = fs.existsSync(path.join(callDir, `call-recording-tracks${suffix}`))
+      || fs.existsSync(path.join(callDir, `call-recording${suffix}.mp4`))
+      || fs.existsSync(path.join(callDir, `call-recording-share${suffix}.mp4`));
+    if (!inUse) return suffix;
+    n++;
+  }
+}
+
 function startCallRecording(room, botName, { force = false } = {}) {
   if (activeRecording) return { ok: true, already: true, dir: activeRecording.dir };
   if (!force && !recordCallEnabled()) return { ok: false, code: 'disabled' };
   try {
     // Save under the bot's HOME (its agent workdir), alongside call-notes/, so a
-    // call's artifacts live together: <home>/calls/<callId>/audio-tracks/.
+    // call's artifacts live together: <home>/calls/<callId>/call-recording-tracks/.
     // Prefer the first-class per-join call id (#292) so this matches
     // call-notes/<call-id>.md exactly; fall back to room+timestamp if the id
     // hasn't been minted yet (recording started before the call went active).
@@ -239,18 +362,39 @@ function startCallRecording(room, botName, { force = false } = {}) {
     const fallbackStamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
     const callId = (localServer && localServer.callId) || `${safeRoom}-${fallbackStamp}`;
     const safeCallId = String(callId).replace(/[^a-zA-Z0-9._-]/g, '_');
-    const dir = path.join(agentDir, 'calls', safeCallId, 'audio-tracks');
+    const callDir = path.join(agentDir, 'calls', safeCallId);
+    const suffix = nextRecordingSuffix(callDir);
+    const dir = path.join(callDir, `call-recording-tracks${suffix}`);
     activeRecording = new CallRecordingSession(dir, {
       room: room || null,
       callId,
       botName: botName || store?.get('botName') || null,
       startedAt: Date.now(),
     });
-    console.log(`[call-record] recording call audio to ${dir}`);
+    // Stashed here (not a separate module-scope variable) so it travels
+    // naturally with the session through stopCallRecording, which reads it
+    // back before activeRecording is cleared — see the outputName below.
+    activeRecording.outputSuffix = suffix;
+    console.log(`[call-record] recording call audio to ${dir}${suffix ? ` (recording ${suffix.slice(1)} of this call)` : ''}`);
+
+    // Video rides along unconditionally whenever recording starts — no
+    // separate flag, no gating decided at meetView creation time (that's the
+    // whole point of this design over the abandoned offscreen-BrowserView
+    // approach: it can start/stop mid-call). Best-effort: any failure here
+    // just means this call gets audio-only, same as the pre-existing
+    // ffmpeg-missing fallback.
+    try {
+      activeRecordingWindow = createCallRecordingWindow(meetView);
+      console.log('[call-record] recording control window created — capturing video');
+    } catch (err) {
+      activeRecordingWindow = null;
+      console.warn('[call-record] could not start video capture (falling back to audio-only):', err.message);
+    }
+
     if (meetView && !meetView.webContents.isDestroyed()) {
       meetView.webContents.send('trigger-record', { recording: true, room, startedAt: activeRecording.startedAt, botName: activeRecording.botName });
     }
-    // Consent: an EXPLICIT start (start_debug_recording) speaks a notice so the
+    // Consent: an EXPLICIT start (start_recording) speaks a notice so the
     // room knows it's being recorded. The auto path (test fleet, force=false)
     // stays silent — it's all bots, and an extra utterance would skew the
     // nightly's speech-timing checks. The notice is captured in the recording.
@@ -267,27 +411,184 @@ function startCallRecording(room, botName, { force = false } = {}) {
   }
 }
 
-function stopCallRecording() {
+// Extension: start the whiteboard-share side capture — a full-resolution
+// recording of the bot's own share content, independent of the (lower-res)
+// video track of Meet's own render of it. Called from the whiteboard branch
+// of setDisplayMediaRequestHandler above, at the moment a share actually
+// engages. Idempotent (a share can re-trigger getDisplayMedia — e.g. the
+// Present-now retry loop — without starting a second capture window), and a
+// no-op unless a call recording is currently active: this side capture only
+// ever exists alongside one.
+function maybeStartShareCapture() {
+  if (!activeRecording) return;
+  if (activeShareCaptureWindow) return;
+  if (!whiteboardWindow || whiteboardWindow.isDestroyed()) return;
+  try {
+    activeShareCaptureWindow = createShareCaptureWindow(whiteboardWindow);
+    console.log('[call-record] capturing whiteboard share to share.webm');
+  } catch (err) {
+    activeShareCaptureWindow = null;
+    console.warn('[call-record] could not start share capture:', err.message);
+  }
+}
+
+// Stop+finalize the share capture window, if one is running. Called both when
+// the share itself ends (onStopSharing, before whiteboardWindow closes — the
+// capture's source frame is about to go away) and when the whole call
+// recording stops (stopCallRecording) — whichever comes first. Safe to call
+// when nothing is active (no-op).
+async function stopShareCaptureIfActive() {
+  if (!activeShareCaptureWindow) return;
+  const win = activeShareCaptureWindow;
+  activeShareCaptureWindow = null;
+  try {
+    await stopFrameCaptureWindow(win);
+  } catch (err) {
+    console.warn('[call-record] error stopping share capture:', err.message);
+  }
+}
+
+// Async: waiting for the control window's final video chunk (and then muxing
+// audio+video into call-recording.mp4) both take a moment. Callers that don't need the
+// result (leave-call teardown, the IPC 'call-record-stopped' notification)
+// fire this without awaiting — best-effort, never blocks the call from ending
+// (each step below is independently try/caught for the same reason).
+async function stopCallRecording() {
   if (!activeRecording) return { ok: true, already: true };
   const dir = activeRecording.dir;
+  const callDir = path.dirname(dir); // call-recording-tracks/'s parent — where call-recording.mp4 lands
+  const outputSuffix = activeRecording.outputSuffix || ''; // read before activeRecording is cleared below — see nextRecordingSuffix
   try {
     if (meetView && !meetView.webContents.isDestroyed()) {
       meetView.webContents.send('trigger-record', { recording: false });
     }
   } catch { /* window already gone */ }
+
+  // A live share's capture must stop too — its source (whiteboardWindow) may
+  // well outlive the recording, but there's no longer an activeRecording to
+  // route its chunks into.
+  await stopShareCaptureIfActive();
+
+  // Stop the control window's MediaRecorder and wait (bounded) for its last
+  // chunk BEFORE finalizing activeRecording — otherwise the video track's
+  // file could still be receiving a chunk after we've already closed it.
+  if (activeRecordingWindow) {
+    const win = activeRecordingWindow;
+    activeRecordingWindow = null;
+    try {
+      await stopFrameCaptureWindow(win);
+    } catch (err) {
+      console.warn('[call-record] error stopping video capture window:', err.message);
+    }
+  }
+
   let tracks = 0;
+  let manifest = null;
   try {
-    const m = activeRecording.stop();
-    tracks = m.tracks.length;
+    manifest = activeRecording.stop();
+    tracks = manifest.tracks.length;
     console.log(`[call-record] saved ${tracks} track(s) to ${dir}`);
   } catch (err) {
     console.warn('[call-record] error finalizing recording:', err.message);
   }
   activeRecording = null;
+
+  // Merge is additive — the raw per-track files stay on disk either way, so a
+  // failed/skipped merge just means no call-recording.mp4, not lost material.
+  let mainMerge = null;
+  let shareMerge = null; // stays null when there was no share track to merge
+  if (manifest) {
+    const shareTrack = manifest.tracks.find((t) => t.track === 'share');
+    const hasVideo = manifest.tracks.some((t) => t.track === 'video');
+    // The merge can take a while and pins a CPU core — by this point BOTH
+    // capture windows have already closed, so without this there's no UI at
+    // all explaining the fan noise. Skip showing it for the (fast, no-op)
+    // case where there's nothing to actually encode. This also gives the
+    // user a way to bail if they don't care about the recording: cancelling
+    // aborts whichever merge is in flight and skips any not yet started —
+    // the raw tracks are untouched either way (see allAttemptedMergesOk
+    // below), so cancelling never loses material, only the combined file(s).
+    const mergeWin = hasVideo ? createMergeProgressWindow() : null;
+    if (mergeWin) {
+      activeMergeAbortController = new AbortController();
+    }
+    const mainOutputName = `call-recording${outputSuffix}.mp4`;
+    try {
+      mainMerge = await mergeCallMedia(callDir, { tracksDir: dir, tracks: manifest.tracks, outputName: mainOutputName, signal: activeMergeAbortController?.signal });
+      if (mainMerge.ok) console.log(`[call-record] merged ${mainOutputName} -> ${mainMerge.file}`);
+      else console.log(`[call-record] merge skipped: ${mainMerge.reason}`);
+    } catch (err) {
+      console.warn('[call-record] merge failed:', err.message);
+      mainMerge = { ok: false, reason: err.message };
+    }
+
+    // Extension: call-recording-share.mp4 — the same mix, but muxed onto the
+    // full-resolution share.webm instead of video.webm, when a share was
+    // captured this call. Additive and best-effort like the main merge: a
+    // failure here never touches call-recording.mp4 or the raw tracks.
+    if (shareTrack) {
+      try {
+        if (mergeWin && !mergeWin.isDestroyed()) {
+          mergeWin.webContents.send('merge-status', { label: 'Preparing share recording…' });
+        }
+        // share.webm's own t=0 is when the share BEGAN (often minutes into
+        // the call) while the audio tracks' t=0 is recording start (same as
+        // the 'video' track's) — pad the share video by that delta so its
+        // picture lines up with the (borrowed) mixed audio in call-recording-share.mp4.
+        // Falls back to no padding if either startWallClock is missing.
+        const videoTrackManifest = manifest.tracks.find((t) => t.track === 'video');
+        let padStartMs = 0;
+        if (videoTrackManifest && Number.isFinite(shareTrack.startWallClock) && Number.isFinite(videoTrackManifest.startWallClock)) {
+          padStartMs = Math.max(0, shareTrack.startWallClock - videoTrackManifest.startWallClock);
+        }
+        const shareOutputName = `call-recording-share${outputSuffix}.mp4`;
+        shareMerge = await mergeCallMedia(callDir, {
+          tracksDir: dir,
+          tracks: manifest.tracks,
+          videoTrackName: 'share',
+          outputName: shareOutputName,
+          padStartMs,
+          signal: activeMergeAbortController?.signal,
+        });
+        if (shareMerge.ok) console.log(`[call-record] merged ${shareOutputName} -> ${shareMerge.file} (padded ${padStartMs}ms)`);
+        else console.log(`[call-record] share merge skipped: ${shareMerge.reason}`);
+      } catch (err) {
+        console.warn('[call-record] share merge failed:', err.message);
+        shareMerge = { ok: false, reason: err.message };
+      }
+    }
+    if (mergeWin) {
+      closeMergeProgressWindow(mergeWin);
+      activeMergeAbortController = null;
+    }
+
+    // call-recording-tracks/ (the raw per-participant audio + video.webm +
+    // share.webm + manifest.json) is verbose and, once the merge succeeds,
+    // redundant for nearly everyone — the keepCallRecordingTracks pref (OFF
+    // by default) controls whether it's kept. Only delete when every merge
+    // that was actually attempted succeeded: a failed/skipped merge (no
+    // ffmpeg, no video captured, share mux error, ...) means the raw tracks
+    // are the ONLY copy of that material, so they're never removed in that
+    // case regardless of the pref.
+    const allAttemptedMergesOk = !!mainMerge?.ok && (!shareTrack || !!shareMerge?.ok);
+    if (allAttemptedMergesOk) {
+      let keepTracks = false;
+      try { keepTracks = !!prefValue('keepCallRecordingTracks'); } catch { /* default: don't keep */ }
+      if (!keepTracks) {
+        try {
+          fs.rmSync(dir, { recursive: true, force: true });
+          console.log(`[call-record] removed raw tracks (${dir}) — keepCallRecordingTracks is off`);
+        } catch (err) {
+          console.warn('[call-record] failed to remove raw tracks:', err.message);
+        }
+      }
+    }
+  }
+
   return { ok: true, dir, tracks };
 }
 
-// Explicit on/off for the start_debug_recording / stop_debug_recording MCP
+// Explicit on/off for the start_recording / stop_recording MCP
 // tools. Requires an active call to start (no tracks otherwise).
 function setCallRecording({ on } = {}) {
   if (on) {
@@ -299,12 +600,20 @@ function setCallRecording({ on } = {}) {
 }
 
 function currentVoiceStatus() {
-  return resolveVoice({
+  const status = resolveVoice({
     ttsApiKey: store?.get('ttsApiKey'),
     ttsProvider: store?.get('ttsProvider'),
     voiceboxProfileId: store?.get('voiceboxProfileId'),
     platform: process.platform,
   });
+  // A key can be PRESENT and dead. resolveVoice only asks whether one is set,
+  // which is the right question for "can this bot make a sound" (it can — the
+  // OS voice covers it) and the wrong one for "is your ElevenLabs key working".
+  // Carried alongside rather than folded in, so canSpeak keeps meaning what it
+  // means and Settings can show the key problem where the key is EDITED.
+  return elevenLabsKeyProblem
+    ? { ...status, keyProblem: { kind: elevenLabsKeyProblem.kind, message: elevenLabsKeyProblem.message } }
+    : status;
 }
 
 // A bot with no voice used to join and simply never make a sound — indis­tin­guish­able,
@@ -359,6 +668,21 @@ function announceNoVoiceOnce() {
 // phase off and reproduces the old teardown-on-leave exactly.
 let _afterCallWorkTimer = null;
 
+// Bot names already spoken for on this machine.
+//
+// Used both when naming a NEW bot and when offering candidates during setup: two
+// bots answering to one name is not merely confusing, since MCP routes by name.
+function takenBotNames() {
+  try {
+    const profileManager = require('./profile-manager.js');
+    return profileManager.listProfiles(PROFILES_ROOT).map((p) => {
+      try {
+        return JSON.parse(fs.readFileSync(path.join(PROFILES_ROOT, p.name, 'config.json'), 'utf-8')).botName;
+      } catch { return null; }
+    }).filter(Boolean);
+  } catch { return []; }
+}
+
 function beginAfterCallWorkOrTeardown(reason) {
   // Through the schema, NOT store.get(): a raw read returns undefined for any
   // profile that has never set this, so `Number(undefined) || 0` disabled the
@@ -396,13 +720,112 @@ function beginAfterCallWorkOrTeardown(reason) {
 // End of the lifecycle: the app-side teardown finally runs. Routed through the
 // panel because that is where the existing leave path lives — showIdle, the
 // terminal close and clearRoom all hang off it.
+// #255 — sharing ONE call's log.
+//
+// Deliberately NOT a preference. remoteLogging is an app-level setting someone
+// chose; this is a one-call grant made in the moment, and the two must not
+// share storage or teardown. Keeping the grant in memory makes the scoping
+// structural rather than a matter of remembering to clean up: a crash or
+// force-quit cannot leave sharing switched on, and there is nothing to
+// reconcile at the next launch.
+//
+// _sharedCallId  — which call the user granted (so a second press is a no-op)
+// _sharingWeEnabled — did OUR grant turn streaming on? Only then may call end
+//                     turn it off. If remoteLogging was already on, the user's
+//                     standing preference must survive the call.
+let _sharedCallId = null;
+let _sharingWeEnabled = false;
+
+function revokeCallLogShare(reason) {
+  if (!_sharedCallId) return;
+  if (_sharingWeEnabled) {
+    const { setRemoteLoggingEnabled } = require('./session-log.js');
+    setRemoteLoggingEnabled(false);
+    console.log('[electron] call-log share ended (' + reason + ') — streaming back off');
+  }
+  _sharedCallId = null;
+  _sharingWeEnabled = false;
+}
+
+// The actual teardown. It lives here, callable from main, rather than only at
+// the end of a main → renderer → main round trip.
+//
+// #254: the round trip was the whole bug. finishCall() set 'call-complete' and
+// sent 'leave-requested' to the panel; only the panel's reply ran clearRoom(),
+// and clearRoom() is what sets 'idle'. So any break in that loop — a destroyed
+// panelView, a renderer that never answers — stranded the session at
+// 'call-complete' forever. Joins only navigate from a settled state, so
+// Bethany Crystal's app accepted SEVEN join_call requests for a new meeting and
+// silently dropped every one, telling her agent "navigating to the call" each
+// time. Recovery needed a quit and relaunch. (This is #229's shape: state that
+// depends on a specific window hearing a message.)
+//
+// Idempotent, because the watchdog and the panel reply race by design and both
+// must be safe.
+let _teardownDone = false;
+function performLeaveTeardown(via) {
+  clearTimeout(_idleWatchdog);
+  _idleWatchdog = null;
+  if (_teardownDone) return;
+  _teardownDone = true;
+  currentMeetUrl = null;
+  detectedMeetUrl = null; // Reset so detection will re-notify about the same Meet
+  // Each step is independent: a throw in one must not strand the rest, because
+  // the whole point is that reaching 'idle' cannot be conditional. clearRoom()
+  // is what sets 'idle', so it goes first — if anything here is going to fail,
+  // the session should already be joinable by the time it does.
+  const step = (name, fn) => {
+    try { fn(); } catch (err) {
+      console.error(ts(), '[electron] teardown step "' + name + '" failed:', err && err.message);
+    }
+  };
+  step('clearRoom', () => localServer.clearRoom());
+  step('closeClaudeTerminal', () => closeClaudeTerminal());
+  step('showIdle', () => showIdle());
+  console.log(ts(), '[electron] Call teardown complete (via ' + via + ') — status',
+    localServer.callStatus);
+  // Identity cache is cleared at *join* time, not here — so it doesn't
+  // matter how the previous call ended (host-ended, app quit, crash).
+}
+
+// How long to let the panel do its own teardown before main does it anyway.
+// Generous: the normal path finishes in well under a second, so anything near
+// this is already a fault, and a late-but-correct teardown beats a wedged app.
+const IDLE_WATCHDOG_MS = 10000;
+let _idleWatchdog = null;
+
 function finishCall() {
   clearTimeout(_afterCallWorkTimer);
   _afterCallWorkTimer = null;
+  // #255: a shared-log grant was for THIS call. Revoking here rather than
+  // trusting the next call to notice is what keeps "share this one" honest.
+  revokeCallLogShare('call ended');
+  _teardownDone = false;
   localServer.setCallStatus('call-complete');
   if (panelView && !panelView.webContents.isDestroyed()) {
+  // ADDRESSED, not broadcast (#229). This is a COMMAND: the panel replies with
+  // 'leave-meet', which runs teardown. Three windows would each reply, so the
+  // teardown would run three times.
     panelView.webContents.send('leave-requested');
+  } else {
+    // No panel to ask. Don't wait out the watchdog for a reply that provably
+    // cannot come.
+    console.warn(ts(), '[electron] No panel to run teardown — doing it here');
+    performLeaveTeardown('no-panel');
+    return;
   }
+  clearTimeout(_idleWatchdog);
+  _idleWatchdog = setTimeout(() => {
+    console.error(ts(), '[electron] #254: panel never completed teardown in '
+      + (IDLE_WATCHDOG_MS / 1000) + 's — forcing idle so the next join is not dropped');
+    try {
+      localServer.addError('Call teardown stalled: the app forced itself back to idle after '
+        + (IDLE_WATCHDOG_MS / 1000) + 's. The previous call may still be open in the Meet view. '
+        + 'Joining a new call should work; if it does not, quit and relaunch.');
+    } catch { /* addError is best-effort */ }
+    performLeaveTeardown('watchdog');
+  }, IDLE_WATCHDOG_MS);
+  if (_idleWatchdog.unref) _idleWatchdog.unref();
 }
 
 // The walk takes a second or two and captions-ready can fire repeatedly in that
@@ -566,6 +989,9 @@ let triageEndpointDown = false;
 const localServer = new globalThis.LocalServer({
   appVersion: app.getVersion(),
   packaged: app.isPackaged, // release (installed .app/DMG) vs running from source
+  // The bot workdir, so afterCallWorkPlan can inline CLAUDE.md's after-call
+  // duties for sessions that don't run in that directory (terminal-driven).
+  getAgentWorkdir: () => require('./agent-workdir.js').agentDirFor(app.getPath('userData')),
 
   // Claude-ready feedback loop: a launched Claude session's SessionStart hook POSTs here
   // once it's up — which only happens when Claude Code is BOTH installed and signed in
@@ -595,6 +1021,8 @@ const localServer = new globalThis.LocalServer({
   // resolve an omitted bot_name to this instead of a frozen env default, and
   // keeps join_call from ever overwriting it.
   getConfiguredBotName: () => resolvedBotName(),
+  // Candidate names for the setup call's "what should I be called" step.
+  getTakenBotNames: () => takenBotNames(),
   onBotSpeech: (text, voice, emoji) => {
     console.log('[local-server] Bot speech:', text.slice(0, 80), emoji ? `(emoji: ${emoji})` : '');
     // Triage EVAL: pair the fast model's turn-taking verdict with the fact that
@@ -641,7 +1069,11 @@ const localServer = new globalThis.LocalServer({
       });
     }
   },
-  onWhiteboardUpdate: (content, sender) => {
+  // Returns delivery status so the caller can tell the bot the truth (#221).
+  // Was fire-and-forget with a bare .catch(), which caught NETWORK errors only —
+  // a 500 from the sync server is a resolved promise, so an outage that dropped
+  // every board write logged nothing and still reported success to the bot.
+  onWhiteboardUpdate: async (content, sender) => {
     console.log('[local-server] Whiteboard update from', sender, ':', content.slice(0, 80));
     const roomId = localServer.roomId;
     if (roomId) {
@@ -658,8 +1090,12 @@ const localServer = new globalThis.LocalServer({
         }
       }
 
-      // Forward to remote sync server so the whiteboard window picks it up
-      fetch(`${baseUrl}/api/sync/${roomId}`, {
+      // Forward to remote sync server so the whiteboard window picks it up.
+      // RETURNED, not fired off: the caller reports delivery to the bot, and a
+      // bare call here would fall through to the no-room `delivered: null`
+      // below — which reads as "nothing to deliver to" and hides the failure
+      // just as thoroughly as the old fire-and-forget did.
+      return fetch(`${baseUrl}/api/sync/${roomId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -668,10 +1104,38 @@ const localServer = new globalThis.LocalServer({
           ownerName: sender,
           whiteboard: { content },
         }),
-      }).catch(err => {
+      }).then(async (resp) => {
+        if (resp.ok) {
+          // A 200 is not enough. The sync server catches a failed whiteboard
+          // write into results.whiteboard = { ok: false, error } and STILL
+          // returns 200 { success: true } — so during the Aug 1 rate limit our
+          // writes were reported delivered and never persisted. The board still
+          // held the previous call's content afterwards, which is how this was
+          // caught: it survived the outage that supposedly wrote over it.
+          let body = null;
+          try { body = await resp.json(); } catch { /* not JSON — treat as delivered */ }
+          const wb = body?.results?.whiteboard;
+          if (wb && wb.ok === false) {
+            const error = `sync server accepted the request but did not store it${wb.error ? `: ${wb.error}` : ''}`;
+            console.error('[local-server] Whiteboard write NOT persisted:', error);
+            return { delivered: false, error };
+          }
+          return { delivered: true };
+        }
+        // Body first — the sync server puts the real reason there; the status
+        // alone ("500") tells the bot nothing it can act on or repeat aloud.
+        let detail = '';
+        try { detail = ((await resp.json())?.error) || ''; } catch { /* not JSON */ }
+        const error = `sync server ${resp.status}${detail ? `: ${detail}` : ''}`;
+        console.error('[local-server] Whiteboard update REJECTED by sync server:', error);
+        return { delivered: false, error };
+      }).catch((err) => {
         console.error('[local-server] Failed to forward whiteboard update:', err.message);
+        return { delivered: false, error: `could not reach the sync server (${err.message})` };
       });
     }
+    // No room means no shared board to deliver to — local-only, not a failure.
+    return { delivered: null };
   },
   // #321: forward custom whiteboard CSS to the remote sync so the whiteboard
   // window (which renders from the remote room page) applies it. The shared
@@ -701,8 +1165,33 @@ const localServer = new globalThis.LocalServer({
     // content + style without changing anything. No-op if nothing's shared.
     return reloadWhiteboardWindow('explicit reload');
   },
+  onListFonts: () => listLocalFonts(),
+
   onJoinCall: (meetCode, botName) => {
     console.log('[local-server] Join call requested by agent:', meetCode, botName);
+    // Joining cancels any pending after-call teardown.
+    //
+    // leave_call arms a timer (afterCallWorkSeconds, 300 by default) that ends
+    // the agent when the wrap-up window expires. Nothing cleared it on a JOIN, so
+    // an agent that left and came back inside that window was still carrying its
+    // own execution date: the timer fired mid-call, tore the call down and killed
+    // the agent, for no reason visible from inside the room.
+    //
+    // That makes leave-then-rejoin viable, which matters — it is the only way to
+    // change the Meet display name, since Meet takes it at join (#249).
+    if (_afterCallWorkTimer) {
+      console.log('[electron] Join during after-call work — cancelling the pending teardown');
+      clearTimeout(_afterCallWorkTimer);
+      _afterCallWorkTimer = null;
+    }
+    // #254: a join is also the loudest possible signal that the previous call is
+    // over. If teardown was started but never finished, don't make this join
+    // wait out the watchdog (or, before the watchdog existed, wait forever) —
+    // finish it now, then navigate from a settled state.
+    if (localServer.callStatus === 'call-complete' && !_teardownDone) {
+      console.warn(ts(), '[electron] Join arrived with teardown unfinished — completing it first');
+      performLeaveTeardown('join');
+    }
     logSessionHeaderUpdate('roomId', meetCode);
     if (botName) {
       // #212: do NOT persist to the store — that's the user's panel preference
@@ -783,7 +1272,10 @@ const localServer = new globalThis.LocalServer({
 
   onLeaveCall: () => {
     console.log('[local-server] Leave call requested by agent');
-    stopCallRecording(); // #209: finalize any call audio recording before teardown
+    // #209: finalize any call audio(+video) recording before teardown. Async
+    // now (video stop + merge are real work) — fire-and-forget, teardown must
+    // not block on it; errors are already logged inside.
+    stopCallRecording().catch((err) => console.warn('[call-record] stop on leave failed:', err.message));
     stopAllRunwayFaces('leave-call'); // P2: end Runway sessions + timers when leaving the call
     shareGeneration++; // cancel any in-flight Present-now retry loop before the view tears down
 
@@ -1030,15 +1522,38 @@ const localServer = new globalThis.LocalServer({
         .catch(() => { /* best-effort tidy-up */ });
     }
     shareGeneration++; // cancel any in-flight Present-now retry loop (it would re-toggle Slack)
-    // Close the whiteboard window — this ends the display media stream for whiteboard shares
-    if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
-      whiteboardWindow.close();
-      whiteboardWindow = null;
-    }
+    const myShareGen = shareGeneration; // see the generation check below, before this IIFE closes the window
     // Click Meet's "Stop presenting" button — works for both whiteboard and full-screen shares
     if (meetView && !meetView.webContents.isDestroyed()) {
       sendCallCmd(CALL_COMMANDS.triggerStopSharing);
     }
+    // Extension: stop the whiteboard-share side capture BEFORE closing
+    // whiteboardWindow — its source frame is about to go away, so the capture
+    // must flush its final chunk while the window (and the frame it's
+    // capturing) still exist. onStopSharing itself stays synchronous (callers
+    // don't await it); the window-close is what waits, via this async IIFE.
+    (async () => {
+      try {
+        await stopShareCaptureIfActive();
+      } catch (err) {
+        console.warn('[call-record] share capture stop failed:', err.message);
+      }
+      // A fast re-share can land while the await above is still in flight —
+      // its 'start-whiteboard-share'/'share-whiteboard' handler sees this
+      // SAME whiteboardWindow (still non-null/non-destroyed from here) and
+      // reuses it rather than creating a new one. Closing unconditionally at
+      // this point would tear down the window the new share now depends on
+      // and null the reference out from under it. Both re-share entry points
+      // bump shareGeneration on start (same guard startShare's own retry
+      // loop uses), so a mismatch here means exactly that happened — leave
+      // the window alone; it's no longer this stop's to close.
+      if (shareGeneration !== myShareGen) return;
+      // Close the whiteboard window — this ends the display media stream for whiteboard shares
+      if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
+        whiteboardWindow.close();
+        whiteboardWindow = null;
+      }
+    })();
   },
   // POC (share-agent-tab): the 'share-tab' action lands here with the URL the
   // agent is browsing. Resolve → stash → Present-now (see startExternalTabShare).
@@ -1054,7 +1569,7 @@ const localServer = new globalThis.LocalServer({
   // Profile switcher (#282): a sibling instance asked us to come forward.
   // /call → POST /api/call/start → the same path the panel button takes.
   onStartCall: (opts) => createAndJoinMeet(opts),
-  onRecord: (opts) => setCallRecording(opts), // #209: start/stop debug recording
+  onRecord: (opts) => setCallRecording(opts), // #209: start/stop call recording
 
   onFocusRequest: () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1099,6 +1614,26 @@ const localServer = new globalThis.LocalServer({
       // pref, a preference write) can see the work is already done rather than
       // walking Meet's Settings dialog a second time for the same value.
       _captionLanguageApplied = { room: localServer.roomId, requested: want, resolved: result.language };
+      // PERSIST it as this bot's own language.
+      //
+      // Meet stores its "Language of the meeting" against the shared browser
+      // session, not the bot — so without this the choice leaks and is lost at
+      // the same time. Observed: a bot set to German left Meet in German, and
+      // every bot created afterwards started in German, because an unset
+      // captionLanguage means "leave whatever Meet already has". Meanwhile the
+      // German bot had not saved anything either, so it was only still German
+      // by accident.
+      //
+      // Storing it makes the language the BOT'S property: re-applied on its next
+      // join, which also overwrites whatever another bot left behind.
+      try {
+        if (store && store.get('captionLanguage') !== result.language) {
+          store.set('captionLanguage', result.language);
+          console.log('[local-server] Saved captionLanguage =', result.language, '(this bot, future calls)');
+        }
+      } catch (err) {
+        console.warn('[local-server] Could not save captionLanguage:', err.message);
+      }
     } else console.warn('[local-server] Caption language change failed:', result && result.error);
     return result;
   },
@@ -1515,7 +2050,11 @@ const localServer = new globalThis.LocalServer({
       // spend the call waiting for it to answer out loud.
       announceNoVoiceOnce();
     }
-    if (isFinished(status)) _noVoiceAnnouncedFor = null;
+    // Kick off ack-cache prewarming (tts.js) as early in the call lifecycle as
+    // possible — 'navigating' fires well before the agent is ready to speak,
+    // so synthesis happens in the background while the bot is still joining.
+    if (isInCall(status)) prewarmAckCache();
+    if (isFinished(status)) { _noVoiceAnnouncedFor = null; ackCachePrewarmedForCall = false; }
     // Studio sound: if disabled by pref, turn off Meet's voice filter once in-call
     // so non-voice audio (SFX/music via play_audio) passes through. Delay lets the
     // in-call toolbar (More options ⋮) finish rendering. Default leaves it ON.
@@ -1531,8 +2070,20 @@ const localServer = new globalThis.LocalServer({
     // "URL navigated" and "actually admitted" is misleading — especially when
     // entry is denied, since that 15s grace window leaves the button visible
     // while we wait for the denial page to be detected.
-    if (panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('call-status-changed', { status, provider: slackProviderMode ? 'slack' : 'meet' });
+    broadcastToRenderers('call-status-changed', { status, provider: slackProviderMode ? 'slack' : 'meet' });
+  },
+
+  // The countdown to the bot taking its turn. Pushed on every arm/re-arm so the
+  // animation always lands on the real moment — the deadline genuinely moves
+  // (name-mention fast-resolve, and the #372 re-arm that corrects a late timer),
+  // and a countdown that finishes at the wrong time is worse than none: the
+  // whole value is that the room learns to trust the endpoint.
+  onSilenceGateChange: (gate) => {
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('extension-message', {
+        action: 'set-silence-gate',
+        payload: gate,   // { deadline, from } or null
+      });
     }
   },
 
@@ -1559,9 +2110,7 @@ const localServer = new globalThis.LocalServer({
     }
     // Keep the panel's caption badge consistent — this fires for the
     // self-correcting on-state (captions text arrived) as well as toggles.
-    if (panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('caption-state', { on: !!on });
-    }
+    broadcastToRenderers('caption-state', { on: !!on });
   },
 
   // Background working-memory refresh (two-tier experiment). Fired by
@@ -1834,7 +2383,29 @@ const localServer = new globalThis.LocalServer({
   // get/set go to the same Store the panel uses, so changes from the agent and
   // changes from Settings → UI converge on one config.json.
   getPref: (key) => store?.get(key),
-  setPref: (key, value) => store?.set(key, value),
+  setPref: (key, value) => {
+    // `avatarBackgroundSvg` takes SVG source, which is fine for an agent that
+    // WRITES an SVG and useless for one that has an image file — including one
+    // it just generated. So the value also accepts `file:<path>`, converted here
+    // to the same self-contained SVG the "Choose image…" button produces
+    // (downscaled, inlined, no reference that can break when the file moves).
+    //
+    // Same shape as emojiSet's `dir:` and `font:`: one value, an open form for
+    // the thing only the user's machine knows. Converted on WRITE so the stored
+    // preference is always real SVG — nothing downstream needs to know.
+    if (key === 'avatarBackgroundSvg' && /^file:/.test(String(value || ''))) {
+      const filePath = String(value).slice(5).trim();
+      return buildBackgroundSvgFromImage(filePath).then((svg) => {
+        store?.set('avatarBackgroundSvg', svg);
+        try { store?.set('avatarBackgroundCaption', require('path').basename(filePath)); } catch { /* noop */ }
+        pushAvatarBackground(svg);
+        notifyConfigChanged('avatarBackgroundSvg', svg);
+        console.log(ts(), '[electron] Background set from', filePath, '->', svg.length, 'chars of SVG');
+        return svg;
+      });
+    }
+    return store?.set(key, value);
+  },
   applyPref: (key, value) => {
     // An agent's set_preference lands here. The panel re-reads on this, the same
     // way it does for a set-config write, so a value changed mid-call shows up in
@@ -1858,7 +2429,7 @@ const localServer = new globalThis.LocalServer({
     } else if (key === 'voiceboxEngine') {
       tts.updateConfig?.({ voiceboxEngine: value });
     } else if (key === 'botName') {
-      applyWindowTitle(); // the window is named after the bot
+      applyAllWindowTitles(); // every window is named after the bot, not just the main one
     } else if (key === 'avatarBackgroundSvg') {
       pushAvatarBackground(value);
       // (The panel re-renders its own avatar — and its switcher thumbnail — off
@@ -1908,6 +2479,32 @@ function pushAvatarEmojiOverrides(overrides = {}) {
 sync.updateConfig({
   onWhiteboardUpdate: (whiteboard) => {
     localServer.applyRemoteWhiteboard(whiteboard);
+  },
+  // #221: the poll reads the SAME room state the whiteboard viewer reads, so a
+  // run of failures means the board is dark for everyone in the room — the bot's
+  // writes still land, they just cannot be fetched back. On Aug 1 that lasted a
+  // whole call and the only trace was a console line nobody was watching.
+  //
+  // Three audiences, because each can do something different about it:
+  //   - the operator, via broadcastError (panel + system notification)
+  //   - the AGENT, via addError, so it can say so aloud and use chat instead —
+  //     the only one of the three that can salvage the moment
+  //   - update_whiteboard, via the flag, so the next write fails loudly rather
+  //     than reporting a success nobody can see
+  onReadHealthChange: ({ healthy, status }) => {
+    localServer.setBoardReadHealthy(healthy);
+    if (!healthy) {
+      const msg = `The shared whiteboard can't be read right now (sync server ${status}). `
+        + 'Anything you put on the board will not be visible to anyone in the call — '
+        + 'send it with send_chat instead, and say the board is down.';
+      console.error('[sync] board reads unhealthy:', status);
+      try { localServer.addError(msg); } catch { /* best-effort */ }
+      broadcastError(`Whiteboard unavailable — the sync server is returning ${status} for room state.`);
+    } else {
+      console.log('[sync] board reads recovered');
+      try { localServer.addError('The shared whiteboard is readable again — the board works normally now.'); }
+      catch { /* best-effort */ }
+    }
   },
 });
 
@@ -2006,7 +2603,56 @@ function setImpaired(on, reason = '') {
   }
 }
 
+// Installed font families, for the agent to name one exactly.
+//
+// queryLocalFonts() is a RENDERER API, so main borrows a live webContents to
+// call it. That is worth it: `system_profiler SPFontsDataType` is the obvious
+// main-process alternative and takes 14.7 SECONDS on this machine, which is not
+// a thing you can call mid-call. queryLocalFonts returns in milliseconds.
+//
+// Cached, because the answer changes only when someone installs a font, and
+// timed out, because #254's lesson is that anything waiting on a renderer needs
+// a way to give up.
+let _fontCache = null;
+async function listLocalFonts() {
+  if (_fontCache) return _fontCache;
+  const host = [panelView, meetView].find((v) => v && !v.webContents.isDestroyed());
+  if (!host) throw new Error('no renderer available to enumerate fonts');
+  const js = `(async () => {
+    if (!window.queryLocalFonts) return null;
+    const fs = await window.queryLocalFonts();
+    return [...new Set(fs.map((f) => f.family))].sort();
+  })()`;
+  const families = await Promise.race([
+    host.webContents.executeJavaScript(js, true),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('font enumeration timed out')), 5000)),
+  ]);
+  if (!Array.isArray(families)) throw new Error('this build cannot enumerate local fonts');
+  _fontCache = families;
+  return families;
+}
+
+// A `dir:` set that matches no files is the quiet failure here: every face
+// falls back to the native glyph, which is indistinguishable from "the setting
+// didn't take". Say so, to the log and to the agent.
+function warnIfEmptyEmojiDir(value) {
+  const ea = require('./emoji-assets.js');
+  const dir = ea.parseDirSet(value);
+  if (!dir) return;
+  ea.forgetExternalDir(dir);            // the folder may have changed since last time
+  const { count } = ea.describeExternalDir(dir);
+  console.log(ts(), '[electron] emoji dir', dir, '->', count, 'usable image(s)');
+  if (count === 0) {
+    try {
+      localServer.addError(`Emoji folder "${dir}" has no usable images, so every face stays native. `
+        + 'Files must be images (png/svg/webp/gif/jpg) named after the emoji — "🙂.png", '
+        + '"1f642.png", "1F642.svg" and "emoji_u1f642.png" all work.');
+    } catch { /* best-effort */ }
+  }
+}
+
 function pushEmojiSet(value) {
+  warnIfEmptyEmojiDir(value);
   if (!meetView || meetView.webContents.isDestroyed()) return;
   // Pass the set name through; the renderer validates against its set registry
   // (unknown → native fallback).
@@ -2109,11 +2755,24 @@ async function pushAvatarBackground(svgSource) {
 
 let store;
 let meetAccountEmailPinned = false; // true when --meet-account-email pinned the account (#282)
+// Calendar auto-join (#299): this bot's matching events within the next 24h,
+// for the panel's "upcoming meeting" notice. Written by
+// pushUpcomingCalendarEvents (inside the whenReady closure, where the poll
+// runs); read by the get-upcoming-calendar-events IPC handler in setupIPC —
+// a SEPARATE top-level function, so this can't be a local of either.
+let latestUpcomingCalendarEvents = [];
+// launchOrFocusProfile is a local of setupIPC() (it needs isDefaultName/
+// scanRunningInstances, also locals there) — checkOtherProfilesForCalendarMatch
+// runs in the whenReady closure and can't see it directly. setupIPC() runs
+// before calendar polling starts (see the setupIPC() call site), so this ref
+// is populated well before anything tries to call it.
+let launchOrFocusProfileRef = null;
 let mainWindow = null;   // single window that holds both views
 let panelView = null;     // left sidebar BrowserView
 let meetView = null;      // right Meet BrowserView
 let panelPopoutWindow = null; // when popped out, the panelView lives here instead
 let troubleshootingWindow = null; // the ⓘ window — a second copy of panel.html
+let brainWindow = null;           // #242: the 🧠 window — the agent's activity feed
 // Bot-view thumbnail column (feat/bot-view-thumbnail-column). The app is a narrow
 // column; the Meet view is either a shrunk thumbnail below the panel ('thumbnail')
 // or floated into its own large window ('popped'). One button toggles them. See
@@ -2194,7 +2853,14 @@ function autoUpdaterInstance() {
   // used to be force-enabled here because the RUNNING version always had a
   // prerelease component — with clean semver it no longer does, so this line is
   // now a belt-and-suspenders guard rather than a workaround.)
-  autoUpdater.allowPrerelease = false;
+  // Channel switch (#release): the 'candidate' update channel (Stan + Seth) opts
+  // into GitHub PRERELEASE builds — the release-candidates tested before promotion;
+  // 'release' (default — real users) sees only promoted releases. Promoted versions
+  // are clean semver (no prerelease component), so a 'release' client is never
+  // offered an rc even after its GitHub prerelease flag is flipped. Fail safe to
+  // 'release' if the pref/store isn't readable yet.
+  try { autoUpdater.allowPrerelease = prefValue('updateChannel') === 'candidate'; }
+  catch { autoUpdater.allowPrerelease = false; }
   // Stage the download, but never restart on our own: installing is gated on
   // not being in a call, and the user gets the last word either way.
   autoUpdater.autoDownload = true;
@@ -2273,6 +2939,10 @@ async function offerStagedUpdate() {
     console.log(ts(), '[updates] install cancelled — a call started while asking');
     return;
   }
+  // On macOS, autoUpdater.quitAndInstall() closes all windows before calling
+  // app.quit(), so the 'before-quit' handler that normally sets this flag
+  // fires too late to suppress the close-window quit-confirmation dialog.
+  appIsQuitting = true;
   autoUpdaterInstance().quitAndInstall();
 }
 
@@ -2481,6 +3151,21 @@ function openAboutWindow() {
 // `onboardingComplete` flag) and re-runnable from the app menu. Pure step logic
 // lives in onboarding-flow.js; the renderer is renderer/onboarding.html.
 let onboardingWindow = null;
+
+// Startup work that would raise a macOS permission prompt, held back while the
+// wizard is up so the asking happens on its Permissions step instead of in a
+// stack of system dialogs over an unread window. Drained when the wizard ends —
+// by finishing OR by being closed, since abandoning setup must not leave the app
+// permanently missing its browser detection until the next launch. Idempotent:
+// every deferred start guards against running twice.
+const deferredStarts = [];
+function runDeferredStarts() {
+  while (deferredStarts.length) {
+    const fn = deferredStarts.shift();
+    try { fn(); } catch (err) { console.error('[electron] Deferred start failed:', err && err.message); }
+  }
+}
+
 function createOnboardingWindow() {
   if (onboardingWindow && !onboardingWindow.isDestroyed()) {
     onboardingWindow.show(); onboardingWindow.focus(); return;
@@ -2504,7 +3189,7 @@ function createOnboardingWindow() {
     onboardingWindow.moveTop();
     onboardingWindow.focus();
   });
-  onboardingWindow.on('closed', () => { onboardingWindow = null; });
+  onboardingWindow.on('closed', () => { onboardingWindow = null; runDeferredStarts(); });
 }
 
 // Probe (and, on first send, trigger) the macOS "Automation" permission by sending
@@ -2858,14 +3543,12 @@ function positionShareWindow(win, { force = false } = {}) {
 function broadcastShareWindowState() {
   const exists = !!(whiteboardWindow && !whiteboardWindow.isDestroyed());
   try {
-    if (panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('share-window-state', {
-        exists,
-        visible: exists && shareWindowVisible,
-        // The one combination the toggle must refuse — see shareCaptureMode.
-        lockedVisible: exists && shareWindowVisible && localServer.sharing && shareCaptureMode === 'window',
-      });
-    }
+    broadcastToRenderers('share-window-state', {
+      exists,
+      visible: exists && shareWindowVisible,
+      // The one combination the toggle must refuse — see shareCaptureMode.
+      lockedVisible: exists && shareWindowVisible && localServer.sharing && shareCaptureMode === 'window',
+    });
   } catch { /* panel not up yet */ }
 }
 
@@ -2972,7 +3655,22 @@ function createWhiteboardWindow(roomUrl) {
   return win;
 }
 
-const PANEL_WIDTH = 380;
+// The width of the app's main window — which IS the panel. There is no wider
+// window with a 380px strip down one side; that arrangement is gone.
+//
+// It was called PANEL_WIDTH, from when the main window held the panel beside a
+// full-size Meet view. #103 made 'hidden' the resting state: meetView now lives
+// in a host window the user never sees, and surfaces only as a thumbnail under
+// the panel or as the 👁 popout. So the number stopped meaning "width of one
+// region" and started meaning "width of the whole window" — same value, and
+// nothing renamed it.
+//
+// That cost a reader a wrong mental model of the UI while debugging #254, which
+// is the only reason this comment exists. bot-view-layout.js takes it as
+// `windowWidth` for the same reason. `panelBounds` there is still honestly
+// named: it really is the panel's bounds WITHIN this column, and in the
+// thumbnail state it is shorter than the window.
+const WINDOW_WIDTH = 380;
 
 // Check if already logged in
 // The public website hosts auth (/api/auth/*) and the whiteboard web-rooms.
@@ -3033,7 +3731,11 @@ function getWebsiteUrl() {
 // request arrived over MCP, because an agent making that request IS the agent;
 // spawning a second one gives the call two drivers that fight over
 // wait_for_speech, which is exactly what happened on 2026-07-29.
-function joinMeetUrl(meetUrl, { spawnAgent = true } = {}) {
+// calendarEvent: the matched Google Calendar event, when this join was
+// triggered by one (#299) — recorded on the local server (setRoom clears any
+// prior one first) so get_room_info can tell the spawned agent WHY it's
+// here, instead of it walking into the call cold.
+function joinMeetUrl(meetUrl, { spawnAgent = true, onboardingCall = false, calendarEvent = null } = {}) {
   currentMeetUrl = meetUrl;
   loadMeetURL(meetUrl);
 
@@ -3041,13 +3743,14 @@ function joinMeetUrl(meetUrl, { spawnAgent = true } = {}) {
   if (!match) return;
   const meetCode = match[1];
   localServer.setRoom(meetCode);
+  localServer.setCalendarEventContext(calendarEvent);
   sync.updateConfig({ roomId: meetCode, baseUrl: getWebsiteUrl() });
   sync.ensureRoom().then(() => {
     sync.startPolling();
     console.log('[electron] Sync started for room:', meetCode);
   });
   if (spawnAgent) {
-    launchClaudeTerminal(meetCode); // the agent behind the face
+    launchClaudeTerminal(meetCode, { onboardingCall }); // the agent behind the face
   } else {
     console.log('[electron] Agent terminal not spawned — the caller is already an agent');
   }
@@ -3088,7 +3791,11 @@ async function websiteRequest(pathname, { method = 'GET', headers = {}, body = n
 // Claude Code from their phone, who wants the meeting made here and the link
 // handed back so they can join from where they actually are. Opening a browser
 // on an unattended desktop would just leave a stray tab in an empty call.
-async function createAndJoinMeet({ openBrowser = true, spawnAgent = true } = {}) {
+// onboardingCall: run the spawned agent through /onboarding-call instead of
+// /join-call, so it walks the user through name/voice/emoji/etc live rather
+// than having a normal conversation. Only meaningful alongside spawnAgent —
+// the MCP start_call route never sets it (see /api/call/start's spawnAgent:false).
+async function createAndJoinMeet({ openBrowser = true, spawnAgent = true, onboardingCall = false } = {}) {
   // A FRESH key per press. Reusing one returns the SAME room instead of a new
   // one, which is right for a retry of one press and wrong for a second press.
   const idempotencyKey = require('crypto').randomUUID();
@@ -3100,7 +3807,7 @@ async function createAndJoinMeet({ openBrowser = true, spawnAgent = true } = {})
   if (r.status === 200 && r.json?.meetingUri) {
     // Shape only — meetingUri/meetingCode are capabilities, never logged.
     console.log(`[meet-create] room ready (replay=${!!r.json.replay})`);
-    joinMeetUrl(r.json.meetingUri, { spawnAgent });
+    joinMeetUrl(r.json.meetingUri, { spawnAgent, onboardingCall });
     // …and get the HUMAN in too. The bot joins inside the Electron webview;
     // the user joins as themselves in their own browser, with their own
     // camera and Google account. Without this the button puts the bot in an
@@ -3151,6 +3858,83 @@ async function checkAuth() {
     request.on('error', () => resolve({ authenticated: false }));
     request.end();
   });
+}
+
+// ── ElevenLabs key gifting (#273) ───────────────────────────────────────────
+// Trusted people can be pre-assigned a working ElevenLabs key on the website,
+// keyed by their vibeconferencing.com account email. This is the app's half.
+//
+// Stateless by design — no separate "did they accept or decline" flag to get
+// stuck or contradict itself (an earlier draft tracked one and it caused
+// exactly that: a decline that also hid the one place left to undo it, and a
+// stale accept that survived past the situation that produced it). Instead,
+// two rules, both derived fresh from comparing the CURRENT key to the
+// grant's key — never from history:
+//   1. The current key differs from the gift (including "no key at all") →
+//      an offer to use it is available. Typing your own key IS the decline;
+//      there's nothing else to click, so there's no separate "not now".
+//   2. The key slot is EMPTY specifically at the moment it's DISPLAYED to
+//      someone (app launch, or a Settings/onboarding pane regaining focus —
+//      see the fillIfEmpty callers in app-settings.js and onboarding.js) →
+//      filled in automatically, announced after the fact. A LIVE clear (rule
+//      1) is left empty on purpose, so clearing the field to type your own
+//      key doesn't get silently fought.
+//
+// Last grant fetched from the server, or null. Read by Settings/onboarding so
+// the offer reflects reality without a round-trip on every paint.
+let ttsGrant = null;
+
+// Apply a grant's key as the server-owned TTS key. Shared by the launch-time
+// auto-fill (rule 2) and the explicit accept-tts-grant IPC (rule 1's button).
+function applyGrant(grant) {
+  tts.updateConfig({ apiKey: grant.apiKey });
+  stt.updateConfig({ apiKey: grant.apiKey });
+  store.set('ttsApiKey', grant.apiKey);
+  store.set('ttsApiKeySource', 'gifted');
+  verifyElevenLabsKey(grant.apiKey, { announce: true });
+  broadcastToRenderers('tts-grant-changed');
+}
+
+// GET /api/tts-grant (session-auth'd). Expected shape from the website:
+//   { granted: boolean, claimed: boolean, apiKey?: string }
+// granted=false: no gift for this account. claimed=true: the server has
+// delivered this grant to SOME client before — admin-facing bookkeeping only
+// (see api/admin/tts-grants.ts on the website side), not read by the app at
+// all: it goes true after the very first fetch and stays true forever, so it
+// can't distinguish anything the app needs to act on.
+// Best-effort: a failed check just means no offer appears, same as no grant.
+async function checkTtsGrant() {
+  try {
+    const r = await websiteRequest('/api/tts-grant');
+    ttsGrant = (r.status === 200 && r.json) ? r.json : null;
+  } catch {
+    ttsGrant = null;
+  }
+  // App launch IS a "displayed, and it's empty" moment (rule 2) — the panel
+  // is the first thing shown.
+  if (ttsGrant?.granted && !store?.get('ttsApiKey')) {
+    console.log('[electron] Auto-applied gifted ElevenLabs key (#273, key slot was empty at launch)');
+    applyGrant(ttsGrant);
+  } else {
+    broadcastToRenderers('tts-grant-changed');
+  }
+  return ttsGrant;
+}
+
+// Logout / account-switch (#273): a gifted key is per-ACCOUNT, not per-machine
+// like a BYO key, so it must not survive into whoever (or however) is signed
+// in next. A BYO key is left alone — only the gifted one is cleared.
+function clearGiftedTtsKey() {
+  try {
+    if (store?.get('ttsApiKeySource') === 'gifted') {
+      store.delete('ttsApiKey');
+      elevenLabsKeyProblem = null;
+      broadcastToRenderers('voice-status-changed');
+    }
+    store?.delete('ttsApiKeySource');
+    ttsGrant = null;
+    broadcastToRenderers('tts-grant-changed');
+  } catch { /* non-fatal */ }
 }
 
 // ── Liveness heartbeat ──────────────────────────────────────────────────────
@@ -3331,9 +4115,10 @@ function openGoogleLogin() {
           return checkAuth();
         }).then(data => {
           console.log('[electron] Auth check after login:', data?.authenticated ? `logged in as ${data.user.name}` : 'NOT authenticated');
-          if (panelView && !panelView.webContents.isDestroyed()) {
-            panelView.webContents.send('auth-changed');
-          }
+          broadcastAuthChanged();
+          // #273: a fresh sign-in may belong to a trusted email with a gift
+          // waiting — check right away rather than at next launch.
+          if (data?.authenticated) checkTtsGrant();
         }).catch(err => {
           console.error('[electron] Login cookie error:', err);
         });
@@ -3611,6 +4396,11 @@ function configureMeetSession(sess) {
     }
 
     if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
+      // Extension: a full-res side capture of the bot's own whiteboard share,
+      // independent of the (lower-res) video track of Meet's own render of
+      // it. This IS the moment the share actually engages, regardless of
+      // which branch below answers — see maybeStartShareCapture().
+      maybeStartShareCapture();
       // callback() may only fire once, so track whether it has — the catch
       // below must not answer again on behalf of a call that already did.
       let answered = false;
@@ -3715,11 +4505,11 @@ function configureMeetSession(sess) {
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing — supports --meet-url, --bot-name, --sync-url,
-// --website-url, --local-port, --profile, --devtools
+// --website-url, --local-port, --profile, --devtools, --bot-view
 // ---------------------------------------------------------------------------
 
 // Flags that take a value; used to catch the silently-ignored space form below.
-const KNOWN_VALUE_FLAGS = new Set(['profile', 'local-port', 'website-url', 'meet-url', 'bot-name']);
+const KNOWN_VALUE_FLAGS = new Set(['profile', 'local-port', 'website-url', 'meet-url', 'bot-name', 'bot-view']);
 
 function parseCLIArgs() {
   const args = process.argv.slice(1); // skip electron binary
@@ -3746,6 +4536,18 @@ function parseCLIArgs() {
 }
 
 const cliArgs = parseCLIArgs();
+
+// --record-calls=true is the "record every call" launch switch (used by the
+// test fleet for nightly runs, scripts/spawn-test-fleet.sh). It plugs into the
+// EXACT SAME trigger recordCallEnabled() already checks — VIBECONF_RECORD_CALL
+// — rather than inventing a second flag namespace, so this must run before
+// recordCallEnabled() is first evaluated (a bot-joined call starts recording
+// almost immediately). Ad-hoc boolean flag, same style as --devtools=true /
+// --no-agent-terminal=true above — NOT added to KNOWN_VALUE_FLAGS, which is
+// only for flags that require a companion value.
+if (cliArgs['record-calls'] === 'true') {
+  process.env.VIBECONF_RECORD_CALL = '1';
+}
 
 function requestedProfileName() {
   const raw = cliArgs.profile || process.env.VIBECONF_PROFILE;
@@ -3979,7 +4781,12 @@ function sendPlayTts(base64Audio, emoji, { unmutedAt, expectMore } = {}) {
   return new Promise((resolve) => {
     if (!meetView || meetView.webContents.isDestroyed()) {
       console.error('[electron] Meet view not available for audio playback');
-      return resolve();
+      // #253: it used to end here. The agent had already been told "Spoken",
+      // and nothing downstream contradicted it — so a farewell played into an
+      // empty room and the session believed it had said goodbye.
+      try { localServer.notePlaybackFailure('the Meet view was gone (call ended or torn down)'); }
+      catch { /* local server not up */ }
+      return resolve(false);
     }
     // #372: when the caller already unmuted (speakText does it BEFORE
     // synthesis so the 300ms settle overlaps the synth time), only wait out
@@ -4028,6 +4835,29 @@ function enqueueAudio(produceAndSend) {
 // slow chunk-2 synth can't play a stale tail after an interruption.
 let ttsStopGeneration = 0;
 
+// True once this call's ack phrases have been pre-warmed into tts.js's cache
+// — reset per call (not per app launch) because ack phrases and voice/provider
+// are per-bot config (store.get), and prewarming at app startup risked warming
+// under a stale/default config that a later-loading credential or per-bot
+// setting would replace before the first real speak. Fired on the earliest
+// active call status, well before the agent is ready to actually say anything.
+let ackCachePrewarmedForCall = false;
+
+function prewarmAckCache() {
+  if (ackCachePrewarmedForCall) return;
+  ackCachePrewarmedForCall = true;
+  const prefs = require('./preferences-schema').PREFERENCES;
+  const shortPhrases = store?.get('ackShortPhrases') || prefs.ackShortPhrases.default;
+  const longPhrases = store?.get('ackLongPhrases') || prefs.ackLongPhrases.default;
+  const ackPhrases = [...new Set([...shortPhrases, ...longPhrases])];
+  console.log(ts(), `🔥 [tts] pre-warming cache for ${ackPhrases.length} ack phrases`);
+  for (const phrase of ackPhrases) {
+    tts.synthesize(phrase).catch((err) => {
+      console.warn(ts(), '[tts] ack cache prewarm failed for', JSON.stringify(phrase), '—', err.message);
+    });
+  }
+}
+
 function speakText(text, voice, emoji) {
   // Sanitize markdown out of the spoken string only (#160).
   const spokenText = stripMarkdownForTts(text);
@@ -4053,7 +4883,9 @@ function speakText(text, voice, emoji) {
           voiceboxEngine: profile.preset_engine || profile.default_engine || 'kokoro',
         });
       } else {
-        tts.updateConfig({ provider: 'elevenlabs', voiceId: voice });
+        // A NAME or an id — resolve, because the two branches above both accept
+        // names and an agent has no reason to think this one is different.
+        tts.updateConfig({ provider: 'elevenlabs', voiceId: resolveElevenLabsVoice(voice) });
       }
     }
     // #372: start the mic-unmute NOW so its 300ms settle runs concurrently
@@ -4225,6 +5057,100 @@ async function listVoiceboxProfiles() {
 //
 // `category` ('premade' / 'cloned' / 'professional' / 'generated') lets the UI
 // surface custom/cloned voices distinctly if it wants.
+// ElevenLabs voice NAME (lowercased) → voice_id, for speak()'s voice override.
+// Empty until warmed, and empty is safe: the override falls back to treating the
+// string as an id, which is the behaviour that existed before.
+let elevenLabsIdByName = new Map();
+// Last key-related ElevenLabs failure, or null. Read by Settings so a dead key
+// is visible where it is EDITED, not only where it is used.
+let elevenLabsKeyProblem = null;
+
+// Check a key against ElevenLabs and record what is wrong with it, if anything.
+// Used both at startup (for a key stored long ago) and the moment one is pasted
+// or accepted as a gift. `announce`: only the "a key just became active" call
+// sites (paste, gift accept) pass true — the startup re-verify of an
+// already-working key must NOT re-announce on every launch.
+async function verifyElevenLabsKey(apiKey, { announce = false } = {}) {
+  try {
+    const { error } = await listElevenLabsVoices(apiKey);
+    // Only KEY problems stick. A timeout or a rate-limit says nothing about the
+    // key and would be a false accusation sitting in Settings.
+    const keyKinds = ['legacy_key', 'invalid_key', 'unauthorized', 'missing_permissions'];
+    elevenLabsKeyProblem = (error && keyKinds.includes(error.kind)) ? error : null;
+    if (elevenLabsKeyProblem) {
+      console.warn(ts(), '[electron] ElevenLabs key problem:', error.kind, '-', error.message);
+      try { localServer.addError(error.message); } catch { /* server not up yet */ }
+    } else if (!error) {
+      // A working key also refreshes the name cache, so "use George" resolves.
+      warmElevenLabsVoiceNames().catch(() => {});
+      if (announce) {
+        // Spoken out loud AND shown in Settings — pasting a key is exactly the
+        // moment someone can't tell whether anything happened, since nothing
+        // in the app makes a sound until a bot is in a call. Text kept in sync
+        // with the visual notice in app-settings.js/.html.
+        broadcastToRenderers('elevenlabs-key-validated', {
+          message: "ElevenLabs key is now active. Select a voice in your bot's preferences.",
+        });
+      }
+    }
+  } catch { elevenLabsKeyProblem = null; }
+  broadcastToRenderers('voice-status-changed');
+  return elevenLabsKeyProblem;
+}
+
+async function warmElevenLabsVoiceNames() {
+  try {
+    // A stored key that no longer authenticates used to be invisible here: the
+    // warm swallowed the error, so the only way to find out was to try picking a
+    // voice and read the failure — meanwhile every ElevenLabs call quietly fell
+    // back to a system voice. Classified by the same helper the paste path uses,
+    // so there is one copy of "what counts as a key problem".
+    const { voices, error } = await listElevenLabsVoices();
+    const keyKinds = ['legacy_key', 'invalid_key', 'unauthorized', 'missing_permissions'];
+    if (error && keyKinds.includes(error.kind)) {
+      console.warn(ts(), '[electron] ElevenLabs key problem at startup:', error.kind, '-', error.message);
+      try { localServer.addError(error.message); } catch { /* server not up yet */ }
+      elevenLabsKeyProblem = error;
+    } else if (!error) {
+      elevenLabsKeyProblem = null;
+    }
+    if (voices && voices.length) {
+      const map = new Map();
+      for (const v of voices) {
+        const full = String(v.name || '').trim();
+        if (!full) continue;
+        map.set(full.toLowerCase(), v.id);
+        // ALSO index the leading name on its own. ElevenLabs library voices are
+        // named "Chris - Charming, Down-to-Earth" / "River - Relaxed, Neutral,
+        // Informative" — a label, not a name. Nobody says that out loud, and an
+        // agent asked to "use George" sends "George".
+        //
+        // This is what made the first version of this fix useless: it matched
+        // exactly, which is correct against the API and wrong against every real
+        // account. Four more silent utterances before it showed up.
+        const short = full.split(/\s+[-–—]\s+/)[0].trim().toLowerCase();
+        // First wins, so a later voice cannot steal an earlier one's short name.
+        // Deterministic (API order) rather than arbitrary, and the full name
+        // always still resolves for whichever one loses.
+        if (short && short !== full.toLowerCase() && !map.has(short)) map.set(short, v.id);
+      }
+      elevenLabsIdByName = map;
+      console.log('[elevenlabs] cached', voices.length, 'voices as',
+        elevenLabsIdByName.size, 'names for speak(voice:…)');
+    }
+  } catch { /* best-effort; the id path still works */ }
+}
+
+// Resolve whatever speak() was handed into a real voice_id.
+//
+// A NAME wins over treating the string as an id, because ids are opaque
+// 20-character tokens that cannot collide with a human-readable name — so a
+// match here is unambiguous, and a miss still falls through to the old
+// behaviour for anyone who passes a genuine id.
+function resolveElevenLabsVoice(voice) {
+  return elevenLabsIdByName.get(String(voice).toLowerCase()) || voice;
+}
+
 async function listElevenLabsVoices(apiKey) {
   const { classifyVoicesError, classifyVoicesNetworkError } = require('./elevenlabs-errors.js');
   const key = apiKey || store?.get('ttsApiKey');
@@ -4269,10 +5195,76 @@ let ttsVoiceFallbackActive = false;
 const ERROR_NOTIFY_DEDUPE_MS = 30_000;
 const recentErrorNotifications = new Map(); // message -> timestamp
 
-function broadcastError(message) {
-  if (panelView && !panelView.webContents.isDestroyed()) {
-    panelView.webContents.send('extension-message', { action: 'error', message });
+// Sign-in state changed — tell every window that shows it.
+//
+// This used to send to panelView only, so signing in from App Settings updated
+// the main window's footer while the settings window you were looking at went on
+// saying you were signed out. Both renderers already listened; only one was ever
+// sent to. Any new window that shows auth state belongs in here.
+// ---------------------------------------------------------------------------
+// #229 — one place that knows which windows exist.
+//
+// Main-process events were addressed to a NAMED window:
+//
+//     panelView.webContents.send('auth-changed');
+//
+// so a renderer could register a perfectly correct listener and never receive
+// anything. Nothing errors; the state is right and the window simply never hears
+// about it, which presents as a broken FEATURE rather than a missing message.
+// That is why each instance cost a debugging session to find (#190, #143, the
+// App Settings sign-in state, and — the expensive one — #254, where teardown
+// waited on a reply from a window that was never asked).
+//
+// The tell was `claude-ready`: its fix was to write the same send three times,
+// one per window. Correctness depended on remembering every window at every call
+// site, and adding a window meant auditing every site to decide whether it
+// belonged there.
+//
+// So: renderer windows are enumerated HERE, once. Anything that is "state the
+// app has changed" broadcasts, and each renderer decides whether it cares —
+// panel.html already does exactly that, since the pop-outs load the same file
+// with ?screen=<name> and guard on it.
+//
+// NOT included: meetView. Its ~33 sends are page-injection COMMANDS (set the
+// emoji set, start a share, apply a caption language) where the destination is
+// part of the meaning. Those stay addressed.
+function rendererWindows() {
+  return [
+    panelView,            // the app's own UI
+    panelPopoutWindow,    // ...when popped out, it lives here instead
+    brainWindow,          // 🧠 — panel.html?screen=brain
+    troubleshootingWindow, // ⓘ — panel.html?screen=troubleshooting
+    appSettingsWindow,    // ⌘, — had ZERO sends and one dead listener
+    onboardingWindow,     // the setup wizard
+    mainWindow,           // the shell (some listeners live here)
+  ];
+}
+
+// Send to every live renderer. Guarded PER TARGET: these windows are all
+// user-closable, and one closed window must not stop the others — a real case,
+// not a theoretical one.
+function broadcastToRenderers(channel, ...args) {
+  let delivered = 0;
+  for (const w of rendererWindows()) {
+    try {
+      if (!w || w.isDestroyed?.()) continue;
+      const wc = w.webContents;
+      if (!wc || wc.isDestroyed()) continue;
+      wc.send(channel, ...args);
+      delivered += 1;
+    } catch { /* window went away mid-broadcast */ }
   }
+  return delivered;
+}
+
+function broadcastAuthChanged() {
+  // Was a hand-kept list of three windows. It was already missing the pop-outs,
+  // which load panel.html and register the same 'auth-changed' listener.
+  broadcastToRenderers('auth-changed');
+}
+
+function broadcastError(message) {
+  broadcastToRenderers('extension-message', { action: 'error', message });
 
   // If the app isn't in the foreground, surface the error as a system
   // notification so the user finds out without checking the app. We treat
@@ -4372,6 +5364,90 @@ function ensureAgentWorkdir() {
 // only happens when Claude Code is BOTH installed and signed in. So this flag means
 // "installed + authenticated + working", front-loaded during onboarding instead of
 // discovered mid-call. Persisted so we only confirm once.
+// #231: does the APP launch the agent on this machine?
+//
+// The gate is deliberately "are we responsible for launching it", not "is the
+// backend claude" — they happen to coincide today, and phrasing it this way
+// keeps the rule correct if Codex ever gains app-driven launch. Everything the
+// app nags about (Claude Code missing, Claude Code signed out) is only our
+// business when we are the one starting it. Someone driving LM Studio or a
+// hand-rolled MCP client should never be told to install Claude Code.
+function appLaunchesAgent() {
+  try { return prefValue('agentBackend') === 'claude'; } catch { return true; }
+}
+
+// Claude Code sign-in state, cached (#137).
+//
+// The check costs a LOGIN SHELL — `$SHELL -lc 'claude auth status'` — because
+// auth can come from environment variables and a GUI app has launchd's minimal
+// env, not the user's. That sources .zprofile/.zshrc, so on a machine with
+// nvm/conda/pyenv it is seconds, not milliseconds. Far too expensive to sit in
+// front of a join, which is the most latency-sensitive thing the app does.
+//
+// So it is answered in advance and kept warm. Tri-state throughout: null means
+// "couldn't tell", and callers must only act on an explicit false — a wrong
+// "please sign in" shown to someone already signed in teaches people to ignore
+// the warning, which is worse than never warning at all.
+let claudeAuthState = { authed: null, method: null, checkedAt: 0 };
+// Slow on purpose. This changes about once in a bot's lifetime — a user signs in
+// and never thinks about it again — so anything faster is spending a login shell
+// per interval to re-learn the same answer. The paths that matter (a join, the
+// panel regaining focus) refresh on demand.
+const CLAUDE_AUTH_POLL_MS = 15 * 60_000;
+// EXCEPT while we know they are signed out. That state is transient — someone is
+// about to fix it — and it is the one window where the answer is genuinely
+// likely to change, so it is worth spending shells on. It also self-terminates:
+// the moment they sign in, the poll drops back to the slow cadence.
+//
+// This is the alternative to putting a dismiss button on the banner. A dismiss
+// hides the warning whether or not the problem was fixed, and the one user it
+// helps most — someone who dismisses and then does NOT sign in — is exactly the
+// user who then hits the failure it exists to prevent.
+const CLAUDE_AUTH_POLL_UNAUTHED_MS = 60_000;
+// Focus is user-triggered and fires in bursts when someone alt-tabs, so the
+// on-demand refresh is throttled hard. 10 minutes, not 1: signing OUT is close
+// to a never-event, and every transition worth catching quickly has its own
+// signal already — markClaudeReady() the instant an agent connects, and a
+// refresh on the join itself. This is a backstop, and a backstop that spawns a
+// login shell should be stingy.
+const CLAUDE_AUTH_FOCUS_MAX_AGE_MS = 10 * 60_000;
+
+// Re-check, unless the cached answer is younger than maxAgeMs. The throttle is
+// what makes this safe to call from anything user-triggered (window focus, a
+// join) without risking a login shell per event.
+async function refreshClaudeAuth({ maxAgeMs = 0 } = {}) {
+  // Not our agent, not our question — and the check costs a login shell, so this
+  // also stops us polling forever on behalf of someone who will never install it.
+  if (!appLaunchesAgent()) {
+    claudeAuthState = { authed: null, method: 'not-managed', checkedAt: Date.now() };
+    broadcastClaudeAuth();
+    return claudeAuthState;
+  }
+  // A session that has ever pinged /claude-ready has PROVEN auth by using it —
+  // stronger evidence than the CLI's own answer, and free.
+  if (claudeReady) {
+    claudeAuthState = { authed: true, method: 'proven', checkedAt: Date.now() };
+    broadcastClaudeAuth();
+    return claudeAuthState;
+  }
+  if (maxAgeMs && Date.now() - claudeAuthState.checkedAt < maxAgeMs) return claudeAuthState;
+  try {
+    const { detectClaudeAuth } = require('./claude-install.js');
+    const r = await detectClaudeAuth();
+    claudeAuthState = { authed: r.authed, method: r.method, checkedAt: Date.now() };
+  } catch {
+    claudeAuthState = { authed: null, method: null, checkedAt: Date.now() };
+  }
+  broadcastClaudeAuth();
+  return claudeAuthState;
+}
+
+function broadcastClaudeAuth() {
+  try {
+    broadcastToRenderers('claude-auth-changed', claudeAuthState);
+  } catch { /* window went away */ }
+}
+
 let claudeReady = false;
 try { claudeReady = !!store.get('claudeReady'); } catch { /* store not ready */ }
 
@@ -4379,11 +5455,17 @@ function markClaudeReady(source) {
   const was = claudeReady;
   claudeReady = true;
   try { store.set('claudeReady', true); } catch { /* noop */ }
+  // #137: an agent that reached us has DEMONSTRATED sign-in — better evidence
+  // than the CLI's own answer, and it lands the instant someone finishes the
+  // login we asked for. Without this the indicator would keep saying "signed
+  // out" until the next poll, right after the user fixed it.
+  claudeAuthState = { authed: true, method: 'proven', checkedAt: Date.now() };
+  try { broadcastClaudeAuth(); } catch { /* panel not up yet */ }
   if (!was) {
     console.log('[electron] Claude Code confirmed ready (' + (source || '?') + ')');
-    try { if (panelView && !panelView.webContents.isDestroyed()) panelView.webContents.send('claude-ready', true); } catch { /* noop */ }
-    try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('claude-ready', true); } catch { /* noop */ }
-    try { if (onboardingWindow && !onboardingWindow.isDestroyed()) onboardingWindow.webContents.send('claude-ready', true); } catch { /* noop */ }
+    // Three hand-written sends until #229. That triple was the clearest symptom
+    // of the problem: correctness by remembering every window, at every site.
+    broadcastToRenderers('claude-ready', true);
   }
 }
 ipcMain.handle('get-claude-ready', () => claudeReady);
@@ -4455,7 +5537,28 @@ function promptInstallClaude() {
   }).catch(() => { /* dialog dismissed */ });
 }
 
-async function launchClaudeTerminal(meetCode) {
+// Claude Code is installed but signed out (#137). We still spawn the Terminal — that
+// window IS where you sign in — but say so, because the alternative is a bot tile that
+// appears and then does nothing while the room debugs the wrong thing. Non-blocking on
+// purpose: the dialog and the Terminal come up together, and the message names the
+// window to look at rather than describing an error.
+function notifyClaudeSignInNeeded() {
+  const parent = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : null;
+  dialog.showMessageBox(parent, {
+    type: 'info',
+    title: 'Claude Code needs a one-time sign-in',
+    message: 'Sign in to Claude Code in the Terminal window',
+    detail:
+      "Your bot will join the call, but nothing will drive it until Claude Code is signed in.\n\n"
+      + "A Terminal window is opening now. If it asks you to log in, do that first — then the "
+      + "bot starts responding. This is a one-time step.\n\n"
+      + "Until you sign in, the bot looks like it's in the meeting but ignoring everyone.",
+    buttons: ['OK'],
+    noLink: true,
+  }).catch(() => { /* dismissed */ });
+}
+
+async function launchClaudeTerminal(meetCode, { onboardingCall = false } = {}) {
   const { execFile } = require('child_process');
   // Test fleets drive the bot from the harness over MCP — they have no use for a
   // spawned agent, and every start_call left another Terminal window on the
@@ -4469,14 +5572,50 @@ async function launchClaudeTerminal(meetCode) {
     console.log('[electron] agent terminal suppressed (--no-agent-terminal)');
     return;
   }
+  // #231: on a machine we don't launch the agent for, launching `claude` is not
+  // a degraded experience, it is the wrong agent — the user runs Codex (or
+  // whatever else) themselves. Return, don't fall through: this used to be a
+  // throw caught by the detection catch below, which skipped the install/auth
+  // nag but still spawned a Claude Terminal on every join.
+  if (!appLaunchesAgent()) {
+    console.log('[electron] agent terminal not launched (agentBackend is not claude)');
+    return;
+  }
   // Claude Code drives the bot. If the `claude` CLI isn't installed, offer to install it
   // (or copy the command) instead of launching a Terminal into "command not found".
   // Detection failure is non-fatal — we still launch (don't block a user who has it).
+  // Resolved absolute path to the CLI, for the headless path below. A
+  // GUI-launched Electron app inherits launchd's minimal PATH, not the user's,
+  // so a bare `claude` in spawn() is an ENOENT waiting to happen — the Terminal
+  // path never had this problem because the shell it typed into sources a
+  // profile. detectClaude already knows the answer; keep it.
+  let claudeBin = 'claude';
   try {
     const { detectClaude } = require('./claude-install.js');
     const det = await detectClaude();
     if (!det.installed) { promptInstallClaude(); return; }
-  } catch (e) { console.error('[electron] claude detection failed (continuing to launch):', e.message); }
+    if (det.path) claudeBin = det.path;
+    // Installed ≠ signed in (#137). Read the CACHED answer — warming it happens
+    // at startup and on a timer, so this costs nothing on the join path.
+    //
+    // Deliberately not awaited: the check is a login shell, and making the user
+    // wait seconds for their Terminal to appear in order to tell them about a
+    // once-ever setup step is a bad trade. The dialog is non-blocking anyway, so
+    // a refresh started now surfaces a moment later if the cache was stale.
+    if (!claudeReady) {
+      // ONLY on an explicit false. null means "couldn't tell" — never nag on a guess.
+      if (claudeAuthState.authed === false) notifyClaudeSignInNeeded();
+      // Re-check in the background. Auth changes mid-session in exactly the
+      // direction that matters: the dialog's whole purpose is to get someone to
+      // sign in, and a stale false would nag them again next join for doing what
+      // we asked.
+      refreshClaudeAuth().then((a) => {
+        if (a.authed === false && claudeAuthState.authed !== false) notifyClaudeSignInNeeded();
+      }).catch(() => {});
+    }
+  } catch (e) {
+    console.error('[electron] claude detection failed (continuing to launch):', e && e.message);
+  }
   // #305: default to this profile's trusted agent dir instead of the untrusted
   // /tmp. An explicit Settings → "Claude Working Directory" still wins.
   const claudeDir = store.get('claudeWorkDir') || ensureAgentWorkdir();
@@ -4494,6 +5633,10 @@ async function launchClaudeTerminal(meetCode) {
   // pass --mcp-config + --strict-mcp-config so the spawned session targets this
   // app only. The default instance keeps using the global config.
   let mcpFlags = '';
+  // The same path, unescaped. The Terminal launcher needs it wrapped for two
+  // quoting layers; the headless launcher passes argv directly and must NOT get
+  // the escaped form.
+  let mcpConfigPath = '';
   if (!isDefaultInstance) {
     try {
       const mcpServerPath = app.isPackaged
@@ -4536,9 +5679,10 @@ async function launchClaudeTerminal(meetCode) {
           // exists: the user-scoped one carries a fallback port pointing at the
           // PRIMARY app, so an unpinned session would drive the wrong bot.
           vibeconferencing: {
-            command: 'node',
+            command: mcpNodeLauncher().command,
             args: [mcpServerPath],
             env: {
+              ...mcpNodeLauncher().env,
               VIBECONF_ROOM_ID: '',
               VIBECONF_BOT_NAME: botName,
               VIBECONF_BASE_URL: `http://127.0.0.1:${localServer.port}`,
@@ -4551,6 +5695,7 @@ async function launchClaudeTerminal(meetCode) {
       // Inner quotes escaped for the AppleScript `do script "…"` wrapper below;
       // quote the path because the profile userData dir contains spaces.
       mcpFlags = ` --mcp-config \\"${cfgPath}\\" --strict-mcp-config`;
+      mcpConfigPath = cfgPath;
       console.log('[electron] Profile', appProfile, '— launching Claude pinned to port', localServer.port,
         'with', Object.keys(cfg.mcpServers).length, 'MCP server(s):', Object.keys(cfg.mcpServers).join(', '));
     } catch (err) {
@@ -4571,14 +5716,31 @@ async function launchClaudeTerminal(meetCode) {
   const dangerousMode = store.get('dangerousMode');
   const dangerousFlag = dangerousMode ? ' --dangerously-skip-permissions' : '';
   // Model for the launched session (Settings → "Claude Model"). Empty now means
-  // sonnet rather than "no flag, let the CLI pick" — sonnet is the right default
-  // for this workload, and an implicit default that can shift under us is worse
-  // than an explicit one. Accepts an alias (sonnet / opus / haiku) or a full model
-  // id; sanitized in claude-model.js, since this is interpolated into an
-  // AppleScript-wrapped shell command. See tests/claude-model.test.mjs.
+  // opus rather than "no flag, let the CLI pick" — an implicit default that can
+  // shift under us is worse than an explicit one, and opus is statistically
+  // tied with sonnet on latency (#responsiveness audit) so it's a fine pick.
+  // Accepts an alias (sonnet / opus / haiku) or a full model id; sanitized in
+  // claude-model.js, since this is interpolated into an AppleScript-wrapped
+  // shell command. See tests/claude-model.test.mjs.
   const { claudeModelFlag } = require('./claude-model.js');
   const modelFlag = claudeModelFlag(store.get('claudeModel'));
-  const claudeCmd = `claude${dangerousFlag}${modelFlag}${mcpFlags} \\"/join-call ${meetCode} ${botName.replace(/"/g, '')}\\"`;
+  const slashCmd = onboardingCall ? 'onboarding-call' : 'join-call';
+  const claudeCmd = `claude${dangerousFlag}${modelFlag}${mcpFlags} \\"/${slashCmd} ${meetCode} ${botName.replace(/"/g, '')}\\"`;
+
+  // #242: run the agent as our own child instead, when asked to. Everything
+  // above (detection, auth nag, workdir, MCP config, bot name) is shared — the
+  // only difference is who owns the process and therefore who can see it work.
+  if (store.get('agentHosting') === 'headless') {
+    const launched = launchClaudeHeadless({
+      meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall,
+    });
+    // Falling through to the Terminal path on refusal is deliberate. The
+    // alternative is joining a call with an agent that never starts, which
+    // presents as a bot sitting silently in the room — the failure this whole
+    // issue exists to stop being invisible.
+    if (launched) return;
+    console.log('[electron] falling back to the Terminal launcher');
+  }
 
   // Open a Terminal window running the command. When Terminal isn't already
   // running, `do script` would spawn TWO windows — the auto-created launch
@@ -4634,7 +5796,92 @@ end tell`;
   });
 }
 
+// The headless agent, when there is one. Module-level for the same reason
+// claudeTerminalWindowIds is: leaving the call has to be able to end it, and an
+// orphaned agent still holding an MCP connection to this app is worse than an
+// orphaned Terminal window — it keeps acting.
+let headlessAgentChild = null;
+
+// Returns true if the agent is now running headlessly, false to fall back.
+function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall = false }) {
+  const { buildAgentArgs, headlessBlockedReason, spawnHeadlessAgent } = require('./agent-spawn.js');
+
+  const blocked = headlessBlockedReason({ dangerous: dangerousMode });
+  if (blocked) {
+    console.log('[electron] headless agent refused —', blocked);
+    return false;
+  }
+
+  // One agent at a time. A second join while one is live would put two agents on
+  // one bot, both driving the same local server — and both writing into one
+  // activity buffer, which is the interleaving the source abstraction is built
+  // to avoid rather than merge.
+  if (headlessAgentChild) {
+    console.log('[electron] headless agent already running — reusing it');
+    return true;
+  }
+
+  const { resolveClaudeModel } = require('./claude-model.js');
+  const args = buildAgentArgs({
+    meetCode,
+    botName,
+    dangerous: dangerousMode,
+    model: resolveClaudeModel(store.get('claudeModel')),
+    mcpConfigPath,
+    onboardingCall,
+  });
+
+  // The stream becomes the activity source BEFORE the spawn, so the very first
+  // event has somewhere to land. It also makes setAgentSession a no-op from here
+  // on — this agent fires the PostToolUse hook itself, and letting that rebind us
+  // to a transcript would wipe the feed one tool call in.
+  const source = localServer.useStreamAgentSource();
+
+  const env = {
+    ...process.env,
+    // Same reason as the Terminal path: the agent-activity hook and the MCP
+    // server must report to THIS app's port, not the default 7865.
+    VIBECONF_LOCAL_PORT: String(localServer.port),
+    // Restore a usable PATH. Electron's is launchd's, and the agent shells out
+    // (git, node, the MCP launcher) far more than the app does.
+    PATH: [process.env.PATH || '', '/opt/homebrew/bin', '/usr/local/bin',
+      path.join(process.env.HOME || '', '.local/bin')].filter(Boolean).join(':'),
+  };
+
+  console.log('[electron] launching headless agent:', claudeBin, args.join(' '));
+  headlessAgentChild = spawnHeadlessAgent({
+    claudePath: claudeBin,
+    args,
+    cwd: claudeDir,
+    env,
+    source,
+    onExit: ({ code, error }) => {
+      headlessAgentChild = null;
+      // A dead agent's last words must not sit in the pane looking live. The
+      // brain pane has no other way to tell — it renders a buffer, and a buffer
+      // that simply stops updating is indistinguishable from a quiet call.
+      if (error) source.push(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: `[agent failed to launch: ${error.code || error.message}]` }] } }) + '\n');
+      else if (code) source.push(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: `[agent exited with code ${code}]` }] } }) + '\n');
+      // Hand the activity feed back to the transcript tail. A dead stream
+      // source otherwise blocks setAgentSession for the rest of the app's
+      // life, and the next terminal-driven session's model/context markers
+      // silently vanish (observed on the 2026-08-10 Seth call).
+      localServer.releaseStreamAgentSource();
+    },
+  });
+  return true;
+}
+
 function closeClaudeTerminal() {
+  // Headless agents have no window to close — end the process instead. SIGTERM
+  // so the session can finish its current turn; the call is already over by the
+  // time this runs, so there is nothing to wait for beyond that.
+  if (headlessAgentChild) {
+    console.log('[electron] ending headless agent');
+    try { headlessAgentChild.kill('SIGTERM'); } catch { /* already gone */ }
+    headlessAgentChild = null;
+  }
+
   if (claudeTerminalWindowIds.length === 0) return;
   const { execFile } = require('child_process');
   const windowIds = [...claudeTerminalWindowIds];
@@ -4784,30 +6031,101 @@ if (isDefaultInstance) {
 // bot reports (no cross-session noise), and it works for BOTH launch paths
 // (app-spawned OR an existing session that ran /join-call). The app tails that
 // transcript onto the debug overlay (gated by the debugOverlay toggle).
+//
+// It also warns in-terminal when a bot joins a call on Fable (#responsiveness
+// audit: Fable averages ~17s stop→audio vs ~8s for Sonnet/Opus, almost entirely
+// think time) — via the join_call tool call itself, so it fires exactly once
+// per join, for whoever's actually watching that terminal.
 const AGENT_HOOK_CONTENT = `#!/usr/bin/env node
 // Auto-installed by Vibeconferencing — reports the Claude session's transcript
-// path to the local bot server for the debug-overlay agent-activity tail.
+// path to the local bot server for the debug-overlay agent-activity tail, and
+// warns (once per join_call) when the joining model is Fable.
 // Never blocks or breaks the agent: swallows all errors, exits 0 fast.
 const http = require('http');
+const fs = require('fs');
+// process.exit() can truncate a stdout write to a pipe that hasn't flushed yet
+// — a real Node gotcha, not hypothetical. Every exit path funnels through
+// done(), which waits on this if maybeWarnSlowModel started a write.
+let pendingWrite = null;
 let raw = '';
 process.stdin.on('data', (c) => { raw += c; });
 process.stdin.on('end', () => {
   let d = {};
   try { d = JSON.parse(raw); } catch (e) {}
+  maybeWarnSlowModel(d);
   const transcriptPath = d.transcript_path;
   if (!transcriptPath) return done();
   const port = process.env.VIBECONF_LOCAL_PORT || '7865';
   const body = JSON.stringify({ sessionId: d.session_id, transcriptPath });
+  // #201 made the control API require a bearer token, and this hook was not
+  // updated — so every POST here 401'd from Aug 1 and the agent session was
+  // never bound. Nothing surfaced it: the hook swallows all errors by design,
+  // and a hook that silently stops working looks exactly like a hook that has
+  // nothing to report. The visible symptom was the avatar never reaching
+  // 🧑‍💻 working (#339), because that state is driven entirely by this feed.
+  //
+  // Same 0600 file the MCP server reads, keyed by port.
+  let token = '';
+  try {
+    token = fs.readFileSync(
+      require('path').join(require('os').homedir(), '.vibeconferencing', 'local-tokens', port + '.token'),
+      'utf8').trim();
+  } catch (e) { /* no token file — server may be running with auth off */ }
+  const headers = { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) };
+  if (token) headers.authorization = 'Bearer ' + token;
   const req = http.request({
     host: '127.0.0.1', port, path: '/api/agent-session', method: 'POST',
-    headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
+    headers,
     timeout: 500,
   }, (res) => { res.resume(); res.on('end', done); });
   req.on('error', done);
   req.on('timeout', () => { req.destroy(); done(); });
   req.write(body); req.end();
 });
-function done() { process.exit(0); }
+
+// A PostToolUse hook's stdout JSON can carry a systemMessage shown to the user
+// in-terminal (not fed to the model, and non-blocking — the tool already ran).
+// Only checked on join_call itself, so this fires once per join, not once per
+// tool call.
+function maybeWarnSlowModel(d) {
+  try {
+    if (d.tool_name !== 'mcp__vibeconferencing__join_call') return;
+    const model = lastRealModel(d.transcript_path);
+    if (model && model.toLowerCase().includes('fable')) {
+      pendingWrite = new Promise((resolve) => {
+        process.stdout.write(JSON.stringify({
+          systemMessage: '⚠️ Joining on ' + model + ' — response latency tends to run much higher than Sonnet/Opus (~17s vs ~8s avg in our audits), almost entirely model think time. Switch with /model if responsiveness matters here.',
+        }), resolve);
+      });
+    }
+  } catch (e) { /* never let a warning attempt block the join */ }
+}
+
+// The model on the most recent real (non-<synthetic>) assistant turn, read
+// from the tail of the transcript. The turn that IS this join_call call is
+// always the last one at this point, so a small tail read is enough.
+function lastRealModel(transcriptPath) {
+  if (!transcriptPath) return null;
+  const size = fs.statSync(transcriptPath).size;
+  const tailBytes = Math.min(size, 65536);
+  const fd = fs.openSync(transcriptPath, 'r');
+  const buf = Buffer.alloc(tailBytes);
+  fs.readSync(fd, buf, 0, tailBytes, size - tailBytes);
+  fs.closeSync(fd);
+  const lines = buf.toString('utf-8').split('\\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].trim()) continue;
+    let entry; try { entry = JSON.parse(lines[i]); } catch (e) { continue; }
+    const model = entry && entry.type === 'assistant' && entry.message && entry.message.model;
+    if (model && model !== '<synthetic>') return model;
+  }
+  return null;
+}
+
+function done() {
+  if (pendingWrite) { pendingWrite.then(() => process.exit(0)); return; }
+  process.exit(0);
+}
 setTimeout(done, 1500); // never hang the agent
 `;
 
@@ -4883,10 +6201,8 @@ function ensureClaudeIntegration() {
 
   // Determine paths based on whether we're packaged or in dev
   const isPackaged = app.isPackaged;
-  const mcpServerRoot = isPackaged
-    ? path.join(process.resourcesPath, 'mcp-server')
-    : path.join(__dirname, '..', 'mcp-server');
-  const mcpServerPath = path.join(mcpServerRoot, 'server.js');
+  const mcpServerRoot = bundledMcpServerRoot();
+  const mcpServerPath = bundledMcpServerPath();
   const appLaunchCmd = isPackaged
     ? 'open -a Vibeconferencing'
     : `cd ${__dirname} && npx electron .`;
@@ -4896,17 +6212,12 @@ function ensureClaudeIntegration() {
   // source checkout has none until someone installs them in mcp-server/.
   const serverEntryExists = fs.existsSync(mcpServerPath);
   // The server needs BOTH the MCP SDK and zod to boot — check both, not just the SDK.
-  const serverDepsPresent = isPackaged || (
-    fs.existsSync(path.join(mcpServerRoot, 'node_modules', '@modelcontextprotocol', 'sdk')) &&
-    fs.existsSync(path.join(mcpServerRoot, 'node_modules', 'zod')));
+  const serverDepsPresent = mcpServerDepsPresent(mcpServerRoot);
 
   // A linked git worktree (`.git` is a file, not a dir) is a removable
   // checkout — repointing durable config at one strands the entry when the
   // worktree goes away.
-  let isTempWorktree = false;
-  if (!isPackaged) {
-    try { isTempWorktree = fs.statSync(path.join(__dirname, '..', '.git')).isFile(); } catch {}
-  }
+  const isTempWorktree = runningFromGitWorktree();
 
   let changed = false;
 
@@ -4930,7 +6241,12 @@ function ensureClaudeIntegration() {
   const localBaseUrl = `http://127.0.0.1:${DEFAULT_PORT}`;
   const configuredBotName = resolvedBotName();
   const currentMcp = claudeJson.mcpServers.vibeconferencing;
+  const nodeLauncher = mcpNodeLauncher();
+  // `command` is compared too, so installs written by an older build (which
+  // hardcoded 'node') get repaired on next launch instead of staying broken for
+  // exactly the users who can't diagnose it.
   const needsUpdate = !currentMcp ||
+    currentMcp.command !== nodeLauncher.command ||
     currentMcp.env?.VIBECONF_BASE_URL !== localBaseUrl ||
     currentMcp.env?.VIBECONF_BOT_NAME !== configuredBotName ||
     currentMcp.args?.[0] !== mcpServerPath;
@@ -4949,9 +6265,10 @@ function ensureClaudeIntegration() {
       currentMcp.args[0], 'instead of repointing durable config at', mcpServerPath);
   } else if (needsUpdate) {
     claudeJson.mcpServers.vibeconferencing = {
-      command: 'node',
+      command: nodeLauncher.command,
       args: [mcpServerPath],
       env: {
+        ...nodeLauncher.env,
         VIBECONF_ROOM_ID: '',
         VIBECONF_BOT_NAME: configuredBotName,
         VIBECONF_BASE_URL: localBaseUrl,
@@ -4966,7 +6283,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '36';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '59';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
@@ -4979,7 +6296,7 @@ function ensureClaudeIntegration() {
     const skillContent = fs.readFileSync(skillSourcePath, 'utf-8');
     fs.writeFileSync(skillPath, skillContent);
     fs.writeFileSync(versionFile, SKILL_VERSION);
-    console.log('[electron] Installed/updated skill v%s at %s', SKILL_VERSION, skillPath);
+    console.log(`[electron] Installed/updated skill v${SKILL_VERSION} at ${skillPath}`);
     changed = true;
   } else {
     console.log('[electron] Skill v%s already installed', SKILL_VERSION);
@@ -5003,11 +6320,65 @@ function ensureClaudeIntegration() {
         'utf-8',
       ));
       fs.writeFileSync(callVersionFile, SKILL_VERSION);
-      console.log('[electron] Installed/updated /call skill v%s', SKILL_VERSION);
+      console.log(`[electron] Installed/updated /call skill v${SKILL_VERSION}`);
       changed = true;
     }
   } catch (err) {
     console.warn('[electron] /call skill install failed:', err.message);
+  }
+
+  // --- Ensure global skill in ~/.claude/skills/onboarding-call/ ---
+  // /onboarding-call is /call's guided-setup sibling: same "start a brand-new
+  // call" mechanics, but the agent runs a scripted walkthrough (name, voice,
+  // emoji, whiteboard style, skills, after-call routine) instead of a normal
+  // conversation. Triggered by the panel's "Setup" button (setupCallBtn),
+  // which passes onboardingCall through createAndJoinMeet → launchClaudeTerminal
+  // / launchClaudeHeadless → buildAgentArgs, picking this slash command over
+  // /join-call. Same version gate as the other two, own directory.
+  try {
+    const onboardingSkillDir = path.join(claudeDir, 'skills', 'onboarding-call');
+    const onboardingVersionFile = path.join(onboardingSkillDir, '.version');
+    let onboardingInstalled = '';
+    try { onboardingInstalled = fs.readFileSync(onboardingVersionFile, 'utf-8').trim(); } catch { /* not yet */ }
+    if (onboardingInstalled !== SKILL_VERSION) {
+      fs.mkdirSync(onboardingSkillDir, { recursive: true });
+      fs.writeFileSync(path.join(onboardingSkillDir, 'SKILL.md'), fs.readFileSync(
+        isPackaged
+          ? path.join(process.resourcesPath, 'mcp-server', 'onboarding-call-skill.md')
+          : path.join(__dirname, '..', 'mcp-server', 'onboarding-call-skill.md'),
+        'utf-8',
+      ));
+      fs.writeFileSync(onboardingVersionFile, SKILL_VERSION);
+      console.log(`[electron] Installed/updated /onboarding-call skill v${SKILL_VERSION}`);
+      changed = true;
+    }
+  } catch (err) {
+    console.warn('[electron] /onboarding-call skill install failed:', err.message);
+  }
+
+  // --- Ensure global skill in ~/.claude/skills/emoji-set/ ---
+  // /emoji-set generates a themed avatar image set (nanobanana) plus a matching
+  // call background, and points a running bot at it via the `dir:`/`file:`
+  // preference forms. Same version gate as the other skills, own directory.
+  try {
+    const emojiSetSkillDir = path.join(claudeDir, 'skills', 'emoji-set');
+    const emojiSetVersionFile = path.join(emojiSetSkillDir, '.version');
+    let emojiSetInstalled = '';
+    try { emojiSetInstalled = fs.readFileSync(emojiSetVersionFile, 'utf-8').trim(); } catch { /* not yet */ }
+    if (emojiSetInstalled !== SKILL_VERSION) {
+      fs.mkdirSync(emojiSetSkillDir, { recursive: true });
+      fs.writeFileSync(path.join(emojiSetSkillDir, 'SKILL.md'), fs.readFileSync(
+        isPackaged
+          ? path.join(process.resourcesPath, 'mcp-server', 'emoji-set-skill.md')
+          : path.join(__dirname, '..', 'mcp-server', 'emoji-set-skill.md'),
+        'utf-8',
+      ));
+      fs.writeFileSync(emojiSetVersionFile, SKILL_VERSION);
+      console.log(`[electron] Installed/updated /emoji-set skill v${SKILL_VERSION}`);
+      changed = true;
+    }
+  } catch (err) {
+    console.warn('[electron] /emoji-set skill install failed:', err.message);
   }
 
   // Agent-activity overlay hook (independent of the MCP/skill version bumps).
@@ -5050,6 +6421,106 @@ function uninstallClaudeIntegration() {
   removeAgentActivityHook();
 
   console.log('[electron] Claude integration uninstalled.');
+}
+
+// ---------------------------------------------------------------------------
+// Codex integration (MCP config only)
+// ---------------------------------------------------------------------------
+
+function ensureCodexIntegration() {
+  const home = process.env.HOME || process.env.USERPROFILE;
+  const configPath = codexConfigPath(home);
+  const mcpServerRoot = bundledMcpServerRoot();
+  const mcpServerPath = bundledMcpServerPath();
+  const serverEntryExists = fs.existsSync(mcpServerPath);
+  const serverDepsPresent = mcpServerDepsPresent(mcpServerRoot);
+
+  if (!serverEntryExists) {
+    console.warn('[electron] Codex MCP server entrypoint missing at', mcpServerPath,
+      '- leaving Codex config untouched');
+    return false;
+  }
+  if (!serverDepsPresent) {
+    console.warn('[electron] mcp-server deps not installed (no node_modules/@modelcontextprotocol/sdk).',
+      'Run `npm install` (or pnpm) in', mcpServerRoot, '- leaving Codex config untouched');
+    return false;
+  }
+
+  const { content: existingCodexConfig, readable } = readCodexConfigSafe(configPath);
+  if (!readable) {
+    console.warn('[electron] ~/.codex/config.toml exists but is unreadable -',
+      'leaving Codex MCP config untouched to avoid clobbering other servers');
+    return false;
+  }
+
+  const currentServerPath = currentCodexMcpServerPath(existingCodexConfig);
+  const existingServerOk = !!currentServerPath && fs.existsSync(currentServerPath);
+  if (runningFromGitWorktree() && existingServerOk && currentServerPath !== mcpServerPath) {
+    console.warn('[electron] running from a git worktree - keeping existing Codex MCP server path',
+      currentServerPath, 'instead of repointing durable config at', mcpServerPath);
+    return false;
+  }
+
+  const localBaseUrl = `http://127.0.0.1:${DEFAULT_PORT}`;
+  const configuredBotName = resolvedBotName();
+  const nodeLauncher = mcpNodeLauncher();
+  const result = installCodexMcpConfig({
+    configPath,
+    command: nodeLauncher.command,
+    args: [mcpServerPath],
+    env: {
+      ...nodeLauncher.env,
+      VIBECONF_ROOM_ID: '',
+      VIBECONF_BOT_NAME: configuredBotName,
+      VIBECONF_BASE_URL: localBaseUrl,
+    },
+  });
+
+  if (!result.ok) {
+    console.warn('[electron] Codex MCP config not updated:', result.reason || 'unknown error');
+    return false;
+  }
+  if (result.changed) {
+    console.log('[electron] Updated Codex MCP config -> local server at', localBaseUrl, 'botName:', configuredBotName);
+    if (result.backupPath) console.log('[electron] Backed up previous Codex config:', result.backupPath);
+    console.log('[electron] Codex integration installed. Restart Codex to pick up MCP changes.');
+    return true;
+  }
+  console.log('[electron] Codex MCP config already pointing to local server');
+  return false;
+}
+
+function removeCodexIntegration() {
+  const home = process.env.HOME || process.env.USERPROFILE;
+  const result = uninstallCodexMcpConfig({ configPath: codexConfigPath(home) });
+  if (!result.ok) {
+    console.warn('[electron] Codex MCP config not removed:', result.reason || 'unknown error');
+    return false;
+  }
+  if (result.changed) {
+    console.log('[electron] Removed Codex MCP config from ~/.codex/config.toml');
+    if (result.backupPath) console.log('[electron] Backed up previous Codex config:', result.backupPath);
+  }
+  console.log('[electron] Codex integration uninstalled.');
+  return result.changed;
+}
+
+// Live "is it actually there" checks for the menu — deliberately independent
+// of the leave-no-trace store flags (those only gate re-install at boot; they
+// drift from ground truth if the user hand-edits the config files).
+function isClaudeIntegrationInstalled() {
+  const home = process.env.HOME || process.env.USERPROFILE;
+  const claudeJsonPath = path.join(home, '.claude.json');
+  const { readClaudeConfigSafe } = require('./claude-config.js');
+  const { config, readable } = readClaudeConfigSafe(claudeJsonPath);
+  return readable && !!config.mcpServers?.vibeconferencing;
+}
+
+function isCodexIntegrationInstalled() {
+  const home = process.env.HOME || process.env.USERPROFILE;
+  const configPath = codexConfigPath(home);
+  const { content, readable } = readCodexConfigSafe(configPath);
+  return readable && !!currentCodexMcpServerPath(content);
 }
 
 app.whenReady().then(async () => {
@@ -5098,6 +6569,10 @@ app.whenReady().then(async () => {
     const agentDir = aw.agentDirFor(profileDir);
     const newCfgPath = path.join(agentDir, 'config.json');
     const oldCfgPath = path.join(profileDir, 'config.json');
+    // Captured BEFORE the migration below can create newCfgPath — otherwise
+    // a profile with only a legacy loose config would look brand new by the
+    // time onboardingCallComplete is decided further down.
+    const isBrandNewProfile = !fs.existsSync(newCfgPath) && !fs.existsSync(oldCfgPath);
     let profileConfigDir = agentDir;
     try {
       fs.mkdirSync(agentDir, { recursive: true });
@@ -5125,6 +6600,18 @@ app.whenReady().then(async () => {
     const profileStore = new Store(profileConfigDir);
     migrateAppLevelKeys(appLevelStore, profileStore);
     store = new ScopedStore(appLevelStore, profileStore);
+
+    // `onboardingCallComplete`'s schema default is true — see
+    // preferences-schema.js — so every profile that predates this preference
+    // (or that this code simply never touches) reads as already onboarded,
+    // with no migration needed. A profile only needs to be told OTHERWISE at
+    // the one moment it's genuinely brand new: no config.json anywhere for
+    // it yet, meaning nothing (not even a "New bot" pre-seed — see
+    // seedNewBotName, which stamps this explicitly for that path) has ever
+    // run for this profile before.
+    if (isBrandNewProfile && profileStore.get('onboardingCallComplete') === undefined) {
+      profileStore.set('onboardingCallComplete', false);
+    }
   }
 
   // #366: inherit (or donate) the shared vibeconferencing.com login before
@@ -5211,10 +6698,11 @@ app.whenReady().then(async () => {
     const sanitize = (s) => String(s || '').replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '') || 'x';
     const hostShort = sanitize(require('os').hostname().split('.')[0]);
     const instanceId = `${hostShort}--${sanitize(appProfile || 'default')}`;
-    // Default ON (schema default) when the user hasn't set it — only an explicit
-    // `false` keeps logs local. `=== true` would ignore the schema default for
-    // unset installs, so use `!== false`.
-    const remoteLoggingOn = store?.get('remoteLogging') !== false;
+    // Default OFF (#255). Only an explicit `true` ships. The test used to be
+    // `!== false`, matching a default of on — left unchanged after the flip it
+    // would have kept every unset install shipping, which is precisely the
+    // population the new default is for.
+    const remoteLoggingOn = store?.get('remoteLogging') === true;
     configureRemoteLog({
       enabled: remoteLoggingOn,
       endpointBase: () => getWebsiteUrl(),
@@ -5224,6 +6712,11 @@ app.whenReady().then(async () => {
       // vc_session JWT mirror) so the backend authorizes log writes by USER — no
       // bundled secret. Read fresh each flush so login/logout takes effect live.
       sessionToken: () => (store && store.get('vcSessionToken')) || '',
+      // #230: ship promptly while a call is in ANY phase — including joining and
+      // waiting-to-be-admitted, which is precisely when someone is tailing the
+      // log to find out why a join is failing. Idle is the one state where
+      // nobody is waiting on a line, and it was producing most of the volume.
+      isActive: () => String(localServer.callStatus || 'idle') !== 'idle',
       meta: () => ({
         version: app.getVersion(),
         platform: process.platform,
@@ -5231,6 +6724,10 @@ app.whenReady().then(async () => {
         host: hostShort,
         port: localServer.port,
         room: localServer.roomId || null,
+        // #255: which CALL these lines belong to, so a slice shared from the
+        // feedback row can be found later. room alone is ambiguous — the same
+        // room can be joined twice.
+        callId: localServer.callId || null,
         callStatus: localServer.callStatus || null,
       }),
     });
@@ -5239,21 +6736,26 @@ app.whenReady().then(async () => {
     console.warn('[electron] Failed to configure remote logging:', err.message);
   }
 
-  // Check/install the machine-global Claude integration (~/.claude.json MCP entry,
-  // the /join-call skill, the agent-activity hook). This content is app-level, not
-  // profile-level — it always points bare-terminal `claude` at the fallback port
+  // Check/install the machine-global agent integration. This content is app-level,
+  // not profile-level — it always points bare-terminal agents at the fallback port
   // (DEFAULT_PORT). We run it from the single default instance purely as a
   // single-writer election so N running profiles don't race on the same global
   // files; named instances skip it (and self-pin their own --mcp-config instead).
   if (!isDefaultInstance) {
-    console.log('[electron] Skipping global Claude integration for named profile:', appProfile);
-  } else if (store.get('claudeIntegrationRemoved') === true) {
+    console.log('[electron] Skipping global agent integration for named profile:', appProfile);
+  } else if (prefValue('agentBackend') === 'codex') {
+    if (store.get('codexIntegrationRemoved') === true) {
+      console.log('[electron] Codex integration NOT installed (user uninstalled it - leave-no-trace flag set)');
+    } else {
+      ensureCodexIntegration();
+    }
+  } else if (prefValue('agentBackend') === 'claude' && store.get('claudeIntegrationRemoved') === true) {
     // "Leave no trace": the user explicitly uninstalled the Claude integration
     // (menu → Uninstall Claude Integration). Without this gate the next launch
     // would silently re-write ~/.claude.json / the skill / the hook, undoing
     // the uninstall. Re-enable via menu → Install Claude Integration.
     console.log('[electron] Claude integration NOT installed (user uninstalled it — leave-no-trace flag set)');
-  } else {
+  } else if (prefValue('agentBackend') === 'claude') {
     ensureClaudeIntegration();
   }
 
@@ -5261,31 +6763,49 @@ app.whenReady().then(async () => {
   // and named profiles all opt out, and nothing installs during a call.
   startUpdateChecks();
 
+  // #137: answer "is Claude Code signed in?" now, while nobody is waiting, so
+  // the join path can read it instantly instead of paying for a login shell.
+  //
+  // Startup CHECKS but does not warn: a dialog at launch is a nag about a
+  // problem the user does not have yet — they may have opened the app to change
+  // a setting. The warning belongs where it is actionable, on the join. The
+  // panel indicator carries the state in the meantime.
+  // Self-scheduling rather than setInterval, so the cadence can follow the state:
+  // brisk while signed out (transient, about to change), slow otherwise.
+  let claudeAuthTimer = null;
+  const scheduleClaudeAuthPoll = () => {
+    const delay = claudeAuthState.authed === false ? CLAUDE_AUTH_POLL_UNAUTHED_MS : CLAUDE_AUTH_POLL_MS;
+    claudeAuthTimer = setTimeout(() => {
+      refreshClaudeAuth().catch(() => {}).finally(scheduleClaudeAuthPoll);
+    }, delay);
+    if (claudeAuthTimer.unref) claudeAuthTimer.unref();
+  };
+  refreshClaudeAuth().catch(() => {}).finally(scheduleClaudeAuthPoll);
+
   // First-run setup wizard: shown once for the default instance (guarded by the
   // per-profile onboardingComplete flag); re-runnable from the app menu. The
   // isDefaultInstance gate is what actually keeps --profile instances from
   // auto-showing it — the flag is not in APP_LEVEL_KEYS, so each profile has
   // its own copy and would otherwise re-run the wizard on first launch.
-  if (isDefaultInstance && !store.get('onboardingComplete')) {
+  // Anything below that triggers a macOS TCC prompt is deferred while the wizard
+  // is up. First launch used to fire the microphone ask, a screen-capture probe
+  // and browser-automation AppleScript within the same tick — three or four
+  // system dialogs stacked on the wizard before the user had read a word about
+  // what any of them were for. The wizard has a Permissions step that names each
+  // one and its reason; that step should be where they're asked. See
+  // startPermissionPrompts(), called from onboarding:finish.
+  const onboardingPending = isDefaultInstance && !store.get('onboardingComplete');
+  if (onboardingPending) {
     createOnboardingWindow();
   }
 
-  // Request microphone permission (needed for audio pipeline even with virtual mic)
-  if (process.platform === 'darwin') {
-    try {
-      const micAccess = systemPreferences.getMediaAccessStatus('microphone');
-      console.log('[electron] Microphone permission:', micAccess);
-      if (micAccess !== 'granted') {
-        systemPreferences.askForMediaAccess('microphone').then((granted) => {
-          console.log('[electron] Microphone permission after prompt:', granted ? 'granted' : 'denied');
-        }).catch(err => {
-          console.error('[electron] Microphone permission prompt failed:', err.message);
-        });
-      }
-    } catch (err) {
-      console.error('[electron] Microphone permission check failed:', err.message);
-    }
-  }
+  // No microphone ask. The comment here used to claim it was "needed for the audio
+  // pipeline even with virtual mic"; it wasn't. The bot's mic is an AudioContext
+  // (VirtualMic in page-inject.js) and getUserMedia is intercepted before it ever
+  // reaches Chromium, so no capture device is opened. Verified on a signed build
+  // with Microphone DENIED: the bot joined a Meet and was heard speaking.
+  // Deferring this prompt to the wizard was the first fix; deleting it is the
+  // right one, and the wizard no longer offers the row either.
 
   // Check screen recording permission (needed for whiteboard share)
   if (process.platform === 'darwin') {
@@ -5293,7 +6813,12 @@ app.whenReady().then(async () => {
     console.log('[electron] Screen recording permission at launch:', screenAccess);
     localServer.setPermission('screenRecording', screenAccess);
 
-    if (screenAccess !== 'granted' && SUPPRESS_NOTIFICATIONS) {
+    if (screenAccess !== 'granted' && onboardingPending) {
+      // First run: the wizard's Permissions step asks for this, with a sentence
+      // saying why. Probing here would raise the system prompt (and, if already
+      // denied, a blocking dialog) on top of a wizard the user hasn't read yet.
+      console.log('[electron] Deferring screen-capture probe until the setup wizard asks');
+    } else if (screenAccess !== 'granted' && SUPPRESS_NOTIFICATIONS) {
       // Headless/test instance (e.g. a CI runner or the agent-less test fleet):
       // there's no interactive user and the smoke doesn't share, so skip both the
       // capture probe AND — critically — the blocking dialog below. Under a
@@ -5385,6 +6910,15 @@ app.whenReady().then(async () => {
   // a profile name to the voicebox provider (best-effort: silently empty if
   // Voicebox isn't running).
   listVoiceboxProfiles().then((ps) => { voiceboxProfileNameSet = new Set(ps.map((p) => p.name)); voiceboxProfilesById = new Map(ps.map((p) => [p.id, p])); }).catch(() => {});
+  // …and for ElevenLabs voice NAMES. Without this, speak(voice: 'George') sent
+  // "George" to the API as a voice_id and 404'd — the bot simply went silent,
+  // which is how this surfaced (three dead utterances in a guided setup call:
+  // Chris, River, George).
+  //
+  // Names are what an agent has to work with: list_voices returns both, but a
+  // conversation is about "the British one", not nPczCjzI2devNBz1zQrb. The
+  // other two providers already accept names; ElevenLabs was the odd one out.
+  warmElevenLabsVoiceNames();
 
   // P2 real voices: if no ElevenLabs key is stored, load it from a credentials file
   // pointed at by VIBECONF_CREDENTIALS_FILE (de-hardcoded — no baked-in personal
@@ -5451,6 +6985,9 @@ app.whenReady().then(async () => {
   checkAuth().then(data => {
     if (data.authenticated) {
       console.log('[electron] Already logged in as', data.user.name);
+      // #273: an already-logged-in launch is exactly when a grant made since
+      // the last run needs to surface — nothing else re-checks it.
+      checkTtsGrant();
     } else {
       console.log('[electron] Not logged in — user can click Log in button');
     }
@@ -5476,6 +7013,10 @@ app.whenReady().then(async () => {
 
   function startMeetDetection() {
     if (meetDetectionInterval) return;
+    // Polling sends the same Apple Events the wizard's Grant button does, so
+    // once this runs the Automation decision has been put to the user either
+    // way, and the wizard can read the real status instead of assuming unknown.
+    if (process.platform === 'darwin') { try { store.set('automationProbed', true); } catch { /* ignore */ } }
     const { execFile } = require('child_process');
     let pollInFlight = false;
 
@@ -5573,7 +7114,16 @@ allURLs`;
           }
           return;
         }
-        console.log(`[electron] Meet poll ok (${elapsed}s)`);
+        // #230: a successful poll that found nothing is not information, and at
+        // one line every 5s it was the single biggest source of log volume — on
+        // an IDLE app, since this poll stops once the bot is in a call. Remote
+        // shipping flushes whenever the queue is non-empty, so that one line
+        // kept an idle instance POSTing every 3s indefinitely.
+        //
+        // Log a SLOW poll (the AppleScript can hang on permissions or a busy
+        // browser, and that is worth seeing), and let the detection changes
+        // below speak for the rest. The failure paths above already log.
+        if (elapsed >= 2) console.log(`[electron] Meet poll slow (${elapsed}s)`);
 
         const lines = (stdout || '').trim().split('\n').map((l) => l.trim()).filter(Boolean);
         const urls = lines.filter((l) => l.startsWith('MEET:')).map((l) => l.slice(5))
@@ -5615,9 +7165,7 @@ allURLs`;
         if (slackHuddleUrl && slackHuddleUrl !== detectedSlackHuddle) {
           detectedSlackHuddle = slackHuddleUrl;
           console.log('[electron] Slack huddle detected:', slackHuddleUrl);
-          if (panelView && !panelView.webContents.isDestroyed()) {
-            panelView.webContents.send('slack-huddle-detected', { url: slackHuddleUrl });
-          }
+          broadcastToRenderers('slack-huddle-detected', { url: slackHuddleUrl });
           const { Notification } = require('electron');
           if (Notification.isSupported() && !SUPPRESS_NOTIFICATIONS) {
             const n = new Notification({
@@ -5630,16 +7178,14 @@ allURLs`;
           }
         } else if (!slackHuddleUrl && detectedSlackHuddle) {
           detectedSlackHuddle = null;
-          if (panelView && !panelView.webContents.isDestroyed()) panelView.webContents.send('slack-huddle-detected', null);
+          broadcastToRenderers('slack-huddle-detected', null);
         }
 
         if (meetUrl && meetUrl !== detectedMeetUrl) {
           detectedMeetUrl = meetUrl;
           const meetCode = meetUrl.match(/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/)?.[1] || '';
           console.log('[electron] Meet detected:', meetCode);
-          if (panelView && !panelView.webContents.isDestroyed()) {
-            panelView.webContents.send('meet-detected', { url: meetUrl, meetCode });
-          }
+          broadcastToRenderers('meet-detected', { url: meetUrl, meetCode });
           // Show macOS notification
           const { Notification } = require('electron');
           if (Notification.isSupported() && !SUPPRESS_NOTIFICATIONS) {
@@ -5658,9 +7204,7 @@ allURLs`;
           }
         } else if (!meetUrl && detectedMeetUrl) {
           detectedMeetUrl = null;
-          if (panelView && !panelView.webContents.isDestroyed()) {
-            panelView.webContents.send('meet-detected', null);
-          }
+          broadcastToRenderers('meet-detected', null);
         }
       });
     }
@@ -5670,7 +7214,275 @@ allURLs`;
     meetDetectionInterval = setInterval(pollForMeet, 5000);
   }
 
-  startMeetDetection();
+  // Not while the wizard is up: the first poll fires immediately and sends Apple
+  // Events to System Events, Chrome, Brave and Safari, which is a TCC prompt per
+  // browser — the bulk of the first-run pile-up. onboarding:finish starts it.
+  if (!onboardingPending) startMeetDetection();
+  else deferredStarts.push(startMeetDetection);
+
+  // --- Calendar auto-join (#299): poll vibeconferencing.com for this user's
+  // upcoming Google Calendar events and auto-join any where this bot profile
+  // has been "invited" — a placeholder guest email (calendarIdentityEmail
+  // pref) or a `#vibeconf:<botName>` tag in the event title or description.
+  // See calendar-auto-join.js for the pure matching/selection/eviction logic
+  // this glues together with IO.
+  let calendarPollInterval = null;
+  let calendarPollInFlight = false;
+  // Tracks the last-seen poll outcome so state-change transitions (e.g.
+  // connected → not-connected) log once instead of every ~60s tick — same
+  // idle-log-suppression spirit as startMeetDetection's "poll found nothing"
+  // silence.
+  let lastCalendarPollState = null;
+
+  // eventDedupeKey -> Timeout handle for a join scheduled to fire at the event's
+  // actual start time (see scheduleCalendarJoin below). Deliberately IN
+  // MEMORY ONLY, not persisted: on an app restart, any event that hasn't
+  // actually joined yet (only actually-joined events go into the persisted
+  // joinedCalendarEventIds store, at the moment the timer fires — not here,
+  // at scheduling time) should be re-detected and re-scheduled from
+  // scratch, not silently skipped because a schedule "happened" in a
+  // process that no longer exists.
+  const scheduledCalendarJoins = new Map();
+
+  // Recomputes the module-scope latestUpcomingCalendarEvents (declared near
+  // the other cross-closure state, ~line 2723 — setupIPC's
+  // get-upcoming-calendar-events handler reads it from there, and is a
+  // separate top-level function that can't see this closure's locals) every
+  // poll tick, and pushes proactively to the panel so its "upcoming
+  // meeting" notice updates without a refresh.
+  function pushUpcomingCalendarEvents(events) {
+    latestUpcomingCalendarEvents = events;
+    if (panelView && !panelView.webContents.isDestroyed()) {
+      panelView.webContents.send('calendar-upcoming', { events });
+    }
+  }
+
+  // Fires at (or a hair past) the event's real start time — see
+  // scheduleCalendarJoin. This is the ONLY place joinedCalendarEventIds gets
+  // written, and it writes right before actually attempting the join, not
+  // at scheduling time — a failed join shouldn't retry-loop every poll cycle
+  // for the same event, but a join that was merely SCHEDULED and never fired
+  // (e.g. the app quit first) should be reconsidered on the next run, not
+  // treated as handled.
+  function performScheduledCalendarJoin(event, meetUrl) {
+    scheduledCalendarJoins.delete(eventDedupeKey(event));
+    const joinedIds = evictStaleEventIds(store.get('joinedCalendarEventIds') || {}, Date.now());
+    store.set('joinedCalendarEventIds', { ...joinedIds, [eventDedupeKey(event)]: Date.now() });
+    console.log(`[calendar] Auto-joining calendar event "${event.summary || event.id}"`);
+    activateMeetProvider(); // no-op if already on a live Meet view
+    joinMeetUrl(meetUrl, { spawnAgent: true, calendarEvent: event });
+  }
+
+  // Schedules (rather than immediately performing) the join for a just-
+  // matched event, timed to fire at its actual start — not up to 5 minutes
+  // early just because that's when it first entered the lookahead window.
+  // Idempotent: a later poll tick re-seeing the same still-pending event is
+  // a no-op (scheduledCalendarJoins already has it), so this is safe to call
+  // every time selectEventToJoin picks the same event across polls.
+  function scheduleCalendarJoin(event, meetUrl) {
+    const key = eventDedupeKey(event);
+    if (scheduledCalendarJoins.has(key)) return;
+    const delayMs = Math.max(0, msUntilStart(event, Date.now()) || 0);
+    console.log(`[calendar] Scheduling auto-join for "${event.summary || event.id}" in ${Math.round(delayMs / 1000)}s`);
+    const timer = setTimeout(() => performScheduledCalendarJoin(event, meetUrl), delayMs);
+    scheduledCalendarJoins.set(key, timer);
+  }
+
+  // Near-term fix for "the bot that should join isn't even running": ANY
+  // currently-running profile sees the SAME upcoming-events list (all
+  // profiles on this machine share one vibeconferencing.com login, so the
+  // event data isn't per-bot) — so on every poll tick, this profile also
+  // checks events against every OTHER locally-configured profile's identity/
+  // tag, not just its own, and launches (or focuses, if already running —
+  // launchOrFocusProfile handles both) whichever one actually matches.
+  //
+  // Deliberately does NOT hand off the specific event/timer across the
+  // process boundary — the newly-launched (or focused) profile's own
+  // startCalendarPolling() re-fetches, re-matches, and re-schedules on its
+  // own very first poll, a few seconds later, well inside the 5-minute
+  // window. Reuses that profile's entire already-built pipeline instead of
+  // inventing a cross-process handoff protocol.
+  //
+  // Real gap this does NOT close (see the tracked "parent process" issue):
+  // if literally no profile is running at all, nothing is executing to
+  // notice anything, for any profile, including this cross-check. This is
+  // only a fix for "at least one bot happens to be open".
+  function checkOtherProfilesForCalendarMatch(events) {
+    if (!events.length) return;
+    let otherNames;
+    try {
+      otherNames = profileManager.listProfileNames(PROFILES_ROOT).filter((n) => n !== appProfile);
+    } catch { return; }
+    if (!otherNames.length) return;
+
+    const now = Date.now();
+    // Separate dedupe namespace from joinedCalendarEventIds (that one means
+    // "I actually joined this"; this one means "I already launched/focused
+    // another profile for this event") — keyed by
+    // `<eventDedupeKey>:profileName` so two different other-profiles matching
+    // the same event don't collide, and (same reason as joinedCalendarEventIds
+    // — see eventDedupeKey) so yesterday's occurrence of a recurring meeting
+    // can't suppress today's launch.
+    const launched = evictStaleEventIds(store.get('launchedForOtherProfileEventIds') || {}, now);
+    let launchedChanged = false;
+
+    for (const name of otherNames) {
+      let fields;
+      try { fields = profileManager.readConfigFields(path.join(PROFILES_ROOT, name)); } catch { continue; }
+      if (!fields.calendarIdentityEmail && !fields.botName) continue; // nothing to match against
+      for (const e of events) {
+        if (!e || !e.id || !isEventUpcoming(e, now)) continue;
+        if (!matchesCalendarEvent(e, { calendarIdentityEmail: fields.calendarIdentityEmail, botName: fields.botName })) continue;
+        const dedupeKey = `${eventDedupeKey(e)}:${name}`;
+        if (Object.prototype.hasOwnProperty.call(launched, dedupeKey)) continue;
+        launched[dedupeKey] = now;
+        launchedChanged = true;
+        console.log(`[calendar] Event "${e.summary || e.id}" matches profile "${name}" (not this one) — launching/focusing it.`);
+        if (launchOrFocusProfileRef) {
+          launchOrFocusProfileRef(name).catch((err) => {
+            console.warn(`[calendar] Failed to launch/focus profile "${name}" for calendar match:`, err.message);
+          });
+        }
+      }
+    }
+    if (launchedChanged) store.set('launchedForOtherProfileEventIds', launched);
+  }
+
+  // Schedule, at most, one matching event's join per tick — a persisted
+  // dedupe entry only exists once a join has actually fired (see
+  // performScheduledCalendarJoin); scheduledCalendarJoins covers the "already
+  // has a pending timer" case in between.
+  function handleCalendarEvents(events) {
+    checkOtherProfilesForCalendarMatch(events);
+
+    const calendarIdentityEmail = store.get('calendarIdentityEmail') || '';
+    const botName = resolvedBotName();
+    const joinedIds = evictStaleEventIds(store.get('joinedCalendarEventIds') || {}, Date.now());
+    // Persist the evicted map even if nothing matches this tick, so the
+    // store doesn't grow unbounded while the app sits idle.
+    store.set('joinedCalendarEventIds', joinedIds);
+    // Selection must also skip events already scheduled (but not yet
+    // actually joined) — merge that in-memory set with the persisted one
+    // purely for this lookup; the two stay otherwise independent.
+    // Both maps are keyed by eventDedupeKey (id + occurrence start), never the
+    // bare event id — see eventDedupeKey for why a recurring series' id alone
+    // would make "joined once" mean "never join again".
+    const excludeIds = { ...joinedIds };
+    for (const key of scheduledCalendarJoins.keys()) excludeIds[key] = true;
+
+    // Visibility for testing/debugging: only when the poll actually returned
+    // something, so this stays silent during normal idle stretches (the
+    // common case) but shows exactly why an event a user is watching for
+    // didn't fire — too far outside the lookahead window, doesn't match the
+    // identity/tag, or already handled — rather than a poll that "saw" the
+    // event but said nothing at all.
+    if (events.length > 0) {
+      const now = Date.now();
+      const summaries = events.map((e) => {
+        const delta = e ? msUntilStart(e, now) : null;
+        const minutesUntil = delta === null ? null : Math.round(delta / 60000);
+        const matched = matchesCalendarEvent(e, { calendarIdentityEmail, botName });
+        const upcoming = isEventUpcoming(e, now);
+        const already = !!(e && e.id && Object.prototype.hasOwnProperty.call(excludeIds, eventDedupeKey(e)));
+        const reason = already ? 'already handled/scheduled' : !upcoming ? 'outside 5m window' : !matched ? 'no identity/tag match' : 'MATCH';
+        return `"${(e && e.summary) || (e && e.id) || '(untitled)'}" (raw start="${e && e.start}", starts ${minutesUntil == null ? '?' : minutesUntil + 'm'} from now, ${reason})`;
+      });
+      console.log(`[calendar] Poll saw ${events.length} event(s): ${summaries.join('; ')}`);
+    }
+
+    // Display-only: everything matching within the next 24h, independent of
+    // the 5-minute join-scheduling gate below — this is what the panel's
+    // "upcoming meeting" notice shows, and it deliberately includes events
+    // the 5-minute logic hasn't (and won't yet) act on.
+    pushUpcomingCalendarEvents(selectUpcomingMatches(events, { calendarIdentityEmail, botName, now: Date.now() }));
+
+    const { event, extraMatchCount } = selectEventToJoin(events, {
+      calendarIdentityEmail,
+      botName,
+      joinedIds: excludeIds,
+      now: Date.now(),
+    });
+    if (!event) return;
+
+    if (extraMatchCount > 0) {
+      console.warn(`[calendar] ${extraMatchCount} additional matching event(s) this tick — `
+        + 'only scheduling one, the rest will be reconsidered next poll.');
+    }
+
+    const meetUrl = resolveCalendarMeetUrl(event.hangoutLink);
+    if (!meetUrl) {
+      console.warn(`[calendar] Matched event "${event.summary || event.id}" but its hangoutLink `
+        + `("${event.hangoutLink}") isn't a recognizable Meet URL — skipping, still marking as handled.`);
+      store.set('joinedCalendarEventIds', { ...joinedIds, [eventDedupeKey(event)]: Date.now() });
+      return;
+    }
+
+    scheduleCalendarJoin(event, meetUrl);
+  }
+
+  function startCalendarPolling() {
+    if (calendarPollInterval) return;
+
+    async function pollCalendar() {
+      if (calendarPollInFlight) return;
+      // Reuse the exact in-call guard startMeetDetection uses — no reason to
+      // poll or auto-join while already in a call.
+      if (localServer.callStatus === 'in-call') return;
+      calendarPollInFlight = true;
+      try {
+        const r = await websiteRequest('/api/calendar/upcoming');
+
+        if (r.status === 200 && r.json && r.json.ok) {
+          if (lastCalendarPollState !== 'ok') {
+            console.log('[calendar] Connected — polling for auto-join events');
+            lastCalendarPollState = 'ok';
+          }
+          handleCalendarEvents(r.json.events || []);
+          return;
+        }
+
+        // Every path below is expected/transient (not signed in, Calendar not
+        // connected yet, offline, upstream hiccup) — skip this poll quietly,
+        // and log only on a STATE CHANGE so an idle app isn't shipping a log
+        // line every ~60s tick.
+        let state = 'unknown';
+        let message = `unexpected response (status ${r.status})`;
+        if (r.status === 401) {
+          state = 'signed-out';
+          message = 'not signed in';
+        } else if (r.json && r.json.code === 'calendar-not-connected') {
+          state = 'not-connected';
+          message = 'signed in, but Calendar access not yet connected';
+        } else if (r.json && r.json.code === 'google-api-error') {
+          state = 'google-api-error';
+          message = `Google API error: ${r.json.detail || 'unknown'}`;
+        } else if (r.status === 0) {
+          state = 'offline';
+          message = `offline/network error: ${r.error || 'unknown'}`;
+        }
+        if (state !== lastCalendarPollState) {
+          console.log(`[calendar] Poll skipped (${message})`);
+          lastCalendarPollState = state;
+        }
+      } catch (err) {
+        if (lastCalendarPollState !== 'error') {
+          console.error('[calendar] Poll failed:', err && err.message);
+          lastCalendarPollState = 'error';
+        }
+      } finally {
+        calendarPollInFlight = false;
+      }
+    }
+
+    console.log('[electron] Calendar auto-join polling started');
+    pollCalendar();
+    calendarPollInterval = setInterval(pollCalendar, 60000);
+  }
+
+  // Same onboarding-deferral reasoning as startMeetDetection: don't let a
+  // background poll (and a possible surprise auto-join) interrupt the wizard.
+  if (!onboardingPending) startCalendarPolling();
+  else deferredStarts.push(startCalendarPolling);
 
   // IPC: join detected meet and launch Claude
   ipcMain.on('join-detected-meet', (_event, { url, meetCode }) => {
@@ -5734,6 +7546,64 @@ allURLs`;
   }
 });
 
+// Closing the main window quits the app, and the red ✕ sits a few pixels from
+// controls people use constantly. Mid-call that costs the bot the call and kills
+// its agent — an expensive outcome for a slightly-off click, and one with no undo.
+//
+// Set once the user has confirmed (or asked not to be asked), so the second
+// close() below doesn't re-prompt itself forever.
+let quitConfirmed = false;
+
+// True once something OTHER than a click on ✕ has decided the app is going away:
+// Cmd-Q, a SIGTERM, macOS logout or shutdown, or the updater installing on quit.
+//
+// This flag is what stops the confirmation from being a hostage. app.quit()
+// closes every window, which fires the same 'close' this handler cancels — so
+// without it the app could not be terminated by a signal at all, and it would
+// sit holding a modal dialog through a system shutdown or block the updater's
+// install-on-quit. Found because SIGTERM stopped working: the old instance
+// survived, the new one hit the single-instance lock and quit, and the port
+// check still said "running" because the OLD app answered it.
+//
+// Confirming is for the ambiguous case — a stray click on a button that sits
+// beside controls you use constantly. Every path below is unambiguous, and a
+// dialog on shutdown is a bug, not a safety net.
+// Set in the existing before-quit handler below rather than by registering a
+// second one — two registrations for the same event are two things to find.
+let appIsQuitting = false;
+
+function confirmQuitBeforeClose(e) {
+  if (quitConfirmed || appIsQuitting) return;
+  if (store.get('confirmQuit') === false) return;
+  e.preventDefault();
+
+  // The stakes differ enormously, so the wording should too. Out of a call this
+  // is a mild "are you sure"; in one it is destructive and the dialog says what
+  // is actually lost.
+  const inCall = localServer.callStatus === 'in-call';
+  const name = botWindowName() || 'The bot';
+  dialog.showMessageBox(mainWindow, {
+    type: 'question',
+    buttons: ['Quit', 'Cancel'],
+    // Cancel is the default: a stray Return on an unexpected dialog should be
+    // the harmless answer, not the irreversible one.
+    defaultId: 1,
+    cancelId: 1,
+    message: inCall ? `${name} is in a call. Quit anyway?` : 'Quit Vibeconferencing?',
+    detail: inCall
+      ? 'The bot will leave the call and its agent will be stopped.'
+      : 'Closing this window quits the app.',
+    checkboxLabel: "Don't ask again",
+  }).then(({ response, checkboxChecked }) => {
+    if (response !== 0) return; // Cancel — including the checkbox, which only
+    // takes effect alongside an actual quit. Ticking "don't ask again" and then
+    // cancelling means "stop nagging me", not "quit now".
+    if (checkboxChecked) store.set('confirmQuit', false);
+    quitConfirmed = true;
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
+  }).catch(() => { quitConfirmed = true; if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close(); });
+}
+
 app.on('window-all-closed', () => {
   closeClaudeTerminal();
   localServer.stop();
@@ -5743,6 +7613,9 @@ app.on('window-all-closed', () => {
 // Close any terminal windows we opened, synchronously, before the process
 // exits — covers Cmd-Q and other quit paths the async close would miss.
 app.on('before-quit', () => {
+  // Every quit that is NOT a click on ✕ passes through here first, so this is
+  // where the confirmation learns to stand down (see confirmQuitBeforeClose).
+  appIsQuitting = true;
   stopAllRunwayFaces('before-quit'); // P2: best-effort end of Runway sessions on quit (fire-and-forget)
   closeAllClaudeTerminalsSync();
 });
@@ -5797,7 +7670,7 @@ const botViewLayout = require('./bot-view-layout.js');
 // is also called from createMeetView's dom-ready hook, not just on state change.
 function applyMeetZoom() {
   if (!meetView || meetView.webContents.isDestroyed()) return;
-  const l = botViewLayout.computeLayout(botViewState, { width: PANEL_WIDTH, height: 0 }, { panelWidth: PANEL_WIDTH });
+  const l = botViewLayout.computeLayout(botViewState, { width: WINDOW_WIDTH, height: 0 }, { windowWidth: WINDOW_WIDTH });
   try { meetView.webContents.setZoomFactor(l.meetZoom); } catch { /* view gone */ }
 }
 
@@ -5873,7 +7746,7 @@ function applyWindowHeight() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (panelPopoutWindow) return;      // panel lives elsewhere; its height isn't ours
   if (!panelContentHeight) return;    // nothing measured yet
-  const region = botViewInCall ? botViewLayout.regionHeightFor(PANEL_WIDTH, botViewState) : 0;
+  const region = botViewInCall ? botViewLayout.regionHeightFor(WINDOW_WIDTH, botViewState) : 0;
   let want = panelContentHeight + region;
   try {
     const { screen } = require('electron');
@@ -5897,14 +7770,53 @@ function applyWindowHeight() {
 // flag deliberately stays "idle" through joining/waiting-to-be-admitted (the
 // pre-call controls stay up) — which would strand the region without its bar.
 function broadcastBotViewVisible() {
-  if (panelView && !panelView.webContents.isDestroyed()) {
-    panelView.webContents.send('bot-view-visible', { visible: botViewInCall });
-  }
+  broadcastToRenderers('bot-view-visible', { visible: botViewInCall });
 }
 
 // The window title names the BOT, not just the app — with several bots open at
 // once, "Vibeconferencing" three times over in the window menu and app switcher
 // tells you nothing. Falls back to the profile name, then the app name.
+// The bot's name for a title, or '' if we can't work one out.
+//
+// Split out of applyWindowTitle because the SATELLITE windows — 🧠 Brain, the
+// bot's view, troubleshooting — are the case the comment above is really about.
+// Someone running two bots and comparing their brains had two windows both
+// called "Vibeconferencing — Brain", which is precisely the "tells you nothing"
+// problem, just one level out from where it was first fixed.
+function botWindowName() {
+  let name = null;
+  try {
+    name = botNameForAppUI({
+      storedName: store.get('botName'),
+      cliName: cliArgs['bot-name'],
+      profileName: isDefaultInstance ? null : explicitProfile,
+    });
+  } catch { /* store/schema not ready */ }
+  return String(name || appProfile || '').trim();
+}
+
+// "Jimmy — Brain", falling back to "Vibeconferencing — Brain" when unnamed.
+// Name FIRST, matching the main window, so the app switcher sorts and truncates
+// by bot rather than showing a column of identical prefixes.
+function windowTitle(suffix) {
+  const n = botWindowName();
+  return n ? `${n} — ${suffix}` : `Vibeconferencing — ${suffix}`;
+}
+
+// Retitle every open window. Called on rename, so a bot renamed mid-session
+// doesn't leave its satellites labelled with the old name.
+function applyAllWindowTitles() {
+  applyWindowTitle();
+  for (const [win, suffix] of [
+    [brainWindow, 'Brain'],
+    [troubleshootingWindow, 'Troubleshooting'],
+    [meetPopoutWindow, "Bot's view"],
+    [panelPopoutWindow, "Bot's-eye view"],
+  ]) {
+    try { if (win && !win.isDestroyed()) win.setTitle(windowTitle(suffix)); } catch { /* gone */ }
+  }
+}
+
 function applyWindowTitle() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   let name = null;
@@ -5944,17 +7856,17 @@ function layoutViews() {
   const l = botViewLayout.computeLayout(
     botViewState,
     { width, height },
-    { panelWidth: PANEL_WIDTH, inCall: botViewInCall },
+    { windowWidth: WINDOW_WIDTH, inCall: botViewInCall },
   );
   // computeLayout reports `clamped` when the panel got too narrow for the zoom
   // trick to hold Meet's virtual viewport steady — Chromium's page zoom bottoms
   // out at 0.25, so below ~294px Meet gets a genuinely narrower viewport and
   // REFLOWS, which breaks caption scraping and every DOM selector. That failure
   // is silent and mid-call, so say something. Once per process; it can only
-  // change if PANEL_WIDTH does.
+  // change if WINDOW_WIDTH does.
   if (l.clamped && !warnedZoomClamped) {
     warnedZoomClamped = true;
-    console.warn(`[electron] PANEL_WIDTH ${PANEL_WIDTH} is below the ~294px floor: `
+    console.warn(`[electron] WINDOW_WIDTH ${WINDOW_WIDTH} is below the ~294px floor: `
       + 'Meet zoom is clamped at its minimum, so Meet will reflow and caption '
       + 'scraping/selectors may break.');
   }
@@ -5983,7 +7895,7 @@ function layoutViews() {
     // clips away entirely. Its webContents keeps running, so idle.html (and any
     // state it holds) survives to the next call.
     if (meetAttached) {
-      meetView.setBounds({ x: 0, y: height, width, height: botViewLayout.regionHeightFor(PANEL_WIDTH) });
+      meetView.setBounds({ x: 0, y: height, width, height: botViewLayout.regionHeightFor(WINDOW_WIDTH) });
     }
   } else if (meetDockable && !meetAttached) {
     mainWindow.addBrowserView(meetView); // re-dock (e.g. after a provider swap)
@@ -5992,7 +7904,7 @@ function layoutViews() {
     meetView.setBounds(l.meetBounds);
     // The zoom is stateful (per-webContents), so set it here too — a resize while
     // in 'thumbnail' keeps the same 380px column, so the zoom is stable, but this
-    // keeps it correct if PANEL_WIDTH ever changes.
+    // keeps it correct if WINDOW_WIDTH ever changes.
     applyMeetZoom();
   }
 
@@ -6063,7 +7975,7 @@ function ensureHiddenMeetHost() {
     useContentSize: true,
     show: false,
     skipTaskbar: true,
-    title: "Vibeconferencing — Bot's view (hidden)",
+    title: windowTitle("Bot's view (hidden)"),
     webPreferences: { nodeIntegration: false, contextIsolation: true },
   });
   meetHiddenWindow = win;
@@ -6153,7 +8065,7 @@ function setBotViewState(state) {
     }
     const win = new BrowserWindow({
       width: 900, height: 620,
-      title: "Vibeconferencing — Bot's view",
+      title: windowTitle("Bot's view"),
       icon: path.join(__dirname, 'icon.png'),
       parent: mainWindow || undefined,
       webPreferences: { nodeIntegration: false, contextIsolation: true },
@@ -6208,11 +8120,9 @@ function setBotViewState(state) {
 }
 
 function broadcastBotViewState() {
-  if (panelView && !panelView.webContents.isDestroyed()) {
-    // #103: the panel labels its toggle by what a click WILL do, so it needs to
-    // know which resting state we'd return to — 'hidden' or the legacy thumbnail.
-    panelView.webContents.send('bot-view-changed', { state: botViewState, resting: restingBotViewState() });
-  }
+  // #103: the panel labels its toggle by what a click WILL do, so it needs to
+  // know which resting state we'd return to — 'hidden' or the legacy thumbnail.
+  broadcastToRenderers('bot-view-changed', { state: botViewState, resting: restingBotViewState() });
   sendBannerVisibility();
 }
 
@@ -6240,9 +8150,9 @@ function setPanelPoppedOut(out) {
   if (out && !panelPopoutWindow) {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.removeBrowserView(panelView);
     const win = new BrowserWindow({
-      width: PANEL_WIDTH + 80,
+      width: WINDOW_WIDTH + 80,
       height: 820,
-      title: "Vibeconferencing — Bot's-eye view",
+      title: windowTitle("Bot's-eye view"),
       icon: path.join(__dirname, 'icon.png'),
       parent: mainWindow || undefined, // closes with the app; still freely movable
       webPreferences: { nodeIntegration: false, contextIsolation: true },
@@ -6266,12 +8176,10 @@ function setPanelPoppedOut(out) {
         mainWindow.addBrowserView(panelView);
       }
       layoutViews();
-      if (panelView && !panelView.webContents.isDestroyed()) {
-        panelView.webContents.send('panel-popout-changed', { poppedOut: false });
-      }
+      broadcastToRenderers('panel-popout-changed', { poppedOut: false });
     });
     layoutViews();
-    panelView.webContents.send('panel-popout-changed', { poppedOut: true });
+    broadcastToRenderers('panel-popout-changed', { poppedOut: true });
     return true;
   }
 
@@ -6298,9 +8206,7 @@ function navigateMeetView(url) {
   if (meetView && !meetView.webContents.isDestroyed()) {
     meetView.webContents.loadURL(url || MEET_HOME_URL);
   }
-  if (panelView && !panelView.webContents.isDestroyed()) {
-    panelView.webContents.send('meet-mode-changed', { partition: SESSION_PARTITION });
-  }
+  broadcastToRenderers('meet-mode-changed', { partition: SESSION_PARTITION });
 }
 
 // --- Runtime provider switch (#264): join a Meet call OR a Slack huddle with no
@@ -6426,7 +8332,7 @@ function createMainWindow() {
     // bot-view-layout.js); a button pops it out to its own large window. The
     // size is the app's to decide (see the note above) — only --window-x/-y are
     // honoured, which is all the test launcher passes.
-    width: PANEL_WIDTH,
+    width: WINDOW_WIDTH,
     // A provisional height: the panel reports its real content height as soon as
     // it lays out, and applyWindowHeight shrinks this to fit.
     height: 820,
@@ -6439,12 +8345,12 @@ function createMainWindow() {
     backgroundColor: '#202124',
     // Content-sized, so there is nothing for a user resize to mean: dragging the
     // edge would just be undone by the next content change. The width is a fixed
-    // column the layout assumes (bot-view-layout is built around PANEL_WIDTH),
+    // column the layout assumes (bot-view-layout is built around WINDOW_WIDTH),
     // and the height is derived — so let the app own both.
     resizable: false,
     ...(Number.isFinite(winX) ? { x: winX } : {}),
     ...(Number.isFinite(winY) ? { y: winY } : {}),
-    minWidth: PANEL_WIDTH,
+    minWidth: WINDOW_WIDTH,
     // Low, because out of a call the window is only as tall as the avatar banner
     // + footer. The real floor is MIN_WINDOW_HEIGHT in applyWindowHeight.
     minHeight: MIN_WINDOW_HEIGHT,
@@ -6472,7 +8378,16 @@ function createMainWindow() {
     },
   });
   mainWindow.addBrowserView(panelView);
-  panelView.webContents.loadFile(path.join(__dirname, 'renderer', 'panel.html'));
+  // --open-settings: a brand-new bot opens straight on its Settings screen.
+  // Creating a bot and landing on "Call now" is backwards — a fresh bot has no
+  // name, voice or face yet, and the first thing anyone wants is to give it one
+  // (or press the guided-setup call that now lives at the top of that page).
+  //
+  // NOT the 'screen' param: that one marks a POP-OUT window (IS_POPOUT_WINDOW),
+  // which would suppress this panel's height reporting and leave the main window
+  // stuck at its startup size.
+  panelView.webContents.loadFile(path.join(__dirname, 'renderer', 'panel.html'),
+    cliArgs['open-settings'] === 'true' ? { search: 'startScreen=settings' } : undefined);
   // The window is hidden until the panel reports its height (showMainWindowOnce).
   // Arm the safety net now, so a renderer that never loads can't leave the app
   // running with no window at all.
@@ -6480,7 +8395,14 @@ function createMainWindow() {
   applyWindowTitle();
 
   // --- macOS menu bar ---
-  const template = [
+  // A function, not a one-shot array, because the Claude/Codex integration
+  // items reflect live install state (isClaudeIntegrationInstalled /
+  // isCodexIntegrationInstalled) and need to be rebuilt after the user
+  // toggles either one — see the two click handlers below.
+  function buildAppMenuTemplate() {
+    const claudeInstalled = isClaudeIntegrationInstalled();
+    const codexInstalled = isCodexIntegrationInstalled();
+    return [
     {
       label: app.name,
       submenu: [
@@ -6504,6 +8426,9 @@ function createMainWindow() {
           accelerator: 'CmdOrCtrl+Shift+,',
           click: () => {
             if (panelView && !panelView.webContents.isDestroyed()) {
+              // ADDRESSED, not broadcast (#229): a COMMAND to navigate the MAIN
+              // panel to its settings screen. A pop-out jumping to settings is
+              // not what the menu item means.
               panelView.webContents.send('show-settings');
             }
           },
@@ -6513,7 +8438,7 @@ function createMainWindow() {
           click: () => createOnboardingWindow(),
         },
         { type: 'separator' },
-        {
+        claudeInstalled ? {
           // "Leave no trace" (F&F): remove EVERYTHING the app wrote into the
           // user's Claude Code setup, and remember the choice so the next
           // launch doesn't silently re-install it.
@@ -6537,6 +8462,7 @@ function createMainWindow() {
               if (response === 1) {
                 uninstallClaudeIntegration();
                 try { store?.set('claudeIntegrationRemoved', true); } catch { /* non-fatal */ }
+                refreshAppMenu();
                 dialog.showMessageBox(mainWindow, {
                   type: 'info',
                   message: 'Claude integration removed. No trace left. Restart Claude Code to apply.',
@@ -6544,16 +8470,55 @@ function createMainWindow() {
               }
             });
           },
-        },
-        {
+        } : {
           label: 'Install Claude Integration',
           click: () => {
             const { dialog } = require('electron');
             try { store?.delete('claudeIntegrationRemoved'); } catch { /* non-fatal */ }
             ensureClaudeIntegration();
+            refreshAppMenu();
             dialog.showMessageBox(mainWindow, {
               type: 'info',
               message: 'Claude integration installed. Restart Claude Code to pick it up.',
+            });
+          },
+        },
+        codexInstalled ? {
+          label: 'Uninstall Codex Integration...',
+          click: () => {
+            const { dialog } = require('electron');
+            dialog.showMessageBox(mainWindow, {
+              type: 'question',
+              buttons: ['Cancel', 'Uninstall'],
+              defaultId: 0,
+              title: 'Uninstall Codex Integration',
+              message: 'Remove the Vibeconferencing MCP server from Codex?',
+              detail:
+                'Removes only the vibeconferencing MCP server block from ~/.codex/config.toml.\n\n' +
+                'It will NOT be reinstalled on the next launch. The app itself keeps working; ' +
+                'use "Install Codex Integration" to bring it back.',
+            }).then(({ response }) => {
+              if (response === 1) {
+                removeCodexIntegration();
+                try { store?.set('codexIntegrationRemoved', true); } catch { /* non-fatal */ }
+                refreshAppMenu();
+                dialog.showMessageBox(mainWindow, {
+                  type: 'info',
+                  message: 'Codex integration removed. Restart Codex to apply.',
+                });
+              }
+            });
+          },
+        } : {
+          label: 'Install Codex Integration',
+          click: () => {
+            const { dialog } = require('electron');
+            try { store?.delete('codexIntegrationRemoved'); } catch { /* non-fatal */ }
+            ensureCodexIntegration();
+            refreshAppMenu();
+            dialog.showMessageBox(mainWindow, {
+              type: 'info',
+              message: 'Codex integration installed. Restart Codex to pick it up.',
             });
           },
         },
@@ -6569,15 +8534,25 @@ function createMainWindow() {
       label: 'File',
       submenu: [
         {
-          // #379: create a brand-new profile and open it in its own window. The
-          // name prompt happens in the panel (inline dialog); a never-seen name
-          // creates the profile. Distinct from "New Window", which opens the
-          // Default profile without creating anything.
-          label: 'New Bot…',
+          // #379: create a brand-new bot and open it in its own window, on its
+          // Settings screen. No ellipsis and no prompt — same one-click path as
+          // the switcher's "＋ New bot", which is the point: two entries that
+          // create a bot should not disagree about how.
+          //
+          // The name it used to ask for was the profile DIRECTORY, from when
+          // that doubled as the bot's name. Now the directory is picked
+          // automatically (botN) and the bot gets a real name from the same pool
+          // the spinner draws from, editable on the page it lands on.
+          //
+          // Routed through the panel because the create/launch helpers live in
+          // setupIPC's scope; the panel just invokes the same handler.
+          label: 'New Bot',
           accelerator: 'CmdOrCtrl+Shift+N',
           click: () => {
             if (panelView && !panelView.webContents.isDestroyed()) {
-              panelView.webContents.send('new-profile-prompt');
+              // ADDRESSED, not broadcast (#229): a COMMAND. The handler calls
+              // create-new-bot, so broadcasting would create three bots.
+              panelView.webContents.send('new-bot');
             }
           },
         },
@@ -6591,6 +8566,8 @@ function createMainWindow() {
           accelerator: 'CmdOrCtrl+N',
           click: () => {
             if (panelView && !panelView.webContents.isDestroyed()) {
+              // ADDRESSED, not broadcast (#229): a COMMAND. Broadcasting would
+              // open three windows.
               panelView.webContents.send('new-window');
             }
           },
@@ -6624,9 +8601,22 @@ function createMainWindow() {
               // isn't the focused frame), so you'd have to click it before typing.
               try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.focus(); } catch { /* ignore */ }
               try { panelView.webContents.focus(); } catch { /* ignore */ }
+              // ADDRESSED, not broadcast (#229): a COMMAND that opens a prompt.
+              // Three windows would ask three times for one menu click.
               panelView.webContents.send('navigate-webview-prompt', { currentUrl });
             }
           },
+        },
+        {
+          // Force the bot's-view window OPEN (popped out). It's hidden by default
+          // (the 👀 button toggles it), so a screen recording of an automated run
+          // films the desktop, not the call. DETERMINISTIC (always 'popped', not a
+          // toggle) so it's safe to trigger from AppleScript for testing —
+          // `tell app "System Events" to click menu item "Show Bot's View"…` — and
+          // the resulting window has a stable title ("<name> — Bot's view").
+          label: "Show Bot's View",
+          accelerator: 'CmdOrCtrl+Shift+B',
+          click: () => { try { setBotViewState('popped'); } catch (err) { console.warn('[electron] Show Bot\'s View failed:', err.message); } },
         },
         { type: 'separator' },
         {
@@ -6660,8 +8650,12 @@ function createMainWindow() {
         { role: 'close' },
       ],
     },
-  ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+    ];
+  }
+  function refreshAppMenu() {
+    Menu.setApplicationMenu(Menu.buildFromTemplate(buildAppMenuTemplate()));
+  }
+  refreshAppMenu();
 
   // --- Call view (right) ---
   // Single partition (#282) — no "restore previous mode" anymore. Sign-in
@@ -6708,6 +8702,199 @@ function createMainWindow() {
   // Open DevTools on demand from panel — registered once, references the
   // current module-level meetView so it always targets the live one after
   // a partition swap.
+  // Call feedback from the troubleshooting window: a human saying "that was
+  // wrong" at the moment it happened.
+  //
+  // The timestamp is the whole point. Bot misbehaviour is hard to report after
+  // the fact — "it kept interrupting" doesn't locate anything — but a marker in
+  // the session log sits next to the captions, the turn state and the agent
+  // activity for that second, which is enough to reconstruct what happened.
+  //
+  // Deliberately ONE handler, and deliberately structured: the same signal is
+  // meant to reach the agent later so it can adjust mid-call, and that should be
+  // an addition here rather than a second route with its own format.
+  //
+  // Never throws: this is clicked during a live call, and a logging failure must
+  // not surface as an error in front of the room.
+  // What the agent is told when a human flags something, per kind.
+  //
+  // Written as instructions, not as reports. "The user flagged interrupting" is
+  // a fact the agent can acknowledge and then ignore; "let people finish, and
+  // score your urgency lower" is something it can act on this turn.
+  //
+  // Four of the seven get nothing. That is deliberate rather than unfinished:
+  //   frozen        — if it were reading this it would not be frozen
+  //   wrong-answer  — it does not tell the agent WHAT was wrong, and a vague
+  //                   "you were wrong" mid-call invites flailing over a turn it
+  //                   cannot identify
+  //   voice / other — nothing the agent controls
+  // A message the agent cannot act on is context spent to make the human feel
+  // heard, and it is the human's own call log that does that job.
+  // Live state for the troubleshooting window: a share that keeps streaming
+  // should show a growing count, not a frozen one beside "still sharing".
+  ipcMain.handle('get-call-log-share-state', () => {
+    const { getSentCount } = require('./session-log.js');
+    return {
+      sharedCallId: _sharedCallId,
+      active: !!_sharedCallId && localServer.callId === _sharedCallId,
+      streaming: _sharingWeEnabled,
+      // Shared this call, but currently stopped — the button offers to resume.
+      paused: !!_sharedCallId && localServer.callId === _sharedCallId && !_sharingWeEnabled,
+      sent: getSentCount(),
+      // With this on there is nothing for the button to do — the panel says so
+      // rather than offering an action that would be a no-op.
+      globalLogging: store?.get('remoteLogging') === true,
+      inCall: !!localServer.callId,
+    };
+  });
+
+  ipcMain.handle('share-call-log', async () => {
+    const { sliceCallLines, sendLinesNow, setRemoteLoggingEnabled } = require('./session-log.js');
+    const callId = localServer.callId;
+    if (!callId) return { ok: false, error: 'not in a call' };
+    const { setRemoteLoggingEnabled: setLog, getSentCount: count } = require('./session-log.js');
+
+    // Second press STOPS sharing, so someone can pause before something they
+    // would rather not send. It cannot unsend — what has gone has gone — but it
+    // does create a real GAP: the streamer drops lines while disabled rather
+    // than buffering them, so the paused stretch is never uploaded at all.
+    if (_sharedCallId === callId && _sharingWeEnabled) {
+      setLog(false);
+      _sharingWeEnabled = false;
+      console.log('[electron] call-log share PAUSED by user —', count(), 'lines sent so far');
+      return { ok: true, stopped: true, sent: count() };
+    }
+
+    // Third press resumes. No backfill: this call's earlier lines already went,
+    // and re-sending them would duplicate. More to the point, the paused stretch
+    // must STAY unsent — excluding it is the entire reason the pause exists.
+    if (_sharedCallId === callId && !_sharingWeEnabled) {
+      setLog(true);
+      _sharingWeEnabled = true;
+      console.log('[electron] call-log share RESUMED — the paused stretch stays unsent');
+      return { ok: true, resumed: true, sent: count() };
+    }
+    // Global logging on means every line of this call has already been shipped
+    // by the streamer. Backfilling would upload the same lines a second time,
+    // and "share this call" would be a promise about something already done.
+    if (store?.get('remoteLogging') === true) {
+      return { ok: true, alreadyGlobal: true, sent: 0 };
+    }
+
+    // Backfill FIRST, then stream. The alternative — flag it and send at call
+    // end — loses the log exactly when it is most wanted: someone tailing a bot
+    // misbehaving right now, and any call where the app crashes before it ends.
+    const { resetSentCount } = require('./session-log.js');
+    resetSentCount();   // count this share, not the whole session
+    const lines = sliceCallLines(callId);
+    const res = await sendLinesNow(lines, { callId, shared: true, sharedAt: new Date().toISOString() });
+    if (!res.ok) {
+      console.warn('[electron] call-log share failed:', res.error);
+      return { ok: false, error: res.error, sent: res.sent };
+    }
+
+    _sharedCallId = callId;
+    // Only claim the enable if it was actually off — otherwise the user's
+    // standing preference is on and is not ours to turn off later.
+    if (store?.get('remoteLogging') !== true) {
+      setRemoteLoggingEnabled(true);
+      _sharingWeEnabled = true;
+    }
+    console.log('[electron] Shared', res.sent, 'log lines for call', callId,
+      _sharingWeEnabled ? '— and streaming the rest of this call' : '(streaming was already on)');
+    return { ok: true, sent: res.sent, streaming: _sharingWeEnabled };
+  });
+
+  const FEEDBACK_TO_AGENT = {
+    interrupting:
+      'A person in the call just flagged that you TALKED OVER them. Stop speaking if you are mid-utterance, '
+      + 'let them finish, and for the next few turns score your urgency lower so you yield the floor sooner. '
+      + 'A brief spoken apology is fine; do not explain at length.',
+    'not-yielding':
+      'A person in the call just flagged that you DID NOT YIELD when they tried to speak. When you hear someone '
+      + 'start, stop — even mid-sentence. Keep replies shorter for the next few turns so there are more gaps.',
+    // Two different bugs wear this label, and the agent is the only one who can
+    // tell them apart in the moment. Either it is choosing not to speak, or the
+    // FLOOR GATE believes someone is always talking so it never gets an opening
+    // — measured levels say a transient (a keystroke, a cough) is enough to arm
+    // that, because the rising edge is immediate. Telling it only to "speak up"
+    // would be useless in the second case, so it is pointed at the check and the
+    // levers instead.
+    'too-timid':
+      'A person in the call just flagged that you are TOO QUIET. Two things cause this, so check which. '
+      + '(1) If you have been holding back: speak up on the next opening rather than waiting to be named. '
+      + '(2) If you keep deciding the floor is busy, the audio gate may be firing on background noise — '
+      + 'call get_room_info and look at whether anyone is really speaking. If it is stuck busy, say so out loud '
+      + 'and offer to fix it: set_preference fastFloorDetection false turns the gate off (read live, takes effect '
+      + 'immediately), or lower bargeInGraceMs so you yield for less time when it does fire. '
+      + 'Ask before changing a preference — it is the human\'s call.',
+  };
+
+  // Used when a kind has no canned notice of its own but the human typed
+  // something. Their words are the actionable part; this just frames them.
+  const FEEDBACK_FREEFORM =
+    'A person in the call just flagged something about how you are behaving, in their own words below. '
+    + 'Take it as a live correction: adjust now if you can, and acknowledge it briefly out loud if it warrants that.';
+
+  // One agent notice per kind per window. A frustrated human clicks the same
+  // button several times in a row — a real run of this produced three
+  // "Interrupted" clicks inside one second — and each one would otherwise
+  // become a separate line in the agent's context, all saying the same thing at
+  // the moment it can least afford the noise.
+  const FEEDBACK_AGENT_COOLDOWN_MS = 20_000;
+  const feedbackNotifiedAt = new Map();
+
+  ipcMain.handle('call-feedback', (_e, { kind, label, note } = {}) => {
+    try {
+      const k = String(kind || 'unspecified').slice(0, 40);
+      // Bounded and single-lined: this lands in a line-oriented log, so a
+      // pasted stack trace would otherwise break every downstream grep.
+      const n = String(note || '').replace(/\s+/g, ' ').trim().slice(0, 280);
+      const room = localServer.roomId || '-';
+      const callId = localServer.callId || '-';
+      const status = localServer.callStatus || 'idle';
+      // What the bot was DOING at that instant, captured here rather than left
+      // to be inferred from neighbouring lines. Verified against a real call:
+      // the surrounding log does reconstruct the moment, but only if you read
+      // ten lines either side. These two fields are what separate the reports
+      // from each other — "interrupted" while bot=speaking is a different bug
+      // from "interrupted" while bot=listening, and "frozen" is only meaningful
+      // next to whether anyone was actually talking.
+      const bot = localServer.botState || 'unknown';
+      const speaking = localServer.anyoneSpeaking ? 'yes' : 'no';
+      // Prefixed and single-line so it greps cleanly out of a busy session log.
+      console.log(`[feedback] kind=${k} status=${status} bot=${bot} othersSpeaking=${speaking} room=${room} call=${callId}`
+        + ` label=${JSON.stringify(String(label || k))}`
+        + (n ? ` note=${JSON.stringify(n)}` : ''));
+
+      // Tell the agent, when there is something it can do and it hasn't just
+      // been told. addError is the existing channel for app-to-agent notices
+      // (it is how the voice-fallback message reaches it), so this rides a path
+      // the agent already reads rather than inventing a second one.
+      // A note makes 'other' actionable, and it is the only way the agent learns
+      // WHAT was wrong — which is exactly why "wrong answer" sends nothing on its
+      // own. With the human's own words attached, the agent has something to act
+      // on rather than a category to flail at.
+      const notice = FEEDBACK_TO_AGENT[k] || (n ? FEEDBACK_FREEFORM : null);
+      let toldAgent = false;
+      if (notice && localServer.roomId) {
+        const last = feedbackNotifiedAt.get(k) || 0;
+        if (Date.now() - last >= FEEDBACK_AGENT_COOLDOWN_MS) {
+          feedbackNotifiedAt.set(k, Date.now());
+          localServer.addError(n ? `${notice}\n\nWhat they typed: "${n}"` : notice);
+          toldAgent = true;
+          console.log(`[feedback] told the agent: ${k}`);
+        } else {
+          console.log(`[feedback] agent already told about ${k} recently — log only`);
+        }
+      }
+      return { ok: true, toldAgent };
+    } catch (err) {
+      console.warn('[feedback] failed to record:', err && err.message);
+      return { ok: false, error: err && err.message };
+    }
+  });
+
   ipcMain.on('open-devtools', () => {
     if (meetView && meetView.webContents) {
       meetView.webContents.openDevTools({ mode: 'detach' });
@@ -6721,7 +8908,13 @@ function createMainWindow() {
   // ensureHiddenMeetHost briefly shows its window to establish a display
   // surface, and doing that mid-construction fights the main window for focus.
   setTimeout(() => {
-    try { setBotViewState(restingBotViewState()); }
+    // --bot-view=<popped|thumbnail|hidden> forces the INITIAL state. The view is
+    // hidden by default (👀 toggles it), so a screen recording of an unattended
+    // test run films the desktop, not the call — launching with --bot-view=popped
+    // pops the bot's-view window (titled "<name> — Bot's view") out so it's
+    // filmable/positionable. Invalid/absent → the normal resting state.
+    const launchView = botViewLayout.STATES.includes(cliArgs['bot-view']) ? cliArgs['bot-view'] : restingBotViewState();
+    try { setBotViewState(launchView); }
     catch (err) { console.warn('[electron] initial bot-view state failed:', err.message); }
   }, 0);
 
@@ -6731,6 +8924,9 @@ function createMainWindow() {
   // Load idle placeholder in the Meet view. In Slack mode the surface already
   // loaded app.slack.com (or the channel deep-link) in createSlackSurface.
   if (!slackMode) meetView.webContents.loadURL(getIdleUrl());
+
+  // 'close' (cancellable) before 'closed' (already gone).
+  mainWindow.on('close', confirmQuitBeforeClose);
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -6752,7 +8948,24 @@ function showIdle() {
   console.log('[electron] Returned to idle state');
 }
 
+// #254: every caller invokes this fire-and-forget, so before this wrapper a
+// rejection anywhere inside was an unhandled promise rejection — the join had
+// already reported ok, and the failure went nowhere the agent or the user could
+// see it. The navigation genuinely can throw: it clears caches, reads cookies
+// and rebuilds the BrowserView. Same honesty class as #243/#253 — report the
+// outcome, not the attempt.
 async function loadMeetURL(meetUrl) {
+  try {
+    await _loadMeetURL(meetUrl);
+  } catch (err) {
+    const msg = 'Failed to open the Meet page: ' + (err && err.message ? err.message : String(err));
+    console.error(ts(), '[electron] #254:', msg);
+    try { localServer.addError(msg + ' — the bot is not in the call.'); } catch { /* best-effort */ }
+    try { localServer.setCallStatus('idle'); } catch { /* best-effort */ }
+  }
+}
+
+async function _loadMeetURL(meetUrl) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
   chatSpaceWarned = false; // fresh call — allow one Chat-space warning again
@@ -6761,10 +8974,8 @@ async function loadMeetURL(meetUrl) {
   // --meet-url CLI launches and any programmatic join), and notify the panel now.
   try {
     localServer.setCurrentUrl(meetUrl);
-    if (panelView && !panelView.webContents.isDestroyed()) {
-      const meetCode = (meetUrl.match(/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/) || [])[1] || '';
-      panelView.webContents.send('meet-detected', { url: meetUrl, meetCode });
-    }
+    const meetCode = (meetUrl.match(/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/) || [])[1] || '';
+    broadcastToRenderers('meet-detected', { url: meetUrl, meetCode });
   } catch { /* non-fatal */ }
 
   // Destroy and recreate the meetView before every join. Clearing storage
@@ -6845,9 +9056,7 @@ async function loadMeetURL(meetUrl) {
     const url = meetView.webContents.getURL();
     if (url.includes('meet.google.com')) {
       // Notify panel that Meet is loaded
-      if (panelView && !panelView.webContents.isDestroyed()) {
-        panelView.webContents.send('meet-status', { url, ready: true });
-      }
+      broadcastToRenderers('meet-status', { url, ready: true });
       // P2 reload-recovery: a Meet page reload (e.g. the pre-join limbo re-join) silently destroys
       // the renderer's LiveKit connection without a Disconnected event. If the face was on, the
       // freshly-loaded runway-avatar.js has nothing — re-establish once it's had a moment to load.
@@ -6989,6 +9198,10 @@ function setupIPC() {
         key: k,
         type: def.type,
         enum: def.enum || null,
+        // #231: optional presentation hints. Absent for every existing pref, so
+        // the renderer must fall back to the raw key/value it used before.
+        label: def.label || null,
+        enumLabels: def.enumLabels || null,
         default: def.default,
         description: def.description || '',
         requiresRestart: !!def.requiresRestart,
@@ -7005,6 +9218,21 @@ function setupIPC() {
     }
     return vals;
   });
+
+  // The Name field shows blank + a generic "Unnamed bot" placeholder when
+  // botName is unset, even though the rest of the app (title bar, tray, ...)
+  // already falls back to resolvedBotName()'s storedName -> cliName ->
+  // profileName chain and shows something real (e.g. a "test-calendar"
+  // profile displays as "Test Calendar"). Exposes that same resolved name so
+  // the panel can use it as the placeholder — informative without pretending
+  // the name was actually set.
+  ipcMain.handle('get-resolved-bot-name', () => resolvedBotName());
+
+  // Calendar auto-join (#299): the panel calls this on load to paint the
+  // "upcoming meeting" notice immediately, without waiting for the next
+  // ~60s poll tick — pushUpcomingCalendarEvents (via 'calendar-upcoming')
+  // keeps it live after that.
+  ipcMain.handle('get-upcoming-calendar-events', () => latestUpcomingCalendarEvents);
 
   // (The switcher thumbnail used to be stolen from the live camera feed here —
   // an edge-triggered capture plus a poll ladder plus 4h staleness gating, all to
@@ -7061,7 +9289,7 @@ function setupIPC() {
     // Live-apply the visual prefs the panel can set here (the agent path goes
     // through applyPref, which already pushes these). #316.
     if (key === 'emojiSet') pushEmojiSet(value);
-    if (key === 'botName') applyWindowTitle();
+    if (key === 'botName') applyAllWindowTitles();
     // The background is settable from Bot Settings now, not just by the agent.
     // Without this the in-call avatar kept the OLD background until the next
     // launch, while the panel preview showed the new one.
@@ -7105,9 +9333,30 @@ function setupIPC() {
     try { return require('./emoji-assets.js').dataUriFor(setName, emoji, __dirname); } catch { return null; }
   });
 
+  // The panel draws its own avatar, so it needs the same font bytes the Meet
+  // page gets. Returned as a Buffer; the preload hands the renderer an
+  // ArrayBuffer for FontFace.
+  ipcMain.handle('emoji-font-bytes', (_event, setName) => {
+    try { return require('./emoji-assets.js').fontBytesFor(setName, __dirname); } catch { return null; }
+  });
+
+  ipcMain.handle('emoji-dir-uri', (_event, dir, emoji) => {
+    try { return require('./emoji-assets.js').externalDataUri(dir, emoji); } catch { return null; }
+  });
+
   // The panel measured itself → resize the window to fit (plus the bot's-view
   // region while in a call). See applyWindowHeight.
-  ipcMain.on('panel-content-height', (_event, h) => {
+  ipcMain.on('panel-content-height', (event, h) => {
+    // Only the panel inside the main window may size that window. Every pop-out
+    // (troubleshooting, 🧠 brain) loads the SAME panel.html, so each one has this
+    // channel and reports its own content height — and the brain window, being
+    // tall, resized the main window and left a large empty band under the avatar.
+    //
+    // The renderer guards this too, but the guard has to be repeated in every new
+    // pop-out and was missed once already. Checking the SENDER here cannot be
+    // forgotten by a future window, because the check does not live in it.
+    if (!panelView || panelView.webContents.isDestroyed()
+      || event.sender !== panelView.webContents) return;
     const n = Math.round(Number(h) || 0);
     if (!n || n === panelContentHeight) return;
     panelContentHeight = n;
@@ -7125,6 +9374,37 @@ function setupIPC() {
   // panelView.webContents.send(...) broadcast goes to the panel, not here, so
   // there are no duplicate prompts or state handlers. Only this window's own
   // OUTBOUND calls need suppressing — see IS_TROUBLESHOOTING_WINDOW.
+  // #242: the brain pane — a read-only window onto the agent's activity feed.
+  //
+  // Its own window, like the troubleshooting one and for the same reason: you
+  // watch it WHILE a call runs, so it has to sit beside the Meet window rather
+  // than replacing the panel. Same panel.html with ?screen=brain, so it is a
+  // second webContents — which also means the panel's broadcasts do not reach
+  // it, and it polls get-call-state instead (see the curl-helper bug, #…, for
+  // what happens when something in one of these windows relies on a broadcast).
+  ipcMain.handle('open-brain-window', () => {
+    if (brainWindow && !brainWindow.isDestroyed()) {
+      brainWindow.show();
+      brainWindow.focus();
+      return { ok: true };
+    }
+    const win = new BrowserWindow({
+      width: 620,
+      height: 780,
+      title: windowTitle('Brain'),
+      icon: path.join(__dirname, 'icon.png'),
+      webPreferences: {
+        preload: path.join(__dirname, 'preload-panel.js'),
+        contextIsolation: true,
+        backgroundThrottling: false, // a live feed must not freeze when unfocused
+      },
+    });
+    brainWindow = win;
+    win.on('closed', () => { brainWindow = null; });
+    win.loadFile(path.join(__dirname, 'renderer', 'panel.html'), { search: 'screen=brain' });
+    return { ok: true };
+  });
+
   ipcMain.handle('open-troubleshooting-window', () => {
     if (troubleshootingWindow && !troubleshootingWindow.isDestroyed()) {
       troubleshootingWindow.show();
@@ -7132,9 +9412,13 @@ function setupIPC() {
       return { ok: true };
     }
     const win = new BrowserWindow({
-      width: 560,
-      height: 820,
-      title: 'Vibeconferencing — Troubleshooting',
+      // Two columns (#…): wide enough for both without either being a slot.
+      // The CSS collapses back to one column below 720px, so a user who resizes
+      // this narrow gets a single readable column rather than clipped content.
+      width: 980,
+      height: 860,
+      minWidth: 420,
+      title: windowTitle('Troubleshooting'),
       icon: path.join(__dirname, 'icon.png'),
       webPreferences: {
         preload: path.join(__dirname, 'preload-panel.js'),
@@ -7152,9 +9436,7 @@ function setupIPC() {
   // to the panel so its avatar shows the SAME expression the call sees.
   ipcMain.on('avatar-emoji-changed', (_event, emoji) => {
     if (typeof emoji !== 'string' || !emoji) return;
-    if (panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('avatar-emoji', { emoji });
-    }
+    broadcastToRenderers('avatar-emoji', { emoji });
   });
 
   // The panel needs to know whether it must provide its own drag handle.
@@ -7176,7 +9458,31 @@ function setupIPC() {
   // which is a different question — see electron-app/voice-status.js.
   ipcMain.handle('get-voice-status', () => currentVoiceStatus());
 
-  ipcMain.handle('create-and-join-meet', async () => createAndJoinMeet());
+  // #273: last grant fetched from the server, for Settings/onboarding to
+  // compare against the current key (see the note above applyGrant — the
+  // decision is derived fresh from that comparison, not from stored history).
+  ipcMain.handle('get-tts-grant', () => ({ grant: ttsGrant }));
+
+  // Apply it as the server-owned key. Used both for the manual "use it"/
+  // "switch" button (rule 1) and the fillIfEmpty auto-apply on pane display
+  // (rule 2) — same action either way, just a different trigger.
+  ipcMain.handle('accept-tts-grant', () => {
+    if (!ttsGrant?.granted || !ttsGrant?.apiKey) return { ok: false };
+    applyGrant(ttsGrant);
+    return { ok: true };
+  });
+
+  // #137: the panel's sign-in indicator. Returns the CACHE immediately and, when
+  // asked, refreshes behind it — so the panel paints instantly and corrects
+  // itself a moment later rather than blocking on a login shell.
+  ipcMain.handle('get-claude-auth-status', (_e, { refresh = false } = {}) => {
+    if (refresh) {
+      refreshClaudeAuth({ maxAgeMs: CLAUDE_AUTH_FOCUS_MAX_AGE_MS }).catch(() => {});
+    }
+    return claudeAuthState;
+  });
+
+  ipcMain.handle('create-and-join-meet', async (_e, opts) => createAndJoinMeet(opts || {}));
 
   // `description` is served from package.json so the About window renders the
   // product line rather than carrying its own copy of it. One source of truth:
@@ -7196,10 +9502,17 @@ function setupIPC() {
     // (osascript on Windows), and both render as a row the user can't act on.
     const wanted = new Set(flow.permissionsFor(process.platform).map((p) => p.key));
     const statusMap = {};
-    for (const key of ['microphone', 'camera', 'screen']) {
+    for (const key of ['screen']) {
       if (wanted.has(key)) statusMap[key] = systemPreferences.getMediaAccessStatus(key);
     }
-    if (wanted.has('automation')) statusMap.automation = await probeBrowserAutomation();
+    // Automation is the odd one out: there is no way to READ its status without
+    // sending an Apple Event, and sending one is what raises the prompt. So
+    // merely opening this step used to prompt, before the user pressed anything.
+    // Until the first probe, report it unknown — that renders the Grant button,
+    // and pressing Grant does the probe. Afterwards the status is free to read.
+    if (wanted.has('automation')) {
+      statusMap.automation = store.get('automationProbed') ? await probeBrowserAutomation() : undefined;
+    }
     return flow.permissionsSummary(statusMap);
   });
 
@@ -7229,13 +9542,12 @@ function setupIPC() {
 
   ipcMain.handle('onboarding:request-permission', async (_e, key) => {
     try {
-      if (key === 'microphone') await systemPreferences.askForMediaAccess('microphone');
-      else if (key === 'camera') await systemPreferences.askForMediaAccess('camera');
-      else if (key === 'screen') {
+      if (key === 'screen') {
         // A real capture attempt registers the app in the Screen Recording list
         // and prompts when not-determined (thumbnail must be non-trivial, #… ).
         try { await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 192, height: 192 } }); } catch { /* prompt only */ }
       } else if (key === 'automation') {
+        try { store.set('automationProbed', true); } catch { /* ignore */ }
         await probeBrowserAutomation();
       }
     } catch (err) { console.warn('[onboarding] request-permission', key, err && err.message); }
@@ -7244,7 +9556,6 @@ function setupIPC() {
 
   ipcMain.handle('onboarding:open-system-settings', (_e, key) => {
     const pane = {
-      microphone: 'Privacy_Microphone', camera: 'Privacy_Camera',
       screen: 'Privacy_ScreenCapture', automation: 'Privacy_Automation',
     }[key] || 'Privacy';
     shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${pane}`);
@@ -7289,6 +9600,7 @@ function setupIPC() {
     try { store.set('onboardingComplete', true); } catch { /* ignore */ }
     if (onboardingWindow && !onboardingWindow.isDestroyed()) onboardingWindow.close();
     if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); }
+    runDeferredStarts();
     return { ok: true };
   });
 
@@ -7503,7 +9815,79 @@ function setupIPC() {
   // current window afterward (switch in place, #379); open-profile-window leaves
   // it open (the additive "new window" path). Returns `runningKey` so a switch
   // caller can poll for the target coming up before it closes itself.
-  async function launchOrFocusProfile(name) {
+  // bot2, bot3, … — the first free one.
+  //
+  // Numbered rather than "Untitled": these are directory names, so they must
+  // survive [A-Za-z0-9._-] and be short enough to read in a window title. The
+  // default profile keeps its own name, so counting starts at 2 the way Chrome's
+  // "Person 2" does.
+  //
+  // Picks the first GAP, not max+1: deleting bot3 and adding a bot should reuse
+  // bot3 rather than creep to bot4 forever. Bounded so a pathological profile
+  // list cannot spin.
+  function nextBotProfileName() {
+    const taken = new Set(profileManager.listProfiles(PROFILES_ROOT).map((p) => String(p.name).toLowerCase()));
+    for (let i = 2; i < 1000; i++) {
+      const candidate = `bot${i}`;
+      if (!taken.has(candidate)) return candidate;
+    }
+    return `bot${Date.now()}`; // absurd, but never collides
+  }
+
+  // Give the new bot an actual NAME, not just a directory.
+  //
+  // "bot3" is a folder, and without this the bot would introduce itself as
+  // "Unnamed bot" — a worse first impression than any random name, and one the
+  // user then has to fix before the thing is usable. Drawn from the same pool
+  // the spinner uses, so a new bot arrives as Pepper or Twiki and can be renamed
+  // on the Settings page it opens on, or in the guided setup call.
+  //
+  // Written to the profile's config BEFORE launch rather than passed as
+  // --bot-name: a launch flag is an override with its own provenance tag
+  // ("Alice [launch name]") that does not persist, and this needs to be the
+  // bot's real, stored name.
+  //
+  // Names already in use are excluded, so two bots on one machine don't collide
+  // — which would make MCP routing by name ambiguous, not just confusing.
+  function seedNewBotName(profileName) {
+    try {
+      const { randomBotName } = require('./bot-names.js');
+      const taken = takenBotNames();
+      // The AGENT dir, not the profile dir. The per-profile store has lived at
+      // <profile>/agent/config.json since #305 (the agent's working directory
+      // has to be a trusted Claude workspace, and the config moved in with it).
+      // Seeding the pre-#305 loose path still WORKED — verified — but only
+      // because the legacy migration copies it across on first launch, and that
+      // migration exists to rescue old installs, not to be load-bearing for new
+      // ones. Someone will delete it one day and new bots would quietly go back
+      // to "Unnamed bot".
+      //
+      // It also left a second config.json that LOOKS authoritative and holds the
+      // original name forever: bot8 read "Diego" long after being renamed
+      // Taylor, which cost a real debugging detour.
+      const dir = require('./agent-workdir.js').agentDirFor(path.join(PROFILES_ROOT, profileName));
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, 'config.json');
+      // Never clobber: a reused directory name (first-gap allocation) might
+      // still hold a config the user cares about.
+      let existing = {};
+      try { existing = JSON.parse(fs.readFileSync(file, 'utf-8')); } catch { /* new */ }
+      if (existing.botName) return;
+      const botName = randomBotName({ taken });
+      // onboardingCallComplete defaults to true (preferences-schema.js) so
+      // pre-existing profiles read as already onboarded with no migration
+      // needed — which means a genuinely NEW bot has to say otherwise
+      // explicitly, right here, at the one moment it's actually created.
+      fs.writeFileSync(file, JSON.stringify({ ...existing, botName, onboardingCallComplete: false }, null, 2));
+      console.log('[electron] New bot', profileName, 'named', botName);
+    } catch (err) {
+      // Non-fatal: an unnamed bot is still a working bot, and the Settings page
+      // it opens on is exactly where that gets fixed.
+      console.warn('[electron] could not seed a name for', profileName, '—', err.message);
+    }
+  }
+
+  async function launchOrFocusProfile(name, { openSettings = false } = {}) {
     const isDefault = isDefaultName(name);
     if (!profileManager.isValidProfileName(name)) {
       return { ok: false, error: 'Invalid profile name (letters, numbers, . _ - only)' };
@@ -7536,6 +9920,9 @@ function setupIPC() {
       catch (err) { return { ok: false, error: err.message }; }
       args = [`--profile=${name}`, `--local-port=${port}`];
     }
+    // A newly created bot lands on Settings rather than "Call now" — it has no
+    // name, voice or face yet, so that page IS its next step.
+    if (openSettings) args = [...args, '--open-settings=true'];
 
     // #379: open the new profile window where THIS one is, not centered. The main
     // window honors --window-x/y (createMainWindow, as the test launcher uses),
@@ -7572,6 +9959,7 @@ function setupIPC() {
       return { ok: false, error: err.message };
     }
   }
+  launchOrFocusProfileRef = launchOrFocusProfile;
 
   // #379: SWITCH IN PLACE. Launch/focus the target, then close THIS window so we
   // end on a single window. (The pre-#379 behavior left both windows open, which
@@ -7607,6 +9995,23 @@ function setupIPC() {
   // and never touches the current call, it's safe to use mid-call.
   ipcMain.handle('open-profile-window', async (_event, name) => {
     return await launchOrFocusProfile(name);
+  });
+
+  // "New bot" — no prompt. Chrome's model: creating a profile is one click, and
+  // naming it comes later (or never).
+  //
+  // The prompt this replaces dates from when the profile DIRECTORY was the bot's
+  // name, so it had to be chosen up front. It isn't any more: the bot's name is
+  // the botName preference, set on the Settings page or in the guided setup call.
+  // Asking for a directory name and calling it "New bot name" made people name
+  // the bot twice, the first time in a field that only accepts [A-Za-z0-9._-].
+  //
+  // Opens the new bot in its OWN window on its Settings screen, so the next step
+  // is right there: name it, or press the guided-setup call at the top.
+  ipcMain.handle('create-new-bot', async () => {
+    const name = nextBotProfileName();
+    seedNewBotName(name);
+    return await launchOrFocusProfile(name, { openSettings: true });
   });
 
   // File ▸ New Window — open a genuinely NEW window with no picker/prompt. The app
@@ -7712,19 +10117,16 @@ function setupIPC() {
   });
 
   // --- Meet window management ---
-  ipcMain.on('join-meet', (_event, meetUrl) => { joinMeetUrl(meetUrl); });
+  // opts.onboardingCall runs the spawned agent through /onboarding-call instead
+  // of /join-call — the guided setup, joining a call that already exists rather
+  // than creating one.
+  ipcMain.on('join-meet', (_event, meetUrl, opts) => {
+    joinMeetUrl(meetUrl, { onboardingCall: !!(opts && opts.onboardingCall) });
+  });
 
   ipcMain.on('open-external-url', (_event, url) => { openExternalUrl(url); });
 
-  ipcMain.on('leave-meet', () => {
-    currentMeetUrl = null;
-    detectedMeetUrl = null; // Reset so detection will re-notify about the same Meet
-    localServer.clearRoom();
-    closeClaudeTerminal();
-    showIdle();
-    // Identity cache is cleared at *join* time, not here — so it doesn't
-    // matter how the previous call ended (host-ended, app quit, crash).
-  });
+  ipcMain.on('leave-meet', () => performLeaveTeardown('panel'));
 
   ipcMain.on('get-meet-status', (event) => {
     if (meetView && !meetView.webContents.isDestroyed()) {
@@ -7756,9 +10158,8 @@ function setupIPC() {
       store?.delete('vcSessionToken');
     } catch { /* non-fatal */ }
     await session.defaultSession.cookies.remove(baseUrl, 'vc_session');
-    if (panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('auth-changed');
-    }
+    clearGiftedTtsKey(); // #273: a gift belongs to the account that's leaving
+    broadcastAuthChanged();
     return { loggedOut: true };
   });
 
@@ -7882,6 +10283,18 @@ function setupIPC() {
     } catch (err) {
       console.warn('[electron] get-meet-account-email DOM read failed:', err.message);
     }
+
+    // The live DOM scan only works while the meetView is actually showing a
+    // google.com page — most of the time (idle panel, not mid-call) it isn't,
+    // so `email` comes back null even for a bot that's been signed in and
+    // bound for weeks. Fall back to the persisted binding (chip-sourced when
+    // it was set, see above) rather than reporting "signed in, but which
+    // account?" every time the panel just happens to load off a Meet page.
+    if (!email && store) {
+      const bound = store.get('meetAccountEmail');
+      if (bound) email = bound;
+    }
+
     // Remember the last Meet display name for this profile (the signed-in Google
     // name). Stable, so the profile selector + idle sub-line can show it without
     // a live call (#282). Display-only — distinct from the authuser-pinning email.
@@ -7955,6 +10368,8 @@ function setupIPC() {
     if (!panelView || panelView.webContents.isDestroyed()) { callback(); return; } // no UI → cancel (401)
     const id = ++basicAuthSeq;
     pendingBasicAuth.set(id, callback);
+    // ADDRESSED, not broadcast (#229): a COMMAND expecting exactly ONE reply.
+    // Each recipient prompts and posts back a result for the same request id.
     panelView.webContents.send('basic-auth-prompt', {
       id, host: authInfo.host || '', realm: authInfo.realm || '',
     });
@@ -8092,7 +10507,48 @@ function setupIPC() {
     } catch { /* skip a malformed chunk rather than kill the stream */ }
   });
 
-  ipcMain.on('call-record-stopped', () => { stopCallRecording(); });
+  ipcMain.on('call-record-stopped', () => {
+    stopCallRecording().catch((err) => console.warn('[call-record] stop via IPC failed:', err.message));
+  });
+
+  // The video control window's own Stop button — routes through the exact
+  // same stopCallRecording() as start_recording/stop_recording
+  // and the call-end teardown path, so everything (audio + video + any live
+  // share capture) finalizes and merges together, not just this one window's
+  // own capture. (The 'share' capture window has no UI/Stop button — it never
+  // sends this; its lifecycle is entirely driven by the share itself.)
+  ipcMain.on('frame-capture-stop-requested', () => {
+    stopCallRecording().catch((err) => console.warn('[call-record] stop via control window failed:', err.message));
+  });
+
+  // The "Preparing recording…" merge-progress window's Cancel button (see
+  // call-recording-merge-window.js). Registered once here rather than
+  // per-call — activeMergeAbortController always reflects whichever merge
+  // (if any) is currently running, so this just aborts that. A cancel click
+  // arriving after the merge already finished (window closing races the
+  // click) finds activeMergeAbortController already null — harmless no-op.
+  ipcMain.on('merge-cancel-requested', () => {
+    console.log('[call-record] merge cancelled by user');
+    activeMergeAbortController?.abort();
+  });
+
+  // Chunks streamed from EITHER frame-capture window's renderer (the visible
+  // 'video' one or the hidden 'share' one — see call-recording-window.js) —
+  // same shape as call-record-chunk (below), tagged with which track they
+  // belong to (and kind, matching the track name) so
+  // CallRecordingSession/call-media-merge.js can tell video/share apart from
+  // the audio tracks without guessing from the name.
+  ipcMain.on('frame-capture-chunk', (_event, payload) => {
+    if (!activeRecording || !payload || !payload.track) return;
+    try {
+      const buf = Buffer.from(payload.dataBase64 || '', 'base64');
+      activeRecording.chunk(payload.track, payload.seq, buf, payload.mime, payload.startWallClock, payload.track);
+    } catch { /* skip a malformed chunk rather than kill the stream */ }
+  });
+
+  ipcMain.on('frame-capture-error', (_event, payload) => {
+    console.warn(`[call-record] frame capture window (${payload && payload.track}) reported an error:`, payload && payload.message);
+  });
 
   // #209: track -> participant name, attributed live in the renderer.
   ipcMain.on('call-record-name', (_event, { track, name } = {}) => {
@@ -8128,9 +10584,7 @@ function setupIPC() {
         localServer.clearRoom();
         // Reset the panel UI — without this it keeps showing "leave call"
         // even though we never made it into the meeting.
-        if (panelView && !panelView.webContents.isDestroyed()) {
-          panelView.webContents.send('call-failed', { message: status });
-        }
+        broadcastToRenderers('call-failed', { message: status });
       } else if (status.startsWith('Notice:')) {
         // #404: agent-visible notices from the call view (time-limit warning,
         // unhandled-dialog surfacing). Rides status.errors, which the agent
@@ -8271,9 +10725,7 @@ function setupIPC() {
     // Mirror the live caption state into the troubleshooting panel — the
     // "bot's-eye view" of exactly what captions the bot is receiving, so you
     // can compare it in real time against the bot's Meet view.
-    if (panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('caption-feed', { turns });
-    }
+    broadcastToRenderers('caption-feed', { turns });
     // TODO(#178 phase 2): forward settled turns to the remote sync for the
     // webapp room view, replacing the old per-entry sync.postTranscripts feed
     // for captions.
@@ -8285,9 +10737,7 @@ function setupIPC() {
   // tell the agent the room isn't silent — the bot is deaf.
   ipcMain.on(CALL_EVENTS.captionsState, (_event, { on }) => {
     localServer.setCaptionsOn(!!on);
-    if (panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('caption-state', { on: !!on });
-    }
+    broadcastToRenderers('caption-state', { on: !!on });
   });
 
   // Captions report ON but the text stream is frozen (#259) — the bot is deaf
@@ -8340,9 +10790,7 @@ function setupIPC() {
     // would otherwise raise 🥴 during any long bot answer.)
     console.log(`[electron] caption stall (${secs}s, ${info?.nodes ?? '?'} nodes) while a remote is speaking — bot is deaf; escalating + self-healing`);
     localServer.setCaptionsOn(false);
-    if (panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('caption-state', { on: false });
-    }
+    broadcastToRenderers('caption-state', { on: false });
     // D (#259): self-heal — only on CONFIRMED deafness, never during quiet rooms.
     if (meetView && !meetView.webContents.isDestroyed()) {
       sendCallCmd(CALL_COMMANDS.recoverCaptions);
@@ -8385,6 +10833,10 @@ function setupIPC() {
     localServer.setParticipants(participants || []);
   });
 
+  ipcMain.on(CALL_EVENTS.screenSharesUpdated, (_event, shares) => {
+    localServer.setScreenShares(shares || []);
+  });
+
   ipcMain.on(CALL_EVENTS.chatUnread, (_event, { unread }) => {
     localServer.setChatUnread(!!unread);
   });
@@ -8408,9 +10860,26 @@ function setupIPC() {
   });
 
   // Track our own presenting state from Meet UI (Stop presenting button visible)
-  ipcMain.on(CALL_EVENTS.selfPresenting, (_event, { presenting }) => {
+  ipcMain.on(CALL_EVENTS.selfPresenting, (_event, { presenting, reconcile }) => {
     const wasSharing = localServer.sharing;
     selfPresentingConfirmed = !!presenting;
+
+    // #68: a reconcile tick carries no news — it re-states what is on screen so a
+    // divergence introduced by another writer gets corrected. Meet's DOM is the
+    // only thing that actually knows whether the room can see us, so it wins.
+    //
+    // Logged when it actually corrects something, because a silent correction
+    // hides the bug it is papering over: a run of these means the stop click is
+    // failing (#141's dialog is the known cause), and that is worth seeing.
+    if (reconcile) {
+      if (wasSharing !== !!presenting) {
+        console.warn(`[share] state disagreed with Meet — app said sharing=${wasSharing}, `
+          + `Meet says ${presenting}. Correcting to Meet.`);
+        localServer.setSharing(!!presenting);
+      }
+      return;   // never run the edge-only side effects below
+    }
+
     localServer.setSharing(presenting);
     if (!presenting) {
       // Distinguish an agent-initiated stop (onStopSharing already cleared
@@ -8435,9 +10904,34 @@ function setupIPC() {
       stt.updateConfig({ apiKey: config.apiKey });
       if (config.apiKey) {
         store.set('ttsApiKey', config.apiKey);
+        // #273: typing/pasting here is always the person's OWN key — the gifted
+        // path sets ttsApiKey through accept-tts-grant, not this handler. Mark
+        // provenance so a later logout knows not to touch it.
+        store.set('ttsApiKeySource', 'byo');
+        // Test it NOW, not at the next startup. A key is pasted once and then
+        // trusted forever, so a bad one is discovered later and somewhere else
+        // entirely — "it won't let me pick an ElevenLabs voice", with nothing
+        // pointing back at the key. Checking here puts the answer next to the
+        // field the person is still looking at.
+        //
+        // Both failure modes matter and they need DIFFERENT advice:
+        //   · the key is rejected outright (wrong/old format) — nothing works
+        //   · the key is fine but lacks voices_read — speaking still works, only
+        //     the voice LIST is unavailable, so a voice id must be set by hand
+        verifyElevenLabsKey(config.apiKey, { announce: true });
       } else {
         store.delete('ttsApiKey');
+        store.delete('ttsApiKeySource');
+        elevenLabsKeyProblem = null;
+        broadcastToRenderers('voice-status-changed');
       }
+      // #273: whatever just happened to the key (pasted, cleared), tell any
+      // open Settings/onboarding pane so its "use gifted key" offer reflects
+      // the new value right away — a LIVE clear stays empty rather than
+      // auto-refilling (see the note above applyGrant), it just becomes
+      // offerable again immediately instead of waiting for the pane to
+      // regain focus.
+      broadcastToRenderers('tts-grant-changed');
     }
     if (config.voiceId) {
       store.set('ttsVoiceId', config.voiceId);
@@ -8570,9 +11064,7 @@ function setupIPC() {
 
   // --- Forward messages from Meet content script to panel ---
   ipcMain.on('to-panel', (_event, message) => {
-    if (panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('extension-message', message);
-    }
+    broadcastToRenderers('extension-message', message);
   });
 
   // --- Forward messages from panel to Meet content script ---
@@ -8587,6 +11079,11 @@ function setupIPC() {
     const baseUrl = getWebsiteUrl();
     const roomUrl = whiteboardShareUrl(baseUrl, meetCode);
 
+    // Bump shareGeneration even when REUSING the existing window: it's the
+    // signal onStopSharing's deferred close (see there) uses to detect "a
+    // re-share landed while I was still finishing the previous stop" and
+    // back off rather than closing the window out from under it.
+    shareGeneration++;
     if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
       whiteboardWindow = createWhiteboardWindow(roomUrl);
     }
@@ -8599,6 +11096,8 @@ function setupIPC() {
     const baseUrl = getWebsiteUrl();
     const roomUrl = whiteboardShareUrl(baseUrl, meetCode);
 
+    // Same reasoning as start-whiteboard-share above.
+    shareGeneration++;
     // Open whiteboard window if not already open
     if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
       whiteboardWindow = createWhiteboardWindow(roomUrl);

@@ -88,6 +88,21 @@ class CallRecordingSession {
     this.names.set(String(track), String(name));
   }
 
+  // Append one speaker start/stop to speaker-events.jsonl (wall-clock stamped),
+  // the source for who-spoke-when annotations over the merged call audio (#209).
+  // Meet mixes participants into shared audio slots, so this DOM-derived timeline
+  // — not the tracks — is what says who was speaking at each moment.
+  speakerEvent(name, speaking, at) {
+    if (this.closed || !name) return;
+    if (!this._speakerFd) {
+      try { this._speakerFd = fs.openSync(path.join(this.dir, 'speaker-events.jsonl'), 'w'); }
+      catch { this._speakerFd = null; return; }
+    }
+    try {
+      fs.writeSync(this._speakerFd, JSON.stringify({ at: Number(at) || Date.now(), name: String(name), speaking: !!speaking }) + '\n');
+    } catch { /* keep recording even if the sidecar write fails */ }
+  }
+
   _track(name, mime, startWallClock, kind) {
     let t = this.tracks.get(name);
     if (!t) {
@@ -160,6 +175,7 @@ class CallRecordingSession {
     for (const t of this.tracks.values()) {
       try { fs.closeSync(t.fd); } catch { /* already closed */ }
     }
+    if (this._speakerFd) { try { fs.closeSync(this._speakerFd); } catch { /* already closed */ } this._speakerFd = null; }
     const m = this.manifest();
     try {
       fs.writeFileSync(path.join(this.dir, 'manifest.json'), JSON.stringify(m, null, 2));
@@ -181,7 +197,10 @@ class CallRecordingSession {
         + 'that. Each remote-* is a distinct WebRTC track from Meet (measured '
         + 'independent in a 3-party call — Meet separates participants, not one '
         + 'mix); tracks are labeled by arrival order and named when attributable, '
-        + 'and Meet can emit extra or initially-silent tracks.',
+        + 'and Meet can emit extra or initially-silent tracks. A "share-audio" '
+        + 'track, when present, is the shared tab/screen\'s own audio (raw, '
+        + 'pre-mute) — distinct from the "share" track, which is that surface\'s '
+        + 'VIDEO capture (kind: "share").',
       tracks: [...this.tracks.values()].map((t) => ({
         track: t.name,
         name: this.names.get(t.name) || null, // attributed participant, when known

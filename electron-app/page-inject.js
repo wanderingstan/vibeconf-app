@@ -1803,6 +1803,14 @@
   // muted, rather than surprising the room with sound already suppressed.
   let shareAudioGain = null;
   let shareAudioMuted = false;
+  // The RAW shared audio track (the tab/screen's actual sound, before the mute
+  // gain). Exposed so the call recorder can save it as its own track (#209),
+  // mirroring __vibeMicTrack. Recording the raw source, not the published
+  // (post-mute) track, so the shared content's audio is captured even when the
+  // bot has muted it into the call. Cleared when the share ends.
+  let currentShareAudioTrack = null;
+  window.__vibeShareTrack = () =>
+    (currentShareAudioTrack && currentShareAudioTrack.readyState === 'live') ? currentShareAudioTrack : null;
 
   function applyShareAudioMute() {
     if (!shareAudioGain) return false;
@@ -1817,6 +1825,10 @@
   function installShareAudioGain(stream) {
     const raw = stream.getAudioTracks()[0];
     if (!raw) { shareAudioGain = null; return null; }
+    // Expose the raw track for recording, whether or not the gain graph below
+    // succeeds — a share that can't be muted can still be recorded.
+    currentShareAudioTrack = raw;
+    raw.addEventListener('ended', () => { if (currentShareAudioTrack === raw) currentShareAudioTrack = null; });
     try {
       const ctx = new AudioContext();
       const gain = ctx.createGain();
@@ -3001,8 +3013,16 @@
 
     window.addEventListener('message', (event) => {
       if (event.source !== window || !event.data?.__botsInCalls) return;
-      if (event.data.action === 'speaker-active' && event.data.payload?.speaking) {
-        voteFromDom(event.data.payload.name);
+      if (event.data.action === 'speaker-active') {
+        const { name, speaking, at } = event.data.payload || {};
+        if (!name) return;
+        // Persist the speaker timeline (start AND stop) to disk alongside the
+        // audio: Meet mixes participants into shared slots, so the tracks alone
+        // don't say who spoke when — but this DOM-derived, wall-clock-stamped
+        // log does, and merge-call-audio.mjs turns it into who-spoke-when
+        // annotations over the merged call audio (#209).
+        if (recording) post('record-speaker-event', { name, speaking: !!speaking, at: at || Date.now() });
+        if (speaking) voteFromDom(name);
       }
     });
 
@@ -3053,6 +3073,7 @@
       recorders.delete(name);
     }
 
+    let lastShareId = null, shareCount = 0;
     function attachAll() {
       if (!recording) return;
       try {
@@ -3064,6 +3085,23 @@
           if (pa && pa.track) recordTrack(`remote-${id}`, pa.track, id);
         }
       } catch { /* manager is a stub (Slack) — nothing to attach */ }
+      // The shared tab/screen's own audio, when a share is live. A fresh id means
+      // a new share session (they come and go mid-call) → a new track name, so
+      // separate shares land in separate files instead of concatenating into one.
+      //
+      // Named 'share-audio', NOT 'share': call-recording-window.js already claims
+      // the bare 'share' name for the shared surface's VIDEO capture (#288, which
+      // landed after this was written). CallRecordingSession keys tracks by name
+      // and opens one fd per name, so reusing 'share' would append two unrelated
+      // webm byte streams into a single share.webm — a corrupt file, plus whichever
+      // stream registered first would decide the per-kind byte cap for both.
+      try {
+        const share = window.__vibeShareTrack && window.__vibeShareTrack();
+        if (share) {
+          if (share.id !== lastShareId) { lastShareId = share.id; shareCount++; }
+          recordTrack(shareCount === 1 ? 'share-audio' : `share-audio-${shareCount}`, share);
+        }
+      } catch { /* no share / not exposed — nothing to attach */ }
     }
 
     return {

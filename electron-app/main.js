@@ -283,6 +283,48 @@ let activeRecording = null;
 // affecting the audio recording at all.
 let activeRecordingWindow = null;
 
+// #328: the control window shows elapsed time, and the renderer has no way to
+// know how much disk that time is actually costing — a 36-minute stand-up wrote
+// a 1.06 GB video.webm. Main owns the only live byte counts (per-track totals on
+// activeRecording), so it pushes them over IPC on this timer; the renderer just
+// formats what it receives. Every 2s: the number is a reassurance gauge, not a
+// readout anyone watches tick.
+const RECORDING_STATS_MS = 2000;
+let _recordingStatsTimer = null;
+
+// Free space on the volume the recording is being written to, or null if it
+// can't be determined. statfs is best-effort by design: it's a nice-to-have on
+// the indicator, and an older/odd platform without it must not break the size
+// display that IS the point.
+function volumeFreeBytes(dir) {
+  try {
+    const st = fs.statfsSync(dir);
+    return Number(st.bsize) * Number(st.bavail);
+  } catch { return null; }
+}
+
+function startRecordingStatsPush() {
+  stopRecordingStatsPush();
+  const tick = () => {
+    if (!activeRecording || !activeRecordingWindow || activeRecordingWindow.isDestroyed()) return;
+    try {
+      activeRecordingWindow.webContents.send('recording-stats', {
+        bytes: activeRecording.totalBytes(),
+        freeBytes: volumeFreeBytes(activeRecording.dir),
+        dir: activeRecording.dir,
+      });
+    } catch { /* window torn down between the check and the send */ }
+  };
+  tick(); // don't make the window wait a full interval for its first number
+  _recordingStatsTimer = setInterval(tick, RECORDING_STATS_MS);
+  if (_recordingStatsTimer.unref) _recordingStatsTimer.unref();
+}
+
+function stopRecordingStatsPush() {
+  if (_recordingStatsTimer) clearInterval(_recordingStatsTimer);
+  _recordingStatsTimer = null;
+}
+
 // The whiteboard-share side-capture (extension, see call-recording-window.js's
 // createShareCaptureWindow): a full-resolution recording of the bot's own
 // whiteboard-window share content, independent of and in addition to the
@@ -385,6 +427,7 @@ function startCallRecording(room, botName, { force = false } = {}) {
     // ffmpeg-missing fallback.
     try {
       activeRecordingWindow = createCallRecordingWindow(meetView);
+      startRecordingStatsPush(); // #328 — feed the window its running size
       console.log('[call-record] recording control window created — capturing video');
     } catch (err) {
       activeRecordingWindow = null;
@@ -472,6 +515,7 @@ async function stopCallRecording() {
   // Stop the control window's MediaRecorder and wait (bounded) for its last
   // chunk BEFORE finalizing activeRecording — otherwise the video track's
   // file could still be receiving a chunk after we've already closed it.
+  stopRecordingStatsPush(); // #328 — nothing to report once we're finalizing
   if (activeRecordingWindow) {
     const win = activeRecordingWindow;
     activeRecordingWindow = null;
@@ -780,6 +824,20 @@ function performLeaveTeardown(via) {
     }
   };
   step('clearRoom', () => localServer.clearRoom());
+  // #326: every leave route converges here, so this is where the recording has
+  // to end. Before this, only onLeaveCall (agent leave_call / auto-leave /
+  // host-ended) stopped it — the panel's Leave button reaches teardown via
+  // 'leave-meet' and stopped nothing, so capture kept running against a dead
+  // call until someone clicked Stop: 24s of "recording" an idle view on the
+  // 2026-08-11 stand-up, and a stale activeRecording that would have made the
+  // next startCallRecording return {already:true}. Placed after clearRoom (which
+  // is what sets 'idle' — that ordering is load-bearing) but BEFORE showIdle,
+  // which navigates meetView to the idle page: after that the audio tracks are
+  // gone and there is nothing left to finalize. No-op when no recording is
+  // active, so it's harmless on the routes where onLeaveCall already fired it.
+  step('stopCallRecording', () => {
+    stopCallRecording().catch((err) => console.warn('[call-record] stop on teardown failed:', err.message));
+  });
   step('closeClaudeTerminal', () => closeClaudeTerminal());
   step('showIdle', () => showIdle());
   console.log(ts(), '[electron] Call teardown complete (via ' + via + ') — status',

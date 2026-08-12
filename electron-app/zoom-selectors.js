@@ -182,12 +182,32 @@ const ZOOM = {
   // Captions ("live transcription"). Enable flow (verified, host):
   //   More (footer) → "Captions" → "Show Captions" → first time only: a
   //   language dialog (.lt-select-language) → "Save".
-  // Renders as a draggable overlay, NOT a persistent transcript panel — the
-  // Meet-style caption-scrape model applies (ephemeral text, poll/observe),
-  // not Slack's scrollable event log. Overlay gains
+  // Renders as a draggable overlay. Overlay gains
   // .live-transcription-subtitle__box--hide as text fades; content persists
   // briefly. NO speaker-name text was present solo (just an avatar <img>) —
   // attribution format in multi-party calls is TBD (may prefix "Name: ").
+  //
+  // CORRECTION (this recon originally concluded "NOT a persistent transcript
+  // panel, so the Meet-style ephemeral scrape model applies, not Slack's
+  // scrollable event log" — that was incomplete). Zoom DOES document a
+  // "View full transcript" mode that opens a Transcript panel with the
+  // session's full transcript, search, and download-as-.TXT. Enabling it is
+  // host-only. See:
+  //   https://support.zoom.com/hc/en/article?id=zm_kb&sysparm_article=KB0062813#h_01GHWATNVPW5FR304S2SVGXN2X
+  // The overlay finding stands; it just was not the whole picture — the two
+  // are most likely views of the same live transcription, and this harvest
+  // never opened the panel.
+  //
+  // BUT: that article documents the DESKTOP and MOBILE apps and never mentions
+  // the web client, which is what this file targets. So do NOT build on the
+  // panel until someone confirms it exists at app.zoom.us — if it is
+  // desktop-only, the ephemeral overlay below stays the only signal. See
+  // checklist item 3 at the bottom of this file.
+  //
+  // If the panel IS reachable here, prefer it over the overlay: a persistent
+  // scrollable log beats racing a fade timer, slack-selectors.js already
+  // implements that pattern, and a transcript panel is the likelier place for
+  // the speaker labels item 3 needs.
   // -------------------------------------------------------------------------
   captions: {
     moreButtonText: 'More', // footer button — NO aria-label; match by text
@@ -338,8 +358,17 @@ ZOOM.parseChatAria = (aria) => {
 //   1. Guest pre-join page (signed-out browser): name/passcode inputs, Join
 //      button, "not a robot" gate if any → join.* above.
 //   2. Waiting-room ("host will let you in") body text → join.waitingRoomTexts.
-//   3. Multi-party captions: does the overlay prefix speaker names? →
-//      captions.* attribution format.
+//   3. Captions, two parts (see the CORRECTION note in the captions block):
+//      a. Does the "View full transcript" Transcript panel exist in the WEB
+//         client at all? Zoom documents it for the desktop/mobile apps only.
+//         This gates everything else: if it is desktop-only, the ephemeral
+//         overlay is the only signal and we scrape it Meet-style. If it is
+//         here, prefer it and add its selectors (panel container, row, speaker
+//         label, scroll region) to captions.*.
+//      b. Multi-party attribution: does the overlay prefix speaker names, and
+//         does the panel carry them? → captions.* attribution format.
+//      Also open: plan/account gating, and whether a GUEST bot can read the
+//      panel once a host has turned transcription on (enabling is host-only).
 //   4. Per-tile speaking indicator (needs 2+ participants) → tiles.speakingIndicator.
 //   5. Stop-share affordances after a real share → share.*.
 //   6. Camera-ON label + participants "video on" phrase → camera.labelStop,

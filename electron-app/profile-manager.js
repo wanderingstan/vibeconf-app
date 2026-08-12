@@ -37,6 +37,11 @@ function readConfigFields(dir) {
     lastMeetName: cfg.lastMeetName || null,   // remembered Meet display name (#282)
     lastSlackName: cfg.lastSlackName || null, // remembered Slack display name (#282)
     avatarThumb: cfg.avatarThumb || null,     // small PNG each bot renders of its own avatar, for the switcher thumbnail
+    // Calendar auto-join (#299): read here (not just by that profile's own
+    // running process) so a DIFFERENT already-running profile can notice a
+    // calendar event belongs to this one and launch it — see
+    // checkOtherProfilesForCalendarMatch in main.js.
+    calendarIdentityEmail: cfg.calendarIdentityEmail || null,
   };
 }
 

@@ -42,6 +42,10 @@ PAT = {
     'sent':    re.compile(r'\[electron\] Sent play-tts to Meet view'),
     'capraw':  re.compile(r'\[caption-raw\] t\d+ LIVE'),
     'model':   re.compile(r'\[agent\] model=(\S+)'),
+    # 📊 [context] input=72123 (fresh=2 cacheRead=72000 cacheWrite=121) output=45
+    'ctx':     re.compile(r'\[context\] input=(\d+) \(fresh=(\d+) cacheRead=(\d+) cacheWrite=(\d+)\) output=(\d+)'),
+    # 📦 [payload] round → 3 entries, 412 chars, reason=silence
+    'payload': re.compile(r'\[payload\] round → (\d+) entries, (\d+) chars'),
 }
 
 def audit_file(path):
@@ -111,6 +115,9 @@ def audit_file(path):
             if tj - t > 120: break
             if kj == 'resolve': break
             if kj == 'perf' and 'claude_ms' not in cyc: cyc['claude_ms'] = int(gj[0])
+            elif kj == 'ctx' and 'ctx_in' not in cyc: cyc['ctx_in'] = int(gj[0])
+            elif kj == 'payload' and 'payload_chars' not in cyc:
+                cyc['payload_entries'] = int(gj[0]); cyc['payload_chars'] = int(gj[1])
             elif kj == 'speak' and 't_speak' not in cyc:
                 cyc['t_speak'] = tj; speak_text = gj[0][:25]
             elif kj == 'synth' and 't_speak' in cyc and 't_synth' not in cyc:
@@ -177,6 +184,22 @@ def main(patterns):
                 s = stats([fn(c) for c in sub])
                 if not s: continue
                 print(f"{b:34s} {lname:28s} {s['n']:4d} {s['avg']:7.0f} {s['med']:7.0f} {s['p90']:7.0f}")
+
+    # Claude think time vs context size (📊 [context] marker, per answering
+    # turn). This is the direct test of the "context growth slows replies"
+    # hypothesis: if D-claude climbs monotonically with the bucket, trimming
+    # baseline context / compacting mid-call are the levers; if it's flat, the
+    # cause is elsewhere (model, load, tool detours).
+    ctx_cycles = [c for c in all_cycles if c.get('ctx_in') and c.get('claude_ms')]
+    if ctx_cycles:
+        print(f"\n{'context bucket':20s} {'D claude n':>10s} {'avg':>7s} {'med':>7s} {'p90':>7s}")
+        print('-' * 56)
+        buckets = sorted({c['ctx_in'] // 10_000 for c in ctx_cycles})
+        for b in buckets:
+            sub = [c['claude_ms'] for c in ctx_cycles if c['ctx_in'] // 10_000 == b]
+            s = stats(sub)
+            label = f"{b*10}-{(b+1)*10}K"
+            print(f"{label:20s} {s['n']:10d} {s['avg']:7.0f} {s['med']:7.0f} {s['p90']:7.0f}")
 
     # Per-model breakdown (#agent model= marker, read straight from the driving
     # session's own transcript — see agent-transcript.js). Cycles from before

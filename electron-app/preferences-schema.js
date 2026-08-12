@@ -140,6 +140,46 @@ const PREFERENCES = {
       "The bot's display name in Meet calls. Takes effect on the next call.",
     requiresRestart: true,
   },
+  calendarIdentityEmail: {
+    type: 'string',
+    default: '',
+    label: 'Calendar invite email',
+    description:
+      "Add this email as a guest on a Google Calendar event (it doesn't need to " +
+      'be a real/working address) to have this bot automatically join that ' +
+      "meeting. Alternatively, put `#vibeconf:<this bot's name>` in the " +
+      "event's title or description. Requires the user to be logged into " +
+      'vibeconferencing.com with Calendar access connected. See ' +
+      'startCalendarPolling in main.js.',
+  },
+  onboardingCallComplete: {
+    type: 'boolean',
+    // Default TRUE, deliberately backwards from how a "have you done X yet"
+    // flag would normally default. A brand-new, never-configured bot needs
+    // this false — but that has to be written explicitly, at the moment the
+    // bot is actually created (main.js: seedNewBotName, and the brand-new-
+    // profile check in the startup block), not left to fall through to a
+    // schema default. Defaulting to false here would mean every profile that
+    // predates this preference — every bot real people have been running for
+    // weeks — reads as never-onboarded the moment this shipped, and gets
+    // shoved into a surprise guided call it doesn't need. Defaulting to true
+    // makes "unknown" mean "assume already configured", which is the safe
+    // direction to be wrong in.
+    default: true,
+    hiddenInSettingsUI: true,
+    description:
+      "Whether this bot has ever finished the live guided onboarding call " +
+      "(mcp-server/onboarding-call-skill.md) — the walkthrough that sets its " +
+      'name, voice, emoji and background live, in-call. Distinct from the ' +
+      "Electron dialog wizard's own `onboardingComplete` store flag, which only " +
+      'tracks that dialog being dismissed and says nothing about whether the ' +
+      'live call ever ran. Explicitly set to false only when a bot is newly ' +
+      'created (main.js), and set to true by the onboarding-call skill itself ' +
+      'at the end of its walkthrough (Step 5, once every question has been ' +
+      'asked or skipped). Read by join-call-skill.md and call-skill.md to ' +
+      'redirect a bot that has never done this into the guided call instead ' +
+      'of a normal join/call.',
+  },
   logRawCaptions: {
     type: 'boolean',
     default: false,
@@ -154,14 +194,34 @@ const PREFERENCES = {
     default: false,
     hiddenInSettingsUI: true,
     description:
-      'Debug: record the call\'s audio to disk, one file per track — the bot\'s ' +
-      'own outgoing audio plus each remote WebRTC track Meet delivers — with a ' +
-      'manifest that time-aligns them. Built to diagnose "heard-nothing" stalls: ' +
-      'it captures what each mic actually carried, to compare against captions. ' +
-      'Meet gives each remote participant its own track (measured), so "remote-*" ' +
-      'tracks are per-participant — labeled by arrival order, not name. OFF by ' +
+      'Automatically record every call to disk — one audio file per track (the bot\'s ' +
+      'own outgoing audio plus each remote WebRTC track Meet delivers) PLUS a ' +
+      'video track of the bot\'s own Meet view, with a manifest that time-aligns ' +
+      'everything. Meet gives each remote participant its own track (measured), so ' +
+      '"remote-*" tracks are per-participant — labeled by arrival order, not name. ' +
+      'When recording is active a small visible status window appears (elapsed ' +
+      'time + Stop button) — that is expected UI, not a side effect, and it is ' +
+      'also how the room is shown recording is happening. When the recording ' +
+      'stops, audio and video are automatically muxed into one call-recording.mp4. OFF by ' +
       'default; verbose on disk. Env VIBECONF_RECORD_CALL=1 ' +
-      'forces it on (used by the test fleet so a nightly stall comes with audio).',
+      'forces it on (used by the test fleet so a nightly stall comes with a recording).',
+  },
+  keepCallRecordingTracks: {
+    type: 'boolean',
+    default: false,
+    label: 'Keep call recording tracks',
+    description:
+      'After a call recording finishes producing call-recording.mp4 (and, if a ' +
+      'whiteboard share happened, call-recording-share.mp4), also keep the raw ' +
+      'per-track files it was built from — call-recording-tracks/ (one audio file ' +
+      'per participant, plus video.webm and share.webm) and manifest.json. OFF by ' +
+      'default: once the merge succeeds, call-recording-tracks/ is deleted, since ' +
+      'almost everyone only ever wants the merged video(s), not the raw tracks they ' +
+      'came from. Turn this on to keep those too — useful for diagnosing the ' +
+      'recording itself (per-track timing, a specific participant\'s audio, a failed ' +
+      'mux) rather than just watching what happened on the call. A merge that fails ' +
+      'or is skipped (no ffmpeg, no video captured) never deletes the raw tracks ' +
+      'regardless of this setting — they are all that is left in that case.',
   },
   studioSound: {
     type: 'boolean',
@@ -358,7 +418,7 @@ const PREFERENCES = {
     label: 'Agent backend',
     enumLabels: {
       claude: 'Claude Code (recommended)',
-      codex: 'OpenAI Codex (experimental, manual setup)',
+      codex: 'OpenAI Codex (experimental)',
       other: 'Other MCP client (LM Studio, custom)',
     },
     description:
@@ -366,7 +426,7 @@ const PREFERENCES = {
       'CLI is installed is a property of the machine, and every bot on it is driven ' +
       'by the same one. "claude" = Claude Code, the path the app automates (it writes ' +
       'the MCP config, opens the Terminal, and checks sign-in). "codex" = OpenAI Codex ' +
-      'CLI — experimental, and set up by hand per docs/codex.md. "other" = anything ' +
+      'CLI — experimental; the app writes its MCP config, but does not launch it. "other" = anything ' +
       'else that speaks MCP (LM Studio, a hand-rolled client, an agent on ' +
       'another machine) — the app gives you the connection details and stays out of ' +
       'the way. ' +
@@ -418,6 +478,7 @@ const PREFERENCES = {
   remoteLogging: {
     type: 'boolean',
     default: false,
+    label: 'Remote logging',
     description:
       'Ship this app\'s session log to the backend continuously, so it can be read '
       + 'remotely via get_session_log (instance:…) or the logs CLI — useful for '

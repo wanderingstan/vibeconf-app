@@ -90,7 +90,7 @@ test('readConfigFields: empty when neither config exists', () => {
     mkdirSync(dir, { recursive: true });
     assert.deepEqual(pm.readConfigFields(dir), {
       botName: null, meetAccountEmail: null, lastMeetName: null,
-      lastSlackName: null, avatarThumb: null,
+      lastSlackName: null, avatarThumb: null, calendarIdentityEmail: null,
     });
   });
 });

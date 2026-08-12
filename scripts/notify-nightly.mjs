@@ -137,6 +137,10 @@ const stamp = dmg?.ts || main?.ts || slack?.ts || '(unknown)';
 // lanes keep recordings (REC_KEEP=fails), so this is naturally the interesting set
 // — a red night's digest links straight to the .mov of what went wrong.
 const recLinks = allLines('recording-uploads.jsonl').filter((r) => r.ts === stamp && r.link);
+// Per-participant call recordings kept+uploaded THIS run (collect_call_recordings →
+// rclone). Same keep=fails logic as the .mov, so on a red night this links straight
+// to the actual call audio/video of what went wrong.
+const callRecLinks = allLines('call-recording-uploads.jsonl').filter((r) => r.ts === stamp && r.link);
 
 // --- Claude analysis (only on a red night) ---------------------------------
 // When something failed, hand the failing log lines to `claude -p` for a short
@@ -221,8 +225,10 @@ if (recBroken) ctx.push(`⚠️ screen-recording is BROKEN on the runner — the
 const analysisBlock = analysis ? ['', '🔎 <b>Claude analysis</b>', esc(analysis)] : [];
 // Keep under Telegram's 4096-char hard limit — the status lines are the priority,
 // so trim the analysis tail (not the digest) if the whole thing runs long.
-const recBlock = recLinks.length
-  ? ['', '📹 <b>Recordings</b>', ...recLinks.map((r) => `<a href="${esc(r.link)}">▶ ${esc(r.lane)}</a>`)]
+const recBlock = (recLinks.length || callRecLinks.length)
+  ? ['', '📹 <b>Recordings</b>',
+     ...recLinks.map((r) => `<a href="${esc(r.link)}">▶ ${esc(r.lane)} (screen)</a>`),
+     ...callRecLinks.map((r) => `<a href="${esc(r.link)}">🎙️ ${esc(r.lane)} (call ×${esc(String(r.files ?? ''))})</a>`)]
   : [];
 let text = [header, ...ctx, ...lines.map(esc), ...recBlock, ...analysisBlock].join('\n');
 if (text.length > 4090) text = text.slice(0, 4087) + '…';

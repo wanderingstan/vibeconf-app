@@ -19,13 +19,44 @@ const fs = require('fs');
 // installer (no Node prerequisite, auto-updates). See code.claude.com/docs/en/quickstart.
 // Pure + testable.
 function installCommandFor(platform = process.platform) {
-  if (platform === 'win32') return 'irm https://claude.ai/install.ps1 | iex';   // Windows PowerShell
+  // Windows: install, THEN put the install dir on PATH ourselves.
+  //
+  // The official installer drops claude.exe in %USERPROFILE%\.local\bin and then
+  // tells the user to add that to PATH by hand, through System Properties →
+  // Environment Variables. That is a lot to ask mid-onboarding and it is the step
+  // most likely to lose someone — and without it nothing works: `where claude`
+  // fails, so the wizard says Claude isn't installed, and the app later launches
+  // `claude` BY NAME to drive a call, so the bot would fail to start too.
+  //
+  // Writes the USER Path (persists, no admin rights) and also updates the current
+  // session, so `claude --help` works in the same window without reopening it.
+  // Guarded against duplicates, so re-running is safe and this becomes a no-op if
+  // the installer ever starts doing it itself.
+  if (platform === 'win32') {
+    return 'irm https://claude.ai/install.ps1 | iex; '
+      + '$b = "$env:USERPROFILE\\.local\\bin"; '
+      + 'if (-not (($env:PATH -split \';\') -contains $b)) { '
+      + '[Environment]::SetEnvironmentVariable(\'Path\', '
+      + '([Environment]::GetEnvironmentVariable(\'Path\',\'User\').TrimEnd(\';\') + \';\' + $b), \'User\'); '
+      + '$env:PATH += \';\' + $b }';
+  }
   return 'curl -fsSL https://claude.ai/install.sh | bash';                       // macOS / Linux
 }
 
 // Where the native installer / package managers commonly drop the binary — checked
 // directly so a minimal GUI PATH can't produce a false "not installed".
-function knownClaudePaths(home = os.homedir()) {
+function knownClaudePaths(home = os.homedir(), platform = process.platform) {
+  // Windows first: the binary is claude.EXE, and every path below it is a Unix
+  // one. Without this the fast check could never match on Windows, so a perfectly
+  // good install fell through to `where claude` — which also fails, because the
+  // installer does not put .local\bin on PATH. Both routes failed and the wizard
+  // reported "not installed" for an install that had just succeeded.
+  if (platform === 'win32') {
+    return [
+      path.join(home, '.local', 'bin', 'claude.exe'), // native installer (irm … | iex)
+      path.join(home, 'AppData', 'Roaming', 'npm', 'claude.cmd'), // npm -g
+    ];
+  }
   return [
     path.join(home, '.local', 'bin', 'claude'),   // native installer (curl … | bash)
     '/opt/homebrew/bin/claude',                    // Homebrew (Apple Silicon)

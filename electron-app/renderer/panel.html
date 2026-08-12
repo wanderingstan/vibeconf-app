@@ -78,6 +78,16 @@
           <div class="hero-notice notice-warn" id="claudeAuthBanner" style="display:none">
             <span><i class="ui-icon ui-icon-construction ui-icon--lead"></i>Claude Code isn't signed in. Your bot will join calls but nothing will drive it.</span>
           </div>
+
+          <!-- Calendar auto-join (#299): the next matching event within the
+               next 24h, refreshed as main.js's calendar poll runs (still only
+               ~5 minutes ahead of the actual start does anything get
+               scheduled — this is purely informational, so a user can see a
+               join is coming well before it happens). Hidden when there's no
+               upcoming match at all. -->
+          <div class="hero-notice notice-info" id="calendarUpcomingBanner" style="display:none">
+            <span>📅 <span id="calendarUpcomingText"></span></span>
+          </div>
         </div>
 
         <!-- PRE-CALL controls, over the foot of the avatar.
@@ -184,7 +194,7 @@
              so name the profile here rather than leaving it to the tooltip on
              the main screen. -->
         <div class="settings-title">
-          <h1>Bot Settings</h1>
+          <h1 id="settingsHeading">Bot Settings</h1>
           <div id="settingsProfileName" class="settings-profile" title="The on-disk bot profile these settings belong to. Each bot profile has its own preferences, Google login, and storage.">…</div>
         </div>
         <!-- A checkmark, not an ✕ (iOS-style "done" affordance): leaving this
@@ -344,7 +354,7 @@
            buttons plus one line of why. The guest-vs-account explainer that used
            to live here is gone; signing in visibly overrides the name above. -->
       <div class="section">
-        <h2>Sign-ins</h2>
+        <h2>Identity</h2>
         <p class="helper-text" style="margin:0 0 8px">
           Optional. Sign the bot into Google so it's auto-admitted to invite-only
           Meets, or into Slack so it can join huddles. Signing in uses that
@@ -355,6 +365,21 @@
         <button id="meetSignOutBtn" style="display:none">Sign out (use as guest)</button>
         <button id="slackSignInBtn">Sign into Slack as bot</button>
         <button id="slackSignOutBtn" style="display:none">Sign out of Slack</button>
+
+        <!-- Calendar auto-join identity (#299): add this address as a guest on
+             a Google Calendar event (it never needs to resolve to a real
+             mailbox) to have this bot auto-join that meeting. A
+             #vibeconf:<name> tag in the event title or description works too,
+             with no field to fill in here. Auto-filled from the bot's
+             signed-in Google account above, if any, when this field is still
+             empty — see refreshAccountEmail() in panel.js. -->
+        <div class="field" id="calendarIdentityEmailField" style="margin-top:16px">
+          <label for="calendarIdentityEmail">Calendar invite email</label>
+          <input type="text" id="calendarIdentityEmail" value="" placeholder="e.g. jimmy@example.com" />
+          <div style="font-size:11px;color:#666;margin-top:2px" id="calendarIdentityEmailCaption">
+            Add this address as a guest on a Google Calendar event to have this bot join it automatically. It doesn't need to be a real, working email. You can also put <code>#vibeconf:&lt;this bot's name&gt;</code> in the event's title or description instead. Filled in automatically from "Sign in to Google as bot" above, if used.
+          </div>
+        </div>
       </div>
 
       <div class="section">

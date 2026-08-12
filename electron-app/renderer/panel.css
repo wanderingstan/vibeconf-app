@@ -284,6 +284,19 @@ button.primary:disabled {
   background: rgba(58, 47, 28, 0.86);
   border: 1px solid rgba(138, 109, 59, 0.7);
 }
+/* Info — blue, calm: FYI, not a problem to fix. */
+.notice-info {
+  display: none;              /* JS flips this to flex */
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: #cfe3fb;
+  background: rgba(28, 42, 58, 0.86);
+  border: 1px solid rgba(59, 95, 138, 0.7);
+}
 button.notice-action {
   width: auto; margin: 0; flex: 0 0 auto;
   background: #8ab4f8; border: none; color: #202124;
@@ -459,6 +472,17 @@ button.screen-close:hover:not(:disabled) { background: #aecbfa; color: #202124; 
 body[data-titlebar] #settingsScreen .container { padding-top: 0; }
 body[data-titlebar] #settingsScreen .settings-head {
   -webkit-app-region: drag;
+  /* STICKY, not static: Settings is a long scrolling page, and a drag handle
+     that scrolls away is a window you can no longer reposition once you've
+     read past the top of it. Pinning to the scroll viewport (there's no
+     overflow ancestor between here and the document, so `top: 0` sticks to
+     the window itself) keeps it reachable at any scroll position, the same
+     reasoning as button.screen-close above. Needs an opaque background since
+     content now passes UNDER it instead of before it. */
+  position: sticky;
+  top: 0;
+  z-index: 15;
+  background: #202124;
   margin: 0 -16px 14px;   /* escape the container's side padding, as .bot-hero does */
   padding: 34px 16px 0;
 }
@@ -714,6 +738,10 @@ button.auth-action-btn:hover:not(:disabled) {
 .hero-top {
   display: flex; align-items: flex-start;
   padding: 10px 10px 0;
+  /* Own stacking context, above .hero-notices (z-index: 5) — the bot switcher
+     dropdown lives in here and must never be obscured by a notice banner
+     opening below it. */
+  z-index: 6;
 }
 /* No OS title bar → this strip becomes the window's drag handle. Whatever is
    interactive inside it must opt back out, or it stops being clickable. */

@@ -8,28 +8,18 @@ For the bigger picture (multiple bots side by side, profiles, ports), see [multi
 
 - The Vibeconferencing macOS app installed and working with at least one Meet call. If you haven't done that yet, start with [Quickstart](quickstart.md).
 - Codex CLI installed and you can run a chat session in it.
-- The Vibeconferencing source checkout at `~/Developer/vibeconferencing/` (or wherever you cloned it). The installer needs the path.
 
 ## Setup
 
-### 1. Install the MCP config for Codex
+### 1. Pick Codex as the agent backend
 
-From the **repo root** (not from `electron-app/`):
+Open Vibeconferencing's setup assistant or App Settings, set **Agent backend** to **OpenAI Codex**, and restart Codex.
 
-```bash
-cd ~/Developer/vibeconferencing
-npm run install:codex-mcp -- \
-  --base-url=http://127.0.0.1:7866 \
-  --bot-name=Codex
-```
+The default app instance writes a `[mcp_servers.vibeconferencing]` block to `~/.codex/config.toml` (backing up any existing config to a timestamped `.bak` next to it). Codex loads MCP servers at startup, so it will not see the new server until it restarts.
 
-This writes a `[mcp_servers.vibeconferencing]` block to `~/.codex/config.toml` (backing up any existing config to a timestamped `.bak` next to it) pointing Codex at port **7866** — a separate Electron app instance from your default one on 7865.
+> **Using multiple bots?** Codex can also get its own profiled Electron app instance so it has its own Google login, prefs, and identity in Meet. See [multi-bot setups](multi-bot.md) for the 7866 profile path.
 
-> **Why a different port?** Codex gets its own profiled Electron app instance so it has its own Google login, prefs, and identity in Meet. Your default app keeps serving Claude (or whatever else) on 7865 without conflict.
-
-To preview what the installer will write without actually writing, add `--dry-run`.
-
-### 2. Launch the Codex-profile app instance
+### 2. Optional: launch a Codex-profile app instance
 
 ```bash
 cd ~/Developer/vibeconferencing/electron-app
@@ -42,6 +32,14 @@ You should see:
 - The default-profile app continues running unaffected
 
 > Permissions are per-binary-path, so you may need to re-grant Microphone and Camera the first time. Sign in to vibeconferencing.com from this new panel window using whichever Google account you want the Codex bot to appear as in Meet.
+
+If you use this profiled instance, run the installer from the repo root to repoint Codex at that profile's port:
+
+```bash
+npm run install:codex-mcp -- \
+  --base-url=http://127.0.0.1:7866 \
+  --bot-name=Codex
+```
 
 ### 3. Verify the wire (optional but recommended)
 
@@ -66,7 +64,7 @@ In your Codex session, ask:
 
 You should see entries like `join_call`, `wait_for_speech`, `speak`, `get_room_info`, `update_whiteboard`, `read_chat`, `send_chat`, `set_avatar_emoji`, and a dozen others all prefixed with the `vibeconferencing` server name.
 
-If you don't see them: Codex didn't load the MCP server. Check `~/.codex/config.toml` has the `[mcp_servers.vibeconferencing]` block, and that you restarted Codex *after* running the installer.
+If you don't see them: Codex didn't load the MCP server. Check `~/.codex/config.toml` has the `[mcp_servers.vibeconferencing]` block, and that you restarted Codex after the app or installer wrote it.
 
 ## Joining a call
 
@@ -126,5 +124,5 @@ A few common Codex setup tweaks:
 | Codex says no MCP tools available | Restart Codex (it loads MCP servers at startup). |
 | Bot joins but doesn't respond | See "Codex joined but isn't responding" above. Most often: Codex didn't enter the loop. |
 | Two bots show the same name in Meet | Both profiles signed into the same Google account. Sign one into a different account, or change the `botName` pref. |
-| Codex MCP config keeps getting rewritten | The default-profile app (port 7865) auto-installs Claude integration — it doesn't touch `~/.codex/config.toml`. If your config gets rewritten, something else is doing it (some other tool); rerun the installer. |
+| Codex MCP config keeps getting rewritten | The default-profile app auto-installs Codex integration when Agent backend is Codex. Use the app menu's **Uninstall Codex Integration** item to opt out, or rerun the installer after launching a profiled app to pin a different port. |
 | Codex sees "no Meet detected" even though the app on 7866 does | A project-scoped `.codex/config.toml` is silently overriding the global one. Codex creates this when you accept its "migrate cloud config" prompt while launching in a project directory. **Check `cat .codex/config.toml`** — if it exists and points at the wrong port or bot name, delete it (`rm .codex/config.toml`) so Codex falls back to `~/.codex/config.toml`. The repo's `.gitignore` keeps the file out of version control. |

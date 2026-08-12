@@ -18,7 +18,18 @@ const { resolveVoice } = require('./voice-status.js');
 const { isInCall, isFinished, isCallComplete } = require('./call-phase.js');
 const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEventsFor } = require('./share-surface.js');
 const { CallRecordingSession } = require('./call-recorder.js');
+const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWindow } = require('./call-recording-window.js');
+const { mergeCallMedia } = require('./call-media-merge.js');
+const { evictStaleEventIds, selectEventToJoin, selectUpcomingMatches, matchesCalendarEvent, isEventUpcoming, msUntilStart, resolveMeetUrl: resolveCalendarMeetUrl } = require('./calendar-auto-join.js');
+const { createMergeProgressWindow, closeMergeProgressWindow } = require('./call-recording-merge-window.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
+const {
+  codexConfigPath,
+  readCodexConfigSafe,
+  installCodexMcpConfig,
+  uninstallCodexMcpConfig,
+  currentCodexMcpServerPath,
+} = require('./codex-config.js');
 // The call-provider contract. main.js is the consumer side: it subscribes to
 // CALL_EVENTS (provider → app) and issues CALL_COMMANDS (app → provider) by
 // constant rather than raw channel string, so the contract is shared on both
@@ -45,6 +56,27 @@ function mcpNodeLauncher() {
     command: process.execPath,
     env: { ELECTRON_RUN_AS_NODE: '1' },
   };
+}
+
+function bundledMcpServerRoot() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'mcp-server')
+    : path.join(__dirname, '..', 'mcp-server');
+}
+
+function bundledMcpServerPath() {
+  return path.join(bundledMcpServerRoot(), 'server.js');
+}
+
+function mcpServerDepsPresent(mcpServerRoot = bundledMcpServerRoot()) {
+  return app.isPackaged || (
+    fs.existsSync(path.join(mcpServerRoot, 'node_modules', '@modelcontextprotocol', 'sdk')) &&
+    fs.existsSync(path.join(mcpServerRoot, 'node_modules', 'zod')));
+}
+
+function runningFromGitWorktree() {
+  if (app.isPackaged) return false;
+  try { return fs.statSync(path.join(__dirname, '..', '.git')).isFile(); } catch { return false; }
 }
 
 // Let the shared board play sound unprompted. Now that the whiteboard window's
@@ -224,6 +256,9 @@ function notifyConfigChanged(key, value) {
   // parked while it wasn't our business.
   if (key === 'agentBackend') {
     try { refreshClaudeAuth().catch(() => {}); } catch { /* not ready yet */ }
+    if (value === 'codex' && isDefaultInstance && store?.get('codexIntegrationRemoved') !== true) {
+      try { ensureCodexIntegration(); } catch (err) { console.warn('[electron] Codex integration install failed:', err.message); }
+    }
   }
 }
 
@@ -238,9 +273,43 @@ function prefValue(key) {
 // at a time — the bot is only ever in one.
 let activeRecording = null;
 
-// Spoken when an explicit start_debug_recording begins, so participants are told
-// the call is being recorded (consent). Short on purpose.
-const RECORDING_NOTICE = "Just so everyone knows — I'm now recording this call's audio for debugging.";
+// The video half (#209-video): a small visible control window (see
+// call-recording-window.js) that answers its OWN session's getDisplayMedia()
+// with meetView's live frame and streams the resulting MediaRecorder chunks
+// back here as one more 'video' track on activeRecording. null whenever video
+// capture isn't running — startCallRecording() always tries to create this
+// alongside activeRecording, but it degrades to audio-only on any failure
+// (no ffmpeg, no display-media support, window creation error, etc.) without
+// affecting the audio recording at all.
+let activeRecordingWindow = null;
+
+// The whiteboard-share side-capture (extension, see call-recording-window.js's
+// createShareCaptureWindow): a full-resolution recording of the bot's own
+// whiteboard-window share content, independent of and in addition to the
+// video track above (which only shows Meet's lower-res call-layout render of
+// it). Only ever running while BOTH a call recording is active AND a
+// whiteboard share is live — see maybeStartShareCapture()/
+// stopShareCaptureIfActive() below, hooked into onShareWhiteboard's
+// display-media handler and onStopSharing/stopCallRecording respectively.
+// Lands at <dir>/share.webm, kept separate from video.webm rather than muxed
+// in as a second video track (multi-video-track containers aren't reliably
+// playable across players/tools).
+let activeShareCaptureWindow = null;
+
+// The AbortController for whichever ffmpeg merge is currently running inside
+// stopCallRecording() (see call-recording-merge-window.js's "Preparing
+// recording…" window). null whenever no merge is in flight — including
+// between the main and share merges, briefly, and always outside
+// stopCallRecording() entirely. The 'merge-cancel-requested' IPC handler
+// (setupIPC) just calls .abort() on whatever this currently points to, so a
+// stray/late cancel click with nothing running is a harmless no-op.
+let activeMergeAbortController = null;
+
+// Spoken when an explicit start_recording begins, so participants are told
+// the call is being recorded (consent). Short on purpose. Just "recording this
+// call" — not "audio for debugging": that description is stale now that this
+// captures video too and is a real feature, not only a debug tool.
+const RECORDING_NOTICE = "Just so everyone knows — I'm now recording this call.";
 
 function recordCallEnabled() {
   // Env wins so the test fleet can force it on without touching config.
@@ -248,15 +317,43 @@ function recordCallEnabled() {
   try { return !!prefValue('recordCallAudio'); } catch { return false; }
 }
 
-// force=true is the explicit request (start_debug_recording MCP tool): record
+// force=true is the explicit request (start_recording MCP tool): record
 // even when the recordCallAudio pref is off. The auto path (bot-joined) leaves
 // force=false so it stays gated. Returns a small status for the MCP tool.
+// A call can be recorded, stopped, and recorded again (start_recording /
+// stop_recording can be called at any point, more than once, in the same
+// call). Every recording within a call shares the same callDir — without
+// this, a second recording would reuse the exact same call-recording-tracks/
+// dir and call-recording.mp4 name as the first, and CallRecordingSession
+// opens track files with 'w' (truncating), so the second recording starting
+// would silently clobber the first's raw tracks the moment its first chunk
+// arrives, and the second merge would overwrite the first's output file.
+// '' for the call's first recording (keeps today's plain names for the
+// overwhelmingly common case); '-2', '-3', ... for each later recording in
+// the SAME call, so nothing already on disk is ever touched. Checks for the
+// MERGED output files too, not just the tracks dir: keepCallRecordingTracks
+// defaults OFF, so a successful first recording's tracks dir is typically
+// already gone by the time a second recording starts — only its
+// call-recording.mp4 survives — and checking the tracks dir alone would miss
+// that and let the second recording's merge silently overwrite it.
+function nextRecordingSuffix(callDir) {
+  let n = 1;
+  while (true) {
+    const suffix = n === 1 ? '' : `-${n}`;
+    const inUse = fs.existsSync(path.join(callDir, `call-recording-tracks${suffix}`))
+      || fs.existsSync(path.join(callDir, `call-recording${suffix}.mp4`))
+      || fs.existsSync(path.join(callDir, `call-recording-share${suffix}.mp4`));
+    if (!inUse) return suffix;
+    n++;
+  }
+}
+
 function startCallRecording(room, botName, { force = false } = {}) {
   if (activeRecording) return { ok: true, already: true, dir: activeRecording.dir };
   if (!force && !recordCallEnabled()) return { ok: false, code: 'disabled' };
   try {
     // Save under the bot's HOME (its agent workdir), alongside call-notes/, so a
-    // call's artifacts live together: <home>/calls/<callId>/audio-tracks/.
+    // call's artifacts live together: <home>/calls/<callId>/call-recording-tracks/.
     // Prefer the first-class per-join call id (#292) so this matches
     // call-notes/<call-id>.md exactly; fall back to room+timestamp if the id
     // hasn't been minted yet (recording started before the call went active).
@@ -265,18 +362,39 @@ function startCallRecording(room, botName, { force = false } = {}) {
     const fallbackStamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
     const callId = (localServer && localServer.callId) || `${safeRoom}-${fallbackStamp}`;
     const safeCallId = String(callId).replace(/[^a-zA-Z0-9._-]/g, '_');
-    const dir = path.join(agentDir, 'calls', safeCallId, 'audio-tracks');
+    const callDir = path.join(agentDir, 'calls', safeCallId);
+    const suffix = nextRecordingSuffix(callDir);
+    const dir = path.join(callDir, `call-recording-tracks${suffix}`);
     activeRecording = new CallRecordingSession(dir, {
       room: room || null,
       callId,
       botName: botName || store?.get('botName') || null,
       startedAt: Date.now(),
     });
-    console.log(`[call-record] recording call audio to ${dir}`);
+    // Stashed here (not a separate module-scope variable) so it travels
+    // naturally with the session through stopCallRecording, which reads it
+    // back before activeRecording is cleared — see the outputName below.
+    activeRecording.outputSuffix = suffix;
+    console.log(`[call-record] recording call audio to ${dir}${suffix ? ` (recording ${suffix.slice(1)} of this call)` : ''}`);
+
+    // Video rides along unconditionally whenever recording starts — no
+    // separate flag, no gating decided at meetView creation time (that's the
+    // whole point of this design over the abandoned offscreen-BrowserView
+    // approach: it can start/stop mid-call). Best-effort: any failure here
+    // just means this call gets audio-only, same as the pre-existing
+    // ffmpeg-missing fallback.
+    try {
+      activeRecordingWindow = createCallRecordingWindow(meetView);
+      console.log('[call-record] recording control window created — capturing video');
+    } catch (err) {
+      activeRecordingWindow = null;
+      console.warn('[call-record] could not start video capture (falling back to audio-only):', err.message);
+    }
+
     if (meetView && !meetView.webContents.isDestroyed()) {
       meetView.webContents.send('trigger-record', { recording: true, room, startedAt: activeRecording.startedAt, botName: activeRecording.botName });
     }
-    // Consent: an EXPLICIT start (start_debug_recording) speaks a notice so the
+    // Consent: an EXPLICIT start (start_recording) speaks a notice so the
     // room knows it's being recorded. The auto path (test fleet, force=false)
     // stays silent — it's all bots, and an extra utterance would skew the
     // nightly's speech-timing checks. The notice is captured in the recording.
@@ -293,27 +411,184 @@ function startCallRecording(room, botName, { force = false } = {}) {
   }
 }
 
-function stopCallRecording() {
+// Extension: start the whiteboard-share side capture — a full-resolution
+// recording of the bot's own share content, independent of the (lower-res)
+// video track of Meet's own render of it. Called from the whiteboard branch
+// of setDisplayMediaRequestHandler above, at the moment a share actually
+// engages. Idempotent (a share can re-trigger getDisplayMedia — e.g. the
+// Present-now retry loop — without starting a second capture window), and a
+// no-op unless a call recording is currently active: this side capture only
+// ever exists alongside one.
+function maybeStartShareCapture() {
+  if (!activeRecording) return;
+  if (activeShareCaptureWindow) return;
+  if (!whiteboardWindow || whiteboardWindow.isDestroyed()) return;
+  try {
+    activeShareCaptureWindow = createShareCaptureWindow(whiteboardWindow);
+    console.log('[call-record] capturing whiteboard share to share.webm');
+  } catch (err) {
+    activeShareCaptureWindow = null;
+    console.warn('[call-record] could not start share capture:', err.message);
+  }
+}
+
+// Stop+finalize the share capture window, if one is running. Called both when
+// the share itself ends (onStopSharing, before whiteboardWindow closes — the
+// capture's source frame is about to go away) and when the whole call
+// recording stops (stopCallRecording) — whichever comes first. Safe to call
+// when nothing is active (no-op).
+async function stopShareCaptureIfActive() {
+  if (!activeShareCaptureWindow) return;
+  const win = activeShareCaptureWindow;
+  activeShareCaptureWindow = null;
+  try {
+    await stopFrameCaptureWindow(win);
+  } catch (err) {
+    console.warn('[call-record] error stopping share capture:', err.message);
+  }
+}
+
+// Async: waiting for the control window's final video chunk (and then muxing
+// audio+video into call-recording.mp4) both take a moment. Callers that don't need the
+// result (leave-call teardown, the IPC 'call-record-stopped' notification)
+// fire this without awaiting — best-effort, never blocks the call from ending
+// (each step below is independently try/caught for the same reason).
+async function stopCallRecording() {
   if (!activeRecording) return { ok: true, already: true };
   const dir = activeRecording.dir;
+  const callDir = path.dirname(dir); // call-recording-tracks/'s parent — where call-recording.mp4 lands
+  const outputSuffix = activeRecording.outputSuffix || ''; // read before activeRecording is cleared below — see nextRecordingSuffix
   try {
     if (meetView && !meetView.webContents.isDestroyed()) {
       meetView.webContents.send('trigger-record', { recording: false });
     }
   } catch { /* window already gone */ }
+
+  // A live share's capture must stop too — its source (whiteboardWindow) may
+  // well outlive the recording, but there's no longer an activeRecording to
+  // route its chunks into.
+  await stopShareCaptureIfActive();
+
+  // Stop the control window's MediaRecorder and wait (bounded) for its last
+  // chunk BEFORE finalizing activeRecording — otherwise the video track's
+  // file could still be receiving a chunk after we've already closed it.
+  if (activeRecordingWindow) {
+    const win = activeRecordingWindow;
+    activeRecordingWindow = null;
+    try {
+      await stopFrameCaptureWindow(win);
+    } catch (err) {
+      console.warn('[call-record] error stopping video capture window:', err.message);
+    }
+  }
+
   let tracks = 0;
+  let manifest = null;
   try {
-    const m = activeRecording.stop();
-    tracks = m.tracks.length;
+    manifest = activeRecording.stop();
+    tracks = manifest.tracks.length;
     console.log(`[call-record] saved ${tracks} track(s) to ${dir}`);
   } catch (err) {
     console.warn('[call-record] error finalizing recording:', err.message);
   }
   activeRecording = null;
+
+  // Merge is additive — the raw per-track files stay on disk either way, so a
+  // failed/skipped merge just means no call-recording.mp4, not lost material.
+  let mainMerge = null;
+  let shareMerge = null; // stays null when there was no share track to merge
+  if (manifest) {
+    const shareTrack = manifest.tracks.find((t) => t.track === 'share');
+    const hasVideo = manifest.tracks.some((t) => t.track === 'video');
+    // The merge can take a while and pins a CPU core — by this point BOTH
+    // capture windows have already closed, so without this there's no UI at
+    // all explaining the fan noise. Skip showing it for the (fast, no-op)
+    // case where there's nothing to actually encode. This also gives the
+    // user a way to bail if they don't care about the recording: cancelling
+    // aborts whichever merge is in flight and skips any not yet started —
+    // the raw tracks are untouched either way (see allAttemptedMergesOk
+    // below), so cancelling never loses material, only the combined file(s).
+    const mergeWin = hasVideo ? createMergeProgressWindow() : null;
+    if (mergeWin) {
+      activeMergeAbortController = new AbortController();
+    }
+    const mainOutputName = `call-recording${outputSuffix}.mp4`;
+    try {
+      mainMerge = await mergeCallMedia(callDir, { tracksDir: dir, tracks: manifest.tracks, outputName: mainOutputName, signal: activeMergeAbortController?.signal });
+      if (mainMerge.ok) console.log(`[call-record] merged ${mainOutputName} -> ${mainMerge.file}`);
+      else console.log(`[call-record] merge skipped: ${mainMerge.reason}`);
+    } catch (err) {
+      console.warn('[call-record] merge failed:', err.message);
+      mainMerge = { ok: false, reason: err.message };
+    }
+
+    // Extension: call-recording-share.mp4 — the same mix, but muxed onto the
+    // full-resolution share.webm instead of video.webm, when a share was
+    // captured this call. Additive and best-effort like the main merge: a
+    // failure here never touches call-recording.mp4 or the raw tracks.
+    if (shareTrack) {
+      try {
+        if (mergeWin && !mergeWin.isDestroyed()) {
+          mergeWin.webContents.send('merge-status', { label: 'Preparing share recording…' });
+        }
+        // share.webm's own t=0 is when the share BEGAN (often minutes into
+        // the call) while the audio tracks' t=0 is recording start (same as
+        // the 'video' track's) — pad the share video by that delta so its
+        // picture lines up with the (borrowed) mixed audio in call-recording-share.mp4.
+        // Falls back to no padding if either startWallClock is missing.
+        const videoTrackManifest = manifest.tracks.find((t) => t.track === 'video');
+        let padStartMs = 0;
+        if (videoTrackManifest && Number.isFinite(shareTrack.startWallClock) && Number.isFinite(videoTrackManifest.startWallClock)) {
+          padStartMs = Math.max(0, shareTrack.startWallClock - videoTrackManifest.startWallClock);
+        }
+        const shareOutputName = `call-recording-share${outputSuffix}.mp4`;
+        shareMerge = await mergeCallMedia(callDir, {
+          tracksDir: dir,
+          tracks: manifest.tracks,
+          videoTrackName: 'share',
+          outputName: shareOutputName,
+          padStartMs,
+          signal: activeMergeAbortController?.signal,
+        });
+        if (shareMerge.ok) console.log(`[call-record] merged ${shareOutputName} -> ${shareMerge.file} (padded ${padStartMs}ms)`);
+        else console.log(`[call-record] share merge skipped: ${shareMerge.reason}`);
+      } catch (err) {
+        console.warn('[call-record] share merge failed:', err.message);
+        shareMerge = { ok: false, reason: err.message };
+      }
+    }
+    if (mergeWin) {
+      closeMergeProgressWindow(mergeWin);
+      activeMergeAbortController = null;
+    }
+
+    // call-recording-tracks/ (the raw per-participant audio + video.webm +
+    // share.webm + manifest.json) is verbose and, once the merge succeeds,
+    // redundant for nearly everyone — the keepCallRecordingTracks pref (OFF
+    // by default) controls whether it's kept. Only delete when every merge
+    // that was actually attempted succeeded: a failed/skipped merge (no
+    // ffmpeg, no video captured, share mux error, ...) means the raw tracks
+    // are the ONLY copy of that material, so they're never removed in that
+    // case regardless of the pref.
+    const allAttemptedMergesOk = !!mainMerge?.ok && (!shareTrack || !!shareMerge?.ok);
+    if (allAttemptedMergesOk) {
+      let keepTracks = false;
+      try { keepTracks = !!prefValue('keepCallRecordingTracks'); } catch { /* default: don't keep */ }
+      if (!keepTracks) {
+        try {
+          fs.rmSync(dir, { recursive: true, force: true });
+          console.log(`[call-record] removed raw tracks (${dir}) — keepCallRecordingTracks is off`);
+        } catch (err) {
+          console.warn('[call-record] failed to remove raw tracks:', err.message);
+        }
+      }
+    }
+  }
+
   return { ok: true, dir, tracks };
 }
 
-// Explicit on/off for the start_debug_recording / stop_debug_recording MCP
+// Explicit on/off for the start_recording / stop_recording MCP
 // tools. Requires an active call to start (no tracks otherwise).
 function setCallRecording({ on } = {}) {
   if (on) {
@@ -714,6 +989,9 @@ let triageEndpointDown = false;
 const localServer = new globalThis.LocalServer({
   appVersion: app.getVersion(),
   packaged: app.isPackaged, // release (installed .app/DMG) vs running from source
+  // The bot workdir, so afterCallWorkPlan can inline CLAUDE.md's after-call
+  // duties for sessions that don't run in that directory (terminal-driven).
+  getAgentWorkdir: () => require('./agent-workdir.js').agentDirFor(app.getPath('userData')),
 
   // Claude-ready feedback loop: a launched Claude session's SessionStart hook POSTs here
   // once it's up — which only happens when Claude Code is BOTH installed and signed in
@@ -994,7 +1272,10 @@ const localServer = new globalThis.LocalServer({
 
   onLeaveCall: () => {
     console.log('[local-server] Leave call requested by agent');
-    stopCallRecording(); // #209: finalize any call audio recording before teardown
+    // #209: finalize any call audio(+video) recording before teardown. Async
+    // now (video stop + merge are real work) — fire-and-forget, teardown must
+    // not block on it; errors are already logged inside.
+    stopCallRecording().catch((err) => console.warn('[call-record] stop on leave failed:', err.message));
     stopAllRunwayFaces('leave-call'); // P2: end Runway sessions + timers when leaving the call
     shareGeneration++; // cancel any in-flight Present-now retry loop before the view tears down
 
@@ -1241,15 +1522,38 @@ const localServer = new globalThis.LocalServer({
         .catch(() => { /* best-effort tidy-up */ });
     }
     shareGeneration++; // cancel any in-flight Present-now retry loop (it would re-toggle Slack)
-    // Close the whiteboard window — this ends the display media stream for whiteboard shares
-    if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
-      whiteboardWindow.close();
-      whiteboardWindow = null;
-    }
+    const myShareGen = shareGeneration; // see the generation check below, before this IIFE closes the window
     // Click Meet's "Stop presenting" button — works for both whiteboard and full-screen shares
     if (meetView && !meetView.webContents.isDestroyed()) {
       sendCallCmd(CALL_COMMANDS.triggerStopSharing);
     }
+    // Extension: stop the whiteboard-share side capture BEFORE closing
+    // whiteboardWindow — its source frame is about to go away, so the capture
+    // must flush its final chunk while the window (and the frame it's
+    // capturing) still exist. onStopSharing itself stays synchronous (callers
+    // don't await it); the window-close is what waits, via this async IIFE.
+    (async () => {
+      try {
+        await stopShareCaptureIfActive();
+      } catch (err) {
+        console.warn('[call-record] share capture stop failed:', err.message);
+      }
+      // A fast re-share can land while the await above is still in flight —
+      // its 'start-whiteboard-share'/'share-whiteboard' handler sees this
+      // SAME whiteboardWindow (still non-null/non-destroyed from here) and
+      // reuses it rather than creating a new one. Closing unconditionally at
+      // this point would tear down the window the new share now depends on
+      // and null the reference out from under it. Both re-share entry points
+      // bump shareGeneration on start (same guard startShare's own retry
+      // loop uses), so a mismatch here means exactly that happened — leave
+      // the window alone; it's no longer this stop's to close.
+      if (shareGeneration !== myShareGen) return;
+      // Close the whiteboard window — this ends the display media stream for whiteboard shares
+      if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
+        whiteboardWindow.close();
+        whiteboardWindow = null;
+      }
+    })();
   },
   // POC (share-agent-tab): the 'share-tab' action lands here with the URL the
   // agent is browsing. Resolve → stash → Present-now (see startExternalTabShare).
@@ -1265,7 +1569,7 @@ const localServer = new globalThis.LocalServer({
   // Profile switcher (#282): a sibling instance asked us to come forward.
   // /call → POST /api/call/start → the same path the panel button takes.
   onStartCall: (opts) => createAndJoinMeet(opts),
-  onRecord: (opts) => setCallRecording(opts), // #209: start/stop debug recording
+  onRecord: (opts) => setCallRecording(opts), // #209: start/stop call recording
 
   onFocusRequest: () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -2451,6 +2755,18 @@ async function pushAvatarBackground(svgSource) {
 
 let store;
 let meetAccountEmailPinned = false; // true when --meet-account-email pinned the account (#282)
+// Calendar auto-join (#299): this bot's matching events within the next 24h,
+// for the panel's "upcoming meeting" notice. Written by
+// pushUpcomingCalendarEvents (inside the whenReady closure, where the poll
+// runs); read by the get-upcoming-calendar-events IPC handler in setupIPC —
+// a SEPARATE top-level function, so this can't be a local of either.
+let latestUpcomingCalendarEvents = [];
+// launchOrFocusProfile is a local of setupIPC() (it needs isDefaultName/
+// scanRunningInstances, also locals there) — checkOtherProfilesForCalendarMatch
+// runs in the whenReady closure and can't see it directly. setupIPC() runs
+// before calendar polling starts (see the setupIPC() call site), so this ref
+// is populated well before anything tries to call it.
+let launchOrFocusProfileRef = null;
 let mainWindow = null;   // single window that holds both views
 let panelView = null;     // left sidebar BrowserView
 let meetView = null;      // right Meet BrowserView
@@ -2623,6 +2939,10 @@ async function offerStagedUpdate() {
     console.log(ts(), '[updates] install cancelled — a call started while asking');
     return;
   }
+  // On macOS, autoUpdater.quitAndInstall() closes all windows before calling
+  // app.quit(), so the 'before-quit' handler that normally sets this flag
+  // fires too late to suppress the close-window quit-confirmation dialog.
+  appIsQuitting = true;
   autoUpdaterInstance().quitAndInstall();
 }
 
@@ -3411,7 +3731,11 @@ function getWebsiteUrl() {
 // request arrived over MCP, because an agent making that request IS the agent;
 // spawning a second one gives the call two drivers that fight over
 // wait_for_speech, which is exactly what happened on 2026-07-29.
-function joinMeetUrl(meetUrl, { spawnAgent = true, onboardingCall = false } = {}) {
+// calendarEvent: the matched Google Calendar event, when this join was
+// triggered by one (#299) — recorded on the local server (setRoom clears any
+// prior one first) so get_room_info can tell the spawned agent WHY it's
+// here, instead of it walking into the call cold.
+function joinMeetUrl(meetUrl, { spawnAgent = true, onboardingCall = false, calendarEvent = null } = {}) {
   currentMeetUrl = meetUrl;
   loadMeetURL(meetUrl);
 
@@ -3419,6 +3743,7 @@ function joinMeetUrl(meetUrl, { spawnAgent = true, onboardingCall = false } = {}
   if (!match) return;
   const meetCode = match[1];
   localServer.setRoom(meetCode);
+  localServer.setCalendarEventContext(calendarEvent);
   sync.updateConfig({ roomId: meetCode, baseUrl: getWebsiteUrl() });
   sync.ensureRoom().then(() => {
     sync.startPolling();
@@ -4071,6 +4396,11 @@ function configureMeetSession(sess) {
     }
 
     if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
+      // Extension: a full-res side capture of the bot's own whiteboard share,
+      // independent of the (lower-res) video track of Meet's own render of
+      // it. This IS the moment the share actually engages, regardless of
+      // which branch below answers — see maybeStartShareCapture().
+      maybeStartShareCapture();
       // callback() may only fire once, so track whether it has — the catch
       // below must not answer again on behalf of a call that already did.
       let answered = false;
@@ -4206,6 +4536,18 @@ function parseCLIArgs() {
 }
 
 const cliArgs = parseCLIArgs();
+
+// --record-calls=true is the "record every call" launch switch (used by the
+// test fleet for nightly runs, scripts/spawn-test-fleet.sh). It plugs into the
+// EXACT SAME trigger recordCallEnabled() already checks — VIBECONF_RECORD_CALL
+// — rather than inventing a second flag namespace, so this must run before
+// recordCallEnabled() is first evaluated (a bot-joined call starts recording
+// almost immediately). Ad-hoc boolean flag, same style as --devtools=true /
+// --no-agent-terminal=true above — NOT added to KNOWN_VALUE_FLAGS, which is
+// only for flags that require a companion value.
+if (cliArgs['record-calls'] === 'true') {
+  process.env.VIBECONF_RECORD_CALL = '1';
+}
 
 function requestedProfileName() {
   const raw = cliArgs.profile || process.env.VIBECONF_PROFILE;
@@ -5520,6 +5862,11 @@ function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, cla
       // that simply stops updating is indistinguishable from a quiet call.
       if (error) source.push(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: `[agent failed to launch: ${error.code || error.message}]` }] } }) + '\n');
       else if (code) source.push(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: `[agent exited with code ${code}]` }] } }) + '\n');
+      // Hand the activity feed back to the transcript tail. A dead stream
+      // source otherwise blocks setAgentSession for the rest of the app's
+      // life, and the next terminal-driven session's model/context markers
+      // silently vanish (observed on the 2026-08-10 Seth call).
+      localServer.releaseStreamAgentSource();
     },
   });
   return true;
@@ -5854,10 +6201,8 @@ function ensureClaudeIntegration() {
 
   // Determine paths based on whether we're packaged or in dev
   const isPackaged = app.isPackaged;
-  const mcpServerRoot = isPackaged
-    ? path.join(process.resourcesPath, 'mcp-server')
-    : path.join(__dirname, '..', 'mcp-server');
-  const mcpServerPath = path.join(mcpServerRoot, 'server.js');
+  const mcpServerRoot = bundledMcpServerRoot();
+  const mcpServerPath = bundledMcpServerPath();
   const appLaunchCmd = isPackaged
     ? 'open -a Vibeconferencing'
     : `cd ${__dirname} && npx electron .`;
@@ -5867,17 +6212,12 @@ function ensureClaudeIntegration() {
   // source checkout has none until someone installs them in mcp-server/.
   const serverEntryExists = fs.existsSync(mcpServerPath);
   // The server needs BOTH the MCP SDK and zod to boot — check both, not just the SDK.
-  const serverDepsPresent = isPackaged || (
-    fs.existsSync(path.join(mcpServerRoot, 'node_modules', '@modelcontextprotocol', 'sdk')) &&
-    fs.existsSync(path.join(mcpServerRoot, 'node_modules', 'zod')));
+  const serverDepsPresent = mcpServerDepsPresent(mcpServerRoot);
 
   // A linked git worktree (`.git` is a file, not a dir) is a removable
   // checkout — repointing durable config at one strands the entry when the
   // worktree goes away.
-  let isTempWorktree = false;
-  if (!isPackaged) {
-    try { isTempWorktree = fs.statSync(path.join(__dirname, '..', '.git')).isFile(); } catch {}
-  }
+  const isTempWorktree = runningFromGitWorktree();
 
   let changed = false;
 
@@ -5943,7 +6283,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '57';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '59';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
@@ -6083,6 +6423,106 @@ function uninstallClaudeIntegration() {
   console.log('[electron] Claude integration uninstalled.');
 }
 
+// ---------------------------------------------------------------------------
+// Codex integration (MCP config only)
+// ---------------------------------------------------------------------------
+
+function ensureCodexIntegration() {
+  const home = process.env.HOME || process.env.USERPROFILE;
+  const configPath = codexConfigPath(home);
+  const mcpServerRoot = bundledMcpServerRoot();
+  const mcpServerPath = bundledMcpServerPath();
+  const serverEntryExists = fs.existsSync(mcpServerPath);
+  const serverDepsPresent = mcpServerDepsPresent(mcpServerRoot);
+
+  if (!serverEntryExists) {
+    console.warn('[electron] Codex MCP server entrypoint missing at', mcpServerPath,
+      '- leaving Codex config untouched');
+    return false;
+  }
+  if (!serverDepsPresent) {
+    console.warn('[electron] mcp-server deps not installed (no node_modules/@modelcontextprotocol/sdk).',
+      'Run `npm install` (or pnpm) in', mcpServerRoot, '- leaving Codex config untouched');
+    return false;
+  }
+
+  const { content: existingCodexConfig, readable } = readCodexConfigSafe(configPath);
+  if (!readable) {
+    console.warn('[electron] ~/.codex/config.toml exists but is unreadable -',
+      'leaving Codex MCP config untouched to avoid clobbering other servers');
+    return false;
+  }
+
+  const currentServerPath = currentCodexMcpServerPath(existingCodexConfig);
+  const existingServerOk = !!currentServerPath && fs.existsSync(currentServerPath);
+  if (runningFromGitWorktree() && existingServerOk && currentServerPath !== mcpServerPath) {
+    console.warn('[electron] running from a git worktree - keeping existing Codex MCP server path',
+      currentServerPath, 'instead of repointing durable config at', mcpServerPath);
+    return false;
+  }
+
+  const localBaseUrl = `http://127.0.0.1:${DEFAULT_PORT}`;
+  const configuredBotName = resolvedBotName();
+  const nodeLauncher = mcpNodeLauncher();
+  const result = installCodexMcpConfig({
+    configPath,
+    command: nodeLauncher.command,
+    args: [mcpServerPath],
+    env: {
+      ...nodeLauncher.env,
+      VIBECONF_ROOM_ID: '',
+      VIBECONF_BOT_NAME: configuredBotName,
+      VIBECONF_BASE_URL: localBaseUrl,
+    },
+  });
+
+  if (!result.ok) {
+    console.warn('[electron] Codex MCP config not updated:', result.reason || 'unknown error');
+    return false;
+  }
+  if (result.changed) {
+    console.log('[electron] Updated Codex MCP config -> local server at', localBaseUrl, 'botName:', configuredBotName);
+    if (result.backupPath) console.log('[electron] Backed up previous Codex config:', result.backupPath);
+    console.log('[electron] Codex integration installed. Restart Codex to pick up MCP changes.');
+    return true;
+  }
+  console.log('[electron] Codex MCP config already pointing to local server');
+  return false;
+}
+
+function removeCodexIntegration() {
+  const home = process.env.HOME || process.env.USERPROFILE;
+  const result = uninstallCodexMcpConfig({ configPath: codexConfigPath(home) });
+  if (!result.ok) {
+    console.warn('[electron] Codex MCP config not removed:', result.reason || 'unknown error');
+    return false;
+  }
+  if (result.changed) {
+    console.log('[electron] Removed Codex MCP config from ~/.codex/config.toml');
+    if (result.backupPath) console.log('[electron] Backed up previous Codex config:', result.backupPath);
+  }
+  console.log('[electron] Codex integration uninstalled.');
+  return result.changed;
+}
+
+// Live "is it actually there" checks for the menu — deliberately independent
+// of the leave-no-trace store flags (those only gate re-install at boot; they
+// drift from ground truth if the user hand-edits the config files).
+function isClaudeIntegrationInstalled() {
+  const home = process.env.HOME || process.env.USERPROFILE;
+  const claudeJsonPath = path.join(home, '.claude.json');
+  const { readClaudeConfigSafe } = require('./claude-config.js');
+  const { config, readable } = readClaudeConfigSafe(claudeJsonPath);
+  return readable && !!config.mcpServers?.vibeconferencing;
+}
+
+function isCodexIntegrationInstalled() {
+  const home = process.env.HOME || process.env.USERPROFILE;
+  const configPath = codexConfigPath(home);
+  const { content, readable } = readCodexConfigSafe(configPath);
+  return readable && !!currentCodexMcpServerPath(content);
+}
+
 app.whenReady().then(async () => {
   // P2: force plain system DNS (no DoH). Chromium's built-in resolver does Secure DNS by
   // default, which can't resolve LiveKit's dynamic media/TURN hosts (*.host/.turn.livekit.cloud)
@@ -6129,6 +6569,10 @@ app.whenReady().then(async () => {
     const agentDir = aw.agentDirFor(profileDir);
     const newCfgPath = path.join(agentDir, 'config.json');
     const oldCfgPath = path.join(profileDir, 'config.json');
+    // Captured BEFORE the migration below can create newCfgPath — otherwise
+    // a profile with only a legacy loose config would look brand new by the
+    // time onboardingCallComplete is decided further down.
+    const isBrandNewProfile = !fs.existsSync(newCfgPath) && !fs.existsSync(oldCfgPath);
     let profileConfigDir = agentDir;
     try {
       fs.mkdirSync(agentDir, { recursive: true });
@@ -6156,6 +6600,18 @@ app.whenReady().then(async () => {
     const profileStore = new Store(profileConfigDir);
     migrateAppLevelKeys(appLevelStore, profileStore);
     store = new ScopedStore(appLevelStore, profileStore);
+
+    // `onboardingCallComplete`'s schema default is true — see
+    // preferences-schema.js — so every profile that predates this preference
+    // (or that this code simply never touches) reads as already onboarded,
+    // with no migration needed. A profile only needs to be told OTHERWISE at
+    // the one moment it's genuinely brand new: no config.json anywhere for
+    // it yet, meaning nothing (not even a "New bot" pre-seed — see
+    // seedNewBotName, which stamps this explicitly for that path) has ever
+    // run for this profile before.
+    if (isBrandNewProfile && profileStore.get('onboardingCallComplete') === undefined) {
+      profileStore.set('onboardingCallComplete', false);
+    }
   }
 
   // #366: inherit (or donate) the shared vibeconferencing.com login before
@@ -6280,21 +6736,26 @@ app.whenReady().then(async () => {
     console.warn('[electron] Failed to configure remote logging:', err.message);
   }
 
-  // Check/install the machine-global Claude integration (~/.claude.json MCP entry,
-  // the /join-call skill, the agent-activity hook). This content is app-level, not
-  // profile-level — it always points bare-terminal `claude` at the fallback port
+  // Check/install the machine-global agent integration. This content is app-level,
+  // not profile-level — it always points bare-terminal agents at the fallback port
   // (DEFAULT_PORT). We run it from the single default instance purely as a
   // single-writer election so N running profiles don't race on the same global
   // files; named instances skip it (and self-pin their own --mcp-config instead).
   if (!isDefaultInstance) {
-    console.log('[electron] Skipping global Claude integration for named profile:', appProfile);
-  } else if (store.get('claudeIntegrationRemoved') === true) {
+    console.log('[electron] Skipping global agent integration for named profile:', appProfile);
+  } else if (prefValue('agentBackend') === 'codex') {
+    if (store.get('codexIntegrationRemoved') === true) {
+      console.log('[electron] Codex integration NOT installed (user uninstalled it - leave-no-trace flag set)');
+    } else {
+      ensureCodexIntegration();
+    }
+  } else if (prefValue('agentBackend') === 'claude' && store.get('claudeIntegrationRemoved') === true) {
     // "Leave no trace": the user explicitly uninstalled the Claude integration
     // (menu → Uninstall Claude Integration). Without this gate the next launch
     // would silently re-write ~/.claude.json / the skill / the hook, undoing
     // the uninstall. Re-enable via menu → Install Claude Integration.
     console.log('[electron] Claude integration NOT installed (user uninstalled it — leave-no-trace flag set)');
-  } else {
+  } else if (prefValue('agentBackend') === 'claude') {
     ensureClaudeIntegration();
   }
 
@@ -6758,6 +7219,263 @@ allURLs`;
   // browser — the bulk of the first-run pile-up. onboarding:finish starts it.
   if (!onboardingPending) startMeetDetection();
   else deferredStarts.push(startMeetDetection);
+
+  // --- Calendar auto-join (#299): poll vibeconferencing.com for this user's
+  // upcoming Google Calendar events and auto-join any where this bot profile
+  // has been "invited" — a placeholder guest email (calendarIdentityEmail
+  // pref) or a `#vibeconf:<botName>` tag in the event title or description.
+  // See calendar-auto-join.js for the pure matching/selection/eviction logic
+  // this glues together with IO.
+  let calendarPollInterval = null;
+  let calendarPollInFlight = false;
+  // Tracks the last-seen poll outcome so state-change transitions (e.g.
+  // connected → not-connected) log once instead of every ~60s tick — same
+  // idle-log-suppression spirit as startMeetDetection's "poll found nothing"
+  // silence.
+  let lastCalendarPollState = null;
+
+  // eventId -> Timeout handle for a join scheduled to fire at the event's
+  // actual start time (see scheduleCalendarJoin below). Deliberately IN
+  // MEMORY ONLY, not persisted: on an app restart, any event that hasn't
+  // actually joined yet (only actually-joined events go into the persisted
+  // joinedCalendarEventIds store, at the moment the timer fires — not here,
+  // at scheduling time) should be re-detected and re-scheduled from
+  // scratch, not silently skipped because a schedule "happened" in a
+  // process that no longer exists.
+  const scheduledCalendarJoins = new Map();
+
+  // Recomputes the module-scope latestUpcomingCalendarEvents (declared near
+  // the other cross-closure state, ~line 2723 — setupIPC's
+  // get-upcoming-calendar-events handler reads it from there, and is a
+  // separate top-level function that can't see this closure's locals) every
+  // poll tick, and pushes proactively to the panel so its "upcoming
+  // meeting" notice updates without a refresh.
+  function pushUpcomingCalendarEvents(events) {
+    latestUpcomingCalendarEvents = events;
+    if (panelView && !panelView.webContents.isDestroyed()) {
+      panelView.webContents.send('calendar-upcoming', { events });
+    }
+  }
+
+  // Fires at (or a hair past) the event's real start time — see
+  // scheduleCalendarJoin. This is the ONLY place joinedCalendarEventIds gets
+  // written, and it writes right before actually attempting the join, not
+  // at scheduling time — a failed join shouldn't retry-loop every poll cycle
+  // for the same event, but a join that was merely SCHEDULED and never fired
+  // (e.g. the app quit first) should be reconsidered on the next run, not
+  // treated as handled.
+  function performScheduledCalendarJoin(event, meetUrl) {
+    scheduledCalendarJoins.delete(event.id);
+    const joinedIds = evictStaleEventIds(store.get('joinedCalendarEventIds') || {}, Date.now());
+    store.set('joinedCalendarEventIds', { ...joinedIds, [event.id]: Date.now() });
+    console.log(`[calendar] Auto-joining calendar event "${event.summary || event.id}"`);
+    activateMeetProvider(); // no-op if already on a live Meet view
+    joinMeetUrl(meetUrl, { spawnAgent: true, calendarEvent: event });
+  }
+
+  // Schedules (rather than immediately performing) the join for a just-
+  // matched event, timed to fire at its actual start — not up to 5 minutes
+  // early just because that's when it first entered the lookahead window.
+  // Idempotent: a later poll tick re-seeing the same still-pending event is
+  // a no-op (scheduledCalendarJoins already has it), so this is safe to call
+  // every time selectEventToJoin picks the same event across polls.
+  function scheduleCalendarJoin(event, meetUrl) {
+    if (scheduledCalendarJoins.has(event.id)) return;
+    const delayMs = Math.max(0, msUntilStart(event, Date.now()) || 0);
+    console.log(`[calendar] Scheduling auto-join for "${event.summary || event.id}" in ${Math.round(delayMs / 1000)}s`);
+    const timer = setTimeout(() => performScheduledCalendarJoin(event, meetUrl), delayMs);
+    scheduledCalendarJoins.set(event.id, timer);
+  }
+
+  // Near-term fix for "the bot that should join isn't even running": ANY
+  // currently-running profile sees the SAME upcoming-events list (all
+  // profiles on this machine share one vibeconferencing.com login, so the
+  // event data isn't per-bot) — so on every poll tick, this profile also
+  // checks events against every OTHER locally-configured profile's identity/
+  // tag, not just its own, and launches (or focuses, if already running —
+  // launchOrFocusProfile handles both) whichever one actually matches.
+  //
+  // Deliberately does NOT hand off the specific event/timer across the
+  // process boundary — the newly-launched (or focused) profile's own
+  // startCalendarPolling() re-fetches, re-matches, and re-schedules on its
+  // own very first poll, a few seconds later, well inside the 5-minute
+  // window. Reuses that profile's entire already-built pipeline instead of
+  // inventing a cross-process handoff protocol.
+  //
+  // Real gap this does NOT close (see the tracked "parent process" issue):
+  // if literally no profile is running at all, nothing is executing to
+  // notice anything, for any profile, including this cross-check. This is
+  // only a fix for "at least one bot happens to be open".
+  function checkOtherProfilesForCalendarMatch(events) {
+    if (!events.length) return;
+    let otherNames;
+    try {
+      otherNames = profileManager.listProfileNames(PROFILES_ROOT).filter((n) => n !== appProfile);
+    } catch { return; }
+    if (!otherNames.length) return;
+
+    const now = Date.now();
+    // Separate dedupe namespace from joinedCalendarEventIds (that one means
+    // "I actually joined this"; this one means "I already launched/focused
+    // another profile for this event") — keyed by `eventId:profileName` so
+    // two different other-profiles matching the same event don't collide.
+    const launched = evictStaleEventIds(store.get('launchedForOtherProfileEventIds') || {}, now);
+    let launchedChanged = false;
+
+    for (const name of otherNames) {
+      let fields;
+      try { fields = profileManager.readConfigFields(path.join(PROFILES_ROOT, name)); } catch { continue; }
+      if (!fields.calendarIdentityEmail && !fields.botName) continue; // nothing to match against
+      for (const e of events) {
+        if (!e || !e.id || !isEventUpcoming(e, now)) continue;
+        if (!matchesCalendarEvent(e, { calendarIdentityEmail: fields.calendarIdentityEmail, botName: fields.botName })) continue;
+        const dedupeKey = `${e.id}:${name}`;
+        if (Object.prototype.hasOwnProperty.call(launched, dedupeKey)) continue;
+        launched[dedupeKey] = now;
+        launchedChanged = true;
+        console.log(`[calendar] Event "${e.summary || e.id}" matches profile "${name}" (not this one) — launching/focusing it.`);
+        if (launchOrFocusProfileRef) {
+          launchOrFocusProfileRef(name).catch((err) => {
+            console.warn(`[calendar] Failed to launch/focus profile "${name}" for calendar match:`, err.message);
+          });
+        }
+      }
+    }
+    if (launchedChanged) store.set('launchedForOtherProfileEventIds', launched);
+  }
+
+  // Schedule, at most, one matching event's join per tick — a persisted
+  // dedupe entry only exists once a join has actually fired (see
+  // performScheduledCalendarJoin); scheduledCalendarJoins covers the "already
+  // has a pending timer" case in between.
+  function handleCalendarEvents(events) {
+    checkOtherProfilesForCalendarMatch(events);
+
+    const calendarIdentityEmail = store.get('calendarIdentityEmail') || '';
+    const botName = resolvedBotName();
+    const joinedIds = evictStaleEventIds(store.get('joinedCalendarEventIds') || {}, Date.now());
+    // Persist the evicted map even if nothing matches this tick, so the
+    // store doesn't grow unbounded while the app sits idle.
+    store.set('joinedCalendarEventIds', joinedIds);
+    // Selection must also skip events already scheduled (but not yet
+    // actually joined) — merge that in-memory set with the persisted one
+    // purely for this lookup; the two stay otherwise independent.
+    const excludeIds = { ...joinedIds };
+    for (const id of scheduledCalendarJoins.keys()) excludeIds[id] = true;
+
+    // Visibility for testing/debugging: only when the poll actually returned
+    // something, so this stays silent during normal idle stretches (the
+    // common case) but shows exactly why an event a user is watching for
+    // didn't fire — too far outside the lookahead window, doesn't match the
+    // identity/tag, or already handled — rather than a poll that "saw" the
+    // event but said nothing at all.
+    if (events.length > 0) {
+      const now = Date.now();
+      const summaries = events.map((e) => {
+        const delta = e ? msUntilStart(e, now) : null;
+        const minutesUntil = delta === null ? null : Math.round(delta / 60000);
+        const matched = matchesCalendarEvent(e, { calendarIdentityEmail, botName });
+        const upcoming = isEventUpcoming(e, now);
+        const already = !!(e && e.id && Object.prototype.hasOwnProperty.call(excludeIds, e.id));
+        const reason = already ? 'already handled/scheduled' : !upcoming ? 'outside 5m window' : !matched ? 'no identity/tag match' : 'MATCH';
+        return `"${(e && e.summary) || (e && e.id) || '(untitled)'}" (raw start="${e && e.start}", starts ${minutesUntil == null ? '?' : minutesUntil + 'm'} from now, ${reason})`;
+      });
+      console.log(`[calendar] Poll saw ${events.length} event(s): ${summaries.join('; ')}`);
+    }
+
+    // Display-only: everything matching within the next 24h, independent of
+    // the 5-minute join-scheduling gate below — this is what the panel's
+    // "upcoming meeting" notice shows, and it deliberately includes events
+    // the 5-minute logic hasn't (and won't yet) act on.
+    pushUpcomingCalendarEvents(selectUpcomingMatches(events, { calendarIdentityEmail, botName, now: Date.now() }));
+
+    const { event, extraMatchCount } = selectEventToJoin(events, {
+      calendarIdentityEmail,
+      botName,
+      joinedIds: excludeIds,
+      now: Date.now(),
+    });
+    if (!event) return;
+
+    if (extraMatchCount > 0) {
+      console.warn(`[calendar] ${extraMatchCount} additional matching event(s) this tick — `
+        + 'only scheduling one, the rest will be reconsidered next poll.');
+    }
+
+    const meetUrl = resolveCalendarMeetUrl(event.hangoutLink);
+    if (!meetUrl) {
+      console.warn(`[calendar] Matched event "${event.summary || event.id}" but its hangoutLink `
+        + `("${event.hangoutLink}") isn't a recognizable Meet URL — skipping, still marking as handled.`);
+      store.set('joinedCalendarEventIds', { ...joinedIds, [event.id]: Date.now() });
+      return;
+    }
+
+    scheduleCalendarJoin(event, meetUrl);
+  }
+
+  function startCalendarPolling() {
+    if (calendarPollInterval) return;
+
+    async function pollCalendar() {
+      if (calendarPollInFlight) return;
+      // Reuse the exact in-call guard startMeetDetection uses — no reason to
+      // poll or auto-join while already in a call.
+      if (localServer.callStatus === 'in-call') return;
+      calendarPollInFlight = true;
+      try {
+        const r = await websiteRequest('/api/calendar/upcoming');
+
+        if (r.status === 200 && r.json && r.json.ok) {
+          if (lastCalendarPollState !== 'ok') {
+            console.log('[calendar] Connected — polling for auto-join events');
+            lastCalendarPollState = 'ok';
+          }
+          handleCalendarEvents(r.json.events || []);
+          return;
+        }
+
+        // Every path below is expected/transient (not signed in, Calendar not
+        // connected yet, offline, upstream hiccup) — skip this poll quietly,
+        // and log only on a STATE CHANGE so an idle app isn't shipping a log
+        // line every ~60s tick.
+        let state = 'unknown';
+        let message = `unexpected response (status ${r.status})`;
+        if (r.status === 401) {
+          state = 'signed-out';
+          message = 'not signed in';
+        } else if (r.json && r.json.code === 'calendar-not-connected') {
+          state = 'not-connected';
+          message = 'signed in, but Calendar access not yet connected';
+        } else if (r.json && r.json.code === 'google-api-error') {
+          state = 'google-api-error';
+          message = `Google API error: ${r.json.detail || 'unknown'}`;
+        } else if (r.status === 0) {
+          state = 'offline';
+          message = `offline/network error: ${r.error || 'unknown'}`;
+        }
+        if (state !== lastCalendarPollState) {
+          console.log(`[calendar] Poll skipped (${message})`);
+          lastCalendarPollState = state;
+        }
+      } catch (err) {
+        if (lastCalendarPollState !== 'error') {
+          console.error('[calendar] Poll failed:', err && err.message);
+          lastCalendarPollState = 'error';
+        }
+      } finally {
+        calendarPollInFlight = false;
+      }
+    }
+
+    console.log('[electron] Calendar auto-join polling started');
+    pollCalendar();
+    calendarPollInterval = setInterval(pollCalendar, 60000);
+  }
+
+  // Same onboarding-deferral reasoning as startMeetDetection: don't let a
+  // background poll (and a possible surprise auto-join) interrupt the wizard.
+  if (!onboardingPending) startCalendarPolling();
+  else deferredStarts.push(startCalendarPolling);
 
   // IPC: join detected meet and launch Claude
   ipcMain.on('join-detected-meet', (_event, { url, meetCode }) => {
@@ -7670,7 +8388,14 @@ function createMainWindow() {
   applyWindowTitle();
 
   // --- macOS menu bar ---
-  const template = [
+  // A function, not a one-shot array, because the Claude/Codex integration
+  // items reflect live install state (isClaudeIntegrationInstalled /
+  // isCodexIntegrationInstalled) and need to be rebuilt after the user
+  // toggles either one — see the two click handlers below.
+  function buildAppMenuTemplate() {
+    const claudeInstalled = isClaudeIntegrationInstalled();
+    const codexInstalled = isCodexIntegrationInstalled();
+    return [
     {
       label: app.name,
       submenu: [
@@ -7706,7 +8431,7 @@ function createMainWindow() {
           click: () => createOnboardingWindow(),
         },
         { type: 'separator' },
-        {
+        claudeInstalled ? {
           // "Leave no trace" (F&F): remove EVERYTHING the app wrote into the
           // user's Claude Code setup, and remember the choice so the next
           // launch doesn't silently re-install it.
@@ -7730,6 +8455,7 @@ function createMainWindow() {
               if (response === 1) {
                 uninstallClaudeIntegration();
                 try { store?.set('claudeIntegrationRemoved', true); } catch { /* non-fatal */ }
+                refreshAppMenu();
                 dialog.showMessageBox(mainWindow, {
                   type: 'info',
                   message: 'Claude integration removed. No trace left. Restart Claude Code to apply.',
@@ -7737,16 +8463,55 @@ function createMainWindow() {
               }
             });
           },
-        },
-        {
+        } : {
           label: 'Install Claude Integration',
           click: () => {
             const { dialog } = require('electron');
             try { store?.delete('claudeIntegrationRemoved'); } catch { /* non-fatal */ }
             ensureClaudeIntegration();
+            refreshAppMenu();
             dialog.showMessageBox(mainWindow, {
               type: 'info',
               message: 'Claude integration installed. Restart Claude Code to pick it up.',
+            });
+          },
+        },
+        codexInstalled ? {
+          label: 'Uninstall Codex Integration...',
+          click: () => {
+            const { dialog } = require('electron');
+            dialog.showMessageBox(mainWindow, {
+              type: 'question',
+              buttons: ['Cancel', 'Uninstall'],
+              defaultId: 0,
+              title: 'Uninstall Codex Integration',
+              message: 'Remove the Vibeconferencing MCP server from Codex?',
+              detail:
+                'Removes only the vibeconferencing MCP server block from ~/.codex/config.toml.\n\n' +
+                'It will NOT be reinstalled on the next launch. The app itself keeps working; ' +
+                'use "Install Codex Integration" to bring it back.',
+            }).then(({ response }) => {
+              if (response === 1) {
+                removeCodexIntegration();
+                try { store?.set('codexIntegrationRemoved', true); } catch { /* non-fatal */ }
+                refreshAppMenu();
+                dialog.showMessageBox(mainWindow, {
+                  type: 'info',
+                  message: 'Codex integration removed. Restart Codex to apply.',
+                });
+              }
+            });
+          },
+        } : {
+          label: 'Install Codex Integration',
+          click: () => {
+            const { dialog } = require('electron');
+            try { store?.delete('codexIntegrationRemoved'); } catch { /* non-fatal */ }
+            ensureCodexIntegration();
+            refreshAppMenu();
+            dialog.showMessageBox(mainWindow, {
+              type: 'info',
+              message: 'Codex integration installed. Restart Codex to pick it up.',
             });
           },
         },
@@ -7878,8 +8643,12 @@ function createMainWindow() {
         { role: 'close' },
       ],
     },
-  ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+    ];
+  }
+  function refreshAppMenu() {
+    Menu.setApplicationMenu(Menu.buildFromTemplate(buildAppMenuTemplate()));
+  }
+  refreshAppMenu();
 
   // --- Call view (right) ---
   // Single partition (#282) — no "restore previous mode" anymore. Sign-in
@@ -8442,6 +9211,21 @@ function setupIPC() {
     }
     return vals;
   });
+
+  // The Name field shows blank + a generic "Unnamed bot" placeholder when
+  // botName is unset, even though the rest of the app (title bar, tray, ...)
+  // already falls back to resolvedBotName()'s storedName -> cliName ->
+  // profileName chain and shows something real (e.g. a "test-calendar"
+  // profile displays as "Test Calendar"). Exposes that same resolved name so
+  // the panel can use it as the placeholder — informative without pretending
+  // the name was actually set.
+  ipcMain.handle('get-resolved-bot-name', () => resolvedBotName());
+
+  // Calendar auto-join (#299): the panel calls this on load to paint the
+  // "upcoming meeting" notice immediately, without waiting for the next
+  // ~60s poll tick — pushUpcomingCalendarEvents (via 'calendar-upcoming')
+  // keeps it live after that.
+  ipcMain.handle('get-upcoming-calendar-events', () => latestUpcomingCalendarEvents);
 
   // (The switcher thumbnail used to be stolen from the live camera feed here —
   // an edge-triggered capture plus a poll ladder plus 4h staleness gating, all to
@@ -9083,7 +9867,11 @@ function setupIPC() {
       try { existing = JSON.parse(fs.readFileSync(file, 'utf-8')); } catch { /* new */ }
       if (existing.botName) return;
       const botName = randomBotName({ taken });
-      fs.writeFileSync(file, JSON.stringify({ ...existing, botName }, null, 2));
+      // onboardingCallComplete defaults to true (preferences-schema.js) so
+      // pre-existing profiles read as already onboarded with no migration
+      // needed — which means a genuinely NEW bot has to say otherwise
+      // explicitly, right here, at the one moment it's actually created.
+      fs.writeFileSync(file, JSON.stringify({ ...existing, botName, onboardingCallComplete: false }, null, 2));
       console.log('[electron] New bot', profileName, 'named', botName);
     } catch (err) {
       // Non-fatal: an unnamed bot is still a working bot, and the Settings page
@@ -9164,6 +9952,7 @@ function setupIPC() {
       return { ok: false, error: err.message };
     }
   }
+  launchOrFocusProfileRef = launchOrFocusProfile;
 
   // #379: SWITCH IN PLACE. Launch/focus the target, then close THIS window so we
   // end on a single window. (The pre-#379 behavior left both windows open, which
@@ -9487,6 +10276,18 @@ function setupIPC() {
     } catch (err) {
       console.warn('[electron] get-meet-account-email DOM read failed:', err.message);
     }
+
+    // The live DOM scan only works while the meetView is actually showing a
+    // google.com page — most of the time (idle panel, not mid-call) it isn't,
+    // so `email` comes back null even for a bot that's been signed in and
+    // bound for weeks. Fall back to the persisted binding (chip-sourced when
+    // it was set, see above) rather than reporting "signed in, but which
+    // account?" every time the panel just happens to load off a Meet page.
+    if (!email && store) {
+      const bound = store.get('meetAccountEmail');
+      if (bound) email = bound;
+    }
+
     // Remember the last Meet display name for this profile (the signed-in Google
     // name). Stable, so the profile selector + idle sub-line can show it without
     // a live call (#282). Display-only — distinct from the authuser-pinning email.
@@ -9699,7 +10500,48 @@ function setupIPC() {
     } catch { /* skip a malformed chunk rather than kill the stream */ }
   });
 
-  ipcMain.on('call-record-stopped', () => { stopCallRecording(); });
+  ipcMain.on('call-record-stopped', () => {
+    stopCallRecording().catch((err) => console.warn('[call-record] stop via IPC failed:', err.message));
+  });
+
+  // The video control window's own Stop button — routes through the exact
+  // same stopCallRecording() as start_recording/stop_recording
+  // and the call-end teardown path, so everything (audio + video + any live
+  // share capture) finalizes and merges together, not just this one window's
+  // own capture. (The 'share' capture window has no UI/Stop button — it never
+  // sends this; its lifecycle is entirely driven by the share itself.)
+  ipcMain.on('frame-capture-stop-requested', () => {
+    stopCallRecording().catch((err) => console.warn('[call-record] stop via control window failed:', err.message));
+  });
+
+  // The "Preparing recording…" merge-progress window's Cancel button (see
+  // call-recording-merge-window.js). Registered once here rather than
+  // per-call — activeMergeAbortController always reflects whichever merge
+  // (if any) is currently running, so this just aborts that. A cancel click
+  // arriving after the merge already finished (window closing races the
+  // click) finds activeMergeAbortController already null — harmless no-op.
+  ipcMain.on('merge-cancel-requested', () => {
+    console.log('[call-record] merge cancelled by user');
+    activeMergeAbortController?.abort();
+  });
+
+  // Chunks streamed from EITHER frame-capture window's renderer (the visible
+  // 'video' one or the hidden 'share' one — see call-recording-window.js) —
+  // same shape as call-record-chunk (below), tagged with which track they
+  // belong to (and kind, matching the track name) so
+  // CallRecordingSession/call-media-merge.js can tell video/share apart from
+  // the audio tracks without guessing from the name.
+  ipcMain.on('frame-capture-chunk', (_event, payload) => {
+    if (!activeRecording || !payload || !payload.track) return;
+    try {
+      const buf = Buffer.from(payload.dataBase64 || '', 'base64');
+      activeRecording.chunk(payload.track, payload.seq, buf, payload.mime, payload.startWallClock, payload.track);
+    } catch { /* skip a malformed chunk rather than kill the stream */ }
+  });
+
+  ipcMain.on('frame-capture-error', (_event, payload) => {
+    console.warn(`[call-record] frame capture window (${payload && payload.track}) reported an error:`, payload && payload.message);
+  });
 
   // #209: track -> participant name, attributed live in the renderer.
   ipcMain.on('call-record-name', (_event, { track, name } = {}) => {
@@ -10230,6 +11072,11 @@ function setupIPC() {
     const baseUrl = getWebsiteUrl();
     const roomUrl = whiteboardShareUrl(baseUrl, meetCode);
 
+    // Bump shareGeneration even when REUSING the existing window: it's the
+    // signal onStopSharing's deferred close (see there) uses to detect "a
+    // re-share landed while I was still finishing the previous stop" and
+    // back off rather than closing the window out from under it.
+    shareGeneration++;
     if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
       whiteboardWindow = createWhiteboardWindow(roomUrl);
     }
@@ -10242,6 +11089,8 @@ function setupIPC() {
     const baseUrl = getWebsiteUrl();
     const roomUrl = whiteboardShareUrl(baseUrl, meetCode);
 
+    // Same reasoning as start-whiteboard-share above.
+    shareGeneration++;
     // Open whiteboard window if not already open
     if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
       whiteboardWindow = createWhiteboardWindow(roomUrl);

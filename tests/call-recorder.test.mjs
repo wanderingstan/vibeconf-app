@@ -13,7 +13,11 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { CallRecordingSession } = require('../electron-app/call-recorder.js');
+const {
+  CallRecordingSession,
+  MAX_TRACK_BYTES_BY_KIND,
+  CAP_WARN_RATIO,
+} = require('../electron-app/call-recorder.js');
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'call-rec-'));
@@ -138,4 +142,75 @@ test('empty or missing buffers never open a file', () => {
   const m = s.stop();
   assert.equal(m.tracks.length, 0);
   assert.ok(!fs.existsSync(path.join(dir, 'bot.webm')));
+});
+
+// --- Per-track byte caps (regression: a single shared cap let video, at a
+// far higher bitrate than audio, silently stop recording after under nine
+// minutes on any real call — see MAX_TRACK_BYTES_BY_KIND in call-recorder.js) ---
+
+test('video and audio tracks get different real-world caps', () => {
+  const dir = path.join(tmpDir(), 'call');
+  const s = new CallRecordingSession(dir, {});
+  s.chunk('bot', 0, Buffer.from('a'), 'audio/webm');
+  s.chunk('video', 0, Buffer.from('b'), 'video/webm', null, 'video');
+  const m = s.stop();
+  const audio = m.tracks.find((t) => t.track === 'bot');
+  const video = m.tracks.find((t) => t.track === 'video');
+  assert.equal(audio.maxBytes, MAX_TRACK_BYTES_BY_KIND.audio);
+  assert.equal(video.maxBytes, MAX_TRACK_BYTES_BY_KIND.video);
+  assert.ok(video.maxBytes > audio.maxBytes, 'video must get a materially higher ceiling than audio');
+});
+
+test('a track that exceeds its cap stops accepting chunks, but other tracks are unaffected', () => {
+  const dir = path.join(tmpDir(), 'call');
+  // A tiny override so the test doesn't need to write real gigabytes — see
+  // the constructor's maxBytesByKind param.
+  const s = new CallRecordingSession(dir, { maxBytesByKind: { audio: 5, video: 5 } });
+  s.chunk('bot', 0, Buffer.from('abc'));  // 3 bytes, under the 5-byte cap
+  s.chunk('bot', 1, Buffer.from('defg')); // would bring it to 7 — over cap, dropped
+  s.chunk('remote-1', 0, Buffer.from('x')); // untouched track keeps recording fine
+  const m = s.stop();
+  const bot = m.tracks.find((t) => t.track === 'bot');
+  const remote = m.tracks.find((t) => t.track === 'remote-1');
+  assert.equal(bot.capped, true);
+  assert.equal(bot.bytes, 3); // only the chunk that fit was written
+  assert.equal(fs.readFileSync(path.join(dir, 'bot.webm'), 'utf8'), 'abc');
+  assert.equal(remote.capped, false);
+});
+
+test('chunks after a track is capped are silently ignored, not retried', () => {
+  const dir = path.join(tmpDir(), 'call');
+  const s = new CallRecordingSession(dir, { maxBytesByKind: { audio: 2, video: 2 } });
+  s.chunk('bot', 0, Buffer.from('ab'));  // exactly at the cap — fits
+  s.chunk('bot', 1, Buffer.from('c'));   // over cap — capped, dropped
+  s.chunk('bot', 2, Buffer.from('d'));   // already capped — dropped, no re-evaluation
+  const m = s.stop();
+  const bot = m.tracks.find((t) => t.track === 'bot');
+  assert.equal(bot.bytes, 2);
+  assert.equal(fs.readFileSync(path.join(dir, 'bot.webm'), 'utf8'), 'ab');
+});
+
+test('a near-cap warning fires exactly once, before the track actually caps', () => {
+  const dir = path.join(tmpDir(), 'call');
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  try {
+    // capWarnRatio 0.5 over a 10-byte cap: the 90%-equivalent warning line
+    // should fire once bytes reach 5, well before the 10-byte cap bites.
+    const s = new CallRecordingSession(dir, { maxBytesByKind: { audio: 10, video: 10 }, capWarnRatio: 0.5 });
+    s.chunk('bot', 0, Buffer.from('abc'));  // 3 bytes — under 5, no warning yet
+    s.chunk('bot', 1, Buffer.from('de'));   // 5 bytes — crosses the 50% warn threshold
+    s.chunk('bot', 2, Buffer.from('fg'));   // 7 bytes — still under cap, must NOT warn again
+    s.chunk('bot', 3, Buffer.from('hijkl')); // would bring it to 12 — over cap, capped
+    const m = s.stop();
+    const bot = m.tracks.find((t) => t.track === 'bot');
+    assert.equal(bot.capped, true);
+    const nearCapWarnings = warnings.filter((w) => w.includes('is at') && w.includes('% of its'));
+    const cappedWarnings = warnings.filter((w) => w.includes('hit its'));
+    assert.equal(nearCapWarnings.length, 1, `expected exactly one near-cap warning, got: ${JSON.stringify(warnings)}`);
+    assert.equal(cappedWarnings.length, 1, `expected exactly one cap-hit warning, got: ${JSON.stringify(warnings)}`);
+  } finally {
+    console.warn = originalWarn;
+  }
 });

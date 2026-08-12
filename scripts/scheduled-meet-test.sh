@@ -603,7 +603,13 @@ echo "=== whiteboard-e2e exit: $SV_CODE (recorded, not gating) ===" | tee -a "$L
 # this block to disable. ---
 echo "" | tee -a "$LOG"
 echo "=== real-agent fuzz test (experimental, grain of salt) $STAMP ===" | tee -a "$LOG"
-node scripts/agent-fuzz-test.mjs --mission smoke --duration 170 2>&1 | tee -a "$LOG" || true
+# Wrapped in rec_run so the fuzz lane's per-participant call recordings are
+# harvested like every other live lane (when VIBECONF_RECORD_CALLS=1, as the mini
+# sets). It's the only lane driven by real, non-deterministic agents, so its
+# footage is the most useful of any lane when a judge verdict looks off. rec_run
+# already tee's to $LOG; keep the `|| true` so this experimental lane still never
+# changes the run's exit code.
+rec_run fuzz -- node scripts/agent-fuzz-test.mjs --mission smoke --duration 170 || true
 
 # --- Codex MCP wire smoke (#373) — deterministic + tokenless (agent-less fleet
 # body + stdio MCP handshake/tools/get_room_info; no GUI interaction beyond app

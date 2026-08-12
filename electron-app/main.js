@@ -1277,6 +1277,7 @@ const localServer = new globalThis.LocalServer({
     // not block on it; errors are already logged inside.
     stopCallRecording().catch((err) => console.warn('[call-record] stop on leave failed:', err.message));
     stopAllRunwayFaces('leave-call'); // P2: end Runway sessions + timers when leaving the call
+    shareIntended = false; // no present is pending once we're leaving
     shareGeneration++; // cancel any in-flight Present-now retry loop before the view tears down
 
     // Wait for any in-flight TTS to finish so goodbye speech actually plays.
@@ -1352,13 +1353,18 @@ const localServer = new globalThis.LocalServer({
     console.log('[local-server] Share requested by agent, type:', shareType);
     const meetCode = localServer.roomId;
     if (meetCode) {
-      // Meet sets sharing optimistically (the present-flow is reliable). On Slack
-      // the share engages ~2s later (whiteboard window opens, then the popup
-      // clicks the share button → getDisplayMedia), and the popup reports the
-      // REAL toggle state via selfPresenting → setSharing. So DON'T pre-set true
-      // on Slack: let the actual share drive `sharing`, so the flag can't claim a
-      // share that silently failed (and a too-early stop can't get masked).
-      if (!slackProviderMode) localServer.setSharing(true);
+      // `sharing` is the PUBLISHED, honest presenting state: it goes true only
+      // when the provider confirms we are actually presenting ("Stop presenting"
+      // in the Meet/Slack DOM, via selfPresenting → setSharing). Do NOT pre-set it
+      // here on either platform — the present flow engages a few seconds later
+      // (Meet's Present-now retry loop below; Slack's popup click), so an
+      // optimistic true would claim a share that hasn't started (or silently
+      // failed) and let a too-early stop get masked. Intent — "the agent asked to
+      // present" — lives in `shareIntended`, kept separate so status never lies
+      // about what is really on screen. (#282: the old optimistic Meet flag made
+      // status.sharing flicker true→false during spin-up, which the whiteboard-e2e
+      // harness misread as an "environmental" share collapse.)
+      shareIntended = true;
       if (shareType === 'screen') {
         // Full screen share — no whiteboard window needed
         fullScreenShareRequested = true;
@@ -1389,7 +1395,6 @@ const localServer = new globalThis.LocalServer({
         // (cancel on stop/leave) and, on Slack, stop as soon as `sharing` (the
         // real selfPresenting toggle) reports engaged.
         const myGen = ++shareGeneration;
-        selfPresentingConfirmed = false;
         (async () => {
           // Wait for the call before clicking anything. A share requested while
           // Meet is still on "Getting ready…" has no Present button to find, and
@@ -1427,13 +1432,13 @@ const localServer = new globalThis.LocalServer({
               console.log('[electron] Whiteboard share: Present trigger loop cancelled (superseded by stop/leave/new share)');
               return;
             }
-            // Stop as soon as the share is really engaged. selfPresenting is the
-            // provider's read of the actual UI ("Stop presenting" visible) on
-            // BOTH platforms, unlike `sharing`, which Meet sets optimistically
-            // up front and so can never report engagement. This matters beyond
-            // tidiness on Slack, where the control is a single TOGGLE and a late
-            // re-click would flip sharing back OFF.
-            if (selfPresentingConfirmed || (slackProviderMode && localServer.sharing)) {
+            // Stop as soon as the share is really engaged. `sharing` is now the
+            // provider's confirmed read of the actual UI ("Stop presenting"
+            // visible) on BOTH platforms — no longer set optimistically — so it is
+            // the honest engagement signal. This matters beyond tidiness on Slack,
+            // where the control is a single TOGGLE and a late re-click would flip
+            // sharing back OFF.
+            if (localServer.sharing) {
               console.log('[electron] Whiteboard share: engaged (attempt ' + attempt + ') — stopping retries');
               return;
             }
@@ -1445,13 +1450,14 @@ const localServer = new globalThis.LocalServer({
             }
           }
           if (myGen !== shareGeneration) return;
-          if (selfPresentingConfirmed || (slackProviderMode && localServer.sharing)) return;
-          // Give up loudly. `sharing` was set optimistically at the top of
-          // onShareWhiteboard, so leaving it true would have the app — and the
-          // agent reading status — believe it is presenting a board nobody can
-          // see. This is the case that used to end in silence.
+          if (localServer.sharing) return;
+          // Give up loudly. `sharing` is already false here (it only ever goes
+          // true on a confirmed present), so the app — and any agent reading
+          // status — correctly sees "not sharing" rather than a board nobody can
+          // see. Clear the intent so nothing keeps believing a present is pending.
           console.error('[electron] Whiteboard share: never engaged after',
             Math.round(PRESENT_RETRY_MS / 1000) + 's and ' + attempt + ' attempts — giving up');
+          shareIntended = false;
           localServer.setSharing(false);
           localServer.addError('Screen share never started — Meet did not accept the Present-now trigger.');
         })();
@@ -1511,6 +1517,7 @@ const localServer = new globalThis.LocalServer({
   },
   onStopSharing: () => {
     console.log('[local-server] Stop sharing requested by agent');
+    shareIntended = false;
     fullScreenShareRequested = false;
     // POC (share-agent-tab): if we were sharing an external browser tab, close
     // its throwaway (isolated) window on stop so no window is left hanging.
@@ -1743,7 +1750,10 @@ const localServer = new globalThis.LocalServer({
     shareTitleBar = want;
 
     const live = whiteboardWindow && !whiteboardWindow.isDestroyed();
-    if (live && localServer.sharing) {
+    // Defer on `sharing` OR `shareIntended`: rebuilding the window mid-share drops
+    // the capture, and during the present spin-up `sharing` is honestly still
+    // false while a share is nonetheless pending — intent covers that window.
+    if (live && (localServer.sharing || shareIntended)) {
       console.log('[local-server] Share title bar →', want, '(deferred — a share is live)');
       return { ok: true, visible: want, applied: false };
     }
@@ -3354,7 +3364,7 @@ async function startExternalTabShare({ url, appName } = {}) {
     return { success: false, error: resolved.reason };
   }
   externalShareRequest = { source: resolved.source, title: resolved.title, url };
-  if (localServer) localServer.setSharing(true);
+  shareIntended = true; // intent only — `sharing` goes true when Meet confirms the present (selfPresenting)
   console.log('[electron] share-external-tab →', resolved.source.id, `"${resolved.title}"`);
 
   if (meetView && meetView.webContents) {
@@ -3455,10 +3465,16 @@ let shareCaptureMode = null;
 // one combined 10s budget, which a slow Meet join could consume on its own.
 const PRESENT_JOIN_WAIT_MS = 60_000;
 const PRESENT_RETRY_MS = 30_000;
-// The provider's read of the real Meet/Slack UI ("Stop presenting" visible),
-// as opposed to localServer.sharing, which Meet sets optimistically the moment
-// a share is requested. This is what tells the retry loop it can stop.
-let selfPresentingConfirmed = false;
+// Intent to present: the agent asked to share (whiteboard / screen / tab) and we
+// have not yet stopped, left, or given up. Distinct from localServer.sharing,
+// which is the PUBLISHED, confirmed reality — true only once the provider reports
+// "Stop presenting" on screen (selfPresenting). Intent covers the few-second
+// spin-up window (e.g. deferring a title-bar rebuild) WITHOUT ever making status
+// claim a live share. Replaces the old confirmed-presenting var, which existed
+// only because `sharing` used to be set optimistically and so couldn't be trusted
+// as the engagement signal; `sharing` is now honest, so the retry loop reads it
+// directly. (#282)
+let shareIntended = false;
 // Agent-controlled mute for the shared surface's audio (set_share_audio).
 // Mirrors the state page-inject holds, purely so the main process can report
 // it; the mute is enforced there, on the gain node feeding the published track.
@@ -10882,7 +10898,6 @@ function setupIPC() {
   // Track our own presenting state from Meet UI (Stop presenting button visible)
   ipcMain.on(CALL_EVENTS.selfPresenting, (_event, { presenting, reconcile }) => {
     const wasSharing = localServer.sharing;
-    selfPresentingConfirmed = !!presenting;
 
     // #68: a reconcile tick carries no news — it re-states what is on screen so a
     // divergence introduced by another writer gets corrected. Meet's DOM is the

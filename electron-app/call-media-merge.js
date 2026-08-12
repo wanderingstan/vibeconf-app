@@ -51,6 +51,35 @@ const KNOWN_FFMPEG_PATHS = [
 // keeping tpad's frame count sane no matter what a future input declares.
 const PAD_NORMALIZE_FPS = 5;
 
+// How long ffmpeg may go WITHOUT producing any output before we give up on it.
+//
+// This deliberately measures a stall, not total wall-clock time. The original
+// guard here was a flat 60s cap on the whole merge, which is a cap on how long
+// the *encode* is allowed to take — and the encode's cost scales with the
+// call. A 36-minute call (issue #327) meant re-encoding a 1.06 GB VP9
+// video.webm with a 4-way amix; it got SIGKILLed at exactly 60s, mid-write,
+// leaving a headerless 14.9 MB mp4. Every recording long enough to be worth
+// keeping was guaranteed to hit it.
+//
+// A merge that's simply big is not a merge that's broken, so there is no
+// honest wall-clock number to pick. What we actually want to catch is a
+// *wedged* ffmpeg, and that's directly observable: ffmpeg writes progress
+// stats to stderr continuously while it works (hence the explicit `-stats`
+// below, so this doesn't depend on the default staying on or on being
+// attached to a tty). As long as those keep arriving, the merge is making
+// progress and is allowed to run as long as it needs. Silence for this long
+// means it's stuck. The user-facing merge window's Cancel button (main.js)
+// remains the way to stop a merge that's merely slower than someone's
+// patience.
+const MERGE_STALL_TIMEOUT_MS = 120000;
+
+// Keep only the tail of ffmpeg's stderr — with `-stats` on and no wall-clock
+// cap, a long merge emits a progress line several times a second for the
+// entire encode, and holding all of it would grow unboundedly for exactly the
+// long calls this file now supports. Only the tail is ever reported (see the
+// non-zero-exit path), so the rest is dead weight.
+const STDERR_TAIL_BYTES = 8192;
+
 // Where the real ffmpeg binary comes from — in priority order:
 //   1. The bundled `ffmpeg-static` binary. This is what a distributed build
 //      (dmg/nsis/AppImage) actually ships and runs — it must NOT depend on the
@@ -172,6 +201,12 @@ function _resetFfmpegAvailabilityCache() {
 // aborted) and passed straight to spawn(), which kills the process on abort;
 // resolves { ok: false, reason: 'cancelled' } rather than throwing, same as
 // every other failure mode here.
+// stallTimeoutMs: how long ffmpeg may produce NO output before it's treated
+// as wedged and killed (default MERGE_STALL_TIMEOUT_MS — see there for why
+// this is a stall watchdog and not a cap on total merge time). 0 disables it.
+// On every failure — stall, cancel, or a non-zero exit — any partial output
+// file is deleted rather than left behind masquerading as a finished
+// recording.
 async function mergeCallMedia(callDir, {
   tracksDir = path.join(callDir, 'call-recording-tracks'),
   tracks = [],
@@ -180,6 +215,7 @@ async function mergeCallMedia(callDir, {
   outputName = 'call-recording.mp4',
   padStartMs = 0,
   signal = null,
+  stallTimeoutMs = MERGE_STALL_TIMEOUT_MS,
 } = {}) {
   if (signal && signal.aborted) return { ok: false, reason: 'cancelled' };
   const isVideo = (t) => videoTrackName
@@ -207,7 +243,10 @@ async function mergeCallMedia(callDir, {
 
   fs.mkdirSync(callDir, { recursive: true });
   const outPath = path.join(callDir, outputName);
-  const args = ['-y', '-i', videoTrack.absPath];
+  // `-nostdin` so a spawned ffmpeg can never sit waiting on input it will
+  // never get (which would read as a stall); `-stats` so the progress output
+  // the stall watchdog below listens for is guaranteed, not incidental.
+  const args = ['-y', '-nostdin', '-stats', '-i', videoTrack.absPath];
   for (const t of audioTracks) args.push('-i', t.absPath);
 
   const padSec = padStartMs > 0 ? (padStartMs / 1000).toFixed(3) : null;
@@ -251,29 +290,64 @@ async function mergeCallMedia(callDir, {
     // needed for the cancel path, only for the timeout below.
     const proc = spawn(ffmpegPath, args, { stdio: ['ignore', 'ignore', 'pipe'], signal: signal || undefined });
     let stderr = '';
-    proc.stderr.on('data', (d) => { stderr += d; });
-    const timer = setTimeout(() => {
-      try { proc.kill('SIGKILL'); } catch { /* already gone */ }
-      resolve({ ok: false, reason: 'ffmpeg merge timed out' });
-    }, 60000);
+    let settled = false;
+    let stallTimer = null;
+    let exitBackstop = null;
+    let timedOut = false;
+
+    // ANY failure means whatever ffmpeg managed to write at outPath is a
+    // partial mp4 — most visibly a killed encode, which leaves a file with no
+    // moov atom that no player can open (issue #327). Every failure path goes
+    // through here so none of them can leave that behind at the very filename
+    // users are told to look for; the raw per-track files are untouched, and
+    // are the ground truth a retry can be run against.
+    const fail = (reason) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(stallTimer);
+      clearTimeout(exitBackstop);
+      try { fs.unlinkSync(outPath); } catch { /* never started writing, or already gone */ }
+      resolve({ ok: false, reason });
+    };
+    const succeed = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(stallTimer);
+      clearTimeout(exitBackstop);
+      resolve({ ok: true, file: outPath });
+    };
+
+    // Reset on every byte ffmpeg emits: this fires only when it has gone
+    // completely quiet, not merely when it's taking a while. See
+    // MERGE_STALL_TIMEOUT_MS.
+    const armStallTimer = () => {
+      clearTimeout(stallTimer);
+      if (!(stallTimeoutMs > 0)) return;
+      stallTimer = setTimeout(() => {
+        timedOut = true;
+        try { proc.kill('SIGKILL'); } catch { /* already gone */ }
+        // Finish in the 'exit' handler so the unlink happens after the
+        // process is actually gone; the backstop covers a kill that somehow
+        // never produces one, so a wedged merge can't hang stopCallRecording.
+        exitBackstop = setTimeout(() => fail('ffmpeg merge timed out'), 5000);
+      }, stallTimeoutMs);
+    };
+    armStallTimer();
+
+    proc.stderr.on('data', (d) => {
+      stderr = (stderr + d).slice(-STDERR_TAIL_BYTES);
+      if (!timedOut) armStallTimer();
+    });
     proc.on('error', (err) => {
-      clearTimeout(timer);
       // AbortError is spawn's own signal-triggered kill, not a real failure.
       const cancelled = (signal && signal.aborted) || err.name === 'AbortError';
-      resolve(cancelled ? { ok: false, reason: 'cancelled' } : { ok: false, reason: `ffmpeg failed to start: ${err.message}` });
+      fail(cancelled ? 'cancelled' : `ffmpeg failed to start: ${err.message}`);
     });
     proc.on('exit', (code) => {
-      clearTimeout(timer);
-      if (signal && signal.aborted) {
-        // A killed ffmpeg can still have written a partial/corrupt outPath —
-        // don't leave that behind looking like a real, finished recording.
-        try { fs.unlinkSync(outPath); } catch { /* never started writing, or already gone */ }
-        resolve({ ok: false, reason: 'cancelled' });
-      } else if (code === 0 && fs.existsSync(outPath)) {
-        resolve({ ok: true, file: outPath });
-      } else {
-        resolve({ ok: false, reason: `ffmpeg exited ${code}: ${stderr.slice(-500)}` });
-      }
+      if (signal && signal.aborted) fail('cancelled');
+      else if (timedOut) fail('ffmpeg merge timed out');
+      else if (code === 0 && fs.existsSync(outPath)) succeed();
+      else fail(`ffmpeg exited ${code}: ${stderr.slice(-500)}`);
     });
   });
 }

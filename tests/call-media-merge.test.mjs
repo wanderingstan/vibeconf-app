@@ -461,3 +461,64 @@ test('aborting mid-flight kills ffmpeg, reports cancelled, and leaves no partial
   assert.equal(r.reason, 'cancelled');
   assert.ok(!fs.existsSync(path.join(dir, 'call-recording.mp4')), 'no partial/corrupt file left behind');
 });
+
+// Issue #327: the old fixed 60s cap SIGKILLed a perfectly healthy merge of a
+// long call and then left the headerless partial mp4 on disk, which is worse
+// than no file at all — it's unplayable but looks finished.
+test('a stalled merge is killed and leaves no partial output file behind', { skip: !HAVE_FFMPEG }, async () => {
+  const dir = tmpDir();
+  writeFakeVideo(path.join(dir, 'video.webm'), { seconds: 3 });
+  // 1ms of "silence" tolerated: the stall fires essentially immediately, so
+  // this stands in for a wedged ffmpeg without having to wedge one.
+  const r = await mergeCallMedia(dir, {
+    tracksDir: dir,
+    tracks: [{ track: 'video', file: 'video.webm', kind: 'video' }],
+    stallTimeoutMs: 1,
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'ffmpeg merge timed out');
+  assert.ok(!fs.existsSync(path.join(dir, 'call-recording.mp4')), 'no headerless partial mp4 left behind');
+});
+
+// The complement of the above, and the actual regression: as long as ffmpeg
+// keeps reporting progress, a merge that takes longer than the stall window
+// is NOT killed. Under the old wall-clock cap this case was a guaranteed
+// failure for any call long enough to matter.
+test('a merge that runs longer than the stall window still succeeds while ffmpeg reports progress', { skip: !HAVE_FFMPEG }, async () => {
+  const dir = tmpDir();
+  // Deliberately heavier than the other fixtures (720p/30fps/30s rather than
+  // 16x16/5fps): the encode has to outlive the stall window below for this to
+  // test anything, and ffmpeg has to emit its ~0.5s-interval progress stats
+  // while it does. Takes a couple of seconds to build and merge.
+  execSync(
+    `"${FFMPEG_BIN}" -y -f lavfi -i color=c=black:s=1280x720:r=30:d=30 -c:v libvpx-vp9 -deadline realtime -cpu-used 8 "${path.join(dir, 'video.webm')}"`,
+    { stdio: 'ignore' },
+  );
+  const started = Date.now();
+  const r = await mergeCallMedia(dir, {
+    tracksDir: dir,
+    tracks: [{ track: 'video', file: 'video.webm', kind: 'video' }],
+    stallTimeoutMs: 1000, // shorter than the encode, longer than ffmpeg's stats interval
+  });
+  assert.equal(r.ok, true, `merge should not be killed while making progress (reason: ${r.reason})`);
+  assert.ok(fs.existsSync(path.join(dir, 'call-recording.mp4')));
+  // Not asserted (an unusually fast machine could beat it, which would make
+  // this vacuous rather than wrong), but this is the case the fixture is sized
+  // to produce — under the old fixed wall-clock cap it was an unavoidable kill.
+  if (Date.now() - started <= 1000) console.log('note: encode finished inside the stall window — assertion above was vacuous');
+});
+
+test('a failed ffmpeg run deletes its partial output rather than leaving an unplayable file', { skip: !HAVE_FFMPEG }, async () => {
+  const dir = tmpDir();
+  // Truncated mid-stream: ffmpeg opens it, starts writing the mp4, then errors
+  // out — exactly the shape that used to leave a moov-less file on disk.
+  writeFakeVideo(path.join(dir, 'video.webm'), { seconds: 2 });
+  const src = fs.readFileSync(path.join(dir, 'video.webm'));
+  fs.writeFileSync(path.join(dir, 'truncated.webm'), src.subarray(0, Math.floor(src.length * 0.6)));
+  const r = await mergeCallMedia(dir, {
+    tracksDir: dir,
+    tracks: [{ track: 'video', file: 'truncated.webm', kind: 'video' }],
+  });
+  if (r.ok) return; // tolerant ffmpeg build recovered the truncated input — nothing to assert
+  assert.ok(!fs.existsSync(path.join(dir, 'call-recording.mp4')), 'no partial output left behind after a failed merge');
+});

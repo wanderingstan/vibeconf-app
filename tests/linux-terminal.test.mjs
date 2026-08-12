@@ -52,8 +52,11 @@ test('gnome-terminal is not in the emulator list', () => {
 });
 
 test('xterm is preferred over the Debian alternatives symlink', () => {
-  // x-terminal-emulator frequently points AT gnome-terminal on Ubuntu desktop,
-  // so it must rank below the emulators we know behave.
+  // x-terminal-emulator is a pointer, not a terminal: it resolves to whatever
+  // this box calls its default, which we cannot know in advance (on the Ubuntu
+  // 24.04 test box it was zutty, not the gnome-terminal an earlier comment here
+  // guessed). It ranks last so we only reach it after the entries we have
+  // actually run.
   const names = TERMINAL_EMULATORS.map((e) => e.bin);
   assert.equal(names[0], 'xterm');
   assert.ok(names.indexOf('xterm') < names.indexOf('x-terminal-emulator'));
@@ -66,9 +69,24 @@ test('xfce4-terminal uses -x, not -e', () => {
 });
 
 test('an emulator with no exec flag gets the command directly, with no stray flag', () => {
-  const kitty = TERMINAL_EMULATORS.find((e) => e.bin === 'kitty');
-  const cmd = buildDirectCommand({ emulator: kitty, argv: ['claude', '--model', 'opus'] });
-  assert.deepEqual(cmd, { command: 'kitty', args: ['claude', '--model', 'opus'] });
+  // Synthetic on purpose: no SHIPPED entry uses a null flag today (kitty did,
+  // and was removed for being unverified). The builders still support it so
+  // that adding a measured flagless emulator later is a data change rather than
+  // a code change — but the support has to stay covered to stay correct.
+  const flagless = { bin: 'someterm', execFlag: null, reapable: true };
+  const cmd = buildDirectCommand({ emulator: flagless, argv: ['claude', '--model', 'opus'] });
+  assert.deepEqual(cmd, { command: 'someterm', args: ['claude', '--model', 'opus'] });
+  const view = buildViewportCommand({ emulator: flagless, session: 's' });
+  assert.deepEqual(view, { command: 'someterm', args: ['tmux', 'attach', '-t', 's'] });
+});
+
+test('every shipped emulator has been verified on a real box', () => {
+  // The policy that removed konsole/alacritty/kitty. An unverified entry is not
+  // neutral: it ranks ABOVE the generic x-terminal-emulator fallback, so a
+  // wrong exec flag preempts a working path with a broken one. Adding an entry
+  // means running it somewhere first.
+  assert.deepEqual(TERMINAL_EMULATORS.map((e) => e.bin),
+    ['xterm', 'xfce4-terminal', 'x-terminal-emulator']);
 });
 
 test('direct: a nasty bot name stays exactly ONE argv element', () => {
@@ -175,10 +193,10 @@ test('detection walks the preference order and tolerates a probe that throws', (
     exists: (bin) => {
       seen.push(bin);
       if (bin === 'xterm') throw new Error('which exploded');
-      return bin === 'konsole';
+      return bin === 'x-terminal-emulator';
     },
   });
-  assert.equal(found.bin, 'konsole');
+  assert.equal(found.bin, 'x-terminal-emulator');
   assert.equal(seen[0], 'xterm', 'must probe in preference order');
 });
 

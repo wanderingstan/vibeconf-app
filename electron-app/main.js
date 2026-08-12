@@ -5960,6 +5960,17 @@ function launchClaudeLinuxTerminal({ meetCode, botName, claudeDir, dangerousMode
     if (plan === 'direct') {
       // The emulator hosts the agent directly. cwd carries the working
       // directory, so no `cd` and no quoting.
+      //
+      // Some emulators fork and return, so the pid we hold is not the terminal
+      // and SIGTERM on it does nothing (measured: xfce4-terminal does this even
+      // with --disable-server). Without tmux there is nothing else to kill, so
+      // the agent can outlive the call still holding its MCP connection. Say so
+      // rather than discovering it as a mystery second bot.
+      if (emulator.reapable === false) {
+        console.warn(`[electron] ${emulator.bin} forks and returns, so this agent cannot be `
+          + 'stopped automatically when the call ends. Install tmux for a session we can '
+          + 'reap, or use xterm.');
+      }
       const { command, args } = buildDirectCommand({ emulator, argv });
       const child = spawn(command, args, { cwd: claudeDir, env, detached: false, stdio: 'ignore' });
       child.on('error', (err) => {

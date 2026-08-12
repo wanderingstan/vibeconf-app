@@ -189,3 +189,27 @@ test('detection returns null when nothing is installed', () => {
 test('detection requires an exists probe rather than guessing', () => {
   assert.throws(() => detectTerminalEmulator({}), /exists/);
 });
+
+test('emulators that fork-and-return are flagged unreapable', () => {
+  // Measured on Ubuntu 24.04, not assumed: xfce4-terminal's spawned pid exits
+  // immediately whether or not --disable-server is passed, so killing it does
+  // nothing. Safe in the tmux shape (kill-session does the work), an
+  // un-stoppable agent in the direct shape — hence the warning at the call site.
+  assert.equal(TERMINAL_EMULATORS.find((e) => e.bin === 'xfce4-terminal').reapable, false);
+  assert.equal(TERMINAL_EMULATORS.find((e) => e.bin === 'xterm').reapable, true);
+});
+
+test('every emulator entry declares reapability explicitly', () => {
+  // An undefined here reads as "reapable" at the call site and would silently
+  // skip the warning. Force the question to be answered per entry.
+  for (const e of TERMINAL_EMULATORS) {
+    assert.equal(typeof e.reapable, 'boolean', `${e.bin} must declare reapable`);
+  }
+});
+
+test('xfce4-terminal keeps -x, which is the flag that actually runs anything', () => {
+  // Verified live: with -e the command did not run AT ALL (it takes a single
+  // string), which would present as a terminal that opens to a bare shell and
+  // an agent that never starts — #317 all over again.
+  assert.equal(TERMINAL_EMULATORS.find((e) => e.bin === 'xfce4-terminal').execFlag, '-x');
+});

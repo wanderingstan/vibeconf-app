@@ -73,22 +73,38 @@
 // that is not the terminal. We would have nothing to kill.
 //
 // x-terminal-emulator (Debian/Ubuntu's alternatives symlink) is included but
-// ranked BELOW the specific ones, because on a stock Ubuntu desktop it very
-// often points AT gnome-terminal. Ranking it last means we only fall back to
-// "whatever this box calls a terminal" after the well-behaved options are gone.
+// ranked LAST, because it can resolve to anything in the alternatives group and
+// we cannot know what. On the Ubuntu 24.04 test box it pointed at zutty (which
+// does honour -e, verified); on a desktop install it may equally be
+// gnome-terminal. Ranking it last means we only fall back to "whatever this box
+// calls a terminal" after the options we have actually tested are gone.
 //
 // Note the blast radius differs by shape. On the tmux path a badly-behaved
 // emulator costs only the viewport handle: the agent still runs and `tmux
 // attach` still reaches it. On the direct path the emulator IS the agent's
 // host, so a fork-and-return emulator means we cannot reap it — one more
 // reason xterm leads the list.
+// `reapable: false` means the binary forks and returns, so the pid we get back
+// is not the terminal and killing it does nothing. That is only safe in the
+// tmux shape, where teardown is kill-session and never depended on the pid. In
+// the DIRECT shape it means an agent we cannot stop — the orphan hazard.
+//
+// Measured on Ubuntu 24.04, not assumed (all of the below were run):
+//   xterm            -e   reapable, argv passed through intact
+//   xfce4-terminal   -x   NOT reapable, even with --disable-server; and -e does
+//                         not run the command at all (it takes a single string)
+//   x-terminal-emulator -e resolves to zutty here, which honours -e and argv
+//   konsole/alacritty/kitty  NOT verified — not installed on the test box
 const TERMINAL_EMULATORS = [
-  { bin: 'xterm', execFlag: '-e' },
-  { bin: 'konsole', execFlag: '-e' },
-  { bin: 'alacritty', execFlag: '-e' },
-  { bin: 'kitty', execFlag: null }, // takes the command directly, no flag
-  { bin: 'xfce4-terminal', execFlag: '-x' }, // -x, NOT -e: -e takes a single string
-  { bin: 'x-terminal-emulator', execFlag: '-e' },
+  { bin: 'xterm', execFlag: '-e', reapable: true },
+  { bin: 'konsole', execFlag: '-e', reapable: true },
+  { bin: 'alacritty', execFlag: '-e', reapable: true },
+  { bin: 'kitty', execFlag: null, reapable: true }, // takes the command directly, no flag
+  // -x, NOT -e: verified that -e silently runs nothing here. Marked unreapable
+  // from a live probe: the spawned pid exits immediately whether or not
+  // --disable-server is passed, so only the tmux shape can clean it up.
+  { bin: 'xfce4-terminal', execFlag: '-x', reapable: false },
+  { bin: 'x-terminal-emulator', execFlag: '-e', reapable: true },
 ];
 
 // tmux target names are parsed, not opaque: `:` separates session from window

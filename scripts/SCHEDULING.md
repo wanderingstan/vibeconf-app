@@ -70,6 +70,32 @@ launchctl unload ~/Library/LaunchAgents/com.vibeconferencing.meet-test.plist
 rm ~/Library/LaunchAgents/com.vibeconferencing.meet-test.plist
 ```
 
+## Recording artifacts (set in the plist's `EnvironmentVariables`)
+The wrapper can preserve two kinds of recording per run, both under
+`~/vibeconf-test-results/` and both governed by the same keep/prune policy:
+
+- **`VIBECONF_RECORD=1`** — screen-records each live-call lane to
+  `recordings/<lane>-<ts>.mov` (what the machine displayed).
+- **`VIBECONF_RECORD_CALLS=1`** — turns on the app's own **per-participant call
+  recording** for every test bot (exported to the fleet as `VIBECONF_RECORD_CALL`).
+  After each lane the wrapper harvests the bots' merged
+  `call-recording*.mp4` out of the throwaway test profiles into
+  `call-recordings/<lane>-<ts>/` (this exercises the real recording feature
+  end-to-end, and gives us the actual call audio/video from a failing night).
+- **`VIBECONF_RECORD_KEEP`** — retention policy, applies to both kinds:
+  - `fails` — keep only FAILING lanes' artifacts (greens deleted immediately).
+  - `all` — keep every lane's artifact.
+  - `nightly` (**what the mini uses**) — keep EVERY lane's recording for the current
+    run, then at the START of the next run reap the prior run's GREENS while keeping
+    its FAILURES. So you can inspect any of last night's lanes for a day, and only
+    failures persist beyond the next 3am run. Failures are tagged `.FAIL` in the name
+    and capped to the newest `VIBECONF_RECORD_MAX`; greens are kept locally only.
+
+  Newest **`VIBECONF_RECORD_MAX`** (default 5) kept per kind. A **failing** lane's
+  artifact uploads to the shared Drive (`rclone`) when configured, so a red night's
+  digest links straight to it; greens stay local (except in `all` mode, which uploads
+  everything).
+
 ## Notes / caveats
 - **Same machine as a real bot?** The fleet uses ports 7901+ and dedicated
   `test-meet-*` / `test-slack-*` profiles, distinct from the real Jimmy (7865) / Samantha (7866), so a

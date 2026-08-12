@@ -284,6 +284,19 @@ button.primary:disabled {
   background: rgba(58, 47, 28, 0.86);
   border: 1px solid rgba(138, 109, 59, 0.7);
 }
+/* Info — blue, calm: FYI, not a problem to fix. */
+.notice-info {
+  display: none;              /* JS flips this to flex */
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: #cfe3fb;
+  background: rgba(28, 42, 58, 0.86);
+  border: 1px solid rgba(59, 95, 138, 0.7);
+}
 button.notice-action {
   width: auto; margin: 0; flex: 0 0 auto;
   background: #8ab4f8; border: none; color: #202124;
@@ -459,6 +472,17 @@ button.screen-close:hover:not(:disabled) { background: #aecbfa; color: #202124; 
 body[data-titlebar] #settingsScreen .container { padding-top: 0; }
 body[data-titlebar] #settingsScreen .settings-head {
   -webkit-app-region: drag;
+  /* STICKY, not static: Settings is a long scrolling page, and a drag handle
+     that scrolls away is a window you can no longer reposition once you've
+     read past the top of it. Pinning to the scroll viewport (there's no
+     overflow ancestor between here and the document, so `top: 0` sticks to
+     the window itself) keeps it reachable at any scroll position, the same
+     reasoning as button.screen-close above. Needs an opaque background since
+     content now passes UNDER it instead of before it. */
+  position: sticky;
+  top: 0;
+  z-index: 15;
+  background: #202124;
   margin: 0 -16px 14px;   /* escape the container's side padding, as .bot-hero does */
   padding: 34px 16px 0;
 }
@@ -477,17 +501,18 @@ body[data-titlebar] #settingsScreen .settings-head button { -webkit-app-region: 
    borrows the accent blue rather than the amber/red notice treatment — and it
    sits flat against the page instead of floating like .hero-notice, since it is
    permanent furniture rather than something that appeared and can be dismissed. */
-.settings-note {
-  margin: 0 0 16px;
-  padding: 9px 11px;
-  border-left: 2px solid #8ab4f8;
-  border-radius: 0 6px 6px 0;
-  background: #282a2d;
-  color: #bdc1c6;
-  font-size: 11px;
+/* The line at the top of Bot Settings. Plain form copy — same size and colour
+   as a field label — not a callout. It used to be a tinted box with an accent
+   border, which made a sentence about the page look like a warning about it. */
+.settings-intro {
+  margin: 0 0 14px;
+  color: #9aa0a6;
+  font-size: 12px;
   line-height: 1.5;
 }
-.settings-note strong { color: #e8eaed; font-weight: 600; }
+/* The guided-setup call keeps the full-width .primary shape it has everywhere
+   else, so it still reads as the same act as "Call Jimmy now". */
+.settings-intro button { margin-top: 10px; }
 
 /* Avatar-background preview. 16:9 to match the camera, so what's shown here is
    framed exactly as the call will frame it. */
@@ -713,6 +738,10 @@ button.auth-action-btn:hover:not(:disabled) {
 .hero-top {
   display: flex; align-items: flex-start;
   padding: 10px 10px 0;
+  /* Own stacking context, above .hero-notices (z-index: 5) — the bot switcher
+     dropdown lives in here and must never be obscured by a notice banner
+     opening below it. */
+  z-index: 6;
 }
 /* No OS title bar → this strip becomes the window's drag handle. Whatever is
    interactive inside it must opt back out, or it stops being clickable. */
@@ -885,7 +914,9 @@ button.agent-gear:hover:not(:disabled) { background: #3c4043; color: #e8eaed; }
    an icon is a masked box, not text, and has no glyph to shadow. drop-shadow
    follows the actual painted shape. */
 .bot-hero .ui-icon { filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.8)); }
-.bot-hero .join-caret { text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8); }
+/* (.join-caret had its own text-shadow here while it was a text glyph. It is a
+   masked icon now, so it is covered by the .ui-icon rule above — text-shadow
+   would paint nothing, there being no text.) */
 /* #379: the switcher SWITCHES the current window (replaces this bot), which only
    makes sense pre-call. In-call, the name must STILL be visible (it's the
    masthead now), so we neutralise the control rather than hide it: drop the
@@ -949,18 +980,24 @@ button.join-more:hover:not(:disabled) { background: #3c4043; color: #e8eaed; }
    .is-close class survives only as a state hook for anything that wants it. */
 /* Open state — reads as "this is what's showing the field below". */
 button.join-more[aria-expanded="true"] { color: #8ab4f8; background: rgba(60, 64, 67, 0.9); }
-/* ONE glyph, rotated — ▸ and ▴ are different characters with different optical
-   weights and widths, so swapping them made the control jump. Rotating the same
-   ▸ counter-clockwise lands it pointing up, identical in size, and animates. */
+/* ONE glyph, rotated. Swapping icons (+ for ×, or the old ▸ for ▴) makes the
+   control jump: different optical weights and advance widths in the same pill.
+   Rotating a single glyph keeps the size identical and animates for free.
+   45° is the whole trick — a + at 45° IS a ×, so "add" turns into "close" with
+   nothing swapped.
+   The glyph is a drawn mask (ui-icon-plus), so it inherits the 20px sizing that
+   button.join-more gives every icon and matches the 👀 and 🧠 beside it. The
+   text "+" it replaced was a different weight in every OS font and read small
+   next to them. */
 .join-caret {
   display: inline-block;
   transition: rotate 160ms ease;
 }
-button.join-more[aria-expanded="true"] .join-caret { rotate: -90deg; }
+button.join-more[aria-expanded="true"] .join-caret { rotate: 45deg; }
 @media (prefers-reduced-motion: reduce) {
   .join-caret { transition: none; }
 }
-/* The in-call 🚧 reuses the same ghost circle as ▸, so the two states have
+/* The in-call 🚧 reuses the same ghost circle as +, so the two states have
    an identical footprint — Leave Call lands exactly where Call now was. */
 
 /* Read-only current-call URL + copy button (in-call). */
@@ -1067,3 +1104,147 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
   margin-top: 10px; padding-top: 8px; border-top: 1px solid #3c4043;
   font-size: 11px; color: #9aa0a6;
 }
+
+/* ── Troubleshooting: two columns, and the call-feedback bar ────────────────
+   Only applied inside the troubleshooting screen so the narrow in-app panel
+   (which shares panel.html) is untouched. The pop-out window is widened to
+   match; below that width the columns collapse back to one so a resized or
+   docked window stays usable rather than clipping. */
+/* minmax(0, 1fr), NOT 1fr.
+   `1fr` is shorthand for `minmax(auto, 1fr)`, so a track can never shrink below
+   its content's min-content width. This column holds pre-wrap monospace blocks
+   (live call state, the caption feed), and ONE long unbreakable line — a URL, a
+   room id, a caption without spaces — pushes that floor past the window.
+   Measured in the wild: tracks resolved to 1204.82px / 117.38px in a 980px
+   window, so the right column was squeezed to a sliver and its content clipped.
+   It looked like the column had vanished, and it did so a beat after opening —
+   both blocks start empty, so the columns are even until the first live update
+   lands. minmax(0, …) lets the track shrink and hands the overflow to the
+   wrapping rules below, where it belongs. */
+.ts-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 24px; align-items: start; }
+@media (max-width: 720px) { .ts-cols { grid-template-columns: minmax(0, 1fr); } }
+/* The other half of the fix: with the track free to shrink, a long token must
+   actually break rather than overflow it. break-word alone does not touch a
+   single unbroken run of characters — anywhere does. */
+.ts-cols .call-state-debug,
+.ts-cols .caption-feed,
+.ts-cols pre,
+.ts-cols code { overflow-wrap: anywhere; }
+/* The first .section in each column has a top border+margin that reads as a
+   stray rule under the column head. */
+.ts-cols > div > .section:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+
+/* Feedback bar. These get clicked DURING a call, with a couple of seconds of
+   attention at most, so they are big, single-click, and never open a dialog. */
+.ts-feedback { margin: 4px 0 8px; }
+/* One row, all seven. They are a scanning target during a call: wrapping to a
+   second line moves them between clicks, so the row shrinks rather than wraps.
+   flex-basis:0 makes the seven share the width evenly regardless of label
+   length, so the row stays a stable grid of targets. */
+.ts-feedback .fb-row { display: flex; flex-wrap: nowrap; gap: 4px; }
+/* Emoji stacked ABOVE the label, and big. The glyph is what gets recognised in
+   the second of attention this has mid-call; the word only confirms it. At
+   label size the emoji was decoration, and there is plenty of room in both
+   directions to make it the actual target. */
+.ts-feedback button {
+  flex: 1 1 0; min-width: 0; width: auto;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 10px 4px;
+  background: #2a2d31; color: #e8eaed;
+  border: 1px solid #5f6368; border-radius: 8px; cursor: pointer;
+}
+.ts-feedback .fb-emoji { font-size: 24px; line-height: 1; }
+.ts-feedback .fb-label {
+  font-size: 11px; line-height: 1.2;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+}
+/* Below the two-column breakpoint the row would squeeze past legibility, so
+   there it is allowed to wrap. */
+@media (max-width: 720px) {
+  .ts-feedback .fb-row { flex-wrap: wrap; }
+  .ts-feedback button { flex: 1 1 auto; min-width: 96px; }
+}
+.ts-feedback button:hover { background: #3c4043; }
+/* Flash green on click. The whole point is confirming the mark landed without
+   stealing attention from the call. */
+/* Submit feedback you can't miss. Mid-call the click is often peripheral —
+   you are looking at the person, not the button — so a colour change alone is
+   easy to doubt, and doubting it means clicking again. A pop plus the flash
+   reads as "that landed" from the corner of your eye. */
+@keyframes fb-pop {
+  0%   { transform: scale(1); }
+  35%  { transform: scale(1.10); }
+  100% { transform: scale(1); }
+}
+.ts-feedback button.logged {
+  background: #1e4620; border-color: #34a853;
+  animation: fb-pop 320ms ease-out;
+}
+/* The note flashes too, so it is obvious the typed text went WITH the click
+   rather than being left behind. */
+@keyframes fb-note-sent {
+  0%   { border-color: #34a853; background: #1e4620; }
+  100% { border-color: #5f6368; background: #2a2d31; }
+}
+.ts-feedback #feedbackNote.sent { animation: fb-note-sent 900ms ease-out; }
+/* Movement is the part that can be unwelcome; the colour still confirms. */
+@media (prefers-reduced-motion: reduce) {
+  .ts-feedback button.logged { animation: none; }
+  .ts-feedback #feedbackNote.sent { animation: none; }
+}
+/* Full width under the row: it belongs to all seven buttons, and anything
+   narrower would read as belonging to whichever one it sat beneath. */
+.ts-feedback #feedbackNote {
+  width: 100%; box-sizing: border-box; margin-top: 8px;
+  padding: 7px 10px; font-size: 12px;
+  background: #2a2d31; color: #e8eaed;
+  border: 1px solid #5f6368; border-radius: 8px;
+}
+.ts-feedback #feedbackNote::placeholder { color: #80868b; }
+
+/* ── Brain pane (#242) ──────────────────────────────────────────────────────
+   A read-only view of the agent's activity feed. Monospace because the lines
+   are already formatted upstream (🗣 / 🔧 / 💬 prefixes and one-lined text) —
+   proportional type would break that alignment for no gain. */
+.brain-feed {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word;
+  background: #202124; color: #e8eaed;
+  border: 1px solid #3c4043; border-radius: 8px;
+  padding: 10px 12px;
+  /* Fills the window: this is the only content on the screen, and a fixed
+     height would waste a pane the user opened specifically to read. */
+  height: calc(100vh - 150px); overflow-y: auto;
+  /* The app sets user-select:none globally (it is chrome, not a document), and
+     that was swallowing this feed too. But this pane is EXACTLY the case the
+     global rule is wrong about: it exists to be read and copied out of — a tool
+     input or an error line pasted into an issue is most of its value during
+     debugging. Opt back in, and take the I-beam so it looks selectable. */
+  user-select: text; cursor: text;
+}
+.brain-feed .l-say  { color: #e8eaed; }
+.brain-feed .l-tool { color: #8ab4f8; }
+.brain-feed .l-ask  { color: #fdd663; }
+/* Reasoning. Dimmer than speech and italic — it is the agent's private working,
+   so it should read as an aside rather than compete with what it actually said. */
+.brain-feed .l-think { color: #c58af9; font-style: italic; }
+.brain-feed .l-none { color: #9aa0a6; font-style: italic; }
+
+/* #255 — the share-this-call's-log control. A rule used to separate it from the
+   feedback buttons above, on the argument that this one sends data off the
+   machine. Removed: the two belong together — the sentence beside the button is
+   about those buttons — and the line made one short section look like two. */
+.share-log-row {
+  margin-top: 12px;
+}
+.share-log-row .helper-text { line-height: 1.45; display: block; }
+/* The explanation sits BESIDE the button in its own column, so it wraps within
+   that column instead of underneath the button. `display: inline` was not
+   enough: after a ~200px button in a ~460px column only a word or two fits on
+   the first line, and the rest falls below — which is the layout this was
+   meant to avoid. */
+.share-log-main { display: flex; align-items: baseline; gap: 10px; }
+.share-log-main button { flex: 0 0 auto; margin-bottom: 0; }
+.share-log-msg { flex: 1; }
+.share-log-msg .helper-text { margin: 0; display: block; }

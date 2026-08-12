@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Recording call…</title>
+  <style>
+    /* Same dark palette as the panel/About window — this is a window of the
+       same app, not a system dialog. Deliberately small and plain: its only
+       job is to say "recording is happening" and offer a way to stop it. */
+    body {
+      margin: 0;
+      padding: 14px 16px;
+      background: #202124;
+      color: #e8eaed;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-app-region: drag; /* frameless-feeling; whole window is a handle */
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      min-width: 0;
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #f28b82; /* recording red */
+      flex: none;
+      animation: pulse 1.6s ease-in-out infinite;
+    }
+    .dot.error { background: #9aa0a6; animation: none; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+    .label {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .elapsed {
+      font-variant-numeric: tabular-nums;
+      color: #9aa0a6;
+      font-size: 12px;
+    }
+    button {
+      -webkit-app-region: no-drag;
+      background: #3c4043;
+      color: #e8eaed;
+      border: none;
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    button:hover { background: #4a4d51; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    .note {
+      margin-top: 6px;
+      font-size: 11px;
+      color: #9aa0a6;
+    }
+  </style>
+</head>
+<body>
+  <div class="row">
+    <div class="status">
+      <div class="dot" id="dot"></div>
+      <div class="label" id="label">Recording…</div>
+    </div>
+    <div class="elapsed" id="elapsed">00:00</div>
+    <button id="stopBtn" type="button">Stop</button>
+  </div>
+  <div class="note" id="note"></div>
+  <script src="call-recording-window.js"></script>
+</body>
+</html>

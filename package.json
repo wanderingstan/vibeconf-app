@@ -1,6 +1,6 @@
 {
   "name": "vibeconf-app",
-  "version": "0.8.13",
+  "version": "0.8.23",
   "private": true,
   "description": "AI agents as real participants in your video calls",
   "license": "MIT",
@@ -15,6 +15,11 @@
     "test:meet:ci": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 2 && node scripts/meet-test.mjs --bots Alice:7901,Jimmy:7902; code=$?; scripts/spawn-test-fleet.sh 2 --kill; exit $code",
     "test:meet:rec": "scripts/record-run.sh --label meet -- pnpm test:meet:ci",
     "test:codex:ci": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 1 && node scripts/smoke-codex-mcp.mjs --base-url=http://127.0.0.1:7901; code=$?; scripts/spawn-test-fleet.sh 1 --kill; exit $code",
+    "test:name-transcription": "node scripts/name-transcription-test.mjs",
+    "test:name-transcription:ci": "VIBECONF_NO_RUN_TAG=1 VIBECONF_BASE_PORT=7911 scripts/spawn-test-fleet.sh 2 && node scripts/name-transcription-test.mjs --bots Alice:7911,Jimmy:7912; code=$?; VIBECONF_BASE_PORT=7911 scripts/spawn-test-fleet.sh 2 --kill; exit $code",
+    "test:name-transcription:full": "scripts/name-transcription-chunked.sh",
+    "test:whiteboard-roundtrip": "node scripts/whiteboard-roundtrip-test.mjs",
+    "test:whiteboard-roundtrip:ci": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 2 && node scripts/whiteboard-roundtrip-test.mjs --bots Alice:7901,Jimmy:7902; code=$?; scripts/spawn-test-fleet.sh 2 --kill; exit $code",
     "smoke:health": "node scripts/smoke-app-health.mjs",
     "smoke:health:ci": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 1 && node scripts/smoke-app-health.mjs --bots Alice:7901; code=$?; scripts/spawn-test-fleet.sh 1 --kill; exit $code",
     "test:meet:ci:workspace": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 2 --google && node scripts/meet-test.mjs --target workspace --bots Alice:7901,Jimmy:7902; code=$?; scripts/spawn-test-fleet.sh 2 --google --kill; exit $code",
@@ -23,13 +28,16 @@
     "test:meet:agents": "VIBECONF_NO_RUN_TAG=1 node scripts/agent-fuzz-test.mjs",
     "test:screenshot": "node scripts/screenshot-test.mjs",
     "test:screenshot:ci": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 1 && node scripts/screenshot-test.mjs --bots Alice:7901; code=$?; scripts/spawn-test-fleet.sh 1 --kill; exit $code",
-    "test:share-verify": "node scripts/share-verify-test.mjs",
-    "test:share-verify:ci": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 2 && node scripts/share-verify-test.mjs --bots Alice:7901,Jimmy:7902; code=$?; scripts/spawn-test-fleet.sh 2 --kill; exit $code",
+    "test:whiteboard-e2e": "node scripts/whiteboard-e2e-test.mjs",
+    "test:whiteboard-e2e:ci": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 2 && node scripts/whiteboard-e2e-test.mjs --bots Alice:7901,Jimmy:7902; code=$?; scripts/spawn-test-fleet.sh 2 --kill; exit $code",
     "test:detect": "node scripts/detect-test.mjs",
     "smoke:codex-mcp": "node scripts/smoke-codex-mcp.mjs",
     "install:codex-mcp": "node scripts/install-codex-mcp.mjs",
     "test:join-route": "node scripts/join-route-test.mjs",
     "test:join-route:ci": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 1 && node scripts/join-route-test.mjs --base-url=http://127.0.0.1:7901 --bot-name=Alice --include-start-call; code=$?; scripts/spawn-test-fleet.sh 1 --kill; exit $code",
-    "merge:call": "node scripts/merge-call-audio.mjs"
+    "merge:call": "node scripts/merge-call-audio.mjs",
+    "dev": "scripts/dev.sh",
+    "dev:stop": "scripts/dev.sh --stop",
+    "promote": "scripts/promote.sh"
   }
 }

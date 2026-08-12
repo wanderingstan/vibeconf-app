@@ -67,13 +67,23 @@ test('page-inject filename rules match emoji-assets, for every set and shape', (
     return EMOJI_SETS;
   `)();
 
+  // Three sets ship as colour FONTS now, so they have no per-emoji filenames to
+  // agree on — page-inject's EMOJI_SETS holds only the IMAGE sets. The filename
+  // rules still have to match for whatever remains, and both sides must agree on
+  // WHICH sets are fonts, or one of them would look for files that aren't there.
+  const imageSets = Object.keys(A.EMOJI_SETS).filter((k) => !A.EMOJI_FONTS[k]);
   assert.deepEqual(
     Object.keys(pageSets).sort(),
-    Object.keys(A.EMOJI_SETS).sort(),
-    'the same sets exist on both sides',
+    imageSets.sort(),
+    'the same IMAGE sets exist on both sides',
   );
+  const pageFontSets = readFileSync(join(process.cwd(), 'electron-app', 'page-inject.js'), 'utf-8')
+    .match(/const EMOJI_FONT_SETS = \{([^}]*)\}/)[1]
+    .match(/[a-z0-9]+(?=:)/g).sort();
+  assert.deepEqual(pageFontSets, Object.keys(A.EMOJI_FONTS).sort(),
+    'both sides must agree which sets are fonts');
 
-  for (const set of Object.keys(A.EMOJI_SETS)) {
+  for (const set of imageSets) {
     assert.equal(pageSets[set].dir, A.EMOJI_SETS[set].dir, `${set}: same directory`);
     for (const emoji of SAMPLES) {
       assert.equal(

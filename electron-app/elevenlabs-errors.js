@@ -23,9 +23,17 @@ function parseDetail(body) {
   const d = body && typeof body === 'object' ? body.detail : undefined;
   if (typeof d === 'string') return { status: '', message: d };
   if (d && typeof d === 'object') {
-    return { status: String(d.status || ''), message: String(d.message || '') };
+    // `code` as well as `status`: ElevenLabs sends BOTH, and they don't always
+    // agree. A legacy-format key answers code=invalid_api_key with
+    // status=invalid_api_key_prefix, so reading status alone missed it and the
+    // whole thing fell through to the generic HTTP branch.
+    return {
+      status: String(d.status || ''),
+      code: String(d.code || ''),
+      message: String(d.message || ''),
+    };
   }
-  return { status: '', message: '' };
+  return { status: '', code: '', message: '' };
 }
 
 /**
@@ -40,8 +48,8 @@ function parseDetail(body) {
  * being swallowed — an unexplained failure the user can see beats silence.
  */
 function classifyVoicesError(httpStatus, body) {
-  const { status, message } = parseDetail(body);
-  const detail = `${status} ${message}`.toLowerCase();
+  const { status, code, message } = parseDetail(body);
+  const detail = `${status} ${code} ${message}`.toLowerCase();
 
   // Scoped key missing voices_read. Match on the status first, but fall back to
   // sniffing the message: the status string is the documented contract, the
@@ -54,12 +62,32 @@ function classifyVoicesError(httpStatus, body) {
       permission,
       message:
         `Your ElevenLabs key is missing the "${permission}" permission, so the app can't list your voices. ` +
-        'Speaking may still work. Edit the key at elevenlabs.io → Profile → API Keys and enable ' +
+        'Speaking may still work — this blocks the LIST, not synthesis (a scoped key can be missing ' +
+        'that permission too). You can still use an ElevenLabs voice without the list: paste its id into ' +
+        '"ElevenLabs Voice ID" in Bot Settings. The id is the last part of the voice\'s page URL on ' +
+        'elevenlabs.io. ' +
+        'To get the list back, edit the key at elevenlabs.io → Profile → API Keys and enable ' +
         `"${permission}" (or switch it to "Has access to all" scopes).`,
     };
   }
 
-  if (status === 'invalid_api_key' || /invalid api key/.test(detail)) {
+  // A key from before ElevenLabs moved to `sk_`-prefixed keys. It is not a typo
+  // and it will never work again, so "check for a typo" is the wrong advice —
+  // the only fix is generating a new one. Seen in the field: a key stored long
+  // ago kept failing every ElevenLabs call, and the app only revealed it when
+  // someone tried to pick a voice.
+  if (status === 'invalid_api_key_prefix' || /must start with 'sk_'/.test(detail)) {
+    return {
+      kind: 'legacy_key',
+      message:
+        'Your ElevenLabs API key is in the OLD format, which ElevenLabs no longer accepts — '
+        + 'every request with it fails, so no ElevenLabs voice can be used. It cannot be repaired; '
+        + 'generate a new one at elevenlabs.io → Profile → API Keys (new keys start with "sk_") '
+        + 'and paste it into Bot Settings.',
+    };
+  }
+
+  if (status === 'invalid_api_key' || code === 'invalid_api_key' || /invalid api key/.test(detail)) {
     return { kind: 'invalid_key', message: 'That ElevenLabs API key was rejected as invalid. Check for a typo or a stale key.' };
   }
 

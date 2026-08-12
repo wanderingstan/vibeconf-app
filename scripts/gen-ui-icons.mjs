@@ -33,8 +33,12 @@ const OUT = path.join(root, 'electron-app', 'renderer', 'ui-icons.css');
 //   · the 🟢🔴🟡⚪ status dots stay emoji — colour is their entire meaning, and a
 //     monochrome dot would say nothing
 //   · the bot's face (🙂 😐 …) stays emoji — the user picks its set themselves
-//   · → ↗ ▸ ▾ stay text glyphs — they're typography rather than pictures, and ▸
-//     in particular is ROTATED by CSS to point up, which a mask can't be
+//   · → ↗ ▾ stay text glyphs — they're typography rather than pictures
+//
+// (▸ used to be listed here as un-maskable because CSS rotates it. That was
+// wrong on both counts: it is now a drawn + — see DRAWN below — and a masked
+// element rotates perfectly well, since the transform applies to the box and
+// the mask rides along with it.)
 export const ICONS = {
   eyes: '1F440', // 👀 what the bot sees
   construction: '1F6A7', // 🚧 troubleshooting
@@ -42,6 +46,7 @@ export const ICONS = {
   speaker: '1F50A', // 🔊 voice-is-off notice
   folder: '1F4C2', // 📂 open bot profiles folder
   clipboard: '1F4CB', // 📋 open call logs folder
+  brain: '1F9E0',     // 🧠 the agent's activity feed — sibling to 👀 (the bot's eyes)
 };
 
 // Two glyphs are drawn by hand rather than lifted from OpenMoji, because
@@ -49,12 +54,19 @@ export const ICONS = {
 // neighbours there are emoji in their own right — ❌ is a big red cross, ✖️ a
 // heavy multiplication sign. Neither reads as "close this".
 //
-// They're still OS-independent art, which is the whole point, and they follow
-// the same stroke idiom as the Bot Settings done-checkmark: round caps, weight
-// ~2.6 on a 24px canvas, which matches OpenMoji's 2-on-72 at these sizes.
+// They're still OS-independent art, which is the whole point: round caps, and
+// the weight below.
 const DRAWN = {
   close: '<path d="M5 5 L19 19 M19 5 L5 19"/>', // ✕ put the bot's view away
   check: '<path d="M4 12 L9.5 17.5 L20 6"/>', // ✓ copied / confirmed
+  // + add the bot to a call. Drawn rather than the text "+" it replaced, which
+  // was a different weight in every OS font and read small beside the drawn
+  // icons flanking it.
+  //
+  // Note the arms are the SAME length as close's: the panel rotates this one 45°
+  // to mean "close", so at that angle it must land on exactly the ✕ above rather
+  // than a second, slightly different cross.
+  plus: '<path d="M12 5 L12 19 M5 12 L19 12"/>',
 };
 
 // Icons vendored from another set, verbatim. OpenMoji's ⚙ is a hairline outline
@@ -73,10 +85,33 @@ const VENDORED = {
     '</svg>',
 };
 
+// Stroke weight for every hand-drawn icon, on the 24px canvas they share.
+//
+// What matters is the fraction of the box, since each icon is scaled to its
+// button: 2.0/24 is 8.3%. For comparison, OpenMoji's outlines are 2 on a 72 box,
+// i.e. 2.78% — roughly a third of this.
+//
+// A previous comment here claimed 2.6 "matches OpenMoji's 2-on-72". It does not,
+// and never did: 2.6/24 is 10.8%, nearly four times OpenMoji's. The drawn icons
+// really were heavier than the 👀 and 🚧 beside them, which is visible once a +
+// sits directly between them.
+//
+// Not corrected all the way DOWN to 2.78%, though. That would be 0.67 on this
+// canvas — a hairline, and these glyphs are two or three strokes with nothing
+// else in the box, so they would read as faint scratches where OpenMoji's
+// dense outlines still hold together. 2.0 lands nearer the Octicons gear, which
+// is the fairer reference: it is the only other icon here actually drawn FOR
+// 24px rather than scaled down from 72.
+//
+// Shared by all three deliberately: the panel rotates + into ×, so if those two
+// had different weights the rotation would read as a swap to a different icon,
+// which is the exact effect this design avoids.
+const DRAWN_STROKE = 2.0;
+
 function drawnSvg(body) {
   return (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">' +
-    `<g fill="none" stroke="#000" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">${body}</g>` +
+    `<g fill="none" stroke="#000" stroke-width="${DRAWN_STROKE}" stroke-linecap="round" stroke-linejoin="round">${body}</g>` +
     '</svg>'
   );
 }

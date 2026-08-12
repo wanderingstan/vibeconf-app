@@ -22,6 +22,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -36,12 +37,40 @@ const srv = (fast) => {
   return s;
 };
 
-test('the experiment ships ON, deliberately, while the users are all test users', () => {
-  // Off would be the cautious default, and was until #116 review: an experiment
-  // nobody runs produces no data, because nobody sets a non-default preference.
-  // Revisit the moment there are real users — the failure mode (bot silently
-  // never speaks) is one an outsider would read as "it's thinking", not as a bug.
+test('the experiment ships OFF now that it has been measured', () => {
+  // It shipped ON deliberately (#116 review): an experiment nobody runs produces
+  // no data, because nobody sets a non-default preference. That worked — the
+  // data arrived, and it argues for off.
+  //
+  // Across 1,501 level windows of real calls the room noise floor never once
+  // reached the -55dB threshold (median -92dB, worst -66dB), so ambient sound was
+  // never the problem. But the rising edge is IMMEDIATE by design, so one ~16ms
+  // frame above threshold arms the floor and holds it 350ms — which a keystroke
+  // or a chair creak will do. 26.5% of 3,820 measured busy periods lasted under
+  // 500ms, too short to be anyone taking the floor.
+  //
+  // A bot that yields to a cough is worse than a bot that yields 400ms later, so
+  // the DOM path wins until an attack requirement makes the analyser safe. The
+  // analyser keeps RECORDING either way (see below), so turning it off does not
+  // stop the comparison data accruing.
+  // Back ON, but only because the FLOOR now has its own threshold. It was
+  // briefly defaulted off when the measurement landed; the fix is the loud
+  // threshold rather than abandoning the fast path, since erring loud costs a
+  // moment of yield latency while erring quiet costs the bot its voice.
   assert.equal(PREFERENCES.fastFloorDetection.default, true);
+  // The floor threshold must stay well clear of the STT gate — conflating the
+  // two is what made it fire on keystrokes.
+  const inject = readFileSync(new URL('../electron-app/page-inject.js', import.meta.url), 'utf8');
+  const m = inject.match(/const FLOOR_SPEECH_DB = (-?\d+)/);
+  assert.ok(m, 'the floor needs its own threshold constant');
+  assert.ok(Number(m[1]) >= -45, `${m[1]}dB is not "genuinely loud" — a keystroke clears it`);
+  // The floor decision must stay independent of the STT gate (this.speaking).
+  // It now runs through `farEnd`, which starts at the floor threshold and is
+  // additionally filtered by the #245 echo guard — so assert the derivation
+  // rather than the literal expression, which has legitimately changed once and
+  // will again.
+  assert.match(inject, /let farEnd = db > FLOOR_SPEECH_DB/);
+  assert.match(inject, /noteAudioLevel\(farEnd\)/, 'the floor must not reuse this.speaking');
 });
 
 test('it is read live, so a bot that goes quiet can be rescued mid-call', () => {

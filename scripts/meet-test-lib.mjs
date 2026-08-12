@@ -142,6 +142,17 @@ export class Bot {
     return data;
   }
 
+  // Read the CURRENT whiteboard content this bot's app holds. The app's
+  // sync-client polls vibeconferencing.com and applyRemoteWhiteboard()s the
+  // result into local state, so on a DIFFERENT instance this reflects what came
+  // back THROUGH the backend (Upstash) — which is what a cross-instance
+  // write→read round-trip verifies. Returns { content, version, ... } | {}.
+  async readWhiteboard() {
+    const resp = await fetch(`${this.base}/api/sync/${this.room}`);
+    const data = await resp.json().catch(() => ({}));
+    return data?.whiteboard || {};
+  }
+
   async shareWhiteboard({ sustainMs = 4000 } = {}) {
     const started = Date.now();
     await this._sync({ meta: { action: 'share-whiteboard', shareType: 'whiteboard' } });
@@ -172,7 +183,7 @@ export class Bot {
       }
     }
     const ms = Date.now() - started;
-    // #296: distinguish a REAL share-API regression from the known ENVIRONMENTAL
+    // #282: distinguish a REAL share-API regression from the known ENVIRONMENTAL
     // "no video stream" collapse. Present engaging and then dropping for lack of a
     // held video stream is a local-env failure — the shared whiteboard window has
     // nothing renderable (unauthenticated view #274, or Screen-Recording perm not
@@ -188,7 +199,7 @@ export class Bot {
     log(this.name, 'shareWhiteboard', {
       ms, ok,
       note: !engaged ? 'NOT sharing after 6s — present never engaged (share flow broke? guest can\'t present?)'
-        : !sustained ? `⚠︎ ENVIRONMENTAL (non-gating, #296): engaged then collapsed after ~${droppedAfterMs}ms — no held video stream (unauth whiteboard window #274 / Screen-Recording perm). Present flow itself worked.`
+        : !sustained ? `⚠︎ ENVIRONMENTAL (non-gating, #282): engaged then collapsed after ~${droppedAfterMs}ms — no held video stream (unauth whiteboard window #274 / Screen-Recording perm). Present flow itself worked.`
           : `sharing held for ${sustainMs}ms`,
       meta: { engaged, sustained, droppedAfterMs, environmental },
     });

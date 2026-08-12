@@ -8,7 +8,7 @@
 // Env:
 //   VIBECONF_NOTIFY=0            disable entirely
 //   VIBECONF_NOTIFY_DRYRUN=1     compose + print, don't send
-//   VIBECONF_NOTIFY_CHAT=<id>    override recipient (default: Stan's DM)
+//   VIBECONF_NOTIFY_CHAT=<id>    override recipient (default: shared group)
 //   VIBECONF_RESULTS_DIR=<path>  override results dir
 //   VIBECONF_TELEGRAM_ENV=<path> override the token .env location
 
@@ -18,7 +18,7 @@ import { homedir } from 'os';
 import { execSync, execFileSync } from 'child_process';
 
 const RESULTS = process.env.VIBECONF_RESULTS_DIR || join(homedir(), 'vibeconf-test-results');
-const CHAT = process.env.VIBECONF_NOTIFY_CHAT || '6785998012'; // Stan's DM
+const CHAT = process.env.VIBECONF_NOTIFY_CHAT || '-5140242529'; // shared group
 const ENV_FILE = process.env.VIBECONF_TELEGRAM_ENV || join(homedir(), '.claude/channels/telegram/.env');
 
 function lastLine(file) {
@@ -26,6 +26,12 @@ function lastLine(file) {
     const lines = readFileSync(join(RESULTS, file), 'utf8').trim().split('\n').filter(Boolean);
     return lines.length ? JSON.parse(lines[lines.length - 1]) : null;
   } catch { return null; }
+}
+function allLines(file) {
+  try {
+    return readFileSync(join(RESULTS, file), 'utf8').trim().split('\n').filter(Boolean)
+      .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  } catch { return []; }
 }
 function botToken() {
   try {
@@ -59,14 +65,33 @@ const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
 
 const icon = (ok) => (ok ? '✅' : '🔴');
 
+// A "real stall" (see meet-test-lib.mjs's realStalls/quiet-room split) still
+// isn't necessarily OUR bug — it's already filtered down from raw
+// wait_for_speech timeouts to ones that overlap another bot's speech, but
+// that can still be a one-off Google Meet audio/caption glitch rather than a
+// code regression. A night with stalls but zero fails reads as 🟡 provisional
+// here, not 🔴 — red is reserved for an actual failed step. This is a
+// reporting-only reclassification: the underlying exit codes ($CODE in
+// scheduled-meet-test.sh, meet-test.mjs's own exit) are untouched, so nothing
+// upstream that reads those changes behavior — only what gets displayed here.
+function verdict(r) {
+  if (!r) return 'none';
+  if (String(r.exit) === '0') return 'green';
+  const fails = Number(r.fails);
+  if (Number.isFinite(fails) && fails === 0) return 'yellow'; // stalls-only — provisional, not our code
+  return 'red'; // fails > 0, or fails unparseable — never silently downgrade an unknown
+}
+const VERDICT_ICON = { green: '✅', yellow: '🟡', red: '🔴', none: '⚪️' };
+
 // meet/slack/codex results share {exit[,stalls,fails]}: exit 0 = green.
 function statusLine(label, r) {
   if (!r) return `⚪️ ${label}: no result`;
-  const ok = String(r.exit) === '0';
+  const v = verdict(r);
   const bits = [];
   if (r.stalls !== undefined) bits.push(`${r.stalls} stall${r.stalls === '1' ? '' : 's'}`);
   if (r.fails !== undefined) bits.push(`${r.fails} fail${r.fails === '1' ? '' : 's'}`);
-  return `${icon(ok)} ${label}: exit ${r.exit}${bits.length ? ` (${bits.join(', ')})` : ''}`;
+  const note = v === 'yellow' ? ' — provisional (Meet flakiness, not our code)' : '';
+  return `${VERDICT_ICON[v]} ${label}: exit ${r.exit}${bits.length ? ` (${bits.join(', ')})` : ''}${note}`;
 }
 // agent-fuzz has a different shape: {ok:true/false, mission}.
 function fuzzLine(r) {
@@ -76,15 +101,28 @@ function fuzzLine(r) {
 
 const dmg = lastLine('results.jsonl');
 const main = lastLine('results-main.jsonl');
+const wbRoundtrip = lastLine('whiteboard-roundtrip-results.jsonl');
+// Did the live lanes run on the FIXED, publicly-joinable fallback room? (mint
+// failed → exposure risk.) Warned even on a green night — see scheduled-meet-test.
+const meetRoomFallback = (lastLine('meet-room-source.json') || {}).source === 'fallback';
 const slack = lastLine('slack-results.jsonl');
+const whiteboardE2e = lastLine('whiteboard-e2e-results.jsonl');
 const codex = lastLine('codex-smoke-results.jsonl');
 const joinRoute = lastLine('join-route-results.jsonl');
 const fuzz = lastLine('agent-fuzz/results.jsonl');
+// Recording preflight: did screencapture actually produce a non-empty file? (null
+// = recording disabled → nothing to say.) A broken recorder isn't a product RED —
+// it's an observability gap — so it warns + pushes like the fallback-room notice
+// rather than counting as a lane failure.
+const recHealth = lastLine('recording-health-results.jsonl');
+const recBroken = recHealth ? recHealth.ok === false : false;
 
 const lines = [
   statusLine('DMG meet (gating)', dmg),
   statusLine('main meet', main),
+  statusLine('whiteboard round-trip', wbRoundtrip),
   statusLine('Slack', slack),
+  statusLine("whiteboard e2e", whiteboardE2e),
   statusLine('codex', codex),
   // #105: the /join-call + /call routes. A lane that runs and records but never
   // reports is a lane nobody reads — the whole point is being TOLD when the
@@ -93,7 +131,16 @@ const lines = [
   fuzzLine(fuzz),
 ];
 const anyRed = lines.some((l) => l.startsWith('🔴'));
+const anyYellow = lines.some((l) => l.startsWith('🟡'));
 const stamp = dmg?.ts || main?.ts || slack?.ts || '(unknown)';
+// Recording links uploaded to Drive THIS run (rec_run → rclone). Only failing
+// lanes keep recordings (REC_KEEP=fails), so this is naturally the interesting set
+// — a red night's digest links straight to the .mov of what went wrong.
+const recLinks = allLines('recording-uploads.jsonl').filter((r) => r.ts === stamp && r.link);
+// Per-participant call recordings kept+uploaded THIS run (collect_call_recordings →
+// rclone). Same keep=fails logic as the .mov, so on a red night this links straight
+// to the actual call audio/video of what went wrong.
+const callRecLinks = allLines('call-recording-uploads.jsonl').filter((r) => r.ts === stamp && r.link);
 
 // --- Claude analysis (only on a red night) ---------------------------------
 // When something failed, hand the failing log lines to `claude -p` for a short
@@ -141,7 +188,9 @@ function analyzeFailures() {
     'Write a SHORT root-cause read for a Telegram alert:',
     '- 2-4 sentences on the single most likely root cause (identify the COMMON',
     '  cause; do not restate every failed step).',
-    '- Tag it: [code regression] / [environment/Google-Meet flakiness] / [test-infra] / [unknown].',
+    '- Tag it: [code regression] / [environment/platform flakiness] / [test-infra] / [unknown].',
+    '  For the platform tag, name the ACTUAL platform that failed — e.g. Slack, Google Meet,',
+    '  network, Upstash. Do NOT default to "Google Meet": a Slack-lane failure is Slack flakiness.',
     '- One line for the most useful next step, if obvious.',
     'Plain text only, no markdown, under ~120 words.',
   ].join('\n');
@@ -160,18 +209,28 @@ function analyzeFailures() {
     return null;
   }
 }
-const analysis = anyRed ? analyzeFailures() : null;
+// Analysis runs for yellow nights too (not just red) — the Claude triage read
+// is exactly what tells a stalls-only night apart from a real regression, so
+// skipping it just because it's not red would throw away the useful part.
+const analysis = (anyRed || anyYellow) ? analyzeFailures() : null;
 
 // Bold title (Telegram HTML), then two context lines: the DMG version (DMG-meet
 // lane) and the main commit (all source lanes).
-const header = `<b>${esc(`${anyRed ? '🔴' : '🌙'} Nightly ${stamp}`)}</b>`;
+const header = `<b>${esc(`${anyRed ? '🔴' : anyYellow ? '🟡' : '🌙'} Nightly ${stamp}`)}</b>`;
 const ctx = [];
 const dver = dmgVersion(); if (dver) ctx.push(`🖥 DMG ${esc(dver)}`);
 const mc = mainCommit(); if (mc) ctx.push(`🔧 main ${esc(mc)}`);
+if (meetRoomFallback) ctx.push('⚠️ live lanes ran on the SHARED fallback Meet room — /call mint failed (sign the test profile into vibeconferencing.com); a fixed, publicly-joinable code appears in logs.');
+if (recBroken) ctx.push(`⚠️ screen-recording is BROKEN on the runner — the preflight capture produced ${recHealth?.bytes ?? 0} bytes (Screen Recording permission missing for the launchd shell). Any kept .mov is empty; grant the permission or set VIBECONF_RECORD=0.`);
 const analysisBlock = analysis ? ['', '🔎 <b>Claude analysis</b>', esc(analysis)] : [];
 // Keep under Telegram's 4096-char hard limit — the status lines are the priority,
 // so trim the analysis tail (not the digest) if the whole thing runs long.
-let text = [header, ...ctx, ...lines.map(esc), ...analysisBlock].join('\n');
+const recBlock = (recLinks.length || callRecLinks.length)
+  ? ['', '📹 <b>Recordings</b>',
+     ...recLinks.map((r) => `<a href="${esc(r.link)}">▶ ${esc(r.lane)} (screen)</a>`),
+     ...callRecLinks.map((r) => `<a href="${esc(r.link)}">🎙️ ${esc(r.lane)} (call ×${esc(String(r.files ?? ''))})</a>`)]
+  : [];
+let text = [header, ...ctx, ...lines.map(esc), ...recBlock, ...analysisBlock].join('\n');
 if (text.length > 4090) text = text.slice(0, 4087) + '…';
 
 if (process.env.VIBECONF_NOTIFY === '0') { console.log('[notify] disabled'); process.exit(0); }
@@ -184,7 +243,7 @@ try {
   const resp = await fetch(`https://api.telegram.org/bot${tok}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: CHAT, text, parse_mode: 'HTML', disable_notification: !anyRed }),
+    body: JSON.stringify({ chat_id: CHAT, text, parse_mode: 'HTML', disable_notification: !(anyRed || meetRoomFallback || recBroken) }),
     signal: AbortSignal.timeout(20000),
   });
   console.log(resp.ok ? '[notify] telegram sent' : `[notify] telegram failed: ${resp.status} ${await resp.text().catch(() => '')}`);

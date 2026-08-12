@@ -1,0 +1,344 @@
+// call-feedback.test.mjs — one-click "that was wrong" markers in the session log,
+// and the two-column troubleshooting layout they sit above.
+//
+// The point of the buttons is the TIMESTAMP. Bot misbehaviour is nearly
+// impossible to report after the fact — "it kept interrupting" locates nothing —
+// but a marker dropped at the moment sits in the session log beside the
+// captions, turn state and agent activity for that second, which is enough to
+// reconstruct what happened.
+//
+// Run: node --test tests/call-feedback.test.mjs
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
+const panelJs = readFileSync(join(root, 'electron-app/renderer/panel.js'), 'utf8');
+const panelHtml = readFileSync(join(root, 'electron-app/renderer/panel.html'), 'utf8');
+const panelCss = readFileSync(join(root, 'electron-app/renderer/panel.css'), 'utf8');
+
+const tsScreen = panelHtml.slice(
+  panelHtml.indexOf('id="troubleshootingScreen"'),
+  panelHtml.indexOf('<!-- Persistent footer'),
+);
+
+test('the reported behaviours are all present', () => {
+  for (const kind of ['interrupting', 'too-timid', 'not-yielding', 'inactive', 'other']) {
+    assert.ok(tsScreen.includes(`data-feedback="${kind}"`), `missing feedback button: ${kind}`);
+  }
+  // "other" matters as much as the named ones: without it, anything unanticipated
+  // goes unreported, which is exactly the class of bug worth hearing about.
+  assert.ok(tsScreen.includes('data-feedback="other"'));
+});
+
+test('a click costs one action and never blocks the call', () => {
+  // These are pressed mid-call. A dialog, a confirmation step or a text field
+  // would mean the moment is gone before it is recorded.
+  // Sliced to the end of the listener rather than a character count — a fixed
+  // window silently stops covering the code it is meant to check the moment
+  // anything is added above it.
+  const handler = panelJs.slice(panelJs.indexOf("document.querySelectorAll('[data-feedback]')"));
+  const body = handler.slice(0, handler.indexOf('\n});') + 4);
+  assert.doesNotMatch(body, /confirm\(|prompt\(|showMessageBox/, 'no dialog on the click path');
+  assert.match(body, /\.catch\(/, 'a failed write must not surface as an error mid-call');
+  // Visible confirmation, since a silent button leaves you unsure it registered.
+  assert.match(body, /classList\.add\('logged'\)/);
+});
+
+test('the log line is greppable and carries the call context', () => {
+  const h = main.slice(main.indexOf("ipcMain.handle('call-feedback'"));
+  // Sliced to the handler's closing brace rather than a character count — a
+  // fixed window silently stops covering the end of the function the moment a
+  // comment is added, which is exactly how this drifted.
+  const body = h.slice(0, h.indexOf('\n  });') + 6);
+  assert.match(body, /\[feedback\]/, 'a stable prefix is what makes it findable in a busy log');
+  // bot= and othersSpeaking= are what separate the reports from each other:
+  // "interrupted" while the bot was speaking is a different bug from the same
+  // click while it was listening, and "frozen" only means something next to
+  // whether anyone was actually talking. Without them the marker needs ten
+  // lines of context either side to interpret.
+  for (const field of ['kind=', 'status=', 'bot=', 'othersSpeaking=', 'room=', 'call=']) {
+    assert.ok(body.includes(field), `the marker needs ${field} to be reconstructable`);
+  }
+  // Never throws: clicked during a live call.
+  assert.match(body, /catch \(err\)/);
+  assert.match(body, /String\(kind \|\| 'unspecified'\)\.slice\(0, 40\)/, 'renderer input is bounded');
+});
+
+test('feedback goes through a single handler', () => {
+  // Agent-visibility landed as an addition INSIDE this handler, which is what
+  // was intended — not a second route with its own format and its own idea of
+  // what a marker looks like.
+  //
+  // Asserts containment rather than counting log lines: the handler legitimately
+  // logs several things now (the marker, told-agent, suppressed-repeat, the
+  // failure path), and a count would have to be revised every time one is added,
+  // which trains people to bump the number rather than check the claim.
+  const start = main.indexOf("ipcMain.handle('call-feedback'");
+  const end = main.indexOf('\n  });', start) + 6;
+  const handler = main.slice(start, end);
+  const inHandler = (handler.match(/\[feedback\]/g) || []).length;
+  const total = (main.match(/\[feedback\]/g) || []).length;
+  assert.equal(inHandler, total, 'every [feedback] log site must live in the one handler');
+});
+
+test('the troubleshooting screen is two columns, and degrades to one', () => {
+  assert.match(tsScreen, /class="ts-cols"/);
+  // minmax(0, 1fr), not 1fr — see the shrink test in brain-pane.test.mjs. Bare
+  // 1fr let the left column grow to 1204px inside a 980px window and squeeze
+  // this one to a sliver, which read as "the second column disappeared".
+  assert.match(panelCss, /\.ts-cols \{[^}]*grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\)/);
+  // The same panel.html renders the NARROW in-app panel, and this window can be
+  // resized. Without the collapse, either would clip rather than reflow.
+  assert.match(panelCss, /@media \(max-width: 720px\)[^}]*\{[^}]*grid-template-columns: minmax\(0, 1fr\)/);
+  assert.match(main, /width: 980,/, 'the pop-out has to be wide enough for two columns');
+});
+
+test('no section was dropped in the move', () => {
+  // The restructure moved blocks wholesale; these are the ids that would silently
+  // break panel.js if one had been lost.
+  for (const id of ['callStateDebug', 'rawCaptionText', 'transcriptArea', 'simulateSpeechBtn',
+    'shareWhiteboardBtn', 'speakTextBtn', 'copyCurlBtn', 'roomIdField', 'devtoolsBtn', 'websiteUrl']) {
+    assert.ok(tsScreen.includes(id), `${id} went missing in the two-column move`);
+  }
+});
+
+test('the DevTools button says which window it opens', () => {
+  // It opens meetView — the bot's Meet view — not this panel. The old label
+  // ("Open DevTools") read as "this window".
+  assert.match(tsScreen, /Open DevTools for Call Window/);
+  const ipc = main.slice(main.indexOf("ipcMain.on('open-devtools'"));
+  assert.match(ipc.slice(0, 300), /meetView\.webContents\.openDevTools/, 'the label must match the target');
+});
+
+test('the Agent Prompt section and its code are gone', () => {
+  // Superseded by MCP: it generated a curl-based prompt for driving a bot by
+  // hand, which nothing uses now.
+  assert.doesNotMatch(tsScreen, /Agent Prompt/);
+  for (const sym of ['agentPromptText', 'copyPromptBtn', 'generateAgentPrompt', 'updateAgentPrompt']) {
+    assert.ok(!panelJs.includes(sym), `${sym} left behind — it would throw on a null element`);
+  }
+});
+
+test('the feedback row stays a single line at full width', () => {
+  // They are a scanning target during a call. Wrapping to a second line moves
+  // buttons between clicks, so the row shrinks instead of wrapping — and
+  // flex-basis:0 keeps the seven evenly sized regardless of label length, so it
+  // stays a stable grid of targets rather than shuffling with the text.
+  assert.match(panelCss, /\.ts-feedback \.fb-row \{[^}]*flex-wrap: nowrap/);
+  assert.match(panelCss, /\.ts-feedback button \{[^}]*flex: 1 1 0/);
+  // Below the two-column breakpoint, squeezing seven buttons is worse than
+  // wrapping them.
+  assert.match(panelCss, /@media \(max-width: 720px\) \{[\s\S]{0,200}flex-wrap: wrap/);
+});
+
+test('the simulated speaker is fixed, not a field', () => {
+  // A stray or blank value silently changed who the bot thought had spoken,
+  // which is the one thing about an injected turn that must be unambiguous when
+  // you read it back.
+  assert.match(panelJs, /const SIMULATED_SPEAKER = 'Troubleshooting User'/);
+  assert.ok(!panelJs.includes('simulateSpeaker'), 'the element reference must go too');
+  assert.ok(!tsScreen.includes('simulateSpeaker'), 'and the orphaned input');
+});
+
+test('the copy-curl command targets something that will accept it', () => {
+  // It pointed at http://127.0.0.1:7865 by default. That endpoint is real, so
+  // the command looked right — and it has 401'd since the local control API
+  // began requiring a bearer token (#201). The website takes these posts
+  // unauthenticated and is the useful target anyway: the point is driving the
+  // bot from somewhere else.
+  assert.ok(!panelJs.includes("syncBaseUrl || 'http://127.0.0.1:7865'"),
+    'the local fallback makes the copied command unusable');
+  assert.match(panelJs, /let syncBaseUrl = 'https:\/\/vibeconferencing\.com'/);
+});
+
+test('Debug Override sits at the foot of the right column', () => {
+  const cols = tsScreen.slice(tsScreen.indexOf('ts-cols'));
+  assert.ok(cols.includes('Debug Override'), 'it belongs inside the columns, not below them');
+  // Last thing in its column: it is machine-wide and persistent, unlike
+  // everything else here, which acts on this call.
+  assert.ok(cols.indexOf('Debug Override') > cols.indexOf('devtoolsBtn'));
+});
+
+test('the curl helper works in the pop-out window, not just the panel', () => {
+  // The pop-out is a SECOND webContents. panelView.webContents.send(...)
+  // broadcasts — meet-detected, call-status-changed — never reach it, so a
+  // control driven only by those events is dead there. This one was: disabled
+  // permanently, in a call or out of one, with nothing explaining why.
+  //
+  // The 1s call-state poll runs in both windows, so it is the right driver.
+  // Anchored on the TROUBLESHOOTING branch specifically. The brain window (#242)
+  // added its own get-call-state call earlier in the same interval, so a plain
+  // indexOf now lands on that one — a first-match anchor is only unambiguous
+  // until someone adds a second caller.
+  const poll = panelJs.slice(panelJs.indexOf("if (troubleshootingScreen.style.display === 'none') return"));
+  assert.match(poll.slice(0, 500), /updateCurlCommand\(s && s\.roomId\)/,
+    'the poll must drive it, or the pop-out never enables the button');
+
+  // And the empty state has to say something. A greyed-out button with no
+  // explanation is indistinguishable from a broken one — which is exactly how
+  // this was reported.
+  const fn = panelJs.slice(panelJs.indexOf('function updateCurlCommand'));
+  assert.match(fn.slice(0, 700), /if \(!meetCode\)/);
+  assert.match(fn.slice(0, 700), /Available once the bot is in a call/);
+});
+
+test('each button carries a distinct emoji, sized to be the target', () => {
+  // System emoji here on purpose: this is the troubleshooting window, where
+  // colour and instant recognition beat the OS-independent SVG set used for the
+  // main UI chrome. Someone clicking these mid-call is matching a feeling to a
+  // picture in about a second — so the glyph is the target and the word only
+  // confirms it, which is why it is stacked above and much larger.
+  const row = tsScreen.slice(tsScreen.indexOf('class="fb-row"'), tsScreen.indexOf('feedbackStatus'));
+  const glyphs = [...row.matchAll(/<span class="fb-emoji">([^<]+)<\/span>/g)].map((m) => m[1]);
+  assert.equal(glyphs.length, 7, 'all seven still carry an emoji');
+  // Two buttons sharing a glyph would defeat the point of having them.
+  assert.equal(new Set(glyphs).size, 7, `duplicate emoji: ${glyphs.join(' ')}`);
+  for (const g of glyphs) assert.doesNotMatch(g, /\p{L}/u, `${g} is not an emoji`);
+
+  // Bigger than the label, or it is decoration rather than the thing being read.
+  assert.match(panelCss, /\.ts-feedback \.fb-emoji \{[^}]*font-size: 24px/);
+  assert.match(panelCss, /\.ts-feedback \.fb-label \{[^}]*font-size: 11px/);
+  assert.match(panelCss, /\.ts-feedback button \{[^}]*flex-direction: column/);
+
+  // The label element is read directly for the log, rather than stripping emoji
+  // out of textContent — `kind=` is the machine key and emoji in a grep is noise.
+  assert.match(panelJs, /btn\.querySelector\('\.fb-label'\)/);
+});
+
+test('the agent is told only what it can act on', () => {
+  const map = main.slice(main.indexOf('const FEEDBACK_TO_AGENT'));
+  const body = map.slice(0, map.indexOf('\n  };'));
+  // The three that map to something the bot controls — the barge-in family, plus
+  // its inverse.
+  for (const k of ['interrupting', "'not-yielding'", "'too-timid'"]) {
+    assert.ok(body.includes(k), `${k} should carry an agent notice`);
+  }
+  // And the four that don't. A frozen agent cannot read; "you were wrong" does
+  // not say WHAT was wrong and invites flailing over a turn it cannot identify;
+  // voice and other are outside its control. Context spent to make the human
+  // feel heard is context taken from the call.
+  for (const k of ['inactive', 'wrong-response', 'voice', 'other']) {
+    assert.ok(!body.includes(`${k}:`) && !body.includes(`'${k}'`), `${k} must NOT message the agent`);
+  }
+});
+
+test('the notices are instructions, not reports', () => {
+  // "The user flagged interrupting" is a fact the agent can acknowledge and then
+  // ignore. It needs to know what to DO differently on the next turn.
+  const map = main.slice(main.indexOf('const FEEDBACK_TO_AGENT'));
+  const body = map.slice(0, map.indexOf('\n  };'));
+  assert.match(body, /score your urgency lower/, 'interrupting has to name the lever');
+  assert.match(body, /stop — even mid-sentence/, 'not-yielding has to say what stopping means');
+  assert.match(body, /speak up on the next/, 'too-timid has to say what speaking up means');
+});
+
+test('repeat clicks do not spam the agent mid-call', () => {
+  // A frustrated human clicks the same button repeatedly — a real run produced
+  // three "Interrupted" clicks inside one second. Each would otherwise be a
+  // separate line in the agent's context, all saying the same thing, at the
+  // moment it can least afford the noise.
+  assert.match(main, /const FEEDBACK_AGENT_COOLDOWN_MS = 20_000/);
+  assert.match(main, /Date\.now\(\) - last >= FEEDBACK_AGENT_COOLDOWN_MS/);
+  // Per KIND, not global: "interrupted" then "too timid" are different reports
+  // and the second must still land.
+  assert.match(main, /feedbackNotifiedAt\.get\(k\)/);
+  assert.match(main, /feedbackNotifiedAt\.set\(k, Date\.now\(\)\)/);
+  // Suppressed repeats still reach the LOG — that is the human's record.
+  assert.match(main, /agent already told about \$\{k\} recently — log only/);
+});
+
+test('the human is told whether it reached the bot', () => {
+  // Four kinds never notify, and repeats inside the cooldown are log-only.
+  // Without saying so, "noted" and "the bot is adjusting" look identical and the
+  // human reasonably keeps clicking.
+  assert.match(main, /return \{ ok: true, toldAgent \}/);
+  assert.match(panelJs, /r\.toldAgent/);
+  assert.match(panelJs, /and told the bot/);
+});
+
+test('nothing is sent to the agent outside a call', () => {
+  // addError would queue it for whoever joins next, which would arrive as a
+  // correction for something they did not do.
+  assert.match(main, /if \(notice && localServer\.roomId\)/);
+});
+
+test('the note field serves every button, and survives submit', () => {
+  // Scoping it to "Other" would be arbitrary: a note on "Interrupted" ("while I
+  // was mid-question") is more useful than a bare flag, same mechanism.
+  assert.match(tsScreen, /id="feedbackNote"/);
+  assert.match(panelJs, /api\.invoke\('call-feedback', \{ kind, label, note \}\)/);
+
+  // KEPT and selected, not cleared. The same complaint recurs within one call,
+  // and retyping it is the friction these buttons exist to remove.
+  const handler = panelJs.slice(panelJs.indexOf("document.querySelectorAll('[data-feedback]')"));
+  const body = handler.slice(0, handler.indexOf('\n});') + 4);
+  assert.match(body, /noteEl\.select\(\)/);
+  assert.doesNotMatch(body, /noteEl\.value = ''/, 'clearing would force a retype');
+
+  // Optional throughout — a click with it empty is still a valid one-click flag.
+  assert.doesNotMatch(body, /if \(!note\) return/, 'an empty note must not block the flag');
+});
+
+test('a typed note is bounded and single-lined before it hits the log', () => {
+  // This lands in a line-oriented log. A pasted stack trace would otherwise
+  // break every downstream grep, including the ones in this suite.
+  const h = main.slice(main.indexOf("ipcMain.handle('call-feedback'"));
+  const body = h.slice(0, h.indexOf('\n  });') + 6);
+  assert.match(body, /replace\(\/\\s\+\/g, ' '\)/, 'newlines must collapse');
+  assert.match(body, /\.slice\(0, 280\)/);
+  assert.match(body, /note=\$\{JSON\.stringify\(n\)\}/, 'quoted, so spaces cannot fake a field');
+  // Absent note must not emit an empty field — a bare `note=""` on every line is
+  // noise in the common case.
+  assert.match(body, /\(n \? ` note=/);
+});
+
+test('a note makes an otherwise-silent kind reach the agent', () => {
+  // "Wrong answer" deliberately sends nothing on its own, because the category
+  // alone invites flailing at a turn the agent cannot identify. With the human's
+  // own words attached it becomes actionable, which is the whole point.
+  const h = main.slice(main.indexOf("ipcMain.handle('call-feedback'"));
+  const body = h.slice(0, h.indexOf('\n  });') + 6);
+  assert.match(body, /FEEDBACK_TO_AGENT\[k\] \|\| \(n \? FEEDBACK_FREEFORM : null\)/);
+  assert.match(body, /What they typed: /, 'their words have to travel, not just the category');
+  assert.match(main, /const FEEDBACK_FREEFORM =/);
+});
+
+test('submitting is visible from the corner of your eye', () => {
+  // Clicked mid-call while looking at a person, not the button. A colour change
+  // alone is easy to doubt, and doubting it means clicking again.
+  assert.match(panelCss, /@keyframes fb-pop/);
+  assert.match(panelCss, /\.ts-feedback button\.logged \{[^}]*animation: fb-pop/);
+  assert.match(panelCss, /@keyframes fb-note-sent/, 'the note flashes too, so it is clear it went along');
+  // A repeat click must replay it — without the reflow the animation only ever
+  // runs once and the second click looks like it did nothing.
+  assert.match(panelJs, /void btn\.offsetWidth/);
+  assert.match(panelJs, /void noteEl\.offsetWidth/);
+  // Movement is the unwelcome part under reduced motion; colour still confirms.
+  assert.match(panelCss, /prefers-reduced-motion: reduce\)[\s\S]{0,200}fb-pop|prefers-reduced-motion[\s\S]{0,200}animation: none/);
+});
+
+test('the confirmation echoes the note back', () => {
+  // The field KEEPS its text after submit, so "with your note" is ambiguous:
+  // there is no way to tell a sent note from one still sitting there unsent.
+  // Quoting the words back is what removes that doubt — and the doubt is what
+  // makes someone click again.
+  assert.match(panelJs, /Marked "\$\{label\}" · /, 'the note has to appear, not be described');
+  assert.match(panelJs, /note\.slice\(0, 48\)/, 'truncated — this sits in a one-line status');
+  // Comment-stripped: the comment above the code quotes the old phrasing to
+  // explain what it replaced, and an unstripped check trips on that.
+  const code = panelJs.replace(/^\s*\/\/.*$/gm, '');
+  assert.doesNotMatch(code, /with your note/, 'describing it is what this replaced');
+
+  // Built once and shared by both paths (told-the-bot and log-only), so the two
+  // confirmations cannot drift apart.
+  assert.match(panelJs, /const withNote = \(tail\) =>/);
+  // Two CALL sites — the definition is `withNote = (tail) =>`, which does not
+  // match `withNote(`, so counting it in was wrong.
+  const uses = panelJs.match(/withNote\(/g) || [];
+  assert.equal(uses.length, 2, `expected both call sites to use the helper, saw ${uses.length}`);
+});

@@ -26,7 +26,7 @@
 <body>
   <div class="as-header">
     <h1>App Settings</h1>
-    <div class="sub">These apply to <strong>every bot on this Mac</strong> (all profiles). Per-bot settings — voice choice, identity, personality — live in each profile's own window.</div>
+    <div class="sub">These apply to <strong>every bot on this machine</strong> (all profiles). Per-bot settings — voice choice, identity, personality — live in each profile's own window.</div>
   </div>
 
   <!-- #366/#381: the vibeconferencing.com user login is app-level (one sign-in
@@ -38,14 +38,40 @@
       <button type="button" id="userSignInBtn" style="display:none;background:#8ab4f8;color:#202124;border:none;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer">Sign in with Google</button>
       <button type="button" id="userSignOutBtn" style="display:none;background:#2a2d31;color:#e8eaed;border:1px solid #5f6368;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer">Log out</button>
     </div>
-    <div class="desc">Your login for the shared whiteboard rooms. One sign-in covers every profile on this Mac.</div>
+    <div class="desc">Your login for the shared whiteboard rooms. One sign-in covers every profile on this machine.</div>
+  </div>
+
+  <!-- #273: shown whenever the current key differs from a standing grant
+       (including no key at all) — stateless, always available, no separate
+       decline needed: typing your own key over it IS the "no". An empty slot
+       is instead filled in automatically when this pane is first shown (see
+       fillIfEmpty in app-settings.js) — this banner only covers the case
+       that still needs a click, replacing a key already in the field. Hidden
+       by default. -->
+  <div class="as-section" id="giftSection" style="display:none">
+    <h2>Voice key gift</h2>
+    <div class="desc" id="giftDesc">You've been gifted a voice key.</div>
+    <div style="margin-top:8px">
+      <button type="button" id="giftAcceptBtn" style="background:#8ab4f8;color:#202124;border:none;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer">Use it</button>
+    </div>
   </div>
 
   <div class="as-section">
     <h2>Voice (ElevenLabs)</h2>
     <label for="ttsApiKey">API key</label>
     <input type="password" id="ttsApiKey" placeholder="sk_..." autocomplete="off" spellcheck="false" />
-    <div class="desc">The machine-wide ElevenLabs secret used for text-to-speech. Without it, bots fall back to the built-in macOS voice.</div>
+    <!-- Fires once, right after a paste verifies clean — pairs with the spoken
+         confirmation in panel.js. Fades on its own rather than sitting forever,
+         since ttsKeyProblem below already covers the persistent state. -->
+    <div class="desc" id="ttsKeyValidated" style="display:none;color:#81c995">✓ Key verified and active.</div>
+    <!-- Auto-applied when the slot was empty (see checkTtsGrant, #273) — this
+         is the after-the-fact notice, not a prompt. -->
+    <div class="desc" id="ttsGiftedNotice" style="display:none;color:#81c995">✓ This is a gifted key — a voice with zero setup.</div>
+    <!-- A key can be PRESENT and dead. Shown where the key is EDITED, because
+         until now the only way to discover a dead one was to try picking a voice
+         and read the failure. -->
+    <div class="desc" id="ttsKeyProblem" style="display:none;color:#f28b82"></div>
+    <div class="desc">The machine-wide ElevenLabs secret used for text-to-speech. Without it, bots fall back to the system's built-in voice, if the platform has one.</div>
     <div class="desc">Get a key at <a href="https://elevenlabs.io/app/settings/api-keys" id="ttsKeyLink" class="ext-link">elevenlabs.io ↗</a> — signup is free, and the free tier includes enough characters to try it out.</div>
   </div>
 

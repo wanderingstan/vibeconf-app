@@ -67,6 +67,27 @@
                  lives there. -->
             <button id="openAppSettingsFromBanner" class="notice-action">Choose a voice →</button>
           </div>
+
+          <!-- #137: installed is not the same as signed in. An agent sitting at
+               Claude Code's login prompt looks, from inside the call, exactly
+               like a crashed one — the bot tile appears and then does nothing.
+               A persistent indicator beats a one-shot dialog here: this is a
+               durable state, so it should be visible and self-clearing rather
+               than dismissible and forgotten. Shown ONLY on an explicit false;
+               "couldn't tell" stays silent. -->
+          <div class="hero-notice notice-warn" id="claudeAuthBanner" style="display:none">
+            <span><i class="ui-icon ui-icon-construction ui-icon--lead"></i>Claude Code isn't signed in. Your bot will join calls but nothing will drive it.</span>
+          </div>
+
+          <!-- Calendar auto-join (#299): the next matching event within the
+               next 24h, refreshed as main.js's calendar poll runs (still only
+               ~5 minutes ahead of the actual start does anything get
+               scheduled — this is purely informational, so a user can see a
+               join is coming well before it happens). Hidden when there's no
+               upcoming match at all. -->
+          <div class="hero-notice notice-info" id="calendarUpcomingBanner" style="display:none">
+            <span>📅 <span id="calendarUpcomingText"></span></span>
+          </div>
         </div>
 
         <!-- PRE-CALL controls, over the foot of the avatar.
@@ -74,7 +95,7 @@
              Two modes, driven by panel.js:
                · nothing detected → one button, "Call <bot> now". No URL field:
                  asking for a URL up front made the common case look like work.
-               · a call detected (or the user opened ▸) → the URL field appears
+               · a call detected (or the user opened +) → the URL field appears
                  and the button becomes "Add <bot> to call". -->
         <div class="hero-bottom">
           <div class="hero-precall">
@@ -94,10 +115,17 @@
             <!-- The helper text that used to sit under this button is now its
                  tooltip — true but not worth permanent screen space. -->
             <button id="joinBtn" class="primary" title="Calls open in Chrome/Safari are detected automatically. You can also type /join-call in any Claude Code session.">Call now</button>
-            <!-- Manual entry. A disclosure triangle: ▸ to open, rotating to
-                 point up when it will collapse. The glyph is in a span so CSS
-                 can rotate IT rather than the button's pill. -->
-            <button id="manualUrlToggle" class="join-more" aria-expanded="false" title="Add the bot to a call that's already running. Paste its Meet or Slack URL"><span class="join-caret">▸</span></button>
+            <!-- Manual entry. A + rather than a disclosure triangle, because what
+                 it reveals is literally "Add <bot> to call" — so the control can
+                 say what it DOES instead of only "there is more below". Rotated
+                 45° the same glyph becomes ×, which reads as close/cancel without
+                 swapping characters.
+                 A DRAWN + (ui-icon-plus), not the text character: that was a
+                 different weight in every OS font and read small beside the drawn
+                 icons either side of it. Its arms match ui-icon-close exactly, so
+                 rotated it lands on the same ✕ used elsewhere in the panel. The
+                 icon carries .join-caret so CSS rotates IT, not the button pill. -->
+            <button id="manualUrlToggle" class="join-more" aria-expanded="false" title="Add the bot to a call that's already running. Paste its Meet or Slack URL"><i class="ui-icon ui-icon-plus join-caret"></i></button>
           </div>
           </div>
 
@@ -126,6 +154,7 @@
                    panel — mirroring the ⓘ on the other side. Its title flips
                    with state (applyBotViewLabel); the glyph stays put so the
                    control doesn't jump. -->
+              <button id="openBrainBtn" class="join-more" title="See what the agent is thinking and doing — its live activity feed"><i class="ui-icon ui-icon-brain"></i></button>
               <button id="botViewToggleBtn" class="join-more botview-toggle-btn" title="See what the bot sees"><i class="ui-icon ui-icon-eyes"></i></button>
               <button id="leaveCallBtn" class="primary danger">Leave Call</button>
               <button id="openTroubleshootingBtn" class="join-more" title="Troubleshooting: live call state, captions, and the agent's view"><i class="ui-icon ui-icon-construction"></i></button>
@@ -165,7 +194,7 @@
              so name the profile here rather than leaving it to the tooltip on
              the main screen. -->
         <div class="settings-title">
-          <h1>Bot Settings</h1>
+          <h1 id="settingsHeading">Bot Settings</h1>
           <div id="settingsProfileName" class="settings-profile" title="The on-disk bot profile these settings belong to. Each bot profile has its own preferences, Google login, and storage.">…</div>
         </div>
         <!-- A checkmark, not an ✕ (iOS-style "done" affordance): leaving this
@@ -189,8 +218,25 @@
            "Most", not "all", is load-bearing: sign-ins, the Claude model and
            working folder, and the personality file are not preferences the
            agent can set. -->
-      <div class="settings-note">
-        You can also just ask the bot to change <strong>most of these settings</strong> during a call.
+      <!-- The note and the button are ONE thought: both say "you don't have to
+           fill this form in". Under its own "Guided setup" heading the call read
+           as a separate feature further down the page, which is the one place
+           someone who has already started editing fields will not look.
+
+           Guided setup call: same "start a fresh call" mechanism as the main
+           screen's "Call now", but tells the spawned agent to run
+           /onboarding-call instead of /join-call, so it walks through
+           name/voice/emoji/etc live, on the whiteboard, instead of editing
+           these fields by hand. Here rather than the main screen because it is
+           an alternative path through THIS page, not a call-starting action on
+           par with "Call now". -->
+      <div class="settings-intro">
+        You can ask the bot to change most of these settings during a call, or call our guided setup.
+        <!-- .primary, matching "Call Jimmy now": this starts a real call, and in
+             the muted .popout-btn style it read as a settings action — the one
+             thing it is not. The label is rewritten with the bot's name by
+             updateSetupCallBtnLabel(); this text is the pre-paint fallback. -->
+        <button id="setupCallBtn" class="primary" title="Run a guided setup call: pick a name, voice, emoji, and more, live in a call">Call your bot for setup</button>
       </div>
 
       <!-- Name first — it's the bot's identity and the thing the panel shows.
@@ -211,6 +257,19 @@
              lacks `voices_read` 401s the list call while TTS still works, which
              otherwise looks identical to "no key set". -->
         <div id="elevenVoiceError" style="display:none;font-size:11px;color:#fdd663;margin-top:4px;line-height:1.4"></div>
+        <!-- The way in when the LIST is unavailable. A key scoped without
+             `voices_read` can synthesise but not enumerate, so pasting an id is
+             the only route to an ElevenLabs voice — which makes this belong
+             beside the picker it substitutes for, not in a separate section, and
+             certainly not behind an "Advanced" disclosure as it was.
+             Shown when the list failed, OR when it already holds a value:
+             hiding a setting that is IN EFFECT is how a bot ends up using a
+             voice nobody can find in the UI. -->
+        <div class="field" id="ttsVoiceIdField" style="display:none;margin-top:8px">
+          <label for="ttsVoiceId">ElevenLabs Voice ID</label>
+          <input type="text" id="ttsVoiceId" placeholder="CwhRBWXzGAHq8TQ4Fs17" />
+          <div style="font-size:11px;color:#666;margin-top:2px">Paste the id from the end of the voice's page URL on elevenlabs.io. Overrides the picker above.</div>
+        </div>
         <div style="font-size:11px;color:#666;margin-top:2px">
           Every voice available right now, best first. ElevenLabs voices appear once a key is set in <strong>App Settings</strong> (⌘,); Voicebox voices when its local app is running.
           <a href="#" id="refreshVoicesBtn" style="color:#8ab4f8;text-decoration:underline">Refresh voices</a><!--
@@ -263,6 +322,7 @@
           <option value="openmoji">OpenMoji (outlined)</option>
           <option value="noto">Noto (Google)</option>
           <option value="fluent3d">Fluent 3D (Microsoft)</option>
+          <option value="redpanda">Red Panda (claymation)</option>
         </select>
       </div>
 
@@ -294,7 +354,7 @@
            buttons plus one line of why. The guest-vs-account explainer that used
            to live here is gone; signing in visibly overrides the name above. -->
       <div class="section">
-        <h2>Sign-ins</h2>
+        <h2>Identity</h2>
         <p class="helper-text" style="margin:0 0 8px">
           Optional. Sign the bot into Google so it's auto-admitted to invite-only
           Meets, or into Slack so it can join huddles. Signing in uses that
@@ -305,14 +365,29 @@
         <button id="meetSignOutBtn" style="display:none">Sign out (use as guest)</button>
         <button id="slackSignInBtn">Sign into Slack as bot</button>
         <button id="slackSignOutBtn" style="display:none">Sign out of Slack</button>
+
+        <!-- Calendar auto-join identity (#299): add this address as a guest on
+             a Google Calendar event (it never needs to resolve to a real
+             mailbox) to have this bot auto-join that meeting. A
+             #vibeconf:<name> tag in the event title or description works too,
+             with no field to fill in here. Auto-filled from the bot's
+             signed-in Google account above, if any, when this field is still
+             empty — see refreshAccountEmail() in panel.js. -->
+        <div class="field" id="calendarIdentityEmailField" style="margin-top:16px">
+          <label for="calendarIdentityEmail">Calendar invite email</label>
+          <input type="text" id="calendarIdentityEmail" value="" placeholder="e.g. jimmy@example.com" />
+          <div style="font-size:11px;color:#666;margin-top:2px" id="calendarIdentityEmailCaption">
+            Add this address as a guest on a Google Calendar event to have this bot join it automatically. It doesn't need to be a real, working email. You can also put <code>#vibeconf:&lt;this bot's name&gt;</code> in the event's title or description instead. Filled in automatically from "Sign in to Google as bot" above, if used.
+          </div>
+        </div>
       </div>
 
       <div class="section">
         <h2>Launched Claude</h2>
         <div class="field">
           <label for="claudeModel">Claude Model</label>
-          <input type="text" id="claudeModel" placeholder="sonnet" />
-          <div style="font-size:11px;color:#666;margin-top:2px">Model for the launched Claude session (passed as <code>--model</code>). Blank = <code>sonnet</code>. Use an alias (<code>sonnet</code>, <code>opus</code>, <code>haiku</code>) or a full model id.</div>
+          <input type="text" id="claudeModel" placeholder="opus" />
+          <div style="font-size:11px;color:#666;margin-top:2px">Model for the launched Claude session (passed as <code>--model</code>). Blank = <code>opus</code>. Use an alias (<code>sonnet</code>, <code>opus</code>, <code>haiku</code>) or a full model id.</div>
         </div>
         <div class="field">
           <label for="claudeWorkDir">Claude Working Directory</label>
@@ -347,13 +422,6 @@
              moved to App Settings (⌘,) since #366/#381. Only the per-profile
              custom Voice ID override stays here. -->
         <div class="helper-text" style="margin:0 0 8px">The ElevenLabs API key is machine-wide. Set it in <strong>App Settings</strong> (⌘,).</div>
-        <details style="margin:2px 0 8px">
-          <summary style="font-size:11px;color:#9aa0a6;cursor:pointer">Advanced: custom ElevenLabs Voice ID</summary>
-          <div class="field" style="margin-top:6px">
-            <input type="text" id="ttsVoiceId" placeholder="CwhRBWXzGAHq8TQ4Fs17" />
-            <div style="font-size:11px;color:#666;margin-top:2px">For a cloned/private voice not shown in the picker. When set, it overrides the ElevenLabs voice chosen above.</div>
-          </div>
-        </details>
       </div>
 
       <div class="section">
@@ -387,6 +455,23 @@
     </div>
   </div>
 
+  <!-- Brain Screen (#242) — a read-only window onto the agent's activity.
+       Renders the SAME feed the app already tails from the Claude session's
+       transcript: 🗣 what it said, 🔧 what tools it ran, 💬 what it was asked.
+       Not a terminal, and deliberately not an input: this is for watching, and
+       a stray keystroke into a live agent is a bad way to learn that. -->
+  <div class="screen" id="brainScreen" style="display:none">
+    <div class="container">
+      <button id="backFromBrainBtn" class="back-btn">&larr; Back</button>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+        <h1 style="margin:0"><i class="ui-icon ui-icon-brain ui-icon--lead"></i>Brain</h1>
+        <span id="brainStatus" class="helper-text"></span>
+      </div>
+      <p class="helper-text" style="margin:6px 0 10px">What the agent driving this bot is thinking and doing, live.</p>
+      <div id="brainFeed" class="brain-feed">Waiting for the agent…</div>
+    </div>
+  </div>
+
   <!-- Troubleshooting Screen -->
   <div class="screen" id="troubleshootingScreen" style="display:none">
     <div class="container">
@@ -398,95 +483,155 @@
 
       <div id="micPermissionWarning" class="error-bar" style="display:none;margin-bottom:8px">Microphone permission problem detected</div>
 
-      <div class="section">
-        <h2>Call State</h2>
-        <p class="helper-text" style="margin:0 0 8px">Live view of what the app's detectors believe. Updates while this screen is open.</p>
-        <div id="callStateDebug" class="call-state-debug">Not in a call.</div>
-        <div style="margin-top:10px">
-          <div class="helper-text" style="margin:0 0 6px">Show on the bot's camera (rendered on the virtual camera so it appears in the bot's Meet tile, <strong>visible to everyone in the call</strong>):</div>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="overlayHealth" /> <span>Bot health &amp; response time</span></label>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:4px"><input type="checkbox" id="overlayCaptions" /> <span>Captions heard</span></label>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:4px"><input type="checkbox" id="overlayAgentLog" /> <span>Agent activity log</span></label>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:4px"><input type="checkbox" id="overlayExperiments" /> <span>Experiment flags &amp; probes</span></label>
+      <!-- Call feedback. Clicked DURING a call, so: one click, no dialog, no
+           confirmation step. Each drops a timestamped, greppable line into the
+           session log beside whatever the bot was doing at that moment, which is
+           what makes a complaint diagnosable afterwards. "It kept interrupting"
+           is a memory; a marker at 14:32:07 is evidence.
+           Log-only today; the same signal is meant to reach the agent later so
+           it can adjust mid-call, which is why it goes through one handler. -->
+      <div class="section ts-feedback">
+        <h2>Bot feedback</h2>
+        <div class="fb-row">
+          <button data-feedback="interrupting"><span class="fb-emoji">😫</span><span class="fb-label">Interrupted</span></button>
+          <button data-feedback="too-timid"><span class="fb-emoji">🤐</span><span class="fb-label">Too timid</span></button>
+          <button data-feedback="not-yielding"><span class="fb-emoji">⛔️</span><span class="fb-label">Won&#39;t yield</span></button>
+          <button data-feedback="inactive"><span class="fb-emoji">🥶</span><span class="fb-label">Frozen</span></button>
+          <button data-feedback="wrong-response"><span class="fb-emoji">❌</span><span class="fb-label">Wrong answer</span></button>
+          <button data-feedback="voice"><span class="fb-emoji">🗣️</span><span class="fb-label">Voice</span></button>
+          <button data-feedback="other"><span class="fb-emoji">❓</span><span class="fb-label">Other</span></button>
+        </div>
+        <!-- One field for ALL the buttons, not just Other. A note attached to
+             "Interrupted" ("while I was mid-question about the migration") is
+             far more useful than a bare flag, and it is the same mechanism, so
+             scoping it to Other would be an arbitrary limit. Optional
+             throughout: clicking with it empty files the plain flag, which is
+             the whole point of one-click reporting.
+
+             SELECTED after submit rather than cleared: the same complaint often
+             happens several times in a call, and retyping it is exactly the
+             friction these buttons exist to remove. Selected rather than merely
+             left alone so it is visibly consumed, and so the next keystroke
+             replaces it. -->
+        <input type="text" id="feedbackNote" maxlength="280"
+               placeholder="Optional note — attaches to whichever button you click next" />
+        <span id="feedbackStatus" class="helper-text" style="display:block;margin-top:6px"></span>
+
+        <!-- #255: hand over this ONE call's log.
+             Separate from the buttons above on purpose. Those are private
+             guidance to the bot; this sends transcript text off the machine, and
+             an action with that consequence must be its own deliberate click,
+             never a side effect of reporting a problem.
+             The label says what is sent, in one line, rather than linking to a
+             policy nobody opens. -->
+        <div class="share-log-row">
+          <!-- What the buttons above do, and do not do. Saying it here rather
+               than beside them because this is the follow-through: the buttons
+               fix the CALL (the bot reads them and adjusts), and nothing about
+               them reaches us. Someone pressing "Won't yield" three times is
+               entitled to know that no one is on the other end of it. -->
+          <!-- Button and explanation as a ROW, not inline text after a button.
+               Inline looked right in the markup and wrong on screen: after a
+               ~200px button in a ~460px column only a word or two fits beside
+               it, so the sentence wrapped underneath and read as a paragraph
+               below the button anyway. A flex row gives the text its own column
+               to wrap inside, which is what "beside the button" actually means. -->
+          <div class="share-log-main">
+            <button id="shareCallLogBtn" class="popout-btn">📤 Share this call's log</button>
+            <!-- One slot, two messages. Before sharing it explains why you would;
+                 once sharing it reports what is happening. They are never both
+                 true, and stacking them would leave a standing invitation above a
+                 line saying the invitation has been accepted. -->
+            <div class="share-log-msg">
+              <span class="helper-text share-log-why">Feedback goes only to the bot, not to the
+                developers. Share the call log and bot feedback is included.</span>
+              <span id="shareCallLogStatus" class="helper-text" style="display:none"></span>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div class="section">
-        <h2>Simulate Speech</h2>
-        <p class="helper-text" style="margin:0 0 8px">Inject a synthetic caption turn into the conversation pipeline, the same path Meet captions use. Bot reacts as if this person had spoken aloud. Useful when you can't speak (coffee shop), want to paste test data, or need to script a flow.</p>
-        <div class="field">
-          <label for="simulateSpeaker">Speaker name</label>
-          <input type="text" id="simulateSpeaker" value="Test User" />
+      <div class="ts-cols">
+        <!-- Left: what the bot is doing right now. Watched, not touched. -->
+        <div>
+          <div class="section">
+          <h2>Call State</h2>
+          <p class="helper-text" style="margin:0 0 8px">Live view of what the app's detectors believe. Updates while this screen is open.</p>
+          <div id="callStateDebug" class="call-state-debug">Not in a call.</div>
+          <div style="margin-top:10px">
+            <div class="helper-text" style="margin:0 0 6px">Show on the bot's camera (rendered on the virtual camera so it appears in the bot's Meet tile, <strong>visible to everyone in the call</strong>):</div>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="overlayHealth" /> <span>Bot health &amp; response time</span></label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:4px"><input type="checkbox" id="overlayCaptions" /> <span>Captions heard</span></label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:4px"><input type="checkbox" id="overlayAgentLog" /> <span>Agent activity log</span></label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:4px"><input type="checkbox" id="overlayExperiments" /> <span>Experiment flags &amp; probes</span></label>
+          </div>
         </div>
-        <div class="field">
-          <label for="simulateText">What to say</label>
-          <textarea id="simulateText" rows="3" style="width:100%;box-sizing:border-box;resize:vertical"></textarea>
+          <div class="section">
+          <h2>Live Captions <span class="helper-text">(bot's-eye view)</span></h2>
+          <p class="helper-text" style="margin:0 0 6px">Exactly what captions the bot is receiving. The still-growing turn is marked LIVE. Compare in real time against the bot's Meet tile.</p>
+          <div id="captionStateBadge" class="caption-badge" style="margin-bottom:6px"></div>
+          <div class="field">
+            <div id="rawCaptionText" class="audio-status caption-feed" style="max-height:240px;overflow-y:auto;font-family:monospace;font-size:11px;white-space:pre-wrap"></div>
+          </div>
         </div>
-        <button id="simulateSpeechBtn" style="width:100%">Send to Bot</button>
-        <span id="simulateSpeechStatus" class="helper-text" style="margin-left:8px"></span>
-      </div>
-
-      <div class="section">
-        <h2>Whiteboard</h2>
-        <p class="helper-text" style="margin:0 0 8px">Normally the agent shares the whiteboard automatically. Use this only if it didn't.</p>
-        <button id="shareWhiteboardBtn">Share Whiteboard</button>
-      </div>
-
-      <div class="field" id="roomIdField" style="display:none">
-        <label>Room ID</label>
-        <input type="text" id="meetCode" readonly />
-      </div>
-      <a id="roomLink" href="#" class="room-link" style="display:none">Open room on vibeconferencing.com</a>
-
-      <div class="section">
-        <h2>Transcript</h2>
-        <div id="transcriptArea" class="transcript-area"></div>
-      </div>
-
-      <div class="section">
-        <h2>Agent Prompt</h2>
-        <div class="field">
-          <textarea id="agentPromptText" readonly rows="8" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:11px;font-family:monospace;resize:vertical"></textarea>
+          <div class="section">
+          <h2>Transcript</h2>
+          <div id="transcriptArea" class="transcript-area"></div>
         </div>
-        <button id="copyPromptBtn">Copy Agent Prompt</button>
-      </div>
+          </div>
 
-      <div class="section">
-        <h2>Live Captions <span class="helper-text">(bot's-eye view)</span></h2>
-        <p class="helper-text" style="margin:0 0 6px">Exactly what captions the bot is receiving. The still-growing turn is marked LIVE. Compare in real time against the bot's Meet tile.</p>
-        <div id="captionStateBadge" class="caption-badge" style="margin-bottom:6px"></div>
-        <div class="field">
-          <div id="rawCaptionText" class="audio-status caption-feed" style="max-height:240px;overflow-y:auto;font-family:monospace;font-size:11px;white-space:pre-wrap"></div>
+          <!-- Right: things you DO to it. Kept apart from the live views so
+               a click never lands where you were only reading. -->
+          <div>
+          <div class="section">
+          <h2>Simulate Speech</h2>
+          <div class="field">
+            <label for="simulateText">What to say</label>
+            <textarea id="simulateText" rows="3" style="width:100%;box-sizing:border-box;resize:vertical"></textarea>
+          </div>
+          <button id="simulateSpeechBtn" style="width:100%">Send to Bot</button>
+          <span id="simulateSpeechStatus" class="helper-text" style="margin-left:8px"></span>
         </div>
-      </div>
-
-      <button id="devtoolsBtn" style="margin-top:8px">Open DevTools</button>
-
-      <div class="section">
-        <h2>Test TTS</h2>
-        <div class="field">
-          <input type="text" id="speakText" value="Hello from TTS" />
+          <div class="section">
+          <h2>Whiteboard</h2>
+          <button id="shareWhiteboardBtn">Share Whiteboard</button>
         </div>
-        <button id="speakTextBtn">Speak using TTS</button>
-        <button id="speechBtn">Play Test Audio File</button>
-      </div>
-      <div class="section">
-        <h2>Test Curl</h2>
-        <div class="field">
-          <div id="curlCommand" class="audio-status" style="font-family:monospace;font-size:10px;white-space:pre-wrap;word-break:break-all"></div>
+          <div class="section">
+          <h2>Test TTS</h2>
+          <div class="field">
+            <input type="text" id="speakText" value="Hello from TTS" />
+          </div>
+          <button id="speakTextBtn">Speak using TTS</button>
+          <button id="speechBtn">Play Test Audio File</button>
         </div>
-        <button id="copyCurlBtn" disabled>Copy Curl Command</button>
-      </div>
+          <div class="section">
+          <h2>Test Curl</h2>
+          <div class="field">
+            <div id="curlCommand" class="audio-status" style="font-family:monospace;font-size:10px;white-space:pre-wrap;word-break:break-all"></div>
+          </div>
+          <button id="copyCurlBtn" disabled>Copy Curl Command</button>
+        </div>
+          <div class="field" id="roomIdField" style="display:none">
+          <label>Room ID</label>
+          <input type="text" id="meetCode" readonly />
+        </div>
+          <a id="roomLink" href="#" class="room-link" style="display:none">Open room on vibeconferencing.com</a>
+            <button id="devtoolsBtn" style="margin-top:8px">Open DevTools for Call Window</button>
 
-      <!-- Debugging override — deliberately last; almost nobody should touch it. -->
-      <div class="section">
-        <h2>Debug Override</h2>
-        <div class="field">
-          <label for="websiteUrl">Website URL</label>
-          <input type="text" id="websiteUrl" placeholder="https://vibeconferencing.com" />
-          <div style="font-size:11px;color:#666;margin-top:2px">Leave blank for the production default (vibeconferencing.com). Set to a Vercel preview URL to test against a feature branch. Applies to all bots on this machine.</div>
+          <!-- Deliberately last in the column: almost nobody should touch it, and
+               it is the one control here that persists machine-wide rather than
+               acting on this call. -->
+          <div class="section">
+            <h2>Debug Override</h2>
+            <div class="field">
+              <label for="websiteUrl">Website URL</label>
+              <input type="text" id="websiteUrl" placeholder="https://vibeconferencing.com" />
+              <div style="font-size:11px;color:#666;margin-top:2px">Leave blank for the production default (vibeconferencing.com). Set to a Vercel preview URL to test against a feature branch. Applies to all bots on this machine.</div>
+            </div>
+          </div>
         </div>
       </div>
+
     </div>
   </div>
   <!-- Persistent footer that labels + toggles the Meet thumbnail docked directly

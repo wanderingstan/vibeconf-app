@@ -71,8 +71,8 @@ These spawn isolated, dedicated **profile** instances (`test-meet-guest-*` / `te
 | Command | What it does | Notes |
 |---|---|---|
 | `pnpm test:detect` | Open a Meet URL in Chrome, assert the app's tab-scan detection catches it. | Needs browser **Automation** permission. |
-| `pnpm test:screenshot[:ci]` | Capture `get_call_screenshot` and validate a real PNG comes back. | Building block for share-verify. |
-| `pnpm test:share-verify[:ci]` | **Ground-truth share check**: bot A puts a nonce on the whiteboard + shares it; bot B (the viewer) screenshots; Claude **reads the screenshot** and asserts the nonce is visible — proving pixels crossed the wire, not just that the button was clicked. | Uses the `claude` CLI (your subscription, no API key). Falls back to `ANTHROPIC_API_KEY`, else captures + prints the path for a manual eyeball. |
+| `pnpm test:screenshot[:ci]` | Capture `get_call_screenshot` and validate a real PNG comes back. | Building block for whiteboard-e2e. |
+| `pnpm test:whiteboard-e2e[:ci]` | **Ground-truth share check**: bot A puts a nonce on the whiteboard + shares it; bot B (the viewer) screenshots; Claude **reads the screenshot** and asserts the nonce is visible — proving pixels crossed the wire, not just that the button was clicked. | Uses the `claude` CLI (your subscription, no API key). Falls back to `ANTHROPIC_API_KEY`, else captures + prints the path for a manual eyeball. |
 
 ### Fleet management
 

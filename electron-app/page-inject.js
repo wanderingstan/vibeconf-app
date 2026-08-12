@@ -3080,11 +3080,18 @@
       // The shared tab/screen's own audio, when a share is live. A fresh id means
       // a new share session (they come and go mid-call) → a new track name, so
       // separate shares land in separate files instead of concatenating into one.
+      //
+      // Named 'share-audio', NOT 'share': call-recording-window.js already claims
+      // the bare 'share' name for the shared surface's VIDEO capture (#288, which
+      // landed after this was written). CallRecordingSession keys tracks by name
+      // and opens one fd per name, so reusing 'share' would append two unrelated
+      // webm byte streams into a single share.webm — a corrupt file, plus whichever
+      // stream registered first would decide the per-kind byte cap for both.
       try {
         const share = window.__vibeShareTrack && window.__vibeShareTrack();
         if (share) {
           if (share.id !== lastShareId) { lastShareId = share.id; shareCount++; }
-          recordTrack(shareCount === 1 ? 'share' : `share-${shareCount}`, share);
+          recordTrack(shareCount === 1 ? 'share-audio' : `share-audio-${shareCount}`, share);
         }
       } catch { /* no share / not exposed — nothing to attach */ }
     }

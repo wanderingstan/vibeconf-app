@@ -2177,6 +2177,12 @@ class LocalServer {
     // that changed identity — never new speech — so recovery is safe to arm for
     // it no matter how few of them arrived.
     //
+    // (Why "changed identity" rather than "is new": a turnId names a DOM
+    // element object, so Meet replacing the element mints a fresh id for words
+    // already on screen. See CaptionScraper's _turnIdByChild in
+    // google-meet-provider.js for why an unknown id on a visible row proves
+    // node replacement, and why the scraper cannot detect this itself.)
+    //
     // This is also why the old comment's fear (swallowing a genuine repeat of
     // "Yeah.") does not apply here: a real repeat is new speech, so it arrives
     // at the bottom, where this rule stays disarmed.

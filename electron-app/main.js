@@ -4269,11 +4269,43 @@ function ensureMeetSessionConfigured(partition) {
   _configuredMeetPartitions.add(partition);
 }
 
-// The partition the meetView is bound to. There's only one now (#282) — kept as
-// a named binding so the createMeetView / ensureMeetSessionConfigured call sites
-// read clearly. Never reassigned; guest-vs-signed-in is decided by cookies, not
-// by swapping this.
-const currentMeetPartition = SESSION_PARTITION;
+// #347: a second, deliberately cookie-free partition, used ONLY as a fallback
+// when Google blocks the bot's own account with an identity challenge (#346).
+// A partition holds cookies and caches and nothing else — botName, voice,
+// CLAUDE.md, the agent workdir, logs and prefs all live in the profile's
+// userData — so joining from here is the same bot, just not signed in. That is
+// precisely what a human locked out of their account would do: join as a guest
+// anyway and wait for the host to admit them.
+const GUEST_PARTITION = 'persist:guest';
+
+// The partition the meetView is CURRENTLY bound to.
+//
+// #282 collapsed three partitions into one and argued against swapping at
+// runtime, because identity is a profile property ("a profile whose partition
+// has no Google cookies IS a guest") and not a toggle. That still holds, and
+// this does not reopen it: SESSION_PARTITION remains the profile's identity in
+// every normal case. The swap is a degraded mode, entered only once Google has
+// already refused the real account, and _loadMeetURL resets it on every
+// ordinary join so it can never become sticky.
+//
+// The other half of #282's objection was that the old swap dragged Slack's
+// login around, which is why it needed a third box. That cannot happen here:
+// every Slack call site names SESSION_PARTITION literally, never this
+// variable. Keep it that way. Same for the identity IPCs (get-meet-mode,
+// get-meet-account-email, meet-sign-out-bot): they report and mutate the
+// PROFILE's account, so they must always read home, or a one-off guest
+// fallback would make the panel claim the bot is permanently signed out.
+let activeMeetPartition = SESSION_PARTITION;
+
+// #347: the meet URL we have already retried as a guest, so one blocked join
+// produces one guest attempt and not a reload loop if the guest partition
+// somehow lands on a sign-in page too. Cleared by every ordinary (non-fallback)
+// join, so tomorrow's instance of the same recurring room is free to try again.
+let guestFallbackTriedFor = null;
+
+// #347: one "waiting to be let in" notice per guest fallback, not one per poll
+// of Meet's pre-join state.
+let guestLobbyNotified = false;
 
 // True iff the partition holds live Google master-auth cookies — i.e. the bot
 // is signed in (a "guest" profile simply has none). This replaces the old
@@ -8342,8 +8374,10 @@ function activateMeetProvider() {
   }
   slackProviderMode = false;
   slackSurface = null;
-  ensureMeetSessionConfigured(currentMeetPartition);
-  meetView = createMeetView(currentMeetPartition);
+  // #347: follows the active partition, so a provider switch mid-fallback
+  // doesn't silently drop the bot back onto the blocked account.
+  ensureMeetSessionConfigured(activeMeetPartition);
+  meetView = createMeetView(activeMeetPartition);
   attachMeetViewForState(); // #103: hidden host / popout / main window, per state
   layoutViews();
 }
@@ -8732,7 +8766,7 @@ function createMainWindow() {
   // Single partition (#282) — no "restore previous mode" anymore. Sign-in
   // stickiness now comes from the cookies persisting in this one partition,
   // not from remembering which partition to swap to.
-  ensureMeetSessionConfigured(currentMeetPartition);
+  ensureMeetSessionConfigured(SESSION_PARTITION);
 
   // Provider selection (#264).
   //
@@ -8766,7 +8800,7 @@ function createMainWindow() {
     // Meet code. Shared with the runtime activateSlackProvider path.
     setupSlackRoom(slackUrl);
   } else {
-    meetView = createMeetView(currentMeetPartition);
+    meetView = createMeetView(SESSION_PARTITION);
   }
   attachMeetViewForState(); // #103: hidden host / popout / main window, per state
 
@@ -9025,9 +9059,9 @@ function showIdle() {
 // see it. The navigation genuinely can throw: it clears caches, reads cookies
 // and rebuilds the BrowserView. Same honesty class as #243/#253 — report the
 // outcome, not the attempt.
-async function loadMeetURL(meetUrl) {
+async function loadMeetURL(meetUrl, opts = {}) {
   try {
-    await _loadMeetURL(meetUrl);
+    await _loadMeetURL(meetUrl, opts);
   } catch (err) {
     const msg = 'Failed to open the Meet page: ' + (err && err.message ? err.message : String(err));
     console.error(ts(), '[electron] #254:', msg);
@@ -9036,10 +9070,29 @@ async function loadMeetURL(meetUrl) {
   }
 }
 
-async function _loadMeetURL(meetUrl) {
+async function _loadMeetURL(meetUrl, { guestFallback = false } = {}) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
   chatSpaceWarned = false; // fresh call — allow one Chat-space warning again
+
+  // #347: the partition for THIS join. Set here, on every join, rather than
+  // toggled and remembered — so the guest fallback can never become sticky no
+  // matter how the previous call ended (host-ended, crash, forced idle). The
+  // only way onto the guest partition is an explicit guestFallback:true, which
+  // only the #346 sign-in handler passes.
+  activeMeetPartition = guestFallback ? GUEST_PARTITION : SESSION_PARTITION;
+  guestLobbyNotified = false;
+  if (guestFallback) {
+    console.warn('[electron] #347: joining as a GUEST — the bot account is blocked by a Google identity challenge.');
+  } else {
+    // A fresh, ordinary join: forget any earlier fallback so the same recurring
+    // room is free to retry as a guest again tomorrow.
+    guestFallbackTriedFor = null;
+  }
+  // The guest partition needs the same CSP stripping, permission handling and
+  // getDisplayMedia wiring as the home one. Cheap and idempotent (it keeps its
+  // own configured-partitions set), so it's safe to call on every join.
+  ensureMeetSessionConfigured(activeMeetPartition);
 
   // Record what we're pointing at so the panel's URL field reflects it (covers
   // --meet-url CLI launches and any programmatic join), and notify the panel now.
@@ -9066,7 +9119,15 @@ async function _loadMeetURL(meetUrl) {
   // Is this profile signed into Google? Drives both the cache-clear decision
   // and the authuser pin below. With a single partition (#282) we can't infer
   // it from "which partition" anymore — read the live cookies.
-  const sess = session.fromPartition(currentMeetPartition);
+  //
+  // #347: reads the ACTIVE partition, which is the whole mechanism. On a guest
+  // fallback that partition has no Google cookies, so this comes back false and
+  // every downstream branch does the right thing on its own: no authuser pin,
+  // the identity-cache clear becomes safe (its #250 danger is removing the
+  // master-auth cookies, and there are none here), and Meet serves the guest
+  // pre-join where autoJoin types the bot's own name from the profile config.
+  // The guest join needs no new join logic.
+  const sess = session.fromPartition(activeMeetPartition);
   const signedIn = await isSignedInToGoogle(sess);
 
   // Now that no view is bound to it, also wipe disk-backed Meet caches so the
@@ -9082,7 +9143,7 @@ async function _loadMeetURL(meetUrl) {
   if (signedIn) {
     console.log('[electron] Signed in — skipping Meet identity-cache clear to preserve Google sign-in');
   } else {
-    await clearMeetIdentityCache(currentMeetPartition);
+    await clearMeetIdentityCache(activeMeetPartition);
   }
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
@@ -9095,7 +9156,7 @@ async function _loadMeetURL(meetUrl) {
   const urlToLoad = boundEmail ? pinAuthUser(meetUrl, boundEmail) : meetUrl;
   if (boundEmail) console.log('[electron] Pinning Meet account via authuser:', boundEmail);
 
-  meetView = createMeetView(currentMeetPartition);
+  meetView = createMeetView(activeMeetPartition);
   attachMeetViewForState(); // #103: hidden host / popout / main window, per state
   layoutViews();
 
@@ -10256,15 +10317,15 @@ function setupIPC() {
   // whether the partition holds Google cookies, not by which partition is active.
 
   ipcMain.handle('get-meet-mode', async () => {
-    const signedIn = await isSignedInToGoogle(session.fromPartition(currentMeetPartition));
-    return { partition: currentMeetPartition, mode: signedIn ? 'account' : 'guest' };
+    const signedIn = await isSignedInToGoogle(session.fromPartition(SESSION_PARTITION));
+    return { partition: SESSION_PARTITION, mode: signedIn ? 'account' : 'guest' };
   });
 
   // Is this profile signed into Slack? Cookie-authoritative (the `d` session
   // cookie). We don't know WHICH workspace/user without the huddle DOM (#283),
   // so this is just connected-vs-not for the Slack row on the main panel.
   ipcMain.handle('get-slack-mode', async () => {
-    const signedIn = await isSignedInToSlack(session.fromPartition(currentMeetPartition));
+    const signedIn = await isSignedInToSlack(session.fromPartition(SESSION_PARTITION));
     return { signedIn };
   });
 
@@ -10276,7 +10337,7 @@ function setupIPC() {
   // bound account (store.meetAccountEmail) so loadMeetURL can pin authuser to it
   // (#282) — unless an explicit --meet-account-email already pinned it.
   ipcMain.handle('get-meet-account-email', async () => {
-    const sess = session.fromPartition(currentMeetPartition);
+    const sess = session.fromPartition(SESSION_PARTITION);
 
     // AUTHORITATIVE signed-in check: the live cookie jar. Google's master-auth
     // cookies (domain=.google.com) are the ground truth — the bot auto-admitting
@@ -10475,7 +10536,7 @@ function setupIPC() {
   // deliberate, rare action — the old per-call partition swap is gone.
   ipcMain.handle('meet-sign-out-bot', async () => {
     try {
-      const sess = session.fromPartition(currentMeetPartition);
+      const sess = session.fromPartition(SESSION_PARTITION);
       const all = await sess.cookies.get({});
       let removed = 0;
       for (const c of all) {
@@ -10513,7 +10574,7 @@ function setupIPC() {
   // reload Slack so the view reflects the logged-out state.
   ipcMain.handle('slack-sign-out', async () => {
     try {
-      const sess = session.fromPartition(currentMeetPartition);
+      const sess = session.fromPartition(SESSION_PARTITION);
       const all = await sess.cookies.get({});
       let removed = 0;
       for (const c of all) {
@@ -10697,6 +10758,19 @@ function setupIPC() {
         localServer.handleCallEnded(status);
       } else if (status.includes('Waiting') || status.includes('Ask to join')) {
         localServer.setCallStatus('waiting-to-be-admitted');
+        // #347: a guest is normally NOT auto-admitted, so this is the expected
+        // resting place of a fallback join rather than a fault. Tell the
+        // operator, because unlike "could not join" this is actionable by
+        // somebody else: the host can admit the bot from their own client
+        // without anyone touching its password. Only on the guest partition, or
+        // this would fire on every ordinary lobby wait and become noise.
+        if (activeMeetPartition === GUEST_PARTITION && !guestLobbyNotified) {
+          guestLobbyNotified = true;
+          const waiting = `${resolvedBotName() || 'The bot'} is waiting to be let into the call as a guest. `
+            + 'Admit it from the meeting, or sign it back in to Google to fix this properly.';
+          broadcastError(waiting);
+          localServer.addError(waiting);
+        }
       } else if (status.includes('Participating') || status.includes('In call')) {
         localServer.setCallStatus('in-call');
       } else if (status.includes('Joining')) {
@@ -10939,19 +11013,37 @@ function setupIPC() {
     console.error(`[meet-landing] join blocked: landed on ${landing} at ${url}`);
 
     if (landing === 'sign-in') {
-      // RECOVERABLE, and deliberately NOT torn down. A human types the password
-      // and Google's own `continue=` redirect carries this very view into the
-      // meeting — which is exactly how the 2026-08-12 call was rescued. That
-      // recovery works because the app is still holding the room and the agent
-      // is still alive behind it, so running the full 'Error:' path here
-      // (clearRoom + resolve every waiter) would break the one path that
-      // already works. Say so loudly, change nothing else, let the redirect
-      // land on a live call.
+      // Deliberately NOT torn down. A human can type the password and Google's
+      // own `continue=` redirect carries this very view into the meeting, which
+      // is exactly how the 2026-08-12 call was rescued. That recovery works
+      // because the app is still holding the room with the agent alive behind
+      // it, so running the full 'Error:' path here (clearRoom + resolve every
+      // waiter) would break the one path that already works.
       //
       // broadcastError is the operator channel: panel error plus an OS
       // notification when the app isn't in the foreground. addError is the
       // agent channel, so it shows up in get_room_info / get_call_log too.
-      const message = `Google is asking ${botLabel} to confirm its identity, so it could not join the call yet. `
+
+      // #347: don't just wait for a human who may not be there. Retry the same
+      // meeting on the cookie-free guest partition, which is what a person
+      // locked out of their account would do: join anyway as a guest and let
+      // the host admit them. Showing up in the lobby is showing up.
+      //
+      // Once per join, keyed on the URL: if the guest attempt ALSO lands on a
+      // sign-in page (it shouldn't, having no cookies to challenge) this must
+      // not become a reload loop.
+      if (currentMeetUrl && guestFallbackTriedFor !== currentMeetUrl) {
+        guestFallbackTriedFor = currentMeetUrl;
+        const message = `Google is asking ${botLabel} to confirm its identity, so it is joining as a guest instead. `
+          + 'It may be waiting to be let in, so admit it from the meeting if you see it. '
+          + "To fix this properly, open the bot's view and sign it back in to Google.";
+        broadcastError(message);
+        localServer.addError(message);
+        loadMeetURL(currentMeetUrl, { guestFallback: true });
+        return;
+      }
+
+      const message = `Google is asking ${botLabel} to confirm its identity, so it could not join the call. `
         + "Open the bot's view and sign it back in to Google, and it will join automatically once you do.";
       broadcastError(message);
       localServer.addError(message);

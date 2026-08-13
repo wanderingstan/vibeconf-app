@@ -717,6 +717,62 @@ function beginAfterCallWorkOrTeardown(reason) {
   }, seconds * 1000);
 }
 
+// The one clean way to leave a Meet call, whichever side asked for it (the
+// agent's leave_call tool or the panel's Leave Call button). Clicks Google's
+// own "Leave call" button BEFORE navigating the view away — skipping that
+// (the old panel-button behavior) just killed the media connection on
+// nav-away and left a ghost participant for others until Google's timeout
+// reaped it — then hands off to beginAfterCallWorkOrTeardown for the rest.
+function requestCleanLeave(reason) {
+  // #209: finalize any call audio(+video) recording before teardown. Async
+  // now (video stop + merge are real work) — fire-and-forget, teardown must
+  // not block on it; errors are already logged inside.
+  stopCallRecording().catch((err) => console.warn('[call-record] stop on leave failed:', err.message));
+  stopAllRunwayFaces('leave-call'); // P2: end Runway sessions + timers when leaving the call
+  shareIntended = false; // no present is pending once we're leaving
+  shareGeneration++; // cancel any in-flight Present-now retry loop before the view tears down
+
+  // Wait for any in-flight TTS to finish so goodbye speech actually plays.
+  // botState leaves 'speaking' when the `tts-ended` IPC fires (page-inject
+  // posts it when its playback queue drains). Cap the wait so a stuck
+  // synthesis can't block leave forever.
+  const MAX_WAIT_MS = 8000;
+  const POLL_MS = 150;
+  const TAIL_MS = 400; // let the last audio buffer flush into the mic stream
+  const deadline = Date.now() + MAX_WAIT_MS;
+
+  // Give Google a clean leave BEFORE we navigate the view away. Clicking the
+  // real "Leave call" button drops our participant tile immediately.
+  const LEAVE_CLICK_SETTLE_MS = 1000;
+  const performLeave = () => {
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('trigger-leave-call');
+    }
+    // Let the click register with Google's servers, then END THE BOT'S
+    // PARTICIPATION — which is not the same as tearing the app down.
+    //
+    // If after-call work is enabled, the bot enters that phase here and the
+    // teardown waits for it: the room, the transcript and every tool stay live
+    // while the agent wraps up. Otherwise this is the old behaviour, teardown
+    // immediately. See call-phase.js.
+    setTimeout(() => beginAfterCallWorkOrTeardown(reason), LEAVE_CLICK_SETTLE_MS);
+  };
+
+  const checkAndLeave = () => {
+    const stillSpeaking = localServer.botState === 'speaking';
+    if (!stillSpeaking) {
+      console.log('[local-server] TTS idle — leaving call');
+      setTimeout(performLeave, TAIL_MS);
+    } else if (Date.now() >= deadline) {
+      console.log('[local-server] TTS still playing after', MAX_WAIT_MS, 'ms — leaving anyway');
+      performLeave();
+    } else {
+      setTimeout(checkAndLeave, POLL_MS);
+    }
+  };
+  checkAndLeave();
+}
+
 // End of the lifecycle: the app-side teardown finally runs. Routed through the
 // panel because that is where the existing leave path lives — showIdle, the
 // terminal close and clearRoom all hang off it.
@@ -1272,55 +1328,7 @@ const localServer = new globalThis.LocalServer({
 
   onLeaveCall: () => {
     console.log('[local-server] Leave call requested by agent');
-    // #209: finalize any call audio(+video) recording before teardown. Async
-    // now (video stop + merge are real work) — fire-and-forget, teardown must
-    // not block on it; errors are already logged inside.
-    stopCallRecording().catch((err) => console.warn('[call-record] stop on leave failed:', err.message));
-    stopAllRunwayFaces('leave-call'); // P2: end Runway sessions + timers when leaving the call
-    shareIntended = false; // no present is pending once we're leaving
-    shareGeneration++; // cancel any in-flight Present-now retry loop before the view tears down
-
-    // Wait for any in-flight TTS to finish so goodbye speech actually plays.
-    // botState leaves 'speaking' when the `tts-ended` IPC fires (page-inject
-    // posts it when its playback queue drains). Cap the wait so a stuck
-    // synthesis can't block leave forever.
-    const MAX_WAIT_MS = 8000;
-    const POLL_MS = 150;
-    const TAIL_MS = 400; // let the last audio buffer flush into the mic stream
-    const deadline = Date.now() + MAX_WAIT_MS;
-
-    // Give Google a clean leave BEFORE we navigate the view away. Clicking the
-    // real "Leave call" button drops our participant tile immediately; skipping
-    // it (the old behavior) just killed the media connection on nav-away and
-    // left a ghost participant for others until Google's timeout reaped it.
-    const LEAVE_CLICK_SETTLE_MS = 1000;
-    const performLeave = () => {
-      if (meetView && !meetView.webContents.isDestroyed()) {
-        meetView.webContents.send('trigger-leave-call');
-      }
-      // Let the click register with Google's servers, then END THE BOT'S
-      // PARTICIPATION — which is not the same as tearing the app down.
-      //
-      // If after-call work is enabled, the bot enters that phase here and the
-      // teardown waits for it: the room, the transcript and every tool stay live
-      // while the agent wraps up. Otherwise this is the old behaviour, teardown
-      // immediately. See call-phase.js.
-      setTimeout(() => beginAfterCallWorkOrTeardown('leave-call'), LEAVE_CLICK_SETTLE_MS);
-    };
-
-    const checkAndLeave = () => {
-      const stillSpeaking = localServer.botState === 'speaking';
-      if (!stillSpeaking) {
-        console.log('[local-server] TTS idle — leaving call');
-        setTimeout(performLeave, TAIL_MS);
-      } else if (Date.now() >= deadline) {
-        console.log('[local-server] TTS still playing after', MAX_WAIT_MS, 'ms — leaving anyway');
-        performLeave();
-      } else {
-        setTimeout(checkAndLeave, POLL_MS);
-      }
-    };
-    checkAndLeave();
+    requestCleanLeave('agent');
   },
   // Play an arbitrary audio file into the call (#audio). Resolve the source to
   // base64 (inline data / local file via fs / remote URL via fetch), then route
@@ -10193,7 +10201,18 @@ function setupIPC() {
 
   ipcMain.on('open-external-url', (_event, url) => { openExternalUrl(url); });
 
+  // Reply-to-teardown-command channel: finishCall() sends 'leave-requested' to
+  // the panel, expecting this back, once the Meet-side leave has already
+  // happened. NOT what the Leave Call button should send directly — see
+  // 'leave-call-requested' below, which is the actual button-initiated leave.
   ipcMain.on('leave-meet', () => performLeaveTeardown('panel'));
+
+  // The Leave Call button's own request to leave. Goes through the same
+  // clean-leave sequence as the agent's leave_call tool (click Meet's real
+  // Leave button, then teardown) instead of skipping straight to local
+  // teardown — the bug where the panel showed "left" while the bot's view
+  // stayed in the live Meet.
+  ipcMain.on('leave-call-requested', () => requestCleanLeave('leave-call'));
 
   ipcMain.on('get-meet-status', (event) => {
     if (meetView && !meetView.webContents.isDestroyed()) {

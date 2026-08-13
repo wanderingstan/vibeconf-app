@@ -1086,7 +1086,34 @@ function brainReuseOffset(prev, next) {
 // The lines currently in the DOM, in order. Compared against the incoming buffer
 // to work out the delta — see brainReuseOffset.
 let _brainRendered = [];
+
+// The session's Notification hook (permission prompt, idle nudge) surfaced
+// here — see local-server.js's setAgentNotification / getCallStateSnapshot.
+// Kept separate from renderBrain's "don't fight the user's scroll" gate below:
+// a stuck-on-you banner should never wait behind an unrelated scroll-position
+// check to appear.
+//
+// Built from nodes for the same reason brainLineNode is: the message is the
+// agent's own prompt text, verbatim, and innerHTML would render it as markup.
+function renderBrainNotification(s) {
+  const el = document.getElementById('brainNotification');
+  if (!el) return;
+  const n = s && s.agentNotification;
+  // style.display, not `hidden`: .brain-notification sets display:flex, which
+  // outranks the UA's [hidden] rule — the banner would never actually hide.
+  if (!n || !n.message) { el.style.display = 'none'; el.replaceChildren(); return; }
+  const icon = document.createElement('span');
+  icon.className = 'bn-icon';
+  icon.textContent = '⏸';
+  const msg = document.createElement('span');
+  msg.className = 'bn-message';
+  msg.textContent = `Waiting on you: ${n.message}`;
+  el.replaceChildren(icon, msg);
+  el.style.display = '';
+}
+
 function renderBrain(s) {
+  renderBrainNotification(s);
   const feed = document.getElementById('brainFeed');
   const status = document.getElementById('brainStatus');
   if (!feed) return;

@@ -283,6 +283,48 @@ let activeRecording = null;
 // affecting the audio recording at all.
 let activeRecordingWindow = null;
 
+// #328: the control window shows elapsed time, and the renderer has no way to
+// know how much disk that time is actually costing — a 36-minute stand-up wrote
+// a 1.06 GB video.webm. Main owns the only live byte counts (per-track totals on
+// activeRecording), so it pushes them over IPC on this timer; the renderer just
+// formats what it receives. Every 2s: the number is a reassurance gauge, not a
+// readout anyone watches tick.
+const RECORDING_STATS_MS = 2000;
+let _recordingStatsTimer = null;
+
+// Free space on the volume the recording is being written to, or null if it
+// can't be determined. statfs is best-effort by design: it's a nice-to-have on
+// the indicator, and an older/odd platform without it must not break the size
+// display that IS the point.
+function volumeFreeBytes(dir) {
+  try {
+    const st = fs.statfsSync(dir);
+    return Number(st.bsize) * Number(st.bavail);
+  } catch { return null; }
+}
+
+function startRecordingStatsPush() {
+  stopRecordingStatsPush();
+  const tick = () => {
+    if (!activeRecording || !activeRecordingWindow || activeRecordingWindow.isDestroyed()) return;
+    try {
+      activeRecordingWindow.webContents.send('recording-stats', {
+        bytes: activeRecording.totalBytes(),
+        freeBytes: volumeFreeBytes(activeRecording.dir),
+        dir: activeRecording.dir,
+      });
+    } catch { /* window torn down between the check and the send */ }
+  };
+  tick(); // don't make the window wait a full interval for its first number
+  _recordingStatsTimer = setInterval(tick, RECORDING_STATS_MS);
+  if (_recordingStatsTimer.unref) _recordingStatsTimer.unref();
+}
+
+function stopRecordingStatsPush() {
+  if (_recordingStatsTimer) clearInterval(_recordingStatsTimer);
+  _recordingStatsTimer = null;
+}
+
 // The whiteboard-share side-capture (extension, see call-recording-window.js's
 // createShareCaptureWindow): a full-resolution recording of the bot's own
 // whiteboard-window share content, independent of and in addition to the
@@ -385,6 +427,7 @@ function startCallRecording(room, botName, { force = false } = {}) {
     // ffmpeg-missing fallback.
     try {
       activeRecordingWindow = createCallRecordingWindow(meetView);
+      startRecordingStatsPush(); // #328 — feed the window its running size
       console.log('[call-record] recording control window created — capturing video');
     } catch (err) {
       activeRecordingWindow = null;
@@ -472,6 +515,7 @@ async function stopCallRecording() {
   // Stop the control window's MediaRecorder and wait (bounded) for its last
   // chunk BEFORE finalizing activeRecording — otherwise the video track's
   // file could still be receiving a chunk after we've already closed it.
+  stopRecordingStatsPush(); // #328 — nothing to report once we're finalizing
   if (activeRecordingWindow) {
     const win = activeRecordingWindow;
     activeRecordingWindow = null;
@@ -484,6 +528,7 @@ async function stopCallRecording() {
 
   let tracks = 0;
   let manifest = null;
+  const finishedSession = activeRecording; // kept for removeRecoveryNote() after the merges (#343)
   try {
     manifest = activeRecording.stop();
     tracks = manifest.tracks.length;
@@ -571,7 +616,13 @@ async function stopCallRecording() {
     // are the ONLY copy of that material, so they're never removed in that
     // case regardless of the pref.
     const allAttemptedMergesOk = !!mainMerge?.ok && (!shareTrack || !!shareMerge?.ok);
+    // #343: the recovery note's PRESENCE is what marks a recording as
+    // unfinished, so it comes off here and nowhere earlier — this is the first
+    // moment there is genuinely nothing left to do by hand. A skipped merge (no
+    // ffmpeg, no video, cancelled) deliberately KEEPS it: the raw tracks are
+    // then the only copy, and the note is what says so and how to finish them.
     if (allAttemptedMergesOk) {
+      try { finishedSession?.removeRecoveryNote(); } catch { /* best-effort */ }
       let keepTracks = false;
       try { keepTracks = !!prefValue('keepCallRecordingTracks'); } catch { /* default: don't keep */ }
       if (!keepTracks) {
@@ -586,6 +637,35 @@ async function stopCallRecording() {
   }
 
   return { ok: true, dir, tracks };
+}
+
+// #343: the cheap half of stopping a recording, done SYNCHRONOUSLY, for the
+// exits that cannot await anything — 'before-quit' above all.
+//
+// The split that makes this possible: closing the track fds and writing
+// manifest.json are a handful of sync fs calls, while the ffmpeg merge is
+// minutes of CPU. Holding up a quit for the merge would be absurd, but skipping
+// the manifest was quietly catastrophic — it carries each track's
+// startWallClock, the only thing that aligns the tracks to each other and to the
+// transcript, and it cannot be reconstructed from the webm files afterwards. So
+// quitting mid-recording used to leave a folder of orphan files that NOTHING
+// could turn back into a recording.
+//
+// Now it leaves a complete, mergeable set plus the RECOVERY.md explaining how to
+// finish it (see call-recorder.js's _writeRecoveryNote). The last ~1s of video
+// is lost with the capture window, which is the right trade for a quit.
+function finalizeRecordingSync(reason) {
+  if (!activeRecording) return;
+  const session = activeRecording;
+  activeRecording = null; // before stop(), so nothing re-enters on the way out
+  stopRecordingStatsPush();
+  try {
+    const m = session.stop();
+    console.log(`[call-record] ${reason}: finalized ${m.tracks.length} track(s) in ${session.dir} `
+      + '(merge skipped — see RECOVERY.md in that folder to finish it)');
+  } catch (err) {
+    console.warn('[call-record] could not finalize recording on ' + reason + ':', err && err.message);
+  }
 }
 
 // Explicit on/off for the start_recording / stop_recording MCP
@@ -836,6 +916,20 @@ function performLeaveTeardown(via) {
     }
   };
   step('clearRoom', () => localServer.clearRoom());
+  // #326: every leave route converges here, so this is where the recording has
+  // to end. Before this, only onLeaveCall (agent leave_call / auto-leave /
+  // host-ended) stopped it — the panel's Leave button reaches teardown via
+  // 'leave-meet' and stopped nothing, so capture kept running against a dead
+  // call until someone clicked Stop: 24s of "recording" an idle view on the
+  // 2026-08-11 stand-up, and a stale activeRecording that would have made the
+  // next startCallRecording return {already:true}. Placed after clearRoom (which
+  // is what sets 'idle' — that ordering is load-bearing) but BEFORE showIdle,
+  // which navigates meetView to the idle page: after that the audio tracks are
+  // gone and there is nothing left to finalize. No-op when no recording is
+  // active, so it's harmless on the routes where onLeaveCall already fired it.
+  step('stopCallRecording', () => {
+    stopCallRecording().catch((err) => console.warn('[call-record] stop on teardown failed:', err.message));
+  });
   step('closeClaudeTerminal', () => closeClaudeTerminal());
   step('showIdle', () => showIdle());
   console.log(ts(), '[electron] Call teardown complete (via ' + via + ') — status',
@@ -7563,6 +7657,11 @@ app.on('before-quit', () => {
   // where the confirmation learns to stand down (see confirmQuitBeforeClose).
   appIsQuitting = true;
   stopAllRunwayFaces('before-quit'); // P2: best-effort end of Runway sessions on quit (fire-and-forget)
+  // #343: sync, and deliberately NOT the full stopCallRecording() — see
+  // finalizeRecordingSync. Quitting must not wait on an ffmpeg merge, but it
+  // costs nothing to leave the tracks closed and the manifest written, which is
+  // the difference between a recoverable recording and an unrecoverable one.
+  finalizeRecordingSync('quit');
   closeAllClaudeTerminalsSync();
 });
 

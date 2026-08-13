@@ -52,6 +52,10 @@
       font-variant-numeric: tabular-nums;
       color: #9aa0a6;
       font-size: 12px;
+      /* "36:12 · 1.06 GB" (#328) is the reason this must not be the thing that
+         gets squeezed at 300px wide — .label above has the ellipsis instead. */
+      white-space: nowrap;
+      flex: none;
     }
     button {
       -webkit-app-region: no-drag;

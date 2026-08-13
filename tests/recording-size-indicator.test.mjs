@@ -1,0 +1,107 @@
+// recording-size-indicator.test.mjs — #328: the recording indicator shows how
+// much disk the capture is eating, not just how long it's been running.
+//
+// Motivating number: a 36-minute stand-up wrote a 1.06 GB video.webm. That is
+// worth knowing while it's happening.
+//
+// totalBytes() is real logic and gets a real test. The IPC plumbing and the
+// renderer formatting need an Electron window to exercise, so those are pinned
+// by source assertions — the point being that the three ends (session → main
+// push → renderer channel) agree on one channel name and one field name.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const { CallRecordingSession } = require('../electron-app/call-recorder.js');
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const main = fs.readFileSync(join(root, 'electron-app/main.js'), 'utf8');
+const rendererJs = fs.readFileSync(join(root, 'electron-app/renderer/call-recording-window.js'), 'utf8');
+
+function tmpDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'rec-size-'));
+}
+
+test('totalBytes sums every track, and is live before stop()', () => {
+  const s = new CallRecordingSession(path.join(tmpDir(), 'call'), { room: 'r', startedAt: 1000 });
+  assert.equal(s.totalBytes(), 0, 'no chunks yet');
+
+  s.chunk('bot', 0, Buffer.alloc(100), 'audio/webm');
+  s.chunk('remote-1', 0, Buffer.alloc(250), 'audio/webm');
+  s.chunk('video', 0, Buffer.alloc(9000), 'video/webm', undefined, 'video');
+  // The indicator polls DURING the recording — a total that only became correct
+  // at stop() would be useless for the thing this exists to show.
+  assert.equal(s.totalBytes(), 9350);
+
+  s.chunk('bot', 1, Buffer.alloc(50), 'audio/webm');
+  assert.equal(s.totalBytes(), 9400, 'keeps climbing as chunks arrive');
+
+  s.stop();
+  assert.equal(s.totalBytes(), 9400, 'still readable after finalize');
+});
+
+test('totalBytes matches what the manifest reports per track', () => {
+  const s = new CallRecordingSession(path.join(tmpDir(), 'call'), { room: 'r', startedAt: 1000 });
+  s.chunk('bot', 0, Buffer.alloc(11), 'audio/webm');
+  s.chunk('video', 0, Buffer.alloc(22), 'video/webm', undefined, 'video');
+  const m = s.stop();
+  const summed = m.tracks.reduce((n, t) => n + t.bytes, 0);
+  assert.equal(s.totalBytes(), summed);
+});
+
+test('main pushes size to the indicator window on a timer', () => {
+  assert.match(main, /const RECORDING_STATS_MS = \d+/);
+  assert.match(main, /function startRecordingStatsPush\(\)/);
+  assert.match(main, /activeRecording\.totalBytes\(\)/);
+  assert.match(main, /send\('recording-stats'/);
+  // Started with the window it feeds, and stopped when the recording is
+  // finalized — a surviving interval would keep poking a destroyed window.
+  const start = main.slice(main.indexOf('function startCallRecording'));
+  assert.match(start.slice(0, start.indexOf('\n}\n')), /startRecordingStatsPush\(\)/);
+  const stop = main.slice(main.indexOf('async function stopCallRecording'));
+  assert.match(stop.slice(0, stop.indexOf('\n}\n')), /stopRecordingStatsPush\(\)/);
+});
+
+test('the push is guarded against a torn-down window', () => {
+  const fn = main.slice(main.indexOf('function startRecordingStatsPush'));
+  const body = fn.slice(0, fn.indexOf('\n}\n\n'));
+  assert.match(body, /activeRecordingWindow\.isDestroyed\(\)/,
+    'the timer outlives the window in a teardown race');
+});
+
+test('free space is best-effort, never fatal', () => {
+  // statfsSync is the nice-to-have; the size display is the point. A platform
+  // without it must still show bytes.
+  const fn = main.slice(main.indexOf('function volumeFreeBytes'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.match(body, /try \{[\s\S]*catch \{ return null; \}/);
+});
+
+test('the renderer listens on the same channel main sends on', () => {
+  assert.match(rendererJs, /on\('recording-stats'/);
+  assert.match(rendererJs, /stats\.bytes/);
+});
+
+test('the renderer shows time alone until the first size arrives', () => {
+  // A "0 MB" before the first push would read as "nothing is being written" —
+  // the exact anxiety the size display is meant to settle.
+  assert.match(rendererJs, /let sizeBytes = null;/);
+  const fn = rendererJs.slice(rendererJs.indexOf('function renderElapsed'));
+  const body = fn.slice(0, fn.indexOf('\n  }\n'));
+  assert.match(body, /sizeBytes === null \? '' :/);
+  assert.match(body, /size \? `\$\{time\} · \$\{size\}` : time/);
+});
+
+test('an error message is never overwritten by a size push', () => {
+  // note is shared between setError() and the free-space line; the error is the
+  // more important thing on screen and it must survive the next tick.
+  const i = rendererJs.indexOf("on('recording-stats'");
+  const handler = rendererJs.slice(i, i + 900);
+  assert.match(handler, /dot\.classList\.contains\('error'\)/);
+});

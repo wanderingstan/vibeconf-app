@@ -3661,17 +3661,32 @@ window.addEventListener('DOMContentLoaded', () => {
     }
   } catch { /* body not ready */ }
 
-  // Only run Meet automation on actual Meet pages
-  if (!window.location.href.includes(MEET.url.host)) {
-    console.log('[electron-meet] Not a Meet page (banner shown), skipping automation');
-    return;
-  }
-  // Run join automation ONLY on a meeting-code URL. We now load Meet home
-  // (meet.google.com/) as the idle view so the operator can sign in / start
-  // meetings / debug manually — the join poll must not fire there (or on /new,
-  // /landing, etc.), only when actually navigated into a meeting code.
-  if (!MEET.url.meetingCodePath.test(window.location.pathname)) {
-    console.log('[electron-meet] Meet home/landing (no meeting code) — skipping join automation');
+  // #346: classify what we ACTUALLY landed on before deciding to automate. See
+  // MEET.classifyLanding for why sign-in is tested first and why the host test
+  // is on hostname rather than a substring of the href.
+  //
+  // Join automation runs ONLY on a meeting-code URL. Everything else is
+  // reported to main, which is the side that knows whether a join was in
+  // flight — a landing that is perfectly normal when idle (the bot-view page,
+  // Meet home after a call) is a hard failure when we were mid-join. Reporting
+  // the fact and letting main judge it keeps that decision in one place.
+  const landing = MEET.classifyLanding({
+    href: window.location.href,
+    hostname: window.location.hostname,
+    pathname: window.location.pathname,
+  });
+  if (landing !== 'meeting') {
+    if (landing === 'sign-in') {
+      console.warn('[electron-meet] Google identity/sign-in challenge at ' + window.location.pathname
+        + ' — join automation cannot proceed until a human signs the bot in.');
+    } else if (landing === 'not-meet') {
+      console.log('[electron-meet] Not a Meet page (banner shown), skipping automation');
+    } else {
+      console.log('[electron-meet] Meet home/landing (no meeting code) — skipping join automation');
+    }
+    try {
+      ipcRenderer.send('meet-landing', { landing, url: window.location.href });
+    } catch { /* ignore */ }
     return;
   }
 

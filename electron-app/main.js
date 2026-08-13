@@ -4233,6 +4233,24 @@ function getIdleUrl() {
   return `${(getWebsiteUrl() || 'https://vibeconferencing.com').replace(/\/+$/, '')}/bot-view`;
 }
 
+// Write a captured page DOM next to the session log, so an unattended run can
+// be post-mortemed. Shared by the #263 denial capture (renderer-pushed, from
+// inside the pre-join loop) and #346's join-landed-somewhere-else capture
+// (main-pulled, from before the loop ever starts) — one naming scheme and one
+// log line for both, rather than two half-identical writers.
+function saveCapturedDom(reason, url, html) {
+  try {
+    const logDir = path.dirname(getSessionLogPath());
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const file = path.join(logDir, `denial-capture-${stamp}.html`);
+    fs.writeFileSync(file, html || '', 'utf-8');
+    console.warn(`[capture-dom] Saved page DOM (${reason || '?'}) → ${file}`);
+    console.warn(`[capture-dom]   url=${url || ''}`);
+  } catch (err) {
+    console.warn('[capture-dom] failed to save DOM:', err.message);
+  }
+}
+
 // Track whether configureMeetSession has been applied to the partition so we
 // don't double-register handlers (which would call callback() twice and crash
 // getDisplayMedia / permission flows).
@@ -7677,6 +7695,21 @@ function createMeetView(partition) {
     },
   });
   view.webContents.setAudioMuted(true);
+
+  // #346: log every URL this view actually ends up on. We used to log which
+  // account we pinned but never where we landed, so when a join was silently
+  // bounced to a Google password challenge the session log had no way to show
+  // it — the redirect was invisible and the resulting page was mislabelled as
+  // "Meet home". Redirects are logged separately from the final landing
+  // because the interesting hop (meeting → accounts.google.com) is exactly the
+  // one that is gone by the time anything else looks.
+  view.webContents.on('did-redirect-navigation', (_e, url, _isInPlace, isMainFrame) => {
+    if (isMainFrame) console.log('[electron] Meet view redirected →', url);
+  });
+  view.webContents.on('did-navigate', (_e, url) => {
+    console.log('[electron] Meet view navigated →', url);
+  });
+
   view.webContents.on('dom-ready', () => {
     // Re-assert the state-appropriate zoom. A real document reload (manual refresh
     // / the mid-call reload path) resets setZoomFactor, and dom-ready fires on
@@ -9058,6 +9091,9 @@ async function _loadMeetURL(meetUrl) {
   attachMeetViewForState(); // #103: hidden host / popout / main window, per state
   layoutViews();
 
+  // #346: the URL we ASKED for. createMeetView logs where we actually land, so
+  // the pair together shows any redirect that took us somewhere else.
+  console.log('[electron] Loading Meet URL:', urlToLoad);
   meetView.webContents.loadURL(urlToLoad);
 
   // Forward preload-meet's console output to main stdout so [electron-meet]
@@ -10593,7 +10629,13 @@ function setupIPC() {
   });
 
   // --- Meet status updates (logged, DOM updated by preload) ---
-  ipcMain.on(CALL_EVENTS.statusUpdate, (_event, status) => {
+  ipcMain.on(CALL_EVENTS.statusUpdate, (_event, status) => handleMeetStatusUpdate(status));
+
+  // Named (not inline) so main-process code paths can raise a call-flow status
+  // the same way the renderer does — #346's join-landed-somewhere-else needs
+  // the whole 'Error:' fan-out (broadcastError, waiter resolution, room clear),
+  // and re-deriving any of that at a second call site is how the two drift.
+  function handleMeetStatusUpdate(status) {
     console.log('[electron] Meet status:', status);
     // Map Meet status to call status for the local server
     if (typeof status === 'string') {
@@ -10642,7 +10684,7 @@ function setupIPC() {
         localServer.setCallStatus('joining');
       }
     }
-  });
+  }
 
   ipcMain.on('stop-sync', () => {
     sync.stopPolling();
@@ -10839,16 +10881,71 @@ function setupIPC() {
   // ~30s, too fast to catch in DevTools). Written next to the session log so
   // it's easy to find after an unattended run.
   ipcMain.on('capture-dom', (_event, info) => {
-    try {
-      const logDir = path.dirname(getSessionLogPath());
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const file = path.join(logDir, `denial-capture-${stamp}.html`);
-      fs.writeFileSync(file, info?.html || '', 'utf-8');
-      console.warn(`[capture-dom] Saved denial/limbo DOM (${info?.reason || '?'}) → ${file}`);
-      console.warn(`[capture-dom]   url=${info?.url || ''}`);
-    } catch (err) {
-      console.warn('[capture-dom] failed to save DOM:', err.message);
+    saveCapturedDom(info?.reason, info?.url, info?.html);
+  });
+
+  // #346: a join that ends up somewhere other than the meeting page. The
+  // renderer classifies the landing (it is the only side that can see
+  // window.location) and main decides whether it MATTERS, because only main
+  // knows whether a join was in flight. Landing on Meet home or the bot-view
+  // idle page is completely normal at rest and only means something went wrong
+  // if we were mid-join — so the same event is silence in one state and a
+  // hard failure in the other.
+  ipcMain.on('meet-landing', async (_event, { landing, url } = {}) => {
+    // 'navigating' is set the instant a join is requested; 'joining' once the
+    // page starts driving Meet's pre-join. Anything else (idle, in-call,
+    // after-call-work) means nobody was trying to join, so this is routine.
+    const joinInFlight = localServer.callStatus === 'navigating' || localServer.callStatus === 'joining';
+    if (!joinInFlight) {
+      console.log(`[meet-landing] ${landing} at ${url} (no join in flight — ignoring)`);
+      return;
     }
+
+    // Grab the page for the record. This is the state we could never capture
+    // before: captureDenialDom only ever fired from inside the pre-join loop,
+    // which is downstream of the bail-out, so the one page most worth seeing
+    // was invisible by construction.
+    try {
+      if (meetView && !meetView.webContents.isDestroyed()) {
+        const html = await meetView.webContents.executeJavaScript('document.documentElement.outerHTML');
+        saveCapturedDom(`join-landed-on-${landing}`, url, html);
+      }
+    } catch (err) {
+      console.warn('[meet-landing] DOM capture failed:', err.message);
+    }
+
+    // The bot cannot announce any of this itself — it is not in the meeting, so
+    // it has no voice and no chat. The app is the only one who can speak here.
+    const botLabel = resolvedBotName() || 'the bot';
+    console.error(`[meet-landing] join blocked: landed on ${landing} at ${url}`);
+
+    if (landing === 'sign-in') {
+      // RECOVERABLE, and deliberately NOT torn down. A human types the password
+      // and Google's own `continue=` redirect carries this very view into the
+      // meeting — which is exactly how the 2026-08-12 call was rescued. That
+      // recovery works because the app is still holding the room and the agent
+      // is still alive behind it, so running the full 'Error:' path here
+      // (clearRoom + resolve every waiter) would break the one path that
+      // already works. Say so loudly, change nothing else, let the redirect
+      // land on a live call.
+      //
+      // broadcastError is the operator channel: panel error plus an OS
+      // notification when the app isn't in the foreground. addError is the
+      // agent channel, so it shows up in get_room_info / get_call_log too.
+      const message = `Google is asking ${botLabel} to confirm its identity, so it could not join the call yet. `
+        + "Open the bot's view and sign it back in to Google, and it will join automatically once you do.";
+      broadcastError(message);
+      localServer.addError(message);
+      return;
+    }
+
+    // Anything else is not going to fix itself, and leaving it is what produced
+    // the original symptom: wedged at 'navigating' forever, looking like the
+    // bot never tried. 'Error:' fans out to broadcastError, resolves the
+    // agent's waiters so wait_for_speech doesn't hang to timeout, and clears
+    // the room so the UI stops offering "leave call" for a call we never made.
+    handleMeetStatusUpdate(`Error: ${botLabel} could not join the call. `
+      + `The page ended up at ${url} instead of the meeting.`);
   });
 
   // --- Speaking state ---

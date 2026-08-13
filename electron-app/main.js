@@ -8297,6 +8297,15 @@ function ensureHiddenMeetHost() {
   if (meetHiddenWindow && !meetHiddenWindow.isDestroyed()) return meetHiddenWindow;
   const { width, height } = botViewLayout.HIDDEN_SIZE;
   const win = new BrowserWindow({
+    // opacity 0, not just off-screen coordinates: macOS clamps a window
+    // positioned entirely outside every display back on-screen, so an x/y
+    // hack alone still lets settleHiddenMeetHost's showInactive() below paint
+    // a real, nearly full-screen (HIDDEN_SIZE is 1600x900) window right where
+    // the user's eye already is — e.g. immediately after closing the Bot's
+    // View popout, it reads as the app flashing full-screen before vanishing.
+    // Opacity is a compositor property, not a renderer one, so the page still
+    // renders (and still captures via capturePage) while genuinely invisible.
+    opacity: 0,
     width, height,
     useContentSize: true,
     show: false,
@@ -8408,7 +8417,13 @@ function setBotViewState(state) {
     win.on('resize', fit);
     // Survive teardown: detach the view before the window dies so the call lives,
     // then re-dock. Covers both the toggle and the user closing the window.
-    win.on('close', () => { try { win.removeBrowserView(meetView); } catch { /* gone */ } });
+    // The resize listener comes off FIRST — otherwise a resize event fired
+    // during the window's teardown (however unlikely) would still call fit()
+    // against a torn-down BrowserView.
+    win.on('close', () => {
+      win.removeListener('resize', fit);
+      try { win.removeBrowserView(meetView); } catch { /* gone */ }
+    });
     win.on('closed', () => {
       meetPopoutWindow = null;
       const resting = restingBotViewState();

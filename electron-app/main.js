@@ -4443,6 +4443,18 @@ let guestLobbyNotified = false;
 // "which partition are we on" check now that there's a single partition (#282).
 // Google's domain=.google.com auth cookies are the ground truth (the same set
 // the bot presents to auto-admit into invited meetings).
+// Returns true (signed in), false (definitely not), or null (COULD NOT TELL).
+//
+// The third state is load-bearing, and it used to be missing. A failed cookie
+// read returned `false`, and the only caller reads `false` as permission to run
+// clearMeetIdentityCache — which deletes the very cookies the read failed to
+// see. So a transient error in the CHECK performed the destructive action it was
+// meant to prevent, turning "I couldn't tell" into a real, permanent sign-out
+// with no notification. #250 is what that costs: the bot silently joins
+// un-authenticated and can no longer be auto-admitted to invited meetings.
+//
+// "Unknown" and "definitely logged out" are not the same answer, and only one of
+// them is safe to act on destructively.
 async function isSignedInToGoogle(sess) {
   try {
     const all = await sess.cookies.get({});
@@ -4451,9 +4463,31 @@ async function isSignedInToGoogle(sess) {
       /(^|\.)google\.com$/.test((c.domain || '').replace(/^\./, '')) &&
       AUTH.includes(c.name) && c.value);
   } catch (err) {
-    console.warn('[electron] isSignedInToGoogle check failed:', err.message);
-    return false;
+    console.warn('[electron] isSignedInToGoogle check failed (treating as UNKNOWN, not logged-out):', err.message);
+    return null;
   }
+}
+
+// The bot's Google session is gone but this profile remembers being signed in as
+// someone — i.e. it EXPIRED, rather than being a guest profile by design (the
+// test fleet's test-meet-guest-* profiles have no bound account and must not
+// trigger this). Nothing surfaced this before: the join simply took the
+// un-authenticated branch, the panel quietly read "guest", and the first anyone
+// knew was a bot that couldn't be admitted to its own meetings.
+function notifyMeetSignInNeeded(email) {
+  const parent = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : null;
+  dialog.showMessageBox(parent, {
+    type: 'warning',
+    title: 'The bot is signed out of Google',
+    message: `Sign back in as ${email}`,
+    detail:
+      `This profile is bound to ${email}, but that Google session is gone — expired, or signed out elsewhere.\n\n`
+      + 'The bot will still try to join, but as an unauthenticated guest: it cannot be auto-admitted to '
+      + 'meetings its account was invited to, and a host may have to let it in by hand.\n\n'
+      + 'Open Settings and sign in to Google again to restore it.',
+    buttons: ['OK'],
+    noLink: true,
+  }).catch(() => { /* dismissed */ });
 }
 
 // True iff the partition holds a live Slack session cookie — i.e. some Slack
@@ -9390,10 +9424,27 @@ async function _loadMeetURL(meetUrl, { guestFallback = false } = {}) {
   // it while signed in silently signs the bot OUT before every join → it joins
   // un-authenticated and can't be auto-admitted to invited meetings (#250). The
   // cache only resets Meet's cached guest "Your name", moot when signed in.
-  if (signedIn) {
-    console.log('[electron] Signed in — skipping Meet identity-cache clear to preserve Google sign-in');
-  } else {
+  //
+  // Only `false` — a POSITIVE "there is no session here" — earns the clear.
+  // `null` means the cookie read failed, and clearing on a failed read is how a
+  // check meant to protect the session ends up destroying it. Skipping when
+  // unknown costs nothing: the worst case is a stale cached guest name.
+  if (signedIn === false) {
     await clearMeetIdentityCache(activeMeetPartition);
+  } else {
+    console.log(`[electron] ${signedIn === null ? 'Sign-in state UNKNOWN' : 'Signed in'} — skipping Meet identity-cache clear to preserve Google sign-in`);
+  }
+
+  // A profile that remembers an account but has no session has EXPIRED. Say so
+  // — loudly, once per join — instead of silently degrading to a guest join that
+  // no one can explain later. Suppressed on the #347 guest fallback, which is a
+  // deliberate downgrade after Google blocked the account and already reports
+  // its own lobby notice; and silent for profiles with no bound account, which
+  // is what the guest test fleet is.
+  const rememberedAccount = store ? store.get('meetAccountEmail') : null;
+  if (!guestFallback && signedIn === false && rememberedAccount) {
+    console.error(`[electron] #250: signed OUT of Google, but this profile is bound to ${rememberedAccount} — the session expired. Joining as an unauthenticated guest.`);
+    notifyMeetSignInNeeded(rememberedAccount);
   }
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
@@ -9402,7 +9453,9 @@ async function _loadMeetURL(meetUrl, { guestFallback = false } = {}) {
   // partition default (authuser=0) — which could be a stray second account that
   // crept in. The bound email comes from --meet-account-email or is captured at
   // sign-in (get-meet-account-email). No pin when guest or when unknown.
-  const boundEmail = signedIn && store ? store.get('meetAccountEmail') : null;
+  // `=== true`: only pin authuser when we KNOW there's a session. Pinning on an
+  // unknown read would put an account on the URL we can't vouch for.
+  const boundEmail = signedIn === true && store ? store.get('meetAccountEmail') : null;
   const urlToLoad = boundEmail ? pinAuthUser(meetUrl, boundEmail) : meetUrl;
   if (boundEmail) console.log('[electron] Pinning Meet account via authuser:', boundEmail);
 
@@ -10555,8 +10608,11 @@ function setupIPC() {
   // whether the partition holds Google cookies, not by which partition is active.
 
   ipcMain.handle('get-meet-mode', async () => {
+    // Tri-state collapses to a boolean here on purpose: this only REPORTS, so an
+    // unknown read showing "guest" is a cosmetic under-claim, not a destructive
+    // act. The tri-state matters at the one call site that deletes cookies.
     const signedIn = await isSignedInToGoogle(session.fromPartition(SESSION_PARTITION));
-    return { partition: SESSION_PARTITION, mode: signedIn ? 'account' : 'guest' };
+    return { partition: SESSION_PARTITION, mode: signedIn === true ? 'account' : 'guest' };
   });
 
   // Is this profile signed into Slack? Cookie-authoritative (the `d` session
@@ -10581,7 +10637,9 @@ function setupIPC() {
     // cookies (domain=.google.com) are the ground truth — the bot auto-admitting
     // as a member proves they're present even when ListAccounts parsing fails.
     const signedIn = await isSignedInToGoogle(sess);
-    if (!signedIn) return { signedIn: false, email: null };
+    // Reporting path — an unknown read reports "not signed in" (as it always
+    // has). Nothing is deleted on this branch.
+    if (signedIn !== true) return { signedIn: false, email: null };
 
     // Best-effort email: read it straight from the bot's live signed-in Google
     // page (the meetView). Meet renders the account in its account-switcher

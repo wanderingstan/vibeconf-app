@@ -463,6 +463,32 @@ const PREFERENCES = {
       + 'to a Terminal rather than joining a call with a mute bot. '
       + 'Only applies when Agent backend is "claude".',
   },
+  linuxAgentTmux: {
+    type: 'boolean',
+    default: false,
+    label: 'Wrap the agent terminal in tmux (Linux only)',
+    requiresRestart: false,
+    description:
+      'On Linux, run the agent inside a tmux session and use the terminal window '
+      + 'only as a viewport onto it (#329). What that buys: the session SURVIVES '
+      + 'the window being closed (or X restarting, or an SSH connection dropping), '
+      + 'and you can reattach from anywhere with "tmux attach -t <session>" — '
+      + 'including over plain SSH, which is how an unattended box gets debugged '
+      + 'and recovered when its agent wedges. '
+      + 'OFF by default because that is not a trade everyone wants: tmux brings '
+      + 'its own status bar, scrollback and Ctrl-B keybindings, and inheriting all '
+      + 'of that just because tmux happens to be installed is a surprise on a '
+      + 'machine you are only playing on. Off, the terminal behaves like macOS '
+      + 'does — plain, and closing it ends the agent. '
+      + 'Turn it ON for a machine you need to reach remotely, or one that has to '
+      + 'survive a dropped connection. '
+      + 'Ignored when tmux is not installed, and ignored entirely on macOS and '
+      + 'Windows. '
+      + 'It does NOT mean "never run tmux": on a machine with NO terminal emulator '
+      + 'at all there is no window for tmux to change the feel of, and a detached '
+      + 'tmux session is the only way to have an agent anyone can type at, so that '
+      + 'case still uses one regardless of this setting.',
+  },
   confirmQuit: {
     type: 'boolean',
     default: true,

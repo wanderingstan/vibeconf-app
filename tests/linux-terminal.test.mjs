@@ -1,0 +1,269 @@
+// linux-terminal.test.mjs — the Linux agent-terminal invocation (#329).
+//
+// The point of the module under test is that NOTHING here crosses a shell, so
+// most of these assert the absence of the quoting class that made
+// launch-command.js necessary on macOS. A bot name with a quote in it is the
+// recurring adversary.
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const require = createRequire(import.meta.url);
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const {
+  TERMINAL_EMULATORS, sanitizeSessionName, tmuxSessionName, buildDirectCommand,
+  buildTmuxNewSessionArgs, buildViewportCommand, buildKillSessionArgs,
+  detectTerminalEmulator, chooseAgentTerminalPlan,
+} = require(join(root, 'electron-app/linux-terminal.js'));
+
+// A name carrying every character that has ever broken a launcher here.
+const NASTY = 'Bot "Quotes" $HOME; rm -rf /  && echo';
+
+test('tmux is an upgrade, not a requirement — an emulator alone still yields a plan', () => {
+  // The whole correction behind this module: requiring tmux would reproduce
+  // #317 (silently no agent) on stock desktops, which do not ship it.
+  assert.equal(chooseAgentTerminalPlan({ emulator: TERMINAL_EMULATORS[0], hasTmux: false }), 'direct');
+});
+
+test('tmux is OPT-IN: installed but not asked for still gives a plain terminal', () => {
+  // The default. Inheriting tmux's status bar, scrollback and Ctrl-B bindings
+  // just because tmux happens to be installed is a surprise on a machine
+  // someone is only playing on.
+  assert.equal(chooseAgentTerminalPlan({ emulator: TERMINAL_EMULATORS[0], hasTmux: true }), 'direct');
+});
+
+test('opting in gives the tmux viewport shape', () => {
+  assert.equal(chooseAgentTerminalPlan({ emulator: TERMINAL_EMULATORS[0], hasTmux: true, allowTmux: true }), 'tmux');
+});
+
+test('opting in does nothing when tmux is not installed', () => {
+  assert.equal(chooseAgentTerminalPlan({ emulator: TERMINAL_EMULATORS[0], hasTmux: false, allowTmux: true }), 'direct');
+});
+
+test('no emulator but tmux is the #324 box: detached, not a failure', () => {
+  // The cloud TA machine has no X and no terminal emulator. A detached session
+  // is the ONLY way to get something a human can later type at over SSH, which
+  // is what headless hosting cannot offer.
+  assert.equal(chooseAgentTerminalPlan({ emulator: null, hasTmux: true, allowTmux: true }), 'tmux-detached');
+});
+
+test('the preference gates the VIEWPORT only, not the detached last resort', () => {
+  // Deliberate asymmetry, and the reason the preference is worded "wrap my
+  // terminal in tmux" rather than "never run tmux". With no emulator there is
+  // no window whose feel tmux could change, and gating this too would mean a
+  // headless box silently having NO agent by default — #317's shape again —
+  // and would make the cloud-TA case depend on remembering a setting.
+  assert.equal(chooseAgentTerminalPlan({ emulator: null, hasTmux: true, allowTmux: false }), 'tmux-detached');
+  assert.equal(chooseAgentTerminalPlan({ emulator: null, hasTmux: true }), 'tmux-detached',
+    'and that holds at the default, which is off');
+});
+
+test('neither available returns null, so the caller can fall back loudly', () => {
+  // null, not a throw: #317's lesson is that the failure must be reported, and
+  // #329 asks for terminal → headless → loud error, never a silent no-agent.
+  assert.equal(chooseAgentTerminalPlan({ emulator: null, hasTmux: false }), null);
+});
+
+test('gnome-terminal is not in the emulator list', () => {
+  // It is a dbus-activated thin client: forks, returns immediately, and hands
+  // back a pid that is not the terminal, so there is nothing to reap.
+  assert.equal(TERMINAL_EMULATORS.some((e) => e.bin === 'gnome-terminal'), false);
+});
+
+test('xterm is preferred over the Debian alternatives symlink', () => {
+  // x-terminal-emulator is a pointer, not a terminal: it resolves to whatever
+  // this box calls its default, which we cannot know in advance (on the Ubuntu
+  // 24.04 test box it was zutty, not the gnome-terminal an earlier comment here
+  // guessed). It ranks last so we only reach it after the entries we have
+  // actually run.
+  const names = TERMINAL_EMULATORS.map((e) => e.bin);
+  assert.equal(names[0], 'xterm');
+  assert.ok(names.indexOf('xterm') < names.indexOf('x-terminal-emulator'));
+});
+
+test('xfce4-terminal uses -x, not -e', () => {
+  // -e on xfce4-terminal takes a SINGLE string and would re-introduce quoting;
+  // -x takes the rest of argv. Getting this backwards is silent breakage.
+  assert.equal(TERMINAL_EMULATORS.find((e) => e.bin === 'xfce4-terminal').execFlag, '-x');
+});
+
+test('an emulator with no exec flag gets the command directly, with no stray flag', () => {
+  // Synthetic on purpose: no SHIPPED entry uses a null flag today (kitty did,
+  // and was removed for being unverified). The builders still support it so
+  // that adding a measured flagless emulator later is a data change rather than
+  // a code change — but the support has to stay covered to stay correct.
+  const flagless = { bin: 'someterm', execFlag: null, reapable: true };
+  const cmd = buildDirectCommand({ emulator: flagless, argv: ['claude', '--model', 'opus'] });
+  assert.deepEqual(cmd, { command: 'someterm', args: ['claude', '--model', 'opus'] });
+  const view = buildViewportCommand({ emulator: flagless, session: 's' });
+  assert.deepEqual(view, { command: 'someterm', args: ['tmux', 'attach', '-t', 's'] });
+});
+
+test('every shipped emulator has been verified on a real box', () => {
+  // The policy that removed konsole/alacritty/kitty. An unverified entry is not
+  // neutral: it ranks ABOVE the generic x-terminal-emulator fallback, so a
+  // wrong exec flag preempts a working path with a broken one. Adding an entry
+  // means running it somewhere first.
+  assert.deepEqual(TERMINAL_EMULATORS.map((e) => e.bin),
+    ['xterm', 'xfce4-terminal', 'x-terminal-emulator']);
+});
+
+test('direct: a nasty bot name stays exactly ONE argv element', () => {
+  const cmd = buildDirectCommand({
+    emulator: TERMINAL_EMULATORS[0],
+    argv: ['claude', '-p', `/join-call abc ${NASTY}`],
+  });
+  assert.deepEqual(cmd, { command: 'xterm', args: ['-e', 'claude', '-p', `/join-call abc ${NASTY}`] });
+  // The real assertion: nothing anywhere escaped, wrapped or joined it.
+  assert.equal(cmd.args.filter((a) => a.includes(NASTY)).length, 1);
+  assert.equal(cmd.args.some((a) => a.includes('\\"')), false, 'no AppleScript-style escaping should appear');
+});
+
+test('direct carries no working directory — that belongs to spawn cwd', () => {
+  // macOS prefixes `cd "<dir>" &&`, which broke when the agent dir moved under
+  // "Application Support". There is no cd here to break.
+  const cmd = buildDirectCommand({ emulator: TERMINAL_EMULATORS[0], argv: ['claude'] });
+  assert.equal(cmd.args.some((a) => a.startsWith('cd ') || a.includes('&&')), false);
+});
+
+test('tmux new-session passes argv as separate elements, never joined', () => {
+  // Verified against tmux 3.6a: MULTIPLE arguments are exec'd directly; a
+  // SINGLE argument goes through a shell. Joining would silently re-introduce
+  // the quoting bug class this module exists to avoid.
+  const args = buildTmuxNewSessionArgs({
+    session: 'vibeconf-default-7865',
+    workdir: '/home/u/Application Support/agent',
+    argv: ['claude', '-p', `/join-call abc ${NASTY}`],
+  });
+  assert.deepEqual(args, [
+    'new-session', '-d', '-s', 'vibeconf-default-7865',
+    '-c', '/home/u/Application Support/agent',
+    'claude', '-p', `/join-call abc ${NASTY}`,
+  ]);
+  // The workdir with a space is one element, so nothing can split it.
+  assert.equal(args.filter((a) => a === '/home/u/Application Support/agent').length, 1);
+});
+
+test('tmux new-session is always detached, so the agent starts without a window', () => {
+  // This is what makes the no-emulator (#324) case work at all.
+  const args = buildTmuxNewSessionArgs({ session: 's', argv: ['claude'] });
+  assert.ok(args.includes('-d'));
+});
+
+test('a workdir is optional and simply omitted, not passed as empty', () => {
+  const args = buildTmuxNewSessionArgs({ session: 's', argv: ['claude'] });
+  assert.equal(args.includes('-c'), false);
+  assert.equal(args.includes(''), false);
+});
+
+test('an empty argv is rejected rather than launching a bare shell', () => {
+  // A session that silently opens a shell instead of the agent is #317 again:
+  // it looks alive and does nothing.
+  assert.throws(() => buildTmuxNewSessionArgs({ session: 's', argv: [] }), /non-empty/);
+  assert.throws(() => buildDirectCommand({ emulator: TERMINAL_EMULATORS[0], argv: [] }), /non-empty/);
+});
+
+test('session names strip tmux target punctuation', () => {
+  // ':' separates session from window and '.' separates window from pane, so a
+  // session containing either cannot be addressed later and kill-session would
+  // miss it, leaking an agent that still holds an MCP connection.
+  assert.equal(sanitizeSessionName('bot.2'), 'bot-2');
+  assert.equal(sanitizeSessionName('bot:1'), 'bot-1');
+  assert.equal(sanitizeSessionName('my bot'), 'my-bot');
+  assert.equal(sanitizeSessionName(''), 'bot');
+  assert.equal(sanitizeSessionName(null), 'bot');
+});
+
+test('the session name is keyed on the port, which is the thing that collides', () => {
+  // Profile bots each own a port; two agents pinned to one app is the failure
+  // launchClaudeHeadless already guards against.
+  assert.notEqual(tmuxSessionName({ profile: 'default', port: 7865 }),
+    tmuxSessionName({ profile: 'default', port: 7866 }));
+  assert.match(tmuxSessionName({ profile: 'Sam.Bot', port: 7866 }), /^vibeconf-Sam-Bot-7866$/);
+});
+
+test('kill targets the session, and a name round-trips through it', () => {
+  const s = tmuxSessionName({ profile: 'Sam Bot', port: 7866 });
+  assert.deepEqual(buildKillSessionArgs({ session: s }), ['kill-session', '-t', s]);
+  // Nothing in a sanitized name can be read as a different target.
+  assert.equal(/[:.]/.test(s), false);
+});
+
+test('missing a session is a programming error, not a silent no-op', () => {
+  assert.throws(() => buildKillSessionArgs({}), /session is required/);
+  assert.throws(() => buildTmuxNewSessionArgs({ argv: ['claude'] }), /session is required/);
+});
+
+test('the viewport only attaches — it never carries the agent command', () => {
+  // If the viewport re-ran the agent, closing and reopening a window would
+  // start a SECOND agent on the same bot.
+  const cmd = buildViewportCommand({ emulator: TERMINAL_EMULATORS[0], session: 'vibeconf-default-7865' });
+  assert.deepEqual(cmd, { command: 'xterm', args: ['-e', 'tmux', 'attach', '-t', 'vibeconf-default-7865'] });
+  assert.equal(cmd.args.includes('claude'), false);
+});
+
+test('no emulator means no viewport, and that is not an error', () => {
+  assert.equal(buildViewportCommand({ emulator: null, session: 's' }), null);
+});
+
+test('detection walks the preference order and tolerates a probe that throws', () => {
+  const seen = [];
+  const found = detectTerminalEmulator({
+    exists: (bin) => {
+      seen.push(bin);
+      if (bin === 'xterm') throw new Error('which exploded');
+      return bin === 'x-terminal-emulator';
+    },
+  });
+  assert.equal(found.bin, 'x-terminal-emulator');
+  assert.equal(seen[0], 'xterm', 'must probe in preference order');
+});
+
+test('detection returns null when nothing is installed', () => {
+  assert.equal(detectTerminalEmulator({ exists: () => false }), null);
+});
+
+test('detection requires an exists probe rather than guessing', () => {
+  assert.throws(() => detectTerminalEmulator({}), /exists/);
+});
+
+test('emulators that fork-and-return are flagged unreapable', () => {
+  // Measured on Ubuntu 24.04, not assumed: xfce4-terminal's spawned pid exits
+  // immediately whether or not --disable-server is passed, so killing it does
+  // nothing. Safe in the tmux shape (kill-session does the work), an
+  // un-stoppable agent in the direct shape — hence the warning at the call site.
+  assert.equal(TERMINAL_EMULATORS.find((e) => e.bin === 'xfce4-terminal').reapable, false);
+  assert.equal(TERMINAL_EMULATORS.find((e) => e.bin === 'xterm').reapable, true);
+});
+
+test('every emulator entry declares reapability explicitly', () => {
+  // An undefined here reads as "reapable" at the call site and would silently
+  // skip the warning. Force the question to be answered per entry.
+  for (const e of TERMINAL_EMULATORS) {
+    assert.equal(typeof e.reapable, 'boolean', `${e.bin} must declare reapable`);
+  }
+});
+
+test('xfce4-terminal keeps -x, which is the flag that actually runs anything', () => {
+  // Verified live: with -e the command did not run AT ALL (it takes a single
+  // string), which would present as a terminal that opens to a bare shell and
+  // an agent that never starts — #317 all over again.
+  assert.equal(TERMINAL_EMULATORS.find((e) => e.bin === 'xfce4-terminal').execFlag, '-x');
+});
+
+test('the preference exists, defaults OFF, and is app-level', () => {
+  // App-level, not per-profile: tmux is installed once per MACHINE. Per-profile
+  // it would also be invisible — App Settings renders app-level schema prefs
+  // only (isAppLevel), the trap documented on agentHosting.
+  const { PREFERENCES } = require(join(root, 'electron-app/preferences-schema.js'));
+  const { isAppLevel } = require(join(root, 'electron-app/config-scope.js'));
+  const p = PREFERENCES.linuxAgentTmux;
+  assert.ok(p, 'linuxAgentTmux should exist');
+  assert.equal(p.type, 'boolean');
+  assert.equal(p.default, false, 'opt-in, not opt-out');
+  assert.ok(isAppLevel('linuxAgentTmux'), 'app-level, or it renders nowhere');
+  assert.match(p.label, /Linux/, 'the label must say it does nothing on macOS/Windows');
+});

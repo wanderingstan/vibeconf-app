@@ -5851,6 +5851,52 @@ async function launchClaudeTerminal(meetCode, { onboardingCall = false } = {}) {
     console.log('[electron] falling back to the Terminal launcher');
   }
 
+  // #329: Linux gets a real terminal instead of falling through to osascript.
+  //
+  // Everything below this point is AppleScript. On Linux it is not "degraded",
+  // it does NOTHING — execFile('osascript') fails ENOENT, the error is logged
+  // and swallowed, and the user sees a bot that joined with "no agent activity"
+  // while Claude was never started (#317). So this branch must RETURN on every
+  // path; falling through is the bug.
+  //
+  // Fallback order is inverted relative to macOS, per #329: terminal first,
+  // then headless, then a loud failure — never a silent no-agent.
+  if (process.platform === 'linux') {
+    const launched = launchClaudeLinuxTerminal({
+      meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall,
+    });
+    if (launched) return;
+    // No terminal emulator AND no tmux. Headless is the last automatic option,
+    // and it can still refuse (it requires dangerousMode — see #330, which adds
+    // the allowlist mode that would make this refusal much rarer).
+    console.log('[electron] no Linux terminal available — trying headless');
+    const headless = launchClaudeHeadless({
+      meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall,
+    });
+    if (headless) return;
+    // Loud, because the alternative is the failure this whole issue exists to
+    // stop being invisible: a bot sitting silently in a room.
+    const msg = 'Could not start the agent: no terminal emulator (xterm, konsole, …) '
+      + 'and no tmux on PATH, and headless hosting refused. Install xterm or tmux, '
+      + 'or enable "dangerous" mode for headless hosting.';
+    console.error('[electron]', msg);
+    try {
+      dialog.showMessageBox({ type: 'error', title: 'Agent could not start', message: msg });
+    } catch { /* no window yet — the log line above is still the record */ }
+    return;
+  }
+
+  // Windows falls through to the AppleScript path below and silently does
+  // nothing, exactly as Linux did before this. Out of scope for #329 (which is
+  // Linux-only by design), but say so rather than pretending it worked — #317
+  // notes the generic "no agent activity" banner cost real debugging time
+  // because a missing spawn looks identical to a hung agent.
+  if (process.platform !== 'darwin') {
+    console.error(`[electron] agent terminal hosting is not implemented on ${process.platform} `
+      + '— the agent was NOT started. Use headless hosting, or start the agent manually.');
+    return;
+  }
+
   // Open a Terminal window running the command. When Terminal isn't already
   // running, `do script` would spawn TWO windows — the auto-created launch
   // window plus the scripted one. Reuse the launch window (window 1) in that
@@ -5903,6 +5949,156 @@ end tell`;
       }
     }
   });
+}
+
+// The Linux agent session (#329). Module-level for the same reason
+// claudeTerminalWindowIds is: leaving the call has to end it.
+//
+// Two shapes, so two handles, and only one is ever set:
+//   linuxTmuxSession  — a tmux session name we own; teardown is kill-session.
+//   linuxTerminalChild— the emulator process itself, when running WITHOUT tmux;
+//                       teardown is killing that pid.
+let linuxTmuxSession = null;
+let linuxTerminalChild = null;
+// The tmux viewport window, when there is one. Separate from the two above
+// because closing it must NOT end the agent — that separation is the whole
+// point of the tmux shape.
+let linuxViewportChild = null;
+
+// Is `bin` runnable? Used both to choose the shape and, implicitly, to promise
+// the spawn below will work.
+//
+// PATH is patched the same way the headless spawn patches it, and for the same
+// reason: a desktop-launched Electron app inherits a minimal environment, so
+// probing the bare PATH would report "no tmux" on a box that has one.
+function linuxAgentPath() {
+  return [process.env.PATH || '', '/usr/bin', '/usr/local/bin', '/bin',
+    path.join(process.env.HOME || '', '.local/bin')].filter(Boolean).join(':');
+}
+function binaryExists(bin) {
+  const { execFileSync } = require('child_process');
+  try {
+    execFileSync('command', ['-v', bin], { stdio: 'ignore', shell: '/bin/sh', env: { ...process.env, PATH: linuxAgentPath() } });
+    return true;
+  } catch {
+    // `command -v` needs a shell; if that route fails for any reason, fall back
+    // to walking PATH ourselves rather than reporting a false negative.
+    for (const dir of linuxAgentPath().split(':')) {
+      try { fs.accessSync(path.join(dir, bin), fs.constants.X_OK); return true; } catch { /* keep looking */ }
+    }
+    return false;
+  }
+}
+
+// Returns true if the agent is now running in a Linux terminal, false to fall
+// back to headless. See linux-terminal.js for the shapes and why tmux is an
+// upgrade rather than a requirement.
+function launchClaudeLinuxTerminal({ meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall = false }) {
+  const { spawn, execFileSync } = require('child_process');
+  const {
+    detectTerminalEmulator, chooseAgentTerminalPlan, tmuxSessionName,
+    buildDirectCommand, buildTmuxNewSessionArgs, buildViewportCommand,
+  } = require('./linux-terminal.js');
+  const { buildInteractiveAgentArgs, cleanAgentEnv } = require('./agent-spawn.js');
+  const { resolveClaudeModel } = require('./claude-model.js');
+
+  // One agent at a time, mirroring the headless guard: two agents on one bot
+  // both drive the same local server.
+  if (linuxTmuxSession || linuxTerminalChild) {
+    console.log('[electron] Linux agent terminal already running — reusing it');
+    return true;
+  }
+
+  const emulator = detectTerminalEmulator({ exists: binaryExists });
+  const hasTmux = binaryExists('tmux');
+  // linuxAgentTmux, default OFF: a plain terminal unless someone opts in. It
+  // gates only the viewport shape — with no emulator, a detached session is the
+  // only way to have an agent anyone can type at, so that case ignores it.
+  const allowTmux = store.get('linuxAgentTmux') === true;
+  const plan = chooseAgentTerminalPlan({ emulator, hasTmux, allowTmux });
+  if (!plan) return false; // caller falls back to headless, then errors loudly
+
+  const argv = [claudeBin, ...buildInteractiveAgentArgs({
+    meetCode,
+    botName,
+    dangerous: dangerousMode,
+    model: resolveClaudeModel(store.get('claudeModel')),
+    mcpConfigPath,
+    onboardingCall,
+  })];
+
+  // Same env contract as the headless spawn: strip the parent Claude session's
+  // identity (a bot agent is a session in its own right), point the activity
+  // hook and MCP server at THIS app's port, and restore a usable PATH.
+  const env = cleanAgentEnv({
+    ...process.env,
+    VIBECONF_LOCAL_PORT: String(localServer.port),
+    PATH: linuxAgentPath(),
+  });
+
+  console.log('[electron] Linux agent terminal plan:', plan,
+    emulator ? `(emulator: ${emulator.bin})` : '(no emulator)', hasTmux ? '(tmux)' : '(no tmux)');
+
+  try {
+    if (plan === 'direct') {
+      // The emulator hosts the agent directly. cwd carries the working
+      // directory, so no `cd` and no quoting.
+      //
+      // Some emulators fork and return, so the pid we hold is not the terminal
+      // and SIGTERM on it does nothing (measured: xfce4-terminal does this even
+      // with --disable-server). Without tmux there is nothing else to kill, so
+      // the agent can outlive the call still holding its MCP connection. Say so
+      // rather than discovering it as a mystery second bot.
+      if (emulator.reapable === false) {
+        console.warn(`[electron] ${emulator.bin} forks and returns, so this agent cannot be `
+          + 'stopped automatically when the call ends. Install tmux for a session we can '
+          + 'reap, or use xterm.');
+      }
+      const { command, args } = buildDirectCommand({ emulator, argv });
+      const child = spawn(command, args, { cwd: claudeDir, env, detached: false, stdio: 'ignore' });
+      child.on('error', (err) => {
+        console.error('[electron] Linux agent terminal failed to spawn:', err.message);
+        linuxTerminalChild = null;
+      });
+      child.on('exit', (code) => {
+        console.log('[electron] Linux agent terminal exited, code', code);
+        linuxTerminalChild = null;
+      });
+      linuxTerminalChild = child;
+      return true;
+    }
+
+    // tmux shapes. Create the session detached FIRST so the agent is running
+    // whether or not a viewport ever opens — that ordering is what makes the
+    // no-emulator (#324) case work at all.
+    const session = tmuxSessionName({ profile: appProfile, port: localServer.port });
+    execFileSync('tmux', buildTmuxNewSessionArgs({ session, workdir: claudeDir, argv }),
+      { env, stdio: 'ignore' });
+    linuxTmuxSession = session;
+    console.log('[electron] agent running in tmux session', session,
+      `— attach with: tmux attach -t ${session}`);
+
+    const viewport = buildViewportCommand({ emulator, session });
+    if (viewport) {
+      const vc = spawn(viewport.command, viewport.args, { env, stdio: 'ignore' });
+      // A viewport that dies is not an agent that died. Log and move on; the
+      // session is still there and still reattachable.
+      vc.on('error', (err) => {
+        console.error('[electron] tmux viewport failed (agent still running):', err.message);
+        linuxViewportChild = null;
+      });
+      vc.on('exit', () => { linuxViewportChild = null; });
+      linuxViewportChild = vc;
+    } else {
+      console.log('[electron] no terminal emulator — session is detached; attach over SSH');
+    }
+    return true;
+  } catch (err) {
+    console.error('[electron] Linux agent terminal launch failed:', err.message);
+    linuxTmuxSession = null;
+    linuxTerminalChild = null;
+    return false; // let the caller try headless rather than joining agent-less
+  }
 }
 
 // The headless agent, when there is one. Module-level for the same reason
@@ -5989,6 +6185,42 @@ function closeClaudeTerminal() {
     console.log('[electron] ending headless agent');
     try { headlessAgentChild.kill('SIGTERM'); } catch { /* already gone */ }
     headlessAgentChild = null;
+  }
+
+  // #329: the Linux shapes. Killing the tmux SESSION is what ends the agent —
+  // the viewport is only a window onto it, so closing that alone would leave an
+  // agent running and still holding an MCP connection. That is the orphan
+  // hazard the macOS window-ID teardown has always carried; here the session
+  // name is ours, so the kill is direct and cannot miss.
+  if (linuxTmuxSession) {
+    const { execFile } = require('child_process');
+    const { buildKillSessionArgs } = require('./linux-terminal.js');
+    const session = linuxTmuxSession;
+    linuxTmuxSession = null;
+    console.log('[electron] killing tmux session', session);
+    execFile('tmux', buildKillSessionArgs({ session }),
+      { env: { ...process.env, PATH: linuxAgentPath() } },
+      (err, _out, stderr) => {
+        // An agent that already exited on its own is the NORMAL end-of-call
+        // case, and tmux exits non-zero for it ("can't find session", or "no
+        // server running" once the last session goes). Logging that as a
+        // failure would cry wolf on every clean call.
+        if (!err) return;
+        const gone = /can't find session|no server running/i.test(String(stderr || err.message));
+        if (gone) console.log('[electron] tmux session', session, 'had already exited');
+        else console.error('[electron] tmux kill-session failed:', err.message);
+      });
+  }
+  if (linuxViewportChild) {
+    try { linuxViewportChild.kill('SIGTERM'); } catch { /* already gone */ }
+    linuxViewportChild = null;
+  }
+  // The no-tmux shape: the emulator IS the agent's host, so ending it ends the
+  // agent. SIGTERM for the same reason as headless — let the turn finish.
+  if (linuxTerminalChild) {
+    console.log('[electron] ending Linux agent terminal');
+    try { linuxTerminalChild.kill('SIGTERM'); } catch { /* already gone */ }
+    linuxTerminalChild = null;
   }
 
   if (claudeTerminalWindowIds.length === 0) return;

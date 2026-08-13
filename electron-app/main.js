@@ -4346,6 +4346,32 @@ function getIdleUrl() {
   return `${(getWebsiteUrl() || 'https://vibeconferencing.com').replace(/\/+$/, '')}/bot-view`;
 }
 
+// EVERY navigation of the Meet view to the idle page goes through here, and says
+// who asked and what the call thought it was doing at the time.
+//
+// 2026-08-13, v0.8.25 nightly: a bot loaded the Meet URL, reached
+// "===== AUTO-JOIN STARTING =====", and 2.1s later the view was sitting on
+// /bot-view — which the landing classifier correctly reported as "landed on
+// not-meet", failing the join and taking 14 downstream steps with it. The log
+// could not say WHO navigated: one of the two callers logs only AFTER the fact
+// ('Returned to idle state', absent here, which is how we know teardown did NOT
+// run), and the other — the meetView's initial load in createMainWindow — was
+// silent. That left a real intermittent regression un-attributable from a full
+// night's logs. A navigation that can abandon a join in flight must name itself.
+//
+// Note the deliberate asymmetry with the loud paths elsewhere: this logs BEFORE
+// the loadURL, because the interesting case is precisely the one where what
+// follows is a surprise.
+function loadIdlePage(reason) {
+  if (!meetView || meetView.webContents.isDestroyed()) return;
+  const status = (() => { try { return localServer?.callStatus ?? 'unknown'; } catch { return 'unknown'; } })();
+  // A join in flight is the pathological case, so it's called out by name rather
+  // than left for a human to infer from a status string in a 4000-line log.
+  const inFlight = status === 'navigating' || status === 'joining';
+  console.log(`[electron] Loading idle page (${reason}) — callStatus=${status}${inFlight ? ' ⚠️ ABANDONING A JOIN IN FLIGHT' : ''}`);
+  meetView.webContents.loadURL(getIdleUrl());
+}
+
 // Write a captured page DOM next to the session log, so an unattended run can
 // be post-mortemed. Shared by the #263 denial capture (renderer-pushed, from
 // inside the pre-join loop) and #346's join-landed-somewhere-else capture
@@ -9240,7 +9266,7 @@ function createMainWindow() {
 
   // Load idle placeholder in the Meet view. In Slack mode the surface already
   // loaded app.slack.com (or the channel deep-link) in createSlackSurface.
-  if (!slackMode) meetView.webContents.loadURL(getIdleUrl());
+  if (!slackMode) loadIdlePage('main-window created');
 
   // 'close' (cancellable) before 'closed' (already gone).
   mainWindow.on('close', confirmQuitBeforeClose);
@@ -9255,7 +9281,7 @@ function createMainWindow() {
 
 function showIdle() {
   if (!meetView || meetView.webContents.isDestroyed()) return;
-  meetView.webContents.loadURL(getIdleUrl());
+  loadIdlePage('showIdle — call teardown');
   sync.stopPolling();
   closeWhiteboardWindow('call teardown');
   setImpaired(false); // #424: don't carry a 🥴 into the next call

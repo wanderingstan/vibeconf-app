@@ -51,6 +51,13 @@ const BACKGROUND_TICK_POLL_MS = 2500;
 // resting face. Long enough to be seen, short enough that it can't be mistaken
 // for a state the bot is stuck in.
 const TICK_FACE_MS = 4000;
+// A stuck-on-notification flag (permission prompt, idle nudge) that outlives
+// this backstop is almost certainly stale — the session crashed, or the
+// Notification hook's clearing activity line never arrived — not a prompt
+// someone has genuinely been staring at for ten minutes. Cleared by the next
+// real agent-activity line long before this in the normal case; this is only
+// the floor for "nobody is ever coming back to clear it."
+const AGENT_NOTIFICATION_MAX_AGE_MS = 10 * 60_000;
 
 // Short HH:MM:SS.mmm timestamp for emoji diagnostic logs — lets us cross-
 // reference log lines with actual conversation moments. Keep it local so
@@ -225,6 +232,13 @@ class LocalServer {
     // path here (via the auto-installed hook); we tail it into a ring buffer
     // shown on the debug overlay. Gated by the same `debugOverlay` toggle.
     this.agentLog = [];
+    // The driving session's Notification hook (permission prompt, idle nudge)
+    // reports here — { message, sessionId, at } — so the brain panel can show
+    // "waiting on you" instead of going quiet, the way an unhandled prompt
+    // does today. Cleared by the next real agent-activity line (proof the
+    // session moved past whatever it was waiting on) or by age, see
+    // AGENT_NOTIFICATION_MAX_AGE_MS.
+    this.agentNotification = null;
     // #339: the same feed also drives the avatar's "working" state — new agent
     // activity while we're between speaks means the bot is heads-down doing tool
     // work (🧑‍💻), not just listening (🙂). Detect NEW lines and surface them.
@@ -1406,6 +1420,11 @@ class LocalServer {
       // Recent agent (Claude session) activity — compact lines tailed from the
       // driving session's transcript. Shown on the debug overlay only.
       agentLog: this.agentLog || [],
+      // Null once granted/denied/dismissed, cleared by the next agent-activity
+      // line, or once stale — see AGENT_NOTIFICATION_MAX_AGE_MS.
+      agentNotification: (this.agentNotification && (Date.now() - this.agentNotification.at) <= AGENT_NOTIFICATION_MAX_AGE_MS)
+        ? this.agentNotification
+        : null,
       workingMemory: this.getWorkingMemory(),
       sharing: this.sharing,
       someoneElsePresenting: this.someoneElsePresenting,
@@ -2568,12 +2587,25 @@ class LocalServer {
     this.onBotStateChange(state, extra);
   }
 
+  // The Notification hook's report of a prompt/nudge. Best-effort and cheap
+  // on purpose: this fires from a hook script with a 500ms socket timeout, so
+  // nothing here should be able to slow it down or throw.
+  setAgentNotification({ sessionId, message } = {}) {
+    if (!message) return;
+    this.agentNotification = { message: String(message), sessionId: sessionId || null, at: Date.now() };
+    console.log(ts(), '🔔 [agent] notification:', this.agentNotification.message);
+  }
+
   // #339: new agent activity → reflect a "working" avatar state so the room can
   // tell "heads-down doing tool work" from "listening". A tool line (🔧) means
   // the bot is running tools → 🧑‍💻 working; other activity (reasoning/text) →
   // 🤔 thinking. Only escalates from resting states — never overrides speaking
   // or yielding. A quiet timer eases back to listening/idle once activity stops.
   _onAgentActivity(line) {
+    // Any new activity line is proof the session is past whatever it was
+    // reporting — a granted/denied prompt, a dismissed idle nudge, or a
+    // notification that just wasn't actually blocking anything.
+    if (this.agentNotification) this.agentNotification = null;
     if (this.callStatus !== 'in-call') return;
     if (!['idle', 'listening', 'ticking', 'thinking', 'working'].includes(this.botState)) return;
     if (this.botState === 'idle' || this.botState === 'listening' || this.botState === 'ticking') {
@@ -3831,6 +3863,20 @@ class LocalServer {
       let parsed;
       try { parsed = JSON.parse(body || '{}'); } catch { parsed = {}; }
       this.setAgentSession({ sessionId: parsed.sessionId, transcriptPath: parsed.transcriptPath });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true }));
+      return;
+    }
+
+    // The driving Claude session's Notification hook reports here whenever
+    // Claude Code needs the user's attention — most commonly a permission
+    // prompt. Lets the brain panel show "waiting on you" instead of going
+    // quiet, which today is indistinguishable from a session mid-thought.
+    if (url.pathname === '/api/agent-notification' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      let parsed;
+      try { parsed = JSON.parse(body || '{}'); } catch { parsed = {}; }
+      this.setAgentNotification({ sessionId: parsed.sessionId, message: parsed.message });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: true }));
       return;

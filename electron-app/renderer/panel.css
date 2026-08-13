@@ -1206,6 +1206,13 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
    A read-only view of the agent's activity feed. Monospace because the lines
    are already formatted upstream (🗣 / 🔧 / 💬 prefixes and one-lined text) —
    proportional type would break that alignment for no gain. */
+/* Column so the notification banner (when shown) takes only the space it
+   needs and brainFeed absorbs the rest — instead of brainFeed's own fixed
+   height pushing the total past the window whenever the banner appears. */
+.brain-body {
+  display: flex; flex-direction: column; gap: 8px;
+  height: calc(100vh - 150px);
+}
 .brain-feed {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px; line-height: 1.5;
@@ -1213,9 +1220,8 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
   background: #202124; color: #e8eaed;
   border: 1px solid #3c4043; border-radius: 8px;
   padding: 10px 12px;
-  /* Fills the window: this is the only content on the screen, and a fixed
-     height would waste a pane the user opened specifically to read. */
-  height: calc(100vh - 150px); overflow-y: auto;
+  /* Fills whatever's left of .brain-body under the notification banner. */
+  flex: 1; min-height: 0; overflow-y: auto;
   /* The app sets user-select:none globally (it is chrome, not a document), and
      that was swallowing this feed too. But this pane is EXACTLY the case the
      global rule is wrong about: it exists to be read and copied out of — a tool
@@ -1230,6 +1236,21 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
    so it should read as an aside rather than compete with what it actually said. */
 .brain-feed .l-think { color: #c58af9; font-style: italic; }
 .brain-feed .l-none { color: #9aa0a6; font-style: italic; }
+
+/* Waiting-on-you banner (permission prompt / idle nudge reported via the
+   Notification hook — see local-server.js's setAgentNotification). Amber to
+   read as "needs you", not "broken" — this is the agent behaving correctly,
+   just blocked on a human. */
+.brain-notification {
+  flex: none;
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 12px; line-height: 1.4;
+  background: #3f3722; color: #fdd663;
+  border: 1px solid #7c6a2e; border-radius: 8px;
+  padding: 8px 12px;
+}
+.brain-notification .bn-icon { flex: none; }
+.brain-notification .bn-message { flex: 1; word-break: break-word; }
 
 /* #255 — the share-this-call's-log control. A rule used to separate it from the
    feedback buttons above, on the argument that this one sends data off the

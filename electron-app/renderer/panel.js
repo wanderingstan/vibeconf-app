@@ -908,7 +908,24 @@ function renderCallState(s) {
 // for a prompt that cannot exist yet.
 const BRAIN_LINE_CLASS = { '🗣': 'l-say', '🔧': 'l-tool', '💬': 'l-ask', '💭': 'l-think' };
 let _brainLastRendered = '';
+
+// The session's Notification hook (permission prompt, idle nudge) surfaced
+// here — see local-server.js's setAgentNotification / getCallStateSnapshot.
+// Kept separate from renderBrain's "don't fight the user's scroll" gate below:
+// a stuck-on-you banner should never wait behind an unrelated scroll-position
+// check to appear.
+function renderBrainNotification(s) {
+  const el = document.getElementById('brainNotification');
+  if (!el) return;
+  const n = s && s.agentNotification;
+  if (!n || !n.message) { el.style.display = 'none'; el.textContent = ''; return; }
+  const esc = String(n.message).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  el.innerHTML = `<span class="bn-icon">⏸</span><span class="bn-message">Waiting on you: ${esc}</span>`;
+  el.style.display = '';
+}
+
 function renderBrain(s) {
+  renderBrainNotification(s);
   const feed = document.getElementById('brainFeed');
   const status = document.getElementById('brainStatus');
   if (!feed) return;

@@ -174,6 +174,14 @@ const recLinks = allLines('recording-uploads.jsonl').filter((r) => r.ts === stam
 // rclone). Same keep=fails logic as the .mov, so on a red night this links straight
 // to the actual call audio/video of what went wrong.
 const callRecLinks = allLines('call-recording-uploads.jsonl').filter((r) => r.ts === stamp && r.link);
+// Stills pulled from THIS run's failing lanes, plus the vision read of whether
+// something was sitting on top of the app (scripts/failure-stills.mjs). This is
+// the class of cause logs cannot report: on 2026-08-13 a macOS Automation prompt
+// covered the screen for a whole lane and triage spent an hour in the logs
+// concluding the wrong thing. A blocked screen outranks everything else in the
+// message, so it goes directly under the header.
+const stills = allLines('failure-stills.jsonl').filter((r) => r.ts === stamp);
+const blockedBy = stills.find((r) => r.blocked && r.detail);
 
 // --- Claude analysis (only on a red night) ---------------------------------
 // When something failed, hand the failing log lines to `claude -p` for a short
@@ -255,6 +263,10 @@ const dver = dmgVersion(); if (dver) ctx.push(`🖥 DMG ${esc(dver)}`);
 const mc = mainCommit(); if (mc) ctx.push(`🔧 main ${esc(mc)}`);
 if (meetRoomFallback) ctx.push('⚠️ live lanes ran on the SHARED fallback Meet room — /call mint failed (sign the test profile into vibeconferencing.com); a fixed, publicly-joinable code appears in logs.');
 if (recBroken) ctx.push(`⚠️ screen-recording is BROKEN on the runner — the preflight capture produced ${recHealth?.bytes ?? 0} bytes (Screen Recording permission missing for the launchd shell). Any kept .mov is empty; grant the permission or set VIBECONF_RECORD=0.`);
+// Above the lane results on purpose: if a dialog owned the screen, that reframes
+// every red line below it, and reading it after the fact is how a night gets
+// misdiagnosed as a product regression.
+if (blockedBy) ctx.push(`🚨 SOMETHING WAS ON SCREEN during ${esc(blockedBy.lane)} — ${esc(blockedBy.detail)}. Treat the failures below as suspect until this is cleared (someone may need to dismiss it on the runner).`);
 const analysisBlock = analysis ? ['', '🔎 <b>Claude analysis</b>', esc(analysis)] : [];
 // Keep under Telegram's 4096-char hard limit — the status lines are the priority,
 // so trim the analysis tail (not the digest) if the whole thing runs long.
@@ -282,5 +294,29 @@ try {
   console.log(resp.ok ? '[notify] telegram sent' : `[notify] telegram failed: ${resp.status} ${await resp.text().catch(() => '')}`);
 } catch (e) {
   console.log(`[notify] telegram error: ${e.message}`);
+}
+
+// Then the pictures. A link to a 145MB .mov on Drive is a thing you open later
+// (i.e. never, at 3am); a still is a thing you glance at on a phone and know.
+// One frame per failing lane, capped — the digest is an alert, not an album.
+// Strictly after the text send, and each one best-effort, so a photo hiccup can
+// never cost us the message that actually carries the results.
+const photos = stills.flatMap((r) => (r.files || []).slice(0, 1).map((f) => ({ lane: r.lane, file: f, blocked: r.blocked, detail: r.detail })));
+for (const p of photos.slice(0, 3)) {
+  if (!tok) break;
+  try {
+    const bytes = readFileSync(p.file);
+    const form = new FormData();
+    form.append('chat_id', CHAT);
+    form.append('caption', p.blocked ? `🚨 ${p.lane} — ${p.detail}`.slice(0, 1024) : `${p.lane} — screen at time of failure`);
+    form.append('disable_notification', 'true');
+    form.append('photo', new Blob([bytes], { type: 'image/jpeg' }), p.file.split('/').pop());
+    const r = await fetch(`https://api.telegram.org/bot${tok}/sendPhoto`, {
+      method: 'POST', body: form, signal: AbortSignal.timeout(30000),
+    });
+    console.log(r.ok ? `[notify] still sent (${p.lane})` : `[notify] still failed (${p.lane}): ${r.status}`);
+  } catch (e) {
+    console.log(`[notify] still error (${p.lane}): ${e.message}`);
+  }
 }
 process.exit(0);

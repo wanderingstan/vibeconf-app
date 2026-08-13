@@ -349,6 +349,15 @@ rec_run() {  # rec_run <lane> -- <cmd...> : run cmd (tee'd to $LOG), return its 
       # keeps it next run (greens have no tag and get reaped).
       [[ "$REC_KEEP" == "nightly" && "$code" != "0" ]] && { mv "$mov" "${mov%.mov}.FAIL.mov" 2>/dev/null && mov="${mov%.mov}.FAIL.mov"; }
       echo "=== 📹 recording kept: $mov ($(du -h "$mov" 2>/dev/null | cut -f1)) ===" | tee -a "$LOG"
+      # On a RED lane, pull a few stills and ask what was actually on the screen.
+      # A .mov nobody watches is not evidence: the 2026-08-13 night failed with a
+      # macOS Automation prompt sitting on the display for the whole lane, and the
+      # recording that would have shown it in one frame sat unopened while triage
+      # read logs. Synchronous (a few seconds) and never gating — a missing ffmpeg
+      # just logs. See scripts/failure-stills.mjs.
+      if [[ "$code" != "0" && "${VIBECONF_STILLS:-1}" == "1" ]]; then
+        node "$REPO/scripts/failure-stills.mjs" --mov "$mov" --lane "$lane" --stamp "$STAMP" 2>&1 | tee -a "$LOG" || true
+      fi
       # Upload the kept recording to Drive + capture a shareable LINK for the digest —
       # only for failures (or in all-mode); nightly greens stay local. Best-effort:
       # needs `rclone` + the configured remote (VIBECONF_RCLONE_REMOTE, default

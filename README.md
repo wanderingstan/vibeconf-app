@@ -26,7 +26,7 @@ You drive it from your agent (just say *"join my call"*); the app is the "body" 
 Download the **`.dmg`** from the **[latest release](https://github.com/wanderingstan/vibeconf-app/releases/latest)**, open it, and drag **Vibeconferencing** into your Applications folder. Open it once.
 
 ### 2. Allow the permission prompts
-The app needs **no microphone or camera permission** — the bot's mic and camera are synthetic (an AudioContext and a canvas stream), so no capture device is ever opened and macOS isn't consulted. Two optional prompts may appear: **Browser Automation** (lets the app find your open Meet by itself — skip it and just paste the Meet link into the app) and **Screen Recording** (only needed for the bot to share its whiteboard into the call). If you also want the bot to *show* its whiteboard on screen, allow **Screen Recording** too (optional).
+The app needs **no microphone, camera, or screen recording permission** — the bot's mic and camera are synthetic (an AudioContext and a canvas stream) and the whiteboard share captures via the app's own window rendering, so no capture device is ever opened and macOS isn't consulted. One optional prompt may appear: **Browser Automation** (lets the app find your open Meet by itself — skip it and just paste the Meet link into the app).
 
 ### 3. Sign in *(optional)*
 Signing in gets you access to the shared whiteboard. It's optional and not automatic; sign in anytime from App Settings (**⌘,**).

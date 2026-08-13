@@ -52,10 +52,10 @@ If you're filing an issue, include the session log path + the rough time the sym
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `update_whiteboard` returns success but the shared screen doesn't change | Screen Recording permission is denied → the share window can't render. | System Settings → Privacy & Security → Screen & System Audio Recording → enable Vibeconferencing. Re-launch the app. |
+| `update_whiteboard` returns success but the shared screen doesn't change | The whiteboard window failed to render the new content — check the app's console log. | Retry `update_whiteboard`, or `reload_share` to force a refresh. |
 | `share_whiteboard` succeeds, then nothing visible to other participants | Meet picker dialog wasn't acknowledged, or the wrong window was selected. | When sharing, Meet asks which window. The whiteboard window should be the only Vibeconferencing window in that list. |
 | Whiteboard shows blank to other bots in the same room | Other bot's local-server isn't seeing remote whiteboard updates. | Fixed in #202. Confirm you're on a build that includes it. |
-| Whiteboard URL loaded via `update_whiteboard({url: …})` doesn't render | Site uses iframe-blocking CSP. | Try the site in a normal browser tab first. If it blocks framing, you can't use it as a whiteboard URL. |
+| A page loaded via `load_url` doesn't render | Site uses iframe-blocking CSP. | Try the site in a normal browser tab first. If it blocks framing, you can't use it via `load_url`. |
 
 ## Multiple bots / profiles
 

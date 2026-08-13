@@ -173,7 +173,7 @@ class LocalServer {
     this.getWebsiteUrl = getWebsiteUrl || (() => ''); // host where /room/:id renders
     // What URL is currently loaded in the whiteboard window? Surfaced so an
     // agent (or the panel) can confirm what's actually being shared — useful
-    // after update_whiteboard({url}) and scroll_share (#169).
+    // after load_url and scroll_share (#169).
     this.getWhiteboardLoadedUrl = getWhiteboardLoadedUrl || (() => null);
     // The user's persistent panel/store botName preference (#212). Read live so
     // the MCP can resolve an omitted bot_name to the panel preference instead of
@@ -4377,7 +4377,7 @@ class LocalServer {
     }
 
     // Explicit whiteboard reload (#321 follow-up): re-fetch the shared board's
-    // content + style without changing content. Used by the reload_whiteboard
+    // content + style without changing content. Used by the reload_share
     // tool when the bot wants to force a refresh.
     if (data.reloadWhiteboard === true) {
       results.reloadWhiteboard = this.onReloadWhiteboard() || { ok: true };

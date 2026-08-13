@@ -1127,10 +1127,13 @@ server.tool(
   }
 );
 
-// --- reload_whiteboard ---
+// --- reload_share ---
+// Not whiteboard-specific: re-fetches whatever is currently loaded in the
+// share window, markdown board or a URL loaded via load_url alike. Named to
+// match the scroll_share/click_share/type_share/stop_sharing convention.
 server.tool(
-  "reload_whiteboard",
-  "Force the shared whiteboard to refresh WITHOUT changing its content — re-fetches the board's current content + styling and re-renders it. Reach for it if the shared board looks stale or out of sync. No-op if you're not currently sharing the whiteboard. Note: set_whiteboard_style already reloads automatically, so this is mainly a manual escape hatch.",
+  "reload_share",
+  "Force the share window to refresh WITHOUT changing its content — re-fetches whatever is currently shared (the whiteboard, or a page loaded via load_url) and re-renders it. Reach for it if the share looks stale or out of sync. No-op if nothing is currently being shared. Note: set_whiteboard_style already reloads automatically, so this is mainly a manual escape hatch.",
   {
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
@@ -1148,11 +1151,43 @@ server.tool(
       const d = await resp.json();
       const r = d.results?.reloadWhiteboard;
       if (r?.ok) {
-        return { content: [{ type: "text", text: "Whiteboard reloaded." }] };
+        return { content: [{ type: "text", text: "Share reloaded." }] };
       }
       return { content: [{ type: "text", text: r?.error || "Nothing is being shared to reload." }] };
     } catch (err) {
-      return { content: [{ type: "text", text: `Error contacting local server to reload whiteboard: ${err.message}` }] };
+      return { content: [{ type: "text", text: `Error contacting local server to reload share: ${err.message}` }] };
+    }
+  }
+);
+
+// --- load_url ---
+// Split out of update_whiteboard (which used to double as "load any URL into
+// the share window"). An agent showing an unrelated site shouldn't have to
+// call a tool literally named "whiteboard" to do it.
+server.tool(
+  "load_url",
+  "Load an arbitrary web page into the bot's share window in the Google Meet call — a website, localhost app, or dashboard, live (not a markdown board). Present it first with start_share if you're not already sharing; calling this while presenting swaps the live content to this URL. For markdown/Mermaid content, use update_whiteboard instead.",
+  {
+    url: z.string().describe("The URL to load into the share window."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ url, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) {
+      return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    }
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
+        meta: { action: "load-url", url },
+      })),
+    });
+    const data = await resp.json();
+    if (data.success) {
+      return { content: [{ type: "text", text: `Share window now showing: ${url}` }] };
+    } else {
+      return { content: [{ type: "text", text: `Error: ${data.error || "Failed to load URL"}` }] };
     }
   }
 );
@@ -1160,21 +1195,20 @@ server.tool(
 // --- update_whiteboard ---
 server.tool(
   "update_whiteboard",
-  "Update the shared whiteboard/screen in the Google Meet call. Supports markdown and Mermaid diagrams. Can also load an arbitrary URL (e.g. a website, localhost app, dashboard) instead of markdown content. To show a local image (e.g. a generated image), pass image_path (absolute local file path) — it gets registered with the app's local server and embedded as markdown. Do NOT put a raw file:// URL in a markdown image tag inside 'content' and do NOT hand-build a base64 data URI — the whiteboard renders in a sandboxed browser that can't load file:// URLs (broken image), and inlining base64 wastes huge amounts of context. image_path is the only correct way to show a local image.",
+  "Update the shared whiteboard content in the Google Meet call. Supports markdown and Mermaid diagrams. To show a local image (e.g. a generated image), pass image_path (absolute local file path) — it gets registered with the app's local server and embedded as markdown. Do NOT put a raw file:// URL in a markdown image tag inside 'content' and do NOT hand-build a base64 data URI — the whiteboard renders in a sandboxed browser that can't load file:// URLs (broken image), and inlining base64 wastes huge amounts of context. image_path is the only correct way to show a local image. To load an arbitrary website/URL instead of markdown, use load_url.",
   {
     content: z.string().optional().describe("Markdown content for the whiteboard. Supports headings, lists, code blocks, Mermaid diagrams, and images. For SEVERAL images (a grid of options, a comparison), write ordinary markdown image links to absolute local paths — ![city](/abs/path/city.svg) — and they are registered and rewritten for you, so you control the layout. Base64 data URIs are still not supported. For a single image appended after the text, image_path is simpler."),
-    url: z.string().optional().describe("Load an arbitrary URL in the whiteboard window instead of markdown content. Useful for showing websites, localhost apps, or dashboards."),
     image_path: z.string().optional().describe("Absolute local file path to an image (png/jpg/gif/webp/svg/bmp/pdf). The local server registers it and embeds it in the markdown. This is the correct way to show a local/generated image — do not build your own file:// link or base64 data URI. If 'content' is also provided, the image is appended after it."),
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
-  async ({ content, url, image_path, room_id }) => {
+  async ({ content, image_path, room_id }) => {
     const roomId = room_id || ROOM_ID;
     if (!roomId) {
       return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
     }
 
-    if (!content && !url && !image_path) {
-      return { content: [{ type: "text", text: "Error: One of 'content', 'url', or 'image_path' must be provided." }] };
+    if (!content && !image_path) {
+      return { content: [{ type: "text", text: "Error: One of 'content' or 'image_path' must be provided." }] };
     }
 
     // image_path: register with the local server and fold the resulting URL
@@ -1228,23 +1262,6 @@ server.tool(
         content = content ? `${content}\n\n${imgMd}` : imgMd;
       } catch (err) {
         return { content: [{ type: "text", text: `Error contacting local server to register image: ${err.message}` }] };
-      }
-    }
-
-    // Load arbitrary URL mode
-    if (url) {
-      const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(botSyncPayload(BOT_NAME, {
-          meta: { action: "load-url", url },
-        })),
-      });
-      const data = await resp.json();
-      if (data.success) {
-        return { content: [{ type: "text", text: `Whiteboard window now showing: ${url}` }] };
-      } else {
-        return { content: [{ type: "text", text: `Error: ${data.error || "Failed to load URL"}` }] };
       }
     }
 
@@ -1562,37 +1579,19 @@ server.tool(
 
 // --- start_share (alias: share_whiteboard) ---
 // "Screen share" is the Meet feature for presenting visual content; the
-// whiteboard window is just the default content source (it can also load any
-// URL, or you can share the whole screen). Shared schema + handler so the
-// legacy share_whiteboard name keeps working for skills in the wild (#177).
+// whiteboard window is the (only) content source — it can load any URL, not
+// just the built-in board. Shared schema + handler so the legacy
+// share_whiteboard name keeps working for skills in the wild (#177).
 const startShareSchema = {
   room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
-  share_type: z.enum(["whiteboard", "screen"]).optional().describe("What to share. 'whiteboard' (default) shares the bot's whiteboard window — set its content with update_whiteboard (markdown/Mermaid, an image, or any URL). 'screen' shares the entire screen."),
   width: z.number().optional().describe("Width of the shared board in pixels. Leave unset for the recommended 800 — the whiteboard renderer is TUNED for 800 wide, so markdown/Mermaid boards should keep it. Only change this when sharing a URL whose content wants a different shape."),
   height: z.number().optional().describe("Height of the shared board in pixels. Leave unset for the recommended 800. Square is deliberate: Meet stacks participant tiles down the RIGHT of a shared screen, so a wide board loses its edge behind them."),
   title_bar: z.boolean().optional().describe("Whether the shared window keeps its title bar. Default true — it labels what people are looking at. Pass false for an edge-to-edge capture when the chrome would read as an accident (a screenshot, a design mock, a full-bleed image)."),
 };
-async function startShareHandler({ room_id, share_type, width, height, title_bar }) {
+async function startShareHandler({ room_id, width, height, title_bar }) {
     const roomId = room_id || ROOM_ID;
     if (!roomId) {
       return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
-    }
-
-    const shareType = share_type || "whiteboard";
-
-    // Pre-flight: confirm screen recording permission before attempting the
-    // share. Without it, getDisplayMedia silently fails and the user hears
-    // the bot claim it shared something that isn't actually visible.
-    try {
-      const preflight = await vfetch(`${BASE_URL}/api/sync/${roomId}`);
-      const preflightData = await preflight.json();
-      const screenPerm = preflightData.status?.permissions?.screenRecording;
-      if (screenPerm && screenPerm !== 'granted' && screenPerm !== 'unknown') {
-        return { content: [{ type: "text", text: `Cannot share: screen recording permission is '${screenPerm}'. The user needs to grant Vibeconferencing access in System Settings > Privacy & Security > Screen Recording. Tell them this in the call (in 1 sentence) so they can fix it.` }] };
-      }
-    } catch (err) {
-      // Non-fatal — fall through to the share attempt; the existing 7s
-      // error-detection path will catch real failures.
     }
 
     // Stamp the attempt start so we can filter out stale errors from earlier
@@ -1628,7 +1627,7 @@ async function startShareHandler({ room_id, share_type, width, height, title_bar
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
-        meta: { action: "share-whiteboard", shareType },
+        meta: { action: "share-whiteboard" },
       })),
     });
 
@@ -1647,10 +1646,7 @@ async function startShareHandler({ room_id, share_type, width, height, title_bar
       // recovered. Don't report failure over stale/transient errors when the
       // share is actually live.
       if (statusData.status?.sharing === true) {
-        const msg = shareType === 'screen'
-          ? "Your screen is now being shared in the call."
-          : "The whiteboard window is now being shared in the call. Use update_whiteboard to change what it shows.";
-        return { content: [{ type: "text", text: msg }] };
+        return { content: [{ type: "text", text: "The whiteboard window is now being shared in the call. Use update_whiteboard to change what it shows." }] };
       }
 
       // Not presenting — explain why, using errors from THIS attempt.
@@ -1660,12 +1656,7 @@ async function startShareHandler({ room_id, share_type, width, height, title_bar
       );
       if (shareErrors.length > 0) {
         const latestError = shareErrors[shareErrors.length - 1];
-        const screenPerm = statusData.status?.permissions?.screenRecording;
-        const permActuallyDenied = screenPerm && screenPerm !== 'granted' && screenPerm !== 'unknown';
-        const suffix = permActuallyDenied
-          ? ` Screen recording permission is '${screenPerm}' — fix in System Settings > Privacy & Security > Screen Recording.`
-          : ` Permission is OK — the Meet UI may not be in a presentable state. Tell the user the share dropped and offer to retry.`;
-        return { content: [{ type: "text", text: `Screen sharing failed: ${latestError.message}.${suffix}` }] };
+        return { content: [{ type: "text", text: `Screen sharing failed: ${latestError.message}. The Meet UI may not be in a presentable state. Tell the user the share dropped and offer to retry.` }] };
       }
 
       return { content: [{ type: "text", text: "Share request was sent but the app reports it isn't presenting yet. The Meet UI may need to be refreshed or focused. Tell the user." }] };
@@ -1675,7 +1666,7 @@ async function startShareHandler({ room_id, share_type, width, height, title_bar
 }
 server.tool(
   "start_share",
-  "Start screen-sharing into the Google Meet call so participants can see it. By default shares the bot's whiteboard window (set its content with update_whiteboard — markdown/Mermaid or any URL); pass share_type 'screen' to share the whole screen instead.",
+  "Start sharing the bot's whiteboard window into the Google Meet call so participants can see it. Set its content with update_whiteboard (markdown/Mermaid), or load_url to show an arbitrary web page instead.",
   startShareSchema,
   startShareHandler
 );
@@ -1696,7 +1687,7 @@ async function shareTabHandler({ room_id, url, app_name }) {
   // is macOS-only for now. On Windows/Linux, fail LOUD and CLEAR (not with a
   // cryptic "osascript not found") and point at the portable alternatives.
   if (process.platform !== "darwin") {
-    return { content: [{ type: "text", text: "Sharing a specific browser tab (share_tab) is macOS-only right now — it uses AppleScript to find and isolate the tab, which Windows/Linux don't support yet. On this platform, tell the user and use start_share with share_type 'screen' to share the whole screen, or the whiteboard, instead." }] };
+    return { content: [{ type: "text", text: "Sharing a specific browser tab (share_tab) is macOS-only right now — it uses AppleScript to find and isolate the tab, which Windows/Linux don't support yet. On this platform, tell the user and use start_share to share the whiteboard instead." }] };
   }
   const roomId = room_id || ROOM_ID;
   if (!roomId) return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
@@ -1723,7 +1714,7 @@ async function shareTabHandler({ room_id, url, app_name }) {
 }
 server.tool(
   "share_tab",
-  "Share a SPECIFIC browser tab into the Google Meet by its URL — ideal for showing the room the exact page you're browsing with the Chrome tools. Pass the tab's `url`; the app finds that tab in Chrome, makes it active, and screen-shares its window live (participants see it update as you navigate). Prefer this over start_share('screen') when you want to present one page rather than the whole desktop. macOS only for now (uses AppleScript to locate the tab); Windows support tracked separately.",
+  "Share a SPECIFIC browser tab into the Google Meet by its URL — ideal for showing the room the exact page you're browsing with the Chrome tools. Pass the tab's `url`; the app finds that tab in Chrome, makes it active, and screen-shares its window live (participants see it update as you navigate). Prefer this over start_share when you want to present a live external page rather than the bot's own whiteboard. macOS only for now (uses AppleScript to locate the tab); Windows support tracked separately.",
   {
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
     url: z.string().describe("The URL of the tab to share — the page you're browsing (e.g. from the claude-in-chrome tab you navigated). Matched by substring against open Chrome tabs, so a distinctive URL works best."),
@@ -1777,7 +1768,7 @@ server.tool(
 // --- scroll_share ---
 server.tool(
   "scroll_share",
-  "Scroll the content currently being screen-shared into the call — useful when you've loaded a long website (via update_whiteboard with a url) or posted markdown longer than the viewport and want to move down. Scrolls smoothly. Direction: 'down'/'up' move ~one screenful, 'top'/'bottom' jump to the ends. Works on whatever is in the share, URL or markdown alike.",
+  "Scroll the content currently being screen-shared into the call — useful when you've loaded a long website (via load_url) or posted markdown longer than the viewport and want to move down. Scrolls smoothly. Direction: 'down'/'up' move ~one screenful, 'top'/'bottom' jump to the ends. Works on whatever is in the share, URL or markdown alike.",
   {
     direction: z.enum(["down", "up", "top", "bottom"]).optional().describe("Scroll direction. Default: down."),
     amount: z.number().optional().describe("Pixels to scroll for up/down (default: ~85% of the viewport). Ignored for top/bottom."),
@@ -1966,7 +1957,7 @@ server.tool(
   "Inspect the live DOM of the bot's Google Meet call, or of whatever it's currently screen-sharing into the call — returns the matched elements' outerHTML. Read-only. Use it to debug what's actually on screen: locate a modal and its dismiss button, find why a share rendered blank, or check Meet's UI state. Pair with get_call_screenshot (pixels) for a fuller picture.",
   {
     selector: z.string().describe("CSS selector to query, e.g. '[role=dialog]', 'button', '.some-class'. Defaults to 'body'."),
-    target: z.enum(["meet", "share"]).optional().describe("Which DOM to read. 'meet' (default) = the bot's Google Meet call page. 'share' = the window currently being screen-shared into the call — that's the whiteboard if you're sharing the whiteboard, or any URL you loaded into it via update_whiteboard."),
+    target: z.enum(["meet", "share"]).optional().describe("Which DOM to read. 'meet' (default) = the bot's Google Meet call page. 'share' = the window currently being screen-shared into the call — that's the whiteboard if you're sharing the whiteboard, or any URL you loaded into it via load_url."),
     max_elements: z.number().optional().describe("Max matched elements to return (default 5, max 20)."),
     max_chars: z.number().optional().describe("Max characters of outerHTML per element (default 4000, max 20000); longer elements are truncated."),
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
@@ -2601,11 +2592,6 @@ server.tool(
 
     if (status.chatUnread) {
       sections.push('Chat: unread message(s) — use read_chat to see them');
-    }
-
-    const screenPerm = status.permissions?.screenRecording;
-    if (screenPerm && screenPerm !== 'granted' && screenPerm !== 'unknown') {
-      sections.push(`Screen recording permission: ${screenPerm} (whiteboard sharing will not work — tell user to grant access in System Settings > Privacy & Security > Screen Recording)`);
     }
 
     if (status.sessionLogPath) {

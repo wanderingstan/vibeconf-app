@@ -1424,6 +1424,23 @@ ipcRenderer.invoke('get-config', ['speakerDebugBorder']).then((r) => {
   console.log('[electron-meet] speakerDebugBorder', speakerDebugBorder ? 'ON — speaking tiles outlined' : 'OFF');
 }).catch(() => {});
 
+// Which per-participant speaking signal(s) the tracker's verdict comes from
+// (#142). Both signals always RUN and are always logged — this only decides
+// which one the verdict is taken from, so the comparison data keeps accruing
+// whatever the setting. See DOMSpeakerTracker for what each signal measures.
+// Re-read on each 2s scan so it can be changed mid-call.
+let speakingDetectionMode = 'either';
+function refreshSpeakingDetectionMode() {
+  ipcRenderer.invoke('get-config', ['speakingDetectionMode']).then((r) => {
+    const v = r?.speakingDetectionMode;
+    if (v && v !== speakingDetectionMode && ['mutation', 'meter', 'either'].includes(v)) {
+      console.log('[speaker-tracker] speakingDetectionMode →', v);
+      speakingDetectionMode = v;
+    }
+  }).catch(() => {});
+}
+refreshSpeakingDetectionMode();
+
 function ensureStatusBar() {
   if (document.getElementById('vibeconf-status-bar')) return;
   const bar = document.createElement('div');
@@ -1968,6 +1985,39 @@ function findPeopleButton() {
   return document.querySelector(MEET.people.buttonFallback);
 }
 
+// Meter-level signal (#142). Meet draws each participant's mic meter as three
+// divs that all share ONE background-image — a sprite of vertical bars at
+// increasing heights — and animates `background-position-x` to pick which bar
+// shows. That property IS the level, as a number, so it can be read directly
+// instead of inferred from how often the tile churns.
+//
+// Read from COMPUTED style, on two triggers: every tile mutation (see
+// _readMeterNow — the same events the mutation counter consumes, reused as
+// "read now" rather than as evidence), and this poll as the backstop.
+//
+// Measured live 2026-08-12, in two rounds: the level is not an inline style
+// (the bar's style attribute is empty) and not the bar's own class either (an
+// observer scoped to it saw evt=0 for a whole call). Meet mutates an ANCESTOR
+// and the bar's computed background-position-x follows from a stylesheet — so
+// there is nothing on the element itself to observe, and getComputedStyle is
+// the only route to the value.
+const METER_SAMPLE_MS = 50;
+// How long a single off-rest sample keeps the meter verdict true. Covers the
+// gaps between the sprite's animation steps (it is quantised, not continuous)
+// without holding so long that a one-frame blip reads as a whole turn. The
+// existing SPEAKING_GRACE_MS still applies on top, at the combine layer.
+const METER_HOLD_MS = 250;
+// How long a raised level must persist (and across at least two readings)
+// before the meter's verdict arms. See the attack note in _readPromoted.
+const METER_ATTACK_MS = 50;
+// Consecutive samples on ONE value that mark it as the meter's resting bar
+// (20 x 50ms = 1s of not moving). See the rest note in _sampleMeter.
+const METER_REST_SAMPLES = 20;
+// Rediscovery cadence for a tile with no live meter element yet. Cheap enough
+// at 1s (one querySelectorAll over one small tile) and stops the 50ms sampler
+// from walking the subtree of every silent participant.
+const METER_DISCOVER_MS = 1000;
+
 class DOMSpeakerTracker {
   constructor() {
     this.participants = new Map();
@@ -1986,6 +2036,7 @@ class DOMSpeakerTracker {
     this._ensurePeoplePaneOpen();
     this.checkInterval = setInterval(() => {
       this._scanParticipants();
+      refreshSpeakingDetectionMode();
       // Self-heal: reopen the people pane whenever it's closed (e.g. a chat
       // read/send switched to the chat pane). _ensurePeoplePaneOpen no-ops when
       // tiles are already present, so this is cheap. Gating on participants.size
@@ -1995,6 +2046,7 @@ class DOMSpeakerTracker {
     }, 2000);
     this._startObserving();
     this.speakingPollInterval = setInterval(() => this._pollSpeakingState(), 200);
+    this.meterPollInterval = setInterval(() => this._sampleMeters(), METER_SAMPLE_MS);
     // Diagnostic heartbeat (5s): makes a "deaf" window legible after the fact.
     // Per participant: is the tile still attached, is the indicator live, and
     // how many raw indicator class-changes (audio-meter animation) we've seen
@@ -2008,6 +2060,7 @@ class DOMSpeakerTracker {
     if (this.observer) this.observer.disconnect();
     if (this.checkInterval) clearInterval(this.checkInterval);
     if (this.speakingPollInterval) clearInterval(this.speakingPollInterval);
+    if (this.meterPollInterval) clearInterval(this.meterPollInterval);
     if (this.healthInterval) clearInterval(this.healthInterval);
   }
 
@@ -2021,9 +2074,23 @@ class DOMSpeakerTracker {
       const itemLive = info.item ? document.contains(info.item) : false;
       const mut = info._hbSubtreeMut || 0;    // tile mutations since last beat (the detection signal)
       info._hbSubtreeMut = 0;
-      parts.push(`${name}${info.isSelf ? '(self)' : ''}[spk=${info.speaking ? 1 : 0} item=${itemLive ? 'live' : 'STALE'} mut=${mut}]`);
+      // Meter state (#142): 'blind' means no sprite element has been found or
+      // none has moved yet, so this participant's verdict is coming from the
+      // mutation counter alone. A whole call of blind tiles is the canary that
+      // Meet changed the meter DOM — the failure this signal must not repeat
+      // silently.
+      const st = info.meter;
+      const off = st ? (st._hbOffRest || 0) : 0;   // readings off the resting bar since last beat
+      // How many readings were triggered by a tile mutation rather than by the
+      // 50ms poll. evt=0 while off>0 means the meter is moving with no mutation
+      // to ride on (a CSS animation), and the poll alone is carrying it.
+      const evt = st ? (st._hbEvents || 0) : 0;
+      if (st) { st._hbOffRest = 0; st._hbEvents = 0; }
+      const mtr = !st || !st.calibrated ? 'blind' : `rest=${st.rest} off=${off} evt=${evt}`;
+      parts.push(`${name}${info.isSelf ? '(self)' : ''}[spk=${info.speaking ? 1 : 0} item=${itemLive ? 'live' : 'STALE'} mut=${mut} mtr=${mtr}]`);
     }
-    console.log('[speaker-health] tiles=' + visiblePeopleTileCount() + ' | ' + (parts.join(' ') || '(no participants tracked)'));
+    console.log('[speaker-health] mode=' + speakingDetectionMode
+      + ' tiles=' + visiblePeopleTileCount() + ' | ' + (parts.join(' ') || '(no participants tracked)'));
   }
 
   _ensurePeoplePaneOpen() {
@@ -2195,12 +2262,18 @@ class DOMSpeakerTracker {
       if (info.item === element || info.item.contains(element)) {
         (info.mutTimes || (info.mutTimes = [])).push(now);
         info._hbSubtreeMut = (info._hbSubtreeMut || 0) + 1;
+        // Same event, two readings: count it for the mutation signal, and take a
+        // fresh LEVEL off the meter (#142) so the verdict below sees the meter
+        // as of this instant rather than as of the last 50ms poll tick.
+        this._readMeterNow(info, now);
         this._evaluateSpeaking(info, info.name, now, 'observer');
       }
     }
   }
 
-  // Raw speaking signal: enough tile mutations in the recent window.
+  // Raw speaking signal #1 of 2: enough tile mutations in the recent window.
+  // The slower but battle-tested one; see _isSpeakingByMeter for the level
+  // signal that reads Meet's meter directly, and _rawSpeaking for the combine.
   _isSpeakingByMutation(info, now) {
     const WINDOW_MS = 1200;
     const MIN_MUTATIONS = 3; // meter does ~6-12 in this window; idle UI does <3
@@ -2210,13 +2283,280 @@ class DOMSpeakerTracker {
     return t.length >= MIN_MUTATIONS;
   }
 
+  // -------------------------------------------------------------------------
+  // Meter-level signal (#142)
+  // -------------------------------------------------------------------------
+  //
+  // Reads Meet's own mic meter as a LEVEL instead of inferring speech from how
+  // much the tile churns. Where the mutation counter needs 3 events inside
+  // 1200ms (so ~300-600ms at the meter's 5-10Hz), this arms once the meter has
+  // sat off its resting bar for METER_ATTACK_MS — ~50ms from the bar rising.
+  //
+  // The element is found by BEHAVIOUR, never by class name — Meet's classes
+  // rotate on every rebuild, and the last attempt to pin one element
+  // (findSpeakingIndicator) is exactly what went deaf. Two properties do the
+  // identifying: the meter bars carry a background-image data URI (the sprite),
+  // and the real one is the only such element whose background-position-x ever
+  // MOVES. A mute/pin decoration can match the first test but never the second,
+  // so a static impostor can't be promoted.
+  //
+  // Until a tile's meter has been seen to move, this signal reports null (not
+  // false) and the verdict falls back to the mutation counter. Going deaf is
+  // the expensive failure here, so an undiscovered meter must never read as
+  // silence.
+  _meterState(info) {
+    if (!info.meter) {
+      info.meter = {
+        el: null,             // promoted meter element, once one has moved
+        candidates: null,     // sprite-bearing descendants, pre-promotion
+        prev: new Map(),      // element -> last sampled background-position-x
+        lastVal: null,        // last value from the promoted element...
+        sameCount: 0,         // ...and how many samples running it has shown it
+        rest: null,           // the resting bar: what this meter shows in silence
+        offSince: 0,          // when the current raised-level run started
+        calibrated: false,    // true once the meter has moved at least once
+        lastMoveAt: 0,        // last reading that held the raised level (post-attack)
+        lastDiscoverAt: 0,
+        samples: 0,
+      };
+    }
+    return info.meter;
+  }
+
+  // Sprite-bearing descendants of a tile: the candidate pool discovery picks
+  // from. Deliberately cheap and deliberately dumb — the actual identification
+  // is "which of these moves", done over subsequent samples.
+  _discoverMeterCandidates(info, st, now) {
+    st.lastDiscoverAt = now;
+    st.candidates = [];
+    st.prev.clear();
+    let sawAnyElement = false;
+    for (const el of info.item.querySelectorAll('*')) {
+      sawAnyElement = true;
+      let bg;
+      try { bg = getComputedStyle(el).backgroundImage; } catch { continue; }
+      if (bg && bg.includes('data:')) st.candidates.push(el);
+    }
+    if (sawAnyElement && !st.candidates.length && !this._warnedNoSprite) {
+      this._warnedNoSprite = true;
+      console.warn('[speaker-meter] no sprite-backed elements in participant tiles — '
+        + 'Meet may have changed the mic-meter DOM; falling back to mutation counting (#142)');
+    }
+  }
+
+  _sampleMeters() {
+    const now = Date.now();
+    for (const [, info] of this.participants) {
+      if (!info.item || !document.contains(info.item)) continue;
+      if (this._sampleMeter(info, now)) {
+        // Only re-evaluate on a meter edge. Calling through on every 50ms
+        // sample would be wasted work — _evaluateSpeaking emits only on a
+        // change, and the 200ms poll already covers the falling edge.
+        this._evaluateSpeaking(info, info.name, now, 'meter');
+      }
+    }
+  }
+
+  // One sample for one participant. Returns true when the meter's own verdict
+  // changed, so the caller can re-evaluate immediately (this is the fast path
+  // the whole issue is about — no window to fill first).
+  _sampleMeter(info, now) {
+    const st = this._meterState(info);
+    const before = this._isSpeakingByMeter(info, now);
+
+    // Pre-promotion: watch every candidate and promote the first one that
+    // moves. Post-promotion: read only that element (one getComputedStyle per
+    // participant per sample).
+    //
+    // Staleness is checked by containment on every sample, not by trusting the
+    // reference: a detached node still answers getComputedStyle (with empty
+    // strings), so a stale pool would sit there looking silent forever — the
+    // exact way the old pinned-element approach went deaf.
+    if (st.el && !info.item.contains(st.el)) { st.el = null; st.candidates = null; }
+    let watched;
+    if (st.el) {
+      watched = [st.el];
+    } else {
+      const poolStale = !st.candidates || !st.candidates.length
+        || !info.item.contains(st.candidates[0]);
+      if (poolStale && now - st.lastDiscoverAt >= METER_DISCOVER_MS) {
+        this._discoverMeterCandidates(info, st, now);
+      }
+      watched = st.candidates || [];
+    }
+
+    // Movers in THIS sample, pre-promotion. Measured live 2026-08-12: Meet's
+    // meter is three bars that step together (0px -> -5px / -20px / -40px), so
+    // "the first element that moves" is a DOM-order coin flip between them.
+    // The centre bar travels furthest and reacts first to sound, so promote by
+    // EXCURSION — biggest jump wins — rather than by whichever comes first.
+    let best = null;
+    for (const el of watched) {
+      let v;
+      try { v = getComputedStyle(el).backgroundPositionX; } catch { continue; }
+      if (v == null) continue;
+      const prev = st.prev.get(el);
+      st.prev.set(el, v);
+
+      if (st.el !== el) {
+        // Still auditioning: a value CHANGE is what proves this is the live
+        // meter rather than a static decoration.
+        if (prev !== undefined && prev !== v) {
+          const travel = Math.abs(parseFloat(v) - parseFloat(prev)) || 0;
+          if (!best || travel > best.travel) best = { el, prev, v, travel };
+        }
+        continue;
+      }
+
+      // The resting bar is whatever this meter PARKS on: the same value held
+      // for a full second without moving. A speaking meter steps between bars
+      // several times a second, so it can't claim rest; a silent one sits still.
+      //
+      // (The obvious alternative — take the most common value — loses the first
+      // utterance of a call, when a raised bar can out-count a rest that has
+      // only been seen a few times.)
+      this._readPromoted(st, v, now);
+    }
+
+    if (best) {
+      st.el = best.el;
+      st.candidates = null;
+      st.rest = best.prev;         // whatever it sat at before it moved
+      st.lastVal = best.v;
+      st.sameCount = 1;
+      st.calibrated = true;
+      st.run = 1;                  // one move seen; the attack still has to be met
+      st.offSince = now;
+      // The style attribute at promotion answers the question the poll exists
+      // to work around: is the level INLINE (observable) or applied from a
+      // stylesheet / CSS animation (not observable, poll-only)?
+      let inline = '';
+      try { inline = (best.el.getAttribute('style') || '').slice(0, 120); } catch { /* ignore */ }
+      console.log('[speaker-meter]', info.name,
+        'meter found — rest=' + best.prev + ' now=' + best.v + ' travel=' + best.travel
+        + ' style="' + inline + '"');
+    }
+
+    return this._isSpeakingByMeter(info, now) !== before;
+  }
+
+  // Fold one reading of the promoted meter into its state. Shared by the poll
+  // and the observer so both paths apply identical rest tracking and attack.
+  _readPromoted(st, v, now) {
+    // The resting bar is whatever this meter PARKS on: the same value held for
+    // a full second without moving. A speaking meter steps between bars several
+    // times a second, so it can't claim rest; a silent one sits still.
+    //
+    // (The obvious alternative — take the most common value — loses the first
+    // utterance of a call, when a raised bar can out-count a rest that has only
+    // been seen a few times.)
+    st.samples++;
+    if (v === st.lastVal) st.sameCount = (st.sameCount || 0) + 1;
+    else { st.lastVal = v; st.sameCount = 1; }
+    if (st.sameCount >= METER_REST_SAMPLES) st.rest = v;
+
+    // Off the resting bar = a raised level. Deliberately NOT "the value
+    // changed": the change back DOWN to rest is a change too, and counting it
+    // would let a single blip arm the verdict on its way out.
+    if (v !== st.rest) {
+      st.run = (st.run || 0) + 1;
+      if (!st.offSince) st.offSince = now;
+      st._hbOffRest = (st._hbOffRest || 0) + 1;
+      // Attack requirement: at least two readings, spanning METER_ATTACK_MS, of
+      // a raised level before the verdict arms. One raised frame is a keystroke
+      // or a chair creak, and with the hold and the grace on top it would have
+      // bought 1.25s of "someone is speaking" — the failure that took the
+      // analyser's fast path out of service (fastFloorDetection).
+      //
+      // Expressed in TIME, not in samples, because the two paths observe at
+      // different rates: the poll every 50ms, the observer at whatever rate
+      // Meet animates. A sample count would silently mean different things.
+      if (st.run >= 2 && (now - st.offSince) >= METER_ATTACK_MS) st.lastMoveAt = now;
+    } else {
+      st.run = 0;
+      st.offSince = 0;
+    }
+  }
+
+  // Event-driven read. Once an element is promoted, the level does not have to
+  // wait for the next poll tick: the tracker ALREADY has a document-wide
+  // observer feeding the mutation counter, and every mutation inside this
+  // participant's tile is exactly the moment Meet redrew their meter. So the
+  // churn the old signal COUNTED is reused here as the trigger to READ.
+  //
+  // Two rounds of live measurement got us here, and both negatives are worth
+  // keeping written down (2026-08-12):
+  //   - the level is not an inline style — the promoted element's style
+  //     attribute is empty, so a `style` observer never fires;
+  //   - it is not the element's own class either — an observer scoped to the
+  //     bar saw evt=0 across a whole call while the meter was plainly moving.
+  // Meet changes something on an ANCESTOR and the bar's computed
+  // background-position-x follows from a stylesheet rule. Nothing on the bar
+  // itself mutates, which is why the poll exists at all.
+  _readMeterNow(info, now) {
+    const st = info.meter;
+    if (!st || !st.el) return false;
+    const before = this._isSpeakingByMeter(info, now);
+    let v;
+    try { v = getComputedStyle(st.el).backgroundPositionX; } catch { return false; }
+    if (v == null) return false;
+    st.prev.set(st.el, v);
+    st._hbEvents = (st._hbEvents || 0) + 1;
+    this._readPromoted(st, v, now);
+    return this._isSpeakingByMeter(info, now) !== before;
+  }
+
+  // true / false / null, where null means "this meter hasn't proved itself yet"
+  // and the caller should fall back to the mutation counter.
+  _isSpeakingByMeter(info, now) {
+    const st = info.meter;
+    if (!st || !st.calibrated) return null;
+    return !!st.lastMoveAt && (now - st.lastMoveAt) < METER_HOLD_MS;
+  }
+
+  // The verdict, from whichever signal(s) speakingDetectionMode selects.
+  //
+  // Both signals are computed every time regardless of the mode, and their
+  // disagreement is logged, so the comparison data that decides the eventual
+  // default keeps accruing whatever the preference is set to. A blind meter
+  // always falls back to mutation counting — no mode can make the tracker
+  // deafer than it was before this signal existed.
+  _rawSpeaking(info, now) {
+    const mut = this._isSpeakingByMutation(info, now);
+    const meter = this._isSpeakingByMeter(info, now);
+    this._logSignalDisagreement(info, mut, meter, now);
+    if (meter === null || speakingDetectionMode === 'mutation') return mut;
+    if (speakingDetectionMode === 'meter') return meter;
+    return mut || meter;   // 'either' — earliest rising edge of the two
+  }
+
+  // Records how far the meter leads (or trails) the mutation counter on each
+  // rising edge, in the shape of the existing [floor-latency] lines: the claim
+  // is that reading a level beats counting churn by 300-600ms, and this is what
+  // turns that into a measured number on real calls.
+  _logSignalDisagreement(info, mut, meter, now) {
+    const s = info._sig || (info._sig = { mut: false, meter: false, mutAt: 0, meterAt: 0 });
+    if (mut && !s.mut) s.mutAt = now;
+    if (meter && !s.meter) s.meterAt = now;
+    const rising = (mut && !s.mut) || (meter && !s.meter);
+    if (rising && s.mutAt && s.meterAt && Math.abs(s.mutAt - s.meterAt) < 5000) {
+      const lead = s.mutAt - s.meterAt;   // >0 = meter got there first
+      console.log('[meter-latency]', info.name, (lead >= 0 ? 'meter led by +' : 'meter trailed by ')
+        + Math.abs(lead) + 'ms');
+      s.mutAt = 0; s.meterAt = 0;
+    }
+    // Both falling: reset so the next turn measures its own edges.
+    if (!mut && !meter) { s.mutAt = 0; s.meterAt = 0; }
+    s.mut = mut; s.meter = meter === true;
+  }
+
   // Asymmetric grace: true trusted instantly (avatar flips with no lag), false
   // held for SPEAKING_GRACE_MS so a brief animation pause mid-utterance doesn't
   // escape as a premature "stopped" (which used to leave wait_for_speech on a
   // stale stopped-timestamp — the 36s-late-response incident). The rolling
   // window already smooths; this adds margin on top.
   _isSpeakingWithGrace(info, now) {
-    const raw = this._isSpeakingByMutation(info, now);
+    const raw = this._rawSpeaking(info, now);
     if (raw) { info.lastTrueAt = now; return true; }
     const SPEAKING_GRACE_MS = 1000;
     if (info.lastTrueAt && (now - info.lastTrueAt) < SPEAKING_GRACE_MS) return true;
@@ -2332,6 +2672,40 @@ class CaptionScraper {
     // anything that's no longer bottommost. The transcript stops being an
     // event log and becomes a map of {turnId → current best-guess text},
     // matching how Meet's caption UI actually behaves.
+    //
+    // #12 — READ THIS BEFORE TOUCHING ANYTHING DOWNSTREAM OF turnId. Six
+    // recurrences of the caption-replay bug (07-22 through 08-11) all trace
+    // back to one property of the line below: a turnId identifies a DOM
+    // ELEMENT OBJECT, not an utterance and not a speaker.
+    //
+    // Consequences, in the order they bite:
+    //
+    //   • A turn's text GROWS. While someone talks, Meet appends to the SAME
+    //     node, so one turnId walks "So" → "So the answer" → "So the answer
+    //     is we should ship it" across polls. Re-delivering a turn because its
+    //     text got longer is correct; the agent needs the new words.
+    //   • Old turns never leave. Meet keeps every row in the document (221
+    //     observed on the 08-11 call) and we re-send all of them every poll,
+    //     so the vast majority of any snapshot is history by construction.
+    //   • If Meet swaps the element, identity is LOST. A UI re-render (or
+    //     virtualized-list recycling — we've never pinned down which) builds a
+    //     fresh object for a row that looks identical on screen. The WeakMap
+    //     has never seen it, so it mints a new turnId and the server sees
+    //     minutes-old speech as brand new. That is the whole bug family.
+    //
+    // The "so dead nodes drop out" note above describes the intent, but note
+    // what it does NOT give you: a WeakMap only releases a key once it's
+    // garbage collected, and a row still in the container is strongly
+    // reachable. So a miss on a row that's currently ON SCREEN cannot be a
+    // dropped entry — it is proof the element was replaced. That inference is
+    // what the fix in local-server.js rests on (search: lastKnownIdx), which
+    // recovers identity by CONTENT and POSITION precisely because turnId is
+    // untrustworthy across a re-render.
+    //
+    // Corollary for anyone tempted to "fix" replay here in the scraper: you
+    // cannot. From inside this class a replayed row is indistinguishable from
+    // a new one — same shape, same absence from the WeakMap. Only the server,
+    // which holds the call's history, can tell them apart.
     this._turnIdByChild = new WeakMap();
     this._nextTurnId = 1;
     this._lastSentSnapshot = ''; // for IPC dedup — skip sending if nothing changed
@@ -2650,6 +3024,9 @@ window.addEventListener('message', (event) => {
   }
   if (event.data.action === 'record-name') {
     ipcRenderer.send('call-record-name', event.data.payload || {});
+  }
+  if (event.data.action === 'record-speaker-event') {
+    ipcRenderer.send('call-record-speaker', event.data.payload || {});
   }
   if (event.data.action === 'record-started') {
     ipcRenderer.send('page-inject-log', `[call-record] renderer started recording (room ${event.data.payload?.room || '?'})`);
@@ -3318,17 +3695,32 @@ window.addEventListener('DOMContentLoaded', () => {
     }
   } catch { /* body not ready */ }
 
-  // Only run Meet automation on actual Meet pages
-  if (!window.location.href.includes(MEET.url.host)) {
-    console.log('[electron-meet] Not a Meet page (banner shown), skipping automation');
-    return;
-  }
-  // Run join automation ONLY on a meeting-code URL. We now load Meet home
-  // (meet.google.com/) as the idle view so the operator can sign in / start
-  // meetings / debug manually — the join poll must not fire there (or on /new,
-  // /landing, etc.), only when actually navigated into a meeting code.
-  if (!MEET.url.meetingCodePath.test(window.location.pathname)) {
-    console.log('[electron-meet] Meet home/landing (no meeting code) — skipping join automation');
+  // #346: classify what we ACTUALLY landed on before deciding to automate. See
+  // MEET.classifyLanding for why sign-in is tested first and why the host test
+  // is on hostname rather than a substring of the href.
+  //
+  // Join automation runs ONLY on a meeting-code URL. Everything else is
+  // reported to main, which is the side that knows whether a join was in
+  // flight — a landing that is perfectly normal when idle (the bot-view page,
+  // Meet home after a call) is a hard failure when we were mid-join. Reporting
+  // the fact and letting main judge it keeps that decision in one place.
+  const landing = MEET.classifyLanding({
+    href: window.location.href,
+    hostname: window.location.hostname,
+    pathname: window.location.pathname,
+  });
+  if (landing !== 'meeting') {
+    if (landing === 'sign-in') {
+      console.warn('[electron-meet] Google identity/sign-in challenge at ' + window.location.pathname
+        + ' — join automation cannot proceed until a human signs the bot in.');
+    } else if (landing === 'not-meet') {
+      console.log('[electron-meet] Not a Meet page (banner shown), skipping automation');
+    } else {
+      console.log('[electron-meet] Meet home/landing (no meeting code) — skipping join automation');
+    }
+    try {
+      ipcRenderer.send('meet-landing', { landing, url: window.location.href });
+    } catch { /* ignore */ }
     return;
   }
 

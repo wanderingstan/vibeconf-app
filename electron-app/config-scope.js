@@ -48,6 +48,12 @@ const APP_LEVEL_KEYS = new Set([
   // profile's experimental headless setting machine-wide would silently move
   // every bot off the Terminal path.
   'agentHosting',
+  // Which terminal tooling this MACHINE has, and how the user wants it used, is
+  // not a property of any one bot — tmux is installed once, per machine. Sharing
+  // agentHosting's scope also keeps the two agent-hosting controls together in
+  // App Settings instead of one of them being per-profile and therefore
+  // INVISIBLE (App Settings renders app-level schema prefs only, via isAppLevel).
+  'linuxAgentTmux',
   // The update CHANNEL is a property of the app BINARY, which every profile on
   // this machine shares — there is ONE updater, so "profile A on candidate,
   // profile B on release" is meaningless. Per-profile it would also be INVISIBLE

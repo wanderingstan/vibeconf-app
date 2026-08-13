@@ -2,7 +2,7 @@
 // Manages Meet BrowserView + panel sidebar in a single window,
 // IPC routing, TTS, and sync.
 
-const { app, BrowserWindow, BrowserView, ipcMain, session, shell, nativeImage, desktopCapturer, systemPreferences, dialog, Menu, net } = require('electron');
+const { app, BrowserWindow, BrowserView, ipcMain, session, shell, nativeImage, desktopCapturer, dialog, Menu, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const vm = require('vm');
@@ -20,7 +20,7 @@ const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEv
 const { CallRecordingSession } = require('./call-recorder.js');
 const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWindow } = require('./call-recording-window.js');
 const { mergeCallMedia } = require('./call-media-merge.js');
-const { evictStaleEventIds, selectEventToJoin, selectUpcomingMatches, matchesCalendarEvent, isEventUpcoming, msUntilStart, resolveMeetUrl: resolveCalendarMeetUrl } = require('./calendar-auto-join.js');
+const { evictStaleEventIds, selectEventToJoin, selectUpcomingMatches, matchesCalendarEvent, isEventUpcoming, msUntilStart, eventDedupeKey, resolveMeetUrl: resolveCalendarMeetUrl } = require('./calendar-auto-join.js');
 const { createMergeProgressWindow, closeMergeProgressWindow } = require('./call-recording-merge-window.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
 const {
@@ -283,6 +283,48 @@ let activeRecording = null;
 // affecting the audio recording at all.
 let activeRecordingWindow = null;
 
+// #328: the control window shows elapsed time, and the renderer has no way to
+// know how much disk that time is actually costing — a 36-minute stand-up wrote
+// a 1.06 GB video.webm. Main owns the only live byte counts (per-track totals on
+// activeRecording), so it pushes them over IPC on this timer; the renderer just
+// formats what it receives. Every 2s: the number is a reassurance gauge, not a
+// readout anyone watches tick.
+const RECORDING_STATS_MS = 2000;
+let _recordingStatsTimer = null;
+
+// Free space on the volume the recording is being written to, or null if it
+// can't be determined. statfs is best-effort by design: it's a nice-to-have on
+// the indicator, and an older/odd platform without it must not break the size
+// display that IS the point.
+function volumeFreeBytes(dir) {
+  try {
+    const st = fs.statfsSync(dir);
+    return Number(st.bsize) * Number(st.bavail);
+  } catch { return null; }
+}
+
+function startRecordingStatsPush() {
+  stopRecordingStatsPush();
+  const tick = () => {
+    if (!activeRecording || !activeRecordingWindow || activeRecordingWindow.isDestroyed()) return;
+    try {
+      activeRecordingWindow.webContents.send('recording-stats', {
+        bytes: activeRecording.totalBytes(),
+        freeBytes: volumeFreeBytes(activeRecording.dir),
+        dir: activeRecording.dir,
+      });
+    } catch { /* window torn down between the check and the send */ }
+  };
+  tick(); // don't make the window wait a full interval for its first number
+  _recordingStatsTimer = setInterval(tick, RECORDING_STATS_MS);
+  if (_recordingStatsTimer.unref) _recordingStatsTimer.unref();
+}
+
+function stopRecordingStatsPush() {
+  if (_recordingStatsTimer) clearInterval(_recordingStatsTimer);
+  _recordingStatsTimer = null;
+}
+
 // The whiteboard-share side-capture (extension, see call-recording-window.js's
 // createShareCaptureWindow): a full-resolution recording of the bot's own
 // whiteboard-window share content, independent of and in addition to the
@@ -385,6 +427,7 @@ function startCallRecording(room, botName, { force = false } = {}) {
     // ffmpeg-missing fallback.
     try {
       activeRecordingWindow = createCallRecordingWindow(meetView);
+      startRecordingStatsPush(); // #328 — feed the window its running size
       console.log('[call-record] recording control window created — capturing video');
     } catch (err) {
       activeRecordingWindow = null;
@@ -472,6 +515,7 @@ async function stopCallRecording() {
   // Stop the control window's MediaRecorder and wait (bounded) for its last
   // chunk BEFORE finalizing activeRecording — otherwise the video track's
   // file could still be receiving a chunk after we've already closed it.
+  stopRecordingStatsPush(); // #328 — nothing to report once we're finalizing
   if (activeRecordingWindow) {
     const win = activeRecordingWindow;
     activeRecordingWindow = null;
@@ -484,6 +528,7 @@ async function stopCallRecording() {
 
   let tracks = 0;
   let manifest = null;
+  const finishedSession = activeRecording; // kept for removeRecoveryNote() after the merges (#343)
   try {
     manifest = activeRecording.stop();
     tracks = manifest.tracks.length;
@@ -571,7 +616,13 @@ async function stopCallRecording() {
     // are the ONLY copy of that material, so they're never removed in that
     // case regardless of the pref.
     const allAttemptedMergesOk = !!mainMerge?.ok && (!shareTrack || !!shareMerge?.ok);
+    // #343: the recovery note's PRESENCE is what marks a recording as
+    // unfinished, so it comes off here and nowhere earlier — this is the first
+    // moment there is genuinely nothing left to do by hand. A skipped merge (no
+    // ffmpeg, no video, cancelled) deliberately KEEPS it: the raw tracks are
+    // then the only copy, and the note is what says so and how to finish them.
     if (allAttemptedMergesOk) {
+      try { finishedSession?.removeRecoveryNote(); } catch { /* best-effort */ }
       let keepTracks = false;
       try { keepTracks = !!prefValue('keepCallRecordingTracks'); } catch { /* default: don't keep */ }
       if (!keepTracks) {
@@ -586,6 +637,35 @@ async function stopCallRecording() {
   }
 
   return { ok: true, dir, tracks };
+}
+
+// #343: the cheap half of stopping a recording, done SYNCHRONOUSLY, for the
+// exits that cannot await anything — 'before-quit' above all.
+//
+// The split that makes this possible: closing the track fds and writing
+// manifest.json are a handful of sync fs calls, while the ffmpeg merge is
+// minutes of CPU. Holding up a quit for the merge would be absurd, but skipping
+// the manifest was quietly catastrophic — it carries each track's
+// startWallClock, the only thing that aligns the tracks to each other and to the
+// transcript, and it cannot be reconstructed from the webm files afterwards. So
+// quitting mid-recording used to leave a folder of orphan files that NOTHING
+// could turn back into a recording.
+//
+// Now it leaves a complete, mergeable set plus the RECOVERY.md explaining how to
+// finish it (see call-recorder.js's _writeRecoveryNote). The last ~1s of video
+// is lost with the capture window, which is the right trade for a quit.
+function finalizeRecordingSync(reason) {
+  if (!activeRecording) return;
+  const session = activeRecording;
+  activeRecording = null; // before stop(), so nothing re-enters on the way out
+  stopRecordingStatsPush();
+  try {
+    const m = session.stop();
+    console.log(`[call-record] ${reason}: finalized ${m.tracks.length} track(s) in ${session.dir} `
+      + '(merge skipped — see RECOVERY.md in that folder to finish it)');
+  } catch (err) {
+    console.warn('[call-record] could not finalize recording on ' + reason + ':', err && err.message);
+  }
 }
 
 // Explicit on/off for the start_recording / stop_recording MCP
@@ -717,6 +797,62 @@ function beginAfterCallWorkOrTeardown(reason) {
   }, seconds * 1000);
 }
 
+// The one clean way to leave a Meet call, whichever side asked for it (the
+// agent's leave_call tool or the panel's Leave Call button). Clicks Google's
+// own "Leave call" button BEFORE navigating the view away — skipping that
+// (the old panel-button behavior) just killed the media connection on
+// nav-away and left a ghost participant for others until Google's timeout
+// reaped it — then hands off to beginAfterCallWorkOrTeardown for the rest.
+function requestCleanLeave(reason) {
+  // #209: finalize any call audio(+video) recording before teardown. Async
+  // now (video stop + merge are real work) — fire-and-forget, teardown must
+  // not block on it; errors are already logged inside.
+  stopCallRecording().catch((err) => console.warn('[call-record] stop on leave failed:', err.message));
+  stopAllRunwayFaces('leave-call'); // P2: end Runway sessions + timers when leaving the call
+  shareIntended = false; // no present is pending once we're leaving
+  shareGeneration++; // cancel any in-flight Present-now retry loop before the view tears down
+
+  // Wait for any in-flight TTS to finish so goodbye speech actually plays.
+  // botState leaves 'speaking' when the `tts-ended` IPC fires (page-inject
+  // posts it when its playback queue drains). Cap the wait so a stuck
+  // synthesis can't block leave forever.
+  const MAX_WAIT_MS = 8000;
+  const POLL_MS = 150;
+  const TAIL_MS = 400; // let the last audio buffer flush into the mic stream
+  const deadline = Date.now() + MAX_WAIT_MS;
+
+  // Give Google a clean leave BEFORE we navigate the view away. Clicking the
+  // real "Leave call" button drops our participant tile immediately.
+  const LEAVE_CLICK_SETTLE_MS = 1000;
+  const performLeave = () => {
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.send('trigger-leave-call');
+    }
+    // Let the click register with Google's servers, then END THE BOT'S
+    // PARTICIPATION — which is not the same as tearing the app down.
+    //
+    // If after-call work is enabled, the bot enters that phase here and the
+    // teardown waits for it: the room, the transcript and every tool stay live
+    // while the agent wraps up. Otherwise this is the old behaviour, teardown
+    // immediately. See call-phase.js.
+    setTimeout(() => beginAfterCallWorkOrTeardown(reason), LEAVE_CLICK_SETTLE_MS);
+  };
+
+  const checkAndLeave = () => {
+    const stillSpeaking = localServer.botState === 'speaking';
+    if (!stillSpeaking) {
+      console.log('[local-server] TTS idle — leaving call');
+      setTimeout(performLeave, TAIL_MS);
+    } else if (Date.now() >= deadline) {
+      console.log('[local-server] TTS still playing after', MAX_WAIT_MS, 'ms — leaving anyway');
+      performLeave();
+    } else {
+      setTimeout(checkAndLeave, POLL_MS);
+    }
+  };
+  checkAndLeave();
+}
+
 // End of the lifecycle: the app-side teardown finally runs. Routed through the
 // panel because that is where the existing leave path lives — showIdle, the
 // terminal close and clearRoom all hang off it.
@@ -780,6 +916,20 @@ function performLeaveTeardown(via) {
     }
   };
   step('clearRoom', () => localServer.clearRoom());
+  // #326: every leave route converges here, so this is where the recording has
+  // to end. Before this, only onLeaveCall (agent leave_call / auto-leave /
+  // host-ended) stopped it — the panel's Leave button reaches teardown via
+  // 'leave-meet' and stopped nothing, so capture kept running against a dead
+  // call until someone clicked Stop: 24s of "recording" an idle view on the
+  // 2026-08-11 stand-up, and a stale activeRecording that would have made the
+  // next startCallRecording return {already:true}. Placed after clearRoom (which
+  // is what sets 'idle' — that ordering is load-bearing) but BEFORE showIdle,
+  // which navigates meetView to the idle page: after that the audio tracks are
+  // gone and there is nothing left to finalize. No-op when no recording is
+  // active, so it's harmless on the routes where onLeaveCall already fired it.
+  step('stopCallRecording', () => {
+    stopCallRecording().catch((err) => console.warn('[call-record] stop on teardown failed:', err.message));
+  });
   step('closeClaudeTerminal', () => closeClaudeTerminal());
   step('showIdle', () => showIdle());
   console.log(ts(), '[electron] Call teardown complete (via ' + via + ') — status',
@@ -989,6 +1139,9 @@ let triageEndpointDown = false;
 const localServer = new globalThis.LocalServer({
   appVersion: app.getVersion(),
   packaged: app.isPackaged, // release (installed .app/DMG) vs running from source
+  // The bot workdir, so afterCallWorkPlan can inline CLAUDE.md's after-call
+  // duties for sessions that don't run in that directory (terminal-driven).
+  getAgentWorkdir: () => require('./agent-workdir.js').agentDirFor(app.getPath('userData')),
 
   // Claude-ready feedback loop: a launched Claude session's SessionStart hook POSTs here
   // once it's up — which only happens when Claude Code is BOTH installed and signed in
@@ -1158,7 +1311,7 @@ const localServer = new globalThis.LocalServer({
     reloadWhiteboardWindow('style change');
   },
   onReloadWhiteboard: () => {
-    // Explicit reload (reload_whiteboard tool): re-fetch the shared board's
+    // Explicit reload (reload_share tool): re-fetch the shared board's
     // content + style without changing anything. No-op if nothing's shared.
     return reloadWhiteboardWindow('explicit reload');
   },
@@ -1269,54 +1422,7 @@ const localServer = new globalThis.LocalServer({
 
   onLeaveCall: () => {
     console.log('[local-server] Leave call requested by agent');
-    // #209: finalize any call audio(+video) recording before teardown. Async
-    // now (video stop + merge are real work) — fire-and-forget, teardown must
-    // not block on it; errors are already logged inside.
-    stopCallRecording().catch((err) => console.warn('[call-record] stop on leave failed:', err.message));
-    stopAllRunwayFaces('leave-call'); // P2: end Runway sessions + timers when leaving the call
-    shareGeneration++; // cancel any in-flight Present-now retry loop before the view tears down
-
-    // Wait for any in-flight TTS to finish so goodbye speech actually plays.
-    // botState leaves 'speaking' when the `tts-ended` IPC fires (page-inject
-    // posts it when its playback queue drains). Cap the wait so a stuck
-    // synthesis can't block leave forever.
-    const MAX_WAIT_MS = 8000;
-    const POLL_MS = 150;
-    const TAIL_MS = 400; // let the last audio buffer flush into the mic stream
-    const deadline = Date.now() + MAX_WAIT_MS;
-
-    // Give Google a clean leave BEFORE we navigate the view away. Clicking the
-    // real "Leave call" button drops our participant tile immediately; skipping
-    // it (the old behavior) just killed the media connection on nav-away and
-    // left a ghost participant for others until Google's timeout reaped it.
-    const LEAVE_CLICK_SETTLE_MS = 1000;
-    const performLeave = () => {
-      if (meetView && !meetView.webContents.isDestroyed()) {
-        meetView.webContents.send('trigger-leave-call');
-      }
-      // Let the click register with Google's servers, then END THE BOT'S
-      // PARTICIPATION — which is not the same as tearing the app down.
-      //
-      // If after-call work is enabled, the bot enters that phase here and the
-      // teardown waits for it: the room, the transcript and every tool stay live
-      // while the agent wraps up. Otherwise this is the old behaviour, teardown
-      // immediately. See call-phase.js.
-      setTimeout(() => beginAfterCallWorkOrTeardown('leave-call'), LEAVE_CLICK_SETTLE_MS);
-    };
-
-    const checkAndLeave = () => {
-      const stillSpeaking = localServer.botState === 'speaking';
-      if (!stillSpeaking) {
-        console.log('[local-server] TTS idle — leaving call');
-        setTimeout(performLeave, TAIL_MS);
-      } else if (Date.now() >= deadline) {
-        console.log('[local-server] TTS still playing after', MAX_WAIT_MS, 'ms — leaving anyway');
-        performLeave();
-      } else {
-        setTimeout(checkAndLeave, POLL_MS);
-      }
-    };
-    checkAndLeave();
+    requestCleanLeave('agent');
   },
   // Play an arbitrary audio file into the call (#audio). Resolve the source to
   // base64 (inline data / local file via fs / remote URL via fetch), then route
@@ -1345,29 +1451,24 @@ const localServer = new globalThis.LocalServer({
       }
     });
   },
-  onShareWhiteboard: (shareType) => {
-    console.log('[local-server] Share requested by agent, type:', shareType);
+  onShareWhiteboard: () => {
+    console.log('[local-server] Whiteboard share requested by agent');
     const meetCode = localServer.roomId;
     if (meetCode) {
-      // Meet sets sharing optimistically (the present-flow is reliable). On Slack
-      // the share engages ~2s later (whiteboard window opens, then the popup
-      // clicks the share button → getDisplayMedia), and the popup reports the
-      // REAL toggle state via selfPresenting → setSharing. So DON'T pre-set true
-      // on Slack: let the actual share drive `sharing`, so the flag can't claim a
-      // share that silently failed (and a too-early stop can't get masked).
-      if (!slackProviderMode) localServer.setSharing(true);
-      if (shareType === 'screen') {
-        // Full screen share — no whiteboard window needed
-        fullScreenShareRequested = true;
-        if (meetView && !meetView.webContents.isDestroyed()) {
-          sendCallCmd(CALL_COMMANDS.triggerScreenShare, { shareType: 'screen' });
-        }
-      } else {
-        // Whiteboard share — open whiteboard window first. Keep the flag
-        // false so setDisplayMediaRequestHandler routes through the
-        // whiteboard-window picker (with main-window exclusion to avoid
-        // #158's infinity-mirror), not the full-screen-grab branch.
-        fullScreenShareRequested = false;
+      // `sharing` is the PUBLISHED, honest presenting state: it goes true only
+      // when the provider confirms we are actually presenting ("Stop presenting"
+      // in the Meet/Slack DOM, via selfPresenting → setSharing). Do NOT pre-set it
+      // here on either platform — the present flow engages a few seconds later
+      // (Meet's Present-now retry loop below; Slack's popup click), so an
+      // optimistic true would claim a share that hasn't started (or silently
+      // failed) and let a too-early stop get masked. Intent — "the agent asked to
+      // present" — lives in `shareIntended`, kept separate so status never lies
+      // about what is really on screen. (#282: the old optimistic Meet flag made
+      // status.sharing flicker true→false during spin-up, which the whiteboard-e2e
+      // harness misread as an "environmental" share collapse.)
+      shareIntended = true;
+      {
+        // Whiteboard share — open whiteboard window first.
         externalShareRequest = null; // POC: switching to the whiteboard drops any tab source
         ipcMain.emit('start-whiteboard-share', {}, { meetCode });
         // Trigger Meet's "Present now" once the whiteboard window is up. A single
@@ -1386,7 +1487,6 @@ const localServer = new globalThis.LocalServer({
         // (cancel on stop/leave) and, on Slack, stop as soon as `sharing` (the
         // real selfPresenting toggle) reports engaged.
         const myGen = ++shareGeneration;
-        selfPresentingConfirmed = false;
         (async () => {
           // Wait for the call before clicking anything. A share requested while
           // Meet is still on "Getting ready…" has no Present button to find, and
@@ -1424,13 +1524,13 @@ const localServer = new globalThis.LocalServer({
               console.log('[electron] Whiteboard share: Present trigger loop cancelled (superseded by stop/leave/new share)');
               return;
             }
-            // Stop as soon as the share is really engaged. selfPresenting is the
-            // provider's read of the actual UI ("Stop presenting" visible) on
-            // BOTH platforms, unlike `sharing`, which Meet sets optimistically
-            // up front and so can never report engagement. This matters beyond
-            // tidiness on Slack, where the control is a single TOGGLE and a late
-            // re-click would flip sharing back OFF.
-            if (selfPresentingConfirmed || (slackProviderMode && localServer.sharing)) {
+            // Stop as soon as the share is really engaged. `sharing` is now the
+            // provider's confirmed read of the actual UI ("Stop presenting"
+            // visible) on BOTH platforms — no longer set optimistically — so it is
+            // the honest engagement signal. This matters beyond tidiness on Slack,
+            // where the control is a single TOGGLE and a late re-click would flip
+            // sharing back OFF.
+            if (localServer.sharing) {
               console.log('[electron] Whiteboard share: engaged (attempt ' + attempt + ') — stopping retries');
               return;
             }
@@ -1442,13 +1542,14 @@ const localServer = new globalThis.LocalServer({
             }
           }
           if (myGen !== shareGeneration) return;
-          if (selfPresentingConfirmed || (slackProviderMode && localServer.sharing)) return;
-          // Give up loudly. `sharing` was set optimistically at the top of
-          // onShareWhiteboard, so leaving it true would have the app — and the
-          // agent reading status — believe it is presenting a board nobody can
-          // see. This is the case that used to end in silence.
+          if (localServer.sharing) return;
+          // Give up loudly. `sharing` is already false here (it only ever goes
+          // true on a confirmed present), so the app — and any agent reading
+          // status — correctly sees "not sharing" rather than a board nobody can
+          // see. Clear the intent so nothing keeps believing a present is pending.
           console.error('[electron] Whiteboard share: never engaged after',
             Math.round(PRESENT_RETRY_MS / 1000) + 's and ' + attempt + ' attempts — giving up');
+          shareIntended = false;
           localServer.setSharing(false);
           localServer.addError('Screen share never started — Meet did not accept the Present-now trigger.');
         })();
@@ -1508,7 +1609,7 @@ const localServer = new globalThis.LocalServer({
   },
   onStopSharing: () => {
     console.log('[local-server] Stop sharing requested by agent');
-    fullScreenShareRequested = false;
+    shareIntended = false;
     // POC (share-agent-tab): if we were sharing an external browser tab, close
     // its throwaway (isolated) window on stop so no window is left hanging.
     const stoppedTabUrl = externalShareRequest && externalShareRequest.url;
@@ -1546,15 +1647,12 @@ const localServer = new globalThis.LocalServer({
       // the window alone; it's no longer this stop's to close.
       if (shareGeneration !== myShareGen) return;
       // Close the whiteboard window — this ends the display media stream for whiteboard shares
-      if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
-        whiteboardWindow.close();
-        whiteboardWindow = null;
-      }
+      closeWhiteboardWindow('stop sharing');
     })();
   },
   // POC (share-agent-tab): the 'share-tab' action lands here with the URL the
   // agent is browsing. Resolve → stash → Present-now (see startExternalTabShare).
-  onChromeShareTab: (url, appName) => { startExternalTabShare({ url, appName }); },
+  onShareTab: (url, appName) => { startExternalTabShare({ url, appName }); },
   onLoadUrl: (url) => {
     console.log('[local-server] Load URL in whiteboard:', url);
     if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
@@ -1675,11 +1773,11 @@ const localServer = new globalThis.LocalServer({
 
   // Click into the shared board.
   //
-  // A selector is the preferred target: the bot can find one with screenshare_read_page,
+  // A selector is the preferred target: the bot can find one with inspect_dom,
   // and it survives the board being a different size than the screenshot it was
   // measured from. Raw x/y stays available for canvas-style content with no
   // addressable elements.
-  onScreenshareClick: async ({ selector, x, y, button, clickCount } = {}) => {
+  onShareClick: async ({ selector, x, y, button, clickCount } = {}) => {
     const wc = shareWebContents();
     if (!wc) return { ok: false, error: 'Nothing is being shared to click' };
 
@@ -1702,7 +1800,7 @@ const localServer = new globalThis.LocalServer({
   // Type into the shared board. An optional selector is focused first, since
   // keystrokes go to whatever the page considers focused — without that, text
   // aimed at a form field lands on the body and vanishes.
-  onScreenshareType: async ({ text, key, modifiers, selector } = {}) => {
+  onShareType: async ({ text, key, modifiers, selector } = {}) => {
     const wc = shareWebContents();
     if (!wc) return { ok: false, error: 'Nothing is being shared to type into' };
 
@@ -1742,15 +1840,17 @@ const localServer = new globalThis.LocalServer({
     shareTitleBar = want;
 
     const live = whiteboardWindow && !whiteboardWindow.isDestroyed();
-    if (live && localServer.sharing) {
+    // Defer on `sharing` OR `shareIntended`: rebuilding the window mid-share drops
+    // the capture, and during the present spin-up `sharing` is honestly still
+    // false while a share is nonetheless pending — intent covers that window.
+    if (live && (localServer.sharing || shareIntended)) {
       console.log('[local-server] Share title bar →', want, '(deferred — a share is live)');
       return { ok: true, visible: want, applied: false };
     }
     if (live) {
       let url = null;
       try { url = whiteboardWindow.webContents.getURL() || null; } catch { /* going away */ }
-      try { whiteboardWindow.close(); } catch { /* already gone */ }
-      whiteboardWindow = null;
+      closeWhiteboardWindow('title bar rebuild');
       if (url) whiteboardWindow = createWhiteboardWindow(url);
       console.log('[local-server] Share title bar →', want, '(window rebuilt)');
       return { ok: true, visible: want, applied: true };
@@ -1759,7 +1859,7 @@ const localServer = new globalThis.LocalServer({
     return { ok: true, visible: want, applied: false };
   },
 
-  onScreenshareScroll: async ({ direction, amount } = {}) => {
+  onScrollShare: async ({ direction, amount } = {}) => {
     if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
       return { ok: false, error: 'Nothing is being shared to scroll' };
     }
@@ -1801,7 +1901,7 @@ const localServer = new globalThis.LocalServer({
   // or the shared whiteboard window and return the matched elements' outerHTML.
   // Lets the bot inspect what it (or a participant) is actually looking at —
   // e.g. locate a modal's dismiss button, debug a blank whiteboard render.
-  onScreenshareReadPage: async ({ target, selector, maxElements, maxChars } = {}) => {
+  onInspectDom: async ({ target, selector, maxElements, maxChars } = {}) => {
     const which = (target || 'meet').toLowerCase();
     let wc = null;
     if (which === 'meet' || which === 'call') {
@@ -1843,31 +1943,31 @@ const localServer = new globalThis.LocalServer({
     }
   },
   // Sandboxed JS eval against the share surface (#244).
-  onScreenshareEval: async ({ expression } = {}) => {
+  onEvalShare: async ({ expression } = {}) => {
     const wc = shareWebContents();
     if (!wc) return { ok: false, error: 'Nothing is being shared to evaluate against' };
     if (!expression) return { ok: false, error: 'expression is required' };
     const result = await evalInShare(wc, expression);
-    console.log('[local-server] screenshare_eval →', result.ok ? 'ok' : `error: ${result.error}`);
+    console.log('[local-server] eval_share →', result.ok ? 'ok' : `error: ${result.error}`);
     return result;
   },
   // Locate an element by description on the share surface (#244).
-  onScreenshareFind: async ({ description, max_results } = {}) => {
+  onFindShareElement: async ({ description, max_results } = {}) => {
     const wc = shareWebContents();
     if (!wc) return { ok: false, error: 'Nothing is being shared to search' };
     if (!description) return { ok: false, error: 'description is required' };
     const result = await findInShare(wc, description, { maxResults: max_results });
-    console.log('[local-server] screenshare_find', JSON.stringify(description), '→',
+    console.log('[local-server] find_share_element', JSON.stringify(description), '→',
       result.ok ? `${result.matches.length} match(es)` : `error: ${result.error}`);
     return result;
   },
   // Read the share surface's buffered console messages (#244).
-  onScreenshareReadConsole: async ({ limit } = {}) => {
+  onReadShareConsole: async ({ limit } = {}) => {
     const wc = shareWebContents();
     return readShareLog(shareConsoleLogs, wc, { limit });
   },
   // Read the share surface's buffered network requests (#244).
-  onScreenshareReadNetwork: async ({ limit } = {}) => {
+  onReadShareNetwork: async ({ limit } = {}) => {
     const wc = shareWebContents();
     return readShareLog(shareNetworkLogs, wc, { limit });
   },
@@ -3355,7 +3455,6 @@ async function stopAllRunwayFaces(why) {
 }
 
 let whiteboardWindow = null;
-let fullScreenShareRequested = false;
 // POC (share-agent-tab): when set to a desktopCapturer window source, the
 // display-media handler shares THAT external window (a specific Chrome tab the
 // agent is browsing) instead of the whiteboard. Cleared on stop/leave. See
@@ -3364,7 +3463,7 @@ let externalShareRequest = null; // { source, title, url } | null
 
 // POC (share-agent-tab): resolve a Chrome tab (by URL) to a desktopCapturer
 // window source, stash it, and trigger Meet's Present-now. Called from the
-// 'share-tab' /api/sync action (via onChromeShareTab) and the 'share-external-tab'
+// 'share-tab' /api/sync action (via onShareTab) and the 'share-external-tab'
 // IPC. Fire-and-forget like onShareWhiteboard — the MCP tool polls `sharing`.
 // TODO for productionization: reuse the whiteboard-share Present-now retry loop
 // (generation token) instead of a single trigger; see docs/share-agent-tab-poc.md.
@@ -3382,7 +3481,7 @@ async function startExternalTabShare({ url, appName } = {}) {
     return { success: false, error: resolved.reason };
   }
   externalShareRequest = { source: resolved.source, title: resolved.title, url };
-  if (localServer) localServer.setSharing(true);
+  shareIntended = true; // intent only — `sharing` goes true when Meet confirms the present (selfPresenting)
   console.log('[electron] share-external-tab →', resolved.source.id, `"${resolved.title}"`);
 
   if (meetView && meetView.webContents) {
@@ -3408,8 +3507,8 @@ function shareWebContents() {
 }
 
 // --- Virtual cursor overlay (#244 follow-up) ---
-// Purely cosmetic: gives the room something to look at when screenshare_click
-// or screenshare_type acts, the way Claude in Chrome's own cursor overlay
+// Purely cosmetic: gives the room something to look at when click_share
+// or type_share acts, the way Claude in Chrome's own cursor overlay
 // does — otherwise a click on the shared board is invisible until its effect
 // shows up. Injected into the shared PAGE itself (not the Electron window
 // chrome), so it's part of what desktopCapturer actually captures. Survives
@@ -3471,7 +3570,7 @@ function vcEnsureOverlayJs() {
 }
 
 // Move the arrow to (x, y) and fire a click ripple there. Coordinates are the
-// same CSS-pixel viewport space screenshare_click already resolves to. Held
+// same CSS-pixel viewport space click_share already resolves to. Held
 // visible for 30s — even a couple of seconds read as an instant flash in
 // testing (#244); the arrow just marks "here's where the last click landed"
 // until the NEXT click/type moves it or the timer runs out, whichever first.
@@ -3520,7 +3619,7 @@ function vcShowCursor(wc, script) {
 
 // Resolve a CSS selector to the CENTRE of the element, in the page's own CSS
 // pixels — which is the coordinate space sendInputEvent expects, and notably
-// NOT the pixel space of screenshare_screenshot (2× on a Retina host). Going
+// NOT the pixel space of get_shared_screenshot (2× on a Retina host). Going
 // through the DOM sidesteps that mismatch entirely.
 async function elementCenterInShare(wc, selector) {
   const js = `(() => {
@@ -3547,6 +3646,20 @@ async function focusInShare(wc, selector) {
     if (!el) return { ok: false, error: 'no element matches ' + ${JSON.stringify(JSON.stringify(selector))} };
     if (typeof el.focus !== 'function') return { ok: false, error: 'element cannot be focused' };
     el.focus();
+    // #101: place the caret at the END. DOM .focus() on a field that already has
+    // text leaves the caret at index 0, so type_share would insert at the front
+    // (and a following select-all/replace could no-op). Wrapped so a field type
+    // that doesn't support selection (e.g. number/email inputs) can't break the
+    // focus that already succeeded.
+    try {
+      if (typeof el.setSelectionRange === 'function' && typeof el.value === 'string') {
+        el.setSelectionRange(el.value.length, el.value.length);
+      } else if (el.isContentEditable) {
+        const r = document.createRange();
+        r.selectNodeContents(el); r.collapse(false);
+        const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+      }
+    } catch (e) { /* selection unsupported on this field — focus still succeeded */ }
     return { ok: document.activeElement === el, error: 'element did not take focus' };
   })()`;
   try {
@@ -3557,8 +3670,8 @@ async function focusInShare(wc, selector) {
   }
 }
 
-// --- screenshare_eval / screenshare_find / screenshare_read_console /
-// screenshare_read_network (#244) ---
+// --- eval_share / find_share_element / read_share_console /
+// read_share_network (#244) ---
 // Electron has no JS-land "attach the Chrome DevTools Protocol" call the way
 // Puppeteer does; these are built on Electron's own native equivalents —
 // executeJavaScript, the 'console-message' webContents event, and
@@ -3625,8 +3738,8 @@ function installShareNetworkListeners() {
 // is safe to call once per whiteboardWindow instance without stepping on
 // anything else.
 function installShareConsoleListener(wc) {
-  if (!wc || wc.isDestroyed() || wc.__screenshareConsoleInstalled) return;
-  wc.__screenshareConsoleInstalled = true;
+  if (!wc || wc.isDestroyed() || wc.__shareConsoleInstalled) return;
+  wc.__shareConsoleInstalled = true;
   const LEVELS = ['verbose', 'info', 'warning', 'error'];
   wc.on('console-message', (event) => {
     pushShareLogEntry(shareConsoleLogs, wc.id, {
@@ -3733,19 +3846,21 @@ let shareTitleBar = true;
 // handler uses frame capture instead. Persisted, so someone who wants it around
 // (to drive the board by hand) keeps it across shares.
 let shareWindowVisible = false;  // seeded from the store in createWhiteboardWindow
-// How the LIVE share is being captured: 'window' (a desktopCapturer source) or
-// 'frame' (the page itself). Hiding a window-captured board would black out the
-// stream — the source stops existing — so the toggle refuses that one case.
-let shareCaptureMode = null;
 // How long the Present-now trigger waits for the bot to actually be in the call
 // before clicking, and how long it then keeps retrying. Both were effectively
 // one combined 10s budget, which a slow Meet join could consume on its own.
 const PRESENT_JOIN_WAIT_MS = 60_000;
 const PRESENT_RETRY_MS = 30_000;
-// The provider's read of the real Meet/Slack UI ("Stop presenting" visible),
-// as opposed to localServer.sharing, which Meet sets optimistically the moment
-// a share is requested. This is what tells the retry loop it can stop.
-let selfPresentingConfirmed = false;
+// Intent to present: the agent asked to share (whiteboard / screen / tab) and we
+// have not yet stopped, left, or given up. Distinct from localServer.sharing,
+// which is the PUBLISHED, confirmed reality — true only once the provider reports
+// "Stop presenting" on screen (selfPresenting). Intent covers the few-second
+// spin-up window (e.g. deferring a title-bar rebuild) WITHOUT ever making status
+// claim a live share. Replaces the old confirmed-presenting var, which existed
+// only because `sharing` used to be set optimistically and so couldn't be trusted
+// as the engagement signal; `sharing` is now honest, so the retry loop reads it
+// directly. (#282)
+let shareIntended = false;
 // Agent-controlled mute for the shared surface's audio (set_share_audio).
 // Mirrors the state page-inject holds, purely so the main process can report
 // it; the mute is enforced there, on the gain node feeding the published track.
@@ -3762,7 +3877,7 @@ let whiteboardLinkPostedForCall = false;
 
 // Reload the shared whiteboard window so it re-fetches content + style. Used
 // after a style change (so current content inherits it) and by the explicit
-// reload_whiteboard tool. No-op (reported to the caller) if nothing's shared.
+// reload_share tool. No-op (reported to the caller) if nothing's shared.
 function reloadWhiteboardWindow(reason) {
   if (whiteboardWindow && !whiteboardWindow.isDestroyed() && !whiteboardWindow.webContents.isDestroyed()) {
     console.log('[whiteboard] Reloading shared board —', reason);
@@ -3770,6 +3885,29 @@ function reloadWhiteboardWindow(reason) {
     return { ok: true };
   }
   return { ok: false, error: 'Nothing is being shared to reload' };
+}
+
+// The one place that closes the whiteboard/share window. close() is not
+// guaranteed — a page-level beforeunload handler (ours or a loaded site's,
+// via onLoadUrl) can make it hang — so this always forces destroy() shortly
+// after, and always nulls the module var so a stuck webContents can never
+// again masquerade as a live share. Every call site used to do its own
+// close()+null, which is how a window could end up orphaned: any site that
+// forgot the null (or skipped closing because of a state guard that assumed
+// clean teardown) left `whiteboardWindow` pointing at nothing while the real
+// OS window stayed on screen with no way to reach it — worse still if
+// shareTitleBar was off, since a frameless window has no close button either.
+function closeWhiteboardWindow(reason) {
+  const win = whiteboardWindow;
+  whiteboardWindow = null;
+  if (!win || win.isDestroyed()) return;
+  console.log('[whiteboard] Closing share window —', reason);
+  try { win.close(); } catch (err) { console.warn('[whiteboard] close() failed:', err.message); }
+  // Give a well-behaved close a moment, then force it regardless.
+  setTimeout(() => {
+    try { if (!win.isDestroyed()) win.destroy(); } catch { /* already gone */ }
+  }, 500);
+  broadcastShareWindowState();
 }
 
 /**
@@ -3847,8 +3985,9 @@ function broadcastShareWindowState() {
     broadcastToRenderers('share-window-state', {
       exists,
       visible: exists && shareWindowVisible,
-      // The one combination the toggle must refuse — see shareCaptureMode.
-      lockedVisible: exists && shareWindowVisible && localServer.sharing && shareCaptureMode === 'window',
+      // Capture is always frame-based now, so hiding the window never blacks
+      // out a live share — nothing for the toggle to refuse.
+      lockedVisible: false,
     });
   } catch { /* panel not up yet */ }
 }
@@ -3959,7 +4098,6 @@ function createWhiteboardWindow(roomUrl) {
     shareConsoleLogs.delete(wcId);
     shareNetworkLogs.delete(wcId);
     whiteboardWindow = null;
-    shareCaptureMode = null;
     broadcastShareWindowState();
   });
   setImmediate(broadcastShareWindowState);
@@ -4514,6 +4652,24 @@ function getIdleUrl() {
   return `${(getWebsiteUrl() || 'https://vibeconferencing.com').replace(/\/+$/, '')}/bot-view`;
 }
 
+// Write a captured page DOM next to the session log, so an unattended run can
+// be post-mortemed. Shared by the #263 denial capture (renderer-pushed, from
+// inside the pre-join loop) and #346's join-landed-somewhere-else capture
+// (main-pulled, from before the loop ever starts) — one naming scheme and one
+// log line for both, rather than two half-identical writers.
+function saveCapturedDom(reason, url, html) {
+  try {
+    const logDir = path.dirname(getSessionLogPath());
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const file = path.join(logDir, `denial-capture-${stamp}.html`);
+    fs.writeFileSync(file, html || '', 'utf-8');
+    console.warn(`[capture-dom] Saved page DOM (${reason || '?'}) → ${file}`);
+    console.warn(`[capture-dom]   url=${url || ''}`);
+  } catch (err) {
+    console.warn('[capture-dom] failed to save DOM:', err.message);
+  }
+}
+
 // Track whether configureMeetSession has been applied to the partition so we
 // don't double-register handlers (which would call callback() twice and crash
 // getDisplayMedia / permission flows).
@@ -4524,11 +4680,43 @@ function ensureMeetSessionConfigured(partition) {
   _configuredMeetPartitions.add(partition);
 }
 
-// The partition the meetView is bound to. There's only one now (#282) — kept as
-// a named binding so the createMeetView / ensureMeetSessionConfigured call sites
-// read clearly. Never reassigned; guest-vs-signed-in is decided by cookies, not
-// by swapping this.
-const currentMeetPartition = SESSION_PARTITION;
+// #347: a second, deliberately cookie-free partition, used ONLY as a fallback
+// when Google blocks the bot's own account with an identity challenge (#346).
+// A partition holds cookies and caches and nothing else — botName, voice,
+// CLAUDE.md, the agent workdir, logs and prefs all live in the profile's
+// userData — so joining from here is the same bot, just not signed in. That is
+// precisely what a human locked out of their account would do: join as a guest
+// anyway and wait for the host to admit them.
+const GUEST_PARTITION = 'persist:guest';
+
+// The partition the meetView is CURRENTLY bound to.
+//
+// #282 collapsed three partitions into one and argued against swapping at
+// runtime, because identity is a profile property ("a profile whose partition
+// has no Google cookies IS a guest") and not a toggle. That still holds, and
+// this does not reopen it: SESSION_PARTITION remains the profile's identity in
+// every normal case. The swap is a degraded mode, entered only once Google has
+// already refused the real account, and _loadMeetURL resets it on every
+// ordinary join so it can never become sticky.
+//
+// The other half of #282's objection was that the old swap dragged Slack's
+// login around, which is why it needed a third box. That cannot happen here:
+// every Slack call site names SESSION_PARTITION literally, never this
+// variable. Keep it that way. Same for the identity IPCs (get-meet-mode,
+// get-meet-account-email, meet-sign-out-bot): they report and mutate the
+// PROFILE's account, so they must always read home, or a one-off guest
+// fallback would make the panel claim the bot is permanently signed out.
+let activeMeetPartition = SESSION_PARTITION;
+
+// #347: the meet URL we have already retried as a guest, so one blocked join
+// produces one guest attempt and not a reload loop if the guest partition
+// somehow lands on a sign-in page too. Cleared by every ordinary (non-fallback)
+// join, so tomorrow's instance of the same recurring room is free to try again.
+let guestFallbackTriedFor = null;
+
+// #347: one "waiting to be let in" notice per guest fallback, not one per poll
+// of Meet's pre-join state.
+let guestLobbyNotified = false;
 
 // True iff the partition holds live Google master-auth cookies — i.e. the bot
 // is signed in (a "guest" profile simply has none). This replaces the old
@@ -4672,29 +4860,12 @@ function configureMeetSession(sess) {
     return ['media', 'microphone', 'camera', 'display-capture'].includes(permission);
   });
 
-  // Screen-share source selection — full screen, or the whiteboard window
-  // with main-window exclusion to avoid the infinity-mirror trap (#158).
+  // Screen-share source selection — always the whiteboard window, captured
+  // via Electron's own frame capture (webContents.mainFrame). This never
+  // touches desktopCapturer for the whiteboard path, so it needs no OS
+  // Screen Recording permission — regardless of whether the share window
+  // happens to be visible or hidden.
   sess.setDisplayMediaRequestHandler(async (request, callback) => {
-    if (fullScreenShareRequested) {
-      try {
-        const sources = await desktopCapturer.getSources({
-          types: ['screen'],
-          thumbnailSize: { width: 0, height: 0 },
-        });
-        if (sources.length > 0) {
-          console.log('[electron] Full screen share source:', sources[0].id, sources[0].name);
-          callback({ video: sources[0] });
-        } else {
-          console.error('[electron] No screen sources found');
-          callback({});
-        }
-      } catch (err) {
-        console.error('[electron] Full screen share error:', err);
-        callback({});
-      }
-      return;
-    }
-
     // POC (share-agent-tab): share a specific external browser window (a Chrome
     // tab the agent is browsing). externalShareRequest.source was resolved ahead
     // of time (tab activated + desktopCapturer source matched) by the
@@ -4709,20 +4880,14 @@ function configureMeetSession(sess) {
     if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
       // Extension: a full-res side capture of the bot's own whiteboard share,
       // independent of the (lower-res) video track of Meet's own render of
-      // it. This IS the moment the share actually engages, regardless of
-      // which branch below answers — see maybeStartShareCapture().
+      // it. This IS the moment the share actually engages.
       maybeStartShareCapture();
-      // callback() may only fire once, so track whether it has — the catch
-      // below must not answer again on behalf of a call that already did.
-      let answered = false;
-      const answer = (streams) => { answered = true; callback(streams); };
       try {
         // Audio for the shared board. Electron's Streams.audio takes a
         // WebFrameMain and captures that frame's audio — so anything the
         // whiteboard page plays (a <video>, a sound effect) reaches the call.
         // Cross-platform, no Chromium feature flags, unlike system loopback
-        // (which is Windows-only in Electron 33 and is a separate problem for
-        // the full-screen share path above).
+        // (which is Windows-only in Electron 33).
         //
         // enableLocalEcho stays at its default false: the bot's own speakers
         // must stay silent or the board's audio would bleed back through the
@@ -4731,68 +4896,15 @@ function configureMeetSession(sess) {
         const wbAudio = !whiteboardWindow.webContents.isDestroyed()
           ? whiteboardWindow.webContents.mainFrame
           : null;
-        // A hidden board has no OS window to capture — it isn't in the window
-        // list at all — so ask for frame capture directly rather than searching,
-        // failing to match, and arriving here via the fallback. Same result, but
-        // the happy path stops logging "No matching whiteboard source", which
-        // reads as a failure to whoever debugs a share next.
-        if (!whiteboardWindow.isVisible()) {
-          console.log('[electron] Share window is hidden — capturing the page frame'
-            + (wbAudio ? ' (with audio)' : ''));
-          shareCaptureMode = 'frame';
-          setImmediate(broadcastShareWindowState);
-          answer(wbAudio
-            ? { video: whiteboardWindow.webContents.mainFrame, audio: wbAudio }
-            : { video: whiteboardWindow.webContents.mainFrame });
-          return;
-        }
-
-        const sources = await desktopCapturer.getSources({
-          types: ['window'],
-          thumbnailSize: { width: 0, height: 0 },
-        });
-        const wbSourceId = whiteboardWindow.getMediaSourceId();
-        const mainSourceId =
-          mainWindow && !mainWindow.isDestroyed() ? mainWindow.getMediaSourceId() : null;
-        const wbTitle = whiteboardWindow.getTitle();
-        console.log('[electron] Display media request — wb source:', wbSourceId, 'main:', mainSourceId, 'title:', wbTitle);
-        console.log('[electron] Available sources:', sources.map(s => `${s.id} "${s.name}"`));
-
-        const candidates = sources.filter(s => s.id !== mainSourceId);
-        let source = candidates.find(s => s.id === wbSourceId);
-        if (!source) source = candidates.find(s => s.name === wbTitle);
-        if (!source) source = candidates.find(s => s.name.startsWith(wbTitle));
-
-        if (source) {
-          console.log('[electron] Matched whiteboard source:', source.id, source.name,
-            '· audio:', wbAudio ? 'whiteboard frame' : 'none');
-          shareCaptureMode = 'window';
-          setImmediate(broadcastShareWindowState);   // the toggle may need to lock
-          answer(wbAudio ? { video: source, audio: wbAudio } : { video: source });
-          return;
-        }
-
-        // Genuinely unexpected now: the window IS on screen but no source matched
-        // it. Frame capture still works, so recover rather than fail the share.
-        //
-        // mainFrame, NOT webContents: Streams.video takes a WebFrameMain or a
-        // DesktopCapturerSource, and anything else throws
-        // "video must be a WebFrameMain or DesktopCapturerSource" — so this
-        // fallback threw instead of falling back, which went unnoticed because
-        // source matching almost always succeeds.
-        console.warn('[electron] Visible share window matched NO capture source — falling back to frame capture (avoiding main window).');
-        shareCaptureMode = 'frame';
-        setImmediate(broadcastShareWindowState);
-        answer(wbAudio
+        callback(wbAudio
           ? { video: whiteboardWindow.webContents.mainFrame, audio: wbAudio }
           : { video: whiteboardWindow.webContents.mainFrame });
       } catch (err) {
-        // callback() is one-time: if the call above already fired and THEN threw
-        // (a bad video type does exactly that), calling it again raises
-        // "One-time callback was called more than once" as an unhandled
-        // rejection, burying the real error under a second one.
+        // callback() is one-time — if it already fired above and THEN threw,
+        // calling it again raises "One-time callback was called more than
+        // once" as an unhandled rejection, burying the real error.
         console.error('[electron] Display media error:', err);
-        if (!answered) { try { callback({}); } catch { /* already answered */ } }
+        try { callback({}); } catch { /* already answered */ }
       }
     } else {
       console.log('[electron] Display media request → no whiteboard window, denying');
@@ -6053,6 +6165,52 @@ async function launchClaudeTerminal(meetCode, { onboardingCall = false } = {}) {
     console.log('[electron] falling back to the Terminal launcher');
   }
 
+  // #329: Linux gets a real terminal instead of falling through to osascript.
+  //
+  // Everything below this point is AppleScript. On Linux it is not "degraded",
+  // it does NOTHING — execFile('osascript') fails ENOENT, the error is logged
+  // and swallowed, and the user sees a bot that joined with "no agent activity"
+  // while Claude was never started (#317). So this branch must RETURN on every
+  // path; falling through is the bug.
+  //
+  // Fallback order is inverted relative to macOS, per #329: terminal first,
+  // then headless, then a loud failure — never a silent no-agent.
+  if (process.platform === 'linux') {
+    const launched = launchClaudeLinuxTerminal({
+      meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall,
+    });
+    if (launched) return;
+    // No terminal emulator AND no tmux. Headless is the last automatic option,
+    // and it can still refuse (it requires dangerousMode — see #330, which adds
+    // the allowlist mode that would make this refusal much rarer).
+    console.log('[electron] no Linux terminal available — trying headless');
+    const headless = launchClaudeHeadless({
+      meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall,
+    });
+    if (headless) return;
+    // Loud, because the alternative is the failure this whole issue exists to
+    // stop being invisible: a bot sitting silently in a room.
+    const msg = 'Could not start the agent: no terminal emulator (xterm, konsole, …) '
+      + 'and no tmux on PATH, and headless hosting refused. Install xterm or tmux, '
+      + 'or enable "dangerous" mode for headless hosting.';
+    console.error('[electron]', msg);
+    try {
+      dialog.showMessageBox({ type: 'error', title: 'Agent could not start', message: msg });
+    } catch { /* no window yet — the log line above is still the record */ }
+    return;
+  }
+
+  // Windows falls through to the AppleScript path below and silently does
+  // nothing, exactly as Linux did before this. Out of scope for #329 (which is
+  // Linux-only by design), but say so rather than pretending it worked — #317
+  // notes the generic "no agent activity" banner cost real debugging time
+  // because a missing spawn looks identical to a hung agent.
+  if (process.platform !== 'darwin') {
+    console.error(`[electron] agent terminal hosting is not implemented on ${process.platform} `
+      + '— the agent was NOT started. Use headless hosting, or start the agent manually.');
+    return;
+  }
+
   // Open a Terminal window running the command. When Terminal isn't already
   // running, `do script` would spawn TWO windows — the auto-created launch
   // window plus the scripted one. Reuse the launch window (window 1) in that
@@ -6105,6 +6263,156 @@ end tell`;
       }
     }
   });
+}
+
+// The Linux agent session (#329). Module-level for the same reason
+// claudeTerminalWindowIds is: leaving the call has to end it.
+//
+// Two shapes, so two handles, and only one is ever set:
+//   linuxTmuxSession  — a tmux session name we own; teardown is kill-session.
+//   linuxTerminalChild— the emulator process itself, when running WITHOUT tmux;
+//                       teardown is killing that pid.
+let linuxTmuxSession = null;
+let linuxTerminalChild = null;
+// The tmux viewport window, when there is one. Separate from the two above
+// because closing it must NOT end the agent — that separation is the whole
+// point of the tmux shape.
+let linuxViewportChild = null;
+
+// Is `bin` runnable? Used both to choose the shape and, implicitly, to promise
+// the spawn below will work.
+//
+// PATH is patched the same way the headless spawn patches it, and for the same
+// reason: a desktop-launched Electron app inherits a minimal environment, so
+// probing the bare PATH would report "no tmux" on a box that has one.
+function linuxAgentPath() {
+  return [process.env.PATH || '', '/usr/bin', '/usr/local/bin', '/bin',
+    path.join(process.env.HOME || '', '.local/bin')].filter(Boolean).join(':');
+}
+function binaryExists(bin) {
+  const { execFileSync } = require('child_process');
+  try {
+    execFileSync('command', ['-v', bin], { stdio: 'ignore', shell: '/bin/sh', env: { ...process.env, PATH: linuxAgentPath() } });
+    return true;
+  } catch {
+    // `command -v` needs a shell; if that route fails for any reason, fall back
+    // to walking PATH ourselves rather than reporting a false negative.
+    for (const dir of linuxAgentPath().split(':')) {
+      try { fs.accessSync(path.join(dir, bin), fs.constants.X_OK); return true; } catch { /* keep looking */ }
+    }
+    return false;
+  }
+}
+
+// Returns true if the agent is now running in a Linux terminal, false to fall
+// back to headless. See linux-terminal.js for the shapes and why tmux is an
+// upgrade rather than a requirement.
+function launchClaudeLinuxTerminal({ meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall = false }) {
+  const { spawn, execFileSync } = require('child_process');
+  const {
+    detectTerminalEmulator, chooseAgentTerminalPlan, tmuxSessionName,
+    buildDirectCommand, buildTmuxNewSessionArgs, buildViewportCommand,
+  } = require('./linux-terminal.js');
+  const { buildInteractiveAgentArgs, cleanAgentEnv } = require('./agent-spawn.js');
+  const { resolveClaudeModel } = require('./claude-model.js');
+
+  // One agent at a time, mirroring the headless guard: two agents on one bot
+  // both drive the same local server.
+  if (linuxTmuxSession || linuxTerminalChild) {
+    console.log('[electron] Linux agent terminal already running — reusing it');
+    return true;
+  }
+
+  const emulator = detectTerminalEmulator({ exists: binaryExists });
+  const hasTmux = binaryExists('tmux');
+  // linuxAgentTmux, default OFF: a plain terminal unless someone opts in. It
+  // gates only the viewport shape — with no emulator, a detached session is the
+  // only way to have an agent anyone can type at, so that case ignores it.
+  const allowTmux = store.get('linuxAgentTmux') === true;
+  const plan = chooseAgentTerminalPlan({ emulator, hasTmux, allowTmux });
+  if (!plan) return false; // caller falls back to headless, then errors loudly
+
+  const argv = [claudeBin, ...buildInteractiveAgentArgs({
+    meetCode,
+    botName,
+    dangerous: dangerousMode,
+    model: resolveClaudeModel(store.get('claudeModel')),
+    mcpConfigPath,
+    onboardingCall,
+  })];
+
+  // Same env contract as the headless spawn: strip the parent Claude session's
+  // identity (a bot agent is a session in its own right), point the activity
+  // hook and MCP server at THIS app's port, and restore a usable PATH.
+  const env = cleanAgentEnv({
+    ...process.env,
+    VIBECONF_LOCAL_PORT: String(localServer.port),
+    PATH: linuxAgentPath(),
+  });
+
+  console.log('[electron] Linux agent terminal plan:', plan,
+    emulator ? `(emulator: ${emulator.bin})` : '(no emulator)', hasTmux ? '(tmux)' : '(no tmux)');
+
+  try {
+    if (plan === 'direct') {
+      // The emulator hosts the agent directly. cwd carries the working
+      // directory, so no `cd` and no quoting.
+      //
+      // Some emulators fork and return, so the pid we hold is not the terminal
+      // and SIGTERM on it does nothing (measured: xfce4-terminal does this even
+      // with --disable-server). Without tmux there is nothing else to kill, so
+      // the agent can outlive the call still holding its MCP connection. Say so
+      // rather than discovering it as a mystery second bot.
+      if (emulator.reapable === false) {
+        console.warn(`[electron] ${emulator.bin} forks and returns, so this agent cannot be `
+          + 'stopped automatically when the call ends. Install tmux for a session we can '
+          + 'reap, or use xterm.');
+      }
+      const { command, args } = buildDirectCommand({ emulator, argv });
+      const child = spawn(command, args, { cwd: claudeDir, env, detached: false, stdio: 'ignore' });
+      child.on('error', (err) => {
+        console.error('[electron] Linux agent terminal failed to spawn:', err.message);
+        linuxTerminalChild = null;
+      });
+      child.on('exit', (code) => {
+        console.log('[electron] Linux agent terminal exited, code', code);
+        linuxTerminalChild = null;
+      });
+      linuxTerminalChild = child;
+      return true;
+    }
+
+    // tmux shapes. Create the session detached FIRST so the agent is running
+    // whether or not a viewport ever opens — that ordering is what makes the
+    // no-emulator (#324) case work at all.
+    const session = tmuxSessionName({ profile: appProfile, port: localServer.port });
+    execFileSync('tmux', buildTmuxNewSessionArgs({ session, workdir: claudeDir, argv }),
+      { env, stdio: 'ignore' });
+    linuxTmuxSession = session;
+    console.log('[electron] agent running in tmux session', session,
+      `— attach with: tmux attach -t ${session}`);
+
+    const viewport = buildViewportCommand({ emulator, session });
+    if (viewport) {
+      const vc = spawn(viewport.command, viewport.args, { env, stdio: 'ignore' });
+      // A viewport that dies is not an agent that died. Log and move on; the
+      // session is still there and still reattachable.
+      vc.on('error', (err) => {
+        console.error('[electron] tmux viewport failed (agent still running):', err.message);
+        linuxViewportChild = null;
+      });
+      vc.on('exit', () => { linuxViewportChild = null; });
+      linuxViewportChild = vc;
+    } else {
+      console.log('[electron] no terminal emulator — session is detached; attach over SSH');
+    }
+    return true;
+  } catch (err) {
+    console.error('[electron] Linux agent terminal launch failed:', err.message);
+    linuxTmuxSession = null;
+    linuxTerminalChild = null;
+    return false; // let the caller try headless rather than joining agent-less
+  }
 }
 
 // The headless agent, when there is one. Module-level for the same reason
@@ -6173,6 +6481,11 @@ function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, cla
       // that simply stops updating is indistinguishable from a quiet call.
       if (error) source.push(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: `[agent failed to launch: ${error.code || error.message}]` }] } }) + '\n');
       else if (code) source.push(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: `[agent exited with code ${code}]` }] } }) + '\n');
+      // Hand the activity feed back to the transcript tail. A dead stream
+      // source otherwise blocks setAgentSession for the rest of the app's
+      // life, and the next terminal-driven session's model/context markers
+      // silently vanish (observed on the 2026-08-10 Seth call).
+      localServer.releaseStreamAgentSource();
     },
   });
   return true;
@@ -6186,6 +6499,42 @@ function closeClaudeTerminal() {
     console.log('[electron] ending headless agent');
     try { headlessAgentChild.kill('SIGTERM'); } catch { /* already gone */ }
     headlessAgentChild = null;
+  }
+
+  // #329: the Linux shapes. Killing the tmux SESSION is what ends the agent —
+  // the viewport is only a window onto it, so closing that alone would leave an
+  // agent running and still holding an MCP connection. That is the orphan
+  // hazard the macOS window-ID teardown has always carried; here the session
+  // name is ours, so the kill is direct and cannot miss.
+  if (linuxTmuxSession) {
+    const { execFile } = require('child_process');
+    const { buildKillSessionArgs } = require('./linux-terminal.js');
+    const session = linuxTmuxSession;
+    linuxTmuxSession = null;
+    console.log('[electron] killing tmux session', session);
+    execFile('tmux', buildKillSessionArgs({ session }),
+      { env: { ...process.env, PATH: linuxAgentPath() } },
+      (err, _out, stderr) => {
+        // An agent that already exited on its own is the NORMAL end-of-call
+        // case, and tmux exits non-zero for it ("can't find session", or "no
+        // server running" once the last session goes). Logging that as a
+        // failure would cry wolf on every clean call.
+        if (!err) return;
+        const gone = /can't find session|no server running/i.test(String(stderr || err.message));
+        if (gone) console.log('[electron] tmux session', session, 'had already exited');
+        else console.error('[electron] tmux kill-session failed:', err.message);
+      });
+  }
+  if (linuxViewportChild) {
+    try { linuxViewportChild.kill('SIGTERM'); } catch { /* already gone */ }
+    linuxViewportChild = null;
+  }
+  // The no-tmux shape: the emulator IS the agent's host, so ending it ends the
+  // agent. SIGTERM for the same reason as headless — let the turn finish.
+  if (linuxTerminalChild) {
+    console.log('[electron] ending Linux agent terminal');
+    try { linuxTerminalChild.kill('SIGTERM'); } catch { /* already gone */ }
+    linuxTerminalChild = null;
   }
 
   if (claudeTerminalWindowIds.length === 0) return;
@@ -6811,6 +7160,24 @@ function removeCodexIntegration() {
   return result.changed;
 }
 
+// Live "is it actually there" checks for the menu — deliberately independent
+// of the leave-no-trace store flags (those only gate re-install at boot; they
+// drift from ground truth if the user hand-edits the config files).
+function isClaudeIntegrationInstalled() {
+  const home = process.env.HOME || process.env.USERPROFILE;
+  const claudeJsonPath = path.join(home, '.claude.json');
+  const { readClaudeConfigSafe } = require('./claude-config.js');
+  const { config, readable } = readClaudeConfigSafe(claudeJsonPath);
+  return readable && !!config.mcpServers?.vibeconferencing;
+}
+
+function isCodexIntegrationInstalled() {
+  const home = process.env.HOME || process.env.USERPROFILE;
+  const configPath = codexConfigPath(home);
+  const { content, readable } = readCodexConfigSafe(configPath);
+  return readable && !!currentCodexMcpServerPath(content);
+}
+
 app.whenReady().then(async () => {
   // P2: force plain system DNS (no DoH). Chromium's built-in resolver does Secure DNS by
   // default, which can't resolve LiveKit's dynamic media/TURN hosts (*.host/.turn.livekit.cloud)
@@ -7095,78 +7462,9 @@ app.whenReady().then(async () => {
   // Deferring this prompt to the wizard was the first fix; deleting it is the
   // right one, and the wizard no longer offers the row either.
 
-  // Check screen recording permission (needed for whiteboard share)
-  if (process.platform === 'darwin') {
-    const screenAccess = systemPreferences.getMediaAccessStatus('screen');
-    console.log('[electron] Screen recording permission at launch:', screenAccess);
-    localServer.setPermission('screenRecording', screenAccess);
-
-    if (screenAccess !== 'granted' && onboardingPending) {
-      // First run: the wizard's Permissions step asks for this, with a sentence
-      // saying why. Probing here would raise the system prompt (and, if already
-      // denied, a blocking dialog) on top of a wizard the user hasn't read yet.
-      console.log('[electron] Deferring screen-capture probe until the setup wizard asks');
-    } else if (screenAccess !== 'granted' && SUPPRESS_NOTIFICATIONS) {
-      // Headless/test instance (e.g. a CI runner or the agent-less test fleet):
-      // there's no interactive user and the smoke doesn't share, so skip both the
-      // capture probe AND — critically — the blocking dialog below. Under a
-      // launcher that lacks Screen Recording (a self-hosted GitHub runner), the
-      // dialog.showMessageBoxSync() call wedges the main process (and its
-      // local-server) forever waiting for a click nobody can make. That is exactly
-      // what hung the on-push smoke to its 20-minute timeout. Permission status is
-      // already recorded above; the probe/dialog only exist to register + prompt a
-      // real user, which is meaningless here.
-      console.log('[electron] Skipping screen-capture probe + permission dialog (test/headless instance)');
-    } else if (screenAccess !== 'granted') {
-      // Attempt a REAL screen capture so macOS registers Vibeconferencing in
-      // the "Screen & System Audio Recording" list (and prompts if the status
-      // is not-determined). The thumbnail size must be non-trivial — Electron
-      // short-circuits {width:1,height:1}/{0,0} without actually capturing, so
-      // TCC never sees a capture attempt and the app never appears in the list
-      // (the bug after `tccutil reset` wipes the entry on every build).
-      desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 192, height: 192 } })
-        .then((sources) => {
-          console.log('[electron] Screen capture probe returned', sources.length, 'source(s); first thumb empty?',
-            sources[0] ? sources[0].thumbnail.isEmpty() : 'n/a');
-        })
-        .catch((err) => {
-          console.error('[electron] Screen capture probe failed:', err && err.message);
-        })
-        .finally(() => {
-          const newStatus = systemPreferences.getMediaAccessStatus('screen');
-          console.log('[electron] Screen recording permission after capture attempt:', newStatus);
-          localServer.setPermission('screenRecording', newStatus);
-          // Still not granted (and not mid-prompt) → guide the user. The app is
-          // now registered, so it'll be present with a toggle in Settings.
-          if (newStatus === 'denied' || newStatus === 'restricted') {
-            const choice = dialog.showMessageBoxSync({
-              type: 'warning',
-              title: 'Screen Recording Permission',
-              message: 'Whiteboard sharing is disabled',
-              detail: 'Vibeconferencing needs Screen Recording permission to share the whiteboard in your Meet calls. The app will still work without it; the bot just can\'t share visuals.\n\nIn System Settings > Privacy & Security > Screen & System Audio Recording, enable the toggle next to Vibeconferencing, then restart the app.',
-              buttons: ['Open System Settings', 'Continue Without'],
-              defaultId: 0,
-              cancelId: 1,
-            });
-            if (choice === 0) {
-              shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
-            }
-          }
-        });
-    }
-  } else {
-    localServer.setPermission('screenRecording', 'granted');
-  }
-
-  // Re-check screen recording perm whenever the app regains focus. Users
-  // typically grant it via System Settings, then return to the app — this
-  // picks up the change without requiring a restart.
-  if (process.platform === 'darwin') {
-    app.on('browser-window-focus', () => {
-      const current = systemPreferences.getMediaAccessStatus('screen');
-      localServer.setPermission('screenRecording', current);
-    });
-  }
+  // Screen Recording permission is no longer needed: the whiteboard share
+  // captures via Electron's own frame capture (webContents.mainFrame), never
+  // desktopCapturer, so there is nothing to probe or prompt for here.
 
   // Load saved config
   const savedConfig = store.getMultiple(['ttsApiKey', 'ttsVoiceId', 'botName', 'syncBaseUrl', 'macosVoice', 'ttsProvider', 'voiceboxUrl', 'voiceboxProfileId', 'voiceboxEngine']);
@@ -7522,7 +7820,7 @@ allURLs`;
   // silence.
   let lastCalendarPollState = null;
 
-  // eventId -> Timeout handle for a join scheduled to fire at the event's
+  // eventDedupeKey -> Timeout handle for a join scheduled to fire at the event's
   // actual start time (see scheduleCalendarJoin below). Deliberately IN
   // MEMORY ONLY, not persisted: on an app restart, any event that hasn't
   // actually joined yet (only actually-joined events go into the persisted
@@ -7553,9 +7851,9 @@ allURLs`;
   // (e.g. the app quit first) should be reconsidered on the next run, not
   // treated as handled.
   function performScheduledCalendarJoin(event, meetUrl) {
-    scheduledCalendarJoins.delete(event.id);
+    scheduledCalendarJoins.delete(eventDedupeKey(event));
     const joinedIds = evictStaleEventIds(store.get('joinedCalendarEventIds') || {}, Date.now());
-    store.set('joinedCalendarEventIds', { ...joinedIds, [event.id]: Date.now() });
+    store.set('joinedCalendarEventIds', { ...joinedIds, [eventDedupeKey(event)]: Date.now() });
     console.log(`[calendar] Auto-joining calendar event "${event.summary || event.id}"`);
     activateMeetProvider(); // no-op if already on a live Meet view
     joinMeetUrl(meetUrl, { spawnAgent: true, calendarEvent: event });
@@ -7568,11 +7866,12 @@ allURLs`;
   // a no-op (scheduledCalendarJoins already has it), so this is safe to call
   // every time selectEventToJoin picks the same event across polls.
   function scheduleCalendarJoin(event, meetUrl) {
-    if (scheduledCalendarJoins.has(event.id)) return;
+    const key = eventDedupeKey(event);
+    if (scheduledCalendarJoins.has(key)) return;
     const delayMs = Math.max(0, msUntilStart(event, Date.now()) || 0);
     console.log(`[calendar] Scheduling auto-join for "${event.summary || event.id}" in ${Math.round(delayMs / 1000)}s`);
     const timer = setTimeout(() => performScheduledCalendarJoin(event, meetUrl), delayMs);
-    scheduledCalendarJoins.set(event.id, timer);
+    scheduledCalendarJoins.set(key, timer);
   }
 
   // Near-term fix for "the bot that should join isn't even running": ANY
@@ -7605,8 +7904,11 @@ allURLs`;
     const now = Date.now();
     // Separate dedupe namespace from joinedCalendarEventIds (that one means
     // "I actually joined this"; this one means "I already launched/focused
-    // another profile for this event") — keyed by `eventId:profileName` so
-    // two different other-profiles matching the same event don't collide.
+    // another profile for this event") — keyed by
+    // `<eventDedupeKey>:profileName` so two different other-profiles matching
+    // the same event don't collide, and (same reason as joinedCalendarEventIds
+    // — see eventDedupeKey) so yesterday's occurrence of a recurring meeting
+    // can't suppress today's launch.
     const launched = evictStaleEventIds(store.get('launchedForOtherProfileEventIds') || {}, now);
     let launchedChanged = false;
 
@@ -7617,7 +7919,7 @@ allURLs`;
       for (const e of events) {
         if (!e || !e.id || !isEventUpcoming(e, now)) continue;
         if (!matchesCalendarEvent(e, { calendarIdentityEmail: fields.calendarIdentityEmail, botName: fields.botName })) continue;
-        const dedupeKey = `${e.id}:${name}`;
+        const dedupeKey = `${eventDedupeKey(e)}:${name}`;
         if (Object.prototype.hasOwnProperty.call(launched, dedupeKey)) continue;
         launched[dedupeKey] = now;
         launchedChanged = true;
@@ -7648,8 +7950,11 @@ allURLs`;
     // Selection must also skip events already scheduled (but not yet
     // actually joined) — merge that in-memory set with the persisted one
     // purely for this lookup; the two stay otherwise independent.
+    // Both maps are keyed by eventDedupeKey (id + occurrence start), never the
+    // bare event id — see eventDedupeKey for why a recurring series' id alone
+    // would make "joined once" mean "never join again".
     const excludeIds = { ...joinedIds };
-    for (const id of scheduledCalendarJoins.keys()) excludeIds[id] = true;
+    for (const key of scheduledCalendarJoins.keys()) excludeIds[key] = true;
 
     // Visibility for testing/debugging: only when the poll actually returned
     // something, so this stays silent during normal idle stretches (the
@@ -7664,7 +7969,7 @@ allURLs`;
         const minutesUntil = delta === null ? null : Math.round(delta / 60000);
         const matched = matchesCalendarEvent(e, { calendarIdentityEmail, botName });
         const upcoming = isEventUpcoming(e, now);
-        const already = !!(e && e.id && Object.prototype.hasOwnProperty.call(excludeIds, e.id));
+        const already = !!(e && e.id && Object.prototype.hasOwnProperty.call(excludeIds, eventDedupeKey(e)));
         const reason = already ? 'already handled/scheduled' : !upcoming ? 'outside 5m window' : !matched ? 'no identity/tag match' : 'MATCH';
         return `"${(e && e.summary) || (e && e.id) || '(untitled)'}" (raw start="${e && e.start}", starts ${minutesUntil == null ? '?' : minutesUntil + 'm'} from now, ${reason})`;
       });
@@ -7694,7 +7999,7 @@ allURLs`;
     if (!meetUrl) {
       console.warn(`[calendar] Matched event "${event.summary || event.id}" but its hangoutLink `
         + `("${event.hangoutLink}") isn't a recognizable Meet URL — skipping, still marking as handled.`);
-      store.set('joinedCalendarEventIds', { ...joinedIds, [event.id]: Date.now() });
+      store.set('joinedCalendarEventIds', { ...joinedIds, [eventDedupeKey(event)]: Date.now() });
       return;
     }
 
@@ -7898,6 +8203,11 @@ app.on('before-quit', () => {
   // where the confirmation learns to stand down (see confirmQuitBeforeClose).
   appIsQuitting = true;
   stopAllRunwayFaces('before-quit'); // P2: best-effort end of Runway sessions on quit (fire-and-forget)
+  // #343: sync, and deliberately NOT the full stopCallRecording() — see
+  // finalizeRecordingSync. Quitting must not wait on an ffmpeg merge, but it
+  // costs nothing to leave the tracks closed and the manifest written, which is
+  // the difference between a recoverable recording and an unrecoverable one.
+  finalizeRecordingSync('quit');
   closeAllClaudeTerminalsSync();
 });
 
@@ -7928,6 +8238,21 @@ function createMeetView(partition) {
     },
   });
   view.webContents.setAudioMuted(true);
+
+  // #346: log every URL this view actually ends up on. We used to log which
+  // account we pinned but never where we landed, so when a join was silently
+  // bounced to a Google password challenge the session log had no way to show
+  // it — the redirect was invisible and the resulting page was mislabelled as
+  // "Meet home". Redirects are logged separately from the final landing
+  // because the interesting hop (meeting → accounts.google.com) is exactly the
+  // one that is gone by the time anything else looks.
+  view.webContents.on('did-redirect-navigation', (_e, url, _isInPlace, isMainFrame) => {
+    if (isMainFrame) console.log('[electron] Meet view redirected →', url);
+  });
+  view.webContents.on('did-navigate', (_e, url) => {
+    console.log('[electron] Meet view navigated →', url);
+  });
+
   view.webContents.on('dom-ready', () => {
     // Re-assert the state-appropriate zoom. A real document reload (manual refresh
     // / the mid-call reload path) resets setZoomFactor, and dom-ready fires on
@@ -8552,8 +8877,10 @@ function activateMeetProvider() {
   }
   slackProviderMode = false;
   slackSurface = null;
-  ensureMeetSessionConfigured(currentMeetPartition);
-  meetView = createMeetView(currentMeetPartition);
+  // #347: follows the active partition, so a provider switch mid-fallback
+  // doesn't silently drop the bot back onto the blocked account.
+  ensureMeetSessionConfigured(activeMeetPartition);
+  meetView = createMeetView(activeMeetPartition);
   attachMeetViewForState(); // #103: hidden host / popout / main window, per state
   layoutViews();
 }
@@ -8676,7 +9003,14 @@ function createMainWindow() {
   applyWindowTitle();
 
   // --- macOS menu bar ---
-  const template = [
+  // A function, not a one-shot array, because the Claude/Codex integration
+  // items reflect live install state (isClaudeIntegrationInstalled /
+  // isCodexIntegrationInstalled) and need to be rebuilt after the user
+  // toggles either one — see the two click handlers below.
+  function buildAppMenuTemplate() {
+    const claudeInstalled = isClaudeIntegrationInstalled();
+    const codexInstalled = isCodexIntegrationInstalled();
+    return [
     {
       label: app.name,
       submenu: [
@@ -8712,7 +9046,7 @@ function createMainWindow() {
           click: () => createOnboardingWindow(),
         },
         { type: 'separator' },
-        {
+        claudeInstalled ? {
           // "Leave no trace" (F&F): remove EVERYTHING the app wrote into the
           // user's Claude Code setup, and remember the choice so the next
           // launch doesn't silently re-install it.
@@ -8736,6 +9070,7 @@ function createMainWindow() {
               if (response === 1) {
                 uninstallClaudeIntegration();
                 try { store?.set('claudeIntegrationRemoved', true); } catch { /* non-fatal */ }
+                refreshAppMenu();
                 dialog.showMessageBox(mainWindow, {
                   type: 'info',
                   message: 'Claude integration removed. No trace left. Restart Claude Code to apply.',
@@ -8743,20 +9078,20 @@ function createMainWindow() {
               }
             });
           },
-        },
-        {
+        } : {
           label: 'Install Claude Integration',
           click: () => {
             const { dialog } = require('electron');
             try { store?.delete('claudeIntegrationRemoved'); } catch { /* non-fatal */ }
             ensureClaudeIntegration();
+            refreshAppMenu();
             dialog.showMessageBox(mainWindow, {
               type: 'info',
               message: 'Claude integration installed. Restart Claude Code to pick it up.',
             });
           },
         },
-        {
+        codexInstalled ? {
           label: 'Uninstall Codex Integration...',
           click: () => {
             const { dialog } = require('electron');
@@ -8774,6 +9109,7 @@ function createMainWindow() {
               if (response === 1) {
                 removeCodexIntegration();
                 try { store?.set('codexIntegrationRemoved', true); } catch { /* non-fatal */ }
+                refreshAppMenu();
                 dialog.showMessageBox(mainWindow, {
                   type: 'info',
                   message: 'Codex integration removed. Restart Codex to apply.',
@@ -8781,13 +9117,13 @@ function createMainWindow() {
               }
             });
           },
-        },
-        {
+        } : {
           label: 'Install Codex Integration',
           click: () => {
             const { dialog } = require('electron');
             try { store?.delete('codexIntegrationRemoved'); } catch { /* non-fatal */ }
             ensureCodexIntegration();
+            refreshAppMenu();
             dialog.showMessageBox(mainWindow, {
               type: 'info',
               message: 'Codex integration installed. Restart Codex to pick it up.',
@@ -8920,16 +9256,32 @@ function createMainWindow() {
         { role: 'minimize' },
         { role: 'zoom' },
         { role: 'close' },
+        { type: 'separator' },
+        {
+          // Escape hatch for an orphaned share window: the normal close paths
+          // (onStopSharing, showIdle) require the app to believe a call/share
+          // is ending, which a crashed or abnormally-dropped call can skip
+          // entirely. The window itself may be frameless (shareTitleBar=false),
+          // so there is otherwise no click target to get rid of it — only
+          // quitting the whole app. This works regardless of call/share state.
+          label: 'Close Share Window',
+          accelerator: 'CmdOrCtrl+Shift+W',
+          click: () => closeWhiteboardWindow('menu'),
+        },
       ],
     },
-  ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+    ];
+  }
+  function refreshAppMenu() {
+    Menu.setApplicationMenu(Menu.buildFromTemplate(buildAppMenuTemplate()));
+  }
+  refreshAppMenu();
 
   // --- Call view (right) ---
   // Single partition (#282) — no "restore previous mode" anymore. Sign-in
   // stickiness now comes from the cookies persisting in this one partition,
   // not from remembering which partition to swap to.
-  ensureMeetSessionConfigured(currentMeetPartition);
+  ensureMeetSessionConfigured(SESSION_PARTITION);
 
   // Provider selection (#264).
   //
@@ -8963,7 +9315,7 @@ function createMainWindow() {
     // Meet code. Shared with the runtime activateSlackProvider path.
     setupSlackRoom(slackUrl);
   } else {
-    meetView = createMeetView(currentMeetPartition);
+    meetView = createMeetView(SESSION_PARTITION);
   }
   attachMeetViewForState(); // #103: hidden host / popout / main window, per state
 
@@ -9208,10 +9560,7 @@ function showIdle() {
   if (!meetView || meetView.webContents.isDestroyed()) return;
   meetView.webContents.loadURL(getIdleUrl());
   sync.stopPolling();
-  // Close whiteboard window if open
-  if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
-    whiteboardWindow.close();
-  }
+  closeWhiteboardWindow('call teardown');
   setImpaired(false); // #424: don't carry a 🥴 into the next call
   console.log('[electron] Returned to idle state');
 }
@@ -9222,9 +9571,9 @@ function showIdle() {
 // see it. The navigation genuinely can throw: it clears caches, reads cookies
 // and rebuilds the BrowserView. Same honesty class as #243/#253 — report the
 // outcome, not the attempt.
-async function loadMeetURL(meetUrl) {
+async function loadMeetURL(meetUrl, opts = {}) {
   try {
-    await _loadMeetURL(meetUrl);
+    await _loadMeetURL(meetUrl, opts);
   } catch (err) {
     const msg = 'Failed to open the Meet page: ' + (err && err.message ? err.message : String(err));
     console.error(ts(), '[electron] #254:', msg);
@@ -9233,10 +9582,29 @@ async function loadMeetURL(meetUrl) {
   }
 }
 
-async function _loadMeetURL(meetUrl) {
+async function _loadMeetURL(meetUrl, { guestFallback = false } = {}) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
   chatSpaceWarned = false; // fresh call — allow one Chat-space warning again
+
+  // #347: the partition for THIS join. Set here, on every join, rather than
+  // toggled and remembered — so the guest fallback can never become sticky no
+  // matter how the previous call ended (host-ended, crash, forced idle). The
+  // only way onto the guest partition is an explicit guestFallback:true, which
+  // only the #346 sign-in handler passes.
+  activeMeetPartition = guestFallback ? GUEST_PARTITION : SESSION_PARTITION;
+  guestLobbyNotified = false;
+  if (guestFallback) {
+    console.warn('[electron] #347: joining as a GUEST — the bot account is blocked by a Google identity challenge.');
+  } else {
+    // A fresh, ordinary join: forget any earlier fallback so the same recurring
+    // room is free to retry as a guest again tomorrow.
+    guestFallbackTriedFor = null;
+  }
+  // The guest partition needs the same CSP stripping, permission handling and
+  // getDisplayMedia wiring as the home one. Cheap and idempotent (it keeps its
+  // own configured-partitions set), so it's safe to call on every join.
+  ensureMeetSessionConfigured(activeMeetPartition);
 
   // Record what we're pointing at so the panel's URL field reflects it (covers
   // --meet-url CLI launches and any programmatic join), and notify the panel now.
@@ -9263,7 +9631,15 @@ async function _loadMeetURL(meetUrl) {
   // Is this profile signed into Google? Drives both the cache-clear decision
   // and the authuser pin below. With a single partition (#282) we can't infer
   // it from "which partition" anymore — read the live cookies.
-  const sess = session.fromPartition(currentMeetPartition);
+  //
+  // #347: reads the ACTIVE partition, which is the whole mechanism. On a guest
+  // fallback that partition has no Google cookies, so this comes back false and
+  // every downstream branch does the right thing on its own: no authuser pin,
+  // the identity-cache clear becomes safe (its #250 danger is removing the
+  // master-auth cookies, and there are none here), and Meet serves the guest
+  // pre-join where autoJoin types the bot's own name from the profile config.
+  // The guest join needs no new join logic.
+  const sess = session.fromPartition(activeMeetPartition);
   const signedIn = await isSignedInToGoogle(sess);
 
   // Now that no view is bound to it, also wipe disk-backed Meet caches so the
@@ -9279,7 +9655,7 @@ async function _loadMeetURL(meetUrl) {
   if (signedIn) {
     console.log('[electron] Signed in — skipping Meet identity-cache clear to preserve Google sign-in');
   } else {
-    await clearMeetIdentityCache(currentMeetPartition);
+    await clearMeetIdentityCache(activeMeetPartition);
   }
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
@@ -9292,10 +9668,13 @@ async function _loadMeetURL(meetUrl) {
   const urlToLoad = boundEmail ? pinAuthUser(meetUrl, boundEmail) : meetUrl;
   if (boundEmail) console.log('[electron] Pinning Meet account via authuser:', boundEmail);
 
-  meetView = createMeetView(currentMeetPartition);
+  meetView = createMeetView(activeMeetPartition);
   attachMeetViewForState(); // #103: hidden host / popout / main window, per state
   layoutViews();
 
+  // #346: the URL we ASKED for. createMeetView logs where we actually land, so
+  // the pair together shows any redirect that took us somewhere else.
+  console.log('[electron] Loading Meet URL:', urlToLoad);
   meetView.webContents.loadURL(urlToLoad);
 
   // Forward preload-meet's console output to main stdout so [electron-meet]
@@ -9312,6 +9691,7 @@ async function _loadMeetURL(meetUrl) {
         body.startsWith('[bots-in-calls]') || body.startsWith('[captions]') ||
         body.startsWith('[chat]') || body.startsWith('[speaker-tracker]') ||
         body.startsWith('[speaker-health]') || body.startsWith('[caption-health]') ||
+        body.startsWith('[speaker-meter]') || body.startsWith('[meter-latency]') ||
         body.startsWith('[runway-avatar]') ||
         body.startsWith('[caption-stall]')) {
       if (level === 2) console.warn(message);
@@ -9766,13 +10146,10 @@ function setupIPC() {
   ipcMain.handle('onboarding:get-permissions', async () => {
     const flow = require('./onboarding-flow.js');
     // Only ask the OS about permissions this OS can actually answer — querying
-    // the rest returns a constant ('screen' on Windows) or fails outright
-    // (osascript on Windows), and both render as a row the user can't act on.
+    // the rest fails outright (osascript on Windows), which would render as a
+    // row the user can't act on.
     const wanted = new Set(flow.permissionsFor(process.platform).map((p) => p.key));
     const statusMap = {};
-    for (const key of ['screen']) {
-      if (wanted.has(key)) statusMap[key] = systemPreferences.getMediaAccessStatus(key);
-    }
     // Automation is the odd one out: there is no way to READ its status without
     // sending an Apple Event, and sending one is what raises the prompt. So
     // merely opening this step used to prompt, before the user pressed anything.
@@ -9810,11 +10187,7 @@ function setupIPC() {
 
   ipcMain.handle('onboarding:request-permission', async (_e, key) => {
     try {
-      if (key === 'screen') {
-        // A real capture attempt registers the app in the Screen Recording list
-        // and prompts when not-determined (thumbnail must be non-trivial, #… ).
-        try { await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 192, height: 192 } }); } catch { /* prompt only */ }
-      } else if (key === 'automation') {
+      if (key === 'automation') {
         try { store.set('automationProbed', true); } catch { /* ignore */ }
         await probeBrowserAutomation();
       }
@@ -9824,7 +10197,7 @@ function setupIPC() {
 
   ipcMain.handle('onboarding:open-system-settings', (_e, key) => {
     const pane = {
-      screen: 'Privacy_ScreenCapture', automation: 'Privacy_Automation',
+      automation: 'Privacy_Automation',
     }[key] || 'Privacy';
     shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${pane}`);
     return { ok: true };
@@ -10349,7 +10722,9 @@ function setupIPC() {
     return {
       exists,
       visible: exists && shareWindowVisible,
-      lockedVisible: exists && shareWindowVisible && localServer.sharing && shareCaptureMode === 'window',
+      // Capture is always frame-based, so hiding the window never blacks out
+      // a live share.
+      lockedVisible: false,
     };
   });
 
@@ -10358,13 +10733,6 @@ function setupIPC() {
       return { ok: false, error: 'Nothing is being shared' };
     }
     const want = !shareWindowVisible;
-    // Refuse only the dangerous direction: a live share whose video comes from
-    // the WINDOW source goes black if that window stops existing on screen.
-    // Frame-captured shares (the default, since the window starts hidden) don't
-    // care, and showing is always safe.
-    if (!want && localServer.sharing && shareCaptureMode === 'window') {
-      return { ok: false, error: 'Can\'t hide the window while it is being captured — the share would go black. Stop sharing first.' };
-    }
     shareWindowVisible = want;
     try { store.set('shareWindowVisible', want); } catch { /* non-fatal */ }
     try {
@@ -10394,7 +10762,18 @@ function setupIPC() {
 
   ipcMain.on('open-external-url', (_event, url) => { openExternalUrl(url); });
 
+  // Reply-to-teardown-command channel: finishCall() sends 'leave-requested' to
+  // the panel, expecting this back, once the Meet-side leave has already
+  // happened. NOT what the Leave Call button should send directly — see
+  // 'leave-call-requested' below, which is the actual button-initiated leave.
   ipcMain.on('leave-meet', () => performLeaveTeardown('panel'));
+
+  // The Leave Call button's own request to leave. Goes through the same
+  // clean-leave sequence as the agent's leave_call tool (click Meet's real
+  // Leave button, then teardown) instead of skipping straight to local
+  // teardown — the bug where the panel showed "left" while the bot's view
+  // stayed in the live Meet.
+  ipcMain.on('leave-call-requested', () => requestCleanLeave('leave-call'));
 
   ipcMain.on('get-meet-status', (event) => {
     if (meetView && !meetView.webContents.isDestroyed()) {
@@ -10438,15 +10817,15 @@ function setupIPC() {
   // whether the partition holds Google cookies, not by which partition is active.
 
   ipcMain.handle('get-meet-mode', async () => {
-    const signedIn = await isSignedInToGoogle(session.fromPartition(currentMeetPartition));
-    return { partition: currentMeetPartition, mode: signedIn ? 'account' : 'guest' };
+    const signedIn = await isSignedInToGoogle(session.fromPartition(SESSION_PARTITION));
+    return { partition: SESSION_PARTITION, mode: signedIn ? 'account' : 'guest' };
   });
 
   // Is this profile signed into Slack? Cookie-authoritative (the `d` session
   // cookie). We don't know WHICH workspace/user without the huddle DOM (#283),
   // so this is just connected-vs-not for the Slack row on the main panel.
   ipcMain.handle('get-slack-mode', async () => {
-    const signedIn = await isSignedInToSlack(session.fromPartition(currentMeetPartition));
+    const signedIn = await isSignedInToSlack(session.fromPartition(SESSION_PARTITION));
     return { signedIn };
   });
 
@@ -10458,7 +10837,7 @@ function setupIPC() {
   // bound account (store.meetAccountEmail) so loadMeetURL can pin authuser to it
   // (#282) — unless an explicit --meet-account-email already pinned it.
   ipcMain.handle('get-meet-account-email', async () => {
-    const sess = session.fromPartition(currentMeetPartition);
+    const sess = session.fromPartition(SESSION_PARTITION);
 
     // AUTHORITATIVE signed-in check: the live cookie jar. Google's master-auth
     // cookies (domain=.google.com) are the ground truth — the bot auto-admitting
@@ -10657,7 +11036,7 @@ function setupIPC() {
   // deliberate, rare action — the old per-call partition swap is gone.
   ipcMain.handle('meet-sign-out-bot', async () => {
     try {
-      const sess = session.fromPartition(currentMeetPartition);
+      const sess = session.fromPartition(SESSION_PARTITION);
       const all = await sess.cookies.get({});
       let removed = 0;
       for (const c of all) {
@@ -10695,7 +11074,7 @@ function setupIPC() {
   // reload Slack so the view reflects the logged-out state.
   ipcMain.handle('slack-sign-out', async () => {
     try {
-      const sess = session.fromPartition(currentMeetPartition);
+      const sess = session.fromPartition(SESSION_PARTITION);
       const all = await sess.cookies.get({});
       let removed = 0;
       for (const c of all) {
@@ -10823,8 +11202,20 @@ function setupIPC() {
     if (activeRecording && track && name) activeRecording.setName(track, name);
   });
 
+  // #209: speaker timeline (name + speaking + wall-clock) → speaker-events.jsonl,
+  // the "who spoke when" source merge-call-audio.mjs annotates the audio with.
+  ipcMain.on('call-record-speaker', (_event, { name, speaking, at } = {}) => {
+    if (activeRecording && name) activeRecording.speakerEvent(name, speaking, at);
+  });
+
   // --- Meet status updates (logged, DOM updated by preload) ---
-  ipcMain.on(CALL_EVENTS.statusUpdate, (_event, status) => {
+  ipcMain.on(CALL_EVENTS.statusUpdate, (_event, status) => handleMeetStatusUpdate(status));
+
+  // Named (not inline) so main-process code paths can raise a call-flow status
+  // the same way the renderer does — #346's join-landed-somewhere-else needs
+  // the whole 'Error:' fan-out (broadcastError, waiter resolution, room clear),
+  // and re-deriving any of that at a second call site is how the two drift.
+  function handleMeetStatusUpdate(status) {
     console.log('[electron] Meet status:', status);
     // Map Meet status to call status for the local server
     if (typeof status === 'string') {
@@ -10867,13 +11258,26 @@ function setupIPC() {
         localServer.handleCallEnded(status);
       } else if (status.includes('Waiting') || status.includes('Ask to join')) {
         localServer.setCallStatus('waiting-to-be-admitted');
+        // #347: a guest is normally NOT auto-admitted, so this is the expected
+        // resting place of a fallback join rather than a fault. Tell the
+        // operator, because unlike "could not join" this is actionable by
+        // somebody else: the host can admit the bot from their own client
+        // without anyone touching its password. Only on the guest partition, or
+        // this would fire on every ordinary lobby wait and become noise.
+        if (activeMeetPartition === GUEST_PARTITION && !guestLobbyNotified) {
+          guestLobbyNotified = true;
+          const waiting = `${resolvedBotName() || 'The bot'} is waiting to be let into the call as a guest. `
+            + 'Admit it from the meeting, or sign it back in to Google to fix this properly.';
+          broadcastError(waiting);
+          localServer.addError(waiting);
+        }
       } else if (status.includes('Participating') || status.includes('In call')) {
         localServer.setCallStatus('in-call');
       } else if (status.includes('Joining')) {
         localServer.setCallStatus('joining');
       }
     }
-  });
+  }
 
   ipcMain.on('stop-sync', () => {
     sync.stopPolling();
@@ -10890,8 +11294,7 @@ function setupIPC() {
   ipcMain.on(CALL_EVENTS.screenShareStopped, () => {
     console.log('[electron] Screen share stopped');
     localServer.setSharing(false);
-    shareCaptureMode = null;
-    broadcastShareWindowState();   // hiding is safe again
+    broadcastShareWindowState();
   });
 
   // Forwarded log lines from page-inject.js (via preload-meet). These are
@@ -11070,16 +11473,89 @@ function setupIPC() {
   // ~30s, too fast to catch in DevTools). Written next to the session log so
   // it's easy to find after an unattended run.
   ipcMain.on('capture-dom', (_event, info) => {
-    try {
-      const logDir = path.dirname(getSessionLogPath());
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const file = path.join(logDir, `denial-capture-${stamp}.html`);
-      fs.writeFileSync(file, info?.html || '', 'utf-8');
-      console.warn(`[capture-dom] Saved denial/limbo DOM (${info?.reason || '?'}) → ${file}`);
-      console.warn(`[capture-dom]   url=${info?.url || ''}`);
-    } catch (err) {
-      console.warn('[capture-dom] failed to save DOM:', err.message);
+    saveCapturedDom(info?.reason, info?.url, info?.html);
+  });
+
+  // #346: a join that ends up somewhere other than the meeting page. The
+  // renderer classifies the landing (it is the only side that can see
+  // window.location) and main decides whether it MATTERS, because only main
+  // knows whether a join was in flight. Landing on Meet home or the bot-view
+  // idle page is completely normal at rest and only means something went wrong
+  // if we were mid-join — so the same event is silence in one state and a
+  // hard failure in the other.
+  ipcMain.on('meet-landing', async (_event, { landing, url } = {}) => {
+    // 'navigating' is set the instant a join is requested; 'joining' once the
+    // page starts driving Meet's pre-join. Anything else (idle, in-call,
+    // after-call-work) means nobody was trying to join, so this is routine.
+    const joinInFlight = localServer.callStatus === 'navigating' || localServer.callStatus === 'joining';
+    if (!joinInFlight) {
+      console.log(`[meet-landing] ${landing} at ${url} (no join in flight — ignoring)`);
+      return;
     }
+
+    // Grab the page for the record. This is the state we could never capture
+    // before: captureDenialDom only ever fired from inside the pre-join loop,
+    // which is downstream of the bail-out, so the one page most worth seeing
+    // was invisible by construction.
+    try {
+      if (meetView && !meetView.webContents.isDestroyed()) {
+        const html = await meetView.webContents.executeJavaScript('document.documentElement.outerHTML');
+        saveCapturedDom(`join-landed-on-${landing}`, url, html);
+      }
+    } catch (err) {
+      console.warn('[meet-landing] DOM capture failed:', err.message);
+    }
+
+    // The bot cannot announce any of this itself — it is not in the meeting, so
+    // it has no voice and no chat. The app is the only one who can speak here.
+    const botLabel = resolvedBotName() || 'the bot';
+    console.error(`[meet-landing] join blocked: landed on ${landing} at ${url}`);
+
+    if (landing === 'sign-in') {
+      // Deliberately NOT torn down. A human can type the password and Google's
+      // own `continue=` redirect carries this very view into the meeting, which
+      // is exactly how the 2026-08-12 call was rescued. That recovery works
+      // because the app is still holding the room with the agent alive behind
+      // it, so running the full 'Error:' path here (clearRoom + resolve every
+      // waiter) would break the one path that already works.
+      //
+      // broadcastError is the operator channel: panel error plus an OS
+      // notification when the app isn't in the foreground. addError is the
+      // agent channel, so it shows up in get_room_info / get_call_log too.
+
+      // #347: don't just wait for a human who may not be there. Retry the same
+      // meeting on the cookie-free guest partition, which is what a person
+      // locked out of their account would do: join anyway as a guest and let
+      // the host admit them. Showing up in the lobby is showing up.
+      //
+      // Once per join, keyed on the URL: if the guest attempt ALSO lands on a
+      // sign-in page (it shouldn't, having no cookies to challenge) this must
+      // not become a reload loop.
+      if (currentMeetUrl && guestFallbackTriedFor !== currentMeetUrl) {
+        guestFallbackTriedFor = currentMeetUrl;
+        const message = `Google is asking ${botLabel} to confirm its identity, so it is joining as a guest instead. `
+          + 'It may be waiting to be let in, so admit it from the meeting if you see it. '
+          + "To fix this properly, open the bot's view and sign it back in to Google.";
+        broadcastError(message);
+        localServer.addError(message);
+        loadMeetURL(currentMeetUrl, { guestFallback: true });
+        return;
+      }
+
+      const message = `Google is asking ${botLabel} to confirm its identity, so it could not join the call. `
+        + "Open the bot's view and sign it back in to Google, and it will join automatically once you do.";
+      broadcastError(message);
+      localServer.addError(message);
+      return;
+    }
+
+    // Anything else is not going to fix itself, and leaving it is what produced
+    // the original symptom: wedged at 'navigating' forever, looking like the
+    // bot never tried. 'Error:' fans out to broadcastError, resolves the
+    // agent's waiters so wait_for_speech doesn't hang to timeout, and clears
+    // the room so the UI stops offering "leave call" for a call we never made.
+    handleMeetStatusUpdate(`Error: ${botLabel} could not join the call. `
+      + `The page ended up at ${url} instead of the meeting.`);
   });
 
   // --- Speaking state ---
@@ -11130,7 +11606,6 @@ function setupIPC() {
   // Track our own presenting state from Meet UI (Stop presenting button visible)
   ipcMain.on(CALL_EVENTS.selfPresenting, (_event, { presenting, reconcile }) => {
     const wasSharing = localServer.sharing;
-    selfPresentingConfirmed = !!presenting;
 
     // #68: a reconcile tick carries no news — it re-states what is on screen so a
     // divergence introduced by another writer gets corrected. Meet's DOM is the
@@ -11150,17 +11625,6 @@ function setupIPC() {
 
     localServer.setSharing(presenting);
     if (!presenting) {
-      // Distinguish an agent-initiated stop (onStopSharing already cleared
-      // fullScreenShareRequested and pushed a screen-share-stopped event)
-      // from an unexpected drop (browser killed the stream, user clicked
-      // Chrome's floating Stop pill, codec stall, perm flip mid-call).
-      // When the agent asked to share and we transition from sharing→not
-      // sharing without anyone having cleared the request, that's a drop.
-      if (wasSharing && fullScreenShareRequested) {
-        console.warn('[electron] Screen share ended unexpectedly');
-        localServer.addError('Screen share ended unexpectedly');
-      }
-      fullScreenShareRequested = false;
       externalShareRequest = null; // POC (share-agent-tab)
     }
   });
@@ -11390,65 +11854,6 @@ function setupIPC() {
   //
   // Still TODO for a real feature (see docs/share-agent-tab-poc.md): route the
   // 'share-tab' /api/sync action + list_windows through local-server to here,
-  // reuse the whiteboard-share Present-now retry loop, and clear
-  // externalShareRequest on stop/leave alongside fullScreenShareRequested.
+  // and reuse the whiteboard-share Present-now retry loop.
   ipcMain.handle('share-external-tab', (_event, opts) => startExternalTabShare(opts));
-
-  // Provide desktopCapturer source for screen share
-  ipcMain.handle('get-screen-share-source', async () => {
-    // Full screen share mode — return the primary display
-    if (fullScreenShareRequested) {
-      try {
-        const sources = await desktopCapturer.getSources({
-          types: ['screen'],
-          thumbnailSize: { width: 0, height: 0 },
-        });
-        if (sources.length > 0) {
-          console.log('[electron] Full screen share source:', sources[0].id);
-          return { sourceId: sources[0].id };
-        }
-        return { error: 'No screen source found' };
-      } catch (err) {
-        return { error: err.message };
-      }
-    }
-
-    // Whiteboard window share mode
-    if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
-      return { error: 'No whiteboard window open' };
-    }
-
-    try {
-      // Use the window's native media source ID for reliable matching
-      const mediaSourceId = whiteboardWindow.getMediaSourceId();
-      console.log('[electron] Whiteboard media source ID:', mediaSourceId);
-
-      const sources = await desktopCapturer.getSources({
-        types: ['window'],
-        thumbnailSize: { width: 0, height: 0 },
-      });
-
-      console.log('[electron] Available sources:', sources.map(s => `${s.id} "${s.name}"`).join(', '));
-
-      // Match by media source ID (most reliable)
-      const wbSource = sources.find(s => s.id === mediaSourceId);
-      if (wbSource) {
-        console.log('[electron] Matched whiteboard by media source ID:', wbSource.id);
-        return { sourceId: wbSource.id };
-      }
-
-      // Fallback: match by window title
-      const wbTitle = whiteboardWindow.getTitle();
-      console.log('[electron] Whiteboard title:', wbTitle);
-      const fallback = sources.find(s => s.name.includes(wbTitle) || s.name.includes('Vibeconferencing'));
-      if (fallback) {
-        console.log('[electron] Matched whiteboard by title:', fallback.id, fallback.name);
-        return { sourceId: fallback.id };
-      }
-
-      return { error: `Could not find whiteboard window. Title: "${wbTitle}", sources: ${sources.length}` };
-    } catch (err) {
-      return { error: err.message };
-    }
-  });
 }

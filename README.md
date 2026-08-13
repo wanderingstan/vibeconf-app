@@ -20,13 +20,13 @@ You drive it from your agent (just say *"join my call"*); the app is the "body" 
 **You'll need:**
 - A **Mac**
 - **Claude Code** installed and working. *(Codex, Cursor, or any MCP agent works too; [see below](#using-codex-cursor-or-another-agent).)*
-- A browser (whatever you already use: Chrome, Brave, Safari, Firefox all work)
+- A browser (whatever you already use — auto-detecting your open Meet works in Chrome, Brave, and Safari; in Firefox or anything else, paste the Meet link into the app)
 
 ### 1. Download and install
 Download the **`.dmg`** from the **[latest release](https://github.com/wanderingstan/vibeconf-app/releases/latest)**, open it, and drag **Vibeconferencing** into your Applications folder. Open it once.
 
 ### 2. Allow the permission prompts
-On first launch macOS asks for **Microphone** and **Camera**. Both are required (the bot speaks through a virtual mic and appears as a virtual-camera avatar). It will also ask for permission to **control your browser** (an Automation prompt, e.g. "Vibeconferencing" would like to control "Google Chrome"). Allow this; it's how the app detects and joins your Meet calls. If you also want the bot to *show* its whiteboard on screen, allow **Screen Recording** too (optional).
+The app needs **no microphone, camera, or screen recording permission** — the bot's mic and camera are synthetic (an AudioContext and a canvas stream) and the whiteboard share captures via the app's own window rendering, so no capture device is ever opened and macOS isn't consulted. One optional prompt may appear: **Browser Automation** (lets the app find your open Meet by itself — skip it and just paste the Meet link into the app).
 
 ### 3. Sign in *(optional)*
 Signing in gets you access to the shared whiteboard. It's optional and not automatic; sign in anytime from App Settings (**⌘,**).

@@ -56,9 +56,32 @@ cd "$REPO" || { echo "repo not found: $REPO"; exit 3; }
 # reaped the EXIT trap's `node notify` child before it could send.)
 _DIGEST_SENT="/tmp/vibeconf-digest-${STAMP}.sent"
 _CALL_DIGEST_SENT="/tmp/vibeconf-calldigest-${STAMP}.sent"
+# --- Drive uploads run ASYNC (backgrounded in rec_run) so a slow push never sits on
+# the run's critical path or crowds the global watchdog (2026-08-08: a keep=all night
+# uploaded ~420MB inline and tripped the 30-min timer). The digest JOINS the in-flight
+# uploads first, so the recording links still land in the Telegram message. The join is
+# BOUNDED by VIBECONF_UPLOAD_JOIN_TIMEOUT so a hung rclone can't re-introduce the very
+# stall we moved off the critical path. Note: the watchdog's own send_digest runs in a
+# FORK where _UPLOAD_PIDS is still empty (it was forked before any lane ran), so it never
+# waits — correct: once we're over time, send with whatever links have already landed. ---
+_UPLOAD_PIDS=()
+UPLOAD_JOIN_TIMEOUT="${VIBECONF_UPLOAD_JOIN_TIMEOUT:-120}"
+wait_for_uploads() {
+  (( ${#_UPLOAD_PIDS} )) || return 0
+  local n=${#_UPLOAD_PIDS}
+  echo "=== ⏳ joining $n Drive upload(s) before the digest (≤${UPLOAD_JOIN_TIMEOUT}s) ===" | tee -a "$LOG"
+  # One overall deadline: after the timeout, TERM any still-running uploads, then reap
+  # them all (wait avoids zombies and returns instantly for already-finished jobs).
+  ( sleep "$UPLOAD_JOIN_TIMEOUT"; for p in "${_UPLOAD_PIDS[@]}"; do kill -TERM "$p" 2>/dev/null; done ) &
+  local _killer=$!
+  local pid; for pid in "${_UPLOAD_PIDS[@]}"; do wait "$pid" 2>/dev/null; done
+  kill "$_killer" 2>/dev/null; wait "$_killer" 2>/dev/null
+  _UPLOAD_PIDS=()
+}
 send_digest() {
   [[ -e "$_DIGEST_SENT" ]] && return
   : > "$_DIGEST_SENT"
+  wait_for_uploads   # let async Drive uploads finish so their links make the digest
   echo "" | tee -a "$LOG"
   echo "=== Telegram digest (fires on normal end OR — via the watchdog — an early kill) ===" | tee -a "$LOG"
   node scripts/notify-nightly.mjs 2>&1 | tee -a "$LOG" || true
@@ -75,6 +98,37 @@ send_call_digest() {
   echo "" | tee -a "$LOG"
   echo "=== Real-call digest ===" | tee -a "$LOG"
   node scripts/nightly-call-digest.mjs 2>&1 | tee -a "$LOG" || true
+}
+# Close stray Google Meet tabs in the runner's Google Chrome. The meet-detection test
+# (detect-test.mjs) opens real Chrome tabs to a Meet URL and is meant to close them by
+# room code, but strays accumulate (Stan sees Chrome "filling up"). Best-effort, and
+# only if Chrome is ALREADY running — never launch it just to tidy. Called in the EXIT
+# trap (so every run leaves Chrome clean) and once at the start (to clear the backlog).
+close_chrome_meet_tabs() {
+  command -v osascript >/dev/null 2>&1 || return 0
+  pgrep -x "Google Chrome" >/dev/null 2>&1 || return 0
+  local n
+  n=$(osascript -e 'tell application "Google Chrome" to count (every tab of every window whose URL contains "meet.google.com")' 2>/dev/null)
+  [[ "$n" =~ ^[0-9]+$ ]] || return 0
+  (( n > 0 )) || return 0
+  osascript -e 'tell application "Google Chrome" to close (every tab of every window whose URL contains "meet.google.com")' 2>/dev/null
+  echo "=== 🧹 closed $n stray Google Meet tab(s) in Chrome ===" | tee -a "$LOG"
+}
+# Prune the per-profile call recordings. Each test bot records its own call into
+# profiles/<p>/agent/calls/<id>/ when VIBECONF_RECORD_CALL=1; rec_run harvests a COPY
+# into $RESULTS (retention-managed), but the SOURCES were never pruned and filled the
+# test profiles to >1GB each. Delete call dirs older than N days from the TEST profiles
+# only — never Default (the real always-on body). Keeps recent runs for debugging.
+prune_profile_recordings() {
+  local base="$HOME/Library/Application Support/Vibeconferencing/profiles"
+  [[ -d "$base" ]] || return 0
+  local days="${VIBECONF_PROFILE_REC_KEEP_DAYS:-3}"
+  local before after pruned
+  before=$(find "$base" -mindepth 4 -maxdepth 4 -type d -path "$base/test*/agent/calls/*" 2>/dev/null | wc -l | tr -d ' ')
+  find "$base" -mindepth 4 -maxdepth 4 -type d -path "$base/test*/agent/calls/*" -mtime +${days} -exec rm -rf {} + 2>/dev/null
+  after=$(find "$base" -mindepth 4 -maxdepth 4 -type d -path "$base/test*/agent/calls/*" 2>/dev/null | wc -l | tr -d ' ')
+  pruned=$(( before - after ))
+  (( pruned > 0 )) && echo "=== 🧹 pruned $pruned per-profile call-recording dir(s) older than ${days}d from test profiles ===" | tee -a "$LOG"
 }
 # A stray pkill / Ctrl-C becomes a normal exit so the EXIT trap — and thus
 # send_digest — still runs. The WATCHDOG can't rely on that (its own pkill/kill-KILL
@@ -114,10 +168,10 @@ if [[ "${VIBECONF_NO_WATCHDOG:-0}" != "1" ]]; then
   _watchdog_pid=$!
   # On any normal exit, stand the watchdog down and sweep any lingering test fleets (a
   # wedged lane skips its own teardown; this guarantees no zombie fleet survives a run).
-  trap 'send_digest; send_call_digest; kill "$_watchdog_pid" 2>/dev/null; pkill -f "profile=test-meet-guest" 2>/dev/null; pkill -f "profile=test-slack" 2>/dev/null' EXIT
+  trap 'send_digest; send_call_digest; kill "$_watchdog_pid" 2>/dev/null; pkill -f "profile=test-meet-guest" 2>/dev/null; pkill -f "profile=test-slack" 2>/dev/null; close_chrome_meet_tabs' EXIT
 else
   # No watchdog, but the digest still must fire on any exit.
-  trap 'send_digest; send_call_digest' EXIT
+  trap 'send_digest; send_call_digest; close_chrome_meet_tabs' EXIT
 fi
 
 # --- optional screen recording of each live-call lane. OFF by default; set
@@ -303,13 +357,21 @@ rec_run() {  # rec_run <lane> -- <cmd...> : run cmd (tee'd to $LOG), return its 
       local _remote="${VIBECONF_RCLONE_REMOTE:-Vibeconf Shared Files}"
       if rec_upload "$code" && command -v rclone >/dev/null 2>&1 && rclone listremotes 2>/dev/null | grep -qxF "${_remote}:"; then
         local _base; _base="$(basename "$mov")"
-        if rclone copy "$mov" "${_remote}:" 2>>"$LOG"; then
-          local _link; _link="$(rclone link "${_remote}:${_base}" 2>/dev/null)"
-          [[ -n "$_link" ]] && echo "=== ☁️ uploaded to Drive: $_link ===" | tee -a "$LOG"
-          printf '{"ts":"%s","lane":"%s","file":"%s","link":"%s"}\n' "$STAMP" "$lane" "$_base" "${_link:-}" >> "$RESULTS/recording-uploads.jsonl"
-        else
-          echo "=== ⚠️ Drive upload failed for $_base (see log) ===" | tee -a "$LOG"
-        fi
+        # ASYNC: background the copy+link so the next lane starts immediately instead of
+        # blocking on a multi-hundred-MB Drive push. send_digest → wait_for_uploads joins
+        # these (bounded) before reading recording-uploads.jsonl, so links still land in
+        # the digest. The .mov is already finalized above, so it's safe to read here; even
+        # if the prune below unlinks an older .mov mid-copy, the open fd keeps reading it.
+        {
+          if rclone copy "$mov" "${_remote}:" 2>>"$LOG"; then
+            _link="$(rclone link "${_remote}:${_base}" 2>/dev/null)"
+            [[ -n "$_link" ]] && echo "=== ☁️ uploaded to Drive: $_link ===" | tee -a "$LOG"
+            printf '{"ts":"%s","lane":"%s","file":"%s","link":"%s"}\n' "$STAMP" "$lane" "$_base" "${_link:-}" >> "$RESULTS/recording-uploads.jsonl"
+          else
+            echo "=== ⚠️ Drive upload failed for $_base (see log) ===" | tee -a "$LOG"
+          fi
+        } &
+        _UPLOAD_PIDS+=($!)
       fi
     else
       rm -f "$mov"
@@ -367,6 +429,11 @@ fi
 # Nightly-mode retention: reap the PRIOR run's green recordings (keep its failures)
 # before this run produces any of its own. No-op unless VIBECONF_RECORD_KEEP=nightly.
 reap_prior_recordings
+# Housekeeping (unconditional): prune the per-profile call recordings rec_run's harvest
+# never cleaned, and clear the backlog of stray Google Meet tabs in the runner's Chrome.
+# Both also run at exit (Chrome via the EXIT trap) so a run leaves the box tidy.
+prune_profile_recordings
+close_chrome_meet_tabs
 
 # --- Self-update the artifacts before testing (Stan): pull latest `main` so the
 # SOURCE lanes test HEAD, and install the latest published DMG so the DMG-meet lane
@@ -572,7 +639,13 @@ echo "=== whiteboard-e2e exit: $SV_CODE (recorded, not gating) ===" | tee -a "$L
 # this block to disable. ---
 echo "" | tee -a "$LOG"
 echo "=== real-agent fuzz test (experimental, grain of salt) $STAMP ===" | tee -a "$LOG"
-node scripts/agent-fuzz-test.mjs --mission smoke --duration 170 2>&1 | tee -a "$LOG" || true
+# Wrapped in rec_run so the fuzz lane's per-participant call recordings are
+# harvested like every other live lane (when VIBECONF_RECORD_CALLS=1, as the mini
+# sets). It's the only lane driven by real, non-deterministic agents, so its
+# footage is the most useful of any lane when a judge verdict looks off. rec_run
+# already tee's to $LOG; keep the `|| true` so this experimental lane still never
+# changes the run's exit code.
+rec_run fuzz -- node scripts/agent-fuzz-test.mjs --mission smoke --duration 170 || true
 
 # --- Codex MCP wire smoke (#373) — deterministic + tokenless (agent-less fleet
 # body + stdio MCP handshake/tools/get_room_info; no GUI interaction beyond app

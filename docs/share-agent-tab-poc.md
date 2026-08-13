@@ -9,11 +9,11 @@ is the join key. This branch (`feat/share-agent-tab`) is a working sketch of the
 
 ```
 claude-in-chrome: agent knows the URL it navigated to
-        │  chrome_share_tab({ url })                  (MCP tool → mcp-server/server.js)
+        │  share_tab({ url })                  (MCP tool → mcp-server/server.js)
         ▼
-POST /api/sync  meta:{ action:"chrome-share-tab", url } (local-server dispatch)
+POST /api/sync  meta:{ action:"share-tab", url } (local-server dispatch)
         ▼
-onChromeShareTab(url) → startExternalTabShare(url)     (electron-app/main.js)
+onShareTab(url) → startExternalTabShare(url)     (electron-app/main.js)
         │  1. AppleScript: find the Chrome tab whose URL matches, make it the ACTIVE tab
         │  2. desktopCapturer.getSources({window}) → match the window by the tab's title
         │  3. stash it in externalShareRequest, trigger Meet "Present now"
@@ -43,14 +43,14 @@ desktopCapturer source*, which is `electron-app/share-external-tab.js`.
 |------|------|
 | `electron-app/share-external-tab.js` | **New.** The core logic: `buildActivateTabScript`/`activateChromeTabByUrl` (AppleScript), `pickWindowSource` (source matcher, mirrors the whiteboard-share strategy + infinity-mirror exclusion), `resolveTabShareSource` (orchestrates), `listBrowserWindows`. |
 | `tests/share-external-tab.test.mjs` | **New.** Unit tests for the pure pieces (escaping, script shape, matcher). `node --test` → 7/7. |
-| `electron-app/main.js` | `externalShareRequest` state; a branch in `setDisplayMediaRequestHandler` that returns it; `startExternalTabShare()`; `onChromeShareTab` wired into the local-server callbacks; `share-external-tab` IPC; cleared on stop/leave/whiteboard-switch. All marked `// POC`. |
-| `electron-app/local-server.js` | `onChromeShareTab` constructor arg + the `chrome-share-tab` `/api/sync` action dispatch. |
-| `mcp-server/server.js` | **New tool `chrome_share_tab({ url, app_name? })`** — POSTs the `chrome-share-tab` action and polls `sharing` like `start_share`. |
+| `electron-app/main.js` | `externalShareRequest` state; a branch in `setDisplayMediaRequestHandler` that returns it; `startExternalTabShare()`; `onShareTab` wired into the local-server callbacks; `share-external-tab` IPC; cleared on stop/leave/whiteboard-switch. All marked `// POC`. |
+| `electron-app/local-server.js` | `onShareTab` constructor arg + the `share-tab` `/api/sync` action dispatch. |
+| `mcp-server/server.js` | **New tool `share_tab({ url, app_name? })`** — POSTs the `share-tab` action and polls `sharing` like `start_share`. |
 
 ## Try it (once wired to a running app)
 
 1. In a call, have the agent open a page with the Chrome tools (or just have a Chrome tab open).
-2. Call `chrome_share_tab({ url: "<that tab's URL>" })`.
+2. Call `share_tab({ url: "<that tab's URL>" })`.
 3. The tab becomes active in its window and appears in the Meet as a live screen share.
 4. Navigate the tab (via the Chrome tools) — the room sees it update in real time.
 5. `stop_sharing` (or `start_share` for the whiteboard) clears it.

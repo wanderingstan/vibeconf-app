@@ -2124,8 +2124,13 @@ meetUrlInput.addEventListener('keydown', (e) => {
 });
 
 document.getElementById('leaveCallBtn').addEventListener('click', () => {
-  api.send('leave-meet');
-  exitCallState();
+  // Don't flip to "Add Jimmy to call" here — that's optimistic and can leave
+  // the button saying "left" while the bot is still visibly in the Meet.
+  // 'leave-call-requested' runs the same clean-leave sequence as the agent's
+  // leave_call tool (clicks Meet's own Leave button first, then tears down);
+  // the 'call-status-changed' broadcast is what actually calls exitCallState()
+  // once the bot has genuinely left.
+  api.send('leave-call-requested');
 });
 
 // ---------------------------------------------------------------------------

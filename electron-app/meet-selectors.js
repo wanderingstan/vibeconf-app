@@ -345,4 +345,34 @@ const MEET = {
 MEET.ariaLabelSelector = (label) =>
   `button[aria-label*="${label}" i], [role="button"][aria-label*="${label}" i]`;
 
+// #346: what kind of page did the bot's view actually land on? Pure, so the
+// join-automation gate can be unit-tested without a browser — which is exactly
+// the coverage that was missing when this went wrong.
+//
+// Returns one of:
+//   'meeting'  — a real meeting-code URL; run join automation
+//   'sign-in'  — Google is demanding sign-in or re-confirmation of identity.
+//                A human has to type the password; nothing can automate past it
+//   'meet-home'— meet.google.com but not a meeting (/, /new, /landing, …).
+//                Benign when idle; a failure if a join was in flight
+//   'not-meet' — anywhere else (the vibeconferencing.com/bot-view idle page,
+//                an error page, a captive portal, …)
+//
+// ORDER MATTERS. 'sign-in' is tested first and against the FULL href, because
+// Google's challenge URL carries the destination in a `continue=` param and
+// percent-encoding leaves "meet.google.com" readable inside it:
+//
+//   https://accounts.google.com/v3/signin/challenge/pwd?continue=https%3A%2F%2Fmeet.google.com%2Fabc-defg-hij
+//
+// The host check is therefore on `hostname`, never `href.includes(host)` — the
+// latter matched that continue param, classified a password prompt as Meet, and
+// then reported it as "Meet home/landing", which is how a five-minute outage
+// looked like a bot that never tried to join at all.
+MEET.classifyLanding = ({ href = '', hostname = '', pathname = '' } = {}) => {
+  if (MEET.url.signInPage.test(href)) return 'sign-in';
+  if (hostname !== MEET.url.host) return 'not-meet';
+  if (!MEET.url.meetingCodePath.test(pathname)) return 'meet-home';
+  return 'meeting';
+};
+
 module.exports = { MEET };

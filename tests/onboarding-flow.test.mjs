@@ -44,21 +44,20 @@ test('steps include sign-in and are ordered welcome→done', () => {
 // getUserMedia is intercepted before Chromium ever opens a device. Two prompts
 // that bought nothing, shown to a first-time user before the wizard had
 // explained anything. Don't add them back without repeating that test.
-test('no permission is required, and mic/camera are gone entirely', () => {
+test('no permission is required, and mic/camera/screen are gone entirely', () => {
   assert.deepEqual(PERMISSIONS.filter((p) => p.required).map((p) => p.key), []);
-  assert.deepEqual(PERMISSIONS.map((p) => p.key).sort(), ['automation', 'screen']);
+  assert.deepEqual(PERMISSIONS.map((p) => p.key).sort(), ['automation']);
 });
 
 // Every permission row must be one the OS can actually answer. A row we can't
 // evaluate either states something untrue or sits permanently indeterminate,
 // and the user has no way to tell which — both were seen on Windows in beta4.
 test('permissions are filtered to the platforms that can answer them', () => {
-  assert.deepEqual(permissionsFor('darwin').map((p) => p.key), ['screen', 'automation']);
+  assert.deepEqual(permissionsFor('darwin').map((p) => p.key), ['automation']);
 
-  // Both survivors are macOS-only, so every other platform now has an EMPTY
-  // list. That's correct, not a bug: getMediaAccessStatus always returns
-  // 'granted' for screen on Windows (a constant, not a grant), and the
-  // automation probe shells osascript, which Windows doesn't have.
+  // The survivor is macOS-only, so every other platform now has an EMPTY
+  // list. That's correct, not a bug: the automation probe shells osascript,
+  // which Windows doesn't have.
   assert.deepEqual(permissionsFor('win32'), []);
   assert.deepEqual(permissionsFor('linux'), [], 'no media permission API on Linux');
 });
@@ -80,7 +79,7 @@ test('a platform with no answerable permissions does not wedge the wizard', () =
 
 test('Windows summary is empty, and says so rather than inventing rows', () => {
   const win = permissionsSummary(
-    { screen: 'granted', automation: 'unknown' },
+    { automation: 'unknown' },
     { platform: 'win32' },
   );
   assert.deepEqual(win.rows, []);
@@ -89,11 +88,11 @@ test('Windows summary is empty, and says so rather than inventing rows', () => {
 });
 
 test('normalizePermission: granted vs needs-System-Settings vs promptable', () => {
-  assert.equal(normalizePermission('screen', 'granted').granted, true);
+  assert.equal(normalizePermission('automation', 'granted').granted, true);
   const denied = normalizePermission('automation', 'denied');
   assert.equal(denied.granted, false);
   assert.equal(denied.needsSystemSettings, true, 'denied requires a System Settings trip');
-  const fresh = normalizePermission('screen', 'not-determined');
+  const fresh = normalizePermission('automation', 'not-determined');
   assert.equal(fresh.granted, false);
   assert.equal(fresh.needsSystemSettings, false, 'not-determined can still be prompted');
   // missing/undefined status defaults to not-determined, not a crash
@@ -102,15 +101,14 @@ test('normalizePermission: granted vs needs-System-Settings vs promptable', () =
 
 test('permissionsSummary: nothing is required, so setup never blocks on a permission', () => {
   const D = { platform: 'darwin' };  // pin: these assertions are about the macOS row set
-  const s1 = permissionsSummary({ screen: 'denied', automation: 'unknown' }, D);
+  const s1 = permissionsSummary({ automation: 'unknown' }, D);
   assert.equal(s1.allRequiredGranted, true);
   assert.deepEqual(s1.missingRequired, []);
-  assert.deepEqual(s1.missingOptional.sort(), ['automation', 'screen']);
+  assert.deepEqual(s1.missingOptional.sort(), ['automation']);
 
-  // Even granting nothing at all must leave the wizard finishable. Every
-  // permission left is a convenience: without screen recording the bot can't
-  // share its whiteboard, without automation it can't spot an open Meet tab,
-  // and it joins, speaks and listens either way.
+  // Even granting nothing at all must leave the wizard finishable. The
+  // permission left is a convenience: without automation it can't spot an
+  // open Meet tab on its own, and it still joins, speaks and listens either way.
   assert.equal(permissionsSummary({}, D).allRequiredGranted, true);
   assert.deepEqual(permissionsSummary({}, D).missingRequired, []);
 });

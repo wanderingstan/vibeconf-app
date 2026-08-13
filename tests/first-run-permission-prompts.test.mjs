@@ -37,27 +37,20 @@ test('the wizard-pending flag is what gates showing the wizard', () => {
 // was the right one: testing showed nothing consumes the permission, so the
 // wizard shouldn't offer the row either. See onboarding-flow.test.mjs for the
 // evidence. This asserts the app cannot ask for mic or camera AT ALL.
-test('nothing in the app ever asks for microphone or camera', () => {
+test('nothing in the app ever asks for microphone, camera, or screen recording', () => {
   assert.doesNotMatch(main, /askForMediaAccess\(\s*['"]microphone['"]/);
   assert.doesNotMatch(main, /askForMediaAccess\(\s*['"]camera['"]/);
   const flow = readFileSync(join(root, 'electron-app/onboarding-flow.js'), 'utf8');
   const keys = [...flow.matchAll(/^\s*\{ key: '([a-z]+)'/gm)].map((m) => m[1]);
-  assert.deepEqual(keys.sort(), ['automation', 'screen'], 'the wizard offers no mic/camera row');
+  assert.deepEqual(keys.sort(), ['automation'], 'the wizard offers no mic/camera/screen row');
 });
 
-test('the screen-capture probe is skipped while the wizard is up', () => {
-  const i = main.indexOf("Deferring screen-capture probe");
-  assert.ok(i > 0, 'expected an explicit deferral branch for the screen probe');
-  const branch = main.slice(main.lastIndexOf('if (', i), i);
-  assert.match(branch, /onboardingPending/);
-  // The denied case pops a BLOCKING showMessageBoxSync. On first run that is a
-  // modal telling the user to go to System Settings for a feature they have not
-  // heard of yet, so it must be inside the same deferral, not just the probe.
-  const after = main.slice(i, i + 2000);
-  assert.ok(
-    after.indexOf('showMessageBoxSync') > after.indexOf('} else if'),
-    'the blocking permission dialog must sit in a later branch, i.e. also deferred',
-  );
+// The whiteboard share captures via Electron's own frame capture
+// (webContents.mainFrame), never desktopCapturer, so there is nothing to probe
+// or prompt for and no Screen Recording permission is needed at all.
+test('the app never probes for Screen Recording permission', () => {
+  assert.doesNotMatch(main, /getMediaAccessStatus\('screen'\)/);
+  assert.doesNotMatch(main, /desktopCapturer\.getSources\(\{\s*\n?\s*types: \['screen'\]/);
 });
 
 test('Apple Events polling does not start under the wizard, and is not lost if setup is abandoned', () => {

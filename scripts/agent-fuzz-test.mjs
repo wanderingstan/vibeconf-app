@@ -79,7 +79,14 @@ async function main() {
 
   // 1) Spawn bodies + attach real agents (unless the fleet is already up).
   if (!NO_SPAWN) {
-    runSpawn(['--with-agents', `--room=${ROOM}`, `--mission=${MISSION_KEY}`]);
+    // Record each bot's own call audio+video when the harness asked for it.
+    // VIBECONF_RECORD_CALL is exported by scheduled-meet-test.sh when
+    // VIBECONF_RECORD_CALLS=1 (the mini's nightly). The scheduler wraps this
+    // lane in rec_run, which then harvests the recordings into the results dir
+    // like every other live lane. Passing the explicit flag (not just relying on
+    // the inherited env) makes recording deterministic for the source-mode fleet.
+    const recordArgs = process.env.VIBECONF_RECORD_CALL ? ['--record-calls'] : [];
+    runSpawn(['--with-agents', `--room=${ROOM}`, `--mission=${MISSION_KEY}`, ...recordArgs]);
   }
 
   // 2) Let the agents run the mission, SAMPLING who's speaking each tick to

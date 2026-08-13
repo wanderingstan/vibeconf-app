@@ -55,13 +55,14 @@ Live-tunable thresholds that shape the bot's conversational rhythm. All read on 
 
 | Key | Type | Default | What |
 |---|---|---|---|
-| `bargeInGraceMs` | number | `2000` | How long the bot waits after detecting a human interruption before actually stopping its TTS. Higher = brief overlap tolerated as natural; lower = bot drops out instantly. |
+| `bargeInGraceMs` | number | `2500` | How long the bot waits after detecting a human interruption before actually stopping its TTS. Higher = brief overlap tolerated as natural; lower = bot drops out instantly. |
 | `bargeInBotRandomMinMs` | number | `1000` | When two bots try to speak simultaneously, each waits a random delay in `[min, max]` before committing — prevents lockstep collision. Floor of that range. |
 | `bargeInBotRandomMaxMs` | number | `4000` | Ceiling of the bot-vs-bot random-delay range. |
-| `bargeInStashMaxAgeMs` | number | `10000` | When the bot yields mid-thought to a human, its queued speech is stashed. On the next silence gap, if the stash is younger than this, the bot auto-replays it (skipping a slow-model round-trip). Older than this, the stash is discarded and the slow model regenerates fresh. |
+| `bargeInStashMaxAgeMs` | number | `45000` | When the bot yields mid-thought to a human, its queued speech is stashed. On the next silence gap, if the stash is younger than this, the bot auto-replays it (skipping a slow-model round-trip). Older than this, the stash is discarded and the slow model regenerates fresh. |
 | `captionDropoutGraceMs` | number | `2000` | Reserved for caption-dropout detection (#187); not currently wired into logic. |
-| `defaultSilenceSeconds` | number | `2` | Default silence threshold for `wait_for_speech` if the agent doesn't pass one. Higher = bot patiently lets users compose longer thoughts; lower = snappier. |
+| `defaultSilenceSeconds` | number | `1.4` | Default silence threshold for `wait_for_speech` if the agent doesn't pass one. Higher = bot patiently lets users compose longer thoughts; lower = snappier. |
 | `defaultMaxWaitForSpeechSec` | number | `55` | Maximum seconds `wait_for_speech` long-polls before returning empty. Default just under typical HTTP timeouts. Raise only if you have a reason. |
+| `speakingDetectionMode` | string | `either` | Which per-participant speaking signal the DOM tracker's verdict comes from: `mutation` (count tile mutations, 3 in 1200ms — ~300-600ms late), `meter` (read Meet's mic meter as a level from `background-position-x` — flips on the first sample after onset), or `either` (OR of the two). Both signals always run and always log, so this only picks the verdict. A meter that hasn't been found or hasn't moved yet reports nothing and falls back to mutation counting, so no setting makes the tracker deafer. See #142. |
 
 **A/B testing different feels.** Set up two profiles with different values, switch with `--profile=<name>`, talk to each. Saved per-profile so swaps are durable.
 

@@ -28,7 +28,7 @@
 // SCOPE (why 'share' only covers the whiteboard, not every share): this only
 // works for shares of a webContents WE control — the whiteboard BrowserWindow
 // is ours, so whiteboardWindow.webContents.mainFrame is directly available.
-// Full-screen share and chrome_share_tab (an external Chrome tab) do NOT get this
+// Full-screen share and share_tab (an external Chrome tab) do NOT get this
 // treatment: there is no webContents of ours behind either of those, which is
 // exactly why they already go through OS-level desktopCapturer instead. That
 // gap is real and not something this module can close.

@@ -27,20 +27,18 @@
 // they had read a word about what the app was.
 //
 // `required` is a badge only — nothing reads allRequiredGranted, so it has never
-// gated finishing. Screen recording (whiteboard sharing, via desktopCapturer) is
-// the one permission genuinely needed, and automation (reading the active Meet
-// tab from Chrome/Brave/Safari) is a real convenience; the bot still joins,
-// speaks and listens without either.
+// gated finishing. Automation (reading the active Meet tab from Chrome/Brave/
+// Safari) is a real convenience, but the bot still joins, speaks, listens, and
+// shares its whiteboard without it — whiteboard sharing captures via Electron's
+// own frame capture (webContents.mainFrame), never desktopCapturer, so it never
+// needed an OS permission in the first place (Screen Recording used to be listed
+// here for that reason and was removed once the capture path stopped touching
+// desktopCapturer for the whiteboard).
 //
 // `platforms` is which OSes can actually ANSWER the question. A row we can't
 // evaluate is worse than no row: it either states something untrue or sits
 // permanently indeterminate, and the user can't tell which.
 //
-//   screen      — macOS only. Electron's getMediaAccessStatus is documented to
-//                 "always return `granted` for `screen`" on Windows, so the row
-//                 reported a constant, not a grant. Seen in the field on
-//                 v0.8.0-beta4: the wizard claimed screen recording was already
-//                 granted on a machine where that was not true.
 //   automation  — macOS only. It's probed by running AppleScript, and `osascript`
 //                 does not exist on Windows; the spawn failed with ENOENT and the
 //                 row rendered as 'unknown' forever. NOTE this is not a statement
@@ -54,8 +52,6 @@
 // per-app grant like macOS TCC, so "granted" is a weaker claim there. They're
 // kept because that toggle being off is a real, fixable cause of silence.
 const PERMISSIONS = [
-  { key: 'screen', label: 'Screen Recording', required: false, platforms: ['darwin'],
-    why: 'Lets the bot share its whiteboard onto the call. Optional.' },
   { key: 'automation', label: 'Browser Automation', required: false, platforms: ['darwin'],
     why: 'Lets the app read which Google Meet you have open in Chrome/Brave/Safari so `/join-call` needs no link. Optional.' },
 ];

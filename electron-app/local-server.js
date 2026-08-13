@@ -79,11 +79,15 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onChromeShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScreenshareScroll, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onScreenshareClick, onScreenshareType, onScreenshareReadPage, onScreenshareEval, onScreenshareFind, onScreenshareReadConsole, onScreenshareReadNetwork, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, extraRoutes } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onFindShareElement, onEvalShare, onReadShareConsole, onReadShareNetwork, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
     // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
     // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
     this.extraRoutes = extraRoutes || null;
+    // Where the bot's workdir (and its CLAUDE.md) lives — a thunk because
+    // Electron's userData path isn't known at construction in every caller.
+    // Optional: tests and headless embedders run without one.
+    this.getAgentWorkdir = getAgentWorkdir || (() => null);
     this.appVersion = appVersion || null;
     // Release (installed .app/DMG) vs running from source (pnpm dev). Surfaced so
     // both the human (panel) and an agent (no-room status) can tell which build
@@ -111,17 +115,17 @@ class LocalServer {
     this.getTakenBotNames = getTakenBotNames || (() => []);
     this.onEndSession = onEndSession || (() => {});
     this.onShareWhiteboard = onShareWhiteboard || (() => {});
-    this.onChromeShareTab = onChromeShareTab || (() => {}); // POC (share-agent-tab)
+    this.onShareTab = onShareTab || (() => {}); // POC (share-agent-tab)
     this.onStopSharing = onStopSharing || (() => {});
     this.onJoinCall = onJoinCall || (() => {});
     this.onListFonts = onListFonts || (async () => []);
     this.onJoinSlack = onJoinSlack || (() => {});
     this.onLoadUrl = onLoadUrl || (() => {});
-    this.onScreenshareScroll = onScreenshareScroll || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onScrollShare = onScrollShare || (async () => ({ ok: false, error: 'not implemented' }));
     this.onSetShareSize = onSetShareSize || (async () => ({ ok: false, error: 'not implemented' }));
     this.onSetShareTitleBar = onSetShareTitleBar || (async () => ({ ok: false, error: 'not implemented' }));
-    this.onScreenshareClick = onScreenshareClick || (async () => ({ ok: false, error: 'not implemented' }));
-    this.onScreenshareType = onScreenshareType || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onShareClick = onShareClick || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onShareType = onShareType || (async () => ({ ok: false, error: 'not implemented' }));
     this.onSetShareAudio = onSetShareAudio || (async () => ({ ok: false, error: 'not implemented' }));
     this.onSetCaptionLanguage = onSetCaptionLanguage || (async () => ({ ok: false, error: 'not implemented' }));
     this.onPlayAudio = onPlayAudio || (() => {});
@@ -130,11 +134,11 @@ class LocalServer {
     // browser. Backs the /call command, mirroring the panel's "Call <bot> now".
     this.onStartCall = onStartCall || (async () => ({ ok: false, code: 'unsupported' }));
     this.onRecord = onRecord || (async () => ({ ok: false, code: 'unsupported' })); // #209
-    this.onScreenshareReadPage = onScreenshareReadPage || (async () => ({ ok: false, error: 'not implemented' }));
-    this.onScreenshareEval = onScreenshareEval || (async () => ({ ok: false, error: 'not implemented' }));
-    this.onScreenshareFind = onScreenshareFind || (async () => ({ ok: false, error: 'not implemented' }));
-    this.onScreenshareReadConsole = onScreenshareReadConsole || (async () => ({ ok: false, error: 'not implemented' }));
-    this.onScreenshareReadNetwork = onScreenshareReadNetwork || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onInspectDom = onInspectDom || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onEvalShare = onEvalShare || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onFindShareElement = onFindShareElement || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onReadShareConsole = onReadShareConsole || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onReadShareNetwork = onReadShareNetwork || (async () => ({ ok: false, error: 'not implemented' }));
     this.onBotStateChange = onBotStateChange || (() => {}); // 'idle' | 'listening' | 'ticking' | 'thinking' | 'speaking' | 'yielding'
     this.onModeChange = onModeChange || (() => {});        // 'active' | 'passive' | 'silent'
     this.onCallStatusChange = onCallStatusChange || (() => {}); // see call-phase.js for the lifecycle
@@ -173,7 +177,7 @@ class LocalServer {
     this.getWebsiteUrl = getWebsiteUrl || (() => ''); // host where /room/:id renders
     // What URL is currently loaded in the whiteboard window? Surfaced so an
     // agent (or the panel) can confirm what's actually being shared — useful
-    // after update_whiteboard({url}) and screenshare_scroll (#169).
+    // after load_url and scroll_share (#169).
     this.getWhiteboardLoadedUrl = getWhiteboardLoadedUrl || (() => null);
     // The user's persistent panel/store botName preference (#212). Read live so
     // the MCP can resolve an omitted bot_name to the panel preference instead of
@@ -234,22 +238,7 @@ class LocalServer {
     // app-launched agent will hand us its own event stream instead. Everything
     // downstream — agentLog, the 🤔→🧑‍💻 escalation, the brain pane — consumes
     // the callbacks below and cannot tell which transport is behind them.
-    this._agentSource = new TranscriptActivitySource({
-      onLines: (lines) => {
-        const prevLast = this.agentLog.length ? this.agentLog[this.agentLog.length - 1] : null;
-        this.agentLog = lines;
-        const last = lines.length ? lines[lines.length - 1] : null;
-        if (last && last !== prevLast) this._onAgentActivity(last);
-      },
-      // Which model is actually authoring replies for the driving session — read
-      // straight from its own transcript, so it's correct regardless of launch
-      // path (app-spawned with --model, or an existing session that ran
-      // /join-call). Logged (not just held in memory) so latency-audit.py can
-      // group cycles by model the same way it already groups by build.
-      onModel: (model) => {
-        console.log(ts(), `🧠 [agent] model=${model}`);
-      },
-    });
+    this._agentSource = new TranscriptActivitySource(this._agentSourceCallbacks());
 
     // Room state (single room — the active call)
     this.roomId = null;
@@ -282,6 +271,21 @@ class LocalServer {
     // Remembering them lets a replay of aged-out history be dropped outright.
     this._retiredFps = new Set();
     this.maxRetiredFps = 2000;
+    // #12 delivery ledger. Every defense above works on INGEST, and each one
+    // has been beaten by a path nobody predicted (six recurrences: 07-22,
+    // 07-27, 07-29, 08-03, 08-04, 08-11). The one thing that stays true across
+    // all of them is the symptom: the agent is handed words it was already
+    // handed. So audit the OUTPUT — what _resolveWaiter actually ships — rather
+    // than any particular ingest path. Also the answer to "what are the agents
+    // even seeing?": the 📨 lines are a verbatim record of every round.
+    //
+    // Keyed on the same normalized fingerprint as the ingest defenses, so a
+    // re-inserted replay (fresh turnId, fresh firstSeen, therefore invisible to
+    // every other field) still collides with its earlier self here.
+    this._deliveredFps = new Map(); // fp -> { at, text }
+    this.maxDeliveredFps = 4000;
+    this._replayDeliveryFired = false;
+    this.replayDeliveryCount = 0;
     // #12 regression alarm. The three replay paths were closed in beta-66, but
     // #402 closed an earlier set on 2026-07-08 and looked healthy for two weeks
     // before the 2026-07-22 call showed it had been recurring throughout —
@@ -539,6 +543,9 @@ class LocalServer {
     this._retiredFps = new Set();
     this._replayAlarmFired = false;
     this.replayAlarmCount = 0;
+    this._deliveredFps = new Map();
+    this._replayDeliveryFired = false;
+    this.replayDeliveryCount = 0;
     this.whiteboard = { content: '', version: 0, lastModified: null, lastEditor: null };
     this.members = [];
     this.sharing = false;
@@ -595,6 +602,9 @@ class LocalServer {
     this._retiredFps = new Set();
     this._replayAlarmFired = false;
     this.replayAlarmCount = 0;
+    this._deliveredFps = new Map();
+    this._replayDeliveryFired = false;
+    this.replayDeliveryCount = 0;
     this.members = [];
     this.sharing = false;
     this.participants = [];
@@ -1265,6 +1275,36 @@ class LocalServer {
     return this.currentCallBotName || this.getConfiguredBotName() || null;
   }
 
+  // The one set of callbacks every agent-activity transport feeds (#242).
+  // Factored out so the constructor, useStreamAgentSource and
+  // releaseStreamAgentSource can't drift apart.
+  _agentSourceCallbacks() {
+    return {
+      onLines: (lines) => {
+        const prevLast = this.agentLog.length ? this.agentLog[this.agentLog.length - 1] : null;
+        this.agentLog = lines;
+        const last = lines.length ? lines[lines.length - 1] : null;
+        if (last && last !== prevLast) this._onAgentActivity(last);
+      },
+      // Which model is actually authoring replies for the driving session — read
+      // straight from its own transcript, so it's correct regardless of launch
+      // path (app-spawned with --model, or an existing session that ran
+      // /join-call). Logged (not just held in memory) so latency-audit.py can
+      // group cycles by model the same way it already groups by build.
+      onModel: (model) => {
+        console.log(ts(), `🧠 [agent] model=${model}`);
+      },
+      // Per-turn context size, read off the driving session's own usage report
+      // (#345). `input` is the full prompt the model processed for the turn —
+      // fresh + cache reads + cache writes — so this is the direct test of the
+      // context-growth-slows-replies hypothesis; latency-audit.py buckets
+      // D-claude against it.
+      onUsage: (u) => {
+        console.log(ts(), `📊 [context] input=${u.input} (fresh=${u.fresh} cacheRead=${u.cacheRead} cacheWrite=${u.cacheCreate}) output=${u.output}`);
+      },
+    };
+  }
+
   // #242: switch to the stream transport, for an agent the APP launched and
   // therefore owns. Returns the source so main can push stdout into it.
   //
@@ -1273,19 +1313,31 @@ class LocalServer {
   // alone — you could not tell which bot said what.
   useStreamAgentSource() {
     try { this._agentSource.stop(); } catch { /* already gone */ }
-    this._agentSource = new StreamActivitySource({
-      onLines: (lines) => {
-        const prevLast = this.agentLog.length ? this.agentLog[this.agentLog.length - 1] : null;
-        this.agentLog = lines;
-        const last = lines.length ? lines[lines.length - 1] : null;
-        if (last && last !== prevLast) this._onAgentActivity(last);
-      },
-      onModel: (model) => { console.log(ts(), `🧠 [agent] model=${model}`); },
-    });
+    this._agentSource = new StreamActivitySource(this._agentSourceCallbacks());
     this._agentSource.bind();
     this._streamBindNoted = false;
     console.log(ts(), '[local-server] Agent activity source → stream (app-launched agent)');
     return this._agentSource;
+  }
+
+  // The stream transport's agent has EXITED — hand the feed back to the
+  // transcript tail so the next driving session (a terminal /join-call) can
+  // bind. Without this, the dead stream source kept winning setAgentSession's
+  // "stream beats transcript" guard for the rest of the app's life: on the
+  // 2026-08-10 Seth call, the app-spawned agent's brief join died at 17:13,
+  // Stan drove the real call from a terminal, and every 🧠 model / 📊 context
+  // marker went dark for 19 minutes — the guard's one-time notice had already
+  // fired, so the rejection was silent, and latency-audit attributed the whole
+  // call to the dead agent's model.
+  //
+  // Only main's onExit calls this, and only for the child it owns; a LIVE
+  // stream agent is never displaced.
+  releaseStreamAgentSource() {
+    if (this._agentSource.kind !== 'stream') return;
+    try { this._agentSource.stop(); } catch { /* already gone */ }
+    this._agentSource = new TranscriptActivitySource(this._agentSourceCallbacks());
+    this._streamBindNoted = false;
+    console.log(ts(), '[local-server] Agent activity source → transcript tail (stream agent exited)');
   }
 
   // Bind (or rebind) the agent-activity tail to a Claude session transcript.
@@ -1525,7 +1577,26 @@ class LocalServer {
     // No agent driving means nobody to hand off TO. Matches the app-side gate in
     // beginAfterCallWorkOrTeardown so the two can't disagree about what happens.
     const hasAgent = !agentIsAbsent(this.agentState());
-    return { enabled: seconds > 0 && hasAgent, seconds: seconds > 0 && hasAgent ? seconds : 0 };
+    const enabled = seconds > 0 && hasAgent;
+    const plan = { enabled, seconds: enabled ? seconds : 0 };
+    // Ship the workdir CLAUDE.md's "## After the call" section with the plan.
+    // Only app-spawned agents cd into the workdir and load that file; a
+    // terminal-driven session never sees it, and without this it ends the
+    // session immediately ("nothing to do") — the Seth-call failure where the
+    // summary and log copy were silently skipped. Inlining the duties makes
+    // leave_call self-contained for every transport.
+    if (enabled) {
+      try {
+        const workdir = this.getAgentWorkdir();
+        if (workdir) {
+          plan.workdir = workdir;
+          const claudeMd = fs.readFileSync(path.join(workdir, 'CLAUDE.md'), 'utf-8');
+          const duties = require('./agent-workdir.js').afterCallSection(claudeMd);
+          if (duties) plan.duties = duties;
+        }
+      } catch { /* no workdir / no CLAUDE.md — the note falls back to pointing at it */ }
+    }
+    return plan;
   }
 
   // Is anyone driving this bot? See agent-liveness.js for why wait_for_speech's
@@ -1962,6 +2033,70 @@ class LocalServer {
     }
   }
 
+  // #12: disclose — and audit — exactly what each wait_for_speech round hands
+  // the agent. Two jobs in one pass:
+  //
+  //   1. TRANSPARENCY. One 📨 line per delivered entry, verbatim. Until now the
+  //      only record of a round was the 📦 count, so "what did the bot actually
+  //      hear?" was unanswerable after the fact and every #12 sighting had to be
+  //      reconstructed from ingest-side breadcrumbs.
+  //   2. REPLAY DETECTION AT THE BOUNDARY. Any entry whose normalized text was
+  //      already delivered this call is marked ⚠️  REPEAT with the age of the
+  //      first delivery. This is deliberately mechanism-blind: it does not care
+  //      which ingest hole let the replay through, only that the agent is being
+  //      told the same thing twice — which is the actual user-visible bug.
+  //
+  // Legitimate re-delivery is excluded by construction: a turn whose captions
+  // are still growing ships a LONGER text each round, so it never fingerprints
+  // to its earlier self. Only an exact-word repeat trips this.
+  _auditDelivery(entries, reason) {
+    if (!entries || !entries.length) return;
+    const now = Date.now();
+    let repeats = 0;
+    for (const e of entries) {
+      const text = String(e.text || '').trim();
+      if (!text) continue;
+      const fp = this._turnFp(e.participantName, text);
+      const prior = this._deliveredFps.get(fp);
+      // Short utterances genuinely recur ("Yeah.", "Right?") — flagging those
+      // would bury the real signal in noise. The replayed history that matters
+      // is always a full utterance.
+      const auditable = text.length >= 40;
+      let mark = '';
+      if (prior && auditable) {
+        repeats++;
+        const agoS = Math.round((now - prior.at) / 1000);
+        mark = ` ⚠️  REPEAT (first delivered ${Math.floor(agoS / 60)}m${agoS % 60}s ago)`;
+      }
+      if (!prior) this._deliveredFps.set(fp, { at: now });
+      console.log(ts(), `📨 [delivered] ${e.participantName}: ${JSON.stringify(text)}${mark}`);
+    }
+    // FIFO bound — Maps iterate in insertion order.
+    while (this._deliveredFps.size > this.maxDeliveredFps) {
+      this._deliveredFps.delete(this._deliveredFps.keys().next().value);
+    }
+    if (!repeats) return;
+
+    this.replayDeliveryCount += repeats;
+    console.warn(
+      ts(), '🔁 [#12] REPLAY DELIVERED:', repeats,
+      'entr' + (repeats === 1 ? 'y' : 'ies'), 'the agent had already been given',
+      '(reason=' + reason + ', session total ' + this.replayDeliveryCount + ')',
+    );
+    // Surface once into get_room_info's "Recent Errors" so the bot driving the
+    // call can call it out live — the same escalation path as the lastUpdated
+    // alarm, which the 08-11 call proved is not enough on its own: it never
+    // fired, yet the whole room saw the replay.
+    if (!this._replayDeliveryFired) {
+      this._replayDeliveryFired = true;
+      this.addError(
+        `caption replay (#12): ${repeats} already-delivered utterance(s) were handed to the agent ` +
+        `again as new speech. Treat repeated lines as artifacts, and capture this session log ` +
+        `before the call ends — grep for "📨 [delivered]".`,
+      );
+    }
+  }
+
   // #12: keep the replay bookkeeping in step with the maxTurns prune. Dropped
   // ids must leave _turnFps/_turnAlias (they can never match again, and stale
   // aliases would route live growth into a turn we no longer hold), and their
@@ -2033,20 +2168,56 @@ class LocalServer {
     }, 0);
     const replayMode = unknownCount >= 3;
 
+    // #12: the ≥3 threshold was the hole that survived every previous fix. Meet
+    // does not always re-render the whole container — on the 2026-08-11 call it
+    // re-identified a TRICKLE of old nodes, one or two per poll. That is below
+    // the burst threshold, so recovery never armed, and those turns re-inserted
+    // as brand-new speech (fresh turnId AND fresh firstSeen, so invisible to
+    // every other guard) and were re-delivered as if just spoken.
+    //
+    // Position is the honest signal, and it needs no threshold: Meet's caption
+    // container is chronological, so genuinely new speech can only appear at the
+    // BOTTOM. An unknown turn with a turn we already know BELOW it is history
+    // that changed identity — never new speech — so recovery is safe to arm for
+    // it no matter how few of them arrived.
+    //
+    // (Why "changed identity" rather than "is new": a turnId names a DOM
+    // element object, so Meet replacing the element mints a fresh id for words
+    // already on screen. See CaptionScraper's _turnIdByChild in
+    // google-meet-provider.js for why an unknown id on a visible row proves
+    // node replacement, and why the scraper cannot detect this itself.)
+    //
+    // This is also why the old comment's fear (swallowing a genuine repeat of
+    // "Yeah.") does not apply here: a real repeat is new speech, so it arrives
+    // at the bottom, where this rule stays disarmed.
+    let lastKnownIdx = -1;
+    for (let i = incoming.length - 1; i >= 0; i--) {
+      const t = incoming[i];
+      if (!t || typeof t.turnId !== 'number') continue;
+      const eff = this._turnAlias.get(t.turnId) ?? t.turnId;
+      if (this.turns.has(eff)) { lastKnownIdx = i; break; }
+    }
+
     // #12: per-speaker candidate index for the prefix fallback below, built
     // once per batch (newest turn first) and normalized lazily — the fallback
     // used to look at one turn per speaker, so scanning them all must not turn
     // a 200-turn replay snapshot into 200 full re-normalizations of the map.
-    const speakerTurns = new Map(); // speaker -> [[id, turn], ...] newest firstSeen first
-    const normCache = new Map();    // canonical turnId -> normalized fingerprint of its text
-    if (replayMode) {
+    // #12: built lazily rather than under `if (replayMode)` — recovery can now
+    // arm positionally on a batch that never reaches the burst threshold, and a
+    // poll where nothing is unknown must still not pay for the index.
+    let speakerTurns = null; // speaker -> [[id, turn], ...] newest firstSeen first
+    const speakerIndex = () => {
+      if (speakerTurns) return speakerTurns;
+      speakerTurns = new Map();
       for (const [id, t] of this.turns) {
         const list = speakerTurns.get(t.speaker) || [];
         list.push([id, t]);
         speakerTurns.set(t.speaker, list);
       }
       for (const list of speakerTurns.values()) list.sort((a, b) => b[1].firstSeen - a[1].firstSeen);
-    }
+      return speakerTurns;
+    };
+    const normCache = new Map();    // canonical turnId -> normalized fingerprint of its text
     const normOf = (id, turn) => {
       let n = normCache.get(id);
       if (n === undefined) { n = this._turnFp(turn.speaker, turn.text); normCache.set(id, n); }
@@ -2071,7 +2242,10 @@ class LocalServer {
       // container re-rendered and this is a REPLAY of a turn we've already
       // ingested, so alias instead of inserting a duplicate.
       let effId = this._turnAlias.get(inc.turnId) ?? inc.turnId;
-      if (replayMode && !this.turns.has(effId)) {
+      // #12: burst evidence (many unknowns at once) OR positional evidence (a
+      // known turn sits below this one, so it cannot be new speech).
+      const recoveryArmed = replayMode || i < lastKnownIdx;
+      if (recoveryArmed && !this.turns.has(effId)) {
         const fp = this._turnFp(inc.speaker, inc.text);
         let match = (this._turnFps.get(fp) || []).find(
           (id) => this.turns.has(id) && !claimedThisBatch.has(id)
@@ -2088,7 +2262,7 @@ class LocalServer {
           // whole call kept re-arriving on 2026-07-22 despite the #402 alias.
           const normInc = this._turnFp(inc.speaker, inc.text);
           const speakerLen = String(inc.speaker).length;
-          for (const [id, t] of (speakerTurns.get(inc.speaker) || [])) {
+          for (const [id, t] of (speakerIndex().get(inc.speaker) || [])) {
             if (claimedThisBatch.has(id) || !this.turns.has(id)) continue;
             const normOld = normOf(id, t);
             if (Math.min(normInc.length, normOld.length) > speakerLen + 12 &&
@@ -3129,6 +3303,17 @@ class LocalServer {
     }
 
     const response = this._buildResponse(waiter.since, waiter.bot, waiter.startTime);
+    // Size of the variable part of what this round hands the agent (#12): the
+    // MCP layer wraps these entries in fixed prose, so entry chars are the
+    // per-round payload trend. A snowballing re-delivery bug shows up here as
+    // entries/chars climbing round over round; the 📊 [context] marker carries
+    // the full context size the model actually processed.
+    {
+      const respEntries = (response.transcript && response.transcript.entries) || [];
+      const respChars = respEntries.reduce((n, e) => n + String(e.text || '').length, 0);
+      console.log(ts(), `📦 [payload] round → ${respEntries.length} entries, ${respChars} chars, reason=${reason}`);
+      this._auditDelivery(respEntries, reason);
+    }
     // Tag so the MCP layer / skill know this is a "bank and loop, do NOT speak"
     // surface rather than a real turn.
     if (reason === 'background_tick') response.backgroundTick = true;
@@ -4321,7 +4506,7 @@ class LocalServer {
     }
 
     // Explicit whiteboard reload (#321 follow-up): re-fetch the shared board's
-    // content + style without changing content. Used by the reload_whiteboard
+    // content + style without changing content. Used by the reload_share
     // tool when the bot wants to force a refresh.
     if (data.reloadWhiteboard === true) {
       results.reloadWhiteboard = this.onReloadWhiteboard() || { ok: true };
@@ -4427,8 +4612,8 @@ class LocalServer {
     }
 
     // Handle share/stop whiteboard commands
-    if (data.meta?.action === 'chrome-share-tab') { // POC (share-agent-tab)
-      this.onChromeShareTab(data.meta.url, data.meta.appName);
+    if (data.meta?.action === 'share-tab') { // POC (share-agent-tab)
+      this.onShareTab(data.meta.url, data.meta.appName);
       results.shareTab = { ok: true };
     }
     if (data.meta?.action === 'share-whiteboard') {
@@ -4471,9 +4656,9 @@ class LocalServer {
     }
 
     // Handle scroll-share command (scroll the shared whiteboard window)
-    if (data.meta?.action === 'screenshare-scroll') {
-      const r = await this.onScreenshareScroll({ direction: data.meta.direction, amount: data.meta.amount });
-      results.screenshareScroll = r || { ok: true };
+    if (data.meta?.action === 'scroll-share') {
+      const r = await this.onScrollShare({ direction: data.meta.direction, amount: data.meta.amount });
+      results.scrollShare = r || { ok: true };
     }
 
     // Handle set-share-audio — silence/restore the shared surface's sound
@@ -4487,15 +4672,15 @@ class LocalServer {
     }
 
     // Drive the shared board: click and type into whatever it is showing.
-    if (data.meta?.action === 'screenshare-click') {
-      results.screenshareClick = await this.onScreenshareClick({
+    if (data.meta?.action === 'share-click') {
+      results.shareClick = await this.onShareClick({
         selector: data.meta.selector, x: data.meta.x, y: data.meta.y,
         button: data.meta.button, clickCount: data.meta.clickCount,
       });
     }
 
-    if (data.meta?.action === 'screenshare-type') {
-      results.screenshareType = await this.onScreenshareType({
+    if (data.meta?.action === 'share-type') {
+      results.shareType = await this.onShareType({
         text: data.meta.text, key: data.meta.key,
         modifiers: data.meta.modifiers, selector: data.meta.selector,
       });
@@ -4514,8 +4699,8 @@ class LocalServer {
 
     // Handle inspect-dom command — read-only DOM extraction from the Meet view
     // or the shared whiteboard window, for debugging/introspection.
-    if (data.meta?.action === 'screenshare-read-page') {
-      results.screenshareReadPage = await this.onScreenshareReadPage({
+    if (data.meta?.action === 'inspect-dom') {
+      results.inspectDom = await this.onInspectDom({
         target: data.meta.target,
         selector: data.meta.selector,
         maxElements: data.meta.maxElements,
@@ -4524,26 +4709,26 @@ class LocalServer {
     }
 
     // Sandboxed JS eval against the share surface (#244).
-    if (data.meta?.action === 'screenshare-eval') {
-      results.screenshareEval = await this.onScreenshareEval({ expression: data.meta.expression });
+    if (data.meta?.action === 'eval-share') {
+      results.evalShare = await this.onEvalShare({ expression: data.meta.expression });
     }
 
     // Locate an element on the share surface by description (#244).
-    if (data.meta?.action === 'screenshare-find') {
-      results.screenshareFind = await this.onScreenshareFind({
+    if (data.meta?.action === 'find-share-element') {
+      results.findShareElement = await this.onFindShareElement({
         description: data.meta.description,
         max_results: data.meta.maxResults,
       });
     }
 
     // Read the share surface's buffered console messages (#244).
-    if (data.meta?.action === 'screenshare-read-console') {
-      results.screenshareReadConsole = await this.onScreenshareReadConsole({ limit: data.meta.limit });
+    if (data.meta?.action === 'read-share-console') {
+      results.readShareConsole = await this.onReadShareConsole({ limit: data.meta.limit });
     }
 
     // Read the share surface's buffered network requests (#244).
-    if (data.meta?.action === 'screenshare-read-network') {
-      results.screenshareReadNetwork = await this.onScreenshareReadNetwork({ limit: data.meta.limit });
+    if (data.meta?.action === 'read-share-network') {
+      results.readShareNetwork = await this.onReadShareNetwork({ limit: data.meta.limit });
     }
 
     // Handle set-mode command — persistent bot behavior mode

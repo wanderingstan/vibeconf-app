@@ -119,9 +119,38 @@ function isEventUpcoming(event, now, lookaheadMs = DEFAULT_LOOKAHEAD_MS, pastGra
   return delta <= lookaheadMs && -delta <= pastGraceMs;
 }
 
+// The key an event is remembered under once it's been joined (or scheduled).
+//
+// NOT the bare event id: a recurring meeting's every occurrence can share one
+// id — the backend maps our `id` from Google's `iCalUID`, which is constant
+// across a whole series by design, and even Google's own instance ids are
+// only per-occurrence when the caller expands with singleEvents=true. Keying
+// dedupe on the id alone therefore means "joined the standup once" reads as
+// "joined the standup forever": the real failure that motivated this
+// (2026-08-11 — yesterday's 17:00 join was 23h30m old when today's 16:30
+// instance came up, still inside the 24h retention, so it was skipped as
+// already-handled and no bot ever joined).
+//
+// Pairing the id with the occurrence's own start time makes each occurrence a
+// distinct thing to remember, which is what the dedupe actually means ("I
+// already handled THIS meeting"). Parsed to epoch ms when parseable so two
+// polls that render the same instant differently ("...Z" vs "...+00:00")
+// still collapse to one key; falls back to the raw string otherwise.
+//
+// This stands on its own: even against a backend that hands back a
+// series-constant id (an old deployment, a different client), a daily standup
+// gets a fresh key every day.
+function eventDedupeKey(event) {
+  const id = (event && event.id) || '';
+  const rawStart = (event && event.start) || '';
+  const parsed = Date.parse(rawStart);
+  const stamp = Number.isFinite(parsed) ? String(parsed) : norm(rawStart);
+  return `${id}|${stamp}`;
+}
+
 // Evict dedupe entries older than maxAgeMs. `idMap` is a plain object
-// { [eventId]: joinedAtMs }. Returns a NEW object (no mutation) so callers
-// can decide whether/when to persist it.
+// { [eventDedupeKey]: joinedAtMs }. Returns a NEW object (no mutation) so
+// callers can decide whether/when to persist it.
 function evictStaleEventIds(idMap, now, maxAgeMs = DEFAULT_DEDUPE_MAX_AGE_MS) {
   const result = {};
   for (const [id, joinedAt] of Object.entries(idMap || {})) {
@@ -134,7 +163,8 @@ function evictStaleEventIds(idMap, now, maxAgeMs = DEFAULT_DEDUPE_MAX_AGE_MS) {
 
 // Given the events a poll tick fetched, pick AT MOST ONE to join: the first
 // (in list order) that is (a) within the lookahead window, (b) matches this
-// bot's identity/tag, and (c) has no existing dedupe entry. Also reports how
+// bot's identity/tag, and (c) has no existing dedupe entry — looked up under
+// eventDedupeKey(e), so `joinedIds` must be keyed the same way. Also reports how
 // many OTHER events in the same tick also matched, so the caller can log a
 // warning about the ones it deliberately didn't join (per the plan: only
 // ever join one per tick, don't silently drop the rest either).
@@ -145,7 +175,7 @@ function selectEventToJoin(events, { calendarIdentityEmail, botName, joinedIds, 
   const candidates = (events || []).filter((e) => e && e.id
     && isEventUpcoming(e, now, lookaheadMs)
     && matchesCalendarEvent(e, { calendarIdentityEmail, botName })
-    && !(joinedIds && Object.prototype.hasOwnProperty.call(joinedIds, e.id)));
+    && !(joinedIds && Object.prototype.hasOwnProperty.call(joinedIds, eventDedupeKey(e))));
 
   if (candidates.length === 0) return { event: null, extraMatchCount: 0 };
   return { event: candidates[0], extraMatchCount: candidates.length - 1 };
@@ -191,6 +221,7 @@ module.exports = {
   matchesCalendarEvent,
   isEventUpcoming,
   msUntilStart,
+  eventDedupeKey,
   evictStaleEventIds,
   selectEventToJoin,
   selectUpcomingMatches,

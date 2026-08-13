@@ -119,6 +119,11 @@
       // when they all notice the same silence gap at once.
       this._tickTiltSign = 1;
       this._tickTiltMag = 1;
+      // Thinking sway envelope (#290) — see the render loop. 0 means "not
+      // swaying"; both are wall-clock stamps, so neither needs a value here
+      // beyond the falsy start.
+      this._swaySince = 0;
+      this._swayLeftAt = 0;
       // Seed persistent state from the module-level avatarState, NOT hardcoded
       // defaults. A camera can be created mid-call — e.g. turning the camera on
       // makes the host page re-acquire the video stream, spawning a fresh
@@ -465,10 +470,54 @@
       const speakScaleX = baseScale * (1 - speakOpen * 0.10); // slight squeeze
       const speakBounce = speakOpen * (emojiSize * 0.06);
       const speakTilt = this.speaking ? Math.sin(this.frameCount * 0.3) * 0.05 : 0;
-      // Thinking state: gentle side-to-side sway
-      const thinkSway = this.state === 'thinking'
-        ? Math.sin(t * 1.2) * 8
-        : 0;
+      // Thinking state: gentle side-to-side sway.
+      //
+      // #290 — "the animation into 🤔 has a jump." It did, and it was this line.
+      // The sway used to be `state === 'thinking' ? sin(t * 1.2) * 8 : 0` against
+      // the FREE-RUNNING clock `t`. That clock's phase has nothing to do with
+      // when the state changes, so at the instant the bot entered thinking the
+      // term went from exactly 0 to sin(whatever) * 8 — an arbitrary value
+      // anywhere in ±8px, applied as a horizontal translate. The head teleported
+      // sideways, on average ~5px, in a single frame. Leaving thinking snapped it
+      // back the same way. Twice per turn, every turn, which is exactly the
+      // "becomes jarring after a while" in the report.
+      //
+      // The fix is to make the sway both START and END at zero:
+      //
+      //   1. PHASE is anchored to the moment thinking began, so the first frame
+      //      is sin(0) = 0 — the face is exactly where it already was.
+      //   2. AMPLITUDE ramps in over SWAY_RAMP_MS, and ramps back out on exit
+      //      rather than being cut, so leaving is as smooth as arriving.
+      //
+      // Wall-clock rather than frameCount, like the tick pulse below: an occluded
+      // or throttled view drops frames, and a frame-counted envelope would then
+      // ramp in slow motion.
+      //
+      // 0.72 rad/s preserves the original rate exactly (frameCount * 0.02 * 1.2
+      // at 30fps), so the sway itself feels unchanged — only its edges do.
+      const SWAY_PX = 8;
+      const SWAY_RATE = 0.72;   // rad/s — the pre-#290 rate, kept deliberately
+      const SWAY_RAMP_MS = 400;
+      const swayNow = Date.now();
+      if (this.state === 'thinking') {
+        if (!this._swaySince) this._swaySince = swayNow;
+        this._swayLeftAt = 0;              // re-entered before the ramp-out finished
+      } else if (this._swaySince) {
+        if (!this._swayLeftAt) this._swayLeftAt = swayNow;
+        if (swayNow - this._swayLeftAt >= SWAY_RAMP_MS) {
+          this._swaySince = 0;             // fully faded; stop tracking
+          this._swayLeftAt = 0;
+        }
+      }
+      let thinkSway = 0;
+      if (this._swaySince) {
+        const elapsed = swayNow - this._swaySince;
+        const fadeIn = Math.min(1, elapsed / SWAY_RAMP_MS);
+        const fadeOut = this._swayLeftAt
+          ? Math.max(0, 1 - (swayNow - this._swayLeftAt) / SWAY_RAMP_MS)
+          : 1;
+        thinkSway = Math.sin((elapsed / 1000) * SWAY_RATE) * SWAY_PX * fadeIn * fadeOut;
+      }
       // Background-tick "noted that" pulse — a quick head-tilt + pop that eases
       // out over ~700ms when the avatar enters thinking (set in 'set-bot-state').
       // Framerate-robust via wall-clock. sin gives a smooth 0→1→0.
@@ -1754,6 +1803,14 @@
   // muted, rather than surprising the room with sound already suppressed.
   let shareAudioGain = null;
   let shareAudioMuted = false;
+  // The RAW shared audio track (the tab/screen's actual sound, before the mute
+  // gain). Exposed so the call recorder can save it as its own track (#209),
+  // mirroring __vibeMicTrack. Recording the raw source, not the published
+  // (post-mute) track, so the shared content's audio is captured even when the
+  // bot has muted it into the call. Cleared when the share ends.
+  let currentShareAudioTrack = null;
+  window.__vibeShareTrack = () =>
+    (currentShareAudioTrack && currentShareAudioTrack.readyState === 'live') ? currentShareAudioTrack : null;
 
   function applyShareAudioMute() {
     if (!shareAudioGain) return false;
@@ -1768,6 +1825,10 @@
   function installShareAudioGain(stream) {
     const raw = stream.getAudioTracks()[0];
     if (!raw) { shareAudioGain = null; return null; }
+    // Expose the raw track for recording, whether or not the gain graph below
+    // succeeds — a share that can't be muted can still be recorded.
+    currentShareAudioTrack = raw;
+    raw.addEventListener('ended', () => { if (currentShareAudioTrack === raw) currentShareAudioTrack = null; });
     try {
       const ctx = new AudioContext();
       const gain = ctx.createGain();
@@ -2952,8 +3013,16 @@
 
     window.addEventListener('message', (event) => {
       if (event.source !== window || !event.data?.__botsInCalls) return;
-      if (event.data.action === 'speaker-active' && event.data.payload?.speaking) {
-        voteFromDom(event.data.payload.name);
+      if (event.data.action === 'speaker-active') {
+        const { name, speaking, at } = event.data.payload || {};
+        if (!name) return;
+        // Persist the speaker timeline (start AND stop) to disk alongside the
+        // audio: Meet mixes participants into shared slots, so the tracks alone
+        // don't say who spoke when — but this DOM-derived, wall-clock-stamped
+        // log does, and merge-call-audio.mjs turns it into who-spoke-when
+        // annotations over the merged call audio (#209).
+        if (recording) post('record-speaker-event', { name, speaking: !!speaking, at: at || Date.now() });
+        if (speaking) voteFromDom(name);
       }
     });
 
@@ -3004,6 +3073,7 @@
       recorders.delete(name);
     }
 
+    let lastShareId = null, shareCount = 0;
     function attachAll() {
       if (!recording) return;
       try {
@@ -3015,6 +3085,23 @@
           if (pa && pa.track) recordTrack(`remote-${id}`, pa.track, id);
         }
       } catch { /* manager is a stub (Slack) — nothing to attach */ }
+      // The shared tab/screen's own audio, when a share is live. A fresh id means
+      // a new share session (they come and go mid-call) → a new track name, so
+      // separate shares land in separate files instead of concatenating into one.
+      //
+      // Named 'share-audio', NOT 'share': call-recording-window.js already claims
+      // the bare 'share' name for the shared surface's VIDEO capture (#288, which
+      // landed after this was written). CallRecordingSession keys tracks by name
+      // and opens one fd per name, so reusing 'share' would append two unrelated
+      // webm byte streams into a single share.webm — a corrupt file, plus whichever
+      // stream registered first would decide the per-kind byte cap for both.
+      try {
+        const share = window.__vibeShareTrack && window.__vibeShareTrack();
+        if (share) {
+          if (share.id !== lastShareId) { lastShareId = share.id; shareCount++; }
+          recordTrack(shareCount === 1 ? 'share-audio' : `share-audio-${shareCount}`, share);
+        }
+      } catch { /* no share / not exposed — nothing to attach */ }
     }
 
     return {

@@ -463,6 +463,32 @@ const PREFERENCES = {
       + 'to a Terminal rather than joining a call with a mute bot. '
       + 'Only applies when Agent backend is "claude".',
   },
+  linuxAgentTmux: {
+    type: 'boolean',
+    default: false,
+    label: 'Wrap the agent terminal in tmux (Linux only)',
+    requiresRestart: false,
+    description:
+      'On Linux, run the agent inside a tmux session and use the terminal window '
+      + 'only as a viewport onto it (#329). What that buys: the session SURVIVES '
+      + 'the window being closed (or X restarting, or an SSH connection dropping), '
+      + 'and you can reattach from anywhere with "tmux attach -t <session>" — '
+      + 'including over plain SSH, which is how an unattended box gets debugged '
+      + 'and recovered when its agent wedges. '
+      + 'OFF by default because that is not a trade everyone wants: tmux brings '
+      + 'its own status bar, scrollback and Ctrl-B keybindings, and inheriting all '
+      + 'of that just because tmux happens to be installed is a surprise on a '
+      + 'machine you are only playing on. Off, the terminal behaves like macOS '
+      + 'does — plain, and closing it ends the agent. '
+      + 'Turn it ON for a machine you need to reach remotely, or one that has to '
+      + 'survive a dropped connection. '
+      + 'Ignored when tmux is not installed, and ignored entirely on macOS and '
+      + 'Windows. '
+      + 'It does NOT mean "never run tmux": on a machine with NO terminal emulator '
+      + 'at all there is no window for tmux to change the feel of, and a detached '
+      + 'tmux session is the only way to have an agent anyone can type at, so that '
+      + 'case still uses one regardless of this setting.',
+  },
   confirmQuit: {
     type: 'boolean',
     default: true,
@@ -762,6 +788,32 @@ const PREFERENCES = {
       'How long a participant tile can stay active without caption text ' +
       'arriving before the bot decides the captions have dropped out (and ' +
       'surfaces that to the agent as a warning). See issue #187.',
+  },
+  speakingDetectionMode: {
+    type: 'string',
+    default: 'either',
+    enum: ['either', 'meter', 'mutation'],
+    enumLabels: {
+      either: 'Either signal (fastest rising edge)',
+      meter: 'Meter level only',
+      mutation: 'Mutation counting only (pre-#142)',
+    },
+    description:
+      'Which per-participant speaking signal the DOM tracker takes its verdict '
+      + 'from. Both always run and both are always logged, so this only picks the '
+      + 'verdict — the comparison keeps accruing whatever it is set to. '
+      + '"mutation" is the original: count tile mutations, 3 inside a 1200ms '
+      + 'window, which lands ~300-600ms after speech starts because Meet churns '
+      + 'the meter at 5-10Hz. "meter" reads the mic meter as a LEVEL — Meet '
+      + 'animates background-position-x across a sprite of bars, so one number '
+      + 'is the loudness — and can flip on the first sample after onset. '
+      + '"either" ORs them: earliest rising edge, and the mutation counter still '
+      + 'covers anything the meter misses. A meter that has not been found or '
+      + 'has not moved yet reports nothing and falls back to mutation counting, '
+      + 'so no setting here can make the tracker deafer than it was before the '
+      + 'meter signal existed. Watch [meter-latency] for the lead the meter '
+      + 'actually delivers and [speaker-health] mtr= for meters reading blind. '
+      + 'Read live (picked up on the tracker\'s 2s scan).',
   },
   fastFloorDetection: {
     type: 'boolean',

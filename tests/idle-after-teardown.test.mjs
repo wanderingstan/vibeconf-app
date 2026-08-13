@@ -86,11 +86,14 @@ test('a join finishes an unfinished teardown instead of being dropped', () => {
 test('a failed Meet navigation is reported, not swallowed', () => {
   // Every caller invokes loadMeetURL fire-and-forget, so before the wrapper a
   // rejection was an unhandled promise rejection: join had already said ok.
-  assert.match(main, /async function loadMeetURL\(meetUrl\) \{\s*\n\s*try \{\s*\n\s*await _loadMeetURL\(meetUrl\);/);
+  // Signature matched loosely past `meetUrl`: the wrapper grew an options bag
+  // for #347's guest fallback, and the point of this test is the try/await/
+  // report shape, not the parameter list.
+  assert.match(main, /async function loadMeetURL\(meetUrl[^)]*\) \{\s*\n\s*try \{\s*\n\s*await _loadMeetURL\(meetUrl/);
   const w = main.slice(main.indexOf('async function loadMeetURL'));
   const body = w.slice(0, w.indexOf('\n}\n'));
   assert.match(body, /addError\(/, 'the agent must learn the bot is NOT in the call');
   assert.match(body, /setCallStatus\('idle'\)/, 'a failed join must leave a joinable state');
   // The real implementation must still exist under its new name.
-  assert.match(main, /async function _loadMeetURL\(meetUrl\)/);
+  assert.match(main, /async function _loadMeetURL\(meetUrl/);
 });

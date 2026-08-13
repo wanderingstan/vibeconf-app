@@ -27,6 +27,8 @@ import { execSync, execFileSync } from "child_process";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
+import { resolveInstance, joinNameFromRouting } from "./instance-routing.js";
+import { parseMeetRoomId } from "./meet-room.js";
 
 let ROOM_ID = process.env.VIBECONF_ROOM_ID || "";
 let BOT_NAME = process.env.VIBECONF_BOT_NAME || "Unnamed bot";
@@ -35,6 +37,16 @@ let BOT_NAME = process.env.VIBECONF_BOT_NAME || "Unnamed bot";
 // single agent session can target any running profile regardless of which port
 // the app baked into the MCP config (#301). Reassigned in routeToInstance().
 let BASE_URL = process.env.VIBECONF_BASE_URL || "http://127.0.0.1:7865";
+// The port this session was EXPLICITLY pinned to, captured before anything can
+// re-bind BASE_URL. The app writes VIBECONF_BASE_URL into each profile's own MCP
+// config, so when it's set we know which instance this terminal belongs to and
+// can skip the "which profile did you mean?" prompt. Null when unset — the
+// default 7865 happens to be the default profile's port, and inferring from that
+// would silently pick a profile the user never named.
+const PINNED_PORT = (() => {
+  const m = String(process.env.VIBECONF_BASE_URL || "").match(/:(\d+)/);
+  return m ? Number(m[1]) : null;
+})();
 // Backend (Vercel) base — used for REMOTE session logs shipped by other machines
 // (get_session_log with an `instance` arg / list_log_instances). Distinct from
 // BASE_URL, which is this machine's local Electron app.
@@ -114,6 +126,10 @@ async function discoverInstances() {
         // The default profile reports null — normalize so it's addressable as "default".
         profile: s.localProfile || "default",
         botName: s.currentCallBotName || s.configuredBotName || null,
+        // Kept separate from botName: this is the profile's OWN display name (what
+        // the panel is set to), which is what a profile-addressed join should join
+        // under — not currentCallBotName, a per-call override from a past call.
+        configuredBotName: (s.configuredBotName || "").trim() || null,
         callStatus: s.callStatus || null,
         roomId: d.roomId || null,
       };
@@ -122,36 +138,23 @@ async function discoverInstances() {
   return results.filter(Boolean);
 }
 
-// Resolve which running instance a name targets. name = profile (preferred) or bot
-// name. Backward-compatible: a single running instance is used as-is (the name is
-// then just the display name); discovery turning up nothing keeps the current
-// BASE_URL (env default) so existing single-instance setups are unaffected.
-function resolveInstance(name, instances) {
-  if (instances.length === 0) return { keep: true }; // nothing discovered → don't touch BASE_URL
-  if (name) {
-    const n = String(name).trim().toLowerCase();
-    const byProfile = instances.find((i) => (i.profile || "").toLowerCase() === n);
-    const byBot = instances.find((i) => (i.botName || "").toLowerCase() === n);
-    if (byProfile || byBot) return { instance: byProfile || byBot };
-    if (instances.length === 1) return { instance: instances[0] }; // sole instance; name is a display name
-    const list = instances.map((i) => `${i.profile} (:${i.port}${i.botName ? `, ${i.botName}` : ""})`).join(", ");
-    return { error: `No running instance for profile "${name}". Running: ${list}. Launch that profile, or use one of these names.` };
-  }
-  if (instances.length === 1) return { instance: instances[0] };
-  const list = instances.map((i) => `${i.profile} (:${i.port}${i.botName ? `, ${i.botName}` : ""})`).join(", ");
-  return { error: `Multiple app instances running — specify which by profile name: ${list}.` };
-}
+// resolveInstance lives in ./instance-routing.js (pure, unit-tested). Behaviour:
+// name = profile (preferred) or display name. Backward-compatible — a single
+// running instance is used as-is (the name is then just the display name), and
+// discovery turning up nothing keeps the current BASE_URL (env default) so
+// existing single-instance setups are unaffected.
 
 // Bind this session's BASE_URL to the instance the name targets. Returns
-// { ok, instance? } or { error }.
+// { ok, instance?, matchedBy? } or { error }. matchedBy tells the caller whether
+// the name was an ADDRESS (a profile) or a label — see instance-routing.js.
 async function routeToInstance(name) {
   let instances;
   try { instances = await discoverInstances(); }
   catch { return { ok: true }; } // discovery failed → keep current BASE_URL, let the join surface a real error
-  const r = resolveInstance(name, instances);
+  const r = resolveInstance(name, instances, { pinnedPort: PINNED_PORT });
   if (r.error) return { error: r.error };
   if (r.keep) return { ok: true };
-  if (r.instance) { BASE_URL = r.instance.baseUrl; return { ok: true, instance: r.instance }; }
+  if (r.instance) { BASE_URL = r.instance.baseUrl; return { ok: true, instance: r.instance, matchedBy: r.matchedBy }; }
   return { ok: true };
 }
 
@@ -201,6 +204,14 @@ async function resolveBotName(name) {
   if (explicit) return explicit;
   const configured = await fetchConfiguredBotName();
   return configured || BOT_NAME;
+}
+
+// The display name to join under. joinNameFromRouting decides it from the routed
+// instance (see instance-routing.js — a profile-matched name is an ADDRESS and
+// must not overwrite that profile's own name); only when routing says nothing do
+// we fall back to the cached configured name / env default.
+async function displayNameForJoin(argName, routed) {
+  return joinNameFromRouting(argName, routed) || (await resolveBotName(null));
 }
 
 const server = new McpServer({
@@ -652,10 +663,21 @@ function afterCallWorkNote(plan) {
   if (!plan || !plan.enabled) {
     return ' Your work here is done — exit the conversation loop.';
   }
+  // The bot's after-call duties live in the workdir CLAUDE.md, which only
+  // app-spawned agents auto-load (they cd into the workdir; a terminal-driven
+  // session runs wherever it was launched). The local-server therefore ships
+  // the actual "## After the call" section in the plan, and it is inlined
+  // here so EVERY transport sees the same checklist. On the 2026-08-10 Seth
+  // call the old "its CLAUDE.md says what that is" phrasing left a
+  // terminal-driven agent with nothing in context — it ended the session in
+  // 0.6s and the summary + log copy were silently skipped.
+  const duties = plan.duties
+    ? `Your after-call duties, from the bot's CLAUDE.md${plan.workdir ? ` (workdir: ${plan.workdir} — file paths below are relative to it)` : ''}:\n\n${plan.duties}\n\n`
+    : `Use them for whatever wrap-up this bot is meant to do — its CLAUDE.md says what that is (a summary, a receipt, notes filed somewhere)${plan.workdir ? `; if you don't have that file in context, read it at ${plan.workdir}/CLAUDE.md` : ''}.\n\n`;
   return ` You are now in AFTER-CALL WORK. You have up to ${plan.seconds} seconds, and you are still running.\n\n`
     + 'The call is over but its state is NOT gone: read_transcripts, read_whiteboard and get_room_info all still '
-    + 'work, and still describe the call that just ended. Use them for whatever wrap-up this bot is meant to do — '
-    + 'its CLAUDE.md says what that is (a summary, a receipt, notes filed somewhere).\n\n'
+    + 'work, and still describe the call that just ended. '
+    + duties
     + 'Do NOT call speak or send_chat: you have left the meeting, so nobody will hear or see it.\n\n'
     + 'Call end_session as soon as you are finished. That releases the app immediately instead of making it wait out '
     + 'the whole window. If there is nothing to do, call it now.';
@@ -1105,10 +1127,13 @@ server.tool(
   }
 );
 
-// --- reload_whiteboard ---
+// --- reload_share ---
+// Not whiteboard-specific: re-fetches whatever is currently loaded in the
+// share window, markdown board or a URL loaded via load_url alike. Named to
+// match the scroll_share/click_share/type_share/stop_sharing convention.
 server.tool(
-  "reload_whiteboard",
-  "Force the shared whiteboard to refresh WITHOUT changing its content — re-fetches the board's current content + styling and re-renders it. Reach for it if the shared board looks stale or out of sync. No-op if you're not currently sharing the whiteboard. Note: set_whiteboard_style already reloads automatically, so this is mainly a manual escape hatch.",
+  "reload_share",
+  "Force the share window to refresh WITHOUT changing its content — re-fetches whatever is currently shared (the whiteboard, or a page loaded via load_url) and re-renders it. Reach for it if the share looks stale or out of sync. No-op if nothing is currently being shared. Note: set_whiteboard_style already reloads automatically, so this is mainly a manual escape hatch.",
   {
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
@@ -1126,11 +1151,43 @@ server.tool(
       const d = await resp.json();
       const r = d.results?.reloadWhiteboard;
       if (r?.ok) {
-        return { content: [{ type: "text", text: "Whiteboard reloaded." }] };
+        return { content: [{ type: "text", text: "Share reloaded." }] };
       }
       return { content: [{ type: "text", text: r?.error || "Nothing is being shared to reload." }] };
     } catch (err) {
-      return { content: [{ type: "text", text: `Error contacting local server to reload whiteboard: ${err.message}` }] };
+      return { content: [{ type: "text", text: `Error contacting local server to reload share: ${err.message}` }] };
+    }
+  }
+);
+
+// --- load_url ---
+// Split out of update_whiteboard (which used to double as "load any URL into
+// the share window"). An agent showing an unrelated site shouldn't have to
+// call a tool literally named "whiteboard" to do it.
+server.tool(
+  "load_url",
+  "Load an arbitrary web page into the bot's share window in the Google Meet call — a website, localhost app, or dashboard, live (not a markdown board). Present it first with start_share if you're not already sharing; calling this while presenting swaps the live content to this URL. For markdown/Mermaid content, use update_whiteboard instead.",
+  {
+    url: z.string().describe("The URL to load into the share window."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ url, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) {
+      return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    }
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
+        meta: { action: "load-url", url },
+      })),
+    });
+    const data = await resp.json();
+    if (data.success) {
+      return { content: [{ type: "text", text: `Share window now showing: ${url}` }] };
+    } else {
+      return { content: [{ type: "text", text: `Error: ${data.error || "Failed to load URL"}` }] };
     }
   }
 );
@@ -1138,21 +1195,20 @@ server.tool(
 // --- update_whiteboard ---
 server.tool(
   "update_whiteboard",
-  "Update the shared whiteboard/screen in the Google Meet call. Supports markdown and Mermaid diagrams. Can also load an arbitrary URL (e.g. a website, localhost app, dashboard) instead of markdown content. To show a local image (e.g. a generated image), pass image_path (absolute local file path) — it gets registered with the app's local server and embedded as markdown. Do NOT put a raw file:// URL in a markdown image tag inside 'content' and do NOT hand-build a base64 data URI — the whiteboard renders in a sandboxed browser that can't load file:// URLs (broken image), and inlining base64 wastes huge amounts of context. image_path is the only correct way to show a local image.",
+  "Update the shared whiteboard content in the Google Meet call. Supports markdown and Mermaid diagrams. To show a local image (e.g. a generated image), pass image_path (absolute local file path) — it gets registered with the app's local server and embedded as markdown. Do NOT put a raw file:// URL in a markdown image tag inside 'content' and do NOT hand-build a base64 data URI — the whiteboard renders in a sandboxed browser that can't load file:// URLs (broken image), and inlining base64 wastes huge amounts of context. image_path is the only correct way to show a local image. To load an arbitrary website/URL instead of markdown, use load_url.",
   {
     content: z.string().optional().describe("Markdown content for the whiteboard. Supports headings, lists, code blocks, Mermaid diagrams, and images. For SEVERAL images (a grid of options, a comparison), write ordinary markdown image links to absolute local paths — ![city](/abs/path/city.svg) — and they are registered and rewritten for you, so you control the layout. Base64 data URIs are still not supported. For a single image appended after the text, image_path is simpler."),
-    url: z.string().optional().describe("Load an arbitrary URL in the whiteboard window instead of markdown content. Useful for showing websites, localhost apps, or dashboards."),
     image_path: z.string().optional().describe("Absolute local file path to an image (png/jpg/gif/webp/svg/bmp/pdf). The local server registers it and embeds it in the markdown. This is the correct way to show a local/generated image — do not build your own file:// link or base64 data URI. If 'content' is also provided, the image is appended after it."),
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
-  async ({ content, url, image_path, room_id }) => {
+  async ({ content, image_path, room_id }) => {
     const roomId = room_id || ROOM_ID;
     if (!roomId) {
       return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
     }
 
-    if (!content && !url && !image_path) {
-      return { content: [{ type: "text", text: "Error: One of 'content', 'url', or 'image_path' must be provided." }] };
+    if (!content && !image_path) {
+      return { content: [{ type: "text", text: "Error: One of 'content' or 'image_path' must be provided." }] };
     }
 
     // image_path: register with the local server and fold the resulting URL
@@ -1206,23 +1262,6 @@ server.tool(
         content = content ? `${content}\n\n${imgMd}` : imgMd;
       } catch (err) {
         return { content: [{ type: "text", text: `Error contacting local server to register image: ${err.message}` }] };
-      }
-    }
-
-    // Load arbitrary URL mode
-    if (url) {
-      const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(botSyncPayload(BOT_NAME, {
-          meta: { action: "load-url", url },
-        })),
-      });
-      const data = await resp.json();
-      if (data.success) {
-        return { content: [{ type: "text", text: `Whiteboard window now showing: ${url}` }] };
-      } else {
-        return { content: [{ type: "text", text: `Error: ${data.error || "Failed to load URL"}` }] };
       }
     }
 
@@ -1398,7 +1437,7 @@ server.tool(
   "start_call",
   "Start a BRAND-NEW call: creates a fresh Google Meet that anyone with the link can join, sends the bot into it, and opens the user's own browser to it. This is the /call command, and it mirrors the app's \"Call <bot> now\" button. Use it when there is no existing call — to put the bot into a call that ALREADY exists, use join_call instead. If the user is NOT at the machine running the app — driving you from a phone, or from a remote session — pass open_browser: false, and you will get the meeting link back to hand them.",
   {
-    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance."),
+    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance, or the one this session is pinned to."),
     open_browser: z.boolean().optional().describe("Whether to open a browser to the meeting ON THE MACHINE RUNNING THE APP. Default true, which is right when the user is sitting at it. Pass false when they are remote (on their phone, in a remote session): no stray tab opens on the unattended desktop, and the response includes the join link so you can give it to them."),
   },
   async ({ bot_name, open_browser }) => {
@@ -1452,7 +1491,7 @@ server.tool(
   "start_recording",
   "Record the current call to disk — one audio file per track (the bot's own voice plus each remote participant's audio, which Meet sends separately) PLUS a video track of the bot's own Meet view, with a manifest that names tracks and time-aligns them. Once recording stops, audio and video are automatically muxed into one playable call-recording.mp4. A small visible status window (elapsed time + Stop button) appears while recording is active — that's expected. Requires an active call. Recording can be started (and stopped, via stop_recording) at ANY point during a live call, not just at launch. Auto-runs on every call when the recordCallAudio pref / VIBECONF_RECORD_CALL is set; this tool starts it on demand otherwise.",
   {
-    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance."),
+    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance, or the one this session is pinned to."),
   },
   async ({ bot_name }) => {
     try {
@@ -1486,7 +1525,7 @@ server.tool(
   "stop_recording",
   "Stop the call recording started by start_recording (or by the recordCallAudio pref) — finalizes the per-track audio + video files and manifest, then automatically muxes them into one playable call-recording.mp4. Returns where they were saved. Can be called at any point mid-call (not just at the end). Recording also stops automatically when the bot leaves the call.",
   {
-    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance."),
+    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance, or the one this session is pinned to."),
   },
   async ({ bot_name }) => {
     try {
@@ -1540,37 +1579,19 @@ server.tool(
 
 // --- start_share (alias: share_whiteboard) ---
 // "Screen share" is the Meet feature for presenting visual content; the
-// whiteboard window is just the default content source (it can also load any
-// URL, or you can share the whole screen). Shared schema + handler so the
-// legacy share_whiteboard name keeps working for skills in the wild (#177).
+// whiteboard window is the (only) content source — it can load any URL, not
+// just the built-in board. Shared schema + handler so the legacy
+// share_whiteboard name keeps working for skills in the wild (#177).
 const startShareSchema = {
   room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
-  share_type: z.enum(["whiteboard", "screen"]).optional().describe("What to share. 'whiteboard' (default) shares the bot's whiteboard window — set its content with update_whiteboard (markdown/Mermaid, an image, or any URL). 'screen' shares the entire screen."),
   width: z.number().optional().describe("Width of the shared board in pixels. Leave unset for the recommended 800 — the whiteboard renderer is TUNED for 800 wide, so markdown/Mermaid boards should keep it. Only change this when sharing a URL whose content wants a different shape."),
   height: z.number().optional().describe("Height of the shared board in pixels. Leave unset for the recommended 800. Square is deliberate: Meet stacks participant tiles down the RIGHT of a shared screen, so a wide board loses its edge behind them."),
   title_bar: z.boolean().optional().describe("Whether the shared window keeps its title bar. Default true — it labels what people are looking at. Pass false for an edge-to-edge capture when the chrome would read as an accident (a screenshot, a design mock, a full-bleed image)."),
 };
-async function startShareHandler({ room_id, share_type, width, height, title_bar }) {
+async function startShareHandler({ room_id, width, height, title_bar }) {
     const roomId = room_id || ROOM_ID;
     if (!roomId) {
       return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
-    }
-
-    const shareType = share_type || "whiteboard";
-
-    // Pre-flight: confirm screen recording permission before attempting the
-    // share. Without it, getDisplayMedia silently fails and the user hears
-    // the bot claim it shared something that isn't actually visible.
-    try {
-      const preflight = await vfetch(`${BASE_URL}/api/sync/${roomId}`);
-      const preflightData = await preflight.json();
-      const screenPerm = preflightData.status?.permissions?.screenRecording;
-      if (screenPerm && screenPerm !== 'granted' && screenPerm !== 'unknown') {
-        return { content: [{ type: "text", text: `Cannot share: screen recording permission is '${screenPerm}'. The user needs to grant Vibeconferencing access in System Settings > Privacy & Security > Screen Recording. Tell them this in the call (in 1 sentence) so they can fix it.` }] };
-      }
-    } catch (err) {
-      // Non-fatal — fall through to the share attempt; the existing 7s
-      // error-detection path will catch real failures.
     }
 
     // Stamp the attempt start so we can filter out stale errors from earlier
@@ -1606,7 +1627,7 @@ async function startShareHandler({ room_id, share_type, width, height, title_bar
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
-        meta: { action: "share-whiteboard", shareType },
+        meta: { action: "share-whiteboard" },
       })),
     });
 
@@ -1625,10 +1646,7 @@ async function startShareHandler({ room_id, share_type, width, height, title_bar
       // recovered. Don't report failure over stale/transient errors when the
       // share is actually live.
       if (statusData.status?.sharing === true) {
-        const msg = shareType === 'screen'
-          ? "Your screen is now being shared in the call."
-          : "The whiteboard window is now being shared in the call. Use update_whiteboard to change what it shows.";
-        return { content: [{ type: "text", text: msg }] };
+        return { content: [{ type: "text", text: "The whiteboard window is now being shared in the call. Use update_whiteboard to change what it shows." }] };
       }
 
       // Not presenting — explain why, using errors from THIS attempt.
@@ -1638,12 +1656,7 @@ async function startShareHandler({ room_id, share_type, width, height, title_bar
       );
       if (shareErrors.length > 0) {
         const latestError = shareErrors[shareErrors.length - 1];
-        const screenPerm = statusData.status?.permissions?.screenRecording;
-        const permActuallyDenied = screenPerm && screenPerm !== 'granted' && screenPerm !== 'unknown';
-        const suffix = permActuallyDenied
-          ? ` Screen recording permission is '${screenPerm}' — fix in System Settings > Privacy & Security > Screen Recording.`
-          : ` Permission is OK — the Meet UI may not be in a presentable state. Tell the user the share dropped and offer to retry.`;
-        return { content: [{ type: "text", text: `Screen sharing failed: ${latestError.message}.${suffix}` }] };
+        return { content: [{ type: "text", text: `Screen sharing failed: ${latestError.message}. The Meet UI may not be in a presentable state. Tell the user the share dropped and offer to retry.` }] };
       }
 
       return { content: [{ type: "text", text: "Share request was sent but the app reports it isn't presenting yet. The Meet UI may need to be refreshed or focused. Tell the user." }] };
@@ -1653,7 +1666,7 @@ async function startShareHandler({ room_id, share_type, width, height, title_bar
 }
 server.tool(
   "start_share",
-  "Start screen-sharing into the Google Meet call so participants can see it. By default shares the bot's whiteboard window (set its content with update_whiteboard — markdown/Mermaid or any URL); pass share_type 'screen' to share the whole screen instead.",
+  "Start sharing the bot's whiteboard window into the Google Meet call so participants can see it. Set its content with update_whiteboard (markdown/Mermaid), or load_url to show an arbitrary web page instead.",
   startShareSchema,
   startShareHandler
 );
@@ -1664,7 +1677,7 @@ server.tool(
   startShareHandler
 );
 
-// --- chrome_share_tab (POC: share the tab you're browsing) ---
+// --- share_tab (POC: share the tab you're browsing) ---
 // The SAME agent drives a Chrome tab (via the claude-in-chrome extension) and
 // this bot, so it already knows the tab's URL — pass it here. The app activates
 // that tab and screen-shares its window into the call, live. Reuses the
@@ -1674,7 +1687,7 @@ async function shareTabHandler({ room_id, url, app_name }) {
   // is macOS-only for now. On Windows/Linux, fail LOUD and CLEAR (not with a
   // cryptic "osascript not found") and point at the portable alternatives.
   if (process.platform !== "darwin") {
-    return { content: [{ type: "text", text: "Sharing a specific browser tab (chrome_share_tab) is macOS-only right now — it uses AppleScript to find and isolate the tab, which Windows/Linux don't support yet. On this platform, tell the user and use start_share with share_type 'screen' to share the whole screen, or the whiteboard, instead." }] };
+    return { content: [{ type: "text", text: "Sharing a specific browser tab (share_tab) is macOS-only right now — it uses AppleScript to find and isolate the tab, which Windows/Linux don't support yet. On this platform, tell the user and use start_share to share the whiteboard instead." }] };
   }
   const roomId = room_id || ROOM_ID;
   if (!roomId) return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
@@ -1684,7 +1697,7 @@ async function shareTabHandler({ room_id, url, app_name }) {
   const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(botSyncPayload(BOT_NAME, { meta: { action: "chrome-share-tab", url, appName: app_name } })),
+    body: JSON.stringify(botSyncPayload(BOT_NAME, { meta: { action: "share-tab", url, appName: app_name } })),
   });
   const data = await resp.json();
   if (!data.success) return { content: [{ type: "text", text: `Error: ${data.error || "Failed to share tab"}` }] };
@@ -1700,8 +1713,8 @@ async function shareTabHandler({ room_id, url, app_name }) {
   return { content: [{ type: "text", text: "Share request sent but the app isn't presenting yet — the tab may not be open in Chrome, or the Meet UI needs focus. Tell the user." }] };
 }
 server.tool(
-  "chrome_share_tab",
-  "Share a SPECIFIC browser tab into the Google Meet by its URL — ideal for showing the room the exact page you're browsing with the Chrome tools. Pass the tab's `url`; the app finds that tab in Chrome, makes it active, and screen-shares its window live (participants see it update as you navigate). Prefer this over start_share('screen') when you want to present one page rather than the whole desktop. macOS only for now (uses AppleScript to locate the tab); Windows support tracked separately.",
+  "share_tab",
+  "Share a SPECIFIC browser tab into the Google Meet by its URL — ideal for showing the room the exact page you're browsing with the Chrome tools. Pass the tab's `url`; the app finds that tab in Chrome, makes it active, and screen-shares its window live (participants see it update as you navigate). Prefer this over start_share when you want to present a live external page rather than the bot's own whiteboard. macOS only for now (uses AppleScript to locate the tab); Windows support tracked separately.",
   {
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
     url: z.string().describe("The URL of the tab to share — the page you're browsing (e.g. from the claude-in-chrome tab you navigated). Matched by substring against open Chrome tabs, so a distinctive URL works best."),
@@ -1752,10 +1765,10 @@ server.tool(
   }
 );
 
-// --- screenshare_scroll ---
+// --- scroll_share ---
 server.tool(
-  "screenshare_scroll",
-  "Scroll the content currently being screen-shared into the call — useful when you've loaded a long website (via update_whiteboard with a url) or posted markdown longer than the viewport and want to move down. Scrolls smoothly. Direction: 'down'/'up' move ~one screenful, 'top'/'bottom' jump to the ends. Works on whatever is in the share, URL or markdown alike.",
+  "scroll_share",
+  "Scroll the content currently being screen-shared into the call — useful when you've loaded a long website (via load_url) or posted markdown longer than the viewport and want to move down. Scrolls smoothly. Direction: 'down'/'up' move ~one screenful, 'top'/'bottom' jump to the ends. Works on whatever is in the share, URL or markdown alike.",
   {
     direction: z.enum(["down", "up", "top", "bottom"]).optional().describe("Scroll direction. Default: down."),
     amount: z.number().optional().describe("Pixels to scroll for up/down (default: ~85% of the viewport). Ignored for top/bottom."),
@@ -1770,11 +1783,11 @@ server.tool(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
-        meta: { action: "screenshare-scroll", direction, amount },
+        meta: { action: "scroll-share", direction, amount },
       })),
     });
     const data = await resp.json();
-    const r = data.results?.screenshareScroll;
+    const r = data.results?.scrollShare;
     if (r?.ok) {
       return { content: [{ type: "text", text: `Scrolled ${direction || 'down'}.` }] };
     }
@@ -1841,10 +1854,10 @@ server.tool(
   }
 );
 
-// --- screenshare_click ---
+// --- click_share ---
 server.tool(
-  "screenshare_click",
-  "Click inside whatever the bot is screen-sharing — a real mouse event, so the page reacts exactly as it would to a person. Use it to drive an app on the board: press a button, open a menu, follow a link, tick a checkbox. PREFER selector over x/y: pass a CSS selector and the click lands on that element's centre, which you can find with screenshare_read_page. Raw x/y is for content with no addressable elements (a canvas, a map, an embedded viewer) — and note those coordinates are CSS pixels IN THE PAGE, which are NOT screenshot pixels: screenshare_screenshot is 2x on a Retina host, so halve what you measure there. Whatever you click, the room sees it happen.",
+  "click_share",
+  "Click inside whatever the bot is screen-sharing — a real mouse event, so the page reacts exactly as it would to a person. Use it to drive an app on the board: press a button, open a menu, follow a link, tick a checkbox. PREFER selector over x/y: pass a CSS selector and the click lands on that element's centre, which you can find with inspect_dom. Raw x/y is for content with no addressable elements (a canvas, a map, an embedded viewer) — and note those coordinates are CSS pixels IN THE PAGE, which are NOT screenshot pixels: get_shared_screenshot is 2x on a Retina host, so halve what you measure there. Whatever you click, the room sees it happen.",
   {
     selector: z.string().optional().describe("CSS selector to click, e.g. 'button.submit', '#next', 'a[href=\"/docs\"]'. Clicks the element's centre and scrolls it into view first. Preferred over x/y."),
     x: z.number().optional().describe("X in CSS pixels within the shared page. Only when no selector fits."),
@@ -1863,21 +1876,21 @@ server.tool(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
-        meta: { action: "screenshare-click", selector, x, y, button, clickCount: double ? 2 : 1 },
+        meta: { action: "share-click", selector, x, y, button, clickCount: double ? 2 : 1 },
       })),
     });
     const data = await resp.json();
-    const r = data.results?.screenshareClick;
+    const r = data.results?.shareClick;
     if (r?.ok) {
-      return { content: [{ type: "text", text: `Clicked ${r.selector ? r.selector + " " : ""}at (${r.x}, ${r.y}). Check the result with screenshare_screenshot or screenshare_read_page.` }] };
+      return { content: [{ type: "text", text: `Clicked ${r.selector ? r.selector + " " : ""}at (${r.x}, ${r.y}). Check the result with get_shared_screenshot or inspect_dom.` }] };
     }
     return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "Failed to click"}` }] };
   }
 );
 
-// --- screenshare_type ---
+// --- type_share ---
 server.tool(
-  "screenshare_type",
+  "type_share",
   "Type into whatever the bot is screen-sharing — real key events, so autocomplete, validation and keyboard shortcuts all behave normally. Pass text to type it, or key to press a single named key (Enter, Tab, Escape, Backspace, ArrowDown, Home...). Add modifiers for a shortcut (['cmd'] + text 'a' selects all). Pass selector to focus a field first — without it keys go to whatever the page already has focused, which for a freshly loaded page is nothing, and the text vanishes. A newline inside text presses Enter, so you can fill a field and submit in one call. The room sees every keystroke land.",
   {
     text: z.string().optional().describe("Text to type, character by character. A \n presses Enter."),
@@ -1894,14 +1907,14 @@ server.tool(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
-        meta: { action: "screenshare-type", text, key, modifiers, selector },
+        meta: { action: "share-type", text, key, modifiers, selector },
       })),
     });
     const data = await resp.json();
-    const r = data.results?.screenshareType;
+    const r = data.results?.shareType;
     if (r?.ok) {
       const what = r.key ? `Pressed ${r.key}` : `Typed ${JSON.stringify(r.typed)}`;
-      return { content: [{ type: "text", text: `${what}${r.selector ? " into " + r.selector : ""}. Check the result with screenshare_screenshot or screenshare_read_page.` }] };
+      return { content: [{ type: "text", text: `${what}${r.selector ? " into " + r.selector : ""}. Check the result with get_shared_screenshot or inspect_dom.` }] };
     }
     return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "Failed to type"}` }] };
   }
@@ -1938,13 +1951,13 @@ server.tool(
   }
 );
 
-// --- screenshare_read_page ---
+// --- inspect_dom ---
 server.tool(
-  "screenshare_read_page",
+  "inspect_dom",
   "Inspect the live DOM of the bot's Google Meet call, or of whatever it's currently screen-sharing into the call — returns the matched elements' outerHTML. Read-only. Use it to debug what's actually on screen: locate a modal and its dismiss button, find why a share rendered blank, or check Meet's UI state. Pair with get_call_screenshot (pixels) for a fuller picture.",
   {
     selector: z.string().describe("CSS selector to query, e.g. '[role=dialog]', 'button', '.some-class'. Defaults to 'body'."),
-    target: z.enum(["meet", "share"]).optional().describe("Which DOM to read. 'meet' (default) = the bot's Google Meet call page. 'share' = the window currently being screen-shared into the call — that's the whiteboard if you're sharing the whiteboard, or any URL you loaded into it via update_whiteboard."),
+    target: z.enum(["meet", "share"]).optional().describe("Which DOM to read. 'meet' (default) = the bot's Google Meet call page. 'share' = the window currently being screen-shared into the call — that's the whiteboard if you're sharing the whiteboard, or any URL you loaded into it via load_url."),
     max_elements: z.number().optional().describe("Max matched elements to return (default 5, max 20)."),
     max_chars: z.number().optional().describe("Max characters of outerHTML per element (default 4000, max 20000); longer elements are truncated."),
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
@@ -1960,11 +1973,11 @@ server.tool(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
-        meta: { action: "screenshare-read-page", target: tgt, selector: sel, maxElements: max_elements, maxChars: max_chars },
+        meta: { action: "inspect-dom", target: tgt, selector: sel, maxElements: max_elements, maxChars: max_chars },
       })),
     });
     const data = await resp.json();
-    const r = data.results?.screenshareReadPage;
+    const r = data.results?.inspectDom;
     if (!r) {
       return { content: [{ type: "text", text: `Error: ${data.error || "No response from app"}` }] };
     }
@@ -1980,10 +1993,10 @@ server.tool(
   }
 );
 
-// --- screenshare_find ---
+// --- find_share_element ---
 server.tool(
-  "screenshare_find",
-  "Locate an element in the share surface by a natural-language description instead of a CSS selector — 'the submit button', 'the search box', 'the second result link'. Returns candidate matches ranked by how well they match, each with a selector (when the element has an id) and its center x/y (for screenshare_click when no selector is available, e.g. a canvas overlay). Read-only. Use this before screenshare_click/screenshare_type when you don't already know the selector.",
+  "find_share_element",
+  "Locate an element in the share surface by a natural-language description instead of a CSS selector — 'the submit button', 'the search box', 'the second result link'. Returns candidate matches ranked by how well they match, each with a selector (when the element has an id) and its center x/y (for click_share when no selector is available, e.g. a canvas overlay). Read-only. Use this before click_share/type_share when you don't already know the selector.",
   {
     description: z.string().describe("What to find, in plain language, e.g. 'the Sign In button' or 'the email input field'."),
     max_results: z.number().optional().describe("Max candidates to return (default 5, max 20)."),
@@ -1996,11 +2009,11 @@ server.tool(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
-        meta: { action: "screenshare-find", description, maxResults: max_results },
+        meta: { action: "find-share-element", description, maxResults: max_results },
       })),
     });
     const data = await resp.json();
-    const r = data.results?.screenshareFind;
+    const r = data.results?.findShareElement;
     if (!r?.ok) {
       return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "find failed"}` }] };
     }
@@ -2014,10 +2027,10 @@ server.tool(
   }
 );
 
-// --- screenshare_eval ---
+// --- eval_share ---
 server.tool(
-  "screenshare_eval",
-  "Run JavaScript in the share surface (whatever's currently being screen-shared) and return the result. Sandboxed to that page's own context — it cannot reach the app or the OS. Use it for anything the other screenshare_* tools don't cover directly: reading a value off the page (localStorage, a global variable), computing something from the DOM, or driving an app via its own JS API. The room does not see this happen (unlike screenshare_click/screenshare_type) — only its visible side effects, if any.",
+  "eval_share",
+  "Run JavaScript in the share surface (whatever's currently being screen-shared) and return the result. Sandboxed to that page's own context — it cannot reach the app or the OS. Use it for anything the other *_share tools don't cover directly: reading a value off the page (localStorage, a global variable), computing something from the DOM, or driving an app via its own JS API. The room does not see this happen (unlike click_share/type_share) — only its visible side effects, if any.",
   {
     expression: z.string().describe("JavaScript to evaluate, e.g. 'document.title' or '(() => { ...; return x; })()'. The last expression's value is returned; must be JSON-serializable (or a Promise that resolves to one)."),
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
@@ -2029,11 +2042,11 @@ server.tool(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
-        meta: { action: "screenshare-eval", expression },
+        meta: { action: "eval-share", expression },
       })),
     });
     const data = await resp.json();
-    const r = data.results?.screenshareEval;
+    const r = data.results?.evalShare;
     if (!r?.ok) {
       return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "eval failed"}` }] };
     }
@@ -2041,9 +2054,9 @@ server.tool(
   }
 );
 
-// --- screenshare_read_console ---
+// --- read_share_console ---
 server.tool(
-  "screenshare_read_console",
+  "read_share_console",
   "Read recent console messages (log/warn/error/info) from the share surface — buffered continuously while something is shared, so you can call this AFTER a click/type/eval to see what it triggered, not just at the moment it happened. Read-only. Use it to debug a web app you're driving on the board: did that click throw, is a script failing to load.",
   {
     limit: z.number().optional().describe("Max most-recent messages to return (default 50, max 200)."),
@@ -2056,11 +2069,11 @@ server.tool(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
-        meta: { action: "screenshare-read-console", limit },
+        meta: { action: "read-share-console", limit },
       })),
     });
     const data = await resp.json();
-    const r = data.results?.screenshareReadConsole;
+    const r = data.results?.readShareConsole;
     if (!r?.ok) {
       return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "no console log available"}` }] };
     }
@@ -2072,9 +2085,9 @@ server.tool(
   }
 );
 
-// --- screenshare_read_network ---
+// --- read_share_network ---
 server.tool(
-  "screenshare_read_network",
+  "read_share_network",
   "Read recent network requests (method, URL, status, timing) made by the share surface — buffered continuously while something is shared. Read-only. Use it to debug a web app on the board: did that API call succeed, is a resource 404ing, how long did a request take.",
   {
     limit: z.number().optional().describe("Max most-recent requests to return (default 50, max 200)."),
@@ -2087,11 +2100,11 @@ server.tool(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(botSyncPayload(BOT_NAME, {
-        meta: { action: "screenshare-read-network", limit },
+        meta: { action: "read-share-network", limit },
       })),
     });
     const data = await resp.json();
-    const r = data.results?.screenshareReadNetwork;
+    const r = data.results?.readShareNetwork;
     if (!r?.ok) {
       return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "no network log available"}` }] };
     }
@@ -2215,7 +2228,7 @@ server.tool(
 // --- get_call_screenshot ---
 server.tool(
   "get_call_screenshot",
-  "Capture a screenshot of the current Meet view as the bot sees it — participant tiles, names, mic icons, who's speaking, captions, ANOTHER participant's shared screen, and the surrounding Google Meet chrome — saved to a temporary file. Returns the absolute path to the PNG. Use this for visual context about what's happening in the call. IMPORTANT: this is the Meet view, so it does NOT show the bot's OWN screen share — Meet never shows you your own presentation. To see what YOU are presenting (your shared whiteboard), use screenshare_screenshot instead. After getting the path, read the file with your normal image-reading tool to look at it.",
+  "Capture a screenshot of the current Meet view as the bot sees it — participant tiles, names, mic icons, who's speaking, captions, ANOTHER participant's shared screen, and the surrounding Google Meet chrome — saved to a temporary file. Returns the absolute path to the PNG. Use this for visual context about what's happening in the call. IMPORTANT: this is the Meet view, so it does NOT show the bot's OWN screen share — Meet never shows you your own presentation. To see what YOU are presenting (your shared whiteboard), use get_shared_screenshot instead. After getting the path, read the file with your normal image-reading tool to look at it.",
   {
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
@@ -2233,9 +2246,9 @@ server.tool(
   }
 );
 
-// --- screenshare_screenshot ---
+// --- get_shared_screenshot ---
 server.tool(
-  "screenshare_screenshot",
+  "get_shared_screenshot",
   "Capture a screenshot of the bot's OWN shared screen — the whiteboard it's currently presenting into the call — and save it to a temporary file. Returns the absolute path to the PNG. Use this to see what participants are actually seeing on your shared screen (get_call_screenshot only shows the Meet view, which can't show you your own share). Fails if you're not currently sharing. After getting the path, read the file with your normal image-reading tool to look at it.",
   {
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
@@ -2681,7 +2694,7 @@ server.tool(
     }
     const shareUrl = status.screenShareUrl || status.whiteboardLoadedUrl; // #177 rename; tolerate old field
     if (shareUrl) {
-      sections.push(`Currently sharing: ${shareUrl} (what's rendering in the screen share now, post-update_whiteboard / screenshare_scroll)`);
+      sections.push(`Currently sharing: ${shareUrl} (what's rendering in the screen share now, post-load_url / scroll_share)`);
     }
 
     // #244: surface the current avatar background so the bot can recall it
@@ -2704,11 +2717,6 @@ server.tool(
 
     if (status.chatUnread) {
       sections.push('Chat: unread message(s) — use read_chat to see them');
-    }
-
-    const screenPerm = status.permissions?.screenRecording;
-    if (screenPerm && screenPerm !== 'granted' && screenPerm !== 'unknown') {
-      sections.push(`Screen recording permission: ${screenPerm} (whiteboard sharing will not work — tell user to grant access in System Settings > Privacy & Security > Screen Recording)`);
     }
 
     if (status.sessionLogPath) {
@@ -2752,7 +2760,7 @@ server.tool(
 // --- list_call_instances ---
 server.tool(
   "list_call_instances",
-  "List the Vibeconferencing app instances (profiles) currently running on this machine — each is a separate bot on its own local-server port. Returns profile name, port, bot name, and call status. join_call's bot_name selects the instance by PROFILE name (so `/join-call <code> Alice` drives the 'Alice' profile's app). Use this to see what you can target, or when join_call reports the name is ambiguous/not found.",
+  "List the Vibeconferencing app instances (profiles) currently running on this machine — each is a separate bot on its own local-server port. Returns profile name, port, bot name, and call status. join_call's bot_name selects the instance by PROFILE name (so `/join-call <code> alice2` drives the 'alice2' profile's app, joining under that profile's own display name). Use this to see what you can target, or when join_call reports the name is ambiguous/not found.",
   {},
   async () => {
     const instances = await discoverInstances();
@@ -2768,10 +2776,10 @@ server.tool(
 // --- join_call ---
 server.tool(
   "join_call",
-  "Tell the Vibeconferencing app to join a call — a Google Meet OR a Slack huddle. Use this when the app is running but idle. For Meet, pass the meet code; the app navigates and joins. For Slack, pass the huddle URL (app.slack.com/client/<team>/<channel>); the app switches to the Slack provider and auto-joins the huddle.",
+  "Tell the Vibeconferencing app to join a call — a Google Meet OR a Slack huddle. Use this when the app is running but idle. For Meet, pass the meet code OR the full Meet URL (either is accepted); the app navigates and joins. For Slack, pass the huddle URL (app.slack.com/client/<team>/<channel>); the app switches to the Slack provider and auto-joins the huddle.",
   {
-    room_id: z.string().describe("Meet code (e.g. abc-defg-hij) OR a Slack huddle URL (https://app.slack.com/client/<team>/<channel>)."),
-    bot_name: z.string().optional().describe("Bot display name in Meet. Omit to use the bot name configured for this MCP instance (set via the app's panel or VIBECONF_BOT_NAME env). Only pass this to explicitly override — don't pass a literal default like 'Unnamed bot', that overrides the user's preference."),
+    room_id: z.string().describe("Meet code (e.g. abc-defg-hij), a full Meet URL (https://meet.google.com/abc-defg-hij, query string and all), OR a Slack huddle URL (https://app.slack.com/client/<team>/<channel>)."),
+    bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running (see list_call_instances) — the profile keeps its own display name, so `/join-call <code> alice2` joins as whatever alice2 is named. If the name matches no profile and only one instance is running, it is used as a one-off Meet display name instead. Omit to use the sole running instance, or the one this session is pinned to, under its configured name — don't pass a literal default like 'Unnamed bot', that overrides the user's preference."),
     force: z.boolean().optional().describe("Rebuild the session even if the bot is already in this call. Default false, which makes a repeat join a harmless no-op. Only pass true when the live session is genuinely wedged and you mean to drop and rejoin — it tears down the working call. It also skips the same-name collision check."),
   },
   async ({ room_id, bot_name, force }) => {
@@ -2784,7 +2792,7 @@ server.tool(
       const routedNote = routed.instance
         ? ` (profile "${routed.instance.profile}" on port ${routed.instance.port})`
         : "";
-      const joinedBotName = await resolveBotName(bot_name);
+      const joinedBotName = await displayNameForJoin(bot_name, routed);
       // If the lock is set but the bot name changed, check whether the
       // previous call is actually still in progress. The local-server is
       // the source of truth — handles every call-end path (explicit
@@ -2844,6 +2852,18 @@ server.tool(
         }
         return { content: [{ type: "text", text: `Couldn't join the Slack huddle: ${sdata.results?.join?.error || sdata.error || 'unknown error'}.` }] };
       }
+
+      // Meet: accept a pasted URL, not just the bare code (#314).
+      //
+      // The URL→code extraction has always existed, but only in the /join-call
+      // skill — so it covered Claude Code and nothing else. The raw tool is the
+      // front door for every other integrator (Codex, Cursor, hand-rolled
+      // clients), and a URL is what people actually have in their clipboard.
+      // Reassigning room_id here keeps the whole rest of the join (and the room
+      // id echoed back to the agent) on the canonical code.
+      const parsedRoom = parseMeetRoomId(room_id);
+      if (!parsedRoom.ok) return { content: [{ type: "text", text: parsedRoom.error }] };
+      room_id = parsedRoom.roomId;
 
       const resp = await vfetch(`${BASE_URL}/api/sync/${room_id}`, {
         method: "POST",

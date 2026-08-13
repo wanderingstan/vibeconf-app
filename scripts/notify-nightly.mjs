@@ -12,7 +12,7 @@
 //   VIBECONF_RESULTS_DIR=<path>  override results dir
 //   VIBECONF_TELEGRAM_ENV=<path> override the token .env location
 
-import { readFileSync, readdirSync } from 'fs';
+import { readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { execSync, execFileSync } from 'child_process';
@@ -98,6 +98,36 @@ function fuzzLine(r) {
   if (!r) return '⚪️ agent-fuzz: no result';
   return `${icon(r.ok === true)} agent-fuzz: ${r.ok ? 'pass' : 'fail'}${r.mission ? ` (${r.mission})` : ''}`;
 }
+// #334: fold the per-agent exit outcomes into the digest so a fuzz FAIL says WHY at
+// a glance. spawn-agents.mjs logs a `[agent-exit NAME: code=X signal=Y after Zs
+// (attempt N/M)]` line per attempt, so we can distinguish a launch flake that
+// burned its retries (code≠0, ⟳3/3) from a hang killed at teardown (signal=SIGTERM
+// after minutes) from a clean agent that ran the mission (code=0, no retry). The
+// agent logs are reused + appended each night, so the LAST exit line per bot is
+// tonight's; only count logs touched in the last hour (notify runs minutes after
+// the fuzz lane).
+function fuzzAgentSummary() {
+  let files = [];
+  try { files = readdirSync(join(RESULTS, 'agent-fuzz')).filter((n) => /^agent-.*\.log$/.test(n)); }
+  catch { return []; }
+  const cutoff = Date.now() - 60 * 60 * 1000;
+  const parts = [];
+  for (const f of files.sort()) {
+    const p = join(RESULTS, 'agent-fuzz', f);
+    let st; try { st = statSync(p); } catch { continue; }
+    if (st.mtimeMs < cutoff) continue;
+    let tail = ''; try { tail = readFileSync(p, 'utf8').slice(-4000); } catch { continue; }
+    const m = [...tail.matchAll(/\[agent-exit (\w+): code=(\S+) signal=(\S+) after ([\d.]+)s \(attempt (\d+)\/(\d+)\)\]/g)];
+    if (!m.length) continue;
+    const [, name, code, signal, secs, attempt, max] = m[m.length - 1];
+    const retry = Number(attempt) > 1 ? ` ⟳${attempt}/${max}` : '';
+    const state = code === '0'
+      ? `ran ${secs}s`
+      : `code=${code}${signal !== 'null' ? `/${signal}` : ''} ${secs}s`;
+    parts.push(`${name} ${state}${retry}`);
+  }
+  return parts;
+}
 
 const dmg = lastLine('results.jsonl');
 const main = lastLine('results-main.jsonl');
@@ -130,6 +160,9 @@ const lines = [
   statusLine('join/call routes', joinRoute),
   fuzzLine(fuzz),
 ];
+// #334: per-agent exit codes under the fuzz line (launch flake vs hang vs clean run).
+const fuzzAgents = fuzzAgentSummary();
+if (fuzzAgents.length) lines.push(`   ↳ agents: ${fuzzAgents.join(' · ')}`);
 const anyRed = lines.some((l) => l.startsWith('🔴'));
 const anyYellow = lines.some((l) => l.startsWith('🟡'));
 const stamp = dmg?.ts || main?.ts || slack?.ts || '(unknown)';

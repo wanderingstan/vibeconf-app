@@ -3,7 +3,7 @@ name: onboarding-call
 description: Run a guided, live setup call that walks the user through configuring this bot, name, personality, voice, emoji, background, whiteboard style, skills, and after-call routine
 argument-hint: "[meet code] [BotName] (same room/profile routing as /call and /join-call)"
 disable-model-invocation: true
-allowed-tools: Read Glob Edit mcp__vibeconferencing__start_call mcp__vibeconferencing__list_call_instances mcp__vibeconferencing__get_room_info mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__reload_whiteboard mcp__vibeconferencing__set_whiteboard_style mcp__vibeconferencing__read_chat mcp__vibeconferencing__send_chat mcp__vibeconferencing__suggest_bot_names mcp__vibeconferencing__list_visual_assets mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__set_avatar_emoji mcp__vibeconferencing__list_preferences mcp__vibeconferencing__set_preference mcp__vibeconferencing__set_caption_language mcp__vibeconferencing__set_mode mcp__vibeconferencing__start_recording mcp__vibeconferencing__stop_recording mcp__vibeconferencing__leave_call mcp__vibeconferencing__end_session
+allowed-tools: Read Glob Edit mcp__vibeconferencing__start_call mcp__vibeconferencing__list_call_instances mcp__vibeconferencing__get_room_info mcp__vibeconferencing__wait_for_speech mcp__vibeconferencing__speak mcp__vibeconferencing__update_whiteboard mcp__vibeconferencing__share_whiteboard mcp__vibeconferencing__reload_share mcp__vibeconferencing__set_whiteboard_style mcp__vibeconferencing__read_chat mcp__vibeconferencing__send_chat mcp__vibeconferencing__suggest_bot_names mcp__vibeconferencing__list_visual_assets mcp__vibeconferencing__list_voices mcp__vibeconferencing__set_voice mcp__vibeconferencing__set_avatar_emoji mcp__vibeconferencing__list_preferences mcp__vibeconferencing__set_preference mcp__vibeconferencing__set_caption_language mcp__vibeconferencing__set_mode mcp__vibeconferencing__start_recording mcp__vibeconferencing__stop_recording mcp__vibeconferencing__leave_call mcp__vibeconferencing__end_session
 ---
 
 Run a guided **setup call**: a live Meet where this bot walks the user through configuring
@@ -85,7 +85,7 @@ is still there but nothing is being presented, and `update_whiteboard` goes back
 to a screen no one can see. So after any rejoin, `share_whiteboard` again before the next
 step. See 4b.
 
-If you are ever unsure whether the board is actually up, `screenshare_screenshot` tells you
+If you are ever unsure whether the board is actually up, `get_shared_screenshot` tells you
 in one call. Prefer checking to guessing: the failure is silent in both directions, and a
 wrong guess costs either an invisible board or an interrupted one.
 
@@ -539,7 +539,7 @@ has a version that works with nothing installed:
   by hand. Plug in an image generator and I can do photographic stuff — and with a video
   model, short clips too."* That lands better than the photo would have, because they just
   watched you do the hard version.
-- 🌐 **Drive a live browser tab** (`chrome_share_tab`) needs the Claude-in-Chrome extension
+- 🌐 **Drive a live browser tab** (`share_tab`) needs the Claude-in-Chrome extension
   installed and connected. Without it the bot can still put a URL on the whiteboard, which
   is a fine demo in itself — just do not promise a driven, logged-in browser you cannot
   drive.

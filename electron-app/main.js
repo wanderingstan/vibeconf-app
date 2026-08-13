@@ -2879,6 +2879,13 @@ let meetPopoutWindow = null; // when 'popped', the meetView lives here instead
 let meetHiddenWindow = null; // when 'hidden', a never-shown host giving meetView a big surface
 let appSettingsWindow = null; // #381: machine-wide App Settings (⌘,), a singleton
 
+// Closing a sub-window should hand focus back to the main window rather than
+// dropping it to whatever else is behind — call from every sub-window's
+// 'closed' handler.
+function focusMainWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.focus();
+}
+
 // #381: open (or focus) the App Settings window — machine-wide config shared by
 // every profile on this Mac. A singleton on purpose: one window no matter how
 // many profile windows are open, reinforcing "there's one machine config".
@@ -3192,7 +3199,7 @@ function openAppSettings() {
     },
   });
   appSettingsWindow.loadFile(path.join(__dirname, 'renderer', 'app-settings.html'));
-  appSettingsWindow.on('closed', () => { appSettingsWindow = null; });
+  appSettingsWindow.on('closed', () => { appSettingsWindow = null; focusMainWindow(); });
 }
 
 // ── About window ────────────────────────────────────────────────────────────
@@ -3240,7 +3247,7 @@ function openAboutWindow() {
     if (/^https:\/\//i.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
-  aboutWindow.on('closed', () => { aboutWindow = null; });
+  aboutWindow.on('closed', () => { aboutWindow = null; focusMainWindow(); });
 }
 
 // ── First-run setup wizard (onboarding) ─────────────────────────────────────
@@ -3286,7 +3293,7 @@ function createOnboardingWindow() {
     onboardingWindow.moveTop();
     onboardingWindow.focus();
   });
-  onboardingWindow.on('closed', () => { onboardingWindow = null; runDeferredStarts(); });
+  onboardingWindow.on('closed', () => { onboardingWindow = null; runDeferredStarts(); focusMainWindow(); });
 }
 
 // Probe (and, on first send, trigger) the macOS "Automation" permission by sending
@@ -3785,6 +3792,7 @@ function createWhiteboardWindow(roomUrl) {
     } catch { /* main window already gone */ }
     whiteboardWindow = null;
     broadcastShareWindowState();
+    focusMainWindow();
   });
   setImmediate(broadcastShareWindowState);
   return win;
@@ -8383,6 +8391,7 @@ function setBotViewState(state) {
         // window on the way, or the view spends a frame at thumbnail size and
         // any capture racing this gets the small image.
         setBotViewState('hidden');
+        focusMainWindow();
         return;
       }
       botViewState = 'thumbnail';
@@ -8392,6 +8401,7 @@ function setBotViewState(state) {
       applyMeetZoom();
       layoutViews(); // re-docks the thumbnail into the region
       broadcastBotViewState();
+      focusMainWindow();
     });
     layoutViews(); // panel reclaims the whole column — no region while popped
     broadcastBotViewState();
@@ -8469,6 +8479,7 @@ function setPanelPoppedOut(out) {
       }
       layoutViews();
       broadcastToRenderers('panel-popout-changed', { poppedOut: false });
+      focusMainWindow();
     });
     layoutViews();
     broadcastToRenderers('panel-popout-changed', { poppedOut: true });
@@ -9734,7 +9745,7 @@ function setupIPC() {
       },
     });
     brainWindow = win;
-    win.on('closed', () => { brainWindow = null; });
+    win.on('closed', () => { brainWindow = null; focusMainWindow(); });
     win.loadFile(path.join(__dirname, 'renderer', 'panel.html'), { search: 'screen=brain' });
     return { ok: true };
   });
@@ -9761,7 +9772,7 @@ function setupIPC() {
       },
     });
     troubleshootingWindow = win;
-    win.on('closed', () => { troubleshootingWindow = null; });
+    win.on('closed', () => { troubleshootingWindow = null; focusMainWindow(); });
     win.loadFile(path.join(__dirname, 'renderer', 'panel.html'), { search: 'screen=troubleshooting' });
     return { ok: true };
   });

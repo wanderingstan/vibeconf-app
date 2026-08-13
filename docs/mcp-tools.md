@@ -39,8 +39,9 @@ Call-scoped tools accept an optional `room_id` argument, falling back to `VIBECO
 
 | Tool | What |
 |---|---|
-| **`update_whiteboard`** | Set whiteboard content. Supports markdown + Mermaid. Can also load an arbitrary URL (website, localhost app, dashboard) via the `url` field instead of `content`. Pass `image_path` (absolute) to embed a local image — it gets registered with the local server and embedded automatically. |
-| **`start_share`** | The primary sharing tool: present the whiteboard (or `share_type: screen`) into Meet, with optional size and title-bar control. (`share_whiteboard` remains as a compatibility alias.) |
+| **`update_whiteboard`** | Set whiteboard content. Supports markdown + Mermaid. Pass `image_path` (absolute) to embed a local image — it gets registered with the local server and embedded automatically. |
+| **`load_url`** | Load an arbitrary web page (website, localhost app, dashboard) into the bot's share window, instead of markdown content. |
+| **`start_share`** | The primary sharing tool: present the bot's whiteboard into Meet, with optional size and title-bar control. (`share_whiteboard` remains as a compatibility alias.) |
 | **`stop_sharing`** | Stop screen-sharing. |
 | **`scroll_share`** | Scroll the content currently being shared — URL or rendered markdown alike. `direction: down/up/top/bottom`. |
 
@@ -122,7 +123,7 @@ One-line index, grouped; the canonical description for each is its `server.tool(
 | **`get_shared_screenshot`** | Capture a screenshot of the bot's OWN shared screen — the whiteboard it's currently presenting into the call — and save it to a temporary… |
 | **`read_whiteboard`** | Read the current contents of the shared whiteboard — the markdown/Mermaid source text, not a screenshot. |
 | **`set_whiteboard_style`** | Restyle the shared whiteboard with custom CSS — colors, fonts, spacing, backgrounds. |
-| **`reload_whiteboard`** | Force the shared whiteboard to refresh WITHOUT changing its content — re-fetches the board's current content + styling and re-renders it. |
+| **`reload_share`** | Force the share window to refresh WITHOUT changing its content — re-fetches whatever's currently shared (whiteboard or a `load_url` page) and re-renders it. |
 
 ### Sound
 

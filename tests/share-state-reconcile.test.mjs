@@ -35,14 +35,14 @@ test('the probe re-asserts on ticks where nothing changed', () => {
 });
 
 test('a reconcile corrects the flag but never re-fires the edge side effects', () => {
-  // The edge path warns about an unexpected drop and clears the share request.
-  // Running that once a second would turn one dropped share into a stream of
-  // warnings, and would clear state that is still legitimately in use.
+  // The edge path clears the (POC) external-tab share request on a real
+  // stop. Running that once a second would clear state that is still
+  // legitimately in use.
   const h = main.slice(main.indexOf('ipcMain.on(CALL_EVENTS.selfPresenting'));
   const body = h.slice(0, h.indexOf('\n  });') + 6);
   assert.match(body, /if \(reconcile\) \{/);
   assert.match(body, /return;/, 'the reconcile branch must return before the edge logic');
-  assert.ok(body.indexOf('if (reconcile)') < body.indexOf('Screen share ended unexpectedly'),
+  assert.ok(body.indexOf('if (reconcile)') < body.indexOf('externalShareRequest = null'),
     'the guard has to come first, or the side effects run every second');
 });
 

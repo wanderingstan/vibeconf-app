@@ -2,7 +2,7 @@
 // Manages Meet BrowserView + panel sidebar in a single window,
 // IPC routing, TTS, and sync.
 
-const { app, BrowserWindow, BrowserView, ipcMain, session, shell, nativeImage, desktopCapturer, systemPreferences, dialog, Menu, net } = require('electron');
+const { app, BrowserWindow, BrowserView, ipcMain, session, shell, nativeImage, desktopCapturer, dialog, Menu, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const vm = require('vm');
@@ -1217,7 +1217,7 @@ const localServer = new globalThis.LocalServer({
     reloadWhiteboardWindow('style change');
   },
   onReloadWhiteboard: () => {
-    // Explicit reload (reload_whiteboard tool): re-fetch the shared board's
+    // Explicit reload (reload_share tool): re-fetch the shared board's
     // content + style without changing anything. No-op if nothing's shared.
     return reloadWhiteboardWindow('explicit reload');
   },
@@ -1357,8 +1357,8 @@ const localServer = new globalThis.LocalServer({
       }
     });
   },
-  onShareWhiteboard: (shareType) => {
-    console.log('[local-server] Share requested by agent, type:', shareType);
+  onShareWhiteboard: () => {
+    console.log('[local-server] Whiteboard share requested by agent');
     const meetCode = localServer.roomId;
     if (meetCode) {
       // `sharing` is the PUBLISHED, honest presenting state: it goes true only
@@ -1373,18 +1373,8 @@ const localServer = new globalThis.LocalServer({
       // status.sharing flicker true→false during spin-up, which the whiteboard-e2e
       // harness misread as an "environmental" share collapse.)
       shareIntended = true;
-      if (shareType === 'screen') {
-        // Full screen share — no whiteboard window needed
-        fullScreenShareRequested = true;
-        if (meetView && !meetView.webContents.isDestroyed()) {
-          sendCallCmd(CALL_COMMANDS.triggerScreenShare, { shareType: 'screen' });
-        }
-      } else {
-        // Whiteboard share — open whiteboard window first. Keep the flag
-        // false so setDisplayMediaRequestHandler routes through the
-        // whiteboard-window picker (with main-window exclusion to avoid
-        // #158's infinity-mirror), not the full-screen-grab branch.
-        fullScreenShareRequested = false;
+      {
+        // Whiteboard share — open whiteboard window first.
         externalShareRequest = null; // POC: switching to the whiteboard drops any tab source
         ipcMain.emit('start-whiteboard-share', {}, { meetCode });
         // Trigger Meet's "Present now" once the whiteboard window is up. A single
@@ -1526,7 +1516,6 @@ const localServer = new globalThis.LocalServer({
   onStopSharing: () => {
     console.log('[local-server] Stop sharing requested by agent');
     shareIntended = false;
-    fullScreenShareRequested = false;
     // POC (share-agent-tab): if we were sharing an external browser tab, close
     // its throwaway (isolated) window on stop so no window is left hanging.
     const stoppedTabUrl = externalShareRequest && externalShareRequest.url;
@@ -3341,7 +3330,6 @@ async function stopAllRunwayFaces(why) {
 }
 
 let whiteboardWindow = null;
-let fullScreenShareRequested = false;
 // POC (share-agent-tab): when set to a desktopCapturer window source, the
 // display-media handler shares THAT external window (a specific Chrome tab the
 // agent is browsing) instead of the whiteboard. Cleared on stop/leave. See
@@ -3460,10 +3448,6 @@ let shareTitleBar = true;
 // handler uses frame capture instead. Persisted, so someone who wants it around
 // (to drive the board by hand) keeps it across shares.
 let shareWindowVisible = false;  // seeded from the store in createWhiteboardWindow
-// How the LIVE share is being captured: 'window' (a desktopCapturer source) or
-// 'frame' (the page itself). Hiding a window-captured board would black out the
-// stream — the source stops existing — so the toggle refuses that one case.
-let shareCaptureMode = null;
 // How long the Present-now trigger waits for the bot to actually be in the call
 // before clicking, and how long it then keeps retrying. Both were effectively
 // one combined 10s budget, which a slow Meet join could consume on its own.
@@ -3495,7 +3479,7 @@ let whiteboardLinkPostedForCall = false;
 
 // Reload the shared whiteboard window so it re-fetches content + style. Used
 // after a style change (so current content inherits it) and by the explicit
-// reload_whiteboard tool. No-op (reported to the caller) if nothing's shared.
+// reload_share tool. No-op (reported to the caller) if nothing's shared.
 function reloadWhiteboardWindow(reason) {
   if (whiteboardWindow && !whiteboardWindow.isDestroyed() && !whiteboardWindow.webContents.isDestroyed()) {
     console.log('[whiteboard] Reloading shared board —', reason);
@@ -3603,8 +3587,9 @@ function broadcastShareWindowState() {
     broadcastToRenderers('share-window-state', {
       exists,
       visible: exists && shareWindowVisible,
-      // The one combination the toggle must refuse — see shareCaptureMode.
-      lockedVisible: exists && shareWindowVisible && localServer.sharing && shareCaptureMode === 'window',
+      // Capture is always frame-based now, so hiding the window never blacks
+      // out a live share — nothing for the toggle to refuse.
+      lockedVisible: false,
     });
   } catch { /* panel not up yet */ }
 }
@@ -3705,7 +3690,6 @@ function createWhiteboardWindow(roomUrl) {
       mainWindow?.removeListener('resize', follow);
     } catch { /* main window already gone */ }
     whiteboardWindow = null;
-    shareCaptureMode = null;
     broadcastShareWindowState();
   });
   setImmediate(broadcastShareWindowState);
@@ -4468,29 +4452,12 @@ function configureMeetSession(sess) {
     return ['media', 'microphone', 'camera', 'display-capture'].includes(permission);
   });
 
-  // Screen-share source selection — full screen, or the whiteboard window
-  // with main-window exclusion to avoid the infinity-mirror trap (#158).
+  // Screen-share source selection — always the whiteboard window, captured
+  // via Electron's own frame capture (webContents.mainFrame). This never
+  // touches desktopCapturer for the whiteboard path, so it needs no OS
+  // Screen Recording permission — regardless of whether the share window
+  // happens to be visible or hidden.
   sess.setDisplayMediaRequestHandler(async (request, callback) => {
-    if (fullScreenShareRequested) {
-      try {
-        const sources = await desktopCapturer.getSources({
-          types: ['screen'],
-          thumbnailSize: { width: 0, height: 0 },
-        });
-        if (sources.length > 0) {
-          console.log('[electron] Full screen share source:', sources[0].id, sources[0].name);
-          callback({ video: sources[0] });
-        } else {
-          console.error('[electron] No screen sources found');
-          callback({});
-        }
-      } catch (err) {
-        console.error('[electron] Full screen share error:', err);
-        callback({});
-      }
-      return;
-    }
-
     // POC (share-agent-tab): share a specific external browser window (a Chrome
     // tab the agent is browsing). externalShareRequest.source was resolved ahead
     // of time (tab activated + desktopCapturer source matched) by the
@@ -4505,20 +4472,14 @@ function configureMeetSession(sess) {
     if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
       // Extension: a full-res side capture of the bot's own whiteboard share,
       // independent of the (lower-res) video track of Meet's own render of
-      // it. This IS the moment the share actually engages, regardless of
-      // which branch below answers — see maybeStartShareCapture().
+      // it. This IS the moment the share actually engages.
       maybeStartShareCapture();
-      // callback() may only fire once, so track whether it has — the catch
-      // below must not answer again on behalf of a call that already did.
-      let answered = false;
-      const answer = (streams) => { answered = true; callback(streams); };
       try {
         // Audio for the shared board. Electron's Streams.audio takes a
         // WebFrameMain and captures that frame's audio — so anything the
         // whiteboard page plays (a <video>, a sound effect) reaches the call.
         // Cross-platform, no Chromium feature flags, unlike system loopback
-        // (which is Windows-only in Electron 33 and is a separate problem for
-        // the full-screen share path above).
+        // (which is Windows-only in Electron 33).
         //
         // enableLocalEcho stays at its default false: the bot's own speakers
         // must stay silent or the board's audio would bleed back through the
@@ -4527,68 +4488,15 @@ function configureMeetSession(sess) {
         const wbAudio = !whiteboardWindow.webContents.isDestroyed()
           ? whiteboardWindow.webContents.mainFrame
           : null;
-        // A hidden board has no OS window to capture — it isn't in the window
-        // list at all — so ask for frame capture directly rather than searching,
-        // failing to match, and arriving here via the fallback. Same result, but
-        // the happy path stops logging "No matching whiteboard source", which
-        // reads as a failure to whoever debugs a share next.
-        if (!whiteboardWindow.isVisible()) {
-          console.log('[electron] Share window is hidden — capturing the page frame'
-            + (wbAudio ? ' (with audio)' : ''));
-          shareCaptureMode = 'frame';
-          setImmediate(broadcastShareWindowState);
-          answer(wbAudio
-            ? { video: whiteboardWindow.webContents.mainFrame, audio: wbAudio }
-            : { video: whiteboardWindow.webContents.mainFrame });
-          return;
-        }
-
-        const sources = await desktopCapturer.getSources({
-          types: ['window'],
-          thumbnailSize: { width: 0, height: 0 },
-        });
-        const wbSourceId = whiteboardWindow.getMediaSourceId();
-        const mainSourceId =
-          mainWindow && !mainWindow.isDestroyed() ? mainWindow.getMediaSourceId() : null;
-        const wbTitle = whiteboardWindow.getTitle();
-        console.log('[electron] Display media request — wb source:', wbSourceId, 'main:', mainSourceId, 'title:', wbTitle);
-        console.log('[electron] Available sources:', sources.map(s => `${s.id} "${s.name}"`));
-
-        const candidates = sources.filter(s => s.id !== mainSourceId);
-        let source = candidates.find(s => s.id === wbSourceId);
-        if (!source) source = candidates.find(s => s.name === wbTitle);
-        if (!source) source = candidates.find(s => s.name.startsWith(wbTitle));
-
-        if (source) {
-          console.log('[electron] Matched whiteboard source:', source.id, source.name,
-            '· audio:', wbAudio ? 'whiteboard frame' : 'none');
-          shareCaptureMode = 'window';
-          setImmediate(broadcastShareWindowState);   // the toggle may need to lock
-          answer(wbAudio ? { video: source, audio: wbAudio } : { video: source });
-          return;
-        }
-
-        // Genuinely unexpected now: the window IS on screen but no source matched
-        // it. Frame capture still works, so recover rather than fail the share.
-        //
-        // mainFrame, NOT webContents: Streams.video takes a WebFrameMain or a
-        // DesktopCapturerSource, and anything else throws
-        // "video must be a WebFrameMain or DesktopCapturerSource" — so this
-        // fallback threw instead of falling back, which went unnoticed because
-        // source matching almost always succeeds.
-        console.warn('[electron] Visible share window matched NO capture source — falling back to frame capture (avoiding main window).');
-        shareCaptureMode = 'frame';
-        setImmediate(broadcastShareWindowState);
-        answer(wbAudio
+        callback(wbAudio
           ? { video: whiteboardWindow.webContents.mainFrame, audio: wbAudio }
           : { video: whiteboardWindow.webContents.mainFrame });
       } catch (err) {
-        // callback() is one-time: if the call above already fired and THEN threw
-        // (a bad video type does exactly that), calling it again raises
-        // "One-time callback was called more than once" as an unhandled
-        // rejection, burying the real error under a second one.
+        // callback() is one-time — if it already fired above and THEN threw,
+        // calling it again raises "One-time callback was called more than
+        // once" as an unhandled rejection, burying the real error.
         console.error('[electron] Display media error:', err);
-        if (!answered) { try { callback({}); } catch { /* already answered */ } }
+        try { callback({}); } catch { /* already answered */ }
       }
     } else {
       console.log('[electron] Display media request → no whiteboard window, denying');
@@ -6914,78 +6822,9 @@ app.whenReady().then(async () => {
   // Deferring this prompt to the wizard was the first fix; deleting it is the
   // right one, and the wizard no longer offers the row either.
 
-  // Check screen recording permission (needed for whiteboard share)
-  if (process.platform === 'darwin') {
-    const screenAccess = systemPreferences.getMediaAccessStatus('screen');
-    console.log('[electron] Screen recording permission at launch:', screenAccess);
-    localServer.setPermission('screenRecording', screenAccess);
-
-    if (screenAccess !== 'granted' && onboardingPending) {
-      // First run: the wizard's Permissions step asks for this, with a sentence
-      // saying why. Probing here would raise the system prompt (and, if already
-      // denied, a blocking dialog) on top of a wizard the user hasn't read yet.
-      console.log('[electron] Deferring screen-capture probe until the setup wizard asks');
-    } else if (screenAccess !== 'granted' && SUPPRESS_NOTIFICATIONS) {
-      // Headless/test instance (e.g. a CI runner or the agent-less test fleet):
-      // there's no interactive user and the smoke doesn't share, so skip both the
-      // capture probe AND — critically — the blocking dialog below. Under a
-      // launcher that lacks Screen Recording (a self-hosted GitHub runner), the
-      // dialog.showMessageBoxSync() call wedges the main process (and its
-      // local-server) forever waiting for a click nobody can make. That is exactly
-      // what hung the on-push smoke to its 20-minute timeout. Permission status is
-      // already recorded above; the probe/dialog only exist to register + prompt a
-      // real user, which is meaningless here.
-      console.log('[electron] Skipping screen-capture probe + permission dialog (test/headless instance)');
-    } else if (screenAccess !== 'granted') {
-      // Attempt a REAL screen capture so macOS registers Vibeconferencing in
-      // the "Screen & System Audio Recording" list (and prompts if the status
-      // is not-determined). The thumbnail size must be non-trivial — Electron
-      // short-circuits {width:1,height:1}/{0,0} without actually capturing, so
-      // TCC never sees a capture attempt and the app never appears in the list
-      // (the bug after `tccutil reset` wipes the entry on every build).
-      desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 192, height: 192 } })
-        .then((sources) => {
-          console.log('[electron] Screen capture probe returned', sources.length, 'source(s); first thumb empty?',
-            sources[0] ? sources[0].thumbnail.isEmpty() : 'n/a');
-        })
-        .catch((err) => {
-          console.error('[electron] Screen capture probe failed:', err && err.message);
-        })
-        .finally(() => {
-          const newStatus = systemPreferences.getMediaAccessStatus('screen');
-          console.log('[electron] Screen recording permission after capture attempt:', newStatus);
-          localServer.setPermission('screenRecording', newStatus);
-          // Still not granted (and not mid-prompt) → guide the user. The app is
-          // now registered, so it'll be present with a toggle in Settings.
-          if (newStatus === 'denied' || newStatus === 'restricted') {
-            const choice = dialog.showMessageBoxSync({
-              type: 'warning',
-              title: 'Screen Recording Permission',
-              message: 'Whiteboard sharing is disabled',
-              detail: 'Vibeconferencing needs Screen Recording permission to share the whiteboard in your Meet calls. The app will still work without it; the bot just can\'t share visuals.\n\nIn System Settings > Privacy & Security > Screen & System Audio Recording, enable the toggle next to Vibeconferencing, then restart the app.',
-              buttons: ['Open System Settings', 'Continue Without'],
-              defaultId: 0,
-              cancelId: 1,
-            });
-            if (choice === 0) {
-              shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
-            }
-          }
-        });
-    }
-  } else {
-    localServer.setPermission('screenRecording', 'granted');
-  }
-
-  // Re-check screen recording perm whenever the app regains focus. Users
-  // typically grant it via System Settings, then return to the app — this
-  // picks up the change without requiring a restart.
-  if (process.platform === 'darwin') {
-    app.on('browser-window-focus', () => {
-      const current = systemPreferences.getMediaAccessStatus('screen');
-      localServer.setPermission('screenRecording', current);
-    });
-  }
+  // Screen Recording permission is no longer needed: the whiteboard share
+  // captures via Electron's own frame capture (webContents.mainFrame), never
+  // desktopCapturer, so there is nothing to probe or prompt for here.
 
   // Load saved config
   const savedConfig = store.getMultiple(['ttsApiKey', 'ttsVoiceId', 'botName', 'syncBaseUrl', 'macosVoice', 'ttsProvider', 'voiceboxUrl', 'voiceboxProfileId', 'voiceboxEngine']);
@@ -9662,13 +9501,10 @@ function setupIPC() {
   ipcMain.handle('onboarding:get-permissions', async () => {
     const flow = require('./onboarding-flow.js');
     // Only ask the OS about permissions this OS can actually answer — querying
-    // the rest returns a constant ('screen' on Windows) or fails outright
-    // (osascript on Windows), and both render as a row the user can't act on.
+    // the rest fails outright (osascript on Windows), which would render as a
+    // row the user can't act on.
     const wanted = new Set(flow.permissionsFor(process.platform).map((p) => p.key));
     const statusMap = {};
-    for (const key of ['screen']) {
-      if (wanted.has(key)) statusMap[key] = systemPreferences.getMediaAccessStatus(key);
-    }
     // Automation is the odd one out: there is no way to READ its status without
     // sending an Apple Event, and sending one is what raises the prompt. So
     // merely opening this step used to prompt, before the user pressed anything.
@@ -9706,11 +9542,7 @@ function setupIPC() {
 
   ipcMain.handle('onboarding:request-permission', async (_e, key) => {
     try {
-      if (key === 'screen') {
-        // A real capture attempt registers the app in the Screen Recording list
-        // and prompts when not-determined (thumbnail must be non-trivial, #… ).
-        try { await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 192, height: 192 } }); } catch { /* prompt only */ }
-      } else if (key === 'automation') {
+      if (key === 'automation') {
         try { store.set('automationProbed', true); } catch { /* ignore */ }
         await probeBrowserAutomation();
       }
@@ -9720,7 +9552,7 @@ function setupIPC() {
 
   ipcMain.handle('onboarding:open-system-settings', (_e, key) => {
     const pane = {
-      screen: 'Privacy_ScreenCapture', automation: 'Privacy_Automation',
+      automation: 'Privacy_Automation',
     }[key] || 'Privacy';
     shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${pane}`);
     return { ok: true };
@@ -10245,7 +10077,9 @@ function setupIPC() {
     return {
       exists,
       visible: exists && shareWindowVisible,
-      lockedVisible: exists && shareWindowVisible && localServer.sharing && shareCaptureMode === 'window',
+      // Capture is always frame-based, so hiding the window never blacks out
+      // a live share.
+      lockedVisible: false,
     };
   });
 
@@ -10254,13 +10088,6 @@ function setupIPC() {
       return { ok: false, error: 'Nothing is being shared' };
     }
     const want = !shareWindowVisible;
-    // Refuse only the dangerous direction: a live share whose video comes from
-    // the WINDOW source goes black if that window stops existing on screen.
-    // Frame-captured shares (the default, since the window starts hidden) don't
-    // care, and showing is always safe.
-    if (!want && localServer.sharing && shareCaptureMode === 'window') {
-      return { ok: false, error: 'Can\'t hide the window while it is being captured — the share would go black. Stop sharing first.' };
-    }
     shareWindowVisible = want;
     try { store.set('shareWindowVisible', want); } catch { /* non-fatal */ }
     try {
@@ -10822,8 +10649,7 @@ function setupIPC() {
   ipcMain.on(CALL_EVENTS.screenShareStopped, () => {
     console.log('[electron] Screen share stopped');
     localServer.setSharing(false);
-    shareCaptureMode = null;
-    broadcastShareWindowState();   // hiding is safe again
+    broadcastShareWindowState();
   });
 
   // Forwarded log lines from page-inject.js (via preload-meet). These are
@@ -11154,17 +10980,6 @@ function setupIPC() {
 
     localServer.setSharing(presenting);
     if (!presenting) {
-      // Distinguish an agent-initiated stop (onStopSharing already cleared
-      // fullScreenShareRequested and pushed a screen-share-stopped event)
-      // from an unexpected drop (browser killed the stream, user clicked
-      // Chrome's floating Stop pill, codec stall, perm flip mid-call).
-      // When the agent asked to share and we transition from sharing→not
-      // sharing without anyone having cleared the request, that's a drop.
-      if (wasSharing && fullScreenShareRequested) {
-        console.warn('[electron] Screen share ended unexpectedly');
-        localServer.addError('Screen share ended unexpectedly');
-      }
-      fullScreenShareRequested = false;
       externalShareRequest = null; // POC (share-agent-tab)
     }
   });
@@ -11394,65 +11209,6 @@ function setupIPC() {
   //
   // Still TODO for a real feature (see docs/share-agent-tab-poc.md): route the
   // 'share-tab' /api/sync action + list_windows through local-server to here,
-  // reuse the whiteboard-share Present-now retry loop, and clear
-  // externalShareRequest on stop/leave alongside fullScreenShareRequested.
+  // and reuse the whiteboard-share Present-now retry loop.
   ipcMain.handle('share-external-tab', (_event, opts) => startExternalTabShare(opts));
-
-  // Provide desktopCapturer source for screen share
-  ipcMain.handle('get-screen-share-source', async () => {
-    // Full screen share mode — return the primary display
-    if (fullScreenShareRequested) {
-      try {
-        const sources = await desktopCapturer.getSources({
-          types: ['screen'],
-          thumbnailSize: { width: 0, height: 0 },
-        });
-        if (sources.length > 0) {
-          console.log('[electron] Full screen share source:', sources[0].id);
-          return { sourceId: sources[0].id };
-        }
-        return { error: 'No screen source found' };
-      } catch (err) {
-        return { error: err.message };
-      }
-    }
-
-    // Whiteboard window share mode
-    if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
-      return { error: 'No whiteboard window open' };
-    }
-
-    try {
-      // Use the window's native media source ID for reliable matching
-      const mediaSourceId = whiteboardWindow.getMediaSourceId();
-      console.log('[electron] Whiteboard media source ID:', mediaSourceId);
-
-      const sources = await desktopCapturer.getSources({
-        types: ['window'],
-        thumbnailSize: { width: 0, height: 0 },
-      });
-
-      console.log('[electron] Available sources:', sources.map(s => `${s.id} "${s.name}"`).join(', '));
-
-      // Match by media source ID (most reliable)
-      const wbSource = sources.find(s => s.id === mediaSourceId);
-      if (wbSource) {
-        console.log('[electron] Matched whiteboard by media source ID:', wbSource.id);
-        return { sourceId: wbSource.id };
-      }
-
-      // Fallback: match by window title
-      const wbTitle = whiteboardWindow.getTitle();
-      console.log('[electron] Whiteboard title:', wbTitle);
-      const fallback = sources.find(s => s.name.includes(wbTitle) || s.name.includes('Vibeconferencing'));
-      if (fallback) {
-        console.log('[electron] Matched whiteboard by title:', fallback.id, fallback.name);
-        return { sourceId: fallback.id };
-      }
-
-      return { error: `Could not find whiteboard window. Title: "${wbTitle}", sources: ${sources.length}` };
-    } catch (err) {
-      return { error: err.message };
-    }
-  });
 }

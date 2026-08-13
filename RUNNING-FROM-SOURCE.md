@@ -112,7 +112,7 @@ If `pnpm install` updates Electron itself, you may need to redo the binary insta
 ## Caveats vs. the signed DMG
 
 - **No code signing / notarization.** macOS will treat this like any other unsigned app. You may need to right-click → Open the first time, or grant permissions in System Settings.
-- **Permissions are scoped to the dev binary path**, not `/Applications/Vibeconferencing.app`. So a fresh source checkout means re-granting Microphone, Camera, Screen Recording, etc. (System Settings → Privacy & Security).
+- **Permissions are scoped to the dev binary path**, not `/Applications/Vibeconferencing.app`. So a fresh source checkout means re-granting Browser Automation, etc. (System Settings → Privacy & Security).
 - **MCP integration** with Claude Code points at `~/.claude/skills/join-call/`. The app's `ensureClaudeIntegration()` writes the skill files on first launch — make sure those paths reference your checkout's `mcp-server/server.js`, not a stale install.
 - **Running the signed DMG and `pnpm dev` simultaneously is advanced.** The second app instance will move to the next available local port, but an MCP client only controls the instance named by its `VIBECONF_BASE_URL`.
 

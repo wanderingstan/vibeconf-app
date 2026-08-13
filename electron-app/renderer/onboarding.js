@@ -340,6 +340,23 @@ async function suggestName(exclude = []) {
 
 // ── initial load ─────────────────────────────────────────────────────────
 (async () => {
+  // Skip the Permissions step on platforms with nothing to grant. Automation
+  // (the one permission left since Screen Recording was removed — whiteboard
+  // sharing captures via Electron's own frame capture now, never
+  // desktopCapturer) is macOS-only, so onboarding:get-permissions already
+  // returns zero rows on Windows/Linux; the step used to render as a single
+  // "nothing to grant" line there instead of just not existing. Resolved
+  // before the first render, so there's no flash of a step the user then
+  // can't reach.
+  try {
+    const { rows } = await api.invoke('onboarding:get-permissions');
+    const idx = steps.indexOf('permissions');
+    if (idx !== -1 && (!rows || rows.length === 0)) {
+      steps.splice(idx, 1);
+      dots.children[idx]?.remove();
+      if (i > idx) i -= 1;
+    }
+  } catch { /* leave the step in — better an extra click than a wrong guess */ }
   try {
     savedVoiceCfg = await api.invoke('get-config', ['botName', 'ttsApiKey', 'remoteLogging', 'captionLanguage']);
     if (savedVoiceCfg) {

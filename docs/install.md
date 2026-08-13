@@ -41,7 +41,7 @@ pnpm dev                  # launches the app pointed at your checkout
 
 Source-build caveats:
 - Not signed / not notarized — macOS may require right-click → Open the first time.
-- Permissions are scoped to the *dev binary path*, not `/Applications/Vibeconferencing.app`. A fresh checkout means re-granting Mic/Camera/Screen Recording.
+- Permissions are scoped to the *dev binary path*, not `/Applications/Vibeconferencing.app`. A fresh checkout means re-granting Browser Automation.
 <!-- source: electron-app/main.js /const DEFAULT_PORT = 7865;/ -->
 - **Don't run the signed DMG app and `pnpm dev` simultaneously** — both bind to `127.0.0.1:7865` by default. Use `--profile=<name> --local-port=<n>` to coexist (see [Multi-bot setups](multi-bot.md)).
 

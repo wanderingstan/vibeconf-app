@@ -1564,10 +1564,7 @@ const localServer = new globalThis.LocalServer({
       // the window alone; it's no longer this stop's to close.
       if (shareGeneration !== myShareGen) return;
       // Close the whiteboard window — this ends the display media stream for whiteboard shares
-      if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
-        whiteboardWindow.close();
-        whiteboardWindow = null;
-      }
+      closeWhiteboardWindow('stop sharing');
     })();
   },
   // POC (share-agent-tab): the 'share-tab' action lands here with the URL the
@@ -1768,8 +1765,7 @@ const localServer = new globalThis.LocalServer({
     if (live) {
       let url = null;
       try { url = whiteboardWindow.webContents.getURL() || null; } catch { /* going away */ }
-      try { whiteboardWindow.close(); } catch { /* already gone */ }
-      whiteboardWindow = null;
+      closeWhiteboardWindow('title bar rebuild');
       if (url) whiteboardWindow = createWhiteboardWindow(url);
       console.log('[local-server] Share title bar →', want, '(window rebuilt)');
       return { ok: true, visible: want, applied: true };
@@ -3507,6 +3503,29 @@ function reloadWhiteboardWindow(reason) {
     return { ok: true };
   }
   return { ok: false, error: 'Nothing is being shared to reload' };
+}
+
+// The one place that closes the whiteboard/share window. close() is not
+// guaranteed — a page-level beforeunload handler (ours or a loaded site's,
+// via onLoadUrl) can make it hang — so this always forces destroy() shortly
+// after, and always nulls the module var so a stuck webContents can never
+// again masquerade as a live share. Every call site used to do its own
+// close()+null, which is how a window could end up orphaned: any site that
+// forgot the null (or skipped closing because of a state guard that assumed
+// clean teardown) left `whiteboardWindow` pointing at nothing while the real
+// OS window stayed on screen with no way to reach it — worse still if
+// shareTitleBar was off, since a frameless window has no close button either.
+function closeWhiteboardWindow(reason) {
+  const win = whiteboardWindow;
+  whiteboardWindow = null;
+  if (!win || win.isDestroyed()) return;
+  console.log('[whiteboard] Closing share window —', reason);
+  try { win.close(); } catch (err) { console.warn('[whiteboard] close() failed:', err.message); }
+  // Give a well-behaved close a moment, then force it regardless.
+  setTimeout(() => {
+    try { if (!win.isDestroyed()) win.destroy(); } catch { /* already gone */ }
+  }, 500);
+  broadcastShareWindowState();
 }
 
 /**
@@ -8719,6 +8738,18 @@ function createMainWindow() {
         { role: 'minimize' },
         { role: 'zoom' },
         { role: 'close' },
+        { type: 'separator' },
+        {
+          // Escape hatch for an orphaned share window: the normal close paths
+          // (onStopSharing, showIdle) require the app to believe a call/share
+          // is ending, which a crashed or abnormally-dropped call can skip
+          // entirely. The window itself may be frameless (shareTitleBar=false),
+          // so there is otherwise no click target to get rid of it — only
+          // quitting the whole app. This works regardless of call/share state.
+          label: 'Close Share Window',
+          accelerator: 'CmdOrCtrl+Shift+W',
+          click: () => closeWhiteboardWindow('menu'),
+        },
       ],
     },
     ];
@@ -9011,10 +9042,7 @@ function showIdle() {
   if (!meetView || meetView.webContents.isDestroyed()) return;
   meetView.webContents.loadURL(getIdleUrl());
   sync.stopPolling();
-  // Close whiteboard window if open
-  if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
-    whiteboardWindow.close();
-  }
+  closeWhiteboardWindow('call teardown');
   setImpaired(false); // #424: don't carry a 🥴 into the next call
   console.log('[electron] Returned to idle state');
 }

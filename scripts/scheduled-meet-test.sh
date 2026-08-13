@@ -99,6 +99,37 @@ send_call_digest() {
   echo "=== Real-call digest ===" | tee -a "$LOG"
   node scripts/nightly-call-digest.mjs 2>&1 | tee -a "$LOG" || true
 }
+# Close stray Google Meet tabs in the runner's Google Chrome. The meet-detection test
+# (detect-test.mjs) opens real Chrome tabs to a Meet URL and is meant to close them by
+# room code, but strays accumulate (Stan sees Chrome "filling up"). Best-effort, and
+# only if Chrome is ALREADY running — never launch it just to tidy. Called in the EXIT
+# trap (so every run leaves Chrome clean) and once at the start (to clear the backlog).
+close_chrome_meet_tabs() {
+  command -v osascript >/dev/null 2>&1 || return 0
+  pgrep -x "Google Chrome" >/dev/null 2>&1 || return 0
+  local n
+  n=$(osascript -e 'tell application "Google Chrome" to count (every tab of every window whose URL contains "meet.google.com")' 2>/dev/null)
+  [[ "$n" =~ ^[0-9]+$ ]] || return 0
+  (( n > 0 )) || return 0
+  osascript -e 'tell application "Google Chrome" to close (every tab of every window whose URL contains "meet.google.com")' 2>/dev/null
+  echo "=== 🧹 closed $n stray Google Meet tab(s) in Chrome ===" | tee -a "$LOG"
+}
+# Prune the per-profile call recordings. Each test bot records its own call into
+# profiles/<p>/agent/calls/<id>/ when VIBECONF_RECORD_CALL=1; rec_run harvests a COPY
+# into $RESULTS (retention-managed), but the SOURCES were never pruned and filled the
+# test profiles to >1GB each. Delete call dirs older than N days from the TEST profiles
+# only — never Default (the real always-on body). Keeps recent runs for debugging.
+prune_profile_recordings() {
+  local base="$HOME/Library/Application Support/Vibeconferencing/profiles"
+  [[ -d "$base" ]] || return 0
+  local days="${VIBECONF_PROFILE_REC_KEEP_DAYS:-3}"
+  local before after pruned
+  before=$(find "$base" -mindepth 4 -maxdepth 4 -type d -path "$base/test*/agent/calls/*" 2>/dev/null | wc -l | tr -d ' ')
+  find "$base" -mindepth 4 -maxdepth 4 -type d -path "$base/test*/agent/calls/*" -mtime +${days} -exec rm -rf {} + 2>/dev/null
+  after=$(find "$base" -mindepth 4 -maxdepth 4 -type d -path "$base/test*/agent/calls/*" 2>/dev/null | wc -l | tr -d ' ')
+  pruned=$(( before - after ))
+  (( pruned > 0 )) && echo "=== 🧹 pruned $pruned per-profile call-recording dir(s) older than ${days}d from test profiles ===" | tee -a "$LOG"
+}
 # A stray pkill / Ctrl-C becomes a normal exit so the EXIT trap — and thus
 # send_digest — still runs. The WATCHDOG can't rely on that (its own pkill/kill-KILL
 # reaps the trap's notify child), so it sends its own digest before killing, below.
@@ -137,10 +168,10 @@ if [[ "${VIBECONF_NO_WATCHDOG:-0}" != "1" ]]; then
   _watchdog_pid=$!
   # On any normal exit, stand the watchdog down and sweep any lingering test fleets (a
   # wedged lane skips its own teardown; this guarantees no zombie fleet survives a run).
-  trap 'send_digest; send_call_digest; kill "$_watchdog_pid" 2>/dev/null; pkill -f "profile=test-meet-guest" 2>/dev/null; pkill -f "profile=test-slack" 2>/dev/null' EXIT
+  trap 'send_digest; send_call_digest; kill "$_watchdog_pid" 2>/dev/null; pkill -f "profile=test-meet-guest" 2>/dev/null; pkill -f "profile=test-slack" 2>/dev/null; close_chrome_meet_tabs' EXIT
 else
   # No watchdog, but the digest still must fire on any exit.
-  trap 'send_digest; send_call_digest' EXIT
+  trap 'send_digest; send_call_digest; close_chrome_meet_tabs' EXIT
 fi
 
 # --- optional screen recording of each live-call lane. OFF by default; set
@@ -398,6 +429,11 @@ fi
 # Nightly-mode retention: reap the PRIOR run's green recordings (keep its failures)
 # before this run produces any of its own. No-op unless VIBECONF_RECORD_KEEP=nightly.
 reap_prior_recordings
+# Housekeeping (unconditional): prune the per-profile call recordings rec_run's harvest
+# never cleaned, and clear the backlog of stray Google Meet tabs in the runner's Chrome.
+# Both also run at exit (Chrome via the EXIT trap) so a run leaves the box tidy.
+prune_profile_recordings
+close_chrome_meet_tabs
 
 # --- Self-update the artifacts before testing (Stan): pull latest `main` so the
 # SOURCE lanes test HEAD, and install the latest published DMG so the DMG-meet lane

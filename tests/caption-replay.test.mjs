@@ -259,3 +259,68 @@ test('#12 end-to-end: a re-render mid-call delivers only the new turn to a waite
   s.updateTurns(said.map(([n, speaker, text], i) => T(500 + i, speaker, text)));
   assert.equal(s._entriesSince(new Date().toISOString()).length, 0, 'no re-delivery on the next poll');
 });
+
+// ---------------------------------------------------------------------------
+// #12 (2026-08-11 recurrence): the sub-threshold TRICKLE re-render.
+//
+// Every fix before this one armed fingerprint recovery on a burst — `unknownCount
+// >= 3`. On the 08-11 stand-up Meet re-identified old caption nodes one or two at
+// a time, which never reached the threshold, so those turns re-inserted as brand
+// new speech. They carried a fresh turnId AND a fresh firstSeen, so no other
+// guard could see them either: `[heard]` fired a second time for utterances from
+// ~27 minutes earlier and wait_for_speech shipped them as live speech.
+//
+// The rule is now positional: an unknown turn with a KNOWN turn below it in the
+// (chronological) caption container is history, not new speech.
+// ---------------------------------------------------------------------------
+
+test('trickle re-render: TWO old turns under fresh ids are still recognized', () => {
+  const s = makeServer();
+  s.updateTurns([
+    T(1, 'Seth', 'There is Jimmy, we need quorum, come on Pepper.'),
+    T(2, 'Stan', 'Yeah, that is southwest Colorado for sure.'),
+    T(3, 'Seth', 'I was training for a century so I did a sixty mile ride.'),
+    T(4, 'Stan', 'Nice, I bet that was hot out there.', true),
+  ]);
+  assert.equal(s.turns.size, 4);
+
+  // Only the first two nodes get re-identified — below the old ≥3 threshold.
+  s.updateTurns([
+    T(101, 'Seth', 'There is Jimmy, we need quorum, come on Pepper.'),
+    T(102, 'Stan', 'Yeah, that is southwest Colorado for sure.'),
+    T(3, 'Seth', 'I was training for a century so I did a sixty mile ride.'),
+    T(4, 'Stan', 'Nice, I bet that was hot out there.', true),
+  ]);
+  assert.equal(s.turns.size, 4, 'a 2-turn trickle replay must not re-insert as new speech');
+});
+
+test('trickle re-render: even a SINGLE re-identified old turn is recognized', () => {
+  const s = makeServer();
+  s.updateTurns([
+    T(1, 'Seth', 'The whole point is that she never touches the Mac mini at all.'),
+    T(2, 'Stan', 'Right, it is just a button on her account.', true),
+  ]);
+  s.updateTurns([
+    T(101, 'Seth', 'The whole point is that she never touches the Mac mini at all.'),
+    T(2, 'Stan', 'Right, it is just a button on her account.', true),
+  ]);
+  assert.equal(s.turns.size, 2, 'one replayed turn above a known turn must alias, not insert');
+});
+
+test('a genuine repeat at the BOTTOM is still ingested as new speech', () => {
+  // The counterpart risk: positional arming must not swallow someone actually
+  // saying the same words again. Real repeats arrive at the bottom of the
+  // container, where nothing known sits below them — so recovery stays disarmed.
+  const s = makeServer();
+  s.updateTurns([
+    T(1, 'Stan', 'So the answer is we should just ship it this week.'),
+    T(2, 'Seth', 'Say that again?', true),
+  ]);
+  assert.equal(s.turns.size, 2);
+  s.updateTurns([
+    T(1, 'Stan', 'So the answer is we should just ship it this week.'),
+    T(2, 'Seth', 'Say that again?'),
+    T(3, 'Stan', 'So the answer is we should just ship it this week.', true),
+  ]);
+  assert.equal(s.turns.size, 3, 'a real repeat at the bottom must not be aliased away');
+});

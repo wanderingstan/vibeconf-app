@@ -2672,6 +2672,40 @@ class CaptionScraper {
     // anything that's no longer bottommost. The transcript stops being an
     // event log and becomes a map of {turnId → current best-guess text},
     // matching how Meet's caption UI actually behaves.
+    //
+    // #12 — READ THIS BEFORE TOUCHING ANYTHING DOWNSTREAM OF turnId. Six
+    // recurrences of the caption-replay bug (07-22 through 08-11) all trace
+    // back to one property of the line below: a turnId identifies a DOM
+    // ELEMENT OBJECT, not an utterance and not a speaker.
+    //
+    // Consequences, in the order they bite:
+    //
+    //   • A turn's text GROWS. While someone talks, Meet appends to the SAME
+    //     node, so one turnId walks "So" → "So the answer" → "So the answer
+    //     is we should ship it" across polls. Re-delivering a turn because its
+    //     text got longer is correct; the agent needs the new words.
+    //   • Old turns never leave. Meet keeps every row in the document (221
+    //     observed on the 08-11 call) and we re-send all of them every poll,
+    //     so the vast majority of any snapshot is history by construction.
+    //   • If Meet swaps the element, identity is LOST. A UI re-render (or
+    //     virtualized-list recycling — we've never pinned down which) builds a
+    //     fresh object for a row that looks identical on screen. The WeakMap
+    //     has never seen it, so it mints a new turnId and the server sees
+    //     minutes-old speech as brand new. That is the whole bug family.
+    //
+    // The "so dead nodes drop out" note above describes the intent, but note
+    // what it does NOT give you: a WeakMap only releases a key once it's
+    // garbage collected, and a row still in the container is strongly
+    // reachable. So a miss on a row that's currently ON SCREEN cannot be a
+    // dropped entry — it is proof the element was replaced. That inference is
+    // what the fix in local-server.js rests on (search: lastKnownIdx), which
+    // recovers identity by CONTENT and POSITION precisely because turnId is
+    // untrustworthy across a re-render.
+    //
+    // Corollary for anyone tempted to "fix" replay here in the scraper: you
+    // cannot. From inside this class a replayed row is indistinguishable from
+    // a new one — same shape, same absence from the WeakMap. Only the server,
+    // which holds the call's history, can tell them apart.
     this._turnIdByChild = new WeakMap();
     this._nextTurnId = 1;
     this._lastSentSnapshot = ''; // for IPC dedup — skip sending if nothing changed

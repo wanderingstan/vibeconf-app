@@ -39,7 +39,7 @@ Call-scoped tools accept an optional `room_id` argument, falling back to `VIBECO
 
 | Tool | What |
 |---|---|
-| **`update_whiteboard`** | Set whiteboard content. Supports markdown + Mermaid. Pass `image_path` (absolute) to embed a local image — it gets registered with the local server and embedded automatically. |
+| **`update_whiteboard`** | Set whiteboard content. Supports markdown + Mermaid. Pass `image_path` (absolute) to embed a local image — it gets registered with the local server and embedded automatically. Writing and presenting are separate calls (#366): a successful write includes a note if nobody is currently sharing/presenting, or if the bot's own share is pointed at something other than the board — either way, the room can't see the update until `start_share`/`share_whiteboard` targets it. |
 | **`load_url`** | Load an arbitrary web page (website, localhost app, dashboard) into the bot's share window, instead of markdown content. |
 | **`start_share`** | The primary sharing tool: present the bot's whiteboard into Meet, with optional size and title-bar control. (`share_whiteboard` remains as a compatibility alias.) |
 | **`stop_sharing`** | Stop screen-sharing. |

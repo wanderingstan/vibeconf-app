@@ -1296,7 +1296,35 @@ server.tool(
           + `Nobody in the room can see this content. Do not describe it as if it were on screen: `
           + `say the board is unavailable and send the content with send_chat instead.` }] };
       }
-      return { content: [{ type: "text", text: `Whiteboard updated (version ${wb.version}).` }] };
+
+      // #366: the write reaching the board says nothing about whether anyone in
+      // the room is actually LOOKING at it. Writing and presenting are two
+      // different calls, and a bot that only did the first has no way to know
+      // it — caught live on the 2026-08-13 call, then named as the general
+      // failure by a bot that hit it from the other side an hour earlier.
+      // `status.sharing` / `status.presenterName` are the same room-wide
+      // presenting signal `get_room_info` already surfaces (formatScreenShares),
+      // read fresh here rather than trusting stale local state.
+      let presenceNote = "";
+      try {
+        const status = await getRoomStatus(roomId);
+        if (!status.sharing && !status.presenterName) {
+          presenceNote = ` Nobody is presenting anything right now — the room CANNOT see this. `
+            + `Use start_share to present the whiteboard, or send_chat instead.`;
+        } else if (status.sharing) {
+          const shareUrl = status.screenShareUrl || status.whiteboardLoadedUrl || "";
+          const onBoard = !shareUrl || shareUrl === status.whiteboardUrl || shareUrl === status.roomUrl;
+          if (!onBoard) {
+            presenceNote = ` But you're currently presenting something else (${shareUrl}), not this board — `
+              + `the room can't see this update until your share points back at the whiteboard.`;
+          }
+        } else if (status.presenterName) {
+          presenceNote = ` Note: ${status.presenterName} is presenting right now, not you — if that's not `
+            + `this whiteboard, the room can't see this update.`;
+        }
+      } catch { /* best-effort — a failed status check shouldn't block the write confirmation */ }
+
+      return { content: [{ type: "text", text: `Whiteboard updated (version ${wb.version}).${presenceNote}` }] };
     } else {
       return { content: [{ type: "text", text: `Error: ${data.error || "Failed to update"}` }] };
     }

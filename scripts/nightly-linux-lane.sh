@@ -24,7 +24,17 @@ set -uo pipefail
 
 PROFILE_AWS="${VIBECONF_AWS_PROFILE:-vibeconf-ta}"
 REGION="${VIBECONF_AWS_REGION:-us-east-2}"
-INSTANCE="${VIBECONF_TA_INSTANCE:-i-0e7b0ce1bbafe24d0}"
+# NO DEFAULT, deliberately. This lane is DESTRUCTIVE on whatever box it targets:
+# it `git reset --hard`s the clone, `tmux kill-server`s (every session, not just
+# its own), pkills the app, and rewrites app-level preferences. Pointed at the
+# cloud-TA box it would kill an instructor's live agent mid-session and discard
+# their state, nightly, at 3am.
+#
+# So the target must be named explicitly by whoever schedules it, and it must be
+# a machine we are ALLOWED TO DESTROY — a disposable Test box, never one with a
+# human on it. A default here would eventually be a default pointed at
+# production.
+INSTANCE="${VIBECONF_TEST_INSTANCE:-}"
 RESULTS="${VIBECONF_RESULTS_DIR:-$HOME/vibeconf-test-results}"
 STAMP="${STAMP:-$(date +%Y%m%d-%H%M%S)}"
 OUT="$RESULTS/linux-results.jsonl"
@@ -47,7 +57,9 @@ finish() {
   # Only stop the box if WE started it. Someone may be working on it — pulling
   # the floor out from under a human debugging session is worse than an idle
   # t3.large overnight, and the cost of one extra hour is pennies.
-  if [ "$started_by_us" = "1" ]; then
+  if [ -z "$INSTANCE" ]; then
+    : # never had a target — nothing was started, so nothing to stop or report
+  elif [ "$started_by_us" = "1" ]; then
     echo "=== stopping $INSTANCE (we started it) ==="
     aws_ ec2 stop-instances --instance-ids "$INSTANCE" --query 'StoppingInstances[0].CurrentState.Name' --output text 2>/dev/null
   else
@@ -56,6 +68,17 @@ finish() {
   record
 }
 trap finish EXIT
+
+# Checked AFTER the trap is armed, so a misconfigured schedule still writes a
+# result line and shows up in the digest rather than vanishing.
+if [ -z "$INSTANCE" ]; then
+  echo "FAIL: VIBECONF_TEST_INSTANCE is not set." >&2
+  echo "      This lane DESTROYS the box it targets (git reset --hard, tmux kill-server," >&2
+  echo "      pkill app, rewrites app-level preferences). Point it at a disposable TEST" >&2
+  echo "      instance — never the cloud-TA box, never anyone's dev box." >&2
+  exit_code=76; fails=1; note="VIBECONF_TEST_INSTANCE not set"
+  exit 76
+fi
 
 state=$(aws_ ec2 describe-instances --instance-ids "$INSTANCE" \
   --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null)

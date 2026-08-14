@@ -671,8 +671,14 @@ echo "=== codex smoke exit: $CODEX_CODE (recorded, not gating) ===" | tee -a "$L
 
 # --- Linux lane (#329/#324) — the only lane that does not run on this machine.
 #
-# Starts the cloud-TA EC2 box, runs the agent-terminal check on it over SSM,
-# stops it again (only if this lane started it — a human may be working on it).
+# Starts a DISPOSABLE Linux test box, runs the agent-terminal check on it over
+# SSM, stops it again (only if this lane started it — a human may be on it).
+#
+# VIBECONF_TEST_INSTANCE must name a box we are ALLOWED TO DESTROY. The check
+# git-reset --hards the clone, tmux kill-servers, pkills the app and rewrites
+# app-level preferences — pointed at the cloud-TA box (#324) it would kill an
+# instructor's live agent mid-session, nightly. The lane refuses to run without
+# it rather than defaulting to any particular machine.
 #
 # NOT wrapped in rec_run: that screen-records THIS mac's display, and there is
 # nothing of this lane on it. The interesting output is the remote log, which
@@ -691,6 +697,7 @@ echo "" | tee -a "$LOG"
 echo "=== linux agent-terminal lane (#329) $STAMP ===" | tee -a "$LOG"
 if command -v aws >/dev/null 2>&1; then
   STAMP="$STAMP" VIBECONF_RESULTS_DIR="$RESULTS" \
+    VIBECONF_TEST_INSTANCE="${VIBECONF_TEST_INSTANCE:-}" \
     scripts/nightly-linux-lane.sh 2>&1 | tee -a "$LOG"
   LINUX_CODE=${pipestatus[1]:-$?}
   echo "=== linux lane exit: $LINUX_CODE (recorded, not gating) ===" | tee -a "$LOG"

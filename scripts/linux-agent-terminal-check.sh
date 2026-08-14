@@ -60,10 +60,27 @@ echo "=== shape under test: $WANT_PLAN ==="
 rm -f /tmp/nightly-linux.log
 VIBECONF_REQUIRE_TOKEN=0 nohup "$ELECTRON" "$SRC/electron-app" --no-sandbox \
   --profile="$PROFILE" >/tmp/nightly-linux.log 2>&1 &
-sleep 14
 
-pgrep -f "electron-dist/electron" >/dev/null || { echo "FAIL: app did not start"; tail -20 /tmp/nightly-linux.log; exit 4; }
-ok "app started"
+# POLL for the local server, don't sleep a guessed amount.
+#
+# This was `sleep 14`, which passed on a warm box and failed on a freshly-booted
+# one: the process existed at 14s (so the pgrep check said "app started") but had
+# not yet bound its port, so the very next curl got nothing and the lane reported
+# a confusing "call/start returned no room". A fixed sleep is the classic way a
+# nightly lane becomes flaky — it encodes the speed of the machine it was written
+# on. /api/sync/no-room is the one GET that needs no auth token.
+ready=""
+for _ in $(seq 1 45); do
+  if curl -fsS -m 3 "$BASE/api/sync/no-room" >/dev/null 2>&1; then ready=1; break; fi
+  pgrep -f "electron-dist/electron" >/dev/null || break  # it died; stop waiting
+  sleep 2
+done
+if [ -z "$ready" ]; then
+  echo "FAIL: app never served $BASE (dead, or never bound its port)"
+  tail -25 /tmp/nightly-linux.log
+  exit 4
+fi
+ok "app started and serving"
 
 # afterCallWorkSeconds=0 through the app's OWN preferences API. A hand-edited
 # config.json is NOT picked up by the running store (learned the hard way), and

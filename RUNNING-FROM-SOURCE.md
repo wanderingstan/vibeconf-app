@@ -34,6 +34,43 @@ node node_modules/.pnpm/electron@*/node_modules/electron/install.js
 
 You should see `dist/` and `path.txt` appear next to `install.js` after it completes.
 
+### ffmpeg: bundled for users, but a real requirement from source
+
+The packaged app ships its own ffmpeg (`ffmpeg-static`, unpacked beside the asar),
+so someone installing the DMG or the `.deb` never has to think about it.
+
+From source it is a different story, because ffmpeg-static fetches its binary in a
+postinstall step. Anything that skips or blocks that step leaves you with no ffmpeg
+at all: `pnpm install --ignore-scripts`, pnpm's postinstall blocking, or a machine
+that cannot reach GitHub's release CDN (observed on a locked-down cloud box, where
+the same restriction also blocks Electron's own download above).
+
+Two things then go quiet rather than loud:
+
+- Call recordings never merge, since `call-media-merge.js` needs ffmpeg to mux the
+  video and audio tracks together.
+- **16 tests silently SKIP** rather than fail, and they are the whole
+  `call-media-merge` suite. A run that reports "0 failures" while sitting out its
+  most-changed module is not the reassurance it looks like.
+
+So on Linux, install it from the distro and stop depending on the download:
+
+```bash
+sudo apt-get install -y ffmpeg
+```
+
+`resolveFfmpegPath` looks for the bundled binary first, then PATH, then a couple of
+known install locations, so a system ffmpeg satisfies both the app and the tests.
+To check a machine is actually covered, run the suite and look at the SKIP count,
+not just the failure count:
+
+```bash
+node --test tests/*.test.mjs 2>&1 | grep -E '^# (pass|fail|skipped)'
+```
+
+One skip is expected (the PATH-lookup-fails fallback case). Seventeen means no
+ffmpeg.
+
 ## Running
 
 ```bash

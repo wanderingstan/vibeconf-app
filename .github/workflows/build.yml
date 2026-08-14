@@ -39,19 +39,37 @@ jobs:
   # test (e.g. a skill's allowed-tools drifting out of sync) could merge green.
   # This job closes that gap.
   #
-  # Runs on macOS: some tests shell out to macOS built-ins (`say`, `afconvert`,
-  # `osascript`) and assert macOS behavior, so they aren't portable to a Linux
-  # runner yet — and macOS is the development platform the suite is green on.
-  # (Follow-up: guard the ~handful of macOS-specific tests so this can move to
-  # the cheaper ubuntu runner.)
+  # Runs on BOTH macOS and Linux. It was macOS-only, with a note that "some
+  # tests shell out to macOS built-ins and aren't portable to a Linux runner
+  # yet" and a follow-up to guard "the ~handful of macOS-specific tests".
+  #
+  # Running the suite on a real Ubuntu 24.04 box settled that: the handful was
+  # ONE test, which hardcoded /bin/zsh (macOS's shell, absent on a bare Ubuntu).
+  # Everything else already passed. With that fixed there is nothing left to
+  # guard, so Linux joins the matrix rather than waiting for a nightly.
+  #
+  # This matters beyond tidiness: the Linux agent-terminal path (#329) has no
+  # coverage at all on a macOS-only runner, and Linux is where the cloud-TA box
+  # (#324) runs. A regression there would have merged green.
   unit-tests:
-    name: unit tests
-    runs-on: macos-latest
+    name: unit tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false # one platform failing must not hide the other's result
+      matrix:
+        os: [macos-latest, ubuntu-latest]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 20
+      # Explicit, not incidental. Without an ffmpeg on PATH the call-media-merge
+      # suite SKIPS rather than fails — 16 tests, the most-changed module in the
+      # app — so a runner that happened to drop it would go quietly green while
+      # covering less. Installed rather than assumed for exactly that reason.
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
       # The tests import electron-app modules, some of which pull deps.
       - name: Install deps (electron-app)
         working-directory: electron-app

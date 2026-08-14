@@ -92,7 +92,7 @@ test('#282: the identity IPCs report the profile, not the active partition', () 
 });
 
 test('the guest partition is only ever reached by an explicit fallback', () => {
-  const body = bodyOf('async function _loadMeetURL(meetUrl');
+  const body = bodyOf('async function _openMeetInFreshView(meetUrl');
   // Set per join from the parameter, never toggled-and-remembered. This is what
   // stops the fallback becoming sticky regardless of how the previous call
   // ended (host-ended, crash, forced idle).
@@ -106,7 +106,7 @@ test('the guest partition is only ever reached by an explicit fallback', () => {
 });
 
 test('an ordinary join always resets to the home partition', () => {
-  const body = bodyOf('async function _loadMeetURL(meetUrl');
+  const body = bodyOf('async function _openMeetInFreshView(meetUrl');
   // No branch may leave a previous fallback in place for a normal join.
   assert.doesNotMatch(body, /if \(guestFallback\) activeMeetPartition/,
     'the partition must be assigned unconditionally, not only in the fallback branch');

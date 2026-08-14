@@ -1760,7 +1760,7 @@ function paintCalendarUpcoming(events) {
   // ownerConfirmed === false means the calendar owner hasn't accepted this
   // event yet, so the bot won't auto-join it (main.js's owner-RSVP gate).
   // Kept to three words: the banner is small. Absent/true → normal notice.
-  const waiting = next.ownerConfirmed === false ? ' (not yet accepted)' : '';
+  const waiting = next.ownerConfirmed === false ? ' ⚠️ (not yet accepted)' : '';
   calendarUpcomingText.textContent = `${localTime} meeting: "${title}" ${formatUpcomingDelta(Math.max(delta, 0))}${waiting}`;
   calendarUpcomingBanner.style.display = 'flex';
 }

@@ -87,6 +87,31 @@ function matchesCalendarEvent(event, { calendarIdentityEmail, botName } = {}) {
   return matchesIdentityEmail(event, calendarIdentityEmail) || matchesVibeconfTag(event, botName);
 }
 
+// Has the CALENDAR OWNER (the human whose Google account the backend polls,
+// i.e. the user of this machine) confirmed they're attending? Matching an
+// event to a bot says "the bot was invited"; this says "the human is actually
+// going" — and a bot should only auto-join when both are true (#: an invite
+// the owner never accepted, or declined, shouldn't summon their bot).
+//
+// Reads `event.selfResponseStatus`, the Google Calendar responseStatus of the
+// owner's own attendee row (`self: true`), surfaced by the backend:
+//   'accepted'                → confirmed, OK to join.
+//   'declined' | 'tentative' | 'needsAction' → not confirmed — don't join,
+//     but DO still display the event (see selectUpcomingMatches) so the UI
+//     can say the bot is waiting on the owner's RSVP.
+//   null                      → the event has no self attendee row at all —
+//     an event the owner created on their own calendar with no guest list.
+//     It's their own event; treat as confirmed.
+//   undefined (field absent)  → an older backend that doesn't send the field
+//     yet. Fail open (today's behavior) rather than silently never joining
+//     anything until the backend deploys.
+function ownerHasConfirmed(event) {
+  if (!event) return false;
+  const status = event.selfResponseStatus;
+  if (status === undefined || status === null) return true;
+  return norm(status) === 'accepted';
+}
+
 // Milliseconds from `now` until `event.start` (negative if already started).
 // null if start is missing/unparseable. Shared by isEventUpcoming's window
 // check and main.js's join-scheduling (the actual setTimeout delay), so both
@@ -175,6 +200,7 @@ function selectEventToJoin(events, { calendarIdentityEmail, botName, joinedIds, 
   const candidates = (events || []).filter((e) => e && e.id
     && isEventUpcoming(e, now, lookaheadMs)
     && matchesCalendarEvent(e, { calendarIdentityEmail, botName })
+    && ownerHasConfirmed(e)
     && !(joinedIds && Object.prototype.hasOwnProperty.call(joinedIds, eventDedupeKey(e))));
 
   if (candidates.length === 0) return { event: null, extraMatchCount: 0 };
@@ -188,7 +214,11 @@ function selectEventToJoin(events, { calendarIdentityEmail, botName, joinedIds, 
 // this one is for display only, never used to arm a join timer, so it
 // doesn't touch the dedupe map — an event already joined/in-progress is
 // still fine to list as "upcoming" a moment before its bot leaves it,
-// callers that care can cross-reference joinedIds themselves.
+// callers that care can cross-reference joinedIds themselves. Same reasoning
+// for ownerHasConfirmed: matches the owner hasn't RSVP'd to yet are still
+// INCLUDED here (the join gate excludes them) so the UI can show them with a
+// "waiting to see if you're attending" notice — callers annotate via
+// ownerHasConfirmed(e) rather than this silently dropping them.
 function selectUpcomingMatches(events, {
   calendarIdentityEmail, botName, now, lookaheadMs = 24 * 60 * 60 * 1000,
   // Small, NOT symmetric with the 24h lookahead — otherwise a meeting from
@@ -219,6 +249,7 @@ module.exports = {
   DEFAULT_LOOKAHEAD_MS,
   DEFAULT_DEDUPE_MAX_AGE_MS,
   matchesCalendarEvent,
+  ownerHasConfirmed,
   isEventUpcoming,
   msUntilStart,
   eventDedupeKey,

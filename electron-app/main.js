@@ -20,7 +20,7 @@ const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEv
 const { CallRecordingSession } = require('./call-recorder.js');
 const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWindow } = require('./call-recording-window.js');
 const { mergeCallMedia } = require('./call-media-merge.js');
-const { evictStaleEventIds, selectEventToJoin, selectUpcomingMatches, matchesCalendarEvent, isEventUpcoming, msUntilStart, eventDedupeKey, resolveMeetUrl: resolveCalendarMeetUrl } = require('./calendar-auto-join.js');
+const { evictStaleEventIds, selectEventToJoin, selectUpcomingMatches, matchesCalendarEvent, ownerHasConfirmed, isEventUpcoming, msUntilStart, eventDedupeKey, resolveMeetUrl: resolveCalendarMeetUrl } = require('./calendar-auto-join.js');
 const { createMergeProgressWindow, closeMergeProgressWindow } = require('./call-recording-merge-window.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
 const {
@@ -7707,6 +7707,11 @@ allURLs`;
       for (const e of events) {
         if (!e || !e.id || !isEventUpcoming(e, now)) continue;
         if (!matchesCalendarEvent(e, { calendarIdentityEmail: fields.calendarIdentityEmail, botName: fields.botName })) continue;
+        // Same owner-RSVP gate the local join path applies (selectEventToJoin):
+        // don't launch a whole other profile for a meeting the calendar owner
+        // hasn't confirmed they're attending — if they accept later, a
+        // subsequent tick launches it then.
+        if (!ownerHasConfirmed(e)) continue;
         const dedupeKey = `${eventDedupeKey(e)}:${name}`;
         if (Object.prototype.hasOwnProperty.call(launched, dedupeKey)) continue;
         launched[dedupeKey] = now;
@@ -7758,7 +7763,8 @@ allURLs`;
         const matched = matchesCalendarEvent(e, { calendarIdentityEmail, botName });
         const upcoming = isEventUpcoming(e, now);
         const already = !!(e && e.id && Object.prototype.hasOwnProperty.call(excludeIds, eventDedupeKey(e)));
-        const reason = already ? 'already handled/scheduled' : !upcoming ? 'outside 5m window' : !matched ? 'no identity/tag match' : 'MATCH';
+        const confirmed = ownerHasConfirmed(e);
+        const reason = already ? 'already handled/scheduled' : !upcoming ? 'outside 5m window' : !matched ? 'no identity/tag match' : !confirmed ? `owner has not accepted (selfResponseStatus=${e && e.selfResponseStatus})` : 'MATCH';
         return `"${(e && e.summary) || (e && e.id) || '(untitled)'}" (raw start="${e && e.start}", starts ${minutesUntil == null ? '?' : minutesUntil + 'm'} from now, ${reason})`;
       });
       console.log(`[calendar] Poll saw ${events.length} event(s): ${summaries.join('; ')}`);
@@ -7767,8 +7773,12 @@ allURLs`;
     // Display-only: everything matching within the next 24h, independent of
     // the 5-minute join-scheduling gate below — this is what the panel's
     // "upcoming meeting" notice shows, and it deliberately includes events
-    // the 5-minute logic hasn't (and won't yet) act on.
-    pushUpcomingCalendarEvents(selectUpcomingMatches(events, { calendarIdentityEmail, botName, now: Date.now() }));
+    // the 5-minute logic hasn't (and won't yet) act on — including ones the
+    // calendar owner hasn't RSVP'd to, annotated so the panel can show its
+    // "waiting to see if you're attending" disclaimer instead of implying a
+    // join is coming.
+    pushUpcomingCalendarEvents(selectUpcomingMatches(events, { calendarIdentityEmail, botName, now: Date.now() })
+      .map((e) => ({ ...e, ownerConfirmed: ownerHasConfirmed(e) })));
 
     const { event, extraMatchCount } = selectEventToJoin(events, {
       calendarIdentityEmail,

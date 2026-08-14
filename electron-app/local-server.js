@@ -1181,6 +1181,9 @@ class LocalServer {
       // speaks again — the point where it would otherwise build on a reply the
       // room never heard.
       ...((() => { const f = this.takeRecentPlaybackFailure(); return f ? { previousPlaybackFailed: f } : {}; })()),
+      // #360: same moment, subtler failure — the previous speech PLAYED but was
+      // cut off partway by a barge-in.
+      ...((() => { const t = this.takeSpeechTruncation(); return t ? { previousSpeechTruncated: t } : {}; })()),
     };
   }
 
@@ -1918,6 +1921,62 @@ class LocalServer {
     if (!f) return null;
     this._playbackFailure = null;
     return (Date.now() - f.at) <= maxAgeMs ? f : null;
+  }
+
+  // #360: a barge-in cut the utterance mid-playback. speak() had already
+  // returned success (it answers at dispatch time), so this record is the
+  // honest correction — surfaced on the next wait_for_speech or speak,
+  // whichever the agent calls first. Fields:
+  //   spoken       — the words that actually reached the room
+  //   unspokenTail — unheard remainder of the chunk that was playing; this is
+  //                  exactly what a #350 resume replays, so a completed resume
+  //                  moves it into `spoken`
+  //   unspokenRest — chunks that never reached the renderer at all (a resume
+  //                  cannot recover these — the synth loop already bailed)
+  //   cutSeconds   — how far into the audio the cut landed (null when the stop
+  //                  hit between chunks)
+  //   resumed      — a #350 resume of the tail is in flight
+  noteSpeechTruncation({ spoken, unspokenTail, unspokenRest, cutSeconds }) {
+    this._speechTruncation = {
+      spoken: spoken || '',
+      unspokenTail: unspokenTail || '',
+      unspokenRest: unspokenRest || '',
+      cutSeconds: cutSeconds ?? null,
+      resumed: false,
+      at: Date.now(),
+    };
+    console.log(ts(), '🔇 [tts-truncated] cut ' +
+      (cutSeconds != null ? '~' + cutSeconds + 's in' : 'between chunks') +
+      ' — unheard: ' + ((unspokenTail || '') + ' ' + (unspokenRest || '')).trim().slice(0, 80));
+  }
+
+  // #360: the audio queue drained. If a resumed utterance just played out, its
+  // tail was heard after all — fold it back into `spoken`, and drop the record
+  // entirely when nothing unheard remains (the room ultimately got everything).
+  noteSpeechPlaybackDrained() {
+    const t = this._speechTruncation;
+    if (!t || !t.resumed) return;
+    t.resumed = false;
+    if (t.unspokenTail) {
+      t.spoken = (t.spoken + ' ' + t.unspokenTail).trim();
+      t.unspokenTail = '';
+    }
+    if (!t.unspokenRest) {
+      console.log(ts(), '🔇 [tts-truncated] resume completed — utterance fully delivered, record cleared');
+      this._speechTruncation = null;
+    }
+  }
+
+  // #360: consumed once, while fresh — same discipline as
+  // takeRecentPlaybackFailure. Not returned while a resume is in flight with
+  // nothing else unheard: the tail is about to play, and reporting it as
+  // unheard right before it plays would push the agent to repeat itself.
+  takeSpeechTruncation(maxAgeMs = 120000) {
+    const t = this._speechTruncation;
+    if (!t) return null;
+    if (t.resumed && !t.unspokenRest) return null;
+    this._speechTruncation = null;
+    return (Date.now() - t.at) <= maxAgeMs ? t : null;
   }
 
   addError(message) {
@@ -2845,6 +2904,10 @@ class LocalServer {
       console.warn(ts(), '[tts-resume] onResumeTts failed:', err.message);
       return false;
     }
+    // #360: the truncation record's tail is now being replayed — mark it so
+    // the drain callback can fold the tail back into `spoken`, and so the
+    // agent-facing note can say "resuming now" instead of "never heard".
+    if (this._speechTruncation) this._speechTruncation.resumed = true;
     return true;
   }
 
@@ -3440,6 +3503,11 @@ class LocalServer {
     const discardedBargeInStash = startTime ? this._lastDiscardedStash : null;
     if (startTime && this._lastDiscardedStash) this._lastDiscardedStash = null;
 
+    // #360: same one-shot surface for a barge-in that truncated the previous
+    // utterance mid-playback — the agent was told "Spoken" at dispatch time,
+    // and this is the correction saying which words actually landed.
+    const speechTruncated = startTime ? this.takeSpeechTruncation() : null;
+
     return {
       success: true,
       roomId: this.roomId,
@@ -3455,6 +3523,7 @@ class LocalServer {
       previousAckPhrase,
       replayedBargeInStash,
       discardedBargeInStash,
+      speechTruncated,
       transcript: {
         entries,
         count: entries.length,

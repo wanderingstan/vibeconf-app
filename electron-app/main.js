@@ -4988,7 +4988,7 @@ return "none"`;
 // Unmute the mic and send the audio to the renderer's TTS queue. Resolves AFTER
 // the play-tts is sent (post the 300ms unmute settle), so callers can chain to
 // preserve send order.
-function sendPlayTts(base64Audio, emoji, { unmutedAt, expectMore } = {}) {
+function sendPlayTts(base64Audio, emoji, { unmutedAt, expectMore, utt } = {}) {
   return new Promise((resolve) => {
     if (!meetView || meetView.webContents.isDestroyed()) {
       console.error('[electron] Meet view not available for audio playback');
@@ -5013,7 +5013,7 @@ function sendPlayTts(base64Audio, emoji, { unmutedAt, expectMore } = {}) {
       // expectMore (#372 sentence-chunked TTS): tells the renderer another
       // chunk of the SAME utterance is coming, so it must not emit tts-ended
       // (and drop the speaking state) if the queue momentarily drains.
-      sendExtMsg({ action: CALL_COMMANDS.ACTIONS.playTts, payload: { audioData: base64Audio, emoji, expectMore: !!expectMore } });
+      sendExtMsg({ action: CALL_COMMANDS.ACTIONS.playTts, payload: { audioData: base64Audio, emoji, expectMore: !!expectMore, utt } });
       console.log('[electron] Sent play-tts to Meet view', emoji ? `(emoji: ${emoji})` : '');
       resolve();
     }, settleMs);
@@ -5021,7 +5021,7 @@ function sendPlayTts(base64Audio, emoji, { unmutedAt, expectMore } = {}) {
 }
 
 // #372: sentence-chunked TTS split — pure helper, unit-tested.
-const { splitForTts } = require('./tts-chunking.js');
+const { splitForTts, splitAtWordFraction } = require('./tts-chunking.js');
 const { systemVoiceLabel } = require('./system-voices.js');
 // "macOS" / "Windows" — used wherever we tell the user or the agent which
 // built-in voice path is in play.
@@ -5045,6 +5045,15 @@ function enqueueAudio(produceAndSend) {
 // value at start and stops sending further chunks once it changes, so a
 // slow chunk-2 synth can't play a stale tail after an interruption.
 let ttsStopGeneration = 0;
+
+// #360: the utterance currently (or most recently) being spoken, so the
+// renderer's tts-stopped report — which only carries {id, chunk} tags — can be
+// paired back with the chunk TEXTS to tell the agent what the room never
+// heard. `sent` counts chunks actually delivered to the renderer; chunks at
+// index >= sent were still synthesizing (or dropped pre-send) when the stop
+// hit, so they are unspoken by definition.
+let ttsUtteranceSeq = 0;
+let lastTtsUtterance = null; // { id, parts, sent }
 
 // True once this call's ack phrases have been pre-warmed into tts.js's cache
 // — reset per call (not per app launch) because ack phrases and voice/provider
@@ -5113,6 +5122,10 @@ function speakText(text, voice, emoji) {
     // the speaking state across the seam); the final chunk clears it.
     const parts = splitForTts(spokenText);
     const genAtStart = ttsStopGeneration;
+    // #360: register this utterance so a barge-in's tts-stopped report can be
+    // mapped back to the chunk texts.
+    const utteranceId = ++ttsUtteranceSeq;
+    lastTtsUtterance = { id: utteranceId, parts, sent: 0 };
     try {
       for (let i = 0; i < parts.length; i++) {
         // #390/#372: a barge-in bumps ttsStopGeneration. Checked for EVERY
@@ -5139,7 +5152,8 @@ function speakText(text, voice, emoji) {
           }
           const base64Audio = Buffer.from(audioBuffer).toString('base64');
           console.log('[electron] TTS synthesized:', parts[i].slice(0, 40), '→', base64Audio.length, 'bytes base64' + chunkTag);
-          await sendPlayTts(base64Audio, chunkEmoji, { unmutedAt, expectMore });
+          await sendPlayTts(base64Audio, chunkEmoji, { unmutedAt, expectMore, utt: { id: utteranceId, chunk: i, chunks: parts.length } });
+          lastTtsUtterance.sent = i + 1; // #360
           // ElevenLabs is back — if we'd previously degraded to the OS voice,
           // tell the agent its normal voice is restored (rides status.errors →
           // the agent sees it on its next wait_for_speech lull).
@@ -5167,7 +5181,8 @@ function speakText(text, voice, emoji) {
               }
               const base64Audio = Buffer.from(fallbackBuffer).toString('base64');
               console.log(`[electron] TTS fell back to the built-in ${SYSTEM_VOICE_LABEL} voice:`, parts[i].slice(0, 40), '→', base64Audio.length, 'bytes base64' + chunkTag);
-              await sendPlayTts(base64Audio, chunkEmoji, { unmutedAt, expectMore });
+              await sendPlayTts(base64Audio, chunkEmoji, { unmutedAt, expectMore, utt: { id: utteranceId, chunk: i, chunks: parts.length } });
+              lastTtsUtterance.sent = i + 1; // #360
               // Tell the agent ONCE that its voice changed, so it knows it now
               // sounds different (and can mention it / not be surprised). Rides
               // the status.errors channel the agent already reads on each lull.
@@ -11145,12 +11160,59 @@ function setupIPC() {
     applyCaptionLanguagePref();
   });
 
+  // #360: the renderer reports how far playback got when a stop-tts hit. Pair
+  // the {id, chunk} tags with the registered chunk texts to compute exactly
+  // which words the room heard and which it never did, and hand that to
+  // local-server — the only component with a channel back to the agent.
+  ipcMain.on('tts-stopped', (_event, p) => {
+    const u = lastTtsUtterance;
+    if (!u || !p) return;
+    // The playing clip wasn't part of this utterance (e.g. a play_audio sound
+    // clip) — no words were cut, nothing to report about the utterance.
+    if (p.wasPlaying && (!p.tag || p.tag.id !== u.id)) return;
+    const dropped = new Set((p.droppedTags || [])
+      .filter((t) => t && t.id === u.id)
+      .map((t) => t.chunk));
+    const playingIdx = p.wasPlaying ? p.tag.chunk : null;
+    const spokenParts = [];
+    let cutTail = '';        // unheard remainder of the chunk that was playing (what a #350 resume would replay)
+    const unspokenRest = []; // chunks the renderer never got to (never recoverable by a resume)
+    let cutSeconds = null;
+    for (let i = 0; i < u.parts.length; i++) {
+      if (i === playingIdx) {
+        const frac = p.duration > 0 ? p.playedTo / p.duration : 0;
+        const { head, tail } = splitAtWordFraction(u.parts[i], frac);
+        if (head) spokenParts.push(head);
+        cutTail = tail;
+        cutSeconds = Math.round(p.playedTo * 10) / 10;
+      } else if (i >= u.sent || dropped.has(i)) {
+        unspokenRest.push(u.parts[i]);
+      } else {
+        spokenParts.push(u.parts[i]);
+      }
+    }
+    if (!cutTail && unspokenRest.length === 0) return; // everything had played — not a truncation
+    try {
+      localServer.noteSpeechTruncation({
+        spoken: spokenParts.join(' '),
+        unspokenTail: cutTail,
+        unspokenRest: unspokenRest.join(' '),
+        cutSeconds,
+      });
+    } catch (err) {
+      console.warn('[electron] noteSpeechTruncation failed:', err.message);
+    }
+  });
+
   ipcMain.on(CALL_EVENTS.ttsEnded, () => {
     // #368: tts-ended = the audio queue fully drained, i.e. the bot is no longer
     // speaking aloud. This is the authoritative release for the speaking-aloud
     // latch — clear it FIRST, before any early-return below, so botState can
     // never get trapped in 'speaking' if the audio ends via an unusual path.
     localServer.speakingAloud = false;
+    // #360: if a resumed utterance just played out, fold its recovered tail
+    // back into the truncation record (or clear it entirely).
+    localServer.noteSpeechPlaybackDrained();
     // If only the ack just finished, stay in 'thinking' — the agent is still
     // generating the real response and will clear the flag when it speaks.
     if (ackTtsPending) {

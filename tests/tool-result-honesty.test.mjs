@@ -32,8 +32,11 @@ test('#199: speech queued until in-call is reported as queued, not spoken', () =
   // And the MCP layer must SAY so, before the generic success line.
   assert.match(server, /tx\?\.queuedUntilInCall/);
   const q = server.indexOf('tx?.queuedUntilInCall');
-  const spoken = server.indexOf('`Spoken: "${text}"`');
-  assert.ok(q < spoken, 'the queued check must come before the generic "Spoken" return');
+  // #360 renamed the success line "Spoken" → "Speaking" (it answers at
+  // dispatch time and must not claim delivery).
+  const spoken = server.indexOf('`Speaking: "${text}"`');
+  assert.ok(spoken > 0, 'the generic success return should say "Speaking", not "Spoken"');
+  assert.ok(q < spoken, 'the queued check must come before the generic success return');
   assert.match(server, /QUEUED, not spoken/);
   // It must also say what to do, or the agent repeats itself into the void.
   assert.match(server, /do NOT repeat it/i);

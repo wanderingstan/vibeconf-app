@@ -24,4 +24,27 @@ function splitForTts(text) {
   return [first, rest];
 }
 
-module.exports = { splitForTts };
+// #360: estimate where a barge-in cut a chunk's text, given how far playback
+// got (playedTo/duration of the chunk's audio). Splits at the word boundary
+// nearest the time fraction — TTS pacing isn't uniform per character, so this
+// is approximate, but "roughly here" is all the agent needs to decide whether
+// the unheard tail still matters. frac<=0 → all tail; frac>=1 → all head.
+function splitAtWordFraction(text, frac) {
+  const t = String(text || '');
+  const f = Number.isFinite(frac) ? Math.max(0, Math.min(1, frac)) : 0;
+  if (!t) return { head: '', tail: '' };
+  if (f <= 0) return { head: '', tail: t };
+  if (f >= 1) return { head: t, tail: '' };
+  const target = Math.round(t.length * f);
+  // Nearest whitespace to the target index (either direction).
+  let before = t.lastIndexOf(' ', target);
+  let after = t.indexOf(' ', target);
+  let cut;
+  if (before === -1 && after === -1) cut = target;
+  else if (before === -1) cut = after;
+  else if (after === -1) cut = before;
+  else cut = (target - before <= after - target) ? before : after;
+  return { head: t.slice(0, cut).trim(), tail: t.slice(cut).trim() };
+}
+
+module.exports = { splitForTts, splitAtWordFraction };

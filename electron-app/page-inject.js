@@ -1285,13 +1285,17 @@
   let currentSpeakingEmoji = null;
   // #350: a mid-TTS utterance that was cut off by a barge-in, retained so the
   // next silence edge can resume it near the interruption point instead of
-  // dropping it. { buf, playedTo, emoji, at } or null.
+  // dropping it. { buf, playedTo, emoji, utt, at } or null.
   let interruptedTts = null;
+  // #360: the {id, chunk, chunks} tag of the clip currently playing, so a
+  // stop-tts can report WHICH chunk of WHICH utterance it interrupted.
+  let currentTtsTag = null;
 
   async function playNextTTS() {
     if (ttsPlaying || ttsQueue.length === 0) return;
     ttsPlaying = true;
-    const { audioData, resumeBuf, offset, emoji } = ttsQueue.shift();
+    const { audioData, resumeBuf, offset, emoji, utt } = ttsQueue.shift();
+    currentTtsTag = utt || null;
     currentSpeakingEmoji = emoji || null;
     for (const cam of cameras.values()) {
       cam.speaking = true;
@@ -1315,6 +1319,7 @@
       console.error('[bots-in-calls] TTS playback error:', err);
     }
     ttsPlaying = false;
+    currentTtsTag = null;
     _ttsMaybeFinish();
   }
 
@@ -2087,7 +2092,7 @@
           // hold the speaking state if the queue drains before it arrives
           // (window refreshed per chunk; final chunk clears it).
           ttsExpectMoreUntil = payload.expectMore ? Date.now() + 8000 : 0;
-          ttsQueue.push({ audioData: payload.audioData, emoji: payload.emoji });
+          ttsQueue.push({ audioData: payload.audioData, emoji: payload.emoji, utt: payload.utt });
           playNextTTS();
         }
         break;
@@ -2096,6 +2101,7 @@
         // Back-off (#154): interrupt the bot mid-utterance and drop anything
         // queued behind it. The current source's onended will fire and the
         // playNextTTS state machine cleans up normally, posting tts-ended.
+        const droppedTags = ttsQueue.map((q) => q.utt).filter(Boolean);
         const droppedQueue = ttsQueue.length;
         ttsQueue.length = 0;
         // #372: a barge-in cancels any promised follow-up chunk — don't hold
@@ -2109,12 +2115,28 @@
         const MIN_REMAINING_S = 0.5;
         if (stopped.wasPlaying && stopped.buf &&
             (stopped.buf.duration - stopped.playedTo) > MIN_REMAINING_S) {
-          interruptedTts = { buf: stopped.buf, playedTo: stopped.playedTo, emoji: currentSpeakingEmoji, at: Date.now() };
+          interruptedTts = { buf: stopped.buf, playedTo: stopped.playedTo, emoji: currentSpeakingEmoji, utt: currentTtsTag, at: Date.now() };
           console.log('[bots-in-calls] stop-tts retained ' +
             (stopped.buf.duration - stopped.playedTo).toFixed(1) + 's tail for possible resume (#350)');
         } else {
           interruptedTts = null;
         }
+        // #360: report how far playback actually got, so main can tell the
+        // agent which part of its utterance the room never heard. Sent even
+        // when nothing was playing — main still needs droppedTags (queued
+        // chunks that will now never play) to account for the whole utterance.
+        window.postMessage({
+          __botsInCalls: true,
+          action: 'tts-stopped',
+          payload: {
+            reason,
+            wasPlaying: stopped.wasPlaying,
+            playedTo: stopped.playedTo,
+            duration: stopped.buf ? stopped.buf.duration : 0,
+            tag: stopped.wasPlaying ? currentTtsTag : null,
+            droppedTags,
+          },
+        }, '*');
         console.log('[bots-in-calls] stop-tts reason=' + reason + ' wasPlaying=' + stopped.wasPlaying + ' droppedQueue=' + droppedQueue);
         break;
       }
@@ -2132,7 +2154,9 @@
         const resumeAt = Math.max(0, interruptedTts.playedTo - BACKUP_S);
         console.log('[bots-in-calls] resume-tts — resuming at ' + resumeAt.toFixed(1) +
           's / ' + interruptedTts.buf.duration.toFixed(1) + 's (#350)');
-        ttsQueue.push({ resumeBuf: interruptedTts.buf, offset: resumeAt, emoji: interruptedTts.emoji });
+        // #360: carry the chunk tag through the resume so a re-interruption
+        // still reports an accurate (and now further-along) cut point.
+        ttsQueue.push({ resumeBuf: interruptedTts.buf, offset: resumeAt, emoji: interruptedTts.emoji, utt: interruptedTts.utt });
         interruptedTts = null;
         playNextTTS();
         break;

@@ -167,6 +167,100 @@ test('silent mode holds the stash rather than speaking it', async () => {
   assert.deepEqual(s.spoken, [], 'silent mode acts but never speaks');
 });
 
+test('#359: the hand comes down when the word-count guard discards the stash', () => {
+  // Distinct from the age-guard test above: this exercises
+  // _maybeReplayBargeInStash directly (bypassing the speech-stop edge) so it
+  // also covers the resolve-time call site (_resolveWaiter, reason=silence),
+  // which — before #359 — discarded via this same guard without ever
+  // lowering the hand.
+  const s = makeServer();
+  stash(s, 'moved on', { wordsAtStash: 0 });
+  s._tickWordCount = () => 999; // way past bargeInStashRedeliverMaxNewWords
+  assert.equal(s.botState, 'yielding');
+
+  const replayed = s._maybeReplayBargeInStash();
+
+  assert.equal(replayed, null, 'guard rejected it');
+  assert.equal(s.bargeInStash, null, 'discarded');
+  assert.notEqual(s.botState, 'yielding', 'hand lowered in the same transaction as the discard');
+});
+
+test('#359: the hand comes down on the resolve-time discard path, not just the opening path', () => {
+  // _maybeReplayBargeInStash is also called from _resolveWaiter (reason=silence)
+  // without going through _maybeReplayStashOnOpening at all — pin that this
+  // call site is also covered now that the lowering lives in the shared method.
+  const s = makeServer();
+  stash(s, 'stale thought', { ageMs: 90_000 }); // past the 45s bar
+  assert.equal(s.botState, 'yielding');
+
+  const replayed = s._maybeReplayBargeInStash();
+
+  assert.equal(replayed, null);
+  assert.equal(s.bargeInStash, null);
+  assert.notEqual(s.botState, 'yielding', 'hand lowered even when called outside the opening path');
+});
+
+// --- #359: naming the bot shortens the stash-opening wait ---
+//
+// The fast-ack that used to mask this gap is suppressed when a stash is held
+// (main.js, onBotStateChange) — it can't consult the slow model without
+// another round trip, which defeats the point of an ack. A mention of the
+// bot's name stands in for that. This is the SAME rule, same pref
+// (nameMentionSilenceSeconds), as the wait_for_speech fast-resolve in
+// _checkWaiters (#343) — not a separate "call-on" concept for the stash
+// case — and deliberately position- and length-agnostic: neither where in
+// the utterance the name lands nor how long the utterance is changes
+// anything, because this only ever SHORTENS an already silence-gated wait,
+// never skips it, so there's no speaker to cut off either way.
+
+const T = (turnId, speaker, text, isBottommost = true) => ({ turnId, speaker, text, isBottommost });
+
+test('#359: a name mention shortens the stash-opening wait, regardless of length', async () => {
+  // bargeInStashRedeliverMaxNewWords raised so the unrelated content-staleness
+  // guard doesn't discard the stash before the timing question is even
+  // reached — this test is only about which silence gate gets armed.
+  const s = makeServer({
+    defaultSilenceSeconds: 5,
+    nameMentionSilenceSeconds: SILENCE_S,
+    bargeInStashRedeliverMaxNewWords: 999,
+  });
+  s.currentCallBotName = 'Pepper';
+  s.updateTurns([T(1, 'Stan', 'So Pepper, given everything we just discussed about the roadmap, what do you actually think we should prioritize next quarter')]);
+  stash(s, 'held thought');
+
+  stopSpeaking(s);
+  await settle();
+
+  assert.deepEqual(s.spoken, ['held thought'],
+    'a name mention gets the fast (nameMentionSilenceSeconds) gate even in a long utterance');
+});
+
+test('#359: the name can be anywhere in the utterance, not only at the end', async () => {
+  // Unlike the pre-#359 wait_for_speech fast-resolve, which required the
+  // name at the END, this check has no position requirement.
+  const s = makeServer({ defaultSilenceSeconds: 5, nameMentionSilenceSeconds: SILENCE_S });
+  s.currentCallBotName = 'Jimmy';
+  s.updateTurns([T(1, 'Stan', 'Jimmy, go ahead')]);
+  stash(s, 'held thought');
+
+  stopSpeaking(s);
+  await settle();
+
+  assert.deepEqual(s.spoken, ['held thought'], 'name-at-start must also get the fast gate');
+});
+
+test('#359: an utterance that never names the bot keeps the full wait', async () => {
+  const s = makeServer({ defaultSilenceSeconds: SILENCE_S, nameMentionSilenceSeconds: 5 });
+  s.currentCallBotName = 'Pepper';
+  s.updateTurns([T(1, 'Stan', 'sure, sounds good')]);
+  stash(s, 'held thought');
+
+  stopSpeaking(s);
+  await settle();
+
+  assert.deepEqual(s.spoken, ['held thought'], 'no name mention must use the slow (default) gate');
+});
+
 test('overwriting an unplayed stash is logged, not silent', () => {
   const s = makeServer();
   const lines = [];

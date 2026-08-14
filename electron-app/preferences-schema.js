@@ -707,21 +707,29 @@ const PREFERENCES = {
   },
   bargeInBotRandomMinMs: {
     type: 'number',
-    default: 1000,
+    default: 0,
     min: 0,
     max: 10_000,
     description:
-      'When two bots try to speak at the same moment, each waits a random ' +
-      'delay in [min, max] before committing to its turn — preventing ' +
-      'lockstep talking over each other. This is the floor of that range.',
+      'When two bots collide (one bot interrupting another, evaluated only AFTER ' +
+      'the normal bargeInGraceMs sustain period already elapsed), each independently ' +
+      'draws a random tie-breaking delay in [min, max] before committing to back off ' +
+      '— whichever bot draws the smaller value yields first, decorrelating two bots ' +
+      'running identical logic against each other. This is the floor of that range. ' +
+      'Was 1000 by default; raising it adds a flat mandatory delay to every bot-vs-' +
+      'bot collision with no decorrelation benefit — the gap between two random draws ' +
+      'depends only on (max - min), not on where the floor sits — so 0 is correct ' +
+      'unless you specifically want a minimum pause. Read live.',
   },
   bargeInBotRandomMaxMs: {
     type: 'number',
-    default: 4000,
+    default: 3000,
     min: 0,
     max: 30_000,
     description:
-      'Ceiling of the bot-vs-bot random-delay range (see bargeInBotRandomMinMs).',
+      'Ceiling of the bot-vs-bot random-delay range (see bargeInBotRandomMinMs). Was ' +
+      '4000 paired with a 1000 floor (3s spread); kept the same 3s spread when the ' +
+      'floor moved to 0.',
   },
   bargeInStashMaxAgeMs: {
     type: 'number',
@@ -889,13 +897,19 @@ const PREFERENCES = {
     min: 0,
     max: 30,
     description:
-      'Shorter silence threshold used when the bot is addressed by name AT THE END ' +
-      'of an utterance — a hand-off like "…what do you think, Jimmy?" (#343). It then ' +
-      'resolves after this much silence instead of the full defaultSilenceSeconds, ' +
-      'for a prompter reply. Only applies when the name is at the END (not mid-' +
-      'sentence, which would cut the speaker off), and only ever shortens. Kept at ' +
-      '1.0 (not lower) so a brief pause right after saying the name — "Hey Jimmy… ' +
-      'how are you" — does not trip it. Set >= defaultSilenceSeconds to disable. Read live.',
+      'Shorter silence threshold used whenever the bot is addressed by name anywhere ' +
+      'in an utterance — a hand-off like "…what do you think, Jimmy?" or "Jimmy, go ' +
+      'ahead" (#343, #359). It then resolves after this much silence instead of the ' +
+      'full defaultSilenceSeconds, for a prompter reply. Applies uniformly to a waiter ' +
+      'parked in wait_for_speech (_checkWaiters) AND to replaying a held barge-in stash ' +
+      '(_maybeReplayStashOnOpening) — the same rule either way, not a separate "call-on" ' +
+      'concept for the stash case. Position in the utterance is deliberately NOT ' +
+      'checked (#359): it is an unreliable signal, more so across languages, and this ' +
+      'only ever SHORTENS an already silence-gated wait — it never skips the wait ' +
+      'outright, so there is no speaker to cut off regardless of where the name lands. ' +
+      'Kept at 1.0 (not lower) so a brief pause right after saying the name — "Hey ' +
+      'Jimmy… how are you" — does not trip it. Set >= defaultSilenceSeconds to disable. ' +
+      'Read live.',
   },
   defaultMaxWaitForSpeechSec: {
     type: 'number',

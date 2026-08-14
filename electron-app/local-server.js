@@ -1744,7 +1744,17 @@ class LocalServer {
       // the agent's poll cycle (see _maybeReplayStashOnOpening).
       if (this.bargeInStash) {
         clearTimeout(this._stashOpeningTimer);
-        const ms = Math.round((Number(this._pref('defaultSilenceSeconds')) || 1.4) * 1000);
+        // #359: the ack that used to mask this gap is gone when a stash is
+        // held (see onBotStateChange in main.js) — it can't ask the slow
+        // model "should I speak?" without another round trip, which is the
+        // whole reason the ack existed. A name-mention stands in for that,
+        // same rule as the waiter fast-resolve in _checkWaiters: this is not
+        // a distinct "call-on" concept, it's the same nameMentionSilenceSeconds
+        // shortening applied uniformly, whether or not a stash happens to be
+        // held.
+        const ms = this._stashLatestUtteranceMentionsBotName()
+          ? Math.round((Number(this._pref('nameMentionSilenceSeconds')) || 1.0) * 1000)
+          : Math.round((Number(this._pref('defaultSilenceSeconds')) || 1.4) * 1000);
         this._stashOpeningTimer = setTimeout(() => this._maybeReplayStashOnOpening(), ms);
       } else if (this._pref('probeFiring')) {
         // Active listening (#245): arm a SOFT-opening probe on a brief quiet —
@@ -2423,13 +2433,6 @@ class LocalServer {
       // call (the bot otherwise falls back to the word-count tick, 20–30s late).
       const botNameLower = waiter.bot ? waiter.bot.toLowerCase() : '';
       const nameMentioned = !!botNameLower && entries.some(e => e.text.toLowerCase().includes(botNameLower));
-      // Fast-resolve only when the name lands at the END of the latest utterance —
-      // a genuine hand-off ("…what do you think, Jimmy?"), NOT a name-drop mid-
-      // sentence ("Hey Jimmy, how's it going?") which would cut the speaker off
-      // (2026-07-02 live test: it resolved on "Hey Jimmy" and missed the rest).
-      const _latestText = entries.length ? String(entries[entries.length - 1].text || '').toLowerCase() : '';
-      const nameAtEnd = !!botNameLower && _latestText.length > 0
-        && _latestText.slice(-(botNameLower.length + 20)).includes(botNameLower);
 
       // Passive/silent modes only respond when directly addressed; otherwise they
       // fall through to the same silence-based resolution active mode uses (the
@@ -2448,8 +2451,13 @@ class LocalServer {
       // Effective silence threshold — shortened when the bot was just addressed
       // by name, so a direct question resolves promptly rather than waiting for
       // the full whole-room gap (#343). Live-tunable via nameMentionSilenceSeconds.
+      // #359: position in the utterance used to matter (only "at the end" fast-
+      // resolved, to avoid cutting off "hey Jimmy, how's it going") — dropped.
+      // Position is an unreliable signal (more so across languages), and this
+      // still only SHORTENS an already silence-gated wait, it never skips the
+      // wait outright, so there is no speaker to cut off either way.
       const _nameSil = Number(this._pref('nameMentionSilenceSeconds'));
-      const effSilence = (nameAtEnd && Number.isFinite(_nameSil) && _nameSil >= 0)
+      const effSilence = (nameMentioned && Number.isFinite(_nameSil) && _nameSil >= 0)
         ? Math.min(waiter.silence, _nameSil)
         : waiter.silence;
 
@@ -2945,6 +2953,35 @@ class LocalServer {
     this._lastDiscardedStash = { texts, reason };
   }
 
+  // #359: the raised hand (🙋 "yielding") means "a reply is stashed and
+  // ready." Every place that discards a stash without ever speaking it
+  // must drop the hand in the same transaction — otherwise the hand
+  // outlives the thing it was raised for, and a human reads it as a lie.
+  _lowerHandIfYielding() {
+    if (this.botState !== 'yielding') return;
+    this._setBotState(this.waiters.length > 0 ? 'listening' : 'idle', undefined, { force: true });
+  }
+
+  // #359: does the utterance that just ended name this bot? Same rule, same
+  // signal, as the waiter fast-resolve in _checkWaiters — deliberately NOT
+  // narrowed to "short" utterances or "name at the end": position/length in
+  // the utterance is an unreliable signal (more so across languages) and
+  // this only ever SHORTENS an already silence-gated wait, never skips it,
+  // so there's no speaker to cut off either way. Looks at the most recent
+  // non-bot entry only — the utterance that just closed on this speech-stop
+  // edge, not the whole held-open window. Used to shorten the stash-opening
+  // wait (see the speech-stop handler in setParticipants); NOT used to
+  // decide whether to replay at all — the freshness/relevance guards in
+  // _maybeReplayBargeInStash still get the last word.
+  _stashLatestUtteranceMentionsBotName() {
+    const myName = (this.getEffectiveBotName() || '').toLowerCase();
+    if (!myName) return false;
+    const entries = this._entriesSince(null, this.getEffectiveBotName());
+    const latest = entries.length ? entries[entries.length - 1] : null;
+    const text = String(latest?.text || '').toLowerCase();
+    return !!text && text.includes(myName);
+  }
+
   // Attempt to replay any fresh barge-in stash before the waiter returns
   // to the slow model. Returns the array of texts that were played (or
   // null if nothing). The bot speaks via the existing onBotSpeech path,
@@ -2958,6 +2995,7 @@ class LocalServer {
       console.log(ts(), '🛡️  [barge-in] discarding stash — too stale (' + ageMs + 'ms old, max ' + maxAgeMs + 'ms)');
       this._noteDiscardedStash(this.bargeInStash, `the floor stayed busy for ${Math.round(ageMs / 1000)}s`);
       this.bargeInStash = null;
+      this._lowerHandIfYielding();
       return null;
     }
     // Content staleness guard (#239): even inside the age window, if a lot was
@@ -2973,6 +3011,7 @@ class LocalServer {
         console.log(ts(), '🛡️  [barge-in] discarding stash — conversation moved on (' + newWords + ' new words > ' + maxNewWords + ') — agent will re-derive');
         this._noteDiscardedStash(this.bargeInStash, `${newWords} words were said while it waited`);
         this.bargeInStash = null;
+        this._lowerHandIfYielding();
         return null;
       }
     }
@@ -3029,11 +3068,9 @@ class LocalServer {
     if (replayed) {
       this._lastReplayedStash = replayed;
       console.log(ts(), '🛡️  [barge-in] stash replayed at a floor opening (no waiter needed)');
-    } else if (this.botState === 'yielding') {
-      // Guards rejected it (stale / conversation moved on) and it's gone.
-      // Lower the hand — nothing is queued anymore.
-      this._setBotState(this.waiters.length > 0 ? 'listening' : 'idle', undefined, { force: true });
     }
+    // If the guards rejected it, _maybeReplayBargeInStash already lowered
+    // the hand as part of the discard.
   }
 
   // How long the room has been quiet, judged from the freshest of `entries`.

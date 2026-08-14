@@ -2482,6 +2482,22 @@ server.tool(
     const participants = data.participants || [];
     const detectedUrls = data.detectedMeetUrls || [];
 
+    // #366-followup: peers' sharing state lives on the REMOTE presence hash
+    // (announced by announceSharing() in main.js on start/stop), not in the
+    // local server's own status/members above — that only knows about this
+    // bot's own view. Best-effort: a failed or slow remote fetch must not
+    // block the rest of get_room_info, which is otherwise entirely local.
+    let peerSharing = [];
+    try {
+      const remoteResp = await vfetch(`${WEBSITE_URL}/api/sync/${roomId}`);
+      const remoteData = await remoteResp.json();
+      if (remoteData.success) {
+        peerSharing = (remoteData.members || []).filter((m) =>
+          m.sharing && m.name && m.name.toLowerCase() !== (BOT_NAME || '').toLowerCase()
+        );
+      }
+    } catch { /* best-effort — see comment above */ }
+
     // Members from sync API (includes bots). Build a set of registered bot
     // names (case-insensitive) so we can annotate the Meet participant list
     // with (bot) for cross-instance bots like Coltrane (#162).
@@ -2570,6 +2586,15 @@ server.tool(
     const shareUrl = status.screenShareUrl || status.whiteboardLoadedUrl; // #177 rename; tolerate old field
     if (shareUrl) {
       sections.push(`Currently sharing: ${shareUrl} (what's rendering in the screen share now, post-update_whiteboard / scroll_share)`);
+    }
+    if (peerSharing.length > 0) {
+      // WHO is presenting is already visible via Meet's own UI (presenterName,
+      // above) — this is WHAT: content another bot announced it's sharing,
+      // which Meet's UI has no way to tell you.
+      sections.push(
+        `Peer bots sharing:\n` +
+        peerSharing.map((m) => `  - ${m.name}: ${m.screenShareUrl || '(url not announced)'}`).join('\n')
+      );
     }
 
     // #244: surface the current avatar background so the bot can recall it

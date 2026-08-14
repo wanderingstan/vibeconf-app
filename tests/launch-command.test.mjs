@@ -11,13 +11,26 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, realpathSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { buildTerminalCommand, asQuoted } = require('../electron-app/launch-command.js');
+
+// The shell to drive the built command through.
+//
+// zsh where it exists, because that is what macOS Terminal.app actually runs and
+// this module only ever feeds Terminal.app. But it is NOT a zsh feature under
+// test: the construct is `cd "path" && cmd`, which is plain POSIX, so any sh
+// exercises the same quoting.
+//
+// Hardcoding /bin/zsh made this the ONLY test in the suite that failed on a
+// stock Ubuntu box (spawnSync /bin/zsh ENOENT). It stayed green in CI because
+// GitHub's ubuntu runners happen to ship zsh, so the assumption was invisible
+// exactly where you would expect CI to catch it.
+const SHELL = ['/bin/zsh', '/bin/bash', '/bin/sh'].find((s) => existsSync(s)) || '/bin/sh';
 
 // Emulate what the shell finally receives: AppleScript `do script "<cmd>"` parses
 // its string literal, turning each \" into a real ". (\\ would become \, but the
@@ -38,7 +51,7 @@ test('a spaces path actually cd\'s — the reported failure', () => {
   try {
     const cmd = buildTerminalCommand({ workdir: dir, port: 7865, innerCmd: 'pwd' });
     const shellCmd = afterAppleScript(cmd);
-    const out = execSync(shellCmd, { shell: '/bin/zsh', encoding: 'utf8' }).trim();
+    const out = execSync(shellCmd, { shell: SHELL, encoding: 'utf8' }).trim();
     assert.equal(realpathSync(out), realpathSync(dir), 'cd landed in the spaces path');
   } finally { rmSync(base, { recursive: true, force: true }); }
 });

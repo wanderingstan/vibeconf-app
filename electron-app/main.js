@@ -4372,6 +4372,40 @@ function loadIdlePage(reason) {
   meetView.webContents.loadURL(getIdleUrl());
 }
 
+// Discard the current embedded provider view for good — the ONLY correct way to
+// throw one away. (`meetView` is the shared handle for whichever provider is
+// live: a Google Meet view OR a Slack surface — see activateSlackProvider — so
+// this is not Meet-specific.) `removeBrowserView(meetView); meetView = null`
+// (what every discard site used to do) merely DETACHES the view from its window
+// and drops our reference; the webContents keeps living and running its page
+// until GC eventually reaps it. That orphaned-but-alive page is a real bug
+// source, not a leak nit: a Meet view we "discarded" at call teardown finished
+// loading /bot-view ~270ms later and its preload emitted a 'meet-landing'
+// event, which the handler — now seeing a NEW join in flight — misread as that
+// join failing and killed it (the 2026-08-14 whiteboard-e2e "could not join …
+// ended up at bot-view" failure). Stopping and closing the webContents makes
+// the discard immediate and total: the page can no longer navigate, run script,
+// or emit into our IPC handlers.
+//
+// Detaches from whichever window currently hosts it (main / popout / hidden),
+// since attachMeetViewForState moves the same view between all three.
+function destroyProviderView() {
+  if (!meetView) return;
+  const wc = meetView.webContents;
+  for (const win of [mainWindow, meetPopoutWindow, meetHiddenWindow]) {
+    try { if (win && !win.isDestroyed()) win.removeBrowserView(meetView); } catch { /* not attached to this one */ }
+  }
+  try {
+    if (wc && !wc.isDestroyed()) {
+      wc.stop();   // cancel any in-flight navigation (e.g. the teardown /bot-view load)
+      wc.close();  // destroy the webContents so its page can't run or emit anymore
+    }
+  } catch (err) {
+    console.warn('[electron] destroyProviderView: webContents teardown failed:', err.message);
+  }
+  meetView = null;
+}
+
 // Write a captured page DOM next to the session log, so an unattended run can
 // be post-mortemed. Shared by the #263 denial capture (renderer-pushed, from
 // inside the pre-join loop) and #346's join-landed-somewhere-else capture
@@ -4416,7 +4450,7 @@ const GUEST_PARTITION = 'persist:guest';
 // has no Google cookies IS a guest") and not a toggle. That still holds, and
 // this does not reopen it: SESSION_PARTITION remains the profile's identity in
 // every normal case. The swap is a degraded mode, entered only once Google has
-// already refused the real account, and _loadMeetURL resets it on every
+// already refused the real account, and _openMeetInFreshView resets it on every
 // ordinary join so it can never become sticky.
 //
 // The other half of #282's objection was that the old swap dragged Slack's
@@ -8615,10 +8649,7 @@ function setupSlackRoom(slackUrl) {
 function activateSlackProvider(slackUrl, { autojoin = true } = {}) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   console.log('[electron] Activating Slack provider:', slackUrl);
-  if (meetView) {
-    try { mainWindow.removeBrowserView(meetView); } catch (err) { console.warn('[electron] removeBrowserView failed:', err.message); }
-    meetView = null;
-  }
+  destroyProviderView();
   ensureMeetSessionConfigured(SESSION_PARTITION);
   const { createSlackSurface } = require('./slack-surface');
   const surface = createSlackSurface(mainWindow, {
@@ -8643,10 +8674,7 @@ function activateMeetProvider() {
   if (!slackProviderMode && meetView && !meetView.webContents.isDestroyed()) return;
   if (!mainWindow || mainWindow.isDestroyed()) return;
   console.log('[electron] Activating Meet provider (was slack=' + slackProviderMode + ')');
-  if (meetView) {
-    try { mainWindow.removeBrowserView(meetView); } catch (err) { console.warn('[electron] removeBrowserView failed:', err.message); }
-    meetView = null;
-  }
+  destroyProviderView();
   slackProviderMode = false;
   slackSurface = null;
   // #347: follows the active partition, so a provider switch mid-fallback
@@ -9345,7 +9373,7 @@ function showIdle() {
 // outcome, not the attempt.
 async function loadMeetURL(meetUrl, opts = {}) {
   try {
-    await _loadMeetURL(meetUrl, opts);
+    await _openMeetInFreshView(meetUrl, opts);
   } catch (err) {
     const msg = 'Failed to open the Meet page: ' + (err && err.message ? err.message : String(err));
     console.error(ts(), '[electron] #254:', msg);
@@ -9354,7 +9382,13 @@ async function loadMeetURL(meetUrl, opts = {}) {
   }
 }
 
-async function _loadMeetURL(meetUrl, { guestFallback = false } = {}) {
+// Tear down whatever Meet view exists and open `meetUrl` in a brand-new one.
+// This is NOT a plain navigation: it destroys the outgoing BrowserView
+// (destroyProviderView), reads Google sign-in state, may clear the identity cache,
+// pins the authuser, builds a fresh BrowserView on the active partition, and
+// only then loads the URL. The old `_loadMeetURL` name hid all of that behind
+// "load a URL"; the work here is "replace the view and join", hence the rename.
+async function _openMeetInFreshView(meetUrl, { guestFallback = false } = {}) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
   chatSpaceWarned = false; // fresh call — allow one Chat-space warning again
@@ -9392,13 +9426,11 @@ async function _loadMeetURL(meetUrl, { guestFallback = false } = {}) {
   // leaves the previous Meet SPA's state alive (visible in logs as
   // duplicated [electron-meet] / [bots-in-calls] lines from two live
   // preload contexts). Tearing down the view is the only thing that
-  // matches what "quit and relaunch the app" does.
-  if (meetView) {
-    try { mainWindow.removeBrowserView(meetView); } catch (err) {
-      console.warn('[electron] removeBrowserView failed:', err.message);
-    }
-    meetView = null;
-  }
+  // matches what "quit and relaunch the app" does. destroyProviderView STOPS the
+  // outgoing view (not just detaches it), so a page we're throwing away — e.g.
+  // a teardown /bot-view load still in flight — can't finish loading and emit a
+  // 'meet-landing' that this very join would then misread as its own failure.
+  destroyProviderView();
 
   // Is this profile signed into Google? Drives both the cache-clear decision
   // and the authuser pin below. With a single partition (#282) we can't infer

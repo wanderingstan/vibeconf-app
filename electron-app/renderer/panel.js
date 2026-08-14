@@ -1758,10 +1758,19 @@ function paintCalendarUpcoming(events) {
   const title = next.summary || 'Untitled event';
   const localTime = new Date(next.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   // ownerConfirmed === false means the calendar owner hasn't accepted this
-  // event yet, so the bot won't auto-join it (main.js's owner-RSVP gate).
-  // Kept to three words: the banner is small. Absent/true → normal notice.
-  const waiting = next.ownerConfirmed === false ? ' ⚠️ (not yet accepted)' : '';
-  calendarUpcomingText.textContent = `${localTime} meeting: "${title}" ${formatUpcomingDelta(Math.max(delta, 0))}${waiting}`;
+  // event yet, so the bot won't auto-join it (main.js's owner-RSVP gate):
+  // the meeting line renders struck through (it's not happening as far as
+  // the bot is concerned) with a short normal-weight warning after it.
+  // Built with DOM nodes, not innerHTML — the title is calendar-sourced text.
+  const line = `${localTime} meeting: "${title}" ${formatUpcomingDelta(Math.max(delta, 0))}`;
+  calendarUpcomingText.textContent = '';
+  const lineSpan = document.createElement('span');
+  lineSpan.textContent = line;
+  calendarUpcomingText.appendChild(lineSpan);
+  if (next.ownerConfirmed === false) {
+    lineSpan.style.textDecoration = 'line-through';
+    calendarUpcomingText.appendChild(document.createTextNode(' ⚠️ (not yet accepted)'));
+  }
   calendarUpcomingBanner.style.display = 'flex';
 }
 api.on('calendar-upcoming', ({ events }) => paintCalendarUpcoming(events));

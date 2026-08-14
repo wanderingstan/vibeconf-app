@@ -3627,6 +3627,39 @@ function whiteboardShareUrl(baseUrl, roomId) {
   return `${baseUrl}/room/${roomId}?mode=whiteboard&surface=share`;
 }
 
+// #366-followup: peers already see WHO is presenting via Meet's own UI
+// (google-meet-provider.js's DOM probe), but not WHAT — whether it's this
+// board or some other URL. Announce our own sharing state on the room's
+// presence channel so other bots can read it via get_room_info without
+// guessing. Fire-and-forget and best-effort on purpose:
+//   - No roomId (never joined via vibeconferencing.com, or between calls) —
+//     nothing to announce to, and that's not a failure.
+//   - No auth is required for /api/sync (unlike /api/logs) — a bot that
+//     isn't logged into a vibeconferencing.com account still gets through.
+//   - A failed POST is logged and dropped, never retried — the #386 outage
+//     that happened from retrying a rate-limited endpoint is exactly the
+//     failure mode to not repeat for a path that fires on every share toggle.
+async function announceSharing(active) {
+  const roomId = localServer.roomId;
+  if (!roomId) return; // no room association — fail gracefully, nothing to tell
+  try {
+    const baseUrl = getWebsiteUrl();
+    const screenShareUrl = active ? (localServer.getWhiteboardLoadedUrl() || whiteboardShareUrl(baseUrl, roomId)) : null;
+    const resp = await fetch(`${baseUrl}/api/sync/${roomId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sender: resolvedBotName(),
+        role: 'bot',
+        sharing: { active, screenShareUrl },
+      }),
+    });
+    if (!resp.ok) console.warn('[share] sharing announce rejected by sync server:', resp.status);
+  } catch (err) {
+    console.warn('[share] failed to announce sharing state (non-fatal):', err.message);
+  }
+}
+
 // The board's title, carrying the bot's name so it is obvious WHICH bot is
 // presenting — the title bar is visible in the share by default, and with
 // several bots in a call that question otherwise means cross-referencing Meet's
@@ -11357,11 +11390,13 @@ function setupIPC() {
         console.warn(`[share] state disagreed with Meet — app said sharing=${wasSharing}, `
           + `Meet says ${presenting}. Correcting to Meet.`);
         localServer.setSharing(!!presenting);
+        announceSharing(!!presenting);
       }
       return;   // never run the edge-only side effects below
     }
 
     localServer.setSharing(presenting);
+    announceSharing(!!presenting);
     if (!presenting) {
       externalShareRequest = null; // POC (share-agent-tab)
     }

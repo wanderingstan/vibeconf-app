@@ -1758,11 +1758,9 @@ function paintCalendarUpcoming(events) {
   const title = next.summary || 'Untitled event';
   const localTime = new Date(next.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   // ownerConfirmed === false means the calendar owner hasn't accepted this
-  // event yet, so the bot won't auto-join it (main.js's owner-RSVP gate) —
-  // say so, rather than implying a join is armed. Absent/true → normal notice.
-  const waiting = next.ownerConfirmed === false
-    ? ' — you haven\'t accepted this invite yet, so the bot is waiting to see if it should attend'
-    : '';
+  // event yet, so the bot won't auto-join it (main.js's owner-RSVP gate).
+  // Kept to three words: the banner is small. Absent/true → normal notice.
+  const waiting = next.ownerConfirmed === false ? ' (not yet accepted)' : '';
   calendarUpcomingText.textContent = `${localTime} meeting: "${title}" ${formatUpcomingDelta(Math.max(delta, 0))}${waiting}`;
   calendarUpcomingBanner.style.display = 'flex';
 }

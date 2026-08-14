@@ -669,6 +669,40 @@ printf '{"ts":"%s","exit":%s,"log":"%s"}\n' "$STAMP" "$CODEX_CODE" "$(basename "
   >> "$RESULTS/codex-smoke-results.jsonl"
 echo "=== codex smoke exit: $CODEX_CODE (recorded, not gating) ===" | tee -a "$LOG"
 
+# --- Linux lane (#329/#324) — the only lane that does not run on this machine.
+#
+# Starts the cloud-TA EC2 box, runs the agent-terminal check on it over SSM,
+# stops it again (only if this lane started it — a human may be working on it).
+#
+# NOT wrapped in rec_run: that screen-records THIS mac's display, and there is
+# nothing of this lane on it. The interesting output is the remote log, which
+# the lane tee's here.
+#
+# It deliberately does NOT run the unit suite: since #363 that runs on
+# ubuntu-latest for every PR, so a nightly copy would just repeat CI a day late.
+# This covers what no GitHub runner can — Electron under Xvfb, a real call, a
+# real agent process in a real terminal.
+#
+# Decoupled from the primary exit for its first nights, like the codex and fuzz
+# blocks above: it depends on AWS reachability and a box that has to boot, so an
+# infrastructure hiccup should not turn the whole night red. PROMOTE into the
+# primary exit once it has a green streak.
+echo "" | tee -a "$LOG"
+echo "=== linux agent-terminal lane (#329) $STAMP ===" | tee -a "$LOG"
+if command -v aws >/dev/null 2>&1; then
+  STAMP="$STAMP" VIBECONF_RESULTS_DIR="$RESULTS" \
+    scripts/nightly-linux-lane.sh 2>&1 | tee -a "$LOG"
+  LINUX_CODE=${pipestatus[1]:-$?}
+  echo "=== linux lane exit: $LINUX_CODE (recorded, not gating) ===" | tee -a "$LOG"
+else
+  # Say so rather than skipping into silence: a missing awscli would otherwise
+  # present in the digest as "no result", indistinguishable from a lane that
+  # never got to run because the night died earlier.
+  echo "=== linux lane SKIPPED: no awscli on this machine ===" | tee -a "$LOG"
+  printf '{"ts":"%s","exit":75,"fails":1,"note":"awscli not installed on the runner"}\n' \
+    "$STAMP" >> "$RESULTS/linux-results.jsonl"
+fi
+
 # --- Telegram digests — two separate messages to Stan's DM: tonight's test-suite
 # results (notify-nightly.mjs) and a real-user call summary (nightly-call-digest.mjs,
 # built from the archive scripts/archive-logs.mjs keeps fed on a */20 cron —

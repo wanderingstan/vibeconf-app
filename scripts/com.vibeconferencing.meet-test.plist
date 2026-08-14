@@ -32,6 +32,26 @@
     <string>1</string>
     <key>VIBECONF_RECORD_KEEP</key>
     <string>nightly</string>
+
+    <!-- The Linux lane's target box (#329/#367). It lives HERE, not in a shell
+         profile, for two reasons.
+
+         It is a property of THIS SCHEDULE, not of the machine: which box the
+         3am job is allowed to wipe is a fact about the job.
+
+         And a shell profile would not reliably reach it anyway. ProgramArguments
+         runs `zsh -lc`, and ~/.zshrc is sourced only for INTERACTIVE shells —
+         the same trap CLAUDE.md documents for APPLE_ID, where notarization
+         silently skipped because the creds were in .zshrc and the LaunchAgent
+         could not see them.
+
+         MUST be a disposable TEST box. The lane git-reset --hards the clone,
+         tmux kill-servers, pkills the app and rewrites app-level preferences.
+         Pointed at the cloud-TA box it would kill an instructor's live agent
+         mid-session, nightly. The lane refuses to run if this is unset rather
+         than guessing. -->
+    <key>VIBECONF_TEST_INSTANCE</key>
+    <string>i-0eee9f56a7ef905cc</string>
   </dict>
 
   <key>ProgramArguments</key>

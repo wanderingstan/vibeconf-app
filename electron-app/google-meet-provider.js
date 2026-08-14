@@ -2697,15 +2697,28 @@ class CaptionScraper {
     // what it does NOT give you: a WeakMap only releases a key once it's
     // garbage collected, and a row still in the container is strongly
     // reachable. So a miss on a row that's currently ON SCREEN cannot be a
-    // dropped entry — it is proof the element was replaced. That inference is
-    // what the fix in local-server.js rests on (search: lastKnownIdx), which
-    // recovers identity by CONTENT and POSITION precisely because turnId is
-    // untrustworthy across a re-render.
+    // dropped entry — it is proof the element was replaced.
+    //
+    // Fixed (2026-08-14, Stan): local-server.js's updateTurns() no longer
+    // tries to recover turnId identity across a re-render at all (that
+    // approach — content/position matching against history, "search:
+    // lastKnownIdx" — is what recurred six times). It keys identity on the
+    // PARTICIPANT instead: Meet never revises a speaker's older turn, so
+    // per-speaker turn COUNT (not id) is what a re-render can't touch. See
+    // the #12 comment in local-server.js's constructor and updateTurns().
     //
     // Corollary for anyone tempted to "fix" replay here in the scraper: you
-    // cannot. From inside this class a replayed row is indistinguishable from
-    // a new one — same shape, same absence from the WeakMap. Only the server,
-    // which holds the call's history, can tell them apart.
+    // still cannot. From inside this class a replayed row is indistinguishable
+    // from a new one — same shape, same absence from the WeakMap. Only the
+    // server, which holds the call's history, can tell them apart.
+    //
+    // To force a REAL re-render for live/manual testing (verified live
+    // 2026-08-14): open DevTools on this BrowserView (`scripts/dev.sh
+    // --devtools`) and run
+    //   document.querySelector('div[role="region"][aria-label="Captions"]').innerHTML = ''
+    // Meet notices within ~10s and self-heals, rebuilding the region with
+    // entirely fresh DOM nodes/turnIds. See tests/caption-replay.test.mjs for
+    // the full writeup and what to watch for in the session log.
     this._turnIdByChild = new WeakMap();
     this._nextTurnId = 1;
     this._lastSentSnapshot = ''; // for IPC dedup — skip sending if nothing changed

@@ -250,23 +250,38 @@ class LocalServer {
                                  // Snapshot of Meet caption children. Upserted by updateTurns.
                                  // settled=true once the child is no longer bottommost.
     this.maxTurns = 200;         // Bound the map to recent turns
-    // #402: caption-replay defense. The scraper keys turn identity on DOM
-    // child nodes (WeakMap); when Meet re-renders the caption container
-    // (observed ~27 min into the Kate call), every historical turn arrives
-    // with a FRESH scraper turnId and would be re-ingested as new speech —
-    // wait_for_speech then re-delivered the whole call (up to 142 entries /
-    // ~2100 words per resolve) and the barge-in/resume machinery lost every
-    // race. Defense: recognize an unknown incoming turnId whose content
-    // fingerprint matches a turn we already hold, and ALIAS it to the
-    // existing turn instead of inserting a duplicate.
-    this._turnAlias = new Map(); // scraper turnId -> canonical turnId (post re-render)
-    this._turnFps = new Map();   // fingerprint -> [canonical turnId, ...] in insertion order
-    // #12: fingerprints of turns that have aged out of the maxTurns window. A
-    // re-render replays them too, and once they're gone from `turns` there is
-    // nothing left to alias them to — they'd re-insert as brand-new speech.
-    // Remembering them lets a replay of aged-out history be dropped outright.
-    this._retiredFps = new Set();
-    this.maxRetiredFps = 2000;
+    // #12: identity is keyed on the PARTICIPANT, not the scraper's per-DOM-
+    // child turnId — that id is unstable across a Meet caption-container
+    // re-render (fresh JS object, fresh id, same words on screen), which is
+    // the root cause behind every recurrence of this bug (07-22 through
+    // 08-11): re-identified history got re-ingested as brand-new speech and
+    // wait_for_speech re-delivered a growing prefix of the whole call.
+    //
+    // The invariant that replaces turnId matching (confirmed empirically,
+    // see google-meet-provider.js CaptionScraper comment): Meet never
+    // revises a participant's OLDER turn, and never touches another
+    // participant's turn — it only ever appends to a participant's OWN
+    // latest turn. So per participant we track how many turns we've seen
+    // from them (a count, not an id) plus a pointer to the current/open one:
+    //   - position [0 .. knownCount-2] for that speaker is frozen forever.
+    //   - position [knownCount-1] (the open turn) may still grow.
+    //   - any position >= knownCount is a brand-new turn.
+    // A re-render changes every turnId but never this per-speaker count or
+    // content, so replay simply cannot happen — there is no identity to
+    // lose. See updateTurns().
+    this._speakerTurnCount = new Map(); // speaker -> turns seen from them so far
+    this._openTurnBySpeaker = new Map(); // speaker -> internal id of their current/open turn
+    this._nextTurnId = 1; // internal id counter, independent of the scraper's turnId
+    // #12 diagnostic ONLY — no effect on ingest. The old alias defense logged
+    // "container re-render detected" as a side effect of matching turnIds;
+    // this design doesn't match turnIds at all, so that visibility is gone
+    // unless we track it separately. Remembering every scraper turnId we've
+    // ever seen lets us log when a burst of never-before-seen ids arrives
+    // without a matching burst of genuinely NEW turns — i.e. Meet just
+    // re-rendered the caption container. Purely informational (confirms live
+    // testing actually exercised the scenario); safe to remove if it gets noisy.
+    this._seenScraperTurnIds = new Set();
+    this.maxSeenScraperTurnIds = 5000;
     // #12 delivery ledger. Every defense above works on INGEST, and each one
     // has been beaten by a path nobody predicted (six recurrences: 07-22,
     // 07-27, 07-29, 08-03, 08-04, 08-11). The one thing that stays true across
@@ -534,9 +549,10 @@ class LocalServer {
     this.calendarEventContext = null;
     this.transcripts = [];
     this.turns = new Map();
-    this._turnAlias = new Map();
-    this._turnFps = new Map();
-    this._retiredFps = new Set();
+    this._speakerTurnCount = new Map();
+    this._openTurnBySpeaker = new Map();
+    this._nextTurnId = 1;
+    this._seenScraperTurnIds = new Set();
     this._replayAlarmFired = false;
     this.replayAlarmCount = 0;
     this._deliveredFps = new Map();
@@ -593,9 +609,10 @@ class LocalServer {
     this.currentUrl = null;
     this.transcripts = [];
     this.turns = new Map();
-    this._turnAlias = new Map();
-    this._turnFps = new Map();
-    this._retiredFps = new Set();
+    this._speakerTurnCount = new Map();
+    this._openTurnBySpeaker = new Map();
+    this._nextTurnId = 1;
+    this._seenScraperTurnIds = new Set();
     this._replayAlarmFired = false;
     this.replayAlarmCount = 0;
     this._deliveredFps = new Map();
@@ -1975,20 +1992,14 @@ class LocalServer {
     return { ok: true, turnId };
   }
 
-  // #402: content fingerprint for caption-replay detection. Normalized so
-  // Meet's cosmetic re-render differences (spacing/punctuation) don't defeat
-  // the match. NOT unique across a call — two "Yeah." turns by the same
-  // speaker share a fingerprint — so _turnFps maps fp → an insertion-ordered
-  // LIST of turnIds, consumed in order during a replay batch (a re-rendered
-  // snapshot arrives in DOM order = original insertion order).
+  // Normalized content fingerprint, used for: (1) telling genuine growth
+  // apart from Meet's cosmetic re-render noise (spacing/punctuation/case) on
+  // a speaker's open turn in updateTurns(), and (2) the output-side replay
+  // audits (_checkReplayRegression, _auditDelivery) below. NOT unique across
+  // a call — two "Yeah." turns share a fingerprint — callers that need
+  // per-instance identity don't use this alone.
   _turnFp(speaker, text) {
     return String(speaker) + '|' + String(text).toLowerCase().replace(/[^a-z0-9']+/g, '');
-  }
-
-  _recordTurnFp(speaker, text, turnId) {
-    const fp = this._turnFp(speaker, text);
-    const list = this._turnFps.get(fp) || [];
-    if (!list.includes(turnId)) { list.push(turnId); this._turnFps.set(fp, list); }
   }
 
   // #12 regression alarm — see the constructor for why this exists rather than
@@ -2093,29 +2104,6 @@ class LocalServer {
     }
   }
 
-  // #12: keep the replay bookkeeping in step with the maxTurns prune. Dropped
-  // ids must leave _turnFps/_turnAlias (they can never match again, and stale
-  // aliases would route live growth into a turn we no longer hold), and their
-  // fingerprints move to _retiredFps so a later replay of that aged-out
-  // history is dropped rather than re-ingested as new speech.
-  _retireTurns(droppedIds) {
-    if (!droppedIds || droppedIds.size === 0) return;
-    for (const [fp, ids] of this._turnFps) {
-      const kept = ids.filter((id) => !droppedIds.has(id));
-      if (kept.length === ids.length) continue;
-      this._retiredFps.add(fp);
-      if (kept.length) this._turnFps.set(fp, kept);
-      else this._turnFps.delete(fp);
-    }
-    for (const [scraperId, canonical] of this._turnAlias) {
-      if (droppedIds.has(canonical)) this._turnAlias.delete(scraperId);
-    }
-    // Bound the retired set — Sets iterate in insertion order, so this is FIFO.
-    while (this._retiredFps.size > this.maxRetiredFps) {
-      this._retiredFps.delete(this._retiredFps.values().next().value);
-    }
-  }
-
   // Fire onNameMentioned at most once per caption turn, the first time its
   // text contains the bot's own name — a purely cosmetic "I heard that" avatar
   // signal, separate from the passive/silent name-gate in _checkWaiters (#343)
@@ -2134,6 +2122,21 @@ class LocalServer {
     }
   }
 
+  // Create a new internally-identified turn (see the constructor's #12 note
+  // for why identity is never the scraper's turnId). `settled` is true for a
+  // turn that's provably already closed on arrival (a later occurrence of
+  // the same speaker exists in this same batch); false for the newest one.
+  // Returns the internal Map key (NOT turn.id, which is the display string).
+  _createTurn(speaker, text, now, settled) {
+    const id = this._nextTurnId++;
+    const turn = { id: `${this.roomId}-turn-${id}`, speaker, text, firstSeen: now, lastUpdated: now, settled, source: 'caption' };
+    this.turns.set(id, turn);
+    this._logRawCaption(id, speaker, text, !settled);
+    if (!settled) this._maybeSignalNameMention(turn, text);
+    else this._logHeard(speaker, text); // arrived already closed
+    return id;
+  }
+
   updateTurns(incoming) {
     if (!this.roomId || !Array.isArray(incoming) || incoming.length === 0) return;
     // If caption turns with text are arriving, captions are definitionally ON —
@@ -2145,232 +2148,145 @@ class LocalServer {
       this.setCaptionsOn(true);
     }
     const now = Date.now();
-    const incomingIds = new Set();
-    const claimedThisBatch = new Set(); // canonical ids already matched in this snapshot
-    let newAliases = 0;
-    let retiredDropped = 0; // #12: replayed turns already aged out of the window
     let changed = false;
 
-    // #402: replay signature. A container re-render REPLAYS history: many
-    // never-seen turnIds arrive in a single snapshot. Genuine new speech
-    // trickles in one turn at a time (the ~300ms poll can't miss that much).
-    // Fingerprint recovery only arms in replay mode — otherwise a genuinely
-    // REPEATED utterance ("Yeah." said again minutes later) would fp-match
-    // its earlier twin and be silently swallowed as a duplicate.
-    const unknownCount = incoming.reduce((n, t) => {
-      if (!t || typeof t.turnId !== 'number') return n;
-      const eff = this._turnAlias.get(t.turnId) ?? t.turnId;
-      return n + (this.turns.has(eff) ? 0 : 1);
-    }, 0);
-    const replayMode = unknownCount >= 3;
-
-    // #12: the ≥3 threshold was the hole that survived every previous fix. Meet
-    // does not always re-render the whole container — on the 2026-08-11 call it
-    // re-identified a TRICKLE of old nodes, one or two per poll. That is below
-    // the burst threshold, so recovery never armed, and those turns re-inserted
-    // as brand-new speech (fresh turnId AND fresh firstSeen, so invisible to
-    // every other guard) and were re-delivered as if just spoken.
-    //
-    // Position is the honest signal, and it needs no threshold: Meet's caption
-    // container is chronological, so genuinely new speech can only appear at the
-    // BOTTOM. An unknown turn with a turn we already know BELOW it is history
-    // that changed identity — never new speech — so recovery is safe to arm for
-    // it no matter how few of them arrived.
-    //
-    // (Why "changed identity" rather than "is new": a turnId names a DOM
-    // element object, so Meet replacing the element mints a fresh id for words
-    // already on screen. See CaptionScraper's _turnIdByChild in
-    // google-meet-provider.js for why an unknown id on a visible row proves
-    // node replacement, and why the scraper cannot detect this itself.)
-    //
-    // This is also why the old comment's fear (swallowing a genuine repeat of
-    // "Yeah.") does not apply here: a real repeat is new speech, so it arrives
-    // at the bottom, where this rule stays disarmed.
-    let lastKnownIdx = -1;
-    for (let i = incoming.length - 1; i >= 0; i--) {
-      const t = incoming[i];
+    // #12 diagnostic ONLY (see constructor note) — track how many scraper
+    // turnIds in this batch we've never seen before, so we can tell a
+    // container re-render apart from ordinary new speech below, purely for
+    // observability. Does not influence ingest.
+    let unknownTurnIds = 0;
+    for (const t of incoming) {
       if (!t || typeof t.turnId !== 'number') continue;
-      const eff = this._turnAlias.get(t.turnId) ?? t.turnId;
-      if (this.turns.has(eff)) { lastKnownIdx = i; break; }
+      if (!this._seenScraperTurnIds.has(t.turnId)) {
+        unknownTurnIds++;
+        this._seenScraperTurnIds.add(t.turnId);
+      }
+    }
+    while (this._seenScraperTurnIds.size > this.maxSeenScraperTurnIds) {
+      this._seenScraperTurnIds.delete(this._seenScraperTurnIds.values().next().value);
+    }
+    let createdThisBatch = 0;
+
+    // #12: group by speaker, preserving DOM/chronological order within each
+    // speaker's own occurrences. The scraper sends a full snapshot of every
+    // visible caption child every time anything changes — so `texts.length`
+    // for a speaker IS the current total count of turns they've produced in
+    // this call, and it can only ever grow (Meet keeps every row; a fresh
+    // scraper turnId after a re-render doesn't remove or reorder anything).
+    // We deliberately ignore turnId/isBottommost entirely: they're per-DOM-
+    // child bookkeeping that a re-render invalidates, and nothing here needs
+    // them — a participant's own turn *count* is what a re-render can't touch.
+    const bySpeaker = new Map(); // speaker -> ordered text[]
+    for (const t of incoming) {
+      if (!t || !t.speaker || typeof t.text !== 'string') continue;
+      if (!t.text.trim()) continue;
+      const list = bySpeaker.get(t.speaker);
+      if (list) list.push(t.text); else bySpeaker.set(t.speaker, [t.text]);
     }
 
-    // #12: per-speaker candidate index for the prefix fallback below, built
-    // once per batch (newest turn first) and normalized lazily — the fallback
-    // used to look at one turn per speaker, so scanning them all must not turn
-    // a 200-turn replay snapshot into 200 full re-normalizations of the map.
-    // #12: built lazily rather than under `if (replayMode)` — recovery can now
-    // arm positionally on a batch that never reaches the burst threshold, and a
-    // poll where nothing is unknown must still not pay for the index.
-    let speakerTurns = null; // speaker -> [[id, turn], ...] newest firstSeen first
-    const speakerIndex = () => {
-      if (speakerTurns) return speakerTurns;
-      speakerTurns = new Map();
-      for (const [id, t] of this.turns) {
-        const list = speakerTurns.get(t.speaker) || [];
-        list.push([id, t]);
-        speakerTurns.set(t.speaker, list);
+    for (const [speaker, texts] of bySpeaker) {
+      const knownCount = this._speakerTurnCount.get(speaker) || 0;
+      const n = texts.length;
+
+      // Meet only ever APPENDS turns for a speaker; a count going backwards
+      // means either a scraper glitch or (per Stan, unconfirmed) Meet pruning
+      // very old rows on an extremely long call. Either way there is nothing
+      // trustworthy to align against — skip this speaker this poll rather
+      // than guess and risk mis-ingesting.
+      if (n < knownCount) {
+        console.warn(ts(), '⚠️  [caption] speaker turn count went backwards for', speaker,
+          '(' + knownCount + ' -> ' + n + ') — skipping this batch for them');
+        continue;
       }
-      for (const list of speakerTurns.values()) list.sort((a, b) => b[1].firstSeen - a[1].firstSeen);
-      return speakerTurns;
-    };
-    const normCache = new Map();    // canonical turnId -> normalized fingerprint of its text
-    const normOf = (id, turn) => {
-      let n = normCache.get(id);
-      if (n === undefined) { n = this._turnFp(turn.speaker, turn.text); normCache.set(id, n); }
-      return n;
-    };
 
-    for (let i = 0; i < incoming.length; i++) {
-      const inc = incoming[i];
-      if (!inc || typeof inc.turnId !== 'number') continue;
-      // Trust the scraper's explicit isBottommost flag — it's computed BEFORE
-      // 'You' turns are filtered out (the bot's own TTS), so a non-final turn
-      // by another speaker that has a "You" caption below it will correctly
-      // be marked not-bottommost (i.e., settled) here. Fall back to
-      // last-in-list for older scrapers that don't send the flag.
-      const isBottommost = typeof inc.isBottommost === 'boolean'
-        ? inc.isBottommost
-        : (i === incoming.length - 1);
-
-      // #402: resolve the scraper's turnId to our canonical id. A previously
-      // established alias routes directly; in replay mode an UNKNOWN id gets
-      // a fingerprint lookup against turns we already hold — a hit means the
-      // container re-rendered and this is a REPLAY of a turn we've already
-      // ingested, so alias instead of inserting a duplicate.
-      let effId = this._turnAlias.get(inc.turnId) ?? inc.turnId;
-      // #12: burst evidence (many unknowns at once) OR positional evidence (a
-      // known turn sits below this one, so it cannot be new speech).
-      const recoveryArmed = replayMode || i < lastKnownIdx;
-      if (recoveryArmed && !this.turns.has(effId)) {
-        const fp = this._turnFp(inc.speaker, inc.text);
-        let match = (this._turnFps.get(fp) || []).find(
-          (id) => this.turns.has(id) && !claimedThisBatch.has(id)
-        );
-        if (match === undefined) {
-          // A turn may have been REVISED between our copy and the replay: the
-          // live turn grew after the re-render snapshot, or Meet re-emits a
-          // truncated/extended version of history. A prefix relation on
-          // normalized text ⇒ same turn.
-          //
-          // #12: scan ALL of this speaker's unclaimed turns, newest first.
-          // Checking only the most recent one meant every OLDER revised turn
-          // fell through and re-inserted as fresh speech — which is how the
-          // whole call kept re-arriving on 2026-07-22 despite the #402 alias.
-          const normInc = this._turnFp(inc.speaker, inc.text);
-          const speakerLen = String(inc.speaker).length;
-          for (const [id, t] of (speakerIndex().get(inc.speaker) || [])) {
-            if (claimedThisBatch.has(id) || !this.turns.has(id)) continue;
-            const normOld = normOf(id, t);
-            if (Math.min(normInc.length, normOld.length) > speakerLen + 12 &&
-                (normInc.startsWith(normOld) || normOld.startsWith(normInc))) {
-              match = id;
-              break;
+      // Position knownCount-1 is the previously-open turn: the only one of
+      // this speaker's turns that can still change. Compare and, if a newer
+      // turn has since appeared for them (n > knownCount), it's now closed.
+      if (knownCount > 0) {
+        const open = this.turns.get(this._openTurnBySpeaker.get(speaker));
+        if (open) {
+          const text = texts[knownCount - 1];
+          if (text !== open.text) {
+            const prevNorm = this._turnFp(speaker, open.text);
+            const nextNorm = this._turnFp(speaker, text);
+            if (nextNorm === prevNorm) {
+              open.text = text; // cosmetic-only revision — take Meet's tidier copy
+            } else if (prevNorm.startsWith(nextNorm)) {
+              // Truncated replay of the same turn — keep the fuller text we hold.
+            } else {
+              open.text = text;
+              open.lastUpdated = now;
+              open.settled = false; // may have been idle-settled below; it's still live
+              changed = true;
+              this._maybeSignalNameMention(open, text);
             }
+            this._logRawCaption(open.id, speaker, open.text, !open.settled);
+          }
+          if (n > knownCount && !open.settled) {
+            open.settled = true;
+            changed = true;
+            this._logHeard(open.speaker, open.text);
           }
         }
-        if (match !== undefined) {
-          this._turnAlias.set(inc.turnId, match);
-          effId = match;
-          newAliases++;
-        } else if (this._retiredFps.has(this._turnFp(inc.speaker, inc.text))) {
-          // #12: replayed history that has already aged out of the maxTurns
-          // window. There is nothing left to alias it to, and re-inserting it
-          // would deliver a minutes-old turn as new speech — exactly the
-          // snowball past the 200-turn horizon (the observed 200-turn
-          // plateaus). Drop it; a genuine repeat of the same words by the same
-          // speaker only gets dropped inside a replay burst, where the whole
-          // batch is history by construction.
-          retiredDropped++;
-          continue;
-        }
       }
-      incomingIds.add(effId);
-      claimedThisBatch.add(effId);
 
-      const existing = this.turns.get(effId);
-      if (!existing) {
-        const newTurn = {
-          id: `${this.roomId}-turn-${effId}`,
-          speaker: inc.speaker,
-          text: inc.text,
-          firstSeen: now,
-          lastUpdated: now,
-          settled: !isBottommost,
-          source: 'caption',
-        };
-        this.turns.set(effId, newTurn);
-        this._recordTurnFp(inc.speaker, inc.text, effId);
+      // Any position beyond knownCount is a brand-new turn for this speaker.
+      // Every one of them except the newest is provably closed already (a
+      // later occurrence for the same speaker exists right here in this
+      // batch), so only the newest opens as live/mutable.
+      for (let i = knownCount; i < n; i++) {
+        const isNewest = i === n - 1;
+        const id = this._createTurn(speaker, texts[i], now, !isNewest);
         changed = true;
-        this._logRawCaption(effId, inc.speaker, inc.text, isBottommost);
-        if (!isBottommost) this._logHeard(inc.speaker, inc.text); // arrived already final
-        this._maybeSignalNameMention(newTurn, inc.text);
-      } else {
-        // #268: separate a real TEXT change (new content the agent hasn't seen)
-        // from a settle-flag flip (same text, just finalized). Only a text change
-        // may bump lastUpdated — that's what _entriesSince(since) filters on, so
-        // an OLD turn settling late (a new turn appearing below it) must NOT
-        // re-qualify as "new since the waiter" and get re-delivered. That stale
-        // re-surfacing is what made the bot answer a minutes-old request and miss
-        // the live one. A settle still flags `changed` so silence-resolve runs.
-        let textChanged = false;
-        let settledNow = false;
-        if (existing.text !== inc.text) {
-          // #12: decide on NORMALIZED text — only a change in the actual WORDS
-          // is new speech. Two re-render artifacts used to bump lastUpdated,
-          // which re-qualified the turn for _entriesSince(since) and dumped the
-          // replayed history to every subsequent waiter:
-          //   • cosmetic revision — same words, different punctuation/case/spacing
-          //   • truncation — the replay carries a shorter prefix of the turn
-          // A truncated replay also must not overwrite the fuller text we hold.
-          const prevNorm = this._turnFp(existing.speaker, existing.text);
-          const nextNorm = this._turnFp(inc.speaker, inc.text);
-          const truncated = nextNorm !== prevNorm && prevNorm.startsWith(nextNorm);
-          if (!truncated) existing.text = inc.text; // cosmetic: take Meet's tidier copy
-          textChanged = !truncated && nextNorm !== prevNorm;
-          normCache.set(effId, truncated ? prevNorm : nextNorm);
-          // #402: index the new text too, so a later replay of the grown
-          // version fingerprint-matches this same turn.
-          this._recordTurnFp(existing.speaker, inc.text, effId);
-          this._logRawCaption(effId, inc.speaker, inc.text, isBottommost);
-          if (textChanged) this._maybeSignalNameMention(existing, existing.text);
-        }
-        if (!existing.settled && !isBottommost) {
-          existing.settled = true;
-          settledNow = true;
-          this._logHeard(existing.speaker, existing.text); // just settled — log final text
-        }
-        if (textChanged) existing.lastUpdated = now; // ONLY text growth re-surfaces to waiters
-        if (textChanged || settledNow) changed = true;
+        createdThisBatch++;
+        if (isNewest) this._openTurnBySpeaker.set(speaker, id);
       }
+      this._speakerTurnCount.set(speaker, n);
     }
 
-    // #402: a burst of fresh aliases = the caption container re-rendered and
-    // replayed history. Loud, parseable marker (the ground-truth analyzer and
-    // future audits key off it); the replay itself was absorbed above.
-    if (newAliases >= 5 || retiredDropped >= 5) {
-      console.log(ts(), '⚠️  [caption-replay] container re-render detected — remapped ' + newAliases +
-        ' replayed turn(s) to existing entries (#402)' +
-        (retiredDropped ? '; dropped ' + retiredDropped + ' replayed turn(s) aged out of the window (#12)' : ''));
+    // #12 diagnostic ONLY: a burst of never-before-seen turnIds that did NOT
+    // produce a matching burst of genuinely new turns means the same content
+    // just arrived under fresh ids — i.e. Meet re-rendered the caption
+    // container. Confirms (during live testing) that the scenario actually
+    // happened; the fix above never needed to know either way.
+    if (unknownTurnIds >= 3 && createdThisBatch < unknownTurnIds) {
+      console.log(ts(), '🔁 [#12-diag] container re-render observed:', unknownTurnIds,
+        'previously-unseen scraper turnId(s) arrived, only', createdThisBatch,
+        'were genuinely new turns — harmless under the per-speaker design (identity never depended on turnId)');
     }
 
-    // Turns that disappeared from the DOM entirely are also settled.
-    for (const [turnId, turn] of this.turns) {
-      if (!incomingIds.has(turnId) && !turn.settled) {
+    // #12: a turn nobody has added to in a while is very likely closed — Meet
+    // just hasn't started a new line for that speaker (or never will, if it
+    // was their last utterance in the call). We don't know Meet's exact rule
+    // for when it stops extending a line vs. starting a new one, so age it
+    // out defensively (Stan, 2026-08-14) rather than leave it "live" forever.
+    // This only affects the settled/isFinal flag — it does not affect what
+    // gets delivered, since delivery is keyed on lastUpdated, not settled.
+    const stableMs = Number(this._pref('openTurnStableMs')) || 5000;
+    for (const id of this._openTurnBySpeaker.values()) {
+      const turn = this.turns.get(id);
+      if (turn && !turn.settled && now - turn.lastUpdated >= stableMs) {
         turn.settled = true;
-        // #268: do NOT bump lastUpdated — finalizing a vanished turn adds no new
-        // content, so it must not re-surface to waiters as fresh speech.
         changed = true;
-        this._logHeard(turn.speaker, turn.text);
       }
     }
 
     this._checkReplayRegression();
 
-    // Bound the map size — keep the most recently-active turns.
+    // Bound the map size — keep the most recently-active turns, but never
+    // evict a speaker's currently-open turn: pruning it would sever the
+    // pointer that growth-matching depends on and reintroduce exactly the
+    // "we've lost identity" failure this whole design avoids.
     if (this.turns.size > this.maxTurns) {
-      const sorted = [...this.turns.entries()].sort((a, b) => b[1].lastUpdated - a[1].lastUpdated);
-      this.turns = new Map(sorted.slice(0, this.maxTurns));
-      this._retireTurns(new Set(sorted.slice(this.maxTurns).map(([id]) => id)));
+      const openIds = new Set(this._openTurnBySpeaker.values());
+      const evictable = [...this.turns.entries()]
+        .filter(([id]) => !openIds.has(id))
+        .sort((a, b) => a[1].lastUpdated - b[1].lastUpdated);
+      let toDrop = this.turns.size - this.maxTurns;
+      for (const [id] of evictable) {
+        if (toDrop-- <= 0) break;
+        this.turns.delete(id);
+      }
     }
 
     if (changed) this._checkWaiters();

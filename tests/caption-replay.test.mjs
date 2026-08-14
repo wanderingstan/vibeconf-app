@@ -1,8 +1,38 @@
-// caption-replay.test.mjs — regression tests for #402: when Meet re-renders
-// the caption container, every historical turn arrives with a fresh scraper
-// turnId; updateTurns must recognize the replay by content fingerprint and
-// alias instead of re-ingesting the whole call as new speech.
+// caption-replay.test.mjs — regression tests for #12/#402: Meet re-rendering
+// the caption container used to hand every historical turn a FRESH scraper
+// turnId, and the old ingest matched by turnId (with a fingerprint/alias
+// fallback), so a re-render could re-ingest history as brand-new speech and
+// wait_for_speech would re-deliver a growing prefix of the whole call.
+//
+// The fix (2026-08-14, Stan): stop keying identity on the scraper's turnId
+// at all. Meet's own behavior guarantees an invariant per PARTICIPANT: it
+// never revises an older turn of theirs, and never touches another
+// participant's turn — it only ever appends to a participant's own latest
+// turn. So updateTurns() tracks, per speaker, how many turns they've
+// produced (a count) and a pointer to the current/open one, and ignores
+// turnId entirely. A re-render changes every turnId but never a speaker's
+// turn count or content, so there is no identity to lose — replay simply
+// cannot reproduce the bug anymore, by construction, however the ids churn.
+//
 // Run: node --test tests/   (or `pnpm test:unit`)
+//
+// LIVE REPRODUCTION (2026-08-14, verified with Stan): these are all unit
+// tests against synthetic batches — none of them drive an actual Google Meet
+// re-render. To force a REAL one for live/manual testing, open DevTools on
+// the bot's Meet BrowserView (`scripts/dev.sh --devtools`) and run:
+//
+//   document.querySelector('div[role="region"][aria-label="Captions"]').innerHTML = ''
+//
+// This empties the live captions region (keeping the container node itself).
+// Confirmed live: Meet notices within ~10s and self-heals, rebuilding the
+// region with entirely fresh DOM nodes/turnIds — exactly the container
+// re-render this fix defends against, and more aggressive than anything
+// inferred from the organic bug reports. Watch the app's session log
+// (`get_session_log`) for `[caption-health] turnNodes` dropping to 0 and
+// bouncing back, and confirm no duplicate `[delivered]` lines or `#12-diag`/
+// replay-alarm hits follow. If this ever becomes an automated (not just
+// unit) test, this is the mechanism to drive it — e.g. via inspect_dom/CDP
+// against the real Meet page rather than synthetic updateTurns() batches.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,309 +48,237 @@ function makeServer() {
   return s;
 }
 
-const T = (turnId, speaker, text, isBottommost = false) => ({ turnId, speaker, text, isBottommost });
+// Simulates Meet's caption container: an ordered list of rows (one per DOM
+// child), growing over the call. Every `feed()` call re-sends the FULL
+// current snapshot — exactly the contract CaptionScraper honors in
+// google-meet-provider.js (it re-reads and re-sends every visible child on
+// every poll, never a delta). `turnIdBase` lets a "re-render" hand out an
+// entirely fresh id range for the identical rows, proving the fix doesn't
+// care.
+function makeFeed(s) {
+  let rows = [];
+  const feed = (turnIdBase = 1) => {
+    s.updateTurns(rows.map((r, i) => ({ turnId: turnIdBase + i, speaker: r.speaker, text: r.text })));
+  };
+  return {
+    // Append a new row (a new turn starts) and send the full snapshot.
+    say(speaker, text, turnIdBase) { rows.push({ speaker, text }); feed(turnIdBase); },
+    // Extend that speaker's most recent row — simulates Meet still typing.
+    grow(speaker, text, turnIdBase) {
+      for (let i = rows.length - 1; i >= 0; i--) {
+        if (rows[i].speaker === speaker) { rows[i].text = text; break; }
+      }
+      feed(turnIdBase);
+    },
+    // Re-send the current rows verbatim (or cosmetically mutated) under a
+    // fresh turnId range — a container re-render.
+    rerender(turnIdBase, mutate) {
+      if (mutate) rows = rows.map((r) => ({ ...r, text: mutate(r.speaker, r.text) }));
+      feed(turnIdBase);
+    },
+    rows: () => rows,
+  };
+}
 
-test('re-render replay: history under fresh turnIds is aliased, not re-ingested', () => {
-  const s = makeServer();
-  s.updateTurns([
-    T(1, 'Stan', 'Hi Jimmy, can you summarize the history of the site?'),
-    T(2, 'Kate', 'I think brighter colors would work better here.'),
-    T(3, 'Stan', 'Yeah, and check the accessibility contrast too.'),
-    T(4, 'Kate', 'Sounds good, let us', true), // live turn
-  ]);
-  assert.equal(s.turns.size, 4);
-  const before = new Map([...s.turns].map(([id, t]) => [id, { text: t.text, lastUpdated: t.lastUpdated }]));
-
-  // Container re-render: SAME content arrives under scraper ids 101..104.
-  s.updateTurns([
-    T(101, 'Stan', 'Hi Jimmy, can you summarize the history of the site?'),
-    T(102, 'Kate', 'I think brighter colors would work better here.'),
-    T(103, 'Stan', 'Yeah, and check the accessibility contrast too.'),
-    T(104, 'Kate', 'Sounds good, let us', true),
-  ]);
-  assert.equal(s.turns.size, 4, 'replay must not create new turns');
-  for (const [id, snap] of before) {
-    assert.equal(s.turns.get(id).text, snap.text);
-    assert.equal(s.turns.get(id).lastUpdated, snap.lastUpdated, 'replay must not bump lastUpdated (no re-delivery to waiters)');
-  }
-
-  // Post-replay: the live turn keeps growing under its NEW scraper id — must
-  // route to the original turn via the alias.
-  s.updateTurns([
-    T(101, 'Stan', 'Hi Jimmy, can you summarize the history of the site?'),
-    T(102, 'Kate', 'I think brighter colors would work better here.'),
-    T(103, 'Stan', 'Yeah, and check the accessibility contrast too.'),
-    T(104, 'Kate', 'Sounds good, let us try the green palette next.', true),
-  ]);
-  assert.equal(s.turns.size, 4);
-  assert.match(s.turns.get(4).text, /green palette/, 'growth after replay lands on the ORIGINAL turn');
-});
-
-test('re-render replay: live turn that GREW during the re-render still aliases (prefix match)', () => {
-  const s = makeServer();
-  s.updateTurns([
-    T(1, 'Stan', 'First settled thing that was said here.'),
-    T(2, 'Kate', 'Second settled thing that was said here.'),
-    T(3, 'Kate', 'And the live turn was mid-sentence when', true),
-  ]);
-  // Replay: the live turn's text has grown a few words past what we stored.
-  s.updateTurns([
-    T(101, 'Stan', 'First settled thing that was said here.'),
-    T(102, 'Kate', 'Second settled thing that was said here.'),
-    T(103, 'Kate', 'And the live turn was mid-sentence when the container re-rendered.', true),
-  ]);
-  assert.equal(s.turns.size, 3, 'grown live turn must alias, not duplicate');
-  assert.match(s.turns.get(3).text, /re-rendered/);
-});
-
-test('genuine repeated utterance is NOT swallowed (no replay signature)', () => {
-  const s = makeServer();
-  s.updateTurns([T(1, 'Kate', 'Yeah.'), T(2, 'Stan', 'So what do we think about the tagline?', true)]);
-  // Minutes later Kate says the exact same thing again — ONE new turn, alone.
-  s.updateTurns([
-    T(1, 'Kate', 'Yeah.'),
-    T(2, 'Stan', 'So what do we think about the tagline?'),
-    T(3, 'Kate', 'Yeah.', true),
-  ]);
-  assert.equal(s.turns.size, 3, 'a lone repeated utterance is genuinely new speech');
-});
-
-test('replay with duplicate texts maps each copy to a distinct original (ordinal)', () => {
-  const s = makeServer();
-  s.updateTurns([
-    T(1, 'Kate', 'Yeah, that works for me I think.'),
-    T(2, 'Stan', 'Okay so about the events calendar page.'),
-    T(3, 'Kate', 'Yeah, that works for me I think.'),
-    T(4, 'Stan', 'Moving on to the donation section now.', true),
-  ]);
-  s.updateTurns([
-    T(101, 'Kate', 'Yeah, that works for me I think.'),
-    T(102, 'Stan', 'Okay so about the events calendar page.'),
-    T(103, 'Kate', 'Yeah, that works for me I think.'),
-    T(104, 'Stan', 'Moving on to the donation section now.', true),
-  ]);
-  assert.equal(s.turns.size, 4, 'both duplicate-text copies alias to their own originals');
-});
-
-test('room reset clears replay state', () => {
-  const s = makeServer();
-  s.updateTurns([
-    T(1, 'Stan', 'Something from the first call entirely.'),
-    T(2, 'Stan', 'More from the first call to reach batch size.'),
-    T(3, 'Stan', 'Third line from the first call here.', true),
-  ]);
-  s.setRoom('second-room');
-  // Same texts in a NEW room must be fresh turns, not aliased to the old call.
-  s.updateTurns([
-    T(11, 'Stan', 'Something from the first call entirely.'),
-    T(12, 'Stan', 'More from the first call to reach batch size.'),
-    T(13, 'Stan', 'Third line from the first call here.', true),
-  ]);
-  assert.equal(s.turns.size, 3);
-  assert.ok(s.turns.has(11) && s.turns.has(12) && s.turns.has(13), 'new room = fresh identity space');
-});
-
-// ---------------------------------------------------------------------------
-// #12: holes left open after #402 — the 2026-07-22 call still snowballed with
-// the fingerprint-alias defense in place. Three separate paths, one symptom:
-// wait_for_speech re-delivering a growing prefix of the whole call.
-// ---------------------------------------------------------------------------
-
-// A waiter's cursor is `lastUpdated || timestamp` (see _entriesSince), so
-// "would this be re-delivered?" == "did any turn's lastUpdated move?". Compare
-// snapshots rather than a wall-clock cursor — updateTurns stamps Date.now(),
-// and a whole test otherwise runs inside a single millisecond.
 const stamps = (s) => new Map([...s.turns].map(([id, t]) => [id, t.lastUpdated]));
-// Turns a waiter would see as new: bumped lastUpdated, or absent before.
 const redelivered = (s, snap) =>
-  [...s.turns].filter(([id, t]) => t.lastUpdated !== snap.get(id));
+  [...s.turns].filter(([id, t]) => t.lastUpdated !== snap.get(id) || !snap.has(id));
 const tick = () => new Promise((r) => setTimeout(r, 2)); // clear the ms boundary
 
-test('#12 punctuation-only re-render does NOT re-deliver history', async () => {
+test('turnId churn from a container re-render is a complete non-event', () => {
   const s = makeServer();
-  s.updateTurns([
-    T(1, 'Stan', 'Hi Jimmy, can you summarize the history of the site?'),
-    T(2, 'Kate', 'I think brighter colors would work better here.'),
-    T(3, 'Stan', 'Yeah, and check the accessibility contrast too.'),
-    T(4, 'Kate', 'Sounds good, let us try the green palette.', true),
-  ]);
+  const feed = makeFeed(s);
+  feed.say('Stan', 'Hi Jimmy, can you summarize the history of the site?', 1);
+  feed.say('Kate', 'I think brighter colors would work better here.', 1);
+  feed.say('Stan', 'Yeah, and check the accessibility contrast too.', 1);
+  feed.say('Kate', 'Sounds good, let us', 1);
+  assert.equal(s.turns.size, 4);
+  const snap = stamps(s);
+
+  // Re-render: identical content, entirely fresh turnIds.
+  feed.rerender(101);
+  assert.equal(s.turns.size, 4, 'replay must not create new turns');
+  assert.deepEqual(redelivered(s, snap), [], 'replay is invisible — nothing re-surfaces to waiters');
+
+  // The live turn keeps growing — still lands on the same original turn.
+  feed.grow('Kate', 'Sounds good, let us try the green palette next.', 101);
+  assert.equal(s.turns.size, 4);
+  const grown = [...s.turns.values()].find((t) => /green palette/.test(t.text));
+  assert.ok(grown, 'growth after replay lands on the original turn, not a new one');
+});
+
+test('a live turn that GREW during the re-render still lands on the original', () => {
+  const s = makeServer();
+  const feed = makeFeed(s);
+  feed.say('Stan', 'First settled thing that was said here.', 1);
+  feed.say('Kate', 'Second settled thing that was said here.', 1);
+  feed.say('Kate', 'And the live turn was mid-sentence when', 1);
+  // Replay where the live turn's text has grown past what we stored — Meet's
+  // re-render snapshot can lag or lead the live edit by a few words.
+  feed.rerender(101, (speaker, text) =>
+    text.startsWith('And the live turn') ? text + ' the container re-rendered.' : text);
+  assert.equal(s.turns.size, 3, 'grown live turn must update in place, not duplicate');
+  const kate = [...s.turns.values()].find((t) => /re-rendered/.test(t.text));
+  assert.ok(kate);
+});
+
+test('genuine repeated utterance by the same speaker is NOT swallowed', () => {
+  const s = makeServer();
+  const feed = makeFeed(s);
+  feed.say('Kate', 'Yeah.', 1);
+  feed.say('Stan', 'So what do we think about the tagline?', 1);
+  // Minutes later Kate says the exact same thing again — a genuinely NEW row.
+  feed.say('Kate', 'Yeah.', 1);
+  assert.equal(s.turns.size, 3, 'a real repeated utterance is a distinct new turn');
+});
+
+test('punctuation/case-only re-render does not re-deliver history', async () => {
+  const s = makeServer();
+  const feed = makeFeed(s);
+  feed.say('Stan', 'Hi Jimmy, can you summarize the history of the site?', 1);
+  feed.say('Kate', 'I think brighter colors would work better here.', 1);
+  feed.say('Stan', 'Yeah, and check the accessibility contrast too.', 1);
+  feed.say('Kate', 'Sounds good, let us try the green palette.', 1);
   const snap = stamps(s);
   await tick();
-  // Re-render replays the same WORDS with Meet's cosmetic differences: added
-  // punctuation, changed case, collapsed spacing. fp-matches (so no duplicate
-  // insert), but the raw text differs — which used to bump lastUpdated on
-  // every replayed turn and dump the entire call to the next waiter.
-  s.updateTurns([
-    T(101, 'Stan', 'Hi Jimmy — can you summarize the history of the site'),
-    T(102, 'Kate', 'I think brighter colors would work better here'),
-    T(103, 'Stan', 'Yeah  and check the accessibility contrast, too!'),
-    T(104, 'Kate', 'Sounds good... let us try the green palette', true),
-  ]);
+
+  feed.rerender(101, (speaker, text) =>
+    text.replace(/,/g, speaker === 'Stan' ? ' —' : '').replace(/\.$/, '').replace(/\s+/g, ' '));
   assert.equal(s.turns.size, 4, 'no duplicate inserts');
   assert.deepEqual(redelivered(s, snap), [], 'cosmetic revision is not new speech');
-  // Real new words on that same turn still surface.
+
   await tick();
-  s.updateTurns([T(104, 'Kate', 'Sounds good, let us try the green palette next week.', true)]);
+  feed.grow('Kate', 'Sounds good, let us try the green palette next week.', 101);
   assert.equal(redelivered(s, snap).length, 1, 'genuine growth still re-surfaces');
 });
 
-test('#12 replay of an OLDER revised turn aliases (not just the newest per speaker)', async () => {
+test('a re-render mid-call delivers only the new turn to a waiter', async () => {
   const s = makeServer();
-  s.updateTurns([
-    T(1, 'Stan', 'The first thing I wanted to raise was the pricing page.'),
-    T(2, 'Kate', 'Right, the pricing page needs a rewrite honestly.'),
-    T(3, 'Stan', 'And the second thing is the onboarding flow.'),
-    T(4, 'Kate', 'Agreed on the onboarding flow being confusing.', true),
-  ]);
-  const snap = stamps(s);
-  await tick();
-  // Replay where Stan's OLD turn (id 1) comes back TRUNCATED and Kate's old
-  // turn (id 2) comes back EXTENDED — both are prefix-related to what we hold,
-  // but neither is the most recent turn by its speaker. The old one-candidate
-  // fallback missed both and re-inserted them as fresh speech.
-  s.updateTurns([
-    T(201, 'Stan', 'The first thing I wanted to raise was the pricing'),
-    T(202, 'Kate', 'Right, the pricing page needs a rewrite honestly, top to bottom.'),
-    T(203, 'Stan', 'And the second thing is the onboarding flow.'),
-    T(204, 'Kate', 'Agreed on the onboarding flow being confusing.', true),
-  ]);
-  assert.equal(s.turns.size, 4, 'revised older turns alias instead of re-inserting');
-  assert.equal(redelivered(s, snap).length, 1,
-    'only the genuinely extended turn counts as new speech');
-});
-
-test('#12 replay of turns aged out of the maxTurns window is dropped, not re-ingested', async () => {
-  const s = makeServer();
-  s.maxTurns = 6;
-  const line = (n) => `Turn number ${n} of the long standup call.`;
-  // 10 turns through a window of 6 — turns 1..4 age out.
-  for (let n = 1; n <= 10; n++) { s.updateTurns([T(n, 'Stan', line(n), true)]); await tick(); }
-  assert.equal(s.turns.size, 6);
-  assert.ok(!s.turns.has(1), 'early turns aged out');
-  const snap = stamps(s);
-  await tick();
-
-  // Container re-render replays the WHOLE call, including the aged-out head.
-  s.updateTurns(Array.from({ length: 10 }, (_, i) => T(300 + i, 'Stan', line(i + 1), i === 9)));
-  assert.equal(s.turns.size, 6, 'aged-out history must not re-enter the window');
-  assert.deepEqual(redelivered(s, snap), [], 'nothing from the replay is new speech');
-});
-
-test('#12 prune drops stale aliases and fingerprints', async () => {
-  const s = makeServer();
-  s.maxTurns = 4;
-  const line = (n) => `Line ${n} spoken during the pruning test call.`;
-  for (let n = 1; n <= 8; n++) { s.updateTurns([T(n, 'Kate', line(n), true)]); await tick(); }
-  for (const ids of s._turnFps.values()) {
-    for (const id of ids) assert.ok(s.turns.has(id), 'no fingerprint points at a pruned turn');
-  }
-  for (const canonical of s._turnAlias.values()) {
-    assert.ok(s.turns.has(canonical), 'no alias routes to a pruned turn');
-  }
-  assert.ok(s._retiredFps.size > 0, 'pruned turns leave a retired fingerprint');
-});
-
-test('#12 retired-fingerprint set stays bounded', () => {
-  const s = makeServer();
-  s.maxTurns = 2;
-  s.maxRetiredFps = 10;
-  for (let n = 1; n <= 60; n++) s.updateTurns([T(n, 'Stan', `Bounded growth check line ${n}.`, true)]);
-  assert.ok(s._retiredFps.size <= 10, `retired set bounded, got ${s._retiredFps.size}`);
-});
-
-test('#12 end-to-end: a re-render mid-call delivers only the new turn to a waiter', async () => {
-  const s = makeServer();
-  // 12 turns of an ordinary call.
-  const said = [];
+  const feed = makeFeed(s);
   for (let n = 1; n <= 12; n++) {
     const speaker = n % 2 ? 'Stan' : 'Kate';
-    said.push([n, speaker, `Point number ${n} about the redesign, roughly.`]);
-    s.updateTurns([T(n, speaker, `Point number ${n} about the redesign, roughly.`, true)]);
+    feed.say(speaker, `Point number ${n} about the redesign, roughly.`, 1);
     await tick();
   }
-  const cursor = new Date().toISOString();   // what wait_for_speech hands back as asOf
+  const cursor = new Date().toISOString();
   await tick();
 
-  // Meet re-renders: the whole call replays under fresh ids, cosmetically
-  // different, with ONE genuinely new turn at the end. Pre-#12 the waiter got
-  // the entire call back (and a bigger slice on every subsequent poll).
-  s.updateTurns([
-    ...said.map(([n, speaker, text], i) =>
-      T(500 + i, speaker, text.replace(/,/g, '').replace(/\.$/, '') + (n % 3 ? '!' : ''))),
-    T(599, 'Kate', 'And one brand new thing nobody has said yet.', true),
-  ]);
+  // Container re-render: the whole call replays under fresh ids with
+  // cosmetic differences, PLUS one genuinely new line from Kate.
+  feed.rerender(500, (speaker, text) => text.replace(/,/g, '').replace(/\.$/, '') + '!');
+  feed.say('Kate', 'And one brand new thing nobody has said yet.', 500);
 
   const fresh = s._entriesSince(cursor);
   assert.equal(fresh.length, 1, `waiter must see 1 new turn, saw ${fresh.length}`);
   assert.match(fresh[0].text, /brand new thing/);
 
-  // And a second poll from the updated cursor sees nothing at all.
+  // A second poll from the updated cursor (still replaying, no new content) sees nothing.
   await tick();
-  s.updateTurns(said.map(([n, speaker, text], i) => T(500 + i, speaker, text)));
-  assert.equal(s._entriesSince(new Date().toISOString()).length, 0, 'no re-delivery on the next poll');
+  const afterCursor = new Date().toISOString();
+  feed.rerender(700);
+  assert.equal(s._entriesSince(afterCursor).length, 0, 'no re-delivery on the next poll');
 });
 
-// ---------------------------------------------------------------------------
-// #12 (2026-08-11 recurrence): the sub-threshold TRICKLE re-render.
-//
-// Every fix before this one armed fingerprint recovery on a burst — `unknownCount
-// >= 3`. On the 08-11 stand-up Meet re-identified old caption nodes one or two at
-// a time, which never reached the threshold, so those turns re-inserted as brand
-// new speech. They carried a fresh turnId AND a fresh firstSeen, so no other
-// guard could see them either: `[heard]` fired a second time for utterances from
-// ~27 minutes earlier and wait_for_speech shipped them as live speech.
-//
-// The rule is now positional: an unknown turn with a KNOWN turn below it in the
-// (chronological) caption container is history, not new speech.
-// ---------------------------------------------------------------------------
-
-test('trickle re-render: TWO old turns under fresh ids are still recognized', () => {
+test('two participants interleaving does not confuse per-speaker identity', () => {
   const s = makeServer();
-  s.updateTurns([
-    T(1, 'Seth', 'There is Jimmy, we need quorum, come on Pepper.'),
-    T(2, 'Stan', 'Yeah, that is southwest Colorado for sure.'),
-    T(3, 'Seth', 'I was training for a century so I did a sixty mile ride.'),
-    T(4, 'Stan', 'Nice, I bet that was hot out there.', true),
-  ]);
+  const feed = makeFeed(s);
+  feed.say('Seth', 'There is Jimmy, we need quorum, come on Pepper.', 1);
+  feed.say('Stan', 'Yeah, that is southwest Colorado for sure.', 1);
+  feed.say('Seth', 'I was training for a century so I did a sixty mile ride.', 1);
+  feed.say('Stan', 'Nice, I bet that was hot out there.', 1);
   assert.equal(s.turns.size, 4);
 
-  // Only the first two nodes get re-identified — below the old ≥3 threshold.
-  s.updateTurns([
-    T(101, 'Seth', 'There is Jimmy, we need quorum, come on Pepper.'),
-    T(102, 'Stan', 'Yeah, that is southwest Colorado for sure.'),
-    T(3, 'Seth', 'I was training for a century so I did a sixty mile ride.'),
-    T(4, 'Stan', 'Nice, I bet that was hot out there.', true),
-  ]);
-  assert.equal(s.turns.size, 4, 'a 2-turn trickle replay must not re-insert as new speech');
+  // Re-render under fresh ids — must not create or drop anything.
+  feed.rerender(101);
+  assert.equal(s.turns.size, 4);
+  const snap = stamps(s);
+  feed.rerender(201);
+  assert.deepEqual(redelivered(s, snap), [], 'a second replay is still a non-event');
 });
 
-test('trickle re-render: even a SINGLE re-identified old turn is recognized', () => {
+test('a participant can grow their turn after someone else has spoken since (the QED case)', () => {
+  // The insight this design is built on: Meet only ever appends to a
+  // speaker's OWN latest turn — it does not matter that Stan's line is no
+  // longer the visually-last row once Seth has spoken.
   const s = makeServer();
+  const feed = makeFeed(s);
+  feed.say('Seth', 'Hi', 1);
+  feed.say('Stan', 'Whatsup?', 1);
+  // Seth's turn grows even though it is not the newest row overall.
   s.updateTurns([
-    T(1, 'Seth', 'The whole point is that she never touches the Mac mini at all.'),
-    T(2, 'Stan', 'Right, it is just a button on her account.', true),
+    { turnId: 1, speaker: 'Seth', text: 'Hi there' },
+    { turnId: 2, speaker: 'Stan', text: 'Whatsup?' },
   ]);
-  s.updateTurns([
-    T(101, 'Seth', 'The whole point is that she never touches the Mac mini at all.'),
-    T(2, 'Stan', 'Right, it is just a button on her account.', true),
-  ]);
-  assert.equal(s.turns.size, 2, 'one replayed turn above a known turn must alias, not insert');
+  const seth = [...s.turns.values()].find((t) => t.speaker === 'Seth');
+  assert.equal(seth.text, 'Hi there', "Seth's turn grows even though Stan's row is below it");
+  const stan = [...s.turns.values()].find((t) => t.speaker === 'Stan');
+  assert.equal(stan.text, 'Whatsup?');
+  assert.equal(s.turns.size, 2, 'no duplicate turns created');
 });
 
-test('a genuine repeat at the BOTTOM is still ingested as new speech', () => {
-  // The counterpart risk: positional arming must not swallow someone actually
-  // saying the same words again. Real repeats arrive at the bottom of the
-  // container, where nothing known sits below them — so recovery stays disarmed.
+test('room reset clears per-speaker turn tracking', () => {
   const s = makeServer();
-  s.updateTurns([
-    T(1, 'Stan', 'So the answer is we should just ship it this week.'),
-    T(2, 'Seth', 'Say that again?', true),
-  ]);
-  assert.equal(s.turns.size, 2);
-  s.updateTurns([
-    T(1, 'Stan', 'So the answer is we should just ship it this week.'),
-    T(2, 'Seth', 'Say that again?'),
-    T(3, 'Stan', 'So the answer is we should just ship it this week.', true),
-  ]);
-  assert.equal(s.turns.size, 3, 'a real repeat at the bottom must not be aliased away');
+  const feed = makeFeed(s);
+  feed.say('Stan', 'Something from the first call entirely.', 1);
+  feed.say('Stan', 'More from the first call to reach batch size.', 1);
+  feed.say('Stan', 'Third line from the first call here.', 1);
+  assert.equal(s.turns.size, 3);
+
+  s.setRoom('second-room');
+  assert.equal(s.turns.size, 0);
+  assert.equal(s._speakerTurnCount.size, 0, 'per-speaker counts reset with the room');
+  s.updateTurns([{ turnId: 11, speaker: 'Stan', text: 'Something from the first call entirely.' }]);
+  assert.equal(s.turns.size, 1, 'new room = fresh identity space, not aliased to the old call');
+});
+
+test('a growing open turn never gets pruned out from under itself', () => {
+  const s = makeServer();
+  s.maxTurns = 4;
+  const feed = makeFeed(s);
+  // Kate keeps one long-running open turn while Stan racks up settled ones,
+  // pushing the map past maxTurns — Kate's open turn must survive the prune.
+  feed.say('Kate', 'K', 1);
+  for (let n = 1; n <= 8; n++) feed.say('Stan', `Line ${n} spoken during the pruning test call.`, 1);
+  assert.ok(s.turns.size <= 4, 'map stays bounded');
+  feed.grow('Kate', 'K, and one more thing.', 1);
+  const kate = [...s.turns.values()].find((t) => t.speaker === 'Kate');
+  assert.equal(kate.text, 'K, and one more thing.', "Kate's open turn survived the prune and still grows");
+});
+
+// ---------------------------------------------------------------------------
+// #12-diag: a pure-logging signal (no effect on ingest) so a live test can
+// confirm it actually exercised a container re-render, not just that the
+// call stayed healthy for unrelated reasons.
+// ---------------------------------------------------------------------------
+
+function captureLogs(fn) {
+  const lines = [];
+  const orig = console.log;
+  console.log = (...args) => lines.push(args.join(' '));
+  try { fn(); } finally { console.log = orig; }
+  return lines;
+}
+
+test('#12-diag fires on a re-render (many unseen turnIds, no new turns)', () => {
+  const s = makeServer();
+  const feed = makeFeed(s);
+  feed.say('Stan', 'First thing that was said here.', 1);
+  feed.say('Kate', 'Second thing that was said here.', 1);
+  feed.say('Stan', 'Third thing that was said here.', 1);
+  feed.say('Kate', 'Fourth thing that was said here.', 1);
+
+  const lines = captureLogs(() => feed.rerender(101));
+  assert.ok(lines.some((l) => l.includes('#12-diag') && l.includes('container re-render observed')),
+    'diagnostic should fire when a burst of unseen turnIds carries no new turns');
+});
+
+test('#12-diag stays silent on ordinary new speech', () => {
+  const s = makeServer();
+  const feed = makeFeed(s);
+  const lines = captureLogs(() => {
+    feed.say('Stan', 'First thing that was said here.', 1);
+    feed.say('Kate', 'Second thing that was said here.', 1);
+    feed.say('Stan', 'Third thing that was said here.', 1);
+  });
+  assert.ok(!lines.some((l) => l.includes('#12-diag')), 'ordinary new turns must not be mistaken for a re-render');
 });

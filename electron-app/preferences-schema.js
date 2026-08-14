@@ -967,6 +967,19 @@ const PREFERENCES = {
       'the real reply. Uses the ackEndpoint/ackModel gate when reachable, and a ' +
       'conservative lexical gate (completeness.heuristicComplete) when it is not.',
   },
+  openTurnStableMs: {
+    type: 'number',
+    default: 5000,
+    min: 500,
+    max: 30000,
+    description:
+      'Caption ingest (#12) tracks one open/mutable turn per participant — the ' +
+      'only one of their lines Meet might still be appending to. We do not know ' +
+      'Meet\'s exact rule for when it stops extending a line vs. starting a new ' +
+      'one for that speaker, so if their open turn hasn\'t grown in this many ms ' +
+      'it is marked settled defensively (Stan, 2026-08-14). Only affects the ' +
+      'settled/isFinal flag, not what gets delivered to wait_for_speech. Default 5s.',
+  },
   probeSilenceMs: {
     type: 'number',
     default: 700,

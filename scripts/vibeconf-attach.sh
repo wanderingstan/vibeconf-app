@@ -7,6 +7,8 @@
 #   vibeconf-attach --list          # what boxes exist, and their state
 #   vibeconf-attach --sessions      # what tmux sessions are on the box
 #   vibeconf-attach --shell         # a plain shell instead of the agent session
+#   vibeconf-attach --screen        # tunnel VNC, so you can SEE the app's screen
+#   vibeconf-attach --stop          # stop the box (it is costing money while up)
 #   vibeconf-attach --no-start      # refuse to start a stopped box
 #
 # WHY SSM AND NOT SSH: no inbound port, no key to hand around, no IP allowlist to
@@ -35,6 +37,8 @@ while [ $# -gt 0 ]; do
     --list) MODE="list" ;;
     --sessions) MODE="sessions" ;;
     --shell) MODE="shell" ;;
+    --screen) MODE="screen" ;;
+    --stop) MODE="stop" ;;
     --no-start) ALLOW_START=0 ;;
     -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) die "unknown option $1" ;;
@@ -66,6 +70,29 @@ STATE=$(aws_ ec2 describe-instances --instance-ids "$ID" \
   --query 'Reservations[0].Instances[0].State.Name' --output text)
 echo "→ $TAG ($ID) is $STATE"
 
+# Stopping is its own mode and never implies starting — otherwise a typo'd
+# `--stop` on an already-stopped box would boot it, which is the opposite of
+# what someone reaching for that flag wants.
+if [ "$MODE" = "stop" ]; then
+  case "$STATE" in
+    stopped|stopping) echo "→ already $STATE, nothing to do"; exit 0 ;;
+  esac
+  # A running agent is doing something for someone. Say what is there before
+  # pulling the floor out, rather than after.
+  LIVE=$(aws_ ssm send-command --instance-ids "$ID" --document-name AWS-RunShellScript \
+    --parameters 'commands=["sudo -u ubuntu tmux ls 2>/dev/null || true"]' \
+    --query 'Command.CommandId' --output text 2>/dev/null)
+  if [ -n "$LIVE" ]; then
+    sleep 4
+    OUT=$(aws_ ssm get-command-invocation --command-id "$LIVE" --instance-id "$ID" \
+      --query StandardOutputContent --output text 2>/dev/null)
+    [ -n "$OUT" ] && { echo "⚠️  sessions currently running on $TAG:"; echo "$OUT" | sed 's/^/     /'; }
+  fi
+  aws_ ec2 stop-instances --instance-ids "$ID" \
+    --query 'StoppingInstances[0].CurrentState.Name' --output text
+  exit 0
+fi
+
 if [ "$STATE" != "running" ]; then
   [ "$ALLOW_START" = "1" ] || die "$TAG is $STATE and --no-start was given"
   echo "→ starting it (takes ~40s, then SSM needs a moment to register)"
@@ -88,6 +115,26 @@ echo
 
 if [ "$MODE" = "shell" ]; then
   exec aws_ ssm start-session --target "$ID"
+fi
+
+# --screen: SEE the app, not just its agent. Needed for the once-per-box
+# interactive logins (vibeconferencing.com + Calendar access, Claude Code),
+# which are OAuth flows in a real window and cannot be done from a shell.
+#
+# The box already runs xvfb + x11vnc + noVNC as systemd services (set up during
+# the #324 bring-up), with x11vnc bound to LOOPBACK — so it is not reachable
+# from the internet and must be tunnelled. This forwards it over SSM: no inbound
+# port, no SSH key, no IP allowlist entry to churn when you change locations.
+if [ "$MODE" = "screen" ]; then
+  LOCAL_PORT="${VIBECONF_VNC_LOCAL_PORT:-5900}"
+  echo "→ forwarding $TAG:5900 → localhost:$LOCAL_PORT over SSM"
+  echo "→ then, in another terminal or Finder:"
+  echo "     open vnc://localhost:$LOCAL_PORT      (macOS Screen Sharing)"
+  echo "   the VNC password is in ~/.vnc/passwd on the box (set at bring-up)"
+  echo "→ Ctrl-C here closes the tunnel"
+  exec aws_ ssm start-session --target "$ID" \
+    --document-name AWS-StartPortForwardingSession \
+    --parameters "{\"portNumber\":[\"5900\"],\"localPortNumber\":[\"$LOCAL_PORT\"]}"
 fi
 
 # Which tmux session? DISCOVERED, not guessed: the name is

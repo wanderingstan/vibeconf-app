@@ -27,9 +27,10 @@ const { buildTerminalCommand, asQuoted } = require('../electron-app/launch-comma
 // exercises the same quoting.
 //
 // Hardcoding /bin/zsh made this the ONLY test in the suite that failed on a
-// stock Ubuntu box (spawnSync /bin/zsh ENOENT). It stayed green in CI because
-// GitHub's ubuntu runners happen to ship zsh, so the assumption was invisible
-// exactly where you would expect CI to catch it.
+// stock Ubuntu box (spawnSync /bin/zsh ENOENT). CI did not catch it because the
+// unit-test job ran on macOS ONLY — `node --test` had never executed on Linux
+// at all, which is also why the job's own comment estimated "a handful" of
+// unportable tests when the real number was this one.
 const SHELL = ['/bin/zsh', '/bin/bash', '/bin/sh'].find((s) => existsSync(s)) || '/bin/sh';
 
 // Emulate what the shell finally receives: AppleScript `do script "<cmd>"` parses

@@ -1963,6 +1963,17 @@ const localServer = new globalThis.LocalServer({
     // fire a spoken ack there, or the bot interrupts whoever still has the floor.
     const triageGateActive = !!store?.get('triageAck') && !triageEndpointDown;
     if (state === 'thinking' && localServer.mode === 'active' && !triageGateActive && !extra?.backgroundTick) {
+      // #359: the hand (🙋 "yielding") means a reply is already stashed and
+      // ready. Firing "let me think about that" on top of a raised hand is
+      // dishonest — it trains people not to call on the bot. The stash's own
+      // opening/resolve paths (_maybeReplayStashOnOpening,
+      // _maybeReplayBargeInStash) already own delivering it; this path just
+      // has to stay out of the way.
+      if (localServer.bargeInStash) {
+        console.log(ts(), '🤐 [ack] Suppressing — a reply is already stashed and the hand is up');
+        return;
+      }
+
       const wordCount = extra?.wordCount || 0;
       const text = (extra?.text || '').toLowerCase();
 
@@ -2303,7 +2314,9 @@ const localServer = new globalThis.LocalServer({
     // missed ack just means the slow answer arrives without a filler; a stray ack
     // is one short phrase. Only in active mode + in-call. The regex ack-on-thinking
     // is suppressed (above) while triage drives, so no double ack.
-    if (result.ack && localServer.mode === 'active' && localServer.callStatus === 'in-call') {
+    // #359: same rule as the regex ack gate above — a raised hand means a
+    // reply is already stashed and ready; don't ack over it.
+    if (result.ack && localServer.mode === 'active' && localServer.callStatus === 'in-call' && !localServer.bargeInStash) {
       const wordCount = (lastUtterance || '').split(/\s+/).filter(Boolean).length;
       const prefs = require('./preferences-schema').PREFERENCES;
       const longMin = Number(store?.get('ackLongMin')) || prefs.ackLongMin.default;

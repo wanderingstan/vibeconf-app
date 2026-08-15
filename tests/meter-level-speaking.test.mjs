@@ -40,9 +40,9 @@ const start = src.indexOf('const METER_SAMPLE_MS');
 const end = src.indexOf('const domSpeakerTracker');
 assert.ok(start > 0 && end > start, 'could not slice DOMSpeakerTracker out of the provider');
 const load = new Function('getComputedStyle', 'document', 'console', 'MutationObserver', 'emits', `
-  // Stubs for the module-level collaborators the slice closes over. The debug
-  // border is off; the emits array is what the tracker would send upward.
-  const speakerDebugBorder = false;
+  // Stubs for the module-level collaborators the slice closes over. The emits
+  // array is what the tracker would send upward. (The speakerDebugBorder stub
+  // that lived here died with the border itself — #407.)
   const CALL_EVENTS = { speakingChanged: 'speaking', participantsUpdated: 'participants' };
   const meetProvider = { emit: (name, payload) => emits.push({ name, payload }) };
   const window = { postMessage: () => {} };
@@ -441,4 +441,61 @@ test('the meter is found by behaviour, never by class name', () => {
   assert.doesNotMatch(region, /IisKdb|HPxjXe|UBNDXc|DwvCqe|QgSmzd|ES310d/);
   assert.match(region, /backgroundImage/);
   assert.match(region, /backgroundPositionX/);
+});
+
+// --- #407: the flag must settle -------------------------------------------
+
+test('mutation verdict is a Schmitt trigger: arms at 3, survives a dip to 2, releases below 2', () => {
+  const { tracker } = setup({ mode: 'mutation' });
+  const info = participant(tile([]));
+  // Two mutations in-window: not armed.
+  info.mutTimes = [1000, 1100];
+  assert.equal(tracker._isSpeakingByMutation(info, 1200), false);
+  // Third arrives: armed.
+  info.mutTimes.push(1200);
+  assert.equal(tracker._isSpeakingByMutation(info, 1250), true);
+  // The exact flap from call cpf-hnso-quk: the window drains to 2. A bare
+  // threshold reported false here (then true again 1ms later, 190 times over).
+  // Armed state must ride the dip out.
+  assert.equal(tracker._isSpeakingByMutation(info, 1000 + 1201), true,
+    'a dip to 2 in-window mutations must not release an armed verdict');
+  // Genuine quiet: window drains below 2 — NOW it releases...
+  assert.equal(tracker._isSpeakingByMutation(info, 1200 + 1201), false);
+  // ...and a single stray mutation cannot re-arm it.
+  info.mutTimes.push(2500);
+  assert.equal(tracker._isSpeakingByMutation(info, 2550), false,
+    're-arming must take the full arm count, not one borderline mutation');
+});
+
+test('self-authored DOM writes never feed the speaking counter', () => {
+  const { tracker } = setup({ mode: 'mutation' });
+  const attr = (oldValue, className) =>
+    ({ type: 'attributes', attributeName: 'class', oldValue, target: { className } });
+  // Pure vibeconf-* class delta (the deleted debug border's exact signature,
+  // both directions): ours, discarded.
+  assert.equal(tracker._isSelfAuthoredMutation(attr('tile', 'tile vibeconf-spk-debug')), true);
+  assert.equal(tracker._isSelfAuthoredMutation(attr('tile vibeconf-spk-debug', 'tile')), true);
+  // Meet churning its own meter classes: counted.
+  assert.equal(tracker._isSelfAuthoredMutation(attr('tile IisKdb', 'tile HPxjXe')), false);
+  // A Meet change arriving in the same record as ours: still counted — the
+  // filter may only discard when the ENTIRE delta is app-authored.
+  assert.equal(tracker._isSelfAuthoredMutation(attr('tile', 'tile QgSmzd vibeconf-marker')), false);
+  // No delta at all (re-set to the same value): nothing to attribute, counted
+  // conservatively as Meet's.
+  assert.equal(tracker._isSelfAuthoredMutation(attr('tile', 'tile')), false);
+  // Our own injected elements coming or going: ours. A Meet node alongside: not.
+  const node = (id, className) => ({ nodeType: 1, id, className });
+  assert.equal(tracker._isSelfAuthoredMutation(
+    { type: 'childList', addedNodes: [node('vibeconf-overlay', '')], removedNodes: [] }), true);
+  assert.equal(tracker._isSelfAuthoredMutation(
+    { type: 'childList', addedNodes: [node('vibeconf-overlay', ''), node('', 'meet-thing')], removedNodes: [] }), false);
+});
+
+test('the debug border is gone, and the observer diffs class deltas to keep it gone', () => {
+  // The border was not dead code — it was a feedback loop (every verdict flip
+  // wrote a class mutation into the counter that produced the verdict). Pin
+  // both the removal and the guard that makes any future reintroduction inert.
+  assert.doesNotMatch(src, /_applyDebugBorder|speakerDebugBorder|_injectDebugStyle/);
+  assert.match(src, /attributeOldValue: true/);
+  assert.match(src, /_isSelfAuthoredMutation\(mutation\)/);
 });

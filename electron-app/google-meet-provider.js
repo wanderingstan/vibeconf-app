@@ -3006,6 +3006,12 @@ window.addEventListener('message', (event) => {
     meetProvider.emit(CALL_EVENTS.ttsEnded);
   }
 
+  if (event.data.action === 'tts-stopped') {
+    // #360: how far playback got when a barge-in stopped it — main pairs this
+    // with the chunk texts to tell the agent what the room never heard.
+    ipcRenderer.send('tts-stopped', event.data.payload || {});
+  }
+
   if (event.data.action === 'log') {
     // Forward page-inject log lines to main so they land in the Electron
     // stdout stream alongside [local-server]/[electron] lines.

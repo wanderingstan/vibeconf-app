@@ -168,6 +168,30 @@ function botSyncPayload(name = BOT_NAME, payload = {}) {
   };
 }
 
+// #360: render the "your previous utterance was cut off" record (from a
+// wait_for_speech poll's `speechTruncated` or a speak result's
+// `previousSpeechTruncated`) as an agent-facing note. speak() answers at
+// dispatch time, so a barge-in that truncated playback is only learnable
+// here, after the fact. Empty string when there is nothing to report.
+function formatSpeechTruncation(t) {
+  if (!t) return '';
+  const where = t.cutSeconds != null ? `~${t.cutSeconds}s in` : 'between sentences';
+  const heard = t.spoken ? `Heard: ${JSON.stringify(t.spoken)}. ` : 'NOTHING of it was heard. ';
+  // A #350 resume replays the cut sentence's tail on its own; only what the
+  // synth loop never produced stays unheard in that case.
+  if (t.resumed) {
+    return `\n[CUT OFF — your previous utterance was interrupted ${where}. ${heard}`
+      + `The cut sentence is auto-resuming now — do NOT repeat it. `
+      + `But this part was never synthesized and will NOT play: ${JSON.stringify(t.unspokenRest)}. `
+      + `If it still matters, work it into your next turn, reworded for where the conversation is now.]`;
+  }
+  const unheard = [t.unspokenTail, t.unspokenRest].filter(Boolean).join(' ');
+  return `\n[CUT OFF — your previous utterance was interrupted ${where}, though speak() reported it as spoken. ${heard}`
+    + `NOT heard: ${JSON.stringify(unheard)}. `
+    + `The room only got the first part. If the unheard part still matters, work it into your next turn — `
+    + `reworded for where the conversation is now, without re-saying what already played. If it's been overtaken, let it go.]`;
+}
+
 let lastPollTime = null;
 // Locks BOT_NAME for the duration of the current call. Once a join_call
 // succeeds, the bot's identity is fixed until the call ends — a mid-call
@@ -500,6 +524,10 @@ server.tool(
       ? `\n[NOT SPOKEN — your held reply was dropped, not replayed (${d.reason}): ${d.texts.map(s => JSON.stringify(s)).join(' · ')}. The room never heard this. If it still matters, say it again — reworded for where the conversation is NOW, not where it was. If it's been overtaken, let it go.]`
       : '';
 
+    // #360: the previous utterance PLAYED but was cut off partway by a
+    // barge-in — speak() had already reported it as spoken in full.
+    const truncLine = formatSpeechTruncation(data.speechTruncated);
+
     if (entries.length === 0) {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       // Chat-triggered wake: a new chat message arrived while the room was quiet
@@ -514,7 +542,7 @@ server.tool(
       const deafLine = status.captionsOn === false
         ? '\n[Captions are OFF in Meet — the bot hears via captions, so it is DEAF until they are re-enabled. The app is retrying automatically; if this persists, say or chat: "Could someone turn captions back on? (CC button in Meet\'s toolbar)"]'
         : '';
-      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${statusLine}${errorLines}${chatLine}${ackLine}${replayLine}${discardLine}${deafLine}` }] };
+      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${statusLine}${errorLines}${chatLine}${ackLine}${replayLine}${discardLine}${truncLine}${deafLine}` }] };
     }
 
     // Each entry is now one logical speaker turn (#178 snapshot model); no
@@ -545,7 +573,7 @@ server.tool(
     return {
       content: [{
         type: "text",
-        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):\n\n${transcriptText}${chatLine}${continuationLine}${ackLine}${replayLine}${discardLine}`,
+        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):\n\n${transcriptText}${chatLine}${continuationLine}${ackLine}${replayLine}${discardLine}${truncLine}`,
       }],
     };
   }
@@ -592,10 +620,14 @@ server.tool(
     // so — and it matters most right here, where the agent is about to build on
     // a reply the room never heard.
     const failed = tx?.previousPlaybackFailed;
-    const priorWarning = failed
+    let priorWarning = failed
       ? `⚠️ Your PREVIOUS speech was NOT heard — audio playback failed (${failed.reason}). `
         + `Nobody in the room got it. If it still matters, say it again.\n\n`
       : '';
+    // #360: the previous speech played but was cut off partway — the agent is
+    // about to speak again, believing its full point landed.
+    const trunc = tx?.previousSpeechTruncated;
+    if (trunc) priorWarning += `⚠️${formatSpeechTruncation(trunc).slice(1)}\n\n`;
 
     // #199: accepted but NOT yet audible. The app queues speech until the bot is
     // actually in the call, because the virtual mic isn't connected to the other
@@ -610,7 +642,11 @@ server.tool(
         + `than assuming a voice or TTS problem.` }] };
     }
     if (data.success && tx?.ok !== false) {
-      return { content: [{ type: "text", text: priorWarning + `Spoken: "${text}"` }] };
+      // #360: "Speaking", not "Spoken" — this answer arrives at dispatch time,
+      // before playback finishes (or even starts). If a barge-in cuts the
+      // utterance short, the next wait_for_speech/speak result carries the
+      // CUT OFF note; this line must not claim delivery it can't know about.
+      return { content: [{ type: "text", text: priorWarning + `Speaking: "${text}"` }] };
     } else {
       return { content: [{ type: "text", text: `Error: ${data.error || tx?.reason || "Failed to post"}` }] };
     }
@@ -1296,7 +1332,35 @@ server.tool(
           + `Nobody in the room can see this content. Do not describe it as if it were on screen: `
           + `say the board is unavailable and send the content with send_chat instead.` }] };
       }
-      return { content: [{ type: "text", text: `Whiteboard updated (version ${wb.version}).` }] };
+
+      // #366: the write reaching the board says nothing about whether anyone in
+      // the room is actually LOOKING at it. Writing and presenting are two
+      // different calls, and a bot that only did the first has no way to know
+      // it — caught live on the 2026-08-13 call, then named as the general
+      // failure by a bot that hit it from the other side an hour earlier.
+      // `status.sharing` / `status.presenterName` are the same room-wide
+      // presenting signal `get_room_info` already surfaces (formatScreenShares),
+      // read fresh here rather than trusting stale local state.
+      let presenceNote = "";
+      try {
+        const status = await getRoomStatus(roomId);
+        if (!status.sharing && !status.presenterName) {
+          presenceNote = ` Nobody is presenting anything right now — the room CANNOT see this. `
+            + `Use start_share to present the whiteboard, or send_chat instead.`;
+        } else if (status.sharing) {
+          const shareUrl = status.screenShareUrl || status.whiteboardLoadedUrl || "";
+          const onBoard = !shareUrl || shareUrl === status.whiteboardUrl || shareUrl === status.roomUrl;
+          if (!onBoard) {
+            presenceNote = ` But you're currently presenting something else (${shareUrl}), not this board — `
+              + `the room can't see this update until your share points back at the whiteboard.`;
+          }
+        } else if (status.presenterName) {
+          presenceNote = ` Note: ${status.presenterName} is presenting right now, not you — if that's not `
+            + `this whiteboard, the room can't see this update.`;
+        }
+      } catch { /* best-effort — a failed status check shouldn't block the write confirmation */ }
+
+      return { content: [{ type: "text", text: `Whiteboard updated (version ${wb.version}).${presenceNote}` }] };
     } else {
       return { content: [{ type: "text", text: `Error: ${data.error || "Failed to update"}` }] };
     }
@@ -2482,6 +2546,22 @@ server.tool(
     const participants = data.participants || [];
     const detectedUrls = data.detectedMeetUrls || [];
 
+    // #366-followup: peers' sharing state lives on the REMOTE presence hash
+    // (announced by announceSharing() in main.js on start/stop), not in the
+    // local server's own status/members above — that only knows about this
+    // bot's own view. Best-effort: a failed or slow remote fetch must not
+    // block the rest of get_room_info, which is otherwise entirely local.
+    let peerSharing = [];
+    try {
+      const remoteResp = await vfetch(`${WEBSITE_URL}/api/sync/${roomId}`);
+      const remoteData = await remoteResp.json();
+      if (remoteData.success) {
+        peerSharing = (remoteData.members || []).filter((m) =>
+          m.sharing && m.name && m.name.toLowerCase() !== (BOT_NAME || '').toLowerCase()
+        );
+      }
+    } catch { /* best-effort — see comment above */ }
+
     // Members from sync API (includes bots). Build a set of registered bot
     // names (case-insensitive) so we can annotate the Meet participant list
     // with (bot) for cross-instance bots like Coltrane (#162).
@@ -2570,6 +2650,15 @@ server.tool(
     const shareUrl = status.screenShareUrl || status.whiteboardLoadedUrl; // #177 rename; tolerate old field
     if (shareUrl) {
       sections.push(`Currently sharing: ${shareUrl} (what's rendering in the screen share now, post-update_whiteboard / scroll_share)`);
+    }
+    if (peerSharing.length > 0) {
+      // WHO is presenting is already visible via Meet's own UI (presenterName,
+      // above) — this is WHAT: content another bot announced it's sharing,
+      // which Meet's UI has no way to tell you.
+      sections.push(
+        `Peer bots sharing:\n` +
+        peerSharing.map((m) => `  - ${m.name}: ${m.screenShareUrl || '(url not announced)'}`).join('\n')
+      );
     }
 
     // #244: surface the current avatar background so the bot can recall it

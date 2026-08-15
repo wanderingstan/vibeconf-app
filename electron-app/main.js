@@ -1963,6 +1963,17 @@ const localServer = new globalThis.LocalServer({
     // fire a spoken ack there, or the bot interrupts whoever still has the floor.
     const triageGateActive = !!store?.get('triageAck') && !triageEndpointDown;
     if (state === 'thinking' && localServer.mode === 'active' && !triageGateActive && !extra?.backgroundTick) {
+      // #359: the hand (🙋 "yielding") means a reply is already stashed and
+      // ready. Firing "let me think about that" on top of a raised hand is
+      // dishonest — it trains people not to call on the bot. The stash's own
+      // opening/resolve paths (_maybeReplayStashOnOpening,
+      // _maybeReplayBargeInStash) already own delivering it; this path just
+      // has to stay out of the way.
+      if (localServer.bargeInStash) {
+        console.log(ts(), '🤐 [ack] Suppressing — a reply is already stashed and the hand is up');
+        return;
+      }
+
       const wordCount = extra?.wordCount || 0;
       const text = (extra?.text || '').toLowerCase();
 
@@ -2303,7 +2314,9 @@ const localServer = new globalThis.LocalServer({
     // missed ack just means the slow answer arrives without a filler; a stray ack
     // is one short phrase. Only in active mode + in-call. The regex ack-on-thinking
     // is suppressed (above) while triage drives, so no double ack.
-    if (result.ack && localServer.mode === 'active' && localServer.callStatus === 'in-call') {
+    // #359: same rule as the regex ack gate above — a raised hand means a
+    // reply is already stashed and ready; don't ack over it.
+    if (result.ack && localServer.mode === 'active' && localServer.callStatus === 'in-call' && !localServer.bargeInStash) {
       const wordCount = (lastUtterance || '').split(/\s+/).filter(Boolean).length;
       const prefs = require('./preferences-schema').PREFERENCES;
       const longMin = Number(store?.get('ackLongMin')) || prefs.ackLongMin.default;
@@ -3625,6 +3638,39 @@ function closeWhiteboardWindow(reason) {
  */
 function whiteboardShareUrl(baseUrl, roomId) {
   return `${baseUrl}/room/${roomId}?mode=whiteboard&surface=share`;
+}
+
+// #366-followup: peers already see WHO is presenting via Meet's own UI
+// (google-meet-provider.js's DOM probe), but not WHAT — whether it's this
+// board or some other URL. Announce our own sharing state on the room's
+// presence channel so other bots can read it via get_room_info without
+// guessing. Fire-and-forget and best-effort on purpose:
+//   - No roomId (never joined via vibeconferencing.com, or between calls) —
+//     nothing to announce to, and that's not a failure.
+//   - No auth is required for /api/sync (unlike /api/logs) — a bot that
+//     isn't logged into a vibeconferencing.com account still gets through.
+//   - A failed POST is logged and dropped, never retried — the #386 outage
+//     that happened from retrying a rate-limited endpoint is exactly the
+//     failure mode to not repeat for a path that fires on every share toggle.
+async function announceSharing(active) {
+  const roomId = localServer.roomId;
+  if (!roomId) return; // no room association — fail gracefully, nothing to tell
+  try {
+    const baseUrl = getWebsiteUrl();
+    const screenShareUrl = active ? (localServer.getWhiteboardLoadedUrl() || whiteboardShareUrl(baseUrl, roomId)) : null;
+    const resp = await fetch(`${baseUrl}/api/sync/${roomId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sender: resolvedBotName(),
+        role: 'bot',
+        sharing: { active, screenShareUrl },
+      }),
+    });
+    if (!resp.ok) console.warn('[share] sharing announce rejected by sync server:', resp.status);
+  } catch (err) {
+    console.warn('[share] failed to announce sharing state (non-fatal):', err.message);
+  }
 }
 
 // The board's title, carrying the bot's name so it is obvious WHICH bot is
@@ -4988,7 +5034,7 @@ return "none"`;
 // Unmute the mic and send the audio to the renderer's TTS queue. Resolves AFTER
 // the play-tts is sent (post the 300ms unmute settle), so callers can chain to
 // preserve send order.
-function sendPlayTts(base64Audio, emoji, { unmutedAt, expectMore } = {}) {
+function sendPlayTts(base64Audio, emoji, { unmutedAt, expectMore, utt } = {}) {
   return new Promise((resolve) => {
     if (!meetView || meetView.webContents.isDestroyed()) {
       console.error('[electron] Meet view not available for audio playback');
@@ -5013,7 +5059,7 @@ function sendPlayTts(base64Audio, emoji, { unmutedAt, expectMore } = {}) {
       // expectMore (#372 sentence-chunked TTS): tells the renderer another
       // chunk of the SAME utterance is coming, so it must not emit tts-ended
       // (and drop the speaking state) if the queue momentarily drains.
-      sendExtMsg({ action: CALL_COMMANDS.ACTIONS.playTts, payload: { audioData: base64Audio, emoji, expectMore: !!expectMore } });
+      sendExtMsg({ action: CALL_COMMANDS.ACTIONS.playTts, payload: { audioData: base64Audio, emoji, expectMore: !!expectMore, utt } });
       console.log('[electron] Sent play-tts to Meet view', emoji ? `(emoji: ${emoji})` : '');
       resolve();
     }, settleMs);
@@ -5021,7 +5067,7 @@ function sendPlayTts(base64Audio, emoji, { unmutedAt, expectMore } = {}) {
 }
 
 // #372: sentence-chunked TTS split — pure helper, unit-tested.
-const { splitForTts } = require('./tts-chunking.js');
+const { splitForTts, splitAtWordFraction } = require('./tts-chunking.js');
 const { systemVoiceLabel } = require('./system-voices.js');
 // "macOS" / "Windows" — used wherever we tell the user or the agent which
 // built-in voice path is in play.
@@ -5045,6 +5091,15 @@ function enqueueAudio(produceAndSend) {
 // value at start and stops sending further chunks once it changes, so a
 // slow chunk-2 synth can't play a stale tail after an interruption.
 let ttsStopGeneration = 0;
+
+// #360: the utterance currently (or most recently) being spoken, so the
+// renderer's tts-stopped report — which only carries {id, chunk} tags — can be
+// paired back with the chunk TEXTS to tell the agent what the room never
+// heard. `sent` counts chunks actually delivered to the renderer; chunks at
+// index >= sent were still synthesizing (or dropped pre-send) when the stop
+// hit, so they are unspoken by definition.
+let ttsUtteranceSeq = 0;
+let lastTtsUtterance = null; // { id, parts, sent }
 
 // True once this call's ack phrases have been pre-warmed into tts.js's cache
 // — reset per call (not per app launch) because ack phrases and voice/provider
@@ -5113,6 +5168,10 @@ function speakText(text, voice, emoji) {
     // the speaking state across the seam); the final chunk clears it.
     const parts = splitForTts(spokenText);
     const genAtStart = ttsStopGeneration;
+    // #360: register this utterance so a barge-in's tts-stopped report can be
+    // mapped back to the chunk texts.
+    const utteranceId = ++ttsUtteranceSeq;
+    lastTtsUtterance = { id: utteranceId, parts, sent: 0 };
     try {
       for (let i = 0; i < parts.length; i++) {
         // #390/#372: a barge-in bumps ttsStopGeneration. Checked for EVERY
@@ -5139,7 +5198,8 @@ function speakText(text, voice, emoji) {
           }
           const base64Audio = Buffer.from(audioBuffer).toString('base64');
           console.log('[electron] TTS synthesized:', parts[i].slice(0, 40), '→', base64Audio.length, 'bytes base64' + chunkTag);
-          await sendPlayTts(base64Audio, chunkEmoji, { unmutedAt, expectMore });
+          await sendPlayTts(base64Audio, chunkEmoji, { unmutedAt, expectMore, utt: { id: utteranceId, chunk: i, chunks: parts.length } });
+          lastTtsUtterance.sent = i + 1; // #360
           // ElevenLabs is back — if we'd previously degraded to the OS voice,
           // tell the agent its normal voice is restored (rides status.errors →
           // the agent sees it on its next wait_for_speech lull).
@@ -5167,7 +5227,8 @@ function speakText(text, voice, emoji) {
               }
               const base64Audio = Buffer.from(fallbackBuffer).toString('base64');
               console.log(`[electron] TTS fell back to the built-in ${SYSTEM_VOICE_LABEL} voice:`, parts[i].slice(0, 40), '→', base64Audio.length, 'bytes base64' + chunkTag);
-              await sendPlayTts(base64Audio, chunkEmoji, { unmutedAt, expectMore });
+              await sendPlayTts(base64Audio, chunkEmoji, { unmutedAt, expectMore, utt: { id: utteranceId, chunk: i, chunks: parts.length } });
+              lastTtsUtterance.sent = i + 1; // #360
               // Tell the agent ONCE that its voice changed, so it knows it now
               // sounds different (and can mention it / not be surprised). Rides
               // the status.errors channel the agent already reads on each lull.
@@ -11155,12 +11216,59 @@ function setupIPC() {
     applyCaptionLanguagePref();
   });
 
+  // #360: the renderer reports how far playback got when a stop-tts hit. Pair
+  // the {id, chunk} tags with the registered chunk texts to compute exactly
+  // which words the room heard and which it never did, and hand that to
+  // local-server — the only component with a channel back to the agent.
+  ipcMain.on('tts-stopped', (_event, p) => {
+    const u = lastTtsUtterance;
+    if (!u || !p) return;
+    // The playing clip wasn't part of this utterance (e.g. a play_audio sound
+    // clip) — no words were cut, nothing to report about the utterance.
+    if (p.wasPlaying && (!p.tag || p.tag.id !== u.id)) return;
+    const dropped = new Set((p.droppedTags || [])
+      .filter((t) => t && t.id === u.id)
+      .map((t) => t.chunk));
+    const playingIdx = p.wasPlaying ? p.tag.chunk : null;
+    const spokenParts = [];
+    let cutTail = '';        // unheard remainder of the chunk that was playing (what a #350 resume would replay)
+    const unspokenRest = []; // chunks the renderer never got to (never recoverable by a resume)
+    let cutSeconds = null;
+    for (let i = 0; i < u.parts.length; i++) {
+      if (i === playingIdx) {
+        const frac = p.duration > 0 ? p.playedTo / p.duration : 0;
+        const { head, tail } = splitAtWordFraction(u.parts[i], frac);
+        if (head) spokenParts.push(head);
+        cutTail = tail;
+        cutSeconds = Math.round(p.playedTo * 10) / 10;
+      } else if (i >= u.sent || dropped.has(i)) {
+        unspokenRest.push(u.parts[i]);
+      } else {
+        spokenParts.push(u.parts[i]);
+      }
+    }
+    if (!cutTail && unspokenRest.length === 0) return; // everything had played — not a truncation
+    try {
+      localServer.noteSpeechTruncation({
+        spoken: spokenParts.join(' '),
+        unspokenTail: cutTail,
+        unspokenRest: unspokenRest.join(' '),
+        cutSeconds,
+      });
+    } catch (err) {
+      console.warn('[electron] noteSpeechTruncation failed:', err.message);
+    }
+  });
+
   ipcMain.on(CALL_EVENTS.ttsEnded, () => {
     // #368: tts-ended = the audio queue fully drained, i.e. the bot is no longer
     // speaking aloud. This is the authoritative release for the speaking-aloud
     // latch — clear it FIRST, before any early-return below, so botState can
     // never get trapped in 'speaking' if the audio ends via an unusual path.
     localServer.speakingAloud = false;
+    // #360: if a resumed utterance just played out, fold its recovered tail
+    // back into the truncation record (or clear it entirely).
+    localServer.noteSpeechPlaybackDrained();
     // If only the ack just finished, stay in 'thinking' — the agent is still
     // generating the real response and will clear the flag when it speaks.
     if (ackTtsPending) {
@@ -11457,11 +11565,13 @@ function setupIPC() {
         console.warn(`[share] state disagreed with Meet — app said sharing=${wasSharing}, `
           + `Meet says ${presenting}. Correcting to Meet.`);
         localServer.setSharing(!!presenting);
+        announceSharing(!!presenting);
       }
       return;   // never run the edge-only side effects below
     }
 
     localServer.setSharing(presenting);
+    announceSharing(!!presenting);
     if (!presenting) {
       externalShareRequest = null; // POC (share-agent-tab)
     }

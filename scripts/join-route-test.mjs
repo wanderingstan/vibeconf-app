@@ -242,12 +242,38 @@ async function main() {
       + 'is exactly #105: the agent believes it is in the call and sits there forever.');
 
     // 2. THE #26 PROTECTION — a duplicate must still be a no-op.
-    const second = textOf(await mcp.request('tools/call', {
-      name: 'join_call', arguments: { room_id: ROOM_A, bot_name: botName },
-    }));
-    check('a repeat join for the SAME room is ignored',
-      SWALLOWED.test(second),
-      `#26: honouring a duplicate tore down a healthy call. Response was:\n      ${second.slice(0, 200)}`);
+    //
+    // …but ONLY while the app is genuinely in a guard-protected state for ROOM_A.
+    // The guard (electron-app/rejoin-guard.js) fires on
+    //   currentRoom === requestedRoom && callStatus ∈ {navigating,joining,in-call}.
+    // ROOM_A is a synthetic room that Google never truly admits, so once the first
+    // join resolves to "couldn't join", the app runs clearRoom() → roomId=null and
+    // the guard's precondition is gone. Honouring the duplicate THEN is correct, not
+    // a #26 regression: this surfaced after #364 (c3de359a) started stopping the
+    // outgoing provider view promptly instead of leaving it lingering, so the fake
+    // call no longer stays "in-flight" in the gap between the two joins. Re-read the
+    // LIVE state and SKIP when the protected window has already closed — otherwise
+    // this check silently tests stale-view timing rather than the guard. See #376.
+    const GUARD_STATES = new Set(['navigating', 'joining', 'in-call']);
+    const dup = await fetch(`${baseUrl}/api/sync/no-room`, { signal: AbortSignal.timeout(5000) })
+      .then((r) => r.json()).catch(() => null);
+    const dupRoom = String(dup?.roomId ?? dup?.currentMeetUrl ?? '');
+    const stillProtected = GUARD_STATES.has(dup?.status?.callStatus) && dupRoom.includes(ROOM_A);
+    if (!stillProtected) {
+      skip('a repeat join for the SAME room is ignored',
+        `app is no longer in a guard-protected state for ${ROOM_A} `
+        + `(roomId=${JSON.stringify(dup?.roomId ?? null)}, callStatus="${dup?.status?.callStatus ?? 'none'}"). `
+        + 'The synthetic room resolved to a failed/idle join before the duplicate arrived, so the '
+        + 'guard precondition (currentRoom === requestedRoom) no longer holds. This is expected '
+        + 'post-#364, not a #26 regression — proving the guard here needs a room that stays in-flight.');
+    } else {
+      const second = textOf(await mcp.request('tools/call', {
+        name: 'join_call', arguments: { room_id: ROOM_A, bot_name: botName },
+      }));
+      check('a repeat join for the SAME room is ignored',
+        SWALLOWED.test(second),
+        `#26: honouring a duplicate tore down a healthy call. Response was:\n      ${second.slice(0, 200)}`);
+    }
 
     // 3. A different room is a real switch, not a duplicate.
     const other = textOf(await mcp.request('tools/call', {

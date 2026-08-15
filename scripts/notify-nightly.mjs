@@ -93,6 +93,24 @@ function statusLine(label, r) {
   const note = v === 'yellow' ? ' — provisional (Meet flakiness, not our code)' : '';
   return `${VERDICT_ICON[v]} ${label}: exit ${r.exit}${bits.length ? ` (${bits.join(', ')})` : ''}${note}`;
 }
+// The Linux lane carries a `note` the other lanes don't, because its failures
+// split into two kinds that want telling apart at a glance: the app broke, or
+// the orchestration did (box would not start, SSM never came Online, no awscli
+// on the runner). Both are worth seeing, but only one is a product regression,
+// and a digest that renders them identically sends you to read the wrong log.
+function linuxLine(r) {
+  if (!r) return '⚪️ linux agent-terminal: no result';
+  const ok = String(r.exit) === '0';
+  const bits = [];
+  if (r.fails !== undefined && Number(r.fails) > 0) bits.push(`${r.fails} fail${Number(r.fails) === 1 ? '' : 's'}`);
+  // Infrastructure exits are numbered 70+ by nightly-linux-lane.sh precisely so
+  // they can be labelled rather than blamed on the app.
+  const infra = Number(r.exit) >= 70;
+  if (infra) bits.push('infra, not the app');
+  const note = r.note && !ok ? ` — ${r.note}` : '';
+  return `${ok ? '🟢' : '🔴'} linux agent-terminal: exit ${r.exit}`
+    + `${bits.length ? ` (${bits.join(', ')})` : ''}${note}`;
+}
 // agent-fuzz has a different shape: {ok:true/false, mission}.
 function fuzzLine(r) {
   if (!r) return '⚪️ agent-fuzz: no result';
@@ -140,6 +158,11 @@ const whiteboardE2e = lastLine('whiteboard-e2e-results.jsonl');
 const codex = lastLine('codex-smoke-results.jsonl');
 const joinRoute = lastLine('join-route-results.jsonl');
 const fuzz = lastLine('agent-fuzz/results.jsonl');
+// #329: the Linux agent-terminal lane, run on the cloud-TA EC2 box over SSM.
+// The only lane that does not run on this mac, and the only coverage anywhere of
+// Electron actually spawning an agent terminal on Linux — CI can run the unit
+// suite on ubuntu (#363) but cannot start a display, a call, or an agent.
+const linux = lastLine('linux-results.jsonl');
 // Recording preflight: did screencapture actually produce a non-empty file? (null
 // = recording disabled → nothing to say.) A broken recorder isn't a product RED —
 // it's an observability gap — so it warns + pushes like the fallback-room notice
@@ -159,6 +182,7 @@ const lines = [
   // route users take is broken.
   statusLine('join/call routes', joinRoute),
   fuzzLine(fuzz),
+  linuxLine(linux),
 ];
 // #334: per-agent exit codes under the fuzz line (launch flake vs hang vs clean run).
 const fuzzAgents = fuzzAgentSummary();

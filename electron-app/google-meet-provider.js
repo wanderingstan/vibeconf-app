@@ -911,55 +911,112 @@ async function restorePeoplePane() {
   return false;
 }
 
-// A sender header is a div with exactly two div children where the second is a
-// timestamp (e.g. "2:32 PM") — the first is the participant name. Meet renders
-// one header per run of consecutive messages from the same person; messages
-// below it (until the next header) belong to that sender. Detect structurally
-// rather than by class/jsname, which rotate.
+// A sender header is a div containing a timestamp child (e.g. "2:32 PM") with
+// the participant name in a sibling child. Meet renders one header per run of
+// consecutive messages from the same person. Detect structurally rather than
+// by class/jsname, which rotate — but by PREDICATE, not by exact shape: the
+// old `children.length === 2` check broke the moment Meet's pin affordance
+// added chrome to the header, and every message under a broken header was
+// silently attributed to the PREVIOUS sender (#397). Find the timestamp child
+// by content, take the name from its sibling, ignore any extra chrome.
 function senderFromHeader(el) {
-  if (el.tagName !== 'DIV' || el.children.length !== 2) return null;
-  const [nameEl, timeEl] = el.children;
-  if (nameEl.tagName !== 'DIV' || timeEl.tagName !== 'DIV') return null;
-  const timeText = timeEl.textContent.trim();
-  if (!MEET.chat.timestampRe.test(timeText)) return null;
-  const name = nameEl.textContent.trim();
-  return name || null;
+  if (!el || el.tagName !== 'DIV') return null;
+  const kids = Array.from(el.children || []);
+  const timeIdx = kids.findIndex(
+    (k) => k.tagName === 'DIV' && MEET.chat.timestampRe.test((k.textContent || '').trim())
+  );
+  if (timeIdx < 0) return null;
+  // Name candidates: the child directly before the timestamp first (Meet's
+  // order is name-then-time), then any other DIV child. Reject pin chrome —
+  // "keep" (the pin glyph's icon ligature), "Pin message", the hover hint —
+  // so a chrome child can never be mistaken for a participant name.
+  const candidates = [];
+  if (timeIdx > 0) candidates.push(kids[timeIdx - 1]);
+  for (let i = 0; i < kids.length; i++) {
+    if (i !== timeIdx && i !== timeIdx - 1) candidates.push(kids[i]);
+  }
+  for (const c of candidates) {
+    if (c.tagName !== 'DIV') continue;
+    const name = (c.textContent || '').trim();
+    if (!name) continue;
+    if (MEET.chat.pinMessageRe.test(name)) continue;
+    if (/^keep$/i.test(name)) continue;
+    if (name.toLowerCase().includes(MEET.chat.pinHoverText.toLowerCase())) continue;
+    return name;
+  }
+  return null;
+}
+
+// A header for THIS message may be the sibling itself or nested one wrapper
+// down. Crucially, a subtree that contains message bodies is a whole previous
+// GROUP — its header belongs to ITS messages, and reading it from here is
+// exactly the stale carry-forward #397 removed. Refuse those.
+function headerFromSubtree(el) {
+  if (!el || el.nodeType !== 1) return null;
+  if (typeof el.matches === 'function' && el.matches(MEET.chat.messageBody)) return null;
+  if (typeof el.querySelector === 'function' && el.querySelector(MEET.chat.messageBody)) return null;
+  const own = senderFromHeader(el);
+  if (own) return own;
+  if (typeof el.querySelectorAll !== 'function') return null;
+  for (const d of el.querySelectorAll('div')) {
+    const s = senderFromHeader(d);
+    if (s) return s;
+  }
+  return null;
+}
+
+// Attribute a message ONLY from a header structurally adjacent to it: walk
+// previous siblings (skipping earlier messages of the same grouped run), then
+// up a few ancestors and their previous siblings. Bounded depth so a failure
+// stays local — no resolvable header means NO sender, never someone else's.
+function resolveSenderForMessage(msgEl) {
+  let node = msgEl;
+  for (let depth = 0; node && node.tagName !== 'BODY' && depth < 6; depth++) {
+    for (let sib = node.previousElementSibling; sib; sib = sib.previousElementSibling) {
+      const name = headerFromSubtree(sib);
+      if (name) return name;
+    }
+    node = node.parentElement;
+  }
+  return null;
+}
+
+// Strip pin-affordance chrome Meet fuses onto a message body's innerText
+// ("…issues/389keepPin message") — see pinChromeTailRe for the token rules.
+// The freestanding hover hint is also removed wherever it appears; it's a
+// 30-char verbatim UI string no human plausibly typed.
+function stripPinChrome(text) {
+  let out = String(text || '');
+  if (MEET.chat.pinChromeOnlyRe.test(out)) return '';
+  out = out.split(MEET.chat.pinHoverText).join('');
+  out = out.replace(MEET.chat.pinChromeTailRe, '');
+  return out.trim();
 }
 
 function scrapeChatMessages() {
-  // Collect sender headers and message bodies, order them by document position,
-  // and attribute each message to the most recent header above it.
-  //
   // Message bodies are divs carrying data-message-id="spaces/.../messages/...".
   // Pin BUTTONS share that attribute but have aria-label="Pin message" — skip
-  // those (and any button). Only the chat pane is open during a scrape (people
-  // pane is closed), so the header pattern doesn't collide with participant tiles.
-  const markers = [];
-  for (const el of document.querySelectorAll('div')) {
-    const sender = senderFromHeader(el);
-    if (sender) markers.push({ kind: 'header', el, sender });
-  }
+  // those (and any button). Each message is attributed from its OWN adjacent
+  // header (resolveSenderForMessage); the old sort-and-carry-forward approach
+  // let one missed header pin the previous person's name on someone else's
+  // words, silently (#397). No header now means no sender — read_chat already
+  // supports that shape — plus a warning so the regression is visible.
+  const out = [];
+  const seen = new Set();
   for (const el of document.querySelectorAll(MEET.chat.messageBody)) {
     if (el.tagName === 'BUTTON') continue;
     if (MEET.chat.pinMessageRe.test(el.getAttribute('aria-label') || '')) continue;
-    markers.push({ kind: 'msg', el });
-  }
-  markers.sort((a, b) => {
-    if (a.el === b.el) return 0;
-    return (a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1;
-  });
-
-  const out = [];
-  const seen = new Set();
-  let currentSender = '';
-  for (const m of markers) {
-    if (m.kind === 'header') { currentSender = m.sender; continue; }
-    const id = m.el.getAttribute(MEET.chat.messageIdAttr);
+    const id = el.getAttribute(MEET.chat.messageIdAttr);
     if (!id || seen.has(id)) continue;
-    const text = (m.el.innerText || '').trim();
+    const text = stripPinChrome(el.innerText || '');
     if (!text) continue;
     seen.add(id);
-    out.push(currentSender ? { id, sender: currentSender, text } : { id, text });
+    const sender = resolveSenderForMessage(el);
+    if (!sender) {
+      console.warn('[chat] no resolvable sender header for message ' + id +
+        ' — emitting it senderless rather than guessing (#397)');
+    }
+    out.push(sender ? { id, sender, text } : { id, text });
   }
   return out;
 }

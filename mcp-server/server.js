@@ -2109,6 +2109,131 @@ server.tool(
   }
 );
 
+// --- find_share_element ---
+server.tool(
+  "find_share_element",
+  "Locate an element in the share surface by a natural-language description instead of a CSS selector — 'the submit button', 'the search box', 'the second result link'. Returns candidate matches ranked by how well they match, each with a selector (when the element has an id) and its center x/y (for click_share when no selector is available, e.g. a canvas overlay). Read-only. Use this before click_share/type_share when you don't already know the selector.",
+  {
+    description: z.string().describe("What to find, in plain language, e.g. 'the Sign In button' or 'the email input field'."),
+    max_results: z.number().optional().describe("Max candidates to return (default 5, max 20)."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ description, max_results, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
+        meta: { action: "find-share-element", description, maxResults: max_results },
+      })),
+    });
+    const data = await resp.json();
+    const r = data.results?.findShareElement;
+    if (!r?.ok) {
+      return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "find failed"}` }] };
+    }
+    if (!r.matches.length) {
+      return { content: [{ type: "text", text: `No elements matched '${description}'.` }] };
+    }
+    const body = r.matches.map((m, i) =>
+      `[${i + 1}] <${m.tag}>${m.ariaLabel ? ` aria-label="${m.ariaLabel}"` : ""}${m.selector ? ` selector="${m.selector}"` : ""} at (${m.x}, ${m.y}), ${m.width}x${m.height} — "${m.text}"`
+    ).join("\n");
+    return { content: [{ type: "text", text: `${r.matches.length} match(es) for '${description}':\n\n${body}` }] };
+  }
+);
+
+// --- eval_share ---
+server.tool(
+  "eval_share",
+  "Run JavaScript in the share surface (whatever's currently being screen-shared) and return the result. Sandboxed to that page's own context — it cannot reach the app or the OS. Use it for anything the other *_share tools don't cover directly: reading a value off the page (localStorage, a global variable), computing something from the DOM, or driving an app via its own JS API. The room does not see this happen (unlike click_share/type_share) — only its visible side effects, if any.",
+  {
+    expression: z.string().describe("JavaScript to evaluate, e.g. 'document.title' or '(() => { ...; return x; })()'. The last expression's value is returned; must be JSON-serializable (or a Promise that resolves to one)."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ expression, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
+        meta: { action: "eval-share", expression },
+      })),
+    });
+    const data = await resp.json();
+    const r = data.results?.evalShare;
+    if (!r?.ok) {
+      return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "eval failed"}` }] };
+    }
+    return { content: [{ type: "text", text: `Result:\n${JSON.stringify(r.result, null, 2)}` }] };
+  }
+);
+
+// --- read_share_console ---
+server.tool(
+  "read_share_console",
+  "Read recent console messages (log/warn/error/info) from the share surface — buffered continuously while something is shared, so you can call this AFTER a click/type/eval to see what it triggered, not just at the moment it happened. Read-only. Use it to debug a web app you're driving on the board: did that click throw, is a script failing to load.",
+  {
+    limit: z.number().optional().describe("Max most-recent messages to return (default 50, max 200)."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ limit, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
+        meta: { action: "read-share-console", limit },
+      })),
+    });
+    const data = await resp.json();
+    const r = data.results?.readShareConsole;
+    if (!r?.ok) {
+      return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "no console log available"}` }] };
+    }
+    if (!r.returned) {
+      return { content: [{ type: "text", text: "No console messages captured yet." }] };
+    }
+    const body = r.entries.map(e => `[${e.timestamp}] ${e.level.toUpperCase()}: ${e.message}`).join("\n");
+    return { content: [{ type: "text", text: `Showing ${r.returned} of ${r.total} captured message(s):\n\n${body}` }] };
+  }
+);
+
+// --- read_share_network ---
+server.tool(
+  "read_share_network",
+  "Read recent network requests (method, URL, status, timing) made by the share surface — buffered continuously while something is shared. Read-only. Use it to debug a web app on the board: did that API call succeed, is a resource 404ing, how long did a request take.",
+  {
+    limit: z.number().optional().describe("Max most-recent requests to return (default 50, max 200)."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ limit, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
+        meta: { action: "read-share-network", limit },
+      })),
+    });
+    const data = await resp.json();
+    const r = data.results?.readShareNetwork;
+    if (!r?.ok) {
+      return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "no network log available"}` }] };
+    }
+    if (!r.returned) {
+      return { content: [{ type: "text", text: "No network requests captured yet." }] };
+    }
+    const body = r.entries.map(e =>
+      `[${e.timestamp}] ${e.method} ${e.url} → ${e.status ?? `ERROR (${e.error})`}${e.durationMs != null ? ` (${e.durationMs}ms)` : ""}`
+    ).join("\n");
+    return { content: [{ type: "text", text: `Showing ${r.returned} of ${r.total} captured request(s):\n\n${body}` }] };
+  }
+);
+
 // --- set_mode ---
 // --- set_caption_language ---
 server.tool(
@@ -2701,7 +2826,7 @@ server.tool(
     }
     const shareUrl = status.screenShareUrl || status.whiteboardLoadedUrl; // #177 rename; tolerate old field
     if (shareUrl) {
-      sections.push(`Currently sharing: ${shareUrl} (what's rendering in the screen share now, post-update_whiteboard / scroll_share)`);
+      sections.push(`Currently sharing: ${shareUrl} (what's rendering in the screen share now, post-load_url / scroll_share)`);
     }
     if (peerSharing.length > 0) {
       // WHO is presenting is already visible via Meet's own UI (presenterName,

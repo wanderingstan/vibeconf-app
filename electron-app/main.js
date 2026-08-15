@@ -1838,6 +1838,7 @@ const localServer = new globalThis.LocalServer({
     const { events, error } = clickEventsFor({ ...point, button, clickCount });
     if (error) return { ok: false, error };
 
+    vcShowCursor(wc, vcClickScript(point.x, point.y));
     for (const ev of events) wc.sendInputEvent(ev);
     console.log('[local-server] Share click at', point.x + ',' + point.y,
       selector ? '(' + selector + ')' : '', button || 'left');
@@ -1864,6 +1865,7 @@ const localServer = new globalThis.LocalServer({
     // activating the window, so it can't steal the user's foreground app.
     try { wc.focus(); } catch { /* best effort */ }
 
+    vcShowCursor(wc, vcTypeScript(selector || null));
     for (const ev of events) wc.sendInputEvent(ev);
     console.log('[local-server] Share type:', key ? 'key ' + key : JSON.stringify(text),
       (modifiers && modifiers.length) ? 'mods ' + modifiers.join('+') : '',
@@ -1987,6 +1989,35 @@ const localServer = new globalThis.LocalServer({
     } catch (err) {
       return { ok: false, error: err.message };
     }
+  },
+  // Sandboxed JS eval against the share surface (#244).
+  onEvalShare: async ({ expression } = {}) => {
+    const wc = shareWebContents();
+    if (!wc) return { ok: false, error: 'Nothing is being shared to evaluate against' };
+    if (!expression) return { ok: false, error: 'expression is required' };
+    const result = await evalInShare(wc, expression);
+    console.log('[local-server] eval_share →', result.ok ? 'ok' : `error: ${result.error}`);
+    return result;
+  },
+  // Locate an element by description on the share surface (#244).
+  onFindShareElement: async ({ description, max_results } = {}) => {
+    const wc = shareWebContents();
+    if (!wc) return { ok: false, error: 'Nothing is being shared to search' };
+    if (!description) return { ok: false, error: 'description is required' };
+    const result = await findInShare(wc, description, { maxResults: max_results });
+    console.log('[local-server] find_share_element', JSON.stringify(description), '→',
+      result.ok ? `${result.matches.length} match(es)` : `error: ${result.error}`);
+    return result;
+  },
+  // Read the share surface's buffered console messages (#244).
+  onReadShareConsole: async ({ limit } = {}) => {
+    const wc = shareWebContents();
+    return readShareLog(shareConsoleLogs, wc, { limit });
+  },
+  // Read the share surface's buffered network requests (#244).
+  onReadShareNetwork: async ({ limit } = {}) => {
+    const wc = shareWebContents();
+    return readShareLog(shareNetworkLogs, wc, { limit });
   },
   onBotStateChange: async (state, extra) => {
     console.log('[local-server] Bot state:', state, extra || '');
@@ -3543,6 +3574,117 @@ function shareWebContents() {
   return whiteboardWindow.webContents;
 }
 
+// --- Virtual cursor overlay (#244 follow-up) ---
+// Purely cosmetic: gives the room something to look at when click_share
+// or type_share acts, the way Claude in Chrome's own cursor overlay
+// does — otherwise a click on the shared board is invisible until its effect
+// shows up. Injected into the shared PAGE itself (not the Electron window
+// chrome), so it's part of what desktopCapturer actually captures. Survives
+// nothing across navigation by design — a fresh page gets a fresh overlay,
+// re-created lazily on the next click/type. Best-effort throughout: a failure
+// here must never break the click/type it's illustrating.
+// Deliberately built WITHOUT a <style> tag or any external/data-URI resource:
+// a lot of real-world sites (banks, e-commerce, anything security-conscious —
+// Uber Eats among them) run a CSP that blocks inline stylesheets (style-src)
+// and/or data: image sources (img-src), which would make an injected
+// <style>-based overlay silently invisible — unstyled 0×0 divs, no error, no
+// signal anything went wrong. Direct CSSOM property assignment (el.style.foo
+// = ...) is NOT governed by style-src (it's a scripting API, not a
+// stylesheet), and clip-path with literal polygon() points draws the arrow
+// without loading anything, so it's unaffected by img-src too.
+function vcEnsureOverlayJs() {
+  return `(() => {
+    if (window.__vcCursor) return;
+    const mk = (styles) => {
+      const el = document.createElement('div');
+      Object.assign(el.style, { position: 'fixed', left: '0px', top: '0px', pointerEvents: 'none' }, styles);
+      document.documentElement.appendChild(el);
+      return el;
+    };
+    // Sized and colored to read clearly at video-call resolution against ANY
+    // page background — a subtle white arrow was tried first and was
+    // basically invisible on light pages (#244 testing).
+    //
+    // The clip-path polygon below is the actual pointer shape (points taken
+    // from a standard arrow-cursor icon, viewBox 0-13 x 0-20: tip(0,0),
+    // (0,18), (6.9,14.5), (10.8,20), (14.6,19), (10.8,13.5), (20,13.5) —
+    // reduced to percentages of ITS OWN bounding box). The div's width:height
+    // (18:28 ≈ 0.64) matches that box's own ratio (13:20 = 0.65) — a prior
+    // attempt guessed dimensions instead of deriving them and the shape came
+    // out visibly squashed (#244 testing).
+    //
+    // box-shadow would give a glow too, but clip-path clips box-shadow along
+    // with the element — filter: drop-shadow() renders on the POST-CLIP
+    // shape instead, so it's the only way to glow around a clipped shape.
+    window.__vcCursor = mk({
+      zIndex: '2147483647', width: '18px', height: '28px', opacity: '0',
+      background: '#ff5a1f',
+      clipPath: 'polygon(0% 0%, 0% 90%, 34.6% 72.5%, 53.8% 100%, 73.1% 95%, 53.8% 67.5%, 100% 67.5%)',
+      filter: 'drop-shadow(0 0 1.5px #ffffff) drop-shadow(0 0 1.5px #ffffff) drop-shadow(0 0 6px rgba(255,90,31,0.9)) drop-shadow(0 0 11px rgba(255,90,31,0.6))',
+      transition: 'left 130ms ease-out, top 130ms ease-out, opacity 200ms ease-out',
+    });
+    window.__vcRipple = mk({
+      zIndex: '2147483646', width: '40px', height: '40px',
+      marginLeft: '-20px', marginTop: '-20px', borderRadius: '50%',
+      border: '4px solid #ff5a1f', boxShadow: '0 0 0 1px rgba(255,255,255,0.9)',
+      opacity: '0', transform: 'scale(0.4)',
+    });
+    window.__vcHighlight = mk({
+      zIndex: '2147483645', border: '3px solid #ff5a1f', borderRadius: '4px',
+      opacity: '0', boxShadow: '0 0 0 4px rgba(255,90,31,0.35), 0 0 0 1px rgba(255,255,255,0.9)',
+      transition: 'opacity 200ms ease-out',
+    });
+  })();`;
+}
+
+// Move the arrow to (x, y) and fire a click ripple there. Coordinates are the
+// same CSS-pixel viewport space click_share already resolves to. Held
+// visible for 30s — even a couple of seconds read as an instant flash in
+// testing (#244); the arrow just marks "here's where the last click landed"
+// until the NEXT click/type moves it or the timer runs out, whichever first.
+function vcClickScript(x, y) {
+  return `${vcEnsureOverlayJs()}
+  (() => {
+    const c = window.__vcCursor, r = window.__vcRipple;
+    c.style.left = ${JSON.stringify(x + 'px')}; c.style.top = ${JSON.stringify(y + 'px')}; c.style.opacity = '1';
+    r.style.transition = 'none';
+    r.style.left = ${JSON.stringify(x + 'px')}; r.style.top = ${JSON.stringify(y + 'px')};
+    r.style.opacity = '0.9'; r.style.transform = 'scale(0.4)';
+    void r.offsetWidth; // force a reflow so the next assignment actually transitions
+    r.style.transition = 'opacity 700ms ease-out, transform 700ms ease-out';
+    r.style.opacity = '0'; r.style.transform = 'scale(1.8)';
+    clearTimeout(window.__vcFadeTimer);
+    window.__vcFadeTimer = setTimeout(() => { c.style.opacity = '0'; }, 30000);
+  })();`;
+}
+
+// Draw a brief highlight box around whatever's being typed into — the
+// selector if one was given, else whatever the page already has focused.
+// Typing has no single "point" the way a click does, so a box reads better
+// than trying to place the arrow inside a text field.
+function vcTypeScript(selector) {
+  const sel = selector ? JSON.stringify(selector) : 'null';
+  return `${vcEnsureOverlayJs()}
+  (() => {
+    const el = ${sel} ? document.querySelector(${sel}) : document.activeElement;
+    const h = window.__vcHighlight;
+    if (!el || el === document.body || el === document.documentElement) return;
+    const r = el.getBoundingClientRect();
+    h.style.left = (r.left - 3) + 'px';
+    h.style.top = (r.top - 3) + 'px';
+    h.style.width = (r.width + 6) + 'px';
+    h.style.height = (r.height + 6) + 'px';
+    h.style.opacity = '1';
+    clearTimeout(window.__vcHighlightTimer);
+    window.__vcHighlightTimer = setTimeout(() => { h.style.opacity = '0'; }, 30000);
+  })();`;
+}
+
+// Fire-and-forget: never let a broken overlay delay or fail the real action.
+function vcShowCursor(wc, script) {
+  try { wc.executeJavaScript(script, true).catch(() => {}); } catch { /* best effort */ }
+}
+
 // Resolve a CSS selector to the CENTRE of the element, in the page's own CSS
 // pixels — which is the coordinate space sendInputEvent expects, and notably
 // NOT the pixel space of get_shared_screenshot (2× on a Retina host). Going
@@ -3593,6 +3735,168 @@ async function focusInShare(wc, selector) {
     return r?.ok ? { ok: true } : { ok: false, error: r?.error || 'could not focus ' + selector };
   } catch (err) {
     return { ok: false, error: 'focus failed: ' + err.message };
+  }
+}
+
+// --- eval_share / find_share_element / read_share_console /
+// read_share_network (#244) ---
+// Electron has no JS-land "attach the Chrome DevTools Protocol" call the way
+// Puppeteer does; these are built on Electron's own native equivalents —
+// executeJavaScript, the 'console-message' webContents event, and
+// session.webRequest — scoped to the share surface, rather than a raw
+// `webContents.debugger` session (which would also fight anyone who opens
+// real DevTools on this window). Console/network are captured continuously
+// into small ring buffers so the read tools can be called anytime, not only
+// from the moment they're invoked.
+const SHARE_LOG_MAX_ENTRIES = 200;
+const shareConsoleLogs = new Map(); // webContents.id -> entries[]
+const shareNetworkLogs = new Map(); // webContents.id -> entries[]
+let shareNetworkListenersInstalled = false;
+
+function pushShareLogEntry(map, id, entry) {
+  let arr = map.get(id);
+  if (!arr) { arr = []; map.set(id, arr); }
+  arr.push(entry);
+  if (arr.length > SHARE_LOG_MAX_ENTRIES) arr.shift();
+}
+
+// Installed once, globally, on the share surface's session partition — NOT
+// per-window, since Electron's webRequest API allows only one handler per
+// event type per session. Filters by webContentsId so other webContents on
+// the same partition (the Meet view, the main window) don't pollute the log.
+function installShareNetworkListeners() {
+  if (shareNetworkListenersInstalled) return;
+  shareNetworkListenersInstalled = true;
+  const sess = session.fromPartition(SESSION_PARTITION);
+  const pending = new Map(); // request id -> { method, url, startedAt }
+  sess.webRequest.onBeforeRequest((details, callback) => {
+    pending.set(details.id, { method: details.method, url: details.url, startedAt: Date.now() });
+    callback({});
+  });
+  sess.webRequest.onCompleted((details) => {
+    const wcId = details.webContentsId;
+    const started = pending.get(details.id);
+    pending.delete(details.id);
+    if (wcId == null) return;
+    pushShareLogEntry(shareNetworkLogs, wcId, {
+      method: details.method,
+      url: details.url,
+      status: details.statusCode,
+      resourceType: details.resourceType,
+      durationMs: started ? Date.now() - started.startedAt : null,
+      timestamp: new Date().toISOString(),
+    });
+  });
+  sess.webRequest.onErrorOccurred((details) => {
+    const wcId = details.webContentsId;
+    pending.delete(details.id);
+    if (wcId == null) return;
+    pushShareLogEntry(shareNetworkLogs, wcId, {
+      method: details.method,
+      url: details.url,
+      status: null,
+      error: details.error,
+      resourceType: details.resourceType,
+      timestamp: new Date().toISOString(),
+    });
+  });
+}
+
+// Console capture IS per-webContents (a real event on that object), so this
+// is safe to call once per whiteboardWindow instance without stepping on
+// anything else.
+function installShareConsoleListener(wc) {
+  if (!wc || wc.isDestroyed() || wc.__shareConsoleInstalled) return;
+  wc.__shareConsoleInstalled = true;
+  const LEVELS = ['verbose', 'info', 'warning', 'error'];
+  wc.on('console-message', (event) => {
+    pushShareLogEntry(shareConsoleLogs, wc.id, {
+      level: LEVELS[event.level] ?? String(event.level),
+      message: event.message,
+      line: event.lineNumber,
+      sourceId: event.sourceId,
+      timestamp: new Date().toISOString(),
+    });
+  });
+}
+
+// Sandboxed JS eval against the share surface. `executeJavaScript` already
+// runs in the page's own isolated world (contextIsolation: true on this
+// window), so this is "sandboxed" in the same sense CDP's Runtime.evaluate
+// would be: it can't reach the Electron/Node side, only the page.
+async function evalInShare(wc, expression) {
+  installShareNetworkListeners();
+  installShareConsoleListener(wc);
+  try {
+    const result = await wc.executeJavaScript(expression, true);
+    return { ok: true, result };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+function readShareLog(map, wc, { limit } = {}) {
+  if (!wc) return { ok: false, error: 'nothing is currently being shared' };
+  const all = map.get(wc.id) || [];
+  const n = Math.max(1, Math.min(limit || 50, SHARE_LOG_MAX_ENTRIES));
+  return { ok: true, total: all.length, returned: Math.min(n, all.length), entries: all.slice(-n) };
+}
+
+// Locate elements by a natural-language-ish description — matched against
+// text content, aria-label, placeholder, title, name and id — rather than a
+// selector the caller already has to know. Ranks interactive/labelled
+// elements first, so "the submit button" beats an unrelated div containing
+// the word "submit" deep in a paragraph.
+async function findInShare(wc, description, { maxResults } = {}) {
+  const js = `(() => {
+    const query = ${JSON.stringify(String(description || '').toLowerCase())};
+    const terms = query.split(/\\s+/).filter(Boolean);
+    if (!terms.length) return { ok: false, error: 'description is empty' };
+    const candidates = document.querySelectorAll(
+      'a, button, input, textarea, select, [role], [onclick], [tabindex], label, h1, h2, h3, li, td, th, span, div, p'
+    );
+    const results = [];
+    for (const el of candidates) {
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) continue;
+      const style = getComputedStyle(el);
+      if (style.visibility === 'hidden' || style.display === 'none') continue;
+      const text = (el.innerText || el.value || '').trim().slice(0, 200);
+      const label = el.getAttribute('aria-label') || '';
+      const placeholder = el.getAttribute('placeholder') || '';
+      const title = el.getAttribute('title') || '';
+      const name = el.getAttribute('name') || '';
+      const id = el.id || '';
+      const haystack = [text, label, placeholder, title, name, id].join(' ').toLowerCase();
+      let score = 0;
+      for (const t of terms) if (haystack.includes(t)) score += 1;
+      if (score === 0) continue;
+      // Prefer tight, labelled matches over huge containers that merely
+      // contain the words somewhere inside them.
+      const isInteractive = /^(a|button|input|textarea|select|label)$/i.test(el.tagName) || el.hasAttribute('role') || el.hasAttribute('onclick');
+      if (isInteractive) score += 1;
+      if (text.length && text.length < 80) score += 0.5;
+      results.push({
+        score,
+        tag: el.tagName.toLowerCase(),
+        text: text.slice(0, 120),
+        ariaLabel: label || undefined,
+        id: id || undefined,
+        selector: id ? '#' + CSS.escape(id) : undefined,
+        x: Math.round(r.left + r.width / 2),
+        y: Math.round(r.top + r.height / 2),
+        width: Math.round(r.width),
+        height: Math.round(r.height),
+      });
+    }
+    results.sort((a, b) => b.score - a.score);
+    return { ok: true, matches: results.slice(0, ${JSON.stringify(Math.max(1, Math.min(maxResults || 5, 20)))}) };
+  })()`;
+  try {
+    const r = await wc.executeJavaScript(js, true);
+    return r?.ok ? r : { ok: false, error: r?.error || 'find failed' };
+  } catch (err) {
+    return { ok: false, error: 'find failed: ' + err.message };
   }
 }
 
@@ -3847,6 +4151,11 @@ function createWhiteboardWindow(roomUrl) {
   // avoid accidentally picking the main app window (which holds the Meet
   // view) and triggering Meet's infinity-mirror warning (#158/#137).
   win.on('page-title-updated', (e) => { e.preventDefault(); });
+  // Captured now, not read off win.webContents in the 'closed' handler below —
+  // webContents is already destroyed by the time 'closed' fires.
+  const wcId = win.webContents.id;
+  installShareNetworkListeners();
+  installShareConsoleListener(win.webContents);
   win.loadURL(roomUrl);
   win.webContents.on('did-finish-load', () => {
     console.log('[electron] Whiteboard window loaded OK:', win.webContents.getURL());
@@ -3884,6 +4193,11 @@ function createWhiteboardWindow(roomUrl) {
       mainWindow?.removeListener('move', follow);
       mainWindow?.removeListener('resize', follow);
     } catch { /* main window already gone */ }
+    // webContents is already destroyed by the time 'closed' fires — read its
+    // id up front (wcId, captured above right after the window was created)
+    // rather than here.
+    shareConsoleLogs.delete(wcId);
+    shareNetworkLogs.delete(wcId);
     whiteboardWindow = null;
     broadcastShareWindowState();
     focusMainWindow();

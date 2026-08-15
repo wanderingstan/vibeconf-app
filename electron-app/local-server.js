@@ -79,7 +79,7 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, extraRoutes } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onFindShareElement, onEvalShare, onReadShareConsole, onReadShareNetwork, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
     // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
     // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
@@ -135,6 +135,10 @@ class LocalServer {
     this.onStartCall = onStartCall || (async () => ({ ok: false, code: 'unsupported' }));
     this.onRecord = onRecord || (async () => ({ ok: false, code: 'unsupported' })); // #209
     this.onInspectDom = onInspectDom || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onEvalShare = onEvalShare || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onFindShareElement = onFindShareElement || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onReadShareConsole = onReadShareConsole || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onReadShareNetwork = onReadShareNetwork || (async () => ({ ok: false, error: 'not implemented' }));
     this.onBotStateChange = onBotStateChange || (() => {}); // 'idle' | 'listening' | 'ticking' | 'thinking' | 'speaking' | 'yielding'
     this.onModeChange = onModeChange || (() => {});        // 'active' | 'passive' | 'silent'
     this.onCallStatusChange = onCallStatusChange || (() => {}); // see call-phase.js for the lifecycle
@@ -4959,6 +4963,29 @@ class LocalServer {
         maxElements: data.meta.maxElements,
         maxChars: data.meta.maxChars,
       });
+    }
+
+    // Sandboxed JS eval against the share surface (#244).
+    if (data.meta?.action === 'eval-share') {
+      results.evalShare = await this.onEvalShare({ expression: data.meta.expression });
+    }
+
+    // Locate an element on the share surface by description (#244).
+    if (data.meta?.action === 'find-share-element') {
+      results.findShareElement = await this.onFindShareElement({
+        description: data.meta.description,
+        max_results: data.meta.maxResults,
+      });
+    }
+
+    // Read the share surface's buffered console messages (#244).
+    if (data.meta?.action === 'read-share-console') {
+      results.readShareConsole = await this.onReadShareConsole({ limit: data.meta.limit });
+    }
+
+    // Read the share surface's buffered network requests (#244).
+    if (data.meta?.action === 'read-share-network') {
+      results.readShareNetwork = await this.onReadShareNetwork({ limit: data.meta.limit });
     }
 
     // Handle set-mode command — persistent bot behavior mode

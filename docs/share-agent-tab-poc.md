@@ -9,11 +9,11 @@ is the join key. This branch (`feat/share-agent-tab`) is a working sketch of the
 
 ```
 claude-in-chrome: agent knows the URL it navigated to
-        │  share_tab({ url })                         (MCP tool → mcp-server/server.js)
+        │  share_tab({ url })                  (MCP tool → mcp-server/server.js)
         ▼
-POST /api/sync  meta:{ action:"share-tab", url }       (local-server dispatch)
+POST /api/sync  meta:{ action:"share-tab", url } (local-server dispatch)
         ▼
-onShareTab(url) → startExternalTabShare(url)           (electron-app/main.js)
+onShareTab(url) → startExternalTabShare(url)     (electron-app/main.js)
         │  1. AppleScript: find the Chrome tab whose URL matches, make it the ACTIVE tab
         │  2. desktopCapturer.getSources({window}) → match the window by the tab's title
         │  3. stash it in externalShareRequest, trigger Meet "Present now"

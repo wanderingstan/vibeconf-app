@@ -225,6 +225,10 @@ class LocalServer {
     // path here (via the auto-installed hook); we tail it into a ring buffer
     // shown on the debug overlay. Gated by the same `debugOverlay` toggle.
     this.agentLog = [];
+    // #385: which model is authoring the driving session's replies, as reported
+    // by the activity source (onModel). null until the source can tell — the
+    // brain window shows nothing rather than a guess.
+    this.agentModel = null;
     // #339: the same feed also drives the avatar's "working" state — new agent
     // activity while we're between speaks means the bot is heads-down doing tool
     // work (🧑‍💻), not just listening (🙂). Detect NEW lines and surface them.
@@ -1322,6 +1326,7 @@ class LocalServer {
       // /join-call). Logged (not just held in memory) so latency-audit.py can
       // group cycles by model the same way it already groups by build.
       onModel: (model) => {
+        this.agentModel = model; // #385: surfaced in the brain window header
         console.log(ts(), `🧠 [agent] model=${model}`);
       },
       // Per-turn context size, read off the driving session's own usage report
@@ -1346,6 +1351,7 @@ class LocalServer {
     this._agentSource = new StreamActivitySource(this._agentSourceCallbacks());
     this._agentSource.bind();
     this._streamBindNoted = false;
+    this.agentModel = null; // #385: a new agent — don't show the old one's model
     console.log(ts(), '[local-server] Agent activity source → stream (app-launched agent)');
     return this._agentSource;
   }
@@ -1367,6 +1373,7 @@ class LocalServer {
     try { this._agentSource.stop(); } catch { /* already gone */ }
     this._agentSource = new TranscriptActivitySource(this._agentSourceCallbacks());
     this._streamBindNoted = false;
+    this.agentModel = null; // #385: the next driving session may run a different model
     console.log(ts(), '[local-server] Agent activity source → transcript tail (stream agent exited)');
   }
 
@@ -1396,6 +1403,7 @@ class LocalServer {
     }
     if (transcriptPath !== this._agentSource.path) {
       console.log('[local-server] Agent session bound:', sessionId || '?', '→', transcriptPath);
+      this.agentModel = null; // #385: new session — its own turns will re-report the model
       // #125: say so when we bind a path that isn't there. The tailer tolerates
       // it (the 1.5s poll picks up a lazily-created file), so this is a warning
       // and not an error — but without it a missing transcript looks EXACTLY
@@ -1461,6 +1469,10 @@ class LocalServer {
       // Recent agent (Claude session) activity — compact lines tailed from the
       // driving session's transcript. Shown on the debug overlay only.
       agentLog: this.agentLog || [],
+      // #385: which model the driving session runs (e.g. claude-opus-5), read
+      // off the session's own turns — null until it has authored one. Shown in
+      // the brain window header so multiple bots are tellable apart.
+      agentModel: this.agentModel || null,
       workingMemory: this.getWorkingMemory(),
       sharing: this.sharing,
       someoneElsePresenting: this.someoneElsePresenting,

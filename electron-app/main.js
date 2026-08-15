@@ -6540,10 +6540,17 @@ if (isDefaultInstance) {
 // audit: Fable averages ~17s stop→audio vs ~8s for Sonnet/Opus, almost entirely
 // think time) — via the join_call tool call itself, so it fires exactly once
 // per join, for whoever's actually watching that terminal.
+//
+// A SECOND hook — Notification, not tool-scoped — rides the same script and
+// reports permission prompts / idle nudges to /api/agent-notification, so the
+// brain panel can show "waiting on you" instead of the silence an unhandled
+// prompt produces today (see agent-spawn.js's headlessBlockedReason comment
+// on why that silence is "the single worst failure shape in this app").
 const AGENT_HOOK_CONTENT = `#!/usr/bin/env node
 // Auto-installed by Vibeconferencing — reports the Claude session's transcript
-// path to the local bot server for the debug-overlay agent-activity tail, and
-// warns (once per join_call) when the joining model is Fable.
+// path to the local bot server for the debug-overlay agent-activity tail,
+// forwards Notification events (permission prompts, idle nudges), and warns
+// (once per join_call) when the joining model is Fable.
 // Never blocks or breaks the agent: swallows all errors, exits 0 fast.
 const http = require('http');
 const fs = require('fs');
@@ -6557,10 +6564,7 @@ process.stdin.on('end', () => {
   let d = {};
   try { d = JSON.parse(raw); } catch (e) {}
   maybeWarnSlowModel(d);
-  const transcriptPath = d.transcript_path;
-  if (!transcriptPath) return done();
   const port = process.env.VIBECONF_LOCAL_PORT || '7865';
-  const body = JSON.stringify({ sessionId: d.session_id, transcriptPath });
   // #201 made the control API require a bearer token, and this hook was not
   // updated — so every POST here 401'd from Aug 1 and the agent session was
   // never bound. Nothing surfaced it: the hook swallows all errors by design,
@@ -6575,17 +6579,29 @@ process.stdin.on('end', () => {
       require('path').join(require('os').homedir(), '.vibeconferencing', 'local-tokens', port + '.token'),
       'utf8').trim();
   } catch (e) { /* no token file — server may be running with auth off */ }
+
+  if (d.hook_event_name === 'Notification') {
+    const body = JSON.stringify({ sessionId: d.session_id, message: d.message });
+    return postJson('/api/agent-notification', body, port, token);
+  }
+  const transcriptPath = d.transcript_path;
+  if (!transcriptPath) return done();
+  const body = JSON.stringify({ sessionId: d.session_id, transcriptPath });
+  postJson('/api/agent-session', body, port, token);
+});
+
+function postJson(urlPath, body, port, token) {
   const headers = { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) };
   if (token) headers.authorization = 'Bearer ' + token;
   const req = http.request({
-    host: '127.0.0.1', port, path: '/api/agent-session', method: 'POST',
+    host: '127.0.0.1', port, path: urlPath, method: 'POST',
     headers,
     timeout: 500,
   }, (res) => { res.resume(); res.on('end', done); });
   req.on('error', done);
   req.on('timeout', () => { req.destroy(); done(); });
   req.write(body); req.end();
-});
+}
 
 // A PostToolUse hook's stdout JSON can carry a systemMessage shown to the user
 // in-terminal (not fed to the model, and non-blocking — the tool already ran).
@@ -6654,22 +6670,44 @@ function ensureAgentActivityHook() {
     let settings = {};
     try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')); } catch { /* none yet */ }
     if (!settings.hooks) settings.hooks = {};
-    if (!Array.isArray(settings.hooks.PostToolUse)) settings.hooks.PostToolUse = [];
     // Is our entry already present with the right command? (idempotent)
     const isOurs = (e) => (e.hooks || []).some((h) => typeof h.command === 'string' && h.command.includes('vibeconf-agent-hook'));
-    const current = settings.hooks.PostToolUse.find(isOurs);
-    if (current && current.matcher === 'mcp__vibeconferencing__.*' && current.hooks?.[0]?.command === desiredCmd) {
-      return; // already correct
+
+    // Checked independently (not one early-return after the first match) so an
+    // existing install missing just the newer Notification hook still gets it
+    // added on the next launch, instead of the PostToolUse match short-circuiting
+    // before Notification is ever looked at.
+    let changed = false;
+
+    if (!Array.isArray(settings.hooks.PostToolUse)) settings.hooks.PostToolUse = [];
+    const toolCurrent = settings.hooks.PostToolUse.find(isOurs);
+    if (!toolCurrent || toolCurrent.matcher !== 'mcp__vibeconferencing__.*' || toolCurrent.hooks?.[0]?.command !== desiredCmd) {
+      settings.hooks.PostToolUse = settings.hooks.PostToolUse.filter((e) => !isOurs(e));
+      settings.hooks.PostToolUse.push({
+        matcher: 'mcp__vibeconferencing__.*',
+        hooks: [{ type: 'command', command: desiredCmd }],
+      });
+      changed = true;
     }
-    // Drop any stale vibeconf entries, then add the current one (preserves the
-    // user's own hooks).
-    settings.hooks.PostToolUse = settings.hooks.PostToolUse.filter((e) => !isOurs(e));
-    settings.hooks.PostToolUse.push({
-      matcher: 'mcp__vibeconferencing__.*',
-      hooks: [{ type: 'command', command: desiredCmd }],
-    });
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-    console.log('[electron] Installed agent-activity PostToolUse hook (port from session env, default 7865)');
+
+    // Notification — permission prompts / idle nudges, so the brain panel can
+    // show a session as waiting-on-you instead of just quiet. No matcher: this
+    // fires per-notification, not per-tool, and every notification is worth
+    // forwarding — the server (not this hook) decides what to do with it.
+    if (!Array.isArray(settings.hooks.Notification)) settings.hooks.Notification = [];
+    const notifCurrent = settings.hooks.Notification.find(isOurs);
+    if (!notifCurrent || notifCurrent.hooks?.[0]?.command !== desiredCmd) {
+      settings.hooks.Notification = settings.hooks.Notification.filter((e) => !isOurs(e));
+      settings.hooks.Notification.push({
+        hooks: [{ type: 'command', command: desiredCmd }],
+      });
+      changed = true;
+    }
+
+    if (changed) {
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+      console.log('[electron] Installed agent-activity PostToolUse + Notification hooks (port from session env, default 7865)');
+    }
   } catch (err) {
     console.warn('[electron] Failed to install agent-activity hook:', err.message);
   }
@@ -6682,15 +6720,18 @@ function removeAgentActivityHook() {
   const settingsPath = path.join(claudeDir, 'settings.json');
   try {
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
-    if (Array.isArray(settings.hooks?.PostToolUse)) {
-      const before = settings.hooks.PostToolUse.length;
-      settings.hooks.PostToolUse = settings.hooks.PostToolUse.filter(
-        (e) => !(e.hooks || []).some((h) => typeof h.command === 'string' && h.command.includes('vibeconf-agent-hook'))
-      );
-      if (settings.hooks.PostToolUse.length !== before) {
-        fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-        console.log('[electron] Removed agent-activity hook from settings.json');
+    const isOurs = (e) => (e.hooks || []).some((h) => typeof h.command === 'string' && h.command.includes('vibeconf-agent-hook'));
+    let changed = false;
+    for (const eventName of ['PostToolUse', 'Notification']) {
+      if (Array.isArray(settings.hooks?.[eventName])) {
+        const before = settings.hooks[eventName].length;
+        settings.hooks[eventName] = settings.hooks[eventName].filter((e) => !isOurs(e));
+        if (settings.hooks[eventName].length !== before) changed = true;
       }
+    }
+    if (changed) {
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+      console.log('[electron] Removed agent-activity hooks from settings.json');
     }
   } catch { /* no settings file */ }
   try { fs.rmSync(hookPath, { force: true }); } catch { /* ignore */ }

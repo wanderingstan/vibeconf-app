@@ -158,6 +158,22 @@ if [[ "${VIBECONF_NO_WATCHDOG:-0}" != "1" ]]; then
     # below would otherwise reap the EXIT trap's notify child before it sends
     # (2026-08-08). The file sentinel dedupes with the trap so it goes out once.
     send_digest; send_call_digest
+    # Before the kill sweep, let any in-flight Drive uploads DRAIN. The pkill -P /
+    # kill -KILL below otherwise reaps the backgrounded `rclone copy` jobs, so a
+    # watchdog-killed night loses most of its failing-lane recordings from Drive
+    # (2026-08-15: only 1 of 5 .movs made it up — the rest sat on local disk only).
+    # This subshell forked BEFORE any lane ran, so its _UPLOAD_PIDS copy is empty and
+    # send_digest's wait_for_uploads was a no-op above — we can't join by PID here, so
+    # drain by process name across the fork boundary. Scoped to THIS run's $STAMP so a
+    # neighbouring run's upload isn't drained, and BOUNDED by VIBECONF_UPLOAD_DRAIN_TIMEOUT
+    # so a hung rclone still can't wedge the schedule (the whole reason the watchdog exists).
+    if pgrep -f "rclone copy.*${STAMP}" >/dev/null 2>&1; then
+      _drain=0; _drain_max="${VIBECONF_UPLOAD_DRAIN_TIMEOUT:-180}"
+      echo "$(date +%Y-%m-%dT%H-%M-%S) ⏳ watchdog: draining in-flight Drive upload(s) before kill (≤${_drain_max}s)" >>"$RESULTS/watchdog.log"
+      while (( _drain < _drain_max )) && pgrep -f "rclone copy.*${STAMP}" >/dev/null 2>&1; do
+        sleep 5; _drain=$(( _drain + 5 ))
+      done
+    fi
     kill -TERM "$_run_pid" 2>/dev/null                # stop the run advancing first…
     pkill -f 'profile=test-meet-guest' 2>/dev/null    # …then sweep test fleets (reparented to init)…
     pkill -f 'profile=test-slack'      2>/dev/null

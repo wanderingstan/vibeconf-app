@@ -913,6 +913,16 @@ function renderBrain(s) {
   const status = document.getElementById('brainStatus');
   if (!feed) return;
   const lines = (s && s.agentLog) || [];
+  // #385: which model drives this bot — the at-a-glance differentiator when
+  // several profiles are up. Set BEFORE the unchanged-content guard below,
+  // because the model is read off the session's turns and can become known
+  // without the feed changing. Empty until known: no guessing.
+  if (status) {
+    const parts = [];
+    if (s && s.agentModel) parts.push(s.agentModel);
+    if (lines.length) parts.push(`${lines.length} lines`);
+    status.textContent = parts.join(' · ');
+  }
   const joined = lines.join('\n');
   if (joined === _brainLastRendered) return;   // don't fight the user's scroll
   _brainLastRendered = joined;
@@ -920,7 +930,6 @@ function renderBrain(s) {
   if (!lines.length) {
     feed.innerHTML = '<span class="l-none">No agent session yet. This fills in once a bot is driven by '
       + 'Claude Code — the app reads the session\u2019s own transcript.</span>';
-    if (status) status.textContent = '';
     return;
   }
   // Pinned to the bottom unless the user has scrolled up to read something —
@@ -931,7 +940,6 @@ function renderBrain(s) {
     const esc = l.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     return `<div class="${cls}">${esc}</div>`;
   }).join('');
-  if (status) status.textContent = `${lines.length} lines`;
   if (atBottom) feed.scrollTop = feed.scrollHeight;
 }
 

@@ -338,14 +338,21 @@ function stopRecordingStatsPush() {
 // playable across players/tools).
 let activeShareCaptureWindow = null;
 
-// The AbortController for whichever ffmpeg merge is currently running inside
-// stopCallRecording() (see call-recording-merge-window.js's "Preparing
-// recording…" window). null whenever no merge is in flight — including
-// between the main and share merges, briefly, and always outside
-// stopCallRecording() entirely. The 'merge-cancel-requested' IPC handler
-// (setupIPC) just calls .abort() on whatever this currently points to, so a
-// stray/late cancel click with nothing running is a harmless no-op.
+// The AbortController for the most recently started ffmpeg merge run (see
+// runPostRecordingMerges and call-recording-merge-window.js's "Preparing
+// recording…" window). null whenever no merge is in flight. The
+// 'merge-cancel-requested' IPC handler (setupIPC) just calls .abort() on
+// whatever this currently points to, so a stray/late cancel click with
+// nothing running is a harmless no-op. Since #388 detached the merge from
+// stopCallRecording, two runs can (rarely) overlap — this always points at
+// the newest one, and each run only nulls it back out if it still owns it.
 let activeMergeAbortController = null;
+
+// #388: how many detached runPostRecordingMerges runs are currently in
+// flight. Only consulted at quit, for an honest log line — quitting kills any
+// running ffmpeg with the app, which loses nothing but the combined mp4 (the
+// raw tracks and their RECOVERY.md stay on disk until a merge SUCCEEDS).
+let mergesInFlight = 0;
 
 // Spoken when an explicit start_recording begins, so participants are told
 // the call is being recorded (consent). Short on purpose. Just "recording this
@@ -491,11 +498,20 @@ async function stopShareCaptureIfActive() {
   }
 }
 
-// Async: waiting for the control window's final video chunk (and then muxing
-// audio+video into call-recording.mp4) both take a moment. Callers that don't need the
-// result (leave-call teardown, the IPC 'call-record-stopped' notification)
-// fire this without awaiting — best-effort, never blocks the call from ending
-// (each step below is independently try/caught for the same reason).
+// Async: waiting for the control window's final video chunk takes a moment,
+// but only a moment — everything awaited in here is the FAST half of stopping
+// (close the capture windows, flush the last chunks, write manifest.json).
+// The ffmpeg merge is NOT awaited (#388): it can run 20+ minutes on a long
+// call, and this function sits directly under the stop_recording MCP tool
+// (via setCallRecording → onRecord → /api/call/record), so awaiting the merge
+// here left the agent comatose in the room — unable to speak, read chat, or
+// even issue leave_call — until ffmpeg finished. The merge now runs detached
+// via runPostRecordingMerges below; by the time this returns, the raw tracks
+// and manifest are safely on disk and the combined mp4(s) are on their way.
+// Callers that don't need even the fast result (leave-call teardown, the IPC
+// 'call-record-stopped' notification) still fire this without awaiting —
+// best-effort, never blocks the call from ending (each step below is
+// independently try/caught for the same reason).
 async function stopCallRecording() {
   if (!activeRecording) return { ok: true, already: true };
   const dir = activeRecording.dir;
@@ -540,9 +556,35 @@ async function stopCallRecording() {
 
   // Merge is additive — the raw per-track files stay on disk either way, so a
   // failed/skipped merge just means no call-recording.mp4, not lost material.
-  let mainMerge = null;
-  let shareMerge = null; // stays null when there was no share track to merge
+  // That's exactly why it can run detached (#388): nothing after this point
+  // needs the merge's outcome, and everything before it is already safe.
+  // Fire-and-forget with the same framing as the share merge inside — the
+  // .catch is belt-and-braces (every step in there is independently caught).
   if (manifest) {
+    runPostRecordingMerges({ callDir, tracksDir: dir, manifest, outputSuffix, finishedSession })
+      .catch((err) => console.warn('[call-record] detached merge failed:', err.message));
+  }
+
+  return { ok: true, dir, tracks, merging: !!manifest };
+}
+
+// #388: the slow half of stopping a recording — the ffmpeg merge(s) plus the
+// cleanup that depends on their outcome — split out of stopCallRecording so
+// it can run detached from the request path (see the comment there). Only
+// ever started by stopCallRecording, exactly once per finalized manifest, so
+// a double stop can't double-merge (the second stop finds activeRecording
+// already null and returns {already:true} without reaching this). A NEW
+// recording started while this is still running can't collide with it either:
+// nextRecordingSuffix treats a still-present call-recording-tracks<suffix>/
+// dir OR an already-merged call-recording<suffix>.mp4 as "in use", and this
+// merge's tracks dir stays on disk until the merge succeeds — so the next
+// recording always picks a fresh suffix and a fresh output name.
+async function runPostRecordingMerges({ callDir, tracksDir, manifest, outputSuffix, finishedSession }) {
+  const dir = tracksDir;
+  mergesInFlight++;
+  try {
+    let mainMerge = null;
+    let shareMerge = null; // stays null when there was no share track to merge
     const shareTrack = manifest.tracks.find((t) => t.track === 'share');
     const hasVideo = manifest.tracks.some((t) => t.track === 'video');
     // The merge can take a while and pins a CPU core — by this point BOTH
@@ -554,12 +596,18 @@ async function stopCallRecording() {
     // the raw tracks are untouched either way (see allAttemptedMergesOk
     // below), so cancelling never loses material, only the combined file(s).
     const mergeWin = hasVideo ? createMergeProgressWindow() : null;
-    if (mergeWin) {
-      activeMergeAbortController = new AbortController();
+    // Per-run controller, published to the module-level slot only while this
+    // run owns it: with the merge detached, a stop→start→stop in quick
+    // succession can (rarely) have two runs alive at once, and the Cancel
+    // button should abort the latest one without an older run's cleanup
+    // nulling the slot out from under it (see the ===-guard below).
+    const abort = mergeWin ? new AbortController() : null;
+    if (abort) {
+      activeMergeAbortController = abort;
     }
     const mainOutputName = `call-recording${outputSuffix}.mp4`;
     try {
-      mainMerge = await mergeCallMedia(callDir, { tracksDir: dir, tracks: manifest.tracks, outputName: mainOutputName, signal: activeMergeAbortController?.signal });
+      mainMerge = await mergeCallMedia(callDir, { tracksDir: dir, tracks: manifest.tracks, outputName: mainOutputName, signal: abort?.signal });
       if (mainMerge.ok) console.log(`[call-record] merged ${mainOutputName} -> ${mainMerge.file}`);
       else console.log(`[call-record] merge skipped: ${mainMerge.reason}`);
     } catch (err) {
@@ -593,7 +641,7 @@ async function stopCallRecording() {
           videoTrackName: 'share',
           outputName: shareOutputName,
           padStartMs,
-          signal: activeMergeAbortController?.signal,
+          signal: abort?.signal,
         });
         if (shareMerge.ok) console.log(`[call-record] merged ${shareOutputName} -> ${shareMerge.file} (padded ${padStartMs}ms)`);
         else console.log(`[call-record] share merge skipped: ${shareMerge.reason}`);
@@ -604,7 +652,7 @@ async function stopCallRecording() {
     }
     if (mergeWin) {
       closeMergeProgressWindow(mergeWin);
-      activeMergeAbortController = null;
+      if (activeMergeAbortController === abort) activeMergeAbortController = null;
     }
 
     // call-recording-tracks/ (the raw per-participant audio + video.webm +
@@ -634,9 +682,9 @@ async function stopCallRecording() {
         }
       }
     }
+  } finally {
+    mergesInFlight--;
   }
-
-  return { ok: true, dir, tracks };
 }
 
 // #343: the cheap half of stopping a recording, done SYNCHRONOUSLY, for the
@@ -8067,6 +8115,13 @@ app.on('before-quit', () => {
   // costs nothing to leave the tracks closed and the manifest written, which is
   // the difference between a recoverable recording and an unrecoverable one.
   finalizeRecordingSync('quit');
+  // #388: a detached post-recording merge may still be running here (it no
+  // longer holds up stop_recording, so quits can now land mid-merge). ffmpeg
+  // dies with the app; the raw tracks and RECOVERY.md are already safe on
+  // disk (they're only removed after a merge SUCCEEDS), so just say so.
+  if (mergesInFlight > 0) {
+    console.log(`[call-record] quit: ${mergesInFlight} background merge(s) still running — the combined mp4(s) won't finish, but the raw tracks are safe (see RECOVERY.md in each call-recording-tracks/ folder)`);
+  }
   closeAllClaudeTerminalsSync();
 });
 

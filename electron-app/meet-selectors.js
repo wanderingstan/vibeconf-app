@@ -86,6 +86,18 @@ const MEET = {
     pinMessageRe: /pin message/i,
     // A sender-header timestamp like "2:32 PM".
     timestampRe: /^\d{1,2}:\d{2}\s*([AP]\.?M\.?)?$/i,
+    // Pin-affordance chrome that leaks into a message body's innerText (#397).
+    // "keep" is the Material Symbols LIGATURE for the pin glyph, so it fuses
+    // onto the body with no separator ("…issues/389keepPin message"). Strip
+    // only a TRAILING run of chrome tokens, and accept a bare "keep" in that
+    // run only when fused (no whitespace before it) or following another
+    // chrome token — a sentence genuinely ending in " keep" survives.
+    pinHoverText: 'Hover over a message to pin it',
+    pinChromeTailRe: /(?:\s*(?:Pin message|Unpin message|Hover over a message to pin it)|(?<=\S)keep)(?:keep|Pin message|Unpin message|Hover over a message to pin it|\s)*$/,
+    // A body that is NOTHING but chrome tokens (the hover hint's row renders
+    // as its own data-message-id div): drop it outright — here "keep" needs
+    // no fusion guard because there is no user text for it to belong to.
+    pinChromeOnlyRe: /^(?:\s|keep|Pin message|Unpin message|Hover over a message to pin it)*$/,
   },
 
   // -------------------------------------------------------------------------

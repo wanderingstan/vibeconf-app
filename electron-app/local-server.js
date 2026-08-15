@@ -1226,7 +1226,21 @@ class LocalServer {
     this.detectedSlackHuddleUrl = url || null;
   }
 
-  setChatUnread(unread) {
+  setChatUnread(unread, { authoritative = false } = {}) {
+    // Only a successful read_chat may CLEAR the flag (authoritative: the agent
+    // provably consumed the messages). The page's false edge must not: Meet
+    // marks chat read the moment the pane opens, and the bot opens the pane
+    // for its OWN send_chat — so every send was silently erasing unread state
+    // the agent had never seen, and the "[Unread chat messages]" notice never
+    // reached wait_for_speech for bots that post a lot (#397). The true edge
+    // still passes through; a spurious badge nags until the next read, which
+    // is the visible failure mode, not the silent one.
+    if (!unread && !authoritative) {
+      if (this.chatUnread) {
+        console.log('[local-server] Chat badge cleared page-side (pane open?) — keeping unread set until read_chat consumes it (#397)');
+      }
+      return;
+    }
     if (this.chatUnread === unread) return;
     this.chatUnread = unread;
     console.log('[local-server] Chat unread:', unread);
@@ -4029,7 +4043,7 @@ class LocalServer {
           // programmatic pane-open, so chatUnread would otherwise stick true and
           // suppress all future chat-wakes (#chat-wake). This is authoritative:
           // a successful read means the messages were seen.
-          if (result?.ok) this.setChatUnread(false);
+          if (result?.ok) this.setChatUnread(false, { authoritative: true });
           res.writeHead(result?.ok ? 200 : 500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: !!result?.ok, messages: result?.messages || [], error: result?.error, reason: result?.reason }));
         }

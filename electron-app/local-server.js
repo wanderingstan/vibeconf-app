@@ -1682,23 +1682,26 @@ class LocalServer {
     if (this.floorBusy) this._armBargeIn();
   }
 
-  // #395: when the silence gate should consider silence to have BEGUN.
+  // #395: when the silence gate should consider silence to have BEGUN — which
+  // is simply when the speaker actually stopped. No padding, anywhere.
   //
-  // The speaker tracker reports the true stop edge — it no longer holds
-  // `speaking` true for an extra second after the audio goes quiet. That
-  // padding was never a fact about the world; it was this gate's policy, so it
-  // lives here now, named and tunable, instead of being baked into a shared
-  // flag every other consumer inherited blind. Barge-in, which needs the
-  // opposite bias — the instant someone actually stopped — reads the tracker
-  // directly and gets the real edge (#392).
+  // The tracker used to hold `speaking` true for a hard-coded extra second so a
+  // flicker mid-utterance couldn't read as "they finished". Two things are
+  // wrong with that. It lied to every consumer, not just this gate (#392: it
+  // made the earliest possible release ~2.1s, longer than the barge-in grace,
+  // so a one-word interjection cut the bot off every time). And — Stan's
+  // point, and it's the better one — this gate ALREADY solves the flicker, with
+  // `silenceSeconds`: a drop shorter than that threshold just re-arms the timer
+  // and resolves nothing. The pad was a second, unnamed silence threshold
+  // stacked on the real one, so a configured 1.4s gate was really 2.4s. (The
+  // "~1.4s extra wait observed every turn" noted below was this.)
   //
-  // Returns 0 when nobody has stopped yet: padding must never manufacture a
-  // stop that did not happen.
+  // One knob, honestly named. If the bot jumps in too fast, raise
+  // `silenceSeconds` — do not reintroduce a hidden pad.
+  //
+  // Returns 0 when nobody has stopped yet.
   effectiveSilenceStart() {
-    if (!this.lastSpeechStoppedAt) return 0;
-    const pref = Number(this._pref('speechStopPaddingMs'));
-    const pad = Number.isFinite(pref) ? pref : 1000;
-    return this.lastSpeechStoppedAt + pad;
+    return this.lastSpeechStoppedAt || 0;
   }
 
   // The floor as the turn-taking gates should see it. With fastFloorDetection

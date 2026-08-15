@@ -15,10 +15,16 @@
 // which is precisely what the grace exists to prevent. Reported from the room
 // as: "I literally just said like one word, and you stopped talking."
 //
-// So: the tracker tells the truth, and `speechStopPaddingMs` re-applies the
-// margin inside the silence gate only. These tests pin BOTH halves — the gate
-// must still be padded (or turns resolve a second early), and the padding must
-// not leak into anything else.
+// The pad is DELETED, not relocated (Stan, same call): the silence gate that
+// wanted it already has `silenceSeconds`, and a flicker shorter than that
+// threshold merely re-arms its timer. So the pad was a second, unnamed silence
+// threshold stacked on the configured one — a 1.4s gate was really 2.4s, which
+// is the "~1.4s extra wait observed every turn" the ingest code already
+// complained about. One knob, honestly named: if the bot jumps in too fast,
+// raise `silenceSeconds`.
+//
+// These tests pin both halves: the pad must be gone from the tracker AND must
+// not reappear in the gate under a new name.
 //
 // Run: node --test tests/   (or `pnpm test:unit`)
 
@@ -64,32 +70,31 @@ test('#395: the padded reading is not silently reintroduced at the combine layer
 
 // --- the gate side: the padding survives, where it belongs -----------------
 
-test('#395: the silence gate still waits out the padding before counting silence', () => {
-  const s = makeServer({ speechStopPaddingMs: 1000 });
-  // Someone stopped speaking RIGHT NOW. With a 1s pad the gate must not treat
-  // silence as having started yet.
-  s.lastSpeechStoppedAt = Date.now();
-  assert.equal(s.effectiveSilenceStart(), s.lastSpeechStoppedAt + 1000,
-    'silence starts one padded second after the true stop edge');
+test('#395: silence is counted from the true stop edge, with nothing added', () => {
+  const s = makeServer();
+  const stopped = Date.now();
+  s.lastSpeechStoppedAt = stopped;
+  assert.equal(s.effectiveSilenceStart(), stopped,
+    'the gate starts counting when the speaker actually stopped');
 });
 
-test('#395: the padding is configurable, and 0 means "trust the true edge"', () => {
-  const s = makeServer({ speechStopPaddingMs: 0 });
-  s.lastSpeechStoppedAt = Date.now();
-  assert.equal(s.effectiveSilenceStart(), s.lastSpeechStoppedAt,
-    'a zero pad resolves from the real stop edge');
+test('#395: no padding preference is reintroduced under any name', () => {
+  // The pad was deleted, not relocated. A pref that re-adds a hidden delay in
+  // front of silenceSeconds would recreate exactly the two-thresholds-for-one-
+  // job problem this change removed.
+  const schemaSrc = readFileSync(
+    new URL('../electron-app/preferences-schema.js', import.meta.url), 'utf8');
+  assert.ok(!/speechStopPaddingMs/.test(schemaSrc),
+    'the relocated pad must not survive as a preference');
+  const serverSrc = readFileSync(
+    new URL('../electron-app/local-server.js', import.meta.url), 'utf8');
+  assert.ok(!/speechStopPaddingMs/.test(serverSrc),
+    'nor be read anywhere in the silence gate');
 });
 
-test('#395: a missing/invalid pref falls back to the 1000ms it replaced', () => {
-  const s = makeServer({}); // no speechStopPaddingMs at all
-  s.lastSpeechStoppedAt = Date.now();
-  assert.equal(s.effectiveSilenceStart(), s.lastSpeechStoppedAt + 1000,
-    'default preserves the behaviour the tracker used to provide');
-});
-
-test('#395: no stop edge yet means no padded timestamp to resolve from', () => {
-  const s = makeServer({ speechStopPaddingMs: 1000 });
+test('#395: the gate is honest when nobody has stopped yet', () => {
+  const s = makeServer();
   s.lastSpeechStoppedAt = null;
   assert.equal(s.effectiveSilenceStart(), 0,
-    'padding must not manufacture a stop that never happened');
+    'no stop edge means no timestamp to resolve from');
 });

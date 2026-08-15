@@ -2565,10 +2565,12 @@ class DOMSpeakerTracker {
   // itself — so the grace could never expire into a cleared flag and a single
   // word from a human reliably cut the bot off mid-sentence.
   //
-  // The padding now lives in local-server's silence gate as
-  // `speechStopPaddingMs`, where it is visible, tunable, and scoped to the
-  // consumer whose policy it actually is. The rolling window in _rawSpeaking
-  // still smooths the signal; what's gone is the extra one-sided margin.
+  // The padding is gone entirely rather than relocated: the silence gate that
+  // wanted it already has `silenceSeconds`, and a flicker shorter than that
+  // threshold merely re-arms its timer. The pad was a second, unnamed silence
+  // threshold stacked on the configured one. The rolling window in
+  // _rawSpeaking still smooths the signal; what's gone is the one-sided margin
+  // on top of it.
   _isSpeaking(info, now) {
     const raw = this._rawSpeaking(info, now);
     if (raw) info.lastTrueAt = now;   // kept: _logSignalDisagreement and debug read it

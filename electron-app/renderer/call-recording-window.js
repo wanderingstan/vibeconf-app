@@ -32,6 +32,38 @@
     document.body.style.display = 'none';
   }
 
+  // Capture size/rate. `{ video: true }` used to be the whole constraint, which
+  // handed back the source frame at its full DEVICE-pixel size — on a Retina
+  // display that meant 3024x1700 @ 60fps, and two problems fell out of it:
+  //
+  //   (1) ASPECT. 3024x1700 is not a standard ratio (756:425 ≈ 1.7788, next to
+  //       16:9's 1.7778) — it is just whatever the window happened to be,
+  //       rounded to even for yuv420p. Nothing downstream distorts it (the
+  //       webm and the muxed mp4 agree exactly, SAR 1:1), but anything that
+  //       ASSUMES 16:9 — Drive's preview, YouTube, most players' fullscreen —
+  //       letterboxes it slightly. Pinning the capture to 16:9 fixes it at the
+  //       source, which is the only place it can be fixed.
+  //
+  //   (2) COST. 5.1 megapixels per frame at 60fps is ~5x the pixel throughput
+  //       of 1080p30, and every one of those pixels is re-encoded by the merge
+  //       step afterwards (call-media-merge.js always transcodes; it cannot
+  //       '-c:v copy' VP9 into MP4). Measured on a real 3024x1700 recording,
+  //       30s of footage took 13.1s to merge — 2.3x realtime, so a 40-minute
+  //       call spent ~17 minutes pinning a core.
+  //
+  // `ideal` rather than `exact` on purpose: a source frame smaller than 1080p
+  // should be captured as-is, not upscaled, and an exact constraint would fail
+  // the request outright rather than degrade. Chromium keeps the source's own
+  // aspect while fitting inside the box, so a genuinely non-16:9 window still
+  // records undistorted — just bounded.
+  const CAPTURE_CONSTRAINTS = {
+    video: {
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
+      frameRate: { ideal: 30 },
+    },
+  };
+
   let seq = 0;
   let startWallClock = 0;
   let startedAt = 0;
@@ -91,7 +123,7 @@
       // target's own frame directly (see call-recording-window.js), which
       // Electron intercepts before Chromium's native gesture-gated picker
       // would run.
-      stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      stream = await navigator.mediaDevices.getDisplayMedia(CAPTURE_CONSTRAINTS);
     } catch (err) {
       setError(String(err && err.message || err));
       window.electronAPI.send('frame-capture-error', { track: TRACK, message: String(err && err.message || err) });

@@ -580,27 +580,37 @@ const PREFERENCES = {
   },
   bargeInGraceMinMs: {
     type: 'number',
-    default: 700,
+    default: 900,
     min: 0,
     max: 10_000,
     description:
       'When bargeInUrgencyScaling is on: the grace for a zero-urgency (filler) ' +
-      'utterance — the bot yields the floor almost immediately. Default 700ms.',
+      'utterance — the bot yields the floor almost immediately. Default 900ms.',
   },
   bargeInGraceMaxMs: {
     type: 'number',
-    default: 1500,
+    default: 4000,
     min: 0,
     max: 10_000,
     description:
       'When bargeInUrgencyScaling is on: the grace for a max-urgency utterance — ' +
-      'the bot fights hardest to be heard. Default 1500ms — was 3500ms, lowered ' +
-      'in #138: the agent self-scored u≈0.90 on essentially every utterance that ' +
-      'call, so the scaling sat pinned near its ceiling and bought ~2.9s of ' +
-      'talking over a human, which is what "you\'re not stopping when we start ' +
-      'speaking" felt like from the room. With the min at 700ms the whole range ' +
-      'is now inside human turn-taking latency; raise it again if the urgency ' +
-      'distribution ever spreads out enough for the ceiling to mean something.',
+      'the bot fights hardest to be heard. Default 4000ms.\n\n' +
+      'History: was 3500ms, cut to 1500ms in #138 because the agent self-scored ' +
+      'u≈0.90 on essentially EVERY utterance, so the scaling sat pinned near its ' +
+      'ceiling and bought ~2.9s of talking over a human. That fix left a note — ' +
+      '"raise it again if the urgency distribution ever spreads out enough for ' +
+      'the ceiling to mean something" — and the join-call skill has since ' +
+      're-anchored the scale so a NORMAL answer is 0.4 and 0.9 means something ' +
+      'is actually wrong. The distribution spread out; the range never followed.\n\n' +
+      'Restored (2026-08-15, observed live on ded-iika-yrs): a well-scored 0.4 ' +
+      'answer got 1020ms and was cut 1.7s in. With 700–1500 the ENTIRE range sat ' +
+      'below the unscaled bargeInGraceMs default of 2500 — so scoring urgency ' +
+      'honestly made the bot strictly more interruptible than turning scaling ' +
+      'off, and even a house-on-fire 1.0 lost to filler-with-scaling-off. The ' +
+      '900–4000 range restores the intended shape: filler (0.0) still cedes at ' +
+      '900ms, unscored (0.5) lands at ~2450ms ≈ the fixed default it falls back ' +
+      'to, a normal answer (0.4) gets ~2140ms, and a genuine emergency (0.9+) ' +
+      'gets ~3.7s to actually finish the sentence.',
   },
   workingStateMinMs: {
     type: 'number',

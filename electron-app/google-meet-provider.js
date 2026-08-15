@@ -1470,16 +1470,14 @@ const botNameLoaded = ipcRenderer.invoke('get-meet-bot-name').then((name) => {
   console.warn('[electron-meet] Failed to load botName:', err.message);
 });
 
-// Debug visual: outline the participant tile the speaker tracker thinks is
-// speaking, so it can be eyeballed against Meet's own animating mic meter
-// (#229 diagnosis). Defaults ON — the bot's Meet view is only ever seen by the
-// operator in the Electron window, never by call participants, so there's no
-// reason to hide it. Set speakerDebugBorder:false in config.json to disable.
-let speakerDebugBorder = true;
-ipcRenderer.invoke('get-config', ['speakerDebugBorder']).then((r) => {
-  speakerDebugBorder = r?.speakerDebugBorder !== false; // explicit false disables
-  console.log('[electron-meet] speakerDebugBorder', speakerDebugBorder ? 'ON — speaking tiles outlined' : 'OFF');
-}).catch(() => {});
+// (#407: the speaker-debug border that used to live here is gone, and not just
+// unused: toggling a class on the tile fed the very MutationObserver that
+// counts tile mutations as the speaking signal, so every verdict flip
+// manufactured the mutation that flipped it back — a feedback loop that kept
+// `speaking` oscillating at poll cadence for as long as the meter churned near
+// threshold. If a tile-marking diagnostic ever returns, it must write only
+// `vibeconf-`-prefixed classes, which the observer now discards as
+// self-authored.)
 
 // Which per-participant speaking signal(s) the tracker's verdict comes from
 // (#142). Both signals always RUN and are always logged — this only decides
@@ -2288,6 +2286,7 @@ class DOMSpeakerTracker {
   _startObserving() {
     this.observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
+        if (this._isSelfAuthoredMutation(mutation)) continue;
         if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
           this._checkSpeakingChange(mutation.target);
         }
@@ -2299,8 +2298,42 @@ class DOMSpeakerTracker {
       }
     });
     this.observer.observe(document.body, {
-      attributes: true, attributeFilter: ['class'], childList: true, subtree: true,
+      // attributeOldValue so the filter above can diff the class list and tell
+      // OUR writes from Meet's — see _isSelfAuthoredMutation.
+      attributes: true, attributeFilter: ['class'], attributeOldValue: true,
+      childList: true, subtree: true,
     });
+  }
+
+  // #407: never let the app's own DOM writes feed the speaking counter. The
+  // deleted debug border proved the failure mode — a class toggle on a tile is
+  // indistinguishable from Meet's meter churn to a subtree observer, so the
+  // tracker literally counted its own output as evidence and oscillated at
+  // poll cadence. The contract that makes this checkable: every class the app
+  // writes inside Meet's DOM is `vibeconf-`-prefixed. A class mutation whose
+  // entire delta is vibeconf-* classes is ours; the tiniest Meet-authored
+  // change alongside still counts. childList additions of our own elements
+  // (id/class vibeconf-*) are skipped for the same reason.
+  _isSelfAuthoredMutation(mutation) {
+    if (mutation.type === 'attributes') {
+      const oldClasses = String(mutation.oldValue || '').split(/\s+/).filter(Boolean);
+      const newClasses = String(mutation.target.className || '').split(/\s+/).filter(Boolean);
+      const oldSet = new Set(oldClasses);
+      const newSet = new Set(newClasses);
+      const delta = [
+        ...newClasses.filter((c) => !oldSet.has(c)),
+        ...oldClasses.filter((c) => !newSet.has(c)),
+      ];
+      return delta.length > 0 && delta.every((c) => c.startsWith('vibeconf-'));
+    }
+    if (mutation.type === 'childList') {
+      const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
+      const ours = (n) => n.nodeType === 1
+        && (String(n.id || '').startsWith('vibeconf-')
+          || String(n.className || '').split(/\s+/).some((c) => c.startsWith('vibeconf-')));
+      return nodes.length > 0 && nodes.every(ours);
+    }
+    return false;
   }
 
   // Detection signal (#229): count mutations WITHIN a participant's tile in a
@@ -2335,13 +2368,28 @@ class DOMSpeakerTracker {
   // Raw speaking signal #1 of 2: enough tile mutations in the recent window.
   // The slower but battle-tested one; see _isSpeakingByMeter for the level
   // signal that reads Meet's meter directly, and _rawSpeaking for the combine.
+  //
+  // #407: a Schmitt trigger, not a bare threshold. Arm at >=ARM, release only
+  // when the window drains BELOW RELEASE. With a single cutoff, a meter
+  // churning right at the threshold rate flapped the verdict every poll tick
+  // (drain to 2 -> false; one mutation lands -> 3 -> true; repeat) — 190
+  // true/false pairs 1ms apart on one real call. The gap between the two
+  // thresholds means one borderline mutation can no longer flip the verdict
+  // in either direction: turning ON still takes the full arm count, turning
+  // OFF requires the churn to genuinely die down, not momentarily dip.
   _isSpeakingByMutation(info, now) {
     const WINDOW_MS = 1200;
-    const MIN_MUTATIONS = 3; // meter does ~6-12 in this window; idle UI does <3
+    const ARM_MUTATIONS = 3;     // meter does ~6-12 in this window; idle UI does <3
+    const RELEASE_MUTATIONS = 2; // armed survives a dip to 2; drops off below it
     const t = info.mutTimes;
-    if (!t || !t.length) return false;
-    while (t.length && now - t[0] > WINDOW_MS) t.shift();
-    return t.length >= MIN_MUTATIONS;
+    if (t) while (t.length && now - t[0] > WINDOW_MS) t.shift();
+    const count = t ? t.length : 0;
+    if (info._mutArmed) {
+      if (count < RELEASE_MUTATIONS) info._mutArmed = false;
+    } else if (count >= ARM_MUTATIONS) {
+      info._mutArmed = true;
+    }
+    return info._mutArmed === true;
   }
 
   // -------------------------------------------------------------------------
@@ -2649,7 +2697,6 @@ class DOMSpeakerTracker {
       info.speaking = isSpeaking;
       info.lastChange = now;
       console.log('[speaker-tracker] (' + source + ')', name, '→', isSpeaking);
-      this._applyDebugBorder(info, isSpeaking);
       meetProvider.emit(CALL_EVENTS.speakingChanged, { name, speaking: isSpeaking });
       meetProvider.emit(CALL_EVENTS.participantsUpdated, this.getParticipantList());
       // #209: feed the page-world CallRecorder the real participant NAME so it can
@@ -2663,35 +2710,6 @@ class DOMSpeakerTracker {
       // Re-assert active speech so local-server's silence timer keeps resetting.
       meetProvider.emit(CALL_EVENTS.speakingChanged, { name, speaking: true });
     }
-  }
-
-  // Visual diagnostic (gated by speakerDebugBorder config): outline the tile we
-  // currently think is speaking, so it can be eyeballed against Meet's own
-  // animating mic meter in the same row.
-  _applyDebugBorder(info, speaking) {
-    if (!speakerDebugBorder || !info.item) return;
-    this._injectDebugStyle(); // lazy — flag is loaded async, head exists by now
-    try { info.item.classList.toggle('vibeconf-spk-debug', !!speaking); } catch { /* ignore */ }
-  }
-
-  _injectDebugStyle() {
-    if (this._debugStyleInjected) return;
-    this._debugStyleInjected = true;
-    try {
-      const style = document.createElement('style');
-      style.textContent = `
-        .vibeconf-spk-debug {
-          outline: 3px solid #00e5ff !important;
-          outline-offset: -3px !important;
-          border-radius: 6px;
-          animation: vibeconf-spk-pulse 0.7s ease-in-out infinite !important;
-        }
-        @keyframes vibeconf-spk-pulse {
-          0%, 100% { box-shadow: 0 0 6px 2px rgba(0,229,255,0.55); }
-          50%      { box-shadow: 0 0 16px 5px rgba(0,229,255,1); }
-        }`;
-      document.head.appendChild(style);
-    } catch { /* ignore */ }
   }
 
   _pollSpeakingState() {

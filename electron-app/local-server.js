@@ -1682,6 +1682,28 @@ class LocalServer {
     if (this.floorBusy) this._armBargeIn();
   }
 
+  // #395: when the silence gate should consider silence to have BEGUN — which
+  // is simply when the speaker actually stopped. No padding, anywhere.
+  //
+  // The tracker used to hold `speaking` true for a hard-coded extra second so a
+  // flicker mid-utterance couldn't read as "they finished". Two things are
+  // wrong with that. It lied to every consumer, not just this gate (#392: it
+  // made the earliest possible release ~2.1s, longer than the barge-in grace,
+  // so a one-word interjection cut the bot off every time). And — Stan's
+  // point, and it's the better one — this gate ALREADY solves the flicker, with
+  // `silenceSeconds`: a drop shorter than that threshold just re-arms the timer
+  // and resolves nothing. The pad was a second, unnamed silence threshold
+  // stacked on the real one, so a configured 1.4s gate was really 2.4s. (The
+  // "~1.4s extra wait observed every turn" noted below was this.)
+  //
+  // One knob, honestly named. If the bot jumps in too fast, raise
+  // `silenceSeconds` — do not reintroduce a hidden pad.
+  //
+  // Returns 0 when nobody has stopped yet.
+  effectiveSilenceStart() {
+    return this.lastSpeechStoppedAt || 0;
+  }
+
   // The floor as the turn-taking gates should see it. With fastFloorDetection
   // on, EITHER signal counts as busy — the analyser gets there first, the DOM
   // path keeps it honest if the analyser misses (threshold too high, no remote
@@ -2486,9 +2508,18 @@ class LocalServer {
       //     the most recent caption activity. Without this fallback a fresh
       //     utterance with a multi-minute-old stopTime would resolve
       //     immediately at speech-onset.
+      // #395: the speaker tracker now reports the TRUE stop edge — it no
+      // longer holds `speaking` true for an extra second after the signal goes
+      // quiet. The pad was DELETED, not moved here: a mid-sentence breath that
+      // flips the tracker false just restarts this gate's own clock (a fresher
+      // lastSpeechStoppedAt), so `silenceSeconds` already does the pad's job
+      // and the pad was a second, unnamed threshold stacked on it. Net effect
+      // on this gate: turns resolve ~1s sooner than before #395 — that second
+      // was the hidden pad, not configured silence. If the bot jumps in too
+      // fast, raise `silenceSeconds`; do not reintroduce a pad.
       const silenceMs = effSilence * 1000;
       const lastEntryTime = lastEntryActivityTime;
-      const stopTime = this.lastSpeechStoppedAt || 0;
+      const stopTime = this.effectiveSilenceStart();
       const STOP_FRESH_MS = silenceMs * 3; // ~6s with default 2s silence
       const stopIsFresh = stopTime && (Date.now() - stopTime) < STOP_FRESH_MS;
       const silenceStart = stopIsFresh

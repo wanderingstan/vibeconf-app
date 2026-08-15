@@ -2004,8 +2004,12 @@ function findPeopleButton() {
 const METER_SAMPLE_MS = 50;
 // How long a single off-rest sample keeps the meter verdict true. Covers the
 // gaps between the sprite's animation steps (it is quantised, not continuous)
-// without holding so long that a one-frame blip reads as a whole turn. The
-// existing SPEAKING_GRACE_MS still applies on top, at the combine layer.
+// without holding so long that a one-frame blip reads as a whole turn. This
+// hold is the ONLY smoothing on the meter's false edge — the 1s combine-layer
+// grace that used to sit on top was deleted in #395 (the tracker now reports
+// the true stop edge), so in 'meter' mode a release is real ~250ms after the
+// last raised sample. In 'mutation'/'either' the 1200ms mutation window still
+// smooths.
 const METER_HOLD_MS = 250;
 // How long a raised level must persist (and across at least two readings)
 // before the meter's verdict arms. See the attack note in _readPromoted.
@@ -2202,7 +2206,7 @@ class DOMSpeakerTracker {
         }
         this.participants.set(key, {
           name, isPseudo, speaking: false, isSelf, item,
-          mutTimes: [], lastTrueAt: 0, lastChange: Date.now(),
+          mutTimes: [], lastChange: Date.now(),
         });
       } else {
         const info = this.participants.get(key);
@@ -2550,17 +2554,32 @@ class DOMSpeakerTracker {
     s.mut = mut; s.meter = meter === true;
   }
 
-  // Asymmetric grace: true trusted instantly (avatar flips with no lag), false
-  // held for SPEAKING_GRACE_MS so a brief animation pause mid-utterance doesn't
-  // escape as a premature "stopped" (which used to leave wait_for_speech on a
-  // stale stopped-timestamp — the 36s-late-response incident). The rolling
-  // window already smooths; this adds margin on top.
-  _isSpeakingWithGrace(info, now) {
-    const raw = this._rawSpeaking(info, now);
-    if (raw) { info.lastTrueAt = now; return true; }
-    const SPEAKING_GRACE_MS = 1000;
-    if (info.lastTrueAt && (now - info.lastTrueAt) < SPEAKING_GRACE_MS) return true;
-    return false;
+  // #395: report the TRUE edges — both of them — and nothing else.
+  //
+  // This used to hold `false` for a SPEAKING_GRACE_MS of 1000ms so a brief
+  // animation pause mid-utterance couldn't escape as a premature "stopped"
+  // (the 36s-late-response incident). That padding was real and still is —
+  // but it belongs to the ONE consumer that needs it, the silence timer, not
+  // baked into the shared flag where every other consumer inherits it blind.
+  //
+  // Barge-in needs the exact opposite bias: it has to know the instant someone
+  // actually went quiet, so it can ride out a one-word interjection instead of
+  // yielding the floor to it. With the pad in here, the shortest release this
+  // tracker could ever report was ~2.1s — longer than the barge-in grace
+  // itself — so the grace could never expire into a cleared flag and a single
+  // word from a human reliably cut the bot off mid-sentence.
+  //
+  // The padding is gone entirely rather than relocated: the silence gate that
+  // wanted it already has `silenceSeconds`, and a flicker shorter than that
+  // threshold merely re-arms its timer. The pad was a second, unnamed silence
+  // threshold stacked on the configured one. The rolling window in
+  // _rawSpeaking still smooths the signal; what's gone is the one-sided margin
+  // on top of it.
+  _isSpeaking(info, now) {
+    // (The lastTrueAt bookkeeping that lived here served only the deleted
+    // grace branch — _logSignalDisagreement keeps its own edge timestamps in
+    // info._sig — so it went with it.)
+    return this._rawSpeaking(info, now);
   }
 
   // Shared flip: evaluate speaking, and on an edge emit the IPCs + toggle the
@@ -2568,7 +2587,7 @@ class DOMSpeakerTracker {
   // the true edge instantly) from the 200ms poll (catches the false edge once
   // the window drains, since the observer only fires while mutations arrive).
   _evaluateSpeaking(info, name, now, source) {
-    const isSpeaking = this._isSpeakingWithGrace(info, now);
+    const isSpeaking = this._isSpeaking(info, now);
     if (isSpeaking !== info.speaking) {
       info.speaking = isSpeaking;
       info.lastChange = now;

@@ -93,7 +93,7 @@ function setup({ mode = 'either' } = {}) {
 }
 
 const participant = (item, extra = {}) =>
-  ({ name: 'Stan', item, speaking: false, mutTimes: [], lastTrueAt: 0, ...extra });
+  ({ name: 'Stan', item, speaking: false, mutTimes: [], ...extra });
 
 // Onset: baseline sample, the meter rises, then it stays up long enough to
 // clear the attack. Leaves the meter verdict true as of `t0 + 100`.

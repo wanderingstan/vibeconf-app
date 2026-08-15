@@ -8538,12 +8538,45 @@ function setBotViewState(state) {
       mainWindow.removeBrowserView(meetView);
     }
     const win = new BrowserWindow({
-      width: 900, height: 620,
+      // 16:9, and LOCKED to it below. This window is a capture surface as well
+      // as a viewing one: call-recording-window.js records meetView's frame,
+      // and in 'popped' state meetView is sized to exactly this window's
+      // content box (see `fit` below, bound to every resize). So whatever
+      // shape the user drags this into is the shape of call-recording.mp4.
+      //
+      // It used to be 900x620 — 1.45:1, not a video ratio at all — and then
+      // free-resizing on top of that. Recordings came out at whatever the user
+      // happened to leave it: 3024x1700 (DAR 756:425) in the wild, close
+      // enough to 16:9 to look like a bug and far enough to letterbox in
+      // anything that assumes 16:9. Meanwhile the 'hidden' state has always
+      // recorded cleanly, purely because botViewLayout.HIDDEN_SIZE is a fixed
+      // 1600x900. This gives 'popped' the same guarantee.
+      //
+      // setAspectRatio rather than a fixed size, and rather than resizing the
+      // window when recording starts: the user keeps full control of how big
+      // their view is, they just can't make it a shape that ruins the
+      // recording. Nothing moves under them mid-call.
+      //
+      // NOTE this is necessary but NOT sufficient — these are LOGICAL pixels,
+      // so on a Retina display the captured frame is 2x this. The capture
+      // constraint in renderer/call-recording-window.js is what bounds the
+      // actual encoded resolution; this only fixes the SHAPE.
+      width: 960, height: 540,
       title: windowTitle("Bot's view"),
       icon: path.join(__dirname, 'icon.png'),
       parent: mainWindow || undefined,
       webPreferences: { nodeIntegration: false, contextIsolation: true },
     });
+    // extraSize {0,0} because meetView fills the whole content box — there is
+    // no in-content chrome to subtract — so the ratio applies to exactly what
+    // getContentSize() reports, which is what `fit` hands to setBounds.
+    //
+    // Best-effort: this is macOS/Windows in Electron 33, and it constrains
+    // USER drags only (the docs are explicit that programmatic setSize skips
+    // it — nothing here calls setSize on this window). Where it's unavailable
+    // it no-ops, and the capture constraint still bounds the encode; the
+    // recording is then merely the old arbitrary shape, not broken.
+    try { win.setAspectRatio(16 / 9, { width: 0, height: 0 }); } catch { /* not supported here */ }
     meetPopoutWindow = win;
     if (meetView && !meetView.webContents.isDestroyed()) win.addBrowserView(meetView);
     const fit = () => {

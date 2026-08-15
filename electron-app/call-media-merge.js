@@ -73,6 +73,61 @@ const PAD_NORMALIZE_FPS = 5;
 // patience.
 const MERGE_STALL_TIMEOUT_MS = 120000;
 
+// The video encode args, in one place because six branches below build the
+// same encode with different maps and filters.
+//
+// `-preset` used to be absent, which is not the same as neutral: libx264
+// silently defaults to `medium`, and medium is tuned for a file you encode
+// once and distribute widely. This is the opposite — a debug artifact,
+// encoded on the user's own machine, watched by one or two people, while a
+// "Preparing recording…" window sits in front of them.
+//
+// Measured on 30s of a real 3024x1700 recording:
+//
+//   default (medium)          13.1s   11 MB
+//   -preset veryfast -crf 23   5.8s    9 MB   <- this
+//   -preset ultrafast -crf 25  3.1s   27 MB
+//   h264_videotoolbox -b:v 6M 10.8s   22 MB
+//
+// veryfast is the sweet spot: 2.3x faster AND a slightly smaller file than
+// the medium default. ultrafast is faster again but the file nearly triples,
+// which matters because these get uploaded to Drive. Hardware videotoolbox
+// looks obvious on a Mac and isn't — at this resolution x264-veryfast beats
+// it outright and at half the bitrate, and it wouldn't be portable anyway.
+//
+// (VP9 decode is only ~1.5s of that 13.1s, so this really is the encode.)
+//
+// `-fps_mode passthrough` is the big one, and it is a CORRECTNESS fix wearing
+// a performance fix's clothes. MediaRecorder's webm carries no honest frame
+// rate — the container's 1ms timebase makes ffprobe report
+// `r_frame_rate=1000/1` on every recording we produce (`avg_frame_rate=0/0`,
+// i.e. "unknown"). The real content is ~30fps.
+//
+// The bundled ffmpeg is 6.0, whose default fps_mode for a CFR-friendly muxer
+// is `cfr`: it DUPLICATES frames to hit the declared rate. So it faithfully
+// padded 30fps of content out to 1000fps. Measured on a real 21.6-minute
+// call (ded-iika-yrs-20260815T133138Z): the finished mp4 had **1,296,862
+// frames** where ~38,000 exist — 34x too many — took **20 minutes** to merge
+// (105 CPU-minutes at 369%), and weighed 402 MB at 900x592.
+//
+// This is the same trap the file already documents at PAD_NORMALIZE_FPS
+// ("padding a real ~56-minute gap at a naively-trusted 1000fps meant
+// generating and x264-encoding ~3.4 MILLION black frames"). That fix only
+// ever went into the tpad branch; the MAIN merge path — every ordinary
+// call-recording.mp4 — never got it.
+//
+// `passthrough` rather than `-vf fps=30`: it keeps exactly the frames that
+// exist with their real timestamps, so nothing is invented and nothing is
+// dropped. A fixed `fps=30` would resample genuinely-variable screen capture.
+//
+// Worth knowing when testing this by hand: ffmpeg 7+ changed the default away
+// from cfr, so a Homebrew ffmpeg 8 shows none of this. It reproduces only
+// with the bundled binary — which is the one that actually runs for users.
+const VIDEO_ENCODE_ARGS = [
+  '-fps_mode', 'passthrough',
+  '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
+];
+
 // Keep only the tail of ffmpeg's stderr — with `-stats` on and no wall-clock
 // cap, a long merge emits a progress line several times a second for the
 // entire encode, and holding all of it would grow unboundedly for exactly the
@@ -260,28 +315,28 @@ async function mergeCallMedia(callDir, {
     // PAD_NORMALIZE_FPS above.
     const videoFilter = `[0:v]fps=${PAD_NORMALIZE_FPS},tpad=start_duration=${padSec}:color=black[vout]`;
     if (audioTracks.length === 0) {
-      args.push('-filter_complex', videoFilter, '-map', '[vout]', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', outPath);
+      args.push('-filter_complex', videoFilter, '-map', '[vout]', ...VIDEO_ENCODE_ARGS, outPath);
     } else if (audioTracks.length === 1) {
       args.push('-filter_complex', videoFilter, '-map', '[vout]', '-map', '1:a',
-        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', outPath);
+        ...VIDEO_ENCODE_ARGS, '-c:a', 'aac', outPath);
     } else {
       const inputs = audioTracks.map((_, i) => `[${i + 1}:a]`).join('');
       const filter = `${videoFilter};${inputs}amix=inputs=${audioTracks.length}:normalize=0[aout]`;
       args.push('-filter_complex', filter, '-map', '[vout]', '-map', '[aout]',
-        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', outPath);
+        ...VIDEO_ENCODE_ARGS, '-c:a', 'aac', outPath);
     }
   } else if (audioTracks.length === 0) {
     // Nothing to mix, but still re-encode the video (see note above) rather
     // than '-c:v copy' it as-is.
-    args.push('-c:v', 'libx264', '-pix_fmt', 'yuv420p', outPath);
+    args.push(...VIDEO_ENCODE_ARGS, outPath);
   } else if (audioTracks.length === 1) {
     // No amix needed for a single track — map it straight through.
-    args.push('-map', '0:v', '-map', '1:a', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', outPath);
+    args.push('-map', '0:v', '-map', '1:a', ...VIDEO_ENCODE_ARGS, '-c:a', 'aac', outPath);
   } else {
     // Build the filter_complex programmatically: [1:a][2:a]...[N:a]amix=inputs=N...
     const inputs = audioTracks.map((_, i) => `[${i + 1}:a]`).join('');
     const filter = `${inputs}amix=inputs=${audioTracks.length}:normalize=0[aout]`;
-    args.push('-filter_complex', filter, '-map', '0:v', '-map', '[aout]', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', outPath);
+    args.push('-filter_complex', filter, '-map', '0:v', '-map', '[aout]', ...VIDEO_ENCODE_ARGS, '-c:a', 'aac', outPath);
   }
 
   return new Promise((resolve) => {

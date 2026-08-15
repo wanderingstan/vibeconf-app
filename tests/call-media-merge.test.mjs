@@ -242,6 +242,74 @@ test('merged output is always re-encoded to h264, never a raw VP9 copy — video
   }
 });
 
+// Regression test for the 34x frame-duplication bug.
+//
+// MediaRecorder webm declares no honest frame rate — the 1ms container
+// timebase makes ffprobe report r_frame_rate=1000/1 on every recording the app
+// produces, with avg_frame_rate=0/0 ("unknown"). ffmpeg 6.0 (the BUNDLED
+// binary, and so the one users actually run) defaults fps_mode to `cfr` and
+// duplicates frames up to that declared rate.
+//
+// Real damage, call ded-iika-yrs-20260815T133138Z: a 21.6-minute 900x592
+// recording merged to an mp4 with 1,296,862 frames where ~38,000 exist. Twenty
+// minutes of wall clock, 105 CPU-minutes, 402 MB.
+//
+// The guard is `-fps_mode passthrough`. Note ffmpeg 7+ changed this default, so
+// a modern Homebrew ffmpeg will NOT reproduce it — hence asserting on the
+// output's frame count rather than trusting the local binary to misbehave.
+// Asserted against the SOURCE, not against a merge run, and deliberately so: a
+// fixture that reproduces this needs webm written by a live MediaRecorder, and
+// nothing ffmpeg can synthesize on the command line carries the same
+// "r_frame_rate=1000/1 with avg_frame_rate=0/0" shape — every generated clip
+// has an honest declared rate, so the merge behaves correctly on it whether or
+// not the flag is present. A runtime test here passes for the wrong reason,
+// which is worse than no test. (Checked: it passes with the flag removed.)
+test('the video encode passes through real timestamps rather than materialising a declared frame rate', () => {
+  const src = fs.readFileSync(new URL('../electron-app/call-media-merge.js', import.meta.url), 'utf8');
+  const m = src.match(/const VIDEO_ENCODE_ARGS = \[([\s\S]*?)\];/);
+  assert.ok(m, 'expected a VIDEO_ENCODE_ARGS array');
+  assert.match(m[1], /'-fps_mode',\s*'passthrough'/);
+});
+
+// Regression test for an INVISIBLE default. The encode args carried no
+// '-preset', which is not the same as neutral — libx264 silently falls back to
+// 'medium', tuned for encode-once-distribute-widely, which this is the exact
+// opposite of. Measured on 30s of a real 3024x1700 recording, medium took
+// 13.1s against veryfast's 5.8s, and produced a LARGER file (11 MB vs 9 MB).
+// A 40-minute call meant ~17 minutes of merge pinning a core behind a
+// "Preparing recording…" window.
+//
+// Asserted via x264's own settings string, which it embeds in the output, so
+// this checks what ffmpeg actually did rather than what args we think we
+// built: 'rc=crf ... crf=23.0' only appears if -crf was passed at all, and
+// subme/ref are the parameters the preset actually moves (veryfast: subme=2
+// ref=1; medium would be subme=7 ref=3). A future preset change should update
+// these numbers deliberately, not discover them.
+test('the video encode sets an explicit fast preset — no silent libx264 "medium" default', { skip: !HAVE_FFMPEG }, async () => {
+  const dir = tmpDir();
+  writeFakeVideo(path.join(dir, 'video.webm'));
+  writeFakeAudio(path.join(dir, 'bot.webm'));
+
+  const r = await mergeCallMedia(dir, {
+    tracksDir: dir,
+    tracks: [
+      { track: 'video', file: 'video.webm', kind: 'video' },
+      { track: 'bot', file: 'bot.webm', kind: 'audio' },
+    ],
+  });
+  assert.equal(r.ok, true);
+
+  const bytes = fs.readFileSync(path.join(dir, 'call-recording.mp4')).toString('latin1');
+  const opts = bytes.match(/x264 - core[^\n\0]*options: ([^\n\0]*)/);
+  assert.ok(opts, 'expected x264 to embed its settings string in the output');
+  const settings = opts[1];
+
+  assert.match(settings, /\brc=crf\b/, 'expected CRF rate control, i.e. an explicit -crf');
+  assert.match(settings, /\bcrf=23\.0\b/, 'expected -crf 23');
+  assert.match(settings, /\bsubme=2\b/, 'expected the veryfast preset (subme=2; medium is 7)');
+  assert.match(settings, /\bref=1\b/, 'expected the veryfast preset (ref=1; medium is 3)');
+});
+
 test('mergeCallMedia with video + one audio track muxes without amix', { skip: !HAVE_FFMPEG }, async () => {
   const dir = tmpDir();
   writeFakeVideo(path.join(dir, 'video.webm'));

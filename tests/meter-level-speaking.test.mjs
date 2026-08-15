@@ -412,9 +412,18 @@ test('the lead over the mutation counter is measured, not assumed', () => {
 test('both signals keep running whatever the mode is set to', () => {
   const pref = PREFERENCES.speakingDetectionMode;
   assert.deepEqual(pref.enum, ['either', 'meter', 'mutation']);
-  // Default ORs them: never deafer than before the meter existed, and it takes
-  // the earlier of the two rising edges.
-  assert.equal(pref.default, 'either');
+  // Defaults to the SAFE signal, not the fast one. The meter buys ~300ms, but
+  // it fires on any sound reaching the mic — a human on laptop speakers hears
+  // the bot's own TTS come back in and the tracker reads it as that human
+  // interrupting, cutting the bot off mid-sentence (seen live, call
+  // ded-iika-yrs-20260815T133138Z). A slow start is invisible; a false cut-off
+  // is not. `either` is opt-in for clean-audio setups. See #378 for earning it
+  // back per-tile.
+  assert.equal(pref.default, 'mutation');
+  // The module-level fallback in the provider declares the default a SECOND
+  // time; it drifting from the schema is exactly the kind of thing nobody
+  // notices, so pin them together.
+  assert.match(src, /let speakingDetectionMode = 'mutation';/);
   // The mode picks the VERDICT only — comparison data must keep accruing even
   // for someone who has pinned the setting, the way the analyser keeps
   // recording while fastFloorDetection is off.

@@ -1587,7 +1587,7 @@ server.tool(
 // --- stop_recording (#209) ---
 server.tool(
   "stop_recording",
-  "Stop the call recording started by start_recording (or by the recordCallAudio pref) — finalizes the per-track audio + video files and manifest, then automatically muxes them into one playable call-recording.mp4. Returns where they were saved. Can be called at any point mid-call (not just at the end). Recording also stops automatically when the bot leaves the call.",
+  "Stop the call recording started by start_recording (or by the recordCallAudio pref) — finalizes the per-track audio + video files and manifest, and returns immediately with where they were saved. The mux into one playable call-recording.mp4 continues in the BACKGROUND after this returns (it can take a while on long calls), so the merged file may not exist yet when you read the response — the raw tracks are already safe on disk either way. Can be called at any point mid-call (not just at the end); it never blocks you from speaking or from leave_call. Recording also stops automatically when the bot leaves the call.",
   {
     bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance, or the one this session is pinned to."),
   },
@@ -1602,7 +1602,13 @@ server.tool(
       });
       const data = await resp.json().catch(() => ({}));
       if (data.already || !data.dir) return { content: [{ type: "text", text: "No recording was in progress." }] };
-      return { content: [{ type: "text", text: `Recording stopped — ${data.tracks ?? 0} track(s) saved to:\n${data.dir}` }] };
+      // #388: the merge runs detached in the app now, so its outcome is
+      // unknowable at reply time — say what IS true (raw tracks saved) and
+      // what is underway, rather than implying the mp4 already exists.
+      const mergeNote = data.merging
+        ? "\nThe merged call-recording.mp4 is being prepared in the background and will appear in that folder's parent directory when ready."
+        : "";
+      return { content: [{ type: "text", text: `Recording stopped. ${data.tracks ?? 0} raw track(s) saved to:\n${data.dir}${mergeNote}` }] };
     } catch (err) {
       return { content: [{ type: "text", text: `Error stopping recording: ${err.message}.` }] };
     }

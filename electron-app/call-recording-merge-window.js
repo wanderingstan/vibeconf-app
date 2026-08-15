@@ -1,5 +1,6 @@
 // call-recording-merge-window.js — a small "Preparing recording…" status
-// window shown while stopCallRecording() runs the ffmpeg merge step.
+// window shown while runPostRecordingMerges() (main.js) runs the ffmpeg
+// merge step, detached from stopCallRecording since #388.
 //
 // WHY: by the time the merge starts, BOTH capture windows (call-recording-
 // window.js's 'video' and 'share' tracks) have already stopped and closed —

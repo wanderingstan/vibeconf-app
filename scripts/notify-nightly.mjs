@@ -311,7 +311,7 @@ if (text.length > 4090) text = text.slice(0, 4087) + '…';
 if (process.env.VIBECONF_NOTIFY === '0') { console.log('[notify] disabled'); process.exit(0); }
 if (process.env.VIBECONF_NOTIFY_DRYRUN === '1') { console.log('[notify] DRY-RUN — would send:\n' + text); process.exit(0); }
 if (!CHAT) {
-  console.log('[notify] VIBECONF_NOTIFY_CHAT not set — skipping Telegram post '
+  console.log('[notify] VIBECONF_NOTIFY_CHAT not set, skipping Telegram post '
     + '(refusing to fall back to the shared group). Set VIBECONF_NOTIFY_CHAT to a chat_id to enable.');
   process.exit(0);
 }

@@ -342,6 +342,11 @@ class LocalServer {
     // fastFloorDetection is on.
     this.audioFloorSpeaking = false;
     this._audioFloorAt = 0;
+    // #392: when the analyser last reported speech OFF. The participant
+    // tracker's `speaking` flag can lag the analyser's falling edge by
+    // seconds (polled release), so barge-in re-checks liveness against THIS
+    // at grace evaluation instead of trusting the tracker flag alone.
+    this._audioFloorOffAt = 0;
     this._domFloorAt = 0;
     // #343: how many participants (excl. self) are speaking RIGHT NOW. The old
     // `anyoneSpeaking` boolean collapses this away, but the count is the raw
@@ -462,6 +467,15 @@ class LocalServer {
     // personas can have different conversational rhythms. Schema defaults
     // match what these used to be hardcoded as. See preferences-schema.js.
     this._bargeInTimer = null;
+    // #392: when the current monitor was armed. The analyser's quiet verdict
+    // at grace evaluation is only trusted if the analyser produced an OFF edge
+    // AFTER this — proof it actually tracked the interruption to its end. An
+    // OFF timestamp older than the arm could just mean the analyser missed
+    // this speaker entirely (threshold too high, no remote track), and bailing
+    // on that would mean never yielding to them. That failure direction —
+    // talking over a human forever — is the one we must not have, so a
+    // missing/stale analyser signal falls back to the tracker-flag behavior.
+    this._bargeInArmedAt = 0;
 
     // Auto-leave when alone (#145). Only fires once at least one other
     // participant has appeared in the call — guards against auto-leaving
@@ -1658,6 +1672,7 @@ class LocalServer {
       console.log(ts(), '🎤 [floor-audio] speech ON  (analyser)');
     } else {
       this._audioFloorAt = 0;
+      this._audioFloorOffAt = now; // #392: barge-in liveness re-check reads this
       console.log(ts(), '🎤 [floor-audio] speech OFF (analyser)');
     }
     // Wake anyone gated on the floor so a faster ON is actually actionable.
@@ -2789,10 +2804,43 @@ class LocalServer {
     const graceMs = typeof g === 'number' ? g : g.ms;
     const detail = typeof g === 'number' ? '' : ` (urgency ${g.u.toFixed(2)}-scaled)`;
     console.log(ts(), '🛡️  [barge-in] armed — grace ' + graceMs + 'ms' + detail);
+    this._bargeInArmedAt = Date.now(); // #392: anchors the analyser-liveness re-check
     this._bargeInTimer = setTimeout(() => {
       this._bargeInTimer = null;
       this._evaluateBargeIn();
     }, graceMs);
+  }
+
+  // #392: is the floor demonstrably quiet RIGHT NOW, per the analyser?
+  //
+  // `p.speaking` / floorBusy can hold true for seconds after a speaker stops
+  // (the tracker's release is poll/mutation-driven), so at grace evaluation
+  // they answer "was anyone speaking recently", not "is anyone speaking". The
+  // analyser's falling edge is the only signal fast enough to answer the
+  // question the grace period actually asks: are they STILL going?
+  //
+  // Trust the quiet verdict only when the analyser has proven it tracked this
+  // interruption: an OFF edge at/after the monitor armed, and quiet sustained
+  // for bargeInQuietConfirmMs (a shorter quiet could be an inter-word dip —
+  // the analyser samples per animation frame and dips between syllables).
+  // If the analyser is absent or missed this speaker (no floor-audio events,
+  // or its last OFF predates the arm), return false and let the tracker-flag
+  // path decide as before: the bad failure direction is a broken analyser
+  // making the bot NEVER yield, so uncertainty must mean "not quiet".
+  _floorQuietPerAnalyser(now = Date.now()) {
+    if (this.audioFloorSpeaking) return false;
+    if (!this._audioFloorOffAt || this._audioFloorOffAt < this._bargeInArmedAt) return false;
+    const confirmMs = Number(this._pref('bargeInQuietConfirmMs'));
+    return Number.isFinite(confirmMs) && (now - this._audioFloorOffAt) >= confirmMs;
+  }
+
+  // #392 (issue suggestion 3): the analyser's view, for every back-off log
+  // line — so the next stale-flag incident is diagnosable from one line
+  // instead of hand-correlating [floor-audio] timestamps with the decision.
+  _analyserStateForLog(now = Date.now()) {
+    if (this.audioFloorSpeaking) return `analyser ON ${now - this._audioFloorAt}ms`;
+    if (!this._audioFloorOffAt) return 'analyser silent (no floor-audio events this call)';
+    return `analyser OFF ${now - this._audioFloorOffAt}ms ago`;
   }
 
   // Grace period elapsed. Decide whether to back off based on who's
@@ -2805,6 +2853,16 @@ class LocalServer {
       // analyser-armed monitor would always bail here on the way back out.
       return;
     }
+    // #392: floorBusy just said someone is speaking — but its tracker half can
+    // lag a real stop by seconds, so re-check against the analyser. A blip
+    // that started AND ended inside the grace window is exactly what the grace
+    // exists to ride out; yielding to it cuts a live reply for an interruption
+    // that no longer exists.
+    if (this._floorQuietPerAnalyser()) {
+      console.log(ts(), '🛡️  [barge-in] interruption already ended (' + this._analyserStateForLog()
+        + ', tracker flag lagging) — continuing');
+      return;
+    }
     const interrupters = this.participants.filter(
       (p) => p.speaking && !p.isSelf && p.name !== 'You'
     );
@@ -2813,7 +2871,8 @@ class LocalServer {
       // them (routinely, while TTS plays). We can't tell bot from human without
       // a name, and the rule below is already "unknown ⇒ human" — so yield.
       // Talking over a real person is the worse failure.
-      console.log(ts(), '🛡️  [barge-in] someone interrupted (analyser only, no DOM speaker yet) — backing off');
+      console.log(ts(), '🛡️  [barge-in] someone interrupted (analyser only, no DOM speaker yet) — backing off ('
+        + this._analyserStateForLog() + ')');
       this._performBackOff('human-interrupt');
       return;
     }
@@ -2831,7 +2890,8 @@ class LocalServer {
     );
 
     if (humanInterrupter) {
-      console.log(ts(), '🛡️  [barge-in] human interrupted — backing off:', humanInterrupter.name);
+      console.log(ts(), '🛡️  [barge-in] human interrupted — backing off:', humanInterrupter.name,
+        '(' + this._analyserStateForLog() + ')');
       this._performBackOff('human-interrupt');
       return;
     }
@@ -2849,7 +2909,16 @@ class LocalServer {
         console.log(ts(), '🛡️  [barge-in] bot-vs-bot resolved during random delay — continuing');
         return;
       }
-      console.log(ts(), '🛡️  [barge-in] bot-vs-bot still colliding after random delay — backing off');
+      // #392: same stale-flag hazard as the main evaluation — the colliding
+      // bot may have stopped during the random delay with its tracker flag
+      // still raised.
+      if (this._floorQuietPerAnalyser()) {
+        console.log(ts(), '🛡️  [barge-in] bot-vs-bot collision already ended ('
+          + this._analyserStateForLog() + ', tracker flag lagging) — continuing');
+        return;
+      }
+      console.log(ts(), '🛡️  [barge-in] bot-vs-bot still colliding after random delay — backing off ('
+        + this._analyserStateForLog() + ')');
       this._performBackOff('bot-interrupt-random');
     }, delay);
   }

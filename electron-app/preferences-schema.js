@@ -578,6 +578,26 @@ const PREFERENCES = {
       '(#367) — urgency calibration is still being collected; toggle off mid-call ' +
       'if it feels wrong.',
   },
+  speechStopPaddingMs: {
+    type: 'number',
+    default: 1000,
+    min: 0,
+    max: 5000,
+    description:
+      'How long after a participant\'s audio goes quiet the SILENCE GATE waits ' +
+      'before it starts counting silence — margin so a breath or a beat ' +
+      'mid-sentence is not mistaken for "they finished". Only affects turn ' +
+      'resolution (wait_for_speech); it does NOT delay the speaking indicator, ' +
+      'barge-in, or anything else.\n\n' +
+      'This used to be a hard-coded SPEAKING_GRACE_MS inside the speaker ' +
+      'tracker, which held the shared `speaking` flag true for an extra second ' +
+      'after speech actually stopped. That made the flag lie to every consumer, ' +
+      'not just this one: the earliest release it could ever report was ~2.1s, ' +
+      'longer than the barge-in grace, so the bot reliably yielded the floor to ' +
+      'one-word interjections that were already over (#392). Moved here in #395 ' +
+      'so the tracker reports true edges and each consumer applies its own bias. ' +
+      'Raise if the bot cuts in on mid-sentence pauses; lower for snappier turns.',
+  },
   bargeInGraceMinMs: {
     type: 'number',
     default: 900,

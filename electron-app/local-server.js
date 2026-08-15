@@ -1682,6 +1682,25 @@ class LocalServer {
     if (this.floorBusy) this._armBargeIn();
   }
 
+  // #395: when the silence gate should consider silence to have BEGUN.
+  //
+  // The speaker tracker reports the true stop edge — it no longer holds
+  // `speaking` true for an extra second after the audio goes quiet. That
+  // padding was never a fact about the world; it was this gate's policy, so it
+  // lives here now, named and tunable, instead of being baked into a shared
+  // flag every other consumer inherited blind. Barge-in, which needs the
+  // opposite bias — the instant someone actually stopped — reads the tracker
+  // directly and gets the real edge (#392).
+  //
+  // Returns 0 when nobody has stopped yet: padding must never manufacture a
+  // stop that did not happen.
+  effectiveSilenceStart() {
+    if (!this.lastSpeechStoppedAt) return 0;
+    const pref = Number(this._pref('speechStopPaddingMs'));
+    const pad = Number.isFinite(pref) ? pref : 1000;
+    return this.lastSpeechStoppedAt + pad;
+  }
+
   // The floor as the turn-taking gates should see it. With fastFloorDetection
   // on, EITHER signal counts as busy — the analyser gets there first, the DOM
   // path keeps it honest if the analyser misses (threshold too high, no remote
@@ -2486,9 +2505,16 @@ class LocalServer {
       //     the most recent caption activity. Without this fallback a fresh
       //     utterance with a multi-minute-old stopTime would resolve
       //     immediately at speech-onset.
+      // #395: the speaker tracker now reports the TRUE stop edge — it no
+      // longer holds `speaking` true for an extra second after the signal goes
+      // quiet. That padding was never a fact about the world, it was THIS
+      // gate's policy: a breath or a beat mid-sentence must not read as "they
+      // finished". So it lives here now, where it is named and tunable, and
+      // the tracker stays honest for consumers (barge-in) that need the real
+      // edge. Net effect on this gate is unchanged from the old behaviour.
       const silenceMs = effSilence * 1000;
       const lastEntryTime = lastEntryActivityTime;
-      const stopTime = this.lastSpeechStoppedAt || 0;
+      const stopTime = this.effectiveSilenceStart();
       const STOP_FRESH_MS = silenceMs * 3; // ~6s with default 2s silence
       const stopIsFresh = stopTime && (Date.now() - stopTime) < STOP_FRESH_MS;
       const silenceStart = stopIsFresh

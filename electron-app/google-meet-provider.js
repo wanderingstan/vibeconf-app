@@ -2550,17 +2550,29 @@ class DOMSpeakerTracker {
     s.mut = mut; s.meter = meter === true;
   }
 
-  // Asymmetric grace: true trusted instantly (avatar flips with no lag), false
-  // held for SPEAKING_GRACE_MS so a brief animation pause mid-utterance doesn't
-  // escape as a premature "stopped" (which used to leave wait_for_speech on a
-  // stale stopped-timestamp — the 36s-late-response incident). The rolling
-  // window already smooths; this adds margin on top.
-  _isSpeakingWithGrace(info, now) {
+  // #395: report the TRUE edges — both of them — and nothing else.
+  //
+  // This used to hold `false` for a SPEAKING_GRACE_MS of 1000ms so a brief
+  // animation pause mid-utterance couldn't escape as a premature "stopped"
+  // (the 36s-late-response incident). That padding was real and still is —
+  // but it belongs to the ONE consumer that needs it, the silence timer, not
+  // baked into the shared flag where every other consumer inherits it blind.
+  //
+  // Barge-in needs the exact opposite bias: it has to know the instant someone
+  // actually went quiet, so it can ride out a one-word interjection instead of
+  // yielding the floor to it. With the pad in here, the shortest release this
+  // tracker could ever report was ~2.1s — longer than the barge-in grace
+  // itself — so the grace could never expire into a cleared flag and a single
+  // word from a human reliably cut the bot off mid-sentence.
+  //
+  // The padding now lives in local-server's silence gate as
+  // `speechStopPaddingMs`, where it is visible, tunable, and scoped to the
+  // consumer whose policy it actually is. The rolling window in _rawSpeaking
+  // still smooths the signal; what's gone is the extra one-sided margin.
+  _isSpeaking(info, now) {
     const raw = this._rawSpeaking(info, now);
-    if (raw) { info.lastTrueAt = now; return true; }
-    const SPEAKING_GRACE_MS = 1000;
-    if (info.lastTrueAt && (now - info.lastTrueAt) < SPEAKING_GRACE_MS) return true;
-    return false;
+    if (raw) info.lastTrueAt = now;   // kept: _logSignalDisagreement and debug read it
+    return raw;
   }
 
   // Shared flip: evaluate speaking, and on an edge emit the IPCs + toggle the
@@ -2568,7 +2580,7 @@ class DOMSpeakerTracker {
   // the true edge instantly) from the 200ms poll (catches the false edge once
   // the window drains, since the observer only fires while mutations arrive).
   _evaluateSpeaking(info, name, now, source) {
-    const isSpeaking = this._isSpeakingWithGrace(info, now);
+    const isSpeaking = this._isSpeaking(info, now);
     if (isSpeaking !== info.speaking) {
       info.speaking = isSpeaking;
       info.lastChange = now;

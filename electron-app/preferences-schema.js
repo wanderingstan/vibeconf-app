@@ -799,7 +799,7 @@ const PREFERENCES = {
   },
   speakingDetectionMode: {
     type: 'string',
-    default: 'either',
+    default: 'mutation',
     enum: ['either', 'meter', 'mutation'],
     enumLabels: {
       either: 'Either signal (fastest rising edge)',
@@ -821,7 +821,12 @@ const PREFERENCES = {
       + 'so no setting here can make the tracker deafer than it was before the '
       + 'meter signal existed. Watch [meter-latency] for the lead the meter '
       + 'actually delivers and [speaker-health] mtr= for meters reading blind. '
-      + 'Read live (picked up on the tracker\'s 2s scan).',
+      + 'Read live (picked up on the tracker\'s 2s scan). '
+      + 'DEFAULTS TO "mutation": the meter only buys ~300ms, but it fires on ANY '
+      + 'sound reaching the mic — a human on laptop speakers hears the bot\'s own '
+      + 'TTS come back in and the tracker reads it as that human interrupting, '
+      + 'cutting the bot off mid-sentence. A slow start is invisible; a false '
+      + 'cut-off is not. Set "either" when everyone is on headphones.',
   },
   fastFloorDetection: {
     type: 'boolean',

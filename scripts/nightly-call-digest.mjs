@@ -27,8 +27,8 @@
 //                            (default: ~/vibeconf-call-digests)
 //   VIBECONF_NOTIFY=0        disable Telegram entirely (still computes + writes)
 //   VIBECONF_NOTIFY_DRYRUN=1 same as --dry-run
-//   VIBECONF_NOTIFY_CHAT     Telegram chat id (default: shared group, matches
-//                            notify-nightly.mjs)
+//   VIBECONF_NOTIFY_CHAT     Telegram chat id (REQUIRED to send; unset = skip,
+//                            no group fallback, matches notify-nightly.mjs)
 //   VIBECONF_TELEGRAM_ENV    override the bot-token .env location
 //   VIBECONF_DISK_WARN_PCT   warn if disk use% >= this (default 80)
 //   VIBECONF_SESSION_ENV     the vc_session credential archive-logs.mjs uses
@@ -62,7 +62,10 @@ const ARCHIVE_DIR = path.resolve(
   process.env.VIBECONF_ARCHIVE_DIR || path.join(REPO_ROOT, '..', 'vibeconferencing', 'logs-archive')
 );
 const DIGEST_DIR = path.resolve(process.env.VIBECONF_DIGEST_DIR || path.join(homedir(), 'vibeconf-call-digests'));
-const CHAT = process.env.VIBECONF_NOTIFY_CHAT || '-5140242529'; // shared group, matches notify-nightly.mjs
+// No fallback chat_id ON PURPOSE (matches notify-nightly.mjs): the old default
+// was the shared group, so any run without VIBECONF_NOTIFY_CHAT spammed it.
+// Unset now means: compute + write the digest as usual, skip the Telegram send.
+const CHAT = process.env.VIBECONF_NOTIFY_CHAT || '';
 const ENV_FILE = process.env.VIBECONF_TELEGRAM_ENV || path.join(homedir(), '.claude/channels/telegram/.env');
 const DISK_WARN_PCT = Number(process.env.VIBECONF_DISK_WARN_PCT || 80);
 const SESSION_ENV_FILE = process.env.VIBECONF_SESSION_ENV
@@ -285,6 +288,11 @@ function botToken() {
 }
 
 async function sendTelegram(text) {
+  if (!CHAT) {
+    console.log('[nightly-call-digest] VIBECONF_NOTIFY_CHAT not set, skipping Telegram send '
+      + '(refusing to fall back to the shared group). Set VIBECONF_NOTIFY_CHAT to a chat_id to enable.');
+    return;
+  }
   const token = botToken();
   if (!token) { console.error('[nightly-call-digest] no Telegram bot token found, skipping send'); return; }
   const resp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {

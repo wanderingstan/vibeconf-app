@@ -578,6 +578,23 @@ const PREFERENCES = {
       '(#367) — urgency calibration is still being collected; toggle off mid-call ' +
       'if it feels wrong.',
   },
+  bargeInQuietConfirmMs: {
+    type: 'number',
+    default: 250,
+    min: 0,
+    max: 5000,
+    description:
+      'How long the analyser must have heard silence, at the moment the barge-in ' +
+      'grace expires, for the interruption to count as "already over" (#392). The ' +
+      'participant tracker\'s speaking flag can lag a real stop by seconds, so the ' +
+      'grace evaluation re-checks liveness against the analyser: quiet for at least ' +
+      'this long means the blip ended inside the grace window and the bot keeps ' +
+      'talking. Shorter quiet is treated as an inter-word dip (the analyser dips ' +
+      'between syllables) and the bot still yields. 250ms matches the meter hold ' +
+      'in the speaker tracker. Applies only when the analyser demonstrably tracked ' +
+      'the interruption; with no analyser signal the old tracker-flag behavior ' +
+      'decides, so a broken analyser can never stop the bot from yielding.',
+  },
   bargeInGraceMinMs: {
     type: 'number',
     default: 900,

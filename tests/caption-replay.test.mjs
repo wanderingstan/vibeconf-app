@@ -76,6 +76,12 @@ function makeFeed(s) {
       if (mutate) rows = rows.map((r) => ({ ...r, text: mutate(r.speaker, r.text) }));
       feed(turnIdBase);
     },
+    // #389: Meet drops the oldest rows out of the caption region on a long
+    // call — the snapshot SHRINKS, without any row's content changing.
+    prune(count, turnIdBase) { rows = rows.slice(count); feed(turnIdBase); },
+    // #389: a rejoin empties the pane entirely; the server-side state is
+    // untouched, so the next snapshot starts from scratch.
+    wipe(turnIdBase) { rows = []; feed(turnIdBase); },
     rows: () => rows,
   };
 }
@@ -281,4 +287,88 @@ test('#12-diag stays silent on ordinary new speech', () => {
     feed.say('Stan', 'Third thing that was said here.', 1);
   });
   assert.ok(!lines.some((l) => l.includes('#12-diag')), 'ordinary new turns must not be mistaken for a re-render');
+});
+
+// ---------------------------------------------------------------------------
+// #389 — the caption pane SHRINKS. The #12 fix assumed a speaker's visible
+// turn count could only ever grow, and skipped the whole batch (before
+// updating any state) when it didn't. Meet prunes old rows on a long call and
+// a rejoin empties the pane, so the count dropped below the high-water mark
+// and could never climb back: that speaker went permanently unheard for the
+// rest of the call, with only a console.warn to show for it. Observed live on
+// 2026-08-15 — 561 consecutive skipped batches for one participant over ~45
+// minutes, while everyone else came through fine.
+// ---------------------------------------------------------------------------
+
+test('#389: speech after Meet prunes old caption rows is still heard', () => {
+  const s = makeServer();
+  const feed = makeFeed(s);
+  feed.say('Stan', 'One, said early in a very long call.', 1);
+  feed.say('Stan', 'Two, said early in a very long call.', 1);
+  feed.say('Stan', 'Three, which is still on screen.', 1);
+  assert.equal(s.turns.size, 3);
+
+  // Meet drops the two oldest rows; Stan's visible count falls 3 -> 1.
+  feed.prune(2, 50);
+  // ...and then he says something new.
+  feed.say('Stan', 'Four, said AFTER the prune.', 60);
+
+  const texts = [...s.turns.values()].filter((t) => t.speaker === 'Stan').map((t) => t.text);
+  assert.ok(texts.includes('Four, said AFTER the prune.'),
+    'post-prune speech must be ingested, not skipped forever');
+});
+
+test('#389: pruning re-anchors without re-ingesting the rows that survived', () => {
+  const s = makeServer();
+  const feed = makeFeed(s);
+  feed.say('Stan', 'One, said early in a very long call.', 1);
+  feed.say('Stan', 'Two, said early in a very long call.', 1);
+  feed.say('Stan', 'Three, which is still on screen.', 1);
+  const before = s.turns.size;
+
+  feed.prune(2, 50); // 'Three' survives, and must NOT come back as a new turn
+  assert.equal(s.turns.size, before, 'a surviving row is re-anchored, not re-created');
+});
+
+test('#389: only the pruned speaker is affected; others keep flowing', () => {
+  const s = makeServer();
+  const feed = makeFeed(s);
+  feed.say('Stan', 'Stan talks a lot on this call.', 1);
+  feed.say('Stan', 'Stan again, second turn here.', 1);
+  feed.say('Kate', 'Kate has said one thing.', 1);
+
+  feed.prune(2, 50); // drops both of Stan's rows, keeps Kate's
+  feed.say('Kate', 'Kate says a second thing.', 60);
+  feed.say('Stan', 'Stan speaks again after the prune.', 70);
+
+  const texts = [...s.turns.values()].map((t) => t.text);
+  assert.ok(texts.includes('Kate says a second thing.'), "Kate's speech is unaffected");
+  assert.ok(texts.includes('Stan speaks again after the prune.'), 'Stan recovers too');
+});
+
+test('#389: a rejoin empties the pane — hearing resumes rather than deadlocking', () => {
+  const s = makeServer();
+  const feed = makeFeed(s);
+  for (let n = 1; n <= 4; n++) feed.say('Stan', `Turn ${n}, before the rejoin.`, 1);
+
+  // The rejoin resets Meet's pane but NOT the server-side counters, which is
+  // what used to wedge this permanently (knownCount=4 vs n=0, forever).
+  feed.wipe(100);
+  feed.say('Stan', 'First thing said after the rejoin.', 110);
+
+  const texts = [...s.turns.values()].map((t) => t.text);
+  assert.ok(texts.includes('First thing said after the rejoin.'),
+    'post-rejoin speech must be heard — the old guard skipped it forever');
+});
+
+test('#389: losing the anchor entirely raises a visible error, not just a warning', () => {
+  const s = makeServer();
+  const feed = makeFeed(s);
+  for (let n = 1; n <= 4; n++) feed.say('Stan', `Turn ${n}, before the rejoin.`, 1);
+  feed.wipe(100);
+  feed.say('Stan', 'First thing said after the rejoin.', 110);
+
+  const errs = (s.errors || []).map((e) => (typeof e === 'string' ? e : e.message || ''));
+  assert.ok(errs.some((m) => m.includes('#389')),
+    'a silently-missed gap must surface through addError, not only console.warn');
 });

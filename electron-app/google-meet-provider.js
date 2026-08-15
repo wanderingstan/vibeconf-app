@@ -2004,8 +2004,12 @@ function findPeopleButton() {
 const METER_SAMPLE_MS = 50;
 // How long a single off-rest sample keeps the meter verdict true. Covers the
 // gaps between the sprite's animation steps (it is quantised, not continuous)
-// without holding so long that a one-frame blip reads as a whole turn. The
-// existing SPEAKING_GRACE_MS still applies on top, at the combine layer.
+// without holding so long that a one-frame blip reads as a whole turn. This
+// hold is the ONLY smoothing on the meter's false edge — the 1s combine-layer
+// grace that used to sit on top was deleted in #395 (the tracker now reports
+// the true stop edge), so in 'meter' mode a release is real ~250ms after the
+// last raised sample. In 'mutation'/'either' the 1200ms mutation window still
+// smooths.
 const METER_HOLD_MS = 250;
 // How long a raised level must persist (and across at least two readings)
 // before the meter's verdict arms. See the attack note in _readPromoted.
@@ -2202,7 +2206,7 @@ class DOMSpeakerTracker {
         }
         this.participants.set(key, {
           name, isPseudo, speaking: false, isSelf, item,
-          mutTimes: [], lastTrueAt: 0, lastChange: Date.now(),
+          mutTimes: [], lastChange: Date.now(),
         });
       } else {
         const info = this.participants.get(key);
@@ -2572,9 +2576,10 @@ class DOMSpeakerTracker {
   // _rawSpeaking still smooths the signal; what's gone is the one-sided margin
   // on top of it.
   _isSpeaking(info, now) {
-    const raw = this._rawSpeaking(info, now);
-    if (raw) info.lastTrueAt = now;   // kept: _logSignalDisagreement and debug read it
-    return raw;
+    // (The lastTrueAt bookkeeping that lived here served only the deleted
+    // grace branch — _logSignalDisagreement keeps its own edge timestamps in
+    // info._sig — so it went with it.)
+    return this._rawSpeaking(info, now);
   }
 
   // Shared flip: evaluate speaking, and on an edge emit the IPCs + toggle the

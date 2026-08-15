@@ -2510,11 +2510,13 @@ class LocalServer {
       //     immediately at speech-onset.
       // #395: the speaker tracker now reports the TRUE stop edge — it no
       // longer holds `speaking` true for an extra second after the signal goes
-      // quiet. That padding was never a fact about the world, it was THIS
-      // gate's policy: a breath or a beat mid-sentence must not read as "they
-      // finished". So it lives here now, where it is named and tunable, and
-      // the tracker stays honest for consumers (barge-in) that need the real
-      // edge. Net effect on this gate is unchanged from the old behaviour.
+      // quiet. The pad was DELETED, not moved here: a mid-sentence breath that
+      // flips the tracker false just restarts this gate's own clock (a fresher
+      // lastSpeechStoppedAt), so `silenceSeconds` already does the pad's job
+      // and the pad was a second, unnamed threshold stacked on it. Net effect
+      // on this gate: turns resolve ~1s sooner than before #395 — that second
+      // was the hidden pad, not configured silence. If the bot jumps in too
+      // fast, raise `silenceSeconds`; do not reintroduce a pad.
       const silenceMs = effSilence * 1000;
       const lastEntryTime = lastEntryActivityTime;
       const stopTime = this.effectiveSilenceStart();

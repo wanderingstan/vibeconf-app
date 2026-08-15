@@ -2275,13 +2275,15 @@ class LocalServer {
 
     // #12: group by speaker, preserving DOM/chronological order within each
     // speaker's own occurrences. The scraper sends a full snapshot of every
-    // visible caption child every time anything changes — so `texts.length`
-    // for a speaker IS the current total count of turns they've produced in
-    // this call, and it can only ever grow (Meet keeps every row; a fresh
-    // scraper turnId after a re-render doesn't remove or reorder anything).
-    // We deliberately ignore turnId/isBottommost entirely: they're per-DOM-
-    // child bookkeeping that a re-render invalidates, and nothing here needs
-    // them — a participant's own turn *count* is what a re-render can't touch.
+    // VISIBLE caption child every time anything changes, so `texts.length` for
+    // a speaker is how many of their turns are on screen right now. We
+    // deliberately ignore turnId/isBottommost entirely: they're per-DOM-child
+    // bookkeeping that a re-render invalidates, and a participant's own turn
+    // ordering is what a re-render can't touch.
+    //
+    // #389: that count is NOT monotonic, which #12's fix assumed. Meet prunes
+    // old rows on a long call and a rejoin empties the pane, so it can drop at
+    // any time — see the re-anchoring below, which is what makes this safe.
     const bySpeaker = new Map(); // speaker -> ordered text[]
     for (const t of incoming) {
       if (!t || !t.speaker || typeof t.text !== 'string') continue;
@@ -2291,18 +2293,76 @@ class LocalServer {
     }
 
     for (const [speaker, texts] of bySpeaker) {
-      const knownCount = this._speakerTurnCount.get(speaker) || 0;
+      let knownCount = this._speakerTurnCount.get(speaker) || 0;
       const n = texts.length;
 
-      // Meet only ever APPENDS turns for a speaker; a count going backwards
-      // means either a scraper glitch or (per Stan, unconfirmed) Meet pruning
-      // very old rows on an extremely long call. Either way there is nothing
-      // trustworthy to align against — skip this speaker this poll rather
-      // than guess and risk mis-ingesting.
+      // #389: a count going backwards is NOT the anomaly the original guard
+      // assumed. Meet prunes old caption rows on a long call, and a rejoin
+      // resets the pane to ~0 while _speakerTurnCount (server-side) survives.
+      // Both are routine, and both used to `continue` here — skipping before
+      // updating any state, so the high-water mark could never come down and
+      // the speaker was silently, permanently unheard for the rest of the
+      // call. Instead of skipping, RE-ANCHOR: find where our held turn sits in
+      // the pruned snapshot and rebase the count onto it.
       if (n < knownCount) {
-        console.warn(ts(), '⚠️  [caption] speaker turn count went backwards for', speaker,
-          '(' + knownCount + ' -> ' + n + ') — skipping this batch for them');
-        continue;
+        const open = this.turns.get(this._openTurnBySpeaker.get(speaker));
+        let rebased = -1;
+        if (open) {
+          // Search from the end: the open turn is the most recent one, so the
+          // last match is the right anchor when text repeats. Accept the same
+          // relations the update path below treats as "still the same turn" —
+          // identical, grown, or a truncated replay — because Meet can prune
+          // rows AND extend/re-render the open turn in the very same
+          // snapshot; requiring an exact fingerprint there would drop the
+          // anchor spuriously and take the lossy branch below for nothing.
+          const openFp = this._turnFp(speaker, open.text);
+          const bareFp = this._turnFp(speaker, ''); // guard: never prefix-match on an empty normalized text
+          for (let i = n - 1; i >= 0; i--) {
+            const fp = this._turnFp(speaker, texts[i]);
+            const shorter = fp.length < openFp.length ? fp : openFp;
+            if (fp === openFp ||
+                (shorter !== bareFp && (fp.startsWith(openFp) || openFp.startsWith(fp)))) {
+              rebased = i + 1;
+              break;
+            }
+          }
+        }
+        if (rebased >= 0) {
+          // Our open turn is still visible at position rebased-1. Everything
+          // before it was pruned (already ingested, nothing lost); everything
+          // after it is genuinely new and falls out of the normal path below.
+          console.log(ts(), 'ℹ️  [caption] re-anchored', speaker,
+            '(' + knownCount + ' -> ' + n + '): rows pruned, held turn found at',
+            rebased - 1);
+        } else {
+          // No anchor at all — a rejoin wiped the pane, or pruning ran past
+          // our open turn. Pruning drops oldest-first, so if the speaker's
+          // newest held row is gone, everything visible for them now
+          // postdates the gap: ingest ALL of it as new speech (rebased = 0).
+          // Detach the stale open-turn pointer first — the previously-open
+          // block below would otherwise rebind it and overwrite the pre-gap
+          // turn's text (and timestamp) with the first post-gap row,
+          // corrupting the transcript. We forfeit anything said while the
+          // pane was empty, but hearing resumes with this very batch instead
+          // of deadlocking forever.
+          rebased = 0;
+          if (open && !open.settled) {
+            open.settled = true; // the pre-gap turn is definitively over
+            changed = true;
+            this._logHeard(open.speaker, open.text);
+          }
+          this._openTurnBySpeaker.delete(speaker);
+          console.warn(ts(), '⚠️  [caption] lost anchor for', speaker,
+            '(' + knownCount + ' -> ' + n + ') — ingesting the visible rows as new speech;',
+            'anything they said in the gap is unrecoverable');
+          this.addError(
+            `Caption anchor lost for ${speaker} (#389): the caption pane shrank past ` +
+            `the last turn we held, so anything they said in the gap was missed. ` +
+            `Hearing resumes with the captions on screen now.`,
+          );
+        }
+        this._speakerTurnCount.set(speaker, rebased);
+        knownCount = rebased;
       }
 
       // Position knownCount-1 is the previously-open turn: the only one of

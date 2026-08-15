@@ -3030,6 +3030,22 @@ api.on('elevenlabs-key-validated', ({ message }) => {
   previewVoiceSample({ provider: 'elevenlabs', text: message });
 });
 
+// #394: mid-call, don't play the audition over the human's speakers — they're
+// already listening to the live call, and the new voice speaks the bot's very
+// next line anyway. Show a brief note instead so the pick still visibly lands.
+// (Gated on callActive, main's callStatusMeansInCall — wider than `inCall`, so
+// the sample also stays quiet while joining.)
+const voiceSetNote = document.getElementById('voiceSetNote');
+let _voiceSetNoteTimer = null;
+function auditionVoice(opts) {
+  if (!callActive) { previewVoiceSample(opts); return; }
+  if (!voiceSetNote) return;
+  voiceSetNote.textContent = "Voice set: you'll hear it on the bot's next line.";
+  voiceSetNote.style.display = 'block';
+  clearTimeout(_voiceSetNoteTimer);
+  _voiceSetNoteTimer = setTimeout(() => { voiceSetNote.style.display = 'none'; }, 4000);
+}
+
 unifiedVoiceSelect?.addEventListener('change', () => {
   const val = unifiedVoiceSelect.value || '';
   const sep = val.indexOf(':');
@@ -3046,16 +3062,16 @@ unifiedVoiceSelect?.addEventListener('change', () => {
   if (kind === 'vb') {
     const engine = unifiedVoiceSelect.selectedOptions[0]?.dataset.engine || 'kokoro';
     api.send('update-tts-config', { provider: 'voicebox', voiceboxProfileId: id, voiceboxEngine: engine });
-    previewVoiceSample({ provider: 'voicebox', voiceboxProfileId: id, voiceboxEngine: engine, text });
+    auditionVoice({ provider: 'voicebox', voiceboxProfileId: id, voiceboxEngine: engine, text });
   } else if (kind === 'el') {
     // Picking a listed EL voice clears any custom-ID override so they don't fight.
     api.send('update-tts-config', { provider: 'elevenlabs', voiceId: id, voiceboxProfileId: '' });
     if (ttsVoiceIdInput) ttsVoiceIdInput.value = id;
-    previewVoiceSample({ provider: 'elevenlabs', voiceId: id, text });
+    auditionVoice({ provider: 'elevenlabs', voiceId: id, text });
   } else if (kind === 'mac') {
     // Force the built-in provider so an ElevenLabs key doesn't override the pick.
     api.send('update-tts-config', { provider: 'macos-say', macosVoice: id, voiceboxProfileId: '' });
-    previewVoiceSample({ provider: 'macos-say', macosVoice: id, text });
+    auditionVoice({ provider: 'macos-say', macosVoice: id, text });
   }
 });
 

@@ -361,6 +361,39 @@ test('#389: a rejoin empties the pane — hearing resumes rather than deadlockin
     'post-rejoin speech must be heard — the old guard skipped it forever');
 });
 
+test('#389: a lost anchor must not overwrite the pre-gap turn with the post-gap speech', () => {
+  const s = makeServer();
+  const feed = makeFeed(s);
+  for (let n = 1; n <= 4; n++) feed.say('Stan', `Turn ${n}, before the rejoin.`, 1);
+  feed.wipe(100);
+  feed.say('Stan', 'First thing said after the rejoin.', 110);
+
+  const texts = [...s.turns.values()].filter((t) => t.speaker === 'Stan').map((t) => t.text);
+  assert.ok(texts.includes('Turn 4, before the rejoin.'),
+    'the pre-gap open turn is history — rebinding the stale open pointer must not rewrite it');
+  assert.equal(s.turns.size, 5, 'post-gap speech is a NEW turn, not a mutation of an old one');
+});
+
+test('#389: a prune plus open-turn growth in the same snapshot still anchors', () => {
+  const s = makeServer();
+  const feed = makeFeed(s);
+  feed.say('Stan', 'One, said early in a very long call.', 1);
+  feed.say('Stan', 'Two, said early in a very long call.', 1);
+  feed.say('Stan', 'Three, which is still', 1);
+
+  // ONE batch in which Meet both dropped the two oldest rows and kept typing
+  // the open turn — the feed helpers send after every step, so build the
+  // combined snapshot by hand.
+  s.updateTurns([{ turnId: 50, speaker: 'Stan', text: 'Three, which is still on screen and growing.' }]);
+
+  const texts = [...s.turns.values()].map((t) => t.text);
+  assert.ok(texts.includes('Three, which is still on screen and growing.'), 'growth is applied');
+  assert.equal(s.turns.size, 3, 'the grown open turn is re-anchored, not duplicated');
+  const errs = (s.errors || []).map((e) => (typeof e === 'string' ? e : e.message || ''));
+  assert.ok(!errs.some((m) => m.includes('#389')),
+    'nothing was missed here — a grown open turn must anchor, not raise a lost-anchor error');
+});
+
 test('#389: losing the anchor entirely raises a visible error, not just a warning', () => {
   const s = makeServer();
   const feed = makeFeed(s);

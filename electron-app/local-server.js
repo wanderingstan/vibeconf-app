@@ -2272,10 +2272,22 @@ class LocalServer {
         let rebased = -1;
         if (open) {
           // Search from the end: the open turn is the most recent one, so the
-          // last fingerprint match is the right anchor when text repeats.
+          // last match is the right anchor when text repeats. Accept the same
+          // relations the update path below treats as "still the same turn" —
+          // identical, grown, or a truncated replay — because Meet can prune
+          // rows AND extend/re-render the open turn in the very same
+          // snapshot; requiring an exact fingerprint there would drop the
+          // anchor spuriously and take the lossy branch below for nothing.
           const openFp = this._turnFp(speaker, open.text);
+          const bareFp = this._turnFp(speaker, ''); // guard: never prefix-match on an empty normalized text
           for (let i = n - 1; i >= 0; i--) {
-            if (this._turnFp(speaker, texts[i]) === openFp) { rebased = i + 1; break; }
+            const fp = this._turnFp(speaker, texts[i]);
+            const shorter = fp.length < openFp.length ? fp : openFp;
+            if (fp === openFp ||
+                (shorter !== bareFp && (fp.startsWith(openFp) || openFp.startsWith(fp)))) {
+              rebased = i + 1;
+              break;
+            }
           }
         }
         if (rebased >= 0) {
@@ -2287,17 +2299,29 @@ class LocalServer {
             rebased - 1);
         } else {
           // No anchor at all — a rejoin wiped the pane, or pruning ran past
-          // our open turn. Adopt the current snapshot as the new baseline:
-          // we forfeit anything said in the gap, but hearing resumes on the
-          // very next batch instead of deadlocking forever.
-          rebased = n;
+          // our open turn. Pruning drops oldest-first, so if the speaker's
+          // newest held row is gone, everything visible for them now
+          // postdates the gap: ingest ALL of it as new speech (rebased = 0).
+          // Detach the stale open-turn pointer first — the previously-open
+          // block below would otherwise rebind it and overwrite the pre-gap
+          // turn's text (and timestamp) with the first post-gap row,
+          // corrupting the transcript. We forfeit anything said while the
+          // pane was empty, but hearing resumes with this very batch instead
+          // of deadlocking forever.
+          rebased = 0;
+          if (open && !open.settled) {
+            open.settled = true; // the pre-gap turn is definitively over
+            changed = true;
+            this._logHeard(open.speaker, open.text);
+          }
+          this._openTurnBySpeaker.delete(speaker);
           console.warn(ts(), '⚠️  [caption] lost anchor for', speaker,
-            '(' + knownCount + ' -> ' + n + ') — re-baselining to the current pane;',
+            '(' + knownCount + ' -> ' + n + ') — ingesting the visible rows as new speech;',
             'anything they said in the gap is unrecoverable');
           this.addError(
             `Caption anchor lost for ${speaker} (#389): the caption pane shrank past ` +
             `the last turn we held, so anything they said in the gap was missed. ` +
-            `Hearing has been re-baselined and resumes now.`,
+            `Hearing resumes with the captions on screen now.`,
           );
         }
         this._speakerTurnCount.set(speaker, rebased);

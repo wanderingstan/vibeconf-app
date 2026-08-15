@@ -4130,6 +4130,55 @@ class LocalServer {
       return;
     }
 
+    // Passthrough to the sync server's whiteboard version history (#380).
+    // The history lives on the website (Redis list `whiteboard:{roomId}:history`,
+    // up to 50 prior versions, newest first). This keeps the MCP server talking
+    // only to the local server, and routes by the same website base URL + room
+    // code the rest of whiteboard sync uses. NOTE: the upstream endpoint takes
+    // the ROOM CODE (e.g. ded-iika-yrs), not any call id.
+    if (url.pathname === '/api/whiteboard-history' && req.method === 'GET') {
+      const json = (body) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(body));
+      };
+      const room = url.searchParams.get('room') || this.roomId;
+      if (!room) {
+        json({ success: false, error: 'no-room' });
+        return;
+      }
+      const base = (this.getWebsiteUrl() || '').replace(/\/$/, '');
+      if (!base) {
+        json({ success: false, error: 'no-sync-server' });
+        return;
+      }
+      try {
+        const qs = new URLSearchParams();
+        for (const k of ['offset', 'limit']) {
+          const v = url.searchParams.get(k);
+          if (v != null) qs.set(k, v);
+        }
+        const resp = await fetch(
+          `${base}/api/room/${encodeURIComponent(room)}/whiteboard-history${qs.size ? `?${qs}` : ''}`,
+          { signal: AbortSignal.timeout(5000) }
+        );
+        const data = await resp.json().catch(() => null);
+        if (!resp.ok || !data?.success) {
+          json({ success: false, error: data?.error || `sync server ${resp.status}` });
+          return;
+        }
+        json({
+          success: true,
+          roomId: room,
+          entries: data.entries || [],
+          total: data.total ?? (data.entries || []).length,
+          hasMore: !!data.hasMore,
+        });
+      } catch (err) {
+        json({ success: false, error: `sync server unreachable: ${err.message}` });
+      }
+      return;
+    }
+
     // Register a local file as a whiteboard asset and get back an opaque URL
     // the bot can embed in update_whiteboard markdown (#157).
     if (url.pathname === '/api/whiteboard-asset' && req.method === 'POST') {

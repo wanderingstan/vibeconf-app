@@ -1458,11 +1458,13 @@ server.tool(
 
 server.tool(
   "read_whiteboard",
-  "Read the current contents of the shared whiteboard — the markdown/Mermaid source text, not a screenshot. Use this before update_whiteboard to build on what's already there (your own earlier writes or another bot's), or to recall what you put up. Returns the source and the current version number. (get_room_info also includes the board, but this is the clean, dedicated read.)",
+  "Read the shared whiteboard: the markdown/Mermaid source text, not a screenshot. By default returns the CURRENT board and its version number. Use that before update_whiteboard to build on what's already there (your own earlier writes or another bot's), or to recall what you put up. Earlier boards are NOT lost when the board is rewritten: the sync server keeps up to 50 prior versions. Pass history: true to list them (newest first, with previews), or version: N to get one prior version back in full, e.g. to recover content that was overwritten or to compare two iterations. (get_room_info also includes the current board, but this is the clean, dedicated read.)",
   {
+    history: z.boolean().optional().describe("List the board's stored PRIOR versions (newest first): version number, editor, timestamp, and a short content preview for each. Fetch a full one with version: N."),
+    version: z.number().optional().describe("Return one stored prior version in full by its version number, as listed by history: true."),
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
-  async ({ room_id }) => {
+  async ({ history, version, room_id }) => {
     let roomId = room_id || ROOM_ID;
     // Prefer the app's active room when it's in a call — authoritative over a
     // stale env/arg, mirroring get_room_info.
@@ -1481,6 +1483,50 @@ server.tool(
       return { content: [{ type: "text", text: "Not in a call and no room_id provided — nothing to read." }] };
     }
 
+    // History mode (#380): prior versions live on the sync server, reached
+    // through the local server's passthrough so routing matches the rest of
+    // whiteboard sync (room code, not call id).
+    if (history || version != null) {
+      let data;
+      try {
+        const resp = await vfetch(`${BASE_URL}/api/whiteboard-history?room=${encodeURIComponent(roomId)}&limit=50`);
+        data = await resp.json();
+      } catch (err) {
+        return { content: [{ type: "text", text: `Error contacting local server: ${err.message}` }] };
+      }
+      if (!data.success) {
+        const why = data.error === "no-room"
+          ? "Not in a call and no room to look up history for."
+          : `Could not fetch whiteboard history: ${data.error || "unknown error"}. The current board may still be readable with a plain read_whiteboard.`;
+        return { content: [{ type: "text", text: why }] };
+      }
+      const entries = data.entries || [];
+      if (version != null) {
+        const hit = entries.find((e) => Number(e.version) === Number(version));
+        if (!hit) {
+          return { content: [{ type: "text", text: entries.length
+            ? `No stored prior version ${version}. Stored prior versions: ${entries.map((e) => e.version).join(", ")}. For the current board, call read_whiteboard with no version.`
+            : "No prior whiteboard versions are stored for this room yet. Only the current board exists." }] };
+        }
+        const meta = [hit.lastEditor ? `by ${hit.lastEditor}` : null, hit.lastModified ? `at ${hit.lastModified}` : null]
+          .filter(Boolean).join(" ");
+        const body = (hit.content || "").trim() || "(this version was empty)";
+        return { content: [{ type: "text", text: `Whiteboard version ${hit.version}${meta ? ` (${meta})` : ""}:\n\n${body}` }] };
+      }
+      if (!entries.length) {
+        return { content: [{ type: "text", text: "No prior whiteboard versions are stored for this room yet. Only the current board exists (plain read_whiteboard)." }] };
+      }
+      const lines = entries.map((e) => {
+        const preview = (e.content || "").replace(/\s+/g, " ").trim().slice(0, 200) || "(empty)";
+        const who = e.lastEditor ? ` by ${e.lastEditor}` : "";
+        const when = e.lastModified ? ` at ${e.lastModified}` : "";
+        return `- version ${e.version}${who}${when}: ${preview}`;
+      });
+      const more = data.hasMore ? `\n\n(${data.total} versions stored in total; showing the newest ${entries.length}.)` : "";
+      return { content: [{ type: "text", text:
+        `Prior whiteboard versions (newest first, previews only). Fetch one in full with read_whiteboard version: N.\n\n${lines.join("\n")}${more}` }] };
+    }
+
     const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`);
     const data = await resp.json();
     if (!data.success) {
@@ -1491,8 +1537,8 @@ server.tool(
     if (!content) {
       return { content: [{ type: "text", text: "The whiteboard is currently empty." }] };
     }
-    const version = wb.version != null ? ` (version ${wb.version})` : "";
-    return { content: [{ type: "text", text: `Current whiteboard contents${version}:\n\n${content}` }] };
+    const versionNote = wb.version != null ? ` (version ${wb.version})` : "";
+    return { content: [{ type: "text", text: `Current whiteboard contents${versionNote}:\n\n${content}` }] };
   }
 );
 

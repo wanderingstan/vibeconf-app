@@ -824,6 +824,25 @@ const PREFERENCES = {
       'arriving before the bot decides the captions have dropped out (and ' +
       'surfaces that to the agent as a warning). See issue #187.',
   },
+  speakingEventCapture: {
+    type: 'boolean',
+    default: false,
+    label: 'Capture raw speaking-detection events',
+    description:
+      'Write every raw observation the speaking detectors make to '
+      + 'speaking-events.jsonl in the call folder: each tile mutation, each '
+      + 'reading of Meet\'s speaking indicator (as its raw background-position-x, '
+      + 'not a derived boolean), each verdict edge, and our own TTS loud/quiet '
+      + 'edges. Off by default — a 4-person call produces on the order of 300k '
+      + 'rows an hour. '
+      + 'Turn it on to TUNE detection rather than argue about it (#422): none of '
+      + 'the detector constants change what Meet does, only what we conclude '
+      + 'from a recording, so one capture can be re-scored offline at any window, '
+      + 'attack, hold or lookback (scripts/score-speaking.mjs). The 5s '
+      + '[speaker-health] line cannot do this — it aggregates away the timing '
+      + 'that is the entire subject. Pairs with keepCallRecordingTracks, which '
+      + 'keeps the per-participant audio the events are scored against.',
+  },
   speakingDetectionMode: {
     type: 'string',
     default: 'mutation',

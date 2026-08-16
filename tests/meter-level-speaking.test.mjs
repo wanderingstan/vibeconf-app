@@ -39,10 +39,10 @@ const { PREFERENCES } = require('../electron-app/preferences-schema.js');
 // Slice from the first tracker-scope declaration (the echo guard's state) to
 // the singleton at the bottom — everything the class closes over lives between
 // them, so the class runs here exactly as it does in the app.
-const start = src.indexOf('// #378 echo guard, DOM side.');
+const start = src.indexOf('// Raw event capture (#422)');
 const end = src.indexOf('const domSpeakerTracker');
 assert.ok(start > 0 && end > start, 'could not slice DOMSpeakerTracker out of the provider');
-const load = new Function('getComputedStyle', 'document', 'console', 'MutationObserver', 'emits', `
+const load = new Function('getComputedStyle', 'document', 'console', 'MutationObserver', 'emits', 'ipcRenderer', `
   // Stubs for the module-level collaborators the slice closes over. The emits
   // array is what the tracker would send upward. (The speakerDebugBorder stub
   // that lived here died with the border itself — #407.)
@@ -88,7 +88,8 @@ function setup({ mode = 'either' } = {}) {
     disconnect() { this.disconnected = true; }
   }
   const emits = [];
-  const api = load((node) => node.style, { contains: () => true }, fakeConsole, FakeObserver, emits);
+  const api = load((node) => node.style, { contains: () => true }, fakeConsole, FakeObserver, emits,
+    { invoke: () => Promise.resolve({}), send: () => {} });
   api.watched = watched;
   api.emits = emits;
   api.setMode(mode);

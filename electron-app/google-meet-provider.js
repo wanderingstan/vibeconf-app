@@ -1495,6 +1495,7 @@ function refreshSpeakingDetectionMode() {
   }).catch(() => {});
 }
 refreshSpeakingDetectionMode();
+refreshSpeakingEventCapture();
 
 function ensureStatusBar() {
   if (document.getElementById('vibeconf-status-bar')) return;
@@ -2040,6 +2041,64 @@ function findPeopleButton() {
   return document.querySelector(MEET.people.buttonFallback);
 }
 
+// ---------------------------------------------------------------------------
+// Raw event capture (#422)
+// ---------------------------------------------------------------------------
+//
+// Every constant in speaking detection was picked by reasoning over a handful
+// of observed calls and corrected later when a call went wrong. What has been
+// missing is a way to SCORE a change: [speaker-health] aggregates into 5s
+// buckets, and timing inside the bucket is the entire subject. "27 mutations in
+// these 5 seconds" cannot yield an onset latency, and "104 raised readings"
+// cannot tell one 1s gap from twenty 50ms ones — which is exactly the question
+// that decides whether METER_HOLD_MS is long enough.
+//
+// So when speakingEventCapture is on, every observation is written out with its
+// timestamp, and the detectors can be re-scored offline at any parameter values
+// (see scripts/score-speaking.mjs). None of these constants change what MEET
+// does; they only change what we conclude from a recording, so one capture
+// sweeps the whole parameter space.
+//
+// RAW VALUES, NEVER DERIVED BOOLEANS. The indicator is recorded as its actual
+// background-position-x, not as "off rest": rest calibration is itself a
+// parameter under test (it produced inverted-rest cases on 4% of beats), and a
+// boolean has already baked in the answer. Same reason self-audio is recorded
+// as loud/quiet edges rather than "suppressed".
+//
+// Off by default and batched: a 4-person call generates on the order of 300k
+// rows an hour, which belongs in its own file, not the session log.
+const CAPTURE_FLUSH_MS = 1000;
+let speakingEventCapture = false;
+let _capBuf = [];
+let _capFlushTimer = null;
+
+function refreshSpeakingEventCapture() {
+  ipcRenderer.invoke('get-config', ['speakingEventCapture']).then((r) => {
+    const on = r?.speakingEventCapture === true;
+    if (on === speakingEventCapture) return;
+    speakingEventCapture = on;
+    console.log('[speaking-capture]', on ? 'ON — writing speaking-events.jsonl' : 'OFF');
+    if (!on) { _capBuf = []; }
+  }).catch(() => {});
+}
+
+// One observation. Kept to short keys because volume is the whole constraint:
+// t=ms epoch, k=kind, p=participant, v=raw value, s=source.
+function capture(kind, participant, value, source) {
+  if (!speakingEventCapture) return;
+  _capBuf.push({ t: Date.now(), k: kind, p: participant || null,
+    ...(value !== undefined ? { v: value } : {}),
+    ...(source ? { s: source } : {}) });
+  if (_capFlushTimer) return;
+  _capFlushTimer = setTimeout(() => {
+    _capFlushTimer = null;
+    if (!_capBuf.length) return;
+    const rows = _capBuf;
+    _capBuf = [];
+    try { ipcRenderer.send('speaking-events', rows); } catch { /* main gone */ }
+  }, CAPTURE_FLUSH_MS);
+}
+
 // #378 echo guard, DOM side. When a human listens on laptop speakers, the bot's
 // own TTS comes back through their microphone; Meet animates THEIR speaking
 // indicator, and both DOM signals read it as that person interrupting. Live on
@@ -2123,6 +2182,7 @@ class DOMSpeakerTracker {
     this.checkInterval = setInterval(() => {
       this._scanParticipants();
       refreshSpeakingDetectionMode();
+      refreshSpeakingEventCapture();
       // Self-heal: reopen the people pane whenever it's closed (e.g. a chat
       // read/send switched to the chat pane). _ensurePeoplePaneOpen no-ops when
       // tiles are already present, so this is cheap. Gating on participants.size
@@ -2448,6 +2508,7 @@ class DOMSpeakerTracker {
       if (info.item === element || info.item.contains(element)) {
         (info.mutTimes || (info.mutTimes = [])).push(now);
         info._hbSubtreeMut = (info._hbSubtreeMut || 0) + 1;
+        capture('mut', info.name);
         // Same event, two readings: count it for the mutation signal, and take a
         // fresh LEVEL off the meter (#142) so the verdict below sees the meter
         // as of this instant rather than as of the last 50ms poll tick.
@@ -2616,7 +2677,7 @@ class DOMSpeakerTracker {
       // (The obvious alternative — take the most common value — loses the first
       // utterance of a call, when a raised bar can out-count a rest that has
       // only been seen a few times.)
-      this._readPromoted(st, v, now);
+      this._readPromoted(st, v, now, info, 'poll');
     }
 
     if (best) {
@@ -2643,7 +2704,10 @@ class DOMSpeakerTracker {
 
   // Fold one reading of the promoted meter into its state. Shared by the poll
   // and the observer so both paths apply identical rest tracking and attack.
-  _readPromoted(st, v, now) {
+  _readPromoted(st, v, now, info, source) {
+    // The raw sprite offset, before any rest comparison — see the capture
+    // header on why a derived boolean would be useless here.
+    if (info) capture('ind', info.name, v, source);
     // The resting bar is whatever this meter PARKS on: the same value held for
     // a full second without moving. A speaking meter steps between bars several
     // times a second, so it can't claim rest; a silent one sits still.
@@ -2716,7 +2780,7 @@ class DOMSpeakerTracker {
     if (v == null) return false;
     st.prev.set(st.el, v);
     st._hbEvents = (st._hbEvents || 0) + 1;
-    this._readPromoted(st, v, now);
+    this._readPromoted(st, v, now, info, 'evt');
     return this._isSpeakingByMeter(info, now) !== before;
   }
 
@@ -2827,6 +2891,7 @@ class DOMSpeakerTracker {
       info.speaking = isSpeaking;
       info.lastChange = now;
       console.log('[speaker-tracker] (' + source + ')', name, '→', isSpeaking);
+      capture('verdict', name, isSpeaking ? 1 : 0, source);
       meetProvider.emit(CALL_EVENTS.speakingChanged, { name, speaking: isSpeaking });
       meetProvider.emit(CALL_EVENTS.participantsUpdated, this.getParticipantList());
       // #209: feed the page-world CallRecorder the real participant NAME so it can
@@ -3217,8 +3282,11 @@ window.addEventListener('message', (event) => {
   if (event.data.action === 'self-audio') {
     // #378: our own TTS envelope, from page-inject's VirtualMic analyser. Only
     // the LOUD edges matter — see noteSelfAudioLoud.
-    const { loud, at } = event.data.payload || {};
+    const { loud, at, amp } = event.data.payload || {};
     if (loud) noteSelfAudioLoud(at || Date.now());
+    // BOTH edges are captured (#422): the echo guard re-scores offline from our
+    // own loud/quiet intervals, so the quiet edge is half the record.
+    capture('self', null, loud ? 1 : 0, amp != null ? String(amp) : undefined);
     return;
   }
 

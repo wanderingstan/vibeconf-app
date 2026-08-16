@@ -32,7 +32,7 @@ const { MEET } = require('../electron-app/meet-selectors.js');
 // Slice from the first tracker-scope declaration (the echo guard's state) to
 // the singleton at the bottom — everything the class closes over lives between
 // them, so the class runs here exactly as it does in the app.
-const start = src.indexOf('// #378 echo guard, DOM side.');
+const start = src.indexOf('// Raw event capture (#422)');
 const end = src.indexOf('const domSpeakerTracker');
 assert.ok(start > 0 && end > start, 'could not slice DOMSpeakerTracker out of the provider');
 
@@ -41,7 +41,7 @@ assert.ok(start > 0 && end > start, 'could not slice DOMSpeakerTracker out of th
 // arrive as parameters; `Date` is one of them so tests can move the clock.
 const load = new Function(
   'document', 'console', 'Date', 'MEET', 'isPresentationTile', 'visiblePeopleTileCount',
-  'getComputedStyle', 'MutationObserver', 'meetProvider', 'CALL_EVENTS', 'window', `
+  'getComputedStyle', 'MutationObserver', 'meetProvider', 'CALL_EVENTS', 'window', 'ipcRenderer', `
   ${src.slice(start, end)}
   return { DOMSpeakerTracker };
 `);
@@ -78,6 +78,7 @@ function setup(initialTiles = []) {
     { emit: () => {} },
     { speakingChanged: 'speaking', participantsUpdated: 'participants' },
     { postMessage: () => {} },
+    { invoke: () => Promise.resolve({}), send: () => {} },
   );
   const tracker = new api.DOMSpeakerTracker();
   return {

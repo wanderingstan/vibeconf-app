@@ -52,17 +52,30 @@ export function scoreCounter(muts, { windowMs = 1200, arm = 3, release = 2 } = {
 // Rest is learned exactly as the app learns it: the value held still for
 // restHoldMs. Recorded as the RAW sprite offset precisely so this stays a
 // parameter rather than a baked-in assumption.
+// restMode selects HOW the resting bar is identified:
+//   'park'     — what the app does today: the value held still for restHoldMs.
+//   'flattest' — the smallest |offset| ever seen for this element.
+//
+// The difference is not cosmetic. The sprite is a ramp, so flat is one fixed
+// end of it, and 'park' can be captured by a LOUD turn: hold the top bar for a
+// second and rest becomes the top bar, after which silence reads as "off rest"
+// and the signal is inverted until it parks at flat again. That was visible in
+// production as rest=-40px on 4% of health beats.
 export function scoreIndicator(readings, {
-  attackMs = 50, holdMs = 250, restHoldMs = 1000,
+  attackMs = 50, holdMs = 250, restHoldMs = 1000, restMode = 'park',
 } = {}, grid) {
   const out = [];
-  let rest = null, lastVal = null, sameSince = 0;
+  let rest = null, lastVal = null, sameSince = 0, flattest = null;
   let run = 0, offSince = 0, lastMoveAt = 0;
   let i = 0;
   for (const t of grid) {
     while (i < readings.length && readings[i].t <= t) {
       const { t: rt, v } = readings[i]; i++;
-      if (v === lastVal) {
+      if (restMode === 'flattest') {
+        const mag = Math.abs(parseFloat(v) || 0);
+        if (flattest === null || mag < flattest.mag) flattest = { mag, v };
+        rest = flattest.v;
+      } else if (v === lastVal) {
         if (rt - sameSince >= restHoldMs) rest = v;
       } else { lastVal = v; sameSince = rt; }
       if (rest === null) continue;              // not calibrated yet
@@ -250,8 +263,9 @@ function main() {
   console.log(`sweeping ${key}: ${list}\n`);
   for (const raw of list.split(',')) {
     const val = Number(raw);
-    const params = { [key === 'window' ? 'windowMs' : key === 'hold' ? 'holdMs' : key === 'attack' ? 'attackMs' : key === 'lookback' ? 'lookbackMs' : key]: val };
-    console.log(`--- ${key}=${val}`);
+    const numeric = { window: 'windowMs', hold: 'holdMs', attack: 'attackMs', lookback: 'lookbackMs' };
+    const params = key === 'restMode' ? { restMode: raw } : { [numeric[key] || key]: val };
+    console.log(`--- ${key}=${raw}`);
     for (const r of runFor(params)) console.log('  ' + fmt(r));
   }
 }

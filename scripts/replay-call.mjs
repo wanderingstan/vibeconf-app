@@ -48,6 +48,10 @@ const MEDIA = (flag('media', '') || '').split(',').filter(Boolean);
 const START = flag('start', '0');
 const DURATION = flag('duration', null);
 const ROOM = flag('room', resolveTarget(flag('target', 'default')).room);
+// Sample rate of the extracted tracks. 48k is faithful; 16k is speech-standard
+// and a third of the bytes, which matters because play-audio ships the whole
+// file to the renderer as base64 — a 20-minute 48k track is ~150MB of it.
+const RATE = flag('rate', '48000');
 const BOTS = flag('bots', 'Alice:7901,Jimmy:7902').split(',').map((s) => {
   const [name, port] = s.split(':');
   return new Bot(name, Number(port), ROOM);
@@ -79,7 +83,7 @@ function extractTracks() {
       if (Number(START)) args.push('-ss', START);
       args.push('-i', MEDIA[0]);
       if (DURATION) args.push('-t', DURATION);
-      args.push('-map', `0:${idx}`, '-ac', '1', '-ar', '48000', '-c:a', 'pcm_s16le', dest, '-y');
+      args.push('-map', `0:${idx}`, '-ac', '1', '-ar', RATE, '-c:a', 'pcm_s16le', dest, '-y');
       execFileSync('ffmpeg', args);
       out.push({ track: `speaker${i + 1}`, path: dest, sourceStream: Number(idx) });
     });
@@ -90,7 +94,7 @@ function extractTracks() {
       if (Number(START)) args.push('-ss', START);
       args.push('-i', f);
       if (DURATION) args.push('-t', DURATION);
-      args.push('-ac', '1', '-ar', '48000', '-c:a', 'pcm_s16le', dest, '-y');
+      args.push('-ac', '1', '-ar', RATE, '-c:a', 'pcm_s16le', dest, '-y');
       execFileSync('ffmpeg', args);
       out.push({ track: `speaker${i + 1}`, path: dest, sourceFile: f });
     });

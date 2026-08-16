@@ -29,6 +29,8 @@
 // both more accurate and less error-prone than bookkeeping it by hand.
 
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
 
 // --- the detectors, re-implemented over a recorded event stream --------------
 
@@ -130,11 +132,11 @@ const pct = (arr, p) => (arr.length ? arr.slice().sort((x, y) => x - y)[Math.min
 // negative: it is early, which the false-positive number already charges for,
 // and letting it subtract would hide lateness elsewhere.
 export function score(detected, labels) {
-  const onsets = [], offsets = [];
+  const onsets = [], offsets = [], missedDurs = [];
   let missed = 0, fragments = 0;
   for (const L of labels) {
     const hits = detected.filter((d) => overlap(d, L) > 0);
-    if (!hits.length) { missed++; continue; }
+    if (!hits.length) { missed++; missedDurs.push(L[1] - L[0]); continue; }
     fragments += hits.length;
     onsets.push(Math.max(0, hits[0][0] - L[0]));
     offsets.push(hits[hits.length - 1][1] - L[1]);
@@ -151,6 +153,10 @@ export function score(detected, labels) {
   return {
     turns: labels.length,
     missed,
+    // Raw per-turn values, so results from several captures can be POOLED
+    // properly. Averaging medians across captures is not the same statistic and
+    // would quietly weight a 26-turn segment like a 300-turn one.
+    onsets, offsets, missedDurations: missedDurs, labelledMs,
     onsetP50: pct(onsets, 0.5), onsetP90: pct(onsets, 0.9),
     offsetP50: pct(offsets, 0.5), offsetP90: pct(offsets, 0.9),
     fragPerTurn: labels.length ? (fragments / (labels.length - missed || 1)) : 0,
@@ -241,11 +247,20 @@ function main() {
           ? scoreCounter(p.muts, params, grid)
           : scoreIndicator(p.readings, params, grid);
         if (!has('no-guard')) v = applyEchoGuard(v, selfLoud, params, grid);
-        rows.push({ who, kind, ...score(spansOf(v, grid), L) });
+        const m = score(spansOf(v, grid), L);
+        const { onsets: _o, offsets: _f, missedDurations: _d, ...summary } = m;
+        rows.push({ who, kind, ...summary });
+        collected.push({ source: eventsPath, who, speaker: sp.name, kind, params, ...m });
       }
     }
     return rows;
   };
+
+  // --json dumps the per-turn measurements so results from SEVERAL captures can
+  // be pooled. One 2-minute segment is 60 turns; a constant should not be
+  // decided on that, and different calls differ in voice, mic and room.
+  const jsonOut = flag('json', null);
+  const collected = [];
 
   const fmt = (r) => r.note
     ? `${r.who.padEnd(14)} ${r.note}`
@@ -254,8 +269,15 @@ function main() {
       + `offset p50=${String(r.offsetP50).padStart(5)} p90=${String(r.offsetP90).padStart(5)} `
       + `frag=${r.fragPerTurn.toFixed(2)} fp=${r.fpEvents}/${r.fpSecPerMin.toFixed(1)}s per min`;
 
+  const dump = () => {
+    if (!jsonOut) return;
+    require('node:fs').writeFileSync(jsonOut, JSON.stringify(collected, null, 2));
+    console.log(`\nwrote ${jsonOut} (${collected.length} rows)`);
+  };
+
   if (!sweep) {
     for (const r of runFor({})) console.log(fmt(r));
+    dump();
     return;
   }
 
@@ -268,6 +290,7 @@ function main() {
     console.log(`--- ${key}=${raw}`);
     for (const r of runFor(params)) console.log('  ' + fmt(r));
   }
+  dump();
 }
 
 if (process.argv[1] && process.argv[1].endsWith('score-speaking.mjs')) main();

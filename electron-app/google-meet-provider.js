@@ -2144,8 +2144,16 @@ class DOMSpeakerTracker {
       // 50ms poll. evt=0 while off>0 means the meter is moving with no mutation
       // to ride on (a CSS animation), and the poll alone is carrying it.
       const evt = st ? (st._hbEvents || 0) : 0;
-      if (st) { st._hbOffRest = 0; st._hbEvents = 0; }
-      const mtr = !st || !st.calibrated ? 'blind' : `rest=${st.rest} off=${off} evt=${evt}`;
+      const lvl = st ? (st._hbMaxLvl || 0) : 0;   // loudest excursion this beat
+      const avg = st && off ? Math.round((st._hbLvlSum || 0) / off) : 0;
+      if (st) { st._hbOffRest = 0; st._hbEvents = 0; st._hbMaxLvl = 0; st._hbLvlSum = 0; }
+      // 'n/a' rather than 'blind' when the meter isn't driving the verdict: a
+      // disabled signal reading "blind" was misread as the tracker having gone
+      // deaf, when in mutation mode the meter's state is simply irrelevant.
+      const meterOff = speakingDetectionMode === 'mutation';
+      const mtr = !st || !st.calibrated
+        ? (meterOff ? 'n/a' : 'blind')
+        : `rest=${st.rest} off=${off} evt=${evt} lvl=${lvl}/${avg}`;
       parts.push(`${name}${info.isSelf ? '(self)' : ''}[spk=${info.speaking ? 1 : 0} item=${itemLive ? 'live' : 'STALE'} mut=${mut} mtr=${mtr}]`);
     }
     console.log('[speaker-health] mode=' + speakingDetectionMode
@@ -2186,6 +2194,12 @@ class DOMSpeakerTracker {
     }
   }
 
+  // How long a tracked participant may be absent from the people pane before
+  // the tracker forgets them. Long enough that a Meet re-render (sub-second)
+  // never evicts a live participant, short enough that someone who left stops
+  // being reported as present.
+  static get GONE_MS() { return 10_000; }
+
   _scanParticipants() {
     // Scope to the in-call region so "Also invited" and "Waiting to be admitted"
     // people (who share the same listitem markup) aren't registered as present
@@ -2200,6 +2214,9 @@ class DOMSpeakerTracker {
     if (region) this._warnedNoInCallRegion = false;
     const items = (region || document).querySelectorAll(MEET.people.tile);
     const shares = [];
+    // Keys present in THIS scan. Anything tracked but not in here has left the
+    // pane, and after a grace period it is dropped (see the prune below).
+    const seen = new Set();
     for (const item of items) {
       const name = item.getAttribute('aria-label');
       if (!name) continue;
@@ -2255,6 +2272,7 @@ class DOMSpeakerTracker {
       // them into one entry — the presentation case just made that reproducible.
       const key = pid || name;
 
+      seen.add(key);
       if (!this.participants.has(key)) {
         if (isSelf) {
           console.log('[speaker-tracker] Identified self tile:', name);
@@ -2269,8 +2287,14 @@ class DOMSpeakerTracker {
         info.isSelf = isSelf;
         info.isPseudo = isPseudo;
         info.name = name;   // a rename keeps the same device id
+        info.missingSince = 0;
       }
     }
+
+    // items.length, not seen.size: a pane holding only a SHARE tile is still a
+    // rendered pane, and everyone in it has genuinely gone. Gating on people
+    // seen would have made a lingering share keep its owner alive forever.
+    this._pruneDeparted(seen, items.length > 0);
 
     // Shares are state, not people. Recomputed from scratch each scan so a share
     // that ENDS disappears — an incremental update would leave a phantom
@@ -2280,6 +2304,41 @@ class DOMSpeakerTracker {
     if (JSON.stringify(shares) !== before) {
       console.log('[speaker-tracker] screen shares:',
         shares.length ? shares.map((s) => s.name).join(', ') : '(none)');
+    }
+  }
+
+  // Forget participants whose tile is gone for good.
+  //
+  // Nothing used to leave this Map. A participant who left the call stayed in
+  // it forever — still reported to the agent as being in the room — and a
+  // REJOIN made it worse: Meet issues a new device id, so the same human came
+  // back as a second entry while the dead one lingered. Measured on the
+  // 2026-08-13 call, which ended with five rows for four people, two of them
+  // "Pepper", the dead one permanently reading `item=STALE mtr=blind`. That
+  // pair of symptoms is also what made the logs look like the meter had gone
+  // blind for long stretches when detection was in fact working.
+  //
+  // Two guards, because forgetting a LIVE participant is much worse than
+  // keeping a dead one:
+  //
+  //   - Nothing is pruned when the scan saw no tiles AT ALL. The people pane is
+  //     closed during a chat read/send (it shares the side panel), and every
+  //     tile disappears from the DOM while it is — pruning then would wipe the
+  //     roster, along with each meter's calibration, several times a call.
+  //     "No tiles" means no listitems of any kind: a pane showing only a share
+  //     is open and rendering, and the people in it really have left.
+  //   - A tile must be absent for GONE_MS, not merely absent once. Meet
+  //     re-renders tiles sub-second for reasons unrelated to leaving.
+  _pruneDeparted(seen, paneRendered) {
+    if (!paneRendered) return;       // pane closed / mid-render — see above
+    const now = Date.now();
+    for (const [key, info] of this.participants) {
+      if (seen.has(key)) { info.missingSince = 0; continue; }
+      if (!info.missingSince) { info.missingSince = now; continue; }
+      if (now - info.missingSince < DOMSpeakerTracker.GONE_MS) continue;
+      this.participants.delete(key);
+      console.log('[speaker-tracker] forgot departed participant:', info.name,
+        `(gone ${Math.round((now - info.missingSince) / 1000)}s)`);
     }
   }
 
@@ -2571,6 +2630,19 @@ class DOMSpeakerTracker {
       st.run = (st.run || 0) + 1;
       if (!st.offSince) st.offSince = now;
       st._hbOffRest = (st._hbOffRest || 0) + 1;
+      // How FAR off rest, in px of sprite travel — the loudness, which nothing
+      // has ever recorded. The verdict is currently binary (off rest at all),
+      // so a quiet sound counts the same as a shout; if the bot's own TTS
+      // coming back through someone's speakers is quieter than that person
+      // actually talking, a level threshold separates them where no amount of
+      // time-smoothing can. This is the number that would show it (#378).
+      const lvl = Math.abs(parseFloat(v) - parseFloat(st.rest)) || 0;
+      if (lvl > (st._hbMaxLvl || 0)) st._hbMaxLvl = lvl;
+      // The MEAN matters more than the max: any real utterance touches the top
+      // bar sooner or later, so max saturates (measured: lvl=40 on every
+      // speaking beat) and separates nothing. If echo is quieter than speech,
+      // it shows up as a lower average excursion across the beat.
+      st._hbLvlSum = (st._hbLvlSum || 0) + lvl;
       // Attack requirement: at least two readings, spanning METER_ATTACK_MS, of
       // a raised level before the verdict arms. One raised frame is a keystroke
       // or a chair creak, and with the hold and the grace on top it would have

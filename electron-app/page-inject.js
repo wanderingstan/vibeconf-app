@@ -2792,6 +2792,40 @@
   const SELF_LOUD_AMP = 0.10;
   const ECHO_GUARD_ENABLED = true;
 
+  // #378: the SAME envelope, published to the renderer world.
+  //
+  // The DOM speaker tracker (google-meet-provider.js) has exactly the problem
+  // this guard already solves for audio — a human on laptop speakers hears the
+  // bot's own TTS, their mic picks it up, Meet animates THEIR speaking
+  // indicator, and the tracker reads it as that person interrupting. It could
+  // not defend itself because our TTS envelope lives here, in the page world,
+  // and the tracker runs in the renderer.
+  //
+  // Published as a boolean crossing rather than a stream of amplitudes: the
+  // consumer only ever asks "were we loud recently", and an edge plus a slow
+  // refresh is two orders of magnitude less postMessage traffic than sampling.
+  // The refresh matters — without it a dropped edge would strand the consumer
+  // believing we are still talking, which would make it deaf rather than
+  // merely cautious.
+  const SELF_AUDIO_SAMPLE_MS = 50;
+  const SELF_AUDIO_REFRESH_MS = 200;
+  let _selfLoud = false;
+  let _selfLastPublishAt = 0;
+  setInterval(() => {
+    let amp = 0;
+    try { amp = (typeof mic !== 'undefined' && mic && mic.getAmplitude) ? mic.getAmplitude() : 0; }
+    catch { return; }
+    const loud = amp > SELF_LOUD_AMP;
+    const now = Date.now();
+    if (loud === _selfLoud && !(loud && now - _selfLastPublishAt >= SELF_AUDIO_REFRESH_MS)) return;
+    _selfLoud = loud;
+    _selfLastPublishAt = now;
+    try {
+      window.postMessage({ __botsInCalls: true, action: 'self-audio',
+        payload: { loud, amp: Math.round(amp * 100) / 100, at: now } }, '*');
+    } catch { /* page tearing down */ }
+  }, SELF_AUDIO_SAMPLE_MS);
+
   // How often the guard actually fires, sampled rather than logged per frame
   // (this runs every animation frame). Without a number here we would be
   // guessing whether the guard is doing anything or quietly disabling barge-in.

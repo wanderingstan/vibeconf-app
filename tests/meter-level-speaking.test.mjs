@@ -36,7 +36,10 @@ const { PREFERENCES } = require('../electron-app/preferences-schema.js');
 // constants + class out and run them against a fake DOM. Slicing beats mocking
 // electron: the code under test is exercised verbatim, and if the boundaries
 // move the slice fails loudly rather than testing a stale copy.
-const start = src.indexOf('const METER_SAMPLE_MS');
+// Slice from the first tracker-scope declaration (the echo guard's state) to
+// the singleton at the bottom — everything the class closes over lives between
+// them, so the class runs here exactly as it does in the app.
+const start = src.indexOf('// #378 echo guard, DOM side.');
 const end = src.indexOf('const domSpeakerTracker');
 assert.ok(start > 0 && end > start, 'could not slice DOMSpeakerTracker out of the provider');
 const load = new Function('getComputedStyle', 'document', 'console', 'MutationObserver', 'emits', `
@@ -48,6 +51,7 @@ const load = new Function('getComputedStyle', 'document', 'console', 'MutationOb
   const window = { postMessage: () => {} };
   ${src.slice(start, end)}
   return { DOMSpeakerTracker, setMode: (m) => { speakingDetectionMode = m; },
+           noteSelfAudioLoud, DOM_ECHO_LOOKBACK_MS,
            METER_HOLD_MS, METER_DISCOVER_MS, METER_SAMPLE_MS, METER_ATTACK_MS };
 `);
 
@@ -405,6 +409,80 @@ test('the lead over the mutation counter is measured, not assumed', () => {
   const line = logs.find((l) => l.startsWith('[meter-latency]'));
   assert.ok(line, 'a rising edge on both signals logs their gap');
   assert.match(line, /meter led by \+300ms/);
+});
+
+// --- the echo guard (#378) --------------------------------------------------
+
+test("a rise while our own TTS is loud is withheld — it is probably us", () => {
+  // A human listening on laptop speakers hears the bot; their mic picks it up;
+  // Meet animates THEIR indicator. Live on ded-iika-yrs: a tile whose owner was
+  // silent flagged speaking, barge-in armed, TTS truncated 0.9s in.
+  const { tracker, noteSelfAudioLoud } = setup({ mode: 'either' });
+  const bar = el(SPRITE, '0px');
+  const info = participant(tile([bar]));
+  speakInto(tracker, info, bar);
+  assert.equal(tracker._isSpeakingByMeter(info, 1100), true, 'the indicator is up');
+
+  noteSelfAudioLoud(1050);                       // ...but we were talking
+  assert.equal(tracker._rawSpeaking(info, 1100), false, 'not credited as them');
+  assert.equal(info._hbEcho, 1, 'and it is counted, not silently dropped');
+});
+
+test('the guard covers the mutation counter too, not just the indicator', () => {
+  // #378 read "meter led by +313ms", and that line is only written when BOTH
+  // signals rise — so the counter fired on the same echo, 313ms later. It is
+  // slower at being wrong, not immune. Hence the guard sits at the verdict.
+  const { tracker, noteSelfAudioLoud } = setup({ mode: 'mutation' });
+  const info = participant(tile([]));
+  info.mutTimes = [1000, 1100, 1200];
+  assert.equal(tracker._isSpeakingByMutation(info, 1250), true);
+
+  noteSelfAudioLoud(1200);
+  assert.equal(tracker._rawSpeaking(info, 1250), false);
+});
+
+test('someone who already had the floor keeps it while we talk', () => {
+  // Only the RISING edge is suppressed. If they were speaking before the bot
+  // started, our own voice is no reason to decide they stopped.
+  const { tracker, noteSelfAudioLoud } = setup({ mode: 'mutation' });
+  const info = participant(tile([]), { speaking: true });
+  info.mutTimes = [1000, 1100, 1200];
+  info._mutArmed = true;
+
+  noteSelfAudioLoud(1200);
+  assert.equal(tracker._rawSpeaking(info, 1250), true, 'not yanked mid-turn');
+});
+
+test('the guard opens once our output has been quiet for the lookback', () => {
+  // LOOKBACK, not "loud right now": echo arrives late (~503ms behind our TTS,
+  // measured in #245) and Meet's indicator adds animation lag on top, so gating
+  // on the instantaneous envelope would pass every echo through the gaps
+  // between words — which is exactly where the gaps are.
+  const { tracker, noteSelfAudioLoud, DOM_ECHO_LOOKBACK_MS } = setup({ mode: 'mutation' });
+  const info = participant(tile([]));
+  info.mutTimes = [1000, 1100, 1200];
+  noteSelfAudioLoud(1200);
+
+  assert.equal(tracker._rawSpeaking(info, 1200 + DOM_ECHO_LOOKBACK_MS - 50), false, 'still suspect');
+  info.mutTimes = [1000, 1100, 1200];   // window would otherwise have drained
+  assert.equal(tracker._rawSpeaking(info, 1200 + DOM_ECHO_LOOKBACK_MS + 50), true, 'clear');
+});
+
+test("the bot's own tile is exempt — it SHOULD light up while it speaks", () => {
+  const { tracker, noteSelfAudioLoud } = setup({ mode: 'mutation' });
+  const info = participant(tile([]), { isSelf: true });
+  info.mutTimes = [1000, 1100, 1200];
+  noteSelfAudioLoud(1200);
+  assert.equal(tracker._rawSpeaking(info, 1250), true, 'self is not echo of self');
+});
+
+test('with no self-audio ever reported, nothing is suppressed', () => {
+  // page-inject publishes the envelope; if that channel is silent (older build,
+  // page not ready) the guard must be inert rather than deaf.
+  const { tracker } = setup({ mode: 'mutation' });
+  const info = participant(tile([]));
+  info.mutTimes = [1000, 1100, 1200];
+  assert.equal(tracker._rawSpeaking(info, 1250), true);
 });
 
 // --- the preference -------------------------------------------------------

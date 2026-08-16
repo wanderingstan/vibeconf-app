@@ -29,7 +29,10 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const src = readFileSync(join(root, 'electron-app/google-meet-provider.js'), 'utf8');
 const { MEET } = require('../electron-app/meet-selectors.js');
 
-const start = src.indexOf('const METER_SAMPLE_MS');
+// Slice from the first tracker-scope declaration (the echo guard's state) to
+// the singleton at the bottom — everything the class closes over lives between
+// them, so the class runs here exactly as it does in the app.
+const start = src.indexOf('// #378 echo guard, DOM side.');
 const end = src.indexOf('const domSpeakerTracker');
 assert.ok(start > 0 && end > start, 'could not slice DOMSpeakerTracker out of the provider');
 

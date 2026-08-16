@@ -2040,6 +2040,33 @@ function findPeopleButton() {
   return document.querySelector(MEET.people.buttonFallback);
 }
 
+// #378 echo guard, DOM side. When a human listens on laptop speakers, the bot's
+// own TTS comes back through their microphone; Meet animates THEIR speaking
+// indicator, and both DOM signals read it as that person interrupting. Live on
+// call ded-iika-yrs: a tile whose owner was silent flagged speaking, barge-in
+// armed, TTS truncated 0.9s in.
+//
+// Level cannot separate them — echo at speaker volume looks like speech, and
+// the indicator is not amplitude-driven anyway. What separates them is
+// CORRELATION: echo tracks our own output envelope, a person does not. That is
+// exactly the test page-inject already applies to far-end AUDIO (#245); this is
+// the same test, applied to the DOM.
+//
+// LOOKBACK, not "right now", is the difference from the audio version. Echo of
+// audio we played arrives late — measured ~503ms behind our TTS in #245 — and
+// Meet's indicator adds its own animation lag on top. Gating on our INSTANT
+// amplitude would let every delayed echo through the gaps between words, which
+// is precisely where the gaps are.
+//
+// The cost is stated plainly: while the bot is speaking, a real human's rising
+// edge is held until our output has been quiet for the lookback. That is not a
+// hole in barge-in — the analyser's floor signal (fastFloorDetection) covers
+// exactly that window and has its own guard — it is the DOM path declining to
+// answer a question it cannot answer honestly.
+const DOM_ECHO_LOOKBACK_MS = 700;
+let selfAudioLastLoudAt = 0;
+function noteSelfAudioLoud(at) { selfAudioLastLoudAt = Math.max(selfAudioLastLoudAt, at); }
+
 // Meter-level signal (#142). Meet draws each participant's mic meter as three
 // divs that all share ONE background-image — a sprite of vertical bars at
 // increasing heights — and animates `background-position-x` to pick which bar
@@ -2144,6 +2171,12 @@ class DOMSpeakerTracker {
       // 50ms poll. evt=0 while off>0 means the meter is moving with no mutation
       // to ride on (a CSS animation), and the poll alone is carrying it.
       const evt = st ? (st._hbEvents || 0) : 0;
+      // Evaluations withheld as our own echo (#378) — not distinct rises: the
+      // verdict is re-evaluated on every mutation and every poll, so a single
+      // suppressed rise contributes several. Read it as "how much of this beat
+      // was spent declining to believe this tile", not as an event count.
+      const echo = info._hbEcho || 0;
+      info._hbEcho = 0;
       const lvl = st ? (st._hbMaxLvl || 0) : 0;   // loudest excursion this beat
       const avg = st && off ? Math.round((st._hbLvlSum || 0) / off) : 0;
       if (st) { st._hbOffRest = 0; st._hbEvents = 0; st._hbMaxLvl = 0; st._hbLvlSum = 0; }
@@ -2154,7 +2187,7 @@ class DOMSpeakerTracker {
       const mtr = !st || !st.calibrated
         ? (meterOff ? 'n/a' : 'blind')
         : `rest=${st.rest} off=${off} evt=${evt} lvl=${lvl}/${avg}`;
-      parts.push(`${name}${info.isSelf ? '(self)' : ''}[spk=${info.speaking ? 1 : 0} item=${itemLive ? 'live' : 'STALE'} mut=${mut} mtr=${mtr}]`);
+      parts.push(`${name}${info.isSelf ? '(self)' : ''}[spk=${info.speaking ? 1 : 0} item=${itemLive ? 'live' : 'STALE'} mut=${mut} mtr=${mtr}${echo ? ' echo=' + echo : ''}]`);
     }
     console.log('[speaker-health] mode=' + speakingDetectionMode
       + ' tiles=' + visiblePeopleTileCount() + ' | ' + (parts.join(' ') || '(no participants tracked)'));
@@ -2706,9 +2739,34 @@ class DOMSpeakerTracker {
     const mut = this._isSpeakingByMutation(info, now);
     const meter = this._isSpeakingByMeter(info, now);
     this._logSignalDisagreement(info, mut, meter, now);
-    if (meter === null || speakingDetectionMode === 'mutation') return mut;
-    if (speakingDetectionMode === 'meter') return meter;
-    return mut || meter;   // 'either' — earliest rising edge of the two
+    let verdict;
+    if (meter === null || speakingDetectionMode === 'mutation') verdict = mut;
+    else if (speakingDetectionMode === 'meter') verdict = meter;
+    else verdict = mut || meter;   // 'either' — earliest rising edge of the two
+
+    // Echo guard (#378) — at the VERDICT, so it covers both DOM signals.
+    //
+    // Not indicator-only, though that is where it was first seen: the
+    // [meter-latency] line in #378 reads "meter led by +313ms", and that line is
+    // only written when BOTH signals rise. The mutation counter fired on the
+    // same echo, 313ms later. It is slower at being wrong, not immune.
+    //
+    // Only the RISING edge is suppressed. Someone already flagged as speaking
+    // stays flagged — if they had the floor before we started talking, our
+    // voice is no reason to decide they stopped.
+    if (verdict && !info.speaking && !info.isSelf && this._echoSuspect(now)) {
+      info._hbEcho = (info._hbEcho || 0) + 1;
+      return false;
+    }
+    return verdict;
+  }
+
+  // Were we audibly talking recently enough that this rise could be our own
+  // voice coming back? Self is exempt: the bot's own tile SHOULD light up while
+  // its TTS plays, and nothing downstream consumes it (isSelf is filtered out
+  // of every speaking gate).
+  _echoSuspect(now) {
+    return !!selfAudioLastLoudAt && (now - selfAudioLastLoudAt) < DOM_ECHO_LOOKBACK_MS;
   }
 
   // Records how far the meter leads (or trails) the mutation counter on each
@@ -3154,6 +3212,14 @@ window.addEventListener('message', (event) => {
   if (event.data.action === 'dom-speaker-change') {
     const { name, speaking } = event.data.payload;
     if (name) meetProvider.emit(CALL_EVENTS.speakingChanged, { name, speaking });
+  }
+
+  if (event.data.action === 'self-audio') {
+    // #378: our own TTS envelope, from page-inject's VirtualMic analyser. Only
+    // the LOUD edges matter — see noteSelfAudioLoud.
+    const { loud, at } = event.data.payload || {};
+    if (loud) noteSelfAudioLoud(at || Date.now());
+    return;
   }
 
   if (event.data.action === 'audio-floor') {

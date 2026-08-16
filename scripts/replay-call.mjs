@@ -119,6 +119,22 @@ async function run() {
   for (const bot of BOTS) await bot.join();
   for (const bot of BOTS) await bot.warmUp();
 
+  // Wait for the join to land before asserting on it.
+  //
+  // warmUp gives up after 40s and proceeds, which is right for the feature
+  // lanes. A FRESHLY SPAWNED fleet routinely needs longer than that — cold
+  // Electron start plus a Meet page load — and all three runs of the first
+  // corpus batch aborted here with callStatus=navigating, collecting nothing.
+  // So poll for the real thing, then assert.
+  const joinTimeoutMs = Number(flag('join-timeout', '120')) * 1000;
+  const deadline = Date.now() + joinTimeoutMs;
+  const isIn = (st) => st.callStatus === 'in-call' || st.callStatus === 'active';
+  while (Date.now() < deadline) {
+    const states = await Promise.all(BOTS.map((b) => b.status().catch(() => ({}))));
+    if (states.every(isIn)) break;
+    await sleep(3000);
+  }
+
   // Assert every bot is ACTUALLY in the call before playing a note.
   //
   // warmUp deliberately proceeds when it cannot confirm ("not in-call in
@@ -163,7 +179,12 @@ async function run() {
   await sleep((durationSec + 5) * 1000);
 
   for (const bot of BOTS) await setCapture(bot, false);
-  for (const bot of BOTS) await bot.leave();
+  // --keep-call leaves them in the call so a second segment can be replayed
+  // without another join. Joining is the expensive, failure-prone step: Google
+  // stopped admitting our guest bots after ~25 joins in a morning, and each
+  // segment costs two of them. Reusing one join across segments cuts that by
+  // the number of segments.
+  if (!argv.includes('--keep-call')) { for (const bot of BOTS) await bot.leave(); }
 
   const manifest = {
     room: ROOM,

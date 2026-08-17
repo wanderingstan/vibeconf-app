@@ -2741,6 +2741,10 @@ class LocalServer {
   }
 
   _setBotState(state, extra, { force } = {}) {
+    // #422: the replay exemption belongs to ONE playback, so it dies the moment
+    // the bot stops speaking. Leaving it set would silently disable barge-in for
+    // the rest of the session — a test-only flag turning into a live bug.
+    if (state !== 'speaking' && this._uninterruptiblePlayback) this._uninterruptiblePlayback = false;
     if (this.botState === state) return;
     // Keep the visible "I want to speak but I'm yielding" signal while the
     // interrupter is still talking. A follow-up wait_for_speech call should
@@ -2890,6 +2894,13 @@ class LocalServer {
 
   _armBargeIn() {
     if (this._bargeInTimer || this.botState !== 'speaking') return;
+    // #422: replayed audio is not the bot talking — it is a recorded human,
+    // played in so detection can be scored against ground truth. Barge-in must
+    // not touch it. Without this, a two-speaker replay destroys the very
+    // conversation it is reproducing: each bot hears the other, arms, and stops
+    // its own playback (observed on the first end-to-end run — one side's audio
+    // died 4s in and that side scored as 26 missed turns).
+    if (this._uninterruptiblePlayback) return;
     const g = this._graceForCurrentUtterance();
     const graceMs = typeof g === 'number' ? g : g.ms;
     const detail = typeof g === 'number' ? '' : ` (urgency ${g.u.toFixed(2)}-scaled)`;
@@ -4887,6 +4898,9 @@ class LocalServer {
     // Treat it as speaking so the bot won't talk over it; 'tts-ended' clears it.
     if (data.meta?.action === 'play-audio') {
       this._setBotState('speaking', { emoji: data.meta.emoji });
+      // uninterruptible: for replay rigs only (#422). Ordinary play_audio stays
+      // interruptible — a human talking over a sound effect should still stop it.
+      this._uninterruptiblePlayback = data.meta.uninterruptible === true;
       this.onPlayAudio({ url: data.meta.url, path: data.meta.path, audioData: data.meta.audioData, emoji: data.meta.emoji });
       results.playAudio = { ok: true };
     }

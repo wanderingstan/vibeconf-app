@@ -8292,6 +8292,33 @@ allURLs`;
   else deferredStarts.push(startCalendarPolling);
 
   // IPC: join detected meet and launch Claude
+  // #422: raw speaking-detection events from the renderer, appended to the
+  // call's own folder as JSONL. Batched by the sender (1s), appended
+  // synchronously here — the rows are small and the write is the only place
+  // this data can be lost.
+  //
+  // Lands beside call-recording-tracks/ deliberately: scoring needs the DOM
+  // event stream and the per-participant audio on ONE timeline, and sharing a
+  // directory is what makes that alignment obvious rather than reconstructed.
+  ipcMain.on('speaking-events', (_event, rows) => {
+    if (!Array.isArray(rows) || !rows.length) return;
+    try {
+      const agentDir = require('./agent-workdir.js').agentDirFor(app.getPath('userData'));
+      const callId = (localServer && localServer.callId) || 'no-call';
+      const safeCallId = String(callId).replace(/[^a-zA-Z0-9._-]/g, '_');
+      const dir = path.join(agentDir, 'calls', safeCallId);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.appendFileSync(path.join(dir, 'speaking-events.jsonl'),
+        rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
+    } catch (err) {
+      // Never let diagnostics break a call. One warning, then stay quiet.
+      if (!global.__warnedSpeakingCapture) {
+        global.__warnedSpeakingCapture = true;
+        console.warn('[speaking-capture] could not write events:', err.message);
+      }
+    }
+  });
+
   ipcMain.on('join-detected-meet', (_event, { url, meetCode }) => {
     // Runtime provider switch: if we're currently on Slack, rebuild a Meet view
     // first so loadMeetURL doesn't try to drive the Slack surface.
@@ -8933,7 +8960,11 @@ function setBotViewState(state) {
       width: 960, height: 540,
       title: windowTitle("Bot's view"),
       icon: path.join(__dirname, 'icon.png'),
-      parent: mainWindow || undefined,
+      // Deliberately NOT `parent: mainWindow`. A child window is dragged around
+      // by its parent on macOS, so every nudge of the app window yanked the
+      // bot's view along with it — maddening when you have parked it somewhere
+      // and want to move the app out of the way. It is a normal top-level
+      // window now: independent position, and free to sit behind the app.
       webPreferences: { nodeIntegration: false, contextIsolation: true },
     });
     // extraSize {0,0} because meetView fills the whole content box — there is
@@ -9825,6 +9856,12 @@ function createMainWindow() {
     mainWindow = null;
     panelView = null;
     meetView = null;
+    // The bot's-view popout is no longer a CHILD of this window (so the app can
+    // be dragged without towing it), which means macOS no longer closes it for
+    // us. Left alone it would outlive the app window and keep
+    // 'window-all-closed' — and so the quit — from ever firing.
+    if (meetPopoutWindow && !meetPopoutWindow.isDestroyed()) meetPopoutWindow.destroy();
+    meetPopoutWindow = null;
     sync.stopPolling();
   });
 }

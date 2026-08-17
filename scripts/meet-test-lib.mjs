@@ -215,8 +215,11 @@ export class Bot {
   // Play arbitrary audio into the call via the bot's virtual mic — the exact
   // play-audio HTTP path the play_audio MCP tool uses (url / local path / inline
   // base64). The app treats it as speaking so it won't talk over it.
-  async playAudio({ url, path: filePath, audioData, emoji } = {}) {
-    const { data, ms } = await this._sync({ meta: { action: 'play-audio', url, path: filePath, audioData, emoji } });
+  // uninterruptible: replay rigs only (#422). Ordinary playback stays
+  // interruptible; a replayed conversation must not be stopped by the bot's own
+  // barge-in, or two bots replaying two speakers silence each other.
+  async playAudio({ url, path: filePath, audioData, emoji, uninterruptible } = {}) {
+    const { data, ms } = await this._sync({ meta: { action: 'play-audio', url, path: filePath, audioData, emoji, uninterruptible } });
     const ok = data?.results?.playAudio?.ok === true || data?.success !== false;
     log(this.name, 'playAudio', { ms, ok, note: url || filePath || '(inline)' });
     return data;

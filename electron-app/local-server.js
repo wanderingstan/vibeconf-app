@@ -1033,7 +1033,8 @@ class LocalServer {
   }
 
   _rankedSpeakDelay(t) {
-    if (this._pref('botSpeakOrdering') !== 'ranked') return null;   // off: not worth logging
+    const mode = this._pref('botSpeakOrdering');
+    if (mode !== 'ranked') return this._rankedSkip(`botSpeakOrdering=${JSON.stringify(mode)}`);
     const self = this.getEffectiveBotName();
     if (!self) return this._rankedSkip('this bot has no name yet');
     // Peers come from the website's room presence, where every bot registers
@@ -1045,12 +1046,24 @@ class LocalServer {
     ])].filter((n) => n && n.toLowerCase() !== self.toLowerCase());
     if (!peers.length) return this._rankedSkip('no peer bots known — set peerBotNames');
 
-    // The utterance being answered: the last thing said by someone who is not
-    // this bot. That is what every bot in the call saw, so it is what they can
-    // all key on.
+    // The utterance being answered: the last thing said by a HUMAN — anyone
+    // outside the bot set.
+    //
+    // "The last thing not said by ME" was the obvious rule and it is wrong,
+    // because it is self-relative: in a three-way exchange each bot excludes a
+    // different speaker and so keys on a different utterance. Measured live
+    // 2026-08-17 with three bots — Alice and Jimmy both keyed on Cosmo's line
+    // while Cosmo, excluding itself, keyed on Jimmy's, giving two different
+    // seeds and therefore two different winners.
+    //
+    // Excluding EVERY bot fixes it because the exclusion set is common
+    // knowledge: all bots hold the same roster, so all bots land on the same
+    // human turn. It is also what the ordering is FOR — deciding who answers
+    // the person, not who answers another bot.
+    const known = new Set([self.toLowerCase(), ...peers.map((p) => p.toLowerCase())]);
     const last = [...(this.transcripts || [])].reverse()
-      .find((e) => e && e.text && e.participantName && e.participantName !== self);
-    if (!last) return this._rankedSkip('no utterance to key on yet');
+      .find((e) => e && e.text && e.participantName && !known.has(e.participantName.toLowerCase()));
+    if (!last) return this._rankedSkip('no human utterance to key on yet');
 
     let ranked;
     try {

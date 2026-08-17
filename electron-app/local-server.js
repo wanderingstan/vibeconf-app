@@ -980,38 +980,6 @@ class LocalServer {
     };
   }
 
-  // Bots currently registered in this room's presence, by name.
-  //
-  // Served from a cache that a background refresh keeps warm, because the
-  // caller decides a speak delay SYNCHRONOUSLY at the instant audio would
-  // start — awaiting a network round trip there would add the very latency this
-  // whole mechanism exists to remove. A cold or stale cache simply yields no
-  // peers, and the caller falls back to jitter for that turn.
-  _presenceBotNames() {
-    const now = Date.now();
-    const fresh = this._presenceCache && (now - this._presenceCache.at) < 30_000;
-    if (!fresh) this._refreshPresenceBots();          // fire-and-forget
-    return (this._presenceCache && this._presenceCache.names) || [];
-  }
-
-  _refreshPresenceBots() {
-    if (this._presenceInFlight) return;
-    const roomId = this.roomId;
-    const base = (this.getWebsiteUrl() || '').replace(/\/$/, '');
-    if (!roomId || !base) return;
-    this._presenceInFlight = true;
-    fetch(`${base}/api/room/${roomId}/presence`, { signal: AbortSignal.timeout(3000) })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        const names = ((data && data.members) || [])
-          .filter((m) => m && m.role === 'bot' && m.name)
-          .map((m) => String(m.name));
-        this._presenceCache = { at: Date.now(), names };
-      })
-      .catch(() => { /* unreachable — peerBotNames or jitter covers it */ })
-      .finally(() => { this._presenceInFlight = false; });
-  }
-
   // The deterministic ordering (electron-app/speak-order.js). Returns null when
   // it cannot be computed, which is the caller's signal to keep using jitter.
   //
@@ -1040,11 +1008,34 @@ class LocalServer {
     // Peers come from the website's room presence, where every bot registers
     // itself with role='bot' (verified live 2026-08-17). peerBotNames is the
     // manual override for when presence is unreachable or a peer predates it.
-    const peers = [...new Set([
-      ...this._presenceBotNames(),
-      ...(Array.isArray(this._pref('peerBotNames')) ? this._pref('peerBotNames') : []),
-    ])].filter((n) => n && n.toLowerCase() !== self.toLowerCase());
-    if (!peers.length) return this._rankedSkip('no peer bots known — set peerBotNames');
+    // Candidates come from the ROSTER — nothing here needs the server.
+    //
+    // Everything the ordering depends on is already local and already shared:
+    // every bot has the same people pane, and Meet gives every participant the
+    // same captions. The only thing the roster does NOT say is which
+    // participants are bots — and that turns out not to matter. Rank everyone:
+    // all bots still derive the same order, and a human simply never claims
+    // their slot, at which point the next rank finds the floor free and speaks.
+    //
+    // peerBotNames is therefore an OPTIMISATION, not a requirement. When it is
+    // set, ranks are not wasted on participants who will never use them; when
+    // it is empty, the ordering still works, just with a slot per human.
+    //
+    // This also removes a class of bug rather than patching it: presence
+    // records the CONFIGURED bot name while Meet shows the display name for
+    // this call, and under test those differ ("Alice" vs "Alice-r4a32"), so
+    // each bot was counted twice and the order came out "rank 4 of 5" in a room
+    // holding three bots — every one of them queued behind peers that did not
+    // exist. Names taken from the roster are the names everyone else sees.
+    const roster = (this.participants || [])
+      .filter((p) => p && p.name && !p.isSelf && p.name !== 'You' && !p.isPseudo)
+      .map((p) => p.name);
+    const configured = Array.isArray(this._pref('peerBotNames')) ? this._pref('peerBotNames') : [];
+    const known = configured.length
+      ? new Set(configured.map((n) => n.toLowerCase()))
+      : null;                                   // null = rank everyone present
+    const peers = roster.filter((n) => !known || known.has(n.toLowerCase()));
+    if (!peers.length) return this._rankedSkip(`nobody else in the roster (${roster.length} listed)`);
 
     // The utterance being answered: the last thing said by a HUMAN — anyone
     // outside the bot set.
@@ -1060,10 +1051,19 @@ class LocalServer {
     // knowledge: all bots hold the same roster, so all bots land on the same
     // human turn. It is also what the ordering is FOR — deciding who answers
     // the person, not who answers another bot.
-    const known = new Set([self.toLowerCase(), ...peers.map((p) => p.toLowerCase())]);
-    const last = [...(this.transcripts || [])].reverse()
-      .find((e) => e && e.text && e.participantName && !known.has(e.participantName.toLowerCase()));
-    if (!last) return this._rankedSkip('no human utterance to key on yet');
+    // _entriesSince, NOT this.transcripts.
+    //
+    // this.transcripts holds only the bot's OWN speech and legacy Web-Speech
+    // entries. Human speech arrives as Meet CAPTION TURNS, which live in
+    // _turnsAsEntries() — and _entriesSince merges the two, which is why the
+    // sync API shows a human utterance that this.transcripts never contains.
+    // Reading the wrong collection made this report "no human utterance to key
+    // on yet" for hours while the speaker was plainly in the API's transcript.
+    const speakers = new Set([self.toLowerCase(), ...peers.map((p) => p.toLowerCase())]);
+    const all = this._entriesSince(null, null) || [];
+    const last = [...all].reverse()
+      .find((e) => e && e.text && e.participantName && !speakers.has(e.participantName.toLowerCase()));
+    if (!last) return this._rankedSkip(`no human utterance yet (${all.length} entries, excluding ${[...speakers].join('/')})`);
 
     let ranked;
     try {

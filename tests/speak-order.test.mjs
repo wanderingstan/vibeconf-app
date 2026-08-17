@@ -160,6 +160,31 @@ test('a bot alone in the call answers immediately', () => {
   assert.equal(d.delayMs, 0);
 });
 
+// --- where the utterance is read from ---------------------------------------
+
+test('the ranked path reads the MERGED transcript, not this.transcripts', () => {
+  // The bug that made every live measurement meaningless. Human speech arrives
+  // as Meet CAPTION TURNS (_turnsAsEntries); this.transcripts holds only the
+  // bot's own speech and legacy Web-Speech entries. _entriesSince merges them,
+  // which is why the sync API showed a human utterance that the ranked lookup
+  // swore did not exist — it was reading the half that cannot contain one.
+  //
+  // Asserted against the source because the alternative is standing up a whole
+  // LocalServer, and the mistake is a one-word one: the wrong collection name.
+  const { readFileSync } = require('node:fs');
+  const { join, dirname } = require('node:path');
+  const { fileURLToPath } = require('node:url');
+  const src = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'electron-app', 'local-server.js'), 'utf8');
+  const fn = src.slice(src.indexOf('_rankedSpeakDelay(t) {'));
+  // Comments only, stripped — the explanation of the bug naturally NAMES the
+  // collection it warns against, which would fail the check below.
+  const body = fn.slice(0, fn.indexOf('\n  }')).split('\n')
+    .filter((l) => !l.trim().startsWith('//')).join('\n');
+  assert.match(body, /_entriesSince\(null, null\)/, 'must read the merged view');
+  assert.doesNotMatch(body, /this\.transcripts/, 'must NOT read bot-speech-only transcripts');
+});
+
 // --- the hash itself --------------------------------------------------------
 
 test('the hash is stable across processes and platforms', () => {

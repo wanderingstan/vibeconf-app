@@ -51,6 +51,23 @@ const BOTS = flag('bots', 'Alice:7901,Jimmy:7902,Cosmo:7903').split(',').map((s)
   return new Bot(name, Number(port), ROOM);
 });
 
+// A bot that stands in for the human.
+//
+// The ranked ordering keys on the last utterance from OUTSIDE the bot set, so
+// something has to say it. Requiring a person to speak before every run made
+// this untestable unattended — and each restart wipes the bots' transcripts, so
+// it had to be a fresh sentence every time.
+//
+// A bot left out of everyone's peerBotNames looks exactly like a human to them:
+// its speech is a valid seed, and it takes no part in the ordering. Stan's idea,
+// and it removes the last human dependency from the harness.
+const PROMPTER = (() => {
+  const spec = flag('prompter', null);
+  if (!spec) return null;
+  const [name, port] = spec.split(':');
+  return new Bot(name, Number(port), ROOM);
+})();
+
 if (BOTS.length < 2) { console.error('need at least two bots'); process.exit(2); }
 
 async function setPref(bot, key, value) {
@@ -149,6 +166,27 @@ async function run() {
 
   const rounds = [];
   for (let r = 1; r <= ROUNDS; r++) {
+    // The cue the bots are answering. A NEW sentence each round, so the seed
+    // changes and the winner rotates — a fixed seed would hand every round to
+    // the same bot and hide whether the ordering is fair.
+    if (PROMPTER) {
+      await PROMPTER.speak(`Question ${r}: what does everyone think about topic number ${r}?`);
+      // Wait for it to reach the responders as a caption — the seed cannot be
+      // derived until Meet has transcribed it, which lags the audio.
+      const deadline = Date.now() + 20000;
+      while (Date.now() < deadline) {
+        const seen = await Promise.all(BOTS.map(async (b) => {
+          try {
+            const resp = await fetch(`${b.base}/api/sync/${ROOM}`);
+            const data = await resp.json();
+            return ((data?.transcript?.entries) || []).some(
+              (e) => e.participantName === PROMPTER.name && /topic number/i.test(e.text || ''));
+          } catch { return false; }
+        }));
+        if (seen.every(Boolean)) break;
+        await sleep(500);
+      }
+    }
     // Every bot is told to say something at the same instant — the lockstep the
     // real failure produces. Deliberately not identical text, so a listener can
     // tell who spoke, but identical length so synthesis time doesn't skew it.

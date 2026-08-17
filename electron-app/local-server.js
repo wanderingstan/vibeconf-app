@@ -955,6 +955,20 @@ class LocalServer {
     // single-human calls stay snappy.
     if (others < 2 || maxJitter <= 0) return { delayMs: 0, why: 'no collision risk' };
 
+    // #100 follow-up: the DETERMINISTIC path, when peers are known.
+    //
+    // Jitter is a private coin flip, so it can only buy separation with
+    // latency, and never reaches zero collisions — (1 - D/N)^2 with the
+    // measured D leaves ~17% of them at N=2000 while charging every bot a mean
+    // 1000ms on every turn. Ranking uses knowledge the bots ALREADY SHARE (the
+    // roster, and the utterance Meet showed all of them) so they reach the same
+    // order without exchanging anything, and the winner waits for nothing.
+    //
+    // Falls through to jitter whenever the peer set is unknown or this bot is
+    // not in it — so the worst case is exactly today's behaviour.
+    const ranked = this._rankedSpeakDelay(t);
+    if (ranked) return ranked;
+
     const lead = Number(this._pref('botSpeakUrgencyLeadMs')) || 0;
     const u = (typeof t?.urgency === 'number') ? Math.max(0, Math.min(1, t.urgency)) : 0.5;
     // Low urgency waits longer, so the more valuable reply reaches the floor first.
@@ -964,6 +978,98 @@ class LocalServer {
       delayMs: urgencyPart + randomPart,
       why: `urgency ${u.toFixed(2)} → ${urgencyPart}ms + ${randomPart}ms random`,
     };
+  }
+
+  // Bots currently registered in this room's presence, by name.
+  //
+  // Served from a cache that a background refresh keeps warm, because the
+  // caller decides a speak delay SYNCHRONOUSLY at the instant audio would
+  // start — awaiting a network round trip there would add the very latency this
+  // whole mechanism exists to remove. A cold or stale cache simply yields no
+  // peers, and the caller falls back to jitter for that turn.
+  _presenceBotNames() {
+    const now = Date.now();
+    const fresh = this._presenceCache && (now - this._presenceCache.at) < 30_000;
+    if (!fresh) this._refreshPresenceBots();          // fire-and-forget
+    return (this._presenceCache && this._presenceCache.names) || [];
+  }
+
+  _refreshPresenceBots() {
+    if (this._presenceInFlight) return;
+    const roomId = this.roomId;
+    const base = (this.getWebsiteUrl() || '').replace(/\/$/, '');
+    if (!roomId || !base) return;
+    this._presenceInFlight = true;
+    fetch(`${base}/api/room/${roomId}/presence`, { signal: AbortSignal.timeout(3000) })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        const names = ((data && data.members) || [])
+          .filter((m) => m && m.role === 'bot' && m.name)
+          .map((m) => String(m.name));
+        this._presenceCache = { at: Date.now(), names };
+      })
+      .catch(() => { /* unreachable — peerBotNames or jitter covers it */ })
+      .finally(() => { this._presenceInFlight = false; });
+  }
+
+  // The deterministic ordering (electron-app/speak-order.js). Returns null when
+  // it cannot be computed, which is the caller's signal to keep using jitter.
+  //
+  // peerBotNames is explicit configuration for now. The roster does not say
+  // which participants are bots, and the website's presence list came back
+  // empty when checked (2026-08-17), so there is no automatic source yet —
+  // announcing over the room's chat, or populating presence, would both work
+  // later. Leaving it unset keeps today's behaviour exactly.
+  // Every early return says WHY, once per call. A silent fallback to jitter is
+  // indistinguishable from the feature being off, which cost an afternoon:
+  // preferences were set, the code was live, and the only visible symptom was
+  // that the collision rate did not improve.
+  _rankedSkip(why) {
+    if (this._lastRankSkip !== why) {
+      this._lastRankSkip = why;
+      console.log(ts(), `🎲 [bot-order] ranked ordering unavailable (${why}) — using jitter`);
+    }
+    return null;
+  }
+
+  _rankedSpeakDelay(t) {
+    if (this._pref('botSpeakOrdering') !== 'ranked') return null;   // off: not worth logging
+    const self = this.getEffectiveBotName();
+    if (!self) return this._rankedSkip('this bot has no name yet');
+    // Peers come from the website's room presence, where every bot registers
+    // itself with role='bot' (verified live 2026-08-17). peerBotNames is the
+    // manual override for when presence is unreachable or a peer predates it.
+    const peers = [...new Set([
+      ...this._presenceBotNames(),
+      ...(Array.isArray(this._pref('peerBotNames')) ? this._pref('peerBotNames') : []),
+    ])].filter((n) => n && n.toLowerCase() !== self.toLowerCase());
+    if (!peers.length) return this._rankedSkip('no peer bots known — set peerBotNames');
+
+    // The utterance being answered: the last thing said by someone who is not
+    // this bot. That is what every bot in the call saw, so it is what they can
+    // all key on.
+    const last = [...(this.transcripts || [])].reverse()
+      .find((e) => e && e.text && e.participantName && e.participantName !== self);
+    if (!last) return this._rankedSkip('no utterance to key on yet');
+
+    let ranked;
+    try {
+      const { speakDelay } = require('./speak-order.js');
+      ranked = speakDelay({
+        selfName: self,
+        botNames: [...new Set([...peers, self])],
+        speaker: last.participantName,
+        utterance: last.text,
+        gapMs: Number(this._pref('botSpeakRankGapMs')) || 500,
+      });
+    } catch (err) { return this._rankedSkip(`speak-order threw: ${err.message}`); }
+    if (!ranked) return this._rankedSkip(`this bot ("${self}") is not in the peer set`);
+
+    // Urgency deliberately absent: a bot cannot know the others' urgency, so
+    // folding its own in would give each bot a different order and undo the
+    // agreement this depends on. That needs an exchange of intent (a server
+    // auction), not a local calculation.
+    return { delayMs: ranked.delayMs, why: `ranked ${ranked.why}` };
   }
 
   // Speak now, or after the delay above.

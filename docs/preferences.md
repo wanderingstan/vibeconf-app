@@ -55,7 +55,20 @@ Live-tunable thresholds that shape the bot's conversational rhythm. All read on 
 
 | Key | Type | Default | What |
 |---|---|---|---|
-| `bargeInGraceMs` | number | `2500` | How long the bot waits after detecting a human interruption before actually stopping its TTS. Higher = brief overlap tolerated as natural; lower = bot drops out instantly. |
+| `bargeInGraceMs` | number | `1500` | How long the bot waits after detecting a human interruption before actually stopping its TTS. **Only read when `bargeInUrgencyScaling` is off** — and it defaults to ON, so out of the box this value is inert and the live grace comes from the min/max pair below. |
+| `bargeInUrgencyScaling` | boolean | `true` | Scale the barge-in grace by the utterance's self-scored urgency instead of using the fixed `bargeInGraceMs`. On by default. |
+| `bargeInGraceMinMs` | number | `900` | Grace for a zero-urgency (filler) utterance — the bot cedes the floor fastest here. |
+| `bargeInGraceMaxMs` | number | `2400` | Grace for a max-urgency utterance. |
+
+**How the scaled grace works:** `ms = min + urgency × (max − min)`, linear, with unscored utterances treated as `0.5`. With the defaults above that gives:
+
+| urgency | grace | rides out (of 850 measured overlaps, #422) |
+|---|---|---|
+| 0.0 — filler | 900ms | 87.7% |
+| 0.4 — a normal answer | **1500ms** | 95.8% |
+| 1.0 — house on fire | 2400ms | 98.5% |
+
+Overlap durations in real conversation run p50 400ms, p90 1100ms, p99 2680ms — so most overlap is backchannel, and the grace exists to ride that out without outlasting someone who genuinely wants the floor. The previous `4000ms` ceiling cleared over 99% of *all* overlap, meaning a high-urgency utterance effectively never yielded.
 | `bargeInBotRandomMinMs` | number | `1000` | When two bots try to speak simultaneously, each waits a random delay in `[min, max]` before committing — prevents lockstep collision. Floor of that range. |
 | `bargeInBotRandomMaxMs` | number | `4000` | Ceiling of the bot-vs-bot random-delay range. |
 | `bargeInStashMaxAgeMs` | number | `45000` | When the bot yields mid-thought to a human, its queued speech is stashed. On the next silence gap, if the stash is younger than this, the bot auto-replays it (skipping a slow-model round-trip). Older than this, the stash is discarded and the slow model regenerates fresh. |

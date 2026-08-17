@@ -2143,15 +2143,34 @@ function noteSelfAudioLoud(at) { selfAudioLastLoudAt = Math.max(selfAudioLastLou
 // there is nothing on the element itself to observe, and getComputedStyle is
 // the only route to the value.
 const METER_SAMPLE_MS = 50;
-// How long a single off-rest sample keeps the meter verdict true. Covers the
-// gaps between the sprite's animation steps (it is quantised, not continuous)
-// without holding so long that a one-frame blip reads as a whole turn. This
-// hold is the ONLY smoothing on the meter's false edge — the 1s combine-layer
-// grace that used to sit on top was deleted in #395 (the tracker now reports
-// the true stop edge), so in 'meter' mode a release is real ~250ms after the
-// last raised sample. In 'mutation'/'either' the 1200ms mutation window still
-// smooths.
-const METER_HOLD_MS = 250;
+// How long a raised reading keeps the meter verdict true — a hangover timer,
+// re-armed by every raised reading, so it only counts down once the indicator
+// STOPS being raised. Its job is to bridge the rests that occur DURING speech:
+// Meet animates this indicator rather than driving it from amplitude, so it
+// returns to its resting bar repeatedly mid-utterance.
+//
+// This hold is the ONLY smoothing on the meter's false edge — the 1s
+// combine-layer grace that used to sit on top was deleted in #395 (the tracker
+// now reports the true stop edge), so in 'meter' mode a release is real this
+// many ms after the last raised reading. In 'mutation'/'either' the 1200ms
+// mutation window still smooths.
+//
+// 400ms, measured (#422). Swept over a 9-call corpus — 2,415 labelled turns
+// scored against per-speaker ground truth — which showed hold is purely a
+// RELEASE parameter: onset latency and missed turns are invariant across it,
+// and only fragmentation and stop latency move.
+//
+//   hold   missed   onset p50/p90   offset p50/p90   frag   fp s/min
+//    150      457       40 / 180       90 /  200     1.91      4.9
+//    250      454       40 / 180      190 /  320     1.42      7.5   <- was
+//    400      449       40 / 170      340 /  810     1.13     11.3   <- now
+//    600      434       10 / 150      560 / 3640     1.07     15.8
+//
+// At 250ms one human turn was being reported as 1.42 detections: the gaps in
+// Meet's animation are routinely longer than that. 400ms cuts it to 1.13 for
+// 150ms of added stop latency, and still reports a turn ENDING roughly five
+// times faster than the mutation counter running beside it (1790ms p50).
+const METER_HOLD_MS = 400;
 // How long a raised level must persist (and across at least two readings)
 // before the meter's verdict arms. See the attack note in _readPromoted.
 const METER_ATTACK_MS = 50;

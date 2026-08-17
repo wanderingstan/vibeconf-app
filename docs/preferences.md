@@ -55,7 +55,10 @@ Live-tunable thresholds that shape the bot's conversational rhythm. All read on 
 
 | Key | Type | Default | What |
 |---|---|---|---|
-| `bargeInGraceMs` | number | `2500` | How long the bot waits after detecting a human interruption before actually stopping its TTS. Higher = brief overlap tolerated as natural; lower = bot drops out instantly. |
+| `bargeInGraceMs` | number | `2500` | How long the bot waits after detecting a human interruption before actually stopping its TTS. Higher = brief overlap tolerated as natural; lower = bot drops out instantly. **Only read when `bargeInUrgencyScaling` is off** — and it defaults to ON, so out of the box this value is inert and the live grace comes from `bargeInGraceMinMs`/`bargeInGraceMaxMs` below. |
+| `bargeInUrgencyScaling` | boolean | `true` | Scale the barge-in grace by the utterance's self-scored urgency instead of using the fixed `bargeInGraceMs`. On by default. |
+| `bargeInGraceMinMs` | number | `900` | Grace for a zero-urgency (filler) utterance when scaling is on — the bot cedes the floor fastest here. |
+| `bargeInGraceMaxMs` | number | `4000` | Grace for a max-urgency utterance when scaling is on. Measured against 850 real overlaps (#422): 4000ms outlasts 99%+ of all overlap, so a high-urgency utterance effectively never yields. |
 | `bargeInBotRandomMinMs` | number | `1000` | When two bots try to speak simultaneously, each waits a random delay in `[min, max]` before committing — prevents lockstep collision. Floor of that range. |
 | `bargeInBotRandomMaxMs` | number | `4000` | Ceiling of the bot-vs-bot random-delay range. |
 | `bargeInStashMaxAgeMs` | number | `45000` | When the bot yields mid-thought to a human, its queued speech is stashed. On the next silence gap, if the stash is younger than this, the bot auto-replays it (skipping a slow-model round-trip). Older than this, the stash is discarded and the slow model regenerates fresh. |

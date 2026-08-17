@@ -554,17 +554,23 @@ const PREFERENCES = {
 
   bargeInGraceMs: {
     type: 'number',
-    default: 2500,
+    default: 1500,
     min: 0,
     max: 10_000,
     description:
-      'How long the bot waits after detecting a human interruption before ' +
-      'actually stopping its TTS. Tunes the bot\'s "patience" — higher means ' +
-      'a brief overlap (a cough, a "yeah" backchannel, a false start) is ridden ' +
-      'out as natural conversation; lower means the bot drops out almost ' +
-      'instantly. Read live, so it can be tuned mid-call (per profile). Used as ' +
-      'the FIXED grace when bargeInUrgencyScaling is off; when scaling is on this ' +
-      'is ignored in favor of the min/max range below. Default 2500ms.',
+      'How long the bot waits after detecting a human interruption before '
+      + 'actually stopping its TTS. Tunes the bot\'s "patience" — higher means '
+      + 'a brief overlap (a cough, a "yeah" backchannel, a false start) is ridden '
+      + 'out as natural conversation; lower means the bot drops out almost '
+      + 'instantly. Read live, so it can be tuned mid-call (per profile). '
+      + 'ONLY USED when bargeInUrgencyScaling is off — and that defaults to ON, '
+      + 'so out of the box this value is inert and the grace comes from the '
+      + 'min/max range below. '
+      + '1500ms, measured (#422): across 850 real overlaps from 9 calls, overlap '
+      + 'duration runs p50 400ms, p90 1100ms, p99 2680ms. 1500ms rides out 95.8% '
+      + 'of them — nearly every backchannel — while yielding a full second sooner '
+      + 'than the old 2500ms, which outlasted 98.6% and so barely distinguished a '
+      + '"mm-hm" from someone genuinely taking the floor.',
   },
   bargeInUrgencyScaling: {
     type: 'boolean',
@@ -606,28 +612,21 @@ const PREFERENCES = {
   },
   bargeInGraceMaxMs: {
     type: 'number',
-    default: 4000,
+    default: 2400,
     min: 0,
     max: 10_000,
     description:
-      'When bargeInUrgencyScaling is on: the grace for a max-urgency utterance — ' +
-      'the bot fights hardest to be heard. Default 4000ms.\n\n' +
-      'History: was 3500ms, cut to 1500ms in #138 because the agent self-scored ' +
-      'u≈0.90 on essentially EVERY utterance, so the scaling sat pinned near its ' +
-      'ceiling and bought ~2.9s of talking over a human. That fix left a note — ' +
-      '"raise it again if the urgency distribution ever spreads out enough for ' +
-      'the ceiling to mean something" — and the join-call skill has since ' +
-      're-anchored the scale so a NORMAL answer is 0.4 and 0.9 means something ' +
-      'is actually wrong. The distribution spread out; the range never followed.\n\n' +
-      'Restored (2026-08-15, observed live on ded-iika-yrs): a well-scored 0.4 ' +
-      'answer got 1020ms and was cut 1.7s in. With 700–1500 the ENTIRE range sat ' +
-      'below the unscaled bargeInGraceMs default of 2500 — so scoring urgency ' +
-      'honestly made the bot strictly more interruptible than turning scaling ' +
-      'off, and even a house-on-fire 1.0 lost to filler-with-scaling-off. The ' +
-      '900–4000 range restores the intended shape: filler (0.0) still cedes at ' +
-      '900ms, unscored (0.5) lands at ~2450ms ≈ the fixed default it falls back ' +
-      'to, a normal answer (0.4) gets ~2140ms, and a genuine emergency (0.9+) ' +
-      'gets ~3.7s to actually finish the sentence.',
+      'When bargeInUrgencyScaling is on: the grace for a max-urgency utterance — '
+      + 'the bot holds the floor longest for something it scored 1.0. The grace is '
+      + 'linear in urgency: ms = min + urgency x (max - min), with unscored '
+      + 'utterances treated as 0.5. '
+      + '2400ms, measured (#422). The anchor is the NORMAL case rather than the '
+      + 'extreme: urgency 0.4 is documented as "a normal answer to a normal '
+      + 'question", and 900 + 0.4 x (2400 - 900) = 1500ms, which rides out 95.8% '
+      + 'of 850 real overlaps. The ladder that produces is filler 900ms (87.7% of '
+      + 'overlaps), normal answer 1500ms (95.8%), house-on-fire 2400ms (98.5%). '
+      + 'The old 4000ms outlasted over 99% of ALL overlap, meaning a high-urgency '
+      + 'utterance effectively never yielded to anyone.',
   },
   workingStateMinMs: {
     type: 'number',

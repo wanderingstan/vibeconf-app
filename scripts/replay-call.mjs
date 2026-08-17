@@ -52,6 +52,16 @@ const ROOM = flag('room', resolveTarget(flag('target', 'default')).room);
 // and a third of the bytes, which matters because play-audio ships the whole
 // file to the renderer as base64 — a 20-minute 48k track is ~150MB of it.
 const RATE = flag('rate', '48000');
+// Loudness-normalise every track to a common target (--no-normalise to skip).
+//
+// Archive recordings differ enormously in gain: measured across two segments,
+// one speaker's noise floor was 13 and another's 115, with speech thresholds of
+// 207 and 449. Replayed as-is, a quiet track may never move Meet's indicator at
+// all — and the resulting "misses" would describe the RECORDING's level, not
+// our detector. Normalising makes segments comparable to each other, which is
+// the whole premise of pooling them.
+const NORMALISE = process.argv.includes('--no-normalise')
+  ? [] : ['-af', 'loudnorm=I=-18:TP=-2:LRA=11'];
 const BOTS = flag('bots', 'Alice:7901,Jimmy:7902').split(',').map((s) => {
   const [name, port] = s.split(':');
   return new Bot(name, Number(port), ROOM);
@@ -83,7 +93,7 @@ function extractTracks() {
       if (Number(START)) args.push('-ss', START);
       args.push('-i', MEDIA[0]);
       if (DURATION) args.push('-t', DURATION);
-      args.push('-map', `0:${idx}`, '-ac', '1', '-ar', RATE, '-c:a', 'pcm_s16le', dest, '-y');
+      args.push('-map', `0:${idx}`, '-ac', '1', '-ar', RATE, ...NORMALISE, '-c:a', 'pcm_s16le', dest, '-y');
       execFileSync('ffmpeg', args);
       out.push({ track: `speaker${i + 1}`, path: dest, sourceStream: Number(idx) });
     });
@@ -94,7 +104,7 @@ function extractTracks() {
       if (Number(START)) args.push('-ss', START);
       args.push('-i', f);
       if (DURATION) args.push('-t', DURATION);
-      args.push('-ac', '1', '-ar', RATE, '-c:a', 'pcm_s16le', dest, '-y');
+      args.push('-ac', '1', '-ar', RATE, ...NORMALISE, '-c:a', 'pcm_s16le', dest, '-y');
       execFileSync('ffmpeg', args);
       out.push({ track: `speaker${i + 1}`, path: dest, sourceFile: f });
     });

@@ -185,17 +185,31 @@ export function loadEvents(path) {
 
 // Search the offset that best aligns labels to events. Coarse then fine, scored
 // by agreement between "anyone labelled speaking" and "anything observed".
+// Coarse-to-fine, over a WIDE range.
+//
+// +/-10s was not enough and produced silently wrong scores. A capture begins
+// when the recorder starts, and playback begins later — after the join check,
+// the warm-up settle and the base64 hand-off — which measured 21-46s on real
+// runs. Worse, when one call serves several segments the later ones start
+// minutes in. A search that cannot reach the true offset does not fail loudly;
+// it returns a plausible number and every metric downstream is nonsense, which
+// is exactly what happened to one segment of the first corpus.
 function findOffset(activity, labelSpans, grid) {
   const anyLabel = labelSpans.flat().sort((a, b) => a[0] - b[0]);
-  let best = { offset: 0, score: -1 };
   const test = (off) => {
     let s = 0;
     for (const L of anyLabel) s += activity.filter((d) => overlap(d, [L[0] + off, L[1] + off]) > 0).length;
     return s;
   };
-  for (let off = -10000; off <= 10000; off += 250) {
+  const span = grid[grid.length - 1] - grid[0];
+  let best = { offset: grid[0], score: -1 };
+  for (let off = -5000; off <= Math.min(span, 180000); off += 1000) {
     const sc = test(grid[0] + off);
     if (sc > best.score) best = { offset: grid[0] + off, score: sc };
+  }
+  for (let off = best.offset - 1000; off <= best.offset + 1000; off += 50) {
+    const sc = test(off);
+    if (sc > best.score) best = { offset: off, score: sc };
   }
   return best.offset;
 }

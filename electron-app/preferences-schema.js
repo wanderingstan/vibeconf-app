@@ -898,6 +898,64 @@ const PREFERENCES = {
       'still too low. [floor-levels] and [floor-latency] record regardless.',
   },
 
+  botSpeakOrdering: {
+    type: 'string',
+    default: 'jitter',
+    enum: ['jitter', 'ranked'],
+    enumLabels: {
+      jitter: 'Random jitter (each bot waits a random delay)',
+      ranked: 'Deterministic order (bots agree who goes first; the winner waits for nothing)',
+    },
+    description:
+      'How several bots in one call decide who answers first. '
+      + '"jitter" is the original (#230): each bot waits a private random delay. '
+      + 'Because the draws are independent the separation is only probabilistic — '
+      + 'two draws from U(0,N) beat the detection time D with probability '
+      + '(1 - D/N)^2, so at N=2000 with D measured near 180ms roughly 17% of '
+      + 'collisions still survive, and EVERY bot pays a mean 1000ms on EVERY turn '
+      + 'to get that. '
+      + '"ranked" computes an order instead, out of what every bot already knows: '
+      + 'the roster, and the utterance Meet showed all of them. Same inputs, same '
+      + 'hash, same order, with nothing exchanged. The winner speaks immediately; '
+      + 'the rest wake botSpeakRankGapMs apart, find the floor busy, and stash '
+      + 'exactly as they would for a human — which also covers a winner that '
+      + 'turns out to have nothing to say. Being named in the utterance is a '
+      + 'bonus in that ordering, so a direct question reaches the bot it was '
+      + 'asked of. '
+      + 'Requires peerBotNames, and falls back to jitter when that is unset or '
+      + 'this bot is not in it — so the worst case is exactly the old behaviour.',
+  },
+  peerBotNames: {
+    type: 'string[]',
+    default: [],
+    description:
+      'The OTHER bots expected in calls with this one, by display name — what '
+      + 'botSpeakOrdering="ranked" ranks against. '
+      + 'Explicit configuration because nothing else knows: the Meet roster does '
+      + 'not mark which participants are bots, and the website presence list came '
+      + 'back empty when checked (2026-08-17). Populating presence, or having the '
+      + 'bots announce themselves in the room chat, would remove the need for it. '
+      + 'Matched case-insensitively, and this bot\'s own name is added '
+      + 'automatically. A wrong or stale entry costs ordering quality, not '
+      + 'correctness: an unrecognised bot simply falls back to jitter.',
+  },
+  botSpeakRankGapMs: {
+    type: 'number',
+    default: 500,
+    min: 0,
+    max: 5000,
+    description:
+      'With botSpeakOrdering="ranked", how far apart the bots wake: rank 0 speaks '
+      + 'at once, rank 1 after this long, and so on. '
+      + 'It must EXCEED the time a bot needs to SEE another bot start, or the '
+      + 'loser\'s delay expires before it has noticed the winner and both talk. '
+      + 'Measured (#422): speaking-onset p90 is about 180ms via the meter signal '
+      + 'and 360-460ms via the mutation counter, so 500ms is safe on today\'s '
+      + 'default and could fall to ~250ms once speakingDetectionMode is "meter". '
+      + 'It is also what a silent winner costs: the next bot in line waits this '
+      + 'long before filling the gap.',
+  },
+
   botSpeakJitterMaxMs: {
     type: 'number',
     default: 2000,

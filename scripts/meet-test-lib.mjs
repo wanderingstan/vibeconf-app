@@ -118,8 +118,13 @@ export class Bot {
     return false;
   }
 
-  async speak(text, { emoji, voice } = {}) {
-    const { data, ms } = await this._sync({ transcript: [{ text, ...(voice ? { voice } : {}), ...(emoji ? { emoji } : {}) }] });
+  // urgency is passed through because it changes the speak DELAY (it scales the
+  // jitter, and the barge-in grace) — a lockstep test that always left it
+  // unscored would be measuring one point of that curve without saying so.
+  async speak(text, { emoji, voice, urgency } = {}) {
+    const { data, ms } = await this._sync({ transcript: [{ text,
+      ...(voice ? { voice } : {}), ...(emoji ? { emoji } : {}),
+      ...(typeof urgency === 'number' ? { urgency } : {}) }] });
     const reason = data?.results?.transcript?.reason;
     log(this.name, 'speak', { ms, ok: reason !== 'mode-silent', note: reason || `"${text.slice(0, 40)}"` });
     return data;

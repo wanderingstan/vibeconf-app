@@ -955,6 +955,20 @@ class LocalServer {
     // single-human calls stay snappy.
     if (others < 2 || maxJitter <= 0) return { delayMs: 0, why: 'no collision risk' };
 
+    // #100 follow-up: the DETERMINISTIC path, when peers are known.
+    //
+    // Jitter is a private coin flip, so it can only buy separation with
+    // latency, and never reaches zero collisions — (1 - D/N)^2 with the
+    // measured D leaves ~17% of them at N=2000 while charging every bot a mean
+    // 1000ms on every turn. Ranking uses knowledge the bots ALREADY SHARE (the
+    // roster, and the utterance Meet showed all of them) so they reach the same
+    // order without exchanging anything, and the winner waits for nothing.
+    //
+    // Falls through to jitter whenever the peer set is unknown or this bot is
+    // not in it — so the worst case is exactly today's behaviour.
+    const ranked = this._rankedSpeakDelay(t);
+    if (ranked) return ranked;
+
     const lead = Number(this._pref('botSpeakUrgencyLeadMs')) || 0;
     const u = (typeof t?.urgency === 'number') ? Math.max(0, Math.min(1, t.urgency)) : 0.5;
     // Low urgency waits longer, so the more valuable reply reaches the floor first.
@@ -964,6 +978,111 @@ class LocalServer {
       delayMs: urgencyPart + randomPart,
       why: `urgency ${u.toFixed(2)} → ${urgencyPart}ms + ${randomPart}ms random`,
     };
+  }
+
+  // The deterministic ordering (electron-app/speak-order.js). Returns null when
+  // it cannot be computed, which is the caller's signal to keep using jitter.
+  //
+  // peerBotNames is explicit configuration for now. The roster does not say
+  // which participants are bots, and the website's presence list came back
+  // empty when checked (2026-08-17), so there is no automatic source yet —
+  // announcing over the room's chat, or populating presence, would both work
+  // later. Leaving it unset keeps today's behaviour exactly.
+  // Every early return says WHY, once per call. A silent fallback to jitter is
+  // indistinguishable from the feature being off, which cost an afternoon:
+  // preferences were set, the code was live, and the only visible symptom was
+  // that the collision rate did not improve.
+  _rankedSkip(why) {
+    if (this._lastRankSkip !== why) {
+      this._lastRankSkip = why;
+      console.log(ts(), `🎲 [bot-order] ranked ordering unavailable (${why}) — using jitter`);
+    }
+    return null;
+  }
+
+  _rankedSpeakDelay(t) {
+    const mode = this._pref('botSpeakOrdering');
+    if (mode !== 'ranked') return this._rankedSkip(`botSpeakOrdering=${JSON.stringify(mode)}`);
+    const self = this.getEffectiveBotName();
+    if (!self) return this._rankedSkip('this bot has no name yet');
+    // Peers come from the website's room presence, where every bot registers
+    // itself with role='bot' (verified live 2026-08-17). peerBotNames is the
+    // manual override for when presence is unreachable or a peer predates it.
+    // Candidates come from the ROSTER — nothing here needs the server.
+    //
+    // Everything the ordering depends on is already local and already shared:
+    // every bot has the same people pane, and Meet gives every participant the
+    // same captions. The only thing the roster does NOT say is which
+    // participants are bots — and that turns out not to matter. Rank everyone:
+    // all bots still derive the same order, and a human simply never claims
+    // their slot, at which point the next rank finds the floor free and speaks.
+    //
+    // peerBotNames is therefore an OPTIMISATION, not a requirement. When it is
+    // set, ranks are not wasted on participants who will never use them; when
+    // it is empty, the ordering still works, just with a slot per human.
+    //
+    // This also removes a class of bug rather than patching it: presence
+    // records the CONFIGURED bot name while Meet shows the display name for
+    // this call, and under test those differ ("Alice" vs "Alice-r4a32"), so
+    // each bot was counted twice and the order came out "rank 4 of 5" in a room
+    // holding three bots — every one of them queued behind peers that did not
+    // exist. Names taken from the roster are the names everyone else sees.
+    const roster = (this.participants || [])
+      .filter((p) => p && p.name && !p.isSelf && p.name !== 'You' && !p.isPseudo)
+      .map((p) => p.name);
+    const configured = Array.isArray(this._pref('peerBotNames')) ? this._pref('peerBotNames') : [];
+    const known = configured.length
+      ? new Set(configured.map((n) => n.toLowerCase()))
+      : null;                                   // null = rank everyone present
+    const peers = roster.filter((n) => !known || known.has(n.toLowerCase()));
+    if (!peers.length) return this._rankedSkip(`nobody else in the roster (${roster.length} listed)`);
+
+    // The utterance being answered: the last thing said by a HUMAN — anyone
+    // outside the bot set.
+    //
+    // "The last thing not said by ME" was the obvious rule and it is wrong,
+    // because it is self-relative: in a three-way exchange each bot excludes a
+    // different speaker and so keys on a different utterance. Measured live
+    // 2026-08-17 with three bots — Alice and Jimmy both keyed on Cosmo's line
+    // while Cosmo, excluding itself, keyed on Jimmy's, giving two different
+    // seeds and therefore two different winners.
+    //
+    // Excluding EVERY bot fixes it because the exclusion set is common
+    // knowledge: all bots hold the same roster, so all bots land on the same
+    // human turn. It is also what the ordering is FOR — deciding who answers
+    // the person, not who answers another bot.
+    // _entriesSince, NOT this.transcripts.
+    //
+    // this.transcripts holds only the bot's OWN speech and legacy Web-Speech
+    // entries. Human speech arrives as Meet CAPTION TURNS, which live in
+    // _turnsAsEntries() — and _entriesSince merges the two, which is why the
+    // sync API shows a human utterance that this.transcripts never contains.
+    // Reading the wrong collection made this report "no human utterance to key
+    // on yet" for hours while the speaker was plainly in the API's transcript.
+    const speakers = new Set([self.toLowerCase(), ...peers.map((p) => p.toLowerCase())]);
+    const all = this._entriesSince(null, null) || [];
+    const last = [...all].reverse()
+      .find((e) => e && e.text && e.participantName && !speakers.has(e.participantName.toLowerCase()));
+    if (!last) return this._rankedSkip(`no human utterance yet (${all.length} entries, excluding ${[...speakers].join('/')})`);
+
+    let ranked;
+    try {
+      const { speakDelay } = require('./speak-order.js');
+      ranked = speakDelay({
+        selfName: self,
+        botNames: [...new Set([...peers, self])],
+        speaker: last.participantName,
+        utterance: last.text,
+        gapMs: Number(this._pref('botSpeakRankGapMs')) || 500,
+      });
+    } catch (err) { return this._rankedSkip(`speak-order threw: ${err.message}`); }
+    if (!ranked) return this._rankedSkip(`this bot ("${self}") is not in the peer set`);
+
+    // Urgency deliberately absent: a bot cannot know the others' urgency, so
+    // folding its own in would give each bot a different order and undo the
+    // agreement this depends on. That needs an exchange of intent (a server
+    // auction), not a local calculation.
+    return { delayMs: ranked.delayMs, why: `ranked ${ranked.why}` };
   }
 
   // Speak now, or after the delay above.

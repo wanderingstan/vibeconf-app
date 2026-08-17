@@ -947,6 +947,24 @@ function revokeCallLogShare(reason) {
 // Idempotent, because the watchdog and the panel reply race by design and both
 // must be safe.
 let _teardownDone = false;
+// #422: one audio-device sample per call edge, never two. Fire-and-forget —
+// system_profiler takes a few hundred ms and a join must never wait on
+// diagnostics.
+let _audioSampledInCall = false;
+function logAudioDevicesOnCallEdge(status) {
+  const { sampleAudioDevices, formatAudioDevices } = require('./audio-devices.js');
+  const emit = (phase) => {
+    sampleAudioDevices()
+      .then((parsed) => {
+        const line = formatAudioDevices(parsed, phase);
+        if (line) console.log(ts(), line);
+      })
+      .catch(() => { /* diagnostics never break a call */ });
+  };
+  if (status === 'in-call' && !_audioSampledInCall) { _audioSampledInCall = true; emit('join'); }
+  else if (_audioSampledInCall && status !== 'in-call') { _audioSampledInCall = false; emit('leave'); }
+}
+
 function performLeaveTeardown(via) {
   clearTimeout(_idleWatchdog);
   _idleWatchdog = null;
@@ -2206,6 +2224,13 @@ const localServer = new globalThis.LocalServer({
     // The bot's view only takes up window space during a call — grow/shrink the
     // column here, before anything else, so the layout tracks the call.
     setBotViewInCall(status);
+    // #422: record what this machine hears and speaks through, once on the way
+    // in and once on the way out. Whether a participant is on SPEAKERS decides
+    // whether the bot can hear its own voice back (#378), and that is the one
+    // condition about a call that no other log captures. Sampled at both ends
+    // because devices change mid-call — measured 2026-08-17, one machine went
+    // from built-in speakers to external headphones eight minutes in.
+    logAudioDevicesOnCallEdge(status);
     // A call we spawned has ended (host ended it, bot was removed, whatever) —
     // hand the room back. leave-meet covers the button; this covers the rest.
     // An update that landed mid-call has been sitting staged and unmentioned.

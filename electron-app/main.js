@@ -6485,31 +6485,64 @@ async function launchClaudeTerminal(meetCode, { onboardingCall = false } = {}) {
     return;
   }
 
-  // Open a Terminal window running the command. When Terminal isn't already
-  // running, `do script` would spawn TWO windows — the auto-created launch
-  // window plus the scripted one. Reuse the launch window (window 1) in that
-  // case; only spawn a fresh window when Terminal is already up.
+  // Open a Terminal window running the command. Reusing a just-launched
+  // Terminal's window (rather than adding a second) is handled inside
+  // buildTerminalLaunchScript — see there for the -1728 failure that made the
+  // old inline version spawn no agent at all.
   // Set VIBECONF_LOCAL_PORT for the spawned session so the agent-activity hook
   // (a child process of claude) reports this bot's transcript to THIS app's
   // local server — not the default 7865 (correct for profile bots on 7866+).
   // Quote the working dir — the #305 agent dir lives under "Application Support",
   // which has spaces (the old /tmp default didn't, so this never mattered before).
   // See launch-command.js for the AppleScript+shell double-quoting.
-  const { buildTerminalCommand } = require('./launch-command.js');
+  const { buildTerminalCommand, buildTerminalLaunchScript } = require('./launch-command.js');
   const cmd = buildTerminalCommand({ workdir: claudeDir, port: localServer.port, innerCmd: claudeCmd });
-  const script = `tell application "Terminal"
-  if not running then
-    do script "${cmd}" in window 1
-  else
-    do script "${cmd}"
-  end if
-  activate
-  return id of window 1
-end tell`;
+  const script = buildTerminalLaunchScript(cmd);
 
   execFile('osascript', ['-e', script], (err, stdout, stderr) => {
     if (err) {
       console.error('[electron] Failed to launch Claude:', err.message, stderr);
+      // Do NOT stop at that log line. By this point the bot has already joined
+      // the call, so a swallowed error is the silent no-agent failure the Linux
+      // path at the top of this function goes out of its way to prevent
+      // (#317, #329) — a face in the room, a brain pane stuck on "Waiting for
+      // the agent…", and nothing anywhere saying the spawn died. macOS had no
+      // such guard until an osascript failure actually happened on 2026-08-17.
+      //
+      // WARN, don't silently fall back to headless. Headless is gated on
+      // Dangerous Mode, so an automatic fallback would only ever fire for users
+      // who have already enabled it — and quietly moving those users from a
+      // session they can watch and Ctrl-C into an invisible one, because of an
+      // unrelated window-server failure, is not a decision this error path gets
+      // to make. Headless remains available as an explicit choice
+      // (agentHosting), which is where that decision belongs.
+      const { asShellCommand } = require('./launch-command.js');
+      const shellCmd = asShellCommand(cmd);
+      const parent = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : null;
+      const buttons = ['Copy command', 'OK'];
+      try {
+        dialog.showMessageBox(parent, {
+          type: 'error',
+          title: 'Agent could not start',
+          message: `${botName} joined the call, but nothing is driving it`,
+          detail:
+            'Opening a Terminal window for the agent failed, so the bot is sitting in the '
+            + 'call with no agent behind it — it will not speak, listen or react.\n\n'
+            + `${err.message.trim()}\n\n`
+            + 'To recover: open a Terminal window yourself and run this, or leave the call '
+            + 'and click Join again.\n\n'
+            + shellCmd,
+          buttons,
+          defaultId: 0,
+          cancelId: 1,
+          noLink: true,
+        }).then(({ response }) => {
+          if (buttons[response] === 'Copy command') {
+            const { clipboard } = require('electron');
+            clipboard.writeText(shellCmd);
+          }
+        }).catch(() => { /* dialog dismissed */ });
+      } catch { /* no window yet — the log line above is still the record */ }
     } else {
       const claudeTerminalWindowId = (stdout || '').trim();
       if (claudeTerminalWindowId && !claudeTerminalWindowIds.includes(claudeTerminalWindowId)) {

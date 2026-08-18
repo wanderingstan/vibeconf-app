@@ -439,18 +439,26 @@ test('our own TTS does NOT suppress another participant\'s rising edge', () => {
 test('both signals keep running whatever the mode is set to', () => {
   const pref = PREFERENCES.speakingDetectionMode;
   assert.deepEqual(pref.enum, ['either', 'meter', 'mutation']);
-  // Defaults to the SAFE signal, not the fast one. The meter buys ~300ms, but
-  // it fires on any sound reaching the mic — a human on laptop speakers hears
-  // the bot's own TTS come back in and the tracker reads it as that human
-  // interrupting, cutting the bot off mid-sentence (seen live, call
-  // ded-iika-yrs-20260815T133138Z). A slow start is invisible; a false cut-off
-  // is not. `either` is opt-in for clean-audio setups. See #378 for earning it
-  // back per-tile.
-  assert.equal(pref.default, 'mutation');
+  // Defaults to the meter since 2026-08-18 (#422). It was 'mutation' to guard
+  // against a human on laptop speakers echoing our TTS back in, read as that
+  // person interrupting (#378) — retired by two measurements. The counter never
+  // gave that protection: in #378 it fired on the SAME echo 313ms later, since
+  // both signals come off the same meter animation. And a 54-minute call with
+  // two humans on speakers found no echo reaching us at all (correlation -0.09,
+  // remote tracks 5-6x quieter during our TTS, and every rise during TTS had a
+  // loud remote track behind it). Meanwhile the meter calls turn ENDS 9.4x
+  // faster at p50 and 41x at p90 across 2,415 labelled turns, with 3x less
+  // false-positive time and the same misses.
+  //
+  // 'meter', NOT 'either': `either` ORs the signals and so takes the union of
+  // their false positives, and the meter alone measured cleaner than the
+  // counter there. Per-participant fallback to mutation still applies whenever
+  // a meter is blind (meter === null), so this cannot be deafer than before.
+  assert.equal(pref.default, 'meter');
   // The module-level fallback in the provider declares the default a SECOND
   // time; it drifting from the schema is exactly the kind of thing nobody
   // notices, so pin them together.
-  assert.match(src, /let speakingDetectionMode = 'mutation';/);
+  assert.match(src, /let speakingDetectionMode = 'meter';/);
   // The mode picks the VERDICT only — comparison data must keep accruing even
   // for someone who has pinned the setting, the way the analyser keeps
   // recording while fastFloorDetection is off.

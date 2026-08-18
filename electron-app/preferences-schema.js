@@ -859,7 +859,7 @@ const PREFERENCES = {
   },
   speakingDetectionMode: {
     type: 'string',
-    default: 'mutation',
+    default: 'meter',
     enum: ['either', 'meter', 'mutation'],
     enumLabels: {
       either: 'Either signal (fastest rising edge)',
@@ -882,11 +882,28 @@ const PREFERENCES = {
       + 'meter signal existed. Watch [meter-latency] for the lead the meter '
       + 'actually delivers and [speaker-health] mtr= for meters reading blind. '
       + 'Read live (picked up on the tracker\'s 2s scan). '
-      + 'DEFAULTS TO "mutation": the meter only buys ~300ms, but it fires on ANY '
-      + 'sound reaching the mic — a human on laptop speakers hears the bot\'s own '
-      + 'TTS come back in and the tracker reads it as that human interrupting, '
-      + 'cutting the bot off mid-sentence. A slow start is invisible; a false '
-      + 'cut-off is not. Set "either" when everyone is on headphones.',
+      + 'DEFAULTS TO "meter", changed from "mutation" on 2026-08-18 (#422). On '
+      + '2,415 labelled turns the meter reports the END of a turn 9.4x faster at '
+      + 'p50 and 41x faster at p90 (190/320ms vs 1790/13290ms), spends 3x less '
+      + 'time claiming speech that is not there (7.5 vs 22.5 s/min), has a better '
+      + 'onset p90, and misses the same number of turns. The counter wins only on '
+      + 'fragmentation. Its onset p50 of 0 is not speed: it is the counter still '
+      + 'latched from the PREVIOUS turn, the same fact as its 13-second offset '
+      + 'p90. '
+      + 'The old default existed to protect against a human on laptop speakers '
+      + 'echoing our own TTS back in, which the tracker would read as that person '
+      + 'interrupting (#378). Two measurements retired that reasoning. First, the '
+      + 'counter never provided the protection: in #378 itself it fired on the '
+      + 'same echo 313ms later, slower at being wrong rather than immune, because '
+      + 'both signals derive from the same meter animation. Second, a 54-minute '
+      + 'call with two humans on speakers (2026-08-17) shows no echo reaching us '
+      + 'at all: bot-to-remote correlation -0.09, remote tracks 5-6x quieter '
+      + 'while the bot talks, and of 838 verdict rises the four during our TTS '
+      + 'each had a remote track at -13 to -16 dB against a -89 dB floor. Meet\'s '
+      + 'AEC strips our voice before transmission. '
+      + 'Prefer "meter" over "either": "either" ORs the two, so it takes the '
+      + 'UNION of their false positives, while the meter alone measured cleaner '
+      + 'than the counter on that axis. Set "mutation" to pin the old behaviour.',
   },
   fastFloorDetection: {
     type: 'boolean',

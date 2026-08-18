@@ -1484,7 +1484,7 @@ const botNameLoaded = ipcRenderer.invoke('get-meet-bot-name').then((name) => {
 // which one the verdict is taken from, so the comparison data keeps accruing
 // whatever the setting. See DOMSpeakerTracker for what each signal measures.
 // Re-read on each 2s scan so it can be changed mid-call.
-let speakingDetectionMode = 'mutation';
+let speakingDetectionMode = 'meter';
 function refreshSpeakingDetectionMode() {
   ipcRenderer.invoke('get-config', ['speakingDetectionMode']).then((r) => {
     const v = r?.speakingDetectionMode;

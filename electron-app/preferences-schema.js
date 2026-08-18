@@ -969,7 +969,12 @@ const PREFERENCES = {
       + 'bots announce themselves in the room chat, would remove the need for it. '
       + 'Matched case-insensitively, and this bot\'s own name is added '
       + 'automatically. A wrong or stale entry costs ordering quality, not '
-      + 'correctness: an unrecognised bot simply falls back to jitter.',
+      + 'correctness: an unrecognised bot simply falls back to jitter. '
+      + 'Accepts a JSON array (["Pepper","Coltrane"]) or a comma-separated '
+      + 'string ("Pepper, Coltrane"); an empty string clears it. The string '
+      + 'forms exist because an array does not reliably survive the MCP '
+      + 'boundary — on 2026-08-17 two agents on two machines found no value '
+      + 'this would accept, which left #426 unreachable in production (#430).',
   },
   botSpeakRankGapMs: {
     type: 'number',
@@ -1233,9 +1238,42 @@ function validate(key, value) {
     return { ok: false, error: `Expected boolean (true/false), got ${typeof value}: ${JSON.stringify(value)}` };
   }
   if (spec.type === 'string[]') {
-    if (!Array.isArray(value) || !value.every(s => typeof s === 'string')) {
-      return { ok: false, error: `Expected array of strings` };
+    // Coerce the string forms, for the same reason the boolean case above does:
+    // the value crosses an MCP boundary before it gets here, and an array does
+    // not always survive the trip. Measured 2026-08-17 (#430): two agents on
+    // two machines each tried `set_preference("peerBotNames", ["Jimmy"])` and
+    // got "Expected array of strings" — for the array form AND the string form.
+    // From an MCP client there was no value that satisfied this, so a shipped
+    // feature (#426 ranked speaking order) could not be turned on at all.
+    //
+    // Being strict here bought nothing: this is a display-name list, and the
+    // failure mode of a wrong entry is degraded ordering, not corruption.
+    if (typeof value === 'string') {
+      const s = value.trim();
+      if (!s) return { ok: true, value: [] };          // "" clears the list
+      if (s.startsWith('[')) {
+        // A JSON array that arrived stringified.
+        try {
+          const arr = JSON.parse(s);
+          if (Array.isArray(arr) && arr.every(x => typeof x === 'string')) {
+            value = arr;
+          } else {
+            return { ok: false, error: `Expected array of strings` };
+          }
+        } catch {
+          return { ok: false, error: `Looks like a JSON array but does not parse: ${s.slice(0, 40)}` };
+        }
+      } else {
+        // "Jimmy" or "Jimmy, Pepper". Commas are not valid in a Meet display
+        // name in any case we have seen, so splitting on them is safe and is
+        // what someone typing this by hand will expect.
+        value = s.split(',').map(x => x.trim()).filter(Boolean);
+      }
     }
+    if (!Array.isArray(value) || !value.every(s => typeof s === 'string')) {
+      return { ok: false, error: `Expected array of strings (or a comma-separated string)` };
+    }
+    value = value.map(s => s.trim()).filter(Boolean);
     if (spec.minItems != null && value.length < spec.minItems) {
       return { ok: false, error: `Must have at least ${spec.minItems} item(s)` };
     }
@@ -1267,4 +1305,34 @@ function describe(store) {
   });
 }
 
-module.exports = { PREFERENCES, validate, describe, DEFAULT_BOT_NAME };
+// A setting can be valid, persist, report success — and still do nothing,
+// because it depends on another setting that is not set. #430 is the case that
+// motivated this: `botSpeakOrdering: "ranked"` took and reported success while
+// `peerBotNames` was empty, so ordering silently fell back to jitter. The
+// observable state was "the tool says the feature is on, the feature is off,
+// and nothing says so", and anyone testing #426 that way would conclude the
+// ordering does not work when it never turned on.
+//
+// `get` reads the CURRENT stored values, so this must run after the write.
+// Returns a human-readable string, or null when the setting is live.
+function inertWarning(key, value, get) {
+  const read = (k) => { try { return get ? get(k) : undefined; } catch { return undefined; } };
+  if (key === 'botSpeakOrdering' && value === 'ranked') {
+    const peers = read('peerBotNames');
+    if (!Array.isArray(peers) || peers.length === 0) {
+      return 'ranked ordering needs peerBotNames — the other bots\' display names — '
+        + 'and it is empty, so ordering falls back to jitter. '
+        + 'Set it with: set_preference("peerBotNames", "Pepper, Coltrane")';
+    }
+  }
+  if (key === 'peerBotNames') {
+    const mode = read('botSpeakOrdering');
+    if (Array.isArray(value) && value.length && mode !== 'ranked') {
+      return `peers are recorded, but botSpeakOrdering is ${JSON.stringify(mode || 'jitter')}, `
+        + 'so they are unused. Set it with: set_preference("botSpeakOrdering", "ranked")';
+    }
+  }
+  return null;
+}
+
+module.exports = { PREFERENCES, validate, describe, inertWarning, DEFAULT_BOT_NAME };

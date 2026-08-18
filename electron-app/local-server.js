@@ -4612,6 +4612,15 @@ class LocalServer {
       const requiresRestart = validated.some(
         ({ key }) => !!prefsSchema.PREFERENCES[key]?.requiresRestart,
       );
+      // #430: a setting can persist, report success, and still do nothing
+      // because it depends on another that is unset. Computed AFTER the write,
+      // so a batch that sets both halves together reports neither as inert.
+      const warnings = validated
+        .map(({ key, value }) => prefsSchema.inertWarning(key, value, (k) => this._pref(k)))
+        .filter(Boolean);
+      if (warnings.length) {
+        for (const w of warnings) console.log(ts(), '⚠️  [preferences]', w);
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         success: true,
@@ -4620,6 +4629,7 @@ class LocalServer {
           ? { key: validated[0].key, value: validated[0].value }
           : { updated: validated }),
         requiresRestart,
+        ...(warnings.length ? { warning: warnings.join(' ') } : {}),
       }));
       return;
     }

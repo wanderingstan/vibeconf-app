@@ -26,9 +26,20 @@ Two findings already, written up in that folder's README:
   audio against each remote track finds none (−0.09), and the remote tracks are
   5-6x quieter while the bot talks. Whatever lights up a speaking indicator
   during our TTS, it is not audible echo in the stream we receive.
-- Echo-driven false rises are RARE: one in 54 minutes on speakers. Three of the
-  four rises during bot speech were people genuinely interrupting — which makes
-  the blanket 700ms lookback in #421 a trade worth re-deciding on evidence.
+- No indicator ever lit up in an audibly silent room. Of 838 verdict rises, four
+  landed during our own TTS, and at every one a remote track was loud (−13 to
+  −16 dB against a −89 dB floor). That removed the blanket echo guard (#432): it
+  was withholding interruptions to prevent something the recording does not
+  contain.
+
+⚠️ **Do not make per-person claims from the tracks.** Meet reassigns
+participants between WebRTC tracks mid-call, and the track→name attribution
+(#209) votes using the DOM speaking signal — circular for the questions this
+corpus answers. That call recorded four participants onto three tracks, labelled
+Stan / Seth / Stan, with none for Pepper. An earlier "one echo-driven false rise
+in 54 minutes" figure trusted those labels and has been **retracted**. The
+corpus carries the same warning beside the audio, in
+`call-recording-tracks/READ-THIS-FIRST.md`.
 
 ## Adding to this index
 

@@ -1755,9 +1755,23 @@ function formatUpcomingDelta(ms) {
   const hours = Math.round(minutes / 60);
   return `in ${hours}h`;
 }
-function paintCalendarUpcoming(events) {
-  const next = Array.isArray(events) && events.length ? events[0] : null;
+function paintCalendarUpcoming(events, error) {
   if (!calendarUpcomingBanner || !calendarUpcomingText) return;
+  // Poll error (main.js pushCalendarPollError): the backend can no longer
+  // reach Google Calendar for this user — auto-join is silently dead until
+  // they re-grant access, so say so instead of quietly showing no meetings
+  // (vibeconferencing#512). Takes over the banner from the upcoming-meeting
+  // notice: a meeting list the poll can't refresh is stale anyway.
+  calendarUpcomingBanner.classList.toggle('notice-warn', !!error);
+  calendarUpcomingBanner.classList.toggle('notice-info', !error);
+  if (error) {
+    calendarUpcomingText.textContent = '⚠️ Calendar connection broken: '
+      + 'auto-join has stopped. Re-connect Google Calendar by signing in '
+      + 'again at vibeconferencing.com.';
+    calendarUpcomingBanner.style.display = 'flex';
+    return;
+  }
+  const next = Array.isArray(events) && events.length ? events[0] : null;
   if (!next) {
     calendarUpcomingBanner.style.display = 'none';
     return;
@@ -1781,8 +1795,14 @@ function paintCalendarUpcoming(events) {
   }
   calendarUpcomingBanner.style.display = 'flex';
 }
-api.on('calendar-upcoming', ({ events }) => paintCalendarUpcoming(events));
-api.invoke('get-upcoming-calendar-events').then(paintCalendarUpcoming).catch(() => {});
+api.on('calendar-upcoming', ({ events, error }) => paintCalendarUpcoming(events, error));
+// The IPC answer used to be a bare events array; it now carries poll health
+// too ({ events, error }). Accept both so a panel reload against an older
+// main (dev hot-swap) still paints.
+api.invoke('get-upcoming-calendar-events').then((r) => {
+  if (Array.isArray(r)) paintCalendarUpcoming(r, null);
+  else paintCalendarUpcoming((r && r.events) || [], (r && r.error) || null);
+}).catch(() => {});
 
 // Load every config value this window displays, and paint the controls from it.
 //

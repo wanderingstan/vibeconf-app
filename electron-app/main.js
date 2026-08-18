@@ -3013,6 +3013,12 @@ let meetAccountEmailPinned = false; // true when --meet-account-email pinned the
 // runs); read by the get-upcoming-calendar-events IPC handler in setupIPC —
 // a SEPARATE top-level function, so this can't be a local of either.
 let latestUpcomingCalendarEvents = [];
+// Calendar poll health, for the panel's warning banner: null while polls
+// succeed (or fail for expected reasons: signed out, not connected, offline),
+// or { code, message } once the backend reports a broken Google connection —
+// the invalid_grant case, where calendar WAS working and silently stopped
+// (vibeconferencing#512). Same cross-closure split as the events above.
+let latestCalendarPollError = null;
 // launchOrFocusProfile is a local of setupIPC() (it needs isDefaultName/
 // scanRunningInstances, also locals there) — checkOtherProfilesForCalendarMatch
 // runs in the whenReady closure and can't see it directly. setupIPC() runs
@@ -8145,8 +8151,22 @@ allURLs`;
   // meeting" notice updates without a refresh.
   function pushUpcomingCalendarEvents(events) {
     latestUpcomingCalendarEvents = events;
+    // A successful poll produced these events, so any prior poll error is over.
+    latestCalendarPollError = null;
     if (panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('calendar-upcoming', { events });
+      panelView.webContents.send('calendar-upcoming', { events, error: null });
+    }
+  }
+
+  // Companion to pushUpcomingCalendarEvents for the poll's failure side:
+  // records the error (or clears it with null) and pushes the combined state
+  // so the panel can warn that calendar auto-join has silently stopped
+  // working. Only the google-api-error state ever sets this — signed-out,
+  // not-connected and offline are expected/transient and stay banner-silent.
+  function pushCalendarPollError(error) {
+    latestCalendarPollError = error;
+    if (panelView && !panelView.webContents.isDestroyed()) {
+      panelView.webContents.send('calendar-upcoming', { events: latestUpcomingCalendarEvents, error });
     }
   }
 
@@ -8366,6 +8386,19 @@ allURLs`;
         if (state !== lastCalendarPollState) {
           console.log(`[calendar] Poll skipped (${message})`);
           lastCalendarPollState = state;
+          // google-api-error means the user HAD calendar working and the
+          // backend can no longer reach Google for them (dead refresh token,
+          // revoked access, ...) — the one failure worth a panel warning,
+          // because nothing else in the UI distinguishes it from "no
+          // meetings today" (vibeconferencing#512: a 7-day token expiry
+          // silently killed auto-join for everyone). The other states clear
+          // the warning: they describe a different situation (signed out,
+          // never connected, offline), and their guidance would be wrong.
+          if (state === 'google-api-error') {
+            pushCalendarPollError({ code: state, message });
+          } else if (latestCalendarPollError) {
+            pushCalendarPollError(null);
+          }
         }
       } catch (err) {
         if (lastCalendarPollState !== 'error') {
@@ -10309,7 +10342,9 @@ function setupIPC() {
   // "upcoming meeting" notice immediately, without waiting for the next
   // ~60s poll tick — pushUpcomingCalendarEvents (via 'calendar-upcoming')
   // keeps it live after that.
-  ipcMain.handle('get-upcoming-calendar-events', () => latestUpcomingCalendarEvents);
+  ipcMain.handle('get-upcoming-calendar-events', () => (
+    { events: latestUpcomingCalendarEvents, error: latestCalendarPollError }
+  ));
 
   // (The switcher thumbnail used to be stolen from the live camera feed here —
   // an edge-triggered capture plus a poll ladder plus 4h staleness gating, all to

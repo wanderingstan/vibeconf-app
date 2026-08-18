@@ -2816,16 +2816,22 @@ class DOMSpeakerTracker {
     //
     // A real call with two humans on SPEAKERS, recorded 2026-08-17 and kept at
     // ~/vibeconf-corpus/echo-speakers-2026-08-17 (see tests/fixtures/CORPUS.md),
-    // says the trade was backwards. Every verdict rise was cross-referenced
-    // against that person's OWN microphone track:
+    // shows nothing for the guard to catch. Of 838 verdict rises, four landed
+    // while our own TTS was playing — and at every one of those four, a remote
+    // track was LOUD: -13 to -16 dB against a -89 dB quiet floor.
     //
-    //   Stan   129 rises, 3 during our TTS — 1 with no audio from him, 2 real
-    //   Seth   113 rises, 1 during our TTS — 0 with no audio from him, 1 real
+    // There is no moment in that recording where an indicator lit up in an
+    // audibly silent room, which is what echo would look like. The guard was
+    // withholding rising edges to prevent something the only relevant recording
+    // does not contain, and the cost is real: a withheld rise is a late yield to
+    // someone genuinely interrupting, which is exactly when yielding matters.
     //
-    // One echo-driven false rise in 54 minutes on speakers, against three
-    // genuine interruptions in the same window. The guard would have delayed
-    // all three to block the one — and an interruption during our own speech is
-    // exactly when yielding promptly matters most.
+    // Deliberately stated WITHOUT naming who spoke. Meet reassigns participants
+    // between WebRTC tracks mid-call, and the track->name attribution (#209)
+    // votes using the DOM speaking signal — the very signal under test. That
+    // call recorded four participants onto three remote tracks, labelled
+    // Stan/Seth/Stan with no track for the fourth, so any per-person claim from
+    // it is unsound. "Some track was loud" needs no attribution and is enough.
     //
     // The same recording also shows WHY the original model was wrong: Meet's
     // acoustic echo cancellation strips our voice out of what it transmits.

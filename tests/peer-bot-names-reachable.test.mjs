@@ -80,14 +80,16 @@ test('a broken JSON array reports THAT, not a generic type error', () => {
   assert.match(r.error, /does not parse/);
 });
 
-test('ranked ordering with no peers warns that it is inert', () => {
-  // The whole point. Without this the tool reports success for a setting that
-  // changes nothing.
+test('ranked ordering with no peers points at discovery, and at the fallback', () => {
+  // Peers are normally discovered from room presence, so an empty list is no
+  // longer proof the feature is off. But discovery only works once every bot in
+  // the room registers itself, so during a rollout this is precisely the case
+  // that quietly does nothing — the note has to say what to look for.
   const w = inertWarning('botSpeakOrdering', 'ranked', () => []);
-  assert.ok(w, 'must warn');
-  assert.match(w, /peerBotNames/);
+  assert.ok(w, 'must say something');
+  assert.match(w, /peers discovered/, 'name the log line that confirms it worked');
   assert.match(w, /falls back to jitter/);
-  assert.match(w, /set_preference/, 'and say how to fix it');
+  assert.match(w, /set_preference/, 'and how to fix it by hand');
 });
 
 test('ranked ordering WITH peers does not warn', () => {

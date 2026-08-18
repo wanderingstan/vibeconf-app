@@ -954,8 +954,12 @@ const PREFERENCES = {
       + 'turns out to have nothing to say. Being named in the utterance is a '
       + 'bonus in that ordering, so a direct question reaches the bot it was '
       + 'asked of. '
-      + 'Requires peerBotNames, and falls back to jitter when that is unset or '
-      + 'this bot is not in it — so the worst case is exactly the old behaviour.',
+      + 'Needs to know which participants are bots. Each bot registers itself in '
+      + 'room presence on join (role="bot", with both its configured and display '
+      + 'names), so this is normally discovered and needs no configuration; '
+      + 'peerBotNames overrides it when discovery is wrong or the backend is '
+      + 'unreachable. With neither, ordering falls back to jitter — the worst '
+      + 'case is exactly the old behaviour.',
   },
   peerBotNames: {
     type: 'string[]',
@@ -963,10 +967,10 @@ const PREFERENCES = {
     description:
       'The OTHER bots expected in calls with this one, by display name — what '
       + 'botSpeakOrdering="ranked" ranks against. '
-      + 'Explicit configuration because nothing else knows: the Meet roster does '
-      + 'not mark which participants are bots, and the website presence list came '
-      + 'back empty when checked (2026-08-17). Populating presence, or having the '
-      + 'bots announce themselves in the room chat, would remove the need for it. '
+      + 'USUALLY UNNECESSARY: each bot now registers itself in room presence with '
+      + 'role="bot" and both its configured and display names, and the peer list '
+      + 'is derived from that (#430). This is the override for when discovery is '
+      + 'wrong, a peer predates the change, or the backend is unreachable. '
       + 'Matched case-insensitively, and this bot\'s own name is added '
       + 'automatically. A wrong or stale entry costs ordering quality, not '
       + 'correctness: an unrecognised bot simply falls back to jitter. '
@@ -1320,9 +1324,15 @@ function inertWarning(key, value, get) {
   if (key === 'botSpeakOrdering' && value === 'ranked') {
     const peers = read('peerBotNames');
     if (!Array.isArray(peers) || peers.length === 0) {
-      return 'ranked ordering needs peerBotNames — the other bots\' display names — '
-        + 'and it is empty, so ordering falls back to jitter. '
-        + 'Set it with: set_preference("peerBotNames", "Pepper, Coltrane")';
+      // Not necessarily inert any more: peers are normally discovered from room
+      // presence. But discovery only works once every bot in the room is on a
+      // build that registers itself, so during the rollout this is exactly the
+      // case that silently does nothing — say what to check.
+      return 'ranked ordering needs to know which participants are bots. That is '
+        + 'normally discovered from room presence, so this is probably fine — watch for '
+        + '"[presence] peers discovered" in the log. If it never appears (an older peer '
+        + 'that does not register itself, or no backend), ordering falls back to jitter; '
+        + 'name them with set_preference("peerBotNames", "Pepper, Coltrane")';
     }
   }
   if (key === 'peerBotNames') {

@@ -663,6 +663,41 @@ async function runPostRecordingMerges({ callDir, tracksDir, manifest, outputSuff
     // ffmpeg, no video captured, share mux error, ...) means the raw tracks
     // are the ONLY copy of that material, so they're never removed in that
     // case regardless of the pref.
+    // #422 — per-PERSON audio, BEFORE the raw tracks can be deleted below.
+    // That ordering is the whole reason this lives in the app: for a normal
+    // call (keepCallRecordingTracks off) call-recording-tracks/ is gone seconds
+    // from now, and anything running later finds nothing to work with.
+    //
+    // Deliberately outside allAttemptedMergesOk: this reads the RAW tracks and
+    // does not care whether the mp4 muxed. A failed merge is exactly when the
+    // per-person view is most wanted, and it is also when the tracks are
+    // guaranteed to still be here.
+    let extractMode = 'off';
+    try { extractMode = String(prefValue('extractSpeakerTracks') || 'off'); } catch { /* default off */ }
+    if (extractMode !== 'off') {
+      try {
+        const { extractSpeakerTracks } = require('./speaker-extract.js');
+        const { resolveFfmpegPath } = require('./call-media-merge.js');
+        const res = await extractSpeakerTracks({
+          tracksDir: dir,
+          eventsFile: path.join(callDir, 'speaking-events.jsonl'),
+          ffmpegPath: resolveFfmpegPath() || 'ffmpeg',
+          writeAudio: extractMode === 'audio',
+          cleanup: true, // the decode cache is ~300MB per slot and rebuildable
+          log: (line) => console.log(`[speaker-extract] ${line}`),
+        });
+        if (res.ok) {
+          console.log(`[speaker-extract] ${res.segments} segments, ${res.people.length} people, `
+            + `${res.unresolved} unresolved -> ${res.outDir}`);
+        } else {
+          console.log(`[speaker-extract] skipped: ${res.reason}`);
+        }
+      } catch (err) {
+        // Diagnostics must never be why a recording is lost.
+        console.warn('[speaker-extract] failed:', err.message);
+      }
+    }
+
     const allAttemptedMergesOk = !!mainMerge?.ok && (!shareTrack || !!shareMerge?.ok);
     // #343: the recovery note's PRESENCE is what marks a recording as
     // unfinished, so it comes off here and nowhere earlier — this is the first

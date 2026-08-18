@@ -1,4 +1,4 @@
-// extract-speaker-tracks.test.mjs — per-person audio out of Meet's shuffled
+// speaker-extract.test.mjs (via scripts/extract-speaker-tracks.mjs) — per-person audio out of Meet's shuffled
 // slot tracks (#209/#422).
 //
 // The thing under test is an attribution decision, and its most dangerous
@@ -8,9 +8,12 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { frameDb, segmentsFromDb, litIntervals, overlapWith, bestAssignment,
-         candidatesFor, weakCandidatesFor, attribute, parseWavHeader, wavHeader, isBotName }
-  from '../scripts/extract-speaker-tracks.mjs';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const { frameDb, segmentsFromDb, litIntervals, overlapWith, bestAssignment,
+        candidatesFor, weakCandidatesFor, attribute, parseWavHeader, wavHeader,
+        isBotName, extractSpeakerTracks } = require('../electron-app/speaker-extract.js');
 
 const tone = (ms, amp, rate = 1000) =>
   Array.from({ length: Math.round(ms / 1000 * rate) }, (_, i) => Math.round(amp * Math.sin(i / 3)));
@@ -229,4 +232,30 @@ test('a genuinely dark meter still yields no owner', () => {
   const out = attribute({ t1: [{ startMs: 1000, endMs: 2000 }] }, new Map([['Seth', [[8000, 9000]]]]));
   assert.equal(out[0].owner, null);
   assert.equal(out[0].method, 'unlabelled');
+});
+
+test('without the indicator capture it declines rather than guessing', async () => {
+  // Identity comes from speaking-events.jsonl. Falling back to the manifest's
+  // per-track `name` would be the exact bug this module exists to undo — a
+  // whole-call majority vote presented as per-segment truth — and the output
+  // would look identical to a real run. Refuse instead.
+  const res = await extractSpeakerTracks({
+    tracksDir: '/nonexistent/tracks', eventsFile: '/nonexistent/speaking-events.jsonl',
+  });
+  assert.equal(res.ok, false);
+  assert.match(res.reason, /speakingEventCapture/);
+});
+
+test('a missing manifest is a skip, not a throw', async () => {
+  // This runs on the post-recording path, right before the raw tracks may be
+  // deleted. Throwing here would surface as "recording failed" for what is
+  // purely diagnostic work.
+  const { mkdtempSync, writeFileSync: wf } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const d = mkdtempSync(join(tmpdir(), 'spk-'));
+  wf(join(d, 'events.jsonl'), '');
+  const res = await extractSpeakerTracks({ tracksDir: d, eventsFile: join(d, 'events.jsonl') });
+  assert.equal(res.ok, false);
+  assert.match(res.reason, /manifest/);
 });

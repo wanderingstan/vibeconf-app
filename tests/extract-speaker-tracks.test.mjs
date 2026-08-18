@@ -9,7 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { frameDb, segmentsFromDb, litIntervals, overlapWith, bestAssignment,
-         candidatesFor, attribute, parseWavHeader, wavHeader, isBotName }
+         candidatesFor, weakCandidatesFor, attribute, parseWavHeader, wavHeader, isBotName }
   from '../scripts/extract-speaker-tracks.mjs';
 
 const tone = (ms, amp, rate = 1000) =>
@@ -200,4 +200,33 @@ test('when every other name is placed, the last one falls out by elimination', (
   // Both slots busy, both names lit: solvable, and neither may be dropped.
   assert.equal(out.filter((s) => s.owner).length, 2);
   assert.notEqual(out[0].owner, out[1].owner);
+});
+
+test('a lone partially-lit name is taken, but marked as the weaker inference', () => {
+  // 46:32 in the corpus: Seth's meter is plainly lit, the segment is 340ms, and
+  // a 30% threshold tuned for long segments throws it away — reporting the
+  // LOUDEST unexplained audio in the call as a detector miss it never was.
+  const lit = new Map([['Seth', [[1000, 1080]]]]);           // 80ms of a 1000ms segment
+  const out = attribute({ t1: [{ startMs: 1000, endMs: 2000 }] }, lit);
+  assert.equal(out[0].owner, 'Seth');
+  assert.equal(out[0].method, 'partial', 'never silently promoted to a sole match');
+});
+
+test('two partially-lit names stay unlabelled rather than picking the larger', () => {
+  // The guard on the above. With a competing claim there is nothing to break
+  // the tie but preference, and a fabricated label reads exactly like a
+  // measured one once it is in the file.
+  const lit = new Map([['Seth', [[1000, 1080]]], ['Ann', [[1100, 1150]]]]);
+  const out = attribute({ t1: [{ startMs: 1000, endMs: 2000 }] }, lit);
+  assert.equal(out[0].owner, null);
+  assert.equal(out[0].method, 'unlabelled');
+});
+
+test('a genuinely dark meter still yields no owner', () => {
+  // The 20 remaining corpus misses: every human's sprite read 0px, densely
+  // sampled. Meet's gate is simply above a breath, and inventing a name for it
+  // would corrupt the ground truth this file exists to be.
+  const out = attribute({ t1: [{ startMs: 1000, endMs: 2000 }] }, new Map([['Seth', [[8000, 9000]]]]));
+  assert.equal(out[0].owner, null);
+  assert.equal(out[0].method, 'unlabelled');
 });

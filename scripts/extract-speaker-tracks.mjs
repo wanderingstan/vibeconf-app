@@ -234,6 +234,23 @@ export function candidatesFor(seg, lit, { minShare = 0.30 } = {}) {
   return cand.sort((a, b) => b.share - a.share);
 }
 
+// Names lit for SOME of a segment but under `minShare`. That threshold stops a
+// name grazing the edge of a long segment from claiming it, which is right —
+// but on a 300ms segment, against an indicator sampled every ~50ms and held for
+// one poll period, partial coverage is the normal case rather than evidence of
+// absence. Two of the 22 "misses" in the 2026-08-17 corpus were this: a human's
+// meter was plainly lit and the threshold discarded it, including the loudest
+// one at -12.5dB.
+export function weakCandidatesFor(seg, lit, { minShare = 0.30 } = {}) {
+  const dur = seg.endMs - seg.startMs;
+  const out = [];
+  for (const [name, iv] of lit) {
+    const o = overlapWith(iv, seg.startMs, seg.endMs);
+    if (o > 0 && o <= minShare * dur) out.push({ name, share: o / dur });
+  }
+  return out.sort((a, b) => b.share - a.share);
+}
+
 // The whole attribution pass. Segments arrive per track, already in wall-clock
 // ms relative to the call start.
 export function attribute(trackSegs, lit, { dominance = 1.8, continuityBonus = 0.25 } = {}) {
@@ -245,7 +262,16 @@ export function attribute(trackSegs, lit, { dominance = 1.8, continuityBonus = 0
 
   // Pass 1 — anything with one candidate, or one clear winner, is settled.
   for (const s of all) {
-    if (!s.cand.length) { s.owner = null; s.method = 'unlabelled'; }
+    if (!s.cand.length) {
+      // Nobody clears the bar. If exactly ONE name is lit at all and no other
+      // is lit for any part of the segment, there is no competing claim to
+      // weigh — take it, but under its own method so it stays visible as the
+      // weaker inference it is. Anything more contested stays unlabelled:
+      // a plausible name here would be indistinguishable from a measured one.
+      const weak = weakCandidatesFor(s, lit);
+      if (weak.length === 1) { s.owner = weak[0].name; s.method = 'partial'; s.cand = weak; }
+      else { s.owner = null; s.method = 'unlabelled'; }
+    }
     else if (s.cand.length === 1) { s.owner = s.cand[0].name; s.method = 'sole'; }
     else if (s.cand[0].share > s.cand[1].share * dominance) {
       s.owner = s.cand[0].name; s.method = 'dominant';

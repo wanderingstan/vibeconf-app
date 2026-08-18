@@ -2099,30 +2099,13 @@ function capture(kind, participant, value, source) {
   }, CAPTURE_FLUSH_MS);
 }
 
-// #378 echo guard, DOM side. When a human listens on laptop speakers, the bot's
-// own TTS comes back through their microphone; Meet animates THEIR speaking
-// indicator, and both DOM signals read it as that person interrupting. Live on
-// call ded-iika-yrs: a tile whose owner was silent flagged speaking, barge-in
-// armed, TTS truncated 0.9s in.
+// Our own TTS envelope, published by page-inject (#378).
 //
-// Level cannot separate them — echo at speaker volume looks like speech, and
-// the indicator is not amplitude-driven anyway. What separates them is
-// CORRELATION: echo tracks our own output envelope, a person does not. That is
-// exactly the test page-inject already applies to far-end AUDIO (#245); this is
-// the same test, applied to the DOM.
-//
-// LOOKBACK, not "right now", is the difference from the audio version. Echo of
-// audio we played arrives late — measured ~503ms behind our TTS in #245 — and
-// Meet's indicator adds its own animation lag on top. Gating on our INSTANT
-// amplitude would let every delayed echo through the gaps between words, which
-// is precisely where the gaps are.
-//
-// The cost is stated plainly: while the bot is speaking, a real human's rising
-// edge is held until our output has been quiet for the lookback. That is not a
-// hole in barge-in — the analyser's floor signal (fastFloorDetection) covers
-// exactly that window and has its own guard — it is the DOM path declining to
-// answer a question it cannot answer honestly.
-const DOM_ECHO_LOOKBACK_MS = 700;
+// It no longer gates anything — see _rawSpeaking for the guard that used to
+// live there and the call recording that removed it. It is still tracked and
+// still captured to speaking-events.jsonl, because "was the bot talking at this
+// instant" is the axis every echo question is asked along, and losing it would
+// make the next such question unanswerable.
 let selfAudioLastLoudAt = 0;
 function noteSelfAudioLoud(at) { selfAudioLastLoudAt = Math.max(selfAudioLastLoudAt, at); }
 
@@ -2827,29 +2810,42 @@ class DOMSpeakerTracker {
     else if (speakingDetectionMode === 'meter') verdict = meter;
     else verdict = mut || meter;   // 'either' — earliest rising edge of the two
 
-    // Echo guard (#378) — at the VERDICT, so it covers both DOM signals.
+    // NO ECHO GUARD HERE — removed deliberately (#378, and the measurement that
+    // undid it). A blanket suppression of every rising edge for 700ms after our
+    // own TTS used to sit at this point.
     //
-    // Not indicator-only, though that is where it was first seen: the
-    // [meter-latency] line in #378 reads "meter led by +313ms", and that line is
-    // only written when BOTH signals rise. The mutation counter fired on the
-    // same echo, 313ms later. It is slower at being wrong, not immune.
+    // A real call with two humans on SPEAKERS, recorded 2026-08-17 and kept at
+    // ~/vibeconf-corpus/echo-speakers-2026-08-17 (see tests/fixtures/CORPUS.md),
+    // says the trade was backwards. Every verdict rise was cross-referenced
+    // against that person's OWN microphone track:
     //
-    // Only the RISING edge is suppressed. Someone already flagged as speaking
-    // stays flagged — if they had the floor before we started talking, our
-    // voice is no reason to decide they stopped.
-    if (verdict && !info.speaking && !info.isSelf && this._echoSuspect(now)) {
-      info._hbEcho = (info._hbEcho || 0) + 1;
-      return false;
-    }
+    //   Stan   129 rises, 3 during our TTS — 1 with no audio from him, 2 real
+    //   Seth   113 rises, 1 during our TTS — 0 with no audio from him, 1 real
+    //
+    // One echo-driven false rise in 54 minutes on speakers, against three
+    // genuine interruptions in the same window. The guard would have delayed
+    // all three to block the one — and an interruption during our own speech is
+    // exactly when yielding promptly matters most.
+    //
+    // The same recording also shows WHY the original model was wrong: Meet's
+    // acoustic echo cancellation strips our voice out of what it transmits.
+    // Correlating our outgoing audio against each remote track finds no echo
+    // (-0.09), and those tracks run 5-6x QUIETER while we talk. Whatever lights
+    // a speaking indicator during our TTS, it is not audible echo in the stream
+    // we receive, so a rule built on "they can hear us" was reasoning about a
+    // mechanism that is not there.
+    //
+    // What the data does support is a targeted test rather than a window: the
+    // app already runs a ParticipantAudio analyser on every remote track, and a
+    // rise while THAT participant's own audio is silent is the actual echo
+    // signature. That would have caught the single false rise and left the
+    // three real ones alone. Tracked separately; not reinstated here on the
+    // strength of one call.
+    //
+    // The self-audio envelope that fed the guard is KEPT: it is published,
+    // captured in speaking-events.jsonl, and it is what made this measurement
+    // possible in the first place.
     return verdict;
-  }
-
-  // Were we audibly talking recently enough that this rise could be our own
-  // voice coming back? Self is exempt: the bot's own tile SHOULD light up while
-  // its TTS plays, and nothing downstream consumes it (isSelf is filtered out
-  // of every speaking gate).
-  _echoSuspect(now) {
-    return !!selfAudioLastLoudAt && (now - selfAudioLastLoudAt) < DOM_ECHO_LOOKBACK_MS;
   }
 
   // Records how far the meter leads (or trails) the mutation counter on each

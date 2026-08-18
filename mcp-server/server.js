@@ -53,6 +53,63 @@ const PINNED_PORT = (() => {
 const WEBSITE_URL = (process.env.VIBECONF_WEBSITE_URL || "https://vibeconferencing.com").replace(/\/$/, "");
 const LOGS_TOKEN = process.env.VIBECONF_LOGS_TOKEN || "";
 
+// Remote-log READS authorize by the logged-in user, the same way #386 made
+// remote-log WRITES work — the app already sends `Cookie: vc_session=…` beside
+// the shared token on every flush (electron-app/session-log.js), and the
+// backend accepts it. Reads never followed, so they were stuck on a shared
+// secret that has to be distributed and rotated by hand.
+//
+// Measured 2026-08-18: `x-vibe-logs-token` gets a flat 401 from /api/logs while
+// the session cookie gets a 200. So the token path was not merely unset on this
+// machine, it was dead — which is why rotating the key never helped anyone.
+//
+// The session lives in the app's own store, written at login. Read fresh per
+// call rather than cached at startup, so logging in (or out) takes effect
+// without restarting this server — an MCP server started days ago is the normal
+// case, not the exception.
+//
+// NOT a fix for bots: a bot profile has no vc_session, because nobody logs bot
+// profiles into vibeconferencing.com. Their remote logging is separately broken
+// and needs its own answer.
+function _appUserDataDir() {
+  if (process.platform === "darwin") {
+    return join(homedir(), "Library", "Application Support", "Vibeconferencing");
+  }
+  if (process.platform === "win32") {
+    return join(process.env.APPDATA || join(homedir(), "AppData", "Roaming"), "Vibeconferencing");
+  }
+  return join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "Vibeconferencing");
+}
+
+function _sessionCookie() {
+  // The top-level config.json is the Default profile's store, which is where a
+  // human actually logs in. A named profile's store is checked first so a
+  // pinned bot profile that HAS been logged in is honoured.
+  const base = _appUserDataDir();
+  const candidates = [];
+  const prof = process.env.VIBECONF_PROFILE;
+  if (prof) candidates.push(join(base, "profiles", prof, "config.json"));
+  candidates.push(join(base, "config.json"));
+  for (const p of candidates) {
+    try {
+      const tok = JSON.parse(readFileSync(p, "utf8")).vcSessionToken;
+      if (tok) return `vc_session=${tok}`;
+    } catch { /* not this one */ }
+  }
+  return null;
+}
+
+// Headers for a backend log request: the user session when we have one, and the
+// shared token when it is set. Sending both mirrors the app's write path and
+// costs nothing — whichever the backend still honours wins.
+function _logAuthHeaders() {
+  const headers = {};
+  const cookie = _sessionCookie();
+  if (cookie) headers.Cookie = cookie;
+  if (LOGS_TOKEN) headers["x-vibe-logs-token"] = LOGS_TOKEN;
+  return Object.keys(headers).length ? headers : undefined;
+}
+
 // #356: attach the local control token to calls aimed at a 127.0.0.1 app instance.
 // The Electron app writes a per-launch bearer token to
 // ~/.vibeconferencing/local-tokens/<port>.token (0600). We read it per-request and
@@ -291,7 +348,8 @@ server.tool(
     const url = isRemote
       ? `${WEBSITE_URL}/api/logs/${encodeURIComponent(instance)}${params.toString() ? '?' + params.toString() : ''}`
       : `${BASE_URL}/api/session-log${params.toString() ? '?' + params.toString() : ''}`;
-    const resp = await vfetch(url, isRemote && LOGS_TOKEN ? { headers: { 'x-vibe-logs-token': LOGS_TOKEN } } : undefined);
+    const auth = isRemote ? _logAuthHeaders() : undefined;
+    const resp = await vfetch(url, auth ? { headers: auth } : undefined);
     const data = await resp.json();
     if (!data.success) {
       return { content: [{ type: "text", text: `Error: ${data.error || "Unknown error"}` }] };
@@ -344,9 +402,20 @@ server.tool(
   "List remote Vibeconferencing instances that are shipping their session logs to the backend (machines/bots with the remoteLogging pref on). Returns each instance's ID, app version, profile, current room, and how long ago it was last seen. Use the returned instanceId with get_session_log({ instance }) to read that bot's log — handy for debugging another person's bots (e.g. Seth's) without terminal access to their machine.",
   {},
   async () => {
-    const resp = await vfetch(`${WEBSITE_URL}/api/logs`, LOGS_TOKEN ? { headers: { 'x-vibe-logs-token': LOGS_TOKEN } } : undefined);
+    const auth = _logAuthHeaders();
+    const resp = await vfetch(`${WEBSITE_URL}/api/logs`, auth ? { headers: auth } : undefined);
     const data = await resp.json();
-    if (!data.success) return { content: [{ type: "text", text: `Error: ${data.error || "Unknown error"}` }] };
+    if (!data.success) {
+      // "unauthorized" is the common failure and the least self-explanatory:
+      // say which credentials were actually offered, so the next person does
+      // not spend an afternoon rotating a key that was never the problem.
+      const why = data.error === 'unauthorized'
+        ? `unauthorized — sent: ${[_sessionCookie() ? 'vc_session (app login)' : null,
+            LOGS_TOKEN ? 'x-vibe-logs-token' : null].filter(Boolean).join(' + ') || 'no credentials'}.`
+          + ' Log in to vibeconferencing.com in the app to authorize reads as your user.'
+        : (data.error || "Unknown error");
+      return { content: [{ type: "text", text: `Error: ${why}` }] };
+    }
     const insts = data.instances || [];
     if (!insts.length) return { content: [{ type: "text", text: "No instances are reporting (remoteLogging may be off everywhere)." }] };
     const lines = insts.map((i) => {

@@ -340,16 +340,25 @@ ${finalized
       note: 'Timeline: each track\'s startWallClock is its webm t=0 in absolute '
         + 'wall-clock ms (same Date.now() clock as the transcript), so sample-time '
         + 't maps to startWallClock + t — align audio with transcript/events by '
-        + 'that. Each remote-* is a distinct WebRTC track from Meet (measured '
-        + 'independent in a 3-party call — Meet separates participants, not one '
-        + 'mix); tracks are labeled by arrival order and named when attributable, '
-        + 'and Meet can emit extra or initially-silent tracks. A "share-audio" '
+        + 'that. Each remote-* is a separate WebRTC track, but NOT one track per '
+        + 'person: on 2026-08-17 one participant\'s voice was confirmed BY EAR on '
+        + 'two different remote-* tracks, and that same call put four '
+        + 'participants on three tracks. Meet appears to forward whoever is '
+        + 'speaking into a small fixed pool of slots and to REASSIGN a slot '
+        + 'mid-call. So the "name" on each track below is a whole-call majority '
+        + 'vote from DOM sole-speaker moments: it names whoever dominated that '
+        + 'slot, and it is simply wrong wherever the slot changed hands. Do not '
+        + 'key analysis on it — use speaker-events.jsonl, which is wall-clock '
+        + 'stamped, for who spoke when. Meet can also emit extra or '
+        + 'initially-silent tracks. A "share-audio" '
         + 'track, when present, is the shared tab/screen\'s own audio (raw, '
         + 'pre-mute) — distinct from the "share" track, which is that surface\'s '
         + 'VIDEO capture (kind: "share").',
       tracks: [...this.tracks.values()].map((t) => ({
         track: t.name,
-        name: this.names.get(t.name) || null, // attributed participant, when known
+        // Whole-call majority vote, NOT a reliable label — a Meet slot can
+        // change hands mid-call and this keeps only the winner. See `note`.
+        name: this.names.get(t.name) || null,
         file: t.base,
         mime: t.mime,
         kind: t.kind, // 'audio' | 'video' — call-media-merge.js uses this, not the name

@@ -3022,10 +3022,12 @@
   // Records the bot's OWN outgoing audio (its TTS mic) and every remote WebRTC
   // track the AudioCaptureManager holds, each with its own MediaRecorder, and
   // streams the webm/opus chunks to main (call-recorder.js appends one file per
-  // track + a manifest). Meet hands each remote participant its OWN WebRTC track
-  // — measured independent in a 3-party call (#209) — so "remote-*" tracks are
-  // genuinely per-participant, not one shared mix. They're labeled by arrival
-  // order, not name; Meet can also emit extra/initially-silent tracks.
+  // track + a manifest). Each "remote-*" is a separate WebRTC track, but NOT one
+  // track per person: on 2026-08-17 one participant's voice was confirmed by ear
+  // on two different remote-* tracks, and four participants arrived on three
+  // tracks. Meet forwards speakers into a small pool of slots and reassigns them
+  // mid-call, so a track is "audio from somebody". They're labeled by arrival
+  // order; Meet can also emit extra/initially-silent tracks.
   //
   // Dormant until main sends 'start-recording' (gated on the recordCallAudio
   // pref / VIBECONF_RECORD_CALL). The poll re-attaches: the bot mic may not
@@ -3046,8 +3048,16 @@
     // Attribution: the DOMSpeakerTracker (provider) posts 'speaker-active' with
     // the REAL participant name when Meet's people-pane shows them speaking. When
     // exactly one recorded remote track is making sound at that moment, that
-    // track is that speaker — vote it. Only sole-speaker moments count, so
-    // overlap never mis-attributes. Best guess is pushed to main as it firms up.
+    // track is that speaker — vote it. Requiring a sole speaker keeps OVERLAP
+    // from mis-attributing.
+    //
+    // It does NOT survive Meet reassigning a slot mid-call, which we have since
+    // confirmed happens (2026-08-17: one voice heard by ear on two tracks). Every
+    // vote may be individually correct and the winner still wrong for most of the
+    // call, because this collapses the whole call to one name. The votes are
+    // honest; the single winner is the lie. Time-segmented attribution is the
+    // real fix — until then, speaker-events.jsonl is the source of truth for who
+    // spoke when, and this name is a hint at best.
     function voteFromDom(name) {
       if (!recording || !name || name === selfName) return; // never attribute the bot's own voice
       const active = [];

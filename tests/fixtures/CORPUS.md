@@ -32,14 +32,20 @@ Two findings already, written up in that folder's README:
   was withholding interruptions to prevent something the recording does not
   contain.
 
-⚠️ **Do not make per-person claims from the tracks.** Meet reassigns
-participants between WebRTC tracks mid-call, and the track→name attribution
-(#209) votes using the DOM speaking signal — circular for the questions this
-corpus answers. That call recorded four participants onto three tracks, labelled
-Stan / Seth / Stan, with none for Pepper. An earlier "one echo-driven false rise
-in 54 minutes" figure trusted those labels and has been **retracted**. The
-corpus carries the same warning beside the audio, in
-`call-recording-tracks/READ-THIS-FIRST.md`.
+⚠️ **Do not make per-person claims from the tracks — this is now confirmed, not
+suspected.** Listening to the tracks on 2026-08-18, Seth's voice is audibly on
+BOTH `remote-participant-2` and `remote-participant-3`, and the manifest labels
+participant-3 "Stan James". Meet forwards speakers into a small pool of slots and
+reassigns them mid-call; that call put four participants on three tracks with
+none for Pepper. The track→name vote (#209) collapses a whole call to one name,
+so it names whoever dominated a slot and is wrong wherever the slot changed
+hands — and it votes using the DOM speaking signal, which is circular for the
+questions this corpus answers anyway. An earlier "one echo-driven false rise in
+54 minutes" figure trusted those labels and is **retracted**. `manifest.json` in
+this corpus states the opposite in its own `note` field; that text was left as
+recorded and the generator fixed in the app instead. Use
+`speaker-events.jsonl` for who-spoke-when. Full detail and the WAV recipe for
+listening: `call-recording-tracks/READ-THIS-FIRST.md`.
 
 ## Adding to this index
 

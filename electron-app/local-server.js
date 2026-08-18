@@ -1017,9 +1017,20 @@ class LocalServer {
     // all bots still derive the same order, and a human simply never claims
     // their slot, at which point the next rank finds the floor free and speaks.
     //
-    // peerBotNames is therefore an OPTIMISATION, not a requirement. When it is
-    // set, ranks are not wasted on participants who will never use them; when
-    // it is empty, the ordering still works, just with a slot per human.
+    // peerBotNames IS required, despite what this comment used to claim. The
+    // reasoning above ("rank everyone, a human never claims their slot") is
+    // sound in isolation and does not survive the next step: the seed is the
+    // last utterance by someone OUTSIDE the bot set, and ranking everyone puts
+    // everyone inside it. `last` then finds nobody and this returns
+    // _rankedSkip('no human utterance yet') on every call — so an empty list
+    // does not degrade the ordering, it disables it. Measured live 2026-08-17
+    // (#430): ranked was set on two bots and neither ever ordered.
+    //
+    // Needing it is a wart, not a design. The room presence API already knows
+    // which members are bots (role='bot'), so this could be derived rather than
+    // configured — see #430 for why the presence path was dropped (it matched
+    // the CONFIGURED name against Meet's DISPLAY name and double-counted) and
+    // for the name matching that would fix it.
     //
     // This also removes a class of bug rather than patching it: presence
     // records the CONFIGURED bot name while Meet shows the display name for

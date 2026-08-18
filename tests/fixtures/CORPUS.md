@@ -6,7 +6,7 @@ guessing at paths.
 
 ## echo-speakers-2026-08-17 — humans on SPEAKERS
 
-`~/vibeconf-corpus/echo-speakers-2026-08-17/` · 167 MB · call
+`~/Developer/vibeconf-corpus/echo-speakers-2026-08-17/` · 247 MB · call
 `wcj-odpo-wrb-20260817T223239Z`, 54 min, jimmy bot + Stan + Seth (+Pepper).
 
 **The only corpus that can exercise #378.** Stan and Seth were on laptop

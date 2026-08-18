@@ -198,7 +198,11 @@ const PREFERENCES = {
       'own outgoing audio plus each remote WebRTC track Meet delivers) PLUS a ' +
       'video track of the bot\'s own Meet view, with a manifest that time-aligns ' +
       'everything. Meet gives each remote participant its own track (measured), so ' +
-      '"remote-*" tracks are per-participant — labeled by arrival order, not name. ' +
+      '"remote-*" tracks are one stream each, but NOT reliably one person each: a ' +
+      'track is labeled by arrival order, and the 2026-08-17 corpus recorded ' +
+      'four participants onto three remote tracks with the fourth absent, so ' +
+      'Meet appears to forward whoever is speaking into a small fixed pool. ' +
+      'Treat a track as "audio from somebody" (see call-recorder.js). ' +
       'When recording is active a small visible status window appears (elapsed ' +
       'time + Stop button) — that is expected UI, not a side effect, and it is ' +
       'also how the room is shown recording is happening. When the recording ' +

@@ -29,10 +29,12 @@
 // explain it is the #378 signature, and a fabricated name there would destroy
 // the most interesting data in the file.
 //
-// Lives here rather than only in scripts/ because the raw tracks are DELETED
-// moments after the merge unless keepCallRecordingTracks is on (main.js
-// runPostRecordingMerges). Anything running later finds nothing, so the app is
-// the only place this can happen for a normal call.
+// Lives here rather than only in scripts/ because it runs on the post-recording
+// path (main.js runPostRecordingMerges), gated on keepCallRecordingTracks —
+// that pref already means "I am going to look at the raw material", and there is
+// no reason to keep the tracks but decline to learn who is on them. The app runs
+// it in labels-only mode; keeping the tracks is exactly what makes the
+// per-person audio reproducible on demand from the CLI.
 
 const { readFileSync, writeFileSync, openSync, readSync, closeSync, mkdirSync,
         existsSync, createWriteStream, rmSync } = require('fs');

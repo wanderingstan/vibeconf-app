@@ -663,18 +663,23 @@ async function runPostRecordingMerges({ callDir, tracksDir, manifest, outputSuff
     // ffmpeg, no video captured, share mux error, ...) means the raw tracks
     // are the ONLY copy of that material, so they're never removed in that
     // case regardless of the pref.
-    // #422 — per-PERSON audio, BEFORE the raw tracks can be deleted below.
-    // That ordering is the whole reason this lives in the app: for a normal
-    // call (keepCallRecordingTracks off) call-recording-tracks/ is gone seconds
-    // from now, and anything running later finds nothing to work with.
+    // #422 — per-PERSON audio: who is actually on each track, when.
     //
-    // Deliberately outside allAttemptedMergesOk: this reads the RAW tracks and
-    // does not care whether the mp4 muxed. A failed merge is exactly when the
-    // per-person view is most wanted, and it is also when the tracks are
-    // guaranteed to still be here.
-    let extractMode = 'off';
-    try { extractMode = String(prefValue('extractSpeakerTracks') || 'off'); } catch { /* default off */ }
-    if (extractMode !== 'off') {
+    // Gated on keepCallRecordingTracks rather than a switch of its own. That
+    // pref already means "I am going to look at the raw material of this
+    // recording", and there is no reason to keep the tracks but decline to
+    // learn who is on them: a recorded remote-* track is NOT one participant,
+    // so the tracks alone answer almost nothing without this.
+    //
+    // Labels only, not the per-person WAVs. Keeping the tracks is precisely
+    // what makes the audio reproducible on demand — scripts/extract-speaker-
+    // tracks.mjs regenerates it in a couple of minutes — so writing ~300MB per
+    // person per hour automatically would spend a gigabyte a call to save one
+    // command. attribution.json and the label tracks come to ~10MB and answer
+    // every question asked of the corpus so far.
+    let keepTracksPref = false;
+    try { keepTracksPref = !!prefValue('keepCallRecordingTracks'); } catch { /* default off */ }
+    if (keepTracksPref) {
       try {
         const { extractSpeakerTracks } = require('./speaker-extract.js');
         const { resolveFfmpegPath } = require('./call-media-merge.js');
@@ -682,7 +687,7 @@ async function runPostRecordingMerges({ callDir, tracksDir, manifest, outputSuff
           tracksDir: dir,
           eventsFile: path.join(callDir, 'speaking-events.jsonl'),
           ffmpegPath: resolveFfmpegPath() || 'ffmpeg',
-          writeAudio: extractMode === 'audio',
+          writeAudio: false,
           cleanup: true, // the decode cache is ~300MB per slot and rebuildable
           log: (line) => console.log(`[speaker-extract] ${line}`),
         });
@@ -706,9 +711,7 @@ async function runPostRecordingMerges({ callDir, tracksDir, manifest, outputSuff
     // then the only copy, and the note is what says so and how to finish them.
     if (allAttemptedMergesOk) {
       try { finishedSession?.removeRecoveryNote(); } catch { /* best-effort */ }
-      let keepTracks = false;
-      try { keepTracks = !!prefValue('keepCallRecordingTracks'); } catch { /* default: don't keep */ }
-      if (!keepTracks) {
+      if (!keepTracksPref) {
         try {
           fs.rmSync(dir, { recursive: true, force: true });
           console.log(`[call-record] removed raw tracks (${dir}) — keepCallRecordingTracks is off`);

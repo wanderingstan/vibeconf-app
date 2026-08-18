@@ -3,13 +3,13 @@
 // extract-speaker-tracks.mjs — CLI for electron-app/speaker-extract.js.
 //
 // Turns Meet's shuffled slot tracks into one audio file per PERSON. The logic
-// lives in the app module, not here: the raw tracks are deleted moments after
-// the merge unless keepCallRecordingTracks is on, so for a normal call this has
-// to run INSIDE the app (main.js runPostRecordingMerges) and there must be
-// exactly one implementation for both paths. See that file for how it works and
-// why identity comes from the raw indicator rather than the detector verdict.
+// lives in the app module, not here: with keepCallRecordingTracks on, the app
+// already runs it after every recording (labels only), and there must be exactly
+// one implementation for both paths. See that file for how it works and why
+// identity comes from the raw indicator rather than the detector verdict.
 //
-// This is the manual path: an archived corpus, or a call whose tracks were kept.
+// This is the manual path, and the one that writes AUDIO: an archived corpus, or
+// re-running a kept call to get the per-person WAVs the app deliberately skips.
 //
 // Usage:
 //   node scripts/extract-speaker-tracks.mjs --tracks <call-recording-tracks/> \

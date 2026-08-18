@@ -210,38 +210,6 @@ const PREFERENCES = {
       'default; verbose on disk. Env VIBECONF_RECORD_CALL=1 ' +
       'forces it on (used by the test fleet so a nightly stall comes with a recording).',
   },
-  extractSpeakerTracks: {
-    type: 'string',
-    default: 'off',
-    enum: ['off', 'labels', 'audio'],
-    enumLabels: {
-      off: 'Off',
-      labels: 'Labels + attribution.json only',
-      audio: 'Also write one WAV per person',
-    },
-    label: 'Extract per-speaker tracks after recording',
-    hiddenInSettingsUI: true,
-    description:
-      'After a recording is merged, reconcile the per-track audio against the raw ' +
-      'mic-meter samples to work out WHO is on each track when. A recorded ' +
-      'remote-* track is not one participant: Meet forwards whoever is speaking ' +
-      'into a small pool of slots and reassigns them mid-call, so the per-track ' +
-      '"name" in manifest.json is a whole-call majority vote and is wrong wherever ' +
-      'a slot changed hands (measured: on the 2026-08-17 corpus all three humans ' +
-      'appear on all three tracks). This produces the per-person view that name ' +
-      'cannot. ' +
-      'REQUIRES speakingEventCapture — identity comes from the indicator capture, ' +
-      'and without it there is nothing to attribute with. ' +
-      '"labels" writes attribution.json and the Audacity label tracks (a few ' +
-      'hundred KB, and enough for every analysis question). "audio" additionally ' +
-      'writes one WAV per person on the original timeline, which is ~300MB per ' +
-      'person per hour — worth it for listening or fingerprinting, wasteful for a ' +
-      'call nobody opens. OFF by default: it costs a CPU-minute per call and only ' +
-      'matters if the recording is going to be analysed. ' +
-      'Runs BEFORE call-recording-tracks/ is deleted, so it works whether or not ' +
-      'keepCallRecordingTracks is on — but with tracks kept you can also re-run it ' +
-      'by hand later via scripts/extract-speaker-tracks.mjs.',
-  },
   keepCallRecordingTracks: {
     type: 'boolean',
     default: false,
@@ -257,7 +225,18 @@ const PREFERENCES = {
       'recording itself (per-track timing, a specific participant\'s audio, a failed ' +
       'mux) rather than just watching what happened on the call. A merge that fails ' +
       'or is skipped (no ffmpeg, no video captured) never deletes the raw tracks ' +
-      'regardless of this setting — they are all that is left in that case.',
+      'regardless of this setting — they are all that is left in that case. ' +
+      'ALSO triggers per-speaker extraction (#422) once the merge finishes: a ' +
+      'recorded remote-* track is NOT one participant, because Meet forwards ' +
+      'whoever is speaking into a small pool of slots and reassigns them mid-call ' +
+      '(measured — on the 2026-08-17 corpus all three humans appear on all three ' +
+      'tracks). So the kept tracks answer very little on their own. Extraction ' +
+      'reconciles them against the raw mic-meter samples and writes by-speaker/ ' +
+      'with attribution.json plus Audacity label tracks (~10MB). It needs ' +
+      'speakingEventCapture for the identity signal, and skips with a log line ' +
+      'without it. The per-person WAVs are NOT written automatically (~300MB per ' +
+      'person per hour); keeping the tracks is what makes them reproducible on ' +
+      'demand via scripts/extract-speaker-tracks.mjs.',
   },
   studioSound: {
     type: 'boolean',

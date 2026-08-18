@@ -48,7 +48,9 @@
 //   <Name>.wav            one file per person, silence where they are not
 //                         talking, so the ORIGINAL call timeline is preserved
 //   attribution.json      every segment: track, span, owner, method, scores
-//   audacity-labels.txt   File > Import > Labels in Audacity
+//   labels-attribution.txt   who owns each segment (Audacity: File > Import >
+//   labels-indicator.txt     what the raw indicator claimed  |  Labels — one
+//   labels-review.txt        only the disagreements          |  track per file)
 //   under-determined/     excerpts (+2s context) of the unresolved windows,
 //                         with their own label file, for listening by ear
 
@@ -351,6 +353,15 @@ function writePersonTrack(outFile, segs, sources, sampleRate, totalMs) {
 }
 
 const secs = (ms) => (ms / 1000).toFixed(3);
+// One rendering of call time everywhere — filenames, labels and console. Two
+// spellings of the same instant is how 18:32 gets read as 18:33.
+// Audacity label track: TAB-separated start/end/label seconds. File > Import >
+// Labels, one label track per file. (Not XML — that is the .aup project file.)
+const labelFile = (rows) =>
+  rows.map(([a, b, t]) => `${secs(a)}\t${secs(b)}\t${t}`).join('\n') + '\n';
+
+const clock = (ms) => `${String(Math.floor(ms / 60000)).padStart(2, '0')}:`
+  + String(Math.floor(ms / 1000) % 60).padStart(2, '0');
 
 // --- CLI --------------------------------------------------------------------
 
@@ -445,8 +456,35 @@ async function main() {
       candidates: s.cand.map((c) => ({ name: c.name, share: +c.share.toFixed(3) })) })),
   }, null, 2));
 
-  writeFileSync(path.join(outDir, 'audacity-labels.txt'),
-    segs.map((s) => `${secs(s.startMs)}\t${secs(s.endMs)}\t${s.owner || '???'} [${s.track.replace('remote-participant-', 'p')}]`).join('\n') + '\n');
+  // Several label tracks rather than one: Audacity imports one track per file
+  // and the questions are different — who owns this audio, what did the
+  // indicator think, and which moments are worth an ear.
+  writeFileSync(path.join(outDir, 'labels-attribution.txt'), labelFile(
+    segs.map((s) => [s.startMs, s.endMs,
+      `${s.owner || '???'} [${s.track.replace('remote-participant-', 'p')}`
+      + `${s.method === 'sole' ? '' : ' ' + s.method}]`])));
+
+  // The indicator's own opinion, as a row you can read AGAINST the waveform.
+  // A gap here over visible audio is the detector missing real speech; a label
+  // running past the audio is its hold. Side by side, both are obvious at a
+  // glance — which no amount of summary statistics achieves.
+  // Clipped to the recorded window. The event capture starts when the app does,
+  // which on this corpus is 99.7s BEFORE recording began — those indicator
+  // intervals are real but have no audio to sit beside, and a negative label
+  // time is not something Audacity can place.
+  writeFileSync(path.join(outDir, 'labels-indicator.txt'), labelFile(
+    [...lit].flatMap(([name, iv]) => iv.map(([a, b]) => [a, b, name]))
+      .filter(([, b]) => b > 0)
+      .map(([a, b, name]) => [Math.max(0, a), Math.min(b, totalMs), name])
+      .sort((x, y) => x[0] - y[0])));
+
+  // Only the disagreements, for review.
+  writeFileSync(path.join(outDir, 'labels-review.txt'), labelFile(
+    segs.filter((s) => s.method === 'unlabelled' || s.method === 'under-determined')
+      .map((s) => [s.startMs, s.endMs,
+        `${s.method === 'unlabelled' ? 'MISS' : 'AMBIG'} ${clock(s.startMs)} `
+        + `${s.track.replace('remote-participant-', 'p')} `
+        + (s.cand.length ? `lit=${s.cand.map((c) => c.name).join('+')}` : 'lit=nobody')])));
 
   const unresolved = segs.filter((s) => s.method === 'under-determined' || s.method === 'unlabelled');
   if (unresolved.length) {
@@ -457,12 +495,23 @@ async function main() {
       const src = audio.find((t) => t.track === s.track);
       const from = Math.max(0, s.startMs - sources[s.track].offsetMs - PAD) / 1000;
       const dur = (s.endMs - s.startMs + 2 * PAD) / 1000;
-      const tag = `${String(i + 1).padStart(2, '0')}-${s.method}-${Math.round(s.startMs / 1000)}s-${s.track.replace('remote-participant-', 'p')}`;
+      // mm-ss, matching how the console and Audacity both show it. A bare
+      // "1113s" invites reading it as 18:33 against a table that floors to
+      // 18:32, and four seconds is the difference between one speaker and the
+      // next in a busy handover.
+      const tag = `${String(i + 1).padStart(2, '0')}-${s.method}-${clock(s.startMs).replace(':', 'm')}s-${s.track.replace('remote-participant-', 'p')}`;
       ffmpeg(['-ss', String(from), '-t', String(dur), '-i', path.join(tracksDir, src.file),
               '-ac', '1', '-ar', String(rate), '-c:a', 'pcm_s16le', path.join(udDir, `${tag}.wav`)]);
+      // Per-excerpt labels in EXCERPT-LOCAL time. The absolute file below is
+      // for overlaying on the whole call; importing it onto a 4-second excerpt
+      // would put the mark ~18 minutes past the end.
+      const lead = Math.min(PAD, s.startMs - sources[s.track].offsetMs);
+      writeFileSync(path.join(udDir, `${tag}.labels.txt`),
+        `${secs(lead)}\t${secs(lead + (s.endMs - s.startMs))}\t`
+        + `${s.method} @ ${clock(s.startMs)} — lit: ${s.cand.map((c) => c.name).join(' + ') || 'nobody'}\n`);
     }
     writeFileSync(path.join(udDir, 'labels.txt'), unresolved.map((s) =>
-      `${secs(s.startMs)}\t${secs(s.endMs)}\t${s.method}: lit=${s.cand.map((c) => c.name).join('+') || 'nobody'} on ${s.track}`).join('\n') + '\n');
+      `${secs(s.startMs)}\t${secs(s.endMs)}\t${clock(s.startMs)} ${s.method}: lit=${s.cand.map((c) => c.name).join('+') || 'nobody'} on ${s.track}`).join('\n') + '\n');
     console.log(`\n${unresolved.length} unresolved windows -> ${udDir} (excerpts +${PAD / 1000}s context, labels.txt)`);
   }
 

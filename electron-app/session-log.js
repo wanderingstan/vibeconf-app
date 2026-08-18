@@ -41,6 +41,11 @@ const REMOTE_MAX_ATTEMPTS = 5;      // requeue a failing batch this many times, 
 const REMOTE_IDLE_INTERVAL_MS = 30_000;
 const REMOTE_MAX_BACKOFF_MS = 5 * 60_000;   // never retry more than ~12x/hour while down
 let _failures = 0;              // consecutive flush failures — drives the backoff
+// Lines the backend REFUSED (4xx) since shipping last succeeded. Distinct from
+// _sentCount, which must only ever count lines that were actually accepted —
+// conflating the two is what let a silently-refused stream look healthy.
+let _rejectedCount = 0;
+let _authRefused = false;       // a 401/403 has been reported; stay quiet until recovery
 let _flushIntervalMs = 3000;    // healthy cadence, restored on the first success
 const REMOTE_MAX_BATCH = 800;   // lines per POST
 
@@ -83,10 +88,54 @@ async function _flushRemote() {
       try { _logStream && _logStream.write(`[remote-log] shed by server (429), dropping ${batch.length} lines\n`); } catch {}
       return;   // `finally` still reschedules, now with the backoff applied
     }
-    // On other 4xx (bad token / payload) DROP the batch — requeuing would loop
-    // forever. On 5xx / network error (caught below) we requeue so a blip recovers.
+    // On 5xx / network error (caught below) we requeue so a blip recovers.
     if (!resp.ok && resp.status >= 500) throw new Error(`HTTP ${resp.status}`);
+    // On other 4xx (bad credentials / payload) DROP the batch — requeuing would
+    // loop forever. But SAY SO, and do not count it as delivered.
+    //
+    // This fell through to the success path for a long time: a 401 dropped the
+    // batch, added it to _sentCount anyway, reset _failures to 0, and wrote
+    // nothing anywhere. The app then reported healthy shipping into a void, at
+    // full cadence, indefinitely. Measured 2026-08-18: two machines' remote logs
+    // held only the first ~96 seconds of a 54-minute call, with `remoteLogging`
+    // still reading as ON and the local log running to 12,529 lines. That is the
+    // entire reason remote logs have been useless for diagnosing anything.
+    //
+    // _failures++ so the backoff applies: a refusal that will not change is
+    // exactly the traffic worth thinning. It still recovers on its own within
+    // one backoff window (capped at 5min) once the cause is fixed.
+    if (!resp.ok) {
+      _failures++;
+      _rejectedCount += batch.length;
+      const isAuth = resp.status === 401 || resp.status === 403;
+      // Auth refusals repeat every flush for as long as the login is missing,
+      // so announce the state ONCE rather than papering the log with it — but
+      // name the fix, because "unauthorized" alone has historically sent people
+      // off to rotate a shared token that was not the credential in use (#439).
+      if (!isAuth || !_authRefused) {
+        if (isAuth) _authRefused = true;
+        try {
+          _logStream && _logStream.write(
+            `[remote-log] REJECTED by backend (HTTP ${resp.status}) — dropped ${batch.length} lines`
+            + `, ${_rejectedCount} total this session.`
+            + (isAuth
+              ? ' Not authorized to ship logs: sign in to vibeconferencing.com in the app.'
+                + ' A bot profile has no login of its own (#440). Further auth refusals stay quiet'
+                + ' until shipping recovers.'
+              : '') + '\n');
+        } catch { /* stream gone */ }
+      }
+      return;   // `finally` still reschedules, now with the backoff applied
+    }
     _sentCount += batch.length;   // #255: only lines the backend ACCEPTED
+    if (_authRefused || _rejectedCount) {
+      try {
+        _logStream && _logStream.write(
+          `[remote-log] shipping recovered — ${_rejectedCount} lines were lost while refused\n`);
+      } catch { /* stream gone */ }
+    }
+    _authRefused = false;
+    _rejectedCount = 0;
     _failures = 0;   // recovered — back to the normal cadence
   } catch (e) {
     // Write the failure straight to the file stream (NOT console) to avoid
@@ -384,4 +433,26 @@ module.exports = {
   sendLinesNow,
   getSentCount: () => _sentCount,
   resetSentCount: () => { _sentCount = 0; },
+  // #255's counter answers "is the share growing?". This answers the question
+  // that was previously unanswerable from inside the app: "is anything being
+  // refused?" A UI that shows only the sent count cannot tell a healthy stream
+  // from one dropping every batch, because the old code advanced sent on both.
+  getRejectedCount: () => _rejectedCount,
+  isShippingRefused: () => _authRefused,
+  // Test seam. Everything above is driven by a timer and by the stdout tee, so
+  // the flush decision — the branch that silently counted refusals as delivered
+  // for months — had no runtime coverage at all, only assertions about its
+  // source text. That is how it survived. Exposing the two internals lets a
+  // test stub fetch and assert on real behaviour rather than on a regex.
+  __testing: {
+    enqueue: (line) => _enqueueChunk(line),
+    flush: () => _flushRemote(),
+    reset: () => {
+      _queue = []; _lineBuf = ''; _sentCount = 0; _rejectedCount = 0;
+      _authRefused = false; _failures = 0;
+      if (_flushTimer) { clearTimeout(_flushTimer); _flushTimer = null; }
+    },
+    failures: () => _failures,
+    queueLength: () => _queue.length,
+  },
 };

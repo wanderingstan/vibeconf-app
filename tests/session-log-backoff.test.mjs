@@ -112,3 +112,73 @@ test('a successful no-op Meet poll is not logged (#230)', () => {
   assert.match(main, /Meet poll slow/, 'but a slow poll still is — it means a hang or a permission problem');
   assert.match(main, /Meet poll failed/, 'and failures were already logged');
 });
+
+// --- 4xx must not masquerade as delivery -----------------------------------
+//
+// Found 2026-08-18 while trying to read another machine's log for a call.
+// `Stans-MacBook-Pro--Default` had stored 145 lines covering 96 SECONDS of a
+// 54-minute call; the local log for that same session ran to 12,529 lines.
+// `remoteLogging` still read as ON the whole time.
+//
+// The cause: only 5xx threw. A 401 fell straight through to the success path,
+// which dropped the batch, added it to _sentCount, and reset _failures — so the
+// app shipped nothing at full cadence while reporting perfect health, and wrote
+// no line anywhere saying so. Remote logs have been unusable for diagnosing
+// anything on another machine ever since.
+
+test('a 4xx is not counted as delivered', () => {
+  // _sentCount feeds the troubleshooting window's "N lines shared" readout.
+  // Advancing it on a refusal is what made a dead stream look alive.
+  const flush = src.slice(src.indexOf('async function _flushRemote'),
+                          src.indexOf('function _rescheduleFlush'));
+  const sentIdx = flush.indexOf('_sentCount += batch.length');
+  const guardIdx = flush.indexOf('if (!resp.ok) {');
+  assert.ok(guardIdx !== -1, 'non-ok responses need an explicit branch');
+  assert.ok(guardIdx < sentIdx,
+    '_sentCount must be reachable only AFTER the not-ok branch returns');
+});
+
+test('a 4xx is reported, not swallowed', () => {
+  assert.match(src, /REJECTED by backend \(HTTP \$\{resp\.status\}\)/);
+  assert.match(src, /dropped \$\{batch\.length\} lines/);
+});
+
+test('a 4xx backs off like any other failure', () => {
+  // A refusal that will not change is precisely the traffic worth thinning, and
+  // resetting _failures on it also defeated the 429 handling next door.
+  const branch = src.slice(src.indexOf('if (!resp.ok) {'));
+  assert.match(branch.slice(0, 400), /_failures\+\+/);
+});
+
+test('an auth refusal names the fix instead of repeating itself', () => {
+  // 401 repeats on every flush for as long as the login is missing. Papering
+  // the log with it helps nobody, and a bare "unauthorized" has historically
+  // sent people off to rotate a shared token that was not the credential in
+  // use. Say it once, and say what to do about it.
+  assert.match(src, /_authRefused/);
+  assert.match(src, /sign in to vibeconferencing\.com/);
+  assert.match(src, /bot profile has no login of its own/);
+});
+
+test('recovery is announced, with what was lost', () => {
+  // Otherwise a stream that silently resumes leaves no record that there is a
+  // hole in the middle of the log — and an unmarked hole is worse than a
+  // labelled gap, because it reads as "nothing happened".
+  assert.match(src, /shipping recovered/);
+  assert.match(src, /lines were lost while refused/);
+});
+
+test('the refusal state is inspectable from outside', () => {
+  // A UI showing only the sent count cannot tell healthy from refusing.
+  assert.match(src, /getRejectedCount:/);
+  assert.match(src, /isShippingRefused:/);
+});
+
+test('the share button already checked resp.ok, and still does', () => {
+  // sendLinesNow ("Share this call's log") was never affected — it returns the
+  // HTTP status to its caller. Worth pinning: it is the reference behaviour the
+  // streaming path should have had all along, and the reason manual shares
+  // worked while background shipping did not.
+  const send = src.slice(src.indexOf('async function sendLinesNow'));
+  assert.match(send, /if \(!resp\.ok\) return \{ ok: false, sent, error: `HTTP \$\{resp\.status\}` \}/);
+});

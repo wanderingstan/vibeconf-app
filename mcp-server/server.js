@@ -2584,7 +2584,7 @@ server.tool(
   "Modify a user preference. The 'value' must match the preference's type (number, string, boolean, or array of strings). Call list_preferences first if you need to see available keys, types, and constraints. Common use cases: tune ack thresholds (ackShortMin / ackLongMin), customize what the bot says when thinking (ackShortPhrases / ackLongPhrases), change bot name. The agent should confirm with the user before changing irreversible-feeling settings; obvious requests ('add \"sure thing\" to your short acks') don't need confirmation.",
   {
     key: z.string().describe("Preference key. Use list_preferences to see what's available."),
-    value: z.any().describe("New value. Must match the preference's type. For string arrays, pass a JSON array."),
+    value: z.any().describe("New value. Must match the preference's type. For string arrays, pass a JSON array — or, if your client will not send one through, a comma-separated string works too (\"Pepper, Coltrane\")."),
   },
   async ({ key, value }) => {
     try {
@@ -2598,7 +2598,10 @@ server.tool(
         return { content: [{ type: "text", text: `Error: ${data?.error || 'Failed to set preference'}` }] };
       }
       const restartNote = data.requiresRestart ? ' Takes effect on next app restart.' : ' Applied immediately.';
-      return { content: [{ type: "text", text: `Set '${data.key}' to ${JSON.stringify(data.value)}.${restartNote}` }] };
+      // #430: "applied immediately" was actively misleading for a setting that
+      // needs a companion value. Say when the change is stored but inert.
+      const warn = data.warning ? `\n\n⚠️  ${data.warning}` : '';
+      return { content: [{ type: "text", text: `Set '${data.key}' to ${JSON.stringify(data.value)}.${restartNote}${warn}` }] };
     } catch (err) {
       return { content: [{ type: "text", text: `Error: ${err.message}` }] };
     }

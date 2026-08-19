@@ -60,6 +60,24 @@ function ts() {
   return d.toTimeString().slice(0, 8) + '.' + String(d.getMilliseconds()).padStart(3, '0');
 }
 
+// Is this the same bot, written two ways? Presence records the CONFIGURED name
+// while Meet's roster shows the DISPLAY name for this call, and the test fleet
+// tags a run onto the end ("Alice" -> "Alice-r4a32"). Comparing them literally
+// is what made each bot count twice and produced "rank 4 of 5" in a room holding
+// three bots (#430).
+//
+// Prefix rather than equality, and in both directions, because either side may
+// be the decorated one. Punctuation and case are dropped so "jimmy bot" matches
+// "Jimmy". Deliberately generous: a false match costs a wasted rank slot, while
+// a miss costs the ordering entirely.
+function namesMatch(a, b) {
+  if (!a || !b) return false;
+  const n = (x) => String(x).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const [x, y] = [n(a), n(b)];
+  if (!x || !y) return false;
+  return x === y || x.startsWith(y) || y.startsWith(x);
+}
+
 // Auto-stamp every console line with HH:MM:SS.mmm. Skip when caller already
 // supplied a ts() prefix so existing `console.log(ts(), '...')` sites don't
 // double-stamp. Runs in the main process — same wrapper as main.js, but
@@ -831,6 +849,24 @@ class LocalServer {
     // single session log and is greppable as a `[call] id=…` block (#292).
     const activeState = status === 'navigating' || status === 'joining' ||
       status === 'waiting-to-be-admitted' || status === 'in-call';
+
+    // #430: announce ourselves and learn the other bots, on a heartbeat. The
+    // presence entry has a 5-minute TTL, so this both keeps ours alive and
+    // refreshes the peer list as bots come and go mid-call. Started on the first
+    // active state rather than on in-call: a bot waiting to be admitted is
+    // already a peer the bots inside should know about.
+    if (activeState && !this._presenceTimer) {
+      const beat = () => { this._registerPresence(); this._refreshPresencePeers(); };
+      beat();
+      this._presenceTimer = setInterval(beat, 60_000);
+      if (this._presenceTimer.unref) this._presenceTimer.unref();
+    }
+    if (!activeState && this._presenceTimer) {
+      clearInterval(this._presenceTimer);
+      this._presenceTimer = null;
+      this._presencePeers = null;
+      this._presenceLoggedOk = false;
+    }
     if (activeState && !this.callId) {
       this.callStartedAt = new Date().toISOString();
       const code = this.roomId || 'call';
@@ -1017,9 +1053,19 @@ class LocalServer {
     // all bots still derive the same order, and a human simply never claims
     // their slot, at which point the next rank finds the floor free and speaks.
     //
-    // peerBotNames is therefore an OPTIMISATION, not a requirement. When it is
-    // set, ranks are not wasted on participants who will never use them; when
-    // it is empty, the ordering still works, just with a slot per human.
+    // The bot set is REQUIRED, despite what this comment used to claim. The
+    // reasoning above ("rank everyone, a human never claims their slot") is
+    // sound in isolation and does not survive the next step: the seed is the
+    // last utterance by someone OUTSIDE the bot set, and ranking everyone puts
+    // everyone inside it. `last` then finds nobody and this returns
+    // _rankedSkip('no human utterance yet') on every call — so an empty set
+    // does not degrade the ordering, it disables it. Measured live 2026-08-17
+    // (#430): ranked was set on two bots and neither ever ordered.
+    //
+    // What is no longer required is TYPING it. Each bot now registers itself in
+    // room presence with role='bot' and both its names, and _refreshPresencePeers
+    // resolves those to the roster names ordering ranks over. peerBotNames stays
+    // as the override for when discovery is wrong or the backend is unreachable.
     //
     // This also removes a class of bug rather than patching it: presence
     // records the CONFIGURED bot name while Meet shows the display name for
@@ -1030,12 +1076,24 @@ class LocalServer {
     const roster = (this.participants || [])
       .filter((p) => p && p.name && !p.isSelf && p.name !== 'You' && !p.isPseudo)
       .map((p) => p.name);
+    // Configured list first — an explicit answer beats a derived one, and it is
+    // the escape hatch when discovery is wrong or the backend is unreachable.
+    // Otherwise use what presence told us (#430): every bot registers itself
+    // there with role='bot' and BOTH its names, so this needs no typing.
     const configured = Array.isArray(this._pref('peerBotNames')) ? this._pref('peerBotNames') : [];
-    const known = configured.length
-      ? new Set(configured.map((n) => n.toLowerCase()))
-      : null;                                   // null = rank everyone present
-    const peers = roster.filter((n) => !known || known.has(n.toLowerCase()));
-    if (!peers.length) return this._rankedSkip(`nobody else in the roster (${roster.length} listed)`);
+    const discovered = Array.isArray(this._presencePeers) ? this._presencePeers : [];
+    const source = configured.length ? configured : discovered;
+    if (!source.length) {
+      return this._rankedSkip('no peer bots known — presence has not named any yet, '
+        + 'and peerBotNames is empty');
+    }
+    const known = new Set(source.map((n) => n.toLowerCase()));
+    const peers = roster.filter((n) => known.has(n.toLowerCase())
+      || source.some((s) => namesMatch(n, s)));
+    if (!peers.length) {
+      return this._rankedSkip(`none of the ${source.length} known bot name(s) are in the `
+        + `roster (${roster.length} listed)`);
+    }
 
     // The utterance being answered: the last thing said by a HUMAN — anyone
     // outside the bot set.
@@ -2841,6 +2899,92 @@ class LocalServer {
     return null;
   }
 
+  // Announce this bot in the room's presence, so the OTHER bots can discover it
+  // (#430). Until now nothing wrote to presence at all: the room page skips
+  // registration for whiteboard-only views, which is the only view a bot opens,
+  // and the app only ever read the list. Two comments in _rankedSpeakDelay
+  // disagreed about this and the pessimistic one was right — the list was empty,
+  // which is why peers had to be typed in by hand.
+  //
+  // BOTH names go up, and that is the point. Presence is keyed by the CONFIGURED
+  // name while Meet's roster shows the DISPLAY name for this call, and under
+  // test those differ ("Alice" vs "Alice-r4a32"). Matching one against the other
+  // is what made each bot count twice and produced "rank 4 of 5" in a room
+  // holding three. The endpoint has always accepted and returned displayName; it
+  // was simply never sent.
+  //
+  // role='bot' is sent even though, in practice, only bots register — a human
+  // who opens the room page to look at the whiteboard would register too, and
+  // then be ranked as a bot. That costs a wasted slot rather than correctness,
+  // but the field is free and makes the set explicit rather than implied.
+  //
+  // Fire-and-forget, like the de-register below: presence is an optimisation for
+  // ordering, and a bot must never fail to speak because a heartbeat did not land.
+  _registerPresence() {
+    const roomId = this.roomId;
+    const name = this.getEffectiveBotName();
+    const base = (this.getWebsiteUrl() || '').replace(/\/$/, '');
+    if (!roomId || !name || !base) return;
+    const self = (this.participants || []).find((p) => p && p.isSelf && p.name && p.name !== 'You');
+    fetch(`${base}/api/room/${roomId}/presence`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        // What the room actually sees. Absent until the people pane names our
+        // own tile, so the first heartbeat may carry only the configured name.
+        ...(self && self.name !== name ? { displayName: self.name } : {}),
+        role: 'bot',
+      }),
+      signal: AbortSignal.timeout(3000),
+    }).then((r) => {
+      if (!this._presenceLoggedOk && r.ok) {
+        this._presenceLoggedOk = true;
+        console.log(ts(), `👋 [presence] registered "${name}"`
+          + (self && self.name !== name ? ` (display "${self.name}")` : '') + ` in room ${roomId}`);
+      }
+    }).catch(() => { /* presence is optional; ordering falls back to jitter */ });
+  }
+
+  // The other bots in this room, as PRESENCE knows them, resolved to the names
+  // Meet's roster uses — which is what the ordering ranks over.
+  //
+  // Cached rather than fetched per utterance: ordering runs on the speak path
+  // and must stay synchronous. Refreshed on the same heartbeat that registers us.
+  _refreshPresencePeers() {
+    const roomId = this.roomId;
+    const base = (this.getWebsiteUrl() || '').replace(/\/$/, '');
+    if (!roomId || !base) return;
+    fetch(`${base}/api/room/${roomId}/presence`, { signal: AbortSignal.timeout(3000) })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data) return;
+        const self = (this.getEffectiveBotName() || '').toLowerCase();
+        const roster = (this.participants || [])
+          .filter((p) => p && p.name && !p.isSelf && p.name !== 'You' && !p.isPseudo)
+          .map((p) => p.name);
+        const bots = (data.members || []).filter((m) => m && m.name
+          && (m.role === 'bot' || !m.role)   // only bots register; role makes it explicit
+          && m.name.toLowerCase() !== self);
+        const matched = roster.filter((r) => bots.some((m) => namesMatch(r, m.displayName)
+          || namesMatch(r, m.name)));
+        // A derived set that swallows the whole roster is worse than none: the
+        // seed is the last utterance by someone OUTSIDE the bot set, so with
+        // everyone inside it there is nothing to key on and ordering stops
+        // entirely. Only ever ADD certainty here, never remove the humans.
+        if (matched.length && matched.length < roster.length) {
+          const changed = JSON.stringify(matched) !== JSON.stringify(this._presencePeers || []);
+          this._presencePeers = matched;
+          if (changed) console.log(ts(), `🤖 [presence] peers discovered: ${matched.join(', ')}`);
+        } else if (matched.length && matched.length >= roster.length) {
+          this._presencePeers = null;
+          console.log(ts(), `🤖 [presence] ignoring peer set — it covers every participant `
+            + `(${matched.length} of ${roster.length}), which would leave no human to key on`);
+        }
+      })
+      .catch(() => { /* unreachable — keep whatever we had */ });
+  }
+
   // Remove our presence entry from the website on leave so a stale "still here"
   // member doesn't block the next session reclaiming this name (#252). Reads
   // roomId/name at call time, so call it BEFORE clearRoom nulls them.
@@ -4612,6 +4756,15 @@ class LocalServer {
       const requiresRestart = validated.some(
         ({ key }) => !!prefsSchema.PREFERENCES[key]?.requiresRestart,
       );
+      // #430: a setting can persist, report success, and still do nothing
+      // because it depends on another that is unset. Computed AFTER the write,
+      // so a batch that sets both halves together reports neither as inert.
+      const warnings = validated
+        .map(({ key, value }) => prefsSchema.inertWarning(key, value, (k) => this._pref(k)))
+        .filter(Boolean);
+      if (warnings.length) {
+        for (const w of warnings) console.log(ts(), '⚠️  [preferences]', w);
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         success: true,
@@ -4620,6 +4773,7 @@ class LocalServer {
           ? { key: validated[0].key, value: validated[0].value }
           : { updated: validated }),
         requiresRestart,
+        ...(warnings.length ? { warning: warnings.join(' ') } : {}),
       }));
       return;
     }
@@ -5207,3 +5361,6 @@ class LocalServer {
 
 // Export for use in main.js (loaded via vm.runInThisContext)
 globalThis.LocalServer = LocalServer;
+// Same channel, for the one module-level helper worth testing on its own: the
+// name matching is what the peer discovery stands or falls on (#430).
+LocalServer._namesMatch = namesMatch;

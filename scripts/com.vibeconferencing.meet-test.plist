@@ -52,6 +52,39 @@
          than guessing. -->
     <key>VIBECONF_TEST_INSTANCE</key>
     <string>i-0eee9f56a7ef905cc</string>
+
+    <!-- Route the nightly digest to Stan's DM instead of the big Seth/Coltrane
+         group. notify-nightly.mjs defaults CHAT to -5140242529 (that group) when
+         unset; 6785998012 is Stan's DM chat_id — VERIFIED delivering (test send
+         2026-08-15). NB: 8658687776 was tried and 403s ("bot can't message a bot"),
+         so it is NOT a usable target.
+
+         This block lived ONLY in the installed ~/Library/LaunchAgents copy until
+         2026-08-19 and was missing here — so the `cp` in SCHEDULING.md's install
+         steps would silently have reverted the digest to the group. Kept in the
+         repo copy now so the documented install is safe to re-run. -->
+    <key>VIBECONF_NOTIFY_CHAT</key>
+    <string>6785998012</string>
+
+    <!-- Global watchdog, in seconds (scheduled-meet-test.sh defaults to 1800).
+         Raised to 40 min on 2026-08-19.
+
+         A run's cost is dominated by FAILING lanes, not by lane count: a failure
+         adds retries, multi-second timeouts, and a 250-390MB .mov to keep and
+         upload. The 08-17 run passed everything and finished the WHOLE suite in
+         13m14s; the 08-19 run failed five lanes and spent 23m24s just getting
+         through whiteboard-e2e. At 1800s that left ~3 min for codex + linux
+         (~2m and ~1m50s respectively) — enough on paper, nothing to spare.
+
+         Deliberately raised only AFTER the lane order was fixed. On its own a
+         bigger timeout just lets a growing suite keep hiding whichever lane is
+         last, which is how the Linux lane went missing for three nights; with
+         the experimental fuzz lane now running last, the lane this protects is
+         the one we are willing to lose. Still bounded, because the watchdog
+         exists to stop a wedged run from skipping the NEXT night (#2026-07-21,
+         when one hung run silently ate four nightlies). -->
+    <key>VIBECONF_GLOBAL_TIMEOUT</key>
+    <string>2400</string>
   </dict>
 
   <key>ProgramArguments</key>

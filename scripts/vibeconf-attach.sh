@@ -131,7 +131,7 @@ echo
 [ "$ONLINE" = "Online" ] || die "$TAG never came Online in SSM (instance profile missing, or the agent is unhappy)"
 
 if [ "$MODE" = "shell" ]; then
-  exec aws_ ssm start-session --target "$ID"
+  exec aws --profile "$PROFILE_AWS" --region "$REGION" ssm start-session --target "$ID"
 fi
 
 # --screen: SEE the app, not just its agent. Needed for the once-per-box
@@ -161,7 +161,7 @@ if [ "$MODE" = "screen" ]; then
   # Open the browser a moment after the tunnel is up. Backgrounded so the exec
   # below still owns the terminal.
   ( sleep 4; command -v open >/dev/null && open "$URL" ) &
-  exec aws_ ssm start-session --target "$ID" \
+  exec aws --profile "$PROFILE_AWS" --region "$REGION" ssm start-session --target "$ID" \
     --document-name AWS-StartPortForwardingSession \
     --parameters "{\"portNumber\":[\"6080\"],\"localPortNumber\":[\"$LOCAL_PORT\"]}"
 fi
@@ -178,7 +178,7 @@ if [ "$MODE" = "screen-vnc" ]; then
   echo "   or a third-party client."
   echo "   password: in ~/.vnc/passwd on the box"
   echo "→ Ctrl-C here closes the tunnel"
-  exec aws_ ssm start-session --target "$ID" \
+  exec aws --profile "$PROFILE_AWS" --region "$REGION" ssm start-session --target "$ID" \
     --document-name AWS-StartPortForwardingSession \
     --parameters "{\"portNumber\":[\"5900\"],\"localPortNumber\":[\"$LOCAL_PORT\"]}"
 fi
@@ -216,6 +216,6 @@ fi
 echo "→ attaching to $TARGET   (detach with Ctrl-B then D — the agent keeps running)"
 # sudo -u ubuntu because SSM lands as root while the app, and therefore the tmux
 # session, belongs to ubuntu. Without it you get "no server running".
-exec aws_ ssm start-session --target "$ID" \
+exec aws --profile "$PROFILE_AWS" --region "$REGION" ssm start-session --target "$ID" \
   --document-name AWS-StartInteractiveCommand \
   --parameters "{\"command\":[\"sudo -u ubuntu tmux attach -t $TARGET\"]}"

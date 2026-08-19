@@ -1105,7 +1105,7 @@
 
     // Play a TTS response (or any audio) through the virtual mic.
     // Returns a promise that resolves when playback ends.
-    async playAudio(arrayBuffer) {
+    async playAudio(arrayBuffer, volume = 1) {
       // Data may arrive as base64 string after Chrome message passing
       // (ArrayBuffer can't survive chrome.tabs.sendMessage serialization).
       if (typeof arrayBuffer === 'string') {
@@ -1119,23 +1119,36 @@
         arrayBuffer = bytes.buffer;
       }
       const buf = await this.audioCtx.decodeAudioData(arrayBuffer.slice(0));
-      return this._playBuffer(buf, 0);
+      return this._playBuffer(buf, 0, volume);
     }
 
     // #350: resume a previously-decoded buffer from `offset` seconds in — the
     // audio-level sibling of the fresh-TTS path. Same lip-sync tap + source
     // bookkeeping; only the start offset differs.
-    async playAudioBuffer(buf, offset) {
-      return this._playBuffer(buf, Math.max(0, offset || 0));
+    async playAudioBuffer(buf, offset, volume = 1) {
+      return this._playBuffer(buf, Math.max(0, offset || 0), volume);
     }
 
     // Shared playback core. Tracks the decoded buffer and the wall-clock start
     // (plus the in-buffer offset it began at) so stopAudio() can report how far
     // we actually got — the seam #350 resumes from.
-    _playBuffer(buf, offset = 0) {
+    _playBuffer(buf, offset = 0, volume = 1) {
       const src = this.audioCtx.createBufferSource();
       src.buffer = buf;
-      src.connect(this.destination);
+      // Acknowledgements play quieter than real speech (a human's "mm-hmm" is
+      // not the same loudness as their sentence). Full-volume playback skips
+      // the node entirely, so the normal path is byte-for-byte what it was.
+      //
+      // Only the DESTINATION tap is attenuated. The analyser tap stays at unit
+      // gain deliberately: it drives lip-sync, and a quiet ack should still
+      // move the avatar's mouth normally rather than mumble.
+      if (volume < 1) {
+        const g = this.audioCtx.createGain();
+        g.gain.value = Math.max(0, volume);
+        src.connect(g).connect(this.destination);
+      } else {
+        src.connect(this.destination);
+      }
       src.connect(this.analyser); // feed lip-sync amplitude (parallel tap)
       // Expose the live source so stopAudio() can interrupt it for back-off
       // (#154). onended fires whether playback finished or was stop()'d.
@@ -1290,13 +1303,19 @@
   // #360: the {id, chunk, chunks} tag of the clip currently playing, so a
   // stop-tts can report WHICH chunk of WHICH utterance it interrupted.
   let currentTtsTag = null;
+  // Playback gain of the utterance in flight, so a resume after a barge-in
+  // comes back at the volume it was cut off at rather than jumping to full.
+  let currentTtsVolume = 1;
 
   async function playNextTTS() {
     if (ttsPlaying || ttsQueue.length === 0) return;
     ttsPlaying = true;
-    const { audioData, resumeBuf, offset, emoji, utt } = ttsQueue.shift();
+    const { audioData, resumeBuf, offset, emoji, utt, volume } = ttsQueue.shift();
+    // Absent/invalid → 1, so anything that doesn't set it plays as before.
+    const vol = (typeof volume === 'number' && volume >= 0 && volume < 1) ? volume : 1;
     currentTtsTag = utt || null;
     currentSpeakingEmoji = emoji || null;
+    currentTtsVolume = vol;
     for (const cam of cameras.values()) {
       cam.speaking = true;
       cam.speakingEmojiOverride = emoji || null;
@@ -1311,15 +1330,16 @@
       // #350: a resume item carries an already-decoded buffer + offset; a fresh
       // utterance carries encoded audioData.
       if (resumeBuf) {
-        await mic.playAudioBuffer(resumeBuf, offset);
+        await mic.playAudioBuffer(resumeBuf, offset, vol);
       } else {
-        await mic.playAudio(audioData);
+        await mic.playAudio(audioData, vol);
       }
     } catch (err) {
       console.error('[bots-in-calls] TTS playback error:', err);
     }
     ttsPlaying = false;
     currentTtsTag = null;
+    currentTtsVolume = 1;
     _ttsMaybeFinish();
   }
 
@@ -2092,7 +2112,7 @@
           // hold the speaking state if the queue drains before it arrives
           // (window refreshed per chunk; final chunk clears it).
           ttsExpectMoreUntil = payload.expectMore ? Date.now() + 8000 : 0;
-          ttsQueue.push({ audioData: payload.audioData, emoji: payload.emoji, utt: payload.utt });
+          ttsQueue.push({ audioData: payload.audioData, emoji: payload.emoji, utt: payload.utt, volume: payload.volume });
           playNextTTS();
         }
         break;
@@ -2115,7 +2135,7 @@
         const MIN_REMAINING_S = 0.5;
         if (stopped.wasPlaying && stopped.buf &&
             (stopped.buf.duration - stopped.playedTo) > MIN_REMAINING_S) {
-          interruptedTts = { buf: stopped.buf, playedTo: stopped.playedTo, emoji: currentSpeakingEmoji, utt: currentTtsTag, at: Date.now() };
+          interruptedTts = { buf: stopped.buf, playedTo: stopped.playedTo, emoji: currentSpeakingEmoji, utt: currentTtsTag, volume: currentTtsVolume, at: Date.now() };
           console.log('[bots-in-calls] stop-tts retained ' +
             (stopped.buf.duration - stopped.playedTo).toFixed(1) + 's tail for possible resume (#350)');
         } else {
@@ -2156,7 +2176,7 @@
           's / ' + interruptedTts.buf.duration.toFixed(1) + 's (#350)');
         // #360: carry the chunk tag through the resume so a re-interruption
         // still reports an accurate (and now further-along) cut point.
-        ttsQueue.push({ resumeBuf: interruptedTts.buf, offset: resumeAt, emoji: interruptedTts.emoji, utt: interruptedTts.utt });
+        ttsQueue.push({ resumeBuf: interruptedTts.buf, offset: resumeAt, emoji: interruptedTts.emoji, utt: interruptedTts.utt, volume: interruptedTts.volume });
         interruptedTts = null;
         playNextTTS();
         break;

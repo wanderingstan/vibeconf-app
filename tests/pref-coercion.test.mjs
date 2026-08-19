@@ -98,3 +98,21 @@ test('an unusable value is warned about once, not silently or repeatedly', () =>
 test('an unknown preference key still returns undefined', () => {
   assert.equal(serverWith({})._pref('noSuchPreference'), undefined);
 });
+
+test('coerceType and validate agree on every accepted form of a string[]', () => {
+  // A rebase hazard, and one that actually happened: #430 put the string-to-array
+  // leniency in validate() (the WRITE path) while _pref reads through
+  // coerceType. Left divergent, set_preference would store "Pepper, Coltrane"
+  // as an array while a hand-edited config holding the same string read back as
+  // empty — writer and reader disagreeing about what a stored value means,
+  // which is the exact class of bug this fix exists to end.
+  const { coerceType, validate } = require('../electron-app/preferences-schema.js');
+  for (const input of ['Pepper, Coltrane', 'Jimmy', '["A","B"]', '', ['X'], [], 42, null]) {
+    const w = validate('peerBotNames', input);
+    const r = coerceType('peerBotNames', input);
+    assert.equal(r.ok, w.ok, `disagree on acceptance of ${JSON.stringify(input)}`);
+    if (w.ok) {
+      assert.deepEqual(r.value, w.value, `disagree on value for ${JSON.stringify(input)}`);
+    }
+  }
+});

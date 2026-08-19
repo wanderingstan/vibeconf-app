@@ -1380,8 +1380,29 @@ function coerceType(key, value) {
     return { ok: false, error: `Expected boolean, got ${typeof value}: ${JSON.stringify(value)}` };
   }
   if (spec.type === 'string[]') {
-    if (Array.isArray(value) && value.every((x) => typeof x === 'string')) return { ok: true, value };
-    return { ok: false, error: 'Expected array of strings' };
+    // Same string forms validate() accepts on the way in (#430). They have to
+    // agree: set_preference coerces a comma-separated string to an array, so a
+    // reader that rejected the same input would disagree with the writer about
+    // what the stored value means — which is the class of bug this whole
+    // function exists to end.
+    if (typeof value === 'string') {
+      const t = value.trim();
+      if (!t) return { ok: true, value: [] };
+      if (t.startsWith('[')) {
+        try {
+          const arr = JSON.parse(t);
+          if (Array.isArray(arr) && arr.every((x) => typeof x === 'string')) {
+            return { ok: true, value: arr.map((x) => x.trim()).filter(Boolean) };
+          }
+        } catch { /* fall through to the error below */ }
+        return { ok: false, error: `Looks like a JSON array but does not parse: ${t.slice(0, 40)}` };
+      }
+      return { ok: true, value: t.split(',').map((x) => x.trim()).filter(Boolean) };
+    }
+    if (Array.isArray(value) && value.every((x) => typeof x === 'string')) {
+      return { ok: true, value: value.map((x) => x.trim()).filter(Boolean) };
+    }
+    return { ok: false, error: 'Expected array of strings (or a comma-separated string)' };
   }
   if (spec.type === 'string') {
     return typeof value === 'string'

@@ -217,10 +217,24 @@ class LocalServer {
     this.lastRespondedAt = null;
 
     // Pending bot speech — queued when speak() is called before the bot is
-    // actually admitted to the call. Flushed in setCallStatus when status
-    // becomes 'in-call'. Without this, audio plays through the virtual mic
-    // before Meet has connected our stream and goes into the void.
-    this.pendingBotSpeech = []; // [{ text, voice }]
+    // actually admitted to the call. Without this, audio plays through the
+    // virtual mic before Meet has connected our stream and goes into the void.
+    //
+    // Flushed by _flushPendingBotSpeech, which main.js calls on the
+    // CAPTIONS-READY signal — NOT on the in-call transition, despite what this
+    // comment used to claim. 'in-call' means Meet's UI is up; captions-ready
+    // means the bot can actually hear the room, which is the later and stronger
+    // "fully wired up" marker. A greeting flushed on the earlier signal played
+    // several seconds before anyone could have heard a reply to it.
+    //
+    // Distinct from bargeInStash, and the difference is only WHICH condition
+    // blocked the speech: this one is "the room cannot hear me yet", that one
+    // is "someone else is talking". Both mean "held for later". They also have
+    // different shapes for no principled reason — this is a FIFO array that
+    // never expires, that is a single slot which overwrites and ages out in
+    // 45s — and the barge-in stop path already pours this one into that one.
+    // See #450; unifying them needs a per-kind hold policy first.
+    this.pendingBotSpeech = []; // [{ text, voice, emoji, urgency }]
 
     // Preference plumbing (whitelist defined in preferences-schema.js).
     // getPref reads from the persistent store; setPref writes; applyPref runs

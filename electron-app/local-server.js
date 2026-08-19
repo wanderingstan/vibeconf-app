@@ -1205,7 +1205,7 @@ class LocalServer {
   // 15-30s round to re-derive the same answer). The next silence edge replays
   // it via _maybeReplayBargeInStash(), unless it has aged out or the
   // conversation has moved on past it.
-  _stashUnspokenSpeech(entries) {
+  _stashUnspokenSpeech(entries, { at } = {}) {
     const stashEntries = entries
       .filter((t) => t && t.text)
       .map((t) => ({ text: t.text, voice: t.voice, emoji: t.emoji, urgency: t.urgency }));
@@ -1223,7 +1223,11 @@ class LocalServer {
     // measure how much NEW speech landed while the reply was held.
     this.bargeInStash = {
       entries: stashEntries,
-      at: Date.now(),
+      // `at` is when the thought was COMPOSED, not when it was last held. A
+      // re-hold that restamped it would let a reply outlive
+      // bargeInStashMaxAgeMs indefinitely, one hold at a time, and the age
+      // guard exists precisely because a stale answer is worse than none.
+      at: at || Date.now(),
       wordsAtStash: this._tickWordCount(this.getEffectiveBotName()),
     };
     console.log(ts(), '🛡️  [barge-in] Floor busy at audio-start — stashed bot speech for replay (' +
@@ -3510,11 +3514,32 @@ class LocalServer {
         return null;
       }
     }
+    // #430/#442: the floor, read HERE — at the instant audio would start, which
+    // is the only instant a floor read means anything (#67).
+    //
+    // _maybeReplayStashOnOpening checks floorBusy before calling us, but the
+    // OTHER caller — the wait_for_speech resolve path — does not, and a replay
+    // reaches onBotSpeech directly without passing the audio-start gate that
+    // every freshly composed utterance goes through. So a held reply could play
+    // into a gap somebody was already taking. Observed twice on 2026-08-17.
+    //
+    // Not a replay-specific rule: it is the same floor every other speech path
+    // consults, applied to the one path that was skipping it.
+    if (this.floorBusy) {
+      console.log(ts(), '🛡️  [barge-in] not replaying — floor busy at audio-start; stash held');
+      return null;                       // the stash survives for the next opening
+    }
+
     const entries = this.bargeInStash.entries;
     console.log(ts(), '🛡️  [barge-in] replaying stash — ' + entries.length + ' entries, ' + ageMs + 'ms old');
     this.bargeInStash = null;
     const texts = [];
-    for (const { text, voice, emoji } of entries) {
+    for (const { text, voice, emoji, urgency } of entries) {
+      // #367: urgency was carried all the way through the stash and then dropped
+      // on this line — the destructure used to take text/voice/emoji only, so a
+      // replayed utterance was graded with whatever urgency the PREVIOUS one
+      // had, and _armBargeIn scaled its grace from that stale number.
+      this._currentUrgency = (typeof urgency === 'number') ? urgency : null;
       this._setBotState('speaking', { emoji });
       this.onBotSpeech(text, voice, emoji);
       texts.push(text);

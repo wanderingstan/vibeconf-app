@@ -158,9 +158,24 @@ if [ "$MODE" = "screen" ]; then
   echo "→ opening $URL"
   echo "   password: in ~/.vnc/passwd on the box (set at bring-up)"
   echo "→ Ctrl-C here closes the tunnel"
-  # Open the browser a moment after the tunnel is up. Backgrounded so the exec
-  # below still owns the terminal.
-  ( sleep 4; command -v open >/dev/null && open "$URL" ) &
+  # WAIT for the port to actually accept a connection before opening the
+  # browser. This was `sleep 4`, and 4s is not enough for SSM to negotiate the
+  # session — the browser opened first and showed ERR_CONNECTION_REFUSED, which
+  # looks like a broken tunnel rather than an early one. Poll, then open, and
+  # say so if it never comes up. Backgrounded so the exec below still owns the
+  # terminal and Ctrl-C still closes the tunnel.
+  (
+    for _ in $(seq 1 40); do
+      if nc -z localhost "$LOCAL_PORT" 2>/dev/null; then
+        command -v open >/dev/null && open "$URL"
+        exit 0
+      fi
+      sleep 1
+    done
+    echo "" >&2
+    echo "vibeconf-attach: the tunnel never came up on localhost:$LOCAL_PORT." >&2
+    echo "  If the line below shows an error, that is the real problem." >&2
+  ) &
   exec aws --profile "$PROFILE_AWS" --region "$REGION" ssm start-session --target "$ID" \
     --document-name AWS-StartPortForwardingSession \
     --parameters "{\"portNumber\":[\"6080\"],\"localPortNumber\":[\"$LOCAL_PORT\"]}"

@@ -253,7 +253,67 @@ class TTSProvider {
   async _systemSay(text) {
     if (process.platform === 'win32') return this._windowsSapi(text);
     if (process.platform === 'darwin') return this._macosSay(text);
+    if (process.platform === 'linux') return this._linuxEspeak(text);
     throw new Error(`No built-in TTS voice on ${process.platform} — set an ElevenLabs API key or run Voicebox`);
+  }
+
+  // Resolve espeak-ng (preferred) or espeak once. Returns the binary name or null.
+  _linuxTtsBin() {
+    if (this._linuxBinCache !== undefined) return this._linuxBinCache;
+    const { execFileSync } = require('child_process');
+    this._linuxBinCache = null;
+    for (const bin of ['espeak-ng', 'espeak']) {
+      try { execFileSync('which', [bin], { stdio: 'ignore' }); this._linuxBinCache = bin; break; } catch { /* not found */ }
+    }
+    return this._linuxBinCache;
+  }
+
+  // Linux's equivalent of the `say` / SAPI paths (#21): espeak-ng (or espeak),
+  // which renders straight to a 16-bit 22.05kHz mono WAV — the same shape the
+  // macOS/Windows paths return, so everything downstream stays platform-blind
+  // (no afconvert step needed). Text goes through a temp file, like _windowsSapi,
+  // so arbitrary model output can't hit quoting/length limits or be read as args.
+  async _linuxEspeak(text) {
+    const { execFileSync } = require('child_process');
+    const os = require('os');
+    const path = require('path');
+    const fs = require('fs');
+
+    const bin = this._linuxTtsBin();
+    if (!bin) {
+      throw new Error('No built-in TTS on Linux — install espeak-ng (e.g. `sudo apt install espeak-ng`), set an ElevenLabs API key, or run Voicebox');
+    }
+
+    // pid + random, same reason as _macosSay/_windowsSapi: os.tmpdir() is shared
+    // by every bot on the machine, so a timestamp alone collides across profiles.
+    const uniq = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const txtPath = path.join(os.tmpdir(), `vibeconf-tts-${uniq}.txt`);
+    const wavPath = path.join(os.tmpdir(), `vibeconf-tts-${uniq}.wav`);
+
+    try {
+      fs.writeFileSync(txtPath, text, 'utf8');
+      // -f: read the utterance from a file; -w: write a WAV (22.05kHz mono 16-bit
+      // by default). We deliberately DON'T pass -v: the shared `macosVoice` field
+      // defaults to a macOS voice name ('Daniel') on non-Windows platforms, which
+      // espeak would reject — unlike `say`/SAPI it errors on an unknown voice
+      // rather than substituting. So Linux uses espeak's default voice for now;
+      // an espeak voice picker (via `espeak-ng --voices`) is the follow-up.
+      const args = ['-f', txtPath, '-w', wavPath];
+      try {
+        execFileSync(bin, args, { timeout: 20000, stdio: ['ignore', 'ignore', 'pipe'] });
+      } catch (err) {
+        const detail = String(err.stderr || '').trim().split('\n')[0] || err.message;
+        throw new Error(`Linux TTS (${bin}) failed: ${detail}`);
+      }
+
+      if (!fs.existsSync(wavPath)) throw new Error('Linux TTS wrote no audio file');
+      const buffer = fs.readFileSync(wavPath);
+      if (!buffer.length) throw new Error('Linux TTS produced an empty WAV');
+      return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+    } finally {
+      try { fs.unlinkSync(txtPath); } catch { /* noop */ }
+      try { fs.unlinkSync(wavPath); } catch { /* noop */ }
+    }
   }
 
   async _macosSay(text) {

@@ -61,10 +61,25 @@ BOX="${BOX:-$DEFAULT_BOX}"
 # what people will actually type.
 case "$BOX" in vibeconf-*) TAG="$BOX" ;; *) TAG="vibeconf-$BOX" ;; esac
 
-ID=$(aws_ ec2 describe-instances \
+# ALL matches, not the first one. This used to `awk '{print $1}'` and silently
+# take whichever came back first — which went wrong the moment two instances
+# shared a Name tag (a second vibeconf-stan was launched by mistake, and this
+# quietly picked the older one and then reported it as unreachable). Picking
+# arbitrarily between two machines someone might be working on is worse than
+# refusing, so an ambiguous name is now a hard stop that shows the candidates.
+IDS=$(aws_ ec2 describe-instances \
   --filters "Name=tag:Name,Values=$TAG" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
-  --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null | awk '{print $1}')
-[ -n "$ID" ] || die "no instance tagged Name=$TAG (try --list)"
+  --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null | tr '\t' '\n' | grep -v '^$')
+COUNT=$(printf '%s\n' "$IDS" | grep -c . || true)
+[ "$COUNT" -ge 1 ] || die "no instance tagged Name=$TAG (try --list)"
+if [ "$COUNT" -gt 1 ]; then
+  echo "vibeconf-attach: $COUNT instances are tagged Name=$TAG:" >&2
+  aws_ ec2 describe-instances --instance-ids $IDS \
+    --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name,Launched:LaunchTime}' \
+    --output table >&2
+  die "ambiguous — retag or terminate one, or pass the instance id directly"
+fi
+ID=$(printf '%s\n' "$IDS" | head -1)
 
 STATE=$(aws_ ec2 describe-instances --instance-ids "$ID" \
   --query 'Reservations[0].Instances[0].State.Name' --output text)

@@ -6,7 +6,8 @@
 #   vibeconf-attach seth            # resolves the EC2 Name tag "vibeconf-seth"
 #   vibeconf-attach --list          # what boxes exist, and their state
 #   vibeconf-attach --sessions      # what tmux sessions are on the box
-#   vibeconf-attach --shell         # a plain shell instead of the agent session
+#   vibeconf-attach --shell         # a shell on the box, as the bot's user (ubuntu)
+#   vibeconf-attach --shell-raw     # ...as ssm-user instead (rarely what you want)
 #   vibeconf-attach --screen        # see the app's screen, in your browser (noVNC)
 #   vibeconf-attach --screen-vnc    # same, but for a native VNC client on :5900
 #   vibeconf-attach --stop          # stop the box (it is costing money while up)
@@ -38,6 +39,7 @@ while [ $# -gt 0 ]; do
     --list) MODE="list" ;;
     --sessions) MODE="sessions" ;;
     --shell) MODE="shell" ;;
+    --shell-raw) MODE="shell-raw" ;;
     --screen) MODE="screen" ;;
     --screen-vnc) MODE="screen-vnc" ;;
     --stop) MODE="stop" ;;
@@ -130,7 +132,27 @@ done
 echo
 [ "$ONLINE" = "Online" ] || die "$TAG never came Online in SSM (instance profile missing, or the agent is unhappy)"
 
+# A shell AS THE BOT'S USER, not as ssm-user.
+#
+# SSM behaves differently by path, and the difference bites: `ssm send-command`
+# runs as ROOT, while `ssm start-session` lands as SSM-USER. Neither is `ubuntu`,
+# which is who owns the app, its config, its tmux sessions and its agent.
+#
+# Landing in /home/ssm-user meant `cat ~/.vnc/plain` failed, and — worse — the
+# documented "run claude once to sign in" step would have authenticated
+# ssm-user, leaving the bot itself still signed out with no obvious symptom.
+#
+# So drop straight into a login shell as ubuntu. -i gives the right HOME, PATH
+# and profile, so anything typed here affects the bot rather than a bystander
+# account. Use --shell-raw for the ssm-user shell if you ever genuinely want it.
 if [ "$MODE" = "shell" ]; then
+  exec aws --profile "$PROFILE_AWS" --region "$REGION" ssm start-session --target "$ID" \
+    --document-name AWS-StartInteractiveCommand \
+    --parameters '{"command":["sudo -u ubuntu -i"]}'
+fi
+
+if [ "$MODE" = "shell-raw" ]; then
+  echo "→ raw ssm-user shell (NOT the bot's user — see --shell)"
   exec aws --profile "$PROFILE_AWS" --region "$REGION" ssm start-session --target "$ID"
 fi
 

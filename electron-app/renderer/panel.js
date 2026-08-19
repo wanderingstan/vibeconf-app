@@ -1086,9 +1086,30 @@ function isValidSlackUrl(url) {
   return /app\.slack\.com\/client\/[^/]+\/[^/?#]+/.test(url);
 }
 
+// Turn whatever was pasted into a full Meet URL.
+//
+// The old test was `url.startsWith('http')`, which misses the single most
+// common paste: "meet.google.com/abc-defg-hij". Chrome HIDES the scheme in the
+// address bar, so copying from there — or from a chat message, or a calendar
+// entry — gives a host-qualified string with no https://. That failed the
+// startsWith check, so the host was prepended a SECOND time and the bot
+// navigated to
+//     https://meet.google.com/meet.google.com/abc-defg-hij
+// which fails as "the page ended up somewhere else instead of the meeting".
+//
+// The MCP path already handles this (mcp-server/meet-room.js, #314/#319); the
+// panel — the front door for anyone using the app by hand — never did.
+function toMeetUrl(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  if (/^https?:\/\//i.test(s)) return s;
+  // Already host-qualified, just scheme-less. Strip the host rather than
+  // stacking another one in front of it.
+  return 'https://meet.google.com/' + s.replace(/^(?:www\.)?meet\.google\.com\//i, '');
+}
+
 function isJoinableUrl(url) {
   if (isValidSlackUrl(url)) return true;
-  return isValidMeetUrl(url.startsWith('http') ? url : 'https://meet.google.com/' + url);
+  return isValidMeetUrl(toMeetUrl(url));
 }
 
 // --- Pre-call modes -------------------------------------------------------
@@ -1748,13 +1769,6 @@ refreshClaudeAuthBanner();
 // tight 5-minute window that actually arms the join timer in main.js.
 const calendarUpcomingBanner = document.getElementById('calendarUpcomingBanner');
 const calendarUpcomingText = document.getElementById('calendarUpcomingText');
-function formatUpcomingDelta(ms) {
-  if (ms <= 60 * 1000) return 'starting now';
-  const minutes = Math.round(ms / 60000);
-  if (minutes < 60) return `in ${minutes}m`;
-  const hours = Math.round(minutes / 60);
-  return `in ${hours}h`;
-}
 function paintCalendarUpcoming(events, error) {
   if (!calendarUpcomingBanner || !calendarUpcomingText) return;
   // Poll error (main.js pushCalendarPollError): the backend can no longer
@@ -1776,7 +1790,6 @@ function paintCalendarUpcoming(events, error) {
     calendarUpcomingBanner.style.display = 'none';
     return;
   }
-  const delta = new Date(next.start).getTime() - Date.now();
   const title = next.summary || 'Untitled event';
   const localTime = new Date(next.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   // ownerConfirmed === false means the calendar owner hasn't accepted this
@@ -1784,7 +1797,14 @@ function paintCalendarUpcoming(events, error) {
   // the meeting line renders struck through (it's not happening as far as
   // the bot is concerned) with a short normal-weight warning after it.
   // Built with DOM nodes, not innerHTML — the title is calendar-sourced text.
-  const line = `${localTime} meeting: "${title}" ${formatUpcomingDelta(Math.max(delta, 0))}`;
+  // Absolute time only, deliberately — NOT "in 12m". The countdown was computed
+  // once at paint time and the panel only repaints when the calendar poll pushes
+  // events, and that poll returns early while callStatus is 'in-call'. So the
+  // moment the bot joined a call the countdown froze, and a stale relative time
+  // is worse than none: it still reads as live. "4:30 PM" is right whenever it
+  // is read. (Observed 2026-08-19: banner said "in 54m" for a meeting 10
+  // minutes away, the difference being how long the call had been running.)
+  const line = `${localTime} meeting: "${title}"`;
   calendarUpcomingText.textContent = '';
   const lineSpan = document.createElement('span');
   lineSpan.textContent = line;
@@ -2105,7 +2125,7 @@ joinBtn.addEventListener('click', async () => {
     // Runtime provider switch: build the Slack surface + auto-join the huddle.
     api.send('join-detected-slack', { url });
   } else {
-    if (!url.startsWith('http')) url = 'https://meet.google.com/' + url;
+    url = toMeetUrl(url);
     api.joinMeet(url);
   }
   setJoinPhase('joining');

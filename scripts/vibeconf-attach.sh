@@ -7,7 +7,8 @@
 #   vibeconf-attach --list          # what boxes exist, and their state
 #   vibeconf-attach --sessions      # what tmux sessions are on the box
 #   vibeconf-attach --shell         # a plain shell instead of the agent session
-#   vibeconf-attach --screen        # tunnel VNC, so you can SEE the app's screen
+#   vibeconf-attach --screen        # see the app's screen, in your browser (noVNC)
+#   vibeconf-attach --screen-vnc    # same, but for a native VNC client on :5900
 #   vibeconf-attach --stop          # stop the box (it is costing money while up)
 #   vibeconf-attach --no-start      # refuse to start a stopped box
 #
@@ -38,6 +39,7 @@ while [ $# -gt 0 ]; do
     --sessions) MODE="sessions" ;;
     --shell) MODE="shell" ;;
     --screen) MODE="screen" ;;
+    --screen-vnc) MODE="screen-vnc" ;;
     --stop) MODE="stop" ;;
     --no-start) ALLOW_START=0 ;;
     -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -140,12 +142,41 @@ fi
 # the #324 bring-up), with x11vnc bound to LOOPBACK — so it is not reachable
 # from the internet and must be tunnelled. This forwards it over SSM: no inbound
 # port, no SSH key, no IP allowlist entry to churn when you change locations.
+# --screen defaults to noVNC IN A BROWSER, not a native VNC client, because
+# macOS Screen Sharing REFUSES a tunnelled connection: pointed at
+# vnc://localhost:5900 it decides you are connecting to your own Mac and says
+# "You cannot control your own screen." The guard is on the ADDRESS, so no
+# choice of local port gets around it.
+#
+# The box already runs noVNC (websockify on 127.0.0.1:6080 in front of the VNC
+# server), so tunnelling 6080 and opening a browser avoids the client question
+# altogether — and needs nothing installed on the Mac.
 if [ "$MODE" = "screen" ]; then
-  LOCAL_PORT="${VIBECONF_VNC_LOCAL_PORT:-5900}"
+  LOCAL_PORT="${VIBECONF_WEB_LOCAL_PORT:-6080}"
+  URL="http://localhost:$LOCAL_PORT/vnc.html?host=localhost&port=$LOCAL_PORT"
+  echo "→ forwarding $TAG:6080 (noVNC) → localhost:$LOCAL_PORT over SSM"
+  echo "→ opening $URL"
+  echo "   password: in ~/.vnc/passwd on the box (set at bring-up)"
+  echo "→ Ctrl-C here closes the tunnel"
+  # Open the browser a moment after the tunnel is up. Backgrounded so the exec
+  # below still owns the terminal.
+  ( sleep 4; command -v open >/dev/null && open "$URL" ) &
+  exec aws_ ssm start-session --target "$ID" \
+    --document-name AWS-StartPortForwardingSession \
+    --parameters "{\"portNumber\":[\"6080\"],\"localPortNumber\":[\"$LOCAL_PORT\"]}"
+fi
+
+# For a REAL VNC client (RealVNC, TigerVNC — not macOS Screen Sharing, see
+# above). Kept because a native client handles clipboard and scaling better than
+# the browser does.
+if [ "$MODE" = "screen-vnc" ]; then
+  LOCAL_PORT="${VIBECONF_VNC_LOCAL_PORT:-5901}"
   echo "→ forwarding $TAG:5900 → localhost:$LOCAL_PORT over SSM"
-  echo "→ then, in another terminal or Finder:"
-  echo "     open vnc://localhost:$LOCAL_PORT      (macOS Screen Sharing)"
-  echo "   the VNC password is in ~/.vnc/passwd on the box (set at bring-up)"
+  echo "→ point a VNC client at localhost:$LOCAL_PORT"
+  echo "   NOTE: macOS Screen Sharing.app will refuse this (\"cannot control your"
+  echo "   own screen\") — it rejects localhost regardless of port. Use --screen,"
+  echo "   or a third-party client."
+  echo "   password: in ~/.vnc/passwd on the box"
   echo "→ Ctrl-C here closes the tunnel"
   exec aws_ ssm start-session --target "$ID" \
     --document-name AWS-StartPortForwardingSession \

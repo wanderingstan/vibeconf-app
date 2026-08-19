@@ -1406,12 +1406,48 @@ class LocalServer {
     };
   }
 
-  _flushPendingBotSpeech() {
+  // Speech composed before the bot could be heard, played once it can.
+  //
+  // What lands here is almost always the greeting: the agent calls speak while
+  // the app is still joining, and the virtual mic is not connected to the other
+  // participants until then, so saying it earlier plays into the void.
+  //
+  // Which means this fires the moment a bot arrives in a meeting ALREADY IN
+  // PROGRESS. It used to emit straight into the room with no floor read and no
+  // separation from a second bot joining beside it — a greeting talked over the
+  // person mid-sentence, and two bots joining together greeted in unison. Both
+  // are the failures the rest of the speech paths already guard against; this
+  // one simply predates them.
+  //
+  // Gated as one batch, not per entry: the queue is one logical utterance in
+  // order, and holding half of it would be worse than holding all of it.
+  async _flushPendingBotSpeech() {
     if (this.pendingBotSpeech.length === 0) return;
     console.log('[local-server] Flushing', this.pendingBotSpeech.length,
       'queued bot speech entries (now playing)');
     const queue = this.pendingBotSpeech;
     this.pendingBotSpeech = [];
+
+    // Ranked when the peers are known, jitter otherwise. At join the transcript
+    // is usually empty, so ranking has no human utterance to seed on and this
+    // falls through to jitter — which is still the difference between two bots
+    // greeting in unison and greeting in turn.
+    const others = (this.participants || [])
+      .filter((p) => !p.isSelf && p.name && p.name !== 'You').length;
+    const { delayMs, why } = this._speakDelay(queue[0], others);
+    if (delayMs > 0) {
+      console.log(ts(), `🎲 [bot-jitter] ${others} others in call — delaying queued speech ${delayMs}ms (${why})`);
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+
+    // The floor, read HERE — after the delay, at the instant audio would start,
+    // which is the only instant it means anything (#67).
+    if (this.floorBusy) {
+      this._stashUnspokenSpeech(queue);
+      console.log(ts(), '🛡️  [barge-in] queued speech held — someone was talking as we joined');
+      return;
+    }
+
     for (const { text, voice, emoji, urgency } of queue) {
       console.log('[local-server] Playing queued speech:', text.slice(0, 60));
       this._currentUrgency = (typeof urgency === 'number') ? urgency : null; // #367
@@ -3400,6 +3436,30 @@ class LocalServer {
   // outcome. Returns true iff a resume was fired.
   _maybeResumeInterruptedTts() {
     if (!this._ttsInterruptedAt) return false;
+
+    // The floor, at the instant audio would restart. This runs on a silence
+    // edge, so the floor has just opened — but "just opened" is not "still
+    // open", and the analyser leads the tracker by up to a second (#417), which
+    // is exactly the width of the window something can start in.
+    //
+    // BEFORE the consume below, unlike every other guard here, and the
+    // distinction is the point. The age and relevance guards mean "this is no
+    // longer worth saying", so spending the one attempt is correct. A busy floor
+    // means "not right now" — a condition that clears on its own. Dropping the
+    // tail for it would defeat #350, whose entire purpose is to not lose the
+    // half-spoken sentence. Left unconsumed, the next silence edge retries, and
+    // ttsResumeMaxAgeMs still bounds how long that can go on.
+    //
+    // Deliberately NO ranked ordering, unlike every other speech path. Ranking
+    // decides who answers a human — a competition for a NEW turn. A resume
+    // finishes a turn this bot already had and was cut off in, so queueing it
+    // behind a peer would pause it mid-sentence to be polite about a turn
+    // nobody is contesting.
+    if (this.floorBusy) {
+      console.log(ts(), '🔊 [tts-resume] not resuming — floor busy; the tail stays held');
+      return false;
+    }
+
     const at = this._ttsInterruptedAt;
     const baseline = this._ttsInterruptWordsBaseline;
     this._ttsInterruptedAt = 0; // consume — one attempt per interruption

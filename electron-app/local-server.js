@@ -507,6 +507,7 @@ class LocalServer {
     // personas can have different conversational rhythms. Schema defaults
     // match what these used to be hardcoded as. See preferences-schema.js.
     this._bargeInTimer = null;
+    this._bargeInClearTimer = null;
     // #392: when the current monitor was armed. The analyser's quiet verdict
     // at grace evaluation is only trusted if the analyser produced an OFF edge
     // AFTER this — proof it actually tracked the interruption to its end. An
@@ -781,11 +782,7 @@ class LocalServer {
   // (#162). We hand this to comprehend/phrase so the model never has to re-derive
   // who's in the call from captions (it does that poorly, leaving `people` empty).
   _rosterText() {
-    const botNames = new Set(
-      (this.members || [])
-        .filter((m) => m.role === 'bot' && m.name)
-        .map((m) => m.name.toLowerCase())
-    );
+    const botNames = this._botNameSet();
     // Identify "me" by the bot's own name, not just the flaky isSelf flag — the
     // speaker tracker sometimes fails to mark the self tile, which mislabeled the
     // bot as "a bot" (not "you") and confused the triage classifier into treating
@@ -1687,11 +1684,7 @@ class LocalServer {
     // the panel can show (bot) alongside (self) (#162). Same logic the MCP
     // get_room_info tool uses; centralizing the snapshot keeps the two
     // surfaces consistent.
-    const botNames = new Set(
-      (this.members || [])
-        .filter((m) => m.role === 'bot' && m.name)
-        .map((m) => m.name.toLowerCase())
-    );
+    const botNames = this._botNameSet();
     return {
       callStatus: this.callStatus,
       mode: this.mode,
@@ -2071,7 +2064,7 @@ class LocalServer {
       // the back-off monitor (#154). #138: only if the analyser agrees the room
       // is actually quiet; Meet's tracker drops a speaker mid-utterance often
       // enough that trusting it alone here disarmed live interruptions.
-      if (!this.floorBusy) this._clearBargeIn('interrupter went silent');
+      if (!this.floorBusy) this._clearBargeInAfterHangover('interrupter went silent');
       // A held reply outranks a probe: if the bot already composed a real
       // thought, the first opening belongs to that, not to a filler phrase.
       // Wait the FULL turn-silence gate before replaying — the same bar a
@@ -3204,11 +3197,42 @@ class LocalServer {
   // Barge-in / back-off helpers (#154) -----------------------------------------
 
   _clearBargeIn(reason) {
+    clearTimeout(this._bargeInClearTimer);
+    this._bargeInClearTimer = null;
     if (this._bargeInTimer) {
       clearTimeout(this._bargeInTimer);
       this._bargeInTimer = null;
       console.log(ts(), '🛡️  [barge-in] cleared:', reason);
     }
+  }
+
+  // The disarm path, with a hangover. Meet's speaking meter drops back to rest
+  // BETWEEN SYLLABLES — 300-900ms gaps, measured mid-sentence on the
+  // eqj-edyv-fdw call — and each dip arrives here as "the interrupter went
+  // silent". Clearing on the first one meant a person speaking steadily could
+  // arm-and-clear the monitor four times over while the bot talked straight
+  // through them; it only ever yielded when a dip happened not to land inside
+  // the grace window. So wait bargeInClearHangoverMs and re-check: if the floor
+  // is busy again by then, the "silence" was an inter-word dip and the monitor
+  // stays armed.
+  //
+  // Deliberately asymmetric — this delays only DISARMING. The floor-opening
+  // path still uses the raw falling edge, because the two directions have
+  // different costs: a false negative here talks over a human, a false negative
+  // there just adds latency before the bot speaks.
+  _clearBargeInAfterHangover(reason) {
+    if (!this._bargeInTimer) return;
+    const ms = Number(this._pref('bargeInClearHangoverMs'));
+    if (!(ms > 0)) return this._clearBargeIn(reason);
+    clearTimeout(this._bargeInClearTimer);
+    this._bargeInClearTimer = setTimeout(() => {
+      this._bargeInClearTimer = null;
+      if (this.floorBusy) {
+        console.log(ts(), '🛡️  [barge-in] disarm held off — floor busy again after ' + ms + 'ms (inter-word dip)');
+        return;
+      }
+      this._clearBargeIn(reason + ' (confirmed after ' + ms + 'ms)');
+    }, ms);
   }
 
   // #367: grace = how long the bot rides out an interruption before yielding.
@@ -3241,6 +3265,8 @@ class LocalServer {
     const graceMs = typeof g === 'number' ? g : g.ms;
     const detail = typeof g === 'number' ? '' : ` (urgency ${g.u.toFixed(2)}-scaled)`;
     console.log(ts(), '🛡️  [barge-in] armed — grace ' + graceMs + 'ms' + detail);
+    clearTimeout(this._bargeInClearTimer); // a fresh arm outranks a pending disarm
+    this._bargeInClearTimer = null;
     this._bargeInArmedAt = Date.now(); // #392: anchors the analyser-liveness re-check
     this._bargeInTimer = setTimeout(() => {
       this._bargeInTimer = null;
@@ -3317,11 +3343,7 @@ class LocalServer {
     // Cross-reference against registered bot members (same logic the
     // get_room_info / panel tag uses). When the binding is unknown, default
     // to "human" — better to yield than to talk over a real person.
-    const botNames = new Set(
-      (this.members || [])
-        .filter((m) => m.role === 'bot' && m.name)
-        .map((m) => m.name.toLowerCase())
-    );
+    const botNames = this._botNameSet();
     const humanInterrupter = interrupters.find(
       (p) => !botNames.has((p.name || '').toLowerCase())
     );
@@ -5469,6 +5491,48 @@ class LocalServer {
       asOf: now,
       results,
     }));
+  }
+
+  // Every name a registered bot member could show up under in the call.
+  // Members carry BOTH a registration name and a Meet display name, and they
+  // routinely differ ("Jimmy" registers, the tile reads "jimmy bot"). Keying
+  // this set on `name` alone meant a bot interrupter never matched, so the
+  // barge-in check fell through to its "unknown ⇒ human" default and yielded
+  // to other bots as if they were people. Index both.
+  // Fold the website's room presence into the local roster. Called from the
+  // sync poll, which already fetches it.
+  //
+  // Remote entries are merged, never allowed to delete: presence expires on its
+  // own schedule and a bot that has gone quiet for a moment must not vanish from
+  // the roster mid-utterance, which is exactly when the barge-in check needs it.
+  // A remote role of 'bot' upgrades a local 'member' — bots register themselves,
+  // so that claim is theirs to make — but the reverse is not true, or a stale
+  // 'member' row for a bot's Meet display name (the sync server holds both) would
+  // demote it back to human and reinstate the very bug this fixes.
+  mergeRemoteMembers(members) {
+    if (!Array.isArray(members)) return;
+    let learned = 0;
+    for (const m of members) {
+      if (!m || !m.name) continue;
+      const existing = this.members.find((x) => x.name === m.name);
+      const wasBot = existing && existing.role === 'bot';
+      const role = m.role === 'bot' || wasBot ? 'bot' : (existing?.role || m.role || 'member');
+      this._upsertMember(m.name, role, m.ownerName, m.displayName, m.versions);
+      if (role === 'bot' && !wasBot) learned++;
+    }
+    if (learned) {
+      console.log(ts(), `👥 [presence] roster now knows ${this._botNameSet().size} bot name(s) from room presence`);
+    }
+  }
+
+  _botNameSet() {
+    const names = new Set();
+    for (const m of this.members || []) {
+      if (m.role !== 'bot') continue;
+      if (m.name) names.add(m.name.toLowerCase());
+      if (m.displayName) names.add(m.displayName.toLowerCase());
+    }
+    return names;
   }
 
   _memberVersions(versions) {

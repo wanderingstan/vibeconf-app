@@ -1197,6 +1197,13 @@ process.on('unhandledRejection', (reason) => {
 const tts = new globalThis.TTSProvider();
 const stt = new globalThis.STTProvider();
 const sync = new globalThis.SyncClient({
+  // Merge the website's room presence into the local roster. The local list is
+  // otherwise written only by posts to THIS instance's local server, so it holds
+  // exactly one bot — itself — and the barge-in check's "is this interrupter a
+  // bot?" question could never come back yes for a peer.
+  onMembers: (members) => {
+    localServer.mergeRemoteMembers(members);
+  },
   onBotSpeech: (text, voice) => {
     console.log('[electron] Bot speech from sync:', text.slice(0, 80), voice ? `(voice: ${voice})` : '');
     ackTtsPending = false;

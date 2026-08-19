@@ -29,6 +29,29 @@ fi
 
 REPO="$VIBECONF_REPO"   # repo root, resolved pre-re-exec (see above)
 RESULTS="$HOME/vibeconf-test-results"
+
+# The machine-wide vibeconferencing.com login, read straight from the BASE
+# userData config. It lives there — not per-profile — because vcSessionToken is
+# an APP-LEVEL key (#366, electron-app/config-scope.js): one login per machine,
+# inherited by every profile including the test bots. On this host it is a
+# dedicated project account, deliberately not a personal one.
+#
+# Read-only, and used only to TELL THE TRUTH in a failure message: when a lane
+# falls back, "is the session still good?" is the first thing triage asks, and
+# guessing the answer is what made the old message misleading.
+_vc_config() { echo "$HOME/Library/Application Support/Vibeconferencing/config.json"; }
+_vc_session_token() {
+  python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("vcSessionToken","") or "")
+except Exception: print("")' "$(_vc_config)" 2>/dev/null
+}
+_website_url() {
+  local u
+  u="$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("websiteUrl","") or "")
+except Exception: print("")' "$(_vc_config)" 2>/dev/null)"
+  echo "${u:-https://vibeconferencing.com}"
+}
 mkdir -p "$RESULTS"
 
 # launchd gives a minimal PATH even under -l on some setups; belt-and-suspenders.
@@ -452,8 +475,35 @@ if [[ "$REC" == "1" ]]; then
     echo "=== ✅ recording preflight: screencapture OK (${_recbytes} bytes / 2s) ===" | tee -a "$LOG"
     printf '{"ts":"%s","ok":true,"bytes":%s}\n'  "$STAMP" "$_recbytes" >> "$RESULTS/recording-health-results.jsonl"
   else
-    echo "=== 🔴 recording preflight: screencapture produced ${_recbytes} bytes — Screen Recording permission is MISSING for the launchd shell; kept .mov recordings will be empty ===" | tee -a "$LOG"
-    printf '{"ts":"%s","ok":false,"bytes":%s}\n' "$STAMP" "$_recbytes" >> "$RESULTS/recording-health-results.jsonl"
+    # Zero bytes has (at least) two very different causes, so DIAGNOSE rather
+    # than assert. The old message named one — "Screen Recording permission is
+    # MISSING" — which on 2026-08-19 was simply wrong, and cost a triage session
+    # hunting a TCC dialog that never appears for a launchd job anyway. The real
+    # cause was CPU starvation: ten orphaned busy-loops had the box at load 35,
+    # and `screencapture -v` never finished spinning up inside its 2s window.
+    # Permission had been fine the whole time — the preflight was green on the
+    # 19 preceding runs, including the night before.
+    #
+    # A still capture needs the SAME TCC grant but none of the video start-up
+    # latency, so it separates the two cleanly: still lands => the grant is
+    # present and this was timing/load; still also empty => really permission.
+    # NOT a dotfile, unlike the .mov probe above: `screencapture -x` refuses to
+    # write a destination whose basename starts with "." ("cannot write file to
+    # intended destination") while `-v` accepts one. Copying the .mov naming here
+    # made the still probe fail unconditionally, which would have pinned the blame
+    # on permission every time — the exact misdiagnosis this block exists to end.
+    _still="$REC_DIR/preflight-still-$STAMP.png"
+    screencapture -x "$_still" >/dev/null 2>&1
+    _stillbytes=$(stat -f%z "$_still" 2>/dev/null || echo 0)
+    rm -f "$_still"
+    _load=$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | awk '{print $1}')
+    if (( _stillbytes > 0 )); then
+      _why="permission is OK (a still capture worked, ${_stillbytes} bytes) — the video recorder did not start inside its 2s window; load average ${_load}"
+    else
+      _why="a still capture produced nothing either — Screen Recording permission for the launchd shell is the likely cause; load average ${_load}"
+    fi
+    echo "=== 🔴 recording preflight: screencapture -v produced ${_recbytes} bytes; ${_why}. Kept .mov recordings will be empty. ===" | tee -a "$LOG"
+    printf '{"ts":"%s","ok":false,"bytes":%s,"stillBytes":%s,"load":"%s"}\n' "$STAMP" "$_recbytes" "$_stillbytes" "$_load" >> "$RESULTS/recording-health-results.jsonl"
   fi
   echo "" | tee -a "$LOG"
 fi
@@ -572,10 +622,26 @@ else
   # publicly-joinable fallback room — its code appears in logs/screenshots, so
   # anyone who sees it could join a live test and interfere. notify-nightly
   # surfaces this in the Telegram digest (and pushes even on a green night).
-  # Root cause: /call needs a signed-in vibeconferencing.com session — the guest
-  # test profile has none (see setup-test-profiles.sh, "vibeconferencing.com").
-  echo "=== ⚠️  meet room: FALLING BACK to the SHARED hard-coded room — /call did not mint one. Live lanes ran on a FIXED, publicly-joinable Meet; sign the test profile into vibeconferencing.com to mint a fresh per-run room. ===" | tee -a "$LOG"
-  printf '{"ts":"%s","source":"fallback"}\n' "$STAMP" > "$RESULTS/meet-room-source.json"
+  # The old message named ONE cause — "sign the test profile into
+  # vibeconferencing.com" — and it was wrong twice over. There is no per-profile
+  # login to do: vcSessionToken is APP-LEVEL (#366, see config-scope.js), one
+  # machine-wide session that every profile inherits, and on this host it is a
+  # dedicated project account rather than anyone's personal one. And on
+  # 2026-08-19 that session was valid the whole time; the mint never ran because
+  # the join-route smoke — whose stdout the room code is scraped from, just
+  # above — died on an MCP timeout under CPU starvation.
+  #
+  # So report what is actually observable here: the smoke's exit code (an empty
+  # scrape follows from a failed smoke) and whether the machine-wide session
+  # still authenticates. Guessing a cause is what sent triage the wrong way.
+  _authstate="unknown (could not reach the site)"
+  _me="$(curl -s -m 10 -b "vc_session=$(_vc_session_token)" "$(_website_url)/api/auth/me" 2>/dev/null)"
+  case "$_me" in
+    *'"authenticated":true'*) _authstate="OK — the machine-wide session still authenticates" ;;
+    *'"authenticated":false'*) _authstate="SIGNED OUT — the machine-wide vibeconferencing.com session is gone; sign in once in the app (it is shared by every profile)" ;;
+  esac
+  echo "=== ⚠️  meet room: FALLING BACK to the SHARED hard-coded room — no VIBECONF_MINTED_ROOM in the join-route smoke output (that smoke exited ${JOINROUTE_CODE}). Live lanes ran on a FIXED, publicly-joinable Meet. Sign-in state: ${_authstate}. ===" | tee -a "$LOG"
+  printf '{"ts":"%s","source":"fallback","joinRouteExit":%s,"auth":"%s"}\n' "$STAMP" "$JOINROUTE_CODE" "$_authstate" > "$RESULTS/meet-room-source.json"
 fi
 
 # Run the one-shot DMG target — the scheduled run on the always-on Mac mini

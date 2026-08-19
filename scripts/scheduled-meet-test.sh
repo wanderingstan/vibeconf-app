@@ -29,6 +29,29 @@ fi
 
 REPO="$VIBECONF_REPO"   # repo root, resolved pre-re-exec (see above)
 RESULTS="$HOME/vibeconf-test-results"
+
+# The machine-wide vibeconferencing.com login, read straight from the BASE
+# userData config. It lives there — not per-profile — because vcSessionToken is
+# an APP-LEVEL key (#366, electron-app/config-scope.js): one login per machine,
+# inherited by every profile including the test bots. On this host it is a
+# dedicated project account, deliberately not a personal one.
+#
+# Read-only, and used only to TELL THE TRUTH in a failure message: when a lane
+# falls back, "is the session still good?" is the first thing triage asks, and
+# guessing the answer is what made the old message misleading.
+_vc_config() { echo "$HOME/Library/Application Support/Vibeconferencing/config.json"; }
+_vc_session_token() {
+  python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("vcSessionToken","") or "")
+except Exception: print("")' "$(_vc_config)" 2>/dev/null
+}
+_website_url() {
+  local u
+  u="$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("websiteUrl","") or "")
+except Exception: print("")' "$(_vc_config)" 2>/dev/null)"
+  echo "${u:-https://vibeconferencing.com}"
+}
 mkdir -p "$RESULTS"
 
 # launchd gives a minimal PATH even under -l on some setups; belt-and-suspenders.
@@ -56,6 +79,47 @@ cd "$REPO" || { echo "repo not found: $REPO"; exit 3; }
 # reaped the EXIT trap's `node notify` child before it could send.)
 _DIGEST_SENT="/tmp/vibeconf-digest-${STAMP}.sent"
 _CALL_DIGEST_SENT="/tmp/vibeconf-calldigest-${STAMP}.sent"
+
+# --- Lane ledger: a lane that never ran must SAY so ---------------------------
+# Every lane this run intends to execute. A lane that reports nothing is not a
+# lane that passed — it is a lane whose result nobody has, and until now the two
+# were indistinguishable. When the watchdog kills a run it simply truncates it,
+# and the lanes after the kill point write nothing at all: linux-results.jsonl
+# just STOPPED after 2026-08-17, with no row explaining why, and three nights of
+# a silently-skipped Linux lane read as "no news" (found 2026-08-19). Same shape
+# as the misdiagnosing messages elsewhere in this file — the run stated something
+# untrue about itself, and triage believed it.
+#
+# Order here is documentation only; the lanes run where they appear below.
+LANES_ALL=(join-route dmg-meet main-meet wb-roundtrip slack whiteboard-e2e codex linux fuzz)
+_LANE_LEDGER="/tmp/vibeconf-lanes-${STAMP}.done"
+: > "$_LANE_LEDGER"
+lane_done() { print -r -- "$1" >> "$_LANE_LEDGER"; }
+# A FILE, not a variable, for the reason the digest sentinels are files: the
+# watchdog runs in a forked subshell, and it is the party most likely to be the
+# one reporting (it fires precisely when lanes got skipped). A variable it set
+# would be invisible to the EXIT trap, and vice-versa.
+lanes_missing() {
+  local l
+  for l in "${LANES_ALL[@]}"; do
+    grep -qxF -- "$l" "$_LANE_LEDGER" 2>/dev/null || print -r -- "$l"
+  done
+}
+report_missing_lanes() {
+  local -a missing
+  missing=(${(f)"$(lanes_missing)"})
+  missing=(${missing:#})   # drop the empty element when nothing is missing
+  if (( ${#missing} == 0 )); then
+    echo "=== ✅ all ${#LANES_ALL} lane(s) reported ===" | tee -a "$LOG"
+    return 0
+  fi
+  echo "=== 🔴 ${#missing} LANE(S) NEVER RAN: ${missing[*]} — the run ended before reaching them (watchdog kill, crash, or early exit). Their own results files have NO row for $STAMP, so do not read that absence as a pass. ===" | tee -a "$LOG"
+  local l
+  for l in "${missing[@]}"; do
+    printf '{"ts":"%s","lane":"%s","exit":null,"note":"never ran — the run ended before reaching this lane"}\n' \
+      "$STAMP" "$l" >> "$RESULTS/lanes-skipped.jsonl"
+  done
+}
 # --- Drive uploads run ASYNC (backgrounded in rec_run) so a slow push never sits on
 # the run's critical path or crowds the global watchdog (2026-08-08: a keep=all night
 # uploaded ~420MB inline and tripped the 30-min timer). The digest JOINS the in-flight
@@ -82,6 +146,11 @@ send_digest() {
   [[ -e "$_DIGEST_SENT" ]] && return
   : > "$_DIGEST_SENT"
   wait_for_uploads   # let async Drive uploads finish so their links make the digest
+  # Before notifying: account for every lane. This runs here, inside send_digest,
+  # because send_digest is the one thing guaranteed to fire on BOTH paths — a
+  # normal end and a watchdog kill — and the watchdog path is exactly when lanes
+  # go missing. Printed into $LOG before notify-nightly reads it.
+  report_missing_lanes
   echo "" | tee -a "$LOG"
   echo "=== Telegram digest (fires on normal end OR — via the watchdog — an early kill) ===" | tee -a "$LOG"
   node scripts/notify-nightly.mjs 2>&1 | tee -a "$LOG" || true
@@ -452,8 +521,35 @@ if [[ "$REC" == "1" ]]; then
     echo "=== ✅ recording preflight: screencapture OK (${_recbytes} bytes / 2s) ===" | tee -a "$LOG"
     printf '{"ts":"%s","ok":true,"bytes":%s}\n'  "$STAMP" "$_recbytes" >> "$RESULTS/recording-health-results.jsonl"
   else
-    echo "=== 🔴 recording preflight: screencapture produced ${_recbytes} bytes — Screen Recording permission is MISSING for the launchd shell; kept .mov recordings will be empty ===" | tee -a "$LOG"
-    printf '{"ts":"%s","ok":false,"bytes":%s}\n' "$STAMP" "$_recbytes" >> "$RESULTS/recording-health-results.jsonl"
+    # Zero bytes has (at least) two very different causes, so DIAGNOSE rather
+    # than assert. The old message named one — "Screen Recording permission is
+    # MISSING" — which on 2026-08-19 was simply wrong, and cost a triage session
+    # hunting a TCC dialog that never appears for a launchd job anyway. The real
+    # cause was CPU starvation: ten orphaned busy-loops had the box at load 35,
+    # and `screencapture -v` never finished spinning up inside its 2s window.
+    # Permission had been fine the whole time — the preflight was green on the
+    # 19 preceding runs, including the night before.
+    #
+    # A still capture needs the SAME TCC grant but none of the video start-up
+    # latency, so it separates the two cleanly: still lands => the grant is
+    # present and this was timing/load; still also empty => really permission.
+    # NOT a dotfile, unlike the .mov probe above: `screencapture -x` refuses to
+    # write a destination whose basename starts with "." ("cannot write file to
+    # intended destination") while `-v` accepts one. Copying the .mov naming here
+    # made the still probe fail unconditionally, which would have pinned the blame
+    # on permission every time — the exact misdiagnosis this block exists to end.
+    _still="$REC_DIR/preflight-still-$STAMP.png"
+    screencapture -x "$_still" >/dev/null 2>&1
+    _stillbytes=$(stat -f%z "$_still" 2>/dev/null || echo 0)
+    rm -f "$_still"
+    _load=$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | awk '{print $1}')
+    if (( _stillbytes > 0 )); then
+      _why="permission is OK (a still capture worked, ${_stillbytes} bytes) — the video recorder did not start inside its 2s window; load average ${_load}"
+    else
+      _why="a still capture produced nothing either — Screen Recording permission for the launchd shell is the likely cause; load average ${_load}"
+    fi
+    echo "=== 🔴 recording preflight: screencapture -v produced ${_recbytes} bytes; ${_why}. Kept .mov recordings will be empty. ===" | tee -a "$LOG"
+    printf '{"ts":"%s","ok":false,"bytes":%s,"stillBytes":%s,"load":"%s"}\n' "$STAMP" "$_recbytes" "$_stillbytes" "$_load" >> "$RESULTS/recording-health-results.jsonl"
   fi
   echo "" | tee -a "$LOG"
 fi
@@ -561,6 +657,7 @@ echo "$JOINROUTE_OUT" | tee -a "$LOG"
 printf '{"ts":"%s","exit":%s,"log":"%s"}\n' "$STAMP" "$JOINROUTE_CODE" "$(basename "$LOG")" \
   >> "$RESULTS/join-route-results.jsonl"
 echo "=== join-route exit: $JOINROUTE_CODE (recorded, not gating) ===" | tee -a "$LOG"
+lane_done join-route
 
 MINTED="$(echo "$JOINROUTE_OUT" | grep -oE 'VIBECONF_MINTED_ROOM=[a-z]{3}-[a-z]{4}-[a-z]{3}' | tail -1 | cut -d= -f2)"
 if [[ -n "$MINTED" ]]; then
@@ -572,10 +669,26 @@ else
   # publicly-joinable fallback room — its code appears in logs/screenshots, so
   # anyone who sees it could join a live test and interfere. notify-nightly
   # surfaces this in the Telegram digest (and pushes even on a green night).
-  # Root cause: /call needs a signed-in vibeconferencing.com session — the guest
-  # test profile has none (see setup-test-profiles.sh, "vibeconferencing.com").
-  echo "=== ⚠️  meet room: FALLING BACK to the SHARED hard-coded room — /call did not mint one. Live lanes ran on a FIXED, publicly-joinable Meet; sign the test profile into vibeconferencing.com to mint a fresh per-run room. ===" | tee -a "$LOG"
-  printf '{"ts":"%s","source":"fallback"}\n' "$STAMP" > "$RESULTS/meet-room-source.json"
+  # The old message named ONE cause — "sign the test profile into
+  # vibeconferencing.com" — and it was wrong twice over. There is no per-profile
+  # login to do: vcSessionToken is APP-LEVEL (#366, see config-scope.js), one
+  # machine-wide session that every profile inherits, and on this host it is a
+  # dedicated project account rather than anyone's personal one. And on
+  # 2026-08-19 that session was valid the whole time; the mint never ran because
+  # the join-route smoke — whose stdout the room code is scraped from, just
+  # above — died on an MCP timeout under CPU starvation.
+  #
+  # So report what is actually observable here: the smoke's exit code (an empty
+  # scrape follows from a failed smoke) and whether the machine-wide session
+  # still authenticates. Guessing a cause is what sent triage the wrong way.
+  _authstate="unknown (could not reach the site)"
+  _me="$(curl -s -m 10 -b "vc_session=$(_vc_session_token)" "$(_website_url)/api/auth/me" 2>/dev/null)"
+  case "$_me" in
+    *'"authenticated":true'*) _authstate="OK — the machine-wide session still authenticates" ;;
+    *'"authenticated":false'*) _authstate="SIGNED OUT — the machine-wide vibeconferencing.com session is gone; sign in once in the app (it is shared by every profile)" ;;
+  esac
+  echo "=== ⚠️  meet room: FALLING BACK to the SHARED hard-coded room — no VIBECONF_MINTED_ROOM in the join-route smoke output (that smoke exited ${JOINROUTE_CODE}). Live lanes ran on a FIXED, publicly-joinable Meet. Sign-in state: ${_authstate}. ===" | tee -a "$LOG"
+  printf '{"ts":"%s","source":"fallback","joinRouteExit":%s,"auth":"%s"}\n' "$STAMP" "$JOINROUTE_CODE" "$_authstate" > "$RESULTS/meet-room-source.json"
 fi
 
 # Run the one-shot DMG target — the scheduled run on the always-on Mac mini
@@ -597,6 +710,7 @@ overlaps=$(grep -oE 'cross-bot speak overlaps \(<1.2s\): [0-9]+' "$LOG" | tail -
 
 printf '{"ts":"%s","ver":"%s","exit":%s,"stalls":"%s","fails":"%s","overlaps":"%s","log":"%s"}\n' \
   "$STAMP" "$DMG_VER" "$CODE" "$stalls" "$fails" "$overlaps" "$(basename "$LOG")" >> "$RESULTS/results.jsonl"
+lane_done dmg-meet
 
 # --- main-source meet regression run (test:meet:ci) — same two-bot meet-test, but
 # against the SOURCE checkout on `main` instead of the installed DMG. The DMG run
@@ -613,6 +727,7 @@ mfails=$(grep -oE 'failed steps: +[0-9]+' "$LOG" | tail -1 | grep -oE '[0-9]+$' 
 printf '{"ts":"%s","exit":%s,"stalls":"%s","fails":"%s","branch":"main","log":"%s"}\n' \
   "$STAMP" "$MAIN_CODE" "$mstalls" "$mfails" "$(basename "$LOG")" >> "$RESULTS/results-main.jsonl"
 echo "=== main-source meet exit: $MAIN_CODE (recorded, not gating) ===" | tee -a "$LOG"
+lane_done main-meet
 
 # --- Whiteboard write→read ROUND-TRIP (backend/Upstash) — the DATA-path check
 # under whiteboard-e2e: bot A writes via update_whiteboard, bot B reads it back via
@@ -627,6 +742,7 @@ wbfails=$(grep -oE 'failed steps: +[0-9]+' "$LOG" | tail -1 | grep -oE '[0-9]+$'
 printf '{"ts":"%s","exit":%s,"fails":"%s","log":"%s"}\n' \
   "$STAMP" "$WBRT_CODE" "$wbfails" "$(basename "$LOG")" >> "$RESULTS/whiteboard-roundtrip-results.jsonl"
 echo "=== whiteboard round-trip exit: $WBRT_CODE (recorded, not gating) ===" | tee -a "$LOG"
+lane_done wb-roundtrip
 
 # --- Slack backend test (test:slack:ci) — the huddle-fleet analog of the meet test
 # (#265). Drives the two SIGNED-IN test-slack profiles through join/speak/hear/chat/
@@ -642,6 +758,7 @@ sfails=$(grep -oE 'failed steps: +[0-9]+' "$LOG" | tail -1 | grep -oE '[0-9]+$' 
 printf '{"ts":"%s","exit":%s,"stalls":"%s","fails":"%s","log":"%s"}\n' \
   "$STAMP" "$SLACK_CODE" "$sstalls" "$sfails" "$(basename "$LOG")" >> "$RESULTS/slack-results.jsonl"
 echo "=== Slack test exit: $SLACK_CODE (recorded, not gating) ===" | tee -a "$LOG"
+lane_done slack
 
 # --- Whiteboard SHARE-VERIFY (#267 step 3) — the ONLY lane that proves the
 # whiteboard actually RENDERS and reaches viewers, not just that the share toggle
@@ -660,24 +777,8 @@ svfails=$(grep -oE 'failed steps: +[0-9]+' "$LOG" | tail -1 | grep -oE '[0-9]+$'
 printf '{"ts":"%s","exit":%s,"fails":"%s","log":"%s"}\n' \
   "$STAMP" "$SV_CODE" "$svfails" "$(basename "$LOG")" >> "$RESULTS/whiteboard-e2e-results.jsonl"
 echo "=== whiteboard-e2e exit: $SV_CODE (recorded, not gating) ===" | tee -a "$LOG"
+lane_done whiteboard-e2e
 
-# --- EXPERIMENTAL: real-agent fuzzing test (#267 item 5) — NEW, take with a grain
-# of salt. Real Claude agents run the 'smoke' mission and an LLM judge grades it.
-# Best-effort and DECOUPLED from the primary signal above: the `|| true` means it
-# NEVER changes this run's exit code, and it writes its OWN verdict line to
-# $RESULTS/agent-fuzz/results.jsonl (so the deterministic dmg result stays clean).
-# It self-spawns + tears down its own source-mode fleet. Costs tokens (real agents)
-# and depends on the same display-on + unlocked conditions as any live test. Delete
-# this block to disable. ---
-echo "" | tee -a "$LOG"
-echo "=== real-agent fuzz test (experimental, grain of salt) $STAMP ===" | tee -a "$LOG"
-# Wrapped in rec_run so the fuzz lane's per-participant call recordings are
-# harvested like every other live lane (when VIBECONF_RECORD_CALLS=1, as the mini
-# sets). It's the only lane driven by real, non-deterministic agents, so its
-# footage is the most useful of any lane when a judge verdict looks off. rec_run
-# already tee's to $LOG; keep the `|| true` so this experimental lane still never
-# changes the run's exit code.
-rec_run fuzz -- node scripts/agent-fuzz-test.mjs --mission smoke --duration 170 || true
 
 # --- Codex MCP wire smoke (#373) — deterministic + tokenless (agent-less fleet
 # body + stdio MCP handshake/tools/get_room_info; no GUI interaction beyond app
@@ -691,6 +792,7 @@ CODEX_CODE=${pipestatus[1]:-$?}
 printf '{"ts":"%s","exit":%s,"log":"%s"}\n' "$STAMP" "$CODEX_CODE" "$(basename "$LOG")" \
   >> "$RESULTS/codex-smoke-results.jsonl"
 echo "=== codex smoke exit: $CODEX_CODE (recorded, not gating) ===" | tee -a "$LOG"
+lane_done codex
 
 # --- Linux lane (#329/#324) — the only lane that does not run on this machine.
 #
@@ -732,6 +834,41 @@ else
   printf '{"ts":"%s","exit":75,"fails":1,"note":"awscli not installed on the runner"}\n' \
     "$STAMP" >> "$RESULTS/linux-results.jsonl"
 fi
+# After the fi, so BOTH branches count as "reported". A deliberate skip that says
+# why is a result; only never reaching this line at all is the silent gap.
+lane_done linux
+
+# --- Lane ORDER note: the experimental fuzz lane runs LAST, deliberately.
+# It used to sit ahead of the codex and linux lanes, and it is both the slowest
+# lane and the least deterministic (real agents, an LLM judge, ~7 min). On
+# 2026-08-19 it was still running when the 30-min watchdog fired, so codex and
+# linux never ran at all — and because they never ran they wrote no results,
+# which read as "no news" rather than "not tested". The Linux lane had been
+# silently absent for three nights that way.
+#
+# So the cheap, deterministic, infrastructure-dependent lanes now finish BEFORE
+# the experimental one can spend the remaining budget. Reordering is the honest
+# fix here; raising VIBECONF_GLOBAL_TIMEOUT alone would just let a growing suite
+# keep hiding whichever lane happens to be last.
+
+# --- EXPERIMENTAL: real-agent fuzzing test (#267 item 5) — NEW, take with a grain
+# of salt. Real Claude agents run the 'smoke' mission and an LLM judge grades it.
+# Best-effort and DECOUPLED from the primary signal above: the `|| true` means it
+# NEVER changes this run's exit code, and it writes its OWN verdict line to
+# $RESULTS/agent-fuzz/results.jsonl (so the deterministic dmg result stays clean).
+# It self-spawns + tears down its own source-mode fleet. Costs tokens (real agents)
+# and depends on the same display-on + unlocked conditions as any live test. Delete
+# this block to disable. ---
+echo "" | tee -a "$LOG"
+echo "=== real-agent fuzz test (experimental, grain of salt) $STAMP ===" | tee -a "$LOG"
+# Wrapped in rec_run so the fuzz lane's per-participant call recordings are
+# harvested like every other live lane (when VIBECONF_RECORD_CALLS=1, as the mini
+# sets). It's the only lane driven by real, non-deterministic agents, so its
+# footage is the most useful of any lane when a judge verdict looks off. rec_run
+# already tee's to $LOG; keep the `|| true` so this experimental lane still never
+# changes the run's exit code.
+rec_run fuzz -- node scripts/agent-fuzz-test.mjs --mission smoke --duration 170 || true
+lane_done fuzz
 
 # --- Telegram digests — two separate messages to Stan's DM: tonight's test-suite
 # results (notify-nightly.mjs) and a real-user call summary (nightly-call-digest.mjs,

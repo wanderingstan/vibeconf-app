@@ -1345,4 +1345,159 @@ function inertWarning(key, value, get) {
   return null;
 }
 
-module.exports = { PREFERENCES, validate, describe, inertWarning, DEFAULT_BOT_NAME };
+// The TYPE half of validate(), without the policy half.
+//
+// _pref uses this rather than validate() because the two answer different
+// questions. Type is about what the value MEANS: a stored string "true" read
+// through `=== true` is false, so the stored FORM silently inverts behaviour,
+// and that is the bug this exists for (#417). Range and enum are about whether
+// a value is WISE — set_preference already enforces them on the way in, so a
+// value outside them arrived deliberately (a hand-edited config, or a test
+// setting defaultSilenceSeconds to 0.02 so it does not sleep for seconds).
+// Overriding a deliberate choice is not this function's business.
+//
+// Returns { ok, value }. ok:false means the value cannot be made into the
+// declared type at all, and the caller should fall back to the default.
+function coerceType(key, value) {
+  const spec = PREFERENCES[key];
+  if (!spec) return { ok: false, error: `Unknown preference '${key}'` };
+  if (value === undefined || value === null) return { ok: false, error: 'unset' };
+
+  if (spec.type === 'number') {
+    const n = typeof value === 'string' ? parseFloat(value) : value;
+    return Number.isFinite(n)
+      ? { ok: true, value: n }
+      : { ok: false, error: `Expected number, got ${typeof value}: ${JSON.stringify(value)}` };
+  }
+  if (spec.type === 'boolean') {
+    if (typeof value === 'boolean') return { ok: true, value };
+    if (typeof value === 'number' && (value === 0 || value === 1)) return { ok: true, value: value === 1 };
+    if (typeof value === 'string') {
+      const v = value.trim().toLowerCase();
+      if (['true', '1', 'yes', 'on'].includes(v)) return { ok: true, value: true };
+      if (['false', '0', 'no', 'off'].includes(v)) return { ok: true, value: false };
+    }
+    return { ok: false, error: `Expected boolean, got ${typeof value}: ${JSON.stringify(value)}` };
+  }
+  if (spec.type === 'string[]') {
+    if (Array.isArray(value) && value.every((x) => typeof x === 'string')) return { ok: true, value };
+    return { ok: false, error: 'Expected array of strings' };
+  }
+  if (spec.type === 'string') {
+    return typeof value === 'string'
+      ? { ok: true, value }
+      : { ok: false, error: `Expected string, got ${typeof value}` };
+  }
+  return { ok: false, error: `Unhandled type ${spec.type}` };
+}
+
+// Anything whose NAME says it is a credential. Matched on the key, not the
+// value, because a token is only recognisable by where it lives. The config file
+// holds `ttsApiKey` and `vcSessionToken` beside the behaviour settings, and this
+// block is written into a session log that gets shipped to the backend, copied
+// into shared Drive folders, and attached to bug reports — so dumping the file
+// verbatim would publish an ElevenLabs key and a session JWT every call.
+const SECRET_KEY_RE = /key|token|secret|password|credential|auth/i;
+
+// Every preference in effect, as log lines — written once per call so a log says
+// which code paths were live when it was recorded.
+//
+// This exists because of a two-day debugging failure. A bot talked over a human
+// three times on 2026-08-17, and the cause was one preference on one machine
+// (`fastFloorDetection`) sitting at a non-default value. Nothing in its log said
+// so. The header dumped eight hand-picked prefs as RAW STORE VALUES — printing
+// `defaultSilenceSeconds=undefined` for an unset one, which says nothing about
+// what the code actually used — and `fastFloorDetection` was not among the
+// eight. Reconstructing it took three separate statistical arguments over 8,000
+// log lines (#417).
+//
+// So: all of them, effective values, and PINS CALLED OUT FIRST. A pin is the
+// only interesting part — it is what differs from every other machine, and
+// therefore what explains why this one behaved differently.
+//
+// Non-schema keys are included too. 20 of the 43 keys in a real config are not
+// in PREFERENCES, and several plainly change behaviour (`dangerousMode`,
+// `ackProvider`, `claudeModel`, `backgroundTickChars`). A snapshot that silently
+// skipped them would repeat this bug's shape: complete-looking, and missing the
+// one line that mattered. They are redacted by name where they look like
+// credentials, and their PRESENCE is still reported so nothing is invisible.
+//
+// `get(key)` reads one value; `get()` with no argument should return the whole
+// store, which is how non-schema keys are found. A get that cannot do that
+// degrades to schema-only rather than failing.
+function snapshotForLog(get, { label = '' } = {}) {
+  const read = (k) => { try { return get ? get(k) : undefined; } catch { return undefined; } };
+  // Truncated: the ack phrase pools alone run to ~700 characters and are almost
+  // never the question being asked of this block. Enough survives to see which
+  // pool it is; list_preferences has the full value when it matters.
+  const fmt = (v) => {
+    if (v === undefined) return 'unset';
+    const s = JSON.stringify(v);
+    return s.length > 110 ? `${s.slice(0, 107)}...(${s.length} chars)` : s;
+  };
+  const pinned = [];
+  const all = [];
+  for (const [key, spec] of Object.entries(PREFERENCES)) {
+    if (!spec || typeof spec !== 'object' || !('type' in spec)) continue;
+    const stored = read(key);
+    let effective = spec.default;
+    let bad = null;
+    let note = '';
+    if (stored !== undefined && stored !== null) {
+      const c = coerceType(key, stored);
+      if (c.ok) {
+        effective = c.value;
+        // Usable, but outside what set_preference would have accepted — so it
+        // was hand-edited or set by a test. Worth saying; not worth overriding.
+        const v = validate(key, stored);
+        if (!v.ok) note = ` [outside schema: ${v.error}]`;
+      } else {
+        bad = c.error;                          // unusable — _pref uses the default
+      }
+    }
+    all.push(`${key}=${fmt(effective)}`);
+    if (bad) {
+      pinned.push(`${key}=${fmt(stored)} INVALID (${bad}) -> using ${fmt(spec.default)}`);
+    } else if (stored !== undefined && stored !== null
+               && JSON.stringify(effective) !== JSON.stringify(spec.default)) {
+      pinned.push(`${key}=${fmt(effective)} (default ${fmt(spec.default)})${note}`);
+    }
+  }
+
+  // Everything in the store the schema does not describe.
+  const other = [];
+  let allData;
+  try { allData = get ? get() : undefined; } catch { allData = undefined; }
+  if (allData && typeof allData === 'object' && !Array.isArray(allData)) {
+    for (const key of Object.keys(allData).sort()) {
+      if (PREFERENCES[key]) continue;
+      other.push(SECRET_KEY_RE.test(key) ? `${key}=<redacted>` : `${key}=${fmt(allData[key])}`);
+    }
+  }
+
+  const lines = [];
+  const head = label ? `[prefs] ${label} — ` : '[prefs] ';
+  lines.push(`${head}${all.length} settings, ${pinned.length} differing from defaults`
+    + (other.length ? `, ${other.length} not in the schema` : ''));
+  // Pins first, one per line: these are what a reader is looking for, and
+  // burying them in a 2KB run-on is how this was missed the first time.
+  for (const p of pinned) lines.push(`[prefs] PINNED ${p}`);
+  const wrap = (prefix, items) => {
+    let cur = '';
+    for (const kv of items) {
+      if (cur && cur.length + kv.length + 1 > 180) { lines.push(prefix + cur); cur = ''; }
+      cur = cur ? `${cur} ${kv}` : kv;
+    }
+    if (cur) lines.push(prefix + cur);
+  };
+  // Then everything, wrapped, so the log is self-contained for any pref the
+  // reader thinks to check later — including ones nobody has suspected yet.
+  wrap('[prefs]   ', all);
+  if (other.length) wrap('[prefs]   (not in schema) ', other);
+  return lines;
+}
+
+module.exports = {
+  PREFERENCES, validate, coerceType, describe, inertWarning, snapshotForLog,
+  DEFAULT_BOT_NAME,
+};

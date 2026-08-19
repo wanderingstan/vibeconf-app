@@ -872,6 +872,22 @@ class LocalServer {
       const code = this.roomId || 'call';
       this.callId = `${code}-${this.callStartedAt.replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}`;
       console.log(`[call] id=${this.callId} room=${this.roomId || '(unknown)'} status=${status} started=${this.callStartedAt}`);
+      // Which knobs were live for THIS call. Per call rather than per session,
+      // because preferences change mid-session — set_preference applies
+      // immediately — and a session log can hold several calls. Anything read at
+      // launch would be a claim about a different call than the one being
+      // debugged.
+      //
+      // Costs ~10 lines against a call's ~12,000, and would have turned two days
+      // of statistical inference into one grep (#417).
+      try {
+        // Bare console.log, like the `[call] id=` line above it: the auto-stamp
+        // wrapper adds the timestamp, and passing ts() here would double it.
+        for (const line of prefsSchema.snapshotForLog((k) => (this.getPref ? this.getPref(k) : undefined),
+          { label: `call ${this.callId}` })) console.log(line);
+      } catch (err) {
+        console.warn(ts(), '[prefs] snapshot failed:', err.message);
+      }
     }
 
     // Drop pending speech if we never made it in (call failed / cleared).
@@ -1883,7 +1899,10 @@ class LocalServer {
       console.log(ts(), '🎤 [floor-audio] speech OFF (analyser)');
     }
     // Wake anyone gated on the floor so a faster ON is actually actionable.
-    if (this._pref('fastFloorDetection') === true) this._onFloorChanged();
+    // No `=== true` here any more: _pref now guarantees the schema's type, and
+    // the strict comparison was the trap — it silently reads a stored string as
+    // "off" whatever the string says (#417).
+    if (this._pref('fastFloorDetection')) this._onFloorChanged();
   }
 
   // #138: the analyser edge, made actionable. Until this existed, _armBargeIn
@@ -1931,7 +1950,7 @@ class LocalServer {
   // path keeps it honest if the analyser misses (threshold too high, no remote
   // track yet). Off, this is exactly today's behaviour.
   get floorBusy() {
-    if (this._pref('fastFloorDetection') === true) {
+    if (this._pref('fastFloorDetection')) {
       return this.anyoneSpeaking || this.audioFloorSpeaking;
     }
     return this.anyoneSpeaking;
@@ -3327,10 +3346,43 @@ class LocalServer {
   // Live preference read with schema-default fallback. Used for every
   // conversation timing knob in this class so set_preference takes effect
   // immediately (no app restart).
+  // The effective value of a preference: what is stored, if it is valid for the
+  // schema, else the default.
+  //
+  // Stored values go through validate() rather than straight out, so a pin
+  // written by hand or by an older build cannot be a different TYPE from what
+  // the reader expects. That is not hypothetical — it cost two days. A bot on
+  // 2026-08-17 talked over a human three times because `floorBusy` is gated on
+  // `_pref('fastFloorDetection') === true`, and a strict comparison against a
+  // stored string is false however the string reads. `"true"` would have
+  // disabled the fast floor exactly as thoroughly as `false`, with no warning
+  // and no way to tell the two apart from a log (#417).
+  //
+  // coerceType, NOT validate: it fixes the FORM ("1500" to 1500, "on" to true)
+  // and leaves the POLICY alone. Range and enum are enforced by set_preference
+  // on the way in, so a value outside them arrived deliberately — a hand-edited
+  // config, or a test setting defaultSilenceSeconds to 0.02 so it does not sleep
+  // for seconds. Overriding a deliberate choice here would be a second bug
+  // wearing the first one's clothes.
+  //
+  // A value that cannot be made into the declared type at all IS treated as
+  // unset, and warned about once per key — the failure mode being fixed is
+  // silence, but _pref runs on the speak path, so warning on every read would
+  // be its own problem.
   _pref(key) {
     if (this.getPref) {
       const stored = this.getPref(key);
-      if (stored !== undefined && stored !== null) return stored;
+      if (stored !== undefined && stored !== null) {
+        const r = prefsSchema.coerceType(key, stored);
+        if (r.ok) return r.value;
+        if (!this._warnedBadPrefs) this._warnedBadPrefs = new Set();
+        if (!this._warnedBadPrefs.has(key)) {
+          this._warnedBadPrefs.add(key);
+          const spec = prefsSchema.PREFERENCES[key];
+          console.warn(ts(), `⚠️  [preferences] ignoring stored ${key}=${JSON.stringify(stored)} `
+            + `— ${r.error}. Using the default ${JSON.stringify(spec ? spec.default : undefined)}.`);
+        }
+      }
     }
     const spec = prefsSchema.PREFERENCES[key];
     return spec ? spec.default : undefined;

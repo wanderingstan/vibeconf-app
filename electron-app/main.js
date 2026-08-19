@@ -2226,7 +2226,10 @@ const localServer = new globalThis.LocalServer({
       // Mark the ack so its tts-ended doesn't drop us out of 'thinking' while
       // the agent is still generating the real response.
       ackTtsPending = true;
-      speakText(ack);
+      // Acks ride at ackVolume — a human's "mm-hmm" is not as loud as their
+      // sentence, and at equal volume these read as the bot barging in. This
+      // is the only caller that passes a volume; everything else is unchanged.
+      speakText(ack, undefined, undefined, { volume: Number(prefValue('ackVolume')) });
       // Surface the phrase to the slow model on its next wait_for_speech,
       // so it can self-correct if its real response contradicts the ack
       // tone. Cleared after one read on the local-server side.
@@ -5465,7 +5468,7 @@ return "none"`;
 // Unmute the mic and send the audio to the renderer's TTS queue. Resolves AFTER
 // the play-tts is sent (post the 300ms unmute settle), so callers can chain to
 // preserve send order.
-function sendPlayTts(base64Audio, emoji, { unmutedAt, expectMore, utt } = {}) {
+function sendPlayTts(base64Audio, emoji, { unmutedAt, expectMore, utt, volume } = {}) {
   return new Promise((resolve) => {
     if (!meetView || meetView.webContents.isDestroyed()) {
       console.error('[electron] Meet view not available for audio playback');
@@ -5490,7 +5493,7 @@ function sendPlayTts(base64Audio, emoji, { unmutedAt, expectMore, utt } = {}) {
       // expectMore (#372 sentence-chunked TTS): tells the renderer another
       // chunk of the SAME utterance is coming, so it must not emit tts-ended
       // (and drop the speaking state) if the queue momentarily drains.
-      sendExtMsg({ action: CALL_COMMANDS.ACTIONS.playTts, payload: { audioData: base64Audio, emoji, expectMore: !!expectMore, utt } });
+      sendExtMsg({ action: CALL_COMMANDS.ACTIONS.playTts, payload: { audioData: base64Audio, emoji, expectMore: !!expectMore, utt, volume } });
       console.log('[electron] Sent play-tts to Meet view', emoji ? `(emoji: ${emoji})` : '');
       resolve();
     }, settleMs);
@@ -5555,7 +5558,7 @@ function prewarmAckCache() {
   }
 }
 
-function speakText(text, voice, emoji) {
+function speakText(text, voice, emoji, { volume } = {}) {
   // Sanitize markdown out of the spoken string only (#160).
   const spokenText = stripMarkdownForTts(text);
   enqueueAudio(async () => {
@@ -5629,7 +5632,7 @@ function speakText(text, voice, emoji) {
           }
           const base64Audio = Buffer.from(audioBuffer).toString('base64');
           console.log('[electron] TTS synthesized:', parts[i].slice(0, 40), '→', base64Audio.length, 'bytes base64' + chunkTag);
-          await sendPlayTts(base64Audio, chunkEmoji, { unmutedAt, expectMore, utt: { id: utteranceId, chunk: i, chunks: parts.length } });
+          await sendPlayTts(base64Audio, chunkEmoji, { unmutedAt, expectMore, utt: { id: utteranceId, chunk: i, chunks: parts.length }, volume });
           lastTtsUtterance.sent = i + 1; // #360
           // ElevenLabs is back — if we'd previously degraded to the OS voice,
           // tell the agent its normal voice is restored (rides status.errors →
@@ -5658,7 +5661,7 @@ function speakText(text, voice, emoji) {
               }
               const base64Audio = Buffer.from(fallbackBuffer).toString('base64');
               console.log(`[electron] TTS fell back to the built-in ${SYSTEM_VOICE_LABEL} voice:`, parts[i].slice(0, 40), '→', base64Audio.length, 'bytes base64' + chunkTag);
-              await sendPlayTts(base64Audio, chunkEmoji, { unmutedAt, expectMore, utt: { id: utteranceId, chunk: i, chunks: parts.length } });
+              await sendPlayTts(base64Audio, chunkEmoji, { unmutedAt, expectMore, utt: { id: utteranceId, chunk: i, chunks: parts.length }, volume });
               lastTtsUtterance.sent = i + 1; // #360
               // Tell the agent ONCE that its voice changed, so it knows it now
               // sounds different (and can mention it / not be surprised). Rides

@@ -33,6 +33,22 @@ const PREFERENCES = {
       'working memory. Lower = fresher but more local-model calls; the first two ' +
       'refreshes fire sooner (~120c then ~300c) to warm up, then settle to this value.',
   },
+  ackVolume: {
+    type: 'number',
+    default: 0.35,
+    min: 0,
+    max: 1,
+    description:
+      'Playback gain for acknowledgement phrases ("mm-hmm", "right"), relative ' +
+      'to normal speech at 1. Acks used to play at exactly the volume of a real ' +
+      'reply, which is what made them feel like the bot butting in rather than ' +
+      'backchanneling — a person murmuring agreement is markedly quieter than a ' +
+      'person taking the floor. Affects the ack path only; every other utterance ' +
+      'plays at full gain. Lip-sync is driven from the pre-gain signal, so a quiet ' +
+      'ack still animates the avatar normally. Set 1 for the old behaviour, or 0 ' +
+      'to keep the ack silent while its timing still masks the thinking pause ' +
+      '(use ackShortMin/ackLongMin to stop acks firing at all).',
+  },
   ackShortMin: {
     type: 'number',
     default: 20,

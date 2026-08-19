@@ -22,6 +22,13 @@ class SyncClient {
     this.isPolling = false;
     this.onBotSpeech = config.onBotSpeech || null; // callback(text)
     this.onWhiteboardUpdate = config.onWhiteboardUpdate || null; // callback(whiteboard)
+    // The room's presence list, as the sync server sees it. This is the only
+    // roster that spans app instances: every bot posts its own presence to the
+    // website, but each bot's LOCAL members list is written solely by posts to
+    // its own local server, so it never contains a peer. Without this the
+    // barge-in check cannot tell a bot interrupter from a human one and yields
+    // to other bots as if they were people. callback(members)
+    this.onMembers = config.onMembers || null;
     // #221: called when room-state reads start or stop failing.
     // callback({ healthy, status, consecutive })
     this.onReadHealthChange = config.onReadHealthChange || null;
@@ -40,6 +47,7 @@ class SyncClient {
     }
     if (config.onBotSpeech) this.onBotSpeech = config.onBotSpeech;
     if (config.onWhiteboardUpdate) this.onWhiteboardUpdate = config.onWhiteboardUpdate;
+    if (config.onMembers) this.onMembers = config.onMembers;
     if (config.onReadHealthChange) this.onReadHealthChange = config.onReadHealthChange;
   }
 
@@ -179,6 +187,14 @@ class SyncClient {
         if (versionChanged && this.onWhiteboardUpdate) {
           this.onWhiteboardUpdate(whiteboard);
         }
+      }
+
+      // Presence rides along on the poll we are already making — no new
+      // endpoint and no new timer. Dispatched BEFORE the first-poll bail-out
+      // below: that early return exists to avoid speaking stale transcript
+      // entries, and it must not also cost us the roster.
+      if (Array.isArray(data.members) && this.onMembers) {
+        this.onMembers(data.members);
       }
 
       // First poll: just capture the timestamp, don't speak old entries

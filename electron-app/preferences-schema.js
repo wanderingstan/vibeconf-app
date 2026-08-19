@@ -632,6 +632,23 @@ const PREFERENCES = {
       'the interruption; with no analyser signal the old tracker-flag behavior ' +
       'decides, so a broken analyser can never stop the bot from yielding.',
   },
+  bargeInClearHangoverMs: {
+    type: 'number',
+    default: 600,
+    min: 0,
+    max: 5000,
+    description:
+      'How long the room must stay quiet before a "the interrupter went silent" ' +
+      'edge is allowed to DISARM the barge-in monitor. Meet\'s speaking meter ' +
+      'returns to rest between syllables — measured 300-900ms gaps mid-sentence ' +
+      'on a normally-spoken utterance — and each of those dips used to clear the ' +
+      'monitor outright, so a person talking steadily could re-arm and clear four ' +
+      'times without the bot ever yielding. This hangover applies ONLY to the ' +
+      'disarm path, so floor-opening detection (which wants the fast falling ' +
+      'edge) is unaffected: a false negative here means the bot talks over a ' +
+      'human, a false negative there only costs latency. Set 0 to restore the ' +
+      'old immediate-clear behaviour.',
+  },
   bargeInGraceMinMs: {
     type: 'number',
     default: 900,

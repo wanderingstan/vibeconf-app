@@ -4699,6 +4699,35 @@ async function syncSharedLoginCookie() {
   }
 }
 
+// The page the system browser lands on at the end of the OAuth round trip.
+//
+// This is the ONLY thing the person signing in actually sees — the app window is
+// behind the browser at that moment — so it has to state the outcome plainly and
+// then stay put. It deliberately does NOT call window.close(): see the note at
+// the callback handler for why self-closing made a working sign-in look broken.
+//
+// Self-contained (inline styles, no network) because it is served off an
+// ephemeral loopback port that closes moments later — anything external would
+// render after the server is already gone.
+function authResultPage(ok) {
+  const title = ok ? 'Signed in' : 'Sign-in did not complete';
+  const detail = ok
+    ? 'Vibeconferencing has your login. You can close this tab and go back to the app.'
+    : 'The sign-in came back without a token, so the app is still signed out. '
+      + 'Close this tab and try Sign in again from the app.';
+  return '<!doctype html><html><head><meta charset="utf-8">'
+    + '<meta name="viewport" content="width=device-width,initial-scale=1">'
+    + '<title>' + title + '</title></head>'
+    + '<body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;'
+    + 'font:16px/1.5 -apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;'
+    + 'background:#f6f7f9;color:#1a1a1a">'
+    + '<main style="max-width:26rem;padding:2rem;text-align:center">'
+    + '<div style="font-size:2.5rem;line-height:1">' + (ok ? '&#9989;' : '&#9888;&#65039;') + '</div>'
+    + '<h1 style="margin:.75rem 0 .5rem;font-size:1.35rem">' + title + '</h1>'
+    + '<p style="margin:0;color:#555">' + detail + '</p>'
+    + '</main></body></html>';
+}
+
 // Open Google OAuth in the system browser
 // Google blocks embedded webviews, so we must use the real browser.
 // We start a local HTTP server to catch the session cookie after login.
@@ -4746,8 +4775,22 @@ function openGoogleLogin() {
         console.warn('[electron] No token in auth callback');
       }
 
-      res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end('<html><body><h2>Signed in! You can close this tab.</h2><script>window.close()</script></body></html>');
+      // Success and failure used to render the SAME "Signed in!" page, and that
+      // page closed itself. Both halves hid real state:
+      //
+      //   - A token-less callback still claimed success, so a genuinely broken
+      //     sign-in was indistinguishable from a working one.
+      //   - window.close() left NOTHING on screen to read. When the browser was
+      //     launched fresh for this flow, the callback tab was its ONLY tab — so
+      //     closing it quit the browser outright. The user saw the window vanish
+      //     with no confirmation and reasonably read it as a failed login.
+      //
+      // Reported 2026-08-19 as "I still can't log in"; the app log showed the
+      // sign-in had in fact succeeded on every attempt. Nothing was broken except
+      // the feedback. So: say which outcome happened, and let the person close
+      // the tab themselves.
+      res.writeHead(token ? 200 : 400, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(authResultPage(Boolean(token)));
       server.close();
       return;
     }

@@ -99,6 +99,39 @@ function clip(seconds) {
   return out;
 }
 
+// A clip that holds the floor with NO gaps.
+//
+// Ordinary speech does not: measured against a 12s clip, the subject's analyser
+// reported episodes of 0.35-4.2s separated by 150-350ms of silence, because the
+// recording has the pauses any real sentence has. For most rules that is what we
+// want — it is what a person sounds like. But a rule that asks "does it keep
+// holding while someone is STILL talking" cannot use it: the bot that speaks in
+// one of those gaps has taken a legitimate opening, not barged in, so the rule
+// scores correct behaviour as a failure.
+//
+// silenceremove strips the pauses before the loop, so the result is continuous
+// voiced audio and any bot speech during it is unambiguously a talk-over.
+function gaplessClip(seconds) {
+  mkdirSync(CLIP_DIR, { recursive: true });
+  const out = path.join(CLIP_DIR, `gapless-${seconds}s.wav`);
+  if (!existsSync(out)) {
+    const packed = path.join(CLIP_DIR, 'packed.wav');
+    if (!existsSync(packed)) {
+      execFileSync('ffmpeg', ['-nostdin', '-loglevel', 'error', '-y',
+        '-i', TEST_SPEECH_PATH,
+        // strip silence everywhere, not just the leading run
+        '-af', 'silenceremove=start_periods=1:stop_periods=-1:'
+             + 'start_threshold=-40dB:stop_threshold=-40dB:'
+             + 'start_duration=0:stop_duration=0.05:detection=rms',
+        '-ac', '1', '-ar', '48000', '-c:a', 'pcm_s16le', packed]);
+    }
+    execFileSync('ffmpeg', ['-nostdin', '-loglevel', 'error', '-y',
+      '-stream_loop', '-1', '-i', packed,
+      '-t', String(seconds), '-ac', '1', '-ar', '48000', '-c:a', 'pcm_s16le', out]);
+  }
+  return out;
+}
+
 // ── observing a decision ────────────────────────────────────────────────────
 // Assertions read the SUBJECT's own session log. These are the same lines we
 // read by hand all week; each MARKER records what the line proves, so a failure
@@ -264,6 +297,33 @@ async function resetPrefs(bot, defaults) {
   return moved;
 }
 
+// Wait until the SUBJECT can actually hear the interrupter.
+//
+// The mirror of settleFloor, and needed for the same reason. Every rule that
+// asks "does it hold back while someone else is talking" first has to get the
+// floor genuinely busy — and playAudio() resolves when the POST lands, not when
+// sound reaches the room. A fixed preroll guesses at that, and when it guesses
+// short the subject speaks into a floor that is not yet busy, does not stash,
+// and the rule reports "never stashed — cannot test the hold" as though the app
+// had misbehaved.
+//
+// Returns false rather than throwing, so the rule can say the scenario never
+// started instead of blaming the subject.
+async function waitForFloorBusy(bot, { maxMs = 20_000 } = {}) {
+  const started = Date.now();
+  // do/while: maxMs:0 is a single "is it busy right now?" probe, which is how a
+  // rule checks its premise still holds at the END of an observation.
+  do {
+    const tail = String((await bot.sessionLog(60)) || '');
+    const on = tail.lastIndexOf('[floor-audio] speech ON');
+    const off = tail.lastIndexOf('[floor-audio] speech OFF');
+    if (on > off) return true;              // busy right now, from its own view
+    if (Date.now() - started >= maxMs) break;
+    await sleep(200);
+  } while (true);
+  return false;
+}
+
 // Ask the subject to speak, and return only once it actually IS — or say why
 // it never got there.
 //
@@ -326,9 +386,10 @@ const RULES = [
     async run({ subject, voice }) {
       // VOICE takes the floor and holds it well past the subject's whole
       // decision window, so there is no ambiguity about who was talking.
-      await voice.playAudio({ path: clip(10), emoji: '🗣️' });
-      await sleep(2500);                       // let the floor register
+      await voice.playAudio({ path: gaplessClip(8), emoji: '🗣️' });
+      const busy = await waitForFloorBusy(subject);
       return window_(subject, async () => {
+        if (!busy) return;                     // verdict reports the non-start
         await subject.speak('I have a thought about the roadmap that I would like to share now.');
         await sleep(3000);
       });
@@ -427,21 +488,36 @@ const RULES = [
       // suite up, while the observation stayed at 10.5s, and the rule started
       // reporting "stashed and then replayed OVER the speaker" for behaviour
       // that was fine. Derived from one number now so the two cannot drift.
-      const PREROLL_MS = 2500;                  // let the floor register first
-      const OBSERVE_MS = 8000;                  // how long the hold must survive
-      const MARGIN_MS = 4000;                   // playback start-up and jitter
-      const clipSeconds = Math.ceil((PREROLL_MS + OBSERVE_MS + MARGIN_MS) / 1000);
+      // The rule only means anything while the interrupter is STILL talking.
+      // Clip length is not a proxy for that: the analyser reports at most ~5s of
+      // continuous floor even from a 15s clip, so a longer clip does not buy a
+      // longer busy floor. Rather than tune a number that has already drifted
+      // twice, the rule CHECKS its own premise at the end and says so when it
+      // does not hold.
+      const OBSERVE_MS = 4000;
 
-      await voice.playAudio({ path: clip(clipSeconds), emoji: '🗣️' });
-      await sleep(PREROLL_MS);
-      return window_(subject, async () => {
+      await voice.playAudio({ path: gaplessClip(8), emoji: '🗣️' });
+      const busy = await waitForFloorBusy(subject);
+      let stillBusy = false;
+      const w = await window_(subject, async () => {
+        if (!busy) return;
         await subject.speak('Here is the point I wanted to make about the schedule.');
         await sleep(OBSERVE_MS);                // it should stash, and still be holding
+        stillBusy = await waitForFloorBusy(subject, { maxMs: 0 });
       });
+      return { w, busy, stillBusy };
     },
-    verdict(w) {
+    verdict({ w, busy, stillBusy }) {
+      if (!busy) return { ok: false, note: 'scenario did not start — the floor never went busy' };
       if (!saw(w, 'stashed')) return { ok: false, note: 'never stashed — cannot test the hold' };
-      if (saw(w, 'spoke')) return { ok: false, note: 'stashed and then replayed OVER the speaker' };
+      if (saw(w, 'spoke')) {
+        // Distinguish "barged in" from "the interrupter finished and it took a
+        // legitimate opening" — which is what stash-replay-on-opening asserts.
+        return stillBusy
+          ? { ok: false, note: 'stashed and then replayed OVER the speaker' }
+          : { ok: false, note: 'inconclusive — the interrupter stopped mid-observation, '
+              + 'so the replay may have been a legitimate opening' };
+      }
       return { ok: true, note: 'stashed and held while the floor stayed busy' };
     },
   },
@@ -452,7 +528,7 @@ const RULES = [
     needs: ['audio'],
     async run({ subject, voice }) {
       await voice.playAudio({ path: clip(6), emoji: '🗣️' });
-      await sleep(1500);
+      await waitForFloorBusy(subject);
       return window_(subject, async () => {
         await subject.speak('The thing I was going to say when you started talking.');
         await sleep(9000);                      // voice finishes ~4.5s in; the floor opens
@@ -476,7 +552,7 @@ const RULES = [
     // (#413). Politeness that loses the reply is not politeness.
     async run({ subject, voice }) {
       await voice.playAudio({ path: clip(4), emoji: '🗣️' });
-      await sleep(1200);
+      await waitForFloorBusy(subject);
       return window_(subject, async () => {
         await subject.speak('The one thing I wanted to add before we move on.');
         await sleep(10_000);            // voice ends ~3s in; plenty of opening after
@@ -497,7 +573,7 @@ const RULES = [
     needs: ['audio', 'human'],
     async run({ subject, voice }) {
       await voice.playAudio({ path: clip(6), emoji: '🗣️' });
-      await sleep(1500);
+      await waitForFloorBusy(subject);
       return window_(subject, async () => {
         await subject.speak('I had something queued about the release.');
         await sleep(1500);

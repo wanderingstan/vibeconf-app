@@ -41,12 +41,22 @@
 //
 // ── running it ───────────────────────────────────────────────────────────────
 //
+//   scripts/spawn-test-fleet.sh 2 --kill   # A FRESH FLEET PER RUN — see below
+//   node scripts/etiquette-prep.mjs        # disguise the voice, clear presence
 //   scripts/spawn-test-fleet.sh 2          # boots Alice:7901, Jimmy:7902
 //   node scripts/etiquette-test.mjs --room <meet-code>
 //
 //   --subject Alice:7901 --voice Jimmy:7902   override the roles
 //   --only no-talk-over,yield                 run a subset
 //   --keep                                    leave the bots in the call
+//
+// A FRESH FLEET PER RUN IS NOT OPTIONAL. Bots accumulate state across runs — a
+// held stash, a floor that never fully reopened, a roster belief that cannot be
+// unlearned — and the rules stop measuring the app. Observed directly: the same
+// build scored 3/7 from a clean boot and 0/7 after several --keep runs in a row,
+// with failures like "neither spoke nor stashed" that describe the harness's
+// leftovers rather than any behaviour. Use --keep to inspect ONE run, then kill
+// and prep before the next.
 //
 // Exit code is non-zero if any rule fails, so this can gate a release.
 
@@ -588,6 +598,11 @@ async function main() {
   }
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${results.length - failed.length}/${results.length} rules held.`);
+  if (has('keep')) {
+    console.log('\n⚠️  --keep leaves the bots in the call with their stashes and floor state.'
+      + '\n   Kill and re-prep before the next run, or the rules will measure the leftovers'
+      + '\n   (measured: 3/7 clean, 0/7 after several --keep runs on the same build).');
+  }
   report();
   process.exit(failed.length ? 1 : 0);
 }

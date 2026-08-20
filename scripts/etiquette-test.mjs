@@ -418,12 +418,25 @@ const RULES = [
     claim: 'a held reply waits for a real opening rather than barging in later',
     needs: ['audio'],
     async run({ subject, voice }) {
-      await voice.playAudio({ path: clip(10), emoji: '🗣️' });
-      await sleep(2500);
+      // The interrupter must still be talking when the observation ENDS.
+      // Otherwise the floor opens inside the window, the held reply replays —
+      // correctly, that is what stash-replay-on-opening asserts — and this rule
+      // reads a right answer as a failure to wait.
+      //
+      // It did exactly that: the clip was shortened from 20s to 10s to speed the
+      // suite up, while the observation stayed at 10.5s, and the rule started
+      // reporting "stashed and then replayed OVER the speaker" for behaviour
+      // that was fine. Derived from one number now so the two cannot drift.
+      const PREROLL_MS = 2500;                  // let the floor register first
+      const OBSERVE_MS = 8000;                  // how long the hold must survive
+      const MARGIN_MS = 4000;                   // playback start-up and jitter
+      const clipSeconds = Math.ceil((PREROLL_MS + OBSERVE_MS + MARGIN_MS) / 1000);
+
+      await voice.playAudio({ path: clip(clipSeconds), emoji: '🗣️' });
+      await sleep(PREROLL_MS);
       return window_(subject, async () => {
         await subject.speak('Here is the point I wanted to make about the schedule.');
-        await sleep(2000);                      // it should stash…
-        await sleep(6000);                      // …and still be waiting, floor still busy
+        await sleep(OBSERVE_MS);                // it should stash, and still be holding
       });
     },
     verdict(w) {

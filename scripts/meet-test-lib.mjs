@@ -113,7 +113,21 @@ export class Bot {
   // Google-side latency, not a regression). A 20s cap false-reported "not in-call"
   // on those nights and cascaded into downstream failures; 40s absorbs the tail
   // while still bounding a genuinely-stuck join.
-  async warmUp({ maxMs = Number(process.env.VIBECONF_WARMUP_MAX_MS) || 40000,
+  // 75s (was 40s), 2026-08-20. The same drift that broke shareWhiteboard is
+  // moving through this file one timeout at a time, and this is the next one in
+  // its path. Measured in-call latency on the nightly:
+  //
+  //   2026-08-17 (all green): 8.1s  8.1s  8.1s  9.1s
+  //   2026-08-20:            20.2s 27.2s 31.2s 34.2s
+  //
+  // 34.2s is 86% of the old 40s cap — one bad night from false-reporting "not
+  // in-call" and cascading, which is exactly what the 20s cap did before it. A
+  // cap should bound a genuinely-stuck join, not track Google's current mood, so
+  // this is set well clear of the observed tail rather than just above it.
+  //
+  // Costs nothing when things are healthy: the loop breaks the moment in-call is
+  // seen, so a fast join still returns in ~8s.
+  async warmUp({ maxMs = Number(process.env.VIBECONF_WARMUP_MAX_MS) || 75000,
                 settleMs = Number(process.env.VIBECONF_WARMUP_SETTLE_MS) || 5000 } = {}) {
     const t0 = Date.now();
     let inCall = false;
@@ -133,7 +147,11 @@ export class Bot {
   // in-call — e.g. the caption-language round trip, a per-call Meet setting that
   // errors "Not in a call" if the bot hasn't joined yet. Returns a bool so callers
   // can skip loudly rather than hard-fail when Google's guest-join is slow.
-  async waitInCall({ maxMs = 40000 } = {}) {
+  // Same 40s → 75s raise, and for the same measurements as warmUp above. This one
+  // matters more: warmUp only logs and proceeds, whereas callers GATE on this
+  // boolean, so a cap under the real join latency turns Google being slow into a
+  // failed step.
+  async waitInCall({ maxMs = 75000 } = {}) {
     const t0 = Date.now();
     while (Date.now() - t0 < maxMs) {
       try { if ((await this.status()).callStatus === 'in-call') return true; } catch { /* retry */ }

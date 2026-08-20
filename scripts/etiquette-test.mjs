@@ -102,6 +102,8 @@ const MARKERS = {
   // means it actually stopped mid-sentence for a person.
   backedOff:    { re: /\[barge-in\] .*interrupted — backing off/,           means: 'stopped talking for the interrupter' },
   endedEarly:   { re: /\[barge-in\] interruption already ended/,            means: 'decided the interruption was over and kept going' },
+  botVsBot:     { re: /\[barge-in\] bot-vs-bot/,                            means: 'treated the interrupter as a PEER BOT, not a person' },
+  humanInt:     { re: /\[barge-in\] human interrupted — backing off/,       means: 'yielded to what it believed was a person' },
   resumed:      { re: /\[tts-resume\] resuming interrupted utterance/,      means: 'finished the sentence it was cut off in' },
   resumeStale:  { re: /\[tts-resume\] skip — too stale/,                    means: 'wanted to resume but the tail had aged out' },
   resumeMoved:  { re: /\[tts-resume\] skip — conversation moved on/,        means: 'dropped the tail because too much was said meanwhile' },
@@ -256,11 +258,20 @@ const RULES = [
       if (!saw(w, 'armed')) {
         return { ok: false, note: 'barge-in never ARMED — the interruption was not noticed at all' };
       }
-      if (saw(w, 'backedOff')) return { ok: true, note: 'armed and stopped talking' };
+      // Which branch of _evaluateBargeIn ran matters more than the outcome.
+      // The subject classifies interrupters with _botNameSet(), and the VOICE is
+      // a registered bot — so this exercises the PEER-BOT path (an extra random
+      // tie-break delay, whichever bot's timer fires first yields) and not the
+      // human path (#154). They are different code with different semantics, and
+      // reporting one as the other is how a suite starts lying. Simulating a
+      // human means joining WITHOUT registering — see the issue.
+      const peer = saw(w, 'botVsBot') && !saw(w, 'humanInt');
+      const tag = peer ? ' [PEER-BOT path — says nothing about human barge-in]' : '';
+      if (saw(w, 'backedOff')) return { ok: !peer, note: `armed and stopped talking${tag}` };
       if (saw(w, 'endedEarly')) {
-        return { ok: false, note: 'armed, then decided the interruption had already ended and kept going' };
+        return { ok: false, note: `armed, then decided the interruption had already ended and kept going${tag}` };
       }
-      return { ok: false, note: 'armed but never backed off — the grace never fired' };
+      return { ok: false, note: `armed but never backed off — the grace never fired${tag}` };
     },
   },
 

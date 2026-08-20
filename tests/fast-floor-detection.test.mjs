@@ -65,11 +65,12 @@ test('the experiment ships OFF now that it has been measured', () => {
   assert.ok(m, 'the floor needs its own threshold constant');
   assert.ok(Number(m[1]) >= -45, `${m[1]}dB is not "genuinely loud" — a keystroke clears it`);
   // The floor decision must stay independent of the STT gate (this.speaking).
-  // It now runs through `farEnd`, which starts at the floor threshold and is
-  // additionally filtered by the #245 echo guard — so assert the derivation
-  // rather than the literal expression, which has legitimately changed once and
-  // will again.
-  assert.match(inject, /let farEnd = db > FLOOR_SPEECH_DB/);
+  // It runs through `farEnd`, which is now the floor threshold and nothing else
+  // — #245's echo guard used to filter it further and was removed in #487. The
+  // declaration keyword is not the point (it became `const` once the guard
+  // stopped reassigning it), so match the derivation, per this test's own note
+  // that the expression has legitimately changed before and will again.
+  assert.match(inject, /(?:const|let) farEnd = db > FLOOR_SPEECH_DB/);
   assert.match(inject, /noteAudioLevel\(farEnd\)/, 'the floor must not reuse this.speaking');
 });
 

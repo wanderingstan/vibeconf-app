@@ -3317,6 +3317,12 @@ class LocalServer {
       if (this.floorBusy) this._armBargeIn();
       else this._rearmBargeInWhileSpeaking(); // floor quiet for now; keep looking
     }, Math.max(200, graceMs));
+    // The chain only terminates when the bot stops speaking, so an utterance
+    // that never formally ends would hold the event loop open forever. It is a
+    // watch, not work: nothing should stay alive on its account. (Caught by the
+    // test suite hanging on barge-in-rode-it-out.test.mjs, which leaves the bot
+    // in 'speaking' after the ride-out and so never let node exit.)
+    this._bargeInRearmTimer.unref?.();
   }
 
   // #392: is the floor demonstrably quiet RIGHT NOW, per the analyser?

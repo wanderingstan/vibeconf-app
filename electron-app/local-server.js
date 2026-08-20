@@ -3620,6 +3620,24 @@ class LocalServer {
     return !!text && text.includes(myName);
   }
 
+  // Was this bot addressed by name at any point while the stash was held?
+  //
+  // Deliberately the whole held window, not _stashLatestUtteranceMentionsBotName's
+  // single latest utterance. That one answers "did the utterance that just ended
+  // name me", which is the right question for a speech-stop edge. Here the
+  // question is different: someone asked for me while I was waiting, and by the
+  // time the floor opens their question is usually no longer the newest caption
+  // -- the interrupter kept talking after it. Looking only at the latest entry
+  // misses exactly the case this exists for.
+  _stashWasAddressedByName() {
+    const stash = this.bargeInStash;
+    if (!stash) return false;
+    const myName = (this.getEffectiveBotName() || '').toLowerCase();
+    if (!myName) return false;
+    const entries = this._entriesSince(stash.at, this.getEffectiveBotName());
+    return entries.some(e => String(e.text || '').toLowerCase().includes(myName));
+  }
+
   // Attempt to replay any fresh barge-in stash before the waiter returns
   // to the slow model. Returns the array of texts that were played (or
   // null if nothing). The bot speaks via the existing onBotSpeech path,
@@ -3646,11 +3664,25 @@ class LocalServer {
       const newWords = this._tickWordCount(this.getEffectiveBotName()) - this.bargeInStash.wordsAtStash;
       const maxNewWords = Number(this._pref('bargeInStashRedeliverMaxNewWords'));
       if (Number.isFinite(maxNewWords) && newWords > maxNewWords) {
-        console.log(ts(), '🛡️  [barge-in] discarding stash — conversation moved on (' + newWords + ' new words > ' + maxNewWords + ') — agent will re-derive');
-        this._noteDiscardedStash(this.bargeInStash, `${newWords} words were said while it waited`);
-        this.bargeInStash = null;
-        this._lowerHandIfYielding();
-        return null;
+        // Unless they asked for it by name. The guard's premise is that nobody
+        // wants the held thought any more, and a direct "So <name>, what do you
+        // think?" is that premise being contradicted out loud. Discarding there
+        // answers a question with silence, which is the worst of both: the bot
+        // neither speaks nor is heard declining to.
+        //
+        // Only this guard is waived. The wall-clock age guard above still runs,
+        // because a genuinely ancient thought is wrong to replay however it was
+        // asked for, and the floor-busy check below still runs, because being
+        // named is not licence to talk over the person doing the naming.
+        if (this._stashWasAddressedByName()) {
+          console.log(ts(), '🛡️  [barge-in] keeping stash despite ' + newWords + ' new words — the bot was addressed by name');
+        } else {
+          console.log(ts(), '🛡️  [barge-in] discarding stash — conversation moved on (' + newWords + ' new words > ' + maxNewWords + ') — agent will re-derive');
+          this._noteDiscardedStash(this.bargeInStash, `${newWords} words were said while it waited`);
+          this.bargeInStash = null;
+          this._lowerHandIfYielding();
+          return null;
+        }
       }
     }
     // #430/#442: the floor, read HERE — at the instant audio would start, which

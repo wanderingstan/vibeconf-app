@@ -19,3 +19,4 @@ __pycache__/
 
 # Local secrets
 .env
+.test-clips/

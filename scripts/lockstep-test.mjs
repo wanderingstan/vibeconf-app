@@ -154,8 +154,13 @@ async function run() {
   // fires, so every later round reads as silence and the collision rate is
   // computed from a handful of unpolluted rounds. Seen directly: six of ten
   // rounds recorded no speech at all until this was turned off.
+  // Disabled FOR THIS RUN only — a replayed stash would look like a collision.
+  // Restored in the finally below: these are shared test profiles, and a pin left
+  // behind silently voids whatever runs next. It did exactly that to the
+  // etiquette suite, whose stash rules all failed against a leftover 0 until the
+  // cause was traced back here.
   for (const b of BOTS) await setPref(b, 'bargeInStashMaxAgeMs', 0);
-  record('harness', 'noStashReplay', true, 'bargeInStashMaxAgeMs=0 for the run');
+  record('harness', 'noStashReplay', true, 'bargeInStashMaxAgeMs=0 for the run (restored after)');
 
   const logs = [];
   for (const b of BOTS) {
@@ -237,6 +242,24 @@ async function run() {
   record('harness', 'collisionRate', true, `${pct.toFixed(1)}% (${collisions}/${allGaps.length})`);
 }
 
+// Put back anything this run pinned. These are SHARED test profiles: a value
+// left behind does not fail, it quietly changes what the next suite measures.
+// This one set bargeInStashMaxAgeMs=0 and left it, and the etiquette suite then
+// reported three app bugs that were really this pin — every stash discarded the
+// instant it was made ("too stale (2252ms old, max 0ms)").
+async function restorePins() {
+  const { PREFERENCES } = (await import('node:module')).createRequire(import.meta.url)(
+    '../electron-app/preferences-schema.js');
+  for (const b of BOTS) {
+    try { await setPref(b, 'bargeInStashMaxAgeMs', PREFERENCES.bargeInStashMaxAgeMs.default); }
+    catch { /* best-effort: a bot that died mid-run cannot be restored */ }
+  }
+}
+
 run()
   .catch((err) => record('harness', 'run', false, err.message))
-  .finally(() => { const { fails } = report(); process.exit(fails > 0 ? 1 : 0); });
+  .finally(async () => {
+    await restorePins();
+    const { fails } = report();
+    process.exit(fails > 0 ? 1 : 0);
+  });

@@ -196,11 +196,43 @@ export class Bot {
     // true→false in ~2s with "Video was requested, but no video stream was
     // provided"). A one-shot "saw true once" check passes on that flicker — a
     // false pass. So require sharing to first engage, then STAY up for sustainMs.
+    // Phase 1 must give the app its OWN full budget. main.js drives Present-now
+    // from a retry loop bounded by PRESENT_RETRY_MS (30s) with backoff — roughly
+    // 1.8s, 2.5s, 3.5s, 5s, 7s, 8s — and only calls it a failure when that
+    // expires. This wait used to be a flat ~6s, which was a DIFFERENT and much
+    // stricter contract than the app's, so the harness declared failure while
+    // the app was still legitimately retrying.
+    //
+    // Worse, it was self-fulfilling: the caller reacts to the "failure" by
+    // stopping the share, which bumps shareGeneration and cancels the app's loop
+    // ("Present trigger loop cancelled (superseded by stop/leave/new share)") —
+    // so the present could never land once the 6s had passed.
+    //
+    // It passed for two months because engagement used to fit inside 6s. On
+    // 2026-08-18 it stopped: Meet's toolbar alone now takes ~7.5s to produce the
+    // button ("Present button appeared after 7542 ms wait"), and a real
+    // engagement measured on 08-20 took 13.0s on attempt 4 — with the share
+    // genuinely working (speaker-tracker saw the screen share, a 1920x1200
+    // stream was captured). Three nightlies were red for a share that worked.
+    //
+    // So: wait the app's budget plus a small margin for the confirming status
+    // poll. A share that is REALLY broken still fails — the app gives up at 30s
+    // and sets sharing=false — it just takes as long to say so as the app does.
+    const ENGAGE_TIMEOUT_MS = 32_000;   // PRESENT_RETRY_MS (30s) + confirmation margin
+    // Warn well before the budget runs out. The app's backoff lands attempts at
+    // roughly 1.8s, 4.3s, 7.8s, 12.8s, 19.8s cumulative, so needing more than
+    // ~10s means Meet is already past three retries — the state this test was
+    // silently in for weeks before it finally crossed the old 6s line. Half the
+    // budget (16s) would NOT have flagged the 13.0s engagement measured on
+    // 2026-08-20, which is exactly the case the warning exists to catch.
+    const ENGAGE_SLOW_MS = 10_000;
     let sharing = false;
-    for (let i = 0; i < 20 && !sharing; i++) { // phase 1: wait up to ~6s to engage
+    const engageDeadline = Date.now() + ENGAGE_TIMEOUT_MS;
+    while (!sharing && Date.now() < engageDeadline) {
       await sleep(300);
       try { sharing = !!(await this.status()).sharing; } catch { /* retry */ }
     }
+    const engagedAfterMs = sharing ? Date.now() - started : null;
     let sustained = sharing, droppedAfterMs = null;
     if (sharing) { // phase 2: it must HOLD, not flicker
       const holdUntil = Date.now() + sustainMs;
@@ -227,10 +259,16 @@ export class Bot {
     const ok = sustained || environmental;
     log(this.name, 'shareWhiteboard', {
       ms, ok,
-      note: !engaged ? 'NOT sharing after 6s — present never engaged (share flow broke? guest can\'t present?)'
+      note: !engaged ? `NOT sharing after ${Math.round(ENGAGE_TIMEOUT_MS / 1000)}s — present never engaged (share flow broke? guest can't present?)`
         : !sustained ? `⚠︎ ENVIRONMENTAL (non-gating, #282): engaged then collapsed after ~${droppedAfterMs}ms — no held video stream (unauth whiteboard window #274 / Screen-Recording perm). Present flow itself worked.`
-          : `sharing held for ${sustainMs}ms`,
-      meta: { engaged, sustained, droppedAfterMs, environmental },
+          // Engagement time is reported on SUCCESS too, deliberately. This test
+          // went red for three nights because that number drifted from ~<6s to
+          // 13s with nothing watching it — the failure was the first anyone
+          // heard of a trend that had been building. A slow-but-passing share is
+          // the early warning; flag it once it is past half the budget.
+          : `sharing held for ${sustainMs}ms (engaged after ${engagedAfterMs}ms${
+            engagedAfterMs > ENGAGE_SLOW_MS ? ` ⚠︎ SLOW — past ${Math.round(ENGAGE_SLOW_MS / 1000)}s, Meet is retrying` : ''})`,
+      meta: { engaged, sustained, droppedAfterMs, environmental, engagedAfterMs },
     });
     return { sharing: sustained, engaged, sustained, droppedAfterMs, environmental };
   }

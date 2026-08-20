@@ -1128,7 +1128,12 @@ function callViewRequest(channel, payload, resultEvent, timeoutMs = 15000) {
   });
 }
 
-function chatRequest(channel, payload) {
+// NOTE: a timeout here does NOT mean the renderer flow stopped — it keeps
+// running and may still send. Callers must treat CHAT_TIMEOUT_ERROR as
+// "unknown, possibly still in flight" and never retry on it (a retry queues
+// a duplicate send behind the one that may yet succeed).
+const CHAT_TIMEOUT_ERROR = 'Chat operation timed out';
+function chatRequest(channel, payload, timeoutMs = 15000) {
   return new Promise((resolve) => {
     const wc = callCmdWC(channel);
     if (!wc) {
@@ -1138,8 +1143,8 @@ function chatRequest(channel, payload) {
     const requestId = `chat-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const timer = setTimeout(() => {
       ipcMain.removeListener('chat-result', handler);
-      resolve({ ok: false, error: 'Chat operation timed out' });
-    }, 15000);
+      resolve({ ok: false, error: CHAT_TIMEOUT_ERROR });
+    }, timeoutMs);
     const handler = (_event, data) => {
       if (data?.requestId !== requestId) return;
       clearTimeout(timer);
@@ -1701,10 +1706,19 @@ const localServer = new globalThis.LocalServer({
             // user may only share once, so "retry on next share" wasn't enough).
             let posted = false;
             for (let i = 1; i <= 3 && !posted; i++) {
-              const result = await chatRequest(CALL_COMMANDS.sendChat, { text: `Whiteboard (live): ${url}` });
+              // 45s: a send flow can legitimately take a long time right after a
+              // share (chat pane contention with speaker tracking). The generous
+              // timeout is what makes "timed out" trustworthy enough to act on.
+              const result = await chatRequest(CALL_COMMANDS.sendChat, { text: `Whiteboard (live): ${url}` }, 45000);
               if (result?.ok) {
                 posted = true;
                 console.log('[main] #189 posted whiteboard link to chat:', url);
+              } else if (result?.error === CHAT_TIMEOUT_ERROR) {
+                // The renderer flow may still be typing/sending — retrying here is
+                // exactly what interleaved three copies of this link into one
+                // gibberish chat message. Stop; the link may yet post on its own.
+                console.warn('[main] #189 whiteboard link post attempt', i, 'timed out — not retrying (send may still be in flight)');
+                break;
               } else {
                 console.warn('[main] #189 whiteboard link post attempt', i, 'failed:', result?.error || '(no result)');
                 if (i < 3) await new Promise((r) => setTimeout(r, 2000));
@@ -8786,10 +8800,6 @@ function openExternalUrl(url) {
   if (typeof url === 'string' && /^https:\/\//i.test(url)) shell.openExternal(url);
 }
 
-// The baked-in testing meet, opened from File ▸ Open Default Testing Meet in
-// Browser. Temporary convenience for development.
-const DEFAULT_TESTING_MEET_URL = 'https://meet.google.com/paz-sqoa-npe';
-
 // The bot's view only occupies the window during a call. `joining` and
 // `waiting-to-be-admitted` count as "in a call" so the green room and the
 // admission prompt are on screen — hiding those would leave the user staring at
@@ -9774,16 +9784,6 @@ function createMainWindow() {
           label: "Show Bot's View",
           accelerator: 'CmdOrCtrl+Shift+B',
           click: () => { try { setBotViewState('popped'); } catch (err) { console.warn('[electron] Show Bot\'s View failed:', err.message); } },
-        },
-        { type: 'separator' },
-        {
-          // Was a link in the panel's pre-call card. It's a testing shortcut, not
-          // something most users need on the main screen — and it's on its way
-          // out — so it lives in the menu now. Opens in the USER's own browser
-          // (so you join as a human alongside the bot); the app's tab-detection
-          // then auto-fills the URL in the panel, ready to send the bot in too.
-          label: 'Open Default Testing Meet in Browser',
-          click: () => { openExternalUrl(DEFAULT_TESTING_MEET_URL); },
         },
       ],
     },

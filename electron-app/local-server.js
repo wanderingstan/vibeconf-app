@@ -1931,6 +1931,15 @@ class LocalServer {
     return this.agentState() === 'never' ? 'never' : 'quiet';
   }
 
+  // #467: when our OWN outgoing audio was last loud. Published per sample by
+  // page-inject's VirtualMic analyser — the same envelope the echo guard keys
+  // on — so this is the app's view of exactly when the far-end signal was being
+  // suppressed. Used by _floorQuietPerAnalyser to tell "the room went quiet"
+  // from "we stopped being able to hear it".
+  setSelfAudioLoud(loud, at) {
+    if (loud) this._selfAudioLastLoudAt = Math.max(this._selfAudioLastLoudAt || 0, at || Date.now());
+  }
+
   // #115: record the fast floor edge and, when the DOM path later agrees, log
   // how far behind it was. That delta is the whole question the issue asks.
   setAudioFloor(speaking, at) {
@@ -3306,6 +3315,27 @@ class LocalServer {
   _floorQuietPerAnalyser(now = Date.now()) {
     if (this.audioFloorSpeaking) return false;
     if (!this._audioFloorOffAt || this._audioFloorOffAt < this._bargeInArmedAt) return false;
+    // #467: an OFF edge only means "they stopped" if we could have HEARD them
+    // continue. page-inject's echo guard (#245) forces the far-end verdict
+    // false whenever our own mic is loud, so while the bot talks a person
+    // talking over it reaches the analyser as fragments with blind gaps
+    // between. Same audio, same room: floor episodes ran 3.0-5.1s while the bot
+    // was quiet, 0.35-0.49s while it spoke.
+    //
+    // The sharp edge was that a PARTIAL glimpse beat none. With no floor-audio
+    // events at all the guard above returns false and the bot yields —
+    // "uncertainty means not quiet", per #392. One fragment set _audioFloorOffAt,
+    // and 250ms later the bot decided they had finished and talked straight
+    // through them. Measured yield rate against a sustained human interrupter:
+    // 1 in 6, failing identically every time.
+    //
+    // So: silence is only evidence if OUR audio was silent for it too. This is
+    // deliberately not a longer timeout — a timeout would also throw away #392's
+    // real case, where a blip genuinely ends during a gap in our own speech and
+    // the bot should keep its sentence. When our mic was quiet and the analyser
+    // still heard nothing, that silence is trustworthy and #392 stands. When we
+    // were loud, it proves nothing.
+    if (this._selfAudioLastLoudAt && this._selfAudioLastLoudAt >= this._audioFloorOffAt) return false;
     const confirmMs = Number(this._pref('bargeInQuietConfirmMs'));
     return Number.isFinite(confirmMs) && (now - this._audioFloorOffAt) >= confirmMs;
   }

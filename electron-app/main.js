@@ -12201,6 +12201,12 @@ function setupIPC() {
   // #115: the analyser-based floor signal. Always recorded (so a real call
   // produces the DOM-vs-audio comparison the issue asks for); only consumed by
   // the turn-taking gates when fastFloorDetection is enabled.
+  // #467: our own TTS envelope, forwarded from the Meet view. See
+  // LocalServer.setSelfAudioLoud.
+  ipcMain.on('self-audio', (_event, { loud, at }) => {
+    localServer.setSelfAudioLoud(!!loud, at);
+  });
+
   ipcMain.on('audio-floor', (_event, { speaking, at }) => {
     localServer.setAudioFloor(!!speaking, at);
   });

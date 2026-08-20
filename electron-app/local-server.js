@@ -3221,6 +3221,8 @@ class LocalServer {
   _clearBargeIn(reason) {
     clearTimeout(this._bargeInClearTimer);
     this._bargeInClearTimer = null;
+    clearTimeout(this._bargeInRearmTimer); // #487: the ride-out poll dies with the monitor
+    this._bargeInRearmTimer = null;
     if (this._bargeInTimer) {
       clearTimeout(this._bargeInTimer);
       this._bargeInTimer = null;
@@ -3296,6 +3298,27 @@ class LocalServer {
     }, graceMs);
   }
 
+  // #487: keep watching for the rest of the utterance after a ride-out.
+  //
+  // Deliberately a poll and not an edge. The edges we have are rising ones, and
+  // the case that broke was an interrupter who never stopped — there is no
+  // second rising edge to hang a re-arm on. Re-check on the same cadence as the
+  // grace so the next decision is at most one grace period away, and stop the
+  // moment the bot is no longer speaking (_clearBargeIn tears this down too).
+  _rearmBargeInWhileSpeaking() {
+    clearTimeout(this._bargeInRearmTimer);
+    this._bargeInRearmTimer = null;
+    if (this.botState !== 'speaking' || this._uninterruptiblePlayback) return;
+    const g = this._graceForCurrentUtterance();
+    const graceMs = typeof g === 'number' ? g : g.ms;
+    this._bargeInRearmTimer = setTimeout(() => {
+      this._bargeInRearmTimer = null;
+      if (this.botState !== 'speaking') return;
+      if (this.floorBusy) this._armBargeIn();
+      else this._rearmBargeInWhileSpeaking(); // floor quiet for now; keep looking
+    }, Math.max(200, graceMs));
+  }
+
   // #392: is the floor demonstrably quiet RIGHT NOW, per the analyser?
   //
   // `p.speaking` / floorBusy can hold true for seconds after a speaker stops
@@ -3315,27 +3338,19 @@ class LocalServer {
   _floorQuietPerAnalyser(now = Date.now()) {
     if (this.audioFloorSpeaking) return false;
     if (!this._audioFloorOffAt || this._audioFloorOffAt < this._bargeInArmedAt) return false;
-    // #467: an OFF edge only means "they stopped" if we could have HEARD them
-    // continue. page-inject's echo guard (#245) forces the far-end verdict
-    // false whenever our own mic is loud, so while the bot talks a person
-    // talking over it reaches the analyser as fragments with blind gaps
-    // between. Same audio, same room: floor episodes ran 3.0-5.1s while the bot
-    // was quiet, 0.35-0.49s while it spoke.
+    // #467's self-audio gate lived here and is REMOVED (#487).
     //
-    // The sharp edge was that a PARTIAL glimpse beat none. With no floor-audio
-    // events at all the guard above returns false and the bot yields —
-    // "uncertainty means not quiet", per #392. One fragment set _audioFloorOffAt,
-    // and 250ms later the bot decided they had finished and talked straight
-    // through them. Measured yield rate against a sustained human interrupter:
-    // 1 in 6, failing identically every time.
+    // It existed because page-inject's echo guard (#245) blanked the far end
+    // whenever our own mic was loud, so a person talking over the bot reached
+    // the analyser only as fragments — one fragment set _audioFloorOffAt and
+    // 250ms later the bot concluded they had finished. The gate patched that by
+    // refusing to trust ANY silence observed while we were loud.
     //
-    // So: silence is only evidence if OUR audio was silent for it too. This is
-    // deliberately not a longer timeout — a timeout would also throw away #392's
-    // real case, where a blip genuinely ends during a gap in our own speech and
-    // the bot should keep its sentence. When our mic was quiet and the analyser
-    // still heard nothing, that silence is trustworthy and #392 stands. When we
-    // were loud, it proves nothing.
-    if (this._selfAudioLastLoudAt && this._selfAudioLastLoudAt >= this._audioFloorOffAt) return false;
+    // With the echo guard gone the analyser now hears an interrupter
+    // continuously, so an OFF edge means what it says and #392's confirmation
+    // window is doing the work again. Keeping the gate on top of that would be
+    // strictly harmful: it would refuse to trust silence for the whole of every
+    // utterance, so the bot could never ride out a cough.
     const confirmMs = Number(this._pref('bargeInQuietConfirmMs'));
     return Number.isFinite(confirmMs) && (now - this._audioFloorOffAt) >= confirmMs;
   }
@@ -3369,6 +3384,14 @@ class LocalServer {
             ? 'bot had already finished speaking'
             : 'interrupter stopped during the ' + this._analyserStateForLog() + ' grace')
         + ' — continuing');
+      // #487: riding one interruption out must not end the watch. Arming is
+      // edge-driven (the analyser rising edge via _onFloorChanged, the DOM
+      // transition in setParticipants), so a return here left the REST of the
+      // utterance unguarded — and if the interrupter never fully stopped, no
+      // fresh edge ever arrived to re-arm. Observed 2026-08-20: one arm, "rode
+      // it out" 1.5s later, then the bot talked over a human for 15 seconds
+      // with nothing armed. Interruptions do not come one per utterance.
+      this._rearmBargeInWhileSpeaking();
       return;
     }
     // #392: floorBusy just said someone is speaking — but its tracker half can
@@ -3379,6 +3402,7 @@ class LocalServer {
     if (this._floorQuietPerAnalyser()) {
       console.log(ts(), '🛡️  [barge-in] interruption already ended (' + this._analyserStateForLog()
         + ', tracker flag lagging) — continuing');
+      this._rearmBargeInWhileSpeaking(); // #487, as above
       return;
     }
     const interrupters = this.participants.filter(

@@ -1,25 +1,22 @@
-// barge-in-self-audio-gate.test.mjs — silence only counts as evidence if we
-// could have heard through it (#467).
+// barge-in-self-audio-gate.test.mjs — #467's gate is GONE (#487); this pins what
+// survived it.
 //
-// The bot yielded to a sustained human interrupter 1 time in 6, failing
-// identically every time: barge-in ARMED, then `_evaluateBargeIn` concluded
-// "interruption already ended" and talked straight through a person.
+// The gate made analyser silence count for nothing whenever our own mic had
+// been loud through it. It existed only because page-inject's echo guard (#245)
+// blanked the far end while the bot spoke, so an interrupter arrived as
+// fragments with blind gaps between — one fragment set _audioFloorOffAt and
+// 250ms later the bot concluded they had finished. Measured yield rate against
+// a sustained human interrupter: 1 in 6.
 //
-// The cause is that page-inject's echo guard (#245) forces the far-end verdict
-// false whenever the bot's own mic is loud, so while the bot talks an
-// interrupter reaches the analyser as fragments with blind gaps between them.
-// Same audio, same room: floor episodes of 3.0-5.1s while the bot was quiet,
-// 0.35-0.49s while it spoke.
+// #487 deleted the echo guard instead. With the analyser hearing an interrupter
+// continuously, an OFF edge means what it says and #392's confirmation window
+// does the work. Keeping the gate on top would have been strictly harmful: it
+// refuses to trust silence for the whole of every utterance, so the bot could
+// never ride out a cough.
 //
-// The sharp edge is that a PARTIAL glimpse was worse than none: with no
-// floor-audio events at all the monitor stays armed and the bot yields
-// ("uncertainty means not quiet", #392), but ONE fragment sets _audioFloorOffAt
-// and 250ms later the bot decides they finished.
-//
-// The gate is deliberately not a longer timeout. A timeout also discards #392's
-// real case — a blip that genuinely ends during a gap in the bot's own speech,
-// where keeping the sentence is right. Asking "was OUR audio quiet through that
-// silence" separates the two exactly.
+// What is still tested here: #392's own two guards (silence must be confirmed,
+// and must postdate the arm), and the self-audio envelope itself, which is kept
+// as a diagnostic signal and must still track only LOUD edges, monotonically.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -48,50 +45,29 @@ function armedWithQuietSince(s, { armedAt, offAt }) {
   return s;
 }
 
-test('analyser silence counts when our own audio was silent through it', () => {
-  // #392's case, preserved. The blip ended during a gap in the bot's speech, so
-  // the quiet is real evidence and the bot should keep its sentence.
+test('confirmed analyser silence after the arm means the blip is over', () => {
+  // #392's case. The interruption ended inside the grace window, so the bot
+  // keeps its sentence. Post-#487 this is decided by the analyser alone.
   const s = makeServer();
   const now = Date.now();
   armedWithQuietSince(s, { armedAt: now - 2000, offAt: now - 1000 });
-  s._selfAudioLastLoudAt = now - 3000;        // we went quiet BEFORE the analyser did
   assert.equal(s._floorQuietPerAnalyser(now), true, 'trustworthy silence');
 });
 
-test('analyser silence counts for NOTHING if we were loud during it', () => {
-  // #467. Our mic was loud after the analyser fell silent, so the echo guard was
-  // suppressing and that silence says nothing about the person.
-  const s = makeServer();
-  const now = Date.now();
-  armedWithQuietSince(s, { armedAt: now - 2000, offAt: now - 1000 });
-  s._selfAudioLastLoudAt = now - 200;         // still talking, well after the OFF edge
-  assert.equal(s._floorQuietPerAnalyser(now), false, 'we could not have heard them');
-});
-
-test('loudness exactly at the OFF edge already disqualifies the silence', () => {
-  // The boundary matters: the suppression that produced the OFF edge is the
-  // thing being ruled out, so >= rather than >.
-  const s = makeServer();
-  const now = Date.now();
-  armedWithQuietSince(s, { armedAt: now - 2000, offAt: now - 1000 });
-  s._selfAudioLastLoudAt = now - 1000;
-  assert.equal(s._floorQuietPerAnalyser(now), false);
-});
-
-test('with no self-audio signal at all, behaviour is exactly as before', () => {
-  // Degrades safely: an older renderer, or the envelope never arriving, must not
-  // change the decision — it just does not get the improvement.
+test('the self-audio envelope no longer influences the decision at all', () => {
+  // #487: loud or quiet, ours is not evidence about them any more.
   const s = makeServer();
   const now = Date.now();
   armedWithQuietSince(s, { armedAt: now - 2000, offAt: now - 1000 });
   assert.equal(s._selfAudioLastLoudAt, undefined);
-  assert.equal(s._floorQuietPerAnalyser(now), true, 'unchanged from the old path');
+  assert.equal(s._floorQuietPerAnalyser(now), true);
+  s._selfAudioLastLoudAt = now;               // loud right up to this instant
+  assert.equal(s._floorQuietPerAnalyser(now), true, 'same verdict either way');
 });
 
-test('an analyser still hearing someone is never "quiet", whatever we are doing', () => {
+test('an analyser still hearing someone is never "quiet"', () => {
   const s = makeServer();
   s.audioFloorSpeaking = true;
-  s._selfAudioLastLoudAt = Date.now() - 5000;
   assert.equal(s._floorQuietPerAnalyser(), false);
 });
 
@@ -106,9 +82,9 @@ test('silence that predates the arm is still not evidence', () => {
 });
 
 test('setSelfAudioLoud only advances on LOUD edges, and never rewinds', () => {
-  // The quiet edges are published too (#422 keeps both for offline scoring), and
-  // treating one as "we stopped being loud at T" would let a mid-word dip make
-  // the analyser's silence look trustworthy again.
+  // Kept as a diagnostic: the envelope is still published (#422 scores against
+  // it offline) even though barge-in no longer consults it, and a quiet edge
+  // read as "we stopped being loud at T" would corrupt those recordings.
   const s = makeServer();
   s.setSelfAudioLoud(true, 1000);
   s.setSelfAudioLoud(false, 5000);

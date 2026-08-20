@@ -187,7 +187,17 @@ async function human(bot, name, text) {
 //     reverse"). A stale row from a previous run would be learned once and never
 //     unlearned, and the suppression alone would look like it had worked.
 async function makeVoiceHuman(voice, room) {
-  await voice.setPref('announceAsBot', false);
+  // Loudly, because a silent failure here does not break the run — it changes
+  // what the run MEASURES. Learned by doing it: the fleet was once booted from a
+  // build without this preference, setPref returned "Unknown preference", the
+  // voice registered as a bot as usual, and the yield rule went on reporting
+  // peer-bot behaviour as though it were about a person.
+  const r = await voice.setPref('announceAsBot', false);
+  if (r && r.success === false) {
+    throw new Error(`cannot disguise ${voice.name}: setPref(announceAsBot) failed — `
+      + `${r.error}. The app under test predates #471; the barge-in rules would `
+      + `measure the peer-bot branch instead of the human one.`);
+  }
   const base = (process.env.VIBECONF_WEBSITE_URL || 'https://vibeconferencing.com').replace(/\/$/, '');
   try {
     await fetch(`${base}/api/room/${encodeURIComponent(room)}/presence?name=${encodeURIComponent(voice.name)}`,

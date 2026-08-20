@@ -145,6 +145,7 @@ const MARKERS = {
   // means it actually stopped mid-sentence for a person.
   backedOff:    { re: /\[barge-in\] .*interrupted — backing off/,           means: 'stopped talking for the interrupter' },
   endedEarly:   { re: /\[barge-in\] interruption already ended/,            means: 'decided the interruption was over and kept going' },
+  rodeOut:      { re: /\[barge-in\] rode it out/,                            means: 'never stopped — the interruption ended inside the grace' },
   botVsBot:     { re: /\[barge-in\] bot-vs-bot/,                            means: 'treated the interrupter as a PEER BOT, not a person' },
   humanInt:     { re: /\[barge-in\] human interrupted — backing off/,       means: 'yielded to what it believed was a person' },
   resumed:      { re: /\[tts-resume\] resuming interrupted utterance/,      means: 'finished the sentence it was cut off in' },
@@ -462,6 +463,14 @@ const RULES = [
     },
     verdict({ w, held }) {
       if (!held.ok) return { ok: false, note: `scenario did not start — ${held.why}` };
+      // Two ways to satisfy the claim, and riding it out is the better one:
+      // the sentence was never broken, so there is nothing to resume. The rule
+      // used to accept only the recovery and scored the clean case as a
+      // failure -- "yielded to a 1s backchannel and never attempted a resume"
+      // was reported for a run whose log says the bot never stopped talking.
+      if (saw(w, 'rodeOut') && !saw(w, 'backedOff')) {
+        return { ok: true, note: 'rode out the backchannel without breaking its sentence' };
+      }
       if (saw(w, 'resumed')) return { ok: true, note: 'picked its sentence back up' };
       // Worth separating, because in a real 54-minute call every resume attempt
       // was rejected this way (8.9s / 39s / 239s against a 5s limit) and the
@@ -469,7 +478,8 @@ const RULES = [
       // "never tried".
       if (saw(w, 'resumeStale')) return { ok: false, note: 'tried to resume but the tail had aged out (ttsResumeMaxAgeMs)' };
       if (saw(w, 'resumeMoved')) return { ok: false, note: 'tried to resume but judged the conversation had moved on' };
-      if (saw(w, 'armed')) return { ok: false, note: 'yielded to a 1s backchannel and never attempted a resume' };
+      if (saw(w, 'backedOff')) return { ok: false, note: 'yielded to a 1s backchannel and never attempted a resume' };
+      if (saw(w, 'armed')) return { ok: false, note: 'armed, then went quiet in the log — neither backed off nor rode it out' };
       return { ok: false, note: 'no resume attempt — was it interrupted at all?' };
     },
   },

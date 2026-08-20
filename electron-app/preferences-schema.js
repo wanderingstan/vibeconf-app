@@ -824,7 +824,7 @@ const PREFERENCES = {
   },
   bargeInStashRedeliverMaxNewWords: {
     type: 'number',
-    default: 15,
+    default: 60,
     min: 0,
     max: 200,
     description:
@@ -836,7 +836,19 @@ const PREFERENCES = {
       'This is the "clock-vs-words" companion to bargeInStashMaxAgeMs: age ' +
       'guards wall-clock staleness, this guards topical staleness. Higher = ' +
       'replay even after a lot was said; 0 = only replay if literally nothing ' +
-      'new was said. Default 15. Read live.',
+      'new was said. Default 60. Read live.\n' +
+      '\n' +
+      'Was 15, which is about six seconds of ordinary speech, so any ' +
+      'interruption longer than a sentence threw the held reply away. That ' +
+      'made this gate fire roughly seven times sooner than the 45s age bar it ' +
+      'is meant to be the companion to, and left the age bar unreachable in ' +
+      'practice: hitting it would need 45 seconds of near-silence. Across 560 ' +
+      'stashes in the session logs only 186 were ever replayed; of the 156 ' +
+      'discarded at the old cap the median was 28 new words and the 90th ' +
+      'percentile 69, so 15 sat well below the shape of the data. 60 is about ' +
+      '24s at a conversational rate, keeps BOTH gates live, and would have ' +
+      'delivered 83% of those replies while still discarding the genuinely ' +
+      'moved-on tail.',
   },
   ttsResumeEnabled: {
     type: 'boolean',

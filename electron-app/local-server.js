@@ -3357,6 +3357,18 @@ class LocalServer {
       // Bot already stopped, or interrupter shut up during the grace
       // period — nothing to do. #138: floorBusy, not anyoneSpeaking, or an
       // analyser-armed monitor would always bail here on the way back out.
+      //
+      // Logged because riding out a brief interruption is a DECISION, and it
+      // was the only outcome in this function that left no trace. From the
+      // outside "armed, then silence" is equally consistent with the bot
+      // sailing through a backchannel (right) and with it yielding and losing
+      // the rest of its sentence (wrong) -- the etiquette suite read this exact
+      // case as the second and reported a failure against correct behaviour.
+      console.log(ts(), '🛡️  [barge-in] rode it out — '
+        + (this.botState !== 'speaking'
+            ? 'bot had already finished speaking'
+            : 'interrupter stopped during the ' + this._analyserStateForLog() + ' grace')
+        + ' — continuing');
       return;
     }
     // #392: floorBusy just said someone is speaking — but its tracker half can

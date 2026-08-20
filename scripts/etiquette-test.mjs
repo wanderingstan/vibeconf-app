@@ -172,6 +172,41 @@ async function human(bot, name, text) {
   });
 }
 
+// Make the VOICE look like a person to the SUBJECT (#471).
+//
+// The subject classifies interrupters with _botNameSet(), fed by
+// mergeRemoteMembers folding the website's room presence into its roster. So a
+// VOICE that announces itself as role='bot' is treated as a peer bot — an extra
+// random tie-break delay before backing off — and the yield rule then measures
+// the wrong branch entirely.
+//
+// Two steps, and BOTH are needed:
+//   • announceAsBot=false, so it never claims to be a bot again.
+//   • delete any presence row it left behind, because mergeRemoteMembers is
+//     deliberately one-way ("a remote bot upgrades a local member, but not the
+//     reverse"). A stale row from a previous run would be learned once and never
+//     unlearned, and the suppression alone would look like it had worked.
+async function makeVoiceHuman(voice, room) {
+  await voice.setPref('announceAsBot', false);
+  const base = (process.env.VIBECONF_WEBSITE_URL || 'https://vibeconferencing.com').replace(/\/$/, '');
+  try {
+    await fetch(`${base}/api/room/${encodeURIComponent(room)}/presence?name=${encodeURIComponent(voice.name)}`,
+      { method: 'DELETE', signal: AbortSignal.timeout(5000) });
+  } catch { /* presence unreachable: the pref still stops it re-registering */ }
+}
+
+// What the room's presence says this participant is — which is precisely what
+// the subject's _botNameSet() will conclude, via mergeRemoteMembers.
+async function presenceRoleOf(room, name) {
+  const base = (process.env.VIBECONF_WEBSITE_URL || 'https://vibeconferencing.com').replace(/\/$/, '');
+  try {
+    const r = await fetch(`${base}/api/room/${encodeURIComponent(room)}/presence`,
+      { signal: AbortSignal.timeout(5000) });
+    const d = await r.json();
+    return (d.members || []).find((m) => m && m.name === name)?.role ?? null;
+  } catch { return null; }
+}
+
 // ── preconditions ───────────────────────────────────────────────────────────
 //
 // Reset the settings these rules depend on, and report anything that had to be
@@ -416,6 +451,10 @@ async function main() {
   console.log(`room ${ROOM} — subject ${subject.name}:${sPort}, voice ${voice.name}:${vPort}`);
   console.log(`${rules.length} rule(s)\n`);
 
+  // Before joining: the subject learns bot identities from presence on its very
+  // first sync poll, and never unlearns them.
+  await makeVoiceHuman(voice, ROOM);
+
   await Promise.all([subject.join(), voice.join()]);
   await Promise.all([subject.warmUp(), voice.warmUp()]);
 
@@ -431,6 +470,21 @@ async function main() {
       for (const m of moved) console.log(`      ${m}`);
     }
   }
+  // Prove the disguise took, rather than assuming it. Asked of PRESENCE, which
+  // is where the subject gets its answer — an earlier version grepped the
+  // subject's log for "roster now knows N bot name(s)" and always fired, because
+  // that line also appears when the subject learns about ITSELF.
+  const voiceRole = await presenceRoleOf(ROOM, voice.name);
+  if (voiceRole === 'bot') {
+    console.log(`⚠️  presence still lists ${voice.name} as a bot — barge-in verdicts will be `
+      + 'about the PEER-BOT branch, not human barge-in. A stale row outlives a run '
+      + '(5-minute TTL) and mergeRemoteMembers never demotes, so respawn the fleet '
+      + 'and re-run.\n');
+  } else {
+    console.log(`✓ ${voice.name} reads as "${voiceRole ?? 'absent'}" in presence — `
+      + 'the subject should treat it as a person\n');
+  }
+
   const st = await subject.status();
   console.log(`subject state before: callStatus=${st?.callStatus ?? '?'}\n`);
 

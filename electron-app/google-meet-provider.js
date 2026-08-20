@@ -3305,6 +3305,10 @@ window.addEventListener('message', (event) => {
     // the LOUD edges matter — see noteSelfAudioLoud.
     const { loud, at, amp } = event.data.payload || {};
     if (loud) noteSelfAudioLoud(at || Date.now());
+    // #467: main needs this too. The barge-in grace runs in local-server, and
+    // without knowing when our own audio was loud it cannot tell a room that
+    // went quiet from one it merely stopped being able to hear.
+    try { ipcRenderer.send('self-audio', { loud: !!loud, at: at || Date.now() }); } catch { /* renderer tearing down */ }
     // BOTH edges are captured (#422): the echo guard re-scores offline from our
     // own loud/quiet intervals, so the quiet edge is half the record.
     capture('self', null, loud ? 1 : 0, amp != null ? String(amp) : undefined);

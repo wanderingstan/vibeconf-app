@@ -367,6 +367,8 @@ export class Bot {
       captionsOn: data?.status?.captionsOn,
       botState: data?.status?.botState,
       anyoneSpeaking: data?.status?.anyoneSpeaking,
+      audioFloorSpeaking: data?.status?.audioFloorSpeaking,
+      floorBusy: data?.status?.floorBusy,
       sharing: data?.status?.sharing,
       participants: data?.status?.participants || data?.participants || [],
     };

@@ -1931,6 +1931,15 @@ class LocalServer {
     return this.agentState() === 'never' ? 'never' : 'quiet';
   }
 
+  // #467: when our OWN outgoing audio was last loud. Published per sample by
+  // page-inject's VirtualMic analyser — the same envelope the echo guard keys
+  // on — so this is the app's view of exactly when the far-end signal was being
+  // suppressed. Used by _floorQuietPerAnalyser to tell "the room went quiet"
+  // from "we stopped being able to hear it".
+  setSelfAudioLoud(loud, at) {
+    if (loud) this._selfAudioLastLoudAt = Math.max(this._selfAudioLastLoudAt || 0, at || Date.now());
+  }
+
   // #115: record the fast floor edge and, when the DOM path later agrees, log
   // how far behind it was. That delta is the whole question the issue asks.
   setAudioFloor(speaking, at) {
@@ -3306,6 +3315,27 @@ class LocalServer {
   _floorQuietPerAnalyser(now = Date.now()) {
     if (this.audioFloorSpeaking) return false;
     if (!this._audioFloorOffAt || this._audioFloorOffAt < this._bargeInArmedAt) return false;
+    // #467: an OFF edge only means "they stopped" if we could have HEARD them
+    // continue. page-inject's echo guard (#245) forces the far-end verdict
+    // false whenever our own mic is loud, so while the bot talks a person
+    // talking over it reaches the analyser as fragments with blind gaps
+    // between. Same audio, same room: floor episodes ran 3.0-5.1s while the bot
+    // was quiet, 0.35-0.49s while it spoke.
+    //
+    // The sharp edge was that a PARTIAL glimpse beat none. With no floor-audio
+    // events at all the guard above returns false and the bot yields —
+    // "uncertainty means not quiet", per #392. One fragment set _audioFloorOffAt,
+    // and 250ms later the bot decided they had finished and talked straight
+    // through them. Measured yield rate against a sustained human interrupter:
+    // 1 in 6, failing identically every time.
+    //
+    // So: silence is only evidence if OUR audio was silent for it too. This is
+    // deliberately not a longer timeout — a timeout would also throw away #392's
+    // real case, where a blip genuinely ends during a gap in our own speech and
+    // the bot should keep its sentence. When our mic was quiet and the analyser
+    // still heard nothing, that silence is trustworthy and #392 stands. When we
+    // were loud, it proves nothing.
+    if (this._selfAudioLastLoudAt && this._selfAudioLastLoudAt >= this._audioFloorOffAt) return false;
     const confirmMs = Number(this._pref('bargeInQuietConfirmMs'));
     return Number.isFinite(confirmMs) && (now - this._audioFloorOffAt) >= confirmMs;
   }
@@ -3327,6 +3357,18 @@ class LocalServer {
       // Bot already stopped, or interrupter shut up during the grace
       // period — nothing to do. #138: floorBusy, not anyoneSpeaking, or an
       // analyser-armed monitor would always bail here on the way back out.
+      //
+      // Logged because riding out a brief interruption is a DECISION, and it
+      // was the only outcome in this function that left no trace. From the
+      // outside "armed, then silence" is equally consistent with the bot
+      // sailing through a backchannel (right) and with it yielding and losing
+      // the rest of its sentence (wrong) -- the etiquette suite read this exact
+      // case as the second and reported a failure against correct behaviour.
+      console.log(ts(), '🛡️  [barge-in] rode it out — '
+        + (this.botState !== 'speaking'
+            ? 'bot had already finished speaking'
+            : 'interrupter stopped during the ' + this._analyserStateForLog() + ' grace')
+        + ' — continuing');
       return;
     }
     // #392: floorBusy just said someone is speaking — but its tracker half can
@@ -3590,6 +3632,24 @@ class LocalServer {
     return !!text && text.includes(myName);
   }
 
+  // Was this bot addressed by name at any point while the stash was held?
+  //
+  // Deliberately the whole held window, not _stashLatestUtteranceMentionsBotName's
+  // single latest utterance. That one answers "did the utterance that just ended
+  // name me", which is the right question for a speech-stop edge. Here the
+  // question is different: someone asked for me while I was waiting, and by the
+  // time the floor opens their question is usually no longer the newest caption
+  // -- the interrupter kept talking after it. Looking only at the latest entry
+  // misses exactly the case this exists for.
+  _stashWasAddressedByName() {
+    const stash = this.bargeInStash;
+    if (!stash) return false;
+    const myName = (this.getEffectiveBotName() || '').toLowerCase();
+    if (!myName) return false;
+    const entries = this._entriesSince(stash.at, this.getEffectiveBotName());
+    return entries.some(e => String(e.text || '').toLowerCase().includes(myName));
+  }
+
   // Attempt to replay any fresh barge-in stash before the waiter returns
   // to the slow model. Returns the array of texts that were played (or
   // null if nothing). The bot speaks via the existing onBotSpeech path,
@@ -3616,11 +3676,25 @@ class LocalServer {
       const newWords = this._tickWordCount(this.getEffectiveBotName()) - this.bargeInStash.wordsAtStash;
       const maxNewWords = Number(this._pref('bargeInStashRedeliverMaxNewWords'));
       if (Number.isFinite(maxNewWords) && newWords > maxNewWords) {
-        console.log(ts(), '🛡️  [barge-in] discarding stash — conversation moved on (' + newWords + ' new words > ' + maxNewWords + ') — agent will re-derive');
-        this._noteDiscardedStash(this.bargeInStash, `${newWords} words were said while it waited`);
-        this.bargeInStash = null;
-        this._lowerHandIfYielding();
-        return null;
+        // Unless they asked for it by name. The guard's premise is that nobody
+        // wants the held thought any more, and a direct "So <name>, what do you
+        // think?" is that premise being contradicted out loud. Discarding there
+        // answers a question with silence, which is the worst of both: the bot
+        // neither speaks nor is heard declining to.
+        //
+        // Only this guard is waived. The wall-clock age guard above still runs,
+        // because a genuinely ancient thought is wrong to replay however it was
+        // asked for, and the floor-busy check below still runs, because being
+        // named is not licence to talk over the person doing the naming.
+        if (this._stashWasAddressedByName()) {
+          console.log(ts(), '🛡️  [barge-in] keeping stash despite ' + newWords + ' new words — the bot was addressed by name');
+        } else {
+          console.log(ts(), '🛡️  [barge-in] discarding stash — conversation moved on (' + newWords + ' new words > ' + maxNewWords + ') — agent will re-derive');
+          this._noteDiscardedStash(this.bargeInStash, `${newWords} words were said while it waited`);
+          this.bargeInStash = null;
+          this._lowerHandIfYielding();
+          return null;
+        }
       }
     }
     // #430/#442: the floor, read HERE — at the instant audio would start, which
@@ -4240,6 +4314,19 @@ class LocalServer {
       currentMeetUrl: this.currentUrl,
       status: {
         callStatus: this.callStatus,
+        // What the bot believes about the floor RIGHT NOW, and the two halves
+        // it is derived from. Exposed because the only other way to ask was to
+        // grep the session log for [floor-audio] ON/OFF edges and reconstruct
+        // the state from them -- which fails silently the moment an edge
+        // scrolls out of the tail being read. The etiquette harness hit exactly
+        // that: it reported "the floor never went busy" on runs where the ON
+        // edge was sitting in the log, just past the window it fetched.
+        //
+        // A level, not an edge, so a reader that misses the transition still
+        // gets the right answer on its next poll.
+        anyoneSpeaking: this.anyoneSpeaking,
+        audioFloorSpeaking: this.audioFloorSpeaking,
+        floorBusy: this.floorBusy,
         sharing: this.sharing,
         someoneElsePresenting: this.someoneElsePresenting,
         presenterName: this.presenterName,

@@ -1,0 +1,27 @@
+# GitGuardian configuration.
+#
+# WHAT THIS IS FOR: test fixtures that are shaped like credentials on purpose.
+# Keep it NARROW. Broad exclusions in a secrets config are how a real leak gets
+# missed later, and a scanner that cries wolf is one people learn to click past,
+# which is precisely when it stops catching the thing it exists to catch.
+#
+# NOTE ON SCOPE: this file is read by ggshield (the CLI, and CI jobs that run
+# it). The GitGuardian GitHub App checks are governed by the dashboard, so an
+# incident already raised there still has to be resolved there — this config
+# prevents the NEXT one rather than clearing the last.
+version: 2
+
+secret:
+  ignored-paths:
+    # tests/pref-snapshot.test.mjs asserts that tokens are REDACTED from logs,
+    # so it necessarily contains credential-shaped strings to redact:
+    #
+    #   vcSessionToken: 'eyJhbGciOiJIUzI1NiJ9.REALJWT'
+    #
+    # The payload is the literal word REALJWT, and the test greps for those
+    # REAL* markers to prove they never reach a log line. But the prefix is a
+    # genuine JWT header ({"alg":"HS256"} in base64), so the JWT detector fires
+    # on it. Flagged 2026-08-19, and it then blocked every PR afterwards --
+    # GitGuardian reports incidents repo-wide, not per-PR, so a finding in one
+    # commit fails checks on unrelated branches that never touched the file.
+    - tests/pref-snapshot.test.mjs

@@ -6,8 +6,10 @@
 #   vibeconf-attach seth            # resolves the EC2 Name tag "vibeconf-seth"
 #   vibeconf-attach --list          # what boxes exist, and their state
 #   vibeconf-attach --sessions      # what tmux sessions are on the box
-#   vibeconf-attach --shell         # a plain shell instead of the agent session
-#   vibeconf-attach --screen        # tunnel VNC, so you can SEE the app's screen
+#   vibeconf-attach --shell         # a shell on the box, as the bot's user (ubuntu)
+#   vibeconf-attach --shell-raw     # ...as ssm-user instead (rarely what you want)
+#   vibeconf-attach --screen        # see the app's screen, in your browser (noVNC)
+#   vibeconf-attach --screen-vnc    # same, but for a native VNC client on :5900
 #   vibeconf-attach --stop          # stop the box (it is costing money while up)
 #   vibeconf-attach --no-start      # refuse to start a stopped box
 #
@@ -37,7 +39,9 @@ while [ $# -gt 0 ]; do
     --list) MODE="list" ;;
     --sessions) MODE="sessions" ;;
     --shell) MODE="shell" ;;
+    --shell-raw) MODE="shell-raw" ;;
     --screen) MODE="screen" ;;
+    --screen-vnc) MODE="screen-vnc" ;;
     --stop) MODE="stop" ;;
     --no-start) ALLOW_START=0 ;;
     -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -128,8 +132,28 @@ done
 echo
 [ "$ONLINE" = "Online" ] || die "$TAG never came Online in SSM (instance profile missing, or the agent is unhappy)"
 
+# A shell AS THE BOT'S USER, not as ssm-user.
+#
+# SSM behaves differently by path, and the difference bites: `ssm send-command`
+# runs as ROOT, while `ssm start-session` lands as SSM-USER. Neither is `ubuntu`,
+# which is who owns the app, its config, its tmux sessions and its agent.
+#
+# Landing in /home/ssm-user meant `cat ~/.vnc/plain` failed, and — worse — the
+# documented "run claude once to sign in" step would have authenticated
+# ssm-user, leaving the bot itself still signed out with no obvious symptom.
+#
+# So drop straight into a login shell as ubuntu. -i gives the right HOME, PATH
+# and profile, so anything typed here affects the bot rather than a bystander
+# account. Use --shell-raw for the ssm-user shell if you ever genuinely want it.
 if [ "$MODE" = "shell" ]; then
-  exec aws_ ssm start-session --target "$ID"
+  exec aws --profile "$PROFILE_AWS" --region "$REGION" ssm start-session --target "$ID" \
+    --document-name AWS-StartInteractiveCommand \
+    --parameters '{"command":["sudo -u ubuntu -i"]}'
+fi
+
+if [ "$MODE" = "shell-raw" ]; then
+  echo "→ raw ssm-user shell (NOT the bot's user — see --shell)"
+  exec aws --profile "$PROFILE_AWS" --region "$REGION" ssm start-session --target "$ID"
 fi
 
 # --screen: SEE the app, not just its agent. Needed for the once-per-box
@@ -140,14 +164,58 @@ fi
 # the #324 bring-up), with x11vnc bound to LOOPBACK — so it is not reachable
 # from the internet and must be tunnelled. This forwards it over SSM: no inbound
 # port, no SSH key, no IP allowlist entry to churn when you change locations.
+# --screen defaults to noVNC IN A BROWSER, not a native VNC client, because
+# macOS Screen Sharing REFUSES a tunnelled connection: pointed at
+# vnc://localhost:5900 it decides you are connecting to your own Mac and says
+# "You cannot control your own screen." The guard is on the ADDRESS, so no
+# choice of local port gets around it.
+#
+# The box already runs noVNC (websockify on 127.0.0.1:6080 in front of the VNC
+# server), so tunnelling 6080 and opening a browser avoids the client question
+# altogether — and needs nothing installed on the Mac.
 if [ "$MODE" = "screen" ]; then
-  LOCAL_PORT="${VIBECONF_VNC_LOCAL_PORT:-5900}"
-  echo "→ forwarding $TAG:5900 → localhost:$LOCAL_PORT over SSM"
-  echo "→ then, in another terminal or Finder:"
-  echo "     open vnc://localhost:$LOCAL_PORT      (macOS Screen Sharing)"
-  echo "   the VNC password is in ~/.vnc/passwd on the box (set at bring-up)"
+  LOCAL_PORT="${VIBECONF_WEB_LOCAL_PORT:-6080}"
+  URL="http://localhost:$LOCAL_PORT/vnc.html?host=localhost&port=$LOCAL_PORT"
+  echo "→ forwarding $TAG:6080 (noVNC) → localhost:$LOCAL_PORT over SSM"
+  echo "→ opening $URL"
+  echo "   password: in ~/.vnc/passwd on the box (set at bring-up)"
   echo "→ Ctrl-C here closes the tunnel"
-  exec aws_ ssm start-session --target "$ID" \
+  # WAIT for the port to actually accept a connection before opening the
+  # browser. This was `sleep 4`, and 4s is not enough for SSM to negotiate the
+  # session — the browser opened first and showed ERR_CONNECTION_REFUSED, which
+  # looks like a broken tunnel rather than an early one. Poll, then open, and
+  # say so if it never comes up. Backgrounded so the exec below still owns the
+  # terminal and Ctrl-C still closes the tunnel.
+  (
+    for _ in $(seq 1 40); do
+      if nc -z localhost "$LOCAL_PORT" 2>/dev/null; then
+        command -v open >/dev/null && open "$URL"
+        exit 0
+      fi
+      sleep 1
+    done
+    echo "" >&2
+    echo "vibeconf-attach: the tunnel never came up on localhost:$LOCAL_PORT." >&2
+    echo "  If the line below shows an error, that is the real problem." >&2
+  ) &
+  exec aws --profile "$PROFILE_AWS" --region "$REGION" ssm start-session --target "$ID" \
+    --document-name AWS-StartPortForwardingSession \
+    --parameters "{\"portNumber\":[\"6080\"],\"localPortNumber\":[\"$LOCAL_PORT\"]}"
+fi
+
+# For a REAL VNC client (RealVNC, TigerVNC — not macOS Screen Sharing, see
+# above). Kept because a native client handles clipboard and scaling better than
+# the browser does.
+if [ "$MODE" = "screen-vnc" ]; then
+  LOCAL_PORT="${VIBECONF_VNC_LOCAL_PORT:-5901}"
+  echo "→ forwarding $TAG:5900 → localhost:$LOCAL_PORT over SSM"
+  echo "→ point a VNC client at localhost:$LOCAL_PORT"
+  echo "   NOTE: macOS Screen Sharing.app will refuse this (\"cannot control your"
+  echo "   own screen\") — it rejects localhost regardless of port. Use --screen,"
+  echo "   or a third-party client."
+  echo "   password: in ~/.vnc/passwd on the box"
+  echo "→ Ctrl-C here closes the tunnel"
+  exec aws --profile "$PROFILE_AWS" --region "$REGION" ssm start-session --target "$ID" \
     --document-name AWS-StartPortForwardingSession \
     --parameters "{\"portNumber\":[\"5900\"],\"localPortNumber\":[\"$LOCAL_PORT\"]}"
 fi
@@ -185,6 +253,6 @@ fi
 echo "→ attaching to $TARGET   (detach with Ctrl-B then D — the agent keeps running)"
 # sudo -u ubuntu because SSM lands as root while the app, and therefore the tmux
 # session, belongs to ubuntu. Without it you get "no server running".
-exec aws_ ssm start-session --target "$ID" \
+exec aws --profile "$PROFILE_AWS" --region "$REGION" ssm start-session --target "$ID" \
   --document-name AWS-StartInteractiveCommand \
   --parameters "{\"command\":[\"sudo -u ubuntu tmux attach -t $TARGET\"]}"

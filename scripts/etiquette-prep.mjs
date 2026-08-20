@@ -11,12 +11,17 @@
 // twenty-three seconds BEFORE it even registered itself at 22:49:57. The voice's
 // row was already there.
 //
-// `set_preference` at runtime is not enough either. It takes effect in memory —
-// the voice does log "not announcing as a bot" — but the value never reaches
-// any config.json, so the next boot starts at the default and registers again.
-// (Searching the whole userData tree finds `announceAsBot` only in LOG files.)
+// `set_preference` at runtime does persist — but only AFTER the harness has run,
+// which is already too late: the app registers on its first active call state,
+// at boot. So the value has to be on disk before the app starts.
 //
-// So: write it to the profile's config directly, with the app stopped, then boot.
+// Write it to <profile>/agent/config.json, NOT <profile>/config.json. The latter
+// is the LEGACY location: main.js migrates per-profile settings into the agent
+// dir on first launch and leaves the old file behind as a safety net, so it sits
+// there looking authoritative while nothing reads it. An earlier version of this
+// script wrote the legacy file and the disguise silently did nothing — and the
+// same stale file made set_preference look broken (#476) when it was working
+// perfectly, just somewhere else.
 //
 // Usage:
 //   scripts/spawn-test-fleet.sh 2 --kill
@@ -35,11 +40,18 @@ const NAME = arg('name', 'Jimmy');
 const ROOM = arg('room', 'paz-sqoa-npe');
 const SITE = (process.env.VIBECONF_WEBSITE_URL || 'https://vibeconferencing.com').replace(/\/$/, '');
 
-const cfgPath = join(homedir(), 'Library', 'Application Support', 'Vibeconferencing',
-  'profiles', PROFILE, 'config.json');
+// agentDirFor() is <userData>/agent — see electron-app/agent-workdir.js.
+const profileDir = join(homedir(), 'Library', 'Application Support', 'Vibeconferencing',
+  'profiles', PROFILE);
+const cfgPath = join(profileDir, 'agent', 'config.json');
+const legacyPath = join(profileDir, 'config.json');
 
 if (!existsSync(cfgPath)) {
-  console.error(`no config for profile "${PROFILE}" at ${cfgPath}`);
+  console.error(`no agent config for profile "${PROFILE}" at ${cfgPath}`);
+  if (existsSync(legacyPath)) {
+    console.error(`(a LEGACY ${legacyPath} exists — the app migrates out of it on first`);
+    console.error(' launch and then ignores it, so writing there has no effect)');
+  }
   console.error('boot the fleet once so the profile exists, then kill it and re-run this.');
   process.exit(2);
 }
@@ -49,6 +61,7 @@ const was = cfg.announceAsBot;
 cfg.announceAsBot = false;
 writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
 console.log(`${PROFILE}: announceAsBot ${JSON.stringify(was ?? '(unset)')} → false`);
+console.log(`  (${cfgPath})`);
 
 // Clear every presence row for the room. Both halves matter: the voice must not
 // re-register (the config above), AND no stale row may survive, because

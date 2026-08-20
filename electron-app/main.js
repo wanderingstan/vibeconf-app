@@ -1361,7 +1361,7 @@ const localServer = new globalThis.LocalServer({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           sender,
-          role: 'bot',
+          ...(selfRole() ? { role: selfRole() } : {}),
           ownerName: sender,
           whiteboard: { content },
         }),
@@ -1412,7 +1412,8 @@ const localServer = new globalThis.LocalServer({
       await fetch(`${getWebsiteUrl()}/api/sync/${roomId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sender, role: 'bot', ownerName: sender, whiteboardStyle: css }),
+        body: JSON.stringify({ sender, ...(selfRole() ? { role: selfRole() } : {}),
+          ownerName: sender, whiteboardStyle: css }),
       });
     } catch (err) {
       console.error('[local-server] Failed to forward whiteboard style:', err.message);
@@ -4094,7 +4095,7 @@ async function announceSharing(active) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         sender: resolvedBotName(),
-        role: 'bot',
+        ...(selfRole() ? { role: selfRole() } : {}),
         sharing: { active, screenShareUrl },
       }),
     });
@@ -6976,6 +6977,31 @@ end tell`;
 
 const speakingState = new Map();
 
+// The role this instance claims about ITSELF, on anything that reaches the
+// server carrying identity.
+//
+// `announceAsBot` (#471) used to gate only _registerPresence, which turned out
+// to be one of four doors. The website's POST /api/sync also upserts presence
+// from the sender's role — so a whiteboard update, a style change, or a sharing
+// announcement re-declared this instance a bot, no matter what it had decided
+// about announcing.
+//
+// Caught by the row's own shape: a voice that logged "not announcing as a bot",
+// registered zero times, and still appeared in presence as
+//   {"name":"Jimmy","role":"bot",...,"sharing":false,"screenShareUrl":null}
+// — and `sharing`/`screenShareUrl` are written by exactly one caller, the
+// sharing announcement.
+//
+// Returns undefined when this instance is presenting as a person, so the field
+// is omitted rather than set to something. An absent role now leaves the
+// existing value alone server-side, so omitting is genuinely neutral.
+function selfRole() {
+  try {
+    if (localServer._pref('announceAsBot') === false) return undefined;
+  } catch { /* no store yet — behave as before */ }
+  return 'bot';
+}
+
 function updateSpeakingState(name, speaking) {
   const existing = speakingState.get(name);
   if (existing && existing.speaking === speaking && existing.sent) return;
@@ -7024,10 +7050,7 @@ function updateSpeakingState(name, speaking) {
       // participants is unaffected: declining to claim bot status is not the
       // same as lying about everyone else.
       const self = (localServer.getEffectiveBotName() || '').toLowerCase();
-      if (role && self && String(name).toLowerCase() === self
-          && localServer._pref('announceAsBot') === false) {
-        role = undefined;
-      }
+      if (role && self && String(name).toLowerCase() === self && !selfRole()) role = undefined;
     } catch { /* roster unavailable — fall through unroled, as before */ }
     fetch(`${baseUrl}/api/room/${sync.roomId}/presence`, {
       method: 'POST',

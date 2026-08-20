@@ -4314,6 +4314,19 @@ class LocalServer {
       currentMeetUrl: this.currentUrl,
       status: {
         callStatus: this.callStatus,
+        // What the bot believes about the floor RIGHT NOW, and the two halves
+        // it is derived from. Exposed because the only other way to ask was to
+        // grep the session log for [floor-audio] ON/OFF edges and reconstruct
+        // the state from them -- which fails silently the moment an edge
+        // scrolls out of the tail being read. The etiquette harness hit exactly
+        // that: it reported "the floor never went busy" on runs where the ON
+        // edge was sitting in the log, just past the window it fetched.
+        //
+        // A level, not an edge, so a reader that misses the transition still
+        // gets the right answer on its next poll.
+        anyoneSpeaking: this.anyoneSpeaking,
+        audioFloorSpeaking: this.audioFloorSpeaking,
+        floorBusy: this.floorBusy,
         sharing: this.sharing,
         someoneElsePresenting: this.someoneElsePresenting,
         presenterName: this.presenterName,

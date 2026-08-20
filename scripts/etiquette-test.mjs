@@ -186,10 +186,19 @@ async function settleFloor(bot, { maxMs = 30_000, quietMs = 1200 } = {}) {
   const started = Date.now();
   let quietSince = null;
   while (Date.now() - started < maxMs) {
-    const tail = String((await bot.sessionLog(120)) || '');
-    const lastOn = tail.lastIndexOf('[floor-audio] speech ON');
-    const lastOff = tail.lastIndexOf('[floor-audio] speech OFF');
-    const quiet = lastOff > lastOn || (lastOn === -1 && lastOff === -1);
+    // Same reason as waitForFloorBusy: read the level. Here a missed edge
+    // fails the safe way (it looks quiet, so a rule starts into someone's
+    // audio), which is worse than a false alarm and was just as invisible.
+    const st = await bot.status().catch(() => null);
+    let quiet;
+    if (st && st.floorBusy != null) {
+      quiet = !st.floorBusy;
+    } else {
+      const tail = String((await bot.sessionLog(400)) || '');
+      const lastOn = tail.lastIndexOf('[floor-audio] speech ON');
+      const lastOff = tail.lastIndexOf('[floor-audio] speech OFF');
+      quiet = lastOff > lastOn || (lastOn === -1 && lastOff === -1);
+    }
     if (quiet) {
       quietSince ??= Date.now();
       if (Date.now() - quietSince >= quietMs) return true;
@@ -312,13 +321,29 @@ async function resetPrefs(bot, defaults) {
 // started instead of blaming the subject.
 async function waitForFloorBusy(bot, { maxMs = 20_000 } = {}) {
   const started = Date.now();
+  // Ask for the LEVEL, not the edge. This used to grep a 60-line log tail for
+  // the last ON/OFF pair, which is only correct while both edges are still
+  // inside the window -- and on a chatty run the ON edge scrolls out in
+  // seconds. Measured over four trials of stash-replay-waits: every failing
+  // run had the ON edge present in a 400-line tail and absent from the 60-line
+  // tail the poll read, so the rule reported "the floor never went busy" about
+  // a floor that had gone busy. Alternating pass/fail, which is what finally
+  // gave it away -- it tracked log volume, not the bot.
+  //
   // do/while: maxMs:0 is a single "is it busy right now?" probe, which is how a
   // rule checks its premise still holds at the END of an observation.
   do {
-    const tail = String((await bot.sessionLog(60)) || '');
-    const on = tail.lastIndexOf('[floor-audio] speech ON');
-    const off = tail.lastIndexOf('[floor-audio] speech OFF');
-    if (on > off) return true;              // busy right now, from its own view
+    const st = await bot.status().catch(() => null);
+    if (st && st.floorBusy != null) {
+      if (st.floorBusy) return true;
+    } else {
+      // Older build with no floorBusy in status — fall back to the edges, with
+      // a deep enough tail that they are at least likely to both be in it.
+      const tail = String((await bot.sessionLog(400)) || '');
+      const on = tail.lastIndexOf('[floor-audio] speech ON');
+      const off = tail.lastIndexOf('[floor-audio] speech OFF');
+      if (on > off) return true;
+    }
     if (Date.now() - started >= maxMs) break;
     await sleep(200);
   } while (true);

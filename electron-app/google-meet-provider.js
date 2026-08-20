@@ -911,55 +911,112 @@ async function restorePeoplePane() {
   return false;
 }
 
-// A sender header is a div with exactly two div children where the second is a
-// timestamp (e.g. "2:32 PM") — the first is the participant name. Meet renders
-// one header per run of consecutive messages from the same person; messages
-// below it (until the next header) belong to that sender. Detect structurally
-// rather than by class/jsname, which rotate.
+// A sender header is a div containing a timestamp child (e.g. "2:32 PM") with
+// the participant name in a sibling child. Meet renders one header per run of
+// consecutive messages from the same person. Detect structurally rather than
+// by class/jsname, which rotate — but by PREDICATE, not by exact shape: the
+// old `children.length === 2` check broke the moment Meet's pin affordance
+// added chrome to the header, and every message under a broken header was
+// silently attributed to the PREVIOUS sender (#397). Find the timestamp child
+// by content, take the name from its sibling, ignore any extra chrome.
 function senderFromHeader(el) {
-  if (el.tagName !== 'DIV' || el.children.length !== 2) return null;
-  const [nameEl, timeEl] = el.children;
-  if (nameEl.tagName !== 'DIV' || timeEl.tagName !== 'DIV') return null;
-  const timeText = timeEl.textContent.trim();
-  if (!MEET.chat.timestampRe.test(timeText)) return null;
-  const name = nameEl.textContent.trim();
-  return name || null;
+  if (!el || el.tagName !== 'DIV') return null;
+  const kids = Array.from(el.children || []);
+  const timeIdx = kids.findIndex(
+    (k) => k.tagName === 'DIV' && MEET.chat.timestampRe.test((k.textContent || '').trim())
+  );
+  if (timeIdx < 0) return null;
+  // Name candidates: the child directly before the timestamp first (Meet's
+  // order is name-then-time), then any other DIV child. Reject pin chrome —
+  // "keep" (the pin glyph's icon ligature), "Pin message", the hover hint —
+  // so a chrome child can never be mistaken for a participant name.
+  const candidates = [];
+  if (timeIdx > 0) candidates.push(kids[timeIdx - 1]);
+  for (let i = 0; i < kids.length; i++) {
+    if (i !== timeIdx && i !== timeIdx - 1) candidates.push(kids[i]);
+  }
+  for (const c of candidates) {
+    if (c.tagName !== 'DIV') continue;
+    const name = (c.textContent || '').trim();
+    if (!name) continue;
+    if (MEET.chat.pinMessageRe.test(name)) continue;
+    if (/^keep$/i.test(name)) continue;
+    if (name.toLowerCase().includes(MEET.chat.pinHoverText.toLowerCase())) continue;
+    return name;
+  }
+  return null;
+}
+
+// A header for THIS message may be the sibling itself or nested one wrapper
+// down. Crucially, a subtree that contains message bodies is a whole previous
+// GROUP — its header belongs to ITS messages, and reading it from here is
+// exactly the stale carry-forward #397 removed. Refuse those.
+function headerFromSubtree(el) {
+  if (!el || el.nodeType !== 1) return null;
+  if (typeof el.matches === 'function' && el.matches(MEET.chat.messageBody)) return null;
+  if (typeof el.querySelector === 'function' && el.querySelector(MEET.chat.messageBody)) return null;
+  const own = senderFromHeader(el);
+  if (own) return own;
+  if (typeof el.querySelectorAll !== 'function') return null;
+  for (const d of el.querySelectorAll('div')) {
+    const s = senderFromHeader(d);
+    if (s) return s;
+  }
+  return null;
+}
+
+// Attribute a message ONLY from a header structurally adjacent to it: walk
+// previous siblings (skipping earlier messages of the same grouped run), then
+// up a few ancestors and their previous siblings. Bounded depth so a failure
+// stays local — no resolvable header means NO sender, never someone else's.
+function resolveSenderForMessage(msgEl) {
+  let node = msgEl;
+  for (let depth = 0; node && node.tagName !== 'BODY' && depth < 6; depth++) {
+    for (let sib = node.previousElementSibling; sib; sib = sib.previousElementSibling) {
+      const name = headerFromSubtree(sib);
+      if (name) return name;
+    }
+    node = node.parentElement;
+  }
+  return null;
+}
+
+// Strip pin-affordance chrome Meet fuses onto a message body's innerText
+// ("…issues/389keepPin message") — see pinChromeTailRe for the token rules.
+// The freestanding hover hint is also removed wherever it appears; it's a
+// 30-char verbatim UI string no human plausibly typed.
+function stripPinChrome(text) {
+  let out = String(text || '');
+  if (MEET.chat.pinChromeOnlyRe.test(out)) return '';
+  out = out.split(MEET.chat.pinHoverText).join('');
+  out = out.replace(MEET.chat.pinChromeTailRe, '');
+  return out.trim();
 }
 
 function scrapeChatMessages() {
-  // Collect sender headers and message bodies, order them by document position,
-  // and attribute each message to the most recent header above it.
-  //
   // Message bodies are divs carrying data-message-id="spaces/.../messages/...".
   // Pin BUTTONS share that attribute but have aria-label="Pin message" — skip
-  // those (and any button). Only the chat pane is open during a scrape (people
-  // pane is closed), so the header pattern doesn't collide with participant tiles.
-  const markers = [];
-  for (const el of document.querySelectorAll('div')) {
-    const sender = senderFromHeader(el);
-    if (sender) markers.push({ kind: 'header', el, sender });
-  }
+  // those (and any button). Each message is attributed from its OWN adjacent
+  // header (resolveSenderForMessage); the old sort-and-carry-forward approach
+  // let one missed header pin the previous person's name on someone else's
+  // words, silently (#397). No header now means no sender — read_chat already
+  // supports that shape — plus a warning so the regression is visible.
+  const out = [];
+  const seen = new Set();
   for (const el of document.querySelectorAll(MEET.chat.messageBody)) {
     if (el.tagName === 'BUTTON') continue;
     if (MEET.chat.pinMessageRe.test(el.getAttribute('aria-label') || '')) continue;
-    markers.push({ kind: 'msg', el });
-  }
-  markers.sort((a, b) => {
-    if (a.el === b.el) return 0;
-    return (a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1;
-  });
-
-  const out = [];
-  const seen = new Set();
-  let currentSender = '';
-  for (const m of markers) {
-    if (m.kind === 'header') { currentSender = m.sender; continue; }
-    const id = m.el.getAttribute(MEET.chat.messageIdAttr);
+    const id = el.getAttribute(MEET.chat.messageIdAttr);
     if (!id || seen.has(id)) continue;
-    const text = (m.el.innerText || '').trim();
+    const text = stripPinChrome(el.innerText || '');
     if (!text) continue;
     seen.add(id);
-    out.push(currentSender ? { id, sender: currentSender, text } : { id, text });
+    const sender = resolveSenderForMessage(el);
+    if (!sender) {
+      console.warn('[chat] no resolvable sender header for message ' + id +
+        ' — emitting it senderless rather than guessing (#397)');
+    }
+    out.push(sender ? { id, sender, text } : { id, text });
   }
   return out;
 }
@@ -1413,23 +1470,21 @@ const botNameLoaded = ipcRenderer.invoke('get-meet-bot-name').then((name) => {
   console.warn('[electron-meet] Failed to load botName:', err.message);
 });
 
-// Debug visual: outline the participant tile the speaker tracker thinks is
-// speaking, so it can be eyeballed against Meet's own animating mic meter
-// (#229 diagnosis). Defaults ON — the bot's Meet view is only ever seen by the
-// operator in the Electron window, never by call participants, so there's no
-// reason to hide it. Set speakerDebugBorder:false in config.json to disable.
-let speakerDebugBorder = true;
-ipcRenderer.invoke('get-config', ['speakerDebugBorder']).then((r) => {
-  speakerDebugBorder = r?.speakerDebugBorder !== false; // explicit false disables
-  console.log('[electron-meet] speakerDebugBorder', speakerDebugBorder ? 'ON — speaking tiles outlined' : 'OFF');
-}).catch(() => {});
+// (#407: the speaker-debug border that used to live here is gone, and not just
+// unused: toggling a class on the tile fed the very MutationObserver that
+// counts tile mutations as the speaking signal, so every verdict flip
+// manufactured the mutation that flipped it back — a feedback loop that kept
+// `speaking` oscillating at poll cadence for as long as the meter churned near
+// threshold. If a tile-marking diagnostic ever returns, it must write only
+// `vibeconf-`-prefixed classes, which the observer now discards as
+// self-authored.)
 
 // Which per-participant speaking signal(s) the tracker's verdict comes from
 // (#142). Both signals always RUN and are always logged — this only decides
 // which one the verdict is taken from, so the comparison data keeps accruing
 // whatever the setting. See DOMSpeakerTracker for what each signal measures.
 // Re-read on each 2s scan so it can be changed mid-call.
-let speakingDetectionMode = 'either';
+let speakingDetectionMode = 'meter';
 function refreshSpeakingDetectionMode() {
   ipcRenderer.invoke('get-config', ['speakingDetectionMode']).then((r) => {
     const v = r?.speakingDetectionMode;
@@ -1440,6 +1495,7 @@ function refreshSpeakingDetectionMode() {
   }).catch(() => {});
 }
 refreshSpeakingDetectionMode();
+refreshSpeakingEventCapture();
 
 function ensureStatusBar() {
   if (document.getElementById('vibeconf-status-bar')) return;
@@ -1985,6 +2041,74 @@ function findPeopleButton() {
   return document.querySelector(MEET.people.buttonFallback);
 }
 
+// ---------------------------------------------------------------------------
+// Raw event capture (#422)
+// ---------------------------------------------------------------------------
+//
+// Every constant in speaking detection was picked by reasoning over a handful
+// of observed calls and corrected later when a call went wrong. What has been
+// missing is a way to SCORE a change: [speaker-health] aggregates into 5s
+// buckets, and timing inside the bucket is the entire subject. "27 mutations in
+// these 5 seconds" cannot yield an onset latency, and "104 raised readings"
+// cannot tell one 1s gap from twenty 50ms ones — which is exactly the question
+// that decides whether METER_HOLD_MS is long enough.
+//
+// So when speakingEventCapture is on, every observation is written out with its
+// timestamp, and the detectors can be re-scored offline at any parameter values
+// (see scripts/score-speaking.mjs). None of these constants change what MEET
+// does; they only change what we conclude from a recording, so one capture
+// sweeps the whole parameter space.
+//
+// RAW VALUES, NEVER DERIVED BOOLEANS. The indicator is recorded as its actual
+// background-position-x, not as "off rest": rest calibration is itself a
+// parameter under test (it produced inverted-rest cases on 4% of beats), and a
+// boolean has already baked in the answer. Same reason self-audio is recorded
+// as loud/quiet edges rather than "suppressed".
+//
+// Off by default and batched: a 4-person call generates on the order of 300k
+// rows an hour, which belongs in its own file, not the session log.
+const CAPTURE_FLUSH_MS = 1000;
+let speakingEventCapture = false;
+let _capBuf = [];
+let _capFlushTimer = null;
+
+function refreshSpeakingEventCapture() {
+  ipcRenderer.invoke('get-config', ['speakingEventCapture']).then((r) => {
+    const on = r?.speakingEventCapture === true;
+    if (on === speakingEventCapture) return;
+    speakingEventCapture = on;
+    console.log('[speaking-capture]', on ? 'ON — writing speaking-events.jsonl' : 'OFF');
+    if (!on) { _capBuf = []; }
+  }).catch(() => {});
+}
+
+// One observation. Kept to short keys because volume is the whole constraint:
+// t=ms epoch, k=kind, p=participant, v=raw value, s=source.
+function capture(kind, participant, value, source) {
+  if (!speakingEventCapture) return;
+  _capBuf.push({ t: Date.now(), k: kind, p: participant || null,
+    ...(value !== undefined ? { v: value } : {}),
+    ...(source ? { s: source } : {}) });
+  if (_capFlushTimer) return;
+  _capFlushTimer = setTimeout(() => {
+    _capFlushTimer = null;
+    if (!_capBuf.length) return;
+    const rows = _capBuf;
+    _capBuf = [];
+    try { ipcRenderer.send('speaking-events', rows); } catch { /* main gone */ }
+  }, CAPTURE_FLUSH_MS);
+}
+
+// Our own TTS envelope, published by page-inject (#378).
+//
+// It no longer gates anything — see _rawSpeaking for the guard that used to
+// live there and the call recording that removed it. It is still tracked and
+// still captured to speaking-events.jsonl, because "was the bot talking at this
+// instant" is the axis every echo question is asked along, and losing it would
+// make the next such question unanswerable.
+let selfAudioLastLoudAt = 0;
+function noteSelfAudioLoud(at) { selfAudioLastLoudAt = Math.max(selfAudioLastLoudAt, at); }
+
 // Meter-level signal (#142). Meet draws each participant's mic meter as three
 // divs that all share ONE background-image — a sprite of vertical bars at
 // increasing heights — and animates `background-position-x` to pick which bar
@@ -2002,11 +2126,34 @@ function findPeopleButton() {
 // there is nothing on the element itself to observe, and getComputedStyle is
 // the only route to the value.
 const METER_SAMPLE_MS = 50;
-// How long a single off-rest sample keeps the meter verdict true. Covers the
-// gaps between the sprite's animation steps (it is quantised, not continuous)
-// without holding so long that a one-frame blip reads as a whole turn. The
-// existing SPEAKING_GRACE_MS still applies on top, at the combine layer.
-const METER_HOLD_MS = 250;
+// How long a raised reading keeps the meter verdict true — a hangover timer,
+// re-armed by every raised reading, so it only counts down once the indicator
+// STOPS being raised. Its job is to bridge the rests that occur DURING speech:
+// Meet animates this indicator rather than driving it from amplitude, so it
+// returns to its resting bar repeatedly mid-utterance.
+//
+// This hold is the ONLY smoothing on the meter's false edge — the 1s
+// combine-layer grace that used to sit on top was deleted in #395 (the tracker
+// now reports the true stop edge), so in 'meter' mode a release is real this
+// many ms after the last raised reading. In 'mutation'/'either' the 1200ms
+// mutation window still smooths.
+//
+// 400ms, measured (#422). Swept over a 9-call corpus — 2,415 labelled turns
+// scored against per-speaker ground truth — which showed hold is purely a
+// RELEASE parameter: onset latency and missed turns are invariant across it,
+// and only fragmentation and stop latency move.
+//
+//   hold   missed   onset p50/p90   offset p50/p90   frag   fp s/min
+//    150      457       40 / 180       90 /  200     1.91      4.9
+//    250      454       40 / 180      190 /  320     1.42      7.5   <- was
+//    400      449       40 / 170      340 /  810     1.13     11.3   <- now
+//    600      434       10 / 150      560 / 3640     1.07     15.8
+//
+// At 250ms one human turn was being reported as 1.42 detections: the gaps in
+// Meet's animation are routinely longer than that. 400ms cuts it to 1.13 for
+// 150ms of added stop latency, and still reports a turn ENDING roughly five
+// times faster than the mutation counter running beside it (1790ms p50).
+const METER_HOLD_MS = 400;
 // How long a raised level must persist (and across at least two readings)
 // before the meter's verdict arms. See the attack note in _readPromoted.
 const METER_ATTACK_MS = 50;
@@ -2037,6 +2184,7 @@ class DOMSpeakerTracker {
     this.checkInterval = setInterval(() => {
       this._scanParticipants();
       refreshSpeakingDetectionMode();
+      refreshSpeakingEventCapture();
       // Self-heal: reopen the people pane whenever it's closed (e.g. a chat
       // read/send switched to the chat pane). _ensurePeoplePaneOpen no-ops when
       // tiles are already present, so this is cheap. Gating on participants.size
@@ -2085,9 +2233,23 @@ class DOMSpeakerTracker {
       // 50ms poll. evt=0 while off>0 means the meter is moving with no mutation
       // to ride on (a CSS animation), and the poll alone is carrying it.
       const evt = st ? (st._hbEvents || 0) : 0;
-      if (st) { st._hbOffRest = 0; st._hbEvents = 0; }
-      const mtr = !st || !st.calibrated ? 'blind' : `rest=${st.rest} off=${off} evt=${evt}`;
-      parts.push(`${name}${info.isSelf ? '(self)' : ''}[spk=${info.speaking ? 1 : 0} item=${itemLive ? 'live' : 'STALE'} mut=${mut} mtr=${mtr}]`);
+      // Evaluations withheld as our own echo (#378) — not distinct rises: the
+      // verdict is re-evaluated on every mutation and every poll, so a single
+      // suppressed rise contributes several. Read it as "how much of this beat
+      // was spent declining to believe this tile", not as an event count.
+      const echo = info._hbEcho || 0;
+      info._hbEcho = 0;
+      const lvl = st ? (st._hbMaxLvl || 0) : 0;   // loudest excursion this beat
+      const avg = st && off ? Math.round((st._hbLvlSum || 0) / off) : 0;
+      if (st) { st._hbOffRest = 0; st._hbEvents = 0; st._hbMaxLvl = 0; st._hbLvlSum = 0; }
+      // 'n/a' rather than 'blind' when the meter isn't driving the verdict: a
+      // disabled signal reading "blind" was misread as the tracker having gone
+      // deaf, when in mutation mode the meter's state is simply irrelevant.
+      const meterOff = speakingDetectionMode === 'mutation';
+      const mtr = !st || !st.calibrated
+        ? (meterOff ? 'n/a' : 'blind')
+        : `rest=${st.rest} off=${off} evt=${evt} lvl=${lvl}/${avg}`;
+      parts.push(`${name}${info.isSelf ? '(self)' : ''}[spk=${info.speaking ? 1 : 0} item=${itemLive ? 'live' : 'STALE'} mut=${mut} mtr=${mtr}${echo ? ' echo=' + echo : ''}]`);
     }
     console.log('[speaker-health] mode=' + speakingDetectionMode
       + ' tiles=' + visiblePeopleTileCount() + ' | ' + (parts.join(' ') || '(no participants tracked)'));
@@ -2127,6 +2289,12 @@ class DOMSpeakerTracker {
     }
   }
 
+  // How long a tracked participant may be absent from the people pane before
+  // the tracker forgets them. Long enough that a Meet re-render (sub-second)
+  // never evicts a live participant, short enough that someone who left stops
+  // being reported as present.
+  static get GONE_MS() { return 10_000; }
+
   _scanParticipants() {
     // Scope to the in-call region so "Also invited" and "Waiting to be admitted"
     // people (who share the same listitem markup) aren't registered as present
@@ -2141,6 +2309,9 @@ class DOMSpeakerTracker {
     if (region) this._warnedNoInCallRegion = false;
     const items = (region || document).querySelectorAll(MEET.people.tile);
     const shares = [];
+    // Keys present in THIS scan. Anything tracked but not in here has left the
+    // pane, and after a grace period it is dropped (see the prune below).
+    const seen = new Set();
     for (const item of items) {
       const name = item.getAttribute('aria-label');
       if (!name) continue;
@@ -2196,13 +2367,14 @@ class DOMSpeakerTracker {
       // them into one entry — the presentation case just made that reproducible.
       const key = pid || name;
 
+      seen.add(key);
       if (!this.participants.has(key)) {
         if (isSelf) {
           console.log('[speaker-tracker] Identified self tile:', name);
         }
         this.participants.set(key, {
           name, isPseudo, speaking: false, isSelf, item,
-          mutTimes: [], lastTrueAt: 0, lastChange: Date.now(),
+          mutTimes: [], lastChange: Date.now(),
         });
       } else {
         const info = this.participants.get(key);
@@ -2210,8 +2382,14 @@ class DOMSpeakerTracker {
         info.isSelf = isSelf;
         info.isPseudo = isPseudo;
         info.name = name;   // a rename keeps the same device id
+        info.missingSince = 0;
       }
     }
+
+    // items.length, not seen.size: a pane holding only a SHARE tile is still a
+    // rendered pane, and everyone in it has genuinely gone. Gating on people
+    // seen would have made a lingering share keep its owner alive forever.
+    this._pruneDeparted(seen, items.length > 0);
 
     // Shares are state, not people. Recomputed from scratch each scan so a share
     // that ENDS disappears — an incremental update would leave a phantom
@@ -2224,9 +2402,45 @@ class DOMSpeakerTracker {
     }
   }
 
+  // Forget participants whose tile is gone for good.
+  //
+  // Nothing used to leave this Map. A participant who left the call stayed in
+  // it forever — still reported to the agent as being in the room — and a
+  // REJOIN made it worse: Meet issues a new device id, so the same human came
+  // back as a second entry while the dead one lingered. Measured on the
+  // 2026-08-13 call, which ended with five rows for four people, two of them
+  // "Pepper", the dead one permanently reading `item=STALE mtr=blind`. That
+  // pair of symptoms is also what made the logs look like the meter had gone
+  // blind for long stretches when detection was in fact working.
+  //
+  // Two guards, because forgetting a LIVE participant is much worse than
+  // keeping a dead one:
+  //
+  //   - Nothing is pruned when the scan saw no tiles AT ALL. The people pane is
+  //     closed during a chat read/send (it shares the side panel), and every
+  //     tile disappears from the DOM while it is — pruning then would wipe the
+  //     roster, along with each meter's calibration, several times a call.
+  //     "No tiles" means no listitems of any kind: a pane showing only a share
+  //     is open and rendering, and the people in it really have left.
+  //   - A tile must be absent for GONE_MS, not merely absent once. Meet
+  //     re-renders tiles sub-second for reasons unrelated to leaving.
+  _pruneDeparted(seen, paneRendered) {
+    if (!paneRendered) return;       // pane closed / mid-render — see above
+    const now = Date.now();
+    for (const [key, info] of this.participants) {
+      if (seen.has(key)) { info.missingSince = 0; continue; }
+      if (!info.missingSince) { info.missingSince = now; continue; }
+      if (now - info.missingSince < DOMSpeakerTracker.GONE_MS) continue;
+      this.participants.delete(key);
+      console.log('[speaker-tracker] forgot departed participant:', info.name,
+        `(gone ${Math.round((now - info.missingSince) / 1000)}s)`);
+    }
+  }
+
   _startObserving() {
     this.observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
+        if (this._isSelfAuthoredMutation(mutation)) continue;
         if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
           this._checkSpeakingChange(mutation.target);
         }
@@ -2238,8 +2452,42 @@ class DOMSpeakerTracker {
       }
     });
     this.observer.observe(document.body, {
-      attributes: true, attributeFilter: ['class'], childList: true, subtree: true,
+      // attributeOldValue so the filter above can diff the class list and tell
+      // OUR writes from Meet's — see _isSelfAuthoredMutation.
+      attributes: true, attributeFilter: ['class'], attributeOldValue: true,
+      childList: true, subtree: true,
     });
+  }
+
+  // #407: never let the app's own DOM writes feed the speaking counter. The
+  // deleted debug border proved the failure mode — a class toggle on a tile is
+  // indistinguishable from Meet's meter churn to a subtree observer, so the
+  // tracker literally counted its own output as evidence and oscillated at
+  // poll cadence. The contract that makes this checkable: every class the app
+  // writes inside Meet's DOM is `vibeconf-`-prefixed. A class mutation whose
+  // entire delta is vibeconf-* classes is ours; the tiniest Meet-authored
+  // change alongside still counts. childList additions of our own elements
+  // (id/class vibeconf-*) are skipped for the same reason.
+  _isSelfAuthoredMutation(mutation) {
+    if (mutation.type === 'attributes') {
+      const oldClasses = String(mutation.oldValue || '').split(/\s+/).filter(Boolean);
+      const newClasses = String(mutation.target.className || '').split(/\s+/).filter(Boolean);
+      const oldSet = new Set(oldClasses);
+      const newSet = new Set(newClasses);
+      const delta = [
+        ...newClasses.filter((c) => !oldSet.has(c)),
+        ...oldClasses.filter((c) => !newSet.has(c)),
+      ];
+      return delta.length > 0 && delta.every((c) => c.startsWith('vibeconf-'));
+    }
+    if (mutation.type === 'childList') {
+      const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
+      const ours = (n) => n.nodeType === 1
+        && (String(n.id || '').startsWith('vibeconf-')
+          || String(n.className || '').split(/\s+/).some((c) => c.startsWith('vibeconf-')));
+      return nodes.length > 0 && nodes.every(ours);
+    }
+    return false;
   }
 
   // Detection signal (#229): count mutations WITHIN a participant's tile in a
@@ -2262,6 +2510,7 @@ class DOMSpeakerTracker {
       if (info.item === element || info.item.contains(element)) {
         (info.mutTimes || (info.mutTimes = [])).push(now);
         info._hbSubtreeMut = (info._hbSubtreeMut || 0) + 1;
+        capture('mut', info.name);
         // Same event, two readings: count it for the mutation signal, and take a
         // fresh LEVEL off the meter (#142) so the verdict below sees the meter
         // as of this instant rather than as of the last 50ms poll tick.
@@ -2274,13 +2523,28 @@ class DOMSpeakerTracker {
   // Raw speaking signal #1 of 2: enough tile mutations in the recent window.
   // The slower but battle-tested one; see _isSpeakingByMeter for the level
   // signal that reads Meet's meter directly, and _rawSpeaking for the combine.
+  //
+  // #407: a Schmitt trigger, not a bare threshold. Arm at >=ARM, release only
+  // when the window drains BELOW RELEASE. With a single cutoff, a meter
+  // churning right at the threshold rate flapped the verdict every poll tick
+  // (drain to 2 -> false; one mutation lands -> 3 -> true; repeat) — 190
+  // true/false pairs 1ms apart on one real call. The gap between the two
+  // thresholds means one borderline mutation can no longer flip the verdict
+  // in either direction: turning ON still takes the full arm count, turning
+  // OFF requires the churn to genuinely die down, not momentarily dip.
   _isSpeakingByMutation(info, now) {
     const WINDOW_MS = 1200;
-    const MIN_MUTATIONS = 3; // meter does ~6-12 in this window; idle UI does <3
+    const ARM_MUTATIONS = 3;     // meter does ~6-12 in this window; idle UI does <3
+    const RELEASE_MUTATIONS = 2; // armed survives a dip to 2; drops off below it
     const t = info.mutTimes;
-    if (!t || !t.length) return false;
-    while (t.length && now - t[0] > WINDOW_MS) t.shift();
-    return t.length >= MIN_MUTATIONS;
+    if (t) while (t.length && now - t[0] > WINDOW_MS) t.shift();
+    const count = t ? t.length : 0;
+    if (info._mutArmed) {
+      if (count < RELEASE_MUTATIONS) info._mutArmed = false;
+    } else if (count >= ARM_MUTATIONS) {
+      info._mutArmed = true;
+    }
+    return info._mutArmed === true;
   }
 
   // -------------------------------------------------------------------------
@@ -2415,7 +2679,7 @@ class DOMSpeakerTracker {
       // (The obvious alternative — take the most common value — loses the first
       // utterance of a call, when a raised bar can out-count a rest that has
       // only been seen a few times.)
-      this._readPromoted(st, v, now);
+      this._readPromoted(st, v, now, info, 'poll');
     }
 
     if (best) {
@@ -2442,7 +2706,10 @@ class DOMSpeakerTracker {
 
   // Fold one reading of the promoted meter into its state. Shared by the poll
   // and the observer so both paths apply identical rest tracking and attack.
-  _readPromoted(st, v, now) {
+  _readPromoted(st, v, now, info, source) {
+    // The raw sprite offset, before any rest comparison — see the capture
+    // header on why a derived boolean would be useless here.
+    if (info) capture('ind', info.name, v, source);
     // The resting bar is whatever this meter PARKS on: the same value held for
     // a full second without moving. A speaking meter steps between bars several
     // times a second, so it can't claim rest; a silent one sits still.
@@ -2462,6 +2729,19 @@ class DOMSpeakerTracker {
       st.run = (st.run || 0) + 1;
       if (!st.offSince) st.offSince = now;
       st._hbOffRest = (st._hbOffRest || 0) + 1;
+      // How FAR off rest, in px of sprite travel — the loudness, which nothing
+      // has ever recorded. The verdict is currently binary (off rest at all),
+      // so a quiet sound counts the same as a shout; if the bot's own TTS
+      // coming back through someone's speakers is quieter than that person
+      // actually talking, a level threshold separates them where no amount of
+      // time-smoothing can. This is the number that would show it (#378).
+      const lvl = Math.abs(parseFloat(v) - parseFloat(st.rest)) || 0;
+      if (lvl > (st._hbMaxLvl || 0)) st._hbMaxLvl = lvl;
+      // The MEAN matters more than the max: any real utterance touches the top
+      // bar sooner or later, so max saturates (measured: lvl=40 on every
+      // speaking beat) and separates nothing. If echo is quieter than speech,
+      // it shows up as a lower average excursion across the beat.
+      st._hbLvlSum = (st._hbLvlSum || 0) + lvl;
       // Attack requirement: at least two readings, spanning METER_ATTACK_MS, of
       // a raised level before the verdict arms. One raised frame is a keystroke
       // or a chair creak, and with the hold and the grace on top it would have
@@ -2502,7 +2782,7 @@ class DOMSpeakerTracker {
     if (v == null) return false;
     st.prev.set(st.el, v);
     st._hbEvents = (st._hbEvents || 0) + 1;
-    this._readPromoted(st, v, now);
+    this._readPromoted(st, v, now, info, 'evt');
     return this._isSpeakingByMeter(info, now) !== before;
   }
 
@@ -2525,9 +2805,53 @@ class DOMSpeakerTracker {
     const mut = this._isSpeakingByMutation(info, now);
     const meter = this._isSpeakingByMeter(info, now);
     this._logSignalDisagreement(info, mut, meter, now);
-    if (meter === null || speakingDetectionMode === 'mutation') return mut;
-    if (speakingDetectionMode === 'meter') return meter;
-    return mut || meter;   // 'either' — earliest rising edge of the two
+    let verdict;
+    if (meter === null || speakingDetectionMode === 'mutation') verdict = mut;
+    else if (speakingDetectionMode === 'meter') verdict = meter;
+    else verdict = mut || meter;   // 'either' — earliest rising edge of the two
+
+    // NO ECHO GUARD HERE — removed deliberately (#378, and the measurement that
+    // undid it). A blanket suppression of every rising edge for 700ms after our
+    // own TTS used to sit at this point.
+    //
+    // A real call with two humans on SPEAKERS, recorded 2026-08-17 and kept at
+    // ~/vibeconf-corpus/echo-speakers-2026-08-17 (see tests/fixtures/CORPUS.md),
+    // shows nothing for the guard to catch. Of 838 verdict rises, four landed
+    // while our own TTS was playing — and at every one of those four, a remote
+    // track was LOUD: -13 to -16 dB against a -89 dB quiet floor.
+    //
+    // There is no moment in that recording where an indicator lit up in an
+    // audibly silent room, which is what echo would look like. The guard was
+    // withholding rising edges to prevent something the only relevant recording
+    // does not contain, and the cost is real: a withheld rise is a late yield to
+    // someone genuinely interrupting, which is exactly when yielding matters.
+    //
+    // Deliberately stated WITHOUT naming who spoke. Meet reassigns participants
+    // between WebRTC tracks mid-call, and the track->name attribution (#209)
+    // votes using the DOM speaking signal — the very signal under test. That
+    // call recorded four participants onto three remote tracks, labelled
+    // Stan/Seth/Stan with no track for the fourth, so any per-person claim from
+    // it is unsound. "Some track was loud" needs no attribution and is enough.
+    //
+    // The same recording also shows WHY the original model was wrong: Meet's
+    // acoustic echo cancellation strips our voice out of what it transmits.
+    // Correlating our outgoing audio against each remote track finds no echo
+    // (-0.09), and those tracks run 5-6x QUIETER while we talk. Whatever lights
+    // a speaking indicator during our TTS, it is not audible echo in the stream
+    // we receive, so a rule built on "they can hear us" was reasoning about a
+    // mechanism that is not there.
+    //
+    // What the data does support is a targeted test rather than a window: the
+    // app already runs a ParticipantAudio analyser on every remote track, and a
+    // rise while THAT participant's own audio is silent is the actual echo
+    // signature. That would have caught the single false rise and left the
+    // three real ones alone. Tracked separately; not reinstated here on the
+    // strength of one call.
+    //
+    // The self-audio envelope that fed the guard is KEPT: it is published,
+    // captured in speaking-events.jsonl, and it is what made this measurement
+    // possible in the first place.
+    return verdict;
   }
 
   // Records how far the meter leads (or trails) the mutation counter on each
@@ -2550,17 +2874,32 @@ class DOMSpeakerTracker {
     s.mut = mut; s.meter = meter === true;
   }
 
-  // Asymmetric grace: true trusted instantly (avatar flips with no lag), false
-  // held for SPEAKING_GRACE_MS so a brief animation pause mid-utterance doesn't
-  // escape as a premature "stopped" (which used to leave wait_for_speech on a
-  // stale stopped-timestamp — the 36s-late-response incident). The rolling
-  // window already smooths; this adds margin on top.
-  _isSpeakingWithGrace(info, now) {
-    const raw = this._rawSpeaking(info, now);
-    if (raw) { info.lastTrueAt = now; return true; }
-    const SPEAKING_GRACE_MS = 1000;
-    if (info.lastTrueAt && (now - info.lastTrueAt) < SPEAKING_GRACE_MS) return true;
-    return false;
+  // #395: report the TRUE edges — both of them — and nothing else.
+  //
+  // This used to hold `false` for a SPEAKING_GRACE_MS of 1000ms so a brief
+  // animation pause mid-utterance couldn't escape as a premature "stopped"
+  // (the 36s-late-response incident). That padding was real and still is —
+  // but it belongs to the ONE consumer that needs it, the silence timer, not
+  // baked into the shared flag where every other consumer inherits it blind.
+  //
+  // Barge-in needs the exact opposite bias: it has to know the instant someone
+  // actually went quiet, so it can ride out a one-word interjection instead of
+  // yielding the floor to it. With the pad in here, the shortest release this
+  // tracker could ever report was ~2.1s — longer than the barge-in grace
+  // itself — so the grace could never expire into a cleared flag and a single
+  // word from a human reliably cut the bot off mid-sentence.
+  //
+  // The padding is gone entirely rather than relocated: the silence gate that
+  // wanted it already has `silenceSeconds`, and a flicker shorter than that
+  // threshold merely re-arms its timer. The pad was a second, unnamed silence
+  // threshold stacked on the configured one. The rolling window in
+  // _rawSpeaking still smooths the signal; what's gone is the one-sided margin
+  // on top of it.
+  _isSpeaking(info, now) {
+    // (The lastTrueAt bookkeeping that lived here served only the deleted
+    // grace branch — _logSignalDisagreement keeps its own edge timestamps in
+    // info._sig — so it went with it.)
+    return this._rawSpeaking(info, now);
   }
 
   // Shared flip: evaluate speaking, and on an edge emit the IPCs + toggle the
@@ -2568,12 +2907,12 @@ class DOMSpeakerTracker {
   // the true edge instantly) from the 200ms poll (catches the false edge once
   // the window drains, since the observer only fires while mutations arrive).
   _evaluateSpeaking(info, name, now, source) {
-    const isSpeaking = this._isSpeakingWithGrace(info, now);
+    const isSpeaking = this._isSpeaking(info, now);
     if (isSpeaking !== info.speaking) {
       info.speaking = isSpeaking;
       info.lastChange = now;
       console.log('[speaker-tracker] (' + source + ')', name, '→', isSpeaking);
-      this._applyDebugBorder(info, isSpeaking);
+      capture('verdict', name, isSpeaking ? 1 : 0, source);
       meetProvider.emit(CALL_EVENTS.speakingChanged, { name, speaking: isSpeaking });
       meetProvider.emit(CALL_EVENTS.participantsUpdated, this.getParticipantList());
       // #209: feed the page-world CallRecorder the real participant NAME so it can
@@ -2587,35 +2926,6 @@ class DOMSpeakerTracker {
       // Re-assert active speech so local-server's silence timer keeps resetting.
       meetProvider.emit(CALL_EVENTS.speakingChanged, { name, speaking: true });
     }
-  }
-
-  // Visual diagnostic (gated by speakerDebugBorder config): outline the tile we
-  // currently think is speaking, so it can be eyeballed against Meet's own
-  // animating mic meter in the same row.
-  _applyDebugBorder(info, speaking) {
-    if (!speakerDebugBorder || !info.item) return;
-    this._injectDebugStyle(); // lazy — flag is loaded async, head exists by now
-    try { info.item.classList.toggle('vibeconf-spk-debug', !!speaking); } catch { /* ignore */ }
-  }
-
-  _injectDebugStyle() {
-    if (this._debugStyleInjected) return;
-    this._debugStyleInjected = true;
-    try {
-      const style = document.createElement('style');
-      style.textContent = `
-        .vibeconf-spk-debug {
-          outline: 3px solid #00e5ff !important;
-          outline-offset: -3px !important;
-          border-radius: 6px;
-          animation: vibeconf-spk-pulse 0.7s ease-in-out infinite !important;
-        }
-        @keyframes vibeconf-spk-pulse {
-          0%, 100% { box-shadow: 0 0 6px 2px rgba(0,229,255,0.55); }
-          50%      { box-shadow: 0 0 16px 5px rgba(0,229,255,1); }
-        }`;
-      document.head.appendChild(style);
-    } catch { /* ignore */ }
   }
 
   _pollSpeakingState() {
@@ -2990,6 +3300,17 @@ window.addEventListener('message', (event) => {
     if (name) meetProvider.emit(CALL_EVENTS.speakingChanged, { name, speaking });
   }
 
+  if (event.data.action === 'self-audio') {
+    // #378: our own TTS envelope, from page-inject's VirtualMic analyser. Only
+    // the LOUD edges matter — see noteSelfAudioLoud.
+    const { loud, at, amp } = event.data.payload || {};
+    if (loud) noteSelfAudioLoud(at || Date.now());
+    // BOTH edges are captured (#422): the echo guard re-scores offline from our
+    // own loud/quiet intervals, so the quiet edge is half the record.
+    capture('self', null, loud ? 1 : 0, amp != null ? String(amp) : undefined);
+    return;
+  }
+
   if (event.data.action === 'audio-floor') {
     // #115: fast floor signal from the Web Audio analyser (~16ms) — published
     // alongside the DOM mutation path (~400-700ms) so the two can be compared
@@ -3004,6 +3325,12 @@ window.addEventListener('message', (event) => {
     // so the user's mute click maps cleanly to mode. The current mode lives in
     // the main process, so we just ask main to decide.
     meetProvider.emit(CALL_EVENTS.ttsEnded);
+  }
+
+  if (event.data.action === 'tts-stopped') {
+    // #360: how far playback got when a barge-in stopped it — main pairs this
+    // with the chunk texts to tell the agent what the room never heard.
+    ipcRenderer.send('tts-stopped', event.data.payload || {});
   }
 
   if (event.data.action === 'log') {

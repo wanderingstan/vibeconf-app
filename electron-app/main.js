@@ -20,7 +20,7 @@ const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEv
 const { CallRecordingSession } = require('./call-recorder.js');
 const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWindow } = require('./call-recording-window.js');
 const { mergeCallMedia } = require('./call-media-merge.js');
-const { evictStaleEventIds, selectEventToJoin, selectUpcomingMatches, matchesCalendarEvent, isEventUpcoming, msUntilStart, eventDedupeKey, resolveMeetUrl: resolveCalendarMeetUrl } = require('./calendar-auto-join.js');
+const { evictStaleEventIds, selectEventToJoin, selectUpcomingMatches, matchesCalendarEvent, ownerHasConfirmed, isEventUpcoming, msUntilStart, eventDedupeKey, resolveMeetUrl: resolveCalendarMeetUrl } = require('./calendar-auto-join.js');
 const { createMergeProgressWindow, closeMergeProgressWindow } = require('./call-recording-merge-window.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
 const {
@@ -338,14 +338,21 @@ function stopRecordingStatsPush() {
 // playable across players/tools).
 let activeShareCaptureWindow = null;
 
-// The AbortController for whichever ffmpeg merge is currently running inside
-// stopCallRecording() (see call-recording-merge-window.js's "Preparing
-// recording…" window). null whenever no merge is in flight — including
-// between the main and share merges, briefly, and always outside
-// stopCallRecording() entirely. The 'merge-cancel-requested' IPC handler
-// (setupIPC) just calls .abort() on whatever this currently points to, so a
-// stray/late cancel click with nothing running is a harmless no-op.
+// The AbortController for the most recently started ffmpeg merge run (see
+// runPostRecordingMerges and call-recording-merge-window.js's "Preparing
+// recording…" window). null whenever no merge is in flight. The
+// 'merge-cancel-requested' IPC handler (setupIPC) just calls .abort() on
+// whatever this currently points to, so a stray/late cancel click with
+// nothing running is a harmless no-op. Since #388 detached the merge from
+// stopCallRecording, two runs can (rarely) overlap — this always points at
+// the newest one, and each run only nulls it back out if it still owns it.
 let activeMergeAbortController = null;
+
+// #388: how many detached runPostRecordingMerges runs are currently in
+// flight. Only consulted at quit, for an honest log line — quitting kills any
+// running ffmpeg with the app, which loses nothing but the combined mp4 (the
+// raw tracks and their RECOVERY.md stay on disk until a merge SUCCEEDS).
+let mergesInFlight = 0;
 
 // Spoken when an explicit start_recording begins, so participants are told
 // the call is being recorded (consent). Short on purpose. Just "recording this
@@ -491,11 +498,20 @@ async function stopShareCaptureIfActive() {
   }
 }
 
-// Async: waiting for the control window's final video chunk (and then muxing
-// audio+video into call-recording.mp4) both take a moment. Callers that don't need the
-// result (leave-call teardown, the IPC 'call-record-stopped' notification)
-// fire this without awaiting — best-effort, never blocks the call from ending
-// (each step below is independently try/caught for the same reason).
+// Async: waiting for the control window's final video chunk takes a moment,
+// but only a moment — everything awaited in here is the FAST half of stopping
+// (close the capture windows, flush the last chunks, write manifest.json).
+// The ffmpeg merge is NOT awaited (#388): it can run 20+ minutes on a long
+// call, and this function sits directly under the stop_recording MCP tool
+// (via setCallRecording → onRecord → /api/call/record), so awaiting the merge
+// here left the agent comatose in the room — unable to speak, read chat, or
+// even issue leave_call — until ffmpeg finished. The merge now runs detached
+// via runPostRecordingMerges below; by the time this returns, the raw tracks
+// and manifest are safely on disk and the combined mp4(s) are on their way.
+// Callers that don't need even the fast result (leave-call teardown, the IPC
+// 'call-record-stopped' notification) still fire this without awaiting —
+// best-effort, never blocks the call from ending (each step below is
+// independently try/caught for the same reason).
 async function stopCallRecording() {
   if (!activeRecording) return { ok: true, already: true };
   const dir = activeRecording.dir;
@@ -540,9 +556,35 @@ async function stopCallRecording() {
 
   // Merge is additive — the raw per-track files stay on disk either way, so a
   // failed/skipped merge just means no call-recording.mp4, not lost material.
-  let mainMerge = null;
-  let shareMerge = null; // stays null when there was no share track to merge
+  // That's exactly why it can run detached (#388): nothing after this point
+  // needs the merge's outcome, and everything before it is already safe.
+  // Fire-and-forget with the same framing as the share merge inside — the
+  // .catch is belt-and-braces (every step in there is independently caught).
   if (manifest) {
+    runPostRecordingMerges({ callDir, tracksDir: dir, manifest, outputSuffix, finishedSession })
+      .catch((err) => console.warn('[call-record] detached merge failed:', err.message));
+  }
+
+  return { ok: true, dir, tracks, merging: !!manifest };
+}
+
+// #388: the slow half of stopping a recording — the ffmpeg merge(s) plus the
+// cleanup that depends on their outcome — split out of stopCallRecording so
+// it can run detached from the request path (see the comment there). Only
+// ever started by stopCallRecording, exactly once per finalized manifest, so
+// a double stop can't double-merge (the second stop finds activeRecording
+// already null and returns {already:true} without reaching this). A NEW
+// recording started while this is still running can't collide with it either:
+// nextRecordingSuffix treats a still-present call-recording-tracks<suffix>/
+// dir OR an already-merged call-recording<suffix>.mp4 as "in use", and this
+// merge's tracks dir stays on disk until the merge succeeds — so the next
+// recording always picks a fresh suffix and a fresh output name.
+async function runPostRecordingMerges({ callDir, tracksDir, manifest, outputSuffix, finishedSession }) {
+  const dir = tracksDir;
+  mergesInFlight++;
+  try {
+    let mainMerge = null;
+    let shareMerge = null; // stays null when there was no share track to merge
     const shareTrack = manifest.tracks.find((t) => t.track === 'share');
     const hasVideo = manifest.tracks.some((t) => t.track === 'video');
     // The merge can take a while and pins a CPU core — by this point BOTH
@@ -554,12 +596,18 @@ async function stopCallRecording() {
     // the raw tracks are untouched either way (see allAttemptedMergesOk
     // below), so cancelling never loses material, only the combined file(s).
     const mergeWin = hasVideo ? createMergeProgressWindow() : null;
-    if (mergeWin) {
-      activeMergeAbortController = new AbortController();
+    // Per-run controller, published to the module-level slot only while this
+    // run owns it: with the merge detached, a stop→start→stop in quick
+    // succession can (rarely) have two runs alive at once, and the Cancel
+    // button should abort the latest one without an older run's cleanup
+    // nulling the slot out from under it (see the ===-guard below).
+    const abort = mergeWin ? new AbortController() : null;
+    if (abort) {
+      activeMergeAbortController = abort;
     }
     const mainOutputName = `call-recording${outputSuffix}.mp4`;
     try {
-      mainMerge = await mergeCallMedia(callDir, { tracksDir: dir, tracks: manifest.tracks, outputName: mainOutputName, signal: activeMergeAbortController?.signal });
+      mainMerge = await mergeCallMedia(callDir, { tracksDir: dir, tracks: manifest.tracks, outputName: mainOutputName, signal: abort?.signal });
       if (mainMerge.ok) console.log(`[call-record] merged ${mainOutputName} -> ${mainMerge.file}`);
       else console.log(`[call-record] merge skipped: ${mainMerge.reason}`);
     } catch (err) {
@@ -593,7 +641,7 @@ async function stopCallRecording() {
           videoTrackName: 'share',
           outputName: shareOutputName,
           padStartMs,
-          signal: activeMergeAbortController?.signal,
+          signal: abort?.signal,
         });
         if (shareMerge.ok) console.log(`[call-record] merged ${shareOutputName} -> ${shareMerge.file} (padded ${padStartMs}ms)`);
         else console.log(`[call-record] share merge skipped: ${shareMerge.reason}`);
@@ -604,7 +652,7 @@ async function stopCallRecording() {
     }
     if (mergeWin) {
       closeMergeProgressWindow(mergeWin);
-      activeMergeAbortController = null;
+      if (activeMergeAbortController === abort) activeMergeAbortController = null;
     }
 
     // call-recording-tracks/ (the raw per-participant audio + video.webm +
@@ -615,6 +663,46 @@ async function stopCallRecording() {
     // ffmpeg, no video captured, share mux error, ...) means the raw tracks
     // are the ONLY copy of that material, so they're never removed in that
     // case regardless of the pref.
+    // #422 — per-PERSON audio: who is actually on each track, when.
+    //
+    // Gated on keepCallRecordingTracks rather than a switch of its own. That
+    // pref already means "I am going to look at the raw material of this
+    // recording", and there is no reason to keep the tracks but decline to
+    // learn who is on them: a recorded remote-* track is NOT one participant,
+    // so the tracks alone answer almost nothing without this.
+    //
+    // Labels only, not the per-person WAVs. Keeping the tracks is precisely
+    // what makes the audio reproducible on demand — scripts/extract-speaker-
+    // tracks.mjs regenerates it in a couple of minutes — so writing ~300MB per
+    // person per hour automatically would spend a gigabyte a call to save one
+    // command. attribution.json and the label tracks come to ~10MB and answer
+    // every question asked of the corpus so far.
+    let keepTracksPref = false;
+    try { keepTracksPref = !!prefValue('keepCallRecordingTracks'); } catch { /* default off */ }
+    if (keepTracksPref) {
+      try {
+        const { extractSpeakerTracks } = require('./speaker-extract.js');
+        const { resolveFfmpegPath } = require('./call-media-merge.js');
+        const res = await extractSpeakerTracks({
+          tracksDir: dir,
+          eventsFile: path.join(callDir, 'speaking-events.jsonl'),
+          ffmpegPath: resolveFfmpegPath() || 'ffmpeg',
+          writeAudio: false,
+          cleanup: true, // the decode cache is ~300MB per slot and rebuildable
+          log: (line) => console.log(`[speaker-extract] ${line}`),
+        });
+        if (res.ok) {
+          console.log(`[speaker-extract] ${res.segments} segments, ${res.people.length} people, `
+            + `${res.unresolved} unresolved -> ${res.outDir}`);
+        } else {
+          console.log(`[speaker-extract] skipped: ${res.reason}`);
+        }
+      } catch (err) {
+        // Diagnostics must never be why a recording is lost.
+        console.warn('[speaker-extract] failed:', err.message);
+      }
+    }
+
     const allAttemptedMergesOk = !!mainMerge?.ok && (!shareTrack || !!shareMerge?.ok);
     // #343: the recovery note's PRESENCE is what marks a recording as
     // unfinished, so it comes off here and nowhere earlier — this is the first
@@ -623,9 +711,7 @@ async function stopCallRecording() {
     // then the only copy, and the note is what says so and how to finish them.
     if (allAttemptedMergesOk) {
       try { finishedSession?.removeRecoveryNote(); } catch { /* best-effort */ }
-      let keepTracks = false;
-      try { keepTracks = !!prefValue('keepCallRecordingTracks'); } catch { /* default: don't keep */ }
-      if (!keepTracks) {
+      if (!keepTracksPref) {
         try {
           fs.rmSync(dir, { recursive: true, force: true });
           console.log(`[call-record] removed raw tracks (${dir}) — keepCallRecordingTracks is off`);
@@ -634,9 +720,9 @@ async function stopCallRecording() {
         }
       }
     }
+  } finally {
+    mergesInFlight--;
   }
-
-  return { ok: true, dir, tracks };
 }
 
 // #343: the cheap half of stopping a recording, done SYNCHRONOUSLY, for the
@@ -899,6 +985,24 @@ function revokeCallLogShare(reason) {
 // Idempotent, because the watchdog and the panel reply race by design and both
 // must be safe.
 let _teardownDone = false;
+// #422: one audio-device sample per call edge, never two. Fire-and-forget —
+// system_profiler takes a few hundred ms and a join must never wait on
+// diagnostics.
+let _audioSampledInCall = false;
+function logAudioDevicesOnCallEdge(status) {
+  const { sampleAudioDevices, formatAudioDevices } = require('./audio-devices.js');
+  const emit = (phase) => {
+    sampleAudioDevices()
+      .then((parsed) => {
+        const line = formatAudioDevices(parsed, phase);
+        if (line) console.log(ts(), line);
+      })
+      .catch(() => { /* diagnostics never break a call */ });
+  };
+  if (status === 'in-call' && !_audioSampledInCall) { _audioSampledInCall = true; emit('join'); }
+  else if (_audioSampledInCall && status !== 'in-call') { _audioSampledInCall = false; emit('leave'); }
+}
+
 function performLeaveTeardown(via) {
   clearTimeout(_idleWatchdog);
   _idleWatchdog = null;
@@ -1093,6 +1197,13 @@ process.on('unhandledRejection', (reason) => {
 const tts = new globalThis.TTSProvider();
 const stt = new globalThis.STTProvider();
 const sync = new globalThis.SyncClient({
+  // Merge the website's room presence into the local roster. The local list is
+  // otherwise written only by posts to THIS instance's local server, so it holds
+  // exactly one bot — itself — and the barge-in check's "is this interrupter a
+  // bot?" question could never come back yes for a peer.
+  onMembers: (members) => {
+    localServer.mergeRemoteMembers(members);
+  },
   onBotSpeech: (text, voice) => {
     console.log('[electron] Bot speech from sync:', text.slice(0, 80), voice ? `(voice: ${voice})` : '');
     ackTtsPending = false;
@@ -1790,6 +1901,7 @@ const localServer = new globalThis.LocalServer({
     const { events, error } = clickEventsFor({ ...point, button, clickCount });
     if (error) return { ok: false, error };
 
+    vcShowCursor(wc, vcClickScript(point.x, point.y));
     for (const ev of events) wc.sendInputEvent(ev);
     console.log('[local-server] Share click at', point.x + ',' + point.y,
       selector ? '(' + selector + ')' : '', button || 'left');
@@ -1816,6 +1928,7 @@ const localServer = new globalThis.LocalServer({
     // activating the window, so it can't steal the user's foreground app.
     try { wc.focus(); } catch { /* best effort */ }
 
+    vcShowCursor(wc, vcTypeScript(selector || null));
     for (const ev of events) wc.sendInputEvent(ev);
     console.log('[local-server] Share type:', key ? 'key ' + key : JSON.stringify(text),
       (modifiers && modifiers.length) ? 'mods ' + modifiers.join('+') : '',
@@ -1940,6 +2053,35 @@ const localServer = new globalThis.LocalServer({
       return { ok: false, error: err.message };
     }
   },
+  // Sandboxed JS eval against the share surface (#244).
+  onEvalShare: async ({ expression } = {}) => {
+    const wc = shareWebContents();
+    if (!wc) return { ok: false, error: 'Nothing is being shared to evaluate against' };
+    if (!expression) return { ok: false, error: 'expression is required' };
+    const result = await evalInShare(wc, expression);
+    console.log('[local-server] eval_share →', result.ok ? 'ok' : `error: ${result.error}`);
+    return result;
+  },
+  // Locate an element by description on the share surface (#244).
+  onFindShareElement: async ({ description, max_results } = {}) => {
+    const wc = shareWebContents();
+    if (!wc) return { ok: false, error: 'Nothing is being shared to search' };
+    if (!description) return { ok: false, error: 'description is required' };
+    const result = await findInShare(wc, description, { maxResults: max_results });
+    console.log('[local-server] find_share_element', JSON.stringify(description), '→',
+      result.ok ? `${result.matches.length} match(es)` : `error: ${result.error}`);
+    return result;
+  },
+  // Read the share surface's buffered console messages (#244).
+  onReadShareConsole: async ({ limit } = {}) => {
+    const wc = shareWebContents();
+    return readShareLog(shareConsoleLogs, wc, { limit });
+  },
+  // Read the share surface's buffered network requests (#244).
+  onReadShareNetwork: async ({ limit } = {}) => {
+    const wc = shareWebContents();
+    return readShareLog(shareNetworkLogs, wc, { limit });
+  },
   onBotStateChange: async (state, extra) => {
     console.log('[local-server] Bot state:', state, extra || '');
     // Forward state to page-inject.js to update avatar emoji
@@ -1963,6 +2105,17 @@ const localServer = new globalThis.LocalServer({
     // fire a spoken ack there, or the bot interrupts whoever still has the floor.
     const triageGateActive = !!store?.get('triageAck') && !triageEndpointDown;
     if (state === 'thinking' && localServer.mode === 'active' && !triageGateActive && !extra?.backgroundTick) {
+      // #359: the hand (🙋 "yielding") means a reply is already stashed and
+      // ready. Firing "let me think about that" on top of a raised hand is
+      // dishonest — it trains people not to call on the bot. The stash's own
+      // opening/resolve paths (_maybeReplayStashOnOpening,
+      // _maybeReplayBargeInStash) already own delivering it; this path just
+      // has to stay out of the way.
+      if (localServer.bargeInStash) {
+        console.log(ts(), '🤐 [ack] Suppressing — a reply is already stashed and the hand is up');
+        return;
+      }
+
       const wordCount = extra?.wordCount || 0;
       const text = (extra?.text || '').toLowerCase();
 
@@ -2080,7 +2233,10 @@ const localServer = new globalThis.LocalServer({
       // Mark the ack so its tts-ended doesn't drop us out of 'thinking' while
       // the agent is still generating the real response.
       ackTtsPending = true;
-      speakText(ack);
+      // Acks ride at ackVolume — a human's "mm-hmm" is not as loud as their
+      // sentence, and at equal volume these read as the bot barging in. This
+      // is the only caller that passes a volume; everything else is unchanged.
+      speakText(ack, undefined, undefined, { volume: Number(prefValue('ackVolume')) });
       // Surface the phrase to the slow model on its next wait_for_speech,
       // so it can self-correct if its real response contradicts the ack
       // tone. Cleared after one read on the local-server side.
@@ -2116,6 +2272,13 @@ const localServer = new globalThis.LocalServer({
     // The bot's view only takes up window space during a call — grow/shrink the
     // column here, before anything else, so the layout tracks the call.
     setBotViewInCall(status);
+    // #422: record what this machine hears and speaks through, once on the way
+    // in and once on the way out. Whether a participant is on SPEAKERS decides
+    // whether the bot can hear its own voice back (#378), and that is the one
+    // condition about a call that no other log captures. Sampled at both ends
+    // because devices change mid-call — measured 2026-08-17, one machine went
+    // from built-in speakers to external headphones eight minutes in.
+    logAudioDevicesOnCallEdge(status);
     // A call we spawned has ended (host ended it, bot was removed, whatever) —
     // hand the room back. leave-meet covers the button; this covers the rest.
     // An update that landed mid-call has been sitting staged and unmentioned.
@@ -2303,7 +2466,9 @@ const localServer = new globalThis.LocalServer({
     // missed ack just means the slow answer arrives without a filler; a stray ack
     // is one short phrase. Only in active mode + in-call. The regex ack-on-thinking
     // is suppressed (above) while triage drives, so no double ack.
-    if (result.ack && localServer.mode === 'active' && localServer.callStatus === 'in-call') {
+    // #359: same rule as the regex ack gate above — a raised hand means a
+    // reply is already stashed and ready; don't ack over it.
+    if (result.ack && localServer.mode === 'active' && localServer.callStatus === 'in-call' && !localServer.bargeInStash) {
       const wordCount = (lastUtterance || '').split(/\s+/).filter(Boolean).length;
       const prefs = require('./preferences-schema').PREFERENCES;
       const longMin = Number(store?.get('ackLongMin')) || prefs.ackLongMin.default;
@@ -2858,6 +3023,12 @@ let meetAccountEmailPinned = false; // true when --meet-account-email pinned the
 // runs); read by the get-upcoming-calendar-events IPC handler in setupIPC —
 // a SEPARATE top-level function, so this can't be a local of either.
 let latestUpcomingCalendarEvents = [];
+// Calendar poll health, for the panel's warning banner: null while polls
+// succeed (or fail for expected reasons: signed out, not connected, offline),
+// or { code, message } once the backend reports a broken Google connection —
+// the invalid_grant case, where calendar WAS working and silently stopped
+// (vibeconferencing#512). Same cross-closure split as the events above.
+let latestCalendarPollError = null;
 // launchOrFocusProfile is a local of setupIPC() (it needs isDefaultName/
 // scanRunningInstances, also locals there) — checkOtherProfilesForCalendarMatch
 // runs in the whenReady closure and can't see it directly. setupIPC() runs
@@ -3482,6 +3653,117 @@ function shareWebContents() {
   return whiteboardWindow.webContents;
 }
 
+// --- Virtual cursor overlay (#244 follow-up) ---
+// Purely cosmetic: gives the room something to look at when click_share
+// or type_share acts, the way Claude in Chrome's own cursor overlay
+// does — otherwise a click on the shared board is invisible until its effect
+// shows up. Injected into the shared PAGE itself (not the Electron window
+// chrome), so it's part of what desktopCapturer actually captures. Survives
+// nothing across navigation by design — a fresh page gets a fresh overlay,
+// re-created lazily on the next click/type. Best-effort throughout: a failure
+// here must never break the click/type it's illustrating.
+// Deliberately built WITHOUT a <style> tag or any external/data-URI resource:
+// a lot of real-world sites (banks, e-commerce, anything security-conscious —
+// Uber Eats among them) run a CSP that blocks inline stylesheets (style-src)
+// and/or data: image sources (img-src), which would make an injected
+// <style>-based overlay silently invisible — unstyled 0×0 divs, no error, no
+// signal anything went wrong. Direct CSSOM property assignment (el.style.foo
+// = ...) is NOT governed by style-src (it's a scripting API, not a
+// stylesheet), and clip-path with literal polygon() points draws the arrow
+// without loading anything, so it's unaffected by img-src too.
+function vcEnsureOverlayJs() {
+  return `(() => {
+    if (window.__vcCursor) return;
+    const mk = (styles) => {
+      const el = document.createElement('div');
+      Object.assign(el.style, { position: 'fixed', left: '0px', top: '0px', pointerEvents: 'none' }, styles);
+      document.documentElement.appendChild(el);
+      return el;
+    };
+    // Sized and colored to read clearly at video-call resolution against ANY
+    // page background — a subtle white arrow was tried first and was
+    // basically invisible on light pages (#244 testing).
+    //
+    // The clip-path polygon below is the actual pointer shape (points taken
+    // from a standard arrow-cursor icon, viewBox 0-13 x 0-20: tip(0,0),
+    // (0,18), (6.9,14.5), (10.8,20), (14.6,19), (10.8,13.5), (20,13.5) —
+    // reduced to percentages of ITS OWN bounding box). The div's width:height
+    // (18:28 ≈ 0.64) matches that box's own ratio (13:20 = 0.65) — a prior
+    // attempt guessed dimensions instead of deriving them and the shape came
+    // out visibly squashed (#244 testing).
+    //
+    // box-shadow would give a glow too, but clip-path clips box-shadow along
+    // with the element — filter: drop-shadow() renders on the POST-CLIP
+    // shape instead, so it's the only way to glow around a clipped shape.
+    window.__vcCursor = mk({
+      zIndex: '2147483647', width: '18px', height: '28px', opacity: '0',
+      background: '#ff5a1f',
+      clipPath: 'polygon(0% 0%, 0% 90%, 34.6% 72.5%, 53.8% 100%, 73.1% 95%, 53.8% 67.5%, 100% 67.5%)',
+      filter: 'drop-shadow(0 0 1.5px #ffffff) drop-shadow(0 0 1.5px #ffffff) drop-shadow(0 0 6px rgba(255,90,31,0.9)) drop-shadow(0 0 11px rgba(255,90,31,0.6))',
+      transition: 'left 130ms ease-out, top 130ms ease-out, opacity 200ms ease-out',
+    });
+    window.__vcRipple = mk({
+      zIndex: '2147483646', width: '40px', height: '40px',
+      marginLeft: '-20px', marginTop: '-20px', borderRadius: '50%',
+      border: '4px solid #ff5a1f', boxShadow: '0 0 0 1px rgba(255,255,255,0.9)',
+      opacity: '0', transform: 'scale(0.4)',
+    });
+    window.__vcHighlight = mk({
+      zIndex: '2147483645', border: '3px solid #ff5a1f', borderRadius: '4px',
+      opacity: '0', boxShadow: '0 0 0 4px rgba(255,90,31,0.35), 0 0 0 1px rgba(255,255,255,0.9)',
+      transition: 'opacity 200ms ease-out',
+    });
+  })();`;
+}
+
+// Move the arrow to (x, y) and fire a click ripple there. Coordinates are the
+// same CSS-pixel viewport space click_share already resolves to. Held
+// visible for 30s — even a couple of seconds read as an instant flash in
+// testing (#244); the arrow just marks "here's where the last click landed"
+// until the NEXT click/type moves it or the timer runs out, whichever first.
+function vcClickScript(x, y) {
+  return `${vcEnsureOverlayJs()}
+  (() => {
+    const c = window.__vcCursor, r = window.__vcRipple;
+    c.style.left = ${JSON.stringify(x + 'px')}; c.style.top = ${JSON.stringify(y + 'px')}; c.style.opacity = '1';
+    r.style.transition = 'none';
+    r.style.left = ${JSON.stringify(x + 'px')}; r.style.top = ${JSON.stringify(y + 'px')};
+    r.style.opacity = '0.9'; r.style.transform = 'scale(0.4)';
+    void r.offsetWidth; // force a reflow so the next assignment actually transitions
+    r.style.transition = 'opacity 700ms ease-out, transform 700ms ease-out';
+    r.style.opacity = '0'; r.style.transform = 'scale(1.8)';
+    clearTimeout(window.__vcFadeTimer);
+    window.__vcFadeTimer = setTimeout(() => { c.style.opacity = '0'; }, 30000);
+  })();`;
+}
+
+// Draw a brief highlight box around whatever's being typed into — the
+// selector if one was given, else whatever the page already has focused.
+// Typing has no single "point" the way a click does, so a box reads better
+// than trying to place the arrow inside a text field.
+function vcTypeScript(selector) {
+  const sel = selector ? JSON.stringify(selector) : 'null';
+  return `${vcEnsureOverlayJs()}
+  (() => {
+    const el = ${sel} ? document.querySelector(${sel}) : document.activeElement;
+    const h = window.__vcHighlight;
+    if (!el || el === document.body || el === document.documentElement) return;
+    const r = el.getBoundingClientRect();
+    h.style.left = (r.left - 3) + 'px';
+    h.style.top = (r.top - 3) + 'px';
+    h.style.width = (r.width + 6) + 'px';
+    h.style.height = (r.height + 6) + 'px';
+    h.style.opacity = '1';
+    clearTimeout(window.__vcHighlightTimer);
+    window.__vcHighlightTimer = setTimeout(() => { h.style.opacity = '0'; }, 30000);
+  })();`;
+}
+
+// Fire-and-forget: never let a broken overlay delay or fail the real action.
+function vcShowCursor(wc, script) {
+  try { wc.executeJavaScript(script, true).catch(() => {}); } catch { /* best effort */ }
+}
+
 // Resolve a CSS selector to the CENTRE of the element, in the page's own CSS
 // pixels — which is the coordinate space sendInputEvent expects, and notably
 // NOT the pixel space of get_shared_screenshot (2× on a Retina host). Going
@@ -3532,6 +3814,168 @@ async function focusInShare(wc, selector) {
     return r?.ok ? { ok: true } : { ok: false, error: r?.error || 'could not focus ' + selector };
   } catch (err) {
     return { ok: false, error: 'focus failed: ' + err.message };
+  }
+}
+
+// --- eval_share / find_share_element / read_share_console /
+// read_share_network (#244) ---
+// Electron has no JS-land "attach the Chrome DevTools Protocol" call the way
+// Puppeteer does; these are built on Electron's own native equivalents —
+// executeJavaScript, the 'console-message' webContents event, and
+// session.webRequest — scoped to the share surface, rather than a raw
+// `webContents.debugger` session (which would also fight anyone who opens
+// real DevTools on this window). Console/network are captured continuously
+// into small ring buffers so the read tools can be called anytime, not only
+// from the moment they're invoked.
+const SHARE_LOG_MAX_ENTRIES = 200;
+const shareConsoleLogs = new Map(); // webContents.id -> entries[]
+const shareNetworkLogs = new Map(); // webContents.id -> entries[]
+let shareNetworkListenersInstalled = false;
+
+function pushShareLogEntry(map, id, entry) {
+  let arr = map.get(id);
+  if (!arr) { arr = []; map.set(id, arr); }
+  arr.push(entry);
+  if (arr.length > SHARE_LOG_MAX_ENTRIES) arr.shift();
+}
+
+// Installed once, globally, on the share surface's session partition — NOT
+// per-window, since Electron's webRequest API allows only one handler per
+// event type per session. Filters by webContentsId so other webContents on
+// the same partition (the Meet view, the main window) don't pollute the log.
+function installShareNetworkListeners() {
+  if (shareNetworkListenersInstalled) return;
+  shareNetworkListenersInstalled = true;
+  const sess = session.fromPartition(SESSION_PARTITION);
+  const pending = new Map(); // request id -> { method, url, startedAt }
+  sess.webRequest.onBeforeRequest((details, callback) => {
+    pending.set(details.id, { method: details.method, url: details.url, startedAt: Date.now() });
+    callback({});
+  });
+  sess.webRequest.onCompleted((details) => {
+    const wcId = details.webContentsId;
+    const started = pending.get(details.id);
+    pending.delete(details.id);
+    if (wcId == null) return;
+    pushShareLogEntry(shareNetworkLogs, wcId, {
+      method: details.method,
+      url: details.url,
+      status: details.statusCode,
+      resourceType: details.resourceType,
+      durationMs: started ? Date.now() - started.startedAt : null,
+      timestamp: new Date().toISOString(),
+    });
+  });
+  sess.webRequest.onErrorOccurred((details) => {
+    const wcId = details.webContentsId;
+    pending.delete(details.id);
+    if (wcId == null) return;
+    pushShareLogEntry(shareNetworkLogs, wcId, {
+      method: details.method,
+      url: details.url,
+      status: null,
+      error: details.error,
+      resourceType: details.resourceType,
+      timestamp: new Date().toISOString(),
+    });
+  });
+}
+
+// Console capture IS per-webContents (a real event on that object), so this
+// is safe to call once per whiteboardWindow instance without stepping on
+// anything else.
+function installShareConsoleListener(wc) {
+  if (!wc || wc.isDestroyed() || wc.__shareConsoleInstalled) return;
+  wc.__shareConsoleInstalled = true;
+  const LEVELS = ['verbose', 'info', 'warning', 'error'];
+  wc.on('console-message', (event) => {
+    pushShareLogEntry(shareConsoleLogs, wc.id, {
+      level: LEVELS[event.level] ?? String(event.level),
+      message: event.message,
+      line: event.lineNumber,
+      sourceId: event.sourceId,
+      timestamp: new Date().toISOString(),
+    });
+  });
+}
+
+// Sandboxed JS eval against the share surface. `executeJavaScript` already
+// runs in the page's own isolated world (contextIsolation: true on this
+// window), so this is "sandboxed" in the same sense CDP's Runtime.evaluate
+// would be: it can't reach the Electron/Node side, only the page.
+async function evalInShare(wc, expression) {
+  installShareNetworkListeners();
+  installShareConsoleListener(wc);
+  try {
+    const result = await wc.executeJavaScript(expression, true);
+    return { ok: true, result };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+function readShareLog(map, wc, { limit } = {}) {
+  if (!wc) return { ok: false, error: 'nothing is currently being shared' };
+  const all = map.get(wc.id) || [];
+  const n = Math.max(1, Math.min(limit || 50, SHARE_LOG_MAX_ENTRIES));
+  return { ok: true, total: all.length, returned: Math.min(n, all.length), entries: all.slice(-n) };
+}
+
+// Locate elements by a natural-language-ish description — matched against
+// text content, aria-label, placeholder, title, name and id — rather than a
+// selector the caller already has to know. Ranks interactive/labelled
+// elements first, so "the submit button" beats an unrelated div containing
+// the word "submit" deep in a paragraph.
+async function findInShare(wc, description, { maxResults } = {}) {
+  const js = `(() => {
+    const query = ${JSON.stringify(String(description || '').toLowerCase())};
+    const terms = query.split(/\\s+/).filter(Boolean);
+    if (!terms.length) return { ok: false, error: 'description is empty' };
+    const candidates = document.querySelectorAll(
+      'a, button, input, textarea, select, [role], [onclick], [tabindex], label, h1, h2, h3, li, td, th, span, div, p'
+    );
+    const results = [];
+    for (const el of candidates) {
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) continue;
+      const style = getComputedStyle(el);
+      if (style.visibility === 'hidden' || style.display === 'none') continue;
+      const text = (el.innerText || el.value || '').trim().slice(0, 200);
+      const label = el.getAttribute('aria-label') || '';
+      const placeholder = el.getAttribute('placeholder') || '';
+      const title = el.getAttribute('title') || '';
+      const name = el.getAttribute('name') || '';
+      const id = el.id || '';
+      const haystack = [text, label, placeholder, title, name, id].join(' ').toLowerCase();
+      let score = 0;
+      for (const t of terms) if (haystack.includes(t)) score += 1;
+      if (score === 0) continue;
+      // Prefer tight, labelled matches over huge containers that merely
+      // contain the words somewhere inside them.
+      const isInteractive = /^(a|button|input|textarea|select|label)$/i.test(el.tagName) || el.hasAttribute('role') || el.hasAttribute('onclick');
+      if (isInteractive) score += 1;
+      if (text.length && text.length < 80) score += 0.5;
+      results.push({
+        score,
+        tag: el.tagName.toLowerCase(),
+        text: text.slice(0, 120),
+        ariaLabel: label || undefined,
+        id: id || undefined,
+        selector: id ? '#' + CSS.escape(id) : undefined,
+        x: Math.round(r.left + r.width / 2),
+        y: Math.round(r.top + r.height / 2),
+        width: Math.round(r.width),
+        height: Math.round(r.height),
+      });
+    }
+    results.sort((a, b) => b.score - a.score);
+    return { ok: true, matches: results.slice(0, ${JSON.stringify(Math.max(1, Math.min(maxResults || 5, 20)))}) };
+  })()`;
+  try {
+    const r = await wc.executeJavaScript(js, true);
+    return r?.ok ? r : { ok: false, error: r?.error || 'find failed' };
+  } catch (err) {
+    return { ok: false, error: 'find failed: ' + err.message };
   }
 }
 
@@ -3625,6 +4069,39 @@ function closeWhiteboardWindow(reason) {
  */
 function whiteboardShareUrl(baseUrl, roomId) {
   return `${baseUrl}/room/${roomId}?mode=whiteboard&surface=share`;
+}
+
+// #366-followup: peers already see WHO is presenting via Meet's own UI
+// (google-meet-provider.js's DOM probe), but not WHAT — whether it's this
+// board or some other URL. Announce our own sharing state on the room's
+// presence channel so other bots can read it via get_room_info without
+// guessing. Fire-and-forget and best-effort on purpose:
+//   - No roomId (never joined via vibeconferencing.com, or between calls) —
+//     nothing to announce to, and that's not a failure.
+//   - No auth is required for /api/sync (unlike /api/logs) — a bot that
+//     isn't logged into a vibeconferencing.com account still gets through.
+//   - A failed POST is logged and dropped, never retried — the #386 outage
+//     that happened from retrying a rate-limited endpoint is exactly the
+//     failure mode to not repeat for a path that fires on every share toggle.
+async function announceSharing(active) {
+  const roomId = localServer.roomId;
+  if (!roomId) return; // no room association — fail gracefully, nothing to tell
+  try {
+    const baseUrl = getWebsiteUrl();
+    const screenShareUrl = active ? (localServer.getWhiteboardLoadedUrl() || whiteboardShareUrl(baseUrl, roomId)) : null;
+    const resp = await fetch(`${baseUrl}/api/sync/${roomId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sender: resolvedBotName(),
+        role: 'bot',
+        sharing: { active, screenShareUrl },
+      }),
+    });
+    if (!resp.ok) console.warn('[share] sharing announce rejected by sync server:', resp.status);
+  } catch (err) {
+    console.warn('[share] failed to announce sharing state (non-fatal):', err.message);
+  }
 }
 
 // The board's title, carrying the bot's name so it is obvious WHICH bot is
@@ -3753,6 +4230,11 @@ function createWhiteboardWindow(roomUrl) {
   // avoid accidentally picking the main app window (which holds the Meet
   // view) and triggering Meet's infinity-mirror warning (#158/#137).
   win.on('page-title-updated', (e) => { e.preventDefault(); });
+  // Captured now, not read off win.webContents in the 'closed' handler below —
+  // webContents is already destroyed by the time 'closed' fires.
+  const wcId = win.webContents.id;
+  installShareNetworkListeners();
+  installShareConsoleListener(win.webContents);
   win.loadURL(roomUrl);
   win.webContents.on('did-finish-load', () => {
     console.log('[electron] Whiteboard window loaded OK:', win.webContents.getURL());
@@ -3790,6 +4272,11 @@ function createWhiteboardWindow(roomUrl) {
       mainWindow?.removeListener('move', follow);
       mainWindow?.removeListener('resize', follow);
     } catch { /* main window already gone */ }
+    // webContents is already destroyed by the time 'closed' fires — read its
+    // id up front (wcId, captured above right after the window was created)
+    // rather than here.
+    shareConsoleLogs.delete(wcId);
+    shareNetworkLogs.delete(wcId);
     whiteboardWindow = null;
     broadcastShareWindowState();
     focusMainWindow();
@@ -4222,6 +4709,35 @@ async function syncSharedLoginCookie() {
   }
 }
 
+// The page the system browser lands on at the end of the OAuth round trip.
+//
+// This is the ONLY thing the person signing in actually sees — the app window is
+// behind the browser at that moment — so it has to state the outcome plainly and
+// then stay put. It deliberately does NOT call window.close(): see the note at
+// the callback handler for why self-closing made a working sign-in look broken.
+//
+// Self-contained (inline styles, no network) because it is served off an
+// ephemeral loopback port that closes moments later — anything external would
+// render after the server is already gone.
+function authResultPage(ok) {
+  const title = ok ? 'Signed in' : 'Sign-in did not complete';
+  const detail = ok
+    ? 'Vibeconferencing has your login. You can close this tab and go back to the app.'
+    : 'The sign-in came back without a token, so the app is still signed out. '
+      + 'Close this tab and try Sign in again from the app.';
+  return '<!doctype html><html><head><meta charset="utf-8">'
+    + '<meta name="viewport" content="width=device-width,initial-scale=1">'
+    + '<title>' + title + '</title></head>'
+    + '<body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;'
+    + 'font:16px/1.5 -apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;'
+    + 'background:#f6f7f9;color:#1a1a1a">'
+    + '<main style="max-width:26rem;padding:2rem;text-align:center">'
+    + '<div style="font-size:2.5rem;line-height:1">' + (ok ? '&#9989;' : '&#9888;&#65039;') + '</div>'
+    + '<h1 style="margin:.75rem 0 .5rem;font-size:1.35rem">' + title + '</h1>'
+    + '<p style="margin:0;color:#555">' + detail + '</p>'
+    + '</main></body></html>';
+}
+
 // Open Google OAuth in the system browser
 // Google blocks embedded webviews, so we must use the real browser.
 // We start a local HTTP server to catch the session cookie after login.
@@ -4269,8 +4785,22 @@ function openGoogleLogin() {
         console.warn('[electron] No token in auth callback');
       }
 
-      res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end('<html><body><h2>Signed in! You can close this tab.</h2><script>window.close()</script></body></html>');
+      // Success and failure used to render the SAME "Signed in!" page, and that
+      // page closed itself. Both halves hid real state:
+      //
+      //   - A token-less callback still claimed success, so a genuinely broken
+      //     sign-in was indistinguishable from a working one.
+      //   - window.close() left NOTHING on screen to read. When the browser was
+      //     launched fresh for this flow, the callback tab was its ONLY tab — so
+      //     closing it quit the browser outright. The user saw the window vanish
+      //     with no confirmation and reasonably read it as a failed login.
+      //
+      // Reported 2026-08-19 as "I still can't log in"; the app log showed the
+      // sign-in had in fact succeeded on every attempt. Nothing was broken except
+      // the feedback. So: say which outcome happened, and let the person close
+      // the tab themselves.
+      res.writeHead(token ? 200 : 400, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(authResultPage(Boolean(token)));
       server.close();
       return;
     }
@@ -4988,7 +5518,7 @@ return "none"`;
 // Unmute the mic and send the audio to the renderer's TTS queue. Resolves AFTER
 // the play-tts is sent (post the 300ms unmute settle), so callers can chain to
 // preserve send order.
-function sendPlayTts(base64Audio, emoji, { unmutedAt, expectMore } = {}) {
+function sendPlayTts(base64Audio, emoji, { unmutedAt, expectMore, utt, volume } = {}) {
   return new Promise((resolve) => {
     if (!meetView || meetView.webContents.isDestroyed()) {
       console.error('[electron] Meet view not available for audio playback');
@@ -5013,7 +5543,7 @@ function sendPlayTts(base64Audio, emoji, { unmutedAt, expectMore } = {}) {
       // expectMore (#372 sentence-chunked TTS): tells the renderer another
       // chunk of the SAME utterance is coming, so it must not emit tts-ended
       // (and drop the speaking state) if the queue momentarily drains.
-      sendExtMsg({ action: CALL_COMMANDS.ACTIONS.playTts, payload: { audioData: base64Audio, emoji, expectMore: !!expectMore } });
+      sendExtMsg({ action: CALL_COMMANDS.ACTIONS.playTts, payload: { audioData: base64Audio, emoji, expectMore: !!expectMore, utt, volume } });
       console.log('[electron] Sent play-tts to Meet view', emoji ? `(emoji: ${emoji})` : '');
       resolve();
     }, settleMs);
@@ -5021,7 +5551,7 @@ function sendPlayTts(base64Audio, emoji, { unmutedAt, expectMore } = {}) {
 }
 
 // #372: sentence-chunked TTS split — pure helper, unit-tested.
-const { splitForTts } = require('./tts-chunking.js');
+const { splitForTts, splitAtWordFraction } = require('./tts-chunking.js');
 const { systemVoiceLabel } = require('./system-voices.js');
 // "macOS" / "Windows" — used wherever we tell the user or the agent which
 // built-in voice path is in play.
@@ -5046,6 +5576,15 @@ function enqueueAudio(produceAndSend) {
 // slow chunk-2 synth can't play a stale tail after an interruption.
 let ttsStopGeneration = 0;
 
+// #360: the utterance currently (or most recently) being spoken, so the
+// renderer's tts-stopped report — which only carries {id, chunk} tags — can be
+// paired back with the chunk TEXTS to tell the agent what the room never
+// heard. `sent` counts chunks actually delivered to the renderer; chunks at
+// index >= sent were still synthesizing (or dropped pre-send) when the stop
+// hit, so they are unspoken by definition.
+let ttsUtteranceSeq = 0;
+let lastTtsUtterance = null; // { id, parts, sent }
+
 // True once this call's ack phrases have been pre-warmed into tts.js's cache
 // — reset per call (not per app launch) because ack phrases and voice/provider
 // are per-bot config (store.get), and prewarming at app startup risked warming
@@ -5069,7 +5608,7 @@ function prewarmAckCache() {
   }
 }
 
-function speakText(text, voice, emoji) {
+function speakText(text, voice, emoji, { volume } = {}) {
   // Sanitize markdown out of the spoken string only (#160).
   const spokenText = stripMarkdownForTts(text);
   enqueueAudio(async () => {
@@ -5113,6 +5652,10 @@ function speakText(text, voice, emoji) {
     // the speaking state across the seam); the final chunk clears it.
     const parts = splitForTts(spokenText);
     const genAtStart = ttsStopGeneration;
+    // #360: register this utterance so a barge-in's tts-stopped report can be
+    // mapped back to the chunk texts.
+    const utteranceId = ++ttsUtteranceSeq;
+    lastTtsUtterance = { id: utteranceId, parts, sent: 0 };
     try {
       for (let i = 0; i < parts.length; i++) {
         // #390/#372: a barge-in bumps ttsStopGeneration. Checked for EVERY
@@ -5139,7 +5682,8 @@ function speakText(text, voice, emoji) {
           }
           const base64Audio = Buffer.from(audioBuffer).toString('base64');
           console.log('[electron] TTS synthesized:', parts[i].slice(0, 40), '→', base64Audio.length, 'bytes base64' + chunkTag);
-          await sendPlayTts(base64Audio, chunkEmoji, { unmutedAt, expectMore });
+          await sendPlayTts(base64Audio, chunkEmoji, { unmutedAt, expectMore, utt: { id: utteranceId, chunk: i, chunks: parts.length }, volume });
+          lastTtsUtterance.sent = i + 1; // #360
           // ElevenLabs is back — if we'd previously degraded to the OS voice,
           // tell the agent its normal voice is restored (rides status.errors →
           // the agent sees it on its next wait_for_speech lull).
@@ -5167,7 +5711,8 @@ function speakText(text, voice, emoji) {
               }
               const base64Audio = Buffer.from(fallbackBuffer).toString('base64');
               console.log(`[electron] TTS fell back to the built-in ${SYSTEM_VOICE_LABEL} voice:`, parts[i].slice(0, 40), '→', base64Audio.length, 'bytes base64' + chunkTag);
-              await sendPlayTts(base64Audio, chunkEmoji, { unmutedAt, expectMore });
+              await sendPlayTts(base64Audio, chunkEmoji, { unmutedAt, expectMore, utt: { id: utteranceId, chunk: i, chunks: parts.length }, volume });
+              lastTtsUtterance.sent = i + 1; // #360
               // Tell the agent ONCE that its voice changed, so it knows it now
               // sounds different (and can mention it / not be surprised). Rides
               // the status.errors channel the agent already reads on each lull.
@@ -5999,31 +6544,64 @@ async function launchClaudeTerminal(meetCode, { onboardingCall = false } = {}) {
     return;
   }
 
-  // Open a Terminal window running the command. When Terminal isn't already
-  // running, `do script` would spawn TWO windows — the auto-created launch
-  // window plus the scripted one. Reuse the launch window (window 1) in that
-  // case; only spawn a fresh window when Terminal is already up.
+  // Open a Terminal window running the command. Reusing a just-launched
+  // Terminal's window (rather than adding a second) is handled inside
+  // buildTerminalLaunchScript — see there for the -1728 failure that made the
+  // old inline version spawn no agent at all.
   // Set VIBECONF_LOCAL_PORT for the spawned session so the agent-activity hook
   // (a child process of claude) reports this bot's transcript to THIS app's
   // local server — not the default 7865 (correct for profile bots on 7866+).
   // Quote the working dir — the #305 agent dir lives under "Application Support",
   // which has spaces (the old /tmp default didn't, so this never mattered before).
   // See launch-command.js for the AppleScript+shell double-quoting.
-  const { buildTerminalCommand } = require('./launch-command.js');
+  const { buildTerminalCommand, buildTerminalLaunchScript } = require('./launch-command.js');
   const cmd = buildTerminalCommand({ workdir: claudeDir, port: localServer.port, innerCmd: claudeCmd });
-  const script = `tell application "Terminal"
-  if not running then
-    do script "${cmd}" in window 1
-  else
-    do script "${cmd}"
-  end if
-  activate
-  return id of window 1
-end tell`;
+  const script = buildTerminalLaunchScript(cmd);
 
   execFile('osascript', ['-e', script], (err, stdout, stderr) => {
     if (err) {
       console.error('[electron] Failed to launch Claude:', err.message, stderr);
+      // Do NOT stop at that log line. By this point the bot has already joined
+      // the call, so a swallowed error is the silent no-agent failure the Linux
+      // path at the top of this function goes out of its way to prevent
+      // (#317, #329) — a face in the room, a brain pane stuck on "Waiting for
+      // the agent…", and nothing anywhere saying the spawn died. macOS had no
+      // such guard until an osascript failure actually happened on 2026-08-17.
+      //
+      // WARN, don't silently fall back to headless. Headless is gated on
+      // Dangerous Mode, so an automatic fallback would only ever fire for users
+      // who have already enabled it — and quietly moving those users from a
+      // session they can watch and Ctrl-C into an invisible one, because of an
+      // unrelated window-server failure, is not a decision this error path gets
+      // to make. Headless remains available as an explicit choice
+      // (agentHosting), which is where that decision belongs.
+      const { asShellCommand } = require('./launch-command.js');
+      const shellCmd = asShellCommand(cmd);
+      const parent = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : null;
+      const buttons = ['Copy command', 'OK'];
+      try {
+        dialog.showMessageBox(parent, {
+          type: 'error',
+          title: 'Agent could not start',
+          message: `${botName} joined the call, but nothing is driving it`,
+          detail:
+            'Opening a Terminal window for the agent failed, so the bot is sitting in the '
+            + 'call with no agent behind it — it will not speak, listen or react.\n\n'
+            + `${err.message.trim()}\n\n`
+            + 'To recover: open a Terminal window yourself and run this, or leave the call '
+            + 'and click Join again.\n\n'
+            + shellCmd,
+          buttons,
+          defaultId: 0,
+          cancelId: 1,
+          noLink: true,
+        }).then(({ response }) => {
+          if (buttons[response] === 'Copy command') {
+            const { clipboard } = require('electron');
+            clipboard.writeText(shellCmd);
+          }
+        }).catch(() => { /* dialog dismissed */ });
+      } catch { /* no window yet — the log line above is still the record */ }
     } else {
       const claudeTerminalWindowId = (stdout || '').trim();
       if (claudeTerminalWindowId && !claudeTerminalWindowIds.includes(claudeTerminalWindowId)) {
@@ -6411,10 +6989,35 @@ function updateSpeakingState(name, speaking) {
     state.sent = true;
 
     const baseUrl = sync.baseUrl || 'http://127.0.0.1:7865';
+    // Carry the role, because this POST cannot avoid asserting one.
+    //
+    // The presence endpoint assigns role on EVERY write, and a body without one
+    // resolves to 'member'. This fires on every speaking edge, for every
+    // participant the tracker sees — so each bot was demoting every other bot it
+    // heard talk, several times a minute, purely as a side effect of announcing
+    // who was speaking. Each bot's own 60s registration heartbeat promoted it
+    // back, and the room's roles oscillated: measured on paz-sqoa-npe, a bot
+    // read as `member` 56s after it had announced itself as `bot`.
+    //
+    // That matters because role IS the bot/human answer everywhere downstream —
+    // _botNameSet() feeds ranked speaking order (#443) and the human-vs-bot
+    // split in _evaluateBargeIn (#154), where "unknown ⇒ human" is deliberate
+    // because talking over a person is the worse mistake. A bot misread as a
+    // human gets yielded to instantly and loses its own turn slot.
+    //
+    // Only for names we already KNOW are bots. An unknown name still resolves to
+    // 'member', which is right for the humans in the room and avoids this code
+    // asserting an identity it is only guessing at — the mistake that caused
+    // this in the first place. A bot we have not learned yet self-heals on its
+    // own next heartbeat.
+    let role;
+    try {
+      if (localServer._botNameSet().has(String(name).toLowerCase())) role = 'bot';
+    } catch { /* roster unavailable — fall through unroled, as before */ }
     fetch(`${baseUrl}/api/room/${sync.roomId}/presence`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, speaking }),
+      body: JSON.stringify({ name, speaking, ...(role ? { role } : {}) }),
     }).catch(err => {
       console.debug('[electron] Speaking state update failed:', err.message);
     });
@@ -7626,8 +8229,22 @@ allURLs`;
   // meeting" notice updates without a refresh.
   function pushUpcomingCalendarEvents(events) {
     latestUpcomingCalendarEvents = events;
+    // A successful poll produced these events, so any prior poll error is over.
+    latestCalendarPollError = null;
     if (panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('calendar-upcoming', { events });
+      panelView.webContents.send('calendar-upcoming', { events, error: null });
+    }
+  }
+
+  // Companion to pushUpcomingCalendarEvents for the poll's failure side:
+  // records the error (or clears it with null) and pushes the combined state
+  // so the panel can warn that calendar auto-join has silently stopped
+  // working. Only the google-api-error state ever sets this — signed-out,
+  // not-connected and offline are expected/transient and stay banner-silent.
+  function pushCalendarPollError(error) {
+    latestCalendarPollError = error;
+    if (panelView && !panelView.webContents.isDestroyed()) {
+      panelView.webContents.send('calendar-upcoming', { events: latestUpcomingCalendarEvents, error });
     }
   }
 
@@ -7707,6 +8324,11 @@ allURLs`;
       for (const e of events) {
         if (!e || !e.id || !isEventUpcoming(e, now)) continue;
         if (!matchesCalendarEvent(e, { calendarIdentityEmail: fields.calendarIdentityEmail, botName: fields.botName })) continue;
+        // Same owner-RSVP gate the local join path applies (selectEventToJoin):
+        // don't launch a whole other profile for a meeting the calendar owner
+        // hasn't confirmed they're attending — if they accept later, a
+        // subsequent tick launches it then.
+        if (!ownerHasConfirmed(e)) continue;
         const dedupeKey = `${eventDedupeKey(e)}:${name}`;
         if (Object.prototype.hasOwnProperty.call(launched, dedupeKey)) continue;
         launched[dedupeKey] = now;
@@ -7758,7 +8380,8 @@ allURLs`;
         const matched = matchesCalendarEvent(e, { calendarIdentityEmail, botName });
         const upcoming = isEventUpcoming(e, now);
         const already = !!(e && e.id && Object.prototype.hasOwnProperty.call(excludeIds, eventDedupeKey(e)));
-        const reason = already ? 'already handled/scheduled' : !upcoming ? 'outside 5m window' : !matched ? 'no identity/tag match' : 'MATCH';
+        const confirmed = ownerHasConfirmed(e);
+        const reason = already ? 'already handled/scheduled' : !upcoming ? 'outside 5m window' : !matched ? 'no identity/tag match' : !confirmed ? `owner has not accepted (selfResponseStatus=${e && e.selfResponseStatus})` : 'MATCH';
         return `"${(e && e.summary) || (e && e.id) || '(untitled)'}" (raw start="${e && e.start}", starts ${minutesUntil == null ? '?' : minutesUntil + 'm'} from now, ${reason})`;
       });
       console.log(`[calendar] Poll saw ${events.length} event(s): ${summaries.join('; ')}`);
@@ -7767,8 +8390,12 @@ allURLs`;
     // Display-only: everything matching within the next 24h, independent of
     // the 5-minute join-scheduling gate below — this is what the panel's
     // "upcoming meeting" notice shows, and it deliberately includes events
-    // the 5-minute logic hasn't (and won't yet) act on.
-    pushUpcomingCalendarEvents(selectUpcomingMatches(events, { calendarIdentityEmail, botName, now: Date.now() }));
+    // the 5-minute logic hasn't (and won't yet) act on — including ones the
+    // calendar owner hasn't RSVP'd to, annotated so the panel can show its
+    // "waiting to see if you're attending" disclaimer instead of implying a
+    // join is coming.
+    pushUpcomingCalendarEvents(selectUpcomingMatches(events, { calendarIdentityEmail, botName, now: Date.now() })
+      .map((e) => ({ ...e, ownerConfirmed: ownerHasConfirmed(e) })));
 
     const { event, extraMatchCount } = selectEventToJoin(events, {
       calendarIdentityEmail,
@@ -7837,6 +8464,19 @@ allURLs`;
         if (state !== lastCalendarPollState) {
           console.log(`[calendar] Poll skipped (${message})`);
           lastCalendarPollState = state;
+          // google-api-error means the user HAD calendar working and the
+          // backend can no longer reach Google for them (dead refresh token,
+          // revoked access, ...) — the one failure worth a panel warning,
+          // because nothing else in the UI distinguishes it from "no
+          // meetings today" (vibeconferencing#512: a 7-day token expiry
+          // silently killed auto-join for everyone). The other states clear
+          // the warning: they describe a different situation (signed out,
+          // never connected, offline), and their guidance would be wrong.
+          if (state === 'google-api-error') {
+            pushCalendarPollError({ code: state, message });
+          } else if (latestCalendarPollError) {
+            pushCalendarPollError(null);
+          }
         }
       } catch (err) {
         if (lastCalendarPollState !== 'error') {
@@ -7859,6 +8499,33 @@ allURLs`;
   else deferredStarts.push(startCalendarPolling);
 
   // IPC: join detected meet and launch Claude
+  // #422: raw speaking-detection events from the renderer, appended to the
+  // call's own folder as JSONL. Batched by the sender (1s), appended
+  // synchronously here — the rows are small and the write is the only place
+  // this data can be lost.
+  //
+  // Lands beside call-recording-tracks/ deliberately: scoring needs the DOM
+  // event stream and the per-participant audio on ONE timeline, and sharing a
+  // directory is what makes that alignment obvious rather than reconstructed.
+  ipcMain.on('speaking-events', (_event, rows) => {
+    if (!Array.isArray(rows) || !rows.length) return;
+    try {
+      const agentDir = require('./agent-workdir.js').agentDirFor(app.getPath('userData'));
+      const callId = (localServer && localServer.callId) || 'no-call';
+      const safeCallId = String(callId).replace(/[^a-zA-Z0-9._-]/g, '_');
+      const dir = path.join(agentDir, 'calls', safeCallId);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.appendFileSync(path.join(dir, 'speaking-events.jsonl'),
+        rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
+    } catch (err) {
+      // Never let diagnostics break a call. One warning, then stay quiet.
+      if (!global.__warnedSpeakingCapture) {
+        global.__warnedSpeakingCapture = true;
+        console.warn('[speaking-capture] could not write events:', err.message);
+      }
+    }
+  });
+
   ipcMain.on('join-detected-meet', (_event, { url, meetCode }) => {
     // Runtime provider switch: if we're currently on Slack, rebuild a Meet view
     // first so loadMeetURL doesn't try to drive the Slack surface.
@@ -7996,6 +8663,13 @@ app.on('before-quit', () => {
   // costs nothing to leave the tracks closed and the manifest written, which is
   // the difference between a recoverable recording and an unrecoverable one.
   finalizeRecordingSync('quit');
+  // #388: a detached post-recording merge may still be running here (it no
+  // longer holds up stop_recording, so quits can now land mid-merge). ffmpeg
+  // dies with the app; the raw tracks and RECOVERY.md are already safe on
+  // disk (they're only removed after a merge SUCCEEDS), so just say so.
+  if (mergesInFlight > 0) {
+    console.log(`[call-record] quit: ${mergesInFlight} background merge(s) still running — the combined mp4(s) won't finish, but the raw tracks are safe (see RECOVERY.md in each call-recording-tracks/ folder)`);
+  }
   closeAllClaudeTerminalsSync();
 });
 
@@ -8467,12 +9141,49 @@ function setBotViewState(state) {
       mainWindow.removeBrowserView(meetView);
     }
     const win = new BrowserWindow({
-      width: 900, height: 620,
+      // 16:9, and LOCKED to it below. This window is a capture surface as well
+      // as a viewing one: call-recording-window.js records meetView's frame,
+      // and in 'popped' state meetView is sized to exactly this window's
+      // content box (see `fit` below, bound to every resize). So whatever
+      // shape the user drags this into is the shape of call-recording.mp4.
+      //
+      // It used to be 900x620 — 1.45:1, not a video ratio at all — and then
+      // free-resizing on top of that. Recordings came out at whatever the user
+      // happened to leave it: 3024x1700 (DAR 756:425) in the wild, close
+      // enough to 16:9 to look like a bug and far enough to letterbox in
+      // anything that assumes 16:9. Meanwhile the 'hidden' state has always
+      // recorded cleanly, purely because botViewLayout.HIDDEN_SIZE is a fixed
+      // 1600x900. This gives 'popped' the same guarantee.
+      //
+      // setAspectRatio rather than a fixed size, and rather than resizing the
+      // window when recording starts: the user keeps full control of how big
+      // their view is, they just can't make it a shape that ruins the
+      // recording. Nothing moves under them mid-call.
+      //
+      // NOTE this is necessary but NOT sufficient — these are LOGICAL pixels,
+      // so on a Retina display the captured frame is 2x this. The capture
+      // constraint in renderer/call-recording-window.js is what bounds the
+      // actual encoded resolution; this only fixes the SHAPE.
+      width: 960, height: 540,
       title: windowTitle("Bot's view"),
       icon: path.join(__dirname, 'icon.png'),
-      parent: mainWindow || undefined,
+      // Deliberately NOT `parent: mainWindow`. A child window is dragged around
+      // by its parent on macOS, so every nudge of the app window yanked the
+      // bot's view along with it — maddening when you have parked it somewhere
+      // and want to move the app out of the way. It is a normal top-level
+      // window now: independent position, and free to sit behind the app.
       webPreferences: { nodeIntegration: false, contextIsolation: true },
     });
+    // extraSize {0,0} because meetView fills the whole content box — there is
+    // no in-content chrome to subtract — so the ratio applies to exactly what
+    // getContentSize() reports, which is what `fit` hands to setBounds.
+    //
+    // Best-effort: this is macOS/Windows in Electron 33, and it constrains
+    // USER drags only (the docs are explicit that programmatic setSize skips
+    // it — nothing here calls setSize on this window). Where it's unavailable
+    // it no-ops, and the capture constraint still bounds the encode; the
+    // recording is then merely the old arbitrary shape, not broken.
+    try { win.setAspectRatio(16 / 9, { width: 0, height: 0 }); } catch { /* not supported here */ }
     meetPopoutWindow = win;
     if (meetView && !meetView.webContents.isDestroyed()) win.addBrowserView(meetView);
     const fit = () => {
@@ -9352,6 +10063,12 @@ function createMainWindow() {
     mainWindow = null;
     panelView = null;
     meetView = null;
+    // The bot's-view popout is no longer a CHILD of this window (so the app can
+    // be dragged without towing it), which means macOS no longer closes it for
+    // us. Left alone it would outlive the app window and keep
+    // 'window-all-closed' — and so the quit — from ever firing.
+    if (meetPopoutWindow && !meetPopoutWindow.isDestroyed()) meetPopoutWindow.destroy();
+    meetPopoutWindow = null;
     sync.stopPolling();
   });
 }
@@ -9703,7 +10420,9 @@ function setupIPC() {
   // "upcoming meeting" notice immediately, without waiting for the next
   // ~60s poll tick — pushUpcomingCalendarEvents (via 'calendar-upcoming')
   // keeps it live after that.
-  ipcMain.handle('get-upcoming-calendar-events', () => latestUpcomingCalendarEvents);
+  ipcMain.handle('get-upcoming-calendar-events', () => (
+    { events: latestUpcomingCalendarEvents, error: latestCalendarPollError }
+  ));
 
   // (The switcher thumbnail used to be stolen from the live camera feed here —
   // an edge-triggered capture plus a poll ladder plus 4h staleness gating, all to
@@ -11145,12 +11864,59 @@ function setupIPC() {
     applyCaptionLanguagePref();
   });
 
+  // #360: the renderer reports how far playback got when a stop-tts hit. Pair
+  // the {id, chunk} tags with the registered chunk texts to compute exactly
+  // which words the room heard and which it never did, and hand that to
+  // local-server — the only component with a channel back to the agent.
+  ipcMain.on('tts-stopped', (_event, p) => {
+    const u = lastTtsUtterance;
+    if (!u || !p) return;
+    // The playing clip wasn't part of this utterance (e.g. a play_audio sound
+    // clip) — no words were cut, nothing to report about the utterance.
+    if (p.wasPlaying && (!p.tag || p.tag.id !== u.id)) return;
+    const dropped = new Set((p.droppedTags || [])
+      .filter((t) => t && t.id === u.id)
+      .map((t) => t.chunk));
+    const playingIdx = p.wasPlaying ? p.tag.chunk : null;
+    const spokenParts = [];
+    let cutTail = '';        // unheard remainder of the chunk that was playing (what a #350 resume would replay)
+    const unspokenRest = []; // chunks the renderer never got to (never recoverable by a resume)
+    let cutSeconds = null;
+    for (let i = 0; i < u.parts.length; i++) {
+      if (i === playingIdx) {
+        const frac = p.duration > 0 ? p.playedTo / p.duration : 0;
+        const { head, tail } = splitAtWordFraction(u.parts[i], frac);
+        if (head) spokenParts.push(head);
+        cutTail = tail;
+        cutSeconds = Math.round(p.playedTo * 10) / 10;
+      } else if (i >= u.sent || dropped.has(i)) {
+        unspokenRest.push(u.parts[i]);
+      } else {
+        spokenParts.push(u.parts[i]);
+      }
+    }
+    if (!cutTail && unspokenRest.length === 0) return; // everything had played — not a truncation
+    try {
+      localServer.noteSpeechTruncation({
+        spoken: spokenParts.join(' '),
+        unspokenTail: cutTail,
+        unspokenRest: unspokenRest.join(' '),
+        cutSeconds,
+      });
+    } catch (err) {
+      console.warn('[electron] noteSpeechTruncation failed:', err.message);
+    }
+  });
+
   ipcMain.on(CALL_EVENTS.ttsEnded, () => {
     // #368: tts-ended = the audio queue fully drained, i.e. the bot is no longer
     // speaking aloud. This is the authoritative release for the speaking-aloud
     // latch — clear it FIRST, before any early-return below, so botState can
     // never get trapped in 'speaking' if the audio ends via an unusual path.
     localServer.speakingAloud = false;
+    // #360: if a resumed utterance just played out, fold its recovered tail
+    // back into the truncation record (or clear it entirely).
+    localServer.noteSpeechPlaybackDrained();
     // If only the ack just finished, stay in 'thinking' — the agent is still
     // generating the real response and will clear the flag when it speaks.
     if (ackTtsPending) {
@@ -11447,11 +12213,13 @@ function setupIPC() {
         console.warn(`[share] state disagreed with Meet — app said sharing=${wasSharing}, `
           + `Meet says ${presenting}. Correcting to Meet.`);
         localServer.setSharing(!!presenting);
+        announceSharing(!!presenting);
       }
       return;   // never run the edge-only side effects below
     }
 
     localServer.setSharing(presenting);
+    announceSharing(!!presenting);
     if (!presenting) {
       externalShareRequest = null; // POC (share-agent-tab)
     }

@@ -36,18 +36,22 @@ const { PREFERENCES } = require('../electron-app/preferences-schema.js');
 // constants + class out and run them against a fake DOM. Slicing beats mocking
 // electron: the code under test is exercised verbatim, and if the boundaries
 // move the slice fails loudly rather than testing a stale copy.
-const start = src.indexOf('const METER_SAMPLE_MS');
+// Slice from the first tracker-scope declaration (the echo guard's state) to
+// the singleton at the bottom — everything the class closes over lives between
+// them, so the class runs here exactly as it does in the app.
+const start = src.indexOf('// Raw event capture (#422)');
 const end = src.indexOf('const domSpeakerTracker');
 assert.ok(start > 0 && end > start, 'could not slice DOMSpeakerTracker out of the provider');
-const load = new Function('getComputedStyle', 'document', 'console', 'MutationObserver', 'emits', `
-  // Stubs for the module-level collaborators the slice closes over. The debug
-  // border is off; the emits array is what the tracker would send upward.
-  const speakerDebugBorder = false;
+const load = new Function('getComputedStyle', 'document', 'console', 'MutationObserver', 'emits', 'ipcRenderer', `
+  // Stubs for the module-level collaborators the slice closes over. The emits
+  // array is what the tracker would send upward. (The speakerDebugBorder stub
+  // that lived here died with the border itself — #407.)
   const CALL_EVENTS = { speakingChanged: 'speaking', participantsUpdated: 'participants' };
   const meetProvider = { emit: (name, payload) => emits.push({ name, payload }) };
   const window = { postMessage: () => {} };
   ${src.slice(start, end)}
   return { DOMSpeakerTracker, setMode: (m) => { speakingDetectionMode = m; },
+           noteSelfAudioLoud,
            METER_HOLD_MS, METER_DISCOVER_MS, METER_SAMPLE_MS, METER_ATTACK_MS };
 `);
 
@@ -84,7 +88,8 @@ function setup({ mode = 'either' } = {}) {
     disconnect() { this.disconnected = true; }
   }
   const emits = [];
-  const api = load((node) => node.style, { contains: () => true }, fakeConsole, FakeObserver, emits);
+  const api = load((node) => node.style, { contains: () => true }, fakeConsole, FakeObserver, emits,
+    { invoke: () => Promise.resolve({}), send: () => {} });
   api.watched = watched;
   api.emits = emits;
   api.setMode(mode);
@@ -93,7 +98,7 @@ function setup({ mode = 'either' } = {}) {
 }
 
 const participant = (item, extra = {}) =>
-  ({ name: 'Stan', item, speaking: false, mutTimes: [], lastTrueAt: 0, ...extra });
+  ({ name: 'Stan', item, speaking: false, mutTimes: [], ...extra });
 
 // Onset: baseline sample, the meter rises, then it stays up long enough to
 // clear the attack. Leaves the meter verdict true as of `t0 + 100`.
@@ -407,14 +412,53 @@ test('the lead over the mutation counter is measured, not assumed', () => {
   assert.match(line, /meter led by \+300ms/);
 });
 
+// --- no echo guard, deliberately (#378) --------------------------------------
+
+test('our own TTS does NOT suppress another participant\'s rising edge', () => {
+  // A blanket guard used to sit here: any rise within 700ms of our own speech
+  // was withheld as probable echo. A real call with two humans on SPEAKERS
+  // (~/vibeconf-corpus/echo-speakers-2026-08-17) measured the trade and found
+  // it backwards — one echo-driven false rise in 54 minutes, against three
+  // genuine interruptions in the same windows, all of which the guard would
+  // have delayed. Yielding late to someone who really is interrupting is the
+  // costlier error, so the guard is gone and this pins its absence.
+  //
+  // The envelope itself is still tracked and still captured; it is the axis
+  // every echo question gets asked along.
+  const { tracker, noteSelfAudioLoud } = setup({ mode: 'mutation' });
+  const info = participant(tile([]));
+  info.mutTimes = [1000, 1100, 1200];
+
+  noteSelfAudioLoud(1200);                 // we are mid-utterance
+  assert.equal(tracker._rawSpeaking(info, 1250), true,
+    'a participant who starts talking over us is reported immediately');
+});
+
 // --- the preference -------------------------------------------------------
 
 test('both signals keep running whatever the mode is set to', () => {
   const pref = PREFERENCES.speakingDetectionMode;
   assert.deepEqual(pref.enum, ['either', 'meter', 'mutation']);
-  // Default ORs them: never deafer than before the meter existed, and it takes
-  // the earlier of the two rising edges.
-  assert.equal(pref.default, 'either');
+  // Defaults to the meter since 2026-08-18 (#422). It was 'mutation' to guard
+  // against a human on laptop speakers echoing our TTS back in, read as that
+  // person interrupting (#378) — retired by two measurements. The counter never
+  // gave that protection: in #378 it fired on the SAME echo 313ms later, since
+  // both signals come off the same meter animation. And a 54-minute call with
+  // two humans on speakers found no echo reaching us at all (correlation -0.09,
+  // remote tracks 5-6x quieter during our TTS, and every rise during TTS had a
+  // loud remote track behind it). Meanwhile the meter calls turn ENDS 9.4x
+  // faster at p50 and 41x at p90 across 2,415 labelled turns, with 3x less
+  // false-positive time and the same misses.
+  //
+  // 'meter', NOT 'either': `either` ORs the signals and so takes the union of
+  // their false positives, and the meter alone measured cleaner than the
+  // counter there. Per-participant fallback to mutation still applies whenever
+  // a meter is blind (meter === null), so this cannot be deafer than before.
+  assert.equal(pref.default, 'meter');
+  // The module-level fallback in the provider declares the default a SECOND
+  // time; it drifting from the schema is exactly the kind of thing nobody
+  // notices, so pin them together.
+  assert.match(src, /let speakingDetectionMode = 'meter';/);
   // The mode picks the VERDICT only — comparison data must keep accruing even
   // for someone who has pinned the setting, the way the analyser keeps
   // recording while fastFloorDetection is off.
@@ -432,4 +476,61 @@ test('the meter is found by behaviour, never by class name', () => {
   assert.doesNotMatch(region, /IisKdb|HPxjXe|UBNDXc|DwvCqe|QgSmzd|ES310d/);
   assert.match(region, /backgroundImage/);
   assert.match(region, /backgroundPositionX/);
+});
+
+// --- #407: the flag must settle -------------------------------------------
+
+test('mutation verdict is a Schmitt trigger: arms at 3, survives a dip to 2, releases below 2', () => {
+  const { tracker } = setup({ mode: 'mutation' });
+  const info = participant(tile([]));
+  // Two mutations in-window: not armed.
+  info.mutTimes = [1000, 1100];
+  assert.equal(tracker._isSpeakingByMutation(info, 1200), false);
+  // Third arrives: armed.
+  info.mutTimes.push(1200);
+  assert.equal(tracker._isSpeakingByMutation(info, 1250), true);
+  // The exact flap from call cpf-hnso-quk: the window drains to 2. A bare
+  // threshold reported false here (then true again 1ms later, 190 times over).
+  // Armed state must ride the dip out.
+  assert.equal(tracker._isSpeakingByMutation(info, 1000 + 1201), true,
+    'a dip to 2 in-window mutations must not release an armed verdict');
+  // Genuine quiet: window drains below 2 — NOW it releases...
+  assert.equal(tracker._isSpeakingByMutation(info, 1200 + 1201), false);
+  // ...and a single stray mutation cannot re-arm it.
+  info.mutTimes.push(2500);
+  assert.equal(tracker._isSpeakingByMutation(info, 2550), false,
+    're-arming must take the full arm count, not one borderline mutation');
+});
+
+test('self-authored DOM writes never feed the speaking counter', () => {
+  const { tracker } = setup({ mode: 'mutation' });
+  const attr = (oldValue, className) =>
+    ({ type: 'attributes', attributeName: 'class', oldValue, target: { className } });
+  // Pure vibeconf-* class delta (the deleted debug border's exact signature,
+  // both directions): ours, discarded.
+  assert.equal(tracker._isSelfAuthoredMutation(attr('tile', 'tile vibeconf-spk-debug')), true);
+  assert.equal(tracker._isSelfAuthoredMutation(attr('tile vibeconf-spk-debug', 'tile')), true);
+  // Meet churning its own meter classes: counted.
+  assert.equal(tracker._isSelfAuthoredMutation(attr('tile IisKdb', 'tile HPxjXe')), false);
+  // A Meet change arriving in the same record as ours: still counted — the
+  // filter may only discard when the ENTIRE delta is app-authored.
+  assert.equal(tracker._isSelfAuthoredMutation(attr('tile', 'tile QgSmzd vibeconf-marker')), false);
+  // No delta at all (re-set to the same value): nothing to attribute, counted
+  // conservatively as Meet's.
+  assert.equal(tracker._isSelfAuthoredMutation(attr('tile', 'tile')), false);
+  // Our own injected elements coming or going: ours. A Meet node alongside: not.
+  const node = (id, className) => ({ nodeType: 1, id, className });
+  assert.equal(tracker._isSelfAuthoredMutation(
+    { type: 'childList', addedNodes: [node('vibeconf-overlay', '')], removedNodes: [] }), true);
+  assert.equal(tracker._isSelfAuthoredMutation(
+    { type: 'childList', addedNodes: [node('vibeconf-overlay', ''), node('', 'meet-thing')], removedNodes: [] }), false);
+});
+
+test('the debug border is gone, and the observer diffs class deltas to keep it gone', () => {
+  // The border was not dead code — it was a feedback loop (every verdict flip
+  // wrote a class mutation into the counter that produced the verdict). Pin
+  // both the removal and the guard that makes any future reintroduction inert.
+  assert.doesNotMatch(src, /_applyDebugBorder|speakerDebugBorder|_injectDebugStyle/);
+  assert.match(src, /attributeOldValue: true/);
+  assert.match(src, /_isSelfAuthoredMutation\(mutation\)/);
 });

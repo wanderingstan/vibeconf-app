@@ -6,13 +6,19 @@ image model through the `nanobanana` MCP server. Not vendored from a third-party
 emoji project, so unlike the other bundled sets there is no upstream licence to
 carry: these files were produced for this app.
 
-**Curated set (36 PNGs)** — the avatar's face vocabulary, derived from the bot's
+**Curated set (37 PNGs)** — the avatar's face vocabulary, derived from the bot's
 own states in `page-inject.js` and `renderer/panel.js` rather than a fixed list:
 the three modes (🙂 🤐 😶), the activity faces (🤔 🧑‍💻 😄 😑 😐 🫤 🙋 🫥), the two
 impairment faces (🙉 🥴), the idle-mood fidgets (😉 😏 😛 🙃 😌 😊 🥱), and the
 wider palette the agent reaches for when it `speak`s with an emoji (🤯 🤔 🧐 🫠
-😬 💀 🎉 …). Anything outside the set falls back to the native glyph, the same
+😬 💀 🎉 🫡 …). Anything outside the set falls back to the native glyph, the same
 way fluent3d's missing hand/person gestures do.
+
+🫥 is the one frame with real transparency in the artwork rather than just a
+keyed-out background: a "dotted line face" has no expression to draw, so it is a
+ghost of the character instead, alpha derived from how close each pixel is to
+white. The wisps at the edges dissolve entirely and the pale parts of the face go
+translucent, which is the point.
 
 The count is asserted by a test against the files on disk — it went stale within
 a day of being written, when the speak palette was added and this paragraph was

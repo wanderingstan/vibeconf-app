@@ -253,6 +253,10 @@
         <select id="unifiedVoice" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit">
           <option value="">Loading voices…</option>
         </select>
+        <!-- Mid-call the audible audition is skipped (#394) — the human is
+             already listening to the live call — so this note is the only
+             feedback that a voice pick registered. Shown briefly, then cleared. -->
+        <div id="voiceSetNote" style="display:none;font-size:11px;color:#81c995;margin-top:4px;line-height:1.4"></div>
         <!-- Why ElevenLabs voices are missing, when we know. A scoped key that
              lacks `voices_read` 401s the list call while TTS still works, which
              otherwise looks identical to "no key set". -->

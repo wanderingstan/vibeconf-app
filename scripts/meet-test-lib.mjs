@@ -12,6 +12,9 @@
 // Launching and driving are deliberately separate concerns.
 
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const MCP_VERSIONS = { app: 'test-harness', mcp: '0.1.0' };
@@ -36,6 +39,21 @@ function syncBody(name, payload = {}) {
   return JSON.stringify({ sender: name, role: 'bot', ownerName: name, versions: MCP_VERSIONS, ...payload });
 }
 
+// The app's per-launch control token (#201/#356). Every 127.0.0.1 endpoint
+// except `/api/sync/no-room` and `/asset/` requires it.
+//
+// The harness went without one because the test fleet disables auth (#212), so
+// everything worked on 7901+ and silently 401'd anywhere else. `sessionLog()`
+// swallows a failed request and returns '', which meant a run against a real
+// profile read an EMPTY log and every log-based assertion quietly measured
+// nothing. Sending the token when one exists costs nothing on the profiles that
+// ignore it, and stops the harness from lying on the ones that do not.
+function localToken(port) {
+  try {
+    return readFileSync(join(homedir(), '.vibeconferencing', 'local-tokens', `${port}.token`), 'utf8').trim() || null;
+  } catch { return null; }
+}
+
 export class Bot {
   constructor(name, port, room) {
     this.name = name;
@@ -45,10 +63,16 @@ export class Bot {
     this.since = null; // advances as we observe speech, for wait_for_speech windows
   }
 
+  // Auth headers for this bot's app, when it is enforcing them.
+  _auth() {
+    if (this._tok === undefined) this._tok = localToken(this.port);
+    return this._tok ? { Authorization: `Bearer ${this._tok}` } : {};
+  }
+
   async _post(path, body) {
     const started = Date.now();
     const resp = await fetch(`${this.base}${path}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...this._auth() }, body,
     });
     const data = await resp.json().catch(() => ({}));
     return { data, ms: Date.now() - started, status: resp.status };
@@ -118,8 +142,13 @@ export class Bot {
     return false;
   }
 
-  async speak(text, { emoji, voice } = {}) {
-    const { data, ms } = await this._sync({ transcript: [{ text, ...(voice ? { voice } : {}), ...(emoji ? { emoji } : {}) }] });
+  // urgency is passed through because it changes the speak DELAY (it scales the
+  // jitter, and the barge-in grace) — a lockstep test that always left it
+  // unscored would be measuring one point of that curve without saying so.
+  async speak(text, { emoji, voice, urgency } = {}) {
+    const { data, ms } = await this._sync({ transcript: [{ text,
+      ...(voice ? { voice } : {}), ...(emoji ? { emoji } : {}),
+      ...(typeof urgency === 'number' ? { urgency } : {}) }] });
     const reason = data?.results?.transcript?.reason;
     log(this.name, 'speak', { ms, ok: reason !== 'mode-silent', note: reason || `"${text.slice(0, 40)}"` });
     return data;
@@ -148,7 +177,7 @@ export class Bot {
   // back THROUGH the backend (Upstash) — which is what a cross-instance
   // write→read round-trip verifies. Returns { content, version, ... } | {}.
   async readWhiteboard() {
-    const resp = await fetch(`${this.base}/api/sync/${this.room}`);
+    const resp = await fetch(`${this.base}/api/sync/${this.room}`, { headers: this._auth() });
     const data = await resp.json().catch(() => ({}));
     return data?.whiteboard || {};
   }
@@ -215,8 +244,11 @@ export class Bot {
   // Play arbitrary audio into the call via the bot's virtual mic — the exact
   // play-audio HTTP path the play_audio MCP tool uses (url / local path / inline
   // base64). The app treats it as speaking so it won't talk over it.
-  async playAudio({ url, path: filePath, audioData, emoji } = {}) {
-    const { data, ms } = await this._sync({ meta: { action: 'play-audio', url, path: filePath, audioData, emoji } });
+  // uninterruptible: replay rigs only (#422). Ordinary playback stays
+  // interruptible; a replayed conversation must not be stopped by the bot's own
+  // barge-in, or two bots replaying two speakers silence each other.
+  async playAudio({ url, path: filePath, audioData, emoji, uninterruptible } = {}) {
+    const { data, ms } = await this._sync({ meta: { action: 'play-audio', url, path: filePath, audioData, emoji, uninterruptible } });
     const ok = data?.results?.playAudio?.ok === true || data?.success !== false;
     log(this.name, 'playAudio', { ms, ok, note: url || filePath || '(inline)' });
     return data;
@@ -245,7 +277,7 @@ export class Bot {
     const sinceParam = this.since ? `&since=${encodeURIComponent(this.since)}` : '';
     const url = `${this.base}/api/sync/${this.room}?wait=${wait}&silence=${silence}&bot=${encodeURIComponent(this.name)}${sinceParam}`;
     const started = Date.now();
-    const resp = await fetch(url);
+    const resp = await fetch(url, { headers: this._auth() });
     const data = await resp.json().catch(() => ({}));
     const ms = Date.now() - started;
     const entries = (data?.transcript?.entries || []).filter((e) => e.participantName !== this.name);
@@ -272,7 +304,7 @@ export class Bot {
 
   // GET the call-state snapshot — for stall / deaf assertions between steps.
   async status() {
-    const resp = await fetch(`${this.base}/api/sync/${this.room}`);
+    const resp = await fetch(`${this.base}/api/sync/${this.room}`, { headers: this._auth() });
     const data = await resp.json().catch(() => ({}));
     return {
       callStatus: data?.status?.callStatus,
@@ -319,7 +351,7 @@ export class Bot {
   // The full call transcript from this bot's perspective, flattened to
   // "[name] text" lines. Used to grade what was said/heard.
   async transcriptText() {
-    const resp = await fetch(`${this.base}/api/sync/${this.room}`);
+    const resp = await fetch(`${this.base}/api/sync/${this.room}`, { headers: this._auth() });
     const data = await resp.json().catch(() => ({}));
     const entries = data?.transcript?.entries || [];
     return entries
@@ -331,7 +363,7 @@ export class Bot {
   // The tail of this bot's session log (agent + app behavior) for post-mortem
   // judging — loops, errors, tool calls, clean leave.
   async sessionLog(lines = 4000) {
-    const resp = await fetch(`${this.base}/api/session-log?lines=${lines}`);
+    const resp = await fetch(`${this.base}/api/session-log?lines=${lines}`, { headers: this._auth() });
     const data = await resp.json().catch(() => ({}));
     return data?.content || '';
   }

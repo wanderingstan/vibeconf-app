@@ -53,6 +53,63 @@ const PINNED_PORT = (() => {
 const WEBSITE_URL = (process.env.VIBECONF_WEBSITE_URL || "https://vibeconferencing.com").replace(/\/$/, "");
 const LOGS_TOKEN = process.env.VIBECONF_LOGS_TOKEN || "";
 
+// Remote-log READS authorize by the logged-in user, the same way #386 made
+// remote-log WRITES work — the app already sends `Cookie: vc_session=…` beside
+// the shared token on every flush (electron-app/session-log.js), and the
+// backend accepts it. Reads never followed, so they were stuck on a shared
+// secret that has to be distributed and rotated by hand.
+//
+// Measured 2026-08-18: `x-vibe-logs-token` gets a flat 401 from /api/logs while
+// the session cookie gets a 200. So the token path was not merely unset on this
+// machine, it was dead — which is why rotating the key never helped anyone.
+//
+// The session lives in the app's own store, written at login. Read fresh per
+// call rather than cached at startup, so logging in (or out) takes effect
+// without restarting this server — an MCP server started days ago is the normal
+// case, not the exception.
+//
+// NOT a fix for bots: a bot profile has no vc_session, because nobody logs bot
+// profiles into vibeconferencing.com. Their remote logging is separately broken
+// and needs its own answer.
+function _appUserDataDir() {
+  if (process.platform === "darwin") {
+    return join(homedir(), "Library", "Application Support", "Vibeconferencing");
+  }
+  if (process.platform === "win32") {
+    return join(process.env.APPDATA || join(homedir(), "AppData", "Roaming"), "Vibeconferencing");
+  }
+  return join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "Vibeconferencing");
+}
+
+function _sessionCookie() {
+  // The top-level config.json is the Default profile's store, which is where a
+  // human actually logs in. A named profile's store is checked first so a
+  // pinned bot profile that HAS been logged in is honoured.
+  const base = _appUserDataDir();
+  const candidates = [];
+  const prof = process.env.VIBECONF_PROFILE;
+  if (prof) candidates.push(join(base, "profiles", prof, "config.json"));
+  candidates.push(join(base, "config.json"));
+  for (const p of candidates) {
+    try {
+      const tok = JSON.parse(readFileSync(p, "utf8")).vcSessionToken;
+      if (tok) return `vc_session=${tok}`;
+    } catch { /* not this one */ }
+  }
+  return null;
+}
+
+// Headers for a backend log request: the user session when we have one, and the
+// shared token when it is set. Sending both mirrors the app's write path and
+// costs nothing — whichever the backend still honours wins.
+function _logAuthHeaders() {
+  const headers = {};
+  const cookie = _sessionCookie();
+  if (cookie) headers.Cookie = cookie;
+  if (LOGS_TOKEN) headers["x-vibe-logs-token"] = LOGS_TOKEN;
+  return Object.keys(headers).length ? headers : undefined;
+}
+
 // #356: attach the local control token to calls aimed at a 127.0.0.1 app instance.
 // The Electron app writes a per-launch bearer token to
 // ~/.vibeconferencing/local-tokens/<port>.token (0600). We read it per-request and
@@ -168,6 +225,30 @@ function botSyncPayload(name = BOT_NAME, payload = {}) {
   };
 }
 
+// #360: render the "your previous utterance was cut off" record (from a
+// wait_for_speech poll's `speechTruncated` or a speak result's
+// `previousSpeechTruncated`) as an agent-facing note. speak() answers at
+// dispatch time, so a barge-in that truncated playback is only learnable
+// here, after the fact. Empty string when there is nothing to report.
+function formatSpeechTruncation(t) {
+  if (!t) return '';
+  const where = t.cutSeconds != null ? `~${t.cutSeconds}s in` : 'between sentences';
+  const heard = t.spoken ? `Heard: ${JSON.stringify(t.spoken)}. ` : 'NOTHING of it was heard. ';
+  // A #350 resume replays the cut sentence's tail on its own; only what the
+  // synth loop never produced stays unheard in that case.
+  if (t.resumed) {
+    return `\n[CUT OFF — your previous utterance was interrupted ${where}. ${heard}`
+      + `The cut sentence is auto-resuming now — do NOT repeat it. `
+      + `But this part was never synthesized and will NOT play: ${JSON.stringify(t.unspokenRest)}. `
+      + `If it still matters, work it into your next turn, reworded for where the conversation is now.]`;
+  }
+  const unheard = [t.unspokenTail, t.unspokenRest].filter(Boolean).join(' ');
+  return `\n[CUT OFF — your previous utterance was interrupted ${where}, though speak() reported it as spoken. ${heard}`
+    + `NOT heard: ${JSON.stringify(unheard)}. `
+    + `The room only got the first part. If the unheard part still matters, work it into your next turn — `
+    + `reworded for where the conversation is now, without re-saying what already played. If it's been overtaken, let it go.]`;
+}
+
 let lastPollTime = null;
 // Locks BOT_NAME for the duration of the current call. Once a join_call
 // succeeds, the bot's identity is fixed until the call ends — a mid-call
@@ -267,7 +348,8 @@ server.tool(
     const url = isRemote
       ? `${WEBSITE_URL}/api/logs/${encodeURIComponent(instance)}${params.toString() ? '?' + params.toString() : ''}`
       : `${BASE_URL}/api/session-log${params.toString() ? '?' + params.toString() : ''}`;
-    const resp = await vfetch(url, isRemote && LOGS_TOKEN ? { headers: { 'x-vibe-logs-token': LOGS_TOKEN } } : undefined);
+    const auth = isRemote ? _logAuthHeaders() : undefined;
+    const resp = await vfetch(url, auth ? { headers: auth } : undefined);
     const data = await resp.json();
     if (!data.success) {
       return { content: [{ type: "text", text: `Error: ${data.error || "Unknown error"}` }] };
@@ -320,9 +402,20 @@ server.tool(
   "List remote Vibeconferencing instances that are shipping their session logs to the backend (machines/bots with the remoteLogging pref on). Returns each instance's ID, app version, profile, current room, and how long ago it was last seen. Use the returned instanceId with get_session_log({ instance }) to read that bot's log — handy for debugging another person's bots (e.g. Seth's) without terminal access to their machine.",
   {},
   async () => {
-    const resp = await vfetch(`${WEBSITE_URL}/api/logs`, LOGS_TOKEN ? { headers: { 'x-vibe-logs-token': LOGS_TOKEN } } : undefined);
+    const auth = _logAuthHeaders();
+    const resp = await vfetch(`${WEBSITE_URL}/api/logs`, auth ? { headers: auth } : undefined);
     const data = await resp.json();
-    if (!data.success) return { content: [{ type: "text", text: `Error: ${data.error || "Unknown error"}` }] };
+    if (!data.success) {
+      // "unauthorized" is the common failure and the least self-explanatory:
+      // say which credentials were actually offered, so the next person does
+      // not spend an afternoon rotating a key that was never the problem.
+      const why = data.error === 'unauthorized'
+        ? `unauthorized — sent: ${[_sessionCookie() ? 'vc_session (app login)' : null,
+            LOGS_TOKEN ? 'x-vibe-logs-token' : null].filter(Boolean).join(' + ') || 'no credentials'}.`
+          + ' Log in to vibeconferencing.com in the app to authorize reads as your user.'
+        : (data.error || "Unknown error");
+      return { content: [{ type: "text", text: `Error: ${why}` }] };
+    }
     const insts = data.instances || [];
     if (!insts.length) return { content: [{ type: "text", text: "No instances are reporting (remoteLogging may be off everywhere)." }] };
     const lines = insts.map((i) => {
@@ -500,6 +593,10 @@ server.tool(
       ? `\n[NOT SPOKEN — your held reply was dropped, not replayed (${d.reason}): ${d.texts.map(s => JSON.stringify(s)).join(' · ')}. The room never heard this. If it still matters, say it again — reworded for where the conversation is NOW, not where it was. If it's been overtaken, let it go.]`
       : '';
 
+    // #360: the previous utterance PLAYED but was cut off partway by a
+    // barge-in — speak() had already reported it as spoken in full.
+    const truncLine = formatSpeechTruncation(data.speechTruncated);
+
     if (entries.length === 0) {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       // Chat-triggered wake: a new chat message arrived while the room was quiet
@@ -514,7 +611,7 @@ server.tool(
       const deafLine = status.captionsOn === false
         ? '\n[Captions are OFF in Meet — the bot hears via captions, so it is DEAF until they are re-enabled. The app is retrying automatically; if this persists, say or chat: "Could someone turn captions back on? (CC button in Meet\'s toolbar)"]'
         : '';
-      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${statusLine}${errorLines}${chatLine}${ackLine}${replayLine}${discardLine}${deafLine}` }] };
+      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${statusLine}${errorLines}${chatLine}${ackLine}${replayLine}${discardLine}${truncLine}${deafLine}` }] };
     }
 
     // Each entry is now one logical speaker turn (#178 snapshot model); no
@@ -545,7 +642,7 @@ server.tool(
     return {
       content: [{
         type: "text",
-        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):\n\n${transcriptText}${chatLine}${continuationLine}${ackLine}${replayLine}${discardLine}`,
+        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):\n\n${transcriptText}${chatLine}${continuationLine}${ackLine}${replayLine}${discardLine}${truncLine}`,
       }],
     };
   }
@@ -592,10 +689,14 @@ server.tool(
     // so — and it matters most right here, where the agent is about to build on
     // a reply the room never heard.
     const failed = tx?.previousPlaybackFailed;
-    const priorWarning = failed
+    let priorWarning = failed
       ? `⚠️ Your PREVIOUS speech was NOT heard — audio playback failed (${failed.reason}). `
         + `Nobody in the room got it. If it still matters, say it again.\n\n`
       : '';
+    // #360: the previous speech played but was cut off partway — the agent is
+    // about to speak again, believing its full point landed.
+    const trunc = tx?.previousSpeechTruncated;
+    if (trunc) priorWarning += `⚠️${formatSpeechTruncation(trunc).slice(1)}\n\n`;
 
     // #199: accepted but NOT yet audible. The app queues speech until the bot is
     // actually in the call, because the virtual mic isn't connected to the other
@@ -610,7 +711,11 @@ server.tool(
         + `than assuming a voice or TTS problem.` }] };
     }
     if (data.success && tx?.ok !== false) {
-      return { content: [{ type: "text", text: priorWarning + `Spoken: "${text}"` }] };
+      // #360: "Speaking", not "Spoken" — this answer arrives at dispatch time,
+      // before playback finishes (or even starts). If a barge-in cuts the
+      // utterance short, the next wait_for_speech/speak result carries the
+      // CUT OFF note; this line must not claim delivery it can't know about.
+      return { content: [{ type: "text", text: priorWarning + `Speaking: "${text}"` }] };
     } else {
       return { content: [{ type: "text", text: `Error: ${data.error || tx?.reason || "Failed to post"}` }] };
     }
@@ -1296,7 +1401,35 @@ server.tool(
           + `Nobody in the room can see this content. Do not describe it as if it were on screen: `
           + `say the board is unavailable and send the content with send_chat instead.` }] };
       }
-      return { content: [{ type: "text", text: `Whiteboard updated (version ${wb.version}).` }] };
+
+      // #366: the write reaching the board says nothing about whether anyone in
+      // the room is actually LOOKING at it. Writing and presenting are two
+      // different calls, and a bot that only did the first has no way to know
+      // it — caught live on the 2026-08-13 call, then named as the general
+      // failure by a bot that hit it from the other side an hour earlier.
+      // `status.sharing` / `status.presenterName` are the same room-wide
+      // presenting signal `get_room_info` already surfaces (formatScreenShares),
+      // read fresh here rather than trusting stale local state.
+      let presenceNote = "";
+      try {
+        const status = await getRoomStatus(roomId);
+        if (!status.sharing && !status.presenterName) {
+          presenceNote = ` Nobody is presenting anything right now — the room CANNOT see this. `
+            + `Use start_share to present the whiteboard, or send_chat instead.`;
+        } else if (status.sharing) {
+          const shareUrl = status.screenShareUrl || status.whiteboardLoadedUrl || "";
+          const onBoard = !shareUrl || shareUrl === status.whiteboardUrl || shareUrl === status.roomUrl;
+          if (!onBoard) {
+            presenceNote = ` But you're currently presenting something else (${shareUrl}), not this board — `
+              + `the room can't see this update until your share points back at the whiteboard.`;
+          }
+        } else if (status.presenterName) {
+          presenceNote = ` Note: ${status.presenterName} is presenting right now, not you — if that's not `
+            + `this whiteboard, the room can't see this update.`;
+        }
+      } catch { /* best-effort — a failed status check shouldn't block the write confirmation */ }
+
+      return { content: [{ type: "text", text: `Whiteboard updated (version ${wb.version}).${presenceNote}` }] };
     } else {
       return { content: [{ type: "text", text: `Error: ${data.error || "Failed to update"}` }] };
     }
@@ -1394,11 +1527,13 @@ server.tool(
 
 server.tool(
   "read_whiteboard",
-  "Read the current contents of the shared whiteboard — the markdown/Mermaid source text, not a screenshot. Use this before update_whiteboard to build on what's already there (your own earlier writes or another bot's), or to recall what you put up. Returns the source and the current version number. (get_room_info also includes the board, but this is the clean, dedicated read.)",
+  "Read the shared whiteboard: the markdown/Mermaid source text, not a screenshot. By default returns the CURRENT board and its version number. Use that before update_whiteboard to build on what's already there (your own earlier writes or another bot's), or to recall what you put up. Earlier boards are NOT lost when the board is rewritten: the sync server keeps up to 50 prior versions. Pass history: true to list them (newest first, with previews), or version: N to get one prior version back in full, e.g. to recover content that was overwritten or to compare two iterations. (get_room_info also includes the current board, but this is the clean, dedicated read.)",
   {
+    history: z.boolean().optional().describe("List the board's stored PRIOR versions (newest first): version number, editor, timestamp, and a short content preview for each. Fetch a full one with version: N."),
+    version: z.number().optional().describe("Return one stored prior version in full by its version number, as listed by history: true."),
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
-  async ({ room_id }) => {
+  async ({ history, version, room_id }) => {
     let roomId = room_id || ROOM_ID;
     // Prefer the app's active room when it's in a call — authoritative over a
     // stale env/arg, mirroring get_room_info.
@@ -1417,6 +1552,50 @@ server.tool(
       return { content: [{ type: "text", text: "Not in a call and no room_id provided — nothing to read." }] };
     }
 
+    // History mode (#380): prior versions live on the sync server, reached
+    // through the local server's passthrough so routing matches the rest of
+    // whiteboard sync (room code, not call id).
+    if (history || version != null) {
+      let data;
+      try {
+        const resp = await vfetch(`${BASE_URL}/api/whiteboard-history?room=${encodeURIComponent(roomId)}&limit=50`);
+        data = await resp.json();
+      } catch (err) {
+        return { content: [{ type: "text", text: `Error contacting local server: ${err.message}` }] };
+      }
+      if (!data.success) {
+        const why = data.error === "no-room"
+          ? "Not in a call and no room to look up history for."
+          : `Could not fetch whiteboard history: ${data.error || "unknown error"}. The current board may still be readable with a plain read_whiteboard.`;
+        return { content: [{ type: "text", text: why }] };
+      }
+      const entries = data.entries || [];
+      if (version != null) {
+        const hit = entries.find((e) => Number(e.version) === Number(version));
+        if (!hit) {
+          return { content: [{ type: "text", text: entries.length
+            ? `No stored prior version ${version}. Stored prior versions: ${entries.map((e) => e.version).join(", ")}. For the current board, call read_whiteboard with no version.`
+            : "No prior whiteboard versions are stored for this room yet. Only the current board exists." }] };
+        }
+        const meta = [hit.lastEditor ? `by ${hit.lastEditor}` : null, hit.lastModified ? `at ${hit.lastModified}` : null]
+          .filter(Boolean).join(" ");
+        const body = (hit.content || "").trim() || "(this version was empty)";
+        return { content: [{ type: "text", text: `Whiteboard version ${hit.version}${meta ? ` (${meta})` : ""}:\n\n${body}` }] };
+      }
+      if (!entries.length) {
+        return { content: [{ type: "text", text: "No prior whiteboard versions are stored for this room yet. Only the current board exists (plain read_whiteboard)." }] };
+      }
+      const lines = entries.map((e) => {
+        const preview = (e.content || "").replace(/\s+/g, " ").trim().slice(0, 200) || "(empty)";
+        const who = e.lastEditor ? ` by ${e.lastEditor}` : "";
+        const when = e.lastModified ? ` at ${e.lastModified}` : "";
+        return `- version ${e.version}${who}${when}: ${preview}`;
+      });
+      const more = data.hasMore ? `\n\n(${data.total} versions stored in total; showing the newest ${entries.length}.)` : "";
+      return { content: [{ type: "text", text:
+        `Prior whiteboard versions (newest first, previews only). Fetch one in full with read_whiteboard version: N.\n\n${lines.join("\n")}${more}` }] };
+    }
+
     const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`);
     const data = await resp.json();
     if (!data.success) {
@@ -1427,8 +1606,8 @@ server.tool(
     if (!content) {
       return { content: [{ type: "text", text: "The whiteboard is currently empty." }] };
     }
-    const version = wb.version != null ? ` (version ${wb.version})` : "";
-    return { content: [{ type: "text", text: `Current whiteboard contents${version}:\n\n${content}` }] };
+    const versionNote = wb.version != null ? ` (version ${wb.version})` : "";
+    return { content: [{ type: "text", text: `Current whiteboard contents${versionNote}:\n\n${content}` }] };
   }
 );
 
@@ -1523,7 +1702,7 @@ server.tool(
 // --- stop_recording (#209) ---
 server.tool(
   "stop_recording",
-  "Stop the call recording started by start_recording (or by the recordCallAudio pref) — finalizes the per-track audio + video files and manifest, then automatically muxes them into one playable call-recording.mp4. Returns where they were saved. Can be called at any point mid-call (not just at the end). Recording also stops automatically when the bot leaves the call.",
+  "Stop the call recording started by start_recording (or by the recordCallAudio pref) — finalizes the per-track audio + video files and manifest, and returns immediately with where they were saved. The mux into one playable call-recording.mp4 continues in the BACKGROUND after this returns (it can take a while on long calls), so the merged file may not exist yet when you read the response — the raw tracks are already safe on disk either way. Can be called at any point mid-call (not just at the end); it never blocks you from speaking or from leave_call. Recording also stops automatically when the bot leaves the call.",
   {
     bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running. Same routing as join_call. Omit to use the sole running instance, or the one this session is pinned to."),
   },
@@ -1538,7 +1717,13 @@ server.tool(
       });
       const data = await resp.json().catch(() => ({}));
       if (data.already || !data.dir) return { content: [{ type: "text", text: "No recording was in progress." }] };
-      return { content: [{ type: "text", text: `Recording stopped — ${data.tracks ?? 0} track(s) saved to:\n${data.dir}` }] };
+      // #388: the merge runs detached in the app now, so its outcome is
+      // unknowable at reply time — say what IS true (raw tracks saved) and
+      // what is underway, rather than implying the mp4 already exists.
+      const mergeNote = data.merging
+        ? "\nThe merged call-recording.mp4 is being prepared in the background and will appear in that folder's parent directory when ready."
+        : "";
+      return { content: [{ type: "text", text: `Recording stopped. ${data.tracks ?? 0} raw track(s) saved to:\n${data.dir}${mergeNote}` }] };
     } catch (err) {
       return { content: [{ type: "text", text: `Error stopping recording: ${err.message}.` }] };
     }
@@ -1993,6 +2178,131 @@ server.tool(
   }
 );
 
+// --- find_share_element ---
+server.tool(
+  "find_share_element",
+  "Locate an element in the share surface by a natural-language description instead of a CSS selector — 'the submit button', 'the search box', 'the second result link'. Returns candidate matches ranked by how well they match, each with a selector (when the element has an id) and its center x/y (for click_share when no selector is available, e.g. a canvas overlay). Read-only. Use this before click_share/type_share when you don't already know the selector.",
+  {
+    description: z.string().describe("What to find, in plain language, e.g. 'the Sign In button' or 'the email input field'."),
+    max_results: z.number().optional().describe("Max candidates to return (default 5, max 20)."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ description, max_results, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
+        meta: { action: "find-share-element", description, maxResults: max_results },
+      })),
+    });
+    const data = await resp.json();
+    const r = data.results?.findShareElement;
+    if (!r?.ok) {
+      return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "find failed"}` }] };
+    }
+    if (!r.matches.length) {
+      return { content: [{ type: "text", text: `No elements matched '${description}'.` }] };
+    }
+    const body = r.matches.map((m, i) =>
+      `[${i + 1}] <${m.tag}>${m.ariaLabel ? ` aria-label="${m.ariaLabel}"` : ""}${m.selector ? ` selector="${m.selector}"` : ""} at (${m.x}, ${m.y}), ${m.width}x${m.height} — "${m.text}"`
+    ).join("\n");
+    return { content: [{ type: "text", text: `${r.matches.length} match(es) for '${description}':\n\n${body}` }] };
+  }
+);
+
+// --- eval_share ---
+server.tool(
+  "eval_share",
+  "Run JavaScript in the share surface (whatever's currently being screen-shared) and return the result. Sandboxed to that page's own context — it cannot reach the app or the OS. Use it for anything the other *_share tools don't cover directly: reading a value off the page (localStorage, a global variable), computing something from the DOM, or driving an app via its own JS API. The room does not see this happen (unlike click_share/type_share) — only its visible side effects, if any.",
+  {
+    expression: z.string().describe("JavaScript to evaluate, e.g. 'document.title' or '(() => { ...; return x; })()'. The last expression's value is returned; must be JSON-serializable (or a Promise that resolves to one)."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ expression, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
+        meta: { action: "eval-share", expression },
+      })),
+    });
+    const data = await resp.json();
+    const r = data.results?.evalShare;
+    if (!r?.ok) {
+      return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "eval failed"}` }] };
+    }
+    return { content: [{ type: "text", text: `Result:\n${JSON.stringify(r.result, null, 2)}` }] };
+  }
+);
+
+// --- read_share_console ---
+server.tool(
+  "read_share_console",
+  "Read recent console messages (log/warn/error/info) from the share surface — buffered continuously while something is shared, so you can call this AFTER a click/type/eval to see what it triggered, not just at the moment it happened. Read-only. Use it to debug a web app you're driving on the board: did that click throw, is a script failing to load.",
+  {
+    limit: z.number().optional().describe("Max most-recent messages to return (default 50, max 200)."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ limit, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
+        meta: { action: "read-share-console", limit },
+      })),
+    });
+    const data = await resp.json();
+    const r = data.results?.readShareConsole;
+    if (!r?.ok) {
+      return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "no console log available"}` }] };
+    }
+    if (!r.returned) {
+      return { content: [{ type: "text", text: "No console messages captured yet." }] };
+    }
+    const body = r.entries.map(e => `[${e.timestamp}] ${e.level.toUpperCase()}: ${e.message}`).join("\n");
+    return { content: [{ type: "text", text: `Showing ${r.returned} of ${r.total} captured message(s):\n\n${body}` }] };
+  }
+);
+
+// --- read_share_network ---
+server.tool(
+  "read_share_network",
+  "Read recent network requests (method, URL, status, timing) made by the share surface — buffered continuously while something is shared. Read-only. Use it to debug a web app on the board: did that API call succeed, is a resource 404ing, how long did a request take.",
+  {
+    limit: z.number().optional().describe("Max most-recent requests to return (default 50, max 200)."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ limit, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    const resp = await vfetch(`${BASE_URL}/api/sync/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(botSyncPayload(BOT_NAME, {
+        meta: { action: "read-share-network", limit },
+      })),
+    });
+    const data = await resp.json();
+    const r = data.results?.readShareNetwork;
+    if (!r?.ok) {
+      return { content: [{ type: "text", text: `Error: ${r?.error || data.error || "no network log available"}` }] };
+    }
+    if (!r.returned) {
+      return { content: [{ type: "text", text: "No network requests captured yet." }] };
+    }
+    const body = r.entries.map(e =>
+      `[${e.timestamp}] ${e.method} ${e.url} → ${e.status ?? `ERROR (${e.error})`}${e.durationMs != null ? ` (${e.durationMs}ms)` : ""}`
+    ).join("\n");
+    return { content: [{ type: "text", text: `Showing ${r.returned} of ${r.total} captured request(s):\n\n${body}` }] };
+  }
+);
+
 // --- set_mode ---
 // --- set_caption_language ---
 server.tool(
@@ -2274,7 +2584,7 @@ server.tool(
   "Modify a user preference. The 'value' must match the preference's type (number, string, boolean, or array of strings). Call list_preferences first if you need to see available keys, types, and constraints. Common use cases: tune ack thresholds (ackShortMin / ackLongMin), customize what the bot says when thinking (ackShortPhrases / ackLongPhrases), change bot name. The agent should confirm with the user before changing irreversible-feeling settings; obvious requests ('add \"sure thing\" to your short acks') don't need confirmation.",
   {
     key: z.string().describe("Preference key. Use list_preferences to see what's available."),
-    value: z.any().describe("New value. Must match the preference's type. For string arrays, pass a JSON array."),
+    value: z.any().describe("New value. Must match the preference's type. For string arrays, pass a JSON array — or, if your client will not send one through, a comma-separated string works too (\"Pepper, Coltrane\")."),
   },
   async ({ key, value }) => {
     try {
@@ -2288,7 +2598,10 @@ server.tool(
         return { content: [{ type: "text", text: `Error: ${data?.error || 'Failed to set preference'}` }] };
       }
       const restartNote = data.requiresRestart ? ' Takes effect on next app restart.' : ' Applied immediately.';
-      return { content: [{ type: "text", text: `Set '${data.key}' to ${JSON.stringify(data.value)}.${restartNote}` }] };
+      // #430: "applied immediately" was actively misleading for a setting that
+      // needs a companion value. Say when the change is stored but inert.
+      const warn = data.warning ? `\n\n⚠️  ${data.warning}` : '';
+      return { content: [{ type: "text", text: `Set '${data.key}' to ${JSON.stringify(data.value)}.${restartNote}${warn}` }] };
     } catch (err) {
       return { content: [{ type: "text", text: `Error: ${err.message}` }] };
     }
@@ -2482,6 +2795,22 @@ server.tool(
     const participants = data.participants || [];
     const detectedUrls = data.detectedMeetUrls || [];
 
+    // #366-followup: peers' sharing state lives on the REMOTE presence hash
+    // (announced by announceSharing() in main.js on start/stop), not in the
+    // local server's own status/members above — that only knows about this
+    // bot's own view. Best-effort: a failed or slow remote fetch must not
+    // block the rest of get_room_info, which is otherwise entirely local.
+    let peerSharing = [];
+    try {
+      const remoteResp = await vfetch(`${WEBSITE_URL}/api/sync/${roomId}`);
+      const remoteData = await remoteResp.json();
+      if (remoteData.success) {
+        peerSharing = (remoteData.members || []).filter((m) =>
+          m.sharing && m.name && m.name.toLowerCase() !== (BOT_NAME || '').toLowerCase()
+        );
+      }
+    } catch { /* best-effort — see comment above */ }
+
     // Members from sync API (includes bots). Build a set of registered bot
     // names (case-insensitive) so we can annotate the Meet participant list
     // with (bot) for cross-instance bots like Coltrane (#162).
@@ -2569,7 +2898,16 @@ server.tool(
     }
     const shareUrl = status.screenShareUrl || status.whiteboardLoadedUrl; // #177 rename; tolerate old field
     if (shareUrl) {
-      sections.push(`Currently sharing: ${shareUrl} (what's rendering in the screen share now, post-update_whiteboard / scroll_share)`);
+      sections.push(`Currently sharing: ${shareUrl} (what's rendering in the screen share now, post-load_url / scroll_share)`);
+    }
+    if (peerSharing.length > 0) {
+      // WHO is presenting is already visible via Meet's own UI (presenterName,
+      // above) — this is WHAT: content another bot announced it's sharing,
+      // which Meet's UI has no way to tell you.
+      sections.push(
+        `Peer bots sharing:\n` +
+        peerSharing.map((m) => `  - ${m.name}: ${m.screenShareUrl || '(url not announced)'}`).join('\n')
+      );
     }
 
     // #244: surface the current avatar background so the bot can recall it

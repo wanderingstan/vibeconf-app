@@ -39,11 +39,27 @@ Call-scoped tools accept an optional `room_id` argument, falling back to `VIBECO
 
 | Tool | What |
 |---|---|
-| **`update_whiteboard`** | Set whiteboard content. Supports markdown + Mermaid. Pass `image_path` (absolute) to embed a local image — it gets registered with the local server and embedded automatically. |
+| **`update_whiteboard`** | Set whiteboard content. Supports markdown + Mermaid. Pass `image_path` (absolute) to embed a local image — it gets registered with the local server and embedded automatically. Writing and presenting are separate calls (#366): a successful write includes a note if nobody is currently sharing/presenting, or if the bot's own share is pointed at something other than the board — either way, the room can't see the update until `start_share`/`share_whiteboard` targets it. |
 | **`load_url`** | Load an arbitrary web page (website, localhost app, dashboard) into the bot's share window, instead of markdown content. |
 | **`start_share`** | The primary sharing tool: present the bot's whiteboard into Meet, with optional size and title-bar control. (`share_whiteboard` remains as a compatibility alias.) |
 | **`stop_sharing`** | Stop screen-sharing. |
 | **`scroll_share`** | Scroll the content currently being shared — URL or rendered markdown alike. `direction: down/up/top/bottom`. |
+
+## Screen share manipulation (`*_share` / `share_tab`)
+
+Two different automation targets: the `*_share` tools manipulate the bot's own Electron share surface (whiteboard, or any URL loaded into it) directly. `share_tab` hands a real Chrome tab off to the Claude-in-Chrome extension, which then owns manipulation of that tab.
+
+| Tool | What |
+|---|---|
+| **`click_share`** | Click inside the shared surface — a real mouse event. Prefer a `selector` (found via `inspect_dom`) over raw `x`/`y`. |
+| **`type_share`** | Type into the shared surface — real key events. Pass `text` or a single `key`, optional `modifiers`, optional `selector` to focus a field first. |
+| **`inspect_dom`** | Read the live DOM of the bot's Meet call or its share surface — returns matched elements' outerHTML. Read-only. |
+| **`get_shared_screenshot`** | Capture a screenshot of the bot's own shared screen (what participants are actually seeing). |
+| **`find_share_element`** | Locate an element on the share surface by a plain-language description instead of a CSS selector. Returns ranked candidates with a selector (if it has an id) and center x/y. |
+| **`eval_share`** | Run JavaScript in the share surface and return the result. Sandboxed to that page's own context. |
+| **`read_share_console`** | Read recent console messages captured from the share surface (buffered continuously while something is shared). |
+| **`read_share_network`** | Read recent network requests captured from the share surface (buffered continuously while something is shared). |
+| **`share_tab`** | Share a specific Chrome tab (by URL) into the call, live. macOS only for now. Once shared, manipulation is via the `mcp__claude-in-chrome__*` tools, not this server. |
 
 ## Avatar & camera
 

@@ -15,14 +15,31 @@
 // call-media-merge.js tell the video track apart from audio tracks without
 // guessing from the name.
 //
-// SEPARATION: measured (#209), Meet DOES hand each remote participant its own
-// WebRTC track — in a 3-party call the two remote tracks came out with near-zero
-// energy cross-correlation (independent audio, not one shared mix). So this
-// records the bot's own outgoing audio plus each distinct remote track, and you
-// get real per-participant tracks. Caveats we do NOT paper over: tracks are
-// labeled by arrival order, not participant NAME (attribution is future work),
-// and Meet can emit extra or initially-silent tracks — in a 2-person call the
-// lone remote may even appear duplicated. The manifest states this per session.
+// SEPARATION — AND WHAT IT IS NOT. The tracks are not one shared mix: measured
+// (#209), remote tracks in a 3-party call came out with near-zero energy
+// cross-correlation. That much holds.
+//
+// It was then written here that "Meet DOES hand each remote participant its own
+// WebRTC track". THAT CLAIM IS WITHDRAWN — the correlation test cannot support
+// it. Speaker SLOTS, where Meet forwards whoever is currently talking into a
+// small fixed pool, are equally uncorrelated, because different people occupy
+// them at different times. The evidence could never distinguish the two.
+//
+// The 2026-08-17 call (54 min, kept as a corpus — see tests/fixtures/CORPUS.md)
+// points at slots:
+//   - FOUR participants recorded onto THREE remote tracks, and the fourth
+//     (Pepper) spoke throughout while having no track of her own.
+//   - The three tracks are almost mutually exclusive: only 1.2-1.5% of their
+//     combined active time overlaps, and all three are never active at once.
+//     Three independent speakers should overlap MORE than a pair, yet real
+//     two-person calls in the other corpus overlap 4.6% and 16.3%. This looks
+//     like one conversation handed between three channels.
+//
+// Treat a track as "audio from somebody" and nothing more. Attribution by name
+// (the manifest's `names`, from the #209 DOM voting) is a best guess that also
+// votes on the DOM speaking signal, so it must never be used to validate that
+// signal. Anything of the form "X was speaking" needs a source we do not have
+// yet; "some remote track was loud" is sound and is usually enough.
 //
 // The renderer (page-inject.js) drives a MediaRecorder per track and streams
 // base64 webm/opus chunks here via IPC. MediaRecorder timeslice chunks are NOT
@@ -323,16 +340,25 @@ ${finalized
       note: 'Timeline: each track\'s startWallClock is its webm t=0 in absolute '
         + 'wall-clock ms (same Date.now() clock as the transcript), so sample-time '
         + 't maps to startWallClock + t — align audio with transcript/events by '
-        + 'that. Each remote-* is a distinct WebRTC track from Meet (measured '
-        + 'independent in a 3-party call — Meet separates participants, not one '
-        + 'mix); tracks are labeled by arrival order and named when attributable, '
-        + 'and Meet can emit extra or initially-silent tracks. A "share-audio" '
+        + 'that. Each remote-* is a separate WebRTC track, but NOT one track per '
+        + 'person: on 2026-08-17 one participant\'s voice was confirmed BY EAR on '
+        + 'two different remote-* tracks, and that same call put four '
+        + 'participants on three tracks. Meet appears to forward whoever is '
+        + 'speaking into a small fixed pool of slots and to REASSIGN a slot '
+        + 'mid-call. So the "name" on each track below is a whole-call majority '
+        + 'vote from DOM sole-speaker moments: it names whoever dominated that '
+        + 'slot, and it is simply wrong wherever the slot changed hands. Do not '
+        + 'key analysis on it — use speaker-events.jsonl, which is wall-clock '
+        + 'stamped, for who spoke when. Meet can also emit extra or '
+        + 'initially-silent tracks. A "share-audio" '
         + 'track, when present, is the shared tab/screen\'s own audio (raw, '
         + 'pre-mute) — distinct from the "share" track, which is that surface\'s '
         + 'VIDEO capture (kind: "share").',
       tracks: [...this.tracks.values()].map((t) => ({
         track: t.name,
-        name: this.names.get(t.name) || null, // attributed participant, when known
+        // Whole-call majority vote, NOT a reliable label — a Meet slot can
+        // change hands mid-call and this keeps only the winner. See `note`.
+        name: this.names.get(t.name) || null,
         file: t.base,
         mime: t.mime,
         kind: t.kind, // 'audio' | 'video' — call-media-merge.js uses this, not the name

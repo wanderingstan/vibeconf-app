@@ -8,7 +8,7 @@
 // Env:
 //   VIBECONF_NOTIFY=0            disable entirely
 //   VIBECONF_NOTIFY_DRYRUN=1     compose + print, don't send
-//   VIBECONF_NOTIFY_CHAT=<id>    override recipient (default: shared group)
+//   VIBECONF_NOTIFY_CHAT=<id>    recipient chat_id (REQUIRED to send; unset = skip, no group fallback)
 //   VIBECONF_RESULTS_DIR=<path>  override results dir
 //   VIBECONF_TELEGRAM_ENV=<path> override the token .env location
 
@@ -18,7 +18,13 @@ import { homedir } from 'os';
 import { execSync, execFileSync } from 'child_process';
 
 const RESULTS = process.env.VIBECONF_RESULTS_DIR || join(homedir(), 'vibeconf-test-results');
-const CHAT = process.env.VIBECONF_NOTIFY_CHAT || '-5140242529'; // shared group
+// No fallback chat_id ON PURPOSE. This used to default to the shared group
+// (-5140242529), so any run that forgot to set VIBECONF_NOTIFY_CHAT — every
+// manual/ad-hoc wrapper run — silently spammed that group. The nightly
+// LaunchAgent sets VIBECONF_NOTIFY_CHAT explicitly (Stan's DM), so it's
+// unaffected; when it's unset we now SKIP the post (guard below) rather than
+// pick a loud default. Set VIBECONF_NOTIFY_CHAT to route somewhere.
+const CHAT = process.env.VIBECONF_NOTIFY_CHAT || '';
 const ENV_FILE = process.env.VIBECONF_TELEGRAM_ENV || join(homedir(), '.claude/channels/telegram/.env');
 
 function lastLine(file) {
@@ -304,6 +310,11 @@ if (text.length > 4090) text = text.slice(0, 4087) + '…';
 
 if (process.env.VIBECONF_NOTIFY === '0') { console.log('[notify] disabled'); process.exit(0); }
 if (process.env.VIBECONF_NOTIFY_DRYRUN === '1') { console.log('[notify] DRY-RUN — would send:\n' + text); process.exit(0); }
+if (!CHAT) {
+  console.log('[notify] VIBECONF_NOTIFY_CHAT not set, skipping Telegram post '
+    + '(refusing to fall back to the shared group). Set VIBECONF_NOTIFY_CHAT to a chat_id to enable.');
+  process.exit(0);
+}
 
 const tok = botToken();
 if (!tok) { console.log(`[notify] no telegram token at ${ENV_FILE} — skipping`); process.exit(0); }

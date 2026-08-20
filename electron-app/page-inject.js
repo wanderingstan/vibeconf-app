@@ -1105,7 +1105,7 @@
 
     // Play a TTS response (or any audio) through the virtual mic.
     // Returns a promise that resolves when playback ends.
-    async playAudio(arrayBuffer) {
+    async playAudio(arrayBuffer, volume = 1) {
       // Data may arrive as base64 string after Chrome message passing
       // (ArrayBuffer can't survive chrome.tabs.sendMessage serialization).
       if (typeof arrayBuffer === 'string') {
@@ -1119,23 +1119,36 @@
         arrayBuffer = bytes.buffer;
       }
       const buf = await this.audioCtx.decodeAudioData(arrayBuffer.slice(0));
-      return this._playBuffer(buf, 0);
+      return this._playBuffer(buf, 0, volume);
     }
 
     // #350: resume a previously-decoded buffer from `offset` seconds in — the
     // audio-level sibling of the fresh-TTS path. Same lip-sync tap + source
     // bookkeeping; only the start offset differs.
-    async playAudioBuffer(buf, offset) {
-      return this._playBuffer(buf, Math.max(0, offset || 0));
+    async playAudioBuffer(buf, offset, volume = 1) {
+      return this._playBuffer(buf, Math.max(0, offset || 0), volume);
     }
 
     // Shared playback core. Tracks the decoded buffer and the wall-clock start
     // (plus the in-buffer offset it began at) so stopAudio() can report how far
     // we actually got — the seam #350 resumes from.
-    _playBuffer(buf, offset = 0) {
+    _playBuffer(buf, offset = 0, volume = 1) {
       const src = this.audioCtx.createBufferSource();
       src.buffer = buf;
-      src.connect(this.destination);
+      // Acknowledgements play quieter than real speech (a human's "mm-hmm" is
+      // not the same loudness as their sentence). Full-volume playback skips
+      // the node entirely, so the normal path is byte-for-byte what it was.
+      //
+      // Only the DESTINATION tap is attenuated. The analyser tap stays at unit
+      // gain deliberately: it drives lip-sync, and a quiet ack should still
+      // move the avatar's mouth normally rather than mumble.
+      if (volume < 1) {
+        const g = this.audioCtx.createGain();
+        g.gain.value = Math.max(0, volume);
+        src.connect(g).connect(this.destination);
+      } else {
+        src.connect(this.destination);
+      }
       src.connect(this.analyser); // feed lip-sync amplitude (parallel tap)
       // Expose the live source so stopAudio() can interrupt it for back-off
       // (#154). onended fires whether playback finished or was stop()'d.
@@ -1285,14 +1298,24 @@
   let currentSpeakingEmoji = null;
   // #350: a mid-TTS utterance that was cut off by a barge-in, retained so the
   // next silence edge can resume it near the interruption point instead of
-  // dropping it. { buf, playedTo, emoji, at } or null.
+  // dropping it. { buf, playedTo, emoji, utt, at } or null.
   let interruptedTts = null;
+  // #360: the {id, chunk, chunks} tag of the clip currently playing, so a
+  // stop-tts can report WHICH chunk of WHICH utterance it interrupted.
+  let currentTtsTag = null;
+  // Playback gain of the utterance in flight, so a resume after a barge-in
+  // comes back at the volume it was cut off at rather than jumping to full.
+  let currentTtsVolume = 1;
 
   async function playNextTTS() {
     if (ttsPlaying || ttsQueue.length === 0) return;
     ttsPlaying = true;
-    const { audioData, resumeBuf, offset, emoji } = ttsQueue.shift();
+    const { audioData, resumeBuf, offset, emoji, utt, volume } = ttsQueue.shift();
+    // Absent/invalid → 1, so anything that doesn't set it plays as before.
+    const vol = (typeof volume === 'number' && volume >= 0 && volume < 1) ? volume : 1;
+    currentTtsTag = utt || null;
     currentSpeakingEmoji = emoji || null;
+    currentTtsVolume = vol;
     for (const cam of cameras.values()) {
       cam.speaking = true;
       cam.speakingEmojiOverride = emoji || null;
@@ -1307,14 +1330,16 @@
       // #350: a resume item carries an already-decoded buffer + offset; a fresh
       // utterance carries encoded audioData.
       if (resumeBuf) {
-        await mic.playAudioBuffer(resumeBuf, offset);
+        await mic.playAudioBuffer(resumeBuf, offset, vol);
       } else {
-        await mic.playAudio(audioData);
+        await mic.playAudio(audioData, vol);
       }
     } catch (err) {
       console.error('[bots-in-calls] TTS playback error:', err);
     }
     ttsPlaying = false;
+    currentTtsTag = null;
+    currentTtsVolume = 1;
     _ttsMaybeFinish();
   }
 
@@ -2087,7 +2112,7 @@
           // hold the speaking state if the queue drains before it arrives
           // (window refreshed per chunk; final chunk clears it).
           ttsExpectMoreUntil = payload.expectMore ? Date.now() + 8000 : 0;
-          ttsQueue.push({ audioData: payload.audioData, emoji: payload.emoji });
+          ttsQueue.push({ audioData: payload.audioData, emoji: payload.emoji, utt: payload.utt, volume: payload.volume });
           playNextTTS();
         }
         break;
@@ -2096,6 +2121,7 @@
         // Back-off (#154): interrupt the bot mid-utterance and drop anything
         // queued behind it. The current source's onended will fire and the
         // playNextTTS state machine cleans up normally, posting tts-ended.
+        const droppedTags = ttsQueue.map((q) => q.utt).filter(Boolean);
         const droppedQueue = ttsQueue.length;
         ttsQueue.length = 0;
         // #372: a barge-in cancels any promised follow-up chunk — don't hold
@@ -2109,12 +2135,28 @@
         const MIN_REMAINING_S = 0.5;
         if (stopped.wasPlaying && stopped.buf &&
             (stopped.buf.duration - stopped.playedTo) > MIN_REMAINING_S) {
-          interruptedTts = { buf: stopped.buf, playedTo: stopped.playedTo, emoji: currentSpeakingEmoji, at: Date.now() };
+          interruptedTts = { buf: stopped.buf, playedTo: stopped.playedTo, emoji: currentSpeakingEmoji, utt: currentTtsTag, volume: currentTtsVolume, at: Date.now() };
           console.log('[bots-in-calls] stop-tts retained ' +
             (stopped.buf.duration - stopped.playedTo).toFixed(1) + 's tail for possible resume (#350)');
         } else {
           interruptedTts = null;
         }
+        // #360: report how far playback actually got, so main can tell the
+        // agent which part of its utterance the room never heard. Sent even
+        // when nothing was playing — main still needs droppedTags (queued
+        // chunks that will now never play) to account for the whole utterance.
+        window.postMessage({
+          __botsInCalls: true,
+          action: 'tts-stopped',
+          payload: {
+            reason,
+            wasPlaying: stopped.wasPlaying,
+            playedTo: stopped.playedTo,
+            duration: stopped.buf ? stopped.buf.duration : 0,
+            tag: stopped.wasPlaying ? currentTtsTag : null,
+            droppedTags,
+          },
+        }, '*');
         console.log('[bots-in-calls] stop-tts reason=' + reason + ' wasPlaying=' + stopped.wasPlaying + ' droppedQueue=' + droppedQueue);
         break;
       }
@@ -2132,7 +2174,9 @@
         const resumeAt = Math.max(0, interruptedTts.playedTo - BACKUP_S);
         console.log('[bots-in-calls] resume-tts — resuming at ' + resumeAt.toFixed(1) +
           's / ' + interruptedTts.buf.duration.toFixed(1) + 's (#350)');
-        ttsQueue.push({ resumeBuf: interruptedTts.buf, offset: resumeAt, emoji: interruptedTts.emoji });
+        // #360: carry the chunk tag through the resume so a re-interruption
+        // still reports an accurate (and now further-along) cut point.
+        ttsQueue.push({ resumeBuf: interruptedTts.buf, offset: resumeAt, emoji: interruptedTts.emoji, utt: interruptedTts.utt, volume: interruptedTts.volume });
         interruptedTts = null;
         playNextTTS();
         break;
@@ -2768,6 +2812,40 @@
   const SELF_LOUD_AMP = 0.10;
   const ECHO_GUARD_ENABLED = true;
 
+  // #378: the SAME envelope, published to the renderer world.
+  //
+  // The DOM speaker tracker (google-meet-provider.js) has exactly the problem
+  // this guard already solves for audio — a human on laptop speakers hears the
+  // bot's own TTS, their mic picks it up, Meet animates THEIR speaking
+  // indicator, and the tracker reads it as that person interrupting. It could
+  // not defend itself because our TTS envelope lives here, in the page world,
+  // and the tracker runs in the renderer.
+  //
+  // Published as a boolean crossing rather than a stream of amplitudes: the
+  // consumer only ever asks "were we loud recently", and an edge plus a slow
+  // refresh is two orders of magnitude less postMessage traffic than sampling.
+  // The refresh matters — without it a dropped edge would strand the consumer
+  // believing we are still talking, which would make it deaf rather than
+  // merely cautious.
+  const SELF_AUDIO_SAMPLE_MS = 50;
+  const SELF_AUDIO_REFRESH_MS = 200;
+  let _selfLoud = false;
+  let _selfLastPublishAt = 0;
+  setInterval(() => {
+    let amp = 0;
+    try { amp = (typeof mic !== 'undefined' && mic && mic.getAmplitude) ? mic.getAmplitude() : 0; }
+    catch { return; }
+    const loud = amp > SELF_LOUD_AMP;
+    const now = Date.now();
+    if (loud === _selfLoud && !(loud && now - _selfLastPublishAt >= SELF_AUDIO_REFRESH_MS)) return;
+    _selfLoud = loud;
+    _selfLastPublishAt = now;
+    try {
+      window.postMessage({ __botsInCalls: true, action: 'self-audio',
+        payload: { loud, amp: Math.round(amp * 100) / 100, at: now } }, '*');
+    } catch { /* page tearing down */ }
+  }, SELF_AUDIO_SAMPLE_MS);
+
   // How often the guard actually fires, sampled rather than logged per frame
   // (this runs every animation frame). Without a number here we would be
   // guessing whether the guard is doing anything or quietly disabling barge-in.
@@ -2964,10 +3042,12 @@
   // Records the bot's OWN outgoing audio (its TTS mic) and every remote WebRTC
   // track the AudioCaptureManager holds, each with its own MediaRecorder, and
   // streams the webm/opus chunks to main (call-recorder.js appends one file per
-  // track + a manifest). Meet hands each remote participant its OWN WebRTC track
-  // — measured independent in a 3-party call (#209) — so "remote-*" tracks are
-  // genuinely per-participant, not one shared mix. They're labeled by arrival
-  // order, not name; Meet can also emit extra/initially-silent tracks.
+  // track + a manifest). Each "remote-*" is a separate WebRTC track, but NOT one
+  // track per person: on 2026-08-17 one participant's voice was confirmed by ear
+  // on two different remote-* tracks, and four participants arrived on three
+  // tracks. Meet forwards speakers into a small pool of slots and reassigns them
+  // mid-call, so a track is "audio from somebody". They're labeled by arrival
+  // order; Meet can also emit extra/initially-silent tracks.
   //
   // Dormant until main sends 'start-recording' (gated on the recordCallAudio
   // pref / VIBECONF_RECORD_CALL). The poll re-attaches: the bot mic may not
@@ -2988,8 +3068,16 @@
     // Attribution: the DOMSpeakerTracker (provider) posts 'speaker-active' with
     // the REAL participant name when Meet's people-pane shows them speaking. When
     // exactly one recorded remote track is making sound at that moment, that
-    // track is that speaker — vote it. Only sole-speaker moments count, so
-    // overlap never mis-attributes. Best guess is pushed to main as it firms up.
+    // track is that speaker — vote it. Requiring a sole speaker keeps OVERLAP
+    // from mis-attributing.
+    //
+    // It does NOT survive Meet reassigning a slot mid-call, which we have since
+    // confirmed happens (2026-08-17: one voice heard by ear on two tracks). Every
+    // vote may be individually correct and the winner still wrong for most of the
+    // call, because this collapses the whole call to one name. The votes are
+    // honest; the single winner is the lie. Time-segmented attribution is the
+    // real fix — until then, speaker-events.jsonl is the source of truth for who
+    // spoke when, and this name is a hint at best.
     function voteFromDom(name) {
       if (!recording || !name || name === selfName) return; // never attribute the bot's own voice
       const active = [];

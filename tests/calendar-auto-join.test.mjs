@@ -15,6 +15,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const {
   matchesCalendarEvent,
+  ownerHasConfirmed,
   isEventUpcoming,
   msUntilStart,
   eventDedupeKey,
@@ -228,6 +229,33 @@ test('evictStaleEventIds: respects a custom maxAgeMs', () => {
   assert.deepEqual(evictStaleEventIds(idMap, now, 10000), idMap);
 });
 
+// ── ownerHasConfirmed ───────────────────────────────────────────────────
+// The bot only auto-joins when the CALENDAR OWNER (the human this machine
+// belongs to) has accepted the event — being invited itself isn't enough.
+
+test('ownerHasConfirmed: accepted means confirmed (case-insensitive)', () => {
+  assert.equal(ownerHasConfirmed(makeEvent({ selfResponseStatus: 'accepted' })), true);
+  assert.equal(ownerHasConfirmed(makeEvent({ selfResponseStatus: 'Accepted' })), true);
+});
+
+test('ownerHasConfirmed: needsAction/tentative/declined are NOT confirmed', () => {
+  assert.equal(ownerHasConfirmed(makeEvent({ selfResponseStatus: 'needsAction' })), false);
+  assert.equal(ownerHasConfirmed(makeEvent({ selfResponseStatus: 'tentative' })), false);
+  assert.equal(ownerHasConfirmed(makeEvent({ selfResponseStatus: 'declined' })), false);
+});
+
+test('ownerHasConfirmed: null (own event, no self attendee row) counts as confirmed', () => {
+  assert.equal(ownerHasConfirmed(makeEvent({ selfResponseStatus: null })), true);
+});
+
+test('ownerHasConfirmed: absent field (older backend) fails open as confirmed', () => {
+  assert.equal(ownerHasConfirmed(makeEvent()), true);
+});
+
+test('ownerHasConfirmed: no event at all is not confirmed', () => {
+  assert.equal(ownerHasConfirmed(null), false);
+});
+
 // ── selectEventToJoin ───────────────────────────────────────────────────
 
 test('selectEventToJoin: picks the first matching, upcoming, not-yet-joined event', () => {
@@ -289,6 +317,36 @@ test('selectEventToJoin: ignores non-matching and out-of-window events', () => {
   assert.equal(extraMatchCount, 0);
 });
 
+test('selectEventToJoin: never picks an event the owner has not accepted', () => {
+  const now = Date.parse('2026-08-08T10:00:00Z');
+  const events = [
+    makeEvent({ id: 'unconfirmed', start: '2026-08-08T10:01:00Z', attendees: ['bot@example.com'], selfResponseStatus: 'needsAction' }),
+    makeEvent({ id: 'confirmed', start: '2026-08-08T10:02:00Z', attendees: ['bot@example.com'], selfResponseStatus: 'accepted' }),
+  ];
+  const { event, extraMatchCount } = selectEventToJoin(events, {
+    calendarIdentityEmail: 'bot@example.com',
+    botName: 'Jimmy',
+    joinedIds: {},
+    now,
+  });
+  assert.equal(event.id, 'confirmed');
+  assert.equal(extraMatchCount, 0);
+});
+
+test('selectEventToJoin: returns null when the only match is owner-unconfirmed', () => {
+  const now = Date.parse('2026-08-08T10:00:00Z');
+  const events = [
+    makeEvent({ id: 'unconfirmed', start: '2026-08-08T10:01:00Z', attendees: ['bot@example.com'], selfResponseStatus: 'tentative' }),
+  ];
+  const { event } = selectEventToJoin(events, {
+    calendarIdentityEmail: 'bot@example.com',
+    botName: 'Jimmy',
+    joinedIds: {},
+    now,
+  });
+  assert.equal(event, null);
+});
+
 test('selectEventToJoin: returns null/0 for an empty events list', () => {
   const { event, extraMatchCount } = selectEventToJoin([], {
     calendarIdentityEmail: 'bot@example.com',
@@ -341,6 +399,19 @@ test('selectUpcomingMatches: sorted soonest-first and ignores non-matching event
   const other = makeEvent({ id: 'other', attendees: ['someone-else@example.com'], start: new Date(now + 30 * 60 * 1000).toISOString() });
   const matches = selectUpcomingMatches([later, other, soon], { calendarIdentityEmail: 'bot@example.com', botName: 'Jimmy', now });
   assert.deepEqual(matches.map((e) => e.id), ['soon', 'later']);
+});
+
+test('selectUpcomingMatches: still lists owner-unconfirmed matches (display shows the waiting notice)', () => {
+  const now = Date.now();
+  const events = [makeEvent({
+    id: 'evt-unconfirmed',
+    attendees: ['bot@example.com'],
+    selfResponseStatus: 'needsAction',
+    start: new Date(now + 60 * 60 * 1000).toISOString(),
+  })];
+  const matches = selectUpcomingMatches(events, { calendarIdentityEmail: 'bot@example.com', botName: 'Jimmy', now });
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].id, 'evt-unconfirmed');
 });
 
 // ── resolveMeetUrl ───────────────────────────────────────────────────────

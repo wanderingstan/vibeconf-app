@@ -913,6 +913,16 @@ function renderBrain(s) {
   const status = document.getElementById('brainStatus');
   if (!feed) return;
   const lines = (s && s.agentLog) || [];
+  // #385: which model drives this bot — the at-a-glance differentiator when
+  // several profiles are up. Set BEFORE the unchanged-content guard below,
+  // because the model is read off the session's turns and can become known
+  // without the feed changing. Empty until known: no guessing.
+  if (status) {
+    const parts = [];
+    if (s && s.agentModel) parts.push(s.agentModel);
+    if (lines.length) parts.push(`${lines.length} lines`);
+    status.textContent = parts.join(' · ');
+  }
   const joined = lines.join('\n');
   if (joined === _brainLastRendered) return;   // don't fight the user's scroll
   _brainLastRendered = joined;
@@ -920,7 +930,6 @@ function renderBrain(s) {
   if (!lines.length) {
     feed.innerHTML = '<span class="l-none">No agent session yet. This fills in once a bot is driven by '
       + 'Claude Code — the app reads the session\u2019s own transcript.</span>';
-    if (status) status.textContent = '';
     return;
   }
   // Pinned to the bottom unless the user has scrolled up to read something —
@@ -931,7 +940,6 @@ function renderBrain(s) {
     const esc = l.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     return `<div class="${cls}">${esc}</div>`;
   }).join('');
-  if (status) status.textContent = `${lines.length} lines`;
   if (atBottom) feed.scrollTop = feed.scrollHeight;
 }
 
@@ -1747,9 +1755,23 @@ function formatUpcomingDelta(ms) {
   const hours = Math.round(minutes / 60);
   return `in ${hours}h`;
 }
-function paintCalendarUpcoming(events) {
-  const next = Array.isArray(events) && events.length ? events[0] : null;
+function paintCalendarUpcoming(events, error) {
   if (!calendarUpcomingBanner || !calendarUpcomingText) return;
+  // Poll error (main.js pushCalendarPollError): the backend can no longer
+  // reach Google Calendar for this user — auto-join is silently dead until
+  // they re-grant access, so say so instead of quietly showing no meetings
+  // (vibeconferencing#512). Takes over the banner from the upcoming-meeting
+  // notice: a meeting list the poll can't refresh is stale anyway.
+  calendarUpcomingBanner.classList.toggle('notice-warn', !!error);
+  calendarUpcomingBanner.classList.toggle('notice-info', !error);
+  if (error) {
+    calendarUpcomingText.textContent = '⚠️ Calendar connection broken: '
+      + 'auto-join has stopped. Re-connect Google Calendar by signing in '
+      + 'again at vibeconferencing.com.';
+    calendarUpcomingBanner.style.display = 'flex';
+    return;
+  }
+  const next = Array.isArray(events) && events.length ? events[0] : null;
   if (!next) {
     calendarUpcomingBanner.style.display = 'none';
     return;
@@ -1757,11 +1779,30 @@ function paintCalendarUpcoming(events) {
   const delta = new Date(next.start).getTime() - Date.now();
   const title = next.summary || 'Untitled event';
   const localTime = new Date(next.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  calendarUpcomingText.textContent = `${localTime} meeting: "${title}" ${formatUpcomingDelta(Math.max(delta, 0))}`;
+  // ownerConfirmed === false means the calendar owner hasn't accepted this
+  // event yet, so the bot won't auto-join it (main.js's owner-RSVP gate):
+  // the meeting line renders struck through (it's not happening as far as
+  // the bot is concerned) with a short normal-weight warning after it.
+  // Built with DOM nodes, not innerHTML — the title is calendar-sourced text.
+  const line = `${localTime} meeting: "${title}" ${formatUpcomingDelta(Math.max(delta, 0))}`;
+  calendarUpcomingText.textContent = '';
+  const lineSpan = document.createElement('span');
+  lineSpan.textContent = line;
+  calendarUpcomingText.appendChild(lineSpan);
+  if (next.ownerConfirmed === false) {
+    lineSpan.style.textDecoration = 'line-through';
+    calendarUpcomingText.appendChild(document.createTextNode(' ⚠️ (not yet accepted)'));
+  }
   calendarUpcomingBanner.style.display = 'flex';
 }
-api.on('calendar-upcoming', ({ events }) => paintCalendarUpcoming(events));
-api.invoke('get-upcoming-calendar-events').then(paintCalendarUpcoming).catch(() => {});
+api.on('calendar-upcoming', ({ events, error }) => paintCalendarUpcoming(events, error));
+// The IPC answer used to be a bare events array; it now carries poll health
+// too ({ events, error }). Accept both so a panel reload against an older
+// main (dev hot-swap) still paints.
+api.invoke('get-upcoming-calendar-events').then((r) => {
+  if (Array.isArray(r)) paintCalendarUpcoming(r, null);
+  else paintCalendarUpcoming((r && r.events) || [], (r && r.error) || null);
+}).catch(() => {});
 
 // Load every config value this window displays, and paint the controls from it.
 //
@@ -3017,6 +3058,22 @@ api.on('elevenlabs-key-validated', ({ message }) => {
   previewVoiceSample({ provider: 'elevenlabs', text: message });
 });
 
+// #394: mid-call, don't play the audition over the human's speakers — they're
+// already listening to the live call, and the new voice speaks the bot's very
+// next line anyway. Show a brief note instead so the pick still visibly lands.
+// (Gated on callActive, main's callStatusMeansInCall — wider than `inCall`, so
+// the sample also stays quiet while joining.)
+const voiceSetNote = document.getElementById('voiceSetNote');
+let _voiceSetNoteTimer = null;
+function auditionVoice(opts) {
+  if (!callActive) { previewVoiceSample(opts); return; }
+  if (!voiceSetNote) return;
+  voiceSetNote.textContent = "Voice set: you'll hear it on the bot's next line.";
+  voiceSetNote.style.display = 'block';
+  clearTimeout(_voiceSetNoteTimer);
+  _voiceSetNoteTimer = setTimeout(() => { voiceSetNote.style.display = 'none'; }, 4000);
+}
+
 unifiedVoiceSelect?.addEventListener('change', () => {
   const val = unifiedVoiceSelect.value || '';
   const sep = val.indexOf(':');
@@ -3033,16 +3090,16 @@ unifiedVoiceSelect?.addEventListener('change', () => {
   if (kind === 'vb') {
     const engine = unifiedVoiceSelect.selectedOptions[0]?.dataset.engine || 'kokoro';
     api.send('update-tts-config', { provider: 'voicebox', voiceboxProfileId: id, voiceboxEngine: engine });
-    previewVoiceSample({ provider: 'voicebox', voiceboxProfileId: id, voiceboxEngine: engine, text });
+    auditionVoice({ provider: 'voicebox', voiceboxProfileId: id, voiceboxEngine: engine, text });
   } else if (kind === 'el') {
     // Picking a listed EL voice clears any custom-ID override so they don't fight.
     api.send('update-tts-config', { provider: 'elevenlabs', voiceId: id, voiceboxProfileId: '' });
     if (ttsVoiceIdInput) ttsVoiceIdInput.value = id;
-    previewVoiceSample({ provider: 'elevenlabs', voiceId: id, text });
+    auditionVoice({ provider: 'elevenlabs', voiceId: id, text });
   } else if (kind === 'mac') {
     // Force the built-in provider so an ElevenLabs key doesn't override the pick.
     api.send('update-tts-config', { provider: 'macos-say', macosVoice: id, voiceboxProfileId: '' });
-    previewVoiceSample({ provider: 'macos-say', macosVoice: id, text });
+    auditionVoice({ provider: 'macos-say', macosVoice: id, text });
   }
 });
 

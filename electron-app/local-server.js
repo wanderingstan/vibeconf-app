@@ -60,6 +60,24 @@ function ts() {
   return d.toTimeString().slice(0, 8) + '.' + String(d.getMilliseconds()).padStart(3, '0');
 }
 
+// Is this the same bot, written two ways? Presence records the CONFIGURED name
+// while Meet's roster shows the DISPLAY name for this call, and the test fleet
+// tags a run onto the end ("Alice" -> "Alice-r4a32"). Comparing them literally
+// is what made each bot count twice and produced "rank 4 of 5" in a room holding
+// three bots (#430).
+//
+// Prefix rather than equality, and in both directions, because either side may
+// be the decorated one. Punctuation and case are dropped so "jimmy bot" matches
+// "Jimmy". Deliberately generous: a false match costs a wasted rank slot, while
+// a miss costs the ordering entirely.
+function namesMatch(a, b) {
+  if (!a || !b) return false;
+  const n = (x) => String(x).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const [x, y] = [n(a), n(b)];
+  if (!x || !y) return false;
+  return x === y || x.startsWith(y) || y.startsWith(x);
+}
+
 // Auto-stamp every console line with HH:MM:SS.mmm. Skip when caller already
 // supplied a ts() prefix so existing `console.log(ts(), '...')` sites don't
 // double-stamp. Runs in the main process — same wrapper as main.js, but
@@ -79,7 +97,7 @@ function ts() {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, extraRoutes } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onFindShareElement, onEvalShare, onReadShareConsole, onReadShareNetwork, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
     // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
     // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
@@ -135,6 +153,10 @@ class LocalServer {
     this.onStartCall = onStartCall || (async () => ({ ok: false, code: 'unsupported' }));
     this.onRecord = onRecord || (async () => ({ ok: false, code: 'unsupported' })); // #209
     this.onInspectDom = onInspectDom || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onEvalShare = onEvalShare || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onFindShareElement = onFindShareElement || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onReadShareConsole = onReadShareConsole || (async () => ({ ok: false, error: 'not implemented' }));
+    this.onReadShareNetwork = onReadShareNetwork || (async () => ({ ok: false, error: 'not implemented' }));
     this.onBotStateChange = onBotStateChange || (() => {}); // 'idle' | 'listening' | 'ticking' | 'thinking' | 'speaking' | 'yielding'
     this.onModeChange = onModeChange || (() => {});        // 'active' | 'passive' | 'silent'
     this.onCallStatusChange = onCallStatusChange || (() => {}); // see call-phase.js for the lifecycle
@@ -195,10 +217,24 @@ class LocalServer {
     this.lastRespondedAt = null;
 
     // Pending bot speech — queued when speak() is called before the bot is
-    // actually admitted to the call. Flushed in setCallStatus when status
-    // becomes 'in-call'. Without this, audio plays through the virtual mic
-    // before Meet has connected our stream and goes into the void.
-    this.pendingBotSpeech = []; // [{ text, voice }]
+    // actually admitted to the call. Without this, audio plays through the
+    // virtual mic before Meet has connected our stream and goes into the void.
+    //
+    // Flushed by _flushPendingBotSpeech, which main.js calls on the
+    // CAPTIONS-READY signal — NOT on the in-call transition, despite what this
+    // comment used to claim. 'in-call' means Meet's UI is up; captions-ready
+    // means the bot can actually hear the room, which is the later and stronger
+    // "fully wired up" marker. A greeting flushed on the earlier signal played
+    // several seconds before anyone could have heard a reply to it.
+    //
+    // Distinct from bargeInStash, and the difference is only WHICH condition
+    // blocked the speech: this one is "the room cannot hear me yet", that one
+    // is "someone else is talking". Both mean "held for later". They also have
+    // different shapes for no principled reason — this is a FIFO array that
+    // never expires, that is a single slot which overwrites and ages out in
+    // 45s — and the barge-in stop path already pours this one into that one.
+    // See #450; unifying them needs a per-kind hold policy first.
+    this.pendingBotSpeech = []; // [{ text, voice, emoji, urgency }]
 
     // Preference plumbing (whitelist defined in preferences-schema.js).
     // getPref reads from the persistent store; setPref writes; applyPref runs
@@ -225,6 +261,10 @@ class LocalServer {
     // path here (via the auto-installed hook); we tail it into a ring buffer
     // shown on the debug overlay. Gated by the same `debugOverlay` toggle.
     this.agentLog = [];
+    // #385: which model is authoring the driving session's replies, as reported
+    // by the activity source (onModel). null until the source can tell — the
+    // brain window shows nothing rather than a guess.
+    this.agentModel = null;
     // #339: the same feed also drives the avatar's "working" state — new agent
     // activity while we're between speaks means the bot is heads-down doing tool
     // work (🧑‍💻), not just listening (🙂). Detect NEW lines and surface them.
@@ -342,6 +382,11 @@ class LocalServer {
     // fastFloorDetection is on.
     this.audioFloorSpeaking = false;
     this._audioFloorAt = 0;
+    // #392: when the analyser last reported speech OFF. The participant
+    // tracker's `speaking` flag can lag the analyser's falling edge by
+    // seconds (polled release), so barge-in re-checks liveness against THIS
+    // at grace evaluation instead of trusting the tracker flag alone.
+    this._audioFloorOffAt = 0;
     this._domFloorAt = 0;
     // #343: how many participants (excl. self) are speaking RIGHT NOW. The old
     // `anyoneSpeaking` boolean collapses this away, but the count is the raw
@@ -462,6 +507,16 @@ class LocalServer {
     // personas can have different conversational rhythms. Schema defaults
     // match what these used to be hardcoded as. See preferences-schema.js.
     this._bargeInTimer = null;
+    this._bargeInClearTimer = null;
+    // #392: when the current monitor was armed. The analyser's quiet verdict
+    // at grace evaluation is only trusted if the analyser produced an OFF edge
+    // AFTER this — proof it actually tracked the interruption to its end. An
+    // OFF timestamp older than the arm could just mean the analyser missed
+    // this speaker entirely (threshold too high, no remote track), and bailing
+    // on that would mean never yielding to them. That failure direction —
+    // talking over a human forever — is the one we must not have, so a
+    // missing/stale analyser signal falls back to the tracker-flag behavior.
+    this._bargeInArmedAt = 0;
 
     // Auto-leave when alone (#145). Only fires once at least one other
     // participant has appeared in the call — guards against auto-leaving
@@ -727,11 +782,7 @@ class LocalServer {
   // (#162). We hand this to comprehend/phrase so the model never has to re-derive
   // who's in the call from captions (it does that poorly, leaving `people` empty).
   _rosterText() {
-    const botNames = new Set(
-      (this.members || [])
-        .filter((m) => m.role === 'bot' && m.name)
-        .map((m) => m.name.toLowerCase())
-    );
+    const botNames = this._botNameSet();
     // Identify "me" by the bot's own name, not just the flaky isSelf flag — the
     // speaker tracker sometimes fails to mark the self tile, which mislabeled the
     // bot as "a bot" (not "you") and confused the triage classifier into treating
@@ -809,11 +860,45 @@ class LocalServer {
     // single session log and is greppable as a `[call] id=…` block (#292).
     const activeState = status === 'navigating' || status === 'joining' ||
       status === 'waiting-to-be-admitted' || status === 'in-call';
+
+    // #430: announce ourselves and learn the other bots, on a heartbeat. The
+    // presence entry has a 5-minute TTL, so this both keeps ours alive and
+    // refreshes the peer list as bots come and go mid-call. Started on the first
+    // active state rather than on in-call: a bot waiting to be admitted is
+    // already a peer the bots inside should know about.
+    if (activeState && !this._presenceTimer) {
+      const beat = () => { this._registerPresence(); this._refreshPresencePeers(); };
+      beat();
+      this._presenceTimer = setInterval(beat, 60_000);
+      if (this._presenceTimer.unref) this._presenceTimer.unref();
+    }
+    if (!activeState && this._presenceTimer) {
+      clearInterval(this._presenceTimer);
+      this._presenceTimer = null;
+      this._presencePeers = null;
+      this._presenceLoggedOk = false;
+    }
     if (activeState && !this.callId) {
       this.callStartedAt = new Date().toISOString();
       const code = this.roomId || 'call';
       this.callId = `${code}-${this.callStartedAt.replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}`;
       console.log(`[call] id=${this.callId} room=${this.roomId || '(unknown)'} status=${status} started=${this.callStartedAt}`);
+      // Which knobs were live for THIS call. Per call rather than per session,
+      // because preferences change mid-session — set_preference applies
+      // immediately — and a session log can hold several calls. Anything read at
+      // launch would be a claim about a different call than the one being
+      // debugged.
+      //
+      // Costs ~10 lines against a call's ~12,000, and would have turned two days
+      // of statistical inference into one grep (#417).
+      try {
+        // Bare console.log, like the `[call] id=` line above it: the auto-stamp
+        // wrapper adds the timestamp, and passing ts() here would double it.
+        for (const line of prefsSchema.snapshotForLog((k) => (this.getPref ? this.getPref(k) : undefined),
+          { label: `call ${this.callId}` })) console.log(line);
+      } catch (err) {
+        console.warn(ts(), '[prefs] snapshot failed:', err.message);
+      }
     }
 
     // Drop pending speech if we never made it in (call failed / cleared).
@@ -933,6 +1018,20 @@ class LocalServer {
     // single-human calls stay snappy.
     if (others < 2 || maxJitter <= 0) return { delayMs: 0, why: 'no collision risk' };
 
+    // #100 follow-up: the DETERMINISTIC path, when peers are known.
+    //
+    // Jitter is a private coin flip, so it can only buy separation with
+    // latency, and never reaches zero collisions — (1 - D/N)^2 with the
+    // measured D leaves ~17% of them at N=2000 while charging every bot a mean
+    // 1000ms on every turn. Ranking uses knowledge the bots ALREADY SHARE (the
+    // roster, and the utterance Meet showed all of them) so they reach the same
+    // order without exchanging anything, and the winner waits for nothing.
+    //
+    // Falls through to jitter whenever the peer set is unknown or this bot is
+    // not in it — so the worst case is exactly today's behaviour.
+    const ranked = this._rankedSpeakDelay(t);
+    if (ranked) return ranked;
+
     const lead = Number(this._pref('botSpeakUrgencyLeadMs')) || 0;
     const u = (typeof t?.urgency === 'number') ? Math.max(0, Math.min(1, t.urgency)) : 0.5;
     // Low urgency waits longer, so the more valuable reply reaches the floor first.
@@ -942,6 +1041,133 @@ class LocalServer {
       delayMs: urgencyPart + randomPart,
       why: `urgency ${u.toFixed(2)} → ${urgencyPart}ms + ${randomPart}ms random`,
     };
+  }
+
+  // The deterministic ordering (electron-app/speak-order.js). Returns null when
+  // it cannot be computed, which is the caller's signal to keep using jitter.
+  //
+  // peerBotNames is explicit configuration for now. The roster does not say
+  // which participants are bots, and the website's presence list came back
+  // empty when checked (2026-08-17), so there is no automatic source yet —
+  // announcing over the room's chat, or populating presence, would both work
+  // later. Leaving it unset keeps today's behaviour exactly.
+  // Every early return says WHY, once per call. A silent fallback to jitter is
+  // indistinguishable from the feature being off, which cost an afternoon:
+  // preferences were set, the code was live, and the only visible symptom was
+  // that the collision rate did not improve.
+  _rankedSkip(why) {
+    if (this._lastRankSkip !== why) {
+      this._lastRankSkip = why;
+      console.log(ts(), `🎲 [bot-order] ranked ordering unavailable (${why}) — using jitter`);
+    }
+    return null;
+  }
+
+  _rankedSpeakDelay(t) {
+    const mode = this._pref('botSpeakOrdering');
+    if (mode !== 'ranked') return this._rankedSkip(`botSpeakOrdering=${JSON.stringify(mode)}`);
+    const self = this.getEffectiveBotName();
+    if (!self) return this._rankedSkip('this bot has no name yet');
+    // Peers come from the website's room presence, where every bot registers
+    // itself with role='bot' (verified live 2026-08-17). peerBotNames is the
+    // manual override for when presence is unreachable or a peer predates it.
+    // Candidates come from the ROSTER — nothing here needs the server.
+    //
+    // Everything the ordering depends on is already local and already shared:
+    // every bot has the same people pane, and Meet gives every participant the
+    // same captions. The only thing the roster does NOT say is which
+    // participants are bots — and that turns out not to matter. Rank everyone:
+    // all bots still derive the same order, and a human simply never claims
+    // their slot, at which point the next rank finds the floor free and speaks.
+    //
+    // The bot set is REQUIRED, despite what this comment used to claim. The
+    // reasoning above ("rank everyone, a human never claims their slot") is
+    // sound in isolation and does not survive the next step: the seed is the
+    // last utterance by someone OUTSIDE the bot set, and ranking everyone puts
+    // everyone inside it. `last` then finds nobody and this returns
+    // _rankedSkip('no human utterance yet') on every call — so an empty set
+    // does not degrade the ordering, it disables it. Measured live 2026-08-17
+    // (#430): ranked was set on two bots and neither ever ordered.
+    //
+    // What is no longer required is TYPING it. Each bot now registers itself in
+    // room presence with role='bot' and both its names, and _refreshPresencePeers
+    // resolves those to the roster names ordering ranks over. peerBotNames stays
+    // as the override for when discovery is wrong or the backend is unreachable.
+    //
+    // This also removes a class of bug rather than patching it: presence
+    // records the CONFIGURED bot name while Meet shows the display name for
+    // this call, and under test those differ ("Alice" vs "Alice-r4a32"), so
+    // each bot was counted twice and the order came out "rank 4 of 5" in a room
+    // holding three bots — every one of them queued behind peers that did not
+    // exist. Names taken from the roster are the names everyone else sees.
+    const roster = (this.participants || [])
+      .filter((p) => p && p.name && !p.isSelf && p.name !== 'You' && !p.isPseudo)
+      .map((p) => p.name);
+    // Configured list first — an explicit answer beats a derived one, and it is
+    // the escape hatch when discovery is wrong or the backend is unreachable.
+    // Otherwise use what presence told us (#430): every bot registers itself
+    // there with role='bot' and BOTH its names, so this needs no typing.
+    const configured = Array.isArray(this._pref('peerBotNames')) ? this._pref('peerBotNames') : [];
+    const discovered = Array.isArray(this._presencePeers) ? this._presencePeers : [];
+    const source = configured.length ? configured : discovered;
+    if (!source.length) {
+      return this._rankedSkip('no peer bots known — presence has not named any yet, '
+        + 'and peerBotNames is empty');
+    }
+    const known = new Set(source.map((n) => n.toLowerCase()));
+    const peers = roster.filter((n) => known.has(n.toLowerCase())
+      || source.some((s) => namesMatch(n, s)));
+    if (!peers.length) {
+      return this._rankedSkip(`none of the ${source.length} known bot name(s) are in the `
+        + `roster (${roster.length} listed)`);
+    }
+
+    // The utterance being answered: the last thing said by a HUMAN — anyone
+    // outside the bot set.
+    //
+    // "The last thing not said by ME" was the obvious rule and it is wrong,
+    // because it is self-relative: in a three-way exchange each bot excludes a
+    // different speaker and so keys on a different utterance. Measured live
+    // 2026-08-17 with three bots — Alice and Jimmy both keyed on Cosmo's line
+    // while Cosmo, excluding itself, keyed on Jimmy's, giving two different
+    // seeds and therefore two different winners.
+    //
+    // Excluding EVERY bot fixes it because the exclusion set is common
+    // knowledge: all bots hold the same roster, so all bots land on the same
+    // human turn. It is also what the ordering is FOR — deciding who answers
+    // the person, not who answers another bot.
+    // _entriesSince, NOT this.transcripts.
+    //
+    // this.transcripts holds only the bot's OWN speech and legacy Web-Speech
+    // entries. Human speech arrives as Meet CAPTION TURNS, which live in
+    // _turnsAsEntries() — and _entriesSince merges the two, which is why the
+    // sync API shows a human utterance that this.transcripts never contains.
+    // Reading the wrong collection made this report "no human utterance to key
+    // on yet" for hours while the speaker was plainly in the API's transcript.
+    const speakers = new Set([self.toLowerCase(), ...peers.map((p) => p.toLowerCase())]);
+    const all = this._entriesSince(null, null) || [];
+    const last = [...all].reverse()
+      .find((e) => e && e.text && e.participantName && !speakers.has(e.participantName.toLowerCase()));
+    if (!last) return this._rankedSkip(`no human utterance yet (${all.length} entries, excluding ${[...speakers].join('/')})`);
+
+    let ranked;
+    try {
+      const { speakDelay } = require('./speak-order.js');
+      ranked = speakDelay({
+        selfName: self,
+        botNames: [...new Set([...peers, self])],
+        speaker: last.participantName,
+        utterance: last.text,
+        gapMs: Number(this._pref('botSpeakRankGapMs')) || 500,
+      });
+    } catch (err) { return this._rankedSkip(`speak-order threw: ${err.message}`); }
+    if (!ranked) return this._rankedSkip(`this bot ("${self}") is not in the peer set`);
+
+    // Urgency deliberately absent: a bot cannot know the others' urgency, so
+    // folding its own in would give each bot a different order and undo the
+    // agreement this depends on. That needs an exchange of intent (a server
+    // auction), not a local calculation.
+    return { delayMs: ranked.delayMs, why: `ranked ${ranked.why}` };
   }
 
   // Speak now, or after the delay above.
@@ -990,7 +1216,7 @@ class LocalServer {
   // 15-30s round to re-derive the same answer). The next silence edge replays
   // it via _maybeReplayBargeInStash(), unless it has aged out or the
   // conversation has moved on past it.
-  _stashUnspokenSpeech(entries) {
+  _stashUnspokenSpeech(entries, { at } = {}) {
     const stashEntries = entries
       .filter((t) => t && t.text)
       .map((t) => ({ text: t.text, voice: t.voice, emoji: t.emoji, urgency: t.urgency }));
@@ -1008,7 +1234,11 @@ class LocalServer {
     // measure how much NEW speech landed while the reply was held.
     this.bargeInStash = {
       entries: stashEntries,
-      at: Date.now(),
+      // `at` is when the thought was COMPOSED, not when it was last held. A
+      // re-hold that restamped it would let a reply outlive
+      // bargeInStashMaxAgeMs indefinitely, one hold at a time, and the age
+      // guard exists precisely because a stale answer is worse than none.
+      at: at || Date.now(),
       wordsAtStash: this._tickWordCount(this.getEffectiveBotName()),
     };
     console.log(ts(), '🛡️  [barge-in] Floor busy at audio-start — stashed bot speech for replay (' +
@@ -1181,15 +1411,54 @@ class LocalServer {
       // speaks again — the point where it would otherwise build on a reply the
       // room never heard.
       ...((() => { const f = this.takeRecentPlaybackFailure(); return f ? { previousPlaybackFailed: f } : {}; })()),
+      // #360: same moment, subtler failure — the previous speech PLAYED but was
+      // cut off partway by a barge-in.
+      ...((() => { const t = this.takeSpeechTruncation(); return t ? { previousSpeechTruncated: t } : {}; })()),
     };
   }
 
-  _flushPendingBotSpeech() {
+  // Speech composed before the bot could be heard, played once it can.
+  //
+  // What lands here is almost always the greeting: the agent calls speak while
+  // the app is still joining, and the virtual mic is not connected to the other
+  // participants until then, so saying it earlier plays into the void.
+  //
+  // Which means this fires the moment a bot arrives in a meeting ALREADY IN
+  // PROGRESS. It used to emit straight into the room with no floor read and no
+  // separation from a second bot joining beside it — a greeting talked over the
+  // person mid-sentence, and two bots joining together greeted in unison. Both
+  // are the failures the rest of the speech paths already guard against; this
+  // one simply predates them.
+  //
+  // Gated as one batch, not per entry: the queue is one logical utterance in
+  // order, and holding half of it would be worse than holding all of it.
+  async _flushPendingBotSpeech() {
     if (this.pendingBotSpeech.length === 0) return;
     console.log('[local-server] Flushing', this.pendingBotSpeech.length,
       'queued bot speech entries (now playing)');
     const queue = this.pendingBotSpeech;
     this.pendingBotSpeech = [];
+
+    // Ranked when the peers are known, jitter otherwise. At join the transcript
+    // is usually empty, so ranking has no human utterance to seed on and this
+    // falls through to jitter — which is still the difference between two bots
+    // greeting in unison and greeting in turn.
+    const others = (this.participants || [])
+      .filter((p) => !p.isSelf && p.name && p.name !== 'You').length;
+    const { delayMs, why } = this._speakDelay(queue[0], others);
+    if (delayMs > 0) {
+      console.log(ts(), `🎲 [bot-jitter] ${others} others in call — delaying queued speech ${delayMs}ms (${why})`);
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+
+    // The floor, read HERE — after the delay, at the instant audio would start,
+    // which is the only instant it means anything (#67).
+    if (this.floorBusy) {
+      this._stashUnspokenSpeech(queue);
+      console.log(ts(), '🛡️  [barge-in] queued speech held — someone was talking as we joined');
+      return;
+    }
+
     for (const { text, voice, emoji, urgency } of queue) {
       console.log('[local-server] Playing queued speech:', text.slice(0, 60));
       this._currentUrgency = (typeof urgency === 'number') ? urgency : null; // #367
@@ -1223,7 +1492,21 @@ class LocalServer {
     this.detectedSlackHuddleUrl = url || null;
   }
 
-  setChatUnread(unread) {
+  setChatUnread(unread, { authoritative = false } = {}) {
+    // Only a successful read_chat may CLEAR the flag (authoritative: the agent
+    // provably consumed the messages). The page's false edge must not: Meet
+    // marks chat read the moment the pane opens, and the bot opens the pane
+    // for its OWN send_chat — so every send was silently erasing unread state
+    // the agent had never seen, and the "[Unread chat messages]" notice never
+    // reached wait_for_speech for bots that post a lot (#397). The true edge
+    // still passes through; a spurious badge nags until the next read, which
+    // is the visible failure mode, not the silent one.
+    if (!unread && !authoritative) {
+      if (this.chatUnread) {
+        console.log('[local-server] Chat badge cleared page-side (pane open?) — keeping unread set until read_chat consumes it (#397)');
+      }
+      return;
+    }
     if (this.chatUnread === unread) return;
     this.chatUnread = unread;
     console.log('[local-server] Chat unread:', unread);
@@ -1305,6 +1588,7 @@ class LocalServer {
       // /join-call). Logged (not just held in memory) so latency-audit.py can
       // group cycles by model the same way it already groups by build.
       onModel: (model) => {
+        this.agentModel = model; // #385: surfaced in the brain window header
         console.log(ts(), `🧠 [agent] model=${model}`);
       },
       // Per-turn context size, read off the driving session's own usage report
@@ -1329,6 +1613,7 @@ class LocalServer {
     this._agentSource = new StreamActivitySource(this._agentSourceCallbacks());
     this._agentSource.bind();
     this._streamBindNoted = false;
+    this.agentModel = null; // #385: a new agent — don't show the old one's model
     console.log(ts(), '[local-server] Agent activity source → stream (app-launched agent)');
     return this._agentSource;
   }
@@ -1350,6 +1635,7 @@ class LocalServer {
     try { this._agentSource.stop(); } catch { /* already gone */ }
     this._agentSource = new TranscriptActivitySource(this._agentSourceCallbacks());
     this._streamBindNoted = false;
+    this.agentModel = null; // #385: the next driving session may run a different model
     console.log(ts(), '[local-server] Agent activity source → transcript tail (stream agent exited)');
   }
 
@@ -1379,6 +1665,7 @@ class LocalServer {
     }
     if (transcriptPath !== this._agentSource.path) {
       console.log('[local-server] Agent session bound:', sessionId || '?', '→', transcriptPath);
+      this.agentModel = null; // #385: new session — its own turns will re-report the model
       // #125: say so when we bind a path that isn't there. The tailer tolerates
       // it (the 1.5s poll picks up a lazily-created file), so this is a warning
       // and not an error — but without it a missing transcript looks EXACTLY
@@ -1397,11 +1684,7 @@ class LocalServer {
     // the panel can show (bot) alongside (self) (#162). Same logic the MCP
     // get_room_info tool uses; centralizing the snapshot keeps the two
     // surfaces consistent.
-    const botNames = new Set(
-      (this.members || [])
-        .filter((m) => m.role === 'bot' && m.name)
-        .map((m) => m.name.toLowerCase())
-    );
+    const botNames = this._botNameSet();
     return {
       callStatus: this.callStatus,
       mode: this.mode,
@@ -1444,6 +1727,10 @@ class LocalServer {
       // Recent agent (Claude session) activity — compact lines tailed from the
       // driving session's transcript. Shown on the debug overlay only.
       agentLog: this.agentLog || [],
+      // #385: which model the driving session runs (e.g. claude-opus-5), read
+      // off the session's own turns — null until it has authored one. Shown in
+      // the brain window header so multiple bots are tellable apart.
+      agentModel: this.agentModel || null,
       workingMemory: this.getWorkingMemory(),
       sharing: this.sharing,
       someoneElsePresenting: this.someoneElsePresenting,
@@ -1655,10 +1942,14 @@ class LocalServer {
       console.log(ts(), '🎤 [floor-audio] speech ON  (analyser)');
     } else {
       this._audioFloorAt = 0;
+      this._audioFloorOffAt = now; // #392: barge-in liveness re-check reads this
       console.log(ts(), '🎤 [floor-audio] speech OFF (analyser)');
     }
     // Wake anyone gated on the floor so a faster ON is actually actionable.
-    if (this._pref('fastFloorDetection') === true) this._onFloorChanged();
+    // No `=== true` here any more: _pref now guarantees the schema's type, and
+    // the strict comparison was the trap — it silently reads a stored string as
+    // "off" whatever the string says (#417).
+    if (this._pref('fastFloorDetection')) this._onFloorChanged();
   }
 
   // #138: the analyser edge, made actionable. Until this existed, _armBargeIn
@@ -1679,12 +1970,34 @@ class LocalServer {
     if (this.floorBusy) this._armBargeIn();
   }
 
+  // #395: when the silence gate should consider silence to have BEGUN — which
+  // is simply when the speaker actually stopped. No padding, anywhere.
+  //
+  // The tracker used to hold `speaking` true for a hard-coded extra second so a
+  // flicker mid-utterance couldn't read as "they finished". Two things are
+  // wrong with that. It lied to every consumer, not just this gate (#392: it
+  // made the earliest possible release ~2.1s, longer than the barge-in grace,
+  // so a one-word interjection cut the bot off every time). And — Stan's
+  // point, and it's the better one — this gate ALREADY solves the flicker, with
+  // `silenceSeconds`: a drop shorter than that threshold just re-arms the timer
+  // and resolves nothing. The pad was a second, unnamed silence threshold
+  // stacked on the real one, so a configured 1.4s gate was really 2.4s. (The
+  // "~1.4s extra wait observed every turn" noted below was this.)
+  //
+  // One knob, honestly named. If the bot jumps in too fast, raise
+  // `silenceSeconds` — do not reintroduce a hidden pad.
+  //
+  // Returns 0 when nobody has stopped yet.
+  effectiveSilenceStart() {
+    return this.lastSpeechStoppedAt || 0;
+  }
+
   // The floor as the turn-taking gates should see it. With fastFloorDetection
   // on, EITHER signal counts as busy — the analyser gets there first, the DOM
   // path keeps it honest if the analyser misses (threshold too high, no remote
   // track yet). Off, this is exactly today's behaviour.
   get floorBusy() {
-    if (this._pref('fastFloorDetection') === true) {
+    if (this._pref('fastFloorDetection')) {
       return this.anyoneSpeaking || this.audioFloorSpeaking;
     }
     return this.anyoneSpeaking;
@@ -1751,7 +2064,7 @@ class LocalServer {
       // the back-off monitor (#154). #138: only if the analyser agrees the room
       // is actually quiet; Meet's tracker drops a speaker mid-utterance often
       // enough that trusting it alone here disarmed live interruptions.
-      if (!this.floorBusy) this._clearBargeIn('interrupter went silent');
+      if (!this.floorBusy) this._clearBargeInAfterHangover('interrupter went silent');
       // A held reply outranks a probe: if the bot already composed a real
       // thought, the first opening belongs to that, not to a filler phrase.
       // Wait the FULL turn-silence gate before replaying — the same bar a
@@ -1761,7 +2074,17 @@ class LocalServer {
       // the agent's poll cycle (see _maybeReplayStashOnOpening).
       if (this.bargeInStash) {
         clearTimeout(this._stashOpeningTimer);
-        const ms = Math.round((Number(this._pref('defaultSilenceSeconds')) || 1.4) * 1000);
+        // #359: the ack that used to mask this gap is gone when a stash is
+        // held (see onBotStateChange in main.js) — it can't ask the slow
+        // model "should I speak?" without another round trip, which is the
+        // whole reason the ack existed. A name-mention stands in for that,
+        // same rule as the waiter fast-resolve in _checkWaiters: this is not
+        // a distinct "call-on" concept, it's the same nameMentionSilenceSeconds
+        // shortening applied uniformly, whether or not a stash happens to be
+        // held.
+        const ms = this._stashLatestUtteranceMentionsBotName()
+          ? Math.round((Number(this._pref('nameMentionSilenceSeconds')) || 1.0) * 1000)
+          : Math.round((Number(this._pref('defaultSilenceSeconds')) || 1.4) * 1000);
         this._stashOpeningTimer = setTimeout(() => this._maybeReplayStashOnOpening(), ms);
       } else if (this._pref('probeFiring')) {
         // Active listening (#245): arm a SOFT-opening probe on a brief quiet —
@@ -1918,6 +2241,62 @@ class LocalServer {
     if (!f) return null;
     this._playbackFailure = null;
     return (Date.now() - f.at) <= maxAgeMs ? f : null;
+  }
+
+  // #360: a barge-in cut the utterance mid-playback. speak() had already
+  // returned success (it answers at dispatch time), so this record is the
+  // honest correction — surfaced on the next wait_for_speech or speak,
+  // whichever the agent calls first. Fields:
+  //   spoken       — the words that actually reached the room
+  //   unspokenTail — unheard remainder of the chunk that was playing; this is
+  //                  exactly what a #350 resume replays, so a completed resume
+  //                  moves it into `spoken`
+  //   unspokenRest — chunks that never reached the renderer at all (a resume
+  //                  cannot recover these — the synth loop already bailed)
+  //   cutSeconds   — how far into the audio the cut landed (null when the stop
+  //                  hit between chunks)
+  //   resumed      — a #350 resume of the tail is in flight
+  noteSpeechTruncation({ spoken, unspokenTail, unspokenRest, cutSeconds }) {
+    this._speechTruncation = {
+      spoken: spoken || '',
+      unspokenTail: unspokenTail || '',
+      unspokenRest: unspokenRest || '',
+      cutSeconds: cutSeconds ?? null,
+      resumed: false,
+      at: Date.now(),
+    };
+    console.log(ts(), '🔇 [tts-truncated] cut ' +
+      (cutSeconds != null ? '~' + cutSeconds + 's in' : 'between chunks') +
+      ' — unheard: ' + ((unspokenTail || '') + ' ' + (unspokenRest || '')).trim().slice(0, 80));
+  }
+
+  // #360: the audio queue drained. If a resumed utterance just played out, its
+  // tail was heard after all — fold it back into `spoken`, and drop the record
+  // entirely when nothing unheard remains (the room ultimately got everything).
+  noteSpeechPlaybackDrained() {
+    const t = this._speechTruncation;
+    if (!t || !t.resumed) return;
+    t.resumed = false;
+    if (t.unspokenTail) {
+      t.spoken = (t.spoken + ' ' + t.unspokenTail).trim();
+      t.unspokenTail = '';
+    }
+    if (!t.unspokenRest) {
+      console.log(ts(), '🔇 [tts-truncated] resume completed — utterance fully delivered, record cleared');
+      this._speechTruncation = null;
+    }
+  }
+
+  // #360: consumed once, while fresh — same discipline as
+  // takeRecentPlaybackFailure. Not returned while a resume is in flight with
+  // nothing else unheard: the tail is about to play, and reporting it as
+  // unheard right before it plays would push the agent to repeat itself.
+  takeSpeechTruncation(maxAgeMs = 120000) {
+    const t = this._speechTruncation;
+    if (!t) return null;
+    if (t.resumed && !t.unspokenRest) return null;
+    this._speechTruncation = null;
+    return (Date.now() - t.at) <= maxAgeMs ? t : null;
   }
 
   addError(message) {
@@ -2169,13 +2548,15 @@ class LocalServer {
 
     // #12: group by speaker, preserving DOM/chronological order within each
     // speaker's own occurrences. The scraper sends a full snapshot of every
-    // visible caption child every time anything changes — so `texts.length`
-    // for a speaker IS the current total count of turns they've produced in
-    // this call, and it can only ever grow (Meet keeps every row; a fresh
-    // scraper turnId after a re-render doesn't remove or reorder anything).
-    // We deliberately ignore turnId/isBottommost entirely: they're per-DOM-
-    // child bookkeeping that a re-render invalidates, and nothing here needs
-    // them — a participant's own turn *count* is what a re-render can't touch.
+    // VISIBLE caption child every time anything changes, so `texts.length` for
+    // a speaker is how many of their turns are on screen right now. We
+    // deliberately ignore turnId/isBottommost entirely: they're per-DOM-child
+    // bookkeeping that a re-render invalidates, and a participant's own turn
+    // ordering is what a re-render can't touch.
+    //
+    // #389: that count is NOT monotonic, which #12's fix assumed. Meet prunes
+    // old rows on a long call and a rejoin empties the pane, so it can drop at
+    // any time — see the re-anchoring below, which is what makes this safe.
     const bySpeaker = new Map(); // speaker -> ordered text[]
     for (const t of incoming) {
       if (!t || !t.speaker || typeof t.text !== 'string') continue;
@@ -2185,18 +2566,76 @@ class LocalServer {
     }
 
     for (const [speaker, texts] of bySpeaker) {
-      const knownCount = this._speakerTurnCount.get(speaker) || 0;
+      let knownCount = this._speakerTurnCount.get(speaker) || 0;
       const n = texts.length;
 
-      // Meet only ever APPENDS turns for a speaker; a count going backwards
-      // means either a scraper glitch or (per Stan, unconfirmed) Meet pruning
-      // very old rows on an extremely long call. Either way there is nothing
-      // trustworthy to align against — skip this speaker this poll rather
-      // than guess and risk mis-ingesting.
+      // #389: a count going backwards is NOT the anomaly the original guard
+      // assumed. Meet prunes old caption rows on a long call, and a rejoin
+      // resets the pane to ~0 while _speakerTurnCount (server-side) survives.
+      // Both are routine, and both used to `continue` here — skipping before
+      // updating any state, so the high-water mark could never come down and
+      // the speaker was silently, permanently unheard for the rest of the
+      // call. Instead of skipping, RE-ANCHOR: find where our held turn sits in
+      // the pruned snapshot and rebase the count onto it.
       if (n < knownCount) {
-        console.warn(ts(), '⚠️  [caption] speaker turn count went backwards for', speaker,
-          '(' + knownCount + ' -> ' + n + ') — skipping this batch for them');
-        continue;
+        const open = this.turns.get(this._openTurnBySpeaker.get(speaker));
+        let rebased = -1;
+        if (open) {
+          // Search from the end: the open turn is the most recent one, so the
+          // last match is the right anchor when text repeats. Accept the same
+          // relations the update path below treats as "still the same turn" —
+          // identical, grown, or a truncated replay — because Meet can prune
+          // rows AND extend/re-render the open turn in the very same
+          // snapshot; requiring an exact fingerprint there would drop the
+          // anchor spuriously and take the lossy branch below for nothing.
+          const openFp = this._turnFp(speaker, open.text);
+          const bareFp = this._turnFp(speaker, ''); // guard: never prefix-match on an empty normalized text
+          for (let i = n - 1; i >= 0; i--) {
+            const fp = this._turnFp(speaker, texts[i]);
+            const shorter = fp.length < openFp.length ? fp : openFp;
+            if (fp === openFp ||
+                (shorter !== bareFp && (fp.startsWith(openFp) || openFp.startsWith(fp)))) {
+              rebased = i + 1;
+              break;
+            }
+          }
+        }
+        if (rebased >= 0) {
+          // Our open turn is still visible at position rebased-1. Everything
+          // before it was pruned (already ingested, nothing lost); everything
+          // after it is genuinely new and falls out of the normal path below.
+          console.log(ts(), 'ℹ️  [caption] re-anchored', speaker,
+            '(' + knownCount + ' -> ' + n + '): rows pruned, held turn found at',
+            rebased - 1);
+        } else {
+          // No anchor at all — a rejoin wiped the pane, or pruning ran past
+          // our open turn. Pruning drops oldest-first, so if the speaker's
+          // newest held row is gone, everything visible for them now
+          // postdates the gap: ingest ALL of it as new speech (rebased = 0).
+          // Detach the stale open-turn pointer first — the previously-open
+          // block below would otherwise rebind it and overwrite the pre-gap
+          // turn's text (and timestamp) with the first post-gap row,
+          // corrupting the transcript. We forfeit anything said while the
+          // pane was empty, but hearing resumes with this very batch instead
+          // of deadlocking forever.
+          rebased = 0;
+          if (open && !open.settled) {
+            open.settled = true; // the pre-gap turn is definitively over
+            changed = true;
+            this._logHeard(open.speaker, open.text);
+          }
+          this._openTurnBySpeaker.delete(speaker);
+          console.warn(ts(), '⚠️  [caption] lost anchor for', speaker,
+            '(' + knownCount + ' -> ' + n + ') — ingesting the visible rows as new speech;',
+            'anything they said in the gap is unrecoverable');
+          this.addError(
+            `Caption anchor lost for ${speaker} (#389): the caption pane shrank past ` +
+            `the last turn we held, so anything they said in the gap was missed. ` +
+            `Hearing resumes with the captions on screen now.`,
+          );
+        }
+        this._speakerTurnCount.set(speaker, rebased);
+        knownCount = rebased;
       }
 
       // Position knownCount-1 is the previously-open turn: the only one of
@@ -2339,13 +2778,6 @@ class LocalServer {
       // call (the bot otherwise falls back to the word-count tick, 20–30s late).
       const botNameLower = waiter.bot ? waiter.bot.toLowerCase() : '';
       const nameMentioned = !!botNameLower && entries.some(e => e.text.toLowerCase().includes(botNameLower));
-      // Fast-resolve only when the name lands at the END of the latest utterance —
-      // a genuine hand-off ("…what do you think, Jimmy?"), NOT a name-drop mid-
-      // sentence ("Hey Jimmy, how's it going?") which would cut the speaker off
-      // (2026-07-02 live test: it resolved on "Hey Jimmy" and missed the rest).
-      const _latestText = entries.length ? String(entries[entries.length - 1].text || '').toLowerCase() : '';
-      const nameAtEnd = !!botNameLower && _latestText.length > 0
-        && _latestText.slice(-(botNameLower.length + 20)).includes(botNameLower);
 
       // Passive/silent modes only respond when directly addressed; otherwise they
       // fall through to the same silence-based resolution active mode uses (the
@@ -2364,8 +2796,13 @@ class LocalServer {
       // Effective silence threshold — shortened when the bot was just addressed
       // by name, so a direct question resolves promptly rather than waiting for
       // the full whole-room gap (#343). Live-tunable via nameMentionSilenceSeconds.
+      // #359: position in the utterance used to matter (only "at the end" fast-
+      // resolved, to avoid cutting off "hey Jimmy, how's it going") — dropped.
+      // Position is an unreliable signal (more so across languages), and this
+      // still only SHORTENS an already silence-gated wait, it never skips the
+      // wait outright, so there is no speaker to cut off either way.
       const _nameSil = Number(this._pref('nameMentionSilenceSeconds'));
-      const effSilence = (nameAtEnd && Number.isFinite(_nameSil) && _nameSil >= 0)
+      const effSilence = (nameMentioned && Number.isFinite(_nameSil) && _nameSil >= 0)
         ? Math.min(waiter.silence, _nameSil)
         : waiter.silence;
 
@@ -2419,9 +2856,18 @@ class LocalServer {
       //     the most recent caption activity. Without this fallback a fresh
       //     utterance with a multi-minute-old stopTime would resolve
       //     immediately at speech-onset.
+      // #395: the speaker tracker now reports the TRUE stop edge — it no
+      // longer holds `speaking` true for an extra second after the signal goes
+      // quiet. The pad was DELETED, not moved here: a mid-sentence breath that
+      // flips the tracker false just restarts this gate's own clock (a fresher
+      // lastSpeechStoppedAt), so `silenceSeconds` already does the pad's job
+      // and the pad was a second, unnamed threshold stacked on it. Net effect
+      // on this gate: turns resolve ~1s sooner than before #395 — that second
+      // was the hidden pad, not configured silence. If the bot jumps in too
+      // fast, raise `silenceSeconds`; do not reintroduce a pad.
       const silenceMs = effSilence * 1000;
       const lastEntryTime = lastEntryActivityTime;
-      const stopTime = this.lastSpeechStoppedAt || 0;
+      const stopTime = this.effectiveSilenceStart();
       const STOP_FRESH_MS = silenceMs * 3; // ~6s with default 2s silence
       const stopIsFresh = stopTime && (Date.now() - stopTime) < STOP_FRESH_MS;
       const silenceStart = stopIsFresh
@@ -2519,6 +2965,105 @@ class LocalServer {
     return null;
   }
 
+  // Announce this bot in the room's presence, so the OTHER bots can discover it
+  // (#430). Until now nothing wrote to presence at all: the room page skips
+  // registration for whiteboard-only views, which is the only view a bot opens,
+  // and the app only ever read the list. Two comments in _rankedSpeakDelay
+  // disagreed about this and the pessimistic one was right — the list was empty,
+  // which is why peers had to be typed in by hand.
+  //
+  // BOTH names go up, and that is the point. Presence is keyed by the CONFIGURED
+  // name while Meet's roster shows the DISPLAY name for this call, and under
+  // test those differ ("Alice" vs "Alice-r4a32"). Matching one against the other
+  // is what made each bot count twice and produced "rank 4 of 5" in a room
+  // holding three. The endpoint has always accepted and returned displayName; it
+  // was simply never sent.
+  //
+  // role='bot' is sent even though, in practice, only bots register — a human
+  // who opens the room page to look at the whiteboard would register too, and
+  // then be ranked as a bot. That costs a wasted slot rather than correctness,
+  // but the field is free and makes the set explicit rather than implied.
+  //
+  // Fire-and-forget, like the de-register below: presence is an optimisation for
+  // ordering, and a bot must never fail to speak because a heartbeat did not land.
+  _registerPresence() {
+    // #471: not announcing makes this instance look like a person to every other
+    // bot in the room — which is the only way to test whether they yield to one.
+    // Checked here rather than at the timer, so the peer REFRESH still runs: an
+    // unannounced instance should still be able to see who else is a bot, it
+    // just does not claim to be one itself.
+    if (!this._pref('announceAsBot')) {
+      if (!this._loggedNoAnnounce) {
+        this._loggedNoAnnounce = true;
+        console.log(ts(), '🕵️  [presence] not announcing as a bot — this instance '
+          + 'appears to others as an ordinary participant (announceAsBot=false)');
+      }
+      return;
+    }
+    const roomId = this.roomId;
+    const name = this.getEffectiveBotName();
+    const base = (this.getWebsiteUrl() || '').replace(/\/$/, '');
+    if (!roomId || !name || !base) return;
+    const self = (this.participants || []).find((p) => p && p.isSelf && p.name && p.name !== 'You');
+    fetch(`${base}/api/room/${roomId}/presence`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        // What the room actually sees. Absent until the people pane names our
+        // own tile, so the first heartbeat may carry only the configured name.
+        ...(self && self.name !== name ? { displayName: self.name } : {}),
+        role: 'bot',
+      }),
+      signal: AbortSignal.timeout(3000),
+    }).then((r) => {
+      if (!this._presenceLoggedOk && r.ok) {
+        this._presenceLoggedOk = true;
+        console.log(ts(), `👋 [presence] registered "${name}"`
+          + (self && self.name !== name ? ` (display "${self.name}")` : '') + ` in room ${roomId}`);
+      }
+    }).catch(() => { /* presence is optional; ordering falls back to jitter */ });
+  }
+
+  // The other bots in this room, as PRESENCE knows them, resolved to the names
+  // Meet's roster uses — which is what the ordering ranks over.
+  //
+  // Cached rather than fetched per utterance: ordering runs on the speak path
+  // and must stay synchronous. Refreshed on the same heartbeat that registers us.
+  _refreshPresencePeers() {
+    const roomId = this.roomId;
+    const base = (this.getWebsiteUrl() || '').replace(/\/$/, '');
+    if (!roomId || !base) return;
+    fetch(`${base}/api/room/${roomId}/presence`, { signal: AbortSignal.timeout(3000) })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data) return;
+        const self = (this.getEffectiveBotName() || '').toLowerCase();
+        const roster = (this.participants || [])
+          .filter((p) => p && p.name && !p.isSelf && p.name !== 'You' && !p.isPseudo)
+          .map((p) => p.name);
+        const bots = (data.members || []).filter((m) => m && m.name
+          && (m.role === 'bot' || !m.role)   // only bots register; role makes it explicit
+          && m.name.toLowerCase() !== self);
+        const matched = roster.filter((r) => bots.some((m) => namesMatch(r, m.displayName)
+          || namesMatch(r, m.name)));
+        // A derived set that swallows the whole roster is worse than none: the
+        // seed is the last utterance by someone OUTSIDE the bot set, so with
+        // everyone inside it there is nothing to key on and ordering stops
+        // entirely. Only ever ADD certainty here, never remove the humans.
+        if (matched.length && matched.length < roster.length) {
+          const changed = JSON.stringify(matched) !== JSON.stringify(this._presencePeers || []);
+          this._presencePeers = matched;
+          if (changed) console.log(ts(), `🤖 [presence] peers discovered: ${matched.join(', ')}`);
+        } else if (matched.length && matched.length >= roster.length) {
+          this._presencePeers = null;
+          console.log(ts(), `🤖 [presence] ignoring peer set — it covers every participant `
+            + `(${matched.length} of ${roster.length}), which would leave no human to key on`);
+        }
+      })
+      .catch(() => { /* unreachable — keep whatever we had */ });
+  }
+
   // Remove our presence entry from the website on leave so a stale "still here"
   // member doesn't block the next session reclaiming this name (#252). Reads
   // roomId/name at call time, so call it BEFORE clearRoom nulls them.
@@ -2538,6 +3083,10 @@ class LocalServer {
   }
 
   _setBotState(state, extra, { force } = {}) {
+    // #422: the replay exemption belongs to ONE playback, so it dies the moment
+    // the bot stops speaking. Leaving it set would silently disable barge-in for
+    // the rest of the session — a test-only flag turning into a live bug.
+    if (state !== 'speaking' && this._uninterruptiblePlayback) this._uninterruptiblePlayback = false;
     if (this.botState === state) return;
     // Keep the visible "I want to speak but I'm yielding" signal while the
     // interrupter is still talking. A follow-up wait_for_speech call should
@@ -2661,11 +3210,42 @@ class LocalServer {
   // Barge-in / back-off helpers (#154) -----------------------------------------
 
   _clearBargeIn(reason) {
+    clearTimeout(this._bargeInClearTimer);
+    this._bargeInClearTimer = null;
     if (this._bargeInTimer) {
       clearTimeout(this._bargeInTimer);
       this._bargeInTimer = null;
       console.log(ts(), '🛡️  [barge-in] cleared:', reason);
     }
+  }
+
+  // The disarm path, with a hangover. Meet's speaking meter drops back to rest
+  // BETWEEN SYLLABLES — 300-900ms gaps, measured mid-sentence on the
+  // eqj-edyv-fdw call — and each dip arrives here as "the interrupter went
+  // silent". Clearing on the first one meant a person speaking steadily could
+  // arm-and-clear the monitor four times over while the bot talked straight
+  // through them; it only ever yielded when a dip happened not to land inside
+  // the grace window. So wait bargeInClearHangoverMs and re-check: if the floor
+  // is busy again by then, the "silence" was an inter-word dip and the monitor
+  // stays armed.
+  //
+  // Deliberately asymmetric — this delays only DISARMING. The floor-opening
+  // path still uses the raw falling edge, because the two directions have
+  // different costs: a false negative here talks over a human, a false negative
+  // there just adds latency before the bot speaks.
+  _clearBargeInAfterHangover(reason) {
+    if (!this._bargeInTimer) return;
+    const ms = Number(this._pref('bargeInClearHangoverMs'));
+    if (!(ms > 0)) return this._clearBargeIn(reason);
+    clearTimeout(this._bargeInClearTimer);
+    this._bargeInClearTimer = setTimeout(() => {
+      this._bargeInClearTimer = null;
+      if (this.floorBusy) {
+        console.log(ts(), '🛡️  [barge-in] disarm held off — floor busy again after ' + ms + 'ms (inter-word dip)');
+        return;
+      }
+      this._clearBargeIn(reason + ' (confirmed after ' + ms + 'ms)');
+    }, ms);
   }
 
   // #367: grace = how long the bot rides out an interruption before yielding.
@@ -2687,14 +3267,56 @@ class LocalServer {
 
   _armBargeIn() {
     if (this._bargeInTimer || this.botState !== 'speaking') return;
+    // #422: replayed audio is not the bot talking — it is a recorded human,
+    // played in so detection can be scored against ground truth. Barge-in must
+    // not touch it. Without this, a two-speaker replay destroys the very
+    // conversation it is reproducing: each bot hears the other, arms, and stops
+    // its own playback (observed on the first end-to-end run — one side's audio
+    // died 4s in and that side scored as 26 missed turns).
+    if (this._uninterruptiblePlayback) return;
     const g = this._graceForCurrentUtterance();
     const graceMs = typeof g === 'number' ? g : g.ms;
     const detail = typeof g === 'number' ? '' : ` (urgency ${g.u.toFixed(2)}-scaled)`;
     console.log(ts(), '🛡️  [barge-in] armed — grace ' + graceMs + 'ms' + detail);
+    clearTimeout(this._bargeInClearTimer); // a fresh arm outranks a pending disarm
+    this._bargeInClearTimer = null;
+    this._bargeInArmedAt = Date.now(); // #392: anchors the analyser-liveness re-check
     this._bargeInTimer = setTimeout(() => {
       this._bargeInTimer = null;
       this._evaluateBargeIn();
     }, graceMs);
+  }
+
+  // #392: is the floor demonstrably quiet RIGHT NOW, per the analyser?
+  //
+  // `p.speaking` / floorBusy can hold true for seconds after a speaker stops
+  // (the tracker's release is poll/mutation-driven), so at grace evaluation
+  // they answer "was anyone speaking recently", not "is anyone speaking". The
+  // analyser's falling edge is the only signal fast enough to answer the
+  // question the grace period actually asks: are they STILL going?
+  //
+  // Trust the quiet verdict only when the analyser has proven it tracked this
+  // interruption: an OFF edge at/after the monitor armed, and quiet sustained
+  // for bargeInQuietConfirmMs (a shorter quiet could be an inter-word dip —
+  // the analyser samples per animation frame and dips between syllables).
+  // If the analyser is absent or missed this speaker (no floor-audio events,
+  // or its last OFF predates the arm), return false and let the tracker-flag
+  // path decide as before: the bad failure direction is a broken analyser
+  // making the bot NEVER yield, so uncertainty must mean "not quiet".
+  _floorQuietPerAnalyser(now = Date.now()) {
+    if (this.audioFloorSpeaking) return false;
+    if (!this._audioFloorOffAt || this._audioFloorOffAt < this._bargeInArmedAt) return false;
+    const confirmMs = Number(this._pref('bargeInQuietConfirmMs'));
+    return Number.isFinite(confirmMs) && (now - this._audioFloorOffAt) >= confirmMs;
+  }
+
+  // #392 (issue suggestion 3): the analyser's view, for every back-off log
+  // line — so the next stale-flag incident is diagnosable from one line
+  // instead of hand-correlating [floor-audio] timestamps with the decision.
+  _analyserStateForLog(now = Date.now()) {
+    if (this.audioFloorSpeaking) return `analyser ON ${now - this._audioFloorAt}ms`;
+    if (!this._audioFloorOffAt) return 'analyser silent (no floor-audio events this call)';
+    return `analyser OFF ${now - this._audioFloorOffAt}ms ago`;
   }
 
   // Grace period elapsed. Decide whether to back off based on who's
@@ -2707,6 +3329,16 @@ class LocalServer {
       // analyser-armed monitor would always bail here on the way back out.
       return;
     }
+    // #392: floorBusy just said someone is speaking — but its tracker half can
+    // lag a real stop by seconds, so re-check against the analyser. A blip
+    // that started AND ended inside the grace window is exactly what the grace
+    // exists to ride out; yielding to it cuts a live reply for an interruption
+    // that no longer exists.
+    if (this._floorQuietPerAnalyser()) {
+      console.log(ts(), '🛡️  [barge-in] interruption already ended (' + this._analyserStateForLog()
+        + ', tracker flag lagging) — continuing');
+      return;
+    }
     const interrupters = this.participants.filter(
       (p) => p.speaking && !p.isSelf && p.name !== 'You'
     );
@@ -2715,7 +3347,8 @@ class LocalServer {
       // them (routinely, while TTS plays). We can't tell bot from human without
       // a name, and the rule below is already "unknown ⇒ human" — so yield.
       // Talking over a real person is the worse failure.
-      console.log(ts(), '🛡️  [barge-in] someone interrupted (analyser only, no DOM speaker yet) — backing off');
+      console.log(ts(), '🛡️  [barge-in] someone interrupted (analyser only, no DOM speaker yet) — backing off ('
+        + this._analyserStateForLog() + ')');
       this._performBackOff('human-interrupt');
       return;
     }
@@ -2723,17 +3356,14 @@ class LocalServer {
     // Cross-reference against registered bot members (same logic the
     // get_room_info / panel tag uses). When the binding is unknown, default
     // to "human" — better to yield than to talk over a real person.
-    const botNames = new Set(
-      (this.members || [])
-        .filter((m) => m.role === 'bot' && m.name)
-        .map((m) => m.name.toLowerCase())
-    );
+    const botNames = this._botNameSet();
     const humanInterrupter = interrupters.find(
       (p) => !botNames.has((p.name || '').toLowerCase())
     );
 
     if (humanInterrupter) {
-      console.log(ts(), '🛡️  [barge-in] human interrupted — backing off:', humanInterrupter.name);
+      console.log(ts(), '🛡️  [barge-in] human interrupted — backing off:', humanInterrupter.name,
+        '(' + this._analyserStateForLog() + ')');
       this._performBackOff('human-interrupt');
       return;
     }
@@ -2751,7 +3381,16 @@ class LocalServer {
         console.log(ts(), '🛡️  [barge-in] bot-vs-bot resolved during random delay — continuing');
         return;
       }
-      console.log(ts(), '🛡️  [barge-in] bot-vs-bot still colliding after random delay — backing off');
+      // #392: same stale-flag hazard as the main evaluation — the colliding
+      // bot may have stopped during the random delay with its tracker flag
+      // still raised.
+      if (this._floorQuietPerAnalyser()) {
+        console.log(ts(), '🛡️  [barge-in] bot-vs-bot collision already ended ('
+          + this._analyserStateForLog() + ', tracker flag lagging) — continuing');
+        return;
+      }
+      console.log(ts(), '🛡️  [barge-in] bot-vs-bot still colliding after random delay — backing off ('
+        + this._analyserStateForLog() + ')');
       this._performBackOff('bot-interrupt-random');
     }, delay);
   }
@@ -2796,10 +3435,43 @@ class LocalServer {
   // Live preference read with schema-default fallback. Used for every
   // conversation timing knob in this class so set_preference takes effect
   // immediately (no app restart).
+  // The effective value of a preference: what is stored, if it is valid for the
+  // schema, else the default.
+  //
+  // Stored values go through validate() rather than straight out, so a pin
+  // written by hand or by an older build cannot be a different TYPE from what
+  // the reader expects. That is not hypothetical — it cost two days. A bot on
+  // 2026-08-17 talked over a human three times because `floorBusy` is gated on
+  // `_pref('fastFloorDetection') === true`, and a strict comparison against a
+  // stored string is false however the string reads. `"true"` would have
+  // disabled the fast floor exactly as thoroughly as `false`, with no warning
+  // and no way to tell the two apart from a log (#417).
+  //
+  // coerceType, NOT validate: it fixes the FORM ("1500" to 1500, "on" to true)
+  // and leaves the POLICY alone. Range and enum are enforced by set_preference
+  // on the way in, so a value outside them arrived deliberately — a hand-edited
+  // config, or a test setting defaultSilenceSeconds to 0.02 so it does not sleep
+  // for seconds. Overriding a deliberate choice here would be a second bug
+  // wearing the first one's clothes.
+  //
+  // A value that cannot be made into the declared type at all IS treated as
+  // unset, and warned about once per key — the failure mode being fixed is
+  // silence, but _pref runs on the speak path, so warning on every read would
+  // be its own problem.
   _pref(key) {
     if (this.getPref) {
       const stored = this.getPref(key);
-      if (stored !== undefined && stored !== null) return stored;
+      if (stored !== undefined && stored !== null) {
+        const r = prefsSchema.coerceType(key, stored);
+        if (r.ok) return r.value;
+        if (!this._warnedBadPrefs) this._warnedBadPrefs = new Set();
+        if (!this._warnedBadPrefs.has(key)) {
+          this._warnedBadPrefs.add(key);
+          const spec = prefsSchema.PREFERENCES[key];
+          console.warn(ts(), `⚠️  [preferences] ignoring stored ${key}=${JSON.stringify(stored)} `
+            + `— ${r.error}. Using the default ${JSON.stringify(spec ? spec.default : undefined)}.`);
+        }
+      }
     }
     const spec = prefsSchema.PREFERENCES[key];
     return spec ? spec.default : undefined;
@@ -2813,6 +3485,30 @@ class LocalServer {
   // outcome. Returns true iff a resume was fired.
   _maybeResumeInterruptedTts() {
     if (!this._ttsInterruptedAt) return false;
+
+    // The floor, at the instant audio would restart. This runs on a silence
+    // edge, so the floor has just opened — but "just opened" is not "still
+    // open", and the analyser leads the tracker by up to a second (#417), which
+    // is exactly the width of the window something can start in.
+    //
+    // BEFORE the consume below, unlike every other guard here, and the
+    // distinction is the point. The age and relevance guards mean "this is no
+    // longer worth saying", so spending the one attempt is correct. A busy floor
+    // means "not right now" — a condition that clears on its own. Dropping the
+    // tail for it would defeat #350, whose entire purpose is to not lose the
+    // half-spoken sentence. Left unconsumed, the next silence edge retries, and
+    // ttsResumeMaxAgeMs still bounds how long that can go on.
+    //
+    // Deliberately NO ranked ordering, unlike every other speech path. Ranking
+    // decides who answers a human — a competition for a NEW turn. A resume
+    // finishes a turn this bot already had and was cut off in, so queueing it
+    // behind a peer would pause it mid-sentence to be polite about a turn
+    // nobody is contesting.
+    if (this.floorBusy) {
+      console.log(ts(), '🔊 [tts-resume] not resuming — floor busy; the tail stays held');
+      return false;
+    }
+
     const at = this._ttsInterruptedAt;
     const baseline = this._ttsInterruptWordsBaseline;
     this._ttsInterruptedAt = 0; // consume — one attempt per interruption
@@ -2845,6 +3541,10 @@ class LocalServer {
       console.warn(ts(), '[tts-resume] onResumeTts failed:', err.message);
       return false;
     }
+    // #360: the truncation record's tail is now being replayed — mark it so
+    // the drain callback can fold the tail back into `spoken`, and so the
+    // agent-facing note can say "resuming now" instead of "never heard".
+    if (this._speechTruncation) this._speechTruncation.resumed = true;
     return true;
   }
 
@@ -2861,6 +3561,35 @@ class LocalServer {
     this._lastDiscardedStash = { texts, reason };
   }
 
+  // #359: the raised hand (🙋 "yielding") means "a reply is stashed and
+  // ready." Every place that discards a stash without ever speaking it
+  // must drop the hand in the same transaction — otherwise the hand
+  // outlives the thing it was raised for, and a human reads it as a lie.
+  _lowerHandIfYielding() {
+    if (this.botState !== 'yielding') return;
+    this._setBotState(this.waiters.length > 0 ? 'listening' : 'idle', undefined, { force: true });
+  }
+
+  // #359: does the utterance that just ended name this bot? Same rule, same
+  // signal, as the waiter fast-resolve in _checkWaiters — deliberately NOT
+  // narrowed to "short" utterances or "name at the end": position/length in
+  // the utterance is an unreliable signal (more so across languages) and
+  // this only ever SHORTENS an already silence-gated wait, never skips it,
+  // so there's no speaker to cut off either way. Looks at the most recent
+  // non-bot entry only — the utterance that just closed on this speech-stop
+  // edge, not the whole held-open window. Used to shorten the stash-opening
+  // wait (see the speech-stop handler in setParticipants); NOT used to
+  // decide whether to replay at all — the freshness/relevance guards in
+  // _maybeReplayBargeInStash still get the last word.
+  _stashLatestUtteranceMentionsBotName() {
+    const myName = (this.getEffectiveBotName() || '').toLowerCase();
+    if (!myName) return false;
+    const entries = this._entriesSince(null, this.getEffectiveBotName());
+    const latest = entries.length ? entries[entries.length - 1] : null;
+    const text = String(latest?.text || '').toLowerCase();
+    return !!text && text.includes(myName);
+  }
+
   // Attempt to replay any fresh barge-in stash before the waiter returns
   // to the slow model. Returns the array of texts that were played (or
   // null if nothing). The bot speaks via the existing onBotSpeech path,
@@ -2874,6 +3603,7 @@ class LocalServer {
       console.log(ts(), '🛡️  [barge-in] discarding stash — too stale (' + ageMs + 'ms old, max ' + maxAgeMs + 'ms)');
       this._noteDiscardedStash(this.bargeInStash, `the floor stayed busy for ${Math.round(ageMs / 1000)}s`);
       this.bargeInStash = null;
+      this._lowerHandIfYielding();
       return null;
     }
     // Content staleness guard (#239): even inside the age window, if a lot was
@@ -2889,14 +3619,36 @@ class LocalServer {
         console.log(ts(), '🛡️  [barge-in] discarding stash — conversation moved on (' + newWords + ' new words > ' + maxNewWords + ') — agent will re-derive');
         this._noteDiscardedStash(this.bargeInStash, `${newWords} words were said while it waited`);
         this.bargeInStash = null;
+        this._lowerHandIfYielding();
         return null;
       }
     }
+    // #430/#442: the floor, read HERE — at the instant audio would start, which
+    // is the only instant a floor read means anything (#67).
+    //
+    // _maybeReplayStashOnOpening checks floorBusy before calling us, but the
+    // OTHER caller — the wait_for_speech resolve path — does not, and a replay
+    // reaches onBotSpeech directly without passing the audio-start gate that
+    // every freshly composed utterance goes through. So a held reply could play
+    // into a gap somebody was already taking. Observed twice on 2026-08-17.
+    //
+    // Not a replay-specific rule: it is the same floor every other speech path
+    // consults, applied to the one path that was skipping it.
+    if (this.floorBusy) {
+      console.log(ts(), '🛡️  [barge-in] not replaying — floor busy at audio-start; stash held');
+      return null;                       // the stash survives for the next opening
+    }
+
     const entries = this.bargeInStash.entries;
     console.log(ts(), '🛡️  [barge-in] replaying stash — ' + entries.length + ' entries, ' + ageMs + 'ms old');
     this.bargeInStash = null;
     const texts = [];
-    for (const { text, voice, emoji } of entries) {
+    for (const { text, voice, emoji, urgency } of entries) {
+      // #367: urgency was carried all the way through the stash and then dropped
+      // on this line — the destructure used to take text/voice/emoji only, so a
+      // replayed utterance was graded with whatever urgency the PREVIOUS one
+      // had, and _armBargeIn scaled its grace from that stale number.
+      this._currentUrgency = (typeof urgency === 'number') ? urgency : null;
       this._setBotState('speaking', { emoji });
       this.onBotSpeech(text, voice, emoji);
       texts.push(text);
@@ -2945,11 +3697,9 @@ class LocalServer {
     if (replayed) {
       this._lastReplayedStash = replayed;
       console.log(ts(), '🛡️  [barge-in] stash replayed at a floor opening (no waiter needed)');
-    } else if (this.botState === 'yielding') {
-      // Guards rejected it (stale / conversation moved on) and it's gone.
-      // Lower the hand — nothing is queued anymore.
-      this._setBotState(this.waiters.length > 0 ? 'listening' : 'idle', undefined, { force: true });
     }
+    // If the guards rejected it, _maybeReplayBargeInStash already lowered
+    // the hand as part of the discard.
   }
 
   // How long the room has been quiet, judged from the freshest of `entries`.
@@ -3440,6 +4190,11 @@ class LocalServer {
     const discardedBargeInStash = startTime ? this._lastDiscardedStash : null;
     if (startTime && this._lastDiscardedStash) this._lastDiscardedStash = null;
 
+    // #360: same one-shot surface for a barge-in that truncated the previous
+    // utterance mid-playback — the agent was told "Spoken" at dispatch time,
+    // and this is the correction saying which words actually landed.
+    const speechTruncated = startTime ? this.takeSpeechTruncation() : null;
+
     return {
       success: true,
       roomId: this.roomId,
@@ -3455,6 +4210,7 @@ class LocalServer {
       previousAckPhrase,
       replayedBargeInStash,
       discardedBargeInStash,
+      speechTruncated,
       transcript: {
         entries,
         count: entries.length,
@@ -3923,7 +4679,7 @@ class LocalServer {
           // programmatic pane-open, so chatUnread would otherwise stick true and
           // suppress all future chat-wakes (#chat-wake). This is authoritative:
           // a successful read means the messages were seen.
-          if (result?.ok) this.setChatUnread(false);
+          if (result?.ok) this.setChatUnread(false, { authoritative: true });
           res.writeHead(result?.ok ? 200 : 500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: !!result?.ok, messages: result?.messages || [], error: result?.error, reason: result?.reason }));
         }
@@ -4020,6 +4776,55 @@ class LocalServer {
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+      return;
+    }
+
+    // Passthrough to the sync server's whiteboard version history (#380).
+    // The history lives on the website (Redis list `whiteboard:{roomId}:history`,
+    // up to 50 prior versions, newest first). This keeps the MCP server talking
+    // only to the local server, and routes by the same website base URL + room
+    // code the rest of whiteboard sync uses. NOTE: the upstream endpoint takes
+    // the ROOM CODE (e.g. ded-iika-yrs), not any call id.
+    if (url.pathname === '/api/whiteboard-history' && req.method === 'GET') {
+      const json = (body) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(body));
+      };
+      const room = url.searchParams.get('room') || this.roomId;
+      if (!room) {
+        json({ success: false, error: 'no-room' });
+        return;
+      }
+      const base = (this.getWebsiteUrl() || '').replace(/\/$/, '');
+      if (!base) {
+        json({ success: false, error: 'no-sync-server' });
+        return;
+      }
+      try {
+        const qs = new URLSearchParams();
+        for (const k of ['offset', 'limit']) {
+          const v = url.searchParams.get(k);
+          if (v != null) qs.set(k, v);
+        }
+        const resp = await fetch(
+          `${base}/api/room/${encodeURIComponent(room)}/whiteboard-history${qs.size ? `?${qs}` : ''}`,
+          { signal: AbortSignal.timeout(5000) }
+        );
+        const data = await resp.json().catch(() => null);
+        if (!resp.ok || !data?.success) {
+          json({ success: false, error: data?.error || `sync server ${resp.status}` });
+          return;
+        }
+        json({
+          success: true,
+          roomId: room,
+          entries: data.entries || [],
+          total: data.total ?? (data.entries || []).length,
+          hasMore: !!data.hasMore,
+        });
+      } catch (err) {
+        json({ success: false, error: `sync server unreachable: ${err.message}` });
       }
       return;
     }
@@ -4137,6 +4942,15 @@ class LocalServer {
       const requiresRestart = validated.some(
         ({ key }) => !!prefsSchema.PREFERENCES[key]?.requiresRestart,
       );
+      // #430: a setting can persist, report success, and still do nothing
+      // because it depends on another that is unset. Computed AFTER the write,
+      // so a batch that sets both halves together reports neither as inert.
+      const warnings = validated
+        .map(({ key, value }) => prefsSchema.inertWarning(key, value, (k) => this._pref(k)))
+        .filter(Boolean);
+      if (warnings.length) {
+        for (const w of warnings) console.log(ts(), '⚠️  [preferences]', w);
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         success: true,
@@ -4145,6 +4959,7 @@ class LocalServer {
           ? { key: validated[0].key, value: validated[0].value }
           : { updated: validated }),
         requiresRestart,
+        ...(warnings.length ? { warning: warnings.join(' ') } : {}),
       }));
       return;
     }
@@ -4542,6 +5357,9 @@ class LocalServer {
     // Treat it as speaking so the bot won't talk over it; 'tts-ended' clears it.
     if (data.meta?.action === 'play-audio') {
       this._setBotState('speaking', { emoji: data.meta.emoji });
+      // uninterruptible: for replay rigs only (#422). Ordinary play_audio stays
+      // interruptible — a human talking over a sound effect should still stop it.
+      this._uninterruptiblePlayback = data.meta.uninterruptible === true;
       this.onPlayAudio({ url: data.meta.url, path: data.meta.path, audioData: data.meta.audioData, emoji: data.meta.emoji });
       results.playAudio = { ok: true };
     }
@@ -4620,6 +5438,29 @@ class LocalServer {
       });
     }
 
+    // Sandboxed JS eval against the share surface (#244).
+    if (data.meta?.action === 'eval-share') {
+      results.evalShare = await this.onEvalShare({ expression: data.meta.expression });
+    }
+
+    // Locate an element on the share surface by description (#244).
+    if (data.meta?.action === 'find-share-element') {
+      results.findShareElement = await this.onFindShareElement({
+        description: data.meta.description,
+        max_results: data.meta.maxResults,
+      });
+    }
+
+    // Read the share surface's buffered console messages (#244).
+    if (data.meta?.action === 'read-share-console') {
+      results.readShareConsole = await this.onReadShareConsole({ limit: data.meta.limit });
+    }
+
+    // Read the share surface's buffered network requests (#244).
+    if (data.meta?.action === 'read-share-network') {
+      results.readShareNetwork = await this.onReadShareNetwork({ limit: data.meta.limit });
+    }
+
     // Handle set-mode command — persistent bot behavior mode
     if (data.meta?.action === 'set-mode' && data.meta.mode) {
       try {
@@ -4665,6 +5506,48 @@ class LocalServer {
     }));
   }
 
+  // Every name a registered bot member could show up under in the call.
+  // Members carry BOTH a registration name and a Meet display name, and they
+  // routinely differ ("Jimmy" registers, the tile reads "jimmy bot"). Keying
+  // this set on `name` alone meant a bot interrupter never matched, so the
+  // barge-in check fell through to its "unknown ⇒ human" default and yielded
+  // to other bots as if they were people. Index both.
+  // Fold the website's room presence into the local roster. Called from the
+  // sync poll, which already fetches it.
+  //
+  // Remote entries are merged, never allowed to delete: presence expires on its
+  // own schedule and a bot that has gone quiet for a moment must not vanish from
+  // the roster mid-utterance, which is exactly when the barge-in check needs it.
+  // A remote role of 'bot' upgrades a local 'member' — bots register themselves,
+  // so that claim is theirs to make — but the reverse is not true, or a stale
+  // 'member' row for a bot's Meet display name (the sync server holds both) would
+  // demote it back to human and reinstate the very bug this fixes.
+  mergeRemoteMembers(members) {
+    if (!Array.isArray(members)) return;
+    let learned = 0;
+    for (const m of members) {
+      if (!m || !m.name) continue;
+      const existing = this.members.find((x) => x.name === m.name);
+      const wasBot = existing && existing.role === 'bot';
+      const role = m.role === 'bot' || wasBot ? 'bot' : (existing?.role || m.role || 'member');
+      this._upsertMember(m.name, role, m.ownerName, m.displayName, m.versions);
+      if (role === 'bot' && !wasBot) learned++;
+    }
+    if (learned) {
+      console.log(ts(), `👥 [presence] roster now knows ${this._botNameSet().size} bot name(s) from room presence`);
+    }
+  }
+
+  _botNameSet() {
+    const names = new Set();
+    for (const m of this.members || []) {
+      if (m.role !== 'bot') continue;
+      if (m.name) names.add(m.name.toLowerCase());
+      if (m.displayName) names.add(m.displayName.toLowerCase());
+    }
+    return names;
+  }
+
   _memberVersions(versions) {
     const clean = versions && typeof versions === 'object' && !Array.isArray(versions)
       ? { ...versions }
@@ -4706,3 +5589,6 @@ class LocalServer {
 
 // Export for use in main.js (loaded via vm.runInThisContext)
 globalThis.LocalServer = LocalServer;
+// Same channel, for the one module-level helper worth testing on its own: the
+// name matching is what the peer discovery stands or falls on (#430).
+LocalServer._namesMatch = namesMatch;

@@ -33,6 +33,22 @@ const PREFERENCES = {
       'working memory. Lower = fresher but more local-model calls; the first two ' +
       'refreshes fire sooner (~120c then ~300c) to warm up, then settle to this value.',
   },
+  ackVolume: {
+    type: 'number',
+    default: 0.35,
+    min: 0,
+    max: 1,
+    description:
+      'Playback gain for acknowledgement phrases ("mm-hmm", "right"), relative ' +
+      'to normal speech at 1. Acks used to play at exactly the volume of a real ' +
+      'reply, which is what made them feel like the bot butting in rather than ' +
+      'backchanneling — a person murmuring agreement is markedly quieter than a ' +
+      'person taking the floor. Affects the ack path only; every other utterance ' +
+      'plays at full gain. Lip-sync is driven from the pre-gain signal, so a quiet ' +
+      'ack still animates the avatar normally. Set 1 for the old behaviour, or 0 ' +
+      'to keep the ack silent while its timing still masks the thinking pause ' +
+      '(use ackShortMin/ackLongMin to stop acks firing at all).',
+  },
   ackShortMin: {
     type: 'number',
     default: 20,
@@ -198,7 +214,11 @@ const PREFERENCES = {
       'own outgoing audio plus each remote WebRTC track Meet delivers) PLUS a ' +
       'video track of the bot\'s own Meet view, with a manifest that time-aligns ' +
       'everything. Meet gives each remote participant its own track (measured), so ' +
-      '"remote-*" tracks are per-participant — labeled by arrival order, not name. ' +
+      '"remote-*" tracks are one stream each, but NOT reliably one person each: a ' +
+      'track is labeled by arrival order, and the 2026-08-17 corpus recorded ' +
+      'four participants onto three remote tracks with the fourth absent, so ' +
+      'Meet appears to forward whoever is speaking into a small fixed pool. ' +
+      'Treat a track as "audio from somebody" (see call-recorder.js). ' +
       'When recording is active a small visible status window appears (elapsed ' +
       'time + Stop button) — that is expected UI, not a side effect, and it is ' +
       'also how the room is shown recording is happening. When the recording ' +
@@ -221,7 +241,18 @@ const PREFERENCES = {
       'recording itself (per-track timing, a specific participant\'s audio, a failed ' +
       'mux) rather than just watching what happened on the call. A merge that fails ' +
       'or is skipped (no ffmpeg, no video captured) never deletes the raw tracks ' +
-      'regardless of this setting — they are all that is left in that case.',
+      'regardless of this setting — they are all that is left in that case. ' +
+      'ALSO triggers per-speaker extraction (#422) once the merge finishes: a ' +
+      'recorded remote-* track is NOT one participant, because Meet forwards ' +
+      'whoever is speaking into a small pool of slots and reassigns them mid-call ' +
+      '(measured — on the 2026-08-17 corpus all three humans appear on all three ' +
+      'tracks). So the kept tracks answer very little on their own. Extraction ' +
+      'reconciles them against the raw mic-meter samples and writes by-speaker/ ' +
+      'with attribution.json plus Audacity label tracks (~10MB). It needs ' +
+      'speakingEventCapture for the identity signal, and skips with a log line ' +
+      'without it. The per-person WAVs are NOT written automatically (~300MB per ' +
+      'person per hour); keeping the tracks is what makes them reproducible on ' +
+      'demand via scripts/extract-speaker-tracks.mjs.',
   },
   studioSound: {
     type: 'boolean',
@@ -554,17 +585,23 @@ const PREFERENCES = {
 
   bargeInGraceMs: {
     type: 'number',
-    default: 2500,
+    default: 1500,
     min: 0,
     max: 10_000,
     description:
-      'How long the bot waits after detecting a human interruption before ' +
-      'actually stopping its TTS. Tunes the bot\'s "patience" — higher means ' +
-      'a brief overlap (a cough, a "yeah" backchannel, a false start) is ridden ' +
-      'out as natural conversation; lower means the bot drops out almost ' +
-      'instantly. Read live, so it can be tuned mid-call (per profile). Used as ' +
-      'the FIXED grace when bargeInUrgencyScaling is off; when scaling is on this ' +
-      'is ignored in favor of the min/max range below. Default 2500ms.',
+      'How long the bot waits after detecting a human interruption before '
+      + 'actually stopping its TTS. Tunes the bot\'s "patience" — higher means '
+      + 'a brief overlap (a cough, a "yeah" backchannel, a false start) is ridden '
+      + 'out as natural conversation; lower means the bot drops out almost '
+      + 'instantly. Read live, so it can be tuned mid-call (per profile). '
+      + 'ONLY USED when bargeInUrgencyScaling is off — and that defaults to ON, '
+      + 'so out of the box this value is inert and the grace comes from the '
+      + 'min/max range below. '
+      + '1500ms, measured (#422): across 850 real overlaps from 9 calls, overlap '
+      + 'duration runs p50 400ms, p90 1100ms, p99 2680ms. 1500ms rides out 95.8% '
+      + 'of them — nearly every backchannel — while yielding a full second sooner '
+      + 'than the old 2500ms, which outlasted 98.6% and so barely distinguished a '
+      + '"mm-hm" from someone genuinely taking the floor.',
   },
   bargeInUrgencyScaling: {
     type: 'boolean',
@@ -578,29 +615,66 @@ const PREFERENCES = {
       '(#367) — urgency calibration is still being collected; toggle off mid-call ' +
       'if it feels wrong.',
   },
+  bargeInQuietConfirmMs: {
+    type: 'number',
+    default: 250,
+    min: 0,
+    max: 5000,
+    description:
+      'How long the analyser must have heard silence, at the moment the barge-in ' +
+      'grace expires, for the interruption to count as "already over" (#392). The ' +
+      'participant tracker\'s speaking flag can lag a real stop by seconds, so the ' +
+      'grace evaluation re-checks liveness against the analyser: quiet for at least ' +
+      'this long means the blip ended inside the grace window and the bot keeps ' +
+      'talking. Shorter quiet is treated as an inter-word dip (the analyser dips ' +
+      'between syllables) and the bot still yields. 250ms matches the meter hold ' +
+      'in the speaker tracker. Applies only when the analyser demonstrably tracked ' +
+      'the interruption; with no analyser signal the old tracker-flag behavior ' +
+      'decides, so a broken analyser can never stop the bot from yielding.',
+  },
+  bargeInClearHangoverMs: {
+    type: 'number',
+    default: 600,
+    min: 0,
+    max: 5000,
+    description:
+      'How long the room must stay quiet before a "the interrupter went silent" ' +
+      'edge is allowed to DISARM the barge-in monitor. Meet\'s speaking meter ' +
+      'returns to rest between syllables — measured 300-900ms gaps mid-sentence ' +
+      'on a normally-spoken utterance — and each of those dips used to clear the ' +
+      'monitor outright, so a person talking steadily could re-arm and clear four ' +
+      'times without the bot ever yielding. This hangover applies ONLY to the ' +
+      'disarm path, so floor-opening detection (which wants the fast falling ' +
+      'edge) is unaffected: a false negative here means the bot talks over a ' +
+      'human, a false negative there only costs latency. Set 0 to restore the ' +
+      'old immediate-clear behaviour.',
+  },
   bargeInGraceMinMs: {
     type: 'number',
-    default: 700,
+    default: 900,
     min: 0,
     max: 10_000,
     description:
       'When bargeInUrgencyScaling is on: the grace for a zero-urgency (filler) ' +
-      'utterance — the bot yields the floor almost immediately. Default 700ms.',
+      'utterance — the bot yields the floor almost immediately. Default 900ms.',
   },
   bargeInGraceMaxMs: {
     type: 'number',
-    default: 1500,
+    default: 2400,
     min: 0,
     max: 10_000,
     description:
-      'When bargeInUrgencyScaling is on: the grace for a max-urgency utterance — ' +
-      'the bot fights hardest to be heard. Default 1500ms — was 3500ms, lowered ' +
-      'in #138: the agent self-scored u≈0.90 on essentially every utterance that ' +
-      'call, so the scaling sat pinned near its ceiling and bought ~2.9s of ' +
-      'talking over a human, which is what "you\'re not stopping when we start ' +
-      'speaking" felt like from the room. With the min at 700ms the whole range ' +
-      'is now inside human turn-taking latency; raise it again if the urgency ' +
-      'distribution ever spreads out enough for the ceiling to mean something.',
+      'When bargeInUrgencyScaling is on: the grace for a max-urgency utterance — '
+      + 'the bot holds the floor longest for something it scored 1.0. The grace is '
+      + 'linear in urgency: ms = min + urgency x (max - min), with unscored '
+      + 'utterances treated as 0.5. '
+      + '2400ms, measured (#422). The anchor is the NORMAL case rather than the '
+      + 'extreme: urgency 0.4 is documented as "a normal answer to a normal '
+      + 'question", and 900 + 0.4 x (2400 - 900) = 1500ms, which rides out 95.8% '
+      + 'of 850 real overlaps. The ladder that produces is filler 900ms (87.7% of '
+      + 'overlaps), normal answer 1500ms (95.8%), house-on-fire 2400ms (98.5%). '
+      + 'The old 4000ms outlasted over 99% of ALL overlap, meaning a high-urgency '
+      + 'utterance effectively never yielded to anyone.',
   },
   workingStateMinMs: {
     type: 'number',
@@ -707,21 +781,29 @@ const PREFERENCES = {
   },
   bargeInBotRandomMinMs: {
     type: 'number',
-    default: 1000,
+    default: 0,
     min: 0,
     max: 10_000,
     description:
-      'When two bots try to speak at the same moment, each waits a random ' +
-      'delay in [min, max] before committing to its turn — preventing ' +
-      'lockstep talking over each other. This is the floor of that range.',
+      'When two bots collide (one bot interrupting another, evaluated only AFTER ' +
+      'the normal bargeInGraceMs sustain period already elapsed), each independently ' +
+      'draws a random tie-breaking delay in [min, max] before committing to back off ' +
+      '— whichever bot draws the smaller value yields first, decorrelating two bots ' +
+      'running identical logic against each other. This is the floor of that range. ' +
+      'Was 1000 by default; raising it adds a flat mandatory delay to every bot-vs-' +
+      'bot collision with no decorrelation benefit — the gap between two random draws ' +
+      'depends only on (max - min), not on where the floor sits — so 0 is correct ' +
+      'unless you specifically want a minimum pause. Read live.',
   },
   bargeInBotRandomMaxMs: {
     type: 'number',
-    default: 4000,
+    default: 3000,
     min: 0,
     max: 30_000,
     description:
-      'Ceiling of the bot-vs-bot random-delay range (see bargeInBotRandomMinMs).',
+      'Ceiling of the bot-vs-bot random-delay range (see bargeInBotRandomMinMs). Was ' +
+      '4000 paired with a 1000 floor (3s spread); kept the same 3s spread when the ' +
+      'floor moved to 0.',
   },
   bargeInStashMaxAgeMs: {
     type: 'number',
@@ -789,9 +871,28 @@ const PREFERENCES = {
       'arriving before the bot decides the captions have dropped out (and ' +
       'surfaces that to the agent as a warning). See issue #187.',
   },
+  speakingEventCapture: {
+    type: 'boolean',
+    default: false,
+    label: 'Capture raw speaking-detection events',
+    description:
+      'Write every raw observation the speaking detectors make to '
+      + 'speaking-events.jsonl in the call folder: each tile mutation, each '
+      + 'reading of Meet\'s speaking indicator (as its raw background-position-x, '
+      + 'not a derived boolean), each verdict edge, and our own TTS loud/quiet '
+      + 'edges. Off by default — a 4-person call produces on the order of 300k '
+      + 'rows an hour. '
+      + 'Turn it on to TUNE detection rather than argue about it (#422): none of '
+      + 'the detector constants change what Meet does, only what we conclude '
+      + 'from a recording, so one capture can be re-scored offline at any window, '
+      + 'attack, hold or lookback (scripts/score-speaking.mjs). The 5s '
+      + '[speaker-health] line cannot do this — it aggregates away the timing '
+      + 'that is the entire subject. Pairs with keepCallRecordingTracks, which '
+      + 'keeps the per-participant audio the events are scored against.',
+  },
   speakingDetectionMode: {
     type: 'string',
-    default: 'either',
+    default: 'meter',
     enum: ['either', 'meter', 'mutation'],
     enumLabels: {
       either: 'Either signal (fastest rising edge)',
@@ -813,7 +914,29 @@ const PREFERENCES = {
       + 'so no setting here can make the tracker deafer than it was before the '
       + 'meter signal existed. Watch [meter-latency] for the lead the meter '
       + 'actually delivers and [speaker-health] mtr= for meters reading blind. '
-      + 'Read live (picked up on the tracker\'s 2s scan).',
+      + 'Read live (picked up on the tracker\'s 2s scan). '
+      + 'DEFAULTS TO "meter", changed from "mutation" on 2026-08-18 (#422). On '
+      + '2,415 labelled turns the meter reports the END of a turn 9.4x faster at '
+      + 'p50 and 41x faster at p90 (190/320ms vs 1790/13290ms), spends 3x less '
+      + 'time claiming speech that is not there (7.5 vs 22.5 s/min), has a better '
+      + 'onset p90, and misses the same number of turns. The counter wins only on '
+      + 'fragmentation. Its onset p50 of 0 is not speed: it is the counter still '
+      + 'latched from the PREVIOUS turn, the same fact as its 13-second offset '
+      + 'p90. '
+      + 'The old default existed to protect against a human on laptop speakers '
+      + 'echoing our own TTS back in, which the tracker would read as that person '
+      + 'interrupting (#378). Two measurements retired that reasoning. First, the '
+      + 'counter never provided the protection: in #378 itself it fired on the '
+      + 'same echo 313ms later, slower at being wrong rather than immune, because '
+      + 'both signals derive from the same meter animation. Second, a 54-minute '
+      + 'call with two humans on speakers (2026-08-17) shows no echo reaching us '
+      + 'at all: bot-to-remote correlation -0.09, remote tracks 5-6x quieter '
+      + 'while the bot talks, and of 838 verdict rises the four during our TTS '
+      + 'each had a remote track at -13 to -16 dB against a -89 dB floor. Meet\'s '
+      + 'AEC strips our voice before transmission. '
+      + 'Prefer "meter" over "either": "either" ORs the two, so it takes the '
+      + 'UNION of their false positives, while the meter alone measured cleaner '
+      + 'than the counter on that axis. Set "mutation" to pin the old behaviour.',
   },
   fastFloorDetection: {
     type: 'boolean',
@@ -838,6 +961,96 @@ const PREFERENCES = {
       'quiet, set this false — read live, so it takes effect mid-call. Watch the ' +
       '[floor-audio] busy durations: a return of sub-500ms periods means -35dB is ' +
       'still too low. [floor-levels] and [floor-latency] record regardless.',
+  },
+
+  botSpeakOrdering: {
+    type: 'string',
+    default: 'jitter',
+    enum: ['jitter', 'ranked'],
+    enumLabels: {
+      jitter: 'Random jitter (each bot waits a random delay)',
+      ranked: 'Deterministic order (bots agree who goes first; the winner waits for nothing)',
+    },
+    description:
+      'How several bots in one call decide who answers first. '
+      + '"jitter" is the original (#230): each bot waits a private random delay. '
+      + 'Because the draws are independent the separation is only probabilistic — '
+      + 'two draws from U(0,N) beat the detection time D with probability '
+      + '(1 - D/N)^2, so at N=2000 with D measured near 180ms roughly 17% of '
+      + 'collisions still survive, and EVERY bot pays a mean 1000ms on EVERY turn '
+      + 'to get that. '
+      + '"ranked" computes an order instead, out of what every bot already knows: '
+      + 'the roster, and the utterance Meet showed all of them. Same inputs, same '
+      + 'hash, same order, with nothing exchanged. The winner speaks immediately; '
+      + 'the rest wake botSpeakRankGapMs apart, find the floor busy, and stash '
+      + 'exactly as they would for a human — which also covers a winner that '
+      + 'turns out to have nothing to say. Being named in the utterance is a '
+      + 'bonus in that ordering, so a direct question reaches the bot it was '
+      + 'asked of. '
+      + 'Needs to know which participants are bots. Each bot registers itself in '
+      + 'room presence on join (role="bot", with both its configured and display '
+      + 'names), so this is normally discovered and needs no configuration; '
+      + 'peerBotNames overrides it when discovery is wrong or the backend is '
+      + 'unreachable. With neither, ordering falls back to jitter — the worst '
+      + 'case is exactly the old behaviour.',
+  },
+  announceAsBot: {
+    type: 'boolean',
+    default: true,
+    label: 'Announce this bot in room presence',
+    hiddenInSettingsUI: true,
+    description:
+      'Register this instance in the room\'s presence list as role="bot" (#430). ' +
+      'That is how the OTHER bots learn it is a bot: they poll presence and fold ' +
+      'it into their roster, which drives ranked speaking order and the barge-in ' +
+      'human-vs-bot split. ' +
+      'Turn it OFF and this instance appears to everyone else as an ordinary ' +
+      'participant — a person. That is the point: barge-in treats a peer bot ' +
+      'differently from a human (a peer gets a random tie-break delay first, a ' +
+      'human is yielded to at once), so testing "does the bot yield to a person" ' +
+      'requires something in the room that is not announced as a bot (#471). ' +
+      'The classification is STICKY on the other side: mergeRemoteMembers lets a ' +
+      'remote "bot" upgrade a local "member" but never the reverse, so ' +
+      'de-registering later does not undo it — this has to be off before the ' +
+      'first heartbeat. ' +
+      'Costs this instance its own ranked ordering, which is correct: something ' +
+      'pretending to be a person should not be taking a bot\'s turn slot. ' +
+      'ON by default; only a test harness or a deliberate observer wants it off.',
+  },
+  peerBotNames: {
+    type: 'string[]',
+    default: [],
+    description:
+      'The OTHER bots expected in calls with this one, by display name — what '
+      + 'botSpeakOrdering="ranked" ranks against. '
+      + 'USUALLY UNNECESSARY: each bot now registers itself in room presence with '
+      + 'role="bot" and both its configured and display names, and the peer list '
+      + 'is derived from that (#430). This is the override for when discovery is '
+      + 'wrong, a peer predates the change, or the backend is unreachable. '
+      + 'Matched case-insensitively, and this bot\'s own name is added '
+      + 'automatically. A wrong or stale entry costs ordering quality, not '
+      + 'correctness: an unrecognised bot simply falls back to jitter. '
+      + 'Accepts a JSON array (["Pepper","Coltrane"]) or a comma-separated '
+      + 'string ("Pepper, Coltrane"); an empty string clears it. The string '
+      + 'forms exist because an array does not reliably survive the MCP '
+      + 'boundary — on 2026-08-17 two agents on two machines found no value '
+      + 'this would accept, which left #426 unreachable in production (#430).',
+  },
+  botSpeakRankGapMs: {
+    type: 'number',
+    default: 500,
+    min: 0,
+    max: 5000,
+    description:
+      'With botSpeakOrdering="ranked", how far apart the bots wake: rank 0 speaks '
+      + 'at once, rank 1 after this long, and so on. '
+      + 'It must EXCEED the time a bot needs to SEE another bot start, or the '
+      + 'loser\'s delay expires before it has noticed the winner and both talk. '
+      + 'Measured (#422): speaking-onset p90 is about 180ms via the meter signal '
+      + 'and 360-460ms via the mutation counter, so 500ms is safe on today\'s '
+      + 'default and could fall to ~250ms once speakingDetectionMode is "meter". '
+      + 'It is also what a silent winner costs: the next bot in line waits this '
+      + 'long before filling the gap.',
   },
 
   botSpeakJitterMaxMs: {
@@ -889,13 +1102,19 @@ const PREFERENCES = {
     min: 0,
     max: 30,
     description:
-      'Shorter silence threshold used when the bot is addressed by name AT THE END ' +
-      'of an utterance — a hand-off like "…what do you think, Jimmy?" (#343). It then ' +
-      'resolves after this much silence instead of the full defaultSilenceSeconds, ' +
-      'for a prompter reply. Only applies when the name is at the END (not mid-' +
-      'sentence, which would cut the speaker off), and only ever shortens. Kept at ' +
-      '1.0 (not lower) so a brief pause right after saying the name — "Hey Jimmy… ' +
-      'how are you" — does not trip it. Set >= defaultSilenceSeconds to disable. Read live.',
+      'Shorter silence threshold used whenever the bot is addressed by name anywhere ' +
+      'in an utterance — a hand-off like "…what do you think, Jimmy?" or "Jimmy, go ' +
+      'ahead" (#343, #359). It then resolves after this much silence instead of the ' +
+      'full defaultSilenceSeconds, for a prompter reply. Applies uniformly to a waiter ' +
+      'parked in wait_for_speech (_checkWaiters) AND to replaying a held barge-in stash ' +
+      '(_maybeReplayStashOnOpening) — the same rule either way, not a separate "call-on" ' +
+      'concept for the stash case. Position in the utterance is deliberately NOT ' +
+      'checked (#359): it is an unreliable signal, more so across languages, and this ' +
+      'only ever SHORTENS an already silence-gated wait — it never skips the wait ' +
+      'outright, so there is no speaker to cut off regardless of where the name lands. ' +
+      'Kept at 1.0 (not lower) so a brief pause right after saying the name — "Hey ' +
+      'Jimmy… how are you" — does not trip it. Set >= defaultSilenceSeconds to disable. ' +
+      'Read live.',
   },
   defaultMaxWaitForSpeechSec: {
     type: 'number',
@@ -1079,9 +1298,42 @@ function validate(key, value) {
     return { ok: false, error: `Expected boolean (true/false), got ${typeof value}: ${JSON.stringify(value)}` };
   }
   if (spec.type === 'string[]') {
-    if (!Array.isArray(value) || !value.every(s => typeof s === 'string')) {
-      return { ok: false, error: `Expected array of strings` };
+    // Coerce the string forms, for the same reason the boolean case above does:
+    // the value crosses an MCP boundary before it gets here, and an array does
+    // not always survive the trip. Measured 2026-08-17 (#430): two agents on
+    // two machines each tried `set_preference("peerBotNames", ["Jimmy"])` and
+    // got "Expected array of strings" — for the array form AND the string form.
+    // From an MCP client there was no value that satisfied this, so a shipped
+    // feature (#426 ranked speaking order) could not be turned on at all.
+    //
+    // Being strict here bought nothing: this is a display-name list, and the
+    // failure mode of a wrong entry is degraded ordering, not corruption.
+    if (typeof value === 'string') {
+      const s = value.trim();
+      if (!s) return { ok: true, value: [] };          // "" clears the list
+      if (s.startsWith('[')) {
+        // A JSON array that arrived stringified.
+        try {
+          const arr = JSON.parse(s);
+          if (Array.isArray(arr) && arr.every(x => typeof x === 'string')) {
+            value = arr;
+          } else {
+            return { ok: false, error: `Expected array of strings` };
+          }
+        } catch {
+          return { ok: false, error: `Looks like a JSON array but does not parse: ${s.slice(0, 40)}` };
+        }
+      } else {
+        // "Jimmy" or "Jimmy, Pepper". Commas are not valid in a Meet display
+        // name in any case we have seen, so splitting on them is safe and is
+        // what someone typing this by hand will expect.
+        value = s.split(',').map(x => x.trim()).filter(Boolean);
+      }
     }
+    if (!Array.isArray(value) || !value.every(s => typeof s === 'string')) {
+      return { ok: false, error: `Expected array of strings (or a comma-separated string)` };
+    }
+    value = value.map(s => s.trim()).filter(Boolean);
     if (spec.minItems != null && value.length < spec.minItems) {
       return { ok: false, error: `Must have at least ${spec.minItems} item(s)` };
     }
@@ -1113,4 +1365,216 @@ function describe(store) {
   });
 }
 
-module.exports = { PREFERENCES, validate, describe, DEFAULT_BOT_NAME };
+// A setting can be valid, persist, report success — and still do nothing,
+// because it depends on another setting that is not set. #430 is the case that
+// motivated this: `botSpeakOrdering: "ranked"` took and reported success while
+// `peerBotNames` was empty, so ordering silently fell back to jitter. The
+// observable state was "the tool says the feature is on, the feature is off,
+// and nothing says so", and anyone testing #426 that way would conclude the
+// ordering does not work when it never turned on.
+//
+// `get` reads the CURRENT stored values, so this must run after the write.
+// Returns a human-readable string, or null when the setting is live.
+function inertWarning(key, value, get) {
+  const read = (k) => { try { return get ? get(k) : undefined; } catch { return undefined; } };
+  if (key === 'botSpeakOrdering' && value === 'ranked') {
+    const peers = read('peerBotNames');
+    if (!Array.isArray(peers) || peers.length === 0) {
+      // Not necessarily inert any more: peers are normally discovered from room
+      // presence. But discovery only works once every bot in the room is on a
+      // build that registers itself, so during the rollout this is exactly the
+      // case that silently does nothing — say what to check.
+      return 'ranked ordering needs to know which participants are bots. That is '
+        + 'normally discovered from room presence, so this is probably fine — watch for '
+        + '"[presence] peers discovered" in the log. If it never appears (an older peer '
+        + 'that does not register itself, or no backend), ordering falls back to jitter; '
+        + 'name them with set_preference("peerBotNames", "Pepper, Coltrane")';
+    }
+  }
+  if (key === 'peerBotNames') {
+    const mode = read('botSpeakOrdering');
+    if (Array.isArray(value) && value.length && mode !== 'ranked') {
+      return `peers are recorded, but botSpeakOrdering is ${JSON.stringify(mode || 'jitter')}, `
+        + 'so they are unused. Set it with: set_preference("botSpeakOrdering", "ranked")';
+    }
+  }
+  return null;
+}
+
+// The TYPE half of validate(), without the policy half.
+//
+// _pref uses this rather than validate() because the two answer different
+// questions. Type is about what the value MEANS: a stored string "true" read
+// through `=== true` is false, so the stored FORM silently inverts behaviour,
+// and that is the bug this exists for (#417). Range and enum are about whether
+// a value is WISE — set_preference already enforces them on the way in, so a
+// value outside them arrived deliberately (a hand-edited config, or a test
+// setting defaultSilenceSeconds to 0.02 so it does not sleep for seconds).
+// Overriding a deliberate choice is not this function's business.
+//
+// Returns { ok, value }. ok:false means the value cannot be made into the
+// declared type at all, and the caller should fall back to the default.
+function coerceType(key, value) {
+  const spec = PREFERENCES[key];
+  if (!spec) return { ok: false, error: `Unknown preference '${key}'` };
+  if (value === undefined || value === null) return { ok: false, error: 'unset' };
+
+  if (spec.type === 'number') {
+    const n = typeof value === 'string' ? parseFloat(value) : value;
+    return Number.isFinite(n)
+      ? { ok: true, value: n }
+      : { ok: false, error: `Expected number, got ${typeof value}: ${JSON.stringify(value)}` };
+  }
+  if (spec.type === 'boolean') {
+    if (typeof value === 'boolean') return { ok: true, value };
+    if (typeof value === 'number' && (value === 0 || value === 1)) return { ok: true, value: value === 1 };
+    if (typeof value === 'string') {
+      const v = value.trim().toLowerCase();
+      if (['true', '1', 'yes', 'on'].includes(v)) return { ok: true, value: true };
+      if (['false', '0', 'no', 'off'].includes(v)) return { ok: true, value: false };
+    }
+    return { ok: false, error: `Expected boolean, got ${typeof value}: ${JSON.stringify(value)}` };
+  }
+  if (spec.type === 'string[]') {
+    // Same string forms validate() accepts on the way in (#430). They have to
+    // agree: set_preference coerces a comma-separated string to an array, so a
+    // reader that rejected the same input would disagree with the writer about
+    // what the stored value means — which is the class of bug this whole
+    // function exists to end.
+    if (typeof value === 'string') {
+      const t = value.trim();
+      if (!t) return { ok: true, value: [] };
+      if (t.startsWith('[')) {
+        try {
+          const arr = JSON.parse(t);
+          if (Array.isArray(arr) && arr.every((x) => typeof x === 'string')) {
+            return { ok: true, value: arr.map((x) => x.trim()).filter(Boolean) };
+          }
+        } catch { /* fall through to the error below */ }
+        return { ok: false, error: `Looks like a JSON array but does not parse: ${t.slice(0, 40)}` };
+      }
+      return { ok: true, value: t.split(',').map((x) => x.trim()).filter(Boolean) };
+    }
+    if (Array.isArray(value) && value.every((x) => typeof x === 'string')) {
+      return { ok: true, value: value.map((x) => x.trim()).filter(Boolean) };
+    }
+    return { ok: false, error: 'Expected array of strings (or a comma-separated string)' };
+  }
+  if (spec.type === 'string') {
+    return typeof value === 'string'
+      ? { ok: true, value }
+      : { ok: false, error: `Expected string, got ${typeof value}` };
+  }
+  return { ok: false, error: `Unhandled type ${spec.type}` };
+}
+
+// Anything whose NAME says it is a credential. Matched on the key, not the
+// value, because a token is only recognisable by where it lives. The config file
+// holds `ttsApiKey` and `vcSessionToken` beside the behaviour settings, and this
+// block is written into a session log that gets shipped to the backend, copied
+// into shared Drive folders, and attached to bug reports — so dumping the file
+// verbatim would publish an ElevenLabs key and a session JWT every call.
+const SECRET_KEY_RE = /key|token|secret|password|credential|auth/i;
+
+// Every preference in effect, as log lines — written once per call so a log says
+// which code paths were live when it was recorded.
+//
+// This exists because of a two-day debugging failure. A bot talked over a human
+// three times on 2026-08-17, and the cause was one preference on one machine
+// (`fastFloorDetection`) sitting at a non-default value. Nothing in its log said
+// so. The header dumped eight hand-picked prefs as RAW STORE VALUES — printing
+// `defaultSilenceSeconds=undefined` for an unset one, which says nothing about
+// what the code actually used — and `fastFloorDetection` was not among the
+// eight. Reconstructing it took three separate statistical arguments over 8,000
+// log lines (#417).
+//
+// So: all of them, effective values, and PINS CALLED OUT FIRST. A pin is the
+// only interesting part — it is what differs from every other machine, and
+// therefore what explains why this one behaved differently.
+//
+// Non-schema keys are included too. 20 of the 43 keys in a real config are not
+// in PREFERENCES, and several plainly change behaviour (`dangerousMode`,
+// `ackProvider`, `claudeModel`, `backgroundTickChars`). A snapshot that silently
+// skipped them would repeat this bug's shape: complete-looking, and missing the
+// one line that mattered. They are redacted by name where they look like
+// credentials, and their PRESENCE is still reported so nothing is invisible.
+//
+// `get(key)` reads one value; `get()` with no argument should return the whole
+// store, which is how non-schema keys are found. A get that cannot do that
+// degrades to schema-only rather than failing.
+function snapshotForLog(get, { label = '' } = {}) {
+  const read = (k) => { try { return get ? get(k) : undefined; } catch { return undefined; } };
+  // Truncated: the ack phrase pools alone run to ~700 characters and are almost
+  // never the question being asked of this block. Enough survives to see which
+  // pool it is; list_preferences has the full value when it matters.
+  const fmt = (v) => {
+    if (v === undefined) return 'unset';
+    const s = JSON.stringify(v);
+    return s.length > 110 ? `${s.slice(0, 107)}...(${s.length} chars)` : s;
+  };
+  const pinned = [];
+  const all = [];
+  for (const [key, spec] of Object.entries(PREFERENCES)) {
+    if (!spec || typeof spec !== 'object' || !('type' in spec)) continue;
+    const stored = read(key);
+    let effective = spec.default;
+    let bad = null;
+    let note = '';
+    if (stored !== undefined && stored !== null) {
+      const c = coerceType(key, stored);
+      if (c.ok) {
+        effective = c.value;
+        // Usable, but outside what set_preference would have accepted — so it
+        // was hand-edited or set by a test. Worth saying; not worth overriding.
+        const v = validate(key, stored);
+        if (!v.ok) note = ` [outside schema: ${v.error}]`;
+      } else {
+        bad = c.error;                          // unusable — _pref uses the default
+      }
+    }
+    all.push(`${key}=${fmt(effective)}`);
+    if (bad) {
+      pinned.push(`${key}=${fmt(stored)} INVALID (${bad}) -> using ${fmt(spec.default)}`);
+    } else if (stored !== undefined && stored !== null
+               && JSON.stringify(effective) !== JSON.stringify(spec.default)) {
+      pinned.push(`${key}=${fmt(effective)} (default ${fmt(spec.default)})${note}`);
+    }
+  }
+
+  // Everything in the store the schema does not describe.
+  const other = [];
+  let allData;
+  try { allData = get ? get() : undefined; } catch { allData = undefined; }
+  if (allData && typeof allData === 'object' && !Array.isArray(allData)) {
+    for (const key of Object.keys(allData).sort()) {
+      if (PREFERENCES[key]) continue;
+      other.push(SECRET_KEY_RE.test(key) ? `${key}=<redacted>` : `${key}=${fmt(allData[key])}`);
+    }
+  }
+
+  const lines = [];
+  const head = label ? `[prefs] ${label} — ` : '[prefs] ';
+  lines.push(`${head}${all.length} settings, ${pinned.length} differing from defaults`
+    + (other.length ? `, ${other.length} not in the schema` : ''));
+  // Pins first, one per line: these are what a reader is looking for, and
+  // burying them in a 2KB run-on is how this was missed the first time.
+  for (const p of pinned) lines.push(`[prefs] PINNED ${p}`);
+  const wrap = (prefix, items) => {
+    let cur = '';
+    for (const kv of items) {
+      if (cur && cur.length + kv.length + 1 > 180) { lines.push(prefix + cur); cur = ''; }
+      cur = cur ? `${cur} ${kv}` : kv;
+    }
+    if (cur) lines.push(prefix + cur);
+  };
+  // Then everything, wrapped, so the log is self-contained for any pref the
+  // reader thinks to check later — including ones nobody has suspected yet.
+  wrap('[prefs]   ', all);
+  if (other.length) wrap('[prefs]   (not in schema) ', other);
+  return lines;
+}
+
+module.exports = {
+  PREFERENCES, validate, coerceType, describe, inertWarning, snapshotForLog,
+  DEFAULT_BOT_NAME,
+};

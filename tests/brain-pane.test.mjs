@@ -321,3 +321,26 @@ test('the troubleshooting columns can actually shrink', () => {
   // broken, not fixed.
   assert.match(css, /\.ts-cols \.call-state-debug,[\s\S]{0,120}overflow-wrap: anywhere/);
 });
+
+test('the header says which model drives the bot (#385)', () => {
+  // With several profiles up, the brains are only tellable apart by what runs
+  // them. The model comes from the driving session's own turns (onModel, off
+  // the transcript tail or the app-owned stream), rides the same get-call-state
+  // snapshot the pane already polls, and is cleared whenever the activity
+  // source is swapped — a stale model is worse than none.
+  const localServer = readFileSync(join(root, 'electron-app/local-server.js'), 'utf8');
+  assert.match(localServer, /agentModel: this\.agentModel \|\| null/, 'snapshot must carry the model');
+  const onModel = localServer.slice(localServer.indexOf('onModel: (model) => {'));
+  assert.match(onModel.slice(0, 200), /this\.agentModel = model/);
+  // Init plus both source swaps reset it: a new agent may run something else.
+  assert.ok((localServer.match(/this\.agentModel = null/g) || []).length >= 3,
+    'init + both source swaps must clear the model');
+  // The renderer shows it in the status area, ahead of the unchanged-content
+  // guard — the model can become known without the feed changing.
+  const fn = panelJs.slice(panelJs.indexOf('function renderBrain'));
+  const body = fn.slice(0, fn.indexOf('\n}'));
+  assert.ok(body.indexOf('agentModel') < body.indexOf('_brainLastRendered'),
+    'status (incl. model) must update before the early return');
+  // And nothing shows until the model is actually known — no guess.
+  assert.match(body, /s\.agentModel/);
+});

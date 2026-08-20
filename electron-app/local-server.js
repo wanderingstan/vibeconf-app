@@ -2987,6 +2987,19 @@ class LocalServer {
   // Fire-and-forget, like the de-register below: presence is an optimisation for
   // ordering, and a bot must never fail to speak because a heartbeat did not land.
   _registerPresence() {
+    // #471: not announcing makes this instance look like a person to every other
+    // bot in the room — which is the only way to test whether they yield to one.
+    // Checked here rather than at the timer, so the peer REFRESH still runs: an
+    // unannounced instance should still be able to see who else is a bot, it
+    // just does not claim to be one itself.
+    if (!this._pref('announceAsBot')) {
+      if (!this._loggedNoAnnounce) {
+        this._loggedNoAnnounce = true;
+        console.log(ts(), '🕵️  [presence] not announcing as a bot — this instance '
+          + 'appears to others as an ordinary participant (announceAsBot=false)');
+      }
+      return;
+    }
     const roomId = this.roomId;
     const name = this.getEffectiveBotName();
     const base = (this.getWebsiteUrl() || '').replace(/\/$/, '');

@@ -994,6 +994,29 @@ const PREFERENCES = {
       + 'unreachable. With neither, ordering falls back to jitter — the worst '
       + 'case is exactly the old behaviour.',
   },
+  announceAsBot: {
+    type: 'boolean',
+    default: true,
+    label: 'Announce this bot in room presence',
+    hiddenInSettingsUI: true,
+    description:
+      'Register this instance in the room\'s presence list as role="bot" (#430). ' +
+      'That is how the OTHER bots learn it is a bot: they poll presence and fold ' +
+      'it into their roster, which drives ranked speaking order and the barge-in ' +
+      'human-vs-bot split. ' +
+      'Turn it OFF and this instance appears to everyone else as an ordinary ' +
+      'participant — a person. That is the point: barge-in treats a peer bot ' +
+      'differently from a human (a peer gets a random tie-break delay first, a ' +
+      'human is yielded to at once), so testing "does the bot yield to a person" ' +
+      'requires something in the room that is not announced as a bot (#471). ' +
+      'The classification is STICKY on the other side: mergeRemoteMembers lets a ' +
+      'remote "bot" upgrade a local "member" but never the reverse, so ' +
+      'de-registering later does not undo it — this has to be off before the ' +
+      'first heartbeat. ' +
+      'Costs this instance its own ranked ordering, which is correct: something ' +
+      'pretending to be a person should not be taking a bot\'s turn slot. ' +
+      'ON by default; only a test harness or a deliberate observer wants it off.',
+  },
   peerBotNames: {
     type: 'string[]',
     default: [],

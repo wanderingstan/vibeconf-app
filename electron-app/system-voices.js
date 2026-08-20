@@ -14,7 +14,11 @@
 // packaged standalone (extraResources) and cannot require() into electron-app/.
 // Keep the two in sync, same as the existing WHITELISTED_MACOS_STANDARD dupe.
 
-// Platforms with an out-of-the-box voice path. Linux (spd-say/espeak) is #21.
+// Platforms whose voices can be ENUMERATED, which is not the same as platforms
+// that can speak. Linux speaks via espeak-ng (tts.js `_linuxEspeak`) but is
+// absent here: espeak errors on an unknown voice name rather than substituting
+// like `say`/SAPI, so we never pass `-v` and the picker has nothing to offer.
+// Adding Linux means parsing `espeak-ng --voices` first — #21.
 const SYSTEM_VOICE_PLATFORMS = ['darwin', 'win32'];
 
 // Quality tiers, shared by both platforms so the pickers can sort one list:

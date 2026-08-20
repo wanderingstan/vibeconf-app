@@ -53,10 +53,40 @@ so each box needs its own logins. See wanderingstan/vibeconferencing#508.
    Google Calendar through the website and matches events against this bot.
 3. In a terminal on the box (`vibeconf-attach --shell`), run `claude` once and
    sign in. Each person's own Claude account.
-4. Optionally set a voice (ElevenLabs key), or leave the bot voiceless.
+4. Optionally set an ElevenLabs key for a better voice. Without one the bot
+   still speaks, using the on-device espeak-ng voice — see **Voice** below.
 
 **Your bot does not need its own Google account.** It joins as a guest. The
 Google identity in play is *yours*, on the website, for reading your calendar.
+
+## Voice
+
+With no ElevenLabs key the bot falls back to the OS voice — `say` on macOS,
+SAPI on Windows, **espeak-ng** on Linux. All three hand downstream the same
+22.05kHz mono 16-bit WAV, so nothing past the synth layer is platform-specific.
+
+espeak-ng is a `Recommends:` of our `.deb`, **not** a `Depends:`, so:
+
+- `sudo apt install ./vibeconferencing-agent_*.deb` pulls it in automatically.
+- `sudo dpkg -i vibeconferencing-agent_*.deb` does **not** — dpkg ignores
+  Recommends. The app installs fine and simply has no built-in voice.
+- The **AppImage** carries no package metadata at all, so AppImage users always
+  install it themselves.
+
+That split is deliberate. As a `Depends:`, a `dpkg -i` on a machine without
+espeak-ng available fails outright *and* leaves dpkg half-configured, which then
+blocks unrelated `apt install` runs until someone finds `apt --fix-broken
+install`. Speech is a nice-to-have (ElevenLabs and Voicebox are the other two
+paths), so it must never be able to block installing the app.
+
+If the bot is silent on a box, that's the first thing to check:
+
+```bash
+command -v espeak-ng || sudo apt install -y espeak-ng
+```
+
+Linux uses espeak's default voice — `set_voice` is a no-op there, since espeak
+errors on an unknown voice name rather than substituting like `say`/SAPI do.
 
 ## Getting the bot into calls
 

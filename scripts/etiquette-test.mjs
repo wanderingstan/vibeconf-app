@@ -54,6 +54,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { Bot, sleep, report, record, TEST_SPEECH_PATH } from './meet-test-lib.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -63,15 +64,27 @@ const arg = (n, d) => { const i = process.argv.indexOf('--' + n); return i !== -
 const has = (n) => process.argv.includes('--' + n);
 
 // ── audio of known length ───────────────────────────────────────────────────
-// Timing is the entire subject here, so the clips have to be exact. Built by
-// looping the bundled 5s sample rather than committing more binaries, and cached
-// so a re-run costs nothing.
+//
+// Timing is the entire subject here, so "10 seconds of someone talking" has to
+// actually be ten unbroken seconds.
+//
+// WAV, not MP3, and that is not a detail. The first version looped the bundled
+// 5.09s mp3 with -stream_loop; ffprobe reported the right duration, but in the
+// room the analyser never saw a stretch longer than 5.2s — the decoder stops at
+// the source's frame boundary, so a "10s interrupter" made about five seconds of
+// noise and then stopped. The `yield` rule failed on that, and the app was
+// RIGHT: its log said "interruption already ended (analyser OFF 1203ms ago)"
+// because the interruption had, in fact, ended. Gapless PCM removes the seam.
+//
+// Cached, and .test-clips/ is gitignored — a few hundred KB per clip, rebuilt in
+// milliseconds.
 function clip(seconds) {
   mkdirSync(CLIP_DIR, { recursive: true });
-  const out = path.join(CLIP_DIR, `speech-${seconds}s.mp3`);
+  const out = path.join(CLIP_DIR, `speech-${seconds}s.wav`);
   if (!existsSync(out)) {
     execFileSync('ffmpeg', ['-nostdin', '-loglevel', 'error', '-y',
-      '-stream_loop', '-1', '-i', TEST_SPEECH_PATH, '-t', String(seconds), out]);
+      '-stream_loop', '-1', '-i', TEST_SPEECH_PATH,
+      '-t', String(seconds), '-ac', '1', '-ar', '48000', '-c:a', 'pcm_s16le', out]);
   }
   return out;
 }
@@ -110,6 +123,38 @@ async function window_(bot, fn) {
 
 const saw = (text, key) => MARKERS[key].re.test(text);
 
+// Wait until the SUBJECT's own floor reads quiet.
+//
+// Found on the first live run: rule 1 plays a 15s clip, the inter-rule gap was a
+// flat 2.5s, and every later rule therefore began while the previous clip was
+// still playing. Every `speak` came back "user-speaking-stashed" — including in
+// the rules where the subject was supposed to speak FIRST and be interrupted.
+// Five of seven results were artifacts of the harness, and the two passes were
+// passing for the wrong reason.
+//
+// A fixed sleep cannot fix that, because what matters is when the room actually
+// goes quiet, not when we guessed it would. `anyoneSpeaking` is not exposed on
+// the sync payload, so the log is the available ground truth — and it is the
+// same signal the rules assert on, so this cannot disagree with them.
+async function settleFloor(bot, { maxMs = 30_000, quietMs = 1200 } = {}) {
+  const started = Date.now();
+  let quietSince = null;
+  while (Date.now() - started < maxMs) {
+    const tail = String((await bot.sessionLog(120)) || '');
+    const lastOn = tail.lastIndexOf('[floor-audio] speech ON');
+    const lastOff = tail.lastIndexOf('[floor-audio] speech OFF');
+    const quiet = lastOff > lastOn || (lastOn === -1 && lastOff === -1);
+    if (quiet) {
+      quietSince ??= Date.now();
+      if (Date.now() - quietSince >= quietMs) return true;
+    } else {
+      quietSince = null;
+    }
+    await sleep(400);
+  }
+  return false;                       // caller decides whether to care
+}
+
 // Post a transcript entry as a PERSON. role='member' is what makes the app treat
 // it as one — a bot-role post would go down the speech path instead.
 async function human(bot, name, text) {
@@ -123,6 +168,43 @@ async function human(bot, name, text) {
     // the rule pass or fail for the wrong reason.
     method: 'POST', headers: { 'Content-Type': 'application/json', ...bot._auth() }, body,
   });
+}
+
+// ── preconditions ───────────────────────────────────────────────────────────
+//
+// Reset the settings these rules depend on, and report anything that had to be
+// moved. Learned the hard way on the first real run: three of five failures were
+// caused by `bargeInStashMaxAgeMs = 0`, left behind on the shared test profile
+// by scripts/lockstep-test.mjs, which sets it and never restores it. Every stash
+// was therefore discarded the instant it was made, and the harness dutifully
+// reported "the reply was swallowed" as though the app were broken.
+//
+// This is #417 in miniature: a per-profile pin shadowing a default, invisible
+// until measured. A suite that reports leftover state as an app bug is worse
+// than no suite, because it is believed.
+const REQUIRED = [
+  'bargeInStashMaxAgeMs', 'bargeInStashRedeliverMaxNewWords',
+  'bargeInGraceMs', 'bargeInGraceMinMs', 'bargeInGraceMaxMs',
+  'ttsResumeEnabled', 'ttsResumeMaxAgeMs',
+  'fastFloorDetection', 'speakingDetectionMode',
+  'defaultSilenceSeconds', 'nameMentionSilenceSeconds',
+  'botSpeakJitterMaxMs', 'bargeInAckExempt',
+];
+
+async function resetPrefs(bot, defaults) {
+  const moved = [];
+  const resp = await fetch(`http://127.0.0.1:${bot.port}/api/preferences`, { headers: bot._auth() });
+  const listed = (await resp.json().catch(() => ({})))?.preferences || [];
+  const byKey = new Map(listed.map((p) => [p.key, p]));
+  for (const key of REQUIRED) {
+    const cur = byKey.get(key);
+    if (!cur) continue;
+    const want = defaults[key];
+    if (JSON.stringify(cur.value) === JSON.stringify(want)) continue;
+    await bot.setPref(key, want);
+    moved.push(`${key}: ${JSON.stringify(cur.value)} → ${JSON.stringify(want)}`);
+  }
+  return moved;
 }
 
 // ── the rules ───────────────────────────────────────────────────────────────
@@ -141,7 +223,7 @@ const RULES = [
     async run({ subject, voice }) {
       // VOICE takes the floor and holds it well past the subject's whole
       // decision window, so there is no ambiguity about who was talking.
-      await voice.playAudio({ path: clip(15), emoji: '🗣️' });
+      await voice.playAudio({ path: clip(10), emoji: '🗣️' });
       await sleep(2500);                       // let the floor register
       return window_(subject, async () => {
         await subject.speak('I have a thought about the roadmap that I would like to share now.');
@@ -213,7 +295,7 @@ const RULES = [
     claim: 'a held reply waits for a real opening rather than barging in later',
     needs: ['audio'],
     async run({ subject, voice }) {
-      await voice.playAudio({ path: clip(20), emoji: '🗣️' });
+      await voice.playAudio({ path: clip(10), emoji: '🗣️' });
       await sleep(2500);
       return window_(subject, async () => {
         await subject.speak('Here is the point I wanted to make about the schedule.');
@@ -329,12 +411,26 @@ async function main() {
   // The floor rules are about DETECTION, so make sure the detector is on and
   // record what it was set to — a run against a machine with fastFloorDetection
   // pinned off measures that pin, not the code (#417).
+  const { PREFERENCES } = createRequire(import.meta.url)('../electron-app/preferences-schema.js');
+  const defaults = Object.fromEntries(Object.entries(PREFERENCES).map(([k, v]) => [k, v.default]));
+  for (const b of [subject, voice]) {
+    const moved = await resetPrefs(b, defaults);
+    if (moved.length) {
+      console.log(`⚠️  ${b.name}: reset ${moved.length} pinned setting(s) that would have skewed this run:`);
+      for (const m of moved) console.log(`      ${m}`);
+    }
+  }
   const st = await subject.status();
   console.log(`subject state before: callStatus=${st?.callStatus ?? '?'}\n`);
 
   const results = [];
   for (const rule of rules) {
     process.stdout.write(`── ${rule.id}: ${rule.claim}\n`);
+    // Never start a rule into someone else's audio — see settleFloor.
+    const settled = await settleFloor(subject);
+    if (!settled) {
+      console.log('   ⚠️  room never went quiet before this rule — result is unreliable\n');
+    }
     let w = '';
     let err = null;
     try {
@@ -344,7 +440,6 @@ async function main() {
     results.push({ rule, ...v });
     record(subject.name, `etiquette:${rule.id}`, v.ok, v.note);
     console.log(`   ${v.ok ? '✅' : '❌'} ${v.note}\n`);
-    await sleep(2500);                          // let the room settle between rules
   }
 
   if (!has('keep')) {

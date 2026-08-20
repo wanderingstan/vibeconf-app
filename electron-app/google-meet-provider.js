@@ -1035,6 +1035,18 @@ async function readChatFlow() {
   }
 }
 
+// Chat sends must be SERIAL. The main process gives up on a send after a
+// timeout and retries, but the flow it launched here keeps running — so two
+// (or three) sendChatFlow calls used to type into the same input at once,
+// and the interleaved keystrokes got posted as gibberish (a whiteboard link
+// mashed together with two partial copies of itself).
+let chatSendChain = Promise.resolve();
+function sendChatSerial(text) {
+  const run = chatSendChain.then(() => sendChatFlow(text));
+  chatSendChain = run.catch(() => {}); // a failed send must not wedge the queue
+  return run;
+}
+
 async function sendChatFlow(text) {
   chatPaneBusy = true; // pause the people-pane self-heal while chat is open
   try {
@@ -1042,7 +1054,16 @@ async function sendChatFlow(text) {
   if (!opened) throw chatUnavailableError();
   const input = getChatInput();
   if (!input) throw chatUnavailableError();
-  await typeIntoInput(input, text);
+  let typed = await typeIntoInput(input, text);
+  if (!typed) typed = await typeIntoInput(input, text); // one retype; it clears the input first
+  // Never post what we didn't intend: if the input holds anything other than
+  // the exact message (leftovers from an interrupted earlier send, a user
+  // draft, interleaved keystrokes), fail the send rather than click Send on it.
+  if (!typed || inputText(input).trim() !== text.trim()) {
+    console.warn('[electron-meet] sendChat aborted — input does not match intended text');
+    await restorePeoplePane();
+    return false;
+  }
   await delay(100);
 
   // Prefer clicking the real send button — synthetic Enter keystrokes are
@@ -3878,7 +3899,7 @@ class GoogleMeetProvider extends CallProvider {
   async recoverCaptions() { return captionScraper._recoverCaptions(); }
 
   async readChat() { return readChatFlow(); }
-  async sendChat(text) { return sendChatFlow(text); }
+  async sendChat(text) { return sendChatSerial(text); }
 
   async startShare(shareType) {
     console.log('[electron-meet] Screen share triggered, type:', shareType);

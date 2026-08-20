@@ -7013,6 +7013,21 @@ function updateSpeakingState(name, speaking) {
     let role;
     try {
       if (localServer._botNameSet().has(String(name).toLowerCase())) role = 'bot';
+      // …unless this is US and we have been told not to announce ourselves as a
+      // bot (#471). Otherwise announceAsBot is only half a disguise: the
+      // instance correctly declines to REGISTER, then re-asserts `role: 'bot'`
+      // about itself on its very next speaking edge, and the room learns it
+      // anyway. Observed exactly that — a voice logging "not announcing as a
+      // bot" with zero registrations, while presence still listed it as one.
+      //
+      // Only about ourselves. What this instance believes about OTHER
+      // participants is unaffected: declining to claim bot status is not the
+      // same as lying about everyone else.
+      const self = (localServer.getEffectiveBotName() || '').toLowerCase();
+      if (role && self && String(name).toLowerCase() === self
+          && localServer._pref('announceAsBot') === false) {
+        role = undefined;
+      }
     } catch { /* roster unavailable — fall through unroled, as before */ }
     fetch(`${baseUrl}/api/room/${sync.roomId}/presence`, {
       method: 'POST',

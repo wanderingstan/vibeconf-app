@@ -254,6 +254,52 @@ async function resetPrefs(bot, defaults) {
   return moved;
 }
 
+// Ask the subject to speak, and return only once it actually IS — or say why
+// it never got there.
+//
+// `speak()` resolves when the POST lands, which is three steps short of audio in
+// the room: the utterance still has to clear the floor gate, be synthesised, and
+// start playing. The rules used to bridge that with `sleep(1800)` and assume.
+//
+// It does not hold. On a live run the subject STASHED instead of speaking — the
+// floor was busy at audio-start — so there was nothing for the interrupter to
+// interrupt, barge-in never armed, and the rule reported "the interruption was
+// not noticed at all". The app was behaving correctly; the scenario had simply
+// never begun. A fixed sleep cannot tell those apart, and that is the fourth
+// distinct way this suite has measured the wrong thing.
+//
+// Waits for `audio playing` rather than `Bot speech:`, because the latter is the
+// dispatch and the former is the sound: measured ~1.3s apart (speech dispatched
+// 38.874, audio playing 39.576, the bot's own meter lit 40.417). Starting an
+// interrupter in that gap tests nothing.
+async function speakAndHoldFloor(bot, text, { maxMs = 25_000 } = {}) {
+  const before = String((await bot.sessionLog(300)) || '').length;
+  await bot.speak(text);
+  const started = Date.now();
+  while (Date.now() - started < maxMs) {
+    const now = String((await bot.sessionLog(300)) || '');
+    const w = now.length >= before ? now.slice(before) : now;
+    if (saw(w, 'stashed')) {
+      return { ok: false, why: 'the subject HELD its reply — the floor was busy when it '
+        + 'tried to speak, so the scenario never started' };
+    }
+    if (saw(w, 'spoke')) {
+      // `Bot speech:` is the DISPATCH, not the sound. Measured ~1.3s from here
+      // to audio actually in the room (dispatch 38.874, playing 39.576, the
+      // bot's own meter lit 40.417). The obvious marker for the sound itself —
+      // page-inject's "audio playing" avatar line — never reaches the session
+      // log for agent-less fleet bots: zero occurrences across 3000 lines while
+      // `Bot speech:` appeared three times, so keying on it timed out every
+      // scenario. This waits the measured gap instead, which is a sleep with a
+      // reason rather than a guess about whether speaking began at all.
+      await sleep(1500);
+      return { ok: true };
+    }
+    await sleep(250);
+  }
+  return { ok: false, why: `the subject never started speaking within ${maxMs}ms` };
+}
+
 // ── the rules ───────────────────────────────────────────────────────────────
 //
 // id      — for --only
@@ -289,17 +335,23 @@ const RULES = [
     claim: 'stops talking when someone starts talking over it',
     needs: ['audio'],
     async run({ subject, voice }) {
-      return window_(subject, async () => {
+      let held = null;
+      const w = await window_(subject, async () => {
         // A long utterance, so there is plenty of it left to interrupt.
-        await subject.speak('Let me walk through the whole plan in some detail, because there are '
-          + 'several parts to it and I want to make sure the sequencing is clear before we decide '
-          + 'anything, starting with the first phase and how it depends on the second.');
-        await sleep(1800);                     // subject is mid-sentence
+        held = await speakAndHoldFloor(subject,
+          'Let me walk through the whole plan in some detail, because there are several parts '
+          + 'to it and I want to make sure the sequencing is clear before we decide anything, '
+          + 'starting with the first phase and how it depends on the second.');
+        if (!held.ok) return;                  // nothing to interrupt; verdict reports why
+        await sleep(600);                      // a beat INTO the utterance, not before it
         await voice.playAudio({ path: clip(8), emoji: '✋' });
         await sleep(5000);                     // longer than bargeInGraceMaxMs (2400)
       });
+      return { w, held };
     },
-    verdict(w) {
+    verdict({ w, held }) {
+      // Distinguish "the app did not yield" from "the scenario never ran".
+      if (!held.ok) return { ok: false, note: `scenario did not start — ${held.why}` };
       if (!saw(w, 'armed')) {
         return { ok: false, note: 'barge-in never ARMED — the interruption was not noticed at all' };
       }
@@ -325,15 +377,20 @@ const RULES = [
     claim: 'finishes its sentence when the interruption was brief',
     needs: ['audio'],
     async run({ subject, voice }) {
-      return window_(subject, async () => {
-        await subject.speak('The migration has three stages and the second one is the risky part, '
-          + 'because it rewrites the index while the old readers are still attached.');
-        await sleep(1800);
+      let held = null;
+      const w = await window_(subject, async () => {
+        held = await speakAndHoldFloor(subject,
+          'The migration has three stages and the second one is the risky part, because it '
+          + 'rewrites the index while the old readers are still attached.');
+        if (!held.ok) return;
+        await sleep(600);
         await voice.playAudio({ path: clip(1), emoji: '💬' });   // a backchannel, not a turn
         await sleep(6000);                     // well inside ttsResumeMaxAgeMs (5s) after silence
       });
+      return { w, held };
     },
-    verdict(w) {
+    verdict({ w, held }) {
+      if (!held.ok) return { ok: false, note: `scenario did not start — ${held.why}` };
       if (saw(w, 'resumed')) return { ok: true, note: 'picked its sentence back up' };
       // Worth separating, because in a real 54-minute call every resume attempt
       // was rejected this way (8.9s / 39s / 239s against a 5s limit) and the
@@ -511,6 +568,8 @@ async function main() {
     try {
       w = await rule.run({ subject, voice });
     } catch (e) { err = e; }
+    // A rule returns either the log window, or { w, held } when it needed the
+    // subject to be genuinely speaking first.
     const v = err ? { ok: false, note: `threw: ${err.message}` } : rule.verdict(w);
     results.push({ rule, ...v });
     record(subject.name, `etiquette:${rule.id}`, v.ok, v.note);

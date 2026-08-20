@@ -59,6 +59,22 @@ so each box needs its own logins. See wanderingstan/vibeconferencing#508.
 **Your bot does not need its own Google account.** It joins as a guest. The
 Google identity in play is *yours*, on the website, for reading your calendar.
 
+## Updating the app on a box
+
+Always use `apt`, never `dpkg -i`:
+
+```bash
+sudo apt install -y ./vibeconferencing-agent_*.deb
+sudo systemctl restart vibeconf-app
+```
+
+Both commands upgrade the app, so `dpkg -i` looks like it worked. The
+difference is that dpkg ignores `Recommends:`, so it skips anything newly
+recommended by the version you're installing — you get the new app without the
+pieces it expects. espeak-ng (below) is the current example: upgrading a box
+from 0.8.22 with `dpkg -i` leaves it voiceless, with nothing in the output
+saying so.
+
 ## Voice
 
 With no ElevenLabs key the bot falls back to the OS voice — `say` on macOS,

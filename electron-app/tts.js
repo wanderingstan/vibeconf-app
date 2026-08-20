@@ -239,8 +239,10 @@ class TTSProvider {
   // Force the OS's built-in voice for a single utterance, regardless of the
   // configured provider. main.js calls this when ElevenLabs fails (e.g. quota
   // exhausted mid-call) so the bot stays audible with a degraded voice rather
-  // than going silent. Returns an ArrayBuffer or null. Throws on a platform
-  // with no built-in path (Linux — #21).
+  // than going silent. Returns an ArrayBuffer or null. macOS/Windows always
+  // have a path; Linux has one only if espeak-ng is installed (it's a
+  // Recommends, not a Depends, of the .deb), and throws with install
+  // instructions if it isn't.
   async sayFallback(text) {
     if (!text?.trim()) return null;
     // #383: this path bypasses synthesize(), so it needs its own fix-up.

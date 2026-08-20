@@ -62,6 +62,12 @@
       "maintainer": "Stan James <stan@wanderingstan.com>",
       "synopsis": "AI agents as real participants in your video calls"
     },
+    "deb": {
+      "recommends": [
+        "libappindicator3-1",
+        "espeak-ng"
+      ]
+    },
     "files": [
       "*.js",
       "*.mp3",

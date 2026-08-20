@@ -8737,10 +8737,6 @@ function openExternalUrl(url) {
   if (typeof url === 'string' && /^https:\/\//i.test(url)) shell.openExternal(url);
 }
 
-// The baked-in testing meet, opened from File ▸ Open Default Testing Meet in
-// Browser. Temporary convenience for development.
-const DEFAULT_TESTING_MEET_URL = 'https://meet.google.com/paz-sqoa-npe';
-
 // The bot's view only occupies the window during a call. `joining` and
 // `waiting-to-be-admitted` count as "in a call" so the green room and the
 // admission prompt are on screen — hiding those would leave the user staring at
@@ -9725,16 +9721,6 @@ function createMainWindow() {
           label: "Show Bot's View",
           accelerator: 'CmdOrCtrl+Shift+B',
           click: () => { try { setBotViewState('popped'); } catch (err) { console.warn('[electron] Show Bot\'s View failed:', err.message); } },
-        },
-        { type: 'separator' },
-        {
-          // Was a link in the panel's pre-call card. It's a testing shortcut, not
-          // something most users need on the main screen — and it's on its way
-          // out — so it lives in the menu now. Opens in the USER's own browser
-          // (so you join as a human alongside the bot); the app's tab-detection
-          // then auto-fills the URL in the panel, ready to send the bot in too.
-          label: 'Open Default Testing Meet in Browser',
-          click: () => { openExternalUrl(DEFAULT_TESTING_MEET_URL); },
         },
       ],
     },

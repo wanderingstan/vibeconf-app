@@ -6989,10 +6989,35 @@ function updateSpeakingState(name, speaking) {
     state.sent = true;
 
     const baseUrl = sync.baseUrl || 'http://127.0.0.1:7865';
+    // Carry the role, because this POST cannot avoid asserting one.
+    //
+    // The presence endpoint assigns role on EVERY write, and a body without one
+    // resolves to 'member'. This fires on every speaking edge, for every
+    // participant the tracker sees — so each bot was demoting every other bot it
+    // heard talk, several times a minute, purely as a side effect of announcing
+    // who was speaking. Each bot's own 60s registration heartbeat promoted it
+    // back, and the room's roles oscillated: measured on paz-sqoa-npe, a bot
+    // read as `member` 56s after it had announced itself as `bot`.
+    //
+    // That matters because role IS the bot/human answer everywhere downstream —
+    // _botNameSet() feeds ranked speaking order (#443) and the human-vs-bot
+    // split in _evaluateBargeIn (#154), where "unknown ⇒ human" is deliberate
+    // because talking over a person is the worse mistake. A bot misread as a
+    // human gets yielded to instantly and loses its own turn slot.
+    //
+    // Only for names we already KNOW are bots. An unknown name still resolves to
+    // 'member', which is right for the humans in the room and avoids this code
+    // asserting an identity it is only guessing at — the mistake that caused
+    // this in the first place. A bot we have not learned yet self-heals on its
+    // own next heartbeat.
+    let role;
+    try {
+      if (localServer._botNameSet().has(String(name).toLowerCase())) role = 'bot';
+    } catch { /* roster unavailable — fall through unroled, as before */ }
     fetch(`${baseUrl}/api/room/${sync.roomId}/presence`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, speaking }),
+      body: JSON.stringify({ name, speaking, ...(role ? { role } : {}) }),
     }).catch(err => {
       console.debug('[electron] Speaking state update failed:', err.message);
     });

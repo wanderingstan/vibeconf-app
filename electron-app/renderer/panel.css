@@ -235,8 +235,8 @@ button.primary:disabled {
 }
 
 /* ── Notice stack ──────────────────────────────────────────────────────────
-   Anything the app needs to tell you sits HERE, across the bot's face, rather
-   than in the page flow. A banner in the flow pushes the avatar and the call
+   Anything the app needs to tell you sits HERE, floating just below the bot's
+   name, rather than in the page flow. A banner in the flow pushes the call
    controls around every time it appears — and these appear on a timer you don't
    control, so the layout would shift under your cursor.
 
@@ -247,14 +247,24 @@ button.primary:disabled {
   position: absolute;
   z-index: 5;                 /* above both scrims */
   left: 12px; right: 12px;
-  top: 50%;
-  transform: translateY(-50%);
+  /* Anchored just under the name row, not centred: centred notices sat right
+     across the bot's face, and every added/removed notice re-centred the whole
+     stack so the survivors jumped. Top-anchored, the first notice holds still
+     and new ones stack downward. 52px = .hero-top's 10px padding + the ~34px
+     name row + 8px breathing room (60px under the titlebar variant below). */
+  top: 52px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 76%;
+  /* Stop above the call controls in .hero-bottom rather than sliding under
+     them; the stack scrolls if it's ever taller than that. */
+  max-height: calc(100% - 52px - 88px);
   overflow-y: auto;
   pointer-events: none;       /* the gaps shouldn't swallow clicks */
+}
+body[data-titlebar] .hero-notices {
+  top: 60px;                  /* tracks .hero-top's 18px titlebar padding */
+  max-height: calc(100% - 60px - 88px);
 }
 .hero-notice {
   pointer-events: auto;

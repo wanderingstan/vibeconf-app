@@ -48,6 +48,20 @@ set -e
 REPO="${VIBECONF_REPO:-${0:A:h:h}}"
 ELECTRON="$REPO/electron-app"
 NAMES=(Alice Jimmy Cosmo Dizzy)           # display names by index (Alice=-1, Jimmy=-2)
+# One macOS `say` voice per bot, parallel to NAMES.
+#
+# Every test bot used to sound IDENTICAL: the block below pins
+# ttsProvider=macos-say but never pinned a voice, so all of them fell back to the
+# machine's default and the call recordings were near-impossible to follow —
+# telling who said what meant watching the window rather than listening (Stan,
+# 2026-08-20). Distinct voices make the audio self-describing, which matters
+# because those recordings are the primary artifact when a lane fails.
+#
+# Chosen for CONTRAST first, not realism: Alice/Jimmy are the two-bot pair that
+# nearly every lane uses, so they get different genders AND different accents
+# (en_US vs en_GB) — distinguishable even through Meet's compression and even to
+# someone skimming at 2x.
+VOICES=(Samantha Daniel Karen "Ava (Premium)")
 # Base local-server port for the fleet (bots use BASE_PORT, BASE_PORT+1, …).
 # Override with VIBECONF_BASE_PORT to run a fleet that WON'T collide with the
 # on-push CI smoke or the nightly (both use the 7901 default) — e.g. the long
@@ -357,7 +371,17 @@ for i in $(seq 1 $N); do
   # focus-stealing modal, and once it can appear for ANY un-onboarded profile
   # (not just the default instance) it would pop up over these freshly-created
   # guest profiles mid-test. Idempotent merge — writes only when something changed.
-  node -e 'const fs=require("fs");const p=process.argv[1]+"/config.json";let c={};try{c=JSON.parse(fs.readFileSync(p,"utf8"))}catch{}let d=false;if(c.ttsProvider!=="macos-say"){c.ttsProvider="macos-say";d=true;}if(c.onboardingComplete!==true){c.onboardingComplete=true;d=true;}if(d)fs.writeFileSync(p,JSON.stringify(c,null,2));' "$PROFDIR"
+  # Pick this bot's voice (see VOICES above), but only if it is actually
+  # installed. A macosVoice naming a voice the machine does not have makes `say`
+  # fail and the bot go SILENT — which surfaces as heard-nothing stalls all over
+  # the run, i.e. a far more confusing failure than the identical-voices problem
+  # this fixes. Empty = leave the key alone and keep the system default.
+  voice="${VOICES[$i]}"
+  if [[ -n "$voice" ]] && ! say -v '?' 2>/dev/null | grep -q "^$voice "; then
+    echo "  ⚠️  voice \"$voice\" not installed — $name keeps the system default"
+    voice=""
+  fi
+  node -e 'const fs=require("fs");const p=process.argv[1]+"/config.json";const v=process.argv[2]||"";let c={};try{c=JSON.parse(fs.readFileSync(p,"utf8"))}catch{}let d=false;if(c.ttsProvider!=="macos-say"){c.ttsProvider="macos-say";d=true;}if(c.onboardingComplete!==true){c.onboardingComplete=true;d=true;}if(v&&c.macosVoice!==v){c.macosVoice=v;d=true;}if(d)fs.writeFileSync(p,JSON.stringify(c,null,2));' "$PROFDIR" "$voice"
   # VIBECONF_REQUIRE_TOKEN=0: #201 made the local-server control API require a
   # Bearer token by default. The agent-less harness drives that API directly and
   # has no token, so with auth on every call returns {"error":"unauthorized"} and

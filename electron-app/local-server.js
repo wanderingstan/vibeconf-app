@@ -1218,6 +1218,15 @@ class LocalServer {
         console.log(ts(), `🎲 [bot-jitter] ${others} others in call — delaying speak ${delayMs}ms (${why})`);
         setTimeout(speakNow, delayMs);
       } else {
+        // WINNING IS ALSO A DECISION, and it used to leave no trace: ranked
+        // ordering gives the top-ranked bot a delay of 0 ("the winner waits for
+        // nothing"), which fell into this branch and logged nothing at all.
+        //
+        // So the only visible evidence of ranked ordering was its FAILURE
+        // paths, every one of which logs a reason. Working perfectly and never
+        // running looked identical from outside — which is the shape of #444's
+        // "ranked ordering never engages". Say it either way.
+        if (why) console.log(ts(), `🎲 [bot-jitter] ${others} others in call — speaking now, no delay (${why})`);
         speakNow();
       }
     });

@@ -337,10 +337,21 @@ async function waitForMarker(bot, marker, { maxMs = 20_000 } = {}) {
   // own stash had replayed, and the observation window then held no replay at
   // all — reported as "REPLAY WAS UNINTERRUPTIBLE", i.e. blaming the app for
   // an event the harness never waited for.
-  const count = (t) => (String(t).match(new RegExp(MARKERS[marker].re.source, 'g')) || []).length;
-  const baseline = count(await sessionTail(bot));
+  // Compare the TIMESTAMP of the newest match, not a count. Counting was the
+  // first fix and it has the same rolling-tail flaw as everything else here:
+  // when a new match arrives and an old one scrolls out of the window, the
+  // count is unchanged and the wait never fires.
+  const newest = (t) => {
+    const re = new RegExp(MARKERS[marker].re.source);
+    const hits = String(t).split('\n').filter((l) => re.test(l));
+    const last = hits[hits.length - 1] || '';
+    const m = last.match(/^\d\d:\d\d:\d\d\.\d\d\d/);
+    return m ? m[0] : '';
+  };
+  const baseline = newest(await sessionTail(bot));
   do {
-    if (count(await sessionTail(bot)) > baseline) return true;
+    const cur = newest(await sessionTail(bot));
+    if (cur && cur > baseline) return true;   // HH:MM:SS.mmm sorts lexicographically
     if (Date.now() - started >= maxMs) break;
     await sleep(250);
   } while (true);
@@ -733,8 +744,7 @@ const RULES = [
       // is exactly why the suite could not see the bug: an early version of
       // this rule passed just as happily with the fix reverted. Parking a real
       // wait_for_speech is what makes the scenario the one that breaks.
-      const parked = subject.waitForSpeech({ wait: 45, silence: 2 })
-        .catch(() => null);                   // resolves on its own; never awaited for a value
+      let parked = null;
 
       // 1. Make the floor busy so the subject stashes rather than speaks.
       await voice.playAudio({ uninterruptible: true, path: clip(5), emoji: '🗣️' });
@@ -749,6 +759,20 @@ const RULES = [
           + 'ordering wrong we will not find out until the migration is half done.');
         if (!saw(await sessionTail(subject), 'stashed')) return;
 
+        // Park the waiter HERE, not at the top. A wait_for_speech returns
+        // immediately when unresponded transcript is already past the silence
+        // bar — which it is, at the start of a rule, after everything the
+        // previous rule said. Parked then, it was gone before the replay, the
+        // replay took the floor-opening path, and this rule passed without
+        // ever touching the path #412 lives on. Parked now, mid-interruption,
+        // there is live speech to wait for, so it stays parked until the
+        // interrupter stops — which is the resolve that carries the replay.
+        // silence BELOW defaultSilenceSeconds (1.4s). The stash-opening timer
+        // fires at that gate, so a waiter with a longer silence bar always
+        // loses the race and the replay takes the opening path — which is
+        // exactly what happened at silence: 2, every single time.
+        parked = subject.waitForSpeech({ wait: 45, silence: 1 }).catch(() => null);
+
         // 2. The interrupter stops, the floor opens, and the stash replays.
         replayed = await waitForMarker(subject, 'replayed', { maxMs: 20_000 });
         if (!replayed) return;
@@ -757,7 +781,7 @@ const RULES = [
         await voice.playAudio({ uninterruptible: true, path: clip(6), emoji: '✋' });
         await sleep(5000);                    // longer than bargeInGraceMaxMs
       });
-      await parked;                           // let the long-poll settle before the next rule
+      if (parked) await parked;               // let the long-poll settle before the next rule
       return { w, busy, replayed };
     },
     verdict({ w, busy, replayed }) {
@@ -777,7 +801,15 @@ const RULES = [
             + 'this rule exists to test (the parked waiter resolved early on a '
             + 'transcript backlog). Run it alone, or first in the sequence' };
       }
-      if (saw(w, 'backedOff')) return { ok: true, note: 'the replayed reply yielded, same as fresh speech' };
+      if (saw(w, 'backedOff')) {
+        // A pass on the floor-opening path is a weaker claim than it looks:
+        // that path never had #412. Say so, rather than let a green tick imply
+        // the resolve path was proven.
+        return saw(w, 'replayNoWaiter')
+          ? { ok: true, note: 'the replayed reply yielded — but via the floor-opening path; '
+              + 'the resolve path (where #412 lives) was not exercised' }
+          : { ok: true, note: 'the replayed reply yielded on the resolve path, same as fresh speech' };
+      }
       if (saw(w, 'armed')) return { ok: false, note: 'armed during the replay but never backed off' };
       // Carry the window size. Every saw() above reads `w`, so an empty or
       // truncated window makes all of them false and lands here — which looks

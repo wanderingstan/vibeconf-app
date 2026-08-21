@@ -8,6 +8,8 @@
 #   vibeconf-attach --sessions      # what tmux sessions are on the box
 #   vibeconf-attach --shell         # a shell on the box, as the bot's user (ubuntu)
 #   vibeconf-attach --shell-raw     # ...as ssm-user instead (rarely what you want)
+#   vibeconf-attach --run 'CMD'     # run CMD on the box, print its output, exit its code
+#   vibeconf-attach seth --run 'CMD'  # box name comes BEFORE --run
 #   vibeconf-attach --screen        # see the app's screen, in your browser (noVNC)
 #   vibeconf-attach --screen-vnc    # same, but for a native VNC client on :5900
 #   vibeconf-attach --stop          # stop the box (it is costing money while up)
@@ -33,18 +35,26 @@ DEFAULT_BOX="${VIBECONF_BOX:-vibeconf-stan}"
 aws_() { aws --profile "$PROFILE_AWS" --region "$REGION" "$@"; }
 die() { echo "vibeconf-attach: $*" >&2; exit 1; }
 
-MODE="attach"; BOX=""; ALLOW_START=1
+MODE="attach"; BOX=""; ALLOW_START=1; RUN_CMD=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --list) MODE="list" ;;
     --sessions) MODE="sessions" ;;
     --shell) MODE="shell" ;;
     --shell-raw) MODE="shell-raw" ;;
+    # Everything after --run is the remote command, so it must come last. The
+    # `break` skips the loop's trailing shift, which would eat the first word.
+    --run) MODE="run"; shift; RUN_CMD="$*"; break ;;
     --screen) MODE="screen" ;;
     --screen-vnc) MODE="screen-vnc" ;;
     --stop) MODE="stop" ;;
     --no-start) ALLOW_START=0 ;;
-    -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # Print the header comment down to the first "WHY" section, rather than a
+    # hardcoded line range: adding a mode used to silently push the last one out
+    # of --help while dragging in three lines of unrelated prose.
+    -h|--help)
+      awk 'NR==1 {next} /^# WHY/ {exit} /^#/ {sub(/^# ?/,""); print; next} {exit}' "$0"
+      exit 0 ;;
     -*) die "unknown option $1" ;;
     *) BOX="$1" ;;
   esac
@@ -87,14 +97,14 @@ ID=$(printf '%s\n' "$IDS" | head -1)
 
 STATE=$(aws_ ec2 describe-instances --instance-ids "$ID" \
   --query 'Reservations[0].Instances[0].State.Name' --output text)
-echo "→ $TAG ($ID) is $STATE"
+echo "→ $TAG ($ID) is $STATE" >&2
 
 # Stopping is its own mode and never implies starting — otherwise a typo'd
 # `--stop` on an already-stopped box would boot it, which is the opposite of
 # what someone reaching for that flag wants.
 if [ "$MODE" = "stop" ]; then
   case "$STATE" in
-    stopped|stopping) echo "→ already $STATE, nothing to do"; exit 0 ;;
+    stopped|stopping) echo "→ already $STATE, nothing to do" >&2; exit 0 ;;
   esac
   # A running agent is doing something for someone. Say what is there before
   # pulling the floor out, rather than after.
@@ -114,22 +124,22 @@ fi
 
 if [ "$STATE" != "running" ]; then
   [ "$ALLOW_START" = "1" ] || die "$TAG is $STATE and --no-start was given"
-  echo "→ starting it (takes ~40s, then SSM needs a moment to register)"
+  echo "→ starting it (takes ~40s, then SSM needs a moment to register)" >&2
   aws_ ec2 start-instances --instance-ids "$ID" >/dev/null || die "could not start $TAG"
   aws_ ec2 wait instance-running --instance-ids "$ID" || die "$TAG never reached running"
 fi
 
 # SSM registration lags "running" — the agent has to dial out and get credentials
 # from its instance profile. Poll rather than sleep a guess.
-printf '→ waiting for SSM'
+printf '→ waiting for SSM' >&2
 ONLINE=""
 for _ in $(seq 1 30); do
   ONLINE=$(aws_ ssm describe-instance-information --filters "Key=InstanceIds,Values=$ID" \
     --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null)
   [ "$ONLINE" = "Online" ] && break
-  printf '.'; sleep 5
+  printf '.' >&2; sleep 5
 done
-echo
+echo >&2
 [ "$ONLINE" = "Online" ] || die "$TAG never came Online in SSM (instance profile missing, or the agent is unhappy)"
 
 # A shell AS THE BOT'S USER, not as ssm-user.
@@ -152,8 +162,79 @@ if [ "$MODE" = "shell" ]; then
 fi
 
 if [ "$MODE" = "shell-raw" ]; then
-  echo "→ raw ssm-user shell (NOT the bot's user — see --shell)"
+  echo "→ raw ssm-user shell (NOT the bot's user — see --shell)" >&2
   exec aws --profile "$PROFILE_AWS" --region "$REGION" ssm start-session --target "$ID"
+fi
+
+# --run: one-shot command, output captured, exit code propagated.
+#
+# WHY THIS EXISTS SEPARATELY FROM --shell: --shell is an interactive SSM session
+# with a TTY. A person can use it; an AGENT cannot — there is no way to feed it a
+# command and read the result. Agents driving these boxes (the expected case:
+# "check the log on my box", "restart the app") need exec-and-capture, which is a
+# different SSM API entirely (send-command, not start-session).
+#
+# Four traps, all of which bit us during the #324/#329 bring-up:
+#
+#  1. send-command runs as ROOT, while start-session lands as ssm-user, and
+#     NEITHER is `ubuntu` (who owns the app, its config and its Claude login).
+#     So this re-enters as ubuntu with a login shell, matching --shell exactly.
+#     Without that, `--run 'claude ...'` would silently drive the wrong account.
+#  2. AWS-RunShellScript executes under dash, not bash. The outer wrapper below
+#     is POSIX-only; the user's command is handed to bash explicitly.
+#  3. Inline --parameters JSON mangles newlines (we once got `pipefailnsudo`),
+#     so the command goes over as base64 and the JSON is passed via file://.
+#  4. SSM caps captured output at ~24KB and truncates SILENTLY — a truncated
+#     result reads exactly like a complete one. We detect and say so.
+if [ "$MODE" = "run" ]; then
+  [ -n "$RUN_CMD" ] || die "--run needs a command, e.g. --run 'systemctl status vibeconf-app'"
+
+  B64=$(printf '%s' "$RUN_CMD" | base64 | tr -d '\n')
+  PARAMS=$(mktemp -t vibeconf-run)
+  trap 'rm -f "$PARAMS"' EXIT
+  R="/tmp/vibeconf-run.$$.sh"
+  # printf '%s\n' with multiple args emits each followed by a LITERAL \n, which
+  # is what JSON wants. B64 is [A-Za-z0-9+/=] so it needs no escaping.
+  SCRIPT=$(printf '%s\\n' \
+    "echo '$B64' | base64 -d > $R" \
+    "chown ubuntu $R && chmod 700 $R" \
+    "sudo -u ubuntu -i bash $R; rc=\$?" \
+    "rm -f $R" \
+    "exit \$rc")
+  printf '{"commands":["%s"]}' "$SCRIPT" > "$PARAMS"
+
+  CID=$(aws_ ssm send-command --instance-ids "$ID" \
+    --document-name AWS-RunShellScript --timeout-seconds 600 \
+    --parameters "file://$PARAMS" --query 'Command.CommandId' --output text) \
+    || die "could not send the command (is the box running? try --list)"
+
+  # Poll rather than sleep a fixed guess: a `uptime` returns in a second, an
+  # `apt install` takes minutes, and a fixed wait is wrong for both.
+  for _ in $(seq 1 200); do
+    STATUS=$(aws_ ssm get-command-invocation --command-id "$CID" --instance-id "$ID" \
+      --query 'Status' --output text 2>/dev/null || echo Pending)
+    case "$STATUS" in InProgress|Pending|Delayed) sleep 2 ;; *) break ;; esac
+  done
+
+  OUT=$(aws_ ssm get-command-invocation --command-id "$CID" --instance-id "$ID" \
+    --query 'StandardOutputContent' --output text 2>/dev/null)
+  ERR=$(aws_ ssm get-command-invocation --command-id "$CID" --instance-id "$ID" \
+    --query 'StandardErrorContent' --output text 2>/dev/null)
+  RC=$(aws_ ssm get-command-invocation --command-id "$CID" --instance-id "$ID" \
+    --query 'ResponseCode' --output text 2>/dev/null)
+
+  [ -n "$OUT" ] && printf '%s\n' "$OUT"
+  [ -n "$ERR" ] && printf '%s\n' "$ERR" >&2
+  # Trap 4. 24000 is SSM's documented cap; at or above it, assume truncation.
+  if [ "${#OUT}" -ge 24000 ] || [ "${#ERR}" -ge 24000 ]; then
+    echo "vibeconf-attach: OUTPUT TRUNCATED at SSM's ~24KB limit — redirect to a file on the box and fetch it in pieces." >&2
+  fi
+  case "$STATUS" in
+    Success|Failed) ;;
+    *) echo "vibeconf-attach: command ended as $STATUS" >&2 ;;
+  esac
+  # Propagate the remote exit code, so `&&` chains and agent tooling behave.
+  case "$RC" in ''|*[!0-9]*) exit 1 ;; *) exit "$RC" ;; esac
 fi
 
 # --screen: SEE the app, not just its agent. Needed for the once-per-box

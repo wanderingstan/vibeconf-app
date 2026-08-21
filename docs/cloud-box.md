@@ -27,6 +27,43 @@ watch it work and type at it.
 or losing your connection is also fine; that is the point of the tmux shape
 (#329). Detaching is NOT the same as stopping the box.
 
+## Running one command (and letting your agent do it)
+
+```bash
+vibeconf-attach --run 'systemctl status vibeconf-app'
+vibeconf-attach seth --run 'tail -50 ~/.vibeconferencing/logs/app.log'
+```
+
+`--run` executes one command on the box, prints its output, and **exits with the
+remote command's exit code**. Unlike `--shell` it is not interactive, which is
+precisely what makes it usable by an agent: your local Claude Code can run
+`vibeconf-attach --run '...'` as an ordinary Bash call and read the result.
+
+Two shapes, and it is worth being clear which you want:
+
+- **The agent lives on the box.** `vibeconf-attach` (no args) attaches you to the
+  tmux session where the bot's own agent is running. That agent already has a
+  local shell on the box; it needs nothing from `--run`.
+- **The agent lives on your Mac.** Your local agent uses `--run` to reach across.
+  This is the one for "check my box's log", "restart the app", "is it even up".
+
+Details that matter when driving it from a script:
+
+- Progress lines (`→ starting it`, `→ waiting for SSM`) go to **stderr**, so
+  stdout carries only the remote command's output.
+- Runs as **`ubuntu`** — the user that owns the app, its config and its Claude
+  login — not as root or `ssm-user`, which is what the underlying SSM APIs
+  would otherwise give you.
+- Quoting survives, including nested quotes, `$(...)`, and multi-line scripts:
+  the command is base64'd rather than interpolated into JSON.
+- Output is capped at SSM's **~24KB** and the script says so when it truncates.
+  For more than that, redirect to a file on the box and fetch it in pieces.
+- It will **start a stopped box** (about a minute). Add `--no-start` to make it
+  fail instead, which is usually what you want in automation.
+
+`scripts/vibeconf-attach-run-check.sh` exercises all of the above against a real
+box. CI cannot (it needs live AWS), so run it by hand after changing `--run`.
+
 ## Seeing the screen
 
 ```bash

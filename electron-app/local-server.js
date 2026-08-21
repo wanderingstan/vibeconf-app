@@ -1358,11 +1358,6 @@ class LocalServer {
         // paths, every one of which logs a reason. Working perfectly and never
         // running looked identical from outside — which is the shape of #444's
         // "ranked ordering never engages". Say it either way.
-        //
-        // Lifted from #492 (cc0644b1) rather than rebased onto it: that branch
-        // is still moving, and this line is what makes its ranked-ordering
-        // etiquette rule readable on THIS branch. Both PRs touch this function,
-        // so whichever merges second should drop the duplicate hunk.
         if (why) console.log(ts(), `🎲 [bot-jitter] ${others} others in call — speaking now, no delay (${why})`);
         speakNow();
       }

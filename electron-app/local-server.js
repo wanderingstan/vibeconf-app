@@ -4327,6 +4327,12 @@ class LocalServer {
         anyoneSpeaking: this.anyoneSpeaking,
         audioFloorSpeaking: this.audioFloorSpeaking,
         floorBusy: this.floorBusy,
+        // Same reason as floorBusy: a harness needs to ask whether the bot is
+        // mid-turn or still holding a reply ('yielding'), and the only other
+        // way was to grep the log for state-change lines. A caller that cannot
+        // see this reads "quiet floor" as "ready to talk", which is wrong for
+        // the whole time a stash is held.
+        botState: this.botState,
         sharing: this.sharing,
         someoneElsePresenting: this.someoneElsePresenting,
         presenterName: this.presenterName,

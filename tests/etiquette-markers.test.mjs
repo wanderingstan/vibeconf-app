@@ -101,9 +101,11 @@ test('every rule declares what it needs and how it is judged', () => {
   const ids = [...src.matchAll(/^\s{4}id: '([\w-]+)'/gm)].map((m) => m[1]);
   assert.ok(ids.length >= 6, `expected several rules, found ${ids.length}`);
   const needs = [...src.matchAll(/^\s{4}needs: \[/gm)];
-  // Two shapes: verdict(w) for a plain log window, verdict({ w, held }) where
-  // the rule first had to confirm the subject was genuinely speaking.
-  const verdicts = [...src.matchAll(/^\s{4}verdict\((?:w|\{[^)]*\})\)/gm)];
+  // Three shapes now: verdict(w) for a plain log window, verdict({ w, held })
+  // where the rule first had to confirm the subject was genuinely speaking, and
+  // verdict(rounds) where the rule ran the same collision several times and
+  // returns one entry per round.
+  const verdicts = [...src.matchAll(/^\s{4}verdict\((?:\w+|\{[^)]*\})\)/gm)];
   assert.equal(needs.length, ids.length, 'every rule needs a `needs`');
   assert.equal(verdicts.length, ids.length, 'every rule needs a `verdict`');
 });

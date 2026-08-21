@@ -166,13 +166,19 @@ test('a passive bot still leaves quietly', () => {
   assert.notEqual(s.botState, 'speaking');
 });
 
-test('"is our audio playing" is a property of the pipeline, not a loose flag', () => {
+test('_nowPlaying records the head — but speakingAloud is still the authority', () => {
+  // Deliberately narrow. The record exists so that "is our audio playing" CAN
+  // become derived (#412), but it is not derived yet: speakingAloud is still
+  // the flag both barge-in gates depend on, and the raw botState write in
+  // _buildResponse can still clobber it. Asserting anything stronger here would
+  // let a green tick stand in for a fix this PR does not contain.
   const s = makeServer();
   assert.equal(s._nowPlaying, undefined);
   const rec = s._emitUtterance(makeUtterance({ text: 'hello', emoji: '💬', urgency: 0.7 }));
-  assert.equal(s._nowPlaying, rec, 'the head of the pipeline IS the answer');
-  assert.equal(s._nowPlaying.text, 'hello');
+  assert.equal(s._nowPlaying, rec);
   assert.equal(s._nowPlaying.source, 'speak');
+  // The flag is still set the old way, by _setBotState — which is the point.
+  assert.equal(s.speakingAloud, true);
 });
 
 test('a stashed reply is the same record, not a copy of some of its fields', () => {

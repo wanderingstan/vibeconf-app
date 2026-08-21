@@ -1201,9 +1201,16 @@ class LocalServer {
     // midpoint convention belongs to the reader (_graceForCurrentUtterance),
     // not to whatever happened to be assigned last.
     this._currentUrgency = rec.urgency;
-    // "Is our audio playing" as a property of the pipeline rather than a flag
-    // any writer can clobber (#412). _setBotState still owns speakingAloud;
-    // this is the record behind it, and what makes it derivable later.
+    // The head of the pipeline: what is playing, as a record.
+    //
+    // NOT a fix for #412, and it must not be read as one. The load-bearing flag
+    // is still speakingAloud, still owned by _setBotState, and still reachable
+    // by the raw `this.botState = 'thinking'` write in _buildResponse — which
+    // this PR does not touch. #492 guards that write; #412 stops being possible
+    // by construction only once this record is authoritative and the flag is
+    // derived from it, which is step 3.
+    //
+    // Until then this is the scaffolding for that, and nothing more.
     this._nowPlaying = rec;
     this._setBotState('speaking', { emoji: rec.emoji });
     this.onBotSpeech(rec.text, rec.voice, rec.emoji);
@@ -1254,6 +1261,20 @@ class LocalServer {
         console.log(ts(), `🎲 [bot-jitter] ${others} others in call — delaying speak ${delayMs}ms (${why})`);
         setTimeout(speakNow, delayMs);
       } else {
+        // WINNING IS ALSO A DECISION, and it used to leave no trace: ranked
+        // ordering gives the top-ranked bot a delay of 0 ("the winner waits for
+        // nothing"), which fell into this branch and logged nothing at all.
+        //
+        // So the only visible evidence of ranked ordering was its FAILURE
+        // paths, every one of which logs a reason. Working perfectly and never
+        // running looked identical from outside — which is the shape of #444's
+        // "ranked ordering never engages". Say it either way.
+        //
+        // Lifted from #492 (cc0644b1) rather than rebased onto it: that branch
+        // is still moving, and this line is what makes its ranked-ordering
+        // etiquette rule readable on THIS branch. Both PRs touch this function,
+        // so whichever merges second should drop the duplicate hunk.
+        if (why) console.log(ts(), `🎲 [bot-jitter] ${others} others in call — speaking now, no delay (${why})`);
         speakNow();
       }
     });

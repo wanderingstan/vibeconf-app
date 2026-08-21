@@ -49,6 +49,9 @@
 //   --subject Alice:7901 --voice Jimmy:7902   override the roles
 //   --only no-talk-over,yield                 run a subset
 //   --keep                                    leave the bots in the call
+//   --sequence                                no settling between rules; what
+//                                             one leaves is the next one's
+//                                             starting conditions (see below)
 //
 // A FRESH FLEET PER RUN IS NOT OPTIONAL. Bots accumulate state across runs — a
 // held stash, a floor that never fully reopened, a roster belief that cannot be
@@ -152,9 +155,13 @@ const MARKERS = {
   resumeStale:  { re: /\[tts-resume\] skip — too stale/,                    means: 'wanted to resume but the tail had aged out' },
   resumeMoved:  { re: /\[tts-resume\] skip — conversation moved on/,        means: 'dropped the tail because too much was said meanwhile' },
   replayed:     { re: /\[barge-in\] replaying stash/,                       means: 'said the thing it had been holding' },
+  replayNoWaiter: { re: /stash replayed at a floor opening \(no waiter needed\)/,   means: 'replayed by the OPENING path — not the resolve path #412 lives on' },
   replayHeld:   { re: /\[barge-in\] not replaying — floor busy/,            means: 'kept holding rather than replaying over someone (#449 builds only)' },
   stashMoved:   { re: /\[barge-in\] discarding stash — conversation moved on/, means: 'threw the held reply away as overtaken' },
   stashStale:   { re: /\[barge-in\] discarding stash — too stale/,          means: 'threw the held reply away as too old' },
+  rankedOrder:  { re: /\[bot-jitter\].*\(ranked /,                        means: 'ordered itself against a peer bot instead of rolling dice' },
+  noCollision:  { re: /\[bot-jitter\].*no collision risk/,                  means: 'skipped ordering entirely — fewer than 3 in the room' },
+  rankedSkip:   { re: /\[bot-order\] ranked ordering unavailable/,          means: 'fell back to random jitter, and said why' },
   floorOn:      { re: /\[floor-audio\] speech ON/,                          means: 'heard the other speaker via the analyser' },
 };
 
@@ -305,6 +312,109 @@ async function resetPrefs(bot, defaults) {
     moved.push(`${key}: ${JSON.stringify(cur.value)} → ${JSON.stringify(want)}`);
   }
   return moved;
+}
+
+// The subject's recent log, as one string. Rules use this mid-scenario to
+// branch on what has happened so far, rather than only judging at the end.
+async function sessionTail(bot, lines = 400) {
+  return String((await bot.sessionLog(lines)) || '');
+}
+
+// Wait for a specific MARKER to appear, not for a fixed delay.
+//
+// Needed wherever the interesting moment is one the app chooses — a stash
+// replaying when the floor happens to open — rather than one the harness
+// schedules. Sleeping "long enough" for it either flakes or wastes the window
+// the rule then has to act in.
+async function waitForMarker(bot, marker, { maxMs = 20_000 } = {}) {
+  const started = Date.now();
+  // Wait for a NEW occurrence, counted against a baseline — not for the marker
+  // to be present, which it may already be.
+  //
+  // The first version tested presence, and `replaying stash` is a line the
+  // PREVIOUS rule leaves in the log: held-reply-survives replays a stash too.
+  // So this returned true instantly, the rule fired its interrupter before its
+  // own stash had replayed, and the observation window then held no replay at
+  // all — reported as "REPLAY WAS UNINTERRUPTIBLE", i.e. blaming the app for
+  // an event the harness never waited for.
+  // Compare the TIMESTAMP of the newest match, not a count. Counting was the
+  // first fix and it has the same rolling-tail flaw as everything else here:
+  // when a new match arrives and an old one scrolls out of the window, the
+  // count is unchanged and the wait never fires.
+  const newest = (t) => {
+    const re = new RegExp(MARKERS[marker].re.source);
+    const hits = String(t).split('\n').filter((l) => re.test(l));
+    const last = hits[hits.length - 1] || '';
+    const m = last.match(/^\d\d:\d\d:\d\d\.\d\d\d/);
+    return m ? m[0] : '';
+  };
+  const baseline = newest(await sessionTail(bot));
+  do {
+    const cur = newest(await sessionTail(bot));
+    if (cur && cur > baseline) return true;   // HH:MM:SS.mmm sorts lexicographically
+    if (Date.now() - started >= maxMs) break;
+    await sleep(250);
+  } while (true);
+  return false;
+}
+
+// What state is this bot in RIGHT NOW, as one line a human can read.
+//
+// Rules inherit whatever the previous rule left behind, and until this existed
+// that inheritance was invisible: a rule whose preconditions had been destroyed
+// reported a plain ❌ indistinguishable from the app misbehaving. Measured
+// across a five-rule sequence, no-talk-over left floorBusy=true and a held
+// stash for every rule after it — and the rules that then failed were exactly
+// the ones needing to start speaking cleanly.
+//
+// Deliberately a READING, not a repair. The messy state is often the real
+// behaviour, and scrubbing it would throw away the most realistic thing the
+// suite does (see --sequence).
+async function snapshot(bot) {
+  const st = await bot.status().catch(() => null);
+  const tail = String((await bot.sessionLog(80)) || '');
+  // A stash is held if the newest stash line has no replay/discard after it.
+  const at = tail.lastIndexOf('[barge-in] Floor busy at audio-start');
+  const after = at >= 0 ? tail.slice(at) : '';
+  const stashHeld = at >= 0 && !/replaying stash|discarding stash/.test(after);
+  return {
+    floorBusy: st ? st.floorBusy : undefined,
+    speaking: st ? st.anyoneSpeaking : undefined,
+    stashHeld,
+    people: ((st && st.participants) || []).map((p) => p.name),
+    // Only the parts worth printing, and only when they are not the clean case.
+    get dirty() {
+      const bits = [];
+      if (this.floorBusy) bits.push('floorBusy');
+      if (this.stashHeld) bits.push('a reply still held');
+      return bits;
+    },
+  };
+}
+
+// Wait for the room to go quiet after a rule, and say how long that took.
+//
+// Rules that play long audio outlive themselves — the clip is still going when
+// the rule returns. That is the rule's own interference, so it is charged to
+// the rule that caused it rather than silently absorbed by the next one.
+async function drainAfter(bot, { maxMs = 20_000 } = {}) {
+  const started = Date.now();
+  const ok = await settleFloor(bot, { maxMs, quietMs: 800 });
+  // A quiet floor is not a clean slate: several rules deliberately leave a
+  // reply HELD, and the next rule then cannot get a word out. Give the stash
+  // its opening — a quiet floor is exactly what it is waiting for, so this
+  // usually costs a second or two and lets it replay or age out on its own.
+  //
+  // Bounded, and not an error if it does not clear: a stash can legitimately
+  // outlive this (it has 45s before it goes stale), and the next rule reports
+  // what it inherited either way.
+  let held = true;
+  while (ok && Date.now() - started < maxMs) {
+    held = (await snapshot(bot)).stashHeld;
+    if (!held) break;
+    await sleep(400);
+  }
+  return { ok, held, ms: Date.now() - started };
 }
 
 // Wait until the SUBJECT can actually hear the interrupter.
@@ -603,6 +713,301 @@ const RULES = [
   },
 
   {
+    id: 'yield-during-replay',
+    claim: 'a held reply, once it finally plays, can still be interrupted',
+    needs: ['audio'],
+    // The rule that would have caught #412, and the reason it lived so long:
+    // every other rule here interrupts speech the bot composed and played
+    // immediately. Nothing interrupted a REPLAY, so the fact that replays were
+    // uninterruptible was invisible to the suite while being obvious on a call.
+    //
+    // The mechanism: a stash replay dispatched one tick before _buildResponse
+    // in the same resolve, and _buildResponse wrote botState directly, so the
+    // replay lost 'speaking' ~1ms after its audio started. Both barge-in gates
+    // require botState === 'speaking'. Measured over one 56-minute call: 18 of
+    // 23 replays lost the state inside 200ms, against 0 of 13 normal
+    // utterances. Two bots then overlapped for 15 seconds with barge-in never
+    // arming once.
+    //
+    // Ordinary speech being interruptible says nothing about this. That is the
+    // whole point of the rule.
+    async run({ subject, voice }) {
+      // A PARKED WAITER IS NOT OPTIONAL, and this is the subtle part.
+      //
+      // A stash can replay by two routes: _maybeReplayStashOnOpening (the floor
+      // opened, no agent involved) and the wait_for_speech resolve path. Only
+      // the second reproduces #412, because only there does _buildResponse run
+      // one tick later and overwrite botState.
+      //
+      // Fleet bots are driven over HTTP with no agent loop, so they never park
+      // a waiter, so every replay in this suite took the harmless route. That
+      // is exactly why the suite could not see the bug: an early version of
+      // this rule passed just as happily with the fix reverted. Parking a real
+      // wait_for_speech is what makes the scenario the one that breaks.
+      let parked = null;
+
+      // 1. Make the floor busy so the subject stashes rather than speaks.
+      await voice.playAudio({ uninterruptible: true, path: clip(5), emoji: '🗣️' });
+      const busy = await waitForFloorBusy(subject);
+      let replayed = false;
+      const w = await window_(subject, async () => {
+        if (!busy) return;
+        // Long, so there is still utterance left to interrupt once it replays.
+        await subject.speak(
+          'The point I wanted to make about the schedule is that the second stage '
+          + 'depends on the first in a way that is easy to miss, and if we get the '
+          + 'ordering wrong we will not find out until the migration is half done.');
+        if (!saw(await sessionTail(subject), 'stashed')) return;
+
+        // Park the waiter HERE, not at the top. A wait_for_speech returns
+        // immediately when unresponded transcript is already past the silence
+        // bar — which it is, at the start of a rule, after everything the
+        // previous rule said. Parked then, it was gone before the replay, the
+        // replay took the floor-opening path, and this rule passed without
+        // ever touching the path #412 lives on. Parked now, mid-interruption,
+        // there is live speech to wait for, so it stays parked until the
+        // interrupter stops — which is the resolve that carries the replay.
+        // silence BELOW defaultSilenceSeconds (1.4s). The stash-opening timer
+        // fires at that gate, so a waiter with a longer silence bar always
+        // loses the race and the replay takes the opening path — which is
+        // exactly what happened at silence: 2, every single time.
+        parked = subject.waitForSpeech({ wait: 45, silence: 1 }).catch(() => null);
+
+        // 2. The interrupter stops, the floor opens, and the stash replays.
+        replayed = await waitForMarker(subject, 'replayed', { maxMs: 20_000 });
+        if (!replayed) return;
+
+        // 3. Interrupt THE REPLAY, immediately — it is already playing.
+        await voice.playAudio({ uninterruptible: true, path: clip(6), emoji: '✋' });
+        await sleep(5000);                    // longer than bargeInGraceMaxMs
+      });
+      if (parked) await parked;               // let the long-poll settle before the next rule
+      return { w, busy, replayed };
+    },
+    verdict({ w, busy, replayed }) {
+      if (!busy) return { ok: false, note: 'scenario did not start — the floor never went busy' };
+      if (!saw(w, 'stashed')) return { ok: false, note: 'never stashed — nothing to replay, rule untested' };
+      if (!replayed) return { ok: false, note: 'the stash never replayed — cannot test interrupting it' };
+      // WHICH replay path ran decides whether this tested anything. #412 lives
+      // on the wait_for_speech resolve path only; the floor-opening path never
+      // had the bug. The parked waiter is supposed to force the first, but it
+      // returns IMMEDIATELY when a previous rule left unresponded transcript
+      // past the silence bar — so the replay takes the opening path and the
+      // rule scores the harmless route as a failure. Seen doing exactly that
+      // after held-reply-survives.
+      if (saw(w, 'replayNoWaiter') && !saw(w, 'backedOff')) {
+        return { ok: false, notRun: true,
+          note: 'not run — the replay took the floor-opening path, not the resolve path '
+            + 'this rule exists to test (the parked waiter resolved early on a '
+            + 'transcript backlog). Run it alone, or first in the sequence' };
+      }
+      if (saw(w, 'backedOff')) {
+        // A pass on the floor-opening path is a weaker claim than it looks:
+        // that path never had #412. Say so, rather than let a green tick imply
+        // the resolve path was proven.
+        return saw(w, 'replayNoWaiter')
+          ? { ok: true, note: 'the replayed reply yielded — but via the floor-opening path; '
+              + 'the resolve path (where #412 lives) was not exercised' }
+          : { ok: true, note: 'the replayed reply yielded on the resolve path, same as fresh speech' };
+      }
+      if (saw(w, 'armed')) return { ok: false, note: 'armed during the replay but never backed off' };
+      // Carry the window size. Every saw() above reads `w`, so an empty or
+      // truncated window makes all of them false and lands here — which looks
+      // identical to the app misbehaving. If this number is small, distrust the
+      // verdict before distrusting the bot.
+      return { ok: false, note: 'REPLAY WAS UNINTERRUPTIBLE — barge-in never armed (#412) '
+        + `[observation window ${w.length} chars]` };
+    },
+  },
+
+  {
+    id: 'ranked-ordering-engages',
+    claim: 'with a peer bot in the room, speaking order is ranked rather than diced',
+    needs: ['audio', 'human'],
+    // #444, and the gap behind both bot-on-bot overlaps on the 2026-08-20 call.
+    //
+    // botSpeakOrdering="ranked" is supposed to make every bot derive the SAME
+    // order from the same roster and the same seed utterance, so the winner
+    // speaks immediately and the others wait a known gap. Random jitter, the
+    // fallback, gives two bots a real chance of picking the same moment — which
+    // is what a listener hears as "they talked over each other".
+    //
+    // Measured live on 2026-08-17 (#430): ranked was configured on two bots and
+    // neither ever ordered. Every early return in _rankedSpeakDelay reports its
+    // reason exactly once per call, which is what makes this rule diagnostic
+    // rather than merely red: the failure note carries the app's own answer.
+    //
+    // REQUIRES A 3-BOT FLEET. _speakDelay returns early at `others < 2` with
+    // "no collision risk" — below three participants there is nobody to collide
+    // with, so ordering is never consulted. The standard fleet is two bots, so
+    // this rule reports NOT TESTABLE there rather than pretending to measure
+    // something. Boot with `scripts/spawn-test-fleet.sh 3`.
+    //
+    // NOTE this rule reaches past the floor rules into configuration. The VOICE
+    // is disguised as a human for every other rule (identity is what the floor
+    // rules must NOT depend on), so ranked ordering — which needs a known peer
+    // BOT — cannot engage on the suite's default setup. peerBotNames is the
+    // documented override for exactly that case, and it is restored afterwards.
+    async run({ subject, voice }) {
+      // Ordering does not exist below three participants, so this rule brings
+      // its own. Built before restore() so the cleanup closure can always see
+      // it, whatever happens in between.
+      const third = new Bot('Cosmo', 7903, subject.room);
+      const restore = async () => {
+        await subject.setPref('botSpeakOrdering', 'jitter');
+        await subject.setPref('peerBotNames', []);
+        // Cosmo must LEAVE again: it changes `others`, and `others` is what
+        // decides whether ordering engages at all. A third body left in the
+        // room silently re-times every rule that runs after this one.
+        await third.leave().catch(() => {});
+      };
+
+      const haveThird = await third.ping();
+      if (haveThird) {
+        await third.join();
+        await third.warmUp();
+      }
+
+      try {
+        await subject.setPref('botSpeakOrdering', 'ranked');
+        await subject.setPref('peerBotNames', [voice.name]);
+
+        // The seed: the last utterance by someone OUTSIDE the bot set. Without
+        // one, ordering has nothing to rank against and skips.
+        await human(subject, 'Test Human', 'So what should we do about the schedule, then?');
+        await sleep(1500);
+
+        const w = await window_(subject, async () => {
+          await subject.speak('Here is my answer about the schedule and the ordering.');
+          await sleep(4000);
+        });
+        return { w, haveThird };
+      } finally {
+        await restore();
+      }
+    },
+    verdict({ w, haveThird }) {
+      if (saw(w, 'rankedOrder')) {
+        return { ok: true, note: 'ranked ordering engaged' };
+      }
+      if (!haveThird) {
+        return { ok: false, note: 'no third participant — ordering does not exist below 3. '
+          + 'Boot with scripts/spawn-test-fleet.sh 3 (adds Cosmo:7903)' };
+      }
+      if (saw(w, 'noCollision')) {
+        // _speakDelay short-circuits at `others < 2` before ordering is ever
+        // consulted, so a two-bot room can never exercise this — the standard
+        // fleet is exactly two. Not a bug in the app and not a bug in the rule:
+        // the scenario needs a third participant to exist at all.
+        return { ok: false, note: 'NOT TESTABLE ON A 2-BOT FLEET — ordering short-circuits '
+          + 'at "no collision risk" below 3 participants. Boot with '
+          + 'scripts/spawn-test-fleet.sh 3 and re-run' };
+      }
+      if (saw(w, 'rankedSkip')) {
+        // Hand back the app's own reason — it is more useful than anything the
+        // harness could infer, and it is why every skip path logs one.
+        const m = w.match(/ranked ordering unavailable \(([^)]*)\)/);
+        return { ok: false, note: `fell back to jitter — ${m ? m[1] : 'reason not logged'}` };
+      }
+      if (!saw(w, 'spoke')) return { ok: false, note: 'the subject never spoke — rule untested' };
+      return { ok: false, note: 'spoke with no ordering decision logged at all — '
+        + 'was another participant even present? (jitter only engages with others in the call)' };
+    },
+  },
+
+  {
+    id: 'ranked-ordering-on-replay',
+    claim: 'a held reply is ordered against peer bots too, not just fresh speech',
+    needs: ['audio', 'human'],
+    // The other half of ranked-ordering-engages, and the half that fails.
+    //
+    // Ordering demonstrably works for freshly composed speech — that rule
+    // passes, and the 2026-08-20 call logged 19 engagements against one skip.
+    // But a replay reaches the room by calling onBotSpeech directly, so it
+    // never enters _speakWithBotJitter and ordering is not skipped so much as
+    // never consulted (#442).
+    //
+    // That is not a corner: on that call replays were 23 of the 41 utterances
+    // the room actually heard. Ordering had no say in 56% of what the bot said,
+    // which is why two bots could take the same opening — neither was ordering,
+    // because both were replaying.
+    //
+    // Paired deliberately with ranked-ordering-engages. Run together they say
+    // exactly where ordering works and where it does not, which is more useful
+    // than either verdict alone.
+    knownGap: '#442 (replay bypasses the speaking gate); #493 removes it by construction',
+    async run({ subject, voice }) {
+      // Ordering does not exist below three participants, so this rule brings
+      // its own. Built before restore() so the cleanup closure can always see
+      // it, whatever happens in between.
+      const third = new Bot('Cosmo', 7903, subject.room);
+      const restore = async () => {
+        await subject.setPref('botSpeakOrdering', 'jitter');
+        await subject.setPref('peerBotNames', []);
+        // Cosmo must LEAVE again: it changes `others`, and `others` is what
+        // decides whether ordering engages at all. A third body left in the
+        // room silently re-times every rule that runs after this one.
+        await third.leave().catch(() => {});
+      };
+      const haveThird = await third.ping();
+      if (haveThird) { await third.join(); await third.warmUp(); }
+
+      try {
+        await subject.setPref('botSpeakOrdering', 'ranked');
+        await subject.setPref('peerBotNames', [voice.name]);
+        await human(subject, 'Test Human', 'So which of you wants to take the schedule question?');
+        await sleep(1500);
+
+        // Make the reply STASH: busy floor at audio-start.
+        await voice.playAudio({ uninterruptible: true, path: clip(5), emoji: '🗣️' });
+        const busy = await waitForFloorBusy(subject);
+        let replayed = false;
+        const w = await window_(subject, async () => {
+          if (!busy) return;
+          await subject.speak('My answer to the schedule question, held for a gap.');
+          if (!saw(await sessionTail(subject), 'stashed')) return;
+          // The interrupter stops, the floor opens, the stash replays.
+          replayed = await waitForMarker(subject, 'replayed', { maxMs: 20_000 });
+          await sleep(2000);
+        });
+        return { w, busy, replayed, haveThird };
+      } finally {
+        await restore();
+      }
+    },
+    verdict({ w, busy, replayed, haveThird }) {
+      if (!haveThird) {
+        return { ok: false, note: 'no third participant — ordering does not exist below 3. '
+          + 'Boot with scripts/spawn-test-fleet.sh 3 (adds Cosmo:7903)' };
+      }
+      if (!busy) return { ok: false, note: 'scenario did not start — the floor never went busy' };
+      if (!saw(w, 'stashed')) return { ok: false, note: 'never stashed — nothing to replay' };
+      if (!replayed) return { ok: false, note: 'the stash never replayed — cannot test its ordering' };
+
+      // Was an ordering decision made for THE REPLAY specifically? Compare
+      // positions: a decision belonging to this utterance is logged after the
+      // replay line, not before it. An earlier decision belongs to an earlier
+      // utterance, and counting it would make the rule pass on the strength of
+      // speech that took the other path.
+      // Strictly BETWEEN the replay and the dispatch it produced. Comparing
+      // lastIndexOf of each was the obvious version and it is wrong: any later
+      // ordering decision — a subsequent utterance, another rule's speech —
+      // sits after the replay and makes this report the gap as closed. It did
+      // exactly that on a full-suite run while the gap was plainly still open.
+      const atReplay = w.lastIndexOf('[barge-in] replaying stash');
+      const atSpeech = w.indexOf('[local-server] Bot speech:', atReplay);
+      const atOrder = w.indexOf('[bot-jitter]', atReplay);
+      const orderedThisUtterance = atReplay >= 0 && atOrder > atReplay
+        && (atSpeech < 0 || atOrder < atSpeech);
+      if (orderedThisUtterance) {
+        return { ok: true, note: 'the replayed reply was ordered, same as fresh speech' };
+      }
+      return { ok: false, note: 'the replay went straight out with NO ordering decision — '
+        + 'it never entered the speaking gate' };
+    },
+  },
+
+  {
     id: 'name-mention-priority',
     claim: 'answers promptly when addressed by name',
     needs: ['audio', 'human'],
@@ -690,24 +1095,83 @@ async function main() {
   console.log(`subject state before: callStatus=${st?.callStatus ?? '?'}\n`);
 
   const results = [];
+  // --sequence: run the rules back to back with NO settling between them, and
+  // treat whatever one rule leaves behind as the next one's starting
+  // conditions. A real call is never clean either, and "a stash from two turns
+  // ago fires during an unrelated exchange" is a real failure mode (#445) that
+  // an isolated rule cannot produce. Off by default, because attribution is
+  // what a suite is for; on deliberately, when the mess IS the subject.
+  const SEQUENCE = has('sequence');
+  if (SEQUENCE) {
+    console.log('▶︎ --sequence: no settling between rules. Inherited state is the scenario.\n');
+  }
+
   for (const rule of rules) {
     process.stdout.write(`── ${rule.id}: ${rule.claim}\n`);
-    // Never start a rule into someone else's audio — see settleFloor.
-    const settled = await settleFloor(subject);
-    if (!settled) {
-      console.log('   ⚠️  room never went quiet before this rule — result is unreliable\n');
+    // What did the previous rule hand us? Read BEFORE settling, so the record
+    // shows what was actually inherited rather than what survived the cleanup.
+    const pre = await snapshot(subject);
+    if (pre.dirty.length) {
+      console.log(`   ↪ inherited: ${pre.dirty.join(', ')}`);
     }
+
+    // Never start a rule into someone else's audio — see settleFloor.
+    const settled = SEQUENCE ? true : await settleFloor(subject);
+    if (!settled) {
+      // NOT a failure. The rule never ran, and counting it as ❌ is how a
+      // polluted predecessor gets charged to the wrong rule — four of them on
+      // one full-suite run (#494).
+      console.log('   ⏭  not run — the room never went quiet, so its preconditions never held\n');
+      results.push({ rule, ok: false, notRun: true, gap: rule.knownGap,
+        note: `not run — inherited ${pre.dirty.join(' + ') || 'a busy room'}` });
+      continue;
+    }
+
     let w = '';
     let err = null;
     try {
       w = await rule.run({ subject, voice });
     } catch (e) { err = e; }
+
+    // (3) A rule hands back what it borrowed. Its own interrupter audio often
+    // outlives it, and absorbing that silently is what made the next rule look
+    // broken. Charged here, to the rule that caused it.
+    if (!SEQUENCE) {
+      const drained = await drainAfter(subject);
+      if (!drained.ok) {
+        console.log(`   ⚠️  left the room busy — still not quiet after ${drained.ms}ms`);
+      } else if (drained.held) {
+        console.log(`   ↩ still holding a reply after ${drained.ms}ms — the next rule inherits it`);
+      } else if (drained.ms > 3000) {
+        console.log(`   ↩ left audio running; took ${drained.ms}ms to settle`);
+      }
+    }
     // A rule returns either the log window, or { w, held } when it needed the
     // subject to be genuinely speaking first.
     const v = err ? { ok: false, note: `threw: ${err.message}` } : rule.verdict(w);
-    results.push({ rule, ...v });
+    // A rule may declare a KNOWN GAP: behaviour we have decided is wrong, have
+    // an issue for, and have not fixed yet. Without this a deliberately-red
+    // rule costs the suite its signal — "8/9 held" stops meaning anything once
+    // the 1 is permanent, and a real regression hides inside it.
+    //
+    // Failing as expected is reported, not celebrated. PASSING unexpectedly is
+    // the loud case: the gap closed and the rule should be promoted.
+    const gap = rule.knownGap;
+    // A rule that says its scenario never started is reporting that it could
+    // not run, not that the app failed — several verdicts already phrase it
+    // exactly that way. Counting those as regressions is what made --sequence
+    // unreadable: the bot holding its reply into a busy floor is CORRECT
+    // behaviour, and it read as two failures.
+    const couldNotStart = !v.ok && /^(scenario did not start|not run)\b/.test(v.note || '');
+    results.push({ rule, ...v, gap, pre, notRun: v.notRun || couldNotStart });
     record(subject.name, `etiquette:${rule.id}`, v.ok, v.note);
-    console.log(`   ${v.ok ? '✅' : '❌'} ${v.note}\n`);
+    if (gap && !v.ok) {
+      console.log(`   ⚠️  ${v.note}\n        known gap, tracked in ${gap}\n`);
+    } else if (gap && v.ok) {
+      console.log(`   🎉 ${v.note}\n        KNOWN GAP ${gap} APPEARS CLOSED — drop knownGap from this rule\n`);
+    } else {
+      console.log(`   ${v.ok ? '✅' : '❌'} ${v.note}\n`);
+    }
   }
 
   if (!has('keep')) {
@@ -717,11 +1181,36 @@ async function main() {
   console.log('─'.repeat(72));
   console.log('CONVERSATIONAL ETIQUETTE');
   for (const r of results) {
-    console.log(`  ${r.ok ? 'pass' : 'FAIL'}  ${r.rule.id.padEnd(26)} ${r.rule.claim}`);
+    const tag = r.notRun ? 'skip' : r.ok ? (r.gap ? 'PASS?' : 'pass') : (r.gap ? 'gap ' : 'FAIL');
+    console.log(`  ${tag}  ${r.rule.id.padEnd(26)} ${r.rule.claim}`);
     if (!r.ok) console.log(`        ↳ ${r.note}`);
+    // A red result should be attributable without re-running it. If the rule
+    // started from a room the previous one left dirty, say so here — that was
+    // the whole complaint in #494.
+    if (!r.ok && !r.notRun && r.pre && r.pre.dirty.length) {
+      console.log(`        ↳ started with: ${r.pre.dirty.join(', ')}`);
+    }
+    if (r.gap) console.log(`        ↳ ${r.ok ? 'was a ' : ''}known gap: ${r.gap}`);
   }
-  const failed = results.filter((r) => !r.ok);
-  console.log(`\n${results.length - failed.length}/${results.length} rules held.`);
+
+  // Four buckets, because they mean four different things and averaging them
+  // is how "9/10 held" stopped meaning anything.
+  const notRun = results.filter((r) => r.notRun);
+  const gaps = results.filter((r) => !r.ok && r.gap && !r.notRun);
+  const failed = results.filter((r) => !r.ok && !r.gap && !r.notRun);
+  const closed = results.filter((r) => r.ok && r.gap);
+  const held = results.filter((r) => r.ok).length;
+  const scored = results.length - gaps.length - notRun.length;
+  console.log(`\n${held}/${scored} rules held`
+    + (gaps.length ? `, ${gaps.length} known gap(s) still open` : '')
+    + (closed.length ? `, ${closed.length} known gap(s) APPARENTLY CLOSED` : '')
+    + (notRun.length ? `, ${notRun.length} never ran` : '')
+    + '.');
+  if (failed.length) console.log(`${failed.length} REGRESSION(S) — not known gaps.`);
+  if (notRun.length) {
+    console.log(`${notRun.length} rule(s) never ran: their preconditions were destroyed before they `
+      + 'started, usually by the rule before. Not evidence about the app.');
+  }
   if (has('keep')) {
     console.log('\n⚠️  --keep leaves the bots in the call with their stashes and floor state.'
       + '\n   Kill and re-prep before the next run, or the rules will measure the leftovers'

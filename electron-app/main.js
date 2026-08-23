@@ -1268,6 +1268,23 @@ const localServer = new globalThis.LocalServer({
     try { pathname = new URL(req.url, 'http://127.0.0.1').pathname; } catch { return false; }
     if (pathname === '/claude-ready' && req.method === 'POST') {
       markClaudeReady('session-hook');
+      // The hook forwards its stdin, which carries session_id — the id to
+      // --resume on the next launch. Best-effort by design: an older hook (or a
+      // curl that could not read stdin) posts an empty body, and readiness above
+      // must still be recorded. See ensureClaudeReadyHook.
+      let body = '';
+      try {
+        body = await new Promise((resolve) => {
+          let buf = '';
+          req.on('data', (c) => { buf += c; });
+          req.on('end', () => resolve(buf));
+          req.on('error', () => resolve(''));
+        });
+      } catch { /* no body */ }
+      try {
+        const payload = JSON.parse(body || '{}');
+        if (payload && payload.session_id) recordAgentSessionId(payload.session_id);
+      } catch { /* not JSON — pre-session-id hook */ }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
       return true;
@@ -6244,6 +6261,12 @@ ipcMain.handle('get-claude-ready', () => claudeReady);
 // Merge a SessionStart hook into the agent dir's settings.local.json so ANY Claude session
 // launched there pings /claude-ready on startup (proof it's installed + signed in).
 // Idempotent — keeps existing settings/hooks; only adds ours if absent.
+//
+// It also forwards the hook's stdin payload, which is what carries `session_id`
+// (see /claude-ready in extraRoutes). That is the ONLY session-id capture path
+// that works for every hosting mode: Terminal.app and tmux own the agent's
+// stdout, so there is nothing for the app to parse there — but the CLI runs this
+// hook itself regardless of who is holding the pipe.
 function ensureClaudeReadyHook(agentDir, port) {
   try {
     const settingsPath = path.join(agentDir, '.claude', 'settings.local.json');
@@ -6251,16 +6274,63 @@ function ensureClaudeReadyHook(agentDir, port) {
     try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')); } catch { /* fresh */ }
     settings.hooks = settings.hooks || {};
     const list = Array.isArray(settings.hooks.SessionStart) ? settings.hooks.SessionStart : [];
-    const present = list.some((g) => (g.hooks || []).some((h) => typeof h.command === 'string' && h.command.includes('/claude-ready')));
-    if (!present) {
-      const cmd = `curl -s -m 2 -X POST http://127.0.0.1:${port}/claude-ready >/dev/null 2>&1 || true`;
-      list.push({ hooks: [{ type: 'command', command: cmd }] });
-      settings.hooks.SessionStart = list;
-      fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-      console.log('[electron] Added Claude-ready SessionStart hook → 127.0.0.1:' + port);
-    }
+    // `--data-binary @-` is what forwards the hook payload; anything without it is
+    // a pre-session-id hook left over in an existing workdir. Matching on the flag
+    // rather than just the URL is what makes those upgrade instead of sitting
+    // there silently never reporting a session id.
+    const cmd = `curl -s -m 2 -X POST -H 'Content-Type: application/json' --data-binary @- http://127.0.0.1:${port}/claude-ready >/dev/null 2>&1 || true`;
+    const isOurs = (h) => typeof h.command === 'string' && h.command.includes('/claude-ready');
+    const current = list.filter((g) => (g.hooks || []).some(isOurs));
+    if (current.length === 1 && current[0].hooks.length === 1 && current[0].hooks[0].command === cmd) return;
+    // Drop every previous version of ours, then add exactly one current one. A
+    // filter-then-push rather than an in-place edit, so a workdir that collected
+    // hooks from several app versions/ports converges on one.
+    const kept = list.filter((g) => !(g.hooks || []).some(isOurs));
+    kept.push({ hooks: [{ type: 'command', command: cmd }] });
+    settings.hooks.SessionStart = kept;
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+    console.log('[electron] Wrote Claude-ready SessionStart hook → 127.0.0.1:' + port);
   } catch (err) { console.warn('[electron] ensureClaudeReadyHook failed:', err.message); }
+}
+
+// The session id to actually --resume, given the dir the agent will start in.
+//
+// Empty when there is nothing to resume OR when the recorded id demonstrably
+// isn't resumable from this directory (see sessionExists — a wrong id makes the
+// CLI exit before starting, so the bot joins mute). Dropping the flag starts a
+// fresh session, and the SessionStart hook then records the new id over the
+// dead one, so this self-heals rather than needing the user to clear the field.
+function effectiveResumeSessionId(claudeDir) {
+  const { resolveSessionId, sessionExists } = require('./agent-session.js');
+  const id = resolveSessionId(store.get('agentSessionId'));
+  if (!id) return '';
+  if (sessionExists(id, claudeDir)) return id;
+  console.warn('[electron] Recorded session', id, 'is not resumable from', claudeDir,
+    '— starting a fresh session. (Working Directory changed, or the session was deleted.)');
+  // Clear it so the hook can record the replacement. Left set, every launch
+  // would re-check, re-warn, and never converge.
+  try { store.set('agentSessionId', ''); notifyConfigChanged('agentSessionId', ''); } catch { /* noop */ }
+  return '';
+}
+
+// Record the session id the CLI chose, so the next launch can --resume it.
+//
+// Only when the pref is EMPTY. A set value is the user's choice (they pinned
+// this bot to a session by hand), and a resumed session reports the same id it
+// was given anyway — so overwriting would only ever do damage.
+function recordAgentSessionId(sessionId) {
+  const { resolveSessionId } = require('./agent-session.js');
+  const id = resolveSessionId(sessionId);
+  if (!id) return;
+  try {
+    if (resolveSessionId(store.get('agentSessionId'))) return;
+    store.set('agentSessionId', id);
+    console.log('[electron] Recorded agent session id for --resume:', id);
+    // The panel's field is populated on load, so without this it keeps showing
+    // the empty "(auto…)" placeholder until the settings window is reopened.
+    notifyConfigChanged('agentSessionId', id);
+  } catch (err) { console.warn('[electron] recordAgentSessionId failed:', err.message); }
 }
 
 // Claude Code isn't installed → offer a CONSENTED one-click install (visible Terminal
@@ -6495,8 +6565,14 @@ async function launchClaudeTerminal(meetCode, { onboardingCall = false } = {}) {
   // shell command. See tests/claude-model.test.mjs.
   const { claudeModelFlag } = require('./claude-model.js');
   const modelFlag = claudeModelFlag(store.get('claudeModel'));
+  // Settings → "Session name/id". Empty = start fresh; the SessionStart hook then
+  // records the new id so the next launch resumes this same conversation.
+  // Sanitized in agent-session.js — like the model, this is interpolated into an
+  // AppleScript-wrapped shell command.
+  const { claudeResumeFlag } = require('./agent-session.js');
+  const resumeFlag = claudeResumeFlag(effectiveResumeSessionId(claudeDir));
   const slashCmd = onboardingCall ? 'onboarding-call' : 'join-call';
-  const claudeCmd = `claude${dangerousFlag}${modelFlag}${mcpFlags} \\"/${slashCmd} ${meetCode} ${botName.replace(/"/g, '')}\\"`;
+  const claudeCmd = `claude${resumeFlag}${dangerousFlag}${modelFlag}${mcpFlags} \\"/${slashCmd} ${meetCode} ${botName.replace(/"/g, '')}\\"`;
 
   // #242: run the agent as our own child instead, when asked to. Everything
   // above (detection, auth nag, workdir, MCP config, bot name) is shared — the
@@ -6719,6 +6795,7 @@ function launchClaudeLinuxTerminal({ meetCode, botName, claudeDir, dangerousMode
     dangerous: dangerousMode,
     model: resolveClaudeModel(store.get('claudeModel')),
     mcpConfigPath,
+    resumeSessionId: effectiveResumeSessionId(claudeDir),
     onboardingCall,
   })];
 
@@ -6828,6 +6905,7 @@ function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, cla
     dangerous: dangerousMode,
     model: resolveClaudeModel(store.get('claudeModel')),
     mcpConfigPath,
+    resumeSessionId: effectiveResumeSessionId(claudeDir),
     onboardingCall,
   });
 

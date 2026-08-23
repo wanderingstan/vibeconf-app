@@ -84,6 +84,7 @@ const ttsVoiceIdInput = document.getElementById('ttsVoiceId');
 const unifiedVoiceSelect = document.getElementById('unifiedVoice'); // #340 merged picker
 const refreshVoicesBtn = document.getElementById('refreshVoicesBtn');
 const claudeWorkDirInput = document.getElementById('claudeWorkDir');
+const agentSessionIdInput = document.getElementById('agentSessionId');
 const claudeModelInput = document.getElementById('claudeModel');
 const emojiSetInput = document.getElementById('emojiSet');
 const captionLanguageInput = document.getElementById('captionLanguage');
@@ -1833,7 +1834,7 @@ api.invoke('get-upcoming-calendar-events').then((r) => {
 // bot in the wizard saw "Unnamed bot" in Settings and reasonably concluded the
 // save had failed, when it had worked (#190, #143).
 function loadConfigIntoControls() {
-  return api.invoke('get-config', ['botName', 'calendarIdentityEmail', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'ttsProvider', 'claudeWorkDir', 'claudeModel', 'emojiSet', 'captionLanguage', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
+  return api.invoke('get-config', ['botName', 'calendarIdentityEmail', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'ttsProvider', 'claudeWorkDir', 'agentSessionId', 'claudeModel', 'emojiSet', 'captionLanguage', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
   if (result?.botName) {
     botNameInput.value = result.botName;
     currentBotName = result.botName;
@@ -1878,6 +1879,7 @@ function loadConfigIntoControls() {
   // from the saved provider/voice; defaults to Daniel (tts.js's real default).
   populateUnifiedVoices(result);
   if (result?.claudeWorkDir) claudeWorkDirInput.value = result.claudeWorkDir;
+  if (result?.agentSessionId) agentSessionIdInput.value = result.agentSessionId;
   if (result?.claudeModel) claudeModelInput.value = result.claudeModel;
   if (emojiSetInput && result?.emojiSet) {
     // emojiSet has two OPEN forms — `font:<Family>` and `dir:<path>` — and
@@ -3143,7 +3145,7 @@ async function refreshAgentWorkdir() {
     const r = await api.invoke('get-agent-workdir');
     agentWorkdirPathEl.textContent = r?.path || '—';
     agentWorkdirPathEl.title = r?.isOverride
-      ? `Override (Claude Working Directory): ${r.path}`
+      ? `Override (Working Directory): ${r.path}`
       : `This bot's own trusted folder: ${r?.path || ''}`;
   } catch { agentWorkdirPathEl.textContent = '—'; }
 }
@@ -3179,6 +3181,10 @@ claudeWorkDirInput.addEventListener('change', () => {
   api.invoke('set-config', 'claudeWorkDir', claudeWorkDirInput.value.trim());
   refreshAgentWorkdir();
   refreshAgentClaudeMd();
+});
+
+agentSessionIdInput?.addEventListener('change', () => {
+  api.invoke('set-config', 'agentSessionId', agentSessionIdInput.value.trim());
 });
 
 claudeModelInput.addEventListener('change', () => {

@@ -71,12 +71,16 @@ function cleanAgentEnv(env) {
 // Code installed. An ARRAY, never a string — the bot name is user-supplied and
 // arrives here unescaped, which through the Terminal path meant stripping quotes
 // out of it and hoping.
-function buildAgentArgs({ meetCode, botName, dangerous, model, mcpConfigPath, resumeSessionId, onboardingCall = false }) {
+function buildAgentArgs({ meetCode, botName, dangerous, model, mcpConfigPath, resumeSessionId, sessionName, onboardingCall = false }) {
   const args = [];
   // Before -p, so the prompt stays the trailing value of its own flag. Empty
   // means "start a new session"; the SessionStart hook records the id the CLI
   // picks so the next launch continues this same conversation.
   if (resumeSessionId) args.push('--resume', resumeSessionId);
+  // The bot's name, so its session is findable as "Jimmy" rather than a UUID.
+  // Applies to a resumed session too — verified against the installed CLI, which
+  // accepts --name alongside --resume and records it as `agentName`.
+  if (sessionName) args.push('--name', sessionName);
   // -p (print/headless) rather than an interactive session: there is no terminal
   // for an interactive one to draw in. The session still runs as long as the
   // agent keeps working — the /join-call loop only ends when it calls leave_call
@@ -128,9 +132,10 @@ function buildAgentArgs({ meetCode, botName, dangerous, model, mcpConfigPath, re
 // user-supplied and arrives unescaped. The macOS path interpolates it into an
 // AppleScript-wrapped shell string and copes by stripping quotes out of it
 // (`botName.replace(/"/g, '')`). Nothing here needs to strip anything.
-function buildInteractiveAgentArgs({ meetCode, botName, dangerous, model, mcpConfigPath, resumeSessionId, onboardingCall = false }) {
+function buildInteractiveAgentArgs({ meetCode, botName, dangerous, model, mcpConfigPath, resumeSessionId, sessionName, onboardingCall = false }) {
   const args = [];
   if (resumeSessionId) args.push('--resume', resumeSessionId);
+  if (sessionName) args.push('--name', sessionName);
   if (dangerous) args.push('--dangerously-skip-permissions');
   if (model) args.push('--model', model);
   if (mcpConfigPath) args.push('--mcp-config', mcpConfigPath, '--strict-mcp-config');

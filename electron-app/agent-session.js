@@ -30,6 +30,34 @@ function claudeResumeFlag(raw) {
   return id ? ` --resume ${id}` : '';
 }
 
+// The DISPLAY name for the session (`--name`), which is what makes a bot's
+// session findable as "Jimmy" instead of a UUID — in the CLI's prompt box, in
+// /resume, and as `agentName` in the transcript.
+//
+// Separate from the id on purpose: the id has to be exact and machine-stable,
+// the name only has to be readable, so this keeps spaces where resolveSessionId
+// strips them. Same drop-don't-escape rule though — the bot name is user-typed
+// and reaches the macOS path inside a shell command inside an AppleScript
+// string, which is how `botName.replace(/"/g, '')` already exists nearby.
+const NAME_SAFE_CHARS = /[^A-Za-z0-9 ._-]/g;
+
+function resolveSessionName(raw) {
+  // Collapse runs of whitespace before trimming, so a name that was mostly
+  // stripped ("Jimmy 🤖") doesn't end up with a trailing gap.
+  const cleaned = String(raw ?? '').replace(NAME_SAFE_CHARS, ' ').replace(/\s+/g, ' ').trim();
+  // Long enough for any real bot name, short enough that a paste accident can't
+  // become the command line.
+  return cleaned.slice(0, 60);
+}
+
+// The full flag, ready to splice into the AppleScript-wrapped command. The
+// escaped quotes match how the prompt argument is already passed there, so a
+// two-word bot name stays one argument.
+function claudeNameFlag(raw) {
+  const name = resolveSessionName(raw);
+  return name ? ` --name \\"${name}\\"` : '';
+}
+
 // Is this session id actually resumable from `cwd`?
 //
 // This exists because a WRONG id is not a soft failure. Measured against the
@@ -66,4 +94,6 @@ function sessionExists(sessionId, cwd, { fs = require('fs'), path = require('pat
   }
 }
 
-module.exports = { resolveSessionId, claudeResumeFlag, sessionExists };
+module.exports = {
+  resolveSessionId, claudeResumeFlag, resolveSessionName, claudeNameFlag, sessionExists,
+};

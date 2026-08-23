@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const { resolveSessionId, claudeResumeFlag, sessionExists } = require('../electron-app/agent-session.js');
+const { resolveSessionId, claudeResumeFlag, resolveSessionName, claudeNameFlag, sessionExists } = require('../electron-app/agent-session.js');
 const { buildAgentArgs, buildInteractiveAgentArgs } = require('../electron-app/agent-spawn.js');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
 
@@ -76,6 +76,56 @@ test('no session id means no --resume in either builder', () => {
     const a = build({ meetCode: 'abc-defg-hij', botName: 'Jimmy', dangerous: true, model: 'opus' });
     assert.ok(!a.includes('--resume'), `${build.name} added --resume with no id`);
   }
+});
+
+test('the session is named after the bot, so it is not a UUID in /resume', () => {
+  assert.equal(resolveSessionName('Jimmy'), 'Jimmy');
+  assert.equal(claudeNameFlag('Jimmy'), ' --name \\"Jimmy\\"');
+  // Two-word names stay one name. The escaped quotes match how the prompt is
+  // already passed on the AppleScript path.
+  assert.equal(claudeNameFlag('Jimmy Bot'), ' --name \\"Jimmy Bot\\"');
+});
+
+test('a bot name is user-typed, so it is sanitized like every other spliced value', () => {
+  // Reaches the macOS path inside a shell command inside an AppleScript string.
+  const flag = claudeNameFlag('Jimmy"; rm -rf ~; echo "');
+  assert.ok(!/[$`;|&<>()]/.test(flag), `unsafe characters survived: ${flag}`);
+  assert.ok(!flag.includes('\\"Jimmy\\"; rm'), 'the name must not be able to close its own quoting');
+  // Stripping must not leave ragged whitespace behind.
+  assert.equal(resolveSessionName('Jimmy 🤖'), 'Jimmy');
+  assert.equal(resolveSessionName('   '), '');
+  assert.equal(claudeNameFlag(''), '', 'no name means no flag, not an empty one');
+});
+
+test('a pasted essay cannot become the command line', () => {
+  assert.ok(resolveSessionName('x'.repeat(500)).length <= 60);
+});
+
+test('both argv builders pass the name as its own element', () => {
+  for (const build of [buildAgentArgs, buildInteractiveAgentArgs]) {
+    const a = build({ meetCode: 'abc-defg-hij', botName: 'Jimmy', dangerous: true, model: 'opus', sessionName: 'Jimmy Bot' });
+    const i = a.indexOf('--name');
+    assert.ok(i >= 0, `${build.name} dropped --name`);
+    assert.equal(a[i + 1], 'Jimmy Bot', 'a two-word name must stay one argv element');
+  }
+});
+
+test('the name is applied to resumed sessions too, not just new ones', () => {
+  // Verified against the installed CLI: --name alongside --resume is accepted
+  // and lands as `agentName` in the transcript. Since a bot resumes on every
+  // launch after the first, a name only applied at creation would be a name
+  // almost never applied.
+  const a = buildAgentArgs({
+    meetCode: 'abc-defg-hij', botName: 'Jimmy', dangerous: true, model: 'opus',
+    resumeSessionId: '11111111-2222-3333-4444-555555555555', sessionName: 'Jimmy',
+  });
+  assert.ok(a.includes('--resume') && a.includes('--name'));
+});
+
+test('every launch path names the session after the bot', () => {
+  const named = (main.match(/sessionName: resolveSessionName\(botName\)/g) || []).length;
+  const flag = (main.match(/claudeNameFlag\(botName\)/g) || []).length;
+  assert.equal(named + flag, 3, `expected all three launch paths to set a name, saw ${named + flag}`);
 });
 
 test('the SessionStart hook forwards its payload, or no id is ever captured', () => {

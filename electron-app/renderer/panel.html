@@ -405,7 +405,7 @@
         <div class="field">
           <label for="agentSessionId">Session name/id</label>
           <input type="text" id="agentSessionId" placeholder="(auto: filled in after first headless launch)" />
-          <div style="font-size:11px;color:#666;margin-top:2px">The Claude Code session this bot resumes into (passed as <code>--resume</code>), so the bot keeps the same conversation across launches instead of starting fresh each time. Leave blank to let the app start a new session and record its id here automatically (headless hosting only, for now). Set your own session id/name to pin this bot to a specific session.</div>
+          <div style="font-size:11px;color:#666;margin-top:2px">The session this bot resumes into (passed as <code>--resume</code>), so it keeps the same conversation across launches instead of starting fresh each time. Leave blank to let the app start a new session and record its id here automatically. The session is also named after the bot, so it shows up as its name rather than a UUID in <code>/resume</code>. Set an id by hand to pin this bot to a specific session; clear the field to start over with a fresh one.</div>
         </div>
         <div class="field">
           <label for="agentClaudeMd">Personality (CLAUDE.md)</label>

@@ -6569,10 +6569,13 @@ async function launchClaudeTerminal(meetCode, { onboardingCall = false } = {}) {
   // records the new id so the next launch resumes this same conversation.
   // Sanitized in agent-session.js — like the model, this is interpolated into an
   // AppleScript-wrapped shell command.
-  const { claudeResumeFlag } = require('./agent-session.js');
+  const { claudeResumeFlag, claudeNameFlag } = require('./agent-session.js');
   const resumeFlag = claudeResumeFlag(effectiveResumeSessionId(claudeDir));
+  // Name the session after the bot, so it reads as "Jimmy" in the prompt box and
+  // /resume instead of a UUID.
+  const nameFlag = claudeNameFlag(botName);
   const slashCmd = onboardingCall ? 'onboarding-call' : 'join-call';
-  const claudeCmd = `claude${resumeFlag}${dangerousFlag}${modelFlag}${mcpFlags} \\"/${slashCmd} ${meetCode} ${botName.replace(/"/g, '')}\\"`;
+  const claudeCmd = `claude${resumeFlag}${nameFlag}${dangerousFlag}${modelFlag}${mcpFlags} \\"/${slashCmd} ${meetCode} ${botName.replace(/"/g, '')}\\"`;
 
   // #242: run the agent as our own child instead, when asked to. Everything
   // above (detection, auth nag, workdir, MCP config, bot name) is shared — the
@@ -6789,6 +6792,7 @@ function launchClaudeLinuxTerminal({ meetCode, botName, claudeDir, dangerousMode
   const plan = chooseAgentTerminalPlan({ emulator, hasTmux, allowTmux });
   if (!plan) return false; // caller falls back to headless, then errors loudly
 
+  const { resolveSessionName } = require('./agent-session.js');
   const argv = [claudeBin, ...buildInteractiveAgentArgs({
     meetCode,
     botName,
@@ -6796,6 +6800,7 @@ function launchClaudeLinuxTerminal({ meetCode, botName, claudeDir, dangerousMode
     model: resolveClaudeModel(store.get('claudeModel')),
     mcpConfigPath,
     resumeSessionId: effectiveResumeSessionId(claudeDir),
+    sessionName: resolveSessionName(botName),
     onboardingCall,
   })];
 
@@ -6899,6 +6904,7 @@ function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, cla
   }
 
   const { resolveClaudeModel } = require('./claude-model.js');
+  const { resolveSessionName } = require('./agent-session.js');
   const args = buildAgentArgs({
     meetCode,
     botName,
@@ -6906,6 +6912,7 @@ function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, cla
     model: resolveClaudeModel(store.get('claudeModel')),
     mcpConfigPath,
     resumeSessionId: effectiveResumeSessionId(claudeDir),
+    sessionName: resolveSessionName(botName),
     onboardingCall,
   });
 

@@ -3181,10 +3181,29 @@ claudeWorkDirInput.addEventListener('change', () => {
   api.invoke('set-config', 'claudeWorkDir', claudeWorkDirInput.value.trim());
   refreshAgentWorkdir();
   refreshAgentClaudeMd();
+  // Sessions are per working directory, so this changes which one is in use.
+  refreshAgentSession();
 });
+
+// The session actually in use, under the field. The id is never something to
+// type — it is looked up from the name — so it is shown rather than filled in.
+const agentSessionStatusEl = document.getElementById('agentSessionStatus');
+async function refreshAgentSession() {
+  if (!agentSessionStatusEl) return;
+  try {
+    const s = await api.invoke('get-agent-session');
+    if (!s?.name) { agentSessionStatusEl.textContent = ''; return; }
+    const where = s.pinned ? 'Pinned to' : 'Session';
+    agentSessionStatusEl.textContent = s.exists
+      ? `${where} “${s.name}” — resuming ${s.id}`
+      : `${where} “${s.name}” — no session yet; the next launch starts one.`;
+  } catch { agentSessionStatusEl.textContent = ''; }
+}
+refreshAgentSession();
 
 agentSessionIdInput?.addEventListener('change', () => {
   api.invoke('set-config', 'agentSessionId', agentSessionIdInput.value.trim());
+  refreshAgentSession();
 });
 
 claudeModelInput.addEventListener('change', () => {

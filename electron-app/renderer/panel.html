@@ -404,8 +404,9 @@
         </div>
         <div class="field">
           <label for="agentSessionId">Session name/id</label>
-          <input type="text" id="agentSessionId" placeholder="(auto: filled in after first headless launch)" />
-          <div style="font-size:11px;color:#666;margin-top:2px">The session this bot resumes into (passed as <code>--resume</code>), so it keeps the same conversation across launches instead of starting fresh each time. Leave blank to let the app start a new session and record its id here automatically. The session is also named after the bot, so it shows up as its name rather than a UUID in <code>/resume</code>. Set an id by hand to pin this bot to a specific session; clear the field to start over with a fresh one.</div>
+          <input type="text" id="agentSessionId" placeholder="(auto: named after the bot)" />
+          <div style="font-size:11px;color:#666;margin-top:2px">The bot keeps <em>one</em> ongoing session and resumes it every launch, instead of starting fresh and forgetting the last call. Leave blank and the session is named after the bot — one "Jimmy" session, resumed each time. Type a different name to keep a separate session under that name, or paste a session id to pin this bot to a specific existing session. Sessions belong to the working directory above, so changing that starts a new one.</div>
+          <div style="font-size:11px;color:#666;margin-top:6px" id="agentSessionStatus">…</div>
         </div>
         <div class="field">
           <label for="agentClaudeMd">Personality (CLAUDE.md)</label>

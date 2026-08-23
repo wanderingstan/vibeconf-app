@@ -5,9 +5,15 @@
 // Terminal path (`do script "claude --resume <X> …"`), so a resolution bug here
 // is a command-injection bug rather than a cosmetic one.
 //
-// The setting lives in the panel (Settings → "Session name/id"). Empty means
-// "start a new session"; the SessionStart hook then records the id the CLI
-// picked, so the next launch resumes it. See ensureClaudeReadyHook in main.js.
+// The setting lives in the panel (Settings → "Session name/id") and is
+// name-first: a bot keeps ONE session, named after itself, and resumes it every
+// launch instead of starting fresh and forgetting the last call. Blank means
+// the bot's own name, so that costs no configuration at all.
+//
+// The id is an implementation detail the field does not normally carry — it is
+// looked up from the name, recorded by the SessionStart hook the first time
+// (see ensureClaudeReadyHook / planAgentSession in main.js). Pasting a real
+// UUID in is the escape hatch for pinning a bot to a specific session.
 
 // Session ids are UUIDs, but the field accepts a name too, so this is the same
 // conservative set claude-model.js uses. Everything else is DROPPED rather than
@@ -58,6 +64,46 @@ function claudeNameFlag(raw) {
   return name ? ` --name \\"${name}\\"` : '';
 }
 
+// What the "Session name/id" field means, given the bot it belongs to.
+//
+// One field, two things, because a session HAS both and people reach for
+// whichever they have. A UUID is an exact session — the escape hatch for
+// pinning a bot to one that already exists. Anything else is a NAME, and blank
+// means the bot's own name, which is the case that makes this invisible: a bot
+// called Jimmy keeps one session called Jimmy without anyone configuring
+// anything.
+//
+// Names are how a person thinks about this ("the Jimmy session"), so the field
+// is name-first and the id is a detail. But names are NOT how the launch
+// resolves it — see planAgentSession in main.js. `--resume <title>` exists, and
+// it hard-errors with "matches 2 sessions" the moment a directory holds two by
+// the same name, which is unrecoverable without an id. Resolving to an id
+// ourselves keeps the readable name and never hits that.
+const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+function isSessionId(raw) {
+  return UUID_RE.test(String(raw ?? '').trim());
+}
+
+function resolveSessionRef(fieldValue, botName) {
+  const raw = String(fieldValue ?? '').trim();
+  // The session is named after the bot either way — a pinned id still gets a
+  // readable label, and the field is not the place to carry one.
+  const botLabel = resolveSessionName(botName);
+  if (isSessionId(raw)) return { kind: 'id', id: resolveSessionId(raw), name: botLabel };
+  return { kind: 'name', id: '', name: resolveSessionName(raw) || botLabel };
+}
+
+// The cache key for a name-keyed session. Sessions are stored per working
+// directory, so the same name in a different directory is a different session —
+// which is why changing the Working Directory correctly starts a fresh one
+// rather than resuming something from the old path.
+function sessionCacheKey(cwd, name) {
+  // Newline as the separator: a path can contain almost anything, but not this,
+  // so two different (dir, name) pairs can never collide into one key.
+  return `${cwd}\n${resolveSessionName(name).toLowerCase()}`;
+}
+
 // Is this session id actually resumable from `cwd`?
 //
 // This exists because a WRONG id is not a soft failure. Measured against the
@@ -96,4 +142,5 @@ function sessionExists(sessionId, cwd, { fs = require('fs'), path = require('pat
 
 module.exports = {
   resolveSessionId, claudeResumeFlag, resolveSessionName, claudeNameFlag, sessionExists,
+  isSessionId, resolveSessionRef, sessionCacheKey,
 };

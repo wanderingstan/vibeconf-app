@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const { resolveSessionId, claudeResumeFlag, resolveSessionName, claudeNameFlag, sessionExists } = require('../electron-app/agent-session.js');
+const { resolveSessionId, claudeResumeFlag, resolveSessionName, claudeNameFlag, sessionExists, resolveSessionRef, sessionCacheKey } = require('../electron-app/agent-session.js');
 const { buildAgentArgs, buildInteractiveAgentArgs } = require('../electron-app/agent-spawn.js');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
 
@@ -122,12 +122,6 @@ test('the name is applied to resumed sessions too, not just new ones', () => {
   assert.ok(a.includes('--resume') && a.includes('--name'));
 });
 
-test('every launch path names the session after the bot', () => {
-  const named = (main.match(/sessionName: resolveSessionName\(botName\)/g) || []).length;
-  const flag = (main.match(/claudeNameFlag\(botName\)/g) || []).length;
-  assert.equal(named + flag, 3, `expected all three launch paths to set a name, saw ${named + flag}`);
-});
-
 test('the SessionStart hook forwards its payload, or no id is ever captured', () => {
   // The hook is the ONLY capture path that works for Terminal.app and tmux. A
   // curl without --data-binary posts an empty body and the session id is lost
@@ -146,27 +140,6 @@ test('an already-installed pre-session-id hook is rewritten, not left alone', ()
     'the hook must be compared against the CURRENT command, not merely detected');
 });
 
-test('a session id already set is never overwritten by the hook', () => {
-  // A set value is the user pinning this bot to a session by hand. The hook
-  // fires on resume too and reports that same id, so the only thing overwriting
-  // could ever do is clobber a deliberate choice.
-  const fn = main.slice(main.indexOf('function recordAgentSessionId'));
-  const body = fn.slice(0, fn.indexOf('\n}\n'));
-  assert.ok(/if \(resolveSessionId\(store\.get\('agentSessionId'\)\)\) return;/.test(body),
-    'recordAgentSessionId must bail when the preference already holds an id');
-});
-
-test('every launch path resolves the id through the staleness guard', () => {
-  // Three hosting modes (macOS Terminal, Linux terminal/tmux, headless). A path
-  // that reads the preference directly skips the sessionExists check, and a
-  // stale id there is not a degraded session — it is an agent that exits before
-  // starting, i.e. a bot sitting mute in the call.
-  const uses = main.match(/(?<!function )effectiveResumeSessionId\(claudeDir\)/g) || [];
-  assert.equal(uses.length, 3, `expected all three launch paths to use the guard, saw ${uses.length}`);
-  // And none of them may read the raw preference instead, which would bypass it.
-  assert.ok(!/resumeSessionId: resolveSessionId\(/.test(main),
-    'a launch path is reading agentSessionId directly, skipping the staleness guard');
-});
 
 test('a stale session id is dropped rather than passed to a doomed launch', () => {
   // Measured against the installed CLI: `--resume <unknown-id>` prints "No
@@ -196,11 +169,83 @@ test('the guard only acts on positive evidence of absence', () => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-test('dropping a stale id also clears it, so the hook can record a live one', () => {
-  // Left set, every launch would re-check, re-warn, and never converge — the
-  // bot would start fresh forever while the field kept showing a dead id.
-  const fn = main.slice(main.indexOf('function effectiveResumeSessionId'));
+
+// ── One field, two meanings ──────────────────────────────────────────────────
+// A session has both a name and an id, and people reach for whichever they
+// have. Blank is the case that matters most: it means "the bot's own name",
+// which is what makes one-session-per-bot need no configuration at all.
+
+test('blank means the session is named after the bot', () => {
+  const ref = resolveSessionRef('', 'Jimmy');
+  assert.equal(ref.kind, 'name');
+  assert.equal(ref.name, 'Jimmy');
+  assert.equal(ref.id, '');
+});
+
+test('a UUID pins the bot to that exact session', () => {
+  const id = '0c7d62da-e284-4670-a089-1ab02ece1b15';
+  const ref = resolveSessionRef(id, 'Jimmy');
+  assert.equal(ref.kind, 'id');
+  assert.equal(ref.id, id);
+  // Still labelled after the bot — a pinned session should not read as a UUID.
+  assert.equal(ref.name, 'Jimmy');
+});
+
+test('anything that is not a UUID is a name, not a broken id', () => {
+  // The failure this prevents: treating "Jimmy" as an id and passing it to
+  // --resume, which errors out and leaves the bot mute.
+  for (const v of ['Jimmy', 'research bot', 'not-a-uuid', '1234']) {
+    assert.equal(resolveSessionRef(v, 'Bot').kind, 'name', `${v} should be a name`);
+  }
+  // A near-miss UUID is a name too, and names are matched case-insensitively
+  // later, so this must not silently become a doomed --resume.
+  assert.equal(resolveSessionRef('0c7d62da-e284-4670-a089', 'Bot').kind, 'name');
+});
+
+test('a session belongs to a working directory, so the key carries both', () => {
+  // This is why changing the Working Directory correctly starts a new session
+  // instead of resuming one that lives under the old path.
+  const a = sessionCacheKey('/bots/jimmy', 'Jimmy');
+  const b = sessionCacheKey('/bots/other', 'Jimmy');
+  assert.notEqual(a, b);
+  // Case-insensitive, matching how the CLI resolves titles.
+  assert.equal(sessionCacheKey('/bots/jimmy', 'JIMMY'), a);
+});
+
+test('resume goes through an id, never through --resume <title>', () => {
+  // Verified against the installed CLI: two sessions sharing a title make
+  // `--resume "Jimmy"` fail with "matches 2 sessions. Pass one of these session
+  // IDs to disambiguate" — unrecoverable without an id, and a mute bot. So the
+  // name is resolved to an id here and the id is what gets passed.
+  const fn = main.slice(main.indexOf('function planAgentSession'));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
-  assert.ok(body.includes("store.set('agentSessionId', '')"),
-    'a session found to be unresumable must be cleared from the preference');
+  assert.ok(body.includes('agentSessionCache'), 'the name must resolve via the id cache');
+  assert.ok(!/resumeSessionId: *ref\.name/.test(body), 'a title must never be passed as --resume');
+});
+
+test('every launch path goes through the planner', () => {
+  // Three hosting modes. One that builds its own flags would miss the
+  // name-to-id resolution and the per-directory scoping with it.
+  const uses = (main.match(/(?<!function )planAgentSession\(claudeDir, botName\)/g) || []).length;
+  assert.equal(uses, 3, `expected all three launch paths to use the planner, saw ${uses}`);
+});
+
+test('a pinned id is never silently replaced', () => {
+  // An id in the field is an explicit instruction. If it is unresumable the
+  // launch starts fresh rather than joining mute, but the field is left alone —
+  // overwriting it would be the app overruling something the user typed.
+  const fn = main.slice(main.indexOf('function planAgentSession'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  const pinned = body.slice(body.indexOf("ref.kind === 'id'"), body.indexOf('Name-keyed'));
+  assert.ok(!pinned.includes('store.set'), 'a pinned session id must not be rewritten by the app');
+});
+
+test('only a session WE started fresh is cached', () => {
+  // The hook fires for any session in the bot's folder, including one a person
+  // started by hand. Gating on the pending key is what stops that becoming the
+  // bot's session — and stops a resumed session re-reporting an id we already had.
+  const fn = main.slice(main.indexOf('function recordAgentSessionId'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.ok(/const key = pendingSessionCacheKey;/.test(body));
+  assert.ok(/if \(!id \|\| !key\) return;/.test(body), 'an unsolicited hook ping must not be cached');
 });

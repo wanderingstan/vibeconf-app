@@ -6294,44 +6294,87 @@ function ensureClaudeReadyHook(agentDir, port) {
   } catch (err) { console.warn('[electron] ensureClaudeReadyHook failed:', err.message); }
 }
 
-// The session id to actually --resume, given the dir the agent will start in.
+// How this launch should reach its session: { resumeSessionId, sessionName }.
 //
-// Empty when there is nothing to resume OR when the recorded id demonstrably
-// isn't resumable from this directory (see sessionExists — a wrong id makes the
-// CLI exit before starting, so the bot joins mute). Dropping the flag starts a
-// fresh session, and the SessionStart hook then records the new id over the
-// dead one, so this self-heals rather than needing the user to clear the field.
-function effectiveResumeSessionId(claudeDir) {
-  const { resolveSessionId, sessionExists } = require('./agent-session.js');
-  const id = resolveSessionId(store.get('agentSessionId'));
-  if (!id) return '';
-  if (sessionExists(id, claudeDir)) return id;
-  console.warn('[electron] Recorded session', id, 'is not resumable from', claudeDir,
-    '— starting a fresh session. (Working Directory changed, or the session was deleted.)');
-  // Clear it so the hook can record the replacement. Left set, every launch
-  // would re-check, re-warn, and never converge.
-  try { store.set('agentSessionId', ''); notifyConfigChanged('agentSessionId', ''); } catch { /* noop */ }
-  return '';
+// The bot keeps ONE session per name per working directory. There is no separate
+// "create" mode to get wrong — resume the session if we can find it, otherwise
+// start one and name it, and the hook below records the id so the next launch
+// finds it.
+//
+// Resolution goes through an id we cached, never through `--resume <title>`.
+// The CLI does accept a title, but it hard-errors ("matches 2 sessions") as soon
+// as a directory holds two by that name, and that is unrecoverable without an
+// id. Resolving ourselves keeps the readable name and cannot hit it. It also
+// avoids reading transcript files to map a title back to an id — the format of
+// what is inside them is undocumented and has broken before; a filename is not.
+function planAgentSession(claudeDir, botName) {
+  const { resolveSessionRef, sessionExists, sessionCacheKey, resolveSessionId } = require('./agent-session.js');
+  const ref = resolveSessionRef(store.get('agentSessionId'), botName);
+
+  // An explicit id in the field is the user pinning this bot to one session.
+  if (ref.kind === 'id') {
+    if (sessionExists(ref.id, claudeDir)) return { resumeSessionId: ref.id, sessionName: ref.name };
+    // NOT cleared: they typed it. Silently replacing a pin with a fresh session
+    // would be the app overruling an explicit instruction.
+    console.warn('[electron] Pinned session', ref.id, 'is not resumable from', claudeDir,
+      '— starting a fresh session. Clear the Session name/id field to stop pinning it.');
+    return { resumeSessionId: '', sessionName: ref.name };
+  }
+
+  // Name-keyed: the id is an implementation detail we look up. A miss is not an
+  // error — it is simply the first launch under this name (or in this
+  // directory), so we create and let the hook fill the cache in.
+  const key = sessionCacheKey(claudeDir, ref.name);
+  const cached = resolveSessionId((store.get('agentSessionCache') || {})[key]);
+  if (cached && sessionExists(cached, claudeDir)) {
+    return { resumeSessionId: cached, sessionName: ref.name };
+  }
+  if (cached) {
+    console.log('[electron] Cached session', cached, 'for', ref.name, 'is gone — starting a fresh one');
+  }
+  // Remember what the next SessionStart hook is reporting about, since the hook
+  // payload says which session started but not which name we asked for.
+  pendingSessionCacheKey = key;
+  return { resumeSessionId: '', sessionName: ref.name };
 }
 
-// Record the session id the CLI chose, so the next launch can --resume it.
+// Set at launch, consumed by the next hook ping. One agent at a time is already
+// enforced by the launchers, so there is no second launch racing for this.
+let pendingSessionCacheKey = null;
+
+// Record the session id the CLI chose, so the next launch resumes it by name.
 //
-// Only when the pref is EMPTY. A set value is the user's choice (they pinned
-// this bot to a session by hand), and a resumed session reports the same id it
-// was given anyway — so overwriting would only ever do damage.
+// Only for a session WE just started fresh (pendingSessionCacheKey). A resumed
+// session reports the id it was already given, so there is nothing to learn from
+// it, and a session someone started by hand in the bot's folder must not
+// quietly become the bot's session.
 function recordAgentSessionId(sessionId) {
   const { resolveSessionId } = require('./agent-session.js');
   const id = resolveSessionId(sessionId);
-  if (!id) return;
+  const key = pendingSessionCacheKey;
+  pendingSessionCacheKey = null;
+  if (!id || !key) return;
   try {
-    if (resolveSessionId(store.get('agentSessionId'))) return;
-    store.set('agentSessionId', id);
-    console.log('[electron] Recorded agent session id for --resume:', id);
-    // The panel's field is populated on load, so without this it keeps showing
-    // the empty "(auto…)" placeholder until the settings window is reopened.
-    notifyConfigChanged('agentSessionId', id);
+    const cache = { ...(store.get('agentSessionCache') || {}), [key]: id };
+    store.set('agentSessionCache', cache);
+    console.log('[electron] Bot session', JSON.stringify(key), '→', id);
   } catch (err) { console.warn('[electron] recordAgentSessionId failed:', err.message); }
 }
+
+// What the panel shows under the field: the name in use, and whether there is a
+// session behind it yet. Read-only — the id is not something to type.
+ipcMain.handle('get-agent-session', () => {
+  try {
+    const { resolveSessionRef, sessionCacheKey, sessionExists, resolveSessionId } = require('./agent-session.js');
+    const claudeDir = store.get('claudeWorkDir') || require('./agent-workdir.js').agentDirFor(app.getPath('userData'));
+    const ref = resolveSessionRef(store.get('agentSessionId'), resolvedBotName());
+    if (ref.kind === 'id') {
+      return { name: ref.name, id: ref.id, pinned: true, exists: sessionExists(ref.id, claudeDir) };
+    }
+    const id = resolveSessionId((store.get('agentSessionCache') || {})[sessionCacheKey(claudeDir, ref.name)]);
+    return { name: ref.name, id: id || '', pinned: false, exists: !!id && sessionExists(id, claudeDir) };
+  } catch { return null; }
+});
 
 // Claude Code isn't installed → offer a CONSENTED one-click install (visible Terminal
 // running the official installer) with a copy-the-command fallback. Never runs anything
@@ -6570,10 +6613,11 @@ async function launchClaudeTerminal(meetCode, { onboardingCall = false } = {}) {
   // Sanitized in agent-session.js — like the model, this is interpolated into an
   // AppleScript-wrapped shell command.
   const { claudeResumeFlag, claudeNameFlag } = require('./agent-session.js');
-  const resumeFlag = claudeResumeFlag(effectiveResumeSessionId(claudeDir));
-  // Name the session after the bot, so it reads as "Jimmy" in the prompt box and
-  // /resume instead of a UUID.
-  const nameFlag = claudeNameFlag(botName);
+  // Resume the bot's own session, and name it after the bot so it reads as
+  // "Jimmy" in the prompt box and /resume rather than a UUID.
+  const plan = planAgentSession(claudeDir, botName);
+  const resumeFlag = claudeResumeFlag(plan.resumeSessionId);
+  const nameFlag = claudeNameFlag(plan.sessionName);
   const slashCmd = onboardingCall ? 'onboarding-call' : 'join-call';
   const claudeCmd = `claude${resumeFlag}${nameFlag}${dangerousFlag}${modelFlag}${mcpFlags} \\"/${slashCmd} ${meetCode} ${botName.replace(/"/g, '')}\\"`;
 
@@ -6792,15 +6836,13 @@ function launchClaudeLinuxTerminal({ meetCode, botName, claudeDir, dangerousMode
   const plan = chooseAgentTerminalPlan({ emulator, hasTmux, allowTmux });
   if (!plan) return false; // caller falls back to headless, then errors loudly
 
-  const { resolveSessionName } = require('./agent-session.js');
   const argv = [claudeBin, ...buildInteractiveAgentArgs({
     meetCode,
     botName,
     dangerous: dangerousMode,
     model: resolveClaudeModel(store.get('claudeModel')),
     mcpConfigPath,
-    resumeSessionId: effectiveResumeSessionId(claudeDir),
-    sessionName: resolveSessionName(botName),
+    ...planAgentSession(claudeDir, botName),
     onboardingCall,
   })];
 
@@ -6904,15 +6946,13 @@ function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, cla
   }
 
   const { resolveClaudeModel } = require('./claude-model.js');
-  const { resolveSessionName } = require('./agent-session.js');
   const args = buildAgentArgs({
     meetCode,
     botName,
     dangerous: dangerousMode,
     model: resolveClaudeModel(store.get('claudeModel')),
     mcpConfigPath,
-    resumeSessionId: effectiveResumeSessionId(claudeDir),
-    sessionName: resolveSessionName(botName),
+    ...planAgentSession(claudeDir, botName),
     onboardingCall,
   });
 

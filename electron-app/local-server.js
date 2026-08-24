@@ -601,16 +601,39 @@ class LocalServer {
   }
 
   setRoom(roomId) {
+    // Rejoining the SAME room while a call id is still live (i.e. during
+    // after-call-work, which deliberately does not clear it — see the
+    // isFinished() guard in _setCallStatus). The call id survives that rejoin,
+    // so the two segments are one call by every other measure; wiping the
+    // transcript here made `read_transcripts` return only the segment after the
+    // rejoin, and the agent's own write-up of the call silently lost its first
+    // half. Keep the conversation state so the transcript matches the id.
+    //
+    // Only the conversation carries over. Everything below — whiteboard,
+    // members, sharing, presence — is re-derived from the room on join anyway.
+    const resuming = !!roomId && this.roomId === roomId && !!this.callId;
     this.roomId = roomId;
     // Calendar auto-join (#299): set via setCalendarEventContext, right after
     // setRoom, only when this join was calendar-triggered — cleared here so a
     // manual join (or the next calendar join) never inherits a stale one.
     this.calendarEventContext = null;
-    this.transcripts = [];
-    this.turns = new Map();
-    this._speakerTurnCount = new Map();
-    this._openTurnBySpeaker = new Map();
-    this._nextTurnId = 1;
+    if (!resuming) {
+      this.transcripts = [];
+      this.turns = new Map();
+      this._speakerTurnCount = new Map();
+      this._openTurnBySpeaker = new Map();
+      this._nextTurnId = 1;
+    }
+    // ALWAYS cleared, resume or not, and deliberately outside the block above.
+    //
+    // This set does not gate ingest — it is the #12 diagnostic that counts how
+    // many scraper turnIds in a batch we have never seen, to tell a container
+    // re-render apart from ordinary new speech. Carrying it across a rejoin
+    // would quietly blind that: `captionScraper` is module-scope, so a rejoin's
+    // fresh page starts minting turnIds at 1 again, every one of them already
+    // in this set. Genuinely new turns would count as familiar, and the signal
+    // would read "no re-render here" in exactly the situation it exists to
+    // flag. A fresh page is a fresh id space, so it gets a fresh set.
     this._seenScraperTurnIds = new Set();
     this._replayAlarmFired = false;
     this.replayAlarmCount = 0;

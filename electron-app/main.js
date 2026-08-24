@@ -10144,6 +10144,38 @@ function createMainWindow() {
         { type: 'separator' },
         { role: 'cut' },
         { role: 'copy' },
+        {
+          // The bot keeps ONE Claude session named after itself, so the session
+          // it uses on calls is the same one a person can open at a prompt. The
+          // panel's Call button held under Option does that; this copies the
+          // command instead, on the Finder shortcut it borrows from (⌘C takes
+          // the thing, ⌥⌘C takes its address).
+          //
+          // A permanent item rather than the true Finder behaviour of Copy
+          // SWAPPING while Option is held: that needs AppKit alternate menu
+          // items, which Electron does not expose. Visible-always is the better
+          // trade anyway — you find it without knowing to hold a key.
+          //
+          // It also closes a real gap. The renderer's ⌥⌘C only fires when the
+          // panel has keyboard focus, and the panel usually does not (see the
+          // Option-label lag fix). A menu accelerator works app-wide.
+          label: 'Copy Chat Command',
+          accelerator: 'Alt+CmdOrCtrl+C',
+          click: () => {
+            try {
+              const claudeDir = store.get('claudeWorkDir') || ensureAgentWorkdir();
+              const command = require('./chat-command.js').buildChatCommand({
+                workdir: claudeDir,
+                sessionField: store.get('agentSession'),
+                botName: resolvedBotName(),
+              });
+              require('electron').clipboard.writeText(command);
+              console.log('[chat-session] copied chat command from the Edit menu');
+            } catch (err) {
+              console.warn('[chat-session] copy from menu failed:', err.message);
+            }
+          },
+        },
         { role: 'paste' },
         { role: 'selectAll' },
       ],

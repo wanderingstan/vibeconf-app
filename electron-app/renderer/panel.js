@@ -1149,6 +1149,64 @@ function setJoinPhase(phase) {
   updateJoinBtnState();
 }
 
+// ── Option-held: the Call button becomes "Chat with <bot>" (#500 follow-up) ──
+//
+// A bot keeps ONE Claude session named after itself, so the session it uses on
+// calls is the same one a person can open in a terminal. Rather than spend
+// permanent panel space on that, it rides the button that is already about
+// reaching this bot — Option-held, which on macOS conventionally means "the
+// alternate version of this action" (Finder: ⌘C copies the file, ⌥⌘C copies its
+// path). The label genuinely swaps while held, so it is discoverable by
+// accident rather than only by being told.
+let optionHeld = false;
+
+function setOptionHeld(next) {
+  if (next === optionHeld) return;
+  optionHeld = next;
+  updateJoinBtnState();
+}
+
+// Keyed on the EVENT's modifier state, not on keydown/keyup of Option itself:
+// releasing the key over another window (or a ⌥-Tab away) never delivers the
+// keyup, and the label would stick in the alternate state with no way back.
+// Reading .altKey off whatever event arrives self-corrects on the next one.
+for (const evt of ['keydown', 'keyup', 'mousemove']) {
+  window.addEventListener(evt, (e) => setOptionHeld(!!e.altKey));
+}
+// Same reason: focus loss is the one case where no further event arrives.
+window.addEventListener('blur', () => setOptionHeld(false));
+
+async function openChatSession() {
+  try {
+    const r = await api.invoke('chat-session:open');
+    if (r && r.ok === false && r.copied) {
+      // No terminal we can drive — say what we did instead, rather than
+      // appearing to do nothing.
+      showError('Copied the command to your clipboard — paste it into a terminal.');
+    }
+  } catch (err) {
+    showError('Could not open a terminal: ' + err.message);
+  }
+}
+
+// ⌥⌘C — the Finder precedent this borrows from: ⌘C takes the thing, ⌥⌘C takes
+// its address. Here the address is the command that reaches the same session.
+window.addEventListener('keydown', async (e) => {
+  if (!e.altKey || !(e.metaKey || e.ctrlKey)) return;
+  if ((e.key || '').toLowerCase() !== 'c') return;
+  // Don't steal a real copy out of a text field.
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA') && String(t.value || '').length
+      && t.selectionStart !== t.selectionEnd) return;
+  e.preventDefault();
+  try {
+    const r = await api.invoke('chat-session:copy');
+    // showError is the panel's only transient-message surface today; the copy
+    // succeeding is worth confirming, since nothing else on screen changes.
+    if (r?.ok) showError('Chat command copied — paste it into a terminal.');
+  } catch { /* noop */ }
+});
+
 function updateJoinBtnState() {
   if (inCall) return; // in-call UI owns the button
   if (joinPhase) {
@@ -1179,6 +1237,16 @@ function updateJoinBtnState() {
       ? 'Dismiss this call — go back to starting a new one'
       : "Add the bot to a call that's already running — paste its Meet or Slack URL";
   }
+
+  if (optionHeld) {
+    // Same button, alternate action. Enabled regardless of the URL field: this
+    // does not join anything, so nothing about a call needs to be valid.
+    joinBtn.textContent = `Chat with ${name}`;
+    joinBtn.disabled = false;
+    joinBtn.title = `Open a terminal in ${name}'s session — the same session it uses on calls (⌥⌘C copies the command)`;
+    return;
+  }
+  joinBtn.title = 'Calls open in Chrome/Safari are detected automatically. You can also type /join-call in any Claude Code session.';
 
   if (addMode) {
     joinBtn.textContent = `Add ${name} to call`;
@@ -2121,7 +2189,15 @@ const CREATE_MEET_ERRORS = {
   'unknown': "Couldn't start a call.",
 };
 
-joinBtn.addEventListener('click', async () => {
+joinBtn.addEventListener('click', async (e) => {
+  // Option-held is the alternate action: open the bot's session in a terminal
+  // instead of calling it. Read the event rather than `optionHeld` so a click
+  // that arrives with the key down is honoured even if the label has not caught
+  // up yet.
+  if (e.altKey) {
+    await openChatSession();
+    return;
+  }
   // "Call <bot> now" — ask the website for a fresh Meet anyone can walk into,
   // then send the bot in. Main does the request: a renderer fetch carries an
   // Origin the backend rejects.

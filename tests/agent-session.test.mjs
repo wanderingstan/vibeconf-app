@@ -403,3 +403,43 @@ test('the handover reaches every transport, not just panel-initiated joins', () 
   assert.ok(!/join-call.*unfinished/i.test(main),
     'the handover must not be smuggled into the join prompt');
 });
+
+// ── The after-call fuse ──────────────────────────────────────────────────────
+// Observed 2026-08-24: a call ended at 07:49:35 arming an 1800s teardown, the
+// user re-joined nine seconds later, talked for half an hour, and at 08:19:35
+// the OLD fuse fired — "After-call work hit its 1800s limit — finishing" — tore
+// the live call down and killed the agent (exit 143). Nothing inside the room
+// could explain it.
+
+test('a live call defuses a pending after-call teardown, whatever route it came in by', () => {
+  // onJoinCall already did this, but only for the agent's own join_call tool.
+  // The panel, the calendar and the CLI never pass through it, which is why the
+  // fuse survived a panel re-join.
+  const h = main.slice(main.indexOf('onCallStatusChange: (status) => {'));
+  const body = h.slice(0, h.indexOf('\n  },'));
+  assert.ok(/if \(_afterCallWorkTimer && isInCall\(status\)\)/.test(body),
+    'the teardown must be cancelled from the status change, where every route converges');
+  assert.ok(/clearTimeout\(_afterCallWorkTimer\)/.test(body));
+});
+
+test('the fuse is defused on any in-call phase, not just "in-call" itself', () => {
+  // isInCall covers navigating/joining/waiting-to-be-admitted too. Waiting for
+  // the terminal 'in-call' would leave the fuse burning through the join, which
+  // is exactly the window a re-join lands in.
+  const { isInCall } = require('../electron-app/call-phase.js');
+  for (const phase of ['navigating', 'joining', 'waiting-to-be-admitted', 'in-call']) {
+    assert.equal(isInCall(phase), true, `${phase} must count as live`);
+  }
+  assert.equal(isInCall('after-call-work'), false, 'wrap-up must NOT defuse its own timer');
+});
+
+test('a teardown that kills an agent mid-write-up hands the work over too', () => {
+  // The lame-duck path recorded this; teardown did not — so the one kill the
+  // user never asked for was also the one that went unreported.
+  const fn = main.slice(main.indexOf('function closeClaudeTerminal'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.ok(/if \(headlessAgentCallOver\)/.test(body),
+    'only a kill during after-call work is an interrupted write-up');
+  assert.ok(/store\.set\('agentUnfinishedWrapUp'/.test(body),
+    'teardown must record the interrupted write-up for the next call');
+});

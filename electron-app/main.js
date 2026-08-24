@@ -2313,6 +2313,26 @@ const localServer = new globalThis.LocalServer({
   },
 
   onCallStatusChange: (status) => {
+    // A live call cancels any pending after-call teardown, on EVERY route in.
+    //
+    // onJoinCall already did this, but only for the agent's own join_call. A
+    // join from the panel, the calendar, or the CLI never passed through it, so
+    // the previous call's fuse kept burning: armed 07:49:35 for 1800s, it fired
+    // at 08:19:35 in the middle of a half-hour conversation, tore the call down
+    // and killed the agent (exit 143) with nothing visible from inside the room
+    // to explain it. Observed 2026-08-24.
+    //
+    // It hid until now because re-joining during after-call work used to leave
+    // you with no agent at all (see launchClaudeHeadless); once that worked, the
+    // stale fuse outlived the call it belonged to.
+    //
+    // Here rather than in each join path because this is where every route
+    // converges — a new one cannot forget to defuse it.
+    if (_afterCallWorkTimer && isInCall(status)) {
+      console.log('[electron] Call live again — cancelling the pending after-call teardown');
+      clearTimeout(_afterCallWorkTimer);
+      _afterCallWorkTimer = null;
+    }
     // The bot's view only takes up window space during a call — grow/shrink the
     // column here, before anything else, so the layout tracks the call.
     setBotViewInCall(status);
@@ -7189,6 +7209,22 @@ function closeClaudeTerminal() {
   // time this runs, so there is nothing to wait for beyond that.
   if (headlessAgentChild) {
     console.log('[electron] ending headless agent');
+    // Killing it mid-write-up loses that work unless we say so. The lame-duck
+    // path in launchClaudeHeadless already records this; teardown did not, so
+    // the one kill the user never asked for was also the one that went
+    // unreported. Same hand-over: the agent resumes this session next call, so
+    // the work is still in its history and only needs flagging.
+    if (headlessAgentCallOver) {
+      try {
+        store.set('agentUnfinishedWrapUp', {
+          call: headlessAgentCall || null,
+          interruptedAt: new Date().toISOString(),
+          interruptedBy: 'call teardown',
+        });
+        console.log('[electron] agent was still writing up', headlessAgentCall,
+          '— recorded so the next call can finish it');
+      } catch { /* best effort */ }
+    }
     try { headlessAgentChild.kill('SIGTERM'); } catch { /* already gone */ }
     headlessAgentChild = null;
     headlessAgentCall = null;

@@ -2128,6 +2128,31 @@ function paintCalendarUpcoming(events, error) {
     lineSpan.style.textDecoration = 'line-through';
     calendarUpcomingText.appendChild(document.createTextNode(' ⚠️ (not yet accepted)'));
   }
+  // Say when there ARE others, without spending the room to list them. One
+  // line is the right size for "what is the bot about to do", but silence
+  // about the rest reads as "your other meeting is missing" — which is
+  // exactly how the 2026-08-24 two-at-noon confusion started, from the far
+  // side (the accepted meeting was the hidden one).
+  //
+  // Counted over TODAY, not over the list. The list is a 24h lookahead, so at
+  // 11am it runs to 11am tomorrow and a bare "+3 more" cannot be read: three
+  // more today, or three more between now and tomorrow morning? Counting the
+  // local calendar day makes the number mean exactly what the word says. A
+  // meeting tomorrow morning is then neither counted nor claimed.
+  const startOfTomorrow = new Date(next.start);
+  startOfTomorrow.setHours(24, 0, 0, 0);
+  const more = (Array.isArray(events) ? events : [])
+    .slice(1)
+    .filter((e) => {
+      const t = new Date(e.start).getTime();
+      return Number.isFinite(t) && t < startOfTomorrow.getTime();
+    }).length;
+  if (more > 0) {
+    const moreSpan = document.createElement('span');
+    moreSpan.style.opacity = '0.75';
+    moreSpan.textContent = ` +${more} more today`;
+    calendarUpcomingText.appendChild(moreSpan);
+  }
   calendarUpcomingBanner.style.display = 'flex';
 }
 api.on('calendar-upcoming', ({ events, error }) => paintCalendarUpcoming(events, error));

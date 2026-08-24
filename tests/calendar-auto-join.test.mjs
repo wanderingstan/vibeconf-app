@@ -496,3 +496,34 @@ test('selectEventToJoin: today\'s occurrence, once joined, is not re-joined', ()
   });
   assert.equal(event, null);
 });
+
+// ── Two meetings at the same minute ──────────────────────────────────────────
+// Observed 2026-08-24: a "vibeconf standup" the owner had ACCEPTED and a test
+// call they had not, both at 12:00. The banner shows one line, took events[0],
+// and the tie fell to whatever the API returned first — so it displayed the
+// meeting the bot would NOT join (struck through, "not yet accepted") and hid
+// the accepted one behind it.
+
+test('selectUpcomingMatches: an accepted meeting wins a tie against an unaccepted one', () => {
+  const now = Date.now();
+  const noon = new Date(now + 60 * 60 * 1000).toISOString();
+  const matches = selectUpcomingMatches([
+    makeEvent({ id: 'unaccepted', attendees: ['bot@example.com'], start: noon, selfResponseStatus: 'needsAction' }),
+    makeEvent({ id: 'accepted', attendees: ['bot@example.com'], start: noon, selfResponseStatus: 'accepted' }),
+  ], { calendarIdentityEmail: 'bot@example.com', botName: 'Jimmy', now });
+  assert.equal(matches[0].id, 'accepted', 'the meeting that will actually happen gets the single line');
+  assert.equal(matches.length, 2, 'the other is still listed, so the caller can say "+1 more"');
+});
+
+test('selectUpcomingMatches: acceptance breaks ties only, never outranking an earlier meeting', () => {
+  // Otherwise an accepted 5pm would displace an unaccepted noon and the banner
+  // would misstate what happens next.
+  const now = Date.now();
+  const matches = selectUpcomingMatches([
+    makeEvent({ id: 'accepted-later', attendees: ['bot@example.com'],
+      start: new Date(now + 6 * 60 * 60 * 1000).toISOString(), selfResponseStatus: 'accepted' }),
+    makeEvent({ id: 'unaccepted-sooner', attendees: ['bot@example.com'],
+      start: new Date(now + 60 * 60 * 1000).toISOString(), selfResponseStatus: 'needsAction' }),
+  ], { calendarIdentityEmail: 'bot@example.com', botName: 'Jimmy', now });
+  assert.equal(matches[0].id, 'unaccepted-sooner', 'time dominates; acceptance only decides equals');
+});

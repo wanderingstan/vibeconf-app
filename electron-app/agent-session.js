@@ -90,8 +90,15 @@ function resolveSessionRef(fieldValue, botName) {
   // The session is named after the bot either way — a pinned id still gets a
   // readable label, and the field is not the place to carry one.
   const botLabel = resolveSessionName(botName);
-  if (isSessionId(raw)) return { kind: 'id', id: resolveSessionId(raw), name: botLabel };
-  return { kind: 'name', id: '', name: resolveSessionName(raw) || botLabel };
+  if (isSessionId(raw)) return { kind: 'id', id: resolveSessionId(raw), name: botLabel, implicit: false };
+  // `implicit` means the name came from the bot rather than the field, which is
+  // the caller's cue to write it INTO the field (see planAgentSession). Blank is
+  // a fine default but a poor stored value: it makes the name invisible, hides
+  // that `claude --resume Jimmy` would work, and — because it re-derives from
+  // the bot every launch — silently moves the bot to a different session the day
+  // someone renames it.
+  const name = resolveSessionName(raw);
+  return { kind: 'name', id: '', name: name || botLabel, implicit: !name };
 }
 
 // The cache key for a name-keyed session. Sessions are stored per working

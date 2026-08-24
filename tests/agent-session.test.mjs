@@ -236,8 +236,12 @@ test('a pinned id is never silently replaced', () => {
   // overwriting it would be the app overruling something the user typed.
   const fn = main.slice(main.indexOf('function planAgentSession'));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
-  const pinned = body.slice(body.indexOf("ref.kind === 'id'"), body.indexOf('Name-keyed'));
+  // The id branch only, up to where the name-pinning block begins. It must
+  // return out before reaching any write.
+  const pinned = body.slice(body.indexOf("ref.kind === 'id'"), body.indexOf("Write the bot's name"));
   assert.ok(!pinned.includes('store.set'), 'a pinned session id must not be rewritten by the app');
+  assert.equal((pinned.match(/return \{/g) || []).length, 2,
+    'both outcomes of a pinned id must return before the name-pinning write');
 });
 
 test('only a session WE started fresh is cached', () => {
@@ -248,4 +252,37 @@ test('only a session WE started fresh is cached', () => {
   const body = fn.slice(0, fn.indexOf('\n}\n'));
   assert.ok(/const key = pendingSessionCacheKey;/.test(body));
   assert.ok(/if \(!id \|\| !key\) return;/.test(body), 'an unsolicited hook ping must not be cached');
+});
+
+test('the bot name is written INTO the field, not left implicit', () => {
+  // Two things a blank field costs. It hides that the session has a name, so
+  // `claude --resume Jimmy` reads as impossible. And because a blank re-derives
+  // from the bot every launch, renaming Jimmy to Jim would silently repoint the
+  // bot at a different, empty session — indistinguishable from amnesia.
+  const ref = resolveSessionRef('', 'Jimmy');
+  assert.equal(ref.implicit, true, 'a blank field must be flagged for pinning');
+  assert.equal(ref.name, 'Jimmy');
+
+  const fn = main.slice(main.indexOf('function planAgentSession'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.ok(/if \(ref\.implicit && ref\.name\)/.test(body)
+    && body.includes("store.set('agentSession', ref.name)"),
+  'an implicitly-derived name must be persisted to the field');
+});
+
+test('a name the user typed is left exactly as they typed it', () => {
+  // Only an implicit name gets written back. Rewriting an explicit one would
+  // make the field un-editable in practice.
+  assert.equal(resolveSessionRef('Research', 'Jimmy').implicit, false);
+  assert.equal(resolveSessionRef('Research', 'Jimmy').name, 'Research');
+  // A pinned id is not a name and must never be overwritten with one.
+  assert.equal(resolveSessionRef('0c7d62da-e284-4670-a089-1ab02ece1b15', 'Jimmy').implicit, false);
+});
+
+test('renaming the bot does not move it to a different session', () => {
+  // The continuity guarantee, stated as the behaviour rather than the mechanism:
+  // once "Jimmy" is stored, the resolved name no longer depends on botName.
+  const stored = resolveSessionRef('Jimmy', 'Jim');   // bot renamed to Jim
+  assert.equal(stored.name, 'Jimmy', 'the stored session name must win over the new bot name');
+  assert.equal(sessionCacheKey('/bots/x', stored.name), sessionCacheKey('/bots/x', 'Jimmy'));
 });

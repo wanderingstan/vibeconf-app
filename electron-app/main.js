@@ -6309,7 +6309,7 @@ function ensureClaudeReadyHook(agentDir, port) {
 // what is inside them is undocumented and has broken before; a filename is not.
 function planAgentSession(claudeDir, botName) {
   const { resolveSessionRef, sessionExists, sessionCacheKey, resolveSessionId } = require('./agent-session.js');
-  const ref = resolveSessionRef(store.get('agentSessionId'), botName);
+  const ref = resolveSessionRef(store.get('agentSession'), botName);
 
   // An explicit id in the field is the user pinning this bot to one session.
   if (ref.kind === 'id') {
@@ -6319,6 +6319,21 @@ function planAgentSession(claudeDir, botName) {
     console.warn('[electron] Pinned session', ref.id, 'is not resumable from', claudeDir,
       '— starting a fresh session. Clear the Session name/id field to stop pinning it.');
     return { resumeSessionId: '', sessionName: ref.name };
+  }
+
+  // Write the bot's name into the field the first time we use it, rather than
+  // leaving it blank and re-deriving it every launch. Two reasons, and the
+  // second is the one that bites: a visible "Jimmy" shows that the session has a
+  // NAME, so `claude --resume Jimmy` is discoverable instead of secret; and a
+  // stored name survives renaming the bot. Left implicit, renaming Jimmy to Jim
+  // would silently point the bot at a different (empty) session and read as
+  // amnesia. Pinned, the session keeps its name and continuity, and anyone who
+  // wants it to follow the rename edits one word.
+  if (ref.implicit && ref.name) {
+    try {
+      store.set('agentSession', ref.name);
+      notifyConfigChanged('agentSession', ref.name);
+    } catch { /* not fatal — the launch below still uses ref.name */ }
   }
 
   // Name-keyed: the id is an implementation detail we look up. A miss is not an
@@ -6367,7 +6382,7 @@ ipcMain.handle('get-agent-session', () => {
   try {
     const { resolveSessionRef, sessionCacheKey, sessionExists, resolveSessionId } = require('./agent-session.js');
     const claudeDir = store.get('claudeWorkDir') || require('./agent-workdir.js').agentDirFor(app.getPath('userData'));
-    const ref = resolveSessionRef(store.get('agentSessionId'), resolvedBotName());
+    const ref = resolveSessionRef(store.get('agentSession'), resolvedBotName());
     if (ref.kind === 'id') {
       return { name: ref.name, id: ref.id, pinned: true, exists: sessionExists(ref.id, claudeDir) };
     }

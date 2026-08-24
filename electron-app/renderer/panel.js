@@ -1834,7 +1834,7 @@ api.invoke('get-upcoming-calendar-events').then((r) => {
 // bot in the wizard saw "Unnamed bot" in Settings and reasonably concluded the
 // save had failed, when it had worked (#190, #143).
 function loadConfigIntoControls() {
-  return api.invoke('get-config', ['botName', 'calendarIdentityEmail', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'ttsProvider', 'claudeWorkDir', 'agentSessionId', 'claudeModel', 'emojiSet', 'captionLanguage', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
+  return api.invoke('get-config', ['botName', 'calendarIdentityEmail', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'ttsProvider', 'claudeWorkDir', 'agentSession', 'claudeModel', 'emojiSet', 'captionLanguage', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
   if (result?.botName) {
     botNameInput.value = result.botName;
     currentBotName = result.botName;
@@ -1879,7 +1879,11 @@ function loadConfigIntoControls() {
   // from the saved provider/voice; defaults to Daniel (tts.js's real default).
   populateUnifiedVoices(result);
   if (result?.claudeWorkDir) claudeWorkDirInput.value = result.claudeWorkDir;
-  if (result?.agentSessionId) agentSessionIdInput.value = result.agentSessionId;
+  if (result?.agentSession) agentSessionIdInput.value = result.agentSession;
+  // Before the first launch there is nothing stored yet, so show the name that
+  // WOULD be used rather than a vague "(auto)" — same reason the field is
+  // pinned on first use: the name is the thing you can type at `claude --resume`.
+  if (agentSessionIdInput) agentSessionIdInput.placeholder = result?.botName || '(the bot’s name)';
   if (result?.claudeModel) claudeModelInput.value = result.claudeModel;
   if (emojiSetInput && result?.emojiSet) {
     // emojiSet has two OPEN forms — `font:<Family>` and `dir:<path>` — and
@@ -3202,7 +3206,7 @@ async function refreshAgentSession() {
 refreshAgentSession();
 
 agentSessionIdInput?.addEventListener('change', () => {
-  api.invoke('set-config', 'agentSessionId', agentSessionIdInput.value.trim());
+  api.invoke('set-config', 'agentSession', agentSessionIdInput.value.trim());
   refreshAgentSession();
 });
 

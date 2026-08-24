@@ -12,7 +12,15 @@
 // address, not a label, and must never be typed into Meet as the display name
 // (that would rename "Alice" to "alice2" the moment you address her by profile).
 
-// Instances are [{ port, baseUrl, profile, botName, configuredBotName, callStatus, roomId }].
+// Trailing slashes and symlink-ish noise aside, two paths are the same folder if
+// their strings match. Deliberately string-only: this module is pure, and a
+// resolved-realpath comparison would need fs.
+function normalizeDir(dir) {
+  const d = String(dir || "").trim().replace(/\/+$/, "");
+  return d || null;
+}
+
+// Instances are [{ port, baseUrl, profile, botName, configuredBotName, callStatus, roomId, agentWorkdir }].
 function describe(instances) {
   return instances
     .map((i) => `${i.profile} (:${i.port}${i.botName ? `, ${i.botName}` : ""})`)
@@ -33,13 +41,16 @@ function describe(instances) {
  *   'displayName'  no match, sole instance — the name is only a display name
  *   'sole'         no name given, sole instance
  *   'pinned'       no name given, several running, but this session is pinned to one
+ *   'workdir'      no name given; this session is RUNNING IN one instance's bot folder
  *
  * @param {string|null} name
  * @param {Array} instances
- * @param {{pinnedPort?: number|null}} opts pinnedPort = the port this session's
- *   MCP config explicitly bound it to (VIBECONF_BASE_URL), or null when unset.
+ * @param {{pinnedPort?: number|null, cwd?: string|null}} opts
+ *   pinnedPort = the port this session's MCP config explicitly bound it to
+ *   (VIBECONF_BASE_URL), or null when unset.
+ *   cwd = where this session is running, used to identify which bot it IS.
  */
-export function resolveInstance(name, instances, { pinnedPort = null } = {}) {
+export function resolveInstance(name, instances, { pinnedPort = null, cwd = null } = {}) {
   if (instances.length === 0) return { keep: true }; // nothing discovered → don't touch BASE_URL
 
   if (name) {
@@ -71,10 +82,35 @@ export function resolveInstance(name, instances, { pinnedPort = null } = {}) {
 
   if (instances.length === 1) return { instance: instances[0], matchedBy: "sole" };
 
-  // No name, several running. If this session was explicitly pinned to a port
-  // (the app writes VIBECONF_BASE_URL into each profile's own MCP config), that
-  // IS the answer — don't make a profile's own terminal name itself just because
-  // a sibling profile happens to be running.
+  // No name, several running.
+  //
+  // WORKING DIRECTORY FIRST, ahead of the pin (#517). Each profile's bot works
+  // in its own folder, and a bot's terminal is opened there, so a session
+  // running inside one is that bot — evidence about THIS session, not about
+  // whoever wrote its config.
+  //
+  // The pin is weaker than it looks: a terminal started by hand picks up the
+  // user-scoped ~/.claude.json entry, which bakes the PRIMARY app's port. Buddy
+  // was launched that way, dialed Pepper's 7865 for every tool except join_call,
+  // and spoke through Pepper's tile — while `pinned` reported success, because
+  // from the router's point of view the session had been bound deliberately.
+  // A pin cannot tell "my app bound me here" from "I inherited someone else's
+  // port"; a working directory can.
+  const here = normalizeDir(cwd);
+  if (here) {
+    const byDir = instances.filter((i) => {
+      const dir = normalizeDir(i.agentWorkdir);
+      return dir && (here === dir || here.startsWith(`${dir}/`));
+    });
+    // Exactly one, or this says nothing: two instances claiming the same folder
+    // is a misconfiguration we should not resolve by guessing.
+    if (byDir.length === 1) return { instance: byDir[0], matchedBy: "workdir" };
+  }
+
+  // Then the pin: the app writes VIBECONF_BASE_URL into each profile's own MCP
+  // config, and for an app-launched session that is still the right answer —
+  // don't make a profile's own terminal name itself just because a sibling
+  // profile happens to be running.
   if (pinnedPort) {
     const pinned = instances.find((i) => i.port === pinnedPort);
     if (pinned) return { instance: pinned, matchedBy: "pinned" };

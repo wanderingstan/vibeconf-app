@@ -164,3 +164,67 @@ test('instances with no display name are still addressable by profile', () => {
   // ...and a blank display name never matches the empty-ish name branch.
   assert.ok(resolveInstance('', fleet).error, 'blank name with several running is ambiguous');
 });
+
+// ── #517: a session's working directory outranks the port its config baked ───
+// Live, 2026-08-24: Seth started Buddy in its own terminal. Buddy spoke and the
+// words came out of PEPPER's Meet tile. Two healthy apps, two correct ports,
+// one terminal addressing the wrong one — because a hand-started terminal picks
+// up the user-scoped ~/.claude.json entry, which bakes the PRIMARY app's port.
+// Every call succeeded, which is what made it expensive to find.
+
+const two = [
+  { port: 7865, baseUrl: 'http://127.0.0.1:7865', profile: 'default', botName: 'Pepper',
+    configuredBotName: 'Pepper', agentWorkdir: '/Users/x/App Support/VC/profiles/Default/agent' },
+  { port: 7866, baseUrl: 'http://127.0.0.1:7866', profile: 'bot2', botName: 'Buddy',
+    configuredBotName: 'Buddy', agentWorkdir: '/Users/x/App Support/VC/profiles/bot2/agent' },
+];
+
+test('a session running in a bot’s folder routes to THAT bot, not the baked port', () => {
+  const r = resolveInstance(null, two, {
+    pinnedPort: 7865,                                             // inherited Pepper's port
+    cwd: '/Users/x/App Support/VC/profiles/bot2/agent',           // but it IS Buddy
+  });
+  assert.equal(r.matchedBy, 'workdir');
+  assert.equal(r.instance.port, 7866, 'Buddy must drive Buddy, not Pepper');
+});
+
+test('a subdirectory of the bot’s folder still identifies the bot', () => {
+  const r = resolveInstance(null, two, {
+    pinnedPort: 7865,
+    cwd: '/Users/x/App Support/VC/profiles/bot2/agent/calls/abc-20260824T000000Z',
+  });
+  assert.equal(r.instance.port, 7866);
+});
+
+test('the pin still wins when the cwd says nothing', () => {
+  // An app-launched session in an unrelated directory is exactly what the pin
+  // is for — this must not regress it.
+  const r = resolveInstance(null, two, { pinnedPort: 7866, cwd: '/tmp/somewhere-else' });
+  assert.equal(r.matchedBy, 'pinned');
+  assert.equal(r.instance.port, 7866);
+});
+
+test('an explicit name still beats both', () => {
+  // Addressing by profile is the unambiguous form and must stay authoritative.
+  const r = resolveInstance('default', two, { pinnedPort: 7866, cwd: '/Users/x/App Support/VC/profiles/bot2/agent' });
+  assert.equal(r.matchedBy, 'profile');
+  assert.equal(r.instance.port, 7865);
+});
+
+test('two instances claiming one folder resolve to neither', () => {
+  // Guessing between them would reintroduce the bug with extra steps.
+  const clashing = [
+    { ...two[0], agentWorkdir: '/shared/agent' },
+    { ...two[1], agentWorkdir: '/shared/agent' },
+  ];
+  const r = resolveInstance(null, clashing, { pinnedPort: 7865, cwd: '/shared/agent' });
+  assert.equal(r.matchedBy, 'pinned', 'falls back to the pin rather than picking one');
+});
+
+test('a trailing slash is not a different folder', () => {
+  const r = resolveInstance(null, two, {
+    pinnedPort: 7865,
+    cwd: '/Users/x/App Support/VC/profiles/bot2/agent/',
+  });
+  assert.equal(r.instance.port, 7866);
+});

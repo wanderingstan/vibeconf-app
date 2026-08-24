@@ -353,6 +353,11 @@
       //   7. botState=idle between turns → 😔
       //   8. botState=listening → mode emoji (🙂 / 🤐 / 😶)
       const notOnLine = VirtualCamera.CALL_STATUS_EMOJIS[this.callStatus] || (!this.hasEngaged ? '\u{1FAE5}' : null);
+      // When the "nobody home" condition STARTED — the arrival card needs it to
+      // escalate from "on the way" to "having trouble". Cleared the moment the
+      // bot is really on the line, so a later disconnect times afresh.
+      if (notOnLine) { if (!this._notOnLineSince) this._notOnLineSince = Date.now(); }
+      else this._notOnLineSince = 0;
       // Audio playing: per-response override > default 😄. Cleared on tts-ended.
       // Suppressed when state === 'thinking' so the ack stays under 🤔.
       const audioPlaying = (this.speaking && this.state !== 'thinking')
@@ -743,12 +748,27 @@
       // to fillText below, where emojiFontStack has already put its family first.
       const emojiImg = (this.emojiSet && this.emojiSet !== 'native' && _isImageSetName(this.emojiSet))
         ? _emojiImage(this.emojiSet, emoji) : null;
-      if (emojiImg) {
+      // NOT ON THE LINE: draw an arrival card instead of a tile-filling face.
+      //
+      // 🫥 was meant to say "the agent isn't here yet", and it does not work.
+      // New users start talking to the bot the moment it appears and are
+      // confused when nothing answers. The reason is that it is still a FACE,
+      // and a face filling a Meet tile means somebody is there; the dots are a
+      // subtlety nobody parses on their first call.
+      //
+      // A small thumbnail beside a line of text reads as a photo on a name badge
+      // rather than as presence — the same asset, a different meaning, purely
+      // from scale.
+      if (notOnLine) {
+        ctx.restore();
+        try { this._renderArrivalCard(emojiImg, emoji); } catch (e) { /* overlay-only */ }
+      } else if (emojiImg) {
         ctx.drawImage(emojiImg, -emojiSize / 2, -emojiSize / 2, emojiSize, emojiSize);
+        ctx.restore();
       } else {
         ctx.fillText(emoji, 0, 0);
+        ctx.restore();
       }
-      ctx.restore();
 
       // Unlike the debug overlay below, this is user-facing (consent/awareness
       // that the call is being recorded) — always drawn when isRecording is
@@ -759,6 +779,75 @@
       // Wrapped: the overlay is diagnostic chrome — a bug in it must never black
       // out the bot's actual camera frame (which already rendered above).
       if (this.debugOverlayEnabled) { try { this._renderDebugOverlay(); } catch (e) { /* overlay-only */ } }
+    }
+
+    // The "not on the line yet" tile: a small avatar thumbnail beside a line of
+    // text, over the bot's ordinary background.
+    //
+    // Sizing is the load-bearing decision. At tile-filling scale the glyph reads
+    // as a person present; at thumbnail scale beside text it reads as a photo
+    // identifying who is coming. That is the whole fix — people talked to 🫥
+    // because it looked like someone was there.
+    //
+    // Two messages, because one cannot be honest about both cases:
+    //   "<Name> is on the way"           — the normal case
+    //   "<Name> is having trouble..."    — after TROUBLE_MS with still nobody home
+    // 🫥 looked identical whether the join was progressing or wedged, and an
+    // empty tile would too. Silence should not be the only symptom of a failure.
+    _renderArrivalCard(emojiImg, emoji) {
+      const ctx = this.ctx;
+      const w = this.canvas.width;
+      const h = this.canvas.height;
+      // Long enough that a healthy join never shows it (a normal connect is a
+      // few seconds), short enough that someone waiting is not left guessing.
+      const TROUBLE_MS = 15000;
+      const waited = this._notOnLineSince ? Date.now() - this._notOnLineSince : 0;
+      const troubled = waited > TROUBLE_MS;
+      const name = String((config && config.botName) || 'The bot').trim() || 'The bot';
+      // Deliberately the register of a person, not a system. "Connecting…"
+      // describes machinery; "<Name> is on the way" implies someone specific is
+      // about to arrive, which is what actually stops people talking to the tile.
+      const text = troubled ? name + ' is having trouble connecting' : name + ' is on the way';
+
+      const thumb = Math.min(w, h) * 0.14;   // badge-photo scale, NOT presence scale
+      const fontPx = Math.round(Math.min(w, h) * 0.062);
+      const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      ctx.save();
+      ctx.font = fontPx + 'px ' + FONT;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      const gap = thumb * 0.42;
+      const textW = ctx.measureText(text).width;
+      const startX = Math.max(0, (w - (thumb + gap + textW)) / 2);
+      const midY = h / 2;
+
+      // A gentle bob, so the tile is never a frozen frame — a static Meet tile
+      // reads as "it crashed", the opposite of the reassurance this is for.
+      // Same reasoning as the idle liveness motion (#223), smaller amplitude.
+      const bob = Math.sin(this.frameCount * 0.045) * (thumb * 0.05);
+      if (emojiImg) {
+        ctx.drawImage(emojiImg, startX, midY - thumb / 2 + bob, thumb, thumb);
+      } else {
+        ctx.save();
+        ctx.font = Math.round(thumb) + 'px ' + (typeof emojiFontStack === 'string' && emojiFontStack ? emojiFontStack : FONT);
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(emoji, startX, midY + bob);
+        ctx.restore();
+      }
+
+      // Same dark-outline treatment as the recording indicator, so it stays
+      // legible over ANY avatar background — including a photo the user chose,
+      // which we cannot predict.
+      const tx = startX + thumb + gap;
+      ctx.lineJoin = 'round';
+      ctx.miterLimit = 2;
+      ctx.lineWidth = Math.max(3, fontPx * 0.14);
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+      ctx.strokeText(text, tx, midY);
+      ctx.fillStyle = troubled ? '#f6c945' : 'rgba(255, 255, 255, 0.95)';
+      ctx.fillText(text, tx, midY);
+      ctx.restore();
     }
 
     _renderRecordingIndicator() {

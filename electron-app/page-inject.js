@@ -819,7 +819,11 @@
       const gap = thumb * 0.42;
       const textW = ctx.measureText(text).width;
       const startX = Math.max(0, (w - (thumb + gap + textW)) / 2);
-      const midY = h / 2;
+      // Two-thirds down rather than centred (Stan, on seeing it): the middle of
+      // a Meet tile is where a FACE goes, so a centred card still occupies the
+      // spot the eye reads as presence. Lower reads as a caption about the tile
+      // instead of as the tile's occupant.
+      const midY = h * 0.66;
 
       // A gentle bob, so the tile is never a frozen frame — a static Meet tile
       // reads as "it crashed", the opposite of the reassurance this is for.
@@ -2147,6 +2151,11 @@
       case 'set-call-status':
         // Forwarded from local-server; see electron-app/call-phase.js for the
         // lifecycle. Used to show 🫥 before the bot is actually in the call.
+        // Carried on this message rather than set-config, which nothing sends:
+        // config.botName sat on its "AI Assistant" placeholder forever, so every
+        // bot's arrival card claimed to be an AI Assistant (reported live,
+        // 2026-08-24, and reproduced on a second bot).
+        if (payload?.botName) config.botName = payload.botName;
         if (payload?.status) {
           // A finished call re-gates engagement so the NEXT one starts at 🫥
           // again. 'after-call-work' is deliberately absent: the agent is still

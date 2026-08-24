@@ -39,6 +39,25 @@ test('it says who is coming, by name', () => {
   assert.match(card, /name \+ ' is on the way'/);
 });
 
+test('the name actually REACHES the renderer', () => {
+  // The bug this catches: page-inject has a config.botName, but nothing ever
+  // sent one, so it stayed on its "AI Assistant" placeholder and every bot's
+  // arrival card claimed to be an AI Assistant. Reported live 2026-08-24 and
+  // reproduced on a second bot — the tell that it was not about one name.
+  //
+  // It rides on set-call-status because that is the ONE message that fires
+  // exactly when the card appears, so the name is right from the first frame.
+  const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
+  assert.match(main, /action: 'set-call-status',[\s\S]{0,700}?payload: \{ status, botName: resolvedBotName\(\) \}/);
+  assert.match(src, /if \(payload\?\.botName\) config\.botName = payload\.botName;/);
+});
+
+test('the card sits below centre — the middle of a tile is where a face goes', () => {
+  const m = card.match(/const midY = h \* ([\d.]+)/);
+  assert.ok(m, 'midY is a fraction of the tile height');
+  assert.ok(Number(m[1]) > 0.5, `${m[1]} must be below centre, or it occupies the presence spot`);
+});
+
 test('and it degrades to a real name when the bot has none', () => {
   assert.match(card, /\|\| 'The bot'/);
 });

@@ -2402,7 +2402,13 @@ const localServer = new globalThis.LocalServer({
     if (meetView && !meetView.webContents.isDestroyed()) {
       meetView.webContents.send('extension-message', {
         action: 'set-call-status',
-        payload: { status },
+        // The NAME rides along, because the arrival card needs it and this is
+        // the one message that fires exactly when that card appears. page-inject
+        // has a `config.botName`, but nothing ever sets it — it stayed on its
+        // placeholder "AI Assistant" forever, which is what every bot's arrival
+        // card said. Sending it here means the name is right from the first
+        // frame rather than arriving later, if at all.
+        payload: { status, botName: resolvedBotName() },
       });
     }
     // #275: the bot just entered — bring the user's browser tab for this call to

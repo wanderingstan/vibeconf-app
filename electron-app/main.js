@@ -11538,7 +11538,19 @@ function setupIPC() {
   //
   // Names already in use are excluded, so two bots on one machine don't collide
   // — which would make MCP routing by name ambiguous, not just confusing.
-  function seedNewBotName(profileName) {
+  //
+  // `adopt` (optional) turns this into ADOPTING AN EXISTING SESSION rather than
+  // creating a blank bot: { workdir, session, botName }. A power user may have a
+  // Claude session with months of accumulated context, and the interesting move
+  // is to give THAT a face rather than start a bot from nothing. Seeding
+  // claudeWorkDir + agentSession here is what makes the new profile resume that
+  // session instead of opening a fresh one in its own agent dir.
+  //
+  // Seeded at creation for the same reason the name is: these have to be the
+  // bot's real stored settings before its first launch, not launch-time
+  // overrides. The bot's very first act is resuming the session, so there is no
+  // later moment to apply them.
+  function seedNewBotName(profileName, adopt = null) {
     try {
       const { randomBotName } = require('./bot-names.js');
       const taken = takenBotNames();
@@ -11562,13 +11574,26 @@ function setupIPC() {
       let existing = {};
       try { existing = JSON.parse(fs.readFileSync(file, 'utf-8')); } catch { /* new */ }
       if (existing.botName) return;
-      const botName = randomBotName({ taken });
+      // An adopted session names itself where it can. The session's own name is
+      // the user's word for this thing already, so it beats a random one — but
+      // only if it can survive a call, which is a real constraint and not a
+      // stylistic one: the bot has to notice its name through Meet's captions.
+      // "pr-482-refactor" fails that badly (digits nobody says aloud), so it
+      // falls back to the random pool rather than shipping a name that cannot
+      // be addressed.
+      const { isAddressableBotName } = require('./addressable-name.js');
+      const adopted = adopt && isAddressableBotName(adopt.botName) ? adopt.botName.trim() : null;
+      const botName = adopted || randomBotName({ taken });
       // onboardingCallComplete defaults to true (preferences-schema.js) so
       // pre-existing profiles read as already onboarded with no migration
       // needed — which means a genuinely NEW bot has to say otherwise
       // explicitly, right here, at the one moment it's actually created.
-      fs.writeFileSync(file, JSON.stringify({ ...existing, botName, onboardingCallComplete: false }, null, 2));
-      console.log('[electron] New bot', profileName, 'named', botName);
+      const seeded = { ...existing, botName, onboardingCallComplete: false };
+      if (adopt && adopt.workdir) seeded.claudeWorkDir = adopt.workdir;
+      if (adopt && adopt.session) seeded.agentSession = adopt.session;
+      fs.writeFileSync(file, JSON.stringify(seeded, null, 2));
+      console.log('[electron] New bot', profileName, 'named', botName,
+        adopt ? `(adopting session ${JSON.stringify(adopt.session)} in ${adopt.workdir})` : '');
     } catch (err) {
       // Non-fatal: an unnamed bot is still a working bot, and the Settings page
       // it opens on is exactly where that gets fixed.
@@ -11701,6 +11726,36 @@ function setupIPC() {
     const name = nextBotProfileName();
     seedNewBotName(name);
     return await launchOrFocusProfile(name, { openSettings: true });
+  });
+
+  // Turn an EXISTING Claude session into a bot.
+  //
+  // The ordinary path creates a blank bot which then starts a fresh session. A
+  // power user may already have a session carrying months of context on some
+  // piece of work, and the far more interesting move is to give THAT a face —
+  // it can already answer questions about the thing it has been doing.
+  //
+  // Mechanically this is create-new-bot with two settings seeded before first
+  // launch, so the new profile resumes that session in that directory instead
+  // of opening its own. It has to happen at creation: the bot's first act IS
+  // resuming, so there is no later moment to apply them.
+  //
+  // The session's own name becomes the bot's name when it can survive being
+  // said out loud (see addressable-name.js) — it is the user's existing word
+  // for this thing, so it beats a random one. When it cannot, the random pool
+  // takes over rather than shipping a bot that never answers to itself.
+  ipcMain.handle('adopt-session-as-bot', async (_event, { workdir, session, botName } = {}) => {
+    const dir = String(workdir || '').trim();
+    if (!dir) return { ok: false, error: 'A working directory is required — that is where the session lives.' };
+    if (!fs.existsSync(dir)) return { ok: false, error: `No such directory: ${dir}` };
+    // Sessions are stored PER WORKING DIRECTORY, so the pair is the identity —
+    // a session name means nothing without the directory it was recorded in.
+    const { resolveSessionName } = require('./agent-session.js');
+    const sessionRef = resolveSessionName(session) || '';
+    const name = nextBotProfileName();
+    seedNewBotName(name, { workdir: dir, session: sessionRef, botName });
+    const result = await launchOrFocusProfile(name, { openSettings: true });
+    return { ...result, profile: name, adopted: { workdir: dir, session: sessionRef } };
   });
 
   // File ▸ New Window — open a genuinely NEW window with no picker/prompt. The app

@@ -22,8 +22,15 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
 
-test('there is a handler for adopting a session', () => {
-  assert.match(main, /ipcMain\.handle\('adopt-session-as-bot'/);
+// The implementation is a named function assigned to a module-scope holder, with
+// the ipcMain handler a thin delegate over it — because the CALLER is a terminal
+// (/call-new-bot), not the panel, so it needs an HTTP route as well as IPC.
+const impl = () => main.slice(main.indexOf('adoptSessionAsBot = async'));
+
+test('reachable from BOTH a terminal and the panel', () => {
+  assert.match(main, /adoptSessionAsBot = async/, 'one implementation');
+  assert.match(main, /ipcMain\.handle\('adopt-session-as-bot'/, 'IPC for the panel');
+  assert.match(main, /'\/api\/adopt-session-as-bot'/, 'HTTP for the slash command');
 });
 
 test('the seed carries BOTH the workdir and the session', () => {
@@ -34,7 +41,7 @@ test('the seed carries BOTH the workdir and the session', () => {
 });
 
 test('seeding happens in seedNewBotName, i.e. BEFORE launchOrFocusProfile', () => {
-  const handler = main.slice(main.indexOf("ipcMain.handle('adopt-session-as-bot'"));
+  const handler = impl();
   const seedAt = handler.indexOf('seedNewBotName(name,');
   const launchAt = handler.indexOf('launchOrFocusProfile(name');
   assert.ok(seedAt > 0 && launchAt > 0, 'both calls are present');
@@ -42,14 +49,14 @@ test('seeding happens in seedNewBotName, i.e. BEFORE launchOrFocusProfile', () =
 });
 
 test('a missing directory is refused, not silently made into a blank bot', () => {
-  const handler = main.slice(main.indexOf("ipcMain.handle('adopt-session-as-bot'"));
+  const handler = impl();
   assert.match(handler, /if \(!dir\) return \{ ok: false/);
   assert.match(handler, /fs\.existsSync\(dir\)/);
 });
 
 test('the session name goes through the same sanitizer the launcher uses', () => {
   // It reaches a shell command inside an AppleScript string on the macOS path.
-  const handler = main.slice(main.indexOf("ipcMain.handle('adopt-session-as-bot'"));
+  const handler = impl();
   assert.match(handler, /resolveSessionName/);
 });
 

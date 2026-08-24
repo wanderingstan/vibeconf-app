@@ -16,6 +16,13 @@ const { DEFAULT_BOT_NAME, PREFERENCES } = require('./preferences-schema');
 const { resolveBotName, botNameForAppUI } = require('./bot-name.js');
 const { resolveVoice } = require('./voice-status.js');
 const { isInCall, isFinished, isCallComplete } = require('./call-phase.js');
+
+// Assigned once the app is ready (the implementation needs nextBotProfileName /
+// seedNewBotName / launchOrFocusProfile, which live in the app-ready block).
+// Held at module scope so the local server's extraRoutes — defined long before
+// that block runs — can reach it. Null until then; the route says so rather
+// than throwing.
+let adoptSessionAsBot = null;
 const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEventsFor } = require('./share-surface.js');
 const { CallRecordingSession } = require('./call-recorder.js');
 const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWindow } = require('./call-recording-window.js');
@@ -1278,6 +1285,31 @@ const localServer = new globalThis.LocalServer({
   extraRoutes: async (req, res) => {
     let pathname;
     try { pathname = new URL(req.url, 'http://127.0.0.1').pathname; } catch { return false; }
+    // Turn the CALLER's Claude session into a bot (/call-new-bot). An HTTP route
+    // rather than only IPC because the caller is a terminal, not the panel.
+    if (pathname === '/api/adopt-session-as-bot' && req.method === 'POST') {
+      let body = '';
+      try {
+        body = await new Promise((resolve) => {
+          let buf = '';
+          req.on('data', (c) => { buf += c; });
+          req.on('end', () => resolve(buf));
+          req.on('error', () => resolve(''));
+        });
+      } catch { /* no body */ }
+      let payload = {};
+      try { payload = JSON.parse(body || '{}'); } catch { /* not JSON */ }
+      let result;
+      if (!adoptSessionAsBot) {
+        result = { ok: false, error: 'The app is still starting up — try again in a moment.' };
+      } else {
+        try { result = await adoptSessionAsBot(payload); }
+        catch (err) { result = { ok: false, error: err.message }; }
+      }
+      res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+      return true;
+    }
     if (pathname === '/claude-ready' && req.method === 'POST') {
       markClaudeReady('session-hook');
       // The hook forwards its stdin, which carries session_id — the id to
@@ -7737,7 +7769,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '59';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '60';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
@@ -7779,6 +7811,33 @@ function ensureClaudeIntegration() {
     }
   } catch (err) {
     console.warn('[electron] /call skill install failed:', err.message);
+  }
+
+  // --- Ensure global skill in ~/.claude/skills/call-new-bot/ ---
+  // /call-new-bot turns the CALLER's own Claude session into a bot: it creates a
+  // profile seeded with that session's workdir + name, so the new bot resumes it
+  // rather than starting fresh. The inverse of every other path here — normally a
+  // bot gets a session; this gives a session a bot. Same version gate, own
+  // directory (Claude Code takes one skill per directory).
+  try {
+    const newBotSkillDir = path.join(claudeDir, 'skills', 'call-new-bot');
+    const newBotVersionFile = path.join(newBotSkillDir, '.version');
+    let newBotInstalled = '';
+    try { newBotInstalled = fs.readFileSync(newBotVersionFile, 'utf-8').trim(); } catch { /* not yet */ }
+    if (newBotInstalled !== SKILL_VERSION) {
+      fs.mkdirSync(newBotSkillDir, { recursive: true });
+      fs.writeFileSync(path.join(newBotSkillDir, 'SKILL.md'), fs.readFileSync(
+        isPackaged
+          ? path.join(process.resourcesPath, 'mcp-server', 'call-new-bot-skill.md')
+          : path.join(__dirname, '..', 'mcp-server', 'call-new-bot-skill.md'),
+        'utf-8',
+      ));
+      fs.writeFileSync(newBotVersionFile, SKILL_VERSION);
+      console.log(`[electron] Installed/updated /call-new-bot skill v${SKILL_VERSION}`);
+      changed = true;
+    }
+  } catch (err) {
+    console.warn('[electron] /call-new-bot skill install failed:', err.message);
   }
 
   // --- Ensure global skill in ~/.claude/skills/onboarding-call/ ---
@@ -11744,7 +11803,7 @@ function setupIPC() {
   // said out loud (see addressable-name.js) — it is the user's existing word
   // for this thing, so it beats a random one. When it cannot, the random pool
   // takes over rather than shipping a bot that never answers to itself.
-  ipcMain.handle('adopt-session-as-bot', async (_event, { workdir, session, botName } = {}) => {
+  adoptSessionAsBot = async ({ workdir, session, botName } = {}) => {
     const dir = String(workdir || '').trim();
     if (!dir) return { ok: false, error: 'A working directory is required — that is where the session lives.' };
     if (!fs.existsSync(dir)) return { ok: false, error: `No such directory: ${dir}` };
@@ -11756,7 +11815,8 @@ function setupIPC() {
     seedNewBotName(name, { workdir: dir, session: sessionRef, botName });
     const result = await launchOrFocusProfile(name, { openSettings: true });
     return { ...result, profile: name, adopted: { workdir: dir, session: sessionRef } };
-  });
+  };
+  ipcMain.handle('adopt-session-as-bot', async (_event, args) => adoptSessionAsBot(args));
 
   // File ▸ New Window — open a genuinely NEW window with no picker/prompt. The app
   // is one-window-per-profile (one locked userData dir + one fixed port each; see

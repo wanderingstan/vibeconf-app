@@ -365,8 +365,14 @@ test('the after-call write-up window is visible in the UI', () => {
   // confusion started. The banner also has to say that calling now CUTS THE
   // WRITE-UP SHORT, since that is the decision it exists to inform.
   assert.ok(/action: 'agent-wrapping-up'/.test(main), 'main must broadcast the wrap-up state');
-  assert.ok(/const wrapping = !!headlessAgentChild && !live;/.test(main),
-    'wrapping up = agent alive AND call not live');
+  // Specifically the lame-duck flag, NOT "callStatus is not in-call": a call
+  // spends its first seconds in navigating/joining/waiting-to-be-admitted, so
+  // that test fired the banner on every launch and told the user a brand-new
+  // agent was finishing the previous call.
+  assert.ok(/const wrapping = !!headlessAgentChild && headlessAgentCallOver;/.test(main),
+    'the banner must use the same lame-duck flag the launcher does');
+  assert.ok(!/callStatus === 'in-call'[^\n]*\n[^\n]*const wrapping/.test(main),
+    'joining is not the same as wrapping up');
   const panel = readFileSync(join(root, 'electron-app/renderer/panel.js'), 'utf8');
   assert.ok(/agent-wrapping-up/.test(panel), 'the panel must listen for it');
   assert.ok(/cut that short/.test(panel), 'the banner must warn that calling now truncates the write-up');

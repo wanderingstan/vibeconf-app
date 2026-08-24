@@ -2907,9 +2907,18 @@ ipcMain.handle('get-agent-wrapping-up', () => {
   try { return { active: _agentWrappingUp, botName: resolvedBotName() }; } catch { return null; }
 });
 function pollAgentWrapUp() {
-  let live = false;
-  try { live = localServer.callStatus === 'in-call'; } catch { /* treat as not live */ }
-  const wrapping = !!headlessAgentChild && !live;
+  // headlessAgentCallOver, NOT "callStatus is not in-call". Those look
+  // equivalent and are not: a call spends its first seconds in navigating /
+  // joining / waiting-to-be-admitted, all of which are "not in-call", so the
+  // banner fired on EVERY launch and announced that a brand-new agent was
+  // finishing the last call (seen 07:34:48 on 2026-08-24, one second after
+  // the launch that created it).
+  //
+  // The launcher already computes this exact question to decide whether an
+  // agent is a lame duck, and the banner is the same question asked for the
+  // user's benefit — so it reads the same flag rather than re-deriving it and
+  // getting a different answer.
+  const wrapping = !!headlessAgentChild && headlessAgentCallOver;
   if (wrapping === _agentWrappingUp) return;
   _agentWrappingUp = wrapping;
   try {

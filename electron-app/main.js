@@ -11191,6 +11191,86 @@ function setupIPC() {
     require('electron').clipboard.writeText(require('./claude-install.js').installCommandFor());
     return { ok: true };
   });
+  // ── Chat with the bot in a terminal (#500 follow-up) ──
+  //
+  // The bot keeps ONE Claude session named after itself, so the session it uses
+  // on calls is the same one a person can open at a prompt. All that stands
+  // between them is knowing to cd into a directory buried under Application
+  // Support and that --resume takes the bot's name. These two handlers remove
+  // that, from the panel's Call button held under Option.
+  //
+  // Both build the SAME string, so what the button runs and what the clipboard
+  // hands you cannot drift.
+  function chatCommandForBot() {
+    const claudeDir = store.get('claudeWorkDir') || ensureAgentWorkdir();
+    return require('./chat-command.js').buildChatCommand({
+      workdir: claudeDir,
+      sessionField: store.get('agentSession'),
+      botName: resolvedBotName(),
+    });
+  }
+
+  ipcMain.handle('chat-session:command', () => ({ ok: true, command: chatCommandForBot() }));
+
+  ipcMain.handle('chat-session:copy', () => {
+    const command = chatCommandForBot();
+    require('electron').clipboard.writeText(command);
+    return { ok: true, command };
+  });
+
+  ipcMain.handle('chat-session:open', () => {
+    const command = chatCommandForBot();
+    // Linux has no osascript. #329 already solved "which of the dozen terminal
+    // emulators is installed" (and tmux) for hosting the agent; reuse it rather
+    // than growing a second, worse copy of that logic here.
+    if (process.platform === 'linux') {
+      try {
+        const lt = require('./linux-terminal.js');
+        const exists = (bin) => {
+          try {
+            require('child_process').execFileSync('which', [bin], { stdio: 'ignore' });
+            return true;
+          } catch { return false; }
+        };
+        const emulator = lt.detectTerminalEmulator({ exists });
+        if (emulator) {
+          // The whole thing goes through a login shell: `command` is a compound
+          // `cd … && claude`, not a single argv, and -lc also gives it the PATH
+          // a GUI-launched process does not inherit.
+          const plan = lt.buildDirectCommand({ emulator, argv: ['sh', '-lc', command] });
+          require('child_process').spawn(plan.command, plan.args, { detached: true, stdio: 'ignore' }).unref();
+          return { ok: true, command };
+        }
+      } catch (err) {
+        console.warn('[chat-session] linux terminal launch failed:', err.message);
+      }
+      // Fall through to the clipboard, which is the honest outcome when we
+      // cannot find a terminal to drive.
+      require('electron').clipboard.writeText(command);
+      return { ok: false, copied: true, command, reason: 'no-terminal' };
+    }
+    if (process.platform !== 'darwin') {
+      // Windows: PowerShell vs the old console vs WSL are genuinely different
+      // commands, and a wrong guess opens a terminal that immediately fails in
+      // front of the user. Copying is the honest thing until someone asks.
+      require('electron').clipboard.writeText(command);
+      return { ok: false, copied: true, command, reason: 'unsupported-platform' };
+    }
+    // The command is in SHELL form (chat-command.js), so it needs the
+    // AppleScript quoting layer put back on for `do script "…"`.
+    const escaped = command.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const script = require('./launch-command.js').buildTerminalLaunchScript(escaped);
+    require('child_process').execFile('osascript', ['-e', script], (err) => {
+      if (err) {
+        // Same recovery as the agent launcher: if Terminal will not play, the
+        // user still gets the command rather than nothing.
+        console.warn('[chat-session] osascript failed:', err.message);
+        try { require('electron').clipboard.writeText(command); } catch { /* noop */ }
+      }
+    });
+    return { ok: true, command };
+  });
+
   ipcMain.handle('onboarding:verify-claude', () => {
     // Launch a Claude session in the agent dir (which carries the /claude-ready SessionStart
     // hook), so signing in + starting a session flips readiness. Same Terminal path as a call.

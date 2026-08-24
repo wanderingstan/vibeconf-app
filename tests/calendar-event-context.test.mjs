@@ -23,7 +23,11 @@ const mcp = readFileSync(join(root, 'mcp-server/server.js'), 'utf8');
 test('setRoom clears any prior calendar event context', () => {
   const start = server.indexOf('setRoom(roomId) {');
   assert.ok(start > 0);
-  const body = server.slice(start, start + 400);
+  // Window, not the whole file, so this stays an assertion about setRoom. Sized
+  // generously: setRoom grew a leading comment block (the rejoin-resume guard,
+  // see rejoin-keeps-transcript.test.mjs) and a tight 400-char slice failed on a
+  // change that did not touch calendar context at all.
+  const body = server.slice(start, start + 2000);
   assert.match(body, /this\.calendarEventContext = null;/);
 });
 

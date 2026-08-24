@@ -353,10 +353,21 @@
       //   7. botState=idle between turns → 😔
       //   8. botState=listening → mode emoji (🙂 / 🤐 / 😶)
       const notOnLine = VirtualCamera.CALL_STATUS_EMOJIS[this.callStatus] || (!this.hasEngaged ? '\u{1FAE5}' : null);
-      // When the "nobody home" condition STARTED — the arrival card needs it to
-      // escalate from "on the way" to "having trouble". Cleared the moment the
-      // bot is really on the line, so a later disconnect times afresh.
-      if (notOnLine) { if (!this._notOnLineSince) this._notOnLineSince = Date.now(); }
+      // When the bot started TRYING TO JOIN — the arrival card needs it to
+      // escalate from "on the way" to "having trouble".
+      //
+      // Deliberately NOT "when notOnLine began". `idle` is a not-on-line status
+      // too, so that version measured time since the app had nothing to do: an
+      // app sitting on its Settings screen while someone created a profile was
+      // already 15s+ "late" before it ever attempted a call, and the card opened
+      // straight on "having trouble connecting" with the on-the-way window never
+      // shown at all. Seen live 2026-08-24, the first time a brand-new bot was
+      // created in front of anyone.
+      //
+      // A join ATTEMPT is what deserves a clock, so it starts at navigating and
+      // resets whenever we fall back to a resting status.
+      const attempting = notOnLine && this.callStatus !== 'idle' && this.callStatus !== 'left';
+      if (attempting) { if (!this._notOnLineSince) this._notOnLineSince = Date.now(); }
       else this._notOnLineSince = 0;
       // Audio playing: per-response override > default 😄. Cleared on tts-ended.
       // Suppressed when state === 'thinking' so the ack stays under 🤔.

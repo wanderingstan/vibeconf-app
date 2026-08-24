@@ -273,6 +273,7 @@ class LocalServer {
     // activity while we're between speaks means the bot is heads-down doing tool
     // work (🧑‍💻), not just listening (🙂). Detect NEW lines and surface them.
     this._workingQuietTimer = null;
+    this._workingEscalationTimer = null; // fires the 🤔→🧑‍💻 dwell for a SINGLE long tool call
     this._workingSince = 0; // #339: dwell-clock start for the 🤔→🧑‍💻 escalation
     // #242: the SOURCE is swappable. Today this is the transcript tail; an
     // app-launched agent will hand us its own event stream instead. Everything
@@ -3244,8 +3245,34 @@ class LocalServer {
       const minMs = Number(this._pref('workingStateMinMs')) || 0;
       if (!this._workingSince) this._workingSince = Date.now();
       if (Date.now() - this._workingSince >= minMs) this._setBotState('working');
+      else this._armWorkingEscalationTimer(minMs - (Date.now() - this._workingSince));
     }
     this._armWorkingQuietTimer();
+  }
+
+  // The dwell has to expire on a TIMER, not only when the next tool line lands.
+  //
+  // Checking it inline was enough for a burst of quick calls — each new line
+  // re-checks the clock, so the face escalates on whichever one crosses the
+  // threshold. But a SINGLE long tool call produces one line and then silence:
+  // nothing re-checks, and the avatar sits on 🤔 for the whole thing. That is
+  // exactly backwards. A five-minute build is when the bot is least able to
+  // reply and the room most needs to see it is heads-down — and it was the one
+  // case that never showed 🧑‍💻 (reported 2026-08-24, "a minor annoyance for a
+  // long time").
+  _armWorkingEscalationTimer(afterMs) {
+    clearTimeout(this._workingEscalationTimer);
+    this._workingEscalationTimer = setTimeout(() => {
+      this._workingEscalationTimer = null;
+      // Re-check everything: the turn may have ended, the bot may be speaking or
+      // yielding, or the call may be over. Only a still-thinking bot escalates.
+      if (this.callStatus !== 'in-call') return;
+      if (this.botState !== 'thinking') return;
+      this._setBotState('working');
+      // Keep the quiet timer honest — without this a long silent tool call could
+      // reach 🧑‍💻 and then be dropped by a quiet timer armed before it.
+      this._armWorkingQuietTimer();
+    }, Math.max(0, afterMs));
   }
 
   // 😑 is a blink, not a state the bot lives in. The agent reads the tick and
@@ -3266,6 +3293,10 @@ class LocalServer {
     if (this._workingQuietTimer) clearTimeout(this._workingQuietTimer);
     this._workingQuietTimer = setTimeout(() => {
       this._workingQuietTimer = null;
+      // The engagement is over: a pending escalation would otherwise fire 🧑‍💻
+      // onto a bot that has already gone quiet.
+      clearTimeout(this._workingEscalationTimer);
+      this._workingEscalationTimer = null;
       if (this.botState !== 'working' && this.botState !== 'thinking') return;
       // Still mid-turn (resolved, not yet spoken)? Hold the face and re-check —
       // a single long tool call can be quiet a while. Once the turn ends (speak

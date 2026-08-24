@@ -6754,6 +6754,12 @@ async function launchClaudeTerminal(meetCode, { onboardingCall = false } = {}) {
               VIBECONF_ROOM_ID: '',
               VIBECONF_BOT_NAME: botName,
               VIBECONF_BASE_URL: `http://127.0.0.1:${localServer.port}`,
+              // #517: marks this URL as a REAL pin — chosen for this profile by
+              // the app that owns the port. The user-scoped ~/.claude.json also
+              // sets VIBECONF_BASE_URL, but as a machine-wide fallback aimed at
+              // the primary app, and the MCP server could not tell the two
+              // apart. Only this one may override discovery.
+              VIBECONF_INSTANCE_PIN: '1',
             },
           },
         },

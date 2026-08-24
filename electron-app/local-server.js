@@ -78,6 +78,15 @@ function namesMatch(a, b) {
   return x === y || x.startsWith(y) || y.startsWith(x);
 }
 
+// Two names we can PROVE belong to different bots (#518). Not `!namesMatch`:
+// that is false whenever either side is missing, and a missing name means "no
+// idea", not "a stranger". Only an affirmative mismatch may refuse a caller —
+// an older agent that sends no `bot` at all must keep working exactly as it did.
+function namesDiffer(a, b) {
+  if (!a || !b) return false;
+  return !namesMatch(a, b);
+}
+
 // Auto-stamp every console line with HH:MM:SS.mmm. Skip when caller already
 // supplied a ts() prefix so existing `console.log(ts(), '...')` sites don't
 // double-stamp. Runs in the main process — same wrapper as main.js, but
@@ -1597,6 +1606,31 @@ class LocalServer {
   // preference. preload-meet reads this to fill Meet's pre-join name input.
   getEffectiveBotName() {
     return this.currentCallBotName || this.getConfiguredBotName() || null;
+  }
+
+  // #517: say it out loud the first time a session addresses an instance that
+  // is not its own. Buddy worked this out live only because it thought to ask
+  // get_room_info which profile had answered — "The ports are different. I'm
+  // Buddy on 7866, Pepper's on 7865… my MCP tools are just dialing the wrong
+  // one." That should not take detective work, and until it is said nothing
+  // looks wrong from either app's side: Pepper's instance was asked to speak,
+  // so it spoke, out of Pepper's tile.
+  //
+  // A warning, not a refusal. Only wait_for_speech refuses (#518), where a
+  // second waiter is unambiguous evidence; here the two names can legitimately
+  // differ mid-call (a Meet display name against a configured one), so the
+  // cost of being wrong must stay at one log line. Once per foreign name, or
+  // it would repeat on every poll.
+  _warnIfForeignCaller(bot) {
+    const mine = this.getEffectiveBotName();
+    if (!namesDiffer(mine, bot)) return;
+    const seen = (this._foreignCallersWarned ||= new Set());
+    const key = String(bot).toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    console.warn(ts(), '⚠️  [instance] ' + bot + ' is calling ' + mine + '\'s app (port '
+      + this.port + '). If that is not deliberate, this session\'s MCP config baked the wrong '
+      + 'port — only join_call re-binds it (#517). list_call_instances shows the real mapping.');
   }
 
   // The one set of callbacks every agent-activity transport feeds (#242).
@@ -5193,6 +5227,7 @@ class LocalServer {
     const silenceRaw = silenceParam != null ? parseFloat(silenceParam) : Number(this._pref('defaultSilenceSeconds'));
     const silence = Number.isFinite(silenceRaw) ? silenceRaw : 1.4;
     const bot = url.searchParams.get('bot');
+    this._warnIfForeignCaller(bot);
 
     // Non-blocking: return immediately
     if (!wait) {
@@ -5257,11 +5292,46 @@ class LocalServer {
 
     const startTime = Date.now();
 
-    // Single-agent enforcement: if another agent is already long-polling, kick
-    // them out. Two agents on one room means double speak() calls per utterance
-    // and inflated wordCounts from overlapping `since` windows. The displaced
-    // agent's wait_for_speech returns with { displaced: true } so its skill
-    // can exit the conversation loop instead of fighting for the room.
+    // Single-agent enforcement: if another agent is already long-polling on
+    // THIS instance, kick them out. Two agents on one instance means double
+    // speak() calls per utterance and inflated wordCounts from overlapping
+    // `since` windows. The displaced agent's wait_for_speech returns with
+    // { displaced: true } so its skill can exit the conversation loop instead
+    // of fighting for the room.
+    //
+    // #518: but only when the newcomer is the SAME bot. The guard used to
+    // evict unconditionally, and a waiter carried no identity, so it could not
+    // tell its two cases apart:
+    //
+    //   • the same bot's second agent — evicting is right, that is the point
+    //   • a different bot that reached the wrong port — evicting is wrong, and
+    //     it is what made #517 invisible
+    //
+    // In the 2026-08-24 standup, Buddy's tools were dialing Pepper's port
+    // (#517). Pepper's wait_for_speech returned { displaced: true }, its loop
+    // exited, and from outside Pepper had simply gone quiet — twice in ten
+    // minutes. Refusing the stranger instead turns a silent eviction into an
+    // error naming the mismatch, which is what should have happened the first
+    // time. (Note the old comment said "two agents on one room"; waiters are
+    // per-LocalServer INSTANCE, which is narrower and part of why the original
+    // diagnosis went looking at the room.)
+    const foreign = this.waiters.find((w) => !w.resolved && namesDiffer(w.bot, bot));
+    if (foreign) {
+      const mine = this.getEffectiveBotName();
+      const msg = `This app instance is ${mine || 'another bot'} on port ${this.port}, and `
+        + `${foreign.bot} is already driving it. You asked as ${bot}, so your MCP tools are `
+        + `pointed at the wrong instance — ${bot} has its own app on its own port. This is #517: `
+        + `only join_call re-binds the session's base URL, so a terminal that never issued one `
+        + `keeps whatever port its config baked. Call list_call_instances to find yours.`;
+      console.warn(ts(), '🚫 [instance] refusing wait_for_speech from', bot,
+        '— this instance belongs to', mine, 'and', foreign.bot, 'is driving it');
+      this.addError(`A second bot (${bot}) tried to drive this instance. See #517.`);
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, wrongInstance: true, error: msg,
+        instance: { bot: mine, port: this.port, drivenBy: foreign.bot } }));
+      return;
+    }
+
     if (this.waiters.length > 0) {
       console.log('[local-server] New wait_for_speech displacing', this.waiters.length, 'existing waiter(s)');
       for (const old of [...this.waiters]) {

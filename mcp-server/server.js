@@ -38,12 +38,34 @@ let BOT_NAME = process.env.VIBECONF_BOT_NAME || "Unnamed bot";
 // the app baked into the MCP config (#301). Reassigned in routeToInstance().
 let BASE_URL = process.env.VIBECONF_BASE_URL || "http://127.0.0.1:7865";
 // The port this session was EXPLICITLY pinned to, captured before anything can
-// re-bind BASE_URL. The app writes VIBECONF_BASE_URL into each profile's own MCP
-// config, so when it's set we know which instance this terminal belongs to and
-// can skip the "which profile did you mean?" prompt. Null when unset — the
-// default 7865 happens to be the default profile's port, and inferring from that
-// would silently pick a profile the user never named.
+// re-bind BASE_URL. When set we know which instance this terminal belongs to and
+// can skip the "which profile did you mean?" prompt.
+//
+// #517: this used to read the port straight out of VIBECONF_BASE_URL, and the
+// comment claimed it would be "null when unset". It never was. TWO things write
+// that variable:
+//
+//   • the app, into a per-profile mcp-config.json passed with --mcp-config, at
+//     the port that profile actually runs on — a real pin
+//   • the installer, into the user-scoped ~/.claude.json, at DEFAULT_PORT — a
+//     machine-wide FALLBACK aimed at the primary app, which main.js already
+//     describes as "an unpinned session would drive the wrong bot"
+//
+// A hand-started terminal (`claude` typed in a directory) gets the second one,
+// so every such session looked explicitly pinned to 7865. resolveInstance
+// honours a pin over discovery by design, so the mistake stuck: in the
+// 2026-08-24 standup Buddy ran on 7866, its tools dialed 7865, and its words
+// came out of Pepper's Meet tile. Every call succeeded; it just drove the wrong
+// app.
+//
+// Requiring the marker makes the pin mean what its name says. Unpinned sessions
+// fall through to resolveInstance, which returns "specify which by profile
+// name" when several apps are running — the terminal is asked to say who it is
+// instead of silently driving somebody else. A sole running instance still
+// matches as 'sole' before the pin is consulted, so single-bot users see no
+// change.
 const PINNED_PORT = (() => {
+  if (!process.env.VIBECONF_INSTANCE_PIN) return null;
   const m = String(process.env.VIBECONF_BASE_URL || "").match(/:(\d+)/);
   return m ? Number(m[1]) : null;
 })();

@@ -3062,6 +3062,17 @@ class LocalServer {
     const base = (this.getWebsiteUrl() || '').replace(/\/$/, '');
     if (!roomId || !name || !base) return;
     const self = (this.participants || []).find((p) => p && p.isSelf && p.name && p.name !== 'You');
+    // #222's self-exemption keys off _everJoinedAs, but that was set ONLY by the
+    // MCP join handler — while the name is published from HERE, by the presence
+    // heartbeat, which starts on any route into setRoom (--meet-url at startup,
+    // clicking a detected Meet, the #238 start-sync recovery). A process that
+    // published its name through one of those, then asked to join over MCP, met
+    // its own fresh entry and did not recognise it: observed 2026-08-24, the app
+    // restarted, auto-joined, and refused itself twice 40s later.
+    //
+    // Recording it where the publish happens is what makes the exemption mean
+    // "a name THIS process put in the room" however the join was started.
+    this._everJoinedAs = name;
     fetch(`${base}/api/room/${roomId}/presence`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

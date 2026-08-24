@@ -88,6 +88,15 @@
           <div class="hero-notice notice-info" id="calendarUpcomingBanner" style="display:none">
             <span>📅 <span id="calendarUpcomingText"></span></span>
           </div>
+
+          <!-- The call is over but the agent is still working: writing its
+               summary and memory files. Without this the window is invisible —
+               the avatar keeps reacting, which reads as "still in the call".
+               Worth showing because starting a new call cuts the write-up
+               short, so this is something to wait out on purpose. -->
+          <div class="hero-notice notice-info" id="agentWrapUpBanner" style="display:none">
+            <span>🧹 <span id="agentWrapUpText"></span></span>
+          </div>
         </div>
 
         <!-- PRE-CALL controls, over the foot of the avatar.

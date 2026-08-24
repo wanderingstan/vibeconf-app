@@ -97,11 +97,15 @@ function namesMatch(a, b) {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onFindShareElement, onEvalShare, onReadShareConsole, onReadShareNetwork, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, extraRoutes } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onFindShareElement, onEvalShare, onReadShareConsole, onReadShareNetwork, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, getUnfinishedWrapUp, clearUnfinishedWrapUp, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
     // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
     // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
     this.extraRoutes = extraRoutes || null;
+    // An after-call write-up that a re-join cut short, so the next one can
+    // finish it. See afterCallWorkPlan.
+    this.getUnfinishedWrapUp = getUnfinishedWrapUp || null;
+    this.clearUnfinishedWrapUp = clearUnfinishedWrapUp || null;
     // Where the bot's workdir (and its CLAUDE.md) lives — a thunk because
     // Electron's userData path isn't known at construction in every caller.
     // Optional: tests and headless embedders run without one.
@@ -1895,6 +1899,27 @@ class LocalServer {
           if (duties) plan.duties = duties;
         }
       } catch { /* no workdir / no CLAUDE.md — the note falls back to pointing at it */ }
+
+      // Hand back a write-up that a re-join cut short, so this pass finishes
+      // both. Calling the bot back mid-wrap-up ends that agent (the live call
+      // beats the last call's bookkeeping), which used to lose the summary
+      // outright. It does not have to: the replacement RESUMES the same
+      // session, so the interrupted work is still in its own history — it only
+      // needs telling that it stopped early.
+      //
+      // Delivered here rather than in the join prompt because this is the
+      // moment the agent is already doing after-call work, and because it
+      // reaches every transport (panel, calendar auto-join, CLI) rather than
+      // just the ones that build a prompt.
+      try {
+        const unfinished = this.getUnfinishedWrapUp && this.getUnfinishedWrapUp();
+        if (unfinished && unfinished.call) {
+          plan.unfinished = unfinished;
+          // Told once. Left set it would nag every call forever, and the detail
+          // it refers to lives in the agent's session history, not here.
+          if (this.clearUnfinishedWrapUp) this.clearUnfinishedWrapUp();
+        }
+      } catch { /* no handover available */ }
     }
     return plan;
   }

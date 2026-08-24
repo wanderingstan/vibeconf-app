@@ -316,3 +316,77 @@ test('taking the field over stops it following the bot', () => {
   assert.ok(/set-config', 'agentSessionAuto', !value/.test(panel),
     'typing a value must clear auto; clearing it must restore auto');
 });
+
+// ── Re-joining while the last call's agent is still winding down ─────────────
+// Observed 2026-08-23: leave_call does NOT kill the agent — it stays up to write
+// its summary and memory files, which took 87s. Calling back inside that window
+// hit "already running — reusing it", the winding-down agent then exited, and
+// the new call was left with no agent at all. A bot that joins and never speaks.
+
+test('an agent is only reused for the call it was launched for', () => {
+  const fn = main.slice(main.indexOf('function launchClaudeHeadless'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.ok(/if \(headlessAgentChild && headlessAgentCall === meetCode\)/.test(body),
+    'reuse must be conditional on the agent belonging to THIS call');
+  assert.ok(body.includes('headlessAgentCall = meetCode'),
+    'the call an agent was launched for must be recorded');
+});
+
+test('the replacement waits for the old agent to actually exit', () => {
+  // The new agent resumes the SAME session id, so overlapping it with a process
+  // still holding that session is a race worth not running.
+  const fn = main.slice(main.indexOf('function launchClaudeHeadless'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.ok(/stale\.once\('exit', startOnce\)/.test(body),
+    'the replacement must start on the old agent’s exit, not immediately');
+  assert.ok(/SIGKILL/.test(body) && /5000/.test(body),
+    'a wrap-up that will not die must not strand the live call');
+});
+
+test('a superseded agent cannot tear down its replacement', () => {
+  // Without this, the SIGKILL path lets a late exit null out the new child and
+  // hand the new call’s activity feed back to the transcript tail.
+  const fn = main.slice(main.indexOf('function launchClaudeHeadless'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.ok(/if \(gen !== headlessAgentGeneration\) return;/.test(body),
+    'the exit handler must ignore a superseded generation');
+});
+
+test('the after-call write-up window is visible in the UI', () => {
+  // It used to be invisible: the avatar keeps reacting through the wrap-up, so
+  // it reads as "still on the call". That is how the 2026-08-23 mute-bot
+  // confusion started. The banner also has to say that calling now CUTS THE
+  // WRITE-UP SHORT, since that is the decision it exists to inform.
+  assert.ok(/action: 'agent-wrapping-up'/.test(main), 'main must broadcast the wrap-up state');
+  assert.ok(/const wrapping = !!headlessAgentChild && !live;/.test(main),
+    'wrapping up = agent alive AND call not live');
+  const panel = readFileSync(join(root, 'electron-app/renderer/panel.js'), 'utf8');
+  assert.ok(/agent-wrapping-up/.test(panel), 'the panel must listen for it');
+  assert.ok(/cut that short/.test(panel), 'the banner must warn that calling now truncates the write-up');
+});
+
+test('an interrupted write-up is handed to the next after-call pass', () => {
+  // Cutting the write-up short (the deliberate trade when someone calls back)
+  // used to lose it outright. It does not have to: the replacement resumes the
+  // SAME session, so the work is still in the agent's history — it only needs
+  // telling that it stopped early.
+  assert.ok(/store\.set\('agentUnfinishedWrapUp'/.test(main),
+    'retiring a lame-duck agent must record what it was interrupted doing');
+  const ls = readFileSync(join(root, 'electron-app/local-server.js'), 'utf8');
+  const fn = ls.slice(ls.indexOf('afterCallWorkPlan()'));
+  const body = fn.slice(0, fn.indexOf('\n  }\n'));
+  assert.ok(body.includes('plan.unfinished'),
+    'the after-call plan must carry the unfinished write-up');
+  assert.ok(body.includes('clearUnfinishedWrapUp'),
+    'and clear it once told, or it would nag on every future call');
+});
+
+test('the handover reaches every transport, not just panel-initiated joins', () => {
+  // Deliberately delivered via afterCallWorkPlan (the leave_call response)
+  // rather than by appending to the join prompt: calendar auto-join and
+  // CLI-initiated calls never build a prompt, and they need it just as much.
+  const ls = readFileSync(join(root, 'electron-app/local-server.js'), 'utf8');
+  assert.ok(/getUnfinishedWrapUp/.test(ls), 'the server must read the handover itself');
+  assert.ok(!/join-call.*unfinished/i.test(main),
+    'the handover must not be smuggled into the join prompt');
+});

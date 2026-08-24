@@ -1934,6 +1934,22 @@ loadConfigIntoControls();
 // Re-reading everything rather than applying message.payload on purpose: a
 // targeted update has to know which control shows which key, and that mapping
 // silently rots as prefs are added. Re-reading cannot drift.
+// The after-call write-up, made visible. See pollAgentWrapUp in main.js: the
+// avatar keeps reacting through this window, so without a banner it reads as
+// "still on the call" — which is exactly how the 2026-08-23 mute-bot confusion
+// started. Says what it is doing AND that calling now will cut it short, since
+// that is the decision the banner exists to inform.
+const agentWrapUpBanner = document.getElementById('agentWrapUpBanner');
+const agentWrapUpText = document.getElementById('agentWrapUpText');
+api.on('extension-message', (message) => {
+  if (message?.action !== 'agent-wrapping-up') return;
+  if (!agentWrapUpBanner || !agentWrapUpText) return;
+  const active = !!message.payload?.active;
+  const who = message.payload?.botName || 'The bot';
+  agentWrapUpText.textContent = `${who} is finishing up the last call — calling now will cut that short.`;
+  agentWrapUpBanner.style.display = active ? 'flex' : 'none';
+});
+
 api.on('extension-message', (message) => {
   if (message?.action !== 'config-updated') return;
   // The avatar repaints regardless of the focus guard below: it is a picture,

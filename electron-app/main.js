@@ -1259,6 +1259,12 @@ const localServer = new globalThis.LocalServer({
   // duties for sessions that don't run in that directory (terminal-driven).
   getAgentWorkdir: () => require('./agent-workdir.js').agentDirFor(app.getPath('userData')),
 
+  // A write-up a re-join cut short. Persisted rather than held in memory: the
+  // whole point is that it survives the agent that was doing it, and it should
+  // survive an app restart in between too.
+  getUnfinishedWrapUp: () => { try { return store.get('agentUnfinishedWrapUp') || null; } catch { return null; } },
+  clearUnfinishedWrapUp: () => { try { store.set('agentUnfinishedWrapUp', null); } catch { /* noop */ } },
+
   // Claude-ready feedback loop: a launched Claude session's SessionStart hook POSTs here
   // once it's up — which only happens when Claude Code is BOTH installed and signed in
   // (a session can't start otherwise). Open, localhost-only, no side effects but flipping
@@ -2874,6 +2880,37 @@ function pollAgentLiveness() {
   }
 }
 setInterval(pollAgentLiveness, AGENT_LIVENESS_POLL_MS);
+
+// #38's mirror image: the agent is alive and busy, but the CALL is over.
+//
+// leave_call deliberately leaves the agent up to write its summary and memory
+// files — 87s of it on the 2026-08-23 test call. From outside that is invisible
+// and easy to misread: the avatar keeps reacting, which reads as "still in the
+// call" rather than "finishing the last one". It also matters now, because a
+// re-join during that window ends the wrap-up early (see launchClaudeHeadless),
+// so the window is something to be able to wait out rather than guess at.
+//
+// Polled on the same interval as liveness rather than wired into every call-end
+// path: this is a two-input derivation (agent alive, call not live) and both
+// inputs already change under this poll's nose.
+let _agentWrappingUp = false;
+function pollAgentWrapUp() {
+  let live = false;
+  try { live = localServer.callStatus === 'in-call'; } catch { /* treat as not live */ }
+  const wrapping = !!headlessAgentChild && !live;
+  if (wrapping === _agentWrappingUp) return;
+  _agentWrappingUp = wrapping;
+  try {
+    broadcastToRenderers('extension-message', {
+      action: 'agent-wrapping-up',
+      payload: { active: wrapping, botName: resolvedBotName() },
+    });
+  } catch { /* no window yet */ }
+  console.log('[electron]', wrapping
+    ? '\u{1F9F9} call over, agent still writing up the last one'
+    : '\u{1F9F9} agent finished its after-call work');
+}
+setInterval(pollAgentWrapUp, AGENT_LIVENESS_POLL_MS);
 
 let _impaired = false;
 function setImpaired(on, reason = '') {
@@ -6974,6 +7011,11 @@ function launchClaudeLinuxTerminal({ meetCode, botName, claudeDir, dangerousMode
 // orphaned agent still holding an MCP connection to this app is worse than an
 // orphaned Terminal window — it keeps acting.
 let headlessAgentChild = null;
+// Which call the live agent was launched for, and a generation counter so a
+// replaced agent's exit handler cannot tear down its successor. See the
+// lame-duck check in launchClaudeHeadless.
+let headlessAgentCall = null;
+let headlessAgentGeneration = 0;
 
 // Returns true if the agent is now running headlessly, false to fall back.
 function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall = false }) {
@@ -6989,11 +7031,71 @@ function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, cla
   // one bot, both driving the same local server — and both writing into one
   // activity buffer, which is the interleaving the source abstraction is built
   // to avoid rather than merge.
+  //
+  // But "an agent is alive" is NOT the same as "an agent is serving this call".
+  // leave_call deliberately does not kill the agent: it stays up to write its
+  // summary and memory files, which took 87s on the 2026-08-23 test call. Call
+  // back inside that window and this guard used to say "reusing it" about an
+  // agent that was already winding down — it then exited, and the new call was
+  // left with no agent at all. A bot that joins and never speaks, which is the
+  // worst failure shape this app has.
+  //
+  // So reuse only an agent launched for THIS call. Anything else is a lame duck
+  // finishing the last one.
+  if (headlessAgentChild && headlessAgentCall === meetCode) {
+    console.log('[electron] headless agent already running for this call — reusing it');
+    return true;
+  }
   if (headlessAgentChild) {
-    console.log('[electron] headless agent already running — reusing it');
+    // Ending it costs the tail of its after-call write-up. That is the right
+    // trade: the previous call's summary is worth less than the live call
+    // having a bot that talks, and it has already had from leave_call until
+    // now. It costs less than it looks, too — the replacement resumes the SAME
+    // session, so the interrupted work is still in the agent's own history
+    // rather than thrown away.
+    console.log('[electron] headless agent belongs to call', headlessAgentCall,
+      '— ending it so', meetCode, 'gets its own');
+    const stale = headlessAgentChild;
+    // Remember WHAT we interrupted. The replacement resumes the same session,
+    // so the work itself is still in the agent's history — it just needs to be
+    // told it stopped early, which afterCallWorkPlan does at the end of this
+    // call. Without this the summary is simply lost, silently.
+    try {
+      store.set('agentUnfinishedWrapUp', {
+        call: headlessAgentCall || null,
+        interruptedAt: new Date().toISOString(),
+        interruptedBy: meetCode,
+      });
+    } catch { /* best effort */ }
+    // Cleared and bumped FIRST so a late exit from this one cannot null out its
+    // successor or hand the successor's activity feed back to the transcript.
+    headlessAgentChild = null;
+    headlessAgentGeneration++;
+
+    // Wait for it to be GONE before starting the replacement. The new agent
+    // resumes the same session id, and two processes on one session file is a
+    // race we should not run — the CLI already refuses an in-use session for
+    // --session-id, and there is no reason to find out how --resume handles it.
+    let started = false;
+    const startOnce = () => { if (!started) { started = true; startAgent(); } };
+    stale.once('exit', startOnce);
+    // A wrap-up that will not die must not strand the live call.
+    const hardStop = setTimeout(() => {
+      console.warn('[electron] previous agent did not exit in 5s — killing it');
+      try { stale.kill('SIGKILL'); } catch { /* already gone */ }
+      startOnce();
+    }, 5000);
+    if (typeof hardStop.unref === 'function') hardStop.unref();
+    stale.once('exit', () => clearTimeout(hardStop));
+    try { stale.kill('SIGTERM'); } catch { startOnce(); }
     return true;
   }
 
+  startAgent();
+  return true;
+
+  // Hoisted so the lame-duck path above can call it once the old agent is gone.
+  function startAgent() {
   const { resolveClaudeModel } = require('./claude-model.js');
   const args = buildAgentArgs({
     meetCode,
@@ -7023,6 +7125,9 @@ function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, cla
   };
 
   console.log('[electron] launching headless agent:', claudeBin, args.join(' '));
+  // This agent's identity, so a superseded one's exit cannot tear this one down.
+  const gen = ++headlessAgentGeneration;
+  headlessAgentCall = meetCode;
   headlessAgentChild = spawnHeadlessAgent({
     claudePath: claudeBin,
     args,
@@ -7030,7 +7135,11 @@ function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, cla
     env,
     source,
     onExit: ({ code, error }) => {
+      // A retired agent exiting late must not null out its replacement, nor
+      // hand the replacement's live feed back to the transcript tail.
+      if (gen !== headlessAgentGeneration) return;
       headlessAgentChild = null;
+      headlessAgentCall = null;
       // A dead agent's last words must not sit in the pane looking live. The
       // brain pane has no other way to tell — it renders a buffer, and a buffer
       // that simply stops updating is indistinguishable from a quiet call.
@@ -7043,7 +7152,7 @@ function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, cla
       localServer.releaseStreamAgentSource();
     },
   });
-  return true;
+  }
 }
 
 function closeClaudeTerminal() {
@@ -7054,6 +7163,7 @@ function closeClaudeTerminal() {
     console.log('[electron] ending headless agent');
     try { headlessAgentChild.kill('SIGTERM'); } catch { /* already gone */ }
     headlessAgentChild = null;
+    headlessAgentCall = null;
   }
 
   // #329: the Linux shapes. Killing the tmux SESSION is what ends the agent —

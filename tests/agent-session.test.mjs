@@ -331,7 +331,9 @@ test('an agent is only reused for the call it was launched for', () => {
   // exactly the reuse this guard exists to prevent (seen 20:51:31, 2026-08-23).
   assert.ok(/if \(headlessAgentChild && !headlessAgentCallOver\)/.test(body),
     'reuse must depend on the agent’s call still being live, not on the room');
-  assert.ok(!/headlessAgentCall === meetCode/.test(main),
+  // Specifically the GUARD. The codes may still be compared for a log line —
+  // what must not come back is deciding reuse on them.
+  assert.ok(!/if \(headlessAgentChild && headlessAgentCall === meetCode\)/.test(main),
     'the meet code cannot distinguish a re-join into the same room from the same call');
   assert.ok(/headlessAgentCallOver = true;/.test(main),
     'the agent must be marked a lame duck when its call ends');

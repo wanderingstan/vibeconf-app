@@ -2900,6 +2900,12 @@ setInterval(pollAgentLiveness, AGENT_LIVENESS_POLL_MS);
 // path: this is a two-input derivation (agent alive, call not live) and both
 // inputs already change under this poll's nose.
 let _agentWrappingUp = false;
+// A panel opened mid-wrap-up missed the broadcast, so it asks on load. Without
+// this the banner is simply absent for anyone who opens the window during the
+// very window it exists to explain.
+ipcMain.handle('get-agent-wrapping-up', () => {
+  try { return { active: _agentWrappingUp, botName: resolvedBotName() }; } catch { return null; }
+});
 function pollAgentWrapUp() {
   let live = false;
   try { live = localServer.callStatus === 'in-call'; } catch { /* treat as not live */ }
@@ -7063,8 +7069,10 @@ function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, cla
     // now. It costs less than it looks, too — the replacement resumes the SAME
     // session, so the interrupted work is still in the agent's own history
     // rather than thrown away.
-    console.log('[electron] headless agent belongs to call', headlessAgentCall,
-      '— ending it so', meetCode, 'gets its own');
+    console.log('[electron] previous agent is still writing up'
+      + (headlessAgentCall ? ` ${headlessAgentCall}` : '')
+      + ' — ending it so this call gets its own'
+      + (headlessAgentCall === meetCode ? ' (same room, new call)' : ''));
     const stale = headlessAgentChild;
     // Remember WHAT we interrupted. The replacement resumes the same session,
     // so the work itself is still in the agent's history — it just needs to be

@@ -1941,14 +1941,18 @@ loadConfigIntoControls();
 // that is the decision the banner exists to inform.
 const agentWrapUpBanner = document.getElementById('agentWrapUpBanner');
 const agentWrapUpText = document.getElementById('agentWrapUpText');
+function showAgentWrapUp(payload) {
+  if (!agentWrapUpBanner || !agentWrapUpText) return;
+  const who = payload?.botName || 'The bot';
+  agentWrapUpText.textContent = `${who} is finishing up the last call — calling now will cut that short.`;
+  agentWrapUpBanner.style.display = payload?.active ? 'flex' : 'none';
+}
 api.on('extension-message', (message) => {
   if (message?.action !== 'agent-wrapping-up') return;
-  if (!agentWrapUpBanner || !agentWrapUpText) return;
-  const active = !!message.payload?.active;
-  const who = message.payload?.botName || 'The bot';
-  agentWrapUpText.textContent = `${who} is finishing up the last call — calling now will cut that short.`;
-  agentWrapUpBanner.style.display = active ? 'flex' : 'none';
+  showAgentWrapUp(message.payload);
 });
+// Catch up on a wrap-up already in progress when this window opened.
+api.invoke('get-agent-wrapping-up').then(showAgentWrapUp).catch(() => {});
 
 api.on('extension-message', (message) => {
   if (message?.action !== 'config-updated') return;

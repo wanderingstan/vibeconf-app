@@ -88,6 +88,15 @@
           <div class="hero-notice notice-info" id="calendarUpcomingBanner" style="display:none">
             <span>📅 <span id="calendarUpcomingText"></span></span>
           </div>
+
+          <!-- The call is over but the agent is still working: writing its
+               summary and memory files. Without this the window is invisible —
+               the avatar keeps reacting, which reads as "still in the call".
+               Worth showing because starting a new call cuts the write-up
+               short, so this is something to wait out on purpose. -->
+          <div class="hero-notice notice-info" id="agentWrapUpBanner" style="display:none">
+            <span>🧹 <span id="agentWrapUpText"></span></span>
+          </div>
         </div>
 
         <!-- PRE-CALL controls, over the foot of the avatar.
@@ -394,13 +403,19 @@
           <div style="font-size:11px;color:#666;margin-top:2px">Model for the launched Claude session (passed as <code>--model</code>). Blank = <code>opus</code>. Use an alias (<code>sonnet</code>, <code>opus</code>, <code>haiku</code>) or a full model id.</div>
         </div>
         <div class="field">
-          <label for="claudeWorkDir">Claude Working Directory</label>
+          <label for="claudeWorkDir">Working Directory</label>
           <input type="text" id="claudeWorkDir" placeholder="(auto: this bot's trusted folder)" />
-          <div style="font-size:11px;color:#666;margin-top:2px">Where the bot's Claude session starts. Leave blank to use this bot's own trusted folder (recommended); set a path to override.</div>
+          <div style="font-size:11px;color:#666;margin-top:2px">Where the bot's agent session starts. Leave blank to use this bot's own trusted folder (recommended); set a path to override.</div>
           <div class="workdir-row" style="display:flex;align-items:center;gap:8px;margin-top:6px">
             <code id="agentWorkdirPath" class="workdir-path" title="The folder the bot's session actually starts in">…</code>
             <button id="openAgentWorkdirBtn" class="popout-btn" title="Reveal the bot's working folder in Finder">Open in Finder</button>
           </div>
+        </div>
+        <div class="field">
+          <label for="agentSessionId">Session name/id</label>
+          <input type="text" id="agentSessionId" placeholder="(the bot’s name)" />
+          <div style="font-size:11px;color:#666;margin-top:2px">The bot keeps <em>one</em> ongoing session and resumes it every launch, instead of starting fresh and forgetting the last call. It follows the bot's name on its own, so you shouldn't need to touch this — rename the bot and the session is renamed too, keeping its history. The name is shown because it's a real handle: <code>claude --resume &lt;name&gt;</code> in the working folder above reaches the same session. Type a name here to take it over (it then stops following the bot's name), or paste a session id to pin this bot to a specific existing session; clear the field to go back to following. Sessions belong to the working directory above, so changing that starts a new one.</div>
+          <div style="font-size:11px;color:#666;margin-top:6px" id="agentSessionStatus">…</div>
         </div>
         <div class="field">
           <label for="agentClaudeMd">Personality (CLAUDE.md)</label>

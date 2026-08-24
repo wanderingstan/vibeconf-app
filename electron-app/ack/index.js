@@ -64,6 +64,17 @@ async function decide({ text, wordCount, addressivity, mode, recentTranscript, s
   const config = getProviderConfig(store);
   const started = Date.now();
 
+  // Does this look like a finished thought? Gates the LONG pool only — see the
+  // reasoning in builtin.js. The HEURISTIC judge, not the model one: an ack has
+  // to be instant to be worth anything, and the model judge is an awaited HTTP
+  // call to an endpoint most installs do not run. Requiring a terminator is
+  // exactly the signal wanted here, and when the caption source never
+  // punctuates the answer is "not finished", which correctly keeps every ack
+  // short.
+  const { heuristicComplete } = require('../completeness');
+  let complete = false;
+  try { complete = !!heuristicComplete(text).complete; } catch { /* treat as unfinished */ }
+
   if (config.provider === 'openai-compat') {
     try {
       const phrase = await openaiCompat.decide({
@@ -76,7 +87,7 @@ async function decide({ text, wordCount, addressivity, mode, recentTranscript, s
       // Endpoint unreachable / timed out / parse error — fall back to builtin
       // so the bot is never strictly worse than baseline.
       log?.(`ack-llm failed (${err.message}); falling back to builtin`);
-      const phrase = builtin.decide({ wordCount, prefs });
+      const phrase = builtin.decide({ wordCount, complete, prefs });
       return {
         phrase,
         source: 'llm-fallback-builtin',
@@ -88,7 +99,7 @@ async function decide({ text, wordCount, addressivity, mode, recentTranscript, s
 
   // Default: builtin
   return {
-    phrase: builtin.decide({ wordCount, prefs }),
+    phrase: builtin.decide({ wordCount, complete, prefs }),
     source: 'builtin',
     latencyMs: Date.now() - started,
   };

@@ -16,6 +16,13 @@ const { DEFAULT_BOT_NAME, PREFERENCES } = require('./preferences-schema');
 const { resolveBotName, botNameForAppUI } = require('./bot-name.js');
 const { resolveVoice } = require('./voice-status.js');
 const { isInCall, isFinished, isCallComplete } = require('./call-phase.js');
+
+// Assigned once the app is ready (the implementation needs nextBotProfileName /
+// seedNewBotName / launchOrFocusProfile, which live in the app-ready block).
+// Held at module scope so the local server's extraRoutes — defined long before
+// that block runs — can reach it. Null until then; the route says so rather
+// than throwing.
+let adoptSessionAsBot = null;
 const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEventsFor } = require('./share-surface.js');
 const { CallRecordingSession } = require('./call-recorder.js');
 const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWindow } = require('./call-recording-window.js');
@@ -872,6 +879,12 @@ function beginAfterCallWorkOrTeardown(reason) {
   }
 
   console.log('[electron] Call ended (' + reason + ') — entering after-call work for up to ' + seconds + 's');
+  // From here the live agent is finishing the call it was launched for, not
+  // serving a live one. That, not the meet code, is what makes it a lame duck:
+  // calling a bot back into the SAME room is a new call, and keying on the code
+  // made the reuse guard say "same call" about an agent already winding down
+  // (observed 20:51:31 on 2026-08-23, right after this fix's first outing).
+  headlessAgentCallOver = true;
   localServer.setCallStatus('after-call-work');
   clearTimeout(_afterCallWorkTimer);
   // A backstop, not a schedule. Nothing reaps a terminal window on its own, so an
@@ -1259,6 +1272,12 @@ const localServer = new globalThis.LocalServer({
   // duties for sessions that don't run in that directory (terminal-driven).
   getAgentWorkdir: () => require('./agent-workdir.js').agentDirFor(app.getPath('userData')),
 
+  // A write-up a re-join cut short. Persisted rather than held in memory: the
+  // whole point is that it survives the agent that was doing it, and it should
+  // survive an app restart in between too.
+  getUnfinishedWrapUp: () => { try { return store.get('agentUnfinishedWrapUp') || null; } catch { return null; } },
+  clearUnfinishedWrapUp: () => { try { store.set('agentUnfinishedWrapUp', null); } catch { /* noop */ } },
+
   // Claude-ready feedback loop: a launched Claude session's SessionStart hook POSTs here
   // once it's up — which only happens when Claude Code is BOTH installed and signed in
   // (a session can't start otherwise). Open, localhost-only, no side effects but flipping
@@ -1266,8 +1285,50 @@ const localServer = new globalThis.LocalServer({
   extraRoutes: async (req, res) => {
     let pathname;
     try { pathname = new URL(req.url, 'http://127.0.0.1').pathname; } catch { return false; }
+    // Turn the CALLER's Claude session into a bot (/call-new-bot). An HTTP route
+    // rather than only IPC because the caller is a terminal, not the panel.
+    if (pathname === '/api/adopt-session-as-bot' && req.method === 'POST') {
+      let body = '';
+      try {
+        body = await new Promise((resolve) => {
+          let buf = '';
+          req.on('data', (c) => { buf += c; });
+          req.on('end', () => resolve(buf));
+          req.on('error', () => resolve(''));
+        });
+      } catch { /* no body */ }
+      let payload = {};
+      try { payload = JSON.parse(body || '{}'); } catch { /* not JSON */ }
+      let result;
+      if (!adoptSessionAsBot) {
+        result = { ok: false, error: 'The app is still starting up — try again in a moment.' };
+      } else {
+        try { result = await adoptSessionAsBot(payload); }
+        catch (err) { result = { ok: false, error: err.message }; }
+      }
+      res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+      return true;
+    }
     if (pathname === '/claude-ready' && req.method === 'POST') {
       markClaudeReady('session-hook');
+      // The hook forwards its stdin, which carries session_id — the id to
+      // --resume on the next launch. Best-effort by design: an older hook (or a
+      // curl that could not read stdin) posts an empty body, and readiness above
+      // must still be recorded. See ensureClaudeReadyHook.
+      let body = '';
+      try {
+        body = await new Promise((resolve) => {
+          let buf = '';
+          req.on('data', (c) => { buf += c; });
+          req.on('end', () => resolve(buf));
+          req.on('error', () => resolve(''));
+        });
+      } catch { /* no body */ }
+      try {
+        const payload = JSON.parse(body || '{}');
+        if (payload && payload.session_id) recordAgentSessionId(payload.session_id);
+      } catch { /* not JSON — pre-session-id hook */ }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
       return true;
@@ -2284,6 +2345,26 @@ const localServer = new globalThis.LocalServer({
   },
 
   onCallStatusChange: (status) => {
+    // A live call cancels any pending after-call teardown, on EVERY route in.
+    //
+    // onJoinCall already did this, but only for the agent's own join_call. A
+    // join from the panel, the calendar, or the CLI never passed through it, so
+    // the previous call's fuse kept burning: armed 07:49:35 for 1800s, it fired
+    // at 08:19:35 in the middle of a half-hour conversation, tore the call down
+    // and killed the agent (exit 143) with nothing visible from inside the room
+    // to explain it. Observed 2026-08-24.
+    //
+    // It hid until now because re-joining during after-call work used to leave
+    // you with no agent at all (see launchClaudeHeadless); once that worked, the
+    // stale fuse outlived the call it belonged to.
+    //
+    // Here rather than in each join path because this is where every route
+    // converges — a new one cannot forget to defuse it.
+    if (_afterCallWorkTimer && isInCall(status)) {
+      console.log('[electron] Call live again — cancelling the pending after-call teardown');
+      clearTimeout(_afterCallWorkTimer);
+      _afterCallWorkTimer = null;
+    }
     // The bot's view only takes up window space during a call — grow/shrink the
     // column here, before anything else, so the layout tracks the call.
     setBotViewInCall(status);
@@ -2487,7 +2568,14 @@ const localServer = new globalThis.LocalServer({
       const wordCount = (lastUtterance || '').split(/\s+/).filter(Boolean).length;
       const prefs = require('./preferences-schema').PREFERENCES;
       const longMin = Number(store?.get('ackLongMin')) || prefs.ackLongMin.default;
-      const arr = wordCount >= longMin
+      // Same rule as the builtin decider: a long ack asserts the speaker has
+      // FINISHED, so it needs an utterance that looks finished — not merely a
+      // long one. See ack/builtin.js. Heuristic judge only; an ack must be
+      // instant, and this path is already covering a slow model's TTFT.
+      let ackComplete = false;
+      try { ackComplete = !!require('./completeness').heuristicComplete(lastUtterance || '').complete; }
+      catch { /* treat as unfinished */ }
+      const arr = (wordCount >= longMin && ackComplete)
         ? (store?.get('ackLongPhrases') || prefs.ackLongPhrases.default)
         : (store?.get('ackShortPhrases') || prefs.ackShortPhrases.default);
       const phrase = arr[Math.floor(Math.random() * arr.length)];
@@ -2857,6 +2945,52 @@ function pollAgentLiveness() {
   }
 }
 setInterval(pollAgentLiveness, AGENT_LIVENESS_POLL_MS);
+
+// #38's mirror image: the agent is alive and busy, but the CALL is over.
+//
+// leave_call deliberately leaves the agent up to write its summary and memory
+// files — 87s of it on the 2026-08-23 test call. From outside that is invisible
+// and easy to misread: the avatar keeps reacting, which reads as "still in the
+// call" rather than "finishing the last one". It also matters now, because a
+// re-join during that window ends the wrap-up early (see launchClaudeHeadless),
+// so the window is something to be able to wait out rather than guess at.
+//
+// Polled on the same interval as liveness rather than wired into every call-end
+// path: this is a two-input derivation (agent alive, call not live) and both
+// inputs already change under this poll's nose.
+let _agentWrappingUp = false;
+// A panel opened mid-wrap-up missed the broadcast, so it asks on load. Without
+// this the banner is simply absent for anyone who opens the window during the
+// very window it exists to explain.
+ipcMain.handle('get-agent-wrapping-up', () => {
+  try { return { active: _agentWrappingUp, botName: resolvedBotName() }; } catch { return null; }
+});
+function pollAgentWrapUp() {
+  // headlessAgentCallOver, NOT "callStatus is not in-call". Those look
+  // equivalent and are not: a call spends its first seconds in navigating /
+  // joining / waiting-to-be-admitted, all of which are "not in-call", so the
+  // banner fired on EVERY launch and announced that a brand-new agent was
+  // finishing the last call (seen 07:34:48 on 2026-08-24, one second after
+  // the launch that created it).
+  //
+  // The launcher already computes this exact question to decide whether an
+  // agent is a lame duck, and the banner is the same question asked for the
+  // user's benefit — so it reads the same flag rather than re-deriving it and
+  // getting a different answer.
+  const wrapping = !!headlessAgentChild && headlessAgentCallOver;
+  if (wrapping === _agentWrappingUp) return;
+  _agentWrappingUp = wrapping;
+  try {
+    broadcastToRenderers('extension-message', {
+      action: 'agent-wrapping-up',
+      payload: { active: wrapping, botName: resolvedBotName() },
+    });
+  } catch { /* no window yet */ }
+  console.log('[electron]', wrapping
+    ? '\u{1F9F9} call over, agent still writing up the last one'
+    : '\u{1F9F9} agent finished its after-call work');
+}
+setInterval(pollAgentWrapUp, AGENT_LIVENESS_POLL_MS);
 
 let _impaired = false;
 function setImpaired(on, reason = '') {
@@ -6244,6 +6378,12 @@ ipcMain.handle('get-claude-ready', () => claudeReady);
 // Merge a SessionStart hook into the agent dir's settings.local.json so ANY Claude session
 // launched there pings /claude-ready on startup (proof it's installed + signed in).
 // Idempotent — keeps existing settings/hooks; only adds ours if absent.
+//
+// It also forwards the hook's stdin payload, which is what carries `session_id`
+// (see /claude-ready in extraRoutes). That is the ONLY session-id capture path
+// that works for every hosting mode: Terminal.app and tmux own the agent's
+// stdout, so there is nothing for the app to parse there — but the CLI runs this
+// hook itself regardless of who is holding the pipe.
 function ensureClaudeReadyHook(agentDir, port) {
   try {
     const settingsPath = path.join(agentDir, '.claude', 'settings.local.json');
@@ -6251,17 +6391,156 @@ function ensureClaudeReadyHook(agentDir, port) {
     try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')); } catch { /* fresh */ }
     settings.hooks = settings.hooks || {};
     const list = Array.isArray(settings.hooks.SessionStart) ? settings.hooks.SessionStart : [];
-    const present = list.some((g) => (g.hooks || []).some((h) => typeof h.command === 'string' && h.command.includes('/claude-ready')));
-    if (!present) {
-      const cmd = `curl -s -m 2 -X POST http://127.0.0.1:${port}/claude-ready >/dev/null 2>&1 || true`;
-      list.push({ hooks: [{ type: 'command', command: cmd }] });
-      settings.hooks.SessionStart = list;
-      fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-      console.log('[electron] Added Claude-ready SessionStart hook → 127.0.0.1:' + port);
-    }
+    // `--data-binary @-` is what forwards the hook payload; anything without it is
+    // a pre-session-id hook left over in an existing workdir. Matching on the flag
+    // rather than just the URL is what makes those upgrade instead of sitting
+    // there silently never reporting a session id.
+    const cmd = `curl -s -m 2 -X POST -H 'Content-Type: application/json' --data-binary @- http://127.0.0.1:${port}/claude-ready >/dev/null 2>&1 || true`;
+    const isOurs = (h) => typeof h.command === 'string' && h.command.includes('/claude-ready');
+    const current = list.filter((g) => (g.hooks || []).some(isOurs));
+    if (current.length === 1 && current[0].hooks.length === 1 && current[0].hooks[0].command === cmd) return;
+    // Drop every previous version of ours, then add exactly one current one. A
+    // filter-then-push rather than an in-place edit, so a workdir that collected
+    // hooks from several app versions/ports converges on one.
+    const kept = list.filter((g) => !(g.hooks || []).some(isOurs));
+    kept.push({ hooks: [{ type: 'command', command: cmd }] });
+    settings.hooks.SessionStart = kept;
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+    console.log('[electron] Wrote Claude-ready SessionStart hook → 127.0.0.1:' + port);
   } catch (err) { console.warn('[electron] ensureClaudeReadyHook failed:', err.message); }
 }
+
+// How this launch should reach its session: { resumeSessionId, sessionName }.
+//
+// The bot keeps ONE session per name per working directory. There is no separate
+// "create" mode to get wrong — resume the session if we can find it, otherwise
+// start one and name it, and the hook below records the id so the next launch
+// finds it.
+//
+// Resolution goes through an id we cached, never through `--resume <title>`.
+// The CLI does accept a title, but it hard-errors ("matches 2 sessions") as soon
+// as a directory holds two by that name, and that is unrecoverable without an
+// id. Resolving ourselves keeps the readable name and cannot hit it. It also
+// avoids reading transcript files to map a title back to an id — the format of
+// what is inside them is undocumented and has broken before; a filename is not.
+function planAgentSession(claudeDir, botName) {
+  const { resolveSessionRef, sessionExists, sessionCacheKey, resolveSessionId, resolveSessionName } = require('./agent-session.js');
+  const ref = resolveSessionRef(store.get('agentSession'), botName);
+
+  // An explicit id in the field is the user pinning this bot to one session.
+  if (ref.kind === 'id') {
+    if (sessionExists(ref.id, claudeDir)) return { resumeSessionId: ref.id, sessionName: ref.name };
+    // NOT cleared: they typed it. Silently replacing a pin with a fresh session
+    // would be the app overruling an explicit instruction.
+    console.warn('[electron] Pinned session', ref.id, 'is not resumable from', claudeDir,
+      '— starting a fresh session. Clear the Session name/id field to stop pinning it.');
+    return { resumeSessionId: '', sessionName: ref.name };
+  }
+
+  // The field TRACKS the bot's name unless someone has deliberately taken it
+  // over (agentSessionAuto). Almost nobody edits this, so the behaviour that has
+  // to be right is the automatic one: rename the bot and its session should
+  // follow, keeping the history rather than starting over.
+  //
+  // The name is still written into the field rather than left blank, because a
+  // visible "Jimmy" is what shows the session HAS a name — otherwise
+  // `claude --resume Jimmy` in the bot's folder reads as impossible when it works.
+  let name = ref.name;
+  const auto = store.get('agentSessionAuto') !== false;
+  if (auto) {
+    const botLabel = resolveSessionName(botName);
+    if (botLabel) name = botLabel;
+  }
+  if (name !== ref.name || ref.implicit) {
+    try {
+      store.set('agentSession', name);
+      notifyConfigChanged('agentSession', name);
+    } catch { /* not fatal — the launch below still uses `name` */ }
+  }
+
+  // Name-keyed: the id is an implementation detail we look up. A miss is not an
+  // error — it is simply the first launch under this name (or in this
+  // directory), so we create and let the hook fill the cache in.
+  const cache = { ...(store.get('agentSessionCache') || {}) };
+  const key = sessionCacheKey(claudeDir, name);
+
+  // Carry the session across a rename instead of orphaning it.
+  //
+  // Renaming the bot changes the key, which on its own would miss and start an
+  // empty session — the bot losing its memory because someone corrected a
+  // typo. Since `--name` RENAMES a session in place (verified: resuming with a
+  // different --name makes the old title stop resolving and the new one start),
+  // moving our cache entry and passing the new name keeps one session that
+  // simply changes what it is called.
+  //
+  // Only when the new name has no session of its own — that case is a switch to
+  // an existing session, and must not drag this one on top of it.
+  if (!cache[key] && ref.name && ref.name !== name) {
+    const from = sessionCacheKey(claudeDir, ref.name);
+    if (cache[from]) {
+      cache[key] = cache[from];
+      delete cache[from];
+      try { store.set('agentSessionCache', cache); } catch { /* best effort */ }
+      console.log('[electron] Bot renamed', JSON.stringify(ref.name), '→', JSON.stringify(name),
+        '— carrying session', cache[key], 'over rather than starting a new one');
+    }
+  }
+
+  const cached = resolveSessionId(cache[key]);
+  if (cached && sessionExists(cached, claudeDir)) {
+    return { resumeSessionId: cached, sessionName: name };
+  }
+  if (cached) {
+    console.log('[electron] Cached session', cached, 'for', name, 'is gone — starting a fresh one');
+  }
+  // Remember what the next SessionStart hook is reporting about, since the hook
+  // payload says which session started but not which name we asked for.
+  pendingSessionCacheKey = key;
+  return { resumeSessionId: '', sessionName: name };
+}
+
+// Set at launch, consumed by the next hook ping. One agent at a time is already
+// enforced by the launchers, so there is no second launch racing for this.
+let pendingSessionCacheKey = null;
+
+// Record the session id the CLI chose, so the next launch resumes it by name.
+//
+// Only for a session WE just started fresh (pendingSessionCacheKey). A resumed
+// session reports the id it was already given, so there is nothing to learn from
+// it, and a session someone started by hand in the bot's folder must not
+// quietly become the bot's session.
+function recordAgentSessionId(sessionId) {
+  const { resolveSessionId } = require('./agent-session.js');
+  const id = resolveSessionId(sessionId);
+  const key = pendingSessionCacheKey;
+  pendingSessionCacheKey = null;
+  if (!id || !key) return;
+  try {
+    const cache = { ...(store.get('agentSessionCache') || {}), [key]: id };
+    store.set('agentSessionCache', cache);
+    console.log('[electron] Bot session', JSON.stringify(key), '→', id);
+  } catch (err) { console.warn('[electron] recordAgentSessionId failed:', err.message); }
+}
+
+// What the panel shows under the field: the name in use, and whether there is a
+// session behind it yet. Read-only — the id is not something to type.
+ipcMain.handle('get-agent-session', () => {
+  try {
+    const { resolveSessionRef, sessionCacheKey, sessionExists, resolveSessionId, resolveSessionName } = require('./agent-session.js');
+    const claudeDir = store.get('claudeWorkDir') || require('./agent-workdir.js').agentDirFor(app.getPath('userData'));
+    const ref = resolveSessionRef(store.get('agentSession'), resolvedBotName());
+    if (ref.kind === 'id') {
+      return { name: ref.name, id: ref.id, pinned: true, auto: false, exists: sessionExists(ref.id, claudeDir) };
+    }
+    // Show what the NEXT launch would use, which under auto-tracking is the
+    // bot's current name even if the stored field still says the old one.
+    const auto = store.get('agentSessionAuto') !== false;
+    const name = (auto && resolveSessionName(resolvedBotName())) || ref.name;
+    const id = resolveSessionId((store.get('agentSessionCache') || {})[sessionCacheKey(claudeDir, name)]);
+    return { name, id: id || '', pinned: false, auto, exists: !!id && sessionExists(id, claudeDir) };
+  } catch { return null; }
+});
 
 // Claude Code isn't installed → offer a CONSENTED one-click install (visible Terminal
 // running the official installer) with a copy-the-command fallback. Never runs anything
@@ -6495,8 +6774,18 @@ async function launchClaudeTerminal(meetCode, { onboardingCall = false } = {}) {
   // shell command. See tests/claude-model.test.mjs.
   const { claudeModelFlag } = require('./claude-model.js');
   const modelFlag = claudeModelFlag(store.get('claudeModel'));
+  // Settings → "Session name/id". Empty = start fresh; the SessionStart hook then
+  // records the new id so the next launch resumes this same conversation.
+  // Sanitized in agent-session.js — like the model, this is interpolated into an
+  // AppleScript-wrapped shell command.
+  const { claudeResumeFlag, claudeNameFlag } = require('./agent-session.js');
+  // Resume the bot's own session, and name it after the bot so it reads as
+  // "Jimmy" in the prompt box and /resume rather than a UUID.
+  const plan = planAgentSession(claudeDir, botName);
+  const resumeFlag = claudeResumeFlag(plan.resumeSessionId);
+  const nameFlag = claudeNameFlag(plan.sessionName);
   const slashCmd = onboardingCall ? 'onboarding-call' : 'join-call';
-  const claudeCmd = `claude${dangerousFlag}${modelFlag}${mcpFlags} \\"/${slashCmd} ${meetCode} ${botName.replace(/"/g, '')}\\"`;
+  const claudeCmd = `claude${resumeFlag}${nameFlag}${dangerousFlag}${modelFlag}${mcpFlags} \\"/${slashCmd} ${meetCode} ${botName.replace(/"/g, '')}\\"`;
 
   // #242: run the agent as our own child instead, when asked to. Everything
   // above (detection, auth nag, workdir, MCP config, bot name) is shared — the
@@ -6719,6 +7008,7 @@ function launchClaudeLinuxTerminal({ meetCode, botName, claudeDir, dangerousMode
     dangerous: dangerousMode,
     model: resolveClaudeModel(store.get('claudeModel')),
     mcpConfigPath,
+    ...planAgentSession(claudeDir, botName),
     onboardingCall,
   })];
 
@@ -6801,6 +7091,15 @@ function launchClaudeLinuxTerminal({ meetCode, botName, claudeDir, dangerousMode
 // orphaned agent still holding an MCP connection to this app is worse than an
 // orphaned Terminal window — it keeps acting.
 let headlessAgentChild = null;
+// Which call the live agent was launched for, and a generation counter so a
+// replaced agent's exit handler cannot tear down its successor. See the
+// lame-duck check in launchClaudeHeadless.
+let headlessAgentCall = null;
+// Set the moment the agent's call ends. The agent outlives its call on purpose
+// (after-call work), so "alive" and "serving a live call" are different things,
+// and only the second one is a reason to reuse it.
+let headlessAgentCallOver = false;
+let headlessAgentGeneration = 0;
 
 // Returns true if the agent is now running headlessly, false to fall back.
 function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall = false }) {
@@ -6816,11 +7115,73 @@ function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, cla
   // one bot, both driving the same local server — and both writing into one
   // activity buffer, which is the interleaving the source abstraction is built
   // to avoid rather than merge.
+  //
+  // But "an agent is alive" is NOT the same as "an agent is serving this call".
+  // leave_call deliberately does not kill the agent: it stays up to write its
+  // summary and memory files, which took 87s on the 2026-08-23 test call. Call
+  // back inside that window and this guard used to say "reusing it" about an
+  // agent that was already winding down — it then exited, and the new call was
+  // left with no agent at all. A bot that joins and never speaks, which is the
+  // worst failure shape this app has.
+  //
+  // So reuse only an agent launched for THIS call. Anything else is a lame duck
+  // finishing the last one.
+  if (headlessAgentChild && !headlessAgentCallOver) {
+    console.log('[electron] headless agent already running for this call — reusing it');
+    return true;
+  }
   if (headlessAgentChild) {
-    console.log('[electron] headless agent already running — reusing it');
+    // Ending it costs the tail of its after-call write-up. That is the right
+    // trade: the previous call's summary is worth less than the live call
+    // having a bot that talks, and it has already had from leave_call until
+    // now. It costs less than it looks, too — the replacement resumes the SAME
+    // session, so the interrupted work is still in the agent's own history
+    // rather than thrown away.
+    console.log('[electron] previous agent is still writing up'
+      + (headlessAgentCall ? ` ${headlessAgentCall}` : '')
+      + ' — ending it so this call gets its own'
+      + (headlessAgentCall === meetCode ? ' (same room, new call)' : ''));
+    const stale = headlessAgentChild;
+    // Remember WHAT we interrupted. The replacement resumes the same session,
+    // so the work itself is still in the agent's history — it just needs to be
+    // told it stopped early, which afterCallWorkPlan does at the end of this
+    // call. Without this the summary is simply lost, silently.
+    try {
+      store.set('agentUnfinishedWrapUp', {
+        call: headlessAgentCall || null,
+        interruptedAt: new Date().toISOString(),
+        interruptedBy: meetCode,
+      });
+    } catch { /* best effort */ }
+    // Cleared and bumped FIRST so a late exit from this one cannot null out its
+    // successor or hand the successor's activity feed back to the transcript.
+    headlessAgentChild = null;
+    headlessAgentGeneration++;
+
+    // Wait for it to be GONE before starting the replacement. The new agent
+    // resumes the same session id, and two processes on one session file is a
+    // race we should not run — the CLI already refuses an in-use session for
+    // --session-id, and there is no reason to find out how --resume handles it.
+    let started = false;
+    const startOnce = () => { if (!started) { started = true; startAgent(); } };
+    stale.once('exit', startOnce);
+    // A wrap-up that will not die must not strand the live call.
+    const hardStop = setTimeout(() => {
+      console.warn('[electron] previous agent did not exit in 5s — killing it');
+      try { stale.kill('SIGKILL'); } catch { /* already gone */ }
+      startOnce();
+    }, 5000);
+    if (typeof hardStop.unref === 'function') hardStop.unref();
+    stale.once('exit', () => clearTimeout(hardStop));
+    try { stale.kill('SIGTERM'); } catch { startOnce(); }
     return true;
   }
 
+  startAgent();
+  return true;
+
+  // Hoisted so the lame-duck path above can call it once the old agent is gone.
+  function startAgent() {
   const { resolveClaudeModel } = require('./claude-model.js');
   const args = buildAgentArgs({
     meetCode,
@@ -6828,6 +7189,7 @@ function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, cla
     dangerous: dangerousMode,
     model: resolveClaudeModel(store.get('claudeModel')),
     mcpConfigPath,
+    ...planAgentSession(claudeDir, botName),
     onboardingCall,
   });
 
@@ -6849,6 +7211,10 @@ function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, cla
   };
 
   console.log('[electron] launching headless agent:', claudeBin, args.join(' '));
+  // This agent's identity, so a superseded one's exit cannot tear this one down.
+  const gen = ++headlessAgentGeneration;
+  headlessAgentCall = meetCode;
+  headlessAgentCallOver = false;
   headlessAgentChild = spawnHeadlessAgent({
     claudePath: claudeBin,
     args,
@@ -6856,7 +7222,11 @@ function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, cla
     env,
     source,
     onExit: ({ code, error }) => {
+      // A retired agent exiting late must not null out its replacement, nor
+      // hand the replacement's live feed back to the transcript tail.
+      if (gen !== headlessAgentGeneration) return;
       headlessAgentChild = null;
+      headlessAgentCall = null;
       // A dead agent's last words must not sit in the pane looking live. The
       // brain pane has no other way to tell — it renders a buffer, and a buffer
       // that simply stops updating is indistinguishable from a quiet call.
@@ -6869,7 +7239,7 @@ function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, cla
       localServer.releaseStreamAgentSource();
     },
   });
-  return true;
+  }
 }
 
 function closeClaudeTerminal() {
@@ -6878,8 +7248,26 @@ function closeClaudeTerminal() {
   // time this runs, so there is nothing to wait for beyond that.
   if (headlessAgentChild) {
     console.log('[electron] ending headless agent');
+    // Killing it mid-write-up loses that work unless we say so. The lame-duck
+    // path in launchClaudeHeadless already records this; teardown did not, so
+    // the one kill the user never asked for was also the one that went
+    // unreported. Same hand-over: the agent resumes this session next call, so
+    // the work is still in its history and only needs flagging.
+    if (headlessAgentCallOver) {
+      try {
+        store.set('agentUnfinishedWrapUp', {
+          call: headlessAgentCall || null,
+          interruptedAt: new Date().toISOString(),
+          interruptedBy: 'call teardown',
+        });
+        console.log('[electron] agent was still writing up', headlessAgentCall,
+          '— recorded so the next call can finish it');
+      } catch { /* best effort */ }
+    }
     try { headlessAgentChild.kill('SIGTERM'); } catch { /* already gone */ }
     headlessAgentChild = null;
+    headlessAgentCall = null;
+    headlessAgentCallOver = false;
   }
 
   // #329: the Linux shapes. Killing the tmux SESSION is what ends the agent —
@@ -7381,7 +7769,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '59';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '60';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
@@ -7423,6 +7811,33 @@ function ensureClaudeIntegration() {
     }
   } catch (err) {
     console.warn('[electron] /call skill install failed:', err.message);
+  }
+
+  // --- Ensure global skill in ~/.claude/skills/call-new-bot/ ---
+  // /call-new-bot turns the CALLER's own Claude session into a bot: it creates a
+  // profile seeded with that session's workdir + name, so the new bot resumes it
+  // rather than starting fresh. The inverse of every other path here — normally a
+  // bot gets a session; this gives a session a bot. Same version gate, own
+  // directory (Claude Code takes one skill per directory).
+  try {
+    const newBotSkillDir = path.join(claudeDir, 'skills', 'call-new-bot');
+    const newBotVersionFile = path.join(newBotSkillDir, '.version');
+    let newBotInstalled = '';
+    try { newBotInstalled = fs.readFileSync(newBotVersionFile, 'utf-8').trim(); } catch { /* not yet */ }
+    if (newBotInstalled !== SKILL_VERSION) {
+      fs.mkdirSync(newBotSkillDir, { recursive: true });
+      fs.writeFileSync(path.join(newBotSkillDir, 'SKILL.md'), fs.readFileSync(
+        isPackaged
+          ? path.join(process.resourcesPath, 'mcp-server', 'call-new-bot-skill.md')
+          : path.join(__dirname, '..', 'mcp-server', 'call-new-bot-skill.md'),
+        'utf-8',
+      ));
+      fs.writeFileSync(newBotVersionFile, SKILL_VERSION);
+      console.log(`[electron] Installed/updated /call-new-bot skill v${SKILL_VERSION}`);
+      changed = true;
+    }
+  } catch (err) {
+    console.warn('[electron] /call-new-bot skill install failed:', err.message);
   }
 
   // --- Ensure global skill in ~/.claude/skills/onboarding-call/ ---
@@ -9795,6 +10210,38 @@ function createMainWindow() {
         { type: 'separator' },
         { role: 'cut' },
         { role: 'copy' },
+        {
+          // The bot keeps ONE Claude session named after itself, so the session
+          // it uses on calls is the same one a person can open at a prompt. The
+          // panel's Call button held under Option does that; this copies the
+          // command instead, on the Finder shortcut it borrows from (⌘C takes
+          // the thing, ⌥⌘C takes its address).
+          //
+          // A permanent item rather than the true Finder behaviour of Copy
+          // SWAPPING while Option is held: that needs AppKit alternate menu
+          // items, which Electron does not expose. Visible-always is the better
+          // trade anyway — you find it without knowing to hold a key.
+          //
+          // It also closes a real gap. The renderer's ⌥⌘C only fires when the
+          // panel has keyboard focus, and the panel usually does not (see the
+          // Option-label lag fix). A menu accelerator works app-wide.
+          label: 'Copy Chat Command',
+          accelerator: 'Alt+CmdOrCtrl+C',
+          click: () => {
+            try {
+              const claudeDir = store.get('claudeWorkDir') || ensureAgentWorkdir();
+              const command = require('./chat-command.js').buildChatCommand({
+                workdir: claudeDir,
+                sessionField: store.get('agentSession'),
+                botName: resolvedBotName(),
+              });
+              require('electron').clipboard.writeText(command);
+              console.log('[chat-session] copied chat command from the Edit menu');
+            } catch (err) {
+              console.warn('[chat-session] copy from menu failed:', err.message);
+            }
+          },
+        },
         { role: 'paste' },
         { role: 'selectAll' },
       ],
@@ -10842,6 +11289,86 @@ function setupIPC() {
     require('electron').clipboard.writeText(require('./claude-install.js').installCommandFor());
     return { ok: true };
   });
+  // ── Chat with the bot in a terminal (#500 follow-up) ──
+  //
+  // The bot keeps ONE Claude session named after itself, so the session it uses
+  // on calls is the same one a person can open at a prompt. All that stands
+  // between them is knowing to cd into a directory buried under Application
+  // Support and that --resume takes the bot's name. These two handlers remove
+  // that, from the panel's Call button held under Option.
+  //
+  // Both build the SAME string, so what the button runs and what the clipboard
+  // hands you cannot drift.
+  function chatCommandForBot() {
+    const claudeDir = store.get('claudeWorkDir') || ensureAgentWorkdir();
+    return require('./chat-command.js').buildChatCommand({
+      workdir: claudeDir,
+      sessionField: store.get('agentSession'),
+      botName: resolvedBotName(),
+    });
+  }
+
+  ipcMain.handle('chat-session:command', () => ({ ok: true, command: chatCommandForBot() }));
+
+  ipcMain.handle('chat-session:copy', () => {
+    const command = chatCommandForBot();
+    require('electron').clipboard.writeText(command);
+    return { ok: true, command };
+  });
+
+  ipcMain.handle('chat-session:open', () => {
+    const command = chatCommandForBot();
+    // Linux has no osascript. #329 already solved "which of the dozen terminal
+    // emulators is installed" (and tmux) for hosting the agent; reuse it rather
+    // than growing a second, worse copy of that logic here.
+    if (process.platform === 'linux') {
+      try {
+        const lt = require('./linux-terminal.js');
+        const exists = (bin) => {
+          try {
+            require('child_process').execFileSync('which', [bin], { stdio: 'ignore' });
+            return true;
+          } catch { return false; }
+        };
+        const emulator = lt.detectTerminalEmulator({ exists });
+        if (emulator) {
+          // The whole thing goes through a login shell: `command` is a compound
+          // `cd … && claude`, not a single argv, and -lc also gives it the PATH
+          // a GUI-launched process does not inherit.
+          const plan = lt.buildDirectCommand({ emulator, argv: ['sh', '-lc', command] });
+          require('child_process').spawn(plan.command, plan.args, { detached: true, stdio: 'ignore' }).unref();
+          return { ok: true, command };
+        }
+      } catch (err) {
+        console.warn('[chat-session] linux terminal launch failed:', err.message);
+      }
+      // Fall through to the clipboard, which is the honest outcome when we
+      // cannot find a terminal to drive.
+      require('electron').clipboard.writeText(command);
+      return { ok: false, copied: true, command, reason: 'no-terminal' };
+    }
+    if (process.platform !== 'darwin') {
+      // Windows: PowerShell vs the old console vs WSL are genuinely different
+      // commands, and a wrong guess opens a terminal that immediately fails in
+      // front of the user. Copying is the honest thing until someone asks.
+      require('electron').clipboard.writeText(command);
+      return { ok: false, copied: true, command, reason: 'unsupported-platform' };
+    }
+    // The command is in SHELL form (chat-command.js), so it needs the
+    // AppleScript quoting layer put back on for `do script "…"`.
+    const escaped = command.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const script = require('./launch-command.js').buildTerminalLaunchScript(escaped);
+    require('child_process').execFile('osascript', ['-e', script], (err) => {
+      if (err) {
+        // Same recovery as the agent launcher: if Terminal will not play, the
+        // user still gets the command rather than nothing.
+        console.warn('[chat-session] osascript failed:', err.message);
+        try { require('electron').clipboard.writeText(command); } catch { /* noop */ }
+      }
+    });
+    return { ok: true, command };
+  });
+
   ipcMain.handle('onboarding:verify-claude', () => {
     // Launch a Claude session in the agent dir (which carries the /claude-ready SessionStart
     // hook), so signing in + starting a session flips readiness. Same Terminal path as a call.
@@ -11070,7 +11597,19 @@ function setupIPC() {
   //
   // Names already in use are excluded, so two bots on one machine don't collide
   // — which would make MCP routing by name ambiguous, not just confusing.
-  function seedNewBotName(profileName) {
+  //
+  // `adopt` (optional) turns this into ADOPTING AN EXISTING SESSION rather than
+  // creating a blank bot: { workdir, session, botName }. A power user may have a
+  // Claude session with months of accumulated context, and the interesting move
+  // is to give THAT a face rather than start a bot from nothing. Seeding
+  // claudeWorkDir + agentSession here is what makes the new profile resume that
+  // session instead of opening a fresh one in its own agent dir.
+  //
+  // Seeded at creation for the same reason the name is: these have to be the
+  // bot's real stored settings before its first launch, not launch-time
+  // overrides. The bot's very first act is resuming the session, so there is no
+  // later moment to apply them.
+  function seedNewBotName(profileName, adopt = null) {
     try {
       const { randomBotName } = require('./bot-names.js');
       const taken = takenBotNames();
@@ -11094,13 +11633,26 @@ function setupIPC() {
       let existing = {};
       try { existing = JSON.parse(fs.readFileSync(file, 'utf-8')); } catch { /* new */ }
       if (existing.botName) return;
-      const botName = randomBotName({ taken });
+      // An adopted session names itself where it can. The session's own name is
+      // the user's word for this thing already, so it beats a random one — but
+      // only if it can survive a call, which is a real constraint and not a
+      // stylistic one: the bot has to notice its name through Meet's captions.
+      // "pr-482-refactor" fails that badly (digits nobody says aloud), so it
+      // falls back to the random pool rather than shipping a name that cannot
+      // be addressed.
+      const { isAddressableBotName } = require('./addressable-name.js');
+      const adopted = adopt && isAddressableBotName(adopt.botName) ? adopt.botName.trim() : null;
+      const botName = adopted || randomBotName({ taken });
       // onboardingCallComplete defaults to true (preferences-schema.js) so
       // pre-existing profiles read as already onboarded with no migration
       // needed — which means a genuinely NEW bot has to say otherwise
       // explicitly, right here, at the one moment it's actually created.
-      fs.writeFileSync(file, JSON.stringify({ ...existing, botName, onboardingCallComplete: false }, null, 2));
-      console.log('[electron] New bot', profileName, 'named', botName);
+      const seeded = { ...existing, botName, onboardingCallComplete: false };
+      if (adopt && adopt.workdir) seeded.claudeWorkDir = adopt.workdir;
+      if (adopt && adopt.session) seeded.agentSession = adopt.session;
+      fs.writeFileSync(file, JSON.stringify(seeded, null, 2));
+      console.log('[electron] New bot', profileName, 'named', botName,
+        adopt ? `(adopting session ${JSON.stringify(adopt.session)} in ${adopt.workdir})` : '');
     } catch (err) {
       // Non-fatal: an unnamed bot is still a working bot, and the Settings page
       // it opens on is exactly where that gets fixed.
@@ -11234,6 +11786,37 @@ function setupIPC() {
     seedNewBotName(name);
     return await launchOrFocusProfile(name, { openSettings: true });
   });
+
+  // Turn an EXISTING Claude session into a bot.
+  //
+  // The ordinary path creates a blank bot which then starts a fresh session. A
+  // power user may already have a session carrying months of context on some
+  // piece of work, and the far more interesting move is to give THAT a face —
+  // it can already answer questions about the thing it has been doing.
+  //
+  // Mechanically this is create-new-bot with two settings seeded before first
+  // launch, so the new profile resumes that session in that directory instead
+  // of opening its own. It has to happen at creation: the bot's first act IS
+  // resuming, so there is no later moment to apply them.
+  //
+  // The session's own name becomes the bot's name when it can survive being
+  // said out loud (see addressable-name.js) — it is the user's existing word
+  // for this thing, so it beats a random one. When it cannot, the random pool
+  // takes over rather than shipping a bot that never answers to itself.
+  adoptSessionAsBot = async ({ workdir, session, botName } = {}) => {
+    const dir = String(workdir || '').trim();
+    if (!dir) return { ok: false, error: 'A working directory is required — that is where the session lives.' };
+    if (!fs.existsSync(dir)) return { ok: false, error: `No such directory: ${dir}` };
+    // Sessions are stored PER WORKING DIRECTORY, so the pair is the identity —
+    // a session name means nothing without the directory it was recorded in.
+    const { resolveSessionName } = require('./agent-session.js');
+    const sessionRef = resolveSessionName(session) || '';
+    const name = nextBotProfileName();
+    seedNewBotName(name, { workdir: dir, session: sessionRef, botName });
+    const result = await launchOrFocusProfile(name, { openSettings: true });
+    return { ...result, profile: name, adopted: { workdir: dir, session: sessionRef } };
+  };
+  ipcMain.handle('adopt-session-as-bot', async (_event, args) => adoptSessionAsBot(args));
 
   // File ▸ New Window — open a genuinely NEW window with no picker/prompt. The app
   // is one-window-per-profile (one locked userData dir + one fixed port each; see

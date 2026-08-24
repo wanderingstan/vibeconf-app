@@ -97,11 +97,15 @@ function namesMatch(a, b) {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onFindShareElement, onEvalShare, onReadShareConsole, onReadShareNetwork, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, extraRoutes } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onFindShareElement, onEvalShare, onReadShareConsole, onReadShareNetwork, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, getUnfinishedWrapUp, clearUnfinishedWrapUp, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
     // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
     // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
     this.extraRoutes = extraRoutes || null;
+    // An after-call write-up that a re-join cut short, so the next one can
+    // finish it. See afterCallWorkPlan.
+    this.getUnfinishedWrapUp = getUnfinishedWrapUp || null;
+    this.clearUnfinishedWrapUp = clearUnfinishedWrapUp || null;
     // Where the bot's workdir (and its CLAUDE.md) lives — a thunk because
     // Electron's userData path isn't known at construction in every caller.
     // Optional: tests and headless embedders run without one.
@@ -597,16 +601,39 @@ class LocalServer {
   }
 
   setRoom(roomId) {
+    // Rejoining the SAME room while a call id is still live (i.e. during
+    // after-call-work, which deliberately does not clear it — see the
+    // isFinished() guard in _setCallStatus). The call id survives that rejoin,
+    // so the two segments are one call by every other measure; wiping the
+    // transcript here made `read_transcripts` return only the segment after the
+    // rejoin, and the agent's own write-up of the call silently lost its first
+    // half. Keep the conversation state so the transcript matches the id.
+    //
+    // Only the conversation carries over. Everything below — whiteboard,
+    // members, sharing, presence — is re-derived from the room on join anyway.
+    const resuming = !!roomId && this.roomId === roomId && !!this.callId;
     this.roomId = roomId;
     // Calendar auto-join (#299): set via setCalendarEventContext, right after
     // setRoom, only when this join was calendar-triggered — cleared here so a
     // manual join (or the next calendar join) never inherits a stale one.
     this.calendarEventContext = null;
-    this.transcripts = [];
-    this.turns = new Map();
-    this._speakerTurnCount = new Map();
-    this._openTurnBySpeaker = new Map();
-    this._nextTurnId = 1;
+    if (!resuming) {
+      this.transcripts = [];
+      this.turns = new Map();
+      this._speakerTurnCount = new Map();
+      this._openTurnBySpeaker = new Map();
+      this._nextTurnId = 1;
+    }
+    // ALWAYS cleared, resume or not, and deliberately outside the block above.
+    //
+    // This set does not gate ingest — it is the #12 diagnostic that counts how
+    // many scraper turnIds in a batch we have never seen, to tell a container
+    // re-render apart from ordinary new speech. Carrying it across a rejoin
+    // would quietly blind that: `captionScraper` is module-scope, so a rejoin's
+    // fresh page starts minting turnIds at 1 again, every one of them already
+    // in this set. Genuinely new turns would count as familiar, and the signal
+    // would read "no re-render here" in exactly the situation it exists to
+    // flag. A fresh page is a fresh id space, so it gets a fresh set.
     this._seenScraperTurnIds = new Set();
     this._replayAlarmFired = false;
     this.replayAlarmCount = 0;
@@ -1895,6 +1922,27 @@ class LocalServer {
           if (duties) plan.duties = duties;
         }
       } catch { /* no workdir / no CLAUDE.md — the note falls back to pointing at it */ }
+
+      // Hand back a write-up that a re-join cut short, so this pass finishes
+      // both. Calling the bot back mid-wrap-up ends that agent (the live call
+      // beats the last call's bookkeeping), which used to lose the summary
+      // outright. It does not have to: the replacement RESUMES the same
+      // session, so the interrupted work is still in its own history — it only
+      // needs telling that it stopped early.
+      //
+      // Delivered here rather than in the join prompt because this is the
+      // moment the agent is already doing after-call work, and because it
+      // reaches every transport (panel, calendar auto-join, CLI) rather than
+      // just the ones that build a prompt.
+      try {
+        const unfinished = this.getUnfinishedWrapUp && this.getUnfinishedWrapUp();
+        if (unfinished && unfinished.call) {
+          plan.unfinished = unfinished;
+          // Told once. Left set it would nag every call forever, and the detail
+          // it refers to lives in the agent's session history, not here.
+          if (this.clearUnfinishedWrapUp) this.clearUnfinishedWrapUp();
+        }
+      } catch { /* no handover available */ }
     }
     return plan;
   }
@@ -3014,6 +3062,17 @@ class LocalServer {
     const base = (this.getWebsiteUrl() || '').replace(/\/$/, '');
     if (!roomId || !name || !base) return;
     const self = (this.participants || []).find((p) => p && p.isSelf && p.name && p.name !== 'You');
+    // #222's self-exemption keys off _everJoinedAs, but that was set ONLY by the
+    // MCP join handler — while the name is published from HERE, by the presence
+    // heartbeat, which starts on any route into setRoom (--meet-url at startup,
+    // clicking a detected Meet, the #238 start-sync recovery). A process that
+    // published its name through one of those, then asked to join over MCP, met
+    // its own fresh entry and did not recognise it: observed 2026-08-24, the app
+    // restarted, auto-joined, and refused itself twice 40s later.
+    //
+    // Recording it where the publish happens is what makes the exemption mean
+    // "a name THIS process put in the room" however the join was started.
+    this._everJoinedAs = name;
     fetch(`${base}/api/room/${roomId}/presence`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

@@ -125,10 +125,14 @@ test('a dead agent says so instead of leaving a stale feed', () => {
 test('leaving the call ends the agent', () => {
   // An orphaned headless agent is worse than an orphaned Terminal window: it has
   // no window to notice, and it keeps acting on the bot through MCP.
+  // Window sized against the real function (body is ~4500 chars, the SIGTERM
+  // sits ~1160 in) rather than a round number: the headless branch grew a
+  // hand-over that records an interrupted write-up before killing, and a 500
+  // char slice cut the kill itself out of view.
   const fn = main.slice(main.indexOf('function closeClaudeTerminal'));
-  assert.match(fn.slice(0, 500), /headlessAgentChild/);
-  assert.match(fn.slice(0, 500), /kill\('SIGTERM'\)/);
-  assert.match(fn.slice(0, 500), /headlessAgentChild = null/);
+  assert.match(fn.slice(0, 2000), /headlessAgentChild/);
+  assert.match(fn.slice(0, 2000), /kill\('SIGTERM'\)/);
+  assert.match(fn.slice(0, 2000), /headlessAgentChild = null/);
 });
 
 test('stderr is logged, never parsed as activity', () => {
@@ -303,8 +307,10 @@ test('leaving a call tears down BOTH Linux shapes, not just one', () => {
   // onto it. Killing the viewport alone leaves an agent running and still
   // holding an MCP connection — the orphan hazard, which on Linux we can
   // actually close because the session name is ours.
+  // 4600 covers the whole function (body ~4500); the Linux shapes live in its
+  // second half, past the headless branch.
   const fn = main.slice(main.indexOf('function closeClaudeTerminal'),
-    main.indexOf('function closeClaudeTerminal') + 2500);
+    main.indexOf('function closeClaudeTerminal') + 4600);
   assert.match(fn, /linuxTmuxSession/, 'the tmux session must be killed');
   assert.match(fn, /buildKillSessionArgs/);
   assert.match(fn, /linuxTerminalChild/, 'and the no-tmux emulator child too');

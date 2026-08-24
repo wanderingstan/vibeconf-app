@@ -127,14 +127,34 @@ test('a bot created via the "New bot" button is explicitly stamped false at crea
   // recorded here, at the moment of creation, or nowhere reliable at all.
   const fn = main.slice(main.indexOf('function seedNewBotName'), main.indexOf('async function launchOrFocusProfile'));
   assert.match(fn, /onboardingCallComplete: false/);
-  // Must land in the SAME write as the name (one file write, not a second
-  // one) — a separate write could fail independently and leave a bot named
-  // but not marked fresh.
-  const writeIdx = fn.indexOf('fs.writeFileSync(file');
+  // Must land in the SAME write as the name — a separate write could fail
+  // independently and leave a bot named but not marked fresh.
+  //
+  // Checked as "there is exactly ONE write, and the stamp is in the object it
+  // writes". The earlier version asserted the stamp appeared textually AFTER
+  // `fs.writeFileSync(`, which only held while the object was inline at the call
+  // site. Building it into a variable first (as the session-adoption seeding
+  // needs to, since claudeWorkDir/agentSession are conditional) kept the
+  // invariant perfectly and broke the proxy.
+  const writes = fn.match(/fs\.writeFileSync\(file/g) || [];
+  assert.equal(writes.length, 1, 'exactly one write — the name and the stamp cannot diverge');
   const stampIdx = fn.indexOf('onboardingCallComplete: false');
-  const nextWriteIdx = fn.indexOf('fs.writeFileSync', writeIdx + 1);
-  assert.ok(stampIdx > writeIdx, 'the stamp should be part of the write, not before it');
-  assert.ok(nextWriteIdx === -1 || stampIdx < nextWriteIdx, 'must be in the same write as botName, not a separate one');
+  assert.ok(stampIdx > 0, 'the stamp exists');
+  // The written value carries it: either inline in the call, or in the object
+  // the call writes.
+  const written = fn.match(/fs\.writeFileSync\(file,\s*JSON\.stringify\((\w+|\{[^}]*\})/);
+  assert.ok(written, 'the write serialises a recognisable value');
+  const target = written[1];
+  if (target.startsWith('{')) {
+    assert.match(target, /onboardingCallComplete: false/, 'stamped inline in the written object');
+  } else {
+    // Written from a variable — the stamp must be in ITS construction, and that
+    // construction must come before the write.
+    const buildIdx = fn.indexOf(`const ${target} =`);
+    assert.ok(buildIdx > 0 && buildIdx < fn.indexOf('fs.writeFileSync(file'),
+      `${target} is built before it is written`);
+    assert.ok(stampIdx > buildIdx, 'the stamp is part of that construction');
+  }
 });
 
 test('a profile launched fresh via --profile (no "New bot" button involved) is also stamped false', () => {

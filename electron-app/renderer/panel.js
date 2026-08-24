@@ -84,6 +84,7 @@ const ttsVoiceIdInput = document.getElementById('ttsVoiceId');
 const unifiedVoiceSelect = document.getElementById('unifiedVoice'); // #340 merged picker
 const refreshVoicesBtn = document.getElementById('refreshVoicesBtn');
 const claudeWorkDirInput = document.getElementById('claudeWorkDir');
+const agentSessionIdInput = document.getElementById('agentSessionId');
 const claudeModelInput = document.getElementById('claudeModel');
 const emojiSetInput = document.getElementById('emojiSet');
 const captionLanguageInput = document.getElementById('captionLanguage');
@@ -1148,6 +1149,83 @@ function setJoinPhase(phase) {
   updateJoinBtnState();
 }
 
+// ── Option-held: the Call button becomes "Chat with <bot>" (#500 follow-up) ──
+//
+// A bot keeps ONE Claude session named after itself, so the session it uses on
+// calls is the same one a person can open in a terminal. Rather than spend
+// permanent panel space on that, it rides the button that is already about
+// reaching this bot — Option-held, which on macOS conventionally means "the
+// alternate version of this action" (Finder: ⌘C copies the file, ⌥⌘C copies its
+// path). The label genuinely swaps while held, so it is discoverable by
+// accident rather than only by being told.
+let optionHeld = false;
+
+function setOptionHeld(next) {
+  if (next === optionHeld) return;
+  optionHeld = next;
+  updateJoinBtnState();
+}
+
+// Keyed on the EVENT's modifier state, not on keydown/keyup of Option itself:
+// releasing the key over another window (or a ⌥-Tab away) never delivers the
+// keyup, and the label would stick in the alternate state with no way back.
+// Reading .altKey off whatever event arrives self-corrects on the next one.
+//
+// The list is long on purpose, and CAPTURE-phase. The first version listened for
+// keydown/keyup/mousemove on window in the bubble phase, and the label took a
+// second or two to flip: key events only reach a window that has keyboard focus,
+// so if the user was looking at the Meet (or had just clicked anywhere else) the
+// FIRST event carrying altKey was whatever mouse movement came next. It felt
+// like polling. Every pointer event carries altKey, so covering them all means
+// the state is correct by the time the pointer is anywhere near the button —
+// which is the moment it needs to be right.
+//
+// Capture rather than bubble so a handler that stops propagation on its way up
+// cannot silently freeze the label.
+const ALT_STATE_EVENTS = [
+  'keydown', 'keyup',
+  'pointerover', 'pointerenter', 'pointermove', 'pointerdown', 'pointerup',
+  'mousemove', 'mouseover', 'wheel', 'focus',
+];
+for (const evt of ALT_STATE_EVENTS) {
+  window.addEventListener(evt, (e) => setOptionHeld(!!e.altKey), true);
+}
+// Focus loss is the one case where no further event arrives — and it is also the
+// case where a stuck "Chat with…" label would be most confusing, because the key
+// the user released was released somewhere else entirely.
+window.addEventListener('blur', () => setOptionHeld(false));
+
+async function openChatSession() {
+  try {
+    const r = await api.invoke('chat-session:open');
+    if (r && r.ok === false && r.copied) {
+      // No terminal we can drive — say what we did instead, rather than
+      // appearing to do nothing.
+      showError('Copied the command to your clipboard — paste it into a terminal.');
+    }
+  } catch (err) {
+    showError('Could not open a terminal: ' + err.message);
+  }
+}
+
+// ⌥⌘C — the Finder precedent this borrows from: ⌘C takes the thing, ⌥⌘C takes
+// its address. Here the address is the command that reaches the same session.
+window.addEventListener('keydown', async (e) => {
+  if (!e.altKey || !(e.metaKey || e.ctrlKey)) return;
+  if ((e.key || '').toLowerCase() !== 'c') return;
+  // Don't steal a real copy out of a text field.
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA') && String(t.value || '').length
+      && t.selectionStart !== t.selectionEnd) return;
+  e.preventDefault();
+  try {
+    const r = await api.invoke('chat-session:copy');
+    // showError is the panel's only transient-message surface today; the copy
+    // succeeding is worth confirming, since nothing else on screen changes.
+    if (r?.ok) showError('Chat command copied — paste it into a terminal.');
+  } catch { /* noop */ }
+});
+
 function updateJoinBtnState() {
   if (inCall) return; // in-call UI owns the button
   if (joinPhase) {
@@ -1178,6 +1256,16 @@ function updateJoinBtnState() {
       ? 'Dismiss this call — go back to starting a new one'
       : "Add the bot to a call that's already running — paste its Meet or Slack URL";
   }
+
+  if (optionHeld) {
+    // Same button, alternate action. Enabled regardless of the URL field: this
+    // does not join anything, so nothing about a call needs to be valid.
+    joinBtn.textContent = `Chat with ${name}`;
+    joinBtn.disabled = false;
+    joinBtn.title = `Open a terminal in ${name}'s session — the same session it uses on calls (⌥⌘C copies the command)`;
+    return;
+  }
+  joinBtn.title = 'Calls open in Chrome/Safari are detected automatically. You can also type /join-call in any Claude Code session.';
 
   if (addMode) {
     joinBtn.textContent = `Add ${name} to call`;
@@ -1833,7 +1921,7 @@ api.invoke('get-upcoming-calendar-events').then((r) => {
 // bot in the wizard saw "Unnamed bot" in Settings and reasonably concluded the
 // save had failed, when it had worked (#190, #143).
 function loadConfigIntoControls() {
-  return api.invoke('get-config', ['botName', 'calendarIdentityEmail', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'ttsProvider', 'claudeWorkDir', 'claudeModel', 'emojiSet', 'captionLanguage', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
+  return api.invoke('get-config', ['botName', 'calendarIdentityEmail', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'ttsProvider', 'claudeWorkDir', 'agentSession', 'claudeModel', 'emojiSet', 'captionLanguage', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
   if (result?.botName) {
     botNameInput.value = result.botName;
     currentBotName = result.botName;
@@ -1878,6 +1966,11 @@ function loadConfigIntoControls() {
   // from the saved provider/voice; defaults to Daniel (tts.js's real default).
   populateUnifiedVoices(result);
   if (result?.claudeWorkDir) claudeWorkDirInput.value = result.claudeWorkDir;
+  if (result?.agentSession) agentSessionIdInput.value = result.agentSession;
+  // Before the first launch there is nothing stored yet, so show the name that
+  // WOULD be used rather than a vague "(auto)" — same reason the field is
+  // pinned on first use: the name is the thing you can type at `claude --resume`.
+  if (agentSessionIdInput) agentSessionIdInput.placeholder = result?.botName || '(the bot’s name)';
   if (result?.claudeModel) claudeModelInput.value = result.claudeModel;
   if (emojiSetInput && result?.emojiSet) {
     // emojiSet has two OPEN forms — `font:<Family>` and `dir:<path>` — and
@@ -1928,6 +2021,26 @@ loadConfigIntoControls();
 // Re-reading everything rather than applying message.payload on purpose: a
 // targeted update has to know which control shows which key, and that mapping
 // silently rots as prefs are added. Re-reading cannot drift.
+// The after-call write-up, made visible. See pollAgentWrapUp in main.js: the
+// avatar keeps reacting through this window, so without a banner it reads as
+// "still on the call" — which is exactly how the 2026-08-23 mute-bot confusion
+// started. Says what it is doing AND that calling now will cut it short, since
+// that is the decision the banner exists to inform.
+const agentWrapUpBanner = document.getElementById('agentWrapUpBanner');
+const agentWrapUpText = document.getElementById('agentWrapUpText');
+function showAgentWrapUp(payload) {
+  if (!agentWrapUpBanner || !agentWrapUpText) return;
+  const who = payload?.botName || 'The bot';
+  agentWrapUpText.textContent = `${who} is finishing up the last call — calling now will cut that short.`;
+  agentWrapUpBanner.style.display = payload?.active ? 'flex' : 'none';
+}
+api.on('extension-message', (message) => {
+  if (message?.action !== 'agent-wrapping-up') return;
+  showAgentWrapUp(message.payload);
+});
+// Catch up on a wrap-up already in progress when this window opened.
+api.invoke('get-agent-wrapping-up').then(showAgentWrapUp).catch(() => {});
+
 api.on('extension-message', (message) => {
   if (message?.action !== 'config-updated') return;
   // The avatar repaints regardless of the focus guard below: it is a picture,
@@ -2095,7 +2208,15 @@ const CREATE_MEET_ERRORS = {
   'unknown': "Couldn't start a call.",
 };
 
-joinBtn.addEventListener('click', async () => {
+joinBtn.addEventListener('click', async (e) => {
+  // Option-held is the alternate action: open the bot's session in a terminal
+  // instead of calling it. Read the event rather than `optionHeld` so a click
+  // that arrives with the key down is honoured even if the label has not caught
+  // up yet.
+  if (e.altKey) {
+    await openChatSession();
+    return;
+  }
   // "Call <bot> now" — ask the website for a fresh Meet anyone can walk into,
   // then send the bot in. Main does the request: a renderer fetch carries an
   // Origin the backend rejects.
@@ -3143,7 +3264,7 @@ async function refreshAgentWorkdir() {
     const r = await api.invoke('get-agent-workdir');
     agentWorkdirPathEl.textContent = r?.path || '—';
     agentWorkdirPathEl.title = r?.isOverride
-      ? `Override (Claude Working Directory): ${r.path}`
+      ? `Override (Working Directory): ${r.path}`
       : `This bot's own trusted folder: ${r?.path || ''}`;
   } catch { agentWorkdirPathEl.textContent = '—'; }
 }
@@ -3179,6 +3300,34 @@ claudeWorkDirInput.addEventListener('change', () => {
   api.invoke('set-config', 'claudeWorkDir', claudeWorkDirInput.value.trim());
   refreshAgentWorkdir();
   refreshAgentClaudeMd();
+  // Sessions are per working directory, so this changes which one is in use.
+  refreshAgentSession();
+});
+
+// The session actually in use, under the field. The id is never something to
+// type — it is looked up from the name — so it is shown rather than filled in.
+const agentSessionStatusEl = document.getElementById('agentSessionStatus');
+async function refreshAgentSession() {
+  if (!agentSessionStatusEl) return;
+  try {
+    const s = await api.invoke('get-agent-session');
+    if (!s?.name) { agentSessionStatusEl.textContent = ''; return; }
+    const where = s.pinned ? 'Pinned to' : (s.auto ? 'Following the bot’s name:' : 'Session');
+    agentSessionStatusEl.textContent = s.exists
+      ? `${where} “${s.name}” — resuming ${s.id}`
+      : `${where} “${s.name}” — no session yet; the next launch starts one.`;
+  } catch { agentSessionStatusEl.textContent = ''; }
+}
+refreshAgentSession();
+
+agentSessionIdInput?.addEventListener('change', async () => {
+  const value = agentSessionIdInput.value.trim();
+  // Typing here takes the field over, so renaming the bot no longer drags the
+  // session along with it. Clearing hands it back — the field returns to
+  // tracking the bot's name, which is what almost everyone should be on.
+  await api.invoke('set-config', 'agentSessionAuto', !value);
+  await api.invoke('set-config', 'agentSession', value);
+  refreshAgentSession();
 });
 
 claudeModelInput.addEventListener('change', () => {

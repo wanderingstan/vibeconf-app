@@ -405,7 +405,7 @@
         <div class="field">
           <label for="agentSessionId">Session name/id</label>
           <input type="text" id="agentSessionId" placeholder="(the bot’s name)" />
-          <div style="font-size:11px;color:#666;margin-top:2px">The bot keeps <em>one</em> ongoing session and resumes it every launch, instead of starting fresh and forgetting the last call. Defaults to the bot's own name, filled in here on first use — so you can reach the same session yourself with <code>claude --resume &lt;name&gt;</code> in its working folder. Change it to keep a separate session under another name, or paste a session id to pin this bot to a specific existing session. Renaming the bot leaves this alone, so its history carries over; edit it if you'd rather the session follow the new name. Sessions belong to the working directory above, so changing that starts a new one.</div>
+          <div style="font-size:11px;color:#666;margin-top:2px">The bot keeps <em>one</em> ongoing session and resumes it every launch, instead of starting fresh and forgetting the last call. It follows the bot's name on its own, so you shouldn't need to touch this — rename the bot and the session is renamed too, keeping its history. The name is shown because it's a real handle: <code>claude --resume &lt;name&gt;</code> in the working folder above reaches the same session. Type a name here to take it over (it then stops following the bot's name), or paste a session id to pin this bot to a specific existing session; clear the field to go back to following. Sessions belong to the working directory above, so changing that starts a new one.</div>
           <div style="font-size:11px;color:#666;margin-top:6px" id="agentSessionStatus">…</div>
         </div>
         <div class="field">

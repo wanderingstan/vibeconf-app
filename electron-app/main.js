@@ -6308,7 +6308,7 @@ function ensureClaudeReadyHook(agentDir, port) {
 // avoids reading transcript files to map a title back to an id — the format of
 // what is inside them is undocumented and has broken before; a filename is not.
 function planAgentSession(claudeDir, botName) {
-  const { resolveSessionRef, sessionExists, sessionCacheKey, resolveSessionId } = require('./agent-session.js');
+  const { resolveSessionRef, sessionExists, sessionCacheKey, resolveSessionId, resolveSessionName } = require('./agent-session.js');
   const ref = resolveSessionRef(store.get('agentSession'), botName);
 
   // An explicit id in the field is the user pinning this bot to one session.
@@ -6321,36 +6321,66 @@ function planAgentSession(claudeDir, botName) {
     return { resumeSessionId: '', sessionName: ref.name };
   }
 
-  // Write the bot's name into the field the first time we use it, rather than
-  // leaving it blank and re-deriving it every launch. Two reasons, and the
-  // second is the one that bites: a visible "Jimmy" shows that the session has a
-  // NAME, so `claude --resume Jimmy` is discoverable instead of secret; and a
-  // stored name survives renaming the bot. Left implicit, renaming Jimmy to Jim
-  // would silently point the bot at a different (empty) session and read as
-  // amnesia. Pinned, the session keeps its name and continuity, and anyone who
-  // wants it to follow the rename edits one word.
-  if (ref.implicit && ref.name) {
+  // The field TRACKS the bot's name unless someone has deliberately taken it
+  // over (agentSessionAuto). Almost nobody edits this, so the behaviour that has
+  // to be right is the automatic one: rename the bot and its session should
+  // follow, keeping the history rather than starting over.
+  //
+  // The name is still written into the field rather than left blank, because a
+  // visible "Jimmy" is what shows the session HAS a name — otherwise
+  // `claude --resume Jimmy` in the bot's folder reads as impossible when it works.
+  let name = ref.name;
+  const auto = store.get('agentSessionAuto') !== false;
+  if (auto) {
+    const botLabel = resolveSessionName(botName);
+    if (botLabel) name = botLabel;
+  }
+  if (name !== ref.name || ref.implicit) {
     try {
-      store.set('agentSession', ref.name);
-      notifyConfigChanged('agentSession', ref.name);
-    } catch { /* not fatal — the launch below still uses ref.name */ }
+      store.set('agentSession', name);
+      notifyConfigChanged('agentSession', name);
+    } catch { /* not fatal — the launch below still uses `name` */ }
   }
 
   // Name-keyed: the id is an implementation detail we look up. A miss is not an
   // error — it is simply the first launch under this name (or in this
   // directory), so we create and let the hook fill the cache in.
-  const key = sessionCacheKey(claudeDir, ref.name);
-  const cached = resolveSessionId((store.get('agentSessionCache') || {})[key]);
+  const cache = { ...(store.get('agentSessionCache') || {}) };
+  const key = sessionCacheKey(claudeDir, name);
+
+  // Carry the session across a rename instead of orphaning it.
+  //
+  // Renaming the bot changes the key, which on its own would miss and start an
+  // empty session — the bot losing its memory because someone corrected a
+  // typo. Since `--name` RENAMES a session in place (verified: resuming with a
+  // different --name makes the old title stop resolving and the new one start),
+  // moving our cache entry and passing the new name keeps one session that
+  // simply changes what it is called.
+  //
+  // Only when the new name has no session of its own — that case is a switch to
+  // an existing session, and must not drag this one on top of it.
+  if (!cache[key] && ref.name && ref.name !== name) {
+    const from = sessionCacheKey(claudeDir, ref.name);
+    if (cache[from]) {
+      cache[key] = cache[from];
+      delete cache[from];
+      try { store.set('agentSessionCache', cache); } catch { /* best effort */ }
+      console.log('[electron] Bot renamed', JSON.stringify(ref.name), '→', JSON.stringify(name),
+        '— carrying session', cache[key], 'over rather than starting a new one');
+    }
+  }
+
+  const cached = resolveSessionId(cache[key]);
   if (cached && sessionExists(cached, claudeDir)) {
-    return { resumeSessionId: cached, sessionName: ref.name };
+    return { resumeSessionId: cached, sessionName: name };
   }
   if (cached) {
-    console.log('[electron] Cached session', cached, 'for', ref.name, 'is gone — starting a fresh one');
+    console.log('[electron] Cached session', cached, 'for', name, 'is gone — starting a fresh one');
   }
   // Remember what the next SessionStart hook is reporting about, since the hook
   // payload says which session started but not which name we asked for.
   pendingSessionCacheKey = key;
-  return { resumeSessionId: '', sessionName: ref.name };
+  return { resumeSessionId: '', sessionName: name };
 }
 
 // Set at launch, consumed by the next hook ping. One agent at a time is already
@@ -6380,14 +6410,18 @@ function recordAgentSessionId(sessionId) {
 // session behind it yet. Read-only — the id is not something to type.
 ipcMain.handle('get-agent-session', () => {
   try {
-    const { resolveSessionRef, sessionCacheKey, sessionExists, resolveSessionId } = require('./agent-session.js');
+    const { resolveSessionRef, sessionCacheKey, sessionExists, resolveSessionId, resolveSessionName } = require('./agent-session.js');
     const claudeDir = store.get('claudeWorkDir') || require('./agent-workdir.js').agentDirFor(app.getPath('userData'));
     const ref = resolveSessionRef(store.get('agentSession'), resolvedBotName());
     if (ref.kind === 'id') {
-      return { name: ref.name, id: ref.id, pinned: true, exists: sessionExists(ref.id, claudeDir) };
+      return { name: ref.name, id: ref.id, pinned: true, auto: false, exists: sessionExists(ref.id, claudeDir) };
     }
-    const id = resolveSessionId((store.get('agentSessionCache') || {})[sessionCacheKey(claudeDir, ref.name)]);
-    return { name: ref.name, id: id || '', pinned: false, exists: !!id && sessionExists(id, claudeDir) };
+    // Show what the NEXT launch would use, which under auto-tracking is the
+    // bot's current name even if the stored field still says the old one.
+    const auto = store.get('agentSessionAuto') !== false;
+    const name = (auto && resolveSessionName(resolvedBotName())) || ref.name;
+    const id = resolveSessionId((store.get('agentSessionCache') || {})[sessionCacheKey(claudeDir, name)]);
+    return { name, id: id || '', pinned: false, auto, exists: !!id && sessionExists(id, claudeDir) };
   } catch { return null; }
 });
 

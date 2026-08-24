@@ -29,6 +29,13 @@ const { resolveSessionId, claudeResumeFlag, resolveSessionName, claudeNameFlag, 
 const { buildAgentArgs, buildInteractiveAgentArgs } = require('../electron-app/agent-spawn.js');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
 
+// The body of planAgentSession, which is where the launch-time policy lives.
+const planBody = () => {
+  const fn = main.slice(main.indexOf('function planAgentSession'));
+  return fn.slice(0, fn.indexOf('\n}\n'));
+};
+
+
 test('a real session id survives untouched', () => {
   const id = '0c7d62da-e284-4670-a089-1ab02ece1b15';
   assert.equal(resolveSessionId(id), id);
@@ -236,9 +243,13 @@ test('a pinned id is never silently replaced', () => {
   // overwriting it would be the app overruling something the user typed.
   const fn = main.slice(main.indexOf('function planAgentSession'));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
-  // The id branch only, up to where the name-pinning block begins. It must
-  // return out before reaching any write.
-  const pinned = body.slice(body.indexOf("ref.kind === 'id'"), body.indexOf("Write the bot's name"));
+  // The id branch only, up to where name resolution begins. It must return out
+  // before reaching any write. Anchored on code, not comment text, so rewording
+  // a comment cannot silently turn this into a no-op assertion.
+  const start = body.indexOf("ref.kind === 'id'");
+  const end = body.indexOf('let name = ref.name;');
+  assert.ok(start >= 0 && end > start, 'planAgentSession no longer has the shape this test reads');
+  const pinned = body.slice(start, end);
   assert.ok(!pinned.includes('store.set'), 'a pinned session id must not be rewritten by the app');
   assert.equal((pinned.match(/return \{/g) || []).length, 2,
     'both outcomes of a pinned id must return before the name-pinning write');
@@ -254,21 +265,6 @@ test('only a session WE started fresh is cached', () => {
   assert.ok(/if \(!id \|\| !key\) return;/.test(body), 'an unsolicited hook ping must not be cached');
 });
 
-test('the bot name is written INTO the field, not left implicit', () => {
-  // Two things a blank field costs. It hides that the session has a name, so
-  // `claude --resume Jimmy` reads as impossible. And because a blank re-derives
-  // from the bot every launch, renaming Jimmy to Jim would silently repoint the
-  // bot at a different, empty session — indistinguishable from amnesia.
-  const ref = resolveSessionRef('', 'Jimmy');
-  assert.equal(ref.implicit, true, 'a blank field must be flagged for pinning');
-  assert.equal(ref.name, 'Jimmy');
-
-  const fn = main.slice(main.indexOf('function planAgentSession'));
-  const body = fn.slice(0, fn.indexOf('\n}\n'));
-  assert.ok(/if \(ref\.implicit && ref\.name\)/.test(body)
-    && body.includes("store.set('agentSession', ref.name)"),
-  'an implicitly-derived name must be persisted to the field');
-});
 
 test('a name the user typed is left exactly as they typed it', () => {
   // Only an implicit name gets written back. Rewriting an explicit one would
@@ -279,10 +275,44 @@ test('a name the user typed is left exactly as they typed it', () => {
   assert.equal(resolveSessionRef('0c7d62da-e284-4670-a089-1ab02ece1b15', 'Jimmy').implicit, false);
 });
 
-test('renaming the bot does not move it to a different session', () => {
-  // The continuity guarantee, stated as the behaviour rather than the mechanism:
-  // once "Jimmy" is stored, the resolved name no longer depends on botName.
-  const stored = resolveSessionRef('Jimmy', 'Jim');   // bot renamed to Jim
-  assert.equal(stored.name, 'Jimmy', 'the stored session name must win over the new bot name');
-  assert.equal(sessionCacheKey('/bots/x', stored.name), sessionCacheKey('/bots/x', 'Jimmy'));
+
+// ── Following the bot's name ─────────────────────────────────────────────────
+// Almost nobody edits this field, so the automatic path is the one that has to
+// be right: rename the bot and the session follows, keeping its history.
+
+test('the resolved name is written into the field, never left blank', () => {
+  // A blank field hides that the session HAS a name, which is what makes
+  // `claude --resume Jimmy` look impossible when it works.
+  assert.equal(resolveSessionRef('', 'Jimmy').implicit, true);
+  const body = planBody();
+  assert.ok(body.includes("store.set('agentSession', name)"),
+    'the name in use must be persisted so it is visible and typeable');
+});
+
+test('renaming the bot renames the session and keeps its history', () => {
+  // The failure this replaces: a new key simply missed, so correcting a typo in
+  // the bot's name started an empty session and read as the bot losing its
+  // memory. --name renames in place (verified against the CLI), so the cache
+  // entry moves with it.
+  const body = planBody();
+  assert.ok(/const auto = store\.get\('agentSessionAuto'\) !== false;/.test(body),
+    'the field must follow the bot name unless taken over');
+  assert.ok(body.includes('cache[key] = cache[from]') && body.includes('delete cache[from]'),
+    'the cached session must MOVE to the new name, not be abandoned under the old one');
+});
+
+test('a rename never clobbers a session that already owns the new name', () => {
+  // Carrying unconditionally would drag this bot's session on top of a
+  // different one — switching to an existing session must stay a switch.
+  const body = planBody();
+  const carry = body.slice(body.indexOf('Only when the new name'));
+  assert.ok(/if \(!cache\[key\] && ref\.name && ref\.name !== name\)/.test(carry),
+    'the carry must be guarded on the new name having no session of its own');
+});
+
+test('taking the field over stops it following the bot', () => {
+  // Otherwise a deliberate choice would be silently reverted on the next rename.
+  const panel = readFileSync(join(root, 'electron-app/renderer/panel.js'), 'utf8');
+  assert.ok(/set-config', 'agentSessionAuto', !value/.test(panel),
+    'typing a value must clear auto; clearing it must restore auto');
 });

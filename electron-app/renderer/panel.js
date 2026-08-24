@@ -3197,7 +3197,7 @@ async function refreshAgentSession() {
   try {
     const s = await api.invoke('get-agent-session');
     if (!s?.name) { agentSessionStatusEl.textContent = ''; return; }
-    const where = s.pinned ? 'Pinned to' : 'Session';
+    const where = s.pinned ? 'Pinned to' : (s.auto ? 'Following the bot’s name:' : 'Session');
     agentSessionStatusEl.textContent = s.exists
       ? `${where} “${s.name}” — resuming ${s.id}`
       : `${where} “${s.name}” — no session yet; the next launch starts one.`;
@@ -3205,8 +3205,13 @@ async function refreshAgentSession() {
 }
 refreshAgentSession();
 
-agentSessionIdInput?.addEventListener('change', () => {
-  api.invoke('set-config', 'agentSession', agentSessionIdInput.value.trim());
+agentSessionIdInput?.addEventListener('change', async () => {
+  const value = agentSessionIdInput.value.trim();
+  // Typing here takes the field over, so renaming the bot no longer drags the
+  // session along with it. Clearing hands it back — the field returns to
+  // tracking the bot's name, which is what almost everyone should be on.
+  await api.invoke('set-config', 'agentSessionAuto', !value);
+  await api.invoke('set-config', 'agentSession', value);
   refreshAgentSession();
 });
 

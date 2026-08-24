@@ -1170,10 +1170,29 @@ function setOptionHeld(next) {
 // releasing the key over another window (or a ⌥-Tab away) never delivers the
 // keyup, and the label would stick in the alternate state with no way back.
 // Reading .altKey off whatever event arrives self-corrects on the next one.
-for (const evt of ['keydown', 'keyup', 'mousemove']) {
-  window.addEventListener(evt, (e) => setOptionHeld(!!e.altKey));
+//
+// The list is long on purpose, and CAPTURE-phase. The first version listened for
+// keydown/keyup/mousemove on window in the bubble phase, and the label took a
+// second or two to flip: key events only reach a window that has keyboard focus,
+// so if the user was looking at the Meet (or had just clicked anywhere else) the
+// FIRST event carrying altKey was whatever mouse movement came next. It felt
+// like polling. Every pointer event carries altKey, so covering them all means
+// the state is correct by the time the pointer is anywhere near the button —
+// which is the moment it needs to be right.
+//
+// Capture rather than bubble so a handler that stops propagation on its way up
+// cannot silently freeze the label.
+const ALT_STATE_EVENTS = [
+  'keydown', 'keyup',
+  'pointerover', 'pointerenter', 'pointermove', 'pointerdown', 'pointerup',
+  'mousemove', 'mouseover', 'wheel', 'focus',
+];
+for (const evt of ALT_STATE_EVENTS) {
+  window.addEventListener(evt, (e) => setOptionHeld(!!e.altKey), true);
 }
-// Same reason: focus loss is the one case where no further event arrives.
+// Focus loss is the one case where no further event arrives — and it is also the
+// case where a stuck "Chat with…" label would be most confusing, because the key
+// the user released was released somewhere else entirely.
 window.addEventListener('blur', () => setOptionHeld(false));
 
 async function openChatSession() {

@@ -2536,7 +2536,14 @@ const localServer = new globalThis.LocalServer({
       const wordCount = (lastUtterance || '').split(/\s+/).filter(Boolean).length;
       const prefs = require('./preferences-schema').PREFERENCES;
       const longMin = Number(store?.get('ackLongMin')) || prefs.ackLongMin.default;
-      const arr = wordCount >= longMin
+      // Same rule as the builtin decider: a long ack asserts the speaker has
+      // FINISHED, so it needs an utterance that looks finished — not merely a
+      // long one. See ack/builtin.js. Heuristic judge only; an ack must be
+      // instant, and this path is already covering a slow model's TTFT.
+      let ackComplete = false;
+      try { ackComplete = !!require('./completeness').heuristicComplete(lastUtterance || '').complete; }
+      catch { /* treat as unfinished */ }
+      const arr = (wordCount >= longMin && ackComplete)
         ? (store?.get('ackLongPhrases') || prefs.ackLongPhrases.default)
         : (store?.get('ackShortPhrases') || prefs.ackShortPhrases.default);
       const phrase = arr[Math.floor(Math.random() * arr.length)];

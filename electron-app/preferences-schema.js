@@ -39,12 +39,16 @@ const PREFERENCES = {
     min: 0,
     max: 1,
     description:
-      'Playback gain for acknowledgement phrases ("mm-hmm", "right"), relative ' +
-      'to normal speech at 1. Acks used to play at exactly the volume of a real ' +
-      'reply, which is what made them feel like the bot butting in rather than ' +
-      'backchanneling — a person murmuring agreement is markedly quieter than a ' +
-      'person taking the floor. Affects the ack path only; every other utterance ' +
-      'plays at full gain. Lip-sync is driven from the pre-gain signal, so a quiet ' +
+      'Playback gain for SHORT acknowledgement phrases ("mm-hmm", "right"), ' +
+      'relative to normal speech at 1. Acks used to play at exactly the volume ' +
+      'of a real reply, which is what made them feel like the bot butting in ' +
+      'rather than backchanneling — a person murmuring agreement is markedly ' +
+      'quieter than a person taking the floor. LONG acks ("Let me think about ' +
+      'that.") are NOT affected and always play at full volume: they are a ' +
+      'different speech act, announcing that the floor has changed hands, and ' +
+      'something taking the floor at a third of normal volume is just hard to ' +
+      'hear. One knob for both meant turning the murmurs down also buried the ' +
+      'announcements. Every other utterance plays at full gain. Lip-sync is driven from the pre-gain signal, so a quiet ' +
       'ack still animates the avatar normally. Set 1 for the old behaviour, or 0 ' +
       'to keep the ack silent while its timing still masks the thinking pause ' +
       '(use ackShortMin/ackLongMin to stop acks firing at all).',

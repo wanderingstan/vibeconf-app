@@ -2309,10 +2309,18 @@ const localServer = new globalThis.LocalServer({
       // Mark the ack so its tts-ended doesn't drop us out of 'thinking' while
       // the agent is still generating the real response.
       ackTtsPending = true;
-      // Acks ride at ackVolume — a human's "mm-hmm" is not as loud as their
-      // sentence, and at equal volume these read as the bot barging in. This
-      // is the only caller that passes a volume; everything else is unchanged.
-      speakText(ack, undefined, undefined, { volume: Number(prefValue('ackVolume')) });
+      // SHORT acks ride at ackVolume — a human's "mm-hmm" is not as loud as their
+      // sentence, and at equal volume these read as the bot barging in.
+      //
+      // LONG acks ride at FULL volume, because they are a different speech act.
+      // "Let me think about that." announces that the floor has changed hands
+      // and the bot is going away to answer; it wants to be heard. A murmur is
+      // deliberately not asking for the floor, so quiet is right for it — but
+      // something TAKING the floor at a third of normal volume is just hard to
+      // hear. One knob for both meant turning the murmurs down also buried the
+      // announcements (raised live, 2026-08-24).
+      const ackVolume = ackResult.pool === 'long' ? undefined : Number(prefValue('ackVolume'));
+      speakText(ack, undefined, undefined, ackVolume === undefined ? undefined : { volume: ackVolume });
       // Surface the phrase to the slow model on its next wait_for_speech,
       // so it can self-correct if its real response contradicts the ack
       // tone. Cleared after one read on the local-server side.
@@ -2580,9 +2588,13 @@ const localServer = new globalThis.LocalServer({
         : (store?.get('ackShortPhrases') || prefs.ackShortPhrases.default);
       const phrase = arr[Math.floor(Math.random() * arr.length)];
       if (phrase) {
-        console.log(ts(), `👂 [ack] (triage-gated) Playing: ${JSON.stringify(phrase)} (${result.ms}ms after floor-open)`);
+        const isLong = arr === (store?.get('ackLongPhrases') || prefs.ackLongPhrases.default);
+        console.log(ts(), `👂 [ack] (triage-gated) Playing: ${JSON.stringify(phrase)} (${result.ms}ms after floor-open, ${isLong ? 'long' : 'short'})`);
         ackTtsPending = true;
-        speakText(phrase);
+        // Same split as the other ack site: a murmur is quiet, an announcement
+        // that the floor has changed hands is not.
+        if (isLong) speakText(phrase);
+        else speakText(phrase, undefined, undefined, { volume: Number(prefValue('ackVolume')) });
         localServer.setLastAckPhrase(phrase);
       }
     }

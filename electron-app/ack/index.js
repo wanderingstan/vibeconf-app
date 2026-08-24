@@ -59,6 +59,22 @@ function getLocalModelConfig(store) {
 //   source    'llm' | 'llm-fallback-builtin' | 'builtin'
 //   latencyMs number — measured from entry to return for the chosen path
 //   error     string | undefined — set when the LLM path failed and we fell back
+// Which pool a phrase came from — the caller needs it to pick a VOLUME.
+//
+// The two acks are different speech acts. A short one is backchannel: it does
+// not ask for the floor, and a person murmuring agreement is markedly quieter
+// than one speaking. A long one ("Let me think about that.") announces that the
+// floor has changed hands, and something taking the floor at a third of normal
+// volume is simply hard to hear.
+//
+// Membership rather than a flag threaded through builtin.decide, so the pools
+// stay the single source of truth and a user who edits them cannot desync this.
+// Unknown phrases (an LLM-authored one) count as short: a generated filler is
+// covering latency, not claiming the floor.
+function poolOf(phrase, prefs) {
+  return (prefs.ackLongPhrases || []).includes(phrase) ? 'long' : 'short';
+}
+
 async function decide({ text, wordCount, addressivity, mode, recentTranscript, store, log }) {
   const prefs = getPrefs(store);
   const config = getProviderConfig(store);
@@ -82,7 +98,9 @@ async function decide({ text, wordCount, addressivity, mode, recentTranscript, s
         config,
         log,
       });
-      return { phrase, source: 'llm', latencyMs: Date.now() - started };
+      // An LLM-authored ack is treated as a murmur: it is generated to cover the
+      // slow model's latency, not to announce that the floor has changed hands.
+      return { phrase, pool: 'short', source: 'llm', latencyMs: Date.now() - started };
     } catch (err) {
       // Endpoint unreachable / timed out / parse error — fall back to builtin
       // so the bot is never strictly worse than baseline.
@@ -90,6 +108,7 @@ async function decide({ text, wordCount, addressivity, mode, recentTranscript, s
       const phrase = builtin.decide({ wordCount, complete, prefs });
       return {
         phrase,
+        pool: poolOf(phrase, prefs),
         source: 'llm-fallback-builtin',
         latencyMs: Date.now() - started,
         error: err.message,
@@ -98,8 +117,10 @@ async function decide({ text, wordCount, addressivity, mode, recentTranscript, s
   }
 
   // Default: builtin
+  const phrase = builtin.decide({ wordCount, complete, prefs });
   return {
-    phrase: builtin.decide({ wordCount, complete, prefs }),
+    phrase,
+    pool: poolOf(phrase, prefs),
     source: 'builtin',
     latencyMs: Date.now() - started,
   };

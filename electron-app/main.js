@@ -872,6 +872,12 @@ function beginAfterCallWorkOrTeardown(reason) {
   }
 
   console.log('[electron] Call ended (' + reason + ') — entering after-call work for up to ' + seconds + 's');
+  // From here the live agent is finishing the call it was launched for, not
+  // serving a live one. That, not the meet code, is what makes it a lame duck:
+  // calling a bot back into the SAME room is a new call, and keying on the code
+  // made the reuse guard say "same call" about an agent already winding down
+  // (observed 20:51:31 on 2026-08-23, right after this fix's first outing).
+  headlessAgentCallOver = true;
   localServer.setCallStatus('after-call-work');
   clearTimeout(_afterCallWorkTimer);
   // A backstop, not a schedule. Nothing reaps a terminal window on its own, so an
@@ -7015,6 +7021,10 @@ let headlessAgentChild = null;
 // replaced agent's exit handler cannot tear down its successor. See the
 // lame-duck check in launchClaudeHeadless.
 let headlessAgentCall = null;
+// Set the moment the agent's call ends. The agent outlives its call on purpose
+// (after-call work), so "alive" and "serving a live call" are different things,
+// and only the second one is a reason to reuse it.
+let headlessAgentCallOver = false;
 let headlessAgentGeneration = 0;
 
 // Returns true if the agent is now running headlessly, false to fall back.
@@ -7042,7 +7052,7 @@ function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, cla
   //
   // So reuse only an agent launched for THIS call. Anything else is a lame duck
   // finishing the last one.
-  if (headlessAgentChild && headlessAgentCall === meetCode) {
+  if (headlessAgentChild && !headlessAgentCallOver) {
     console.log('[electron] headless agent already running for this call — reusing it');
     return true;
   }
@@ -7128,6 +7138,7 @@ function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, cla
   // This agent's identity, so a superseded one's exit cannot tear this one down.
   const gen = ++headlessAgentGeneration;
   headlessAgentCall = meetCode;
+  headlessAgentCallOver = false;
   headlessAgentChild = spawnHeadlessAgent({
     claudePath: claudeBin,
     args,
@@ -7164,6 +7175,7 @@ function closeClaudeTerminal() {
     try { headlessAgentChild.kill('SIGTERM'); } catch { /* already gone */ }
     headlessAgentChild = null;
     headlessAgentCall = null;
+    headlessAgentCallOver = false;
   }
 
   // #329: the Linux shapes. Killing the tmux SESSION is what ends the agent —

@@ -326,10 +326,15 @@ test('taking the field over stops it following the bot', () => {
 test('an agent is only reused for the call it was launched for', () => {
   const fn = main.slice(main.indexOf('function launchClaudeHeadless'));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
-  assert.ok(/if \(headlessAgentChild && headlessAgentCall === meetCode\)/.test(body),
-    'reuse must be conditional on the agent belonging to THIS call');
-  assert.ok(body.includes('headlessAgentCall = meetCode'),
-    'the call an agent was launched for must be recorded');
+  // NOT on the meet code. Calling a bot back into the SAME room is a new call,
+  // so a code match said "same call" about an agent already winding down —
+  // exactly the reuse this guard exists to prevent (seen 20:51:31, 2026-08-23).
+  assert.ok(/if \(headlessAgentChild && !headlessAgentCallOver\)/.test(body),
+    'reuse must depend on the agent’s call still being live, not on the room');
+  assert.ok(!/headlessAgentCall === meetCode/.test(main),
+    'the meet code cannot distinguish a re-join into the same room from the same call');
+  assert.ok(/headlessAgentCallOver = true;/.test(main),
+    'the agent must be marked a lame duck when its call ends');
 });
 
 test('the replacement waits for the old agent to actually exit', () => {

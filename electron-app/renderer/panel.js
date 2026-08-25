@@ -1827,6 +1827,9 @@ function refreshVoiceBanner() {
   return api.invoke('get-voice-status').then(updateAppSettingsBanner).catch(() => {});
 }
 document.getElementById('openAppSettingsFromBanner')?.addEventListener('click', () => api.invoke('open-app-settings'));
+// Re-authorize Google Calendar (#446). Reuses the existing website login IPC —
+// the credential that expired is the website's, so this is the same sign-in.
+document.getElementById('calendarReconnectBtn')?.addEventListener('click', () => api.invoke('login'));
 // The key lives in the separate App Settings window, so re-check on focus.
 window.addEventListener('focus', refreshVoiceBanner);
 
@@ -1857,6 +1860,7 @@ refreshClaudeAuthBanner();
 // tight 5-minute window that actually arms the join timer in main.js.
 const calendarUpcomingBanner = document.getElementById('calendarUpcomingBanner');
 const calendarUpcomingText = document.getElementById('calendarUpcomingText');
+const calendarReconnectBtn = document.getElementById('calendarReconnectBtn');
 function paintCalendarUpcoming(events, error) {
   if (!calendarUpcomingBanner || !calendarUpcomingText) return;
   // Poll error (main.js pushCalendarPollError): the backend can no longer
@@ -1870,9 +1874,16 @@ function paintCalendarUpcoming(events, error) {
     calendarUpcomingText.textContent = '⚠️ Calendar connection broken: '
       + 'auto-join has stopped. Re-connect Google Calendar by signing in '
       + 'again at vibeconferencing.com.';
+    // #446: the sentence said the right thing and still left people stuck —
+    // "sign in again at vibeconferencing.com" reads as something you do in a
+    // browser you now have to go and find, and the two obvious in-app guesses
+    // (sign out and back in, restart) both touch a different credential. The
+    // button is the same flow the sign-in path already uses.
+    if (calendarReconnectBtn) calendarReconnectBtn.style.display = '';
     calendarUpcomingBanner.style.display = 'flex';
     return;
   }
+  if (calendarReconnectBtn) calendarReconnectBtn.style.display = 'none';
   const next = Array.isArray(events) && events.length ? events[0] : null;
   if (!next) {
     calendarUpcomingBanner.style.display = 'none';

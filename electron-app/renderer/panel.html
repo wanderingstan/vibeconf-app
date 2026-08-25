@@ -87,6 +87,12 @@
                upcoming match at all. -->
           <div class="hero-notice notice-info" id="calendarUpcomingBanner" style="display:none">
             <span>📅 <span id="calendarUpcomingText"></span></span>
+            <!-- Only shown when the banner is carrying the broken-connection
+                 warning (#446). Calendar authorization lives with the WEBSITE
+                 login, so the fix is a sign-in there — and the obvious guesses
+                 (sign out of the app, restart it) both touch the wrong thing and
+                 were each tried for a day. A button removes the guessing. -->
+            <button id="calendarReconnectBtn" class="notice-action" style="display:none">Sign in again →</button>
           </div>
 
           <!-- The call is over but the agent is still working: writing its

@@ -95,3 +95,27 @@ test('a persistently broken calendar re-logs on a slow cadence', () => {
   assert.match(poll, /Scheduled calls will be missed/,
     'the line has to say what it costs, or it reads as noise');
 });
+
+test('the broken-calendar warning offers the fix, not just the diagnosis', () => {
+  // #446: the sentence was already right and people still got stuck. Signing
+  // out of the app and restarting it were both tried for a day; neither touches
+  // the credential, because calendar authorization lives with the WEBSITE
+  // login. A button removes the guessing.
+  const panelHtml = readFileSync(join(root, 'electron-app/renderer/panel.html'), 'utf8');
+  const panelJs = readFileSync(join(root, 'electron-app/renderer/panel.js'), 'utf8');
+
+  assert.match(panelHtml, /id="calendarReconnectBtn" class="notice-action"/,
+    'same affordance as the other actionable banner, not a bespoke control');
+  assert.match(panelHtml, /id="calendarReconnectBtn"[^>]*style="display:none"/,
+    'hidden until the banner is actually carrying the warning');
+
+  // It must reuse the existing sign-in, not invent a second route to the site.
+  assert.match(panelJs, /calendarReconnectBtn'\)\?\.addEventListener\('click', \(\) => api\.invoke\('login'\)\)/);
+
+  // Shown on the error path and hidden on every other, or a stale button would
+  // sit on top of an ordinary "next meeting at 4:30" notice.
+  const fn = panelJs.slice(panelJs.indexOf('function paintCalendarUpcoming'));
+  const body = fn.slice(0, fn.indexOf('\n}'));
+  assert.match(body, /if \(error\) \{[\s\S]*calendarReconnectBtn\.style\.display = ''/);
+  assert.match(body, /if \(calendarReconnectBtn\) calendarReconnectBtn\.style\.display = 'none';/);
+});

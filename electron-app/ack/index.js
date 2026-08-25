@@ -146,4 +146,33 @@ async function warmupLocalModel({ store, log }) {
   return openaiCompat.warmup({ config: { ...lm, promptPath: '' }, log });
 }
 
-module.exports = { decide, warmup, getProviderConfig, getLocalModelConfig, warmupLocalModel };
+
+// How loud an ack should be (#534).
+//
+// 06553b47 keyed this to which POOL the phrase came from: short acks quiet,
+// long acks full. The reasoning was that a short ack is backchannel, and a
+// person murmuring agreement is markedly quieter than one speaking. That is
+// right about backchannel and wrong about how to detect it: backchannel is
+// defined by TIMING. It overlaps the speaker, which is exactly why it does not
+// need volume and would be rude if it had it.
+//
+// Observed live: a short ack landing ~1.4s AFTER the speaker stopped, into a
+// silent room, at a third of normal volume. Nothing was being backchannelled.
+// In silence the bot is taking the floor, which is the same speech act the long
+// pool was raised to full volume for, so it wants the same volume.
+//
+// Quiet therefore requires BOTH: a murmur (short pool) and someone to murmur
+// under (anyoneSpeaking). A long ack stays full whatever else is true, because
+// announcing that the floor has changed hands is never backchannel.
+//
+// Returns the options object speakText takes, or undefined for "no override",
+// which is full volume. One function rather than a rule copied to each ack
+// site: duplicated ack logic has needed the same fix in two places repeatedly.
+function speakOptionsFor({ pool, anyoneSpeaking, ackVolume }) {
+  if (pool === 'long') return undefined;
+  if (!anyoneSpeaking) return undefined;
+  const v = Number(ackVolume);
+  return Number.isFinite(v) ? { volume: v } : undefined;
+}
+
+module.exports = { decide, warmup, getProviderConfig, getLocalModelConfig, warmupLocalModel, speakOptionsFor };

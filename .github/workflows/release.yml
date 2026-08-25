@@ -69,10 +69,20 @@
 #     gh api -X PATCH repos/wanderingstan/vibeconf-app/releases/assets/$id \
 #          -f name='Vibeconferencing-Setup-X.exe'
 #
-# Usage (clean semver — NO -beta suffix; see the note at "NOT marked --prerelease"):
+# Usage (clean semver — NO -beta suffix, and no -rc either; see THE TWO-TRACK
+# MODEL at the create-draft step):
 #     npm version --no-git-tag-version 0.8.10   # in BOTH package.json files
 #     git commit -am "Release v0.8.10" && git push
 #     git tag v0.8.10 && git push origin v0.8.10
+#
+# That leaves a DRAFT with the Windows/Linux assets. Then, locally:
+#     # build + attach the notarized Mac assets (see the block above)
+#     gh release edit v0.8.10 --draft=false --prerelease \
+#                             --title "v0.8.10 (candidate)" --notes-file notes.md
+#
+# --prerelease is what puts it on the candidate track. Promote it to everyone
+# later with scripts/promote.sh, which flips the same release rather than
+# rebuilding it.
 
 name: release
 
@@ -112,19 +122,36 @@ jobs:
             echo "release $GITHUB_REF_NAME already exists — reusing it"
             exit 0
           fi
-          # NOT marked --prerelease. We ship CLEAN SEMVER now (0.8.10, 0.8.11, …),
-          # so these are full releases: GitHub awards "Latest" to the highest
-          # version and electron-updater installs it in one hop.
+          # Created as a DRAFT and NOT marked --prerelease here. Both of those are
+          # decided later, by hand, when you publish — see "THE TWO-TRACK MODEL"
+          # below. CI cannot know which track a build is for, so it does not guess.
           #
-          # (History: tags used to carry a -betaN suffix. That was a mistake — the
-          # no-dot form breaks semver ordering once past single digits, because
-          # `beta9`/`beta10` are single alphanumeric identifiers compared
-          # LEXICALLY, so `beta10` sorts BELOW `beta9`. GitHub/electron-updater
-          # then couldn't identify the true latest and the updater lagged / stepped
-          # through intermediate versions. Dropping the suffix fixes it. Marking
-          # --prerelease would ALSO break things — GitHub never awards "Latest" to
-          # a prerelease, and electron-updater's provider skips prereleases unless
-          # allowPrerelease is set — so don't add it back either.)
+          # THE TWO-TRACK MODEL (canonical description lives in scripts/promote.sh):
+          #   • You publish a candidate as a GitHub PRERELEASE, titled
+          #     "vX.Y.Z (candidate)". Stan + Seth run the 'candidate' update channel
+          #     (allowPrerelease on) and pick it up early.
+          #   • scripts/promote.sh later flips that same release prerelease → latest,
+          #     gated on a green nightly, and everyone else gets the exact bits
+          #     already tested. No rebuild, no re-notarize.
+          # So the prerelease FLAG is the track signal, and it is the ONLY one.
+          #
+          # ⚠️ The VERSION must stay clean semver (0.8.10, NOT 0.8.10-rc.1) even for
+          # a candidate. A version carrying a prerelease COMPONENT is rejected by
+          # 'release'-channel clients even after promotion, which would make the
+          # promotion a no-op for the people it is for. The flag is reversible; the
+          # version string is not.
+          #
+          # (History, and why this comment used to say the opposite: tags once
+          # carried a -betaN suffix. That was a mistake — the no-dot form breaks
+          # semver ordering past single digits, because `beta9`/`beta10` are single
+          # alphanumeric identifiers compared LEXICALLY, so `beta10` sorts BELOW
+          # `beta9`. GitHub/electron-updater then couldn't identify the true latest
+          # and the updater lagged / stepped through intermediate versions. Dropping
+          # the SUFFIX fixed that. This comment then went further and said never to
+          # mark --prerelease at all, which was true only until the two-track model
+          # arrived — every release since v0.8.31 has in fact shipped as a
+          # prerelease. Keep the two straight: no prerelease component in the
+          # VERSION, prerelease FLAG on candidates.)
           flags="--draft --generate-notes"
           gh release create "$GITHUB_REF_NAME" $flags --title "$GITHUB_REF_NAME"
 

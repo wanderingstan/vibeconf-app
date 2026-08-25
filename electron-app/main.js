@@ -2309,18 +2309,15 @@ const localServer = new globalThis.LocalServer({
       // Mark the ack so its tts-ended doesn't drop us out of 'thinking' while
       // the agent is still generating the real response.
       ackTtsPending = true;
-      // SHORT acks ride at ackVolume — a human's "mm-hmm" is not as loud as their
-      // sentence, and at equal volume these read as the bot barging in.
-      //
-      // LONG acks ride at FULL volume, because they are a different speech act.
-      // "Let me think about that." announces that the floor has changed hands
-      // and the bot is going away to answer; it wants to be heard. A murmur is
-      // deliberately not asking for the floor, so quiet is right for it — but
-      // something TAKING the floor at a third of normal volume is just hard to
-      // hear. One knob for both meant turning the murmurs down also buried the
-      // announcements (raised live, 2026-08-24).
-      const ackVolume = ackResult.pool === 'long' ? undefined : Number(prefValue('ackVolume'));
-      speakText(ack, undefined, undefined, ackVolume === undefined ? undefined : { volume: ackVolume });
+      // Quiet only while someone is actually speaking — see speakOptionsFor in
+      // ack/index.js for why timing decides this and pool membership does not
+      // (#534). anyoneSpeaking is read HERE, at the moment the ack plays,
+      // because that is the moment the question is about.
+      speakText(ack, undefined, undefined, ackModule.speakOptionsFor({
+        pool: ackResult.pool,
+        anyoneSpeaking: localServer.anyoneSpeaking,
+        ackVolume: prefValue('ackVolume'),
+      }));
       // Surface the phrase to the slow model on its next wait_for_speech,
       // so it can self-correct if its real response contradicts the ack
       // tone. Cleared after one read on the local-server side.
@@ -2597,10 +2594,15 @@ const localServer = new globalThis.LocalServer({
         const isLong = arr === (store?.get('ackLongPhrases') || prefs.ackLongPhrases.default);
         console.log(ts(), `👂 [ack] (triage-gated) Playing: ${JSON.stringify(phrase)} (${result.ms}ms after floor-open, ${isLong ? 'long' : 'short'})`);
         ackTtsPending = true;
-        // Same split as the other ack site: a murmur is quiet, an announcement
-        // that the floor has changed hands is not.
-        if (isLong) speakText(phrase);
-        else speakText(phrase, undefined, undefined, { volume: Number(prefValue('ackVolume')) });
+        // Same rule as the other ack site, from the same function (#534). This
+        // one fires into a detected OPENING, so anyoneSpeaking is normally
+        // false and it plays at full volume — which is right: firing into a
+        // gap is taking the floor, not murmuring under someone.
+        speakText(phrase, undefined, undefined, require('./ack').speakOptionsFor({
+          pool: isLong ? 'long' : 'short',
+          anyoneSpeaking: localServer.anyoneSpeaking,
+          ackVolume: prefValue('ackVolume'),
+        }));
         localServer.setLastAckPhrase(phrase);
       }
     }

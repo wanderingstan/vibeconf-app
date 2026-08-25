@@ -90,7 +90,7 @@ test('one dead window cannot stop the others being told', () => {
 const COMMANDS = [
   'leave-requested',        // panel replies 'leave-meet' → teardown would run 3×
   'new-bot',                // would create three bots
-  'new-window',             // would open three windows
+  'menu-call-now',          // would start three calls
   'show-settings',          // navigates the MAIN panel; a pop-out jumping is wrong
   'basic-auth-prompt',      // expects exactly ONE reply per request id
   'navigate-webview-prompt', // would prompt three times per menu click

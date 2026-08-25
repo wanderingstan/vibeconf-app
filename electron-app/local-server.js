@@ -467,8 +467,15 @@ class LocalServer {
     // stash is discarded and the agent's slow model regenerates from
     // scratch instead.
     //
-    // Shape: { entries: [{ text, voice, emoji }], at: ms }
+    // Shape: { entries: [{ text, voice, emoji }], at: ms, seqAtStash: n }
     this.bargeInStash = null;
+    // Counts bot payloads the agent has submitted this session. Only ever
+    // compared against itself: a stash carries the value as of the thought it
+    // holds, so a later bump means the agent has said something newer and the
+    // held thought is no longer its latest word (#519). Not a message id, not
+    // persisted, and deliberately blind to acks — those are generated here, not
+    // by the agent, so they do not supersede anything.
+    this._agentUtteranceSeq = 0;
     // Texts of any stash that was replayed in the just-completed resolve.
     // Surfaced once on the next _buildResponse, then cleared, so the slow
     // model knows the queued thought already happened and can build on it
@@ -1268,6 +1275,11 @@ class LocalServer {
       // guard exists precisely because a stale answer is worse than none.
       at: at || Date.now(),
       wordsAtStash: this._tickWordCount(this.getEffectiveBotName()),
+      // Which of the agent's thoughts this is (#519). A re-hold of the SAME
+      // thought (the mid-TTS _performBackOff path) does not go through
+      // _applyTranscriptPayload, so the counter has not moved and the re-held
+      // stash keeps its original sequence — a re-hold is not a supersede.
+      seqAtStash: this._agentUtteranceSeq,
     };
     console.log(ts(), '🛡️  [barge-in] Floor busy at audio-start — stashed bot speech for replay (' +
       stashEntries.length + ' entr' + (stashEntries.length === 1 ? 'y' : 'ies') + '):',
@@ -1349,6 +1361,21 @@ class LocalServer {
     // both directions. The gate now lives in _speakWithBotJitter, at the
     // instant audio starts; we await its verdict so the agent still gets an
     // accurate synchronous answer.
+    // #519: mark this as the agent's newest thought BEFORE anything is spoken
+    // or stashed, so a stash created below carries its own sequence number and
+    // any stash from an earlier payload is now provably superseded. Bumped once
+    // per payload rather than per entry — a multi-entry reply is one thought.
+    //
+    // NOT for a barge-in-exempt utterance. The exemption (#338) means precisely
+    // "this is brief and a little overlap beats the alternative" — the "I'm on
+    // it" that stops the room re-asking while the bot does slow work. It is a
+    // holding message, not a replacement thought, and counting it would let
+    // "One sec." delete the substantive answer queued behind it. That is a worse
+    // failure than the stale replay this guard exists to prevent: the room would
+    // get an acknowledgement and then silence. Same reasoning as the ack path,
+    // which never reaches here at all because acks are generated locally.
+    if (data.role === 'bot' && !_bargeExempt) this._agentUtteranceSeq++;
+
     const entries = [];
     let stashed = false;
     for (const t of data.transcript) {
@@ -3746,6 +3773,25 @@ class LocalServer {
   // so TTS playback / transcript registration follow the normal route.
   _maybeReplayBargeInStash() {
     if (!this.bargeInStash) return null;
+    // Supersede guard (#519), checked before the tuned ones because it is exact
+    // rather than heuristic and costs nothing. If the agent has submitted a
+    // newer thought since this one was held, it has already moved on and this
+    // is not its latest word — replaying it puts a superseded answer into a
+    // later gap. Live in the 2026-08-24 standup that surfaced as replays 25.6s
+    // and 39.4s old landing while another bot held the floor, which from the
+    // outside is indistinguishable from a bot that has stopped yielding. Both
+    // were inside the age and word bars, so no amount of retuning them catches
+    // this; only the agent's own progress does.
+    if (this.bargeInStash.seqAtStash != null
+        && this._agentUtteranceSeq > this.bargeInStash.seqAtStash) {
+      const ageMs = Date.now() - this.bargeInStash.at;
+      console.log(ts(), '🛡️  [barge-in] discarding stash — superseded by a newer reply ('
+        + (this._agentUtteranceSeq - this.bargeInStash.seqAtStash) + ' since, ' + ageMs + 'ms old)');
+      this._noteDiscardedStash(this.bargeInStash, 'the agent had already moved on to a newer reply');
+      this.bargeInStash = null;
+      this._lowerHandIfYielding();
+      return null;
+    }
     const ageMs = Date.now() - this.bargeInStash.at;
     const maxAgeMs = this._pref('bargeInStashMaxAgeMs');
     // Wall-clock staleness guard: the floor took too long to reopen.

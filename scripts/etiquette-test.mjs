@@ -155,6 +155,7 @@ const MARKERS = {
   replayHeld:   { re: /\[barge-in\] not replaying — floor busy/,            means: 'kept holding rather than replaying over someone (#449 builds only)' },
   stashMoved:   { re: /\[barge-in\] discarding stash — conversation moved on/, means: 'threw the held reply away as overtaken' },
   stashStale:   { re: /\[barge-in\] discarding stash — too stale/,          means: 'threw the held reply away as too old' },
+  stashSuperseded: { re: /\[barge-in\] discarding stash — superseded/,   means: 'dropped a held reply the agent had already moved past (#519)' },
   floorOn:      { re: /\[floor-audio\] speech ON/,                          means: 'heard the other speaker via the analyser' },
 };
 
@@ -344,6 +345,24 @@ async function waitForFloorBusy(bot, { maxMs = 20_000 } = {}) {
       const off = tail.lastIndexOf('[floor-audio] speech OFF');
       if (on > off) return true;
     }
+    if (Date.now() - started >= maxMs) break;
+    await sleep(200);
+  } while (true);
+  return false;
+}
+
+// The other edge. Needed by no-superseded-replay, which has to get a SECOND
+// utterance in during the window between the floor opening and the stash
+// auto-replaying — defaultSilenceSeconds, 1.4s by default (see the
+// _stashOpeningTimer arming in local-server.js). Polling at 200ms like its
+// sibling leaves most of that window, and speak() resolves when the POST lands,
+// which is when the app records the newer utterance. If this ever gets tight,
+// the rule reports "the replay beat us" rather than failing the app.
+async function waitForFloorClear(bot, { maxMs = 20_000 } = {}) {
+  const started = Date.now();
+  do {
+    const st = await bot.status().catch(() => null);
+    if (st && st.floorBusy === false) return true;
     if (Date.now() - started >= maxMs) break;
     await sleep(200);
   } while (true);
@@ -573,6 +592,71 @@ const RULES = [
       if (!saw(w, 'stashed')) return { ok: false, note: 'never stashed — the floor was not busy?' };
       if (saw(w, 'replayed') || saw(w, 'spoke')) return { ok: true, note: 'held, then said it at the opening' };
       return { ok: false, note: 'stashed and never came back — the reply was swallowed' };
+    },
+  },
+
+  {
+    id: 'no-superseded-replay',
+    claim: 'does not replay a reply it has already moved past',
+    needs: ['audio'],
+    // The 2026-08-24 standup. Stan shouted "Jimmy stop!" four times at a bot
+    // that was yielding correctly all through the same minute — what he heard
+    // was the stash replaying answers composed 25.6s and 39.4s earlier into a
+    // gap while another bot held the floor. Both replays were LEGAL: inside
+    // bargeInStashMaxAgeMs (45s) and bargeInStashRedeliverMaxNewWords (60). No
+    // tuning of either catches it, because the thing that makes it wrong is
+    // that the agent had already said something newer (#519).
+    //
+    // The shape here is the incident's: hold a reply, say a different one while
+    // it is held, then give the room an opening and see which arrives.
+    async run({ subject, voice }) {
+      await voice.playAudio({ path: clip(5), emoji: '🗣️' });
+      await waitForFloorBusy(subject);
+      // `cleared` is captured out here rather than returned from the window
+      // callback: window_ returns the LOG, and whatever the callback returns is
+      // discarded. Same { w, ... } shape the yield rule uses for `held`.
+      let cleared = null;
+      const w = await window_(subject, async () => {
+        await subject.speak('The answer to the question you asked a moment ago, which is '
+          + 'the thing I was about to say when you started talking.');
+        // The floor reopens when the clip ends. From that instant there are
+        // ~1.4s before the stash auto-replays, and the second utterance has to
+        // land inside it — deliberately NOT awaited, because speak() resolves
+        // when the POST lands and awaiting the audio would spend the window.
+        cleared = await waitForFloorClear(subject);
+        if (!cleared) return;
+        subject.speak('Actually, forget that — the thing that matters is the deployment '
+          + 'timeline, and I think we should talk about that instead.').catch(() => {});
+        await sleep(9000);            // let the newer reply finish playing
+
+        // A SECOND gap is required, and this is the part the first draft got
+        // wrong. _maybeReplayStashOnOpening returns early while the bot itself
+        // is speaking — before it reaches any of the stash guards — and the
+        // opening timer only re-arms on the falling edge of somebody ELSE's
+        // speech. So after the newer reply there is no evaluation at all: the
+        // held stash just sits there, unexamined, until the room next goes
+        // quiet. Which is exactly the incident, where the replay surfaced 25.6s
+        // later in a gap while another bot had the floor. Give it that gap.
+        await voice.playAudio({ path: clip(4), emoji: '🗣️' });
+        await waitForFloorBusy(subject);
+        await waitForFloorClear(subject);
+        await sleep(4000);            // past the ~1.4s opening timer
+      });
+      return { w, cleared };
+    },
+    verdict({ w, cleared }) {
+      if (!saw(w, 'stashed')) return { ok: false, note: 'never stashed — floor not busy, rule untested' };
+      if (!cleared) return { ok: false, note: 'the floor never reopened — scenario did not run' };
+      // The failure this exists for: the superseded reply reaching the room.
+      if (saw(w, 'replayed')) {
+        return { ok: false, note: 'REPLAYED a reply it had already moved past — the #519 failure' };
+      }
+      if (saw(w, 'stashSuperseded')) return { ok: true, note: 'dropped the superseded reply' };
+      // Distinguish "the guard worked" from "something else binned it", or a
+      // pass here would be indistinguishable from another gate happening to fire.
+      if (saw(w, 'stashMoved')) return { ok: true, note: 'discarded as overtaken (word gate, not the supersede guard)' };
+      if (saw(w, 'stashStale')) return { ok: false, note: 'discarded as too stale — the scenario ran too slowly to test the rule' };
+      return { ok: false, note: 'the held reply neither replayed nor was discarded — still holding?' };
     },
   },
 

@@ -1608,16 +1608,22 @@ api.on('new-bot', async () => {
   } catch (e) { showError('Could not create bot: ' + e.message); }
 });
 
-// Menu-bar "New Window" → open the next profile that isn't already running (the
-// app is one-window-per-profile — same bot in two calls is #393). No prompt.
-api.on('new-window', async () => {
-  try {
-    const r = await api.invoke('open-next-available-window');
-    if (r && r.ok === false) {
-      if (r.error === 'all-running') showError('Every bot is already open in a window.');
-      else showError('Could not open window: ' + (r.error || 'unknown'));
-    }
-  } catch (e) { showError('Could not open window: ' + e.message); }
+// Menu-bar "Call Now" → press the panel's own button rather than duplicate what
+// it does. Its label is "Call <bot> now" or "Add <bot> to call" depending on
+// what was detected, and only the button knows which — a menu item with its own
+// opinion is the thing that could join the wrong call.
+api.on('menu-call-now', () => {
+  // The button lives on the main screen, so a menu click made from Settings has
+  // to land there first.
+  showScreen(mainScreen);
+  if (!joinBtn) return;
+  if (joinBtn.disabled) {
+    // "Add <bot> to call" with nothing usable in the field. Point at the gap
+    // instead of no-opping silently.
+    try { meetUrlInput?.focus(); } catch { /* field may be hidden */ }
+    return;
+  }
+  joinBtn.click();
 });
 
 function renderProfileMenu(data) {

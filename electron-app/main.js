@@ -2438,6 +2438,10 @@ const localServer = new globalThis.LocalServer({
     // entry is denied, since that 15s grace window leaves the button visible
     // while we wait for the denial page to be detected.
     broadcastToRenderers('call-status-changed', { status, provider: slackProviderMode ? 'slack' : 'meet' });
+    // Rebuild the menu bar for the same reason: Call Now and Hang Up are a
+    // pair, and exactly one of them should be available. A handful of rebuilds
+    // per call (idle → joining → in-call → idle), not a poll.
+    try { refreshAppMenuRef && refreshAppMenuRef(); } catch (err) { console.warn('[electron] menu refresh on call status failed:', err.message); }
   },
 
   // The countdown to the bot taking its turn. Pushed on every arm/re-arm so the
@@ -3220,6 +3224,17 @@ let latestCalendarPollError = null;
 // before calendar polling starts (see the setupIPC() call site), so this ref
 // is populated well before anything tries to call it.
 let launchOrFocusProfileRef = null;
+// #502: the Bot menu is built in createMainWindow() but these windows are
+// opened from setupIPC(), which is a different scope. Same ref pattern as
+// launchOrFocusProfileRef above, for the same reason — the menu needs to reach
+// them, and a menu item is not an IPC client so it cannot go through the
+// handler the panel uses.
+let openBrainWindowRef = null;
+let openTroubleshootingWindowRef = null;
+// Same reason, other direction: the call-status setter (onCallStatusChange,
+// far above this file's window code) has to rebuild the menu so Call Now and
+// Hang Up can carry a REAL `enabled:` instead of one frozen at startup.
+let refreshAppMenuRef = null;
 let mainWindow = null;   // single window that holds both views
 let panelView = null;     // left sidebar BrowserView
 let meetView = null;      // right Meet BrowserView
@@ -10052,6 +10067,24 @@ function createMainWindow() {
   // items reflect live install state (isClaudeIntegrationInstalled /
   // isCodexIntegrationInstalled) and need to be rebuilt after the user
   // toggles either one — see the two click handlers below.
+  // One entry per configured profile, newest-usable name first. Falls back to
+  // the profile's directory name when it has no botName yet — an unnamed bot is
+  // still a window you might want to open, and hiding it would make the menu
+  // disagree with the switcher.
+  function botProfileMenuItems() {
+    let profiles = [];
+    try { profiles = profileManager.listProfiles(PROFILES_ROOT) || []; } catch { /* unreadable — show nothing rather than throw */ }
+    if (!profiles.length) return [{ label: 'No other bots', enabled: false }];
+    return profiles.map((prof) => ({
+      label: prof.botName || prof.name,
+      click: () => {
+        if (!launchOrFocusProfileRef) return;
+        launchOrFocusProfileRef(prof.name).catch((err) =>
+          console.warn('[electron] Open Bot Window failed for', prof.name, '-', err.message));
+      },
+    }));
+  }
+
   function buildAppMenuTemplate() {
     const claudeInstalled = isClaudeIntegrationInstalled();
     const codexInstalled = isCodexIntegrationInstalled();
@@ -10068,23 +10101,11 @@ function createMainWindow() {
         { type: 'separator' },
         {
           // #381: ⌘, opens machine-wide Settings (macOS-native Preferences→Settings
-          // convention). Per-profile settings are their own item below + the
-          // panel's gear button.
+          // convention). Per-profile settings are NOT here: they belong to a bot,
+          // so they live under Bot (⇧⌘,) and on the panel's gear button.
           label: 'Settings…',
           accelerator: 'CmdOrCtrl+,',
           click: () => openAppSettings(),
-        },
-        {
-          label: 'Bot Settings…',
-          accelerator: 'CmdOrCtrl+Shift+,',
-          click: () => {
-            if (panelView && !panelView.webContents.isDestroyed()) {
-              // ADDRESSED, not broadcast (#229): a COMMAND to navigate the MAIN
-              // panel to its settings screen. A pop-out jumping to settings is
-              // not what the menu item means.
-              panelView.webContents.send('show-settings');
-            }
-          },
         },
         {
           label: 'Setup Assistant…',
@@ -10209,21 +10230,96 @@ function createMainWindow() {
             }
           },
         },
+        { type: 'separator' },
         {
-          // Open another app window on the Default profile — a fresh window with no
-          // profile picker/prompt. Additive multi-profile path: lives here (out of
-          // the panel) so it stays available even in-call — where the in-panel
-          // switcher is hidden — because opening a SEPARATE window never touches
-          // the current call.
-          label: 'New Window',
-          accelerator: 'CmdOrCtrl+N',
+          // Opening a window is a File verb, so the profile list lives here
+          // rather than under Bot. It also subsumes the old "New Window", which
+          // opened the first profile that wasn't already running — naming them
+          // is strictly better: you pick the bot you want instead of guessing
+          // which one ⌘N will land on.
+          //
+          // The most valuable item in the menu, per #502: profiles are how one
+          // machine runs several bots, but while you are in a call there is no
+          // good way to open a window for a different one — which makes them
+          // close to theoretical in exactly the situation they were built for.
+          //
+          // Rebuilt from disk on every refreshAppMenu(), so a profile created
+          // mid-session appears without a relaunch. listProfiles reads
+          // agent/config.json off disk, no running instance required.
+          label: 'Open Bot',
+          submenu: botProfileMenuItems(),
+        },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'selectAll' },
+      ],
+    },
+    {
+      // #502: the menu bar is where macOS users expect to FIND OUT what an app
+      // can do, and almost everything here was reachable only by clicking
+      // something in the panel. Two items already existed and were simply in
+      // places nobody would look: Show Bot's View was under File, and Copy Chat
+      // Command was parked in Edit by fb6f07aa — a spot fix for one command
+      // rather than a plan. They move here unchanged, accelerators included.
+      //
+      // The dividing line is the bot versus the window: anything about THIS bot
+      // belongs here, anything about the window stays in Window.
+      label: 'Bot',
+      submenu: [
+        {
+          // Moved out of the app menu, where it sat directly under the
+          // machine-wide "Settings…" and read as a second helping of the same
+          // thing. It configures THIS bot — name, voice, avatar — which is the
+          // line this menu is drawn on. First item because it is the one you
+          // open before a bot is any good, and it keeps ⇧⌘, either way.
+          label: 'Bot Settings…',
+          accelerator: 'CmdOrCtrl+Shift+,',
           click: () => {
             if (panelView && !panelView.webContents.isDestroyed()) {
-              // ADDRESSED, not broadcast (#229): a COMMAND. Broadcasting would
-              // open three windows.
-              panelView.webContents.send('new-window');
+              // ADDRESSED, not broadcast (#229): a COMMAND to navigate the MAIN
+              // panel to its settings screen. A pop-out jumping to settings is
+              // not what the menu item means.
+              panelView.webContents.send('show-settings');
             }
           },
+        },
+        { type: 'separator' },
+        {
+          // Three ways to look inside the same bot, so they read as one group:
+          // one verb (Show), one subject (this bot), no separators between them.
+          // "Brain Pane" and "Troubleshooting…" named the window rather than the
+          // act, and the ellipsis promised a modal that never existed — these
+          // all open a window and none of them ask a question first.
+          //
+          // Force the bot's-view window OPEN (popped out). It's hidden by default
+          // (the 👀 button toggles it), so a screen recording of an automated run
+          // films the desktop, not the call. DETERMINISTIC (always 'popped', not a
+          // toggle) so it's safe to trigger from AppleScript for testing —
+          // `tell app "System Events" to click menu item "Show Bot's View"…` — and
+          // the resulting window has a stable title ("<name> — Bot's view").
+          label: "Show Bot's View",
+          accelerator: 'CmdOrCtrl+Shift+B',
+          click: () => { try { setBotViewState('popped'); } catch (err) { console.warn('[electron] Show Bot\'s View failed:', err.message); } },
+        },
+        {
+          label: "Show Bot's Brain",
+          click: () => { try { openBrainWindowRef && openBrainWindowRef(); } catch (err) { console.warn('[electron] Show Bot\'s Brain from menu failed:', err.message); } },
+        },
+        {
+          // Not "Show Call Details": the window carries Test TTS, Test Curl and
+          // the debug overrides alongside the live call state, and a name that
+          // covered only the call half would hide the other one.
+          label: 'Show Troubleshooting',
+          click: () => { try { openTroubleshootingWindowRef && openTroubleshootingWindowRef(); } catch (err) { console.warn('[electron] Show Troubleshooting from menu failed:', err.message); } },
         },
         { type: 'separator' },
         {
@@ -10261,27 +10357,6 @@ function createMainWindow() {
           },
         },
         {
-          // Force the bot's-view window OPEN (popped out). It's hidden by default
-          // (the 👀 button toggles it), so a screen recording of an automated run
-          // films the desktop, not the call. DETERMINISTIC (always 'popped', not a
-          // toggle) so it's safe to trigger from AppleScript for testing —
-          // `tell app "System Events" to click menu item "Show Bot's View"…` — and
-          // the resulting window has a stable title ("<name> — Bot's view").
-          label: "Show Bot's View",
-          accelerator: 'CmdOrCtrl+Shift+B',
-          click: () => { try { setBotViewState('popped'); } catch (err) { console.warn('[electron] Show Bot\'s View failed:', err.message); } },
-        },
-      ],
-    },
-    {
-      label: 'Edit',
-      submenu: [
-        { role: 'undo' },
-        { role: 'redo' },
-        { type: 'separator' },
-        { role: 'cut' },
-        { role: 'copy' },
-        {
           // The bot keeps ONE Claude session named after itself, so the session
           // it uses on calls is the same one a person can open at a prompt. The
           // panel's Call button held under Option does that; this copies the
@@ -10313,8 +10388,39 @@ function createMainWindow() {
             }
           },
         },
-        { role: 'paste' },
-        { role: 'selectAll' },
+        { type: 'separator' },
+        {
+          // The pair to Hang Up, which used to stand alone because a menu item
+          // cannot carry the URL field the panel's button sits beside. It does
+          // not need to: it PRESSES that button rather than reimplementing it,
+          // so it means whatever the button means at that moment — "Call <bot>
+          // now" with nothing detected, "Add <bot> to call" with a URL in hand.
+          // A second opinion in the menu is what could have joined the wrong
+          // thing; deferring to the one control cannot.
+          label: 'Call Now',
+          // Live, not frozen: refreshAppMenuRef() now runs on every call-status
+          // change, so exactly one of this pair is enabled at any moment.
+          enabled: !localServer || localServer.callStatus === 'idle',
+          click: () => {
+            if (panelView && !panelView.webContents.isDestroyed()) {
+              // ADDRESSED, not broadcast (#229): a COMMAND. Broadcasting would
+              // start three calls.
+              panelView.webContents.send('menu-call-now');
+            }
+          },
+        },
+        {
+          // Guarded in the handler AS WELL as by `enabled:`. The menu is rebuilt
+          // from the call-status change, so there is a window of a few
+          // milliseconds where it can be stale, and requestCleanLeave does real
+          // teardown — it must not run when there is no call to leave.
+          label: 'Hang Up',
+          enabled: !!localServer && localServer.callStatus !== 'idle',
+          click: () => {
+            if (!localServer || localServer.callStatus === 'idle') return;
+            try { requestCleanLeave('menu'); } catch (err) { console.warn('[electron] Hang Up from menu failed:', err.message); }
+          },
+        },
       ],
     },
     {
@@ -10342,6 +10448,7 @@ function createMainWindow() {
   function refreshAppMenu() {
     Menu.setApplicationMenu(Menu.buildFromTemplate(buildAppMenuTemplate()));
   }
+  refreshAppMenuRef = refreshAppMenu;
   refreshAppMenu();
 
   // --- Call view (right) ---
@@ -11128,7 +11235,7 @@ function setupIPC() {
   // second webContents — which also means the panel's broadcasts do not reach
   // it, and it polls get-call-state instead (see the curl-helper bug, #…, for
   // what happens when something in one of these windows relies on a broadcast).
-  ipcMain.handle('open-brain-window', () => {
+  function openBrainWindow() {
     if (brainWindow && !brainWindow.isDestroyed()) {
       brainWindow.show();
       brainWindow.focus();
@@ -11149,9 +11256,11 @@ function setupIPC() {
     win.on('closed', () => { brainWindow = null; focusMainWindow(); });
     win.loadFile(path.join(__dirname, 'renderer', 'panel.html'), { search: 'screen=brain' });
     return { ok: true };
-  });
+  }
+  ipcMain.handle('open-brain-window', () => openBrainWindow());
+  openBrainWindowRef = openBrainWindow;
 
-  ipcMain.handle('open-troubleshooting-window', () => {
+  function openTroubleshootingWindow() {
     if (troubleshootingWindow && !troubleshootingWindow.isDestroyed()) {
       troubleshootingWindow.show();
       troubleshootingWindow.focus();
@@ -11176,7 +11285,9 @@ function setupIPC() {
     win.on('closed', () => { troubleshootingWindow = null; focusMainWindow(); });
     win.loadFile(path.join(__dirname, 'renderer', 'panel.html'), { search: 'screen=troubleshooting' });
     return { ok: true };
-  });
+  }
+  ipcMain.handle('open-troubleshooting-window', () => openTroubleshootingWindow());
+  openTroubleshootingWindowRef = openTroubleshootingWindow;
 
   // The bot's live face, straight from the virtual camera's render loop, relayed
   // to the panel so its avatar shows the SAME expression the call sees.
@@ -11888,28 +11999,6 @@ function setupIPC() {
     return { ...result, profile: name, adopted: { workdir: dir, session: sessionRef } };
   };
   ipcMain.handle('adopt-session-as-bot', async (_event, args) => adoptSessionAsBot(args));
-
-  // File ▸ New Window — open a genuinely NEW window with no picker/prompt. The app
-  // is one-window-per-profile (one locked userData dir + one fixed port each; see
-  // #393), so a "new window" MUST be a profile that isn't already running: open
-  // Default if it's free, else the first idle existing profile. If every profile
-  // is already up, there's nothing new to open — the panel reports 'all-running'.
-  ipcMain.handle('open-next-available-window', async () => {
-    const running = await scanRunningInstances();
-    // Always mark THIS instance's profile as running. The scan is a best-effort
-    // HTTP sweep with a 350ms per-port timeout, so under load it can miss our own
-    // server — which would make New Window re-target our own profile (Default gets
-    // reopened, or a named window needlessly opens Default first). We know our own
-    // identity for certain, so seed it deterministically.
-    running[appProfile] = localServer.port;
-    // listProfiles now includes the default; make sure it's a candidate even if
-    // its dir doesn't exist yet, and try it first (New Window prefers the default).
-    const names = profileManager.listProfiles(PROFILES_ROOT).map((p) => p.name);
-    const candidates = names.some(isDefaultName) ? names : [DEFAULT_PROFILE_NAME, ...names];
-    const target = candidates.find((name) => !running[name]);
-    if (!target) return { ok: false, error: 'all-running' };
-    return await launchOrFocusProfile(target);
-  });
 
   // Debug overlay — renders the troubleshooting snapshot onto the bot's
   // virtual camera so non-technical users can diagnose state by looking at

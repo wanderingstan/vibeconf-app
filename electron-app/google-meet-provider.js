@@ -669,6 +669,16 @@ function visiblePeopleTileCount() {
   return n;
 }
 
+// Positive proof that Meet has actually LET US IN. The waiting room renders a
+// "Leave call" control of its own (#330/#376), so that button alone is not
+// admission; the People / Chat toolbar buttons exist only once we're really in
+// the room. Everything that must not run in the lobby — captions above all
+// (#497) — gates on this.
+function inCallToolbarPresent() {
+  return !!document.querySelector(MEET.people.buttonFallback) ||
+    !!document.querySelector(MEET.chat.toggle);
+}
+
 // Diagnostic dump for the captions-button race (#247). When the "Turn on
 // captions" button can't be found (or never confirms on), we go silently deaf —
 // and we've only been logging "button never appeared", which doesn't tell us WHY.
@@ -1639,7 +1649,7 @@ function clickCaptionsWhenReady() {
   const cleanup = () => {
     if (observer) { observer.disconnect(); observer = null; }
     if (safetyPoll) { clearInterval(safetyPoll); safetyPoll = null; }
-    if (backstop) { clearTimeout(backstop); backstop = null; }
+    if (backstop) { clearInterval(backstop); backstop = null; }
   };
 
   const attempt = () => {
@@ -1671,13 +1681,43 @@ function clickCaptionsWhenReady() {
 
   safetyPoll = setInterval(attempt, 1000);
 
-  backstop = setTimeout(() => {
-    if (settled) return;
-    cleanup();
-    console.warn('[electron-meet] [CC] Captions button never appeared after 60s — escalating deaf');
-    dumpCaptionDiagnostics('clickCaptionsWhenReady: button never appeared (60s, observer+poll)');
-    try { meetProvider.emit(CALL_EVENTS.captionsState, { on: false }); } catch { /* ignore */ }
-  }, 60_000);
+  // #497: this 60s clock used to start when we ARMED the waiter, which for a
+  // bot admitted from the lobby is long before Meet has shown it a toolbar. It
+  // spent the whole budget in the waiting room, escalated deaf, and — the part
+  // that made it unrecoverable — ran cleanup(), tearing down the observer and
+  // the poll. The captions button that rendered moments later was then never
+  // clicked by anybody. Two changes: the clock starts at real ADMISSION, and
+  // escalating is a REPORT, not a reason to stop watching.
+  let admittedAt = inCallToolbarPresent() ? startTime : 0;
+  let escalated = false;
+  let toolbarGoneTicks = 0;
+  backstop = setInterval(() => {
+    if (settled) { cleanup(); return; }
+    if (!admittedAt) {
+      if (inCallToolbarPresent()) {
+        admittedAt = Date.now();
+        console.log('[electron-meet] [CC] Admitted after', admittedAt - startTime,
+          'ms in the lobby — captions clock starts now (#497)');
+      }
+      return; // still in the lobby: there is no button to miss yet
+    }
+    // #417: once admitted, a sustained loss of the in-call toolbar means the
+    // call ended. Stand down rather than polling for a button forever.
+    if (!inCallToolbarPresent()) {
+      if (++toolbarGoneTicks >= 60) {
+        cleanup();
+        console.log('[electron-meet] [CC] In-call toolbar gone for 60s — call over; captions waiter stood down');
+      }
+      return;
+    }
+    toolbarGoneTicks = 0;
+    if (!escalated && Date.now() - admittedAt > 60_000) {
+      escalated = true;
+      console.warn('[electron-meet] [CC] Captions button never appeared 60s after admission — escalating deaf (still watching)');
+      dumpCaptionDiagnostics('clickCaptionsWhenReady: button never appeared (60s after admission, observer+poll)');
+      try { meetProvider.emit(CALL_EVENTS.captionsState, { on: false }); } catch { /* ignore */ }
+    }
+  }, 1000);
 }
 
 // Diagnostic: snapshot the full page DOM when the bot is stuck on an
@@ -1964,8 +2004,7 @@ async function autoJoin(botName) {
       // the lobby, Leave present). The banner text isn't in document.body.innerText
       // (shadow DOM), so text detection missed the lobby; require a real toolbar
       // button as positive proof of admission instead.
-      const inCallToolbar = !!document.querySelector(MEET.people.buttonFallback) ||
-        !!document.querySelector(MEET.chat.toggle);
+      const inCallToolbar = inCallToolbarPresent();
 
       // Explicit denial/removal pages — Meet shows one when the host blocks
       // entry or the call is inaccessible. Fail fast (with #238 reload-retry)
@@ -3107,6 +3146,16 @@ class CaptionScraper {
   // flips, RE-CLICK and retry with backoff (the click can land before the button
   // is wired). After the last round, ESCALATE the deaf state (#246) rather than
   // silently giving up — a clicked-but-never-confirmed bot is still deaf.
+  //
+  // #497: the budget counts FAILED ATTEMPTS, not elapsed rounds. A bot invited
+  // by a non-Google address is a guest on every join and is therefore always
+  // admitted from Meet's lobby — where there is no toolbar and no captions
+  // button at all. Rounds spent there used to consume the budget (30+40+50s
+  // ≈ 90s of it), so a host who took longer than that to press admit got a
+  // permanently deaf bot, giving up on the very round the real UI rendered.
+  // How long the lobby lasts is a human's decision, so no fixed budget can be
+  // right: a round with nothing to click is a NOT-YET. It re-arms the same
+  // round and costs nothing.
   _waitForCaptions(round = 0) {
     const ROUND_POLLS = [120, 160, 200]; // ×250ms = 30s, 40s, 50s (backoff)
     const maxPolls = ROUND_POLLS[round] || 200;
@@ -3120,34 +3169,87 @@ class CaptionScraper {
         console.log('[electron-meet] [CC] Captions confirmed on at', Date.now(),
           'after', attempts * 250, 'ms (round', round, ')');
         this._observe();
-        if (this.onReady) { try { this.onReady(); } catch {} }
+        this._fireReady();
         return;
       }
+      // Cheap and only until it's true: remember that we HAVE been in the real
+      // room, so a later loss of the toolbar reads as "the call ended" rather
+      // than "not admitted yet". Sampled every tick, because admission can come
+      // and go well inside one 30s round.
+      if (!this._sawToolbar && inCallToolbarPresent()) this._sawToolbar = true;
       if (++attempts > maxPolls) {
         clearInterval(poll);
+        // Was there anything to click this round? No button (or no admission
+        // yet) means we never actually attempted anything — don't spend budget.
+        const admitted = inCallToolbarPresent();
+        const buttonPresent = !!findByAriaLabel(MEET.captions.enableLabelEn)
+          || !!findByAriaLabel(MEET.captions.enableLabelEs);
+        if (!admitted || !buttonPresent) {
+          // #417: waiting forever is only right while there is still a call to
+          // wait for. Once we HAVE seen the in-call toolbar, its sustained
+          // absence means the meeting ended — keep retrying then and we're the
+          // ghost loop that logged "no captions button in DOM" for nine minutes.
+          this._toolbarGoneRounds = admitted || !this._sawToolbar
+            ? 0 : (this._toolbarGoneRounds || 0) + 1;
+          if (this._toolbarGoneRounds >= 2) { // ~1 minute with no in-call UI
+            console.warn('[electron-meet] [CC] In-call toolbar gone — the call is over; standing the caption waiter down');
+            return;
+          }
+          this._notYetRounds = (this._notYetRounds || 0) + 1;
+          // This can legitimately run for many minutes, so log sparingly.
+          if (this._notYetRounds === 1 || this._notYetRounds % 4 === 0) {
+            console.warn('[electron-meet] [CC] No captions button to click yet (' +
+              (admitted ? 'admitted, button not rendered' : 'still in the lobby') +
+              ') — round ' + round + ' costs nothing, still waiting (#497)');
+            dumpCaptionDiagnostics('_waitForCaptions: not-yet (round ' + round + ')');
+          }
+          this._waitForCaptions(round); // same round, budget untouched
+          return;
+        }
+        this._notYetRounds = 0;
         if (round < ROUND_POLLS.length - 1) {
           console.warn('[electron-meet] [CC] Captions never flipped (round', round, ') — re-clicking, retrying with backoff');
           dumpCaptionDiagnostics('_waitForCaptions: not confirmed, round ' + round);
           this._enableCaptions();
           this._waitForCaptions(round + 1);
         } else {
-          console.warn('[electron-meet] [CC] Captions never confirmed after', round + 1, 'rounds — escalating deaf');
+          console.warn('[electron-meet] [CC] Captions never confirmed after', round + 1,
+            'attempted rounds — escalating deaf, watcher stays armed (#497)');
           dumpCaptionDiagnostics('_waitForCaptions: gave up after ' + (round + 1) + ' rounds');
           try { meetProvider.emit(CALL_EVENTS.captionsState, { on: false }); } catch { /* ignore */ }
+          // #497(b): keep somebody looking at the button. _checkCaptionsButton
+          // is the only thing that notices captions coming on later — including
+          // a HUMAN clicking CC to rescue the bot — and it runs only from
+          // _observe(), which used to be called on the success path alone. So a
+          // bot that escalated deaf had nothing watching at all: Seth turned
+          // captions on by hand mid-call and Pepper never heard the room again.
+          // Deaf is a state to keep watching, not a terminal one.
+          this._observe(false);
         }
       }
     }, 250);
   }
 
-  _observe() {
+  // captionsOn=false is the deaf watch (#497): same polling, but starting from
+  // "captions are off", so _checkCaptionsButton re-clicks the button whenever it
+  // finally shows up and reports the flip if a human turns captions on for us.
+  _observe(captionsOn = true) {
     this.isRunning = true;
-    this._captionsOn = true; // _waitForCaptions just confirmed
+    this._captionsOn = captionsOn;
     this._lastReenableAt = 0;
     this._pollInterval = setInterval(() => this._checkCaptions(), 1000);
     // Diagnostic heartbeat (5s): pairs with [speaker-health] to make a deaf
     // window legible — is the captions region present, how many turn nodes are
     // in it, and how long since new caption text actually arrived (#229/#187).
     this._healthInterval = setInterval(() => this._logHealth(), 5000);
+  }
+
+  // Captions became usable — tell main once, whether we got here by confirming
+  // on the happy path or by being rescued long after escalating deaf (#497).
+  _fireReady() {
+    if (this._readyFired) return;
+    this._readyFired = true;
+    if (this.onReady) { try { this.onReady(); } catch {} }
   }
 
   _logHealth() {
@@ -3214,6 +3316,7 @@ class CaptionScraper {
       this._captionsOn = on;
       console.warn('[electron-meet] [CC] captions flipped', on ? 'ON' : 'OFF', 'mid-call');
       meetProvider.emit(CALL_EVENTS.captionsState, { on });
+      if (on) this._fireReady(); // may be the first ready ever, if we escalated deaf (#497)
     }
     if (!on) {
       // Self-heal at most once per 5s — a user deliberately keeping them
@@ -3221,7 +3324,19 @@ class CaptionScraper {
       const now = Date.now();
       if (now - this._lastReenableAt > 5000) {
         this._lastReenableAt = now;
-        this._enableCaptions();
+        // #497: this watcher now also runs while deaf, where the button can be
+        // absent for a long time. _enableCaptions() dumps the full toolbar
+        // aria-label list every time it finds nothing, so calling it blind here
+        // would write that dump to the session log every 5s for the rest of the
+        // call. Click when there's a button; otherwise note it at most once a
+        // minute and keep watching.
+        const btn = findByAriaLabel(MEET.captions.enableLabelEn) || findByAriaLabel(MEET.captions.enableLabelEs);
+        if (btn) {
+          this._enableCaptions();
+        } else if (now - (this._lastNoButtonNoteAt || 0) > 60000) {
+          this._lastNoButtonNoteAt = now;
+          console.warn('[electron-meet] [CC] captions off and no button in the DOM — watching for it (#497)');
+        }
       }
     }
   }
@@ -3988,9 +4103,7 @@ function enterInCallState() {
   // appear only once genuinely admitted (confirmed live). Require one as positive
   // proof; no-op (retries next 1.5s tick) until then. The waiting-room BANNER isn't
   // in document.body.innerText (shadow DOM), so text detection alone missed it.
-  const inCallToolbar = document.querySelector(MEET.people.buttonFallback) ||
-    document.querySelector(MEET.chat.toggle);
-  if (!inCallToolbar) return; // lobby: Leave present but no People/Chat toolbar
+  if (!inCallToolbarPresent()) return; // lobby: Leave present but no People/Chat toolbar
   inCallSetupDone = true;
   if (inCallWatcher) { clearInterval(inCallWatcher); inCallWatcher = null; }
   console.log('[electron-meet] In-call toolbar detected — entering in-call state');

@@ -659,6 +659,31 @@ printf '{"ts":"%s","exit":%s,"log":"%s"}\n' "$STAMP" "$JOINROUTE_CODE" "$(basena
 echo "=== join-route exit: $JOINROUTE_CODE (recorded, not gating) ===" | tee -a "$LOG"
 lane_done join-route
 
+# --- multi-bot displacement (#518) — two REAL app instances, no Meet.
+#
+# The only lane that exercises two bots COORDINATING. Everything it asserts is
+# decided by our own HTTP layer (who may displace whose wait_for_speech), so
+# unlike the live lanes a red here means WE broke something — no Google, no
+# admission queue, no #57-style environmental failure.
+#
+# Recorded, not gating, like every lane except dmg-meet: only that one sets
+# $CODE, and quietly adding a second gating lane would change what a red nightly
+# means. Deterministic enough to promote later if you want a second primary
+# signal — that is a decision, not a default.
+#
+# Placed here on purpose: seconds long, so it finishes well before the
+# experimental fuzz lane can spend the remaining budget (see the lane-ORDER note
+# further down). Its result is registered in notify-nightly.mjs — a lane that
+# records but never reports is a lane nobody reads.
+echo "" | tee -a "$LOG"
+echo "=== multi-bot displacement (#518) $STAMP ===" | tee -a "$LOG"
+rec_run displacement -- pnpm test:displacement:ci
+DISPLACEMENT_CODE=$?
+printf '{"ts":"%s","exit":%s,"log":"%s"}\n' "$STAMP" "$DISPLACEMENT_CODE" "$(basename "$LOG")" \
+  >> "$RESULTS/displacement-results.jsonl"
+echo "=== displacement exit: $DISPLACEMENT_CODE (recorded, not gating) ===" | tee -a "$LOG"
+lane_done displacement
+
 MINTED="$(echo "$JOINROUTE_OUT" | grep -oE 'VIBECONF_MINTED_ROOM=[a-z]{3}-[a-z]{4}-[a-z]{3}' | tail -1 | cut -d= -f2)"
 if [[ -n "$MINTED" ]]; then
   export VIBECONF_MEET_ROOM="$MINTED"

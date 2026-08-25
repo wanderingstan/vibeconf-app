@@ -84,7 +84,13 @@
          exists to stop a wedged run from skipping the NEXT night (#2026-07-21,
          when one hung run silently ate four nightlies). -->
     <key>VIBECONF_GLOBAL_TIMEOUT</key>
-    <string>2400</string>
+    <!-- 90 min. Was 2400 (40). Raised 2026-08-24: the mini has the whole night
+         and nothing else to do, and the suite is growing lanes. The watchdog is
+         a wedge-breaker, not a budget — see the lane-ORDER note in
+         scheduled-meet-test.sh: a bigger number does NOT excuse letting a slow
+         lane hide the ones behind it, which is how the Linux lane went missing
+         for three nights. Keep cheap deterministic lanes first. -->
+    <string>5400</string>
   </dict>
 
   <key>ProgramArguments</key>

@@ -150,3 +150,15 @@ test("Navigate Webview moved to Bot, since it drives THIS bot's webview", () => 
   assert.equal(main.split("label: 'Navigate Webview…'").length - 1, 1);
   assert.ok(botMenu.includes("accelerator: 'CmdOrCtrl+Shift+L'"), 'it keeps its accelerator');
 });
+
+test('Bot Settings moved out of the app menu, where it read as a second Settings', () => {
+  // Machine-wide Settings (⌘,) stays in the app menu. This one configures THIS
+  // bot — name, voice, avatar — which is the line the Bot menu is drawn on.
+  assert.ok(botMenu.includes("label: 'Bot Settings…'"), 'it belongs under Bot');
+  assert.equal(main.split("label: 'Bot Settings…'").length - 1, 1, 'moved, not copied');
+  assert.ok(botMenu.includes("accelerator: 'CmdOrCtrl+Shift+,'"), 'it keeps ⇧⌘,');
+  assert.ok(main.includes("accelerator: 'CmdOrCtrl+,'"),
+    'the machine-wide Settings keeps ⌘, and stays where macOS users expect it');
+  assert.ok(botMenu.indexOf("label: 'Bot Settings…'") < botMenu.indexOf("Show Bot's View"),
+    'first item: it is the one you open before a bot is any good');
+});

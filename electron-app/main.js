@@ -10083,23 +10083,11 @@ function createMainWindow() {
         { type: 'separator' },
         {
           // #381: ⌘, opens machine-wide Settings (macOS-native Preferences→Settings
-          // convention). Per-profile settings are their own item below + the
-          // panel's gear button.
+          // convention). Per-profile settings are NOT here: they belong to a bot,
+          // so they live under Bot (⇧⌘,) and on the panel's gear button.
           label: 'Settings…',
           accelerator: 'CmdOrCtrl+,',
           click: () => openAppSettings(),
-        },
-        {
-          label: 'Bot Settings…',
-          accelerator: 'CmdOrCtrl+Shift+,',
-          click: () => {
-            if (panelView && !panelView.webContents.isDestroyed()) {
-              // ADDRESSED, not broadcast (#229): a COMMAND to navigate the MAIN
-              // panel to its settings screen. A pop-out jumping to settings is
-              // not what the menu item means.
-              panelView.webContents.send('show-settings');
-            }
-          },
         },
         {
           label: 'Setup Assistant…',
@@ -10269,6 +10257,24 @@ function createMainWindow() {
       // belongs here, anything about the window stays in Window.
       label: 'Bot',
       submenu: [
+        {
+          // Moved out of the app menu, where it sat directly under the
+          // machine-wide "Settings…" and read as a second helping of the same
+          // thing. It configures THIS bot — name, voice, avatar — which is the
+          // line this menu is drawn on. First item because it is the one you
+          // open before a bot is any good, and it keeps ⇧⌘, either way.
+          label: 'Bot Settings…',
+          accelerator: 'CmdOrCtrl+Shift+,',
+          click: () => {
+            if (panelView && !panelView.webContents.isDestroyed()) {
+              // ADDRESSED, not broadcast (#229): a COMMAND to navigate the MAIN
+              // panel to its settings screen. A pop-out jumping to settings is
+              // not what the menu item means.
+              panelView.webContents.send('show-settings');
+            }
+          },
+        },
+        { type: 'separator' },
         {
           // Three ways to look inside the same bot, so they read as one group:
           // one verb (Show), one subject (this bot), no separators between them.

@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Realtime Pepper</title>
+<style>
+  :root{
+    --bg:#0d0f12; --card:#14181d; --line:#232a32; --ink:#e6edf3;
+    --dim:#8b98a5; --accent:#ff8a5b; --deep:#7aa2ff; --ok:#3fb950;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);
+    font:15px/1.55 ui-sans-serif,-apple-system,"Segoe UI",sans-serif;
+    padding:32px 20px;max-width:940px;margin:0 auto}
+  h1{font-size:30px;letter-spacing:-.02em;margin-bottom:4px}
+  h1 span{color:var(--accent)}
+  .sub{color:var(--dim);margin-bottom:22px;font-size:14px}
+  .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:20px}
+  button{font:inherit;font-weight:600;border:1px solid var(--line);border-radius:8px;
+    padding:9px 16px;background:var(--card);color:var(--ink);cursor:pointer}
+  button:hover:not(:disabled){border-color:var(--accent)}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  button.go{background:var(--accent);border-color:var(--accent);color:#1a0f08}
+  .pill{margin-left:auto;font-size:12px;font-weight:600;padding:5px 12px;border-radius:999px;
+    border:1px solid var(--line);color:var(--dim)}
+  .pill.live{color:var(--ok);border-color:var(--ok)}
+  .pill.err{color:#f85149;border-color:#f85149}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:720px){.grid{grid-template-columns:1fr}}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:14px;height:380px;overflow-y:auto}
+  .panel h2{font-size:11px;text-transform:uppercase;letter-spacing:.09em;
+    color:var(--dim);margin-bottom:10px;position:sticky;top:-14px;background:var(--card);
+    padding:4px 0}
+  .turn{margin-bottom:12px;padding-left:11px;border-left:2px solid var(--line)}
+  .turn .who{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim)}
+  .turn.you{border-left-color:var(--dim)}
+  .turn.pepper{border-left-color:var(--accent)}
+  .turn.pepper .who{color:var(--accent)}
+  .turn.deep{border-left-color:var(--deep);background:#7aa2ff10;padding:8px 11px;border-radius:0 6px 6px 0}
+  .turn.deep .who{color:var(--deep)}
+  .ev{font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--dim);
+    padding:2px 0;border-bottom:1px solid #1b2027;word-break:break-word}
+  .ev b{color:var(--ink);font-weight:600}
+  .ev.hot b{color:var(--deep)}
+  .note{margin-top:20px;font-size:13px;color:var(--dim);border-top:1px solid var(--line);padding-top:14px}
+  code{font:12px ui-monospace,Menlo,monospace;background:#1b2027;padding:2px 6px;border-radius:4px;color:var(--ink)}
+</style>
+</head>
+<body>
+
+<h1>Realtime <span>Pepper</span></h1>
+<p class="sub">OpenAI speech-to-speech over WebRTC, with a visible seam: the fast model
+talks, and hands the hard questions to Claude.</p>
+
+<div class="bar">
+  <button id="go" class="go">Connect</button>
+  <button id="mute" disabled>Mute mic</button>
+  <button id="stop" disabled>Hang up</button>
+  <span id="pill" class="pill">idle</span>
+</div>
+
+<div class="grid">
+  <div class="panel"><h2>Conversation</h2><div id="convo"></div></div>
+  <div class="panel"><h2>Events</h2><div id="events"></div></div>
+</div>
+
+<p class="note">Try: <em>"What's the capital of France?"</em> &mdash; Pepper answers alone.
+Then: <em>"Write me a Python function that merges two sorted lists, and explain the edge cases."</em>
+&mdash; watch it speak a filler, call <code>ask_deep_model</code>, and read Claude's answer back.</p>
+
+<audio id="sink" autoplay></audio>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let pc, dc, mic, muted = false;
+
+function pill(t, cls = '') { $('pill').textContent = t; $('pill').className = 'pill ' + cls; }
+
+function ev(name, detail = '', hot = false) {
+  const d = document.createElement('div');
+  d.className = 'ev' + (hot ? ' hot' : '');
+  d.innerHTML = '<b>' + name + '</b>' + (detail ? ' ' + detail : '');
+  $('events').appendChild(d);
+  $('events').parentElement.scrollTop = 1e9;
+}
+
+// Streaming turns, keyed so deltas append to one bubble.
+const turns = {};
+function say(key, who, cls, text, append) {
+  let t = turns[key];
+  if (!t) {
+    t = document.createElement('div');
+    t.className = 'turn ' + cls;
+    t.innerHTML = '<div class="who">' + who + '</div><div class="body"></div>';
+    $('convo').appendChild(t);
+    turns[key] = t;
+  }
+  const b = t.querySelector('.body');
+  b.textContent = append ? b.textContent + text : text;
+  $('convo').parentElement.scrollTop = 1e9;
+  return t;
+}
+
+async function connect() {
+  $('go').disabled = true;
+  pill('minting token…');
+
+  const s = await fetch('/api/session').then((r) => r.json());
+  if (s.error) { pill('error', 'err'); ev('session.error', s.error); $('go').disabled = false; return; }
+  ev('session.minted', s.model + ' via ' + s.shape);
+
+  pill('mic…');
+  mic = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true },
+  });
+
+  pc = new RTCPeerConnection();
+  pc.ontrack = (e) => { $('sink').srcObject = e.streams[0]; ev('track.remote', 'audio in'); };
+  pc.addTrack(mic.getAudioTracks()[0], mic);
+  pc.onconnectionstatechange = () => ev('pc.' + pc.connectionState);
+
+  dc = pc.createDataChannel('oai-events');
+  dc.onopen = () => {
+    pill('live', 'live');
+    $('mute').disabled = $('stop').disabled = false;
+    ev('datachannel.open');
+    // Best-effort: ask for a transcript of what the user says.
+    send({ type: 'session.update',
+           session: { audio: { input: { transcription: { model: 'whisper-1' } } } } });
+  };
+  dc.onmessage = (e) => handle(JSON.parse(e.data));
+
+  pill('negotiating…');
+  await pc.setLocalDescription(await pc.createOffer());
+
+  const sdp = await postSdp(pc.localDescription.sdp, s.secret, s.model);
+  await pc.setRemoteDescription({ type: 'answer', sdp });
+}
+
+// The SDP endpoint got renamed; try the newer path, then the older one.
+async function postSdp(sdp, secret, model) {
+  const hdr = { Authorization: 'Bearer ' + secret, 'Content-Type': 'application/sdp' };
+  for (const url of ['https://api.openai.com/v1/realtime/calls?model=' + model,
+                     'https://api.openai.com/v1/realtime?model=' + model]) {
+    const r = await fetch(url, { method: 'POST', body: sdp, headers: hdr });
+    if (r.ok) { ev('sdp.ok', new URL(url).pathname); return await r.text(); }
+    ev('sdp.retry', new URL(url).pathname + ' -> ' + r.status);
+  }
+  throw new Error('SDP exchange failed on both endpoints');
+}
+
+function send(o) { if (dc && dc.readyState === 'open') dc.send(JSON.stringify(o)); }
+
+function handle(m) {
+  switch (m.type) {
+    // Pepper's own speech, streamed as text.
+    case 'response.audio_transcript.delta':
+    case 'response.output_audio_transcript.delta':
+      say('a' + m.response_id, 'Pepper', 'pepper', m.delta, true);
+      break;
+
+    // What the user said.
+    case 'conversation.item.input_audio_transcription.completed':
+      say('u' + m.item_id, 'You', 'you', m.transcript || '', false);
+      ev('you.said', (m.transcript || '').slice(0, 60));
+      break;
+
+    case 'input_audio_buffer.speech_started':
+      ev('speech.started'); break;
+    case 'response.done':
+      ev('response.done'); break;
+
+    // The seam.
+    case 'response.function_call_arguments.done':
+      if (m.name === 'ask_deep_model') handoff(m);
+      break;
+
+    case 'error':
+      ev('error', JSON.stringify(m.error || m).slice(0, 160));
+      break;
+  }
+}
+
+async function handoff(m) {
+  let q = '';
+  try { q = JSON.parse(m.arguments).question; } catch { q = m.arguments; }
+
+  ev('HANDOFF →', 'ask_deep_model', true);
+  const bubble = say('d' + m.call_id, 'Claude (deep model)', 'deep', '…thinking', false);
+  const t0 = performance.now();
+
+  let answer;
+  try {
+    const r = await fetch('/api/deep', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: q }),
+    }).then((r) => r.json());
+    answer = r.error ? 'The deep model failed: ' + r.error : r.answer;
+    ev('HANDOFF ←', (r.model || 'error') + ' in ' + Math.round(performance.now() - t0) + 'ms', true);
+  } catch (e) {
+    answer = 'The deep model could not be reached.';
+    ev('HANDOFF ←', 'failed', true);
+  }
+
+  bubble.querySelector('.body').textContent = answer;
+
+  // Feed the result back in and let Pepper speak it.
+  send({ type: 'conversation.item.create',
+         item: { type: 'function_call_output', call_id: m.call_id, output: answer } });
+  send({ type: 'response.create' });
+}
+
+$('go').onclick = () => connect().catch((e) => {
+  pill('error', 'err'); ev('fatal', e.message); $('go').disabled = false;
+});
+
+$('mute').onclick = () => {
+  muted = !muted;
+  mic.getAudioTracks().forEach((t) => (t.enabled = !muted));
+  $('mute').textContent = muted ? 'Unmute mic' : 'Mute mic';
+  ev(muted ? 'mic.muted' : 'mic.live');
+};
+
+$('stop').onclick = () => {
+  if (dc) dc.close();
+  if (pc) pc.close();
+  if (mic) mic.getTracks().forEach((t) => t.stop());
+  pill('idle');
+  $('go').disabled = false;
+  $('mute').disabled = $('stop').disabled = true;
+  ev('hung.up');
+};
+</script>
+</body>
+</html>

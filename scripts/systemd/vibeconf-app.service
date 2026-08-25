@@ -1,0 +1,33 @@
+[Unit]
+# The app itself, on the virtual display. The box already had xvfb, x11vnc and
+# novnc as services from the #324 bring-up — but nothing started the APP, so a
+# rebooted box came up with a working VNC view of an empty desktop. That reads
+# as "the screen is broken" rather than "nothing is running", which is exactly
+# the confusion worth removing from a machine people connect to expecting a bot.
+Description=Vibeconferencing app on display :99
+After=network-online.target xvfb.service
+Wants=network-online.target
+# Requires, not Wants: with no X display the app cannot start at all, so there
+# is no useful degraded mode to fall back to.
+Requires=xvfb.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+Environment=DISPLAY=:99
+# Electron's own sandbox needs a setuid helper that a .deb install does not set
+# up here; the app is the only thing on this box and the box is disposable.
+ExecStart=/opt/Vibeconferencing/vibeconferencing-agent --no-sandbox
+
+# An always-on bot is worth restarting. RestartSec gives Xvfb a moment if they
+# race on boot, and StartLimit* stops a genuinely broken build from spinning in
+# a crash loop all night — after 5 failures in 5 minutes it stays down, which is
+# a state a human can actually notice.
+Restart=always
+RestartSec=10
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+[Install]
+WantedBy=multi-user.target

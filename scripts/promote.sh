@@ -49,8 +49,40 @@ command -v gh >/dev/null || { echo "✗ gh (GitHub CLI) not found"; exit 3; }
 echo "▶ promote candidate $TAG (version $VER) → RELEASE channel"
 
 # --- Sanity: the release exists and is currently a prerelease (a candidate). ---
-_ispre=$(gh release view "$TAG" --repo "$REPO" --json isPrerelease -q '.isPrerelease' 2>/dev/null)
-if [[ -z "$_ispre" ]]; then echo "✗ no release $TAG on $REPO"; exit 4; fi
+# Keep gh's stderr rather than discarding it. This check used to be
+# `2>/dev/null` with "no release $TAG" as the only explanation for an empty
+# result, which reported a MISSING RELEASE for every possible failure: an expired
+# gh auth, a gh too old for `--json` on `gh release view`, no network, a rate
+# limit. Hit for real on the Mac mini (2026-08-25) against a tag that plainly
+# existed, and the message sent the reader looking for the wrong thing entirely.
+_err=$(mktemp)
+_ispre=$(gh release view "$TAG" --repo "$REPO" --json isPrerelease -q '.isPrerelease' 2>"$_err")
+_ghrc=$?
+if [[ -z "$_ispre" ]]; then
+  if [[ "$(cat "$_err")" == *"release not found"* ]]; then
+    # gh reached GitHub and GitHub says there is no such release. The one case
+    # the old message was right about.
+    echo "✗ no release $TAG on $REPO — GitHub answered, and there is no such release."
+    echo "  Most recent releases: $(gh release list --repo "$REPO" --limit 5 2>/dev/null | awk '{print $(NF-1)}' | tr '\n' ' ')"
+    rm -f "$_err"; exit 4
+  fi
+  if (( _ghrc != 0 )) && [[ -s "$_err" ]]; then
+    # gh failed for some OTHER reason and said why. Pass that through rather
+    # than translating every failure into "the release does not exist".
+    echo "✗ could not ask GitHub about $TAG on $REPO:"
+    sed 's/^/    /' "$_err"
+    echo "  (that is gh failing, NOT proof the release is missing — check:"
+    echo "     gh auth status          # expired or wrong account?"
+    echo "     gh --version            # too old for --json on 'gh release view'?"
+    echo "     gh release view $TAG --repo $REPO )"
+    rm -f "$_err"; exit 5
+  fi
+  # Succeeded, said nothing, explained nothing. Not a case we know how to read.
+  echo "✗ gh returned no answer for $TAG on $REPO and no error (exit $_ghrc)."
+  echo "  Try: gh release view $TAG --repo $REPO"
+  rm -f "$_err"; exit 5
+fi
+rm -f "$_err"
 if [[ "$_ispre" != "true" ]]; then echo "✓ $TAG is already a full release — nothing to promote."; exit 0; fi
 
 # --- The gate: latest nightly gating result must be GREEN and for THIS version. ---

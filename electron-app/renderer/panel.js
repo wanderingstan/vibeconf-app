@@ -1612,6 +1612,13 @@ api.on('new-bot', async () => {
 // it does. Its label is "Call <bot> now" or "Add <bot> to call" depending on
 // what was detected, and only the button knows which — a menu item with its own
 // opinion is the thing that could join the wrong call.
+// Menu-bar "Open Terminal with Bot" → the same call openChatSession() makes
+// on an Option-held click of the join button, so the menu and the button can
+// never launch a different command from each other.
+api.on('menu-chat-with-bot', () => {
+  openChatSession();
+});
+
 api.on('menu-call-now', () => {
   // The button lives on the main screen, so a menu click made from Settings has
   // to land there first.

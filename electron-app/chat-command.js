@@ -28,24 +28,29 @@ function shellQuote(s) {
 
 // `cd '<workdir>' && claude --resume <ref>`
 //
-// The ref is the session NAME by default, because that is the form a person can
-// read, retype and remember — `claude --resume Jimmy`. The app itself resolves
-// the name to an id before launching (planAgentSession), since `--resume <name>`
-// hard-errors when a directory holds two sessions by the same name. That failure
-// mode is worth avoiding for an unattended bot; for a human at a prompt it is a
-// legible error they can act on, and the readable name is worth more.
+// The ref PRINTS as the session name — `claude --resume Jimmy` — because that is
+// the form a person can read, retype and remember. But when the caller has a
+// cached id for that name (the same one planAgentSession resolves before every
+// bot launch, passed in as `cachedSessionId`), the command resumes by THAT id
+// instead. `--resume <name>` hard-errors, or falls back to the interactive
+// picker, the moment the working directory holds more than one session whose
+// title matches — which a long-lived bot folder accumulates over time (renames,
+// restarts, old bots). Resolving to an id sidesteps that without giving up the
+// readable name: `--name` is what makes the CLI display it, not the arg to
+// `--resume`.
 //
-// Passing an explicit id (the pinned-session escape hatch) uses the id instead —
-// there is no name to prefer in that case.
-function buildChatCommand({ workdir, sessionField, botName }) {
+// Passing an explicit id (the pinned-session escape hatch) always uses the id —
+// there is no cache lookup or name to prefer in that case.
+function buildChatCommand({ workdir, sessionField, botName, cachedSessionId }) {
   const ref = resolveSessionRef(sessionField, botName);
-  const arg = ref.kind === 'id' ? resolveSessionId(ref.id) : resolveSessionName(ref.name);
+  const cached = ref.kind === 'name' ? resolveSessionId(cachedSessionId) : '';
+  const arg = ref.kind === 'id' ? resolveSessionId(ref.id) : (cached || resolveSessionName(ref.name));
   // No session to resume — starting a fresh one in the right directory is still
   // most of the value, and is what the bot's very first launch does anyway.
   if (!arg) return `cd ${shellQuote(workdir)} && claude`;
-  // `arg` is already restricted to [A-Za-z0-9 ._-] by agent-session.js, so a
-  // name with a space stays one argument under these quotes and nothing else
-  // can survive to be interpreted.
+  // `arg` is already restricted to [A-Za-z0-9 ._-] (name) or [A-Za-z0-9._-] (id)
+  // by agent-session.js, so a name with a space stays one argument under these
+  // quotes and nothing else can survive to be interpreted.
   return `cd ${shellQuote(workdir)} && claude --resume ${shellQuote(arg)}`;
 }
 

@@ -45,6 +45,41 @@ test('the field wins over the bot name when it holds a name', () => {
   );
 });
 
+test('a cached id resumes by id, not name — the whole point of #530', () => {
+  // The bot's own launch path (planAgentSession) never resumes by name once it
+  // has an id cached, because `--resume <name>` is ambiguous the moment the
+  // working directory holds a second session with that title. The copied
+  // command must get the same guarantee.
+  const id = '1cf12b6c-c297-4bb0-baa9-963c1d040172';
+  assert.equal(
+    buildChatCommand({ workdir: DIR, sessionField: '', botName: 'Jimmy', cachedSessionId: id }),
+    `cd '${DIR}' && claude --resume '${id}'`,
+  );
+});
+
+test('no cached id falls back to the name, same as before', () => {
+  assert.equal(
+    buildChatCommand({ workdir: DIR, sessionField: '', botName: 'Jimmy', cachedSessionId: '' }),
+    `cd '${DIR}' && claude --resume 'Jimmy'`,
+  );
+});
+
+test('a pinned UUID in the field wins over a cached id — the pin is explicit', () => {
+  const pinned = '1cf12b6c-c297-4bb0-baa9-963c1d040172';
+  const cached = '00000000-0000-4000-8000-000000000000';
+  assert.equal(
+    buildChatCommand({ workdir: DIR, sessionField: pinned, botName: 'Jimmy', cachedSessionId: cached }),
+    `cd '${DIR}' && claude --resume '${pinned}'`,
+  );
+});
+
+test('a cachedSessionId that sanitizes away entirely falls back to the name', () => {
+  const cmd = buildChatCommand({ workdir: DIR, sessionField: '', botName: 'Jimmy', cachedSessionId: '🤖🤖' });
+  // resolveSessionId strips everything outside [A-Za-z0-9._-]; empty means "no
+  // id to prefer", same as when no cache lookup was ever done.
+  assert.equal(cmd, `cd '${DIR}' && claude --resume 'Jimmy'`);
+});
+
 test('a two-word name stays ONE argument', () => {
   const cmd = buildChatCommand({ workdir: DIR, sessionField: '', botName: 'Doctor Who' });
   assert.ok(cmd.endsWith(`--resume 'Doctor Who'`), cmd);

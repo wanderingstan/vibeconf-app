@@ -6586,6 +6586,17 @@ function planAgentSession(claudeDir, botName) {
   return { resumeSessionId: '', sessionName: name };
 }
 
+// The session id cached for (claudeDir, name), the same lookup planAgentSession
+// makes before every bot launch — reused here so a copied `claude --resume`
+// command gets the same guarantee: an id, not a name that stops being unique
+// the moment this working directory has collected a second session with that
+// title. '' means nothing usable is cached, so the caller falls back to name.
+function cachedResumeSessionId(claudeDir, name) {
+  const { sessionCacheKey, resolveSessionId, sessionExists } = require('./agent-session.js');
+  const id = resolveSessionId((store.get('agentSessionCache') || {})[sessionCacheKey(claudeDir, name)]);
+  return id && sessionExists(id, claudeDir) ? id : '';
+}
+
 // Set at launch, consumed by the next hook ping. One agent at a time is already
 // enforced by the launchers, so there is no second launch racing for this.
 let pendingSessionCacheKey = null;
@@ -10392,6 +10403,21 @@ function createMainWindow() {
           },
         },
         {
+          // The pair to Copy Chat Command below: PRESSES the panel's Call
+          // button as if Option were held, rather than reimplementing the
+          // terminal launch here — same reasoning as Call Now above it. Useful
+          // from the app-wide accelerator, or when the panel doesn't have
+          // keyboard focus so Option-click isn't an option.
+          label: 'Open Terminal with Bot',
+          click: () => {
+            if (panelView && !panelView.webContents.isDestroyed()) {
+              // ADDRESSED, not broadcast (#229): a COMMAND. Broadcasting would
+              // open three terminals.
+              panelView.webContents.send('menu-chat-with-bot');
+            }
+          },
+        },
+        {
           // The bot keeps ONE Claude session named after itself, so the session
           // it uses on calls is the same one a person can open at a prompt. The
           // panel's Call button held under Option does that; this copies the
@@ -10411,10 +10437,15 @@ function createMainWindow() {
           click: () => {
             try {
               const claudeDir = store.get('claudeWorkDir') || ensureAgentWorkdir();
+              const sessionField = store.get('agentSession');
+              const botName = resolvedBotName();
+              const { resolveSessionRef } = require('./agent-session.js');
+              const ref = resolveSessionRef(sessionField, botName);
               const command = require('./chat-command.js').buildChatCommand({
                 workdir: claudeDir,
-                sessionField: store.get('agentSession'),
-                botName: resolvedBotName(),
+                sessionField,
+                botName,
+                cachedSessionId: ref.kind === 'name' ? cachedResumeSessionId(claudeDir, ref.name) : '',
               });
               require('electron').clipboard.writeText(command);
               console.log('[chat-session] copied chat command from the Edit menu');
@@ -11518,10 +11549,15 @@ function setupIPC() {
   // hands you cannot drift.
   function chatCommandForBot() {
     const claudeDir = store.get('claudeWorkDir') || ensureAgentWorkdir();
+    const sessionField = store.get('agentSession');
+    const botName = resolvedBotName();
+    const { resolveSessionRef } = require('./agent-session.js');
+    const ref = resolveSessionRef(sessionField, botName);
     return require('./chat-command.js').buildChatCommand({
       workdir: claudeDir,
-      sessionField: store.get('agentSession'),
-      botName: resolvedBotName(),
+      sessionField,
+      botName,
+      cachedSessionId: ref.kind === 'name' ? cachedResumeSessionId(claudeDir, ref.name) : '',
     });
   }
 

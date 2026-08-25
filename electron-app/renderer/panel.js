@@ -2135,13 +2135,30 @@ api.on('slack-huddle-detected', (data) => {
 // Error display
 // ---------------------------------------------------------------------------
 
-function showError(message) {
+// #533: what the bar is currently showing, when the sender named the condition
+// it reports. Held so a later "that condition has passed" can retract it — and
+// only it. An unrelated failure that arrived in the meantime is still true, so
+// a clear for some OTHER key must leave the bar alone.
+let _errorKey = null;
+function showError(message, key) {
   document.getElementById('errorText').textContent = message;
   errorBar.style.display = 'flex';
+  _errorKey = key || null;
+}
+
+// Retract a keyed error, iff it is still the one on screen. Silent by design:
+// no alert and no sound for a condition that has recovered.
+function clearError(key) {
+  if (!key || _errorKey !== key) return;
+  errorBar.style.display = 'none';
+  _errorKey = null;
 }
 
 document.getElementById('errorClose').addEventListener('click', () => {
   errorBar.style.display = 'none';
+  // Dismissed by hand: forget the key too, so a later retraction of the same
+  // condition can't hide whatever has taken the bar over since.
+  _errorKey = null;
 });
 
 // ---------------------------------------------------------------------------
@@ -3391,7 +3408,7 @@ const seenEntryIds = new Set();
 
 api.on('extension-message', (message) => {
   if (message.action === 'error') {
-    showError(message.message);
+    showError(message.message, message.key);
     if (/microphone|mic/i.test(message.message)) {
       micWarn.textContent = message.message;
       micWarn.style.display = 'block';
@@ -3400,6 +3417,13 @@ api.on('extension-message', (message) => {
 
   if (message.action === 'mic-status' && message.status === 'healthy') {
     micWarn.style.display = 'none';
+  }
+
+  // #533: the condition this error reported has passed. Same shape as the mic
+  // recovery just above — the signal that things are healthy again takes the
+  // stale warning down, rather than announcing itself.
+  if (message.action === 'clear-error') {
+    clearError(message.key);
   }
 
   if (message.action === 'raw-caption') {

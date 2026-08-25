@@ -130,11 +130,15 @@ test('losing the agent raises a real app error, not just a face', () => {
   // in the foreground (deduped).
   const fn = main.slice(main.indexOf('function pollAgentLiveness'));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
-  assert.match(body, /broadcastError\(message\)/);
+  // Raised under a key since #533, so recovery can retract it.
+  assert.match(body, /broadcastError\(message, AGENT_ABSENT_ERROR_KEY\)/);
   // Only on the way out. An alert for "everything is fine again" trains people
-  // to dismiss alerts.
-  const raise = body.indexOf('broadcastError(');
-  assert.match(body.slice(0, raise), /if \(absent\) \{/, 'recovery must stay quiet');
+  // to dismiss alerts — recovery RETRACTS the notice (#533), it never raises
+  // one, so the not-absent path returns before reaching this.
+  const raise = body.indexOf('broadcastError(message');
+  const recovery = body.slice(0, raise);
+  assert.match(recovery, /if \(!absent\) \{/, 'the recovery path bails out early');
+  assert.ok(!/broadcastError\(message/.test(recovery), 'recovery must stay quiet');
 });
 
 test('the avatar shows 🫥, ranked above deaf', () => {
@@ -171,7 +175,9 @@ test('the warning claims only as much as we actually know', () => {
   const dropped = body.slice(body.indexOf("reason === 'dropped'"), body.indexOf("reason === 'never'"));
   assert.match(dropped, /disconnected/);
   // The ambiguous case must name the innocent explanations too.
-  const quiet = body.slice(body.indexOf('gone quiet'));
+  // Anchored on the MESSAGE, not the first mention of the phrase: the comments
+  // above it discuss the quiet case too (#533).
+  const quiet = body.slice(body.indexOf('"This bot has gone quiet'));
   assert.match(quiet.slice(0, 300), /permission prompt/);
   assert.ok(!/Restart the session/.test(quiet.slice(0, 300)),
     'must not tell the user to restart an agent that may be alive and waiting on them');

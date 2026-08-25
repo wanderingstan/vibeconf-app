@@ -2937,8 +2937,12 @@ speakTextBtn.addEventListener('click', () => {
 });
 
 // Named so it is obvious in the transcript and the session log that this turn
-// was injected rather than heard.
-const SIMULATED_SPEAKER = 'Troubleshooting User';
+// was injected rather than heard. "Troubleshooting User" described the feature
+// we thought this was; it is really the private channel to the bot, and the
+// only one in headless mode (#293). The bot cannot tell which Meet participant
+// is sitting at this computer, so the label names the seat rather than guessing
+// at a person.
+const SIMULATED_SPEAKER = 'Computer User';
 
 const simulateSpeechBtn = document.getElementById('simulateSpeechBtn');
 const simulateText = document.getElementById('simulateText');

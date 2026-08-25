@@ -50,6 +50,8 @@ const REAL = {
   replayed:    '[barge-in] replaying stash — 1 entries, 3702ms old',
   stashMoved:  '[barge-in] discarding stash — conversation moved on (31 new words > 15) — agent will re-derive',
   stashStale:  '[barge-in] discarding stash — too stale (48210ms old, max 45000ms)',
+  // Captured verbatim from a tests/stash-supersede.test.mjs run, not hand-written.
+  stashSuperseded: '[barge-in] discarding stash — superseded by a newer reply (1 since, 1ms old)',
   floorOn:     '[floor-audio] speech ON  (analyser)',
 };
 

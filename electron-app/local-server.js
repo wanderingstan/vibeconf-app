@@ -1365,7 +1365,16 @@ class LocalServer {
     // or stashed, so a stash created below carries its own sequence number and
     // any stash from an earlier payload is now provably superseded. Bumped once
     // per payload rather than per entry — a multi-entry reply is one thought.
-    if (data.role === 'bot') this._agentUtteranceSeq++;
+    //
+    // NOT for a barge-in-exempt utterance. The exemption (#338) means precisely
+    // "this is brief and a little overlap beats the alternative" — the "I'm on
+    // it" that stops the room re-asking while the bot does slow work. It is a
+    // holding message, not a replacement thought, and counting it would let
+    // "One sec." delete the substantive answer queued behind it. That is a worse
+    // failure than the stale replay this guard exists to prevent: the room would
+    // get an acknowledgement and then silence. Same reasoning as the ack path,
+    // which never reaches here at all because acks are generated locally.
+    if (data.role === 'bot' && !_bargeExempt) this._agentUtteranceSeq++;
 
     const entries = [];
     let stashed = false;

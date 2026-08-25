@@ -145,3 +145,28 @@ test('the discard is reported to the agent, not silent', async () => {
   assert.deepEqual(s._lastDiscardedStash.texts, ['The superseded answer.'],
     'and it must name the thought that was dropped, not the one that replaced it');
 });
+
+test('a brief holding message does not supersede the answer behind it', async () => {
+  // Found while writing the etiquette rule for this. The barge-in exemption
+  // (#338) means "brief, and a little overlap beats the alternative" — the
+  // "I'm on it" that stops the room re-asking during slow tool work. If that
+  // counted as the agent moving on, the bot would say "One sec." and then
+  // silently bin the real answer: an acknowledgement followed by nothing, which
+  // is worse than the stale replay this guard exists to prevent.
+  const s = makeServer({ bargeInAckExempt: true, bargeInAckMaxWords: 8 });
+
+  setFloor(s, { speaking: ['Stan'] });
+  await say(s, 'The substantive answer to the question that was asked.');
+  assert.ok(s.bargeInStash, 'precondition: the real answer is held');
+  const seq = s.bargeInStash.seqAtStash;
+
+  // Short enough to be exempt, so it plays over the busy floor rather than
+  // stashing and overwriting — which is the whole point of the exemption.
+  await say(s, 'On it.');
+  assert.equal(s._agentUtteranceSeq, seq, 'a holding message is not a new thought');
+  assert.deepEqual(s.spoken, ['On it.'], 'and it did go out over the floor');
+
+  setFloor(s, { speaking: [] });
+  assert.deepEqual(s._maybeReplayBargeInStash(), ['The substantive answer to the question that was asked.'],
+    'the answer must still be delivered');
+});

@@ -171,6 +171,7 @@ function flush() {
 
 // ---- connection ----------------------------------------------------------
 async function connect() {
+  teardown();          // a failed attempt must not leave a session holding a slot
   $('go').disabled = true;
   $('mRouter').disabled = $('mBack').disabled = true;
   pill('minting token...');
@@ -206,13 +207,29 @@ async function connect() {
 
 async function postSdp(sdp, secret, model) {
   const hdr = { Authorization: 'Bearer ' + secret, 'Content-Type': 'application/sdp' };
-  for (const url of ['https://api.openai.com/v1/realtime/calls?model=' + model,
-                     'https://api.openai.com/v1/realtime?model=' + model]) {
+  // GA endpoint first. The beta path is kept only so an old-account failure is
+  // legible; OpenAI now rejects it outright.
+  const urls = ['https://api.openai.com/v1/realtime/calls?model=' + model,
+                'https://api.openai.com/v1/realtime?model=' + model];
+  let first = null;
+
+  for (const url of urls) {
     const r = await fetch(url, { method: 'POST', body: sdp, headers: hdr });
     if (r.ok) { ev('sdp.ok', new URL(url).pathname); return await r.text(); }
-    ev('sdp.retry', new URL(url).pathname + ' -> ' + r.status);
+
+    // Surface WHY, not just the status. A 429 here is usually billing, not load.
+    const body = await r.text().catch(() => '');
+    let why = body.slice(0, 300);
+    try { why = JSON.parse(body).error?.message || why; } catch {}
+    if (!first) first = { status: r.status, why };
+    ev('sdp.fail', new URL(url).pathname + ' -> ' + r.status + ': ' + why);
   }
-  throw new Error('SDP exchange failed on both endpoints');
+
+  const hint = first && first.status === 429
+    ? ' (429 on the GA endpoint is almost always no credit on the account, or the '
+      + 'realtime concurrent-session cap. Check billing at platform.openai.com.)'
+    : '';
+  throw new Error('SDP exchange failed: ' + (first ? first.status + ' ' + first.why : 'unknown') + hint);
 }
 
 // ---- realtime events -----------------------------------------------------
@@ -377,7 +394,16 @@ function setMode(m) {
 $('mRouter').onclick = () => setMode('router');
 $('mBack').onclick = () => setMode('backchannel');
 
+function teardown() {
+  if (inflight) { inflight.abort(); inflight = null; }
+  try { if (dc) dc.close(); } catch {}
+  try { if (pc) pc.close(); } catch {}
+  try { if (mic) mic.getTracks().forEach((t) => t.stop()); } catch {}
+  dc = pc = mic = null;
+}
+
 function reset() {
+  teardown();
   $('go').disabled = false;
   $('mRouter').disabled = $('mBack').disabled = false;
   $('mute').disabled = $('stop').disabled = true;
@@ -395,13 +421,10 @@ $('mute').onclick = () => {
   ev(muted ? 'mic.muted' : 'mic.live');
 };
 
-$('stop').onclick = () => {
-  if (inflight) inflight.abort();
-  if (dc) dc.close();
-  if (pc) pc.close();
-  if (mic) mic.getTracks().forEach((t) => t.stop());
-  pill('idle'); reset(); ev('hung.up');
-};
+$('stop').onclick = () => { pill('idle'); reset(); ev('hung.up'); };
+
+// Leaving the page mid-call should release the session, not hold the slot.
+window.addEventListener('beforeunload', teardown);
 
 stat();
 </script>

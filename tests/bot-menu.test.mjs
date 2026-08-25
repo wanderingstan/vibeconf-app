@@ -22,11 +22,15 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
 
-// The Bot menu object, from its label to the close of that top-level entry.
-const botMenu = (() => {
-  const i = main.indexOf("      label: 'Bot',");
+const panel = readFileSync(join(root, 'electron-app/renderer/panel.js'), 'utf8');
+
+// One top-level menu object, from its label to the close of that entry.
+const menuSlice = (label) => {
+  const i = main.indexOf(`      label: '${label}',`);
   return main.slice(i, main.indexOf('\n    },\n', i));
-})();
+};
+const botMenu = menuSlice('Bot');
+const fileMenu = menuSlice('File');
 
 test('there is a Bot menu, and it sits before Window', () => {
   assert.ok(botMenu.length > 0, 'no Bot menu found');
@@ -47,7 +51,7 @@ test('the two misfiled items MOVED rather than being duplicated', () => {
 });
 
 test('the bot windows are reachable from the menu, not only from the panel', () => {
-  for (const item of ['Brain Pane', 'Troubleshooting…']) {
+  for (const item of ["Show Bot's Brain", 'Show Troubleshooting']) {
     assert.ok(botMenu.includes(item), `missing: ${item}`);
   }
   // Via the same refs pattern the profile launcher already uses — the menu is
@@ -56,9 +60,15 @@ test('the bot windows are reachable from the menu, not only from the panel', () 
   assert.match(main, /let openTroubleshootingWindowRef = null;/);
 });
 
-test('Open Bot Window lists profiles, rebuilt from disk each time', () => {
-  assert.ok(botMenu.includes("label: 'Open Bot Window'"));
-  assert.match(botMenu, /submenu: botProfileMenuItems\(\)/,
+test('Open Bot lists profiles under File, rebuilt from disk each time', () => {
+  // Opening a window is a File verb. It also replaced "New Window", which only
+  // ever opened whichever profile happened to be free.
+  assert.ok(fileMenu.includes("label: 'Open Bot'"), 'Open Bot belongs in File');
+  assert.ok(!botMenu.includes('Open Bot'), 'it must have MOVED, not been copied');
+  assert.ok(!main.includes("label: 'New Window'"), 'Open Bot subsumes New Window');
+  assert.ok(!main.includes("open-next-available-window"),
+    'New Window\'s handler is unreachable once the item is gone');
+  assert.match(fileMenu, /submenu: botProfileMenuItems\(\)/,
     'called at build time so a profile created mid-session appears without a relaunch');
 
   const fn = main.slice(main.indexOf('function botProfileMenuItems()'));
@@ -73,21 +83,70 @@ test('Open Bot Window lists profiles, rebuilt from disk each time', () => {
   assert.match(body, /catch \{/, 'an unreadable profiles dir must not take the whole menu down');
 });
 
-test('Hang Up is guarded in the handler, not by a stale enabled flag', () => {
-  // refreshAppMenu() runs at startup and on integration install/uninstall only.
-  // An `enabled:` computed from callStatus would be frozen at its startup value
-  // — permanently greyed out, which is worse than an item that does nothing.
+test('Hang Up is guarded in the handler as well as by enabled:', () => {
+  // `enabled:` is only honest because the menu is now rebuilt on every
+  // call-status change; between the status flipping and the rebuild landing the
+  // item can be stale, and requestCleanLeave does real teardown.
   const item = botMenu.slice(botMenu.indexOf("label: 'Hang Up'"));
-  assert.ok(!item.slice(0, 400).includes('enabled:'),
-    'a menu that is never rebuilt cannot carry a live enabled flag');
   assert.match(item, /if \(!localServer \|\| localServer\.callStatus === 'idle'\) return;/,
     'requestCleanLeave does real teardown; it must not run when there is no call');
 });
 
-test('there is no Call item to pair with Hang Up', () => {
-  // Deliberate. Hanging up means one thing from a menu; starting a call does
-  // not — the panel's button is "Call <bot> now" or "Add <bot> to call"
-  // depending on what was detected, and it needs the URL field beside it.
-  assert.ok(!/label: 'Call(…| |')/.test(botMenu),
-    'a menu item that sometimes meant "join the thing I found" would be worse than none');
+test('Call Now pairs with Hang Up, and exactly one of them is live', () => {
+  const i = botMenu.indexOf("label: 'Call Now'");
+  const j = botMenu.indexOf("label: 'Hang Up'");
+  assert.ok(i > -1 && j > i, 'Call Now sits directly above Hang Up');
+  assert.ok(!botMenu.slice(i, j).includes("type: 'separator'"),
+    'they are one pair, not two groups');
+  assert.match(botMenu.slice(i, j),
+    /enabled: !localServer \|\| localServer\.callStatus === 'idle'/);
+  assert.match(botMenu.slice(j),
+    /enabled: !!localServer && localServer\.callStatus !== 'idle'/);
+});
+
+test('Call Now presses the panel button rather than reimplementing it', () => {
+  // The button is "Call <bot> now" or "Add <bot> to call" depending on what was
+  // detected, and the second form needs the URL beside it. Only the button
+  // knows which it is; a menu item with its own opinion could join the wrong
+  // thing. So main sends, and the renderer clicks.
+  assert.match(botMenu, /panelView\.webContents\.send\('menu-call-now'\)/);
+  assert.match(panel, /api\.on\('menu-call-now'/);
+  const handler = panel.slice(panel.indexOf("api.on('menu-call-now'"));
+  assert.match(handler.slice(0, 600), /joinBtn\.click\(\)/,
+    'press the real control, do not duplicate its logic');
+  assert.match(handler.slice(0, 600), /showScreen\(mainScreen\)/,
+    'the button only exists on the main screen');
+});
+
+test('the menu is rebuilt when the call status changes', () => {
+  // Without this the `enabled:` flags above would be frozen at their startup
+  // value — permanently greyed out, which is worse than an item that does
+  // nothing.
+  assert.match(main, /let refreshAppMenuRef = null;/);
+  assert.match(main, /refreshAppMenuRef = refreshAppMenu;/);
+  const i = main.indexOf("broadcastToRenderers('call-status-changed'");
+  assert.match(main.slice(i, i + 700), /refreshAppMenuRef && refreshAppMenuRef\(\)/,
+    'rebuild on the same status change the panel is told about');
+});
+
+test('the three ways to look inside the bot read as one group', () => {
+  // One verb, one subject, no separators between them. "Brain Pane" named a
+  // window rather than an act, and "Troubleshooting…" promised a modal that
+  // never existed.
+  const labels = ["Show Bot's View", "Show Bot's Brain", 'Show Troubleshooting'];
+  const at = labels.map((l) => botMenu.indexOf(l));
+  assert.ok(at.every((n) => n > -1), `missing one of: ${labels}`);
+  assert.deepEqual(at.slice().sort((a, b) => a - b), at, 'they must stay in order');
+  assert.ok(!botMenu.slice(at[0], at[2]).includes("type: 'separator'"),
+    'one group means no separators inside it');
+  for (const dead of ['Brain Pane', 'Troubleshooting…']) {
+    assert.ok(!main.includes(`label: '${dead}'`), `${dead} was renamed, not kept`);
+  }
+});
+
+test("Navigate Webview moved to Bot, since it drives THIS bot's webview", () => {
+  assert.ok(botMenu.includes("label: 'Navigate Webview…'"), 'it belongs under Bot');
+  assert.ok(!fileMenu.includes('Navigate Webview'), 'it must have MOVED, not been copied');
+  assert.equal(main.split("label: 'Navigate Webview…'").length - 1, 1);
+  assert.ok(botMenu.includes("accelerator: 'CmdOrCtrl+Shift+L'"), 'it keeps its accelerator');
 });

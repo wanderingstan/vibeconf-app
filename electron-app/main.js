@@ -2916,6 +2916,9 @@ sync.updateConfig({
 // cap makes this safe, and why it is deliberately thin pending #113.
 let _agentAbsent = false;
 let _agentAbsentReason = null;
+// Names the condition, not the wording: all three absence reasons raise under
+// this key so recovery can retract whichever one is on screen (#533).
+const AGENT_ABSENT_ERROR_KEY = 'agent-absent';
 // 5s, not 15: the socket-close path sets the state instantly, so this interval
 // is now the only thing between the agent dying and the face showing it.
 const AGENT_LIVENESS_POLL_MS = 5_000;
@@ -2937,33 +2940,46 @@ function pollAgentLiveness() {
     ? '\u{1FAE5} no agent driving — avatar shows nobody home'
     : '\u{1FAE5} agent back — avatar restored');
 
-  // Raise it as a real app error on the way OUT only. broadcastError already
-  // does both halves of what this needs: the notice over the avatar in the
-  // panel, and a system notification when the app isn't in the foreground
-  // (deduped, so a long outage doesn't spam). Recovery is deliberately quiet —
-  // an alert for "everything is fine again" trains people to dismiss alerts.
+  // Raise it as a real app error on the way OUT. broadcastError already does
+  // both halves of what this needs: the notice over the avatar in the panel,
+  // and a system notification when the app isn't in the foreground (deduped, so
+  // a long outage doesn't spam).
   //
   // This is the one silence in #155 that is a genuine fault, so unlike the
   // others it earns an interruption rather than just a face.
-  if (absent) {
-    // Word it to match how sure we actually are. A dropped socket means the
-    // process is gone; a quiet stretch might just as easily be an agent sitting
-    // on a permission prompt, and telling someone to restart a session that is
-    // alive and waiting for them would be actively unhelpful.
-    const reason = _agentAbsentReason || 'quiet';
-    const message = reason === 'dropped'
-      ? "The agent driving this bot disconnected. Its terminal has exited or lost "
-        + 'its connection, so nothing is answering in the call. Restart the session to reconnect it.'
-      : reason === 'never'
-        ? "No agent ever attached to this bot. It's in the call but nothing is driving it. "
-          + 'Check the terminal: the session may have failed to start, or be waiting on a Claude login.'
-        : "This bot has gone quiet: no agent activity for a while, so it may not answer. "
-          + 'Check its terminal. It could be waiting on a permission prompt, busy on a long task, or stopped.';
-    try {
-      broadcastError(message);
-    } catch (err) {
-      console.error('[electron] Failed to surface agent-absent error:', err.message);
-    }
+  //
+  // #533: and TAKE IT DOWN on the way back. Recovery stays quiet — no alert, no
+  // sound, an alert for "everything is fine again" trains people to dismiss
+  // alerts — but quiet was previously implemented as doing nothing at all, so
+  // the banner outlived the condition. From the outside a stale "this bot has
+  // gone quiet" is indistinguishable from a live one, which makes it useless
+  // even when it IS live: you cannot tell whether you are looking at now or at
+  // something that fixed itself five minutes ago. The face already recovers
+  // here (set-agent-absent above); the notice now recovers with it.
+  if (!absent) {
+    clearBroadcastError(AGENT_ABSENT_ERROR_KEY);
+    return;
+  }
+
+  // Word it to match how sure we actually are. A dropped socket means the
+  // process is gone; a quiet stretch might just as easily be an agent sitting
+  // on a permission prompt, and telling someone to restart a session that is
+  // alive and waiting for them would be actively unhelpful.
+  const reason = _agentAbsentReason || 'quiet';
+  const message = reason === 'dropped'
+    ? "The agent driving this bot disconnected. Its terminal has exited or lost "
+      + 'its connection, so nothing is answering in the call. Restart the session to reconnect it.'
+    : reason === 'never'
+      ? "No agent ever attached to this bot. It's in the call but nothing is driving it. "
+        + 'Check the terminal: the session may have failed to start, or be waiting on a Claude login.'
+      : "This bot has gone quiet: no agent activity for a while, so it may not answer. "
+        + 'Check its terminal. It could be waiting on a permission prompt, busy on a long task, or stopped.';
+  try {
+    // One key for all three reasons: recovery retracts the notice whichever
+    // way the bot was absent, and only one of them can be showing anyway.
+    broadcastError(message, AGENT_ABSENT_ERROR_KEY);
+  } catch (err) {
+    console.error('[electron] Failed to surface agent-absent error:', err.message);
   }
 }
 setInterval(pollAgentLiveness, AGENT_LIVENESS_POLL_MS);
@@ -6132,6 +6148,9 @@ let ttsVoiceFallbackActive = false;
 // notification center. Same message within this window is suppressed.
 const ERROR_NOTIFY_DEDUPE_MS = 30_000;
 const recentErrorNotifications = new Map(); // message -> timestamp
+// message -> key, so clearBroadcastError can drop the dedupe entries belonging
+// to a condition that has recovered. Same lifetime as the map above.
+const _errorKeyForMessage = new Map();
 
 // Sign-in state changed — tell every window that shows it.
 //
@@ -6201,8 +6220,14 @@ function broadcastAuthChanged() {
   broadcastToRenderers('auth-changed');
 }
 
-function broadcastError(message) {
-  broadcastToRenderers('extension-message', { action: 'error', message });
+// `key` (optional) names the CONDITION this error reports, so it can be
+// retracted later by whatever notices the condition has passed. Without one an
+// error is permanent until the user clicks it away, which is right for a
+// one-shot failure ("could not start a call") and wrong for a running state
+// ("the agent has gone quiet") that stops being true on its own. See
+// clearBroadcastError below and #533.
+function broadcastError(message, key) {
+  broadcastToRenderers('extension-message', { action: 'error', message, key });
 
   // If the app isn't in the foreground, surface the error as a system
   // notification so the user finds out without checking the app. We treat
@@ -6223,10 +6248,11 @@ function broadcastError(message) {
   const lastShown = recentErrorNotifications.get(message);
   if (lastShown && now - lastShown < ERROR_NOTIFY_DEDUPE_MS) return;
   recentErrorNotifications.set(message, now);
+  if (key) _errorKeyForMessage.set(message, key);
   // Best-effort cleanup so the map doesn't grow unbounded.
   if (recentErrorNotifications.size > 50) {
     for (const [k, t] of recentErrorNotifications) {
-      if (now - t > ERROR_NOTIFY_DEDUPE_MS) recentErrorNotifications.delete(k);
+      if (now - t > ERROR_NOTIFY_DEDUPE_MS) { recentErrorNotifications.delete(k); _errorKeyForMessage.delete(k); }
     }
   }
 
@@ -6249,6 +6275,31 @@ function broadcastError(message) {
     console.error('[electron] Failed to show error notification:', err.message);
   }
 }
+
+// Retract an error raised with this key, iff that is still what the bar is
+// showing. Deliberately NOT a general "clear the error bar": an unrelated
+// failure that arrived in the meantime is still true, and wiping it because
+// some other condition recovered would lose a real message. The renderer owns
+// that comparison, since it is the only side that knows what is on screen.
+//
+// No notification and no sound on the way back. An alert for "everything is
+// fine again" trains people to dismiss alerts; taking down a notice that has
+// stopped being true is not an announcement.
+function clearBroadcastError(key) {
+  if (!key) return;
+  broadcastToRenderers('extension-message', { action: 'clear-error', key });
+  // Drop the dedupe entry too, so a condition that recurs after recovering
+  // notifies again instead of being swallowed as a repeat. Without this a bot
+  // that goes quiet, recovers, and goes quiet again inside the dedupe window
+  // is silently un-warned about the second time.
+  for (const m of [...recentErrorNotifications.keys()]) {
+    if (_errorKeyForMessage.get(m) === key) {
+      recentErrorNotifications.delete(m);
+      _errorKeyForMessage.delete(m);
+    }
+  }
+}
+
 
 // ---------------------------------------------------------------------------
 // Terminal management — launch Claude and track the window for cleanup

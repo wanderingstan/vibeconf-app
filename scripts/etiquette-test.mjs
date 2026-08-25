@@ -627,7 +627,20 @@ const RULES = [
         if (!cleared) return;
         subject.speak('Actually, forget that — the thing that matters is the deployment '
           + 'timeline, and I think we should talk about that instead.').catch(() => {});
-        await sleep(14_000);          // the newer reply plays, then a real opening
+        await sleep(9000);            // let the newer reply finish playing
+
+        // A SECOND gap is required, and this is the part the first draft got
+        // wrong. _maybeReplayStashOnOpening returns early while the bot itself
+        // is speaking — before it reaches any of the stash guards — and the
+        // opening timer only re-arms on the falling edge of somebody ELSE's
+        // speech. So after the newer reply there is no evaluation at all: the
+        // held stash just sits there, unexamined, until the room next goes
+        // quiet. Which is exactly the incident, where the replay surfaced 25.6s
+        // later in a gap while another bot had the floor. Give it that gap.
+        await voice.playAudio({ path: clip(4), emoji: '🗣️' });
+        await waitForFloorBusy(subject);
+        await waitForFloorClear(subject);
+        await sleep(4000);            // past the ~1.4s opening timer
       });
       return { w, cleared };
     },

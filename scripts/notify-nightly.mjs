@@ -163,6 +163,7 @@ const slack = lastLine('slack-results.jsonl');
 const whiteboardE2e = lastLine('whiteboard-e2e-results.jsonl');
 const codex = lastLine('codex-smoke-results.jsonl');
 const joinRoute = lastLine('join-route-results.jsonl');
+const displacement = lastLine('displacement-results.jsonl');
 const fuzz = lastLine('agent-fuzz/results.jsonl');
 // #329: the Linux agent-terminal lane, run on the cloud-TA EC2 box over SSM.
 // The only lane that does not run on this mac, and the only coverage anywhere of
@@ -187,6 +188,9 @@ const lines = [
   // reports is a lane nobody reads — the whole point is being TOLD when the
   // route users take is broken.
   statusLine('join/call routes', joinRoute),
+  // #518: the only lane covering two bots at once. Its failure mode is a bot
+  // going SILENT, which is exactly the kind that goes unnoticed without a line here.
+  statusLine('multi-bot displacement', displacement),
   fuzzLine(fuzz),
   linuxLine(linux),
 ];

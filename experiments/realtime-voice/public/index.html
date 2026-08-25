@@ -195,8 +195,14 @@ async function connect() {
     pill('live', 'live');
     $('mute').disabled = $('stop').disabled = false;
     ev('datachannel.open');
+    // Pin the transcription language and stiffen VAD a little. Room noise
+    // tripping VAD is what produces a spontaneous opener in a random language.
     send({ type: 'session.update',
-           session: { audio: { input: { transcription: { model: 'whisper-1' } } } } });
+           session: { audio: { input: {
+             transcription: { model: 'whisper-1', language: 'en' },
+             turn_detection: { type: 'server_vad', threshold: 0.6,
+                               prefix_padding_ms: 300, silence_duration_ms: 600 },
+           } } } });
   };
   dc.onmessage = (e) => handle(JSON.parse(e.data));
 

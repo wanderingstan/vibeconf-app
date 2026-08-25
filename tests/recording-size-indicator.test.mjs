@@ -105,3 +105,21 @@ test('an error message is never overwritten by a size push', () => {
   const handler = rendererJs.slice(i, i + 900);
   assert.match(handler, /dot\.classList\.contains\('error'\)/);
 });
+
+test('byte sizes read at about three significant figures', () => {
+  // #416: the free-disk note read "130.92 GB free on disk". Two decimals on a
+  // three-digit number is noise. Decimals now scale with magnitude, so the
+  // growing-recording case that motivated this indicator (1.06 GB) keeps them
+  // and the free-disk case loses them.
+  const src = rendererJs.slice(rendererJs.indexOf('function fmtBytes'));
+  const fmtBytes = new Function(`return ${src.slice(0, src.indexOf('\n  }\n') + 4)}`)();
+
+  assert.equal(fmtBytes(130.92e9), '131 GB');   // the reported case
+  assert.equal(fmtBytes(1.06e9), '1.06 GB');    // what you watch tick up
+  assert.equal(fmtBytes(12.34e9), '12.3 GB');
+  assert.equal(fmtBytes(4.2e6), '4 MB');
+  assert.equal(fmtBytes(0), '0 KB');
+  // Never render a unit for a value we don't have — the note hides instead.
+  assert.equal(fmtBytes(NaN), '');
+  assert.equal(fmtBytes(-1), '');
+});

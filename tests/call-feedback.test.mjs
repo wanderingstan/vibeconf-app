@@ -140,7 +140,7 @@ test('the simulated speaker is fixed, not a field', () => {
   // A stray or blank value silently changed who the bot thought had spoken,
   // which is the one thing about an injected turn that must be unambiguous when
   // you read it back.
-  assert.match(panelJs, /const SIMULATED_SPEAKER = 'Troubleshooting User'/);
+  assert.match(panelJs, /const SIMULATED_SPEAKER = 'Computer User'/);
   assert.ok(!panelJs.includes('simulateSpeaker'), 'the element reference must go too');
   assert.ok(!tsScreen.includes('simulateSpeaker'), 'and the orphaned input');
 });

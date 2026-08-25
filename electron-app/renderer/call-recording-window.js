@@ -86,11 +86,16 @@
   // Decimal units (MB = 1e6), matching what Finder/Explorer report for the same
   // file — the point is to be comparable to what the user sees on disk, not to
   // be binary-exact.
+  // Decimals scale with magnitude, so every tier reads at about three
+  // significant figures. A recording ticking up past 1.06 GB earns its two
+  // decimals; "130.92 GB free on disk" spends them on noise (#416). Ordinary
+  // recordings sit well under 10 GB, so what you watch grow is unchanged.
   function fmtBytes(bytes) {
     if (!Number.isFinite(bytes) || bytes < 0) return '';
     if (bytes < 1e6) return `${Math.round(bytes / 1e3)} KB`;
     if (bytes < 1e9) return `${Math.round(bytes / 1e6)} MB`;
-    return `${(bytes / 1e9).toFixed(2)} GB`;
+    const gb = bytes / 1e9;
+    return `${gb.toFixed(gb < 10 ? 2 : gb < 100 ? 1 : 0)} GB`;
   }
 
   function renderElapsed() {

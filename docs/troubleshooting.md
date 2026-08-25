@@ -85,14 +85,14 @@ If you're filing an issue, include the session log path + the rough time the sym
 
 ## Driving the bot when you can't speak
 
-The Troubleshooting panel has a **Simulate Speech** section that injects synthetic caption turns straight into the conversation pipeline — the bot reacts as if the named participant actually spoke. Useful when:
+The Troubleshooting panel has a **Whisper to Bot** section that injects synthetic caption turns straight into the conversation pipeline — the bot reacts as if someone had spoken, but nothing is played into the room. It is a private channel to the bot, and the only one in headless mode. Useful when:
 
 - You're coding in a coffee shop and can't speak aloud
 - You want to paste test conversational data to drive a specific flow
 - You need to script a flow without a live Meet
 - You're reproducing a bug from a transcript snippet
 
-Two fields: a **Speaker name** (defaults to "Test User", overrideable to any string — including an existing participant's name) and a **What they said** textarea. Click **Send to Bot** or hit Cmd-Enter from the textarea.
+One field: a **What to say** textarea. Click **Send to Bot** or hit Cmd-Enter from the textarea. The turn is always attributed to **Computer User** — a fixed label, not an editable field, because a stray or blank value silently changed who the bot thought had spoken. The bot has no way to tell which Meet participant is sitting at this computer, so the label names the seat rather than guessing at a person.
 
 The injected turn travels the same `updateTurns()` path real captions use, so silence detection, the fast-ack pipeline, the slow model, and TTS all run unchanged.
 

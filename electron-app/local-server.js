@@ -372,6 +372,10 @@ class LocalServer {
 
     // State exposed to agents
     this.localProfile = null;   // optional app profile name for multi-agent local runs
+    // Calendar auto-join health, pushed by main.js's poll (#324). null until the
+    // first poll — which is itself an answer on an unattended box: it means the
+    // poller never started, not that it is healthy.
+    this.calendarHealth = null;
     this.detectedMeetUrls = [];  // Meet URLs found in browser tabs (when not in a call)
     this.detectedSlackHuddleUrl = null; // app.slack.com/client/<team>/<channel> when a huddle is live in a browser tab
     this.participants = [];      // [{ name, speaking, isPseudo }] from DOM speaker tracker
@@ -1719,6 +1723,10 @@ class LocalServer {
       localServerUrl: this.getLocalServerUrl(),
       localServerPort: this.port,
       localProfile: this.localProfile,
+      // #324: is this instance actually going to turn up to its next scheduled
+      // meeting? On a cloud box the panel banner that answers this has no
+      // reader, so the answer has to be fetchable. null = never polled.
+      calendarHealth: this.calendarHealth,
       // Calendar auto-join (#299): only present when this join was matched
       // from a Google Calendar event — see setCalendarEventContext.
       calendarEventContext: this.calendarEventContext || null,
@@ -4455,6 +4463,12 @@ class LocalServer {
         // how get_room_info tells the agent WHY it's here, instead of it
         // walking into a call cold.
         calendarEventContext: this.calendarEventContext || null,
+        // #324: whether auto-join is armed AT ALL, as opposed to why this
+        // particular join happened. The pair matters on an unattended box: a
+        // bot that never turns up looks identical to a quiet calendar, and this
+        // is the only thing that tells them apart without a human reading a
+        // banner nobody is looking at. null = the poller never ran.
+        calendarHealth: this.calendarHealth,
       },
     };
   }

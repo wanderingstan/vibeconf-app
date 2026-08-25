@@ -161,6 +161,49 @@ Leaving it up is the right call while a bot is expected to join scheduled calls
 on its own — a stopped box cannot watch a calendar. Waking on a calendar event
 is tracked in #301.
 
+## Will the bot actually turn up?
+
+A box that has quietly lost its calendar connection looks exactly like a box
+with nothing scheduled: the bot simply never appears. The app notices, but it
+says so in a panel banner, and on a cloud box nobody is looking at one.
+
+Ask it directly instead:
+
+```bash
+vibeconf-attach --run 'curl -s -H "Authorization: Bearer $(cat ~/.vibeconferencing/local-tokens/7865.token)" http://127.0.0.1:7865/api/sync/no-room | python3 -c "import json,sys; print(json.load(sys.stdin)[\"status\"][\"calendarHealth\"])"'
+```
+
+The answer is one of:
+
+| `calendarHealth` | means |
+| --- | --- |
+| `{'autoJoinArmed': True, …}` | the bot will join its next matching event |
+| `{'autoJoinArmed': False, 'state': 'google-api-error', …}` | **calendar access is broken** — re-connect by signing in at vibeconferencing.com (not in the app, and not by restarting; see below) |
+| `{'autoJoinArmed': False, 'state': 'signed-out'}` | the box is not signed in to vibeconferencing.com at all |
+| `null` | the poller never started — check the app is running and past onboarding |
+
+`autoJoinArmed` is the whole question; `state` and `message` say why when it is
+false. The same object rides along on `get_room_info`, so the bot's own agent can
+check its own health.
+
+While auto-join is not armed, the app also re-logs it every 30 minutes:
+
+```
+[calendar] auto-join still not armed after 180m (Google API error: token refresh
+failed: OAuth request error: invalid_grant). Scheduled calls will be missed until
+this clears.
+```
+
+so `vibeconf-attach --run 'tail -100 ~/.vibeconferencing/logs/app.log'` finds it
+even on a box that has been sick since before you looked.
+
+**Re-connecting is done on the website, not on the box.** Calendar authorization
+lives with your vibeconferencing.com login, so signing out and back in *in the
+app*, or restarting it, does not touch the credential — both were tried for a day
+before this was understood (vibeconf-app#446). Testing-mode OAuth refresh tokens
+expire every 7 days, which is why this recurs; publishing the consent screen to
+Production is vibeconferencing#512.
+
 ## When something is wrong
 
 ```bash

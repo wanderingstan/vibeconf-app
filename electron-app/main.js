@@ -8696,6 +8696,43 @@ allURLs`;
   // silence.
   let lastCalendarPollState = null;
 
+  // Calendar health, for a machine with nobody sitting at it (#324). The panel
+  // banner that announces a broken calendar connection is the right UI for a
+  // laptop and no use at all on a cloud box: the TA bot's whole job is joining
+  // scheduled calls unattended, and if auto-join dies the failure is a bot that
+  // simply never turns up. So the same state is (a) readable over the wire, in
+  // the status payload every instance already serves, and (b) re-logged on a
+  // slow cadence while it stays broken, so `tail app.log` on a box that has
+  // been sick for hours still says so. State-change-only logging is right for a
+  // laptop and invisible to anyone arriving after the change.
+  let calendarLastOkAt = null;
+  let calendarStateSince = Date.now();
+  let calendarLastReLogAt = 0;
+  const CALENDAR_RELOG_MS = 30 * 60 * 1000;
+
+  function recordCalendarHealth(state, message) {
+    const now = Date.now();
+    if (state !== lastCalendarPollState) calendarStateSince = now;
+    if (state === 'ok') calendarLastOkAt = now;
+    localServer.calendarHealth = {
+      state,
+      message: message || null,
+      // autoJoinArmed is the question anyone actually has — "will this bot turn
+      // up to its next meeting?" — rather than making every caller re-derive it
+      // from a state string they have to know the vocabulary for.
+      autoJoinArmed: state === 'ok',
+      since: new Date(calendarStateSince).toISOString(),
+      lastOkAt: calendarLastOkAt ? new Date(calendarLastOkAt).toISOString() : null,
+      lastPollAt: new Date(now).toISOString(),
+    };
+    if (state === 'ok') { calendarLastReLogAt = 0; return; }
+    if (now - calendarLastReLogAt < CALENDAR_RELOG_MS) return;
+    calendarLastReLogAt = now;
+    const mins = Math.round((now - calendarStateSince) / 60000);
+    console.warn(`[calendar] auto-join still not armed after ${mins}m (${message || state}).`
+      + ' Scheduled calls will be missed until this clears.');
+  }
+
   // eventDedupeKey -> Timeout handle for a join scheduled to fire at the event's
   // actual start time (see scheduleCalendarJoin below). Deliberately IN
   // MEMORY ONLY, not persisted: on an app restart, any event that hasn't
@@ -8919,6 +8956,7 @@ allURLs`;
         const r = await websiteRequest('/api/calendar/upcoming');
 
         if (r.status === 200 && r.json && r.json.ok) {
+          recordCalendarHealth('ok');
           if (lastCalendarPollState !== 'ok') {
             console.log('[calendar] Connected — polling for auto-join events');
             lastCalendarPollState = 'ok';
@@ -8946,6 +8984,7 @@ allURLs`;
           state = 'offline';
           message = `offline/network error: ${r.error || 'unknown'}`;
         }
+        recordCalendarHealth(state, message);
         if (state !== lastCalendarPollState) {
           console.log(`[calendar] Poll skipped (${message})`);
           lastCalendarPollState = state;
@@ -8964,6 +9003,7 @@ allURLs`;
           }
         }
       } catch (err) {
+        recordCalendarHealth('error', err && err.message);
         if (lastCalendarPollState !== 'error') {
           console.error('[calendar] Poll failed:', err && err.message);
           lastCalendarPollState = 'error';

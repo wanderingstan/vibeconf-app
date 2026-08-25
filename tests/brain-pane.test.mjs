@@ -49,8 +49,16 @@ test('it opens as its own window, so it can sit beside the call', () => {
   assert.match(main, /search: 'screen=brain'/);
   assert.match(panelJs, /IS_BRAIN_WINDOW/);
   // Reuses the existing window, rather than stacking a new one per click.
-  const h = main.slice(main.indexOf("ipcMain.handle('open-brain-window'"));
+  // Sliced from the FUNCTION, not the IPC handler: the body moved out of the
+  // handler when the Bot menu needed to open this window too (#502), and the
+  // handler is now a one-line forwarder. The reuse check is the claim being
+  // tested; where it is registered from is not.
+  const h = main.slice(main.indexOf('function openBrainWindow()'));
   assert.match(h.slice(0, 400), /if \(brainWindow && !brainWindow\.isDestroyed\(\)\)/);
+  // Both entry points must reach the same opener, or the menu would stack a
+  // second window while the panel button reused the first.
+  assert.match(main, /ipcMain\.handle\('open-brain-window', \(\) => openBrainWindow\(\)\)/);
+  assert.match(main, /openBrainWindowRef = openBrainWindow;/);
 });
 
 test('it polls rather than relying on broadcasts', () => {

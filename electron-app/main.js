@@ -8479,9 +8479,27 @@ app.whenReady().then(async () => {
   let meetDetectionInterval = null;
   let currentMeetUrl = null; // Track what we've joined
   let automationPromptShown = false; // only nag about Automation permission once
+  // Last Meet-poll failure message, so an identical one isn't logged every tick.
+  // null = nothing failing right now; a success clears it, so a recurrence is
+  // reported again rather than swallowed forever.
+  let lastMeetPollFailure = null;
 
   function startMeetDetection() {
     if (meetDetectionInterval) return;
+    // This whole feature is AppleScript — `osascript` scanning Chrome/Safari/
+    // Brave tabs. Off macOS there is no osascript, so every tick failed with
+    // ENOENT and logged a line, forever: 12 lines a minute, 17k a day, on a
+    // box where the poll CANNOT succeed by construction. On the always-on
+    // Linux TA box that buried the calendar-poll lines (the ones you actually
+    // need when a scheduled join misbehaves) at roughly 12:1.
+    //
+    // Don't start it at all rather than start it and swallow the errors: a
+    // subsystem that cannot work should be off, not quietly failing. Say so
+    // once, so "why is auto-detect missing on Linux" has an answer in the log.
+    if (process.platform !== 'darwin') {
+      console.log(`[electron] Meet/Slack auto-detection is macOS-only (needs AppleScript); not polling on ${process.platform}. Paste a Meet link or use /join-call.`);
+      return;
+    }
     // Polling sends the same Apple Events the wizard's Grant button does, so
     // once this runs the Automation decision has been put to the user either
     // way, and the wizard can read the real status instead of assuming unknown.
@@ -8558,7 +8576,18 @@ allURLs`;
         const elapsed = ((Date.now() - pollStart) / 1000).toFixed(1);
         if (err) {
           const stderrMsg = stderr?.trim() || '';
-          console.log(`[electron] Meet poll failed (${elapsed}s):`, stderrMsg || (err.killed ? 'timeout' : err.message?.slice(0, 80)));
+          // Log a given failure ONCE, not every 5 seconds. These conditions are
+          // persistent by nature — a denied Automation permission, a missing
+          // binary, a browser that hangs the scan — so repeating the same line
+          // at 12/min adds no information after the first and drowns the log it
+          // shares. Keyed by message so a DIFFERENT failure still gets through,
+          // and re-armed on the next success below, so a recurrence after a
+          // recovery is still reported.
+          const failKey = stderrMsg || (err.killed ? 'timeout' : err.message?.slice(0, 80)) || 'unknown';
+          if (failKey !== lastMeetPollFailure) {
+            lastMeetPollFailure = failKey;
+            console.log(`[electron] Meet poll failed (${elapsed}s):`, failKey, '— further identical failures suppressed');
+          }
           // -1743 = errAEEventNotPermitted: the user hasn't granted Automation
           // permission to control the browser. macOS won't re-prompt once it's
           // been denied/dismissed, so the poll fails silently forever and Meet
@@ -8593,6 +8622,12 @@ allURLs`;
         // browser, and that is worth seeing), and let the detection changes
         // below speak for the rest. The failure paths above already log.
         if (elapsed >= 2) console.log(`[electron] Meet poll slow (${elapsed}s)`);
+        // Recovered — re-arm the failure log so the NEXT failure is reported
+        // rather than suppressed as a duplicate of one that has since cleared.
+        if (lastMeetPollFailure !== null) {
+          console.log('[electron] Meet poll recovered');
+          lastMeetPollFailure = null;
+        }
 
         const lines = (stdout || '').trim().split('\n').map((l) => l.trim()).filter(Boolean);
         const urls = lines.filter((l) => l.startsWith('MEET:')).map((l) => l.slice(5))

@@ -2886,6 +2886,7 @@ server.tool(
       const calLines = [`Calendar context: this call was auto-joined from a calendar invite.`];
       if (cal.summary) calLines.push(`  Title: ${cal.summary}`);
       if (cal.start) calLines.push(`  Start: ${cal.start}`);
+      if (cal.end) calLines.push(`  End: ${cal.end}`);
       if (cal.description) calLines.push(`  Description: ${cal.description}`);
       sections.push(calLines.join('\n'));
     }

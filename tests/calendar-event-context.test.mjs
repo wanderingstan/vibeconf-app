@@ -38,6 +38,17 @@ test('setCalendarEventContext exists and stores summary/description/start', () =
   assert.match(server, /start: event\.start \|\| null/);
 });
 
+// The end time is what lets an agent say "ten minutes left" — the one thing
+// about a meeting's shape that neither the transcript nor the start can tell
+// it. It was dropped here for a while even though the event carried it.
+test('setCalendarEventContext keeps the event end time', () => {
+  assert.match(server, /end: event\.end \|\| null/);
+});
+
+test('get_room_info prints End alongside Start', () => {
+  assert.match(mcp, /if \(cal\.end\) calLines\.push\(`  End: \$\{cal\.end\}`\)/);
+});
+
 test('the /api/sync/:roomId status payload includes calendarEventContext', () => {
   assert.match(server, /calendarEventContext: this\.calendarEventContext \|\| null/);
 });

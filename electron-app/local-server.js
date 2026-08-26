@@ -614,6 +614,11 @@ class LocalServer {
       summary: event.summary || null,
       description: event.description || null,
       start: event.start || null,
+      // When the meeting is meant to FINISH. Kept so the agent can say "ten
+      // minutes left" — nothing else it is handed conveys that, and a bot that
+      // knows the start but not the end can only guess at the shape of the
+      // call it just walked into. Older backends don't send it; null then.
+      end: event.end || null,
     };
   }
 

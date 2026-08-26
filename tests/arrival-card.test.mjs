@@ -72,10 +72,21 @@ test('a stalled join says so instead of looking identical to a healthy one', () 
     'long enough that a healthy join never shows it, short enough to not leave people guessing');
 });
 
+test('the clock times a JOIN ATTEMPT, not an idle app', () => {
+  // The bug: `idle` is a not-on-line status too, so timing "since notOnLine
+  // began" measured how long the app had had nothing to do. An app open on its
+  // Settings screen while someone created a profile was already 15s+ "late"
+  // before it attempted anything, so the card opened straight on "having
+  // trouble connecting" and the on-the-way window was never seen. Hit live
+  // 2026-08-24 the first time a brand-new bot was created in front of anyone.
+  assert.match(src, /const attempting = notOnLine && this\.callStatus !== 'idle' && this\.callStatus !== 'left'/);
+  assert.match(src, /if \(attempting\) \{ if \(!this\._notOnLineSince\)/);
+});
+
 test('the clock starts when the condition starts, and resets when it clears', () => {
   // Otherwise a later disconnect would immediately inherit an old elapsed time
   // and jump straight to the trouble message.
-  assert.match(src, /if \(notOnLine\) \{ if \(!this\._notOnLineSince\) this\._notOnLineSince = Date\.now\(\); \}/);
+  assert.match(src, /if \(attempting\) \{ if \(!this\._notOnLineSince\) this\._notOnLineSince = Date\.now\(\); \}/);
   assert.match(src, /else this\._notOnLineSince = 0;/);
 });
 

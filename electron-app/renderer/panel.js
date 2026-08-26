@@ -3,6 +3,75 @@
 
 const api = window.electronAPI;
 
+// Every `set-config` from this pane goes through here (#557).
+//
+// They used to be bare fire-and-forget calls:
+//
+//     dangerousModeInput.addEventListener('change', () => {
+//       api.invoke('set-config', 'dangerousMode', dangerousModeInput.checked);
+//     });
+//
+// — no await, no catch. A rejected invoke there is an unhandled promise
+// rejection in the renderer: nothing logged, nothing shown, and the CONTROL
+// STILL LOOKS RIGHT, because a checkbox reflects its own DOM state whether or
+// not anything was written. On 2026-08-26 that cost about forty minutes of a
+// pre-demo hour on a headless box: three settings in a row read back as saved
+// in the UI and never reached disk, and the only way to find out was to go and
+// stat the file. `set_preference` over the local-server API wrote fine the
+// whole time, so the store, the disk and the handler were never the problem.
+//
+// So: surface it. Loudly enough that nobody spends an hour proving a checkbox
+// is lying, and in the session log so a post-mortem is possible without
+// devtools — which cannot be opened on this pane anyway (the `open-devtools`
+// IPC only serves meetView, and the --devtools flag needs a relaunch).
+//
+// Deliberately still non-blocking for callers that don't await: the failure
+// path is a notification, not a throw, so wiring this in changes no control's
+// behaviour on the happy path.
+async function setConfig(key, value) {
+  try {
+    await api.invoke('set-config', key, value);
+    return true;
+  } catch (err) {
+    reportSettingFailure(key, err && err.message ? err.message : String(err));
+    return false;
+  }
+}
+
+// One place to shout from, so the message is identical wherever a write dies.
+// Three channels on purpose, because on a headless box only some are reachable:
+// the pane itself (a human is usually looking at it), the renderer console (for
+// anyone who does have devtools), and main — which is what lands in the session
+// log and the remote logs, the only channel that reaches someone who is not
+// sitting in front of the machine.
+function reportSettingFailure(key, detail) {
+  const msg = `Could not save "${key}": ${detail}`;
+  console.error('[panel] set-config failed —', key, detail);
+  try { api.send('renderer-error', { where: 'panel/set-config', key, detail }); } catch { /* best effort */ }
+  showSettingsError(msg);
+}
+
+// A banner rather than an inline note next to one field: a failure here is
+// usually the whole channel being down, not one control misbehaving, and the
+// 2026-08-26 case had three different settings failing at once. Sticky until
+// dismissed — an 11px status line that clears itself after 2.5s is exactly how
+// the original "Save failed" went unnoticed.
+function showSettingsError(msg) {
+  let el = document.getElementById('settingsErrorBanner');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'settingsErrorBanner';
+    el.setAttribute('role', 'alert');
+    el.style.cssText = 'position:sticky;top:0;z-index:99;margin:0 0 8px;padding:8px 10px;'
+      + 'background:#5c1f1f;color:#ffd7d7;border:1px solid #a04040;border-radius:6px;'
+      + 'font-size:12px;line-height:1.4;cursor:pointer';
+    el.title = 'Click to dismiss';
+    el.addEventListener('click', () => el.remove());
+    document.body.prepend(el);
+  }
+  el.textContent = `⚠️ ${msg} — this setting was NOT saved. (click to dismiss)`;
+}
+
 // Markup for one of the chrome icons in ui-icons.css (OpenMoji outlines, painted
 // with currentColor). Use this instead of pasting an emoji character into a
 // label: the OS emoji fonts draw ⚙/👀/🚧 at different sizes and weights, so the
@@ -329,8 +398,8 @@ chooseAvatarBgBtn?.addEventListener('click', async () => {
 
 clearAvatarBgBtn?.addEventListener('click', async () => {
   try {
-    await api.invoke('set-config', 'avatarBackgroundSvg', '');
-    await api.invoke('set-config', 'avatarBackgroundCaption', '');
+    await setConfig('avatarBackgroundSvg', '');
+    await setConfig('avatarBackgroundCaption', '');
     paintAvatarBgPreview('');
     for (const el of agentAvatarEls) paintAvatarBg(el, '');
     setAvatarBgStatus('Cleared — back to the default gradient');
@@ -763,7 +832,7 @@ async function refreshAvatarThumb(svg, emojiSet, emojiUri) {
       ctx.fillText(RESTING_EMOJI, size / 2, size / 2 + face * 0.04);
     }
 
-    await api.invoke('set-config', 'avatarThumb', canvas.toDataURL('image/png'));
+    await setConfig('avatarThumb', canvas.toDataURL('image/png'));
   } catch {
     lastThumbKey = null; // let the next tick retry
   }
@@ -2440,7 +2509,7 @@ function lockCalendarIdentityToAccount(email) {
   if (!calendarIdentityEmailInput) return;
   if (calendarIdentityEmailInput.value !== email) {
     calendarIdentityEmailInput.value = email;
-    api.invoke('set-config', 'calendarIdentityEmail', email);
+    setConfig('calendarIdentityEmail', email);
   }
   calendarIdentityEmailInput.readOnly = true;
   calendarIdentityEmailInput.title = 'Locked to the bot\'s signed-in Google account. Sign out to set a custom calendar invite email.';
@@ -3042,7 +3111,7 @@ botNameInput.addEventListener('change', () => {
   if (typed) {
     currentBotName = typed;
     botNameDisplay = null; // a typed/saved name is a real identity — drop any fallback tag
-    api.invoke('set-config', 'botName', typed);
+    setConfig('botName', typed);
     api.send('to-meet', { action: 'set-config', payload: { botName: typed } });
     updateBotNameBig();
     refreshBotIdentity(); // keep the guest "👤 Guest 'Name'" line in sync
@@ -3059,7 +3128,7 @@ botNameInput.addEventListener('change', () => {
   // cliName -> profileName -> "Unnamed bot" chain run for real, and
   // get-bot-name-info re-fetches so the headline/placeholder reflect
   // whatever that chain resolves to immediately, not a stale value.
-  api.invoke('set-config', 'botName', '');
+  setConfig('botName', '');
   api.send('to-meet', { action: 'set-config', payload: { botName: '' } });
   api.invoke('get-bot-name-info').then((info) => {
     currentBotName = info?.name || 'Unnamed bot';
@@ -3079,7 +3148,7 @@ botNameInput.addEventListener('change', () => {
 // to resolve to a real mailbox, and calendar-auto-join.js's matching is
 // already trim+lowercase-tolerant, so there's nothing meaningful to reject.
 calendarIdentityEmailInput.addEventListener('change', () => {
-  api.invoke('set-config', 'calendarIdentityEmail', calendarIdentityEmailInput.value.trim());
+  setConfig('calendarIdentityEmail', calendarIdentityEmailInput.value.trim());
 });
 
 websiteUrlInput.addEventListener('change', () => {
@@ -3090,8 +3159,8 @@ websiteUrlInput.addEventListener('change', () => {
   // websiteUrl anyway, but cleaning legacy makes the precedence visible in
   // config.json. Restart required for the change to take effect (the URL is
   // captured at startup by sync/auth init paths).
-  api.invoke('set-config', 'websiteUrl', url);
-  api.invoke('set-config', 'syncBaseUrl', '');
+  setConfig('websiteUrl', url);
+  setConfig('syncBaseUrl', '');
   api.send('update-sync-config', { baseUrl: syncBaseUrl });
 });
 
@@ -3333,16 +3402,26 @@ refreshAgentClaudeMd();
 saveAgentClaudeMdBtn?.addEventListener('click', async () => {
   if (!agentClaudeMdEl) return;
   if (agentClaudeMdStatus) { agentClaudeMdStatus.style.color = '#81c995'; agentClaudeMdStatus.textContent = 'Saving…'; }
-  const r = await api.invoke('save-agent-claudemd', agentClaudeMdEl.value).catch(() => ({ ok: false }));
+  // #557: this used to be `.catch(() => ({ ok: false }))` — every possible
+  // cause, from a rejected invoke to a disk error, collapsed into the same two
+  // words in an 11px span. When it actually happened nobody could tell whether
+  // the click had missed, the channel was dead, or the write had failed, and
+  // there was nothing in any log to check afterwards.
+  const r = await api.invoke('save-agent-claudemd', agentClaudeMdEl.value)
+    .catch((err) => ({ ok: false, error: err && err.message ? err.message : String(err) }));
+  if (!r?.ok) reportSettingFailure('Personality (CLAUDE.md)', r?.error || 'unknown error');
   if (agentClaudeMdStatus) {
     agentClaudeMdStatus.style.color = r?.ok ? '#81c995' : '#f28b82';
-    agentClaudeMdStatus.textContent = r?.ok ? 'Saved ✓' : 'Save failed';
+    // Keep the reason where the eye already is, as well as in the banner.
+    agentClaudeMdStatus.textContent = r?.ok ? 'Saved ✓' : `Save failed — ${r?.error || 'unknown error'}`;
+    // Only the SUCCESS message self-clears. A failure that quietly wipes itself
+    // after 2.5s is how this went unnoticed in the first place.
     if (r?.ok) setTimeout(() => { agentClaudeMdStatus.textContent = ''; }, 2500);
   }
 });
 
 claudeWorkDirInput.addEventListener('change', () => {
-  api.invoke('set-config', 'claudeWorkDir', claudeWorkDirInput.value.trim());
+  setConfig('claudeWorkDir', claudeWorkDirInput.value.trim());
   refreshAgentWorkdir();
   refreshAgentClaudeMd();
   // Sessions are per working directory, so this changes which one is in use.
@@ -3370,23 +3449,23 @@ agentSessionIdInput?.addEventListener('change', async () => {
   // Typing here takes the field over, so renaming the bot no longer drags the
   // session along with it. Clearing hands it back — the field returns to
   // tracking the bot's name, which is what almost everyone should be on.
-  await api.invoke('set-config', 'agentSessionAuto', !value);
-  await api.invoke('set-config', 'agentSession', value);
+  await setConfig('agentSessionAuto', !value);
+  await setConfig('agentSession', value);
   refreshAgentSession();
 });
 
 claudeModelInput.addEventListener('change', () => {
-  api.invoke('set-config', 'claudeModel', claudeModelInput.value.trim());
+  setConfig('claudeModel', claudeModelInput.value.trim());
 });
 
 if (captionLanguageInput) captionLanguageInput.addEventListener('change', () => {
   // set-config live-applies it: mid-call it takes effect now, otherwise on the
   // next join. See applyCaptionLanguagePref in main.
-  api.invoke('set-config', 'captionLanguage', captionLanguageInput.value);
+  setConfig('captionLanguage', captionLanguageInput.value);
 });
 
 if (emojiSetInput) emojiSetInput.addEventListener('change', async () => {
-  await api.invoke('set-config', 'emojiSet', emojiSetInput.value);
+  await setConfig('emojiSet', emojiSetInput.value);
   // Repaint OUR avatar now. set-config pushes the new set to the in-call camera
   // immediately, but the panel's own face is painted by renderAgentAvatar on a
   // 60s timer — so picking a set used to change the bot's face in the call while
@@ -3396,17 +3475,17 @@ if (emojiSetInput) emojiSetInput.addEventListener('change', async () => {
 });
 
 dangerousModeInput.addEventListener('change', () => {
-  api.invoke('set-config', 'dangerousMode', dangerousModeInput.checked);
+  setConfig('dangerousMode', dangerousModeInput.checked);
 });
 
 ackShortMinInput.addEventListener('change', () => {
   const v = parseInt(ackShortMinInput.value, 10);
-  if (Number.isFinite(v) && v >= 0) api.invoke('set-config', 'ackShortMin', v);
+  if (Number.isFinite(v) && v >= 0) setConfig('ackShortMin', v);
 });
 
 ackLongMinInput.addEventListener('change', () => {
   const v = parseInt(ackLongMinInput.value, 10);
-  if (Number.isFinite(v) && v >= 0) api.invoke('set-config', 'ackLongMin', v);
+  if (Number.isFinite(v) && v >= 0) setConfig('ackLongMin', v);
 });
 
 // Phrase textareas: split on newline, drop blanks. Won't save if the
@@ -3420,12 +3499,12 @@ function parsePhraseLines(textarea) {
 
 ackShortPhrasesInput.addEventListener('change', () => {
   const phrases = parsePhraseLines(ackShortPhrasesInput);
-  if (phrases.length > 0) api.invoke('set-config', 'ackShortPhrases', phrases);
+  if (phrases.length > 0) setConfig('ackShortPhrases', phrases);
 });
 
 ackLongPhrasesInput.addEventListener('change', () => {
   const phrases = parsePhraseLines(ackLongPhrasesInput);
-  if (phrases.length > 0) api.invoke('set-config', 'ackLongPhrases', phrases);
+  if (phrases.length > 0) setConfig('ackLongPhrases', phrases);
 });
 
 // ---------------------------------------------------------------------------

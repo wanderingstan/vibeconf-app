@@ -10755,6 +10755,19 @@ function createMainWindow() {
     }
   });
 
+  // #557: a renderer telling us one of its own calls failed. The panel is a
+  // separate process, so a failure there is invisible to the session log — and
+  // devtools cannot be opened on that pane (the handler below only serves
+  // meetView, and --devtools needs a relaunch). On a headless box that means a
+  // silently-failing settings pane leaves NO trace anywhere a human can reach.
+  // One line here puts it in the session log and, with remoteLogging on, in the
+  // remote logs — which is the only channel that reaches someone who isn't
+  // sitting in front of the machine.
+  ipcMain.on('renderer-error', (_event, info) => {
+    const { where = 'renderer', key, detail } = info || {};
+    console.warn(`[renderer-error] ${where}${key ? ` key=${key}` : ''}: ${detail || 'unknown'}`);
+  });
+
   ipcMain.on('open-devtools', () => {
     if (meetView && meetView.webContents) {
       meetView.webContents.openDevTools({ mode: 'detach' });

@@ -640,6 +640,26 @@ class LocalServer {
     // manual join (or the next calendar join) never inherits a stale one.
     this.calendarEventContext = null;
     if (!resuming) {
+      // A DIFFERENT room, while a call id is still live. That happens whenever a
+      // join lands during after-call-work — which `isFinished()` deliberately
+      // does not treat as finished, so `callId` survives it (see setCallStatus).
+      // Without this, `activeState && !this.callId` in setCallStatus is false,
+      // the id is never re-minted, and the new call wears the previous call's
+      // name: two calls, two rooms, one `calls/<id>/` folder. The media survives
+      // (the recorder suffixes -2), but speaking-events.jsonl is APPENDED to with
+      // no boundary marker, so #422's turn-taking tuning would score two
+      // different calls in two different rooms as one continuous session.
+      //
+      // Observed 2026-08-26: left zks-dygt-quq, calendar auto-joined
+      // dcw-goqf-ypa 90s later, and get_room_info reported
+      //   Room: dcw-goqf-ypa   Call id: zks-dygt-quq-20260826T165732Z
+      //
+      // The `resuming` guard above already means "same room, id still live", so
+      // clearing here keeps the same-room rejoin case intact (one folder across
+      // a leave/rejoin, per rejoin-keeps-transcript.test.mjs) while forcing a
+      // genuinely new call to mint its own id.
+      this.callId = null;
+      this.callStartedAt = null;
       this.transcripts = [];
       this.turns = new Map();
       this._speakerTurnCount = new Map();

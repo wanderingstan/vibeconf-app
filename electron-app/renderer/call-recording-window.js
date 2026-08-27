@@ -98,11 +98,28 @@
     return `${gb.toFixed(gb < 10 ? 2 : gb < 100 ? 1 : 0)} GB`;
   }
 
+  // What #328 put on screen is the RAW capture growing on disk, and out of
+  // context it alarms: a 50-minute call reads "1.21 GB" while the file you
+  // actually keep is a fraction of that. The merge always transcodes
+  // (call-media-merge.js cannot '-c:v copy' VP9 into MP4), so the muxed mp4
+  // lands at roughly a sixth of the raw bytes — measured on the 2026-08-27
+  // call, 1.28 GB of tracks became a 193 MB mp4 (0.15).
+  //
+  // One measurement is not a model. A screen share full of motion compresses
+  // far worse than the mostly-static Meet view that number came from, so this
+  // is only ever shown with a tilde, and it sits in the note line rather than
+  // beside the real number — the honest claim is "much smaller than this",
+  // and the figure is there to give that claim a scale, not to be held to.
+  const MERGED_SIZE_RATIO = 1 / 6;
+
   function renderElapsed() {
     if (!SHOW_CONTROLS) return;
     const time = fmtElapsed(performance.now() - startedAt);
     const size = sizeBytes === null ? '' : fmtBytes(sizeBytes);
-    elapsedEl.textContent = size ? `${time} · ${size}` : time;
+    // "raw" is what makes the note's "~200 MB final" legible as a pair. It
+    // costs four characters at 300px wide; .label takes the ellipsis, which
+    // is what the .elapsed CSS comment already says it is there to do.
+    elapsedEl.textContent = size ? `${time} · ${size} raw` : time;
   }
 
   function setError(message) {
@@ -256,7 +273,9 @@
     // and is the more important message, so never overwrite one.
     if (!dot.classList.contains('error')) {
       const free = Number.isFinite(stats.freeBytes) ? fmtBytes(stats.freeBytes) : '';
-      note.textContent = free ? `${free} free on disk` : '';
+      const est = sizeBytes === null ? '' : fmtBytes(sizeBytes * MERGED_SIZE_RATIO);
+      note.textContent = [est && `~${est} final`, free && `${free} free on disk`]
+        .filter(Boolean).join(' · ');
     }
     if (stats.dir) {
       // Hover anywhere on the row to see where this is being written.

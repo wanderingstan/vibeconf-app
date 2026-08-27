@@ -95,7 +95,44 @@ test('the renderer shows time alone until the first size arrives', () => {
   const fn = rendererJs.slice(rendererJs.indexOf('function renderElapsed'));
   const body = fn.slice(0, fn.indexOf('\n  }\n'));
   assert.match(body, /sizeBytes === null \? '' :/);
-  assert.match(body, /size \? `\$\{time\} · \$\{size\}` : time/);
+  assert.match(body, /size \? `\$\{time\} · \$\{size\} raw` : time/);
+});
+
+test('the number on screen is labelled raw, and paired with an estimate', () => {
+  // The raw capture is ~6x the file you keep, so "1.21 GB" on its own reads as
+  // a disk emergency. Neither half works alone: "raw" without a scale is just
+  // a word, and an estimate next to an unlabelled number is two figures with
+  // no stated relationship.
+  const fn = rendererJs.slice(rendererJs.indexOf('function renderElapsed'));
+  assert.match(fn.slice(0, fn.indexOf('\n  }\n')), /\$\{size\} raw/);
+
+  const i = rendererJs.indexOf("on('recording-stats'");
+  const handler = rendererJs.slice(i, i + 1200);
+  assert.match(handler, /MERGED_SIZE_RATIO/);
+  assert.match(handler, /~\$\{est\} final/);
+});
+
+test('the estimate is a tilde, never a promise', () => {
+  // Measured once (1.28 GB of tracks -> a 193 MB mp4) on a mostly-static Meet
+  // view. A share full of motion will compress worse, so the ratio is a scale
+  // and the tilde is load-bearing — if it ever renders bare, this fails.
+  const m = rendererJs.match(/const MERGED_SIZE_RATIO = ([^;]+);/);
+  assert.ok(m, 'the ratio is a named constant, not an inline magic number');
+  const ratio = new Function(`return ${m[1]}`)();
+  assert.ok(ratio > 0 && ratio < 1, 'the merge shrinks the recording');
+
+  const i = rendererJs.indexOf("on('recording-stats'");
+  const handler = rendererJs.slice(i, i + 1200);
+  assert.doesNotMatch(handler, /[^~]\$\{est\}/, 'est never renders without its tilde');
+});
+
+test('the note degrades to whichever half it has', () => {
+  // freeBytes is best-effort (statfsSync may not exist); sizeBytes is null
+  // until the first push. Either missing must not leave a dangling separator.
+  const i = rendererJs.indexOf("on('recording-stats'");
+  const handler = rendererJs.slice(i, i + 1200);
+  assert.match(handler, /\.filter\(Boolean\)\.join\(' · '\)/);
+  assert.match(handler, /sizeBytes === null \? '' :/);
 });
 
 test('an error message is never overwritten by a size push', () => {

@@ -124,6 +124,7 @@ having succeeded.
 
 - `scripts/nightly-issue-triage.mjs` — the survey.
 - `scripts/com.vibeconferencing.issue-triage.plist` — the LaunchAgent (04:30).
+- `scripts/bot-pr-pipeline.mjs` — phase-two readiness pulse (writes nothing; see below).
 
 ```sh
 # Install
@@ -158,9 +159,42 @@ of 2026-08 that vault is six notes with nothing newer than July — the survey w
 without it, but it prioritises much better with it. Filling it in is the highest-
 leverage thing you can do to improve these digests.
 
-**Phase two (not built):** bot-authored PRs for `good-for-bot` issues, as a Claude
-**cloud** routine (`/schedule`), not a LaunchAgent — sandboxed, parallel, doesn't
-need the mini awake, and can't wedge the test runner it reports on.
+### Phase two — the write side (skeleton only)
+
+Phase two picks up issues **a human tagged `good-for-bot`** and opens draft PRs for
+them. It is not built. What exists is `scripts/bot-pr-pipeline.mjs`, a readiness
+pulse that writes nothing:
+
+```sh
+node scripts/bot-pr-pipeline.mjs          # preflight + the pool + what it WOULD do
+node scripts/bot-pr-pipeline.mjs --json   # same, machine-readable
+node scripts/bot-pr-pipeline.mjs --execute  # refuses, exit 2
+```
+
+The morning survey runs it and folds the answer into the digest, so the readiness
+check is something you see daily rather than something you remember to run. A
+readiness check nobody reads is already broken.
+
+It preflights the things that can genuinely be wrong *today*: `gh` authed with a
+token that can actually write, a resolvable `claude` binary, and the `good-for-bot`
+label present in **every** repo in the list. That last one matters more than it
+looks — an empty pool and a missing label are indistinguishable from the outside,
+so a rename (or a new repo added without the label) would read as "nothing to do"
+forever.
+
+`wanderingstan/vibeconf-app#565` is a deliberate **canary**: a `good-for-bot` issue
+that explicitly asks an agent to do nothing and report back. It gives the pool a
+non-zero member before any real issue is tagged, and when phase two goes live its
+first run is a test of the property that matters most — whether an agent respects
+the scope written in the issue instead of opening a PR anyway.
+
+**It stays a separate file from the survey on purpose.** The survey is read-only by
+construction, and that is its whole value in the first weeks. The moment read and
+write live in one script, "read-only" is a flag someone can flip by accident.
+
+**When it is built it runs as a Claude cloud routine** (`/schedule`), not a
+LaunchAgent — sandboxed, parallel, doesn't need the mini awake, and a job that
+writes branches has no business sharing a host with the test runner it reports on.
 
 ## Notes / caveats
 - **Same machine as a real bot?** The fleet uses ports 7901+ and dedicated

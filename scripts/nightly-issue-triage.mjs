@@ -407,6 +407,29 @@ if (!survey && raw) log('survey returned unparseable output — falling back to 
 // ---------------------------------------------------------------------------
 // 6. Report (full) + digest (short).
 // ---------------------------------------------------------------------------
+// --- phase-two pulse ---------------------------------------------------------
+// bot-pr-pipeline.mjs is a skeleton that writes nothing; all it does is answer
+// "would phase two work if an issue were tagged right now". Folding its answer
+// into the digest is the whole point of having it: a readiness check nobody reads
+// is a readiness check that is already broken. Best-effort — a pulse failure must
+// never cost the survey, which is the message that actually matters.
+function phaseTwoPulse() {
+  try {
+    const out = execFileSync(process.execPath, [join(import.meta.dirname, 'bot-pr-pipeline.mjs'), '--json'], {
+      encoding: 'utf8', timeout: 120000, maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return JSON.parse(out);
+  } catch (e) {
+    // Exit 1 means "not ready" and still prints valid JSON on stdout — that's a
+    // result, not an error, so parse it before giving up.
+    try { return JSON.parse(e.stdout || ''); } catch { /* fall through */ }
+    log(`phase-two pulse skipped: ${e.message?.split('\n')[0] || e}`);
+    return null;
+  }
+}
+const pulse = phaseTwoPulse();
+if (pulse) log(`phase two ${pulse.ready ? 'armed' : 'NOT READY'}, pool ${pulse.pool} (${pulse.claimable} claimable)`);
+
 const A = (x) => (Array.isArray(x) ? x : []);
 // The model is asked for "owner/repo" and reliably answers with the bare name
 // ("vibeconf-app"), which yields github.com/vibeconf-app/issues/105 — a dead link —
@@ -424,6 +447,26 @@ const ref = (repo, n) => `${normRepo(repo).split('/')[1]}#${n}`;
 const issueUrl = (repo, n) => `https://github.com/${normRepo(repo)}/issues/${n}`;
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
+// Rendered on BOTH report paths — including the one where the survey itself failed.
+// The readiness of the write-side pipeline is exactly the thing you still want to
+// know on a morning when the survey broke, and an early return that swallowed it
+// would hide it on precisely those days.
+function phaseTwoSection() {
+  if (!pulse) return [];
+  const bad = pulse.checks.filter((c) => !c.ok);
+  const L = ['## Phase two (skeleton — writes nothing yet)',
+    pulse.ready
+      ? `💚 Armed. Pool: ${pulse.pool} tagged \`${pulse.label}\`, ${pulse.claimable} claimable.`
+      : `💔 NOT READY — ${bad.map((c) => c.name).join('; ')}`];
+  for (const i of pulse.issues) {
+    const why = i.assigned ? 'assigned to a human' : i.hasOpenPR ? 'already has an open PR' : 'claimable';
+    L.push(`- [${i.repo.split('/')[1]}#${i.number}](${i.url}) — ${i.title} (${why})`);
+  }
+  if (!pulse.issues.length) L.push('- _(pool empty — tag a nomination above to fill it)_');
+  L.push('');
+  return L;
+}
+
 function buildReport() {
   const L = [`# Backlog survey — ${stamp}`, ''];
   if (night.failures.length) {
@@ -433,7 +476,8 @@ function buildReport() {
   else L.push('## ⚪️ No fresh nightly results', '');
 
   if (!survey) {
-    L.push('## Survey', raw ? '```\n' + raw.slice(0, 20000) + '\n```' : '_(survey did not run)_');
+    L.push('## Survey', raw ? '```\n' + raw.slice(0, 20000) + '\n```' : '_(survey did not run)_', '');
+    L.push(...phaseTwoSection());
     return L.join('\n');
   }
   if (survey.headline) L.push(`> **${survey.headline}**`, '');
@@ -481,6 +525,7 @@ function buildReport() {
     L.push('## Looks closable', ...A(survey.stale).map((s) =>
       `- ${ref(s.repo, s.issue)} — ${s.why || ''}`), '');
   }
+  L.push(...phaseTwoSection());
   L.push('## Open PRs', prBlock.split('\n').slice(1).join('\n'), '');
   L.push(`---`, `_${totalIssues} open issues surveyed · model ${MODEL} · vault `
     + (vault ? `${vault.count} notes, newest ${vault.newestDays}d old` : 'absent') + '_');
@@ -518,6 +563,11 @@ function buildDigest(reportPath) {
   const prCount = byRepo.reduce((n, r) => n + r.prs.length, 0);
   if (prCount) counts.push(`🔀 ${plural(prCount, 'PR')} open`);
   counts.push(`📋 ${plural(totalIssues, 'open issue')}`);
+  if (pulse) {
+    L.push('', pulse.ready
+      ? esc(`💚 phase two armed · ${plural(pulse.claimable, 'issue')} tagged ${pulse.label} and claimable`)
+      : esc(`💔 phase two NOT READY — ${pulse.checks.filter((c) => !c.ok).map((c) => c.name).join('; ')}`));
+  }
   L.push('', esc(counts.join(' · ')));
   L.push('', `📄 <code>${esc(reportPath)}</code>`);
   let text = L.join('\n');
@@ -543,6 +593,7 @@ try {
     top: A(survey?.top).map((t) => ({ repo: normRepo(t.repo), issues: t.issues, title: t.title })),
     botReady: A(survey?.botReady).map((b) => ref(b.repo, b.issue)),
     labels: A(survey?.labels).length, model: MODEL, ok: !!survey,
+    phaseTwo: pulse ? { ready: pulse.ready, pool: pulse.pool, claimable: pulse.claimable } : null,
   }) + '\n');
   log(`report → ${reportPath}`);
   // Keep the last 60 reports; results.jsonl stays forever (it's the trend line).

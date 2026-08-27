@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent: nightly open-issue backlog survey (Stan's Mac mini).
+  Install: see scripts/SCHEDULING.md, "Morning backlog survey".
+
+  Runs scripts/nightly-issue-triage.mjs at 04:30 — after the 03:00 meet-test suite
+  (so it can read tonight's lane results) and after the 04:00 TTS guardrail (so the
+  two never contend). Pure network + gh; no GUI session, mic, camera or screen
+  permissions needed.
+
+  WHY A SEPARATE AGENT and not a lane appended to scheduled-meet-test.sh: that
+  wrapper runs under a hard global watchdog (VIBECONF_GLOBAL_TIMEOUT, currently
+  2400s) and its cost is dominated by FAILING lanes. A lane at the end of it gets
+  killed on precisely the nights worth triaging — the way the Linux lane went
+  missing for three nights. Kept as a LaunchAgent rather than a crontab line to sit
+  alongside the other two for discoverability, same call as tts-usage-check. Invoked
+  via `zsh -lc` so it inherits the user's full PATH (node, gh, claude).
+
+  READ-ONLY. The script opens no PRs, closes no issues and applies no labels unless
+  invoked with --apply-labels, which is deliberately NOT in the ProgramArguments
+  below. Phase two (bot-authored PRs from a `good-for-bot`-tagged pool) runs as a
+  Claude cloud routine, not here — a job that writes to the repo has no business
+  sharing a host with the test runner it reports on.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.vibeconferencing.issue-triage</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- Same destination as the nightly test digest: Stan's DM. 6785998012 is
+         VERIFIED delivering (see com.vibeconferencing.meet-test.plist for the
+         history — the group -5140242529 is NOT the target, and the bot-to-bot id
+         8658687776 403s). Unset would make the script write its report and skip
+         the post; it never falls back to a default chat. -->
+    <key>VIBECONF_NOTIFY_CHAT</key>
+    <string>6785998012</string>
+
+    <!-- The survey is ONE judgement call a day across the whole backlog, so it gets
+         the better model — unlike the 3am failure RCA in notify-nightly.mjs, which
+         runs on sonnet because it reads a few hundred log lines. Drop to sonnet
+         here if the runtime or the spend ever bothers you. -->
+    <key>VIBECONF_TRIAGE_MODEL</key>
+    <string>opus</string>
+
+    <!-- Repos to survey, PRIMARY FIRST. vibeconf-app is what the survey is FOR;
+         vibeconferencing (the website) rides along so cross-repo duplicates and
+         blockers are visible, but it does not get to dominate the ranking. -->
+    <key>VIBECONF_TRIAGE_REPOS</key>
+    <string>wanderingstan/vibeconf-app,wanderingstan/vibeconferencing</string>
+  </dict>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>cd /Users/wanderingstan/Developer/vibeconf-app &amp;&amp; node scripts/nightly-issue-triage.mjs</string>
+  </array>
+
+  <!-- 04:30 — 90 min after the test suite starts (it finishes in 13-25 min) and 30
+       min after the TTS check. -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict>
+      <key>Hour</key><integer>4</integer>
+      <key>Minute</key><integer>30</integer>
+    </dict>
+  </array>
+
+  <key>StandardOutPath</key>
+  <string>/Users/wanderingstan/vibeconf-test-results/issue-triage.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/wanderingstan/vibeconf-test-results/issue-triage.log</string>
+
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

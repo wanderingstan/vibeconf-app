@@ -94,7 +94,12 @@ function lastNightFailures() {
       .flatMap((d) => (d.isDirectory()
         ? (() => { try { return readdirSync(join(RESULTS, d.name)).map((n) => join(d.name, n)); } catch { return []; } })()
         : [d.name]))
-      .filter((n) => /results.*\.jsonl$/.test(n));
+      // Excluding our OWN results.jsonl is not hygiene, it's a correctness fix: it
+      // lives under RESULTS too and matches the same glob, so the first run after a
+      // failed one read its own `ok:false` back as a failing "issue-triage lane",
+      // reported it above the real ones, and spent a top-5 slot telling Stan to go
+      // investigate this script.
+      .filter((n) => /results.*\.jsonl$/.test(n) && !n.startsWith('issue-triage/'));
   } catch { return { failures: [], digest: '', ran: false } }
 
   const failures = [];
@@ -241,12 +246,22 @@ function vaultContext() {
 // ---------------------------------------------------------------------------
 // 4. The survey.
 // ---------------------------------------------------------------------------
+// Prefer the REAL CLI at ~/.local/bin/claude over whatever `command -v` finds.
+// On this machine `claude` on PATH is a bash shim inside cmux.app, and a shim that
+// re-execs is exactly the kind of thing that drops the child's stdin — see the
+// argv note in runSurvey. notify-nightly.mjs's resolver predates that discovery;
+// it gets away with it because its 12KB payload fits in the pipe buffer.
 function resolveClaudeBin() {
   if (process.env.CLAUDE_BIN) return process.env.CLAUDE_BIN;
-  const onPath = sh('command -v claude');
-  if (onPath) return onPath;
-  const known = '/Applications/cmux.app/Contents/Resources/bin/claude';
-  try { readFileSync(known); return known; } catch { return null; }
+  const candidates = [
+    join(homedir(), '.local/bin/claude'),
+    sh('command -v claude'),
+    '/Applications/cmux.app/Contents/Resources/bin/claude',
+  ].filter(Boolean);
+  for (const c of candidates) {
+    try { statSync(c); return c; } catch { /* next */ }
+  }
+  return null;
 }
 
 const SCHEMA = `{
@@ -272,8 +287,8 @@ function runSurvey(payload) {
     'plus a companion website at vibeconferencing.com (repo wanderingstan/vibeconferencing:',
     'shared whiteboard, auth, room URLs).',
     '',
-    'stdin contains: last night\'s automated test results, the full open-issue backlog for',
-    'both repos, the open PR list, and (maybe) strategy notes.',
+    'Below the ===== INPUT ===== marker: last night\'s automated test results, the full',
+    'open-issue backlog for both repos, the open PR list, and (maybe) strategy notes.',
     '',
     'RULES:',
     '1. A FAILING TEST LANE FROM LAST NIGHT OUTRANKS EVERYTHING IN THE BACKLOG. If any',
@@ -299,13 +314,19 @@ function runSurvey(payload) {
     '',
     `Reply with ONLY a JSON object matching this shape (no prose, no markdown fence):\n${SCHEMA}`,
   ].join('\n');
+  // The payload goes in ARGV, not stdin. Piping it is the obvious choice and it is
+  // what notify-nightly.mjs does, but it broke here: a 169KB write does not fit in
+  // the 64KB pipe buffer, so the write BLOCKS until the child drains it, and if the
+  // child exits first — which the cmux shim on PATH does — node raises EPIPE and a
+  // 15-minute survey is lost. It failed under launchd while passing from an
+  // interactive shell, which is the worst possible way to find out. argv has no such
+  // race; macOS ARG_MAX here is 1MB and CAP keeps us well inside it.
   try {
-    const out = execFileSync(bin, ['-p', prompt, '--model', MODEL], {
-      input: payload,
+    const out = execFileSync(bin, ['-p', `${prompt}\n\n===== INPUT =====\n${payload}`, '--model', MODEL], {
       encoding: 'utf8',
       timeout: 900000, // 15 min — a whole-backlog read is not the 3-minute RCA call
       maxBuffer: 16 * 1024 * 1024,
-      stdio: ['pipe', 'pipe', 'ignore'],
+      stdio: ['ignore', 'pipe', 'ignore'],
     });
     return (out || '').trim() || null;
   } catch (e) {
@@ -373,7 +394,9 @@ let payload = ['## Last night\'s automated tests', nightBlock, '',
   ...byRepo.map(({ repo, issues }, i) => renderIssues(repo, issues, i === 0))].join('\n');
 // Hard cap. The tiering above should keep us well under this; the slice is the
 // backstop for the night the backlog doubles, so the job degrades instead of dying.
-const CAP = 400000;
+// Fits inside macOS ARG_MAX (1MB, shared with the environment) with room to spare,
+// since the payload now travels as an argv string.
+const CAP = 300000;
 if (payload.length > CAP) { payload = payload.slice(0, CAP) + '\n\n[TRUNCATED]'; log(`payload capped at ${CAP} chars`); }
 log(`payload ${Math.round(payload.length / 1024)}KB → ${MODEL}`);
 

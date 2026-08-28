@@ -144,6 +144,14 @@ say "pooling $scored run(s)"
 node "$ROOT/scripts/pool-speaking-scores.mjs" "$RUN"/run-*.json > "$RUN/pooled.txt" 2>> "$LOG" \
   || { say "FATAL: pooling failed"; exit 1; }
 
+# The pooled table says what the data looks like. The verdict says whether
+# anything should change, which is the only part worth waking up to.
+say "verdict"
+node "$ROOT/scripts/sweep-verdict.mjs" "$RUN"/*.labels.json > "$RUN/verdict.txt" 2>> "$LOG"
+verdict_rc=$?
+cat "$RUN/verdict.txt" | tee -a "$LOG"
+[ "$verdict_rc" = 3 ] && say "SOME CONSTANTS LOOK WRONG — see $RUN/verdict.txt"
+
 say "done — $RUN/pooled.txt"
 echo
 sed -n '1,40p' "$RUN/pooled.txt"

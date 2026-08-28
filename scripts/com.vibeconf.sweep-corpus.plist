@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Nightly #422 detector sweep across the archived calls.
+
+  Install on the machine that PHYSICALLY holds the drive (the Mac Mini). The
+  archive is exported from it over SMB, so running anywhere else would score a
+  few gigabytes across a network share that has already proved flaky during
+  bulk reads.
+
+    cp scripts/com.vibeconf.sweep-corpus.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.vibeconf.sweep-corpus.plist
+
+  Check it:      launchctl list | grep vibeconf
+  Run it now:    launchctl start com.vibeconf.sweep-corpus
+  Remove it:     launchctl unload ~/Library/LaunchAgents/com.vibeconf.sweep-corpus.plist
+
+  04:10, not 04:00: the test suite runs at 03:00 and the top of an hour is where
+  everything else lands too. Ten past is out of the way of both.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.vibeconf.sweep-corpus</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-lc</string>
+    <!-- Login shell: node arrives via nvm/homebrew in the profile, and launchd's
+         own PATH is minimal enough that `node` would not be found. -->
+    <string>$HOME/Developer/vibeconf-app/scripts/sweep-corpus.sh</string>
+  </array>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>4</integer>
+    <key>Minute</key><integer>10</integer>
+  </dict>
+
+  <!-- Do NOT run at load, and do not catch up after the machine was asleep. A
+       sweep is expensive and its whole point is to run overnight; firing it the
+       moment someone logs in at 9am is the opposite of what was asked for. -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/vibeconf-sweep.out</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/vibeconf-sweep.err</string>
+
+  <!-- Nice it right down. If anything else is still running at 04:10 it should
+       win; this job has all night. -->
+  <key>Nice</key>
+  <integer>10</integer>
+  <key>LowPriorityIO</key>
+  <true/>
+</dict>
+</plist>

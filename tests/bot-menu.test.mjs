@@ -66,7 +66,11 @@ test('Open Bot lists profiles under File, rebuilt from disk each time', () => {
   assert.ok(fileMenu.includes("label: 'Open Bot'"), 'Open Bot belongs in File');
   assert.ok(!botMenu.includes('Open Bot'), 'it must have MOVED, not been copied');
   assert.ok(!main.includes("label: 'New Window'"), 'Open Bot subsumes New Window');
-  assert.ok(!main.includes("open-next-available-window"),
+  // The HANDLER must be gone, not every mention of the name: #489's unresponsive-
+  // panel comment refers to `open-next-available-window` while explaining why a
+  // native dialog is the only way out of a wedged renderer. A bare substring test
+  // failed on prose, which is the wrong thing to be strict about.
+  assert.doesNotMatch(main, /ipcMain\.(on|handle)\(\s*'open-next-available-window'/,
     'New Window\'s handler is unreachable once the item is gone');
   assert.match(fileMenu, /submenu: botProfileMenuItems\(\)/,
     'called at build time so a profile created mid-session appears without a relaunch');

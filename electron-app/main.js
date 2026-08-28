@@ -9256,6 +9256,15 @@ app.on('before-quit', () => {
   // Every quit that is NOT a click on ✕ passes through here first, so this is
   // where the confirmation learns to stand down (see confirmQuitBeforeClose).
   appIsQuitting = true;
+  // Nothing below is guaranteed to finish — a wedged ffmpeg wait, a terminal
+  // that won't close, some future addition to this handler — and if any of it
+  // hangs, quit intent was already committed with no way back to the UI (see
+  // confirmQuitBeforeClose above). Once the user has asked to quit, quitting
+  // has to actually happen; unref'd so it can't itself hold the process open.
+  setTimeout(() => {
+    console.warn('[electron] quit did not complete within 10s — forcing exit');
+    app.exit(0);
+  }, 10_000).unref();
   stopAllRunwayFaces('before-quit'); // P2: best-effort end of Runway sessions on quit (fire-and-forget)
   // #343: sync, and deliberately NOT the full stopCallRecording() — see
   // finalizeRecordingSync. Quitting must not wait on an ffmpeg merge, but it
@@ -10106,6 +10115,29 @@ function createMainWindow() {
   // Arm the safety net now, so a renderer that never loads can't leave the app
   // running with no window at all.
   armShowMainWindowFallback();
+
+  // Every button the user has (including Quit and New Window) is an IPC call
+  // through this view — if its renderer wedges, every click looks like it does
+  // nothing and there is no menu-bar fallback, because 'New Window' is itself a
+  // panel button, not a native menu item (see open-next-available-window). A
+  // native dialog is independent of the hung renderer, so it's the only way out
+  // that's guaranteed to still work. Debounced by wasUnresponsive so a single
+  // slow tick (GC pause, a big IPC payload) doesn't pop a dialog every time.
+  let wasUnresponsive = false;
+  panelView.webContents.on('unresponsive', () => {
+    if (wasUnresponsive) return;
+    wasUnresponsive = true;
+    console.warn('[electron] panel view unresponsive — offering force-quit');
+    dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      buttons: ['Force Quit', 'Wait'],
+      defaultId: 1,
+      cancelId: 1,
+      message: 'Vibeconferencing isn’t responding.',
+      detail: 'Clicks and menu actions may do nothing until it recovers. You can force quit and relaunch, or keep waiting.',
+    }).then(({ response }) => { if (response === 0) app.exit(0); });
+  });
+  panelView.webContents.on('responsive', () => { wasUnresponsive = false; });
   applyWindowTitle();
 
   // --- macOS menu bar ---

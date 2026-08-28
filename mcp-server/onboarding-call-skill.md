@@ -368,7 +368,7 @@ while everyone else sees it correctly. Do not pre-flip the images to "fix" it.
 
 **One grid, all of them at once** — not a slideshow. `list_visual_assets` returns every
 preset with its absolute path; put them in a markdown table as images with the name under
-each, so the whole choice is visible in a glance and they can just say "the forest one".
+each, so the whole choice is visible in a glance and they can just say "the city one".
 
 **Restyle for these before drawing the grid**, exactly as in 4e — and with different values,
 because these are 16:9 scenes rather than square glyphs. Fixing the height (the emoji rule)

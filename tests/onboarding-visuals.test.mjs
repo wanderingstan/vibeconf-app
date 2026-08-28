@@ -46,7 +46,32 @@ test('the app can hand the agent real paths to its own sample art', () => {
   for (const b of v.backgrounds) {
     assert.ok(existsSync(b.path), `${b.name} missing at ${b.path}`);
   }
-  assert.ok(v.backgrounds.some((b) => b.name === 'forest'), 'the named presets should be there');
+  assert.ok(v.backgrounds.some((b) => b.name === 'snowy-hills'), 'the named presets should be there');
+});
+
+test('presets are listed whatever image format they are authored in', () => {
+  // The presets were hand-written SVG; they are now generated PNGs. The filter
+  // was `.endsWith('.svg')`, so the swap would have listed NOTHING — an empty
+  // picker, no error, nothing in a log. Pin the extension set rather than the
+  // current contents, so the next format change can't silently empty it again.
+  const v = new LocalServer({ port: 0 }).visualAssets();
+  assert.ok(v.backgrounds.length > 0, 'the picker must not be empty');
+  for (const b of v.backgrounds) {
+    assert.doesNotMatch(b.name, /\.(svg|png|jpe?g|webp|gif)$/i,
+      `${b.name} still carries its extension — the name is what a human picks by`);
+  }
+  // Exercise the real predicate rather than grepping for spellings: pull the
+  // constant out of the source and run filenames through it.
+  const src = readFileSync(join(root, 'electron-app/local-server.js'), 'utf8');
+  const m = src.match(/const BG_EXTS = (\/.+?\/[a-z]*);/);
+  assert.ok(m, 'the accepted extensions are one named constant, used for both filter and strip');
+  const re = new Function(`return ${m[1]}`)();
+  for (const f of ['a.svg', 'a.png', 'a.jpg', 'a.jpeg', 'a.webp', 'a.PNG']) {
+    assert.ok(re.test(f), `${f} should be accepted`);
+  }
+  for (const f of ['a.txt', 'a.mp4', 'notes.md', '.DS_Store']) {
+    assert.ok(!re.test(f), `${f} must not be offered as a background`);
+  }
 });
 
 test("only image sets are listed — 'native' has no file", () => {

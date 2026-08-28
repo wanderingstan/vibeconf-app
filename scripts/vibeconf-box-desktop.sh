@@ -122,6 +122,63 @@ Terminal=false
 Categories=System;
 D
 
+echo "--- openbox: ONE desktop, not four"
+# Openbox ships with 4 virtual desktops and binds scroll-on-the-desktop to
+# switch between them. Over VNC that is a trap: an ordinary trackpad scroll
+# lands on the desktop background and the whole screen appears to be replaced
+# by an empty one, which reads as "the box crashed". Nobody here wants virtual
+# desktops, so reduce it to one — then the scroll bindings have nowhere to go
+# and become harmless, without having to unpick openbox's mouse config.
+cp /etc/xdg/openbox/rc.xml ~/.config/openbox/rc.xml
+python3 - <<'PY'
+import re, os
+p = os.path.expanduser('~/.config/openbox/rc.xml')
+s = open(p).read()
+# Only the <number> INSIDE <desktops> — there are other <number> elements.
+s2 = re.sub(r'(<desktops>.*?<number>)\s*\d+\s*(</number>)',
+            r'\g<1>1\g<2>', s, count=1, flags=re.S)
+assert s2 != s, 'desktop count not found in rc.xml — openbox config changed shape?'
+open(p, 'w').write(s2)
+m = re.search(r'<desktops>.*?<number>\s*(\d+)\s*</number>', s2, re.S)
+print(f'    rc.xml desktops: {m.group(1)}')
+PY
+# rc.xml alone is NOT enough for a session that is already running. Xvfb
+# outlives openbox restarts, so the root window still advertises the old count
+# and openbox defers to it, logging:
+#   "Openbox is configured for 1 desktop, but the current session has 4.
+#    Overriding the Openbox configuration."
+# wmctrl -n sets the EWMH property directly, fixing the live session. On a
+# fresh boot Xvfb starts clean and rc.xml wins, so both paths reach one desktop.
+DISPLAY=:99 wmctrl -n 1 2>/dev/null || true
+# Anything parked on a desktop that no longer exists would be stranded, and
+# would look exactly like the app having vanished.
+DISPLAY=:99 wmctrl -l 2>/dev/null | awk '{print $1}' | while read -r w; do
+  DISPLAY=:99 wmctrl -i -r "$w" -t 0 2>/dev/null
+done
+DISPLAY=:99 wmctrl -s 0 2>/dev/null || true
+printf '    live desktops  :%s\n' "$(DISPLAY=:99 xprop -root _NET_NUMBER_OF_DESKTOPS 2>/dev/null | sed 's/.*=//')"
+
+echo "--- Chrome as the default browser"
+# The app hands OAuth sign-in to the SYSTEM browser via xdg-open. With no
+# default registered that call fails silently and the sign-in button looks dead.
+DISPLAY=:99 xdg-settings set default-web-browser google-chrome.desktop 2>/dev/null || true
+printf '    default browser: %s\n' "$(DISPLAY=:99 xdg-settings get default-web-browser 2>/dev/null)"
+
+echo "--- clear any stale Chrome profile lock"
+# Chrome records "hostname-pid" in SingletonLock to spot a profile opened from
+# two machines. RENAMING THE HOST invalidates it: Chrome then refuses to start,
+# silently, and every xdg-open does nothing. Cost an hour to find once.
+CP=~/.config/google-chrome
+LOCKPID=$(readlink "$CP/SingletonLock" 2>/dev/null | sed 's/.*-//')
+if [ -n "${LOCKPID:-}" ] && ! kill -0 "$LOCKPID" 2>/dev/null; then
+  rm -f "$CP/SingletonLock" "$CP/SingletonCookie" "$CP/SingletonSocket"
+  echo "    cleared a stale lock (pid $LOCKPID not running)"
+elif [ -n "${LOCKPID:-}" ]; then
+  echo "    lock held by LIVE pid $LOCKPID — left alone"
+else
+  echo "    no stale lock"
+fi
+
 echo "--- openbox root menu (right-click anywhere on the desktop)"
 cat > ~/.config/openbox/menu.xml <<'X'
 <?xml version="1.0" encoding="UTF-8"?>

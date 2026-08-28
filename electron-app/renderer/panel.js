@@ -2755,10 +2755,10 @@ api.on('navigate-webview-prompt', async (data) => {
   const sharing = !!(data && data.sharing);
   const url = await inlinePrompt({
     title: sharing
-      ? '⚠️ YOU ARE PRESENTING — this window is on screen to everyone in the '
-        + 'call. Anything you load here is visible to them, sign-in pages '
+      ? '⚠️ YOU ARE PRESENTING. This window is on screen to everyone in the '
+        + 'call, so anything you load here is visible to them, sign-in pages '
         + 'included.\n\nNavigate the shared window to URL:'
-      : 'Navigate the bot webview to URL (advanced — Slack/Google account setup):',
+      : 'Navigate the bot webview to URL (advanced: Slack/Google account setup):',
     initial: current || 'https://', okLabel: 'Go',
   });
   if (!url) return;

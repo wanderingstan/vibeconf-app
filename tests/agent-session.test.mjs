@@ -313,7 +313,12 @@ test('a rename never clobbers a session that already owns the new name', () => {
 test('taking the field over stops it following the bot', () => {
   // Otherwise a deliberate choice would be silently reverted on the next rename.
   const panel = readFileSync(join(root, 'electron-app/renderer/panel.js'), 'utf8');
-  assert.ok(/set-config', 'agentSessionAuto', !value/.test(panel),
+  // #561 routed every settings write through the checked `setConfig()` wrapper
+  // instead of a bare `api.invoke('set-config', …)`. Accept either spelling —
+  // what this test is about is the VALUE (`!value`), not how the write is
+  // dispatched. Pinning the dispatch made this fail on a change that only made
+  // the write safer.
+  assert.ok(/(setConfig\(|set-config', )'agentSessionAuto', !value/.test(panel),
     'typing a value must clear auto; clearing it must restore auto');
 });
 

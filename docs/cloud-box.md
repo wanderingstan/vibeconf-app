@@ -90,11 +90,39 @@ so each box needs its own logins. See wanderingstan/vibeconferencing#508.
    Google Calendar through the website and matches events against this bot.
 3. In a terminal on the box (`vibeconf-attach --shell`), run `claude` once and
    sign in. Each person's own Claude account.
-4. Optionally set an ElevenLabs key for a better voice. Without one the bot
+4. Sign in to GitHub, if the bot needs a repo — `gh auth login`. See
+   **GitHub on a box** below.
+5. Optionally set an ElevenLabs key for a better voice. Without one the bot
    still speaks, using the on-device espeak-ng voice — see **Voice** below.
 
 **Your bot does not need its own Google account.** It joins as a guest. The
 Google identity in play is *yours*, on the website, for reading your calendar.
+
+## GitHub on a box
+
+The AMI ships `git` but **not** the GitHub CLI, so a fresh box cannot clone a
+private repo and says so only when you try. Install it as part of provisioning:
+
+```bash
+sudo mkdir -p -m 755 /etc/apt/keyrings
+curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+  | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null
+sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+  | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+sudo apt-get update && sudo apt-get install -y gh
+```
+
+Then, **as the person who owns the box**, `gh auth login`. Same rule as Claude
+and the website: the AMI carries software, never identity.
+
+Two things that look like this working when it isn't:
+
+- **Being logged into GitHub in a browser on the box is not the same thing.**
+  The browser session lets *you* read a private repo; it gives the bot's shell
+  nothing. `gh auth status` is the check that matters.
+- **A bot that cannot clone should say so.** Reading the methodology from
+  memory instead of from the repo is worse than admitting the clone failed.
 
 ## Updating the app on a box
 

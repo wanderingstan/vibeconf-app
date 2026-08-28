@@ -8996,6 +8996,21 @@ allURLs`;
     pushUpcomingCalendarEvents(selectUpcomingMatches(events, { calendarIdentityEmail, botName, now: Date.now() })
       .map((e) => ({ ...e, ownerConfirmed: ownerHasConfirmed(e) })));
 
+    // THIS is where being in a call matters, and the only place (#550). The
+    // poll itself now runs regardless, so everything above — the sibling-profile
+    // launcher, the "poll saw" log, and the panel's upcoming-meeting notice —
+    // stays current while the bot is busy. What must not happen is yanking it
+    // out of a live call into a different one.
+    //
+    // Deliberately AFTER pushUpcomingCalendarEvents: the panel (and, next, the
+    // agent) should be able to say "there's another meeting at three" precisely
+    // while the bot is in the 2 o'clock. Returning any earlier would restore
+    // the blind spot this issue is about.
+    //
+    // Not marked as handled, so it is reconsidered on the next tick — once the
+    // call ends, the ordinary path picks it up if it is still in the window.
+    if (localServer.callStatus === 'in-call') return;
+
     const { event, extraMatchCount } = selectEventToJoin(events, {
       calendarIdentityEmail,
       botName,
@@ -9025,9 +9040,26 @@ allURLs`;
 
     async function pollCalendar() {
       if (calendarPollInFlight) return;
-      // Reuse the exact in-call guard startMeetDetection uses — no reason to
-      // poll or auto-join while already in a call.
-      if (localServer.callStatus === 'in-call') return;
+      // NOT gated on being in a call any more (#550). This used to
+      // `return` outright whenever callStatus was 'in-call', borrowed from
+      // startMeetDetection's guard — "no reason to poll or auto-join while
+      // already in a call". The auto-JOIN half of that is right and still
+      // applies (see handleCalendarEvents); the "don't even look" half was too
+      // broad, and cost three things:
+      //
+      //   1. Back-to-backs never fire. A bot in a 2:00 call cannot join the
+      //      3:00, because it never sees it. That is exactly the shape of the
+      //      per-student studio sessions — one bot, consecutive 1:1s.
+      //   2. Sibling profiles are stranded: checkOtherProfilesForCalendarMatch
+      //      lives inside handleCalendarEvents, so an app sitting in a call
+      //      also could not launch OTHER bots for THEIR meetings.
+      //   3. Nobody could be told a meeting was coming — not the panel, not
+      //      the agent, so a bot could never excuse itself before dropping.
+      //
+      // Found 2026-08-26: a laptop in a call was 25 minutes stale on a meeting
+      // whose time had changed. Its last [calendar] line was 10:57:03; the call
+      // it was in started at 10:57:32. A cloud box looked healthy purely
+      // because it happened to be idle.
       calendarPollInFlight = true;
       try {
         const r = await websiteRequest('/api/calendar/upcoming');

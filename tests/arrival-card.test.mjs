@@ -65,11 +65,32 @@ test('and it degrades to a real name when the bot has none', () => {
 test('a stalled join says so instead of looking identical to a healthy one', () => {
   // The failure of 🫥 was ambiguity: working and wedged looked the same. An
   // empty tile would have inherited exactly that.
-  assert.match(card, /const troubled = waited > TROUBLE_MS/);
+  assert.match(card, /const troubled = !inLobby && waited > TROUBLE_MS/);
   assert.match(card, /is having trouble connecting/);
   const m = card.match(/const TROUBLE_MS = (\d+)/);
-  assert.ok(m && Number(m[1]) >= 8000 && Number(m[1]) <= 30000,
-    'long enough that a healthy join never shows it, short enough to not leave people guessing');
+  assert.ok(m && Number(m[1]) >= 45000 && Number(m[1]) <= 180000,
+    'must clear a real join by a wide margin — measured joins take 7-9s, and 15000 left only '
+    + '6s of headroom, so the warning fired on ordinary joins');
+});
+
+test('waiting in the lobby is never called trouble', () => {
+  // A bot in `waiting-to-be-admitted` is not broken — a human has not clicked
+  // Admit. Meet now hides Admit behind a ⋮ overflow on a "review potential
+  // risks" prompt, so this wait is routinely minutes, and calling it "trouble
+  // connecting" blames the software for a person's pending decision. It also
+  // sends whoever is watching to debug the wrong subsystem.
+  assert.match(card, /const inLobby = this\.callStatus === 'waiting-to-be-admitted'/);
+  assert.match(card, /is waiting to be let in/);
+
+  // The lobby must short-circuit the timer, not merely be worded differently:
+  // an hour in the lobby is still not trouble.
+  assert.match(card, /const troubled = !inLobby &&/,
+    'inLobby has to gate the escalation, otherwise a long lobby wait still flips to trouble');
+
+  // Three distinct messages, and the lobby one has to win over both others.
+  const branch = card.match(/const text = ([\s\S]*?);\n/);
+  assert.ok(branch, 'the three-way choice is one expression');
+  assert.match(branch[1], /inLobby \?/, 'lobby is tested first');
 });
 
 test('the clock times a JOIN ATTEMPT, not an idle app', () => {

@@ -809,16 +809,36 @@
       const ctx = this.ctx;
       const w = this.canvas.width;
       const h = this.canvas.height;
-      // Long enough that a healthy join never shows it (a normal connect is a
-      // few seconds), short enough that someone waiting is not left guessing.
-      const TROUBLE_MS = 15000;
+      // Long enough that a healthy join never shows it, short enough that
+      // someone waiting is not left guessing.
+      //
+      // Was 15s, and that was too tight. Measured on this machine's own logs,
+      // healthy joins took 7s and 9s from `navigating` to in-call — a 6-second
+      // margin, which any slow network or a Meet page that takes its time eats
+      // immediately. So "having trouble connecting" was showing up on joins
+      // that were merely ordinary, every run. A warning that fires on the
+      // normal case teaches people to ignore it, which costs more than the
+      // warning was ever worth.
+      const TROUBLE_MS = 60000;
       const waited = this._notOnLineSince ? Date.now() - this._notOnLineSince : 0;
-      const troubled = waited > TROUBLE_MS;
       const name = String((config && config.botName) || 'The bot').trim() || 'The bot';
+
+      // Waiting in the lobby is NOT trouble, however long it lasts — it is a
+      // human who has not clicked Admit yet, and Meet now hides that button
+      // behind a ⋮ overflow on a "review potential risks" prompt, so this wait
+      // is routinely long. Calling it "trouble connecting" blames the software
+      // for what is a person's pending decision, and sends whoever is watching
+      // to debug the wrong thing. Say the true thing instead: it also tells the
+      // host, who is the one person who can end the wait, what to do.
+      const inLobby = this.callStatus === 'waiting-to-be-admitted';
+      const troubled = !inLobby && waited > TROUBLE_MS;
+
       // Deliberately the register of a person, not a system. "Connecting…"
       // describes machinery; "<Name> is on the way" implies someone specific is
       // about to arrive, which is what actually stops people talking to the tile.
-      const text = troubled ? name + ' is having trouble connecting' : name + ' is on the way';
+      const text = inLobby ? name + ' is waiting to be let in'
+        : troubled ? name + ' is having trouble connecting'
+          : name + ' is on the way';
 
       const thumb = Math.min(w, h) * 0.14;   // badge-photo scale, NOT presence scale
       const fontPx = Math.round(Math.min(w, h) * 0.062);

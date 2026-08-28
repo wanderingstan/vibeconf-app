@@ -1212,6 +1212,13 @@ process.on('unhandledRejection', (reason) => {
   try { broadcastError('Unhandled promise rejection: ' + String(msg).slice(0, 200)); } catch {}
 });
 
+// The ElevenLabs voice_settings preferences (#594). They pass straight through
+// to tts.updateConfig under the same names, so they are listed once here and
+// used by BOTH the boot-time load and the live-apply path. Those two drifting
+// apart is exactly how a setting ends up saved, shown in the panel, and not
+// actually applied until a restart.
+const VOICE_SETTING_KEYS = ['ttsSpeed', 'ttsStability', 'ttsSimilarityBoost', 'ttsStyle', 'ttsSpeakerBoost'];
+
 const tts = new globalThis.TTSProvider();
 const stt = new globalThis.STTProvider();
 const sync = new globalThis.SyncClient({
@@ -2817,6 +2824,13 @@ const localServer = new globalThis.LocalServer({
       tts.updateConfig?.({ voiceboxProfileId: value });
     } else if (key === 'voiceboxEngine') {
       tts.updateConfig?.({ voiceboxEngine: value });
+    } else if (VOICE_SETTING_KEYS.includes(key)) {
+      // ElevenLabs voice_settings, live (#594). Same reasoning as the voice keys
+      // above: without this the value is saved, the panel shows it, and the bot
+      // keeps talking exactly as before until a restart — a change that looks
+      // applied but is not. tts.js keys its audio cache on all five, so the next
+      // line is re-synthesized rather than replayed at the old setting.
+      tts.updateConfig?.({ [key]: value });
     } else if (key === 'botName') {
       applyAllWindowTitles(); // every window is named after the bot, not just the main one
     } else if (key === 'avatarBackgroundSvg') {
@@ -8422,7 +8436,7 @@ app.whenReady().then(async () => {
   // desktopCapturer, so there is nothing to probe or prompt for here.
 
   // Load saved config
-  const savedConfig = store.getMultiple(['ttsApiKey', 'ttsVoiceId', 'botName', 'syncBaseUrl', 'macosVoice', 'ttsProvider', 'voiceboxUrl', 'voiceboxProfileId', 'voiceboxEngine']);
+  const savedConfig = store.getMultiple(['ttsApiKey', 'ttsVoiceId', 'botName', 'syncBaseUrl', 'macosVoice', 'ttsProvider', 'voiceboxUrl', 'voiceboxProfileId', 'voiceboxEngine', ...VOICE_SETTING_KEYS]);
   if (savedConfig.ttsApiKey) {
     tts.updateConfig({ apiKey: savedConfig.ttsApiKey });
     stt.updateConfig({ apiKey: savedConfig.ttsApiKey });
@@ -8432,6 +8446,11 @@ app.whenReady().then(async () => {
   if (savedConfig.voiceboxUrl) tts.updateConfig({ voiceboxUrl: savedConfig.voiceboxUrl });
   if (savedConfig.voiceboxProfileId) tts.updateConfig({ voiceboxProfileId: savedConfig.voiceboxProfileId });
   if (savedConfig.voiceboxEngine) tts.updateConfig({ voiceboxEngine: savedConfig.voiceboxEngine });
+  // `!== undefined`, not truthiness: 0 for stability/style and false for speaker
+  // boost are all legal saved values that `if (x)` would silently skip.
+  for (const k of VOICE_SETTING_KEYS) {
+    if (savedConfig[k] !== undefined) tts.updateConfig({ [k]: savedConfig[k] });
+  }
   // Explicit provider override (e.g. bot chose a built-in voice as primary).
   if (savedConfig.ttsProvider) tts.updateConfig({ provider: savedConfig.ttsProvider });
   // Prime the built-in voice-name set so speak()'s voice-override can route a

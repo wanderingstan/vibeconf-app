@@ -333,6 +333,60 @@ const PREFERENCES = {
       'ElevenLabs voice ID, used when ttsProvider is "elevenlabs". ' +
       'Use list_voices and set_voice for an in-call switch instead of editing this directly.',
   },
+  // ElevenLabs voice_settings (#594). stability and similarity_boost were
+  // hardcoded in tts.js; style and speed were never sent, so the API's defaults
+  // applied. Defaults here ARE those defaults, so nothing changes sound until
+  // someone moves a knob. Live-settable: tts.js rebuilds the body per request
+  // and the audio cache keys on all five, so a change takes effect on the very
+  // next line rather than replaying cached audio at the old setting.
+  ttsSpeed: {
+    type: 'number',
+    default: 1.0,
+    min: 0.7,
+    max: 1.2,
+    description:
+      'How fast the ElevenLabs voice talks. 1.0 is normal, below slows down, above speeds '
+      + 'up. The usable range really is this narrow: values outside 0.7-1.2 are rejected by '
+      + 'the API, so they are clamped rather than allowed to fail the request and leave the '
+      + 'bot silent. Worth nudging down for a bot that reads long answers, or up for one '
+      + 'that mostly says short acknowledgements.',
+  },
+  ttsStability: {
+    type: 'number',
+    default: 0.5,
+    min: 0,
+    max: 1,
+    description:
+      'ElevenLabs voice consistency. Lower is more expressive and more variable between '
+      + 'renderings of the same line; higher is flatter and more predictable. 0.5 is the '
+      + 'ElevenLabs default and what every bot used before this was exposed.',
+  },
+  ttsSimilarityBoost: {
+    type: 'number',
+    default: 0.75,
+    min: 0,
+    max: 1,
+    description:
+      'How closely ElevenLabs sticks to the original voice it cloned. Higher is more '
+      + 'faithful; very high can carry artefacts from the source recording.',
+  },
+  ttsStyle: {
+    type: 'number',
+    default: 0,
+    min: 0,
+    max: 1,
+    description:
+      'Amplifies the stylistic quirks of the source speaker. 0 (the default, and what was '
+      + 'used implicitly before) is neutral. Raising it costs latency, which matters here: '
+      + 'this voice is answering in a live conversation.',
+  },
+  ttsSpeakerBoost: {
+    type: 'boolean',
+    default: true,
+    description:
+      'ElevenLabs speaker boost: enhances similarity to the original speaker at a small '
+      + 'latency cost. On by default, which is the API default and the previous behaviour.',
+  },
   macosVoice: {
     type: 'string',
     default: '',

@@ -27,6 +27,29 @@ function applyTtsPronunciationFixes(text) {
   return out;
 }
 
+// A finite number, or the fallback. Guards against a pref arriving as '' or a
+// non-numeric string from the store/IPC, which would otherwise reach ElevenLabs
+// as NaN and turn every line into a 422 with no audio.
+function numOr(v, fallback) {
+  // Empty and blank strings are rejected explicitly because Number('') is 0,
+  // not NaN. Without this an emptied field in the panel reads as a deliberate
+  // zero, and 0 clamps to the slowest legal speed — so clearing a box would
+  // silently make the bot drawl instead of restoring the default.
+  if (v === null || v === undefined) return fallback;
+  if (typeof v === 'string' && v.trim() === '') return fallback;
+  if (typeof v === 'boolean') return fallback;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+// Clamp to the range ElevenLabs accepts, rather than letting an out-of-range
+// value 422 the request. A bot that says nothing is a much worse outcome than a
+// bot that speaks at 1.2 when you asked for 3, and the failure would surface as
+// silence rather than as an error anyone can see in the room.
+function clamp(n, lo, hi) {
+  return Math.min(hi, Math.max(lo, n));
+}
+
 class TTSProvider {
   constructor(config = {}) {
     this.provider = config.provider || 'auto'; // 'auto' picks elevenlabs if key set, else the OS voice
@@ -59,6 +82,19 @@ class TTSProvider {
     this.voiceboxUrl = config.voiceboxUrl || 'http://127.0.0.1:17493'; // local Voicebox server
     this.voiceboxProfileId = config.voiceboxProfileId || '';
     this.voiceboxEngine = config.voiceboxEngine || 'kokoro'; // must match what the profile supports
+    // ElevenLabs voice_settings. These were hardcoded (stability 0.5,
+    // similarity_boost 0.75) and the other two were never sent at all, so the
+    // API's own defaults applied. The defaults here are ElevenLabs' defaults,
+    // which keeps every existing bot sounding exactly as it did.
+    //
+    // `??` and not `||` throughout: 0 is a legal value for stability and style,
+    // and false is legal for use_speaker_boost. `||` would silently discard all
+    // three, which is the bug this whole block is one line away from.
+    this.ttsSpeed = numOr(config.ttsSpeed, 1.0);
+    this.ttsStability = numOr(config.ttsStability, 0.5);
+    this.ttsSimilarityBoost = numOr(config.ttsSimilarityBoost, 0.75);
+    this.ttsStyle = numOr(config.ttsStyle, 0);
+    this.ttsSpeakerBoost = config.ttsSpeakerBoost ?? true;
     this._queue = [];
     this._active = false;
     // Small LRU of already-synthesized audio, keyed on text + everything that
@@ -93,6 +129,16 @@ class TTSProvider {
       this.macosVoice,
       this.voiceboxProfileId,
       this.voiceboxEngine,
+      // Every voice_setting belongs here for the reason the comment above the
+      // cache gives: the key encodes everything that makes the same text sound
+      // different, so changing one is automatically a miss rather than stale
+      // audio. Leave them out and turning the speed up mid-call would keep
+      // replaying cached acks at the old speed.
+      this.ttsSpeed,
+      this.ttsStability,
+      this.ttsSimilarityBoost,
+      this.ttsStyle,
+      this.ttsSpeakerBoost,
       text,
     ].join('\0');
   }
@@ -106,6 +152,14 @@ class TTSProvider {
     if (config.voiceboxUrl) this.voiceboxUrl = config.voiceboxUrl;
     if (config.voiceboxProfileId) this.voiceboxProfileId = config.voiceboxProfileId;
     if (config.voiceboxEngine) this.voiceboxEngine = config.voiceboxEngine;
+    // `in`, not truthiness: setting stability or style to 0, or speaker boost to
+    // false, is a legitimate thing to ask for and the `if (config.x)` style used
+    // above would drop exactly those updates.
+    if ('ttsSpeed' in config) this.ttsSpeed = numOr(config.ttsSpeed, this.ttsSpeed);
+    if ('ttsStability' in config) this.ttsStability = numOr(config.ttsStability, this.ttsStability);
+    if ('ttsSimilarityBoost' in config) this.ttsSimilarityBoost = numOr(config.ttsSimilarityBoost, this.ttsSimilarityBoost);
+    if ('ttsStyle' in config) this.ttsStyle = numOr(config.ttsStyle, this.ttsStyle);
+    if ('ttsSpeakerBoost' in config) this.ttsSpeakerBoost = !!config.ttsSpeakerBoost;
   }
 
   async synthesize(text) {
@@ -182,6 +236,23 @@ class TTSProvider {
     }
   }
 
+  // The voice_settings body ElevenLabs is sent. Split out so it can be tested
+  // without a network call, and clamped so a bad pref cannot make the bot mute.
+  //
+  // Ranges are ElevenLabs': the three 0..1 knobs, and speed 0.7..1.2. Speed is
+  // the narrow one and the easy mistake — "2" reads like a reasonable ask for
+  // double speed and is rejected outright, so it clamps to 1.2 rather than
+  // returning no audio.
+  voiceSettings() {
+    return {
+      stability: clamp(this.ttsStability, 0, 1),
+      similarity_boost: clamp(this.ttsSimilarityBoost, 0, 1),
+      style: clamp(this.ttsStyle, 0, 1),
+      use_speaker_boost: !!this.ttsSpeakerBoost,
+      speed: clamp(this.ttsSpeed, 0.7, 1.2),
+    };
+  }
+
   async _elevenlabs(text) {
     if (!this.apiKey) {
       throw new Error('ElevenLabs API key not configured');
@@ -198,10 +269,7 @@ class TTSProvider {
       body: JSON.stringify({
         text,
         model_id: this.modelId,
-        voice_settings: {
-          stability: 0.5,
-          similarity_boost: 0.75,
-        },
+        voice_settings: this.voiceSettings(),
       }),
     });
 

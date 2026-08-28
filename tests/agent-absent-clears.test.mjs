@@ -56,19 +56,55 @@ test('the warning is raised under a key so it CAN be retracted', () => {
 test('a clear only takes down its OWN message', () => {
   // An unrelated failure that arrived in the meantime is still true. Wiping it
   // because some other condition recovered would lose a real message.
-  assert.match(panel, /let _errorKey = null;/);
   const fn = panel.slice(panel.indexOf('function clearError(key)'));
-  assert.match(fn.slice(0, 300), /if \(!key \|\| _errorKey !== key\) return;/,
-    'compare against what is actually on screen before hiding anything');
+  assert.match(fn.slice(0, 500), /if \(!key\) return;/,
+    'an unkeyed clear must do nothing at all');
+  assert.match(fn.slice(0, 500), /_errorStack\[i\]\.key === key/,
+    'only entries under this key come down');
   assert.match(panel, /showError\(message\.message, message\.key\)/,
     'the key has to reach the renderer for the comparison to mean anything');
 });
 
-test('dismissing by hand forgets the key', () => {
-  // Otherwise a retraction arriving later could hide whatever has taken the bar
-  // over since the user cleared it.
+test('an unkeyed error cannot disarm a keyed retraction', () => {
+  // THE 2026-08-28 BUG. `_errorKey` was one slot, set on every showError —
+  // including the ~15 calls in this file that pass no key (clipboard
+  // confirmations, "could not create bot", share failures) and three from
+  // google-meet-provider. Any one of them set it to null, and from then on
+  // clearError('agent-absent') could never match again for the rest of the
+  // session: the "bot has gone quiet" bar stayed up after the bot came back.
+  //
+  // Seen live with the main process provably sending the retraction — three
+  // paired quiet/back transitions in the log, the last six minutes before the
+  // bar was still on screen.
+  assert.ok(!/let _errorKey\b/.test(panel),
+    'one slot is a latch: any unkeyed error disarms every later retraction');
+  assert.match(panel, /const _errorStack = \[\]/,
+    'keep every raised error, so a keyless one on top cannot lose a keyed one under it');
+
+  // showError must not be able to drop a keyed entry it does not own.
+  const show = panel.slice(panel.indexOf('function showError(message, key)'));
+  assert.doesNotMatch(show.slice(0, 600), /_errorStack\.length = 0/,
+    'raising an error must never clear the ones already known about');
+
+  // Re-raising the same condition replaces rather than duplicates — a flapping
+  // bot would otherwise leave N copies, and one clear would retract only one.
+  assert.match(show.slice(0, 600), /findIndex\(\(e\) => e\.key === key\)/);
+});
+
+test('both directions are logged, so next time the log answers it', () => {
+  // Nothing recorded showError or clearError, in either direction. That is why
+  // "the warning will not dismiss" could only be argued about: the main process
+  // logs its half (🫥 no agent driving / agent back) and the renderer logged
+  // nothing at all, so there was no way to tell which side dropped it.
+  assert.match(panel, /\[panel\] error shown/);
+  assert.match(panel, /\[panel\] error cleared/);
+});
+
+test('dismissing by hand drops everything', () => {
+  // The user said "I have seen these". Leaving a hidden entry behind to
+  // reappear when some unrelated error clears would be a ghost.
   const close = panel.slice(panel.indexOf("getElementById('errorClose')"));
-  assert.match(close.slice(0, 400), /_errorKey = null;/);
+  assert.match(close.slice(0, 500), /_errorStack\.length = 0;/);
 });
 
 test('a condition that recurs after recovering notifies again', () => {

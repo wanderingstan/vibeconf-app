@@ -2228,30 +2228,64 @@ api.on('slack-huddle-detected', (data) => {
 // Error display
 // ---------------------------------------------------------------------------
 
-// #533: what the bar is currently showing, when the sender named the condition
-// it reports. Held so a later "that condition has passed" can retract it — and
-// only it. An unrelated failure that arrived in the meantime is still true, so
-// a clear for some OTHER key must leave the bar alone.
-let _errorKey = null;
-function showError(message, key) {
-  document.getElementById('errorText').textContent = message;
+// #533: what the bar is showing, when the sender named the condition it
+// reports, so a later "that condition has passed" can retract it — and only it.
+// An unrelated failure that arrived in the meantime is still true, so a clear
+// for some OTHER key must leave the bar alone.
+//
+// A STACK, not one slot. It was one slot, and that made the retraction a latch
+// that any unkeyed error permanently disarmed: ~15 showError() calls in this
+// file pass no key (clipboard confirmations, "could not create bot", share
+// failures), plus three from google-meet-provider. Every one of them set the
+// slot to null, and from then on `clearError('agent-absent')` could never match
+// again for the rest of the session — the "bot has gone quiet" bar stayed up
+// after the bot came back, which is exactly what #533 set out to fix. Seen live
+// 2026-08-28 with the main process provably sending the retraction (three
+// paired quiet/back transitions in the log, the last six minutes earlier).
+//
+// Keeping the whole stack means a keyless message can sit on top of a keyed one
+// and, when it goes, the keyed one is still known about.
+const _errorStack = [];   // [{ message, key }], newest last
+function _renderErrorBar() {
+  const top = _errorStack[_errorStack.length - 1];
+  if (!top) { errorBar.style.display = 'none'; return; }
+  document.getElementById('errorText').textContent = top.message;
   errorBar.style.display = 'flex';
-  _errorKey = key || null;
 }
 
-// Retract a keyed error, iff it is still the one on screen. Silent by design:
-// no alert and no sound for a condition that has recovered.
+function showError(message, key) {
+  // Re-raising the same condition replaces it in place rather than stacking a
+  // duplicate — otherwise a flapping bot leaves N copies to retract.
+  if (key) {
+    const i = _errorStack.findIndex((e) => e.key === key);
+    if (i >= 0) _errorStack.splice(i, 1);
+  }
+  _errorStack.push({ message, key: key || null });
+  console.log('[panel] error shown', key ? `(${key})` : '(no key)', '—', String(message).slice(0, 80));
+  _renderErrorBar();
+}
+
+// Retract a keyed error wherever it is in the stack. Silent by design: no alert
+// and no sound for a condition that has recovered.
 function clearError(key) {
-  if (!key || _errorKey !== key) return;
-  errorBar.style.display = 'none';
-  _errorKey = null;
+  if (!key) return;
+  const before = _errorStack.length;
+  for (let i = _errorStack.length - 1; i >= 0; i--) {
+    if (_errorStack[i].key === key) _errorStack.splice(i, 1);
+  }
+  // Log both directions. Nothing recorded either before, which is why "the
+  // warning won't dismiss" could only be argued about rather than looked up.
+  console.log('[panel] error cleared', `(${key})`,
+    before === _errorStack.length ? '— nothing was showing for that key' : '');
+  _renderErrorBar();
 }
 
 document.getElementById('errorClose').addEventListener('click', () => {
-  errorBar.style.display = 'none';
-  // Dismissed by hand: forget the key too, so a later retraction of the same
-  // condition can't hide whatever has taken the bar over since.
-  _errorKey = null;
+  // Dismissed by hand: drop the whole stack. The user said "I have seen these",
+  // and leaving a hidden one behind to reappear when an unrelated error clears
+  // would be a ghost.
+  _errorStack.length = 0;
+  _renderErrorBar();
 });
 
 // ---------------------------------------------------------------------------

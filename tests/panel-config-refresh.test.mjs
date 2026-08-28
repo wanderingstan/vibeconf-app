@@ -39,10 +39,15 @@ test('BOTH write paths notify the panel', () => {
   // for why even that did nothing. The wizard writes through set-config, which
   // told the panel nothing at all.
   assert.match(main, /function notifyConfigChanged\(key, value\)/);
-  const setConfig = main.slice(main.indexOf("ipcMain.handle('set-config'"));
-  assert.match(setConfig.slice(0, 600), /notifyConfigChanged\(key, value\)/, 'set-config (wizard, panel)');
-  const applyPref = main.slice(main.indexOf('applyPref: (key, value) => {'));
-  assert.match(applyPref.slice(0, 600), /notifyConfigChanged\(key, value\)/, 'applyPref (agent set_preference)');
+  // Slice each handler's own body rather than a fixed number of characters —
+  // the assertion is "this handler notifies", and a fixed window turns any
+  // comment added above the call into a failing test about nothing.
+  const body = (from) => {
+    const rest = main.slice(main.indexOf(from));
+    return rest.slice(0, rest.indexOf('\n  },') + 1 || rest.indexOf('\n  });') + 1);
+  };
+  assert.match(body("ipcMain.handle('set-config'"), /notifyConfigChanged\(key, value\)/, 'set-config (wizard, panel)');
+  assert.match(body('applyPref: (key, value) => {'), /notifyConfigChanged\(key, value\)/, 'applyPref (agent set_preference)');
 });
 
 test('the notification is not limited to one key', () => {

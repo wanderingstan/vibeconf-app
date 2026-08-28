@@ -297,7 +297,11 @@ test('renaming the bot renames the session and keeps its history', () => {
   const body = planBody();
   assert.ok(/const auto = store\.get\('agentSessionAuto'\) !== false;/.test(body),
     'the field must follow the bot name unless taken over');
-  assert.ok(body.includes('cache[key] = cache[from]') && body.includes('delete cache[from]'),
+  // The move itself is renameSessionCacheEntries' job (tested directly below,
+  // including the invitee-keyed sessions a bot holds once #570 is on); the
+  // planner's part is calling it and storing the result.
+  assert.ok(/const renamed = renameSessionCacheEntries\(cache, ref\.name, name\)/.test(body)
+    && /store\.set\('agentSessionCache', cache\)/.test(body),
     'the cached session must MOVE to the new name, not be abandoned under the old one');
 });
 
@@ -442,4 +446,258 @@ test('a teardown that kills an agent mid-write-up hands the work over too', () =
     'only a kill during after-call work is an interrupted write-up');
   assert.ok(/store\.set\('agentUnfinishedWrapUp'/.test(body),
     'teardown must record the interrupted write-up for the next call');
+});
+
+// --- #546: the cache entry a manual edit leaves behind -----------------------
+//
+// planAgentSession keys the remembered session id on (working dir, session
+// name). Editing either in Settings moves the bot to a different key and
+// abandons the old entry — which reads as harmless until the working directory
+// is pointed back at a previous value and the orphan silently resumes a session
+// nobody meant to return to.
+
+const { staleSessionCacheKey } = require('../electron-app/agent-session.js');
+
+test('changing the working directory evicts the pair it moved off', () => {
+  const before = { cwd: '/Users/x/proj-a', name: 'Bramble' };
+  const after = { cwd: '/Users/x/proj-b', name: 'Bramble' };
+  assert.equal(staleSessionCacheKey(before, after), sessionCacheKey('/Users/x/proj-a', 'Bramble'));
+});
+
+test('typing a different session name evicts the old name, not the new one', () => {
+  const before = { cwd: '/Users/x/proj', name: 'Bramble' };
+  const after = { cwd: '/Users/x/proj', name: 'realtime-voice' };
+  assert.equal(staleSessionCacheKey(before, after), sessionCacheKey('/Users/x/proj', 'Bramble'));
+});
+
+test('an edit that lands on the SAME pair evicts nothing', () => {
+  // The case that makes "which field was touched" the wrong test to write.
+  // Clearing the session field hands it back to following the bot's name, which
+  // normally resolves to the name the field already held — so the pair does not
+  // move, and evicting would delete the session the next launch resumes.
+  const pair = { cwd: '/Users/x/proj', name: 'Bramble' };
+  assert.equal(staleSessionCacheKey(pair, { ...pair }), '');
+  // Same name in a different case is the same key (sessionCacheKey lowercases).
+  assert.equal(staleSessionCacheKey(pair, { cwd: '/Users/x/proj', name: 'bramble' }), '');
+});
+
+test('pinning an explicit id evicts the named session it moved off', () => {
+  // A pin has no name-keyed pair at all, so `after` is null. That is still a
+  // deliberate move away from the named session — leaving the orphan is the bug.
+  const before = { cwd: '/Users/x/proj', name: 'Bramble' };
+  assert.equal(staleSessionCacheKey(before, null), sessionCacheKey('/Users/x/proj', 'Bramble'));
+});
+
+test('nothing to evict when there was no pair to begin with', () => {
+  for (const before of [null, undefined, {}, { cwd: '', name: 'Bramble' }, { cwd: '/x', name: '   ' }]) {
+    assert.equal(staleSessionCacheKey(before, { cwd: '/y', name: 'Bramble' }), '');
+  }
+});
+
+test('set-config is the only write path that evicts, and it reads the pair first', () => {
+  // The rename carry-over in planAgentSession writes agentSession straight to the
+  // store, bypassing set-config — that is what keeps a bot rename from tripping
+  // the eviction. Guard both halves in the source.
+  const handler = main.slice(main.indexOf("ipcMain.handle('set-config'"));
+  const body = handler.slice(0, handler.indexOf('\n  });'));
+  assert.ok(/const beforePair = sessionKeyed \? agentSessionPair\(\)/.test(body)
+    && body.indexOf('agentSessionPair()') < body.indexOf('store.set(key, value)'),
+    'the pair must be read BEFORE the write, or there is nothing to compare against');
+  assert.ok(/forgetStaleAgentSession\(beforePair, agentSessionPair\(\)\)/.test(body),
+    'set-config should compare before/after pairs');
+  assert.ok(!/key === 'botName'/.test(body.slice(0, body.indexOf('store.set(key, value)'))),
+    'a bot rename must NOT evict — planAgentSession carries that session over');
+});
+
+// --- #570: one session per calendar meeting ---------------------------------
+//
+// A bot has one Claude session, so everyone it meets shares one pile of context
+// — no continuity per person, no isolation between meetings. With
+// `sessionPerCalendarInvitees` on, a join that came FROM a calendar event runs in
+// its own working directory instead, named for that event's invitees. Sessions
+// are already stored per working directory, so that one move splits the memory,
+// the permissions file and the CLAUDE.md together.
+
+const { meetingDirFor, meetingDirSlug, meetingsRootFor, agentDirFor, normaliseAttendees }
+  = require('../electron-app/agent-workdir.js');
+const { renameSessionCacheEntries } = require('../electron-app/agent-session.js');
+
+test('a meeting folder is a SIBLING of the bot dir, never inside it', () => {
+  // The whole security property, and the easy thing to get backwards. The bot's
+  // ordinary session — the ad-hoc call, the one a stranger can turn up to — runs
+  // in the agent dir. Nesting the meeting folders under it would hand exactly
+  // that session the ability to read every meeting the bot has ever held.
+  const agent = agentDirFor('/UD');
+  const meeting = meetingDirFor('/UD', ['alice@example.com']);
+  assert.ok(meeting, 'a real invite list must produce a folder');
+  assert.ok(!meeting.startsWith(`${agent}/`), `meeting dir is nested under the bot dir: ${meeting}`);
+  assert.equal(meetingsRootFor('/UD'), '/UD/meetings');
+});
+
+test('the folder is named for the people, so a human can find it later', () => {
+  // Someone will need to look inside one, delete one, or hand it over. A folder
+  // named as a hex string makes "which of these is Francis" unanswerable.
+  assert.equal(meetingDirFor('/UD', ['francis@school.edu', 'bethany@school.edu']),
+    '/UD/meetings/bethany@school.edu,francis@school.edu');
+});
+
+test('whole addresses, so two people with one first name stay two folders', () => {
+  // Local-parts read better right up until this. An address is unique by
+  // definition, which makes the readable form and the unique form one string.
+  assert.notEqual(meetingDirSlug(['francis@a.edu']), meetingDirSlug(['francis@b.edu']));
+});
+
+test('the same group is the same folder however the event lists them', () => {
+  const a = meetingDirSlug(['Bob@Example.com', 'alice@example.com']);
+  assert.equal(a, meetingDirSlug([' alice@example.com ', 'bob@example.com', 'alice@example.com']));
+  // Both payload shapes calendar-auto-join.js sees.
+  assert.equal(a, meetingDirSlug([{ email: 'Alice@example.com' }, { email: 'bob@example.com' }]));
+  assert.deepEqual(normaliseAttendees([{ email: 'B@x.com' }, 'a@x.com', 'a@X.com']), ['a@x.com', 'b@x.com']);
+});
+
+test("the bot's own invite address is dropped — it is on every one of its events", () => {
+  assert.equal(meetingDirSlug(['alice@example.com', 'Bot@vibe.test'], { identityEmail: 'bot@vibe.test' }),
+    meetingDirSlug(['alice@example.com']));
+  // An event with only the bot on it has no group, so no folder: the bot falls
+  // back to its own session rather than keying on nobody.
+  assert.equal(meetingDirSlug(['bot@vibe.test'], { identityEmail: 'bot@vibe.test' }), '');
+});
+
+test('no attendees means no folder, so the flag simply does not apply', () => {
+  for (const none of [null, undefined, [], ['   '], 'alice@example.com']) {
+    assert.equal(meetingDirSlug(none), '');
+    assert.equal(meetingDirFor('/UD', none), '');
+  }
+});
+
+test('a long invite list stays a legal, still-unique folder name', () => {
+  // Truncation alone would silently merge two different meetings, so past the
+  // cap the tail becomes a digest of the full list.
+  const many = Array.from({ length: 40 }, (_, i) => `student${i}@school.edu`);
+  const slug = meetingDirSlug(many);
+  assert.ok(slug.length <= 120, `folder name too long for the filesystem: ${slug.length}`);
+  assert.notEqual(slug, meetingDirSlug([...many, 'extra@school.edu']));
+  assert.ok(!/[/\\:*?"<>|]/.test(slug), `unsafe path characters in the folder name: ${slug}`);
+});
+
+test('a new meeting folder is created trusted, or the allowlist is silently ignored', () => {
+  // Trust is recorded PER DIRECTORY, so a folder created today is untrusted
+  // today — #305 one level down, and invisible because it only bites on the
+  // first call with a new group.
+  const fn = main.slice(main.indexOf('function ensureMeetingWorkdir'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.match(body, /isProjectTrusted\(claudeJson, dir\)/);
+  assert.match(body, /withTrustedProject\(claudeJson, dir\)/);
+  assert.match(body, /settings\.local\.json/, 'each folder needs its own permissions file');
+});
+
+test('the personality is COPIED in, because a sibling cannot read its way up', () => {
+  const fn = main.slice(main.indexOf('function ensureMeetingWorkdir'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.match(body, /readFileSync\(source, 'utf-8'\)/, "copy the bot's CLAUDE.md, don't import it");
+  assert.match(body, /aw\.defaultClaudeMd\(\)/, 'and fall back to the default if the bot has none');
+});
+
+test('the flag is off by default and only applies to a calendar join', () => {
+  const fn = main.slice(main.indexOf('function ensureMeetingWorkdir'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.match(body, /store\.get\('sessionPerCalendarInvitees'\) !== true\) return ''/,
+    'must be an explicit opt-in — anything looser turns it on for existing bots');
+  // No event behind the join means no invitees means no folder: today's behaviour.
+  assert.match(main, /launchClaudeTerminal\(meetCode, \{ onboardingCall, calendarEvent \}\)/);
+  assert.match(main, /const invitees = calendarEvent && Array\.isArray\(calendarEvent\.attendees\)/);
+});
+
+test('a failure to build the meeting folder falls back loudly, not silently', () => {
+  // The quiet version is a bot that answers normally while writing one meeting's
+  // notes into another's folder.
+  const fn = main.slice(main.indexOf('function ensureMeetingWorkdir'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.match(body, /console\.warn\('\[electron\] ensureMeetingWorkdir failed/);
+});
+
+test('an explicitly typed working directory still wins over the flag', () => {
+  // Same rule planAgentSession follows for a pinned session id: the app does not
+  // overrule something the user typed. But it says so, because from outside
+  // "the flag did nothing" and "the flag is broken" look identical.
+  const launch = main.slice(main.indexOf('async function launchClaudeTerminal'));
+  assert.match(launch, /const claudeDir = overrideDir \|\| meetingDir \|\| ensureAgentWorkdir\(\)/);
+  assert.match(launch, /console\.warn\('\[electron\] sessionPerCalendarInvitees is on, but/);
+});
+
+test('the session key is NOT also split by invitees — one mechanism, not two', () => {
+  // The directory is already in the cache key, so splitting the key as well
+  // would be a second mechanism for the same job, free to drift from the first.
+  const body = planBody();
+  assert.ok(!/invitee/i.test(body.replace(/^.*deliberately so.*$/gm, '')),
+    'planAgentSession must stay unaware of calendar invitees');
+  assert.match(body, /const key = sessionCacheKey\(claudeDir, name\);/);
+});
+
+test('a rename carries EVERY session the bot holds, across every directory', () => {
+  // A bot now has one cache entry per directory it has worked in — its own, plus
+  // one per group it has met — and every key ends in its name. Carrying only the
+  // current directory's entry would strand all the rest, which is the memory
+  // loss the carry-over exists to prevent, once per person the bot knows.
+  const cache = {
+    [sessionCacheKey('/UD/agent', 'Jimmy')]: 'own',
+    [sessionCacheKey('/UD/meetings/a@x.com', 'Jimmy')]: 'group-a',
+    [sessionCacheKey('/UD/meetings/b@x.com', 'Jimmy')]: 'group-b',
+  };
+  const out = renameSessionCacheEntries(cache, 'Jimmy', 'Bramble');
+  assert.equal(out.moved.length, 3);
+  assert.equal(out.cache[sessionCacheKey('/UD/agent', 'Bramble')], 'own');
+  assert.equal(out.cache[sessionCacheKey('/UD/meetings/a@x.com', 'Bramble')], 'group-a');
+  assert.equal(out.cache[sessionCacheKey('/UD/meetings/b@x.com', 'Bramble')], 'group-b');
+  assert.deepEqual(Object.keys(out.cache).filter((k) => k.endsWith('jimmy')), []);
+});
+
+test('a rename does not drag along a bot whose name merely starts the same', () => {
+  const cache = { [sessionCacheKey('/UD/agent', 'Jim')]: 'other', [sessionCacheKey('/UD/agent', 'Jimmy')]: 'mine' };
+  const out = renameSessionCacheEntries(cache, 'Jimmy', 'Bramble');
+  assert.equal(out.moved.length, 1);
+  assert.equal(out.cache[sessionCacheKey('/UD/agent', 'Jim')], 'other');
+});
+
+test('a rename never overwrites a session that already owns the destination', () => {
+  // Switching onto an existing session must stay a switch, per-directory too.
+  const cache = {
+    [sessionCacheKey('/UD/meetings/a@x.com', 'Jimmy')]: 'mine',
+    [sessionCacheKey('/UD/meetings/a@x.com', 'Bramble')]: 'theirs',
+  };
+  assert.equal(renameSessionCacheEntries(cache, 'Jimmy', 'Bramble'), null);
+  // A rename to the same name is not a rename.
+  assert.equal(renameSessionCacheEntries(cache, 'Jimmy', 'jimmy'), null);
+});
+
+test('the flag has a real toggle in Bot Settings, not just a schema entry', () => {
+  // A per-profile pref gets NO auto-generated control: the schema-driven section
+  // renders app-level prefs only (get-app-settings-schema filters on isAppLevel),
+  // and every Bot Settings control is hand-written. config-scope.js records this
+  // exact hole being fallen into once before with agentHosting — "the toggle
+  // existed, worked via set_preference, and could not be found by anyone using
+  // the app normally". All three halves have to be present or it is invisible.
+  const html = readFileSync(join(root, 'electron-app/renderer/panel.html'), 'utf8');
+  const panel = readFileSync(join(root, 'electron-app/renderer/panel.js'), 'utf8');
+  assert.match(html, /id="sessionPerCalendarInvitees"/, 'no checkbox in the panel');
+  assert.match(panel, /'sessionPerCalendarInvitees'/, 'the panel never reads or writes it');
+  // Read on load, or the box shows unchecked for a bot that has it on.
+  assert.match(panel, /sessionPerCalendarInviteesInput\.checked = !!result\?\.sessionPerCalendarInvitees/);
+  // And written on change, or ticking it does nothing.
+  assert.match(panel, /set-config', 'sessionPerCalendarInvitees', sessionPerCalendarInviteesInput\.checked/);
+  // It must appear in a get-config key list too — those calls name their keys
+  // explicitly, so a pref missing from every one of them reads back undefined
+  // forever and the checkbox is permanently unchecked.
+  const lists = [...panel.matchAll(/api\.invoke\('get-config', \[([^\]]*)\]/g)].map((m) => m[1]);
+  assert.ok(lists.some((l) => l.includes("'sessionPerCalendarInvitees'")),
+    'the pref is never fetched, so the checkbox can never load as checked');
+});
+
+test('the flag stays per-profile, not machine-wide', () => {
+  // It is identity ("who this bot keeps memories about"), not machine plumbing.
+  // Promoting it to app-level would give it a free App Settings toggle and turn
+  // it on for every bot on the machine at once — the wrong trade.
+  const scope = readFileSync(join(root, 'electron-app/config-scope.js'), 'utf8');
+  const appLevel = scope.slice(scope.indexOf('const APP_LEVEL_KEYS'), scope.indexOf('])'));
+  assert.ok(!appLevel.includes('sessionPerCalendarInvitees'), 'must not be app-level');
 });

@@ -4547,7 +4547,10 @@ function joinMeetUrl(meetUrl, { spawnAgent = true, onboardingCall = false, calen
     console.log('[electron] Sync started for room:', meetCode);
   });
   if (spawnAgent) {
-    launchClaudeTerminal(meetCode, { onboardingCall }); // the agent behind the face
+    // calendarEvent rides along for #570: its invitees are what a per-meeting
+    // session is keyed on. Only this path has it — a panel join or a pasted
+    // link has no event, and so keeps the bot's single session.
+    launchClaudeTerminal(meetCode, { onboardingCall, calendarEvent }); // the agent behind the face
   } else {
     console.log('[electron] Agent terminal not spawned — the caller is already an agent');
   }
@@ -6282,6 +6285,64 @@ function ensureAgentWorkdir() {
   return agentDir;
 }
 
+// The working directory for a call that came from a calendar event, when
+// `sessionPerCalendarInvitees` is on (#570). Creates it if new, and returns ''
+// for every case the feature does not apply to — the flag off, no event behind
+// the join, or an event with nobody on it but the bot — so the caller falls back
+// to the bot's ordinary agent dir and today's behaviour is untouched.
+//
+// Sessions are already stored PER WORKING DIRECTORY, which is why this is the
+// whole feature rather than half of it: pointing the session at a per-invitee
+// folder splits the memory, the permissions file and the CLAUDE.md in one move.
+// There is deliberately no second invitee component on the cache key — the key
+// already contains the directory, and two mechanisms for one job is how they
+// drift apart.
+function ensureMeetingWorkdir(invitees) {
+  if (store.get('sessionPerCalendarInvitees') !== true) return '';
+  const aw = require('./agent-workdir.js');
+  const dir = aw.meetingDirFor(app.getPath('userData'), invitees, { identityEmail: store.get('calendarIdentityEmail') });
+  if (!dir) return '';
+  try {
+    const fresh = !fs.existsSync(dir);
+    fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
+    const settingsPath = path.join(dir, '.claude', 'settings.local.json');
+    if (!fs.existsSync(settingsPath)) {
+      fs.writeFileSync(settingsPath, JSON.stringify(aw.defaultBotSettings(), null, 2) + '\n');
+    }
+    // COPIED from the bot's own folder, not imported from it. A sibling cannot
+    // read its way up the tree — that is the point of siblings — so the
+    // personality has to be physically present here. It then belongs to this
+    // meeting and can drift: notes about these people, gathered over weeks, is
+    // most of what the feature is for.
+    const claudeMdPath = path.join(dir, 'CLAUDE.md');
+    if (!fs.existsSync(claudeMdPath)) {
+      const source = path.join(aw.agentDirFor(app.getPath('userData')), 'CLAUDE.md');
+      let seed = '';
+      try { seed = fs.readFileSync(source, 'utf-8'); } catch { seed = aw.defaultClaudeMd(); }
+      fs.writeFileSync(claudeMdPath, seed);
+    }
+    // Trust is recorded PER DIRECTORY, so a folder created today is untrusted
+    // today. Without this every first meeting with a new group launches with
+    // "Ignoring N permissions.allow entries" and prompts mid-call — #305 again,
+    // one level down, and invisible because it only bites on the first call.
+    const home = process.env.HOME || process.env.USERPROFILE;
+    const claudeJsonPath = path.join(home, '.claude.json');
+    let claudeJson = {};
+    try { claudeJson = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf-8')); } catch { /* fresh */ }
+    if (!aw.isProjectTrusted(claudeJson, dir)) {
+      fs.writeFileSync(claudeJsonPath, JSON.stringify(aw.withTrustedProject(claudeJson, dir), null, 2) + '\n');
+    }
+    if (fresh) console.log('[electron] New meeting workdir (first call with this invite list):', dir);
+    return dir;
+  } catch (err) {
+    // Falling back to the bot's own dir keeps the call working. Say so loudly:
+    // the quiet version is a bot that answers normally while writing one
+    // meeting's notes into another's folder.
+    console.warn('[electron] ensureMeetingWorkdir failed — falling back to the shared agent dir:', err.message);
+    return '';
+  }
+}
+
 // ── Claude Code readiness (onboarding feedback loop) ─────────────────────────
 // A launched Claude session's SessionStart hook POSTs /claude-ready once it's up — which
 // only happens when Claude Code is BOTH installed and signed in. So this flag means
@@ -6442,8 +6503,15 @@ function ensureClaudeReadyHook(agentDir, port) {
 // id. Resolving ourselves keeps the readable name and cannot hit it. It also
 // avoids reading transcript files to map a title back to an id — the format of
 // what is inside them is undocumented and has broken before; a filename is not.
+// Nothing here knows about calendar invitees (#570), and deliberately so: a
+// per-meeting session is produced by handing this a different `claudeDir` (see
+// ensureMeetingWorkdir), because sessions are ALREADY stored per working
+// directory and the key already contains it. A second invitee component on the
+// key would be a second mechanism for the same job, and two mechanisms for one
+// job is how they drift apart.
 function planAgentSession(claudeDir, botName) {
-  const { resolveSessionRef, sessionExists, sessionCacheKey, resolveSessionId, resolveSessionName } = require('./agent-session.js');
+  const { resolveSessionRef, sessionExists, sessionCacheKey, resolveSessionId, resolveSessionName,
+    renameSessionCacheEntries } = require('./agent-session.js');
   const ref = resolveSessionRef(store.get('agentSession'), botName);
 
   // An explicit id in the field is the user pinning this bot to one session.
@@ -6494,14 +6562,19 @@ function planAgentSession(claudeDir, botName) {
   //
   // Only when the new name has no session of its own — that case is a switch to
   // an existing session, and must not drag this one on top of it.
+  //
+  // EVERY session under the old name moves, across every directory, not just the
+  // one this launch wants (#570): with per-meeting working directories a bot
+  // holds one entry per group it has met, and carrying only the current
+  // directory's entry would strand all the others.
   if (!cache[key] && ref.name && ref.name !== name) {
-    const from = sessionCacheKey(claudeDir, ref.name);
-    if (cache[from]) {
-      cache[key] = cache[from];
-      delete cache[from];
+    const renamed = renameSessionCacheEntries(cache, ref.name, name);
+    if (renamed) {
+      Object.keys(cache).forEach((k) => delete cache[k]);
+      Object.assign(cache, renamed.cache);
       try { store.set('agentSessionCache', cache); } catch { /* best effort */ }
       console.log('[electron] Bot renamed', JSON.stringify(ref.name), '→', JSON.stringify(name),
-        '— carrying session', cache[key], 'over rather than starting a new one');
+        `— carrying ${renamed.moved.length} session(s) over rather than starting new ones`);
     }
   }
 
@@ -6516,6 +6589,46 @@ function planAgentSession(claudeDir, botName) {
   // payload says which session started but not which name we asked for.
   pendingSessionCacheKey = key;
   return { resumeSessionId: '', sessionName: name };
+}
+
+// The (working dir, session name) pair in effect right now — what
+// planAgentSession would key the cache on if it ran this instant. Returns null
+// when the field pins an explicit id, since a pin has no name-keyed entry.
+// Deliberately does NOT call ensureAgentWorkdir: this runs on every panel write,
+// and reading a preference should not create a directory as a side effect.
+function agentSessionPair() {
+  try {
+    const { resolveSessionRef } = require('./agent-session.js');
+    const cwd = store.get('claudeWorkDir') || require('./agent-workdir.js').agentDirFor(app.getPath('userData'));
+    const ref = resolveSessionRef(store.get('agentSession'), resolvedBotName());
+    if (ref.kind !== 'name') return null;
+    // Mirrors planAgentSession: with the field on auto, the name FOLLOWS the
+    // bot, so that is the pair a launch would actually use.
+    const auto = store.get('agentSessionAuto') !== false;
+    const name = auto ? (require('./agent-session.js').resolveSessionName(resolvedBotName()) || ref.name) : ref.name;
+    return { cwd, name };
+  } catch { return null; }
+}
+
+// Drop the cache entry a manual edit orphaned. The decision of WHETHER there is
+// one is staleSessionCacheKey's (agent-session.js, and tested there); this only
+// does the write.
+function forgetStaleAgentSession(before, after) {
+  try {
+    const { staleSessionCacheKey } = require('./agent-session.js');
+    const key = staleSessionCacheKey(before, after);
+    if (!key) return;
+    const cache = { ...(store.get('agentSessionCache') || {}) };
+    // The key AND its invitee-suffixed children (#570). One orphan under a bot's
+    // name is the cosmetic version of this bug; one orphan per group of people
+    // the bot has met is how it becomes resuming the wrong meeting's session.
+    const dead = Object.keys(cache).filter((k) => k === key || k.startsWith(`${key}\n`));
+    if (!dead.length) return;
+    dead.forEach((k) => delete cache[k]);
+    store.set('agentSessionCache', cache);
+    console.log('[electron] Session settings edited by hand — forgetting', dead.length,
+      'cached session(s) under', JSON.stringify(key), 'so they cannot be resumed by accident later');
+  } catch (err) { console.warn('[electron] forgetStaleAgentSession failed:', err.message); }
 }
 
 // Set at launch, consumed by the next hook ping. One agent at a time is already
@@ -6626,7 +6739,7 @@ function notifyClaudeSignInNeeded() {
   }).catch(() => { /* dismissed */ });
 }
 
-async function launchClaudeTerminal(meetCode, { onboardingCall = false } = {}) {
+async function launchClaudeTerminal(meetCode, { onboardingCall = false, calendarEvent = null } = {}) {
   const { execFile } = require('child_process');
   // Test fleets drive the bot from the harness over MCP — they have no use for a
   // spawned agent, and every start_call left another Terminal window on the
@@ -6686,7 +6799,23 @@ async function launchClaudeTerminal(meetCode, { onboardingCall = false } = {}) {
   }
   // #305: default to this profile's trusted agent dir instead of the untrusted
   // /tmp. An explicit Settings → "Claude Working Directory" still wins.
-  const claudeDir = store.get('claudeWorkDir') || ensureAgentWorkdir();
+  const invitees = calendarEvent && Array.isArray(calendarEvent.attendees) ? calendarEvent.attendees : null;
+  // #570: with the flag on, a join that came from a calendar event runs in a
+  // per-invitee sibling folder instead — its own session, permissions and
+  // CLAUDE.md. '' for every case the feature doesn't apply to.
+  const meetingDir = ensureMeetingWorkdir(invitees);
+  // An explicit Settings → "Claude Working Directory" still wins, even over the
+  // flag. Someone who typed a path meant that path, and quietly running
+  // somewhere else would be the app overruling an instruction — the same rule
+  // planAgentSession follows for a pinned session id. Said out loud rather than
+  // silently, because from the outside "the flag did nothing" and "the flag is
+  // broken" look identical.
+  const overrideDir = store.get('claudeWorkDir');
+  if (meetingDir && overrideDir) {
+    console.warn('[electron] sessionPerCalendarInvitees is on, but Claude Working Directory is set to',
+      overrideDir, '— using that. Clear it to get per-meeting folders.');
+  }
+  const claudeDir = overrideDir || meetingDir || ensureAgentWorkdir();
   // Ensure this dir's session pings /claude-ready on start (feedback loop for readiness).
   ensureClaudeReadyHook(claudeDir, localServer.port);
   // Use the bot's name (getActiveBotName) so the spawned /join-call <code> <name>
@@ -10974,7 +11103,12 @@ function setupIPC() {
   });
 
   ipcMain.handle('set-config', (_event, key, value) => {
+    // #546: these two feed the session cache key, so read the pair BEFORE the
+    // write and drop whatever the edit moved off (forgetStaleAgentSession).
+    const sessionKeyed = key === 'claudeWorkDir' || key === 'agentSession';
+    const beforePair = sessionKeyed ? agentSessionPair() : null;
     store.set(key, value);
+    if (sessionKeyed) forgetStaleAgentSession(beforePair, agentSessionPair());
     // Every key, not only the ones with a live-apply hook below — the panel shows
     // more prefs than this function specially handles, and the wizard writes
     // several of them.

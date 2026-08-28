@@ -418,6 +418,13 @@
           <div style="font-size:11px;color:#666;margin-top:6px" id="agentSessionStatus">…</div>
         </div>
         <div class="field">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="sessionPerCalendarInvitees" />
+            One session per calendar meeting
+          </label>
+          <div style="font-size:11px;color:#666;margin-top:2px">Off, this bot keeps <em>one</em> session, so everyone it ever talks to shares the same context. On, a call it joined for a <em>calendar event</em> runs in its own folder named for that event's invitees — meet the same people next week and it resumes what it knew; meet different people and it doesn't. Same bot, same name, same personality either way (the <code>CLAUDE.md</code> below is copied into each new folder, then free to drift). The key is the invitee <em>emails</em>, never the names people type into Meet. A call with no calendar event behind it is unaffected. Note: setting a Working Directory above overrides this.</div>
+        </div>
+        <div class="field">
           <label for="agentClaudeMd">Personality (CLAUDE.md)</label>
           <div style="font-size:11px;color:#666;margin:0 0 6px">The bot's standing instructions, loaded at the start of every call. This is the <code>CLAUDE.md</code> in its working folder. Edit freely.</div>
           <textarea id="agentClaudeMd" rows="12" spellcheck="false" placeholder="(loading…)" style="width:100%;box-sizing:border-box;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.45;resize:vertical"></textarea>

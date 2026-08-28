@@ -89,6 +89,7 @@ const claudeModelInput = document.getElementById('claudeModel');
 const emojiSetInput = document.getElementById('emojiSet');
 const captionLanguageInput = document.getElementById('captionLanguage');
 const dangerousModeInput = document.getElementById('dangerousMode');
+const sessionPerCalendarInviteesInput = document.getElementById('sessionPerCalendarInvitees');
 const ackShortMinInput = document.getElementById('ackShortMin');
 const ackLongMinInput = document.getElementById('ackLongMin');
 const ackShortPhrasesInput = document.getElementById('ackShortPhrases');
@@ -1921,7 +1922,7 @@ api.invoke('get-upcoming-calendar-events').then((r) => {
 // bot in the wizard saw "Unnamed bot" in Settings and reasonably concluded the
 // save had failed, when it had worked (#190, #143).
 function loadConfigIntoControls() {
-  return api.invoke('get-config', ['botName', 'calendarIdentityEmail', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'ttsProvider', 'claudeWorkDir', 'agentSession', 'claudeModel', 'emojiSet', 'captionLanguage', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
+  return api.invoke('get-config', ['botName', 'calendarIdentityEmail', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'ttsProvider', 'claudeWorkDir', 'agentSession', 'sessionPerCalendarInvitees', 'claudeModel', 'emojiSet', 'captionLanguage', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
   if (result?.botName) {
     botNameInput.value = result.botName;
     currentBotName = result.botName;
@@ -2002,6 +2003,7 @@ function loadConfigIntoControls() {
     captionLanguageInput.value = result.captionLanguage || '';
   }
   if (result?.dangerousMode) dangerousModeInput.checked = true;
+  if (sessionPerCalendarInviteesInput) sessionPerCalendarInviteesInput.checked = !!result?.sessionPerCalendarInvitees;
   if (result?.ackShortMin != null) ackShortMinInput.value = result.ackShortMin;
   if (result?.ackLongMin != null) ackLongMinInput.value = result.ackLongMin;
   if (Array.isArray(result?.ackShortPhrases)) ackShortPhrasesInput.value = result.ackShortPhrases.join('\n');
@@ -3348,6 +3350,14 @@ if (emojiSetInput) emojiSetInput.addEventListener('change', async () => {
   // the face on this screen sat on the old artwork for up to a minute, which
   // reads as "the setting didn't take".
   renderAgentAvatar();
+});
+
+sessionPerCalendarInviteesInput?.addEventListener('change', () => {
+  api.invoke('set-config', 'sessionPerCalendarInvitees', sessionPerCalendarInviteesInput.checked);
+  // Which session is in use depends on which directory the next call starts in,
+  // and this changes that — for a calendar join, at least. The status line below
+  // the field would otherwise keep describing the session it was showing before.
+  refreshAgentSession();
 });
 
 dangerousModeInput.addEventListener('change', () => {

@@ -10433,19 +10433,33 @@ function createMainWindow() {
         },
         { type: 'separator' },
         {
-          // Advanced (#282 follow-up): drive the bot's own webview to any URL to
+          // Advanced (#282 follow-up): drive the bot's own browser to any URL to
           // set up Slack/Google account state inside its partition. Pre-fills the
-          // prompt with the view's CURRENT URL so you can see where it landed
+          // prompt with the window's CURRENT URL so you can see where it landed
           // (redirects/blank pages) and edit from there.
+          //
+          // The target is the SHARE window, which sits on the same partition as
+          // meetView — one cookie jar, so a login done there is live for the bot
+          // — and, unlike meetView, is not the call. See the navigate-webview
+          // handler for why that swap happened.
           label: 'Navigate Webview…',
           accelerator: 'CmdOrCtrl+Shift+L',
           click: () => {
             if (panelView && !panelView.webContents.isDestroyed()) {
-              // (The pop-out happens in the navigate-webview handler, AFTER the
-              // URL is entered — popping out here would put a child window over
-              // the panel that's asking for the URL.)
+              // (Showing the window happens in the navigate-webview handler,
+              // AFTER the URL is entered — raising it here would put a child
+              // window over the panel that's asking for the URL.)
               let currentUrl = '';
-              try { if (meetView && !meetView.webContents.isDestroyed()) currentUrl = meetView.webContents.getURL(); } catch { /* ignore */ }
+              try {
+                if (whiteboardWindow && !whiteboardWindow.isDestroyed()) {
+                  currentUrl = whiteboardWindow.webContents.getURL();
+                }
+              } catch { /* ignore */ }
+              // Presenting means this window is ON SCREEN to everyone in the
+              // call, so whatever is typed here — a login page, a half-loaded
+              // site — is watched live. Worth a warning; not worth refusing,
+              // since fixing a broken share is a real reason to do it.
+              const sharing = !!(localServer && localServer.sharing);
               // Raise the app window so the URL prompt is actually on screen —
               // it may be behind an already-open pop-out, or minimised.
               try {
@@ -10462,7 +10476,7 @@ function createMainWindow() {
               try { panelView.webContents.focus(); } catch { /* ignore */ }
               // ADDRESSED, not broadcast (#229): a COMMAND that opens a prompt.
               // Three windows would ask three times for one menu click.
-              panelView.webContents.send('navigate-webview-prompt', { currentUrl });
+              panelView.webContents.send('navigate-webview-prompt', { currentUrl, sharing });
             }
           },
         },
@@ -12438,12 +12452,22 @@ function setupIPC() {
     return { ok: true, mode: 'account' };
   });
 
-  // Advanced/power-user: point the embedded webview at an arbitrary URL so the
+  // Advanced/power-user: point a browser surface at an arbitrary URL so the
   // operator can drive Slack or Google into a needed state (accept an invite,
   // switch workspace, finish a sign-in) inside the bot's OWN partition — the
-  // same cookies the bot uses. Navigates the CURRENT view in place (Meet or
-  // Slack), without switching providers. Triggered by the "Navigate Webview…"
-  // menu item (⌘⇧L) → panel prompt. Not exposed to the agent (operator-only).
+  // same cookies the bot uses. Triggered by the "Navigate Webview…" menu item
+  // (⌘⇧L) → panel prompt. Not exposed to the agent (operator-only).
+  //
+  // It navigates the SHARE window, not meetView. It used to be meetView, and
+  // that made the command unusable during the only time anyone needs it: the
+  // Meet view IS the call, so navigating it away hangs up. Someone reaching for
+  // this mid-call to fix a Slack login would end the meeting instead.
+  //
+  // The share window works because it is created on SESSION_PARTITION — the
+  // same partition as meetView, deliberately, so the shared surface inherits
+  // the bot's credentials (see createWhiteboardWindow). One cookie jar: a login
+  // completed here is live in the Meet view, which is the whole point of the
+  // command. Nothing about the call is touched.
   ipcMain.handle('navigate-webview', (_event, rawUrl) => {
     // Prepend https:// when the user typed a bare host (a different explicit
     // scheme is still refused). See nav-url.js.
@@ -12451,21 +12475,24 @@ function setupIPC() {
     const norm = normalizeNavUrl(rawUrl);
     if (!norm.ok) return { ok: false, error: norm.error };
     const url = norm.url;
-    if (!meetView || meetView.webContents.isDestroyed()) {
-      activateMeetProvider();
+    if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
+      // Same construction path onLoadUrl uses — createWhiteboardWindow loads
+      // the URL itself, so there is no second loadURL below for this branch.
+      whiteboardWindow = createWhiteboardWindow(url);
+    } else {
+      whiteboardWindow.loadURL(url);
     }
-    if (meetView && !meetView.webContents.isDestroyed()) {
-      console.log('[electron] navigate-webview →', url);
-      meetView.webContents.loadURL(url);
-      // Show the result. Out of a call the bot's view isn't on screen at all,
-      // so without this you'd drive the webview somewhere and have nothing to
-      // look at — seeing where the bot's browser landed IS the point of this
-      // command. Only when it isn't already popped: if the user has it open,
-      // leave their window exactly where and how it is.
-      if (botViewState !== 'popped') setBotViewState('popped');
-      return { ok: true, url };
+    if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
+      return { ok: false, error: 'could not open the share window' };
     }
-    return { ok: false, error: 'no webview' };
+    console.log('[electron] navigate-webview →', url,
+      localServer.sharing ? '(WHILE PRESENTING — visible to the room)' : '');
+    // Show the result. The share window is normally hidden, so without this you
+    // would drive it somewhere and have nothing to look at — seeing where the
+    // browser landed IS the point of this command. showInactive, not show: it
+    // must not steal focus from the URL prompt or, worse, from Meet mid-call.
+    try { whiteboardWindow.showInactive(); } catch { /* ignore */ }
+    return { ok: true, url, sharing: !!localServer.sharing };
   });
 
   // HTTP Basic/Digest auth for the bot's webview. Electron cancels auth

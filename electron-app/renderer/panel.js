@@ -1558,7 +1558,9 @@ function inlinePrompt({ title, placeholder = '', initial = '', okLabel = 'OK' })
     box.style.cssText = 'background:#2a2d31;border:1px solid #5f6368;border-radius:10px;padding:16px;width:min(360px,86vw);box-shadow:0 10px 40px rgba(0,0,0,0.6)';
     const t = document.createElement('div');
     t.textContent = title;
-    t.style.cssText = 'color:#e8eaed;font-size:13px;margin-bottom:10px;line-height:1.4';
+    // pre-line so a caller can put a blank line between a warning and the ask.
+    // textContent is still what's set — the title stays untrusted text, never HTML.
+    t.style.cssText = 'color:#e8eaed;font-size:13px;margin-bottom:10px;line-height:1.4;white-space:pre-line';
     const input = document.createElement('input');
     input.type = 'text'; input.value = initial; input.placeholder = placeholder;
     input.style.cssText = 'width:100%;box-sizing:border-box;background:#202124;border:1px solid #5f6368;border-radius:6px;color:#e8eaed;padding:8px;font-size:13px;outline:none';
@@ -2743,12 +2745,20 @@ api.on('meet-mode-changed', () => {
 // embedded view there, so the operator can set up Slack/Google account state in
 // the bot's own partition (#282).
 api.on('navigate-webview-prompt', async (data) => {
-  // Pre-fill the CURRENT webview URL (passed from main) so you can see where the
-  // view actually landed — handy for debugging redirects/blank pages — and edit
-  // from there. Falls back to https:// when there's no current URL.
+  // Pre-fill the CURRENT URL of the share window (passed from main) so you can
+  // see where it actually landed — handy for debugging redirects/blank pages —
+  // and edit from there. Falls back to https:// when there's no current URL.
   const current = (data && data.currentUrl) || '';
+  // Presenting means this window is on screen to everyone in the call, so a
+  // sign-in page typed here is watched live. Say so — but don't refuse: fixing
+  // a broken share is a legitimate reason to navigate mid-presentation.
+  const sharing = !!(data && data.sharing);
   const url = await inlinePrompt({
-    title: 'Navigate the bot webview to URL (advanced — Slack/Google account setup):',
+    title: sharing
+      ? '⚠️ YOU ARE PRESENTING. This window is on screen to everyone in the '
+        + 'call, so anything you load here is visible to them, sign-in pages '
+        + 'included.\n\nNavigate the shared window to URL:'
+      : 'Navigate the bot webview to URL (advanced: Slack/Google account setup):',
     initial: current || 'https://', okLabel: 'Go',
   });
   if (!url) return;

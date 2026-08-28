@@ -1932,12 +1932,19 @@ class LocalServer {
     const bgDir = __dirname.includes('.asar')
       ? path.join(process.resourcesPath, 'backgrounds', 'presets')
       : path.join(__dirname, 'backgrounds', 'presets');
+    // Raster as well as vector. The presets were hand-written SVG when this was
+    // the only way to author one; they are now generated images, and
+    // avatarBackgroundSvg's `file:<path>` shortcut takes any of these formats and
+    // inlines it. Filtering to .svg alone silently listed nothing once the
+    // presets became PNGs — an empty picker with no error, which is the worst
+    // shape a bug like this can take.
+    const BG_EXTS = /\.(svg|png|jpe?g|webp|gif)$/i;
     let backgrounds = [];
     try {
       backgrounds = fs.readdirSync(bgDir)
-        .filter((f) => f.toLowerCase().endsWith('.svg'))
+        .filter((f) => BG_EXTS.test(f))
         .sort()
-        .map((f) => ({ name: f.replace(/\.svg$/i, ''), path: path.join(bgDir, f) }));
+        .map((f) => ({ name: f.replace(BG_EXTS, ''), path: path.join(bgDir, f) }));
     } catch { /* none bundled */ }
     return { emojiSets, backgrounds };
   }

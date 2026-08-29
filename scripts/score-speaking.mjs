@@ -231,10 +231,19 @@ function main() {
   const map = new Map(flag('map', '').split(',').filter(Boolean).map((kv) => kv.split('=')));
   const stepMs = Number(flag('step', '10'));
 
-  const allTs = [];
-  for (const p of byParticipant.values()) { for (const t of p.muts) allTs.push(t); for (const r of p.readings) allTs.push(r.t); }
-  if (!allTs.length) { console.error('no events in capture'); process.exit(2); }
-  const t0 = Math.min(...allTs), t1 = Math.max(...allTs);
+  // Track the extent as we go rather than collecting every timestamp and
+  // spreading it into Math.min/max. `Math.min(...allTs)` throws
+  // "RangeError: Maximum call stack size exceeded" once the array is large
+  // enough — each element becomes a function argument, and the limit is on the
+  // order of 10^5. A real capture blows straight past it: a 51-minute call
+  // wrote 613,347 events, and the whole archive sweep failed on every call
+  // that had a full-length recording while the short ones passed, which is
+  // exactly the shape that makes this look like a data problem rather than a
+  // code one.
+  let t0 = Infinity, t1 = -Infinity, nTs = 0;
+  const seeTs = (t) => { nTs++; if (t < t0) t0 = t; if (t > t1) t1 = t; };
+  for (const p of byParticipant.values()) { for (const t of p.muts) seeTs(t); for (const r of p.readings) seeTs(r.t); }
+  if (!nTs) { console.error('no events in capture'); process.exit(2); }
   const grid = [];
   for (let t = t0; t <= t1; t += stepMs) grid.push(t);
 

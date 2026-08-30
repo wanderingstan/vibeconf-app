@@ -19,7 +19,13 @@ PROFILE="nightly-linux"
 SRC="$HOME/vibeconf-app"
 ELECTRON="$HOME/electron-dist/electron"
 ACFG="$HOME/.config/Vibeconferencing/config.json"
-PORT=7865
+# 7866, NOT the default 7865. The primary app owns 7865, and on a box where one
+# is service-managed (vibeconf-app.service on the test instance) it holds that
+# port across reboots and process kills — so a lane pinned to 7865 can never get
+# its own instance up. 7866+ is where profile bots already live (main.js:7126),
+# and --local-port below puts our app there. The guard still stands watch: this
+# removes the collision, it does not make the check unnecessary.
+PORT=7866
 BASE="http://127.0.0.1:$PORT"
 export DISPLAY="${DISPLAY:-:99}"
 
@@ -108,7 +114,7 @@ echo "=== shape under test: $WANT_PLAN ==="
 
 rm -f /tmp/nightly-linux.log
 VIBECONF_REQUIRE_TOKEN=0 nohup "$ELECTRON" "$SRC/electron-app" --no-sandbox \
-  --profile="$PROFILE" >/tmp/nightly-linux.log 2>&1 &
+  --profile="$PROFILE" --local-port="$PORT" >/tmp/nightly-linux.log 2>&1 &
 
 # POLL for the local server, don't sleep a guessed amount.
 #

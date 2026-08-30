@@ -32,6 +32,16 @@ ipcRenderer.on('extension-message', (_event, message) => {
     meetProvider.setCameraOn(true);
   } else if (message.action === 'camera-off') {
     meetProvider.setCameraOn(false);
+  } else if (message.action === 'start-realtime' || message.action === 'stop-realtime') {
+    // EXPERIMENT: realtime speech-to-speech. Only the short-lived ephemeral
+    // secret crosses into the page; the API key stays in main.
+    window.postMessage({
+      __botsInCalls: true,
+      __fromExtension: true,
+      action: message.action,
+      secret: message.secret,
+      model: message.model,
+    }, '*');
   } else if (message.action === 'set-banner-prefix-visible') {
     // The banner stays (it shows status + errors), but its "🤖 Bot's view —"
     // PREFIX is redundant in the thumbnail column — the panel bar right above it
@@ -3956,6 +3966,16 @@ ipcRenderer.on('trigger-record', (_event, { recording, room, startedAt, botName 
     action: recording ? 'start-recording' : 'stop-recording',
     payload: { room, startedAt, botName },
   }, '*');
+});
+
+// EXPERIMENT: realtime voice status (RealtimeVoice in page-inject.js posts these).
+// Without this a failed session is invisible unless someone has the page console
+// open, which for a bot on a call is nobody.
+window.addEventListener('message', (ev) => {
+  const m = ev && ev.data;
+  if (m && m.source === 'vibeconf-realtime-status') {
+    ipcRenderer.send('realtime-status', { type: m.type, detail: m.detail });
+  }
 });
 
 // ---------------------------------------------------------------------------

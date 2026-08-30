@@ -429,6 +429,38 @@ const PREFERENCES = {
       'Which engine renders the Voicebox profile (e.g. "kokoro"). Set alongside ' +
       'voiceboxProfileId by set_voice; a profile id without its engine will not speak.',
   },
+  realtimeVoice: {
+    type: 'boolean',
+    default: false,
+    description:
+      'EXPERIMENT: hand this bot voice duty to the OpenAI realtime speech-to-speech ' +
+      'model instead of the caption/Claude/ElevenLabs loop. The bot then hears the call ' +
+      'as audio and answers as audio, in one model, with sub-second turn-taking and real ' +
+      'barge-in. It is NOT connected to Claude, so it cannot read your repo, use tools, ' +
+      'or do anything the fast model cannot do alone. Per bot: leave it off and this bot ' +
+      'behaves exactly as before, so a realtime bot and normal Claude-backed bots can sit ' +
+      'in the same call. Needs realtimeApiKey (an OpenAI key) in config.json. Audio bills ' +
+      'per minute in both directions for as long as the bot is in the call, including ' +
+      'while nobody is talking.',
+  },
+  realtimeVoiceName: {
+    type: 'string',
+    default: 'cedar',
+    description:
+      'Which OpenAI voice the realtime model speaks in (for example "cedar", "marin", ' +
+      '"alloy"). Only used when realtimeVoice is on. These are a different and much ' +
+      'smaller set than the ElevenLabs voices, and there is no cloning, so a bot that ' +
+      'switches to realtime will not sound like it did before. Voice continuity is a ' +
+      'per-bot property, so that only matters within one bot.',
+  },
+  realtimeModel: {
+    type: 'string',
+    default: 'gpt-realtime',
+    hiddenInSettingsUI: true,
+    description:
+      'Which realtime model to open the session against. Only used when realtimeVoice ' +
+      'is on. Here so a model rename does not need a release.',
+  },
   avatarBackgroundSvg: {
     type: 'string',
     default: '',

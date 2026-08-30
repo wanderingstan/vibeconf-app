@@ -3037,6 +3037,12 @@
       const self = this;
       const _RTCPeerConnection = window.RTCPeerConnection;
 
+      // Keep the NATIVE constructor reachable. Anything in this page that opens
+      // its own peer connection (the realtime voice session below) must use
+      // this one, or the hook we are about to install files the bot's own voice
+      // as a call participant and feeds it into recording and STT.
+      window.__vibeconfNativeRTCPeerConnection = _RTCPeerConnection;
+
       // We need to create a proper subclass to preserve instanceof checks
       // that Meet's code may rely on
       window.RTCPeerConnection = function (...args) {
@@ -3164,6 +3170,233 @@
 
   // Expose for debugging from console
   window.__botsInCallsAudioCapture = audioCaptureManager;
+
+  // ---------------------------------------------------------------------------
+  // RealtimeVoice (EXPERIMENT) — OpenAI speech-to-speech, wired straight to the
+  // call audio. Off unless the realtimeVoice pref is on for THIS bot.
+  //
+  // Both halves of what a realtime session needs already exist in this page and
+  // nowhere else, which is why this lives here rather than in main:
+  //
+  //   IN   AudioCaptureManager holds the remote WebRTC tracks (other people).
+  //        We mix them into one stream and publish that as the session mic.
+  //   OUT  VirtualMic.destination IS the mic Meet publishes. Connecting the
+  //        model audio into it is all it takes for the room to hear the bot.
+  //
+  // No encode/IPC/decode round trip, and the avatar lip-syncs for free because
+  // we tap mic.analyser the same way normal TTS playback does.
+  //
+  // The main process holds the API key and mints a ~60s ephemeral secret; only
+  // that secret ever reaches this page.
+  class RealtimeVoice {
+    constructor() {
+      this.pc = null;
+      this.dc = null;
+      this.mixDest = null;      // where remote participants are summed for upload
+      this.mixed = new Map();   // participantId -> MediaStreamAudioSourceNode
+      this.sink = null;         // keeps the model audio flowing (see below)
+      this.outGain = null;
+      this.pollTimer = null;
+      this.active = false;
+      this.startedAt = 0;
+    }
+
+    _report(type, detail) {
+      try {
+        window.postMessage({ source: 'vibeconf-realtime-status', type, detail }, '*');
+      } catch { /* page torn down */ }
+      console.log('[bots-in-calls] realtime:', type, detail == null ? '' : detail);
+    }
+
+    // Sum every remote participant track into one upload stream. Deliberately
+    // NOT connected to mic.destination: that would publish everyone back into
+    // the bot's own mic and echo the whole room.
+    _mixParticipants(ctx) {
+      if (!this.mixDest) this.mixDest = ctx.createMediaStreamDestination();
+      let added = 0;
+      const parts = (audioCaptureManager && audioCaptureManager.participants) || new Map();
+      for (const [id, pa] of parts) {
+        if (this.mixed.has(id)) continue;
+        const track = pa && pa.track;
+        if (!track || track.readyState !== 'live') continue;
+        try {
+          const src = ctx.createMediaStreamSource(new MediaStream([track]));
+          src.connect(this.mixDest);
+          this.mixed.set(id, src);
+          added++;
+        } catch (err) {
+          console.warn('[bots-in-calls] realtime: could not mix', id, err.message);
+        }
+      }
+      return added;
+    }
+
+    async start({ secret, model }) {
+      if (this.active) { this._report('already-active'); return; }
+      if (!secret || !model) { this._report('failed', 'missing secret or model'); return; }
+
+      // The bot has to be publishing a mic before we can speak into it. By
+      // bot-joined time it is; if it somehow is not, say so rather than
+      // building a second AudioContext nobody is listening to.
+      if (!mic || !mic.audioCtx || !mic.destination) {
+        this._report('failed', 'no VirtualMic yet, cannot route model audio into the call');
+        return;
+      }
+      const ctx = mic.audioCtx;
+      if (ctx.state === 'suspended') { try { await ctx.resume(); } catch { /* best effort */ } }
+
+      const Native = window.__vibeconfNativeRTCPeerConnection || window.RTCPeerConnection;
+      const pc = new Native();
+      this.pc = pc;
+
+      // OUT: model audio into the mic Meet publishes, plus a parallel tap into
+      // the analyser so the avatar animates exactly as it does for TTS.
+      pc.addEventListener('track', (event) => {
+        if (event.track.kind !== 'audio') return;
+        const stream = event.streams[0] || new MediaStream([event.track]);
+        try {
+          const src = ctx.createMediaStreamSource(stream);
+          this.outGain = ctx.createGain();
+          this.outGain.gain.value = 1;
+          src.connect(this.outGain).connect(mic.destination);
+          if (mic.analyser) src.connect(mic.analyser);
+        } catch (err) {
+          this._report('failed', 'could not route model audio: ' + err.message);
+          return;
+        }
+
+        // Chromium will not pull samples from a remote WebRTC track that is fed
+        // only into an AudioContext. Without a media element consuming it the
+        // graph stays silent, which looks exactly like the model never spoke.
+        // Muted, so this element never doubles the audio locally.
+        try {
+          const el = new Audio();
+          el.srcObject = stream;
+          el.muted = true;
+          el.play().catch(() => {});
+          this.sink = el;
+        } catch { /* non-fatal */ }
+
+        this._report('audio-connected');
+      });
+
+      pc.addEventListener('connectionstatechange', () => {
+        this._report('pc-' + pc.connectionState);
+        if (pc.connectionState === 'failed') this.stop('connection failed');
+      });
+
+      // IN: the room, as one mixed track.
+      const mixedCount = this._mixParticipants(ctx);
+      const upload = this.mixDest.stream.getAudioTracks()[0];
+      if (!upload) { this._report('failed', 'no upload track'); return this.stop('no upload track'); }
+      pc.addTrack(upload, this.mixDest.stream);
+      this._report('mixed-participants', String(mixedCount));
+
+      // People join mid-call and Meet reassigns its track slots, so re-check.
+      // Polling because AudioCaptureManager emits no events; cheap and good
+      // enough for a first draft.
+      this.pollTimer = setInterval(() => {
+        if (!this.active) return;
+        const n = this._mixParticipants(ctx);
+        if (n) this._report('mixed-participants', '+' + n);
+      }, 3000);
+
+      this.dc = pc.createDataChannel('oai-events');
+      this.dc.onopen = () => {
+        this._report('datachannel-open');
+        // Pin the transcription language and stiffen VAD a little: room noise
+        // tripping VAD is what makes the model open a call unprompted.
+        this._send({
+          type: 'session.update',
+          session: {
+            audio: {
+              input: {
+                transcription: { model: 'whisper-1', language: 'en' },
+                turn_detection: {
+                  type: 'server_vad', threshold: 0.6,
+                  prefix_padding_ms: 300, silence_duration_ms: 600,
+                },
+              },
+            },
+          },
+        });
+      };
+      this.dc.onmessage = (e) => {
+        let m; try { m = JSON.parse(e.data); } catch { return; }
+        if (m.type === 'response.audio_transcript.done' ||
+            m.type === 'response.output_audio_transcript.done') {
+          this._report('bot-said', m.transcript || '');
+        } else if (m.type === 'conversation.item.input_audio_transcription.completed') {
+          this._report('heard', m.transcript || '');
+        } else if (m.type === 'error') {
+          this._report('model-error', JSON.stringify(m.error || m).slice(0, 200));
+        }
+      };
+
+      try {
+        await pc.setLocalDescription(await pc.createOffer());
+        const answer = await this._negotiate(pc.localDescription.sdp, secret, model);
+        await pc.setRemoteDescription({ type: 'answer', sdp: answer });
+      } catch (err) {
+        this._report('failed', err.message);
+        return this.stop('negotiation failed');
+      }
+
+      this.active = true;
+      this.startedAt = Date.now();
+      this._report('live', model);
+    }
+
+    async _negotiate(sdp, secret, model) {
+      const res = await fetch('https://api.openai.com/v1/realtime/calls?model=' +
+        encodeURIComponent(model), {
+        method: 'POST',
+        body: sdp,
+        headers: { Authorization: 'Bearer ' + secret, 'Content-Type': 'application/sdp' },
+      });
+      if (res.ok) return await res.text();
+      // Surface the server message, not just the status: 429 here is normally
+      // billing rather than load, and that is only visible in the body.
+      const body = await res.text().catch(() => '');
+      let why = body.slice(0, 200);
+      try { why = JSON.parse(body).error.message || why; } catch { /* not JSON */ }
+      throw new Error('SDP ' + res.status + ': ' + why);
+    }
+
+    _send(o) {
+      if (this.dc && this.dc.readyState === 'open') this.dc.send(JSON.stringify(o));
+    }
+
+    stop(why) {
+      if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
+      for (const src of this.mixed.values()) { try { src.disconnect(); } catch { /* gone */ } }
+      this.mixed.clear();
+      try { if (this.outGain) this.outGain.disconnect(); } catch { /* gone */ }
+      this.outGain = null;
+      try { if (this.sink) { this.sink.pause(); this.sink.srcObject = null; } } catch { /* gone */ }
+      this.sink = null;
+      try { if (this.dc) this.dc.close(); } catch { /* gone */ }
+      this.dc = null;
+      try { if (this.pc) this.pc.close(); } catch { /* gone */ }
+      this.pc = null;
+      this.mixDest = null;
+      if (this.active) this._report('stopped', why || '');
+      this.active = false;
+    }
+  }
+
+  const realtimeVoice = new RealtimeVoice();
+  window.__vibeconfRealtimeVoice = realtimeVoice; // console debugging
+
+  window.addEventListener('message', (event) => {
+    if (!event.data || event.source !== window) return;
+    if (event.data.action === 'start-realtime') {
+      realtimeVoice.start({ secret: event.data.secret, model: event.data.model });
+    } else if (event.data.action === 'stop-realtime') {
+      realtimeVoice.stop('asked to stop');
+    }
+  });
+
 
   // ---------------------------------------------------------------------------
   // CallRecorder (#209) — per-track call audio to disk, for debugging.

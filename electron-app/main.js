@@ -13,6 +13,7 @@ const { MEET } = require('./meet-selectors.js'); // pure data — safe in the ma
 const { resolveSvg } = require('./svg-resolver.js');
 // One source of truth for the unconfigured bot name — see preferences-schema.
 const { DEFAULT_BOT_NAME, PREFERENCES } = require('./preferences-schema');
+const { resolveRealtimeConfig, mintEphemeralSession, buildInstructions } = require('./realtime-session');
 const { resolveBotName, botNameForAppUI } = require('./bot-name.js');
 const { resolveVoice } = require('./voice-status.js');
 const { isInCall, isFinished, isCallComplete } = require('./call-phase.js');
@@ -931,11 +932,54 @@ function beginAfterCallWorkOrTeardown(reason) {
 // (the old panel-button behavior) just killed the media connection on
 // nav-away and left a ghost participant for others until Google's timeout
 // reaped it — then hands off to beginAfterCallWorkOrTeardown for the rest.
+// --- EXPERIMENT: realtime speech-to-speech voice -----------------------------
+// Off unless realtimeVoice is set for THIS bot, so a realtime bot and normal
+// Claude-backed bots can sit in the same call. The API key never leaves main:
+// we mint a ~60s ephemeral secret and hand only that to the page, which does
+// the WebRTC negotiation and wires the audio itself (see page-inject.js).
+//
+// NOT connected to Claude. This establishes the audio path only.
+let realtimeVoiceActive = false;
+
+async function startRealtimeVoice(botName) {
+  const cfg = resolveRealtimeConfig({ store, env: process.env });
+  if (!cfg.enabled) return;
+
+  if (!cfg.ready) {
+    const why = 'realtimeVoice is on but ' + cfg.missing.join(', ') + ' is not set';
+    console.warn('[realtime]', why);
+    broadcastError('Realtime voice: ' + why);
+    return;
+  }
+
+  try {
+    const session = await mintEphemeralSession({
+      ...cfg,
+      instructions: buildInstructions({ botName: botName || store.get('botName') }),
+    });
+    sendExtMsg({ action: 'start-realtime', secret: session.secret, model: session.model });
+    realtimeVoiceActive = true;
+    console.log('[realtime] session minted (' + session.shape + '), voice=' + session.voice +
+      ', model=' + session.model);
+  } catch (err) {
+    console.error('[realtime] could not start:', err.message);
+    broadcastError('Realtime voice: ' + err.message.slice(0, 140));
+  }
+}
+
+function stopRealtimeVoice(why) {
+  if (!realtimeVoiceActive) return;
+  realtimeVoiceActive = false;
+  console.log('[realtime] stopping (' + (why || 'unspecified') + ')');
+  try { sendExtMsg({ action: 'stop-realtime' }); } catch { /* view already gone */ }
+}
+
 function requestCleanLeave(reason) {
   // #209: finalize any call audio(+video) recording before teardown. Async
   // now (video stop + merge are real work) — fire-and-forget, teardown must
   // not block on it; errors are already logged inside.
   stopCallRecording().catch((err) => console.warn('[call-record] stop on leave failed:', err.message));
+  stopRealtimeVoice('leave-call');
   stopAllRunwayFaces('leave-call'); // P2: end Runway sessions + timers when leaving the call
   shareIntended = false; // no present is pending once we're leaving
   shareGeneration++; // cancel any in-flight Present-now retry loop before the view tears down
@@ -1076,6 +1120,7 @@ function performLeaveTeardown(via) {
   step('stopCallRecording', () => {
     stopCallRecording().catch((err) => console.warn('[call-record] stop on teardown failed:', err.message));
   });
+  step('stopRealtimeVoice', () => stopRealtimeVoice('teardown'));
   step('closeClaudeTerminal', () => closeClaudeTerminal());
   step('showIdle', () => showIdle());
   console.log(ts(), '[electron] Call teardown complete (via ' + via + ') — status',
@@ -12827,6 +12872,24 @@ function setupIPC() {
     // #209: begin call audio recording once the page is live (page-inject is
     // active by the time this fires) — a no-op unless recordCallAudio is on.
     startCallRecording(meetCode, botName);
+    // EXPERIMENT: hand this bot voice duty to the realtime model instead of the
+    // caption/Claude/TTS loop. A no-op unless realtimeVoice is on for this bot.
+    startRealtimeVoice(botName).catch((err) => console.warn('[realtime] start failed:', err.message));
+  });
+
+  // EXPERIMENT: realtime voice status from the page. A session that fails to
+  // negotiate is otherwise invisible unless someone has the page console open,
+  // which for a bot sitting on a call is nobody. The two failure shapes worth
+  // shouting about are a refused session and losing the peer connection
+  // mid-call; both leave a bot that looks present and stays silent.
+  ipcMain.on('realtime-status', (_event, { type, detail } = {}) => {
+    console.log('[realtime]', type, detail == null ? '' : String(detail).slice(0, 160));
+    if (type === 'failed') {
+      broadcastError('Realtime voice: ' + String(detail || '').slice(0, 140));
+      realtimeVoiceActive = false;
+    } else if (type === 'pc-failed' || type === 'pc-disconnected') {
+      broadcastError('Realtime voice: lost the connection to the model');
+    }
   });
 
   // #209: audio chunks streamed from the page-world CallRecorder. Decode and

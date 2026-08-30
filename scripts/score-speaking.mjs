@@ -216,6 +216,30 @@ function findOffset(activity, labelSpans, grid) {
 
 // --- main -------------------------------------------------------------------
 
+// The capture's first and last timestamp, walked rather than spread.
+//
+// This was `Math.min(...allTs)` over every timestamp in the capture, which
+// throws "RangeError: Maximum call stack size exceeded" once the array is large
+// enough — each element becomes a function argument, and the limit is on the
+// order of 10^5. A real capture blows straight past it: a 51-minute call wrote
+// 613,347 events, so the archive sweep failed on every call that had a
+// full-length recording and passed on all the short ones. That is exactly the
+// shape that reads as a data problem rather than a code one, which is why it
+// cost an afternoon.
+//
+// Exported so the regression test can hand it more elements than the argument
+// limit allows. A comment saying "don't spread this" is not a guarantee; a test
+// that fails when someone does is.
+export function timeExtent(byParticipant) {
+  let t0 = Infinity, t1 = -Infinity, n = 0;
+  const see = (t) => { n++; if (t < t0) t0 = t; if (t > t1) t1 = t; };
+  for (const p of byParticipant.values()) {
+    for (const t of p.muts) see(t);
+    for (const r of p.readings) see(r.t);
+  }
+  return { t0, t1, n };
+}
+
 function main() {
   const argv = process.argv.slice(2);
   const flag = (n, d) => { const i = argv.indexOf('--' + n); return i !== -1 && argv[i + 1] ? argv[i + 1] : d; };
@@ -231,10 +255,8 @@ function main() {
   const map = new Map(flag('map', '').split(',').filter(Boolean).map((kv) => kv.split('=')));
   const stepMs = Number(flag('step', '10'));
 
-  const allTs = [];
-  for (const p of byParticipant.values()) { for (const t of p.muts) allTs.push(t); for (const r of p.readings) allTs.push(r.t); }
-  if (!allTs.length) { console.error('no events in capture'); process.exit(2); }
-  const t0 = Math.min(...allTs), t1 = Math.max(...allTs);
+  const { t0, t1, n: nTs } = timeExtent(byParticipant);
+  if (!nTs) { console.error('no events in capture'); process.exit(2); }
   const grid = [];
   for (let t = t0; t <= t1; t += stepMs) grid.push(t);
 

@@ -19,13 +19,56 @@ PROFILE="nightly-linux"
 SRC="$HOME/vibeconf-app"
 ELECTRON="$HOME/electron-dist/electron"
 ACFG="$HOME/.config/Vibeconferencing/config.json"
-PORT=7865
+# 7866, NOT the default 7865. The primary app owns 7865, and on a box where one
+# is service-managed (vibeconf-app.service on the test instance) it holds that
+# port across reboots and process kills — so a lane pinned to 7865 can never get
+# its own instance up. 7866+ is where profile bots already live (main.js:7126),
+# and --local-port below puts our app there. The guard still stands watch: this
+# removes the collision, it does not make the check unnecessary.
+PORT=7866
 BASE="http://127.0.0.1:$PORT"
 export DISPLAY="${DISPLAY:-:99}"
 
 fails=0
 fail() { echo "FAIL: $*"; fails=$((fails + 1)); }
 ok()   { echo "ok: $*"; }
+
+# WHO HOLDS $PORT — the pid, or empty if nobody.
+#
+# This exists because /api/sync/no-room is deliberately an OPEN route (#356): it
+# answers 200 from ANY app instance on the port, not just the one we launched.
+# So when something else already owns $PORT, the readiness poll below sails
+# through, prints "app started and serving", and then every authenticated call
+# 401s against a stranger's app — which reads as an app regression rather than a
+# port collision. That cost six nights of identical, misdiagnosed red (2026-08-25
+# through 08-30): a packaged build installed as the systemd unit vibeconf-app
+# .service was holding 7865, and killing the process only made systemd respawn it.
+port_holder() {
+  ss -ltnpH "sport = :$PORT" 2>/dev/null | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2
+}
+
+# Is $1 an electron we launched? Our runtime lives under $HOME/electron-dist; a
+# packaged install lives under /opt. Comparing the resolved exe (not the pid)
+# keeps this true for electron's forked children, which is who may hold the
+# socket rather than the pid we backgrounded.
+holder_is_ours() {
+  case "$(readlink -f "/proc/$1/exe" 2>/dev/null)" in
+    "$(readlink -f "$ELECTRON" 2>/dev/null)") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Report a foreign holder in the terms needed to actually clear it: what it is,
+# and the unit to stop when it is service-managed (stopping it is the operator's
+# call — a test script that stops arbitrary services is a worse problem than the
+# one it solves).
+describe_holder() {
+  local pid="$1"
+  echo "  pid $pid: $(ps -o args= -p "$pid" 2>/dev/null | cut -c1-100)"
+  local unit
+  unit=$(systemctl status "$pid" 2>/dev/null | head -1 | grep -o '[A-Za-z0-9@._-]*\.service')
+  [ -n "$unit" ] && echo "  managed by systemd unit: $unit — clear with: sudo systemctl stop $unit"
+}
 
 cleanup() {
   pkill -f "electron-dist/electron" 2>/dev/null
@@ -44,6 +87,18 @@ command -v xterm >/dev/null || echo "note: xterm absent — the direct shape can
 pgrep -f "Xvfb $DISPLAY" >/dev/null || { nohup Xvfb "$DISPLAY" -screen 0 1440x900x24 >/tmp/xvfb.log 2>&1 & sleep 3; }
 pgrep -f "Xvfb $DISPLAY" >/dev/null || { echo "FAIL: Xvfb would not start"; exit 3; }
 
+# $PORT must be free BEFORE we launch. cleanup() below pkills our own electron,
+# but it cannot clear a packaged or service-managed app — and a stranger on the
+# port makes every check downstream meaningless.
+holder=$(port_holder)
+if [ -n "$holder" ] && ! holder_is_ours "$holder"; then
+  echo "FAIL: port $PORT is already held by an app this lane did not start"
+  describe_holder "$holder"
+  echo "  the lane needs $PORT for its own instance (launched with VIBECONF_REQUIRE_TOKEN=0);"
+  echo "  a foreign app enforces the #356 bearer token, so every authenticated call would 401."
+  exit 3
+fi
+
 cleanup; sleep 1
 
 # The tmux wrapper is a preference (#329), default off. Exercise whichever shape
@@ -59,7 +114,7 @@ echo "=== shape under test: $WANT_PLAN ==="
 
 rm -f /tmp/nightly-linux.log
 VIBECONF_REQUIRE_TOKEN=0 nohup "$ELECTRON" "$SRC/electron-app" --no-sandbox \
-  --profile="$PROFILE" >/tmp/nightly-linux.log 2>&1 &
+  --profile="$PROFILE" --local-port="$PORT" >/tmp/nightly-linux.log 2>&1 &
 
 # POLL for the local server, don't sleep a guessed amount.
 #
@@ -78,6 +133,15 @@ done
 if [ -z "$ready" ]; then
   echo "FAIL: app never served $BASE (dead, or never bound its port)"
   tail -25 /tmp/nightly-linux.log
+  exit 4
+fi
+# Serving is not enough — it must be OUR app serving. Without this, an instance
+# that raced us onto the port (or was started between the precondition check and
+# now) passes the open-route poll and turns the whole run into 401 noise.
+holder=$(port_holder)
+if [ -n "$holder" ] && ! holder_is_ours "$holder"; then
+  echo "FAIL: $BASE answered, but the listener is not the app this lane launched"
+  describe_holder "$holder"
   exit 4
 fi
 ok "app started and serving"

@@ -725,6 +725,35 @@ async function runPostRecordingMerges({ callDir, tracksDir, manifest, outputSuff
         } catch (err) {
           console.warn('[call-record] failed to remove raw tracks:', err.message);
         }
+      } else {
+        // keepTracksPref keeps the tracks dir — but the VIDEO track in it is
+        // pure duplication once the merge has succeeded: video.webm is the raw
+        // capture of the bot's Meet view and the mp4 beside it contains that
+        // same footage, transcoded. It is also, by a distance, the largest
+        // thing we write — measured across a 53-call archive, video.webm was
+        // 30 GB of 39 GB, while the per-speaker audio that keepTracksPref
+        // exists to preserve was 2.3 GB in total.
+        //
+        // So drop the video and keep everything else. What survives is exactly
+        // what cannot be reconstructed from the mp4: one audio file per
+        // participant (the #422 ground truth — the mp4 is mixed and cannot be
+        // un-mixed), the manifest, and the per-track speaking events.
+        //
+        // Only on allAttemptedMergesOk. If the merge was skipped or cancelled
+        // the raw video is the ONLY copy, the recovery note stays, and
+        // scripts/finish-call-recording.mjs still has what it needs.
+        for (const t of (manifest?.tracks || [])) {
+          if (t.kind !== 'video') continue;             // 'share' is its own capture, not in the main mp4
+          const p = path.join(dir, t.file || '');
+          if (!t.file) continue;
+          try {
+            const bytes = fs.statSync(p).size;
+            fs.rmSync(p, { force: true });
+            console.log(`[call-record] removed ${t.file} (${Math.round(bytes / 1e6)} MB) — already in the muxed mp4`);
+          } catch (err) {
+            if (err.code !== 'ENOENT') console.warn(`[call-record] failed to remove ${t.file}:`, err.message);
+          }
+        }
       }
     }
   } finally {

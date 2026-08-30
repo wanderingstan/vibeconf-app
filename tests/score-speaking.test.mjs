@@ -14,7 +14,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  scoreCounter, scoreIndicator, applyEchoGuard, spansOf, score,
+  scoreCounter, scoreIndicator, applyEchoGuard, spansOf, score, timeExtent,
 } from '../scripts/score-speaking.mjs';
 
 const gridOf = (from, to, step = 10) => {
@@ -170,4 +170,43 @@ test('detection in genuine silence is a false positive, counted and timed', () =
   assert.equal(m.missed, 1);
   // 500ms of false positive against 2000ms (=1/30 min) of labelled speech.
   assert.ok(Math.abs(m.fpSecPerMin - 15) < 0.01, `${m.fpSecPerMin} s/min`);
+});
+
+// --- the capture's time extent ------------------------------------------------
+// Not a scoring test. This one exists because the extent was computed with
+// `Math.min(...allTs)`, which throws RangeError once the array passes the
+// argument limit (~10^5) — so the archive sweep failed on exactly the calls
+// worth scoring (a 51-minute one wrote 613,347 events) and passed on every
+// short one. The size here is the whole point of the test: anything under the
+// limit passes with the broken implementation too.
+
+test('the extent walks the timestamps — a real capture exceeds the spread-argument limit', () => {
+  const N = 300_000; // ~3x the argument limit; a 51-min capture was twice this
+  const muts = Array.from({ length: N }, (_, i) => i * 10);
+  const byParticipant = new Map([['s1', { muts, readings: [], verdicts: [] }]]);
+
+  const { t0, t1, n } = timeExtent(byParticipant);
+  assert.equal(n, N);
+  assert.equal(t0, 0);
+  assert.equal(t1, (N - 1) * 10);
+
+  // Guard the guard: if a future node raises the argument limit past N, this
+  // test would keep passing against a reintroduced spread and prove nothing.
+  assert.throws(() => Math.min(...muts), RangeError,
+    'Math.min spread no longer throws at this size — raise N or the test is vacuous');
+});
+
+test('the extent reads both muts and indicator readings, and reports an empty capture', () => {
+  const byParticipant = new Map([
+    ['s1', { muts: [500], readings: [{ t: 100, v: 0 }], verdicts: [] }],
+    ['s2', { muts: [], readings: [{ t: 900, v: 1 }], verdicts: [] }],
+  ]);
+  const { t0, t1, n } = timeExtent(byParticipant);
+  assert.equal(n, 3);
+  assert.equal(t0, 100);   // from a reading, not a mut
+  assert.equal(t1, 900);   // from the other participant
+
+  // main() keys its "no events in capture" bail on n, so the empty case has to
+  // report 0 rather than an Infinity extent that would silently build a grid.
+  assert.equal(timeExtent(new Map()).n, 0);
 });

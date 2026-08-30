@@ -98,7 +98,11 @@ The wrapper can preserve two kinds of recording per run, both under
 
 ## Morning backlog survey (04:30, separate agent)
 
-A second, unrelated LaunchAgent: `scripts/nightly-issue-triage.mjs` reads the whole
+The last rung of the nightly ladder — 03:00 meet-test suite → 04:00 TTS guardrail →
+04:10 corpus sweep → **04:30 this**. Keep it last: it reads what the others leave
+behind, so moving it earlier would survey a night that hasn't finished.
+
+A separate LaunchAgent: `scripts/nightly-issue-triage.mjs` reads the whole
 open-issue backlog for **both** repos plus last night's lane results, and posts a
 short Telegram digest + writes a full markdown report — so the day starts with "here
 are the three things to do" instead of 349 open issues.

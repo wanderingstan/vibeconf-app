@@ -59,8 +59,10 @@
     <string>cd /Users/wanderingstan/Developer/vibeconf-app &amp;&amp; node scripts/nightly-issue-triage.mjs</string>
   </array>
 
-  <!-- 04:30 — 90 min after the test suite starts (it finishes in 13-25 min) and 30
-       min after the TTS check. -->
+  <!-- 04:30, the last rung of the nightly ladder: 03:00 meet-test suite (13-25 min
+       typical, 40 min watchdog) → 04:00 TTS credit guardrail → 04:10 corpus sweep →
+       04:30 this. Keep it last: it READS the artifacts the others leave behind, so
+       moving it earlier would have it survey a night that hasn't finished. -->
   <key>StartCalendarInterval</key>
   <array>
     <dict>

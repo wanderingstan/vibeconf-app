@@ -46,6 +46,21 @@ ttsInput.addEventListener('change', () => {
   api.send('update-tts-config', { apiKey: ttsInput.value.trim() });
 });
 
+// --- EXPERIMENT: OpenAI realtime key. Plain set-config, with none of the
+// validation round trip the ElevenLabs field has: there is no cheap "is this
+// key good" probe that does not open a billable session, so a bad key surfaces
+// as a failed session on the next join, reported via realtime-status.
+const realtimeInput = document.getElementById('realtimeApiKey');
+if (realtimeInput) {
+  api.invoke('get-config', ['realtimeApiKey']).then((c) => {
+    if (c && c.realtimeApiKey) realtimeInput.value = c.realtimeApiKey;
+  }).catch(() => { /* non-fatal */ });
+  realtimeInput.addEventListener('change', () => {
+    api.invoke('set-config', 'realtimeApiKey', realtimeInput.value.trim())
+      .catch(() => { /* non-fatal */ });
+  });
+}
+
 // --- #273: gifted ElevenLabs key. Stateless by design — no accepted/declined
 // flag to get stuck: whether to offer or auto-fill is derived fresh, every
 // time, from comparing the CURRENT key to the grant's key. Two rules:

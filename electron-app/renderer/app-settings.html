@@ -75,6 +75,18 @@
     <div class="desc">Get a key at <a href="https://elevenlabs.io/app/settings/api-keys" id="ttsKeyLink" class="ext-link">elevenlabs.io ↗</a> — signup is free, and the free tier includes enough characters to try it out.</div>
   </div>
 
+  <!-- EXPERIMENT: realtime speech-to-speech. Its own section rather than a field
+       under ElevenLabs, because it REPLACES that path for a bot rather than
+       tuning it: a bot with realtimeVoice on never calls ElevenLabs at all. -->
+  <div class="as-section">
+    <h2>Realtime voice (OpenAI, experiment)</h2>
+    <label for="realtimeApiKey">API key</label>
+    <input type="password" id="realtimeApiKey" placeholder="sk-..." autocomplete="off" spellcheck="false" />
+    <div class="desc">Machine-wide OpenAI secret, stored once for every bot. Each bot then decides for itself whether to use it, via its own <code>realtimeVoice</code> setting, so a realtime bot and normal Claude-backed bots can sit in the same call.</div>
+    <div class="desc">A realtime bot hears the call as audio and answers as audio, with sub-second turn-taking and real barge-in. It is NOT connected to Claude, so it cannot read your repo or use tools. Audio bills per minute in both directions for as long as that bot is in a call, including while nobody is talking.</div>
+    <div class="desc">Get a key at <a href="https://platform.openai.com/api-keys" class="ext-link">platform.openai.com ↗</a>.</div>
+  </div>
+
   <!-- Schema-driven (#381): every app-level (scope:'app') schema pref renders here,
        so future app-level prefs appear automatically without touching this file. -->
   <div class="as-section" id="schemaSection">

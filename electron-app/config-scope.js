@@ -18,6 +18,15 @@
 
 const APP_LEVEL_KEYS = new Set([
   'ttsApiKey', // ElevenLabs secret — one key per machine (#140 tracks storage security)
+  // OpenAI secret for the realtime-voice experiment. Same reasoning as
+  // ttsApiKey exactly: machine auth, not identity. Which bot uses realtime and
+  // which voice it speaks in stay per-profile (realtimeVoice / realtimeVoiceName
+  // are behaviour, not auth), so one key serves a whole fleet while each bot
+  // decides for itself whether to use it.
+  //
+  // NOT in MIGRATE_KEYS: nothing predates this pref, so there is no per-profile
+  // copy to promote.
+  'realtimeApiKey',
   'vcSessionToken', // vibeconferencing.com login (mirror of the vc_session cookie)
   'vcSessionLoggedOutToken', // logout tombstone — profiles must not re-donate this token
   'syncBaseUrl', // legacy website/sync host override

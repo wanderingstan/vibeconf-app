@@ -19,13 +19,29 @@ realtimeVoiceName "cedar"       # optional, OpenAI voice name
 realtimeModel     "gpt-realtime" # optional, hidden in Settings
 ```
 
-The key is **not** a preference, because `preferences-schema.js` is the
-agent-visible whitelist and keys are what it exists to exclude. Put it in the
-same `config.json`, next to `ttsApiKey`:
+The key is **app-level**, pasted once for the whole machine:
 
-```
-realtimeApiKey    "sk-..."      # an ordinary OpenAI key; OPENAI_API_KEY also works
-```
+**App Settings → Realtime voice (OpenAI, experiment) → API key**
+
+An ordinary OpenAI key. `OPENAI_API_KEY` in the environment also works, which is
+handy for a scratch run without storing anything.
+
+It is stored as `realtimeApiKey` and listed in `config-scope.js` beside
+`ttsApiKey`, for the same reason: a key is machine auth, not identity, so a
+fleet of bots should not each need their own copy. Its companions deliberately
+stay per-profile. `realtimeVoice` decides whether a **given** bot uses realtime,
+and `realtimeVoiceName` how that bot sounds, which are identity rather than
+auth. Promoting either would drag every bot onto realtime at once.
+
+It is not in `preferences-schema.js`, because that map is the agent-visible
+whitelist and keys are what it exists to exclude. That also means it does not
+render in the schema-driven part of App Settings, hence the hand-written
+section.
+
+Unlike the ElevenLabs field there is no validation round trip on paste: there is
+no cheap "is this key good" probe that does not open a billable session, so a
+bad key surfaces as a failed session on the next join, reported through
+`realtime-status`.
 
 ## How the audio is wired
 

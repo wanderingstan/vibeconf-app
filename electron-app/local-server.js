@@ -25,6 +25,7 @@ const { classifyAgent, agentIsAbsent } = require('./agent-liveness.js');
 const { isFinished } = require('./call-phase.js');
 const { getRecentSessionLog, getSessionLogPath, sliceCallLines } = require('./session-log.js');
 const { shouldIgnoreRejoin } = require('./rejoin-guard.js');
+const { makeUtterance, defaultStaleWhen, evaluateStaleness } = require('./utterance.js');
 const { TranscriptActivitySource, StreamActivitySource } = require('./agent-activity.js');
 
 // Mime types for the whiteboard asset server (#157). Conservative list —
@@ -1239,6 +1240,52 @@ class LocalServer {
     return { delayMs: ranked.delayMs, why: `ranked ${ranked.why}` };
   }
 
+  // Coerce anything utterance-shaped into a record. The stash and the
+  // pre-in-call queue predate records and hold plain
+  // { text, voice, emoji, urgency } objects — as do the tests that build a
+  // stash directly — so entries are normalised on the way OUT rather than
+  // requiring every producer to be converted at once. Already-made records
+  // pass through untouched, keeping their declared properties.
+  _asUtterance(entry, source) {
+    if (!entry || !entry.text) return null;
+    if (entry.source && typeof entry.at === 'number' && 'resumable' in entry) return entry;
+    return makeUtterance({ ...entry, source });
+  }
+
+  // #493: THE ONE PLACE THE BOT'S AUDIO STARTS.
+  //
+  // Every audible thing the bot emits arrives here as an utterance record, and
+  // the preamble is written once instead of five times. That preamble was the
+  // bug: five sites, each re-implementing "set the urgency the grace scales
+  // from, set the state, dispatch", and two of them missing the first line —
+  // so a probe was graded with whatever urgency the PREVIOUS utterance scored
+  // (#367, "fixed" once per path someone remembered).
+  //
+  // The fix is not the missing assignments. It is that there is now one place
+  // to miss them from, so the next gate added here applies to every path by
+  // construction rather than by whoever remembers.
+  _emitUtterance(rec) {
+    if (!rec || !rec.text) return null;
+    // #367: a record's urgency is its OWN. Unscored is explicitly null — the
+    // midpoint convention belongs to the reader (_graceForCurrentUtterance),
+    // not to whatever happened to be assigned last.
+    this._currentUrgency = rec.urgency;
+    // The head of the pipeline: what is playing, as a record.
+    //
+    // NOT a fix for #412, and it must not be read as one. The load-bearing flag
+    // is still speakingAloud, still owned by _setBotState, and still reachable
+    // by the raw `this.botState = 'thinking'` write in _buildResponse — which
+    // this PR does not touch. #492 guards that write; #412 stops being possible
+    // by construction only once this record is authoritative and the flag is
+    // derived from it, which is step 3.
+    //
+    // Until then this is the scaffolding for that, and nothing more.
+    this._nowPlaying = rec;
+    this._setBotState('speaking', { emoji: rec.emoji });
+    this.onBotSpeech(rec.text, rec.voice, rec.emoji);
+    return rec;
+  }
+
   // Speak now, or after the delay above.
   //
   // #67: this is ALSO where the floor is checked — at the moment audio would
@@ -1251,30 +1298,52 @@ class LocalServer {
   //
   // Resolves 'spoken' | 'stashed' | 'aborted' so the caller can tell the agent
   // what actually happened to its reply.
-  _speakWithBotJitter(t, { exempt = false } = {}) {
+  _speakWithBotJitter(t, { exempt = false, interrupts } = {}) {
+    // The record is built HERE, at submission, and is the currency from this
+    // point on — including into the stash, so a held reply keeps the
+    // properties it was composed with instead of being flattened to a bag of
+    // fields and re-inferred on the way out.
+    //
+    // `exempt` and `interrupts` arrive already computed from
+    // _applyTranscriptPayload and stay DISTINCT, because they answer different
+    // questions: `interrupts` is the 0..1 scalar reduced at the 0.5 line —
+    // "is this worth interrupting a person for?" — while `exempt` is that AND
+    // short enough to be an ack. Folding them together is what let 30-word
+    // paragraphs through the exemption (#109).
+    const rec = makeUtterance({ ...t, source: 'speak', exempt, interrupts });
     return new Promise((resolve) => {
       const speakNow = () => {
         if (this.callStatus !== 'in-call') return resolve('aborted'); // call ended during the jitter
         if (this.floorBusy) {   // #115: analyser-or-DOM when fastFloorDetection is on
-          if (!exempt) {
-            this._stashUnspokenSpeech([t]);
+          if (!rec.exempt) {
+            this._stashUnspokenSpeech([rec]);
             return resolve('stashed');
           }
-          console.log(ts(), '🛡️  [barge-in] EXEMPT — playing over speech:', String(t.text || '').slice(0, 60));
+          console.log(ts(), '🛡️  [barge-in] EXEMPT — playing over speech:', String(rec.text || '').slice(0, 60));
         }
-        // #367: remember this utterance's self-scored urgency so _armBargeIn can
-        // scale the grace by how badly the bot wanted to be heard.
-        this._currentUrgency = (typeof t.urgency === 'number') ? t.urgency : null;
-        this._setBotState('speaking', { emoji: t.emoji });
-        this.onBotSpeech(t.text, t.voice, t.emoji);
+        this._emitUtterance(rec);
         resolve('spoken');
       };
       const others = (this.participants || []).filter(p => !p.isSelf && p.name && p.name !== 'You').length;
-      const { delayMs, why } = this._speakDelay(t, others);
+      const { delayMs, why } = this._speakDelay(rec, others);
       if (delayMs > 0) {
         console.log(ts(), `🎲 [bot-jitter] ${others} others in call — delaying speak ${delayMs}ms (${why})`);
         setTimeout(speakNow, delayMs);
       } else {
+        // WINNING IS ALSO A DECISION, and it used to leave no trace: ranked
+        // ordering gives the top-ranked bot a delay of 0 ("the winner waits for
+        // nothing"), which fell into this branch and logged nothing at all.
+        //
+        // So the only visible evidence of ranked ordering was its FAILURE
+        // paths, every one of which logs a reason. Working perfectly and never
+        // running looked identical from outside — which is the shape of #444's
+        // "ranked ordering never engages". Say it either way.
+        //
+        // Lifted from #492 (cc0644b1) rather than rebased onto it: that branch
+        // is still moving, and this line is what makes its ranked-ordering
+        // etiquette rule readable on THIS branch. Both PRs touch this function,
+        // so whichever merges second should drop the duplicate hunk.
+        if (why) console.log(ts(), `🎲 [bot-jitter] ${others} others in call — speaking now, no delay (${why})`);
         speakNow();
       }
     });
@@ -1286,9 +1355,12 @@ class LocalServer {
   // it via _maybeReplayBargeInStash(), unless it has aged out or the
   // conversation has moved on past it.
   _stashUnspokenSpeech(entries, { at } = {}) {
+    // Records in, records out. A stashed reply is the SAME utterance that
+    // could not go out yet — not a copy of some of its fields — so `exempt`,
+    // `resumable` and any per-record staleWhen survive the hold.
     const stashEntries = entries
-      .filter((t) => t && t.text)
-      .map((t) => ({ text: t.text, voice: t.voice, emoji: t.emoji, urgency: t.urgency }));
+      .map((t) => this._asUtterance(t, 'stash-replay'))
+      .filter(Boolean);
     if (stashEntries.length === 0) return false;
     // A second stash before the first ever got its opening means the earlier
     // thought is being discarded. That used to happen silently — the single
@@ -1422,7 +1494,9 @@ class LocalServer {
       if (data.role === 'bot' && this.callStatus === 'in-call') {
         const outcome = await this._speakWithBotJitter(
           { text: t.text, voice: t.voice, emoji: t.emoji, urgency: t.urgency },
-          { exempt: _bargeExempt },
+          // #493 decision 5: the scalar survives at the MCP boundary and on the
+          // record; the THRESHOLD is what gets reduced, here, at submission.
+          { exempt: _bargeExempt, interrupts: _urgentEnough },
         );
         if (outcome !== 'spoken') {
           if (outcome === 'stashed') stashed = true;
@@ -1548,11 +1622,9 @@ class LocalServer {
       return;
     }
 
-    for (const { text, voice, emoji, urgency } of queue) {
-      console.log('[local-server] Playing queued speech:', text.slice(0, 60));
-      this._currentUrgency = (typeof urgency === 'number') ? urgency : null; // #367
-      this._setBotState('speaking', { emoji });
-      this.onBotSpeech(text, voice, emoji);
+    for (const entry of queue) {
+      console.log('[local-server] Playing queued speech:', entry.text.slice(0, 60));
+      this._emitUtterance(this._asUtterance(entry, 'pending-flush'));
     }
   }
 
@@ -2305,7 +2377,17 @@ class LocalServer {
     // quietly.
     if (this.mode === 'active') {
       try {
-        this.onBotSpeech("Looks like I'm the only one here, signing off.", undefined, '👋');
+        // #493 decision 1: the goodbye is just an ack — `exempt`, not a
+        // special case. It was the only emit site that set no state at all,
+        // which is why leaveCall's "wait for in-flight TTS so the goodbye
+        // actually plays" loop had nothing to wait on and the line was covered
+        // by a hardcoded 3s guess instead. Going through the pipeline gives it
+        // the same state transition as everything else, so that wait works.
+        this._emitUtterance(makeUtterance({
+          text: "Looks like I'm the only one here, signing off.",
+          emoji: '👋',
+          source: 'auto-leave',
+        }));
       } catch (err) {
         console.warn(ts(), '[auto-leave] speak failed:', err.message);
       }
@@ -3835,45 +3917,44 @@ class LocalServer {
       return null;
     }
     const ageMs = Date.now() - this.bargeInStash.at;
-    const maxAgeMs = this._pref('bargeInStashMaxAgeMs');
-    // Wall-clock staleness guard: the floor took too long to reopen.
-    if (ageMs > maxAgeMs) {
-      console.log(ts(), '🛡️  [barge-in] discarding stash — too stale (' + ageMs + 'ms old, max ' + maxAgeMs + 'ms)');
-      this._noteDiscardedStash(this.bargeInStash, `the floor stayed busy for ${Math.round(ageMs / 1000)}s`);
+
+    // #493 decision 2: ONE staleness evaluation, at ONE point, consulting BOTH
+    // signals. The two guards that used to live here inline — wall-clock age
+    // and words-said-over-it — are genuinely different measurements, not
+    // proxies for each other (r = 0.61 across 220 held replies; see the note in
+    // utterance.js for the cases where they disagree). What is unified is the
+    // MECHANISM: a predicate on the held record, so the name-mention exemption
+    // (#475) is another predicate rather than a special case bolted onto one
+    // gate, and the next signal is a third.
+    //
+    // The thresholds are read HERE, not baked in when the reply was stashed:
+    // both are tunable mid-call via set_preference, and a held reply must be
+    // judged by the rule in force at the moment the floor opens.
+    const stale = evaluateStaleness(
+      this.bargeInStash,
+      {
+        now: Date.now(),
+        // null means the signal was never baselined — the mid-TTS
+        // _performBackOff path — which falls back to age-only, as before. Zero
+        // is a real measurement and must not read as absent.
+        newWords: this.bargeInStash.wordsAtStash != null
+          ? this._tickWordCount(this.getEffectiveBotName()) - this.bargeInStash.wordsAtStash
+          : null,
+        addressedByName: () => this._stashWasAddressedByName(),
+      },
+      defaultStaleWhen({
+        maxAgeMs: Number(this._pref('bargeInStashMaxAgeMs')),
+        maxNewWords: Number(this._pref('bargeInStashRedeliverMaxNewWords')),
+      }),
+    );
+    if (stale && stale.waived) {
+      console.log(ts(), '🛡️  [barge-in] ' + stale.note);
+    } else if (stale) {
+      console.log(ts(), '🛡️  [barge-in] discarding stash — ' + stale.note);
+      this._noteDiscardedStash(this.bargeInStash, stale.reason);
       this.bargeInStash = null;
       this._lowerHandIfYielding();
       return null;
-    }
-    // Content staleness guard (#239): even inside the age window, if a lot was
-    // SAID while the reply was held, the queued thought is answering a
-    // conversation that has moved on — replaying it would be a non-sequitur.
-    // Discard and let the agent re-derive on the caught-up window instead.
-    // (wordsAtStash is only recorded on the drop-before-playback stash path;
-    // the mid-TTS _performBackOff path leaves it undefined → age-only, as before.)
-    if (this.bargeInStash.wordsAtStash != null) {
-      const newWords = this._tickWordCount(this.getEffectiveBotName()) - this.bargeInStash.wordsAtStash;
-      const maxNewWords = Number(this._pref('bargeInStashRedeliverMaxNewWords'));
-      if (Number.isFinite(maxNewWords) && newWords > maxNewWords) {
-        // Unless they asked for it by name. The guard's premise is that nobody
-        // wants the held thought any more, and a direct "So <name>, what do you
-        // think?" is that premise being contradicted out loud. Discarding there
-        // answers a question with silence, which is the worst of both: the bot
-        // neither speaks nor is heard declining to.
-        //
-        // Only this guard is waived. The wall-clock age guard above still runs,
-        // because a genuinely ancient thought is wrong to replay however it was
-        // asked for, and the floor-busy check below still runs, because being
-        // named is not licence to talk over the person doing the naming.
-        if (this._stashWasAddressedByName()) {
-          console.log(ts(), '🛡️  [barge-in] keeping stash despite ' + newWords + ' new words — the bot was addressed by name');
-        } else {
-          console.log(ts(), '🛡️  [barge-in] discarding stash — conversation moved on (' + newWords + ' new words > ' + maxNewWords + ') — agent will re-derive');
-          this._noteDiscardedStash(this.bargeInStash, `${newWords} words were said while it waited`);
-          this.bargeInStash = null;
-          this._lowerHandIfYielding();
-          return null;
-        }
-      }
     }
     // #430/#442: the floor, read HERE — at the instant audio would start, which
     // is the only instant a floor read means anything (#67).
@@ -3895,15 +3976,13 @@ class LocalServer {
     console.log(ts(), '🛡️  [barge-in] replaying stash — ' + entries.length + ' entries, ' + ageMs + 'ms old');
     this.bargeInStash = null;
     const texts = [];
-    for (const { text, voice, emoji, urgency } of entries) {
-      // #367: urgency was carried all the way through the stash and then dropped
-      // on this line — the destructure used to take text/voice/emoji only, so a
-      // replayed utterance was graded with whatever urgency the PREVIOUS one
-      // had, and _armBargeIn scaled its grace from that stale number.
-      this._currentUrgency = (typeof urgency === 'number') ? urgency : null;
-      this._setBotState('speaking', { emoji });
-      this.onBotSpeech(text, voice, emoji);
-      texts.push(text);
+    for (const entry of entries) {
+      // #367 used to be re-fixed on this line: the destructure took
+      // text/voice/emoji only, so a replayed utterance was graded with the
+      // PREVIOUS one's urgency. Now the record carries it and _emitUtterance
+      // applies it, which is the same guarantee every other path gets.
+      const rec = this._emitUtterance(this._asUtterance(entry, 'stash-replay'));
+      if (rec) texts.push(rec.text);
     }
     // Advance the responded-through clock so timing-based guards know a real
     // reply just went out on this silence edge. (Full respondedThrough windowing
@@ -4144,8 +4223,12 @@ class LocalServer {
     if (!text) return null;
     this.lastProbeAt = Date.now();
     console.log(ts(), '🎣 [probe] firing (' + source + '): ' + JSON.stringify(text));
-    this._setBotState('speaking', {});
-    this.onBotSpeech(text, undefined, undefined);
+    // Was one of the two sites that never set _currentUrgency, so every probe
+    // inherited the previous utterance's score and _armBargeIn scaled its grace
+    // from it. A probe declares no urgency; _graceForCurrentUtterance reads
+    // that as the midpoint, which is what an unscored utterance has always
+    // meant everywhere else.
+    this._emitUtterance(makeUtterance({ text, source: 'probe' }));
     return text;
   }
 

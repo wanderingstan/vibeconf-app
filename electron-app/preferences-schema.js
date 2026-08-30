@@ -174,6 +174,25 @@ const PREFERENCES = {
       'vibeconferencing.com with Calendar access connected. See ' +
       'startCalendarPolling in main.js.',
   },
+  sessionPerCalendarInvitees: {
+    type: 'boolean',
+    default: false,
+    label: 'One session per calendar meeting',
+    description:
+      'A bot normally keeps ONE Claude session, so everyone it ever talks to ' +
+      'shares one pile of context — no continuity per person, and no isolation ' +
+      'between meetings. Turn this on and a bot that joined for a CALENDAR ' +
+      'event keys its session on that event\'s invitees instead: meet the same ' +
+      'people next week and it resumes what it knew, meet different people and ' +
+      'it does not. Same bot, same name, same personality either way. The key ' +
+      'is the invitee EMAILS, never the Meet display names — a display name is ' +
+      'whatever someone typed into a box, and resuming the wrong session is ' +
+      'worse than having no memory at all. A join with no calendar event behind ' +
+      'it (the panel button, /join-call, a pasted link) is unaffected and keeps ' +
+      "today's single session, so this is only ever additive. OFF by default: " +
+      'it makes one stored session per group of people the bot has met, which ' +
+      'is a thing to opt into rather than discover.',
+  },
   onboardingCallComplete: {
     type: 'boolean',
     // Default TRUE, deliberately backwards from how a "have you done X yet"

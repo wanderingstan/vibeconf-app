@@ -21,6 +21,70 @@ function agentDirFor(userDataDir) {
   return path.join(String(userDataDir || ''), 'agent');
 }
 
+// The working directory for a session keyed on a calendar event's invitees
+// (#570) — a SIBLING of the bot's own agent dir, never a child of it.
+//
+// That distinction is the whole security property, and it is easy to get
+// backwards. Nesting looks tidier and buys free inheritance (CLAUDE.md is read
+// up the tree), but inheritance IS sharing: the bot's ordinary session — the one
+// with no calendar event behind it — runs in the parent, so nesting would make
+// exactly that session able to read every meeting folder underneath it. The
+// ad-hoc call is the one place a stranger can turn up, so that is the worst
+// possible place to put the master key. Siblings cost the inheritance and give a
+// real wall; the personality file is COPIED in at create time instead.
+//
+//     <userData>/agent/                  the bot's own session (unchanged)
+//     <userData>/meetings/<who>/         one per invite list, siblings of it
+//
+function meetingsRootFor(userDataDir) {
+  return path.join(String(userDataDir || ''), 'meetings');
+}
+
+function meetingDirFor(userDataDir, attendees, { identityEmail = '' } = {}) {
+  const slug = meetingDirSlug(attendees, { identityEmail });
+  return slug ? path.join(meetingsRootFor(userDataDir), slug) : '';
+}
+
+// The folder name for a group of invitees.
+//
+// Built from the WHOLE email addresses, not the local-parts. Shortening them to
+// "alice, bob" reads better right up until two people share a first name, and an
+// address is unique by definition — so the readable form and the unique form are
+// the same string, and no hash is needed to tell two meetings apart.
+//
+// Readability is the point: someone will one day need to look inside a
+// particular meeting's folder, delete one, or hand it over, and a directory
+// named as a hex string makes "which of these is Francis" unanswerable.
+//
+// The one case that DOES need a hash is truncation. A long invite list would
+// otherwise blow past the filesystem's name limit, and a truncated name is no
+// longer unique — so past the cap the tail is replaced by a digest of the full
+// list, which is exact where the readable part has stopped being.
+const NAME_MAX = 120;
+
+function meetingDirSlug(attendees, { identityEmail = '' } = {}) {
+  const emails = normaliseAttendees(attendees, identityEmail);
+  if (!emails.length) return '';
+  // Whatever cannot safely be a path segment becomes '-'. Deliberately strict:
+  // this string is built from data that arrived over the network.
+  const readable = emails.join(',').replace(/[^A-Za-z0-9@._,-]/g, '-');
+  if (readable.length <= NAME_MAX) return readable;
+  const digest = require('crypto').createHash('sha256').update(emails.join(',')).digest('hex').slice(0, 12);
+  return `${readable.slice(0, NAME_MAX - digest.length - 1)}-${digest}`;
+}
+
+// Lowercased, de-duplicated, sorted, with the bot's own invite address dropped —
+// so the same group is the same folder however the event happens to list them,
+// and the address that is on every one of the bot's events adds nothing.
+// Accepts bare strings or {email} objects; both shapes appear in event payloads.
+function normaliseAttendees(attendees, identityEmail = '') {
+  const mine = String(identityEmail || '').trim().toLowerCase();
+  const list = (Array.isArray(attendees) ? attendees : [])
+    .map((a) => String((a && typeof a === 'object' ? a.email : a) ?? '').trim().toLowerCase())
+    .filter((a) => a && a !== mine);
+  return [...new Set(list)].sort();
+}
+
 // The bot's pre-approved tool allowlist, written to <agentDir>/.claude/settings.local.json.
 // Honored only because the dir is marked trusted (below). The MCP wildcard covers
 // the whole vibeconferencing server; if a Claude Code version doesn't expand the
@@ -182,4 +246,5 @@ knowledge, the people it works with, things it should never do.
 module.exports = {
   agentDirFor, defaultBotSettings, withTrustedProject, isProjectTrusted, perProfileSubset,
   defaultClaudeMd, afterCallSection,
+  meetingsRootFor, meetingDirFor, meetingDirSlug, normaliseAttendees,
 };

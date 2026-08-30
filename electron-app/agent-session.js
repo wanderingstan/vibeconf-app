@@ -111,6 +111,69 @@ function sessionCacheKey(cwd, name) {
   return `${cwd}\n${resolveSessionName(name).toLowerCase()}`;
 }
 
+// Carry EVERY session a bot holds across a rename, not just the one this launch
+// happens to want (#570).
+//
+// Before per-meeting folders a bot had exactly one cache entry, so the carry-over
+// could move a single key and be complete. It now has one per DIRECTORY it has
+// worked in — its own, plus one per group of people it has met — and every one of
+// those keys ends in the bot's name. Moving only the current directory's entry
+// would carry the meeting the bot is in right now and strand every other one,
+// which is the memory loss the carry-over exists to prevent, once per person the
+// bot knows.
+//
+// So this matches on the NAME component across all directories rather than on
+// one (dir, name) pair. Returns a NEW cache plus the keys it moved, or null when
+// there was nothing to move. A destination that is already occupied is skipped:
+// that case is a switch ONTO an existing session and must not be overwritten by
+// the one being renamed away.
+function renameSessionCacheEntries(cache, fromName, toName) {
+  const from = resolveSessionName(fromName).toLowerCase();
+  const to = resolveSessionName(toName).toLowerCase();
+  if (!from || !to || from === to) return null;
+  const next = { ...(cache || {}) };
+  const moved = [];
+  for (const key of Object.keys(next)) {
+    // Split at the LAST separator: the name is the final component, and a path
+    // cannot contain a newline, so this is exact rather than a guess.
+    const cut = key.lastIndexOf('\n');
+    if (cut < 0 || key.slice(cut + 1) !== from) continue;
+    const dest = `${key.slice(0, cut)}\n${to}`;
+    if (dest in next) continue;
+    next[dest] = next[key];
+    delete next[key];
+    moved.push([key, dest]);
+  }
+  return moved.length ? { cache: next, moved } : null;
+}
+
+// Which cache entry a MANUAL edit leaves behind (#546).
+//
+// `planAgentSession` looks the session id up by (working dir, session name), so
+// editing either of those in Settings moves the bot to a different key and the
+// old entry is simply abandoned. That is mostly harmless, but not entirely:
+// point the working directory back at a previous value later and the orphan is
+// still sitting there, so the bot silently resumes a session nobody meant to
+// return to. This says which key to drop.
+//
+// It compares the pair BEFORE the edit with the pair AFTER it, rather than
+// keying off which field was touched, because the two edits that look most like
+// a change are not one: clearing the session field hands it back to tracking the
+// bot's name, which usually resolves to the SAME name it held. Dropping the
+// entry there would delete the session the bot is about to resume — the exact
+// memory loss the rename carry-over exists to prevent. Equal keys, no eviction.
+//
+// An `after` with no name-keyed pair at all (the field now pins an explicit id)
+// still evicts: pinning is a deliberate move off the named session, and leaving
+// the orphan behind is what this is here to stop.
+function staleSessionCacheKey(before, after) {
+  if (!before || !before.cwd || !resolveSessionName(before.name)) return '';
+  const from = sessionCacheKey(before.cwd, before.name);
+  if (after && after.cwd && resolveSessionName(after.name)
+      && sessionCacheKey(after.cwd, after.name) === from) return '';
+  return from;
+}
+
 // Is this session id actually resumable from `cwd`?
 //
 // This exists because a WRONG id is not a soft failure. Measured against the
@@ -149,5 +212,5 @@ function sessionExists(sessionId, cwd, { fs = require('fs'), path = require('pat
 
 module.exports = {
   resolveSessionId, claudeResumeFlag, resolveSessionName, claudeNameFlag, sessionExists,
-  isSessionId, resolveSessionRef, sessionCacheKey,
+  isSessionId, resolveSessionRef, sessionCacheKey, staleSessionCacheKey, renameSessionCacheEntries,
 };

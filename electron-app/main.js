@@ -9328,7 +9328,47 @@ function isCodexIntegrationInstalled() {
   return readable && !!currentCodexMcpServerPath(content);
 }
 
+// #301: a bot running means the supervisor is running. That is the whole
+// guarantee — not that the supervisor lives forever (closing its window quits
+// it, which is the user's call), but that it is never absent while there are
+// bots to coordinate.
+//
+// Fire-and-forget, and deliberately not awaited: a bot must never be slower to
+// appear because the coordinator is slow, and everything the bot itself does
+// works whether or not one is up. A launch that races another bot's launch is
+// resolved by the supervisor's own single-instance lock, not here.
+async function ensureSupervisorRunning() {
+  try {
+    const { supervisorIsRunning } = require('./profile-launch.js');
+    const { supervisorUrl } = require('./supervisor-port.js');
+    if (await supervisorIsRunning({ url: supervisorUrl() })) return;
+
+    const { execFile } = require('child_process');
+    console.log('[electron] No supervisor answering — starting one.');
+    // Same per-platform argv as a bot launch (#746): open(1) only on macOS.
+    const { cmd, argv, detached } = profileLaunchCommand({
+      platform: process.platform,
+      isPackaged: app.isPackaged,
+      exePath: app.getPath('exe'),
+      appPath: app.isPackaged ? null : app.getAppPath(),
+      args: ['--supervisor'],
+    });
+    const onError = (err) => { if (err) console.warn('[electron] could not start the supervisor:', err.message); };
+    const child = detached
+      ? execFile(cmd, argv, { detached: true, stdio: 'ignore' })
+      : execFile(cmd, argv, onError);
+    child.on('error', onError);
+    if (detached) child.unref();
+  } catch (err) {
+    // A bot that cannot start a supervisor is still a working bot. Say so and
+    // carry on — this must never be the reason a call does not happen.
+    console.warn('[electron] ensureSupervisorRunning failed (continuing):', err.message);
+  }
+}
+
 app.whenReady().then(async () => {
+  ensureSupervisorRunning();
+
   // P2: force plain system DNS (no DoH). Chromium's built-in resolver does Secure DNS by
   // default, which can't resolve LiveKit's dynamic media/TURN hosts (*.host/.turn.livekit.cloud)
   // → -105 in WebRTC → the Runway avatar video never connects. The OS resolver handles them, so

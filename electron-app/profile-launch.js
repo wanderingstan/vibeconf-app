@@ -81,4 +81,21 @@ function spawnArgsForProfile({ name, isDefault = false, port = null, openSetting
   return args;
 }
 
-module.exports = { profileLaunchCommand, spawnArgsForProfile };
+// Is a supervisor answering? One request to its fixed address (#301).
+//
+// Short timeout on purpose: this runs on a bot's startup path, and a bot must
+// never be slower to appear because the coordinator is wedged. Unreachable is
+// answered as "no", which costs a duplicate launch attempt that the
+// single-instance lock then refuses — the cheap direction to be wrong in.
+async function supervisorIsRunning({ url, fetchImpl = fetch, timeoutMs = 700 } = {}) {
+  try {
+    const res = await fetchImpl(`${url}/api/health`, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) return false;
+    const body = await res.json();
+    return !!body?.ok;
+  } catch {
+    return false;
+  }
+}
+
+module.exports = { profileLaunchCommand, spawnArgsForProfile, supervisorIsRunning };

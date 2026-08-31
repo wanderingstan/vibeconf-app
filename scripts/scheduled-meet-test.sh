@@ -887,15 +887,19 @@ lane_done linux
 # impression-based loop the suite was built to replace, with a cron job attached.
 # So this pays ~25s of fleet boot per rule to buy a red that means something.
 #
-# Budgeted rather than open-ended: the watchdog kills the whole run at 30 min,
-# and a lane that eats the budget would take the lanes after it down with it.
+# Budgeted rather than open-ended. The watchdog is the wedge-breaker
+# (VIBECONF_GLOBAL_TIMEOUT, 5400s on the mini as of 2026-08-31) and a lane that
+# ate it would take every lane after it down — which is how the Linux lane went
+# missing for three nights. Sizing, measured 2026-08-31: a full run takes ~13.5
+# min (03:00:05 -> 03:13:39), so 25 min here still leaves ~50 min of headroom.
+#
 # Rules the budget cuts off are recorded as "not-run", never as passing.
 #
 # Recorded, not gating. Needs the minted room, so it runs after join-route.
 if [[ -n "${VIBECONF_MEET_ROOM:-}" ]]; then
   echo "" | tee -a "$LOG"
   echo "=== conversational etiquette (#468) $STAMP ===" | tee -a "$LOG"
-  "$VIBECONF_REPO/scripts/etiquette-nightly.sh" --room "$VIBECONF_MEET_ROOM" --budget-sec 600 2>&1 | tee -a "$LOG"
+  "$VIBECONF_REPO/scripts/etiquette-nightly.sh" --room "$VIBECONF_MEET_ROOM" --budget-sec 1500 2>&1 | tee -a "$LOG"
   ETIQ_CODE=${pipestatus[1]}
   echo "=== etiquette exit: $ETIQ_CODE (recorded, not gating) ===" | tee -a "$LOG"
 else

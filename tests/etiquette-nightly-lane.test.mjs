@@ -65,11 +65,18 @@ test('the nightly runs it as a ledgered lane, and skips loudly', () => {
   assert.match(nightly, /etiquette SKIPPED — no VIBECONF_MEET_ROOM/);
 });
 
-test('it is budgeted, because the watchdog kills the whole run at 30 min', () => {
-  // An open-ended lane here would take every lane after it down with it.
+test('it is budgeted, and the budget fits inside the watchdog', () => {
+  // The watchdog is the wedge-breaker (5400s on the mini as of 2026-08-31), not
+  // a budget. A lane that ate it would take every lane after it down — which is
+  // how the Linux lane went missing for three nights.
+  //
+  // Measured 2026-08-31: a full nightly run takes ~13.5 min. The cap below is
+  // deliberately well under the watchdog rather than close to it.
   assert.match(nightly, /--budget-sec \d+/);
   const m = nightly.match(/--budget-sec (\d+)/);
-  assert.ok(Number(m[1]) <= 900, `${m[1]}s is too much of a 30-minute run`);
+  const budget = Number(m[1]);
+  assert.ok(budget >= 900, `${budget}s cannot get through the rules — one fleet boot each`);
+  assert.ok(budget <= 2400, `${budget}s leaves too little of the 5400s watchdog for other lanes`);
 });
 
 test('it runs after the room is minted, and before the fuzz lane', () => {

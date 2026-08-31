@@ -29,7 +29,7 @@ RESULTS="${VIBECONF_TEST_RESULTS:-$HOME/vibeconf-test-results}"
 OUT="$RESULTS/etiquette-results.jsonl"
 mkdir -p "$RESULTS"
 
-ROOM=""; BUDGET=900; ONLY=""
+ROOM=""; BUDGET=1500; ONLY=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --room) ROOM="$2"; shift 2 ;;

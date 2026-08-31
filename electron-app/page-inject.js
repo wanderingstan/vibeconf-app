@@ -3197,8 +3197,58 @@
       this.sink = null;         // keeps the model audio flowing (see below)
       this.outGain = null;
       this.pollTimer = null;
+      this.lipTimer = null;
+      this.speakingNow = false;
+      this.botSpeakingClear = null;
       this.active = false;
       this.startedAt = 0;
+    }
+
+    // The avatar's jaw is gated on cam.speaking; the analyser only modulates
+    // how far it opens once that flag is already true. The TTS path raises and
+    // lowers it around each clip, and realtime has no clips, so on the first
+    // live call the bot talked with a completely still face.
+    //
+    // Driven from the model audio itself rather than from response.created /
+    // response.done. Truthful by construction (the mouth moves exactly when
+    // there is sound), and it cannot get stuck open the way an event-driven
+    // flag does when a response.done never arrives.
+    _startLipSync() {
+      if (!mic || typeof mic.getAmplitude !== 'function') return;
+      let quietSince = 0;
+      this.lipTimer = setInterval(() => {
+        let amp = 0;
+        try { amp = mic.getAmplitude() || 0; } catch { return; }
+        const now = Date.now();
+        if (amp > 0.02) quietSince = 0;
+        else if (!quietSince) quietSince = now;
+        // Hangover, so the gaps between words do not flicker the face.
+        this._setSpeaking(amp > 0.02 || now - quietSince < 300);
+      }, 50);
+    }
+
+    _setSpeaking(on) {
+      if (on === this.speakingNow) return;
+      this.speakingNow = on;
+
+      try {
+        for (const cam of cameras.values()) {
+          cam.speaking = on;
+          cam.speakingEmojiOverride = null;
+        }
+      } catch { /* no cameras yet */ }
+
+      // Keeps Meet's caption of the bot's OWN voice from being ingested as if
+      // somebody else in the room had said it. The TTS path does the same, with
+      // the same delay on the way down: the caption lands after the audio.
+      try {
+        if (this.botSpeakingClear) { clearTimeout(this.botSpeakingClear); this.botSpeakingClear = null; }
+        if (on) {
+          transcription.botSpeaking = true;
+        } else {
+          this.botSpeakingClear = setTimeout(() => { transcription.botSpeaking = false; }, 1500);
+        }
+      } catch { /* transcription not up */ }
     }
 
     _report(type, detail) {
@@ -3350,6 +3400,7 @@
 
       this.active = true;
       this.startedAt = Date.now();
+      this._startLipSync();
       this._report('live', model);
     }
 
@@ -3375,6 +3426,8 @@
 
     stop(why) {
       if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
+      if (this.lipTimer) { clearInterval(this.lipTimer); this.lipTimer = null; }
+      this._setSpeaking(false); // never leave the face mid-word
       for (const src of this.mixed.values()) { try { src.disconnect(); } catch { /* gone */ } }
       this.mixed.clear();
       try { if (this.outGain) this.outGain.disconnect(); } catch { /* gone */ }

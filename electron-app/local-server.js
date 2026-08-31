@@ -4595,6 +4595,11 @@ class LocalServer {
         localServerUrl: this.getLocalServerUrl(),
         localServerPort: this.port,
         localProfile: this.localProfile,
+        // Which folder this instance's bot works in (#517). A session started in
+        // that folder IS this bot, whatever port its MCP config happened to
+        // bake — see resolveInstance's cwd matching. Per-profile, because
+        // userData is.
+        agentWorkdir: (() => { try { return this.getAgentWorkdir ? this.getAgentWorkdir() : null; } catch { return null; } })(),
         errors: this.errors,
         permissions: this.permissions,
         captionsOn: this.captionsOn,

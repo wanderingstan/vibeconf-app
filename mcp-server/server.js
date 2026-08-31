@@ -190,6 +190,9 @@ async function discoverInstances() {
         configuredBotName: (s.configuredBotName || "").trim() || null,
         callStatus: s.callStatus || null,
         roomId: d.roomId || null,
+        // Where this instance's bot works (#517). A session running in that
+        // folder IS this bot, regardless of the port its config baked.
+        agentWorkdir: s.agentWorkdir || null,
       };
     } catch { return null; }
   }));
@@ -202,6 +205,29 @@ async function discoverInstances() {
 // discovery turning up nothing keeps the current BASE_URL (env default) so
 // existing single-instance setups are unaffected.
 
+// Say it out loud when the baked port pointed somewhere else (#517).
+//
+// This is the whole reason that bug was expensive: every call SUCCEEDED. Buddy
+// spoke, and the words came out of Pepper's tile, and neither app saw anything
+// wrong — Pepper's instance was asked to speak, so it spoke. Working it out took
+// asking get_room_info which profile had answered. Once is enough; a warning
+// per tool call would be its own kind of noise.
+let warnedAboutPin = false;
+function warnIfPinMisleads(routed, instances) {
+  if (warnedAboutPin || routed.matchedBy !== "workdir" || !PINNED_PORT) return;
+  if (routed.instance.port === PINNED_PORT) return;
+  warnedAboutPin = true;
+  const pinned = instances.find((i) => i.port === PINNED_PORT);
+  console.error(
+    `[vibeconferencing] This session's MCP config points at port ${PINNED_PORT}`
+    + (pinned ? ` (profile "${pinned.profile}")` : " (not running)")
+    + `, but it is running in profile "${routed.instance.profile}"'s folder`
+    + ` — using :${routed.instance.port}. A terminal started by hand inherits the`
+    + ` user-scoped MCP config, which bakes the primary app's port; that is how a`
+    + ` second bot ends up speaking through the first bot's tile.`,
+  );
+}
+
 // Bind this session's BASE_URL to the instance the name targets. Returns
 // { ok, instance?, matchedBy? } or { error }. matchedBy tells the caller whether
 // the name was an ADDRESS (a profile) or a label — see instance-routing.js.
@@ -209,10 +235,16 @@ async function routeToInstance(name) {
   let instances;
   try { instances = await discoverInstances(); }
   catch { return { ok: true }; } // discovery failed → keep current BASE_URL, let the join surface a real error
-  const r = resolveInstance(name, instances, { pinnedPort: PINNED_PORT });
+  let cwd = null;
+  try { cwd = process.cwd(); } catch { /* no cwd — fall back to the pin */ }
+  const r = resolveInstance(name, instances, { pinnedPort: PINNED_PORT, cwd });
   if (r.error) return { error: r.error };
   if (r.keep) return { ok: true };
-  if (r.instance) { BASE_URL = r.instance.baseUrl; return { ok: true, instance: r.instance, matchedBy: r.matchedBy }; }
+  if (r.instance) {
+    warnIfPinMisleads(r, instances);
+    BASE_URL = r.instance.baseUrl;
+    return { ok: true, instance: r.instance, matchedBy: r.matchedBy };
+  }
   return { ok: true };
 }
 

@@ -11,6 +11,10 @@
 // Electron main file is not importable from `node --test`. Keep it pure: no
 // `app`, no `process.platform`, no spawning — callers pass what they know and
 // get back an argv to run.
+//
+// #301: the supervisor window launches bots too, so the profile flags are
+// built here as well (spawnArgsForProfile) — two copies of "how a bot is
+// started" is exactly the drift that lands a bot on the wrong port.
 
 /**
  * Build the command that launches another profile instance.
@@ -51,4 +55,30 @@ function profileLaunchCommand({ platform, isPackaged, exePath, appPath, args = [
   return { cmd: exePath, argv: [...args], detached: true };
 }
 
-module.exports = { profileLaunchCommand };
+// The command line for a bot instance.
+//
+// `isDefault`: the default profile takes NO --profile and NO --local-port — it
+// is the privileged seat that owns DEFAULT_PORT and the global Claude MCP
+// config, and passing its name explicitly would make it look like a named
+// profile to the receiving process.
+//
+// `windowPos`: #379 — open the new window where the launching one is, rather
+// than centred. Position only; size is not ours to hand over, since the window
+// is a fixed-width column with a content-derived height.
+function spawnArgsForProfile({ name, isDefault = false, port = null, openSettings = false, windowPos = null } = {}) {
+  const args = [];
+  if (!isDefault) {
+    if (!name) throw new Error('a named profile needs a name');
+    if (!port) throw new Error(`profile "${name}" needs a local port`);
+    args.push(`--profile=${name}`, `--local-port=${port}`);
+  }
+  // A newly created bot lands on Settings rather than "Call now" — it has no
+  // name, voice or face yet, so that page IS its next step.
+  if (openSettings) args.push('--open-settings=true');
+  if (windowPos && Number.isFinite(windowPos.x) && Number.isFinite(windowPos.y)) {
+    args.push(`--window-x=${windowPos.x}`, `--window-y=${windowPos.y}`);
+  }
+  return args;
+}
+
+module.exports = { profileLaunchCommand, spawnArgsForProfile };

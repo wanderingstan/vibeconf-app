@@ -3,13 +3,35 @@
 // IPC routing, TTS, and sync.
 
 const { app, BrowserWindow, BrowserView, ipcMain, session, shell, nativeImage, desktopCapturer, dialog, Menu, net } = require('electron');
+
+// #301: `--supervisor` is a different program that happens to share this binary.
+//
+// The supervisor watches the FLEET — it lists every bot, launches them, and
+// keeps watching the calendar when no bot window is open at all (today, with
+// every window closed, zero JavaScript runs for this app and a scheduled
+// auto-join simply cannot fire).
+//
+// It returns before ANY of the rest of this file, and that is the point rather
+// than an optimisation. Everything below is built around one implicit bot —
+// module-level state, a process-global `app.setPath('userData')`, IPC handlers
+// that all mean "the bot in this process". A supervisor that ran through it
+// would come up owning a bot's userData and a bot's port, which is precisely
+// the state it exists to be independent of.
+//
+// Top-level `return` is legal in CommonJS (modules are function-wrapped), and is
+// the smallest branch that can guarantee "none of the below ran".
+if (process.argv.includes('--supervisor')) {
+  require('./supervisor-app.js').start();
+  return;
+}
+
 const path = require('path');
 const fs = require('fs');
 const vm = require('vm');
 const Store = require('./store.js');
 const { APP_LEVEL_KEYS, ScopedStore, migrateAppLevelKeys } = require('./config-scope.js');
 const profileManager = require('./profile-manager.js');
-const { profileLaunchCommand } = require('./profile-launch.js');
+const { profileLaunchCommand, spawnArgsForProfile } = require('./profile-launch.js');
 const { stallExplainedByOwnSpeech } = require('./caption-stall-excuse.js');
 const { MEET } = require('./meet-selectors.js'); // pure data — safe in the main process
 const { resolveSvg } = require('./svg-resolver.js');
@@ -14013,16 +14035,14 @@ function setupIPC() {
     // Otherwise launch a fresh instance. The default takes no --profile (and the
     // default port); a named profile gets its stable registry port.
     let port = null;
-    let args = [];
     if (!isDefault) {
       try { port = profileManager.portForProfile(BASE_USER_DATA, name); }
       catch (err) { return { ok: false, error: err.message }; }
-      args = [`--profile=${name}`, `--local-port=${port}`];
     }
-    // A newly created bot lands on Settings rather than "Call now" — it has no
-    // name, voice or face yet, so that page IS its next step.
-    if (openSettings) args = [...args, '--open-settings=true'];
-    if (extraArgs.length) args = [...args, ...extraArgs];
+    // Built by profile-launch.js, which the SUPERVISOR also uses (#301). Two
+    // copies of "how a bot is started" is how one caller ends up launching a bot
+    // on the wrong port because the other was the one that got updated.
+    let args = [];
 
     // #379: open the new profile window where THIS one is, not centered. The main
     // window honors --window-x/y (createMainWindow, as the test launcher uses),
@@ -14031,12 +14051,18 @@ function setupIPC() {
     // POSITION ONLY. Size isn't ours to hand over: the window is a fixed-width
     // column with a content-derived height, and createMainWindow ignores
     // --window-w/-h for exactly that reason.
+    let windowPos = null;
     try {
       if (mainWindow && !mainWindow.isDestroyed()) {
         const b = mainWindow.getBounds();
-        args = [...args, `--window-x=${b.x}`, `--window-y=${b.y}`];
+        windowPos = { x: b.x, y: b.y };
       }
     } catch { /* ignore — fall back to Electron's default centering */ }
+    try {
+      args = spawnArgsForProfile({ name, isDefault, port, openSettings, windowPos });
+    } catch (err) { return { ok: false, error: err.message }; }
+    // #822: e.g. --join-url for a bot summoned into a call already in progress.
+    if (extraArgs.length) args = [...args, ...extraArgs];
 
     const { execFile } = require('child_process');
     // #746: the spawn failure arrives asynchronously, LONG after we have returned

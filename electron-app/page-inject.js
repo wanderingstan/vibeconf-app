@@ -3211,6 +3211,40 @@
       this.startedAt = 0;
     }
 
+    // The model asked to do something. Main does it and hands back a result,
+    // which goes into the conversation as the tool's output.
+    //
+    // The reply that follows is NOT gated by _shouldRespond: the bot is
+    // finishing a turn it already started, not answering a fresh utterance.
+    // Running it through the gate would strand the model mid-action, having
+    // said "let me get that" and then never speaking again.
+    _toolCall(m) {
+      let args = {};
+      try { args = JSON.parse(m.arguments || '{}'); } catch { /* handled below */ }
+      this._report('tool', m.name + ' ' + JSON.stringify(args).slice(0, 90));
+      try {
+        window.postMessage({
+          source: 'vibeconf-realtime-tool',
+          callId: m.call_id, name: m.name, args,
+        }, '*');
+      } catch {
+        this._toolResult(m.call_id, 'That did not work: the call view is gone.');
+      }
+    }
+
+    _toolResult(callId, output) {
+      if (!this.dc || this.dc.readyState !== 'open') return;
+      this._send({
+        type: 'conversation.item.create',
+        item: { type: 'function_call_output', call_id: callId, output: String(output || '') },
+      });
+      if (!this.responseActive) {
+        this._send({ type: 'response.create' });
+        this.responseActive = true;
+      }
+      this._report('tool-result', String(output || '').slice(0, 80));
+    }
+
     // Should the bot answer what it just heard?
     //
     // Mirrors the app's existing passive-mode name gate (plain lowercase
@@ -3511,6 +3545,8 @@
             this._send({ type: 'response.create' });
             this.responseActive = true;
           }
+        } else if (m.type === 'response.function_call_arguments.done') {
+          this._toolCall(m);
         } else if (m.type === 'error') {
           this._report('model-error', JSON.stringify(m.error || m).slice(0, 200));
         }
@@ -3597,6 +3633,8 @@
         (realtimeVoice.policy.gate ? 'gated' : 'open') +
         ', bot=' + (realtimeVoice.policy.botNames || []).join('/') +
         ', others=' + (realtimeVoice.policy.otherNames || []).join('/'));
+    } else if (event.data.action === 'realtime-tool-result') {
+      realtimeVoice._toolResult(event.data.callId, event.data.output);
     } else if (event.data.action === 'realtime-hold') {
       const secs = Math.max(0, Math.min(120, Number(event.data.seconds) || 0));
       realtimeVoice.holdUntil = secs ? Date.now() + secs * 1000 : 0;

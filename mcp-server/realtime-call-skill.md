@@ -62,6 +62,23 @@ then brief the result.
 It has been told not to disclaim, but it will still hit the edges of what it
 knows. Watch for them.
 
+## The voice can ask you directly
+
+It has a small toolbox of its own: it can put a message in the chat, and write
+the whiteboard with something said in the room. Anything else, including
+anything that needs looking up, it hands to you with `ask_teammate` rather than
+telling the room it cannot be done.
+
+Those requests arrive in your `wait_for_speech` result under **THE VOICE ASKED
+YOU FOR THIS**. They are not in the transcript, because a tool call is not
+speech, and this is the only place they appear.
+
+Treat one as a commitment already made. By the time you see it the voice has
+usually told the room out loud that it is checking, so an unanswered request is
+a promise broken in front of everyone. Answer with `brief` even when the answer
+is that there is nothing: "no PRs touched the installer today" is a fine reply
+and lets it close the loop.
+
 ## When two other people are talking
 
 With three or more in the room the bot only answers when its own name is said,

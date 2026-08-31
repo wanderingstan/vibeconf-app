@@ -8323,7 +8323,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '64';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '65';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
@@ -13141,6 +13141,70 @@ function setupIPC() {
     // EXPERIMENT: hand this bot voice duty to the realtime model instead of the
     // caption/Claude/TTS loop. A no-op unless realtimeVoice is on for this bot.
     startRealtimeVoice(botName).catch((err) => console.warn('[realtime] start failed:', err.message));
+  });
+
+  // EXPERIMENT: the voice model asking to do something itself.
+  //
+  // Only tools whose ARGUMENTS come from the room, plus ask_teammate as the
+  // escape hatch for everything else. Nothing here needs the model to know
+  // something it has no way of knowing, which is what keeps a fabricated tool
+  // call from having consequences a fabricated sentence would not.
+  ipcMain.on('realtime-tool', async (_event, { callId, name, args } = {}) => {
+    const reply = (output) => {
+      console.log('[realtime] tool', name, '->', String(output).slice(0, 90));
+      sendExtMsg({ action: 'realtime-tool-result', callId, output });
+    };
+    if (!callId || !name) return;
+
+    try {
+      if (name === 'ask_teammate') {
+        const question = String((args && args.question) || '').trim();
+        if (!question) return reply('Nothing was asked, so nothing was passed on.');
+        // Rides the same one-shot channel the ack phrase uses, so it lands on
+        // the slow half's next wait_for_speech rather than needing a new poll.
+        try { localServer.addVoiceRequest(question); }
+        catch { return reply('Could not reach your teammate.'); }
+        return reply('Passed to your teammate. They answer in their own time, not to you, '
+          + 'so carry on with the conversation and do not wait for them.');
+      }
+
+      if (name === 'send_chat') {
+        const text = String((args && args.text) || '').trim();
+        if (!text) return reply('Nothing to send.');
+        const r = await chatRequest(CALL_COMMANDS.sendChat, { text }, 15000);
+        return reply(r && r.success === false
+          ? 'The chat message did not send: ' + String(r.error || 'unknown')
+          : 'Sent to the call chat.');
+      }
+
+      if (name === 'write_whiteboard') {
+        const content = String((args && args.content) || '').trim();
+        if (!content) return reply('Nothing to write.');
+        const roomId = localServer.roomId;
+        if (!roomId) return reply('There is no call to write a board for.');
+        const botName = (localServer.getEffectiveBotName && localServer.getEffectiveBotName()) || 'bot';
+        // Straight through the app's own sync route, the same one the MCP
+        // whiteboard tool uses, so the remote-write check (#221) still applies
+        // and a board that never reached the room is still reported as such.
+        const res = await fetch(`http://127.0.0.1:${localServer.port}/api/sync/${roomId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sender: botName, role: 'bot', ownerName: botName,
+            whiteboard: { content },
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        const wb = (data && data.results && data.results.whiteboard) || {};
+        return reply(wb.remote === false
+          ? 'Written locally, but it did not reach the room, so nobody can see it. Say so.'
+          : 'On the board.');
+      }
+
+      return reply('There is no tool called ' + name + '.');
+    } catch (err) {
+      return reply('That did not work: ' + String(err.message || err).slice(0, 120));
+    }
   });
 
   // EXPERIMENT: realtime voice status from the page. A session that fails to

@@ -255,3 +255,46 @@ test('no participants and no name does not throw', () => {
   assert.deepEqual(p.botNames, []);
   assert.deepEqual(p.otherNames, []);
 });
+
+// --- the voice model's own toolbox ------------------------------------------
+
+const { VOICE_TOOLS } = require('../electron-app/realtime-session.js');
+
+test('the voice gets an escape hatch, not a repo', () => {
+  const names = VOICE_TOOLS.map((t) => t.name).sort();
+  assert.deepEqual(names, ['ask_teammate', 'send_chat', 'write_whiteboard']);
+
+  // The line is where the ARGUMENTS come from, not how hard the job is. Every
+  // tool here can be called from what was just said in the room; none needs the
+  // model to know something it has no way of knowing. A model that has invented
+  // staff who do not exist must not be handed a lookup, because a fabricated
+  // tool call has consequences a fabricated sentence does not.
+  for (const t of VOICE_TOOLS) {
+    assert.equal(t.type, 'function');
+    assert.ok(t.description.length > 40, `${t.name} needs a real description`);
+    assert.equal(t.parameters.type, 'object');
+    assert.ok(t.parameters.required.length >= 1, `${t.name} needs a required arg`);
+    for (const req of t.parameters.required) {
+      assert.ok(t.parameters.properties[req], `${t.name}.${req} must be described`);
+    }
+  }
+});
+
+test('ask_teammate is described as the alternative to saying no', () => {
+  const t = VOICE_TOOLS.find((x) => x.name === 'ask_teammate');
+  // The failure this exists to prevent: the model confidently declining
+  // something the BOT can do, and sending the user off to do it by hand.
+  assert.match(t.description, /cannot do yourself/i);
+  assert.match(t.description, /do not say it cannot be done/i);
+});
+
+test('write_whiteboard is fenced to content from the room', () => {
+  const t = VOICE_TOOLS.find((x) => x.name === 'write_whiteboard');
+  assert.match(t.description, /came out of this conversation/i);
+  assert.match(t.description, /ask_teammate/, 'must point lookups at the slow half');
+});
+
+test('the prompt tells it the toolbox exists', () => {
+  // A tool it is never told to reach for is a tool it will not reach for.
+  assert.match(buildInstructions({ botName: 'Jimmy' }), /ask_teammate/);
+});

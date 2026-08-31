@@ -38,6 +38,12 @@ ipcRenderer.on('extension-message', (_event, message) => {
     meetProvider.setCameraOn(true);
   } else if (message.action === 'camera-off') {
     meetProvider.setCameraOn(false);
+  } else if (message.action === 'realtime-tool-result') {
+    window.postMessage({
+      __botsInCalls: true, __fromExtension: true,
+      action: 'realtime-tool-result',
+      callId: message.callId, output: message.output,
+    }, '*');
   } else if (message.action === 'realtime-policy' || message.action === 'realtime-hold') {
     // Who may make the bot speak, and a time-limited request for quiet.
     window.postMessage({
@@ -4016,6 +4022,15 @@ ipcRenderer.on('trigger-record', (_event, { recording, room, startedAt, botName 
 // EXPERIMENT: realtime voice status (RealtimeVoice in page-inject.js posts these).
 // Without this a failed session is invisible unless someone has the page console
 // open, which for a bot on a call is nobody.
+// The voice model asking to do something. Main runs it and answers on the
+// realtime-tool-result channel above.
+window.addEventListener('message', (ev) => {
+  const m = ev && ev.data;
+  if (m && m.source === 'vibeconf-realtime-tool') {
+    ipcRenderer.send('realtime-tool', { callId: m.callId, name: m.name, args: m.args });
+  }
+});
+
 window.addEventListener('message', (ev) => {
   const m = ev && ev.data;
   if (m && m.source === 'vibeconf-realtime-status') {

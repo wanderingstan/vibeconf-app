@@ -38,14 +38,79 @@ function buildInstructions({ botName } = {}) {
     'but the two of you are one bot, and it hands you what it finds as it finds it.',
     '',
     'So never tell anyone what you cannot do, and never point them elsewhere for it.',
-    'If you do not have something yet, say you are getting it and move on. If it',
-    'still has not arrived, saying you do not have it yet is fine. What is never',
-    'fine is inventing the thing itself.',
+    'When something is beyond you, say you will check and call ask_teammate. If you',
+    'do not have something yet, say you are getting it and move on. If it still has',
+    'not arrived, saying you do not have it yet is fine. What is never fine is',
+    'inventing the thing itself.',
     '',
     'Speak English. Switch only if someone speaks to you in another language first.',
     'Never open the call yourself. Say nothing until somebody has actually spoken.',
   ].join('\n');
 }
+
+// What the voice model may do for itself.
+//
+// The line is not "hard vs easy", it is where the ARGUMENTS come from. If they
+// come out of what was just said in the room, the fast model can call it: that
+// is the shape these models are drilled on, and there is nothing to get wrong
+// that it does not already have in front of it. If they require knowing
+// something it does not know, it must not, because this is a model that has
+// invented staff who do not exist, and a fabricated tool call has consequences
+// a fabricated sentence does not.
+//
+// ask_teammate is the escape hatch that makes the rest safe, and the one that
+// matters most. Its whole job is to be a better answer than "I can't do that":
+// anything the model cannot do itself, it hands over rather than declining.
+const VOICE_TOOLS = [
+  {
+    type: 'function',
+    name: 'ask_teammate',
+    description:
+      'Hand something to your slower teammate, who has the repo, real tools, and can ' +
+      'do things you cannot. Use it in BOTH of these cases, and prefer it to saying no: ' +
+      '(1) you need information you do not have, and (2) somebody asks for something you ' +
+      'cannot do yourself, in which case do not say it cannot be done, say you will check ' +
+      'and call this. It answers in its own time, not as a reply to you, so say something ' +
+      'natural out loud first and carry on with the conversation.',
+    parameters: {
+      type: 'object',
+      properties: {
+        question: {
+          type: 'string',
+          description: 'What you need, in one sentence, self-contained enough to act on without the transcript.',
+        },
+      },
+      required: ['question'],
+    },
+  },
+  {
+    type: 'function',
+    name: 'send_chat',
+    description:
+      'Put a short message in the call chat. For things better read than heard: a link, ' +
+      'an exact spelling, a number somebody asked you to repeat. Say what you are doing ' +
+      'out loud as well, because a message nobody notices helps nobody.',
+    parameters: {
+      type: 'object',
+      properties: { text: { type: 'string', description: 'The message. One or two lines.' } },
+      required: ['text'],
+    },
+  },
+  {
+    type: 'function',
+    name: 'write_whiteboard',
+    description:
+      'Write on the shared whiteboard, replacing what is there. Markdown. ONLY for content ' +
+      'that came out of this conversation: a list somebody just dictated, a decision to ' +
+      'write down, an agenda being agreed. If it needs looking up, or you would have to ' +
+      'reconstruct it from memory, use ask_teammate and let them write it.',
+    parameters: {
+      type: 'object',
+      properties: { content: { type: 'string', description: 'The whole board, in markdown. It replaces the current contents.' } },
+      required: ['content'],
+    },
+  },
+];
 
 // Reads the per-bot switch and the app-level key. Preferences are stored per
 // profile, so `realtimeVoice` is already per-bot with no extra machinery: one
@@ -108,13 +173,15 @@ async function mintEphemeralSession(cfg, { fetchImpl } = {}) {
           model: cfg.model,
           audio: { output: { voice: cfg.voice } },
           instructions,
+          tools: VOICE_TOOLS,
+          tool_choice: 'auto',
         },
       },
     },
     {
       shape: 'sessions',
       url: 'https://api.openai.com/v1/realtime/sessions',
-      body: { model: cfg.model, voice: cfg.voice, instructions },
+      body: { model: cfg.model, voice: cfg.voice, instructions, tools: VOICE_TOOLS, tool_choice: 'auto' },
     },
   ];
 
@@ -185,6 +252,7 @@ function buildResponsePolicy({ botName, participants = [], respondWhenUnnamed = 
 }
 
 module.exports = {
+  VOICE_TOOLS,
   buildResponsePolicy,
   REALTIME_DEFAULTS,
   buildInstructions,

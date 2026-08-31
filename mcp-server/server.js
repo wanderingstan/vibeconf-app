@@ -611,6 +611,14 @@ server.tool(
     // ended up saying "no" / "actually I disagree"), you may briefly clarify
     // the mismatch in your next turn. If the ack and your response were
     // consistent, ignore this note.
+    // The voice model asked you for something. It is not in the transcript,
+    // because a tool call is not speech — this is the only place it appears,
+    // and it has usually already told the room it was checking.
+    const voiceLine = (data.voiceRequests && data.voiceRequests.length)
+      ? `\n\n[THE VOICE ASKED YOU FOR THIS — it has likely already said out loud that it is checking, so answer with brief() rather than leaving it hanging]\n`
+        + data.voiceRequests.map((q) => `  • ${q}`).join('\n')
+      : '';
+
     const ackLine = data.previousAckPhrase
       ? `\n[Previous fast-ack played: ${JSON.stringify(data.previousAckPhrase)}. If it didn't fit your real response, you may briefly clarify.]`
       : '';
@@ -650,7 +658,7 @@ server.tool(
       const deafLine = status.captionsOn === false
         ? '\n[Captions are OFF in Meet — the bot hears via captions, so it is DEAF until they are re-enabled. The app is retrying automatically; if this persists, say or chat: "Could someone turn captions back on? (CC button in Meet\'s toolbar)"]'
         : '';
-      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${clockLine}${statusLine}${errorLines}${chatLine}${ackLine}${replayLine}${discardLine}${truncLine}${deafLine}` }] };
+      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${clockLine}${statusLine}${errorLines}${chatLine}${voiceLine}${ackLine}${replayLine}${discardLine}${truncLine}${deafLine}` }] };
     }
 
     // Each entry is now one logical speaker turn (#178 snapshot model); no
@@ -681,7 +689,7 @@ server.tool(
     return {
       content: [{
         type: "text",
-        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):${clockLine}\n\n${transcriptText}${chatLine}${continuationLine}${ackLine}${replayLine}${discardLine}${truncLine}`,
+        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):${clockLine}\n\n${transcriptText}${chatLine}${voiceLine}${continuationLine}${ackLine}${replayLine}${discardLine}${truncLine}`,
       }],
     };
   }

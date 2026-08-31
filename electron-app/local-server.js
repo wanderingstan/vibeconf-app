@@ -457,6 +457,10 @@ class LocalServer {
     // its full response contradicts the ack tone (e.g. ack was "Uh-huh"
     // but the real answer is "no, actually..."). Cleared after one read.
     this.lastAckPhrase = null;
+    // EXPERIMENT: things the VOICE model asked its slow half for, via its
+    // ask_teammate tool. Surfaced once on the next wait_for_speech, same
+    // one-shot discipline as lastAckPhrase.
+    this.pendingVoiceRequests = [];
 
     // Active-listening probe bank (#245). The slow model deposits a short,
     // context-aware interjection here on background ticks via bank_probe; the
@@ -1734,6 +1738,18 @@ class LocalServer {
   // preference. preload-meet reads this to fill Meet's pre-join name input.
   getEffectiveBotName() {
     return this.currentCallBotName || this.getConfiguredBotName() || null;
+  }
+
+
+  // The voice model asking its slow half for something (ask_teammate). Capped:
+  // a model that gets stuck asking must not grow this without bound, and an
+  // old request is worth less than a recent one anyway.
+  addVoiceRequest(question) {
+    const q = String(question || '').trim();
+    if (!q) return;
+    this.pendingVoiceRequests.push(q.slice(0, 500));
+    while (this.pendingVoiceRequests.length > 5) this.pendingVoiceRequests.shift();
+    console.log('[local-server] voice model asked its teammate:', q.slice(0, 90));
   }
 
 
@@ -4534,6 +4550,15 @@ class LocalServer {
     const previousAckPhrase = startTime ? this.lastAckPhrase : null;
     if (startTime && this.lastAckPhrase) this.lastAckPhrase = null;
 
+    // The voice model asked for something it could not do itself. This is the
+    // ONLY way that request reaches the slow half: a tool call is not speech,
+    // so it never appears in the transcript, and without this it would be a
+    // promise made in the room that nothing downstream ever hears about.
+    const voiceRequests = startTime && this.pendingVoiceRequests.length
+      ? this.pendingVoiceRequests.slice()
+      : null;
+    if (startTime && this.pendingVoiceRequests.length) this.pendingVoiceRequests = [];
+
     // Same one-shot surface for any barge-in stash that just auto-replayed.
     // The slow model needs to know its queued thought already went out so
     // it doesn't try to repeat it — instead it can build on it or stay
@@ -4566,6 +4591,7 @@ class LocalServer {
       elapsed,
       continuationOfPriorResponse,
       previousAckPhrase,
+      voiceRequests,
       replayedBargeInStash,
       discardedBargeInStash,
       speechTruncated,

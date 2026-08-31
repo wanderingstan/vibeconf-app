@@ -70,6 +70,15 @@ import { Bot, sleep, report, record, TEST_SPEECH_PATH } from './meet-test-lib.mj
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLIP_DIR = path.join(HERE, '..', '.test-clips');
 
+// 28 seconds of Stan being talked over, from the call where it happened
+// (vph-sbmo-uic-20260830T203346Z, 34m26s in). See scripts/fixtures/README.md.
+//
+// Here rather than in TEST_SPEECH_PATH's slot because it is not interchangeable
+// with it: the synthesised clip is what a person sounds like, and this is what
+// an ANGRY person sounds like — short bursts with 200-660ms gaps, which is
+// precisely the shape the analyser mistook for stopping.
+const REAL_INTERRUPTION_PATH = path.join(HERE, 'fixtures', 'interrupt-2026-08-30-30s.mp3');
+
 const arg = (n, d) => { const i = process.argv.indexOf('--' + n); return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : d; };
 const has = (n) => process.argv.includes('--' + n);
 
@@ -856,6 +865,77 @@ const RULES = [
         return { ok: false, note: 'yielded, then took the floor back at the first opening' };
       }
       return { ok: true, note: 'yielded, and left the floor alone afterwards' };
+    },
+  },
+
+  {
+    id: 'real-interruption-2026-08-30',
+    claim: 'yields to the recorded interruption it actually failed to yield to',
+    needs: ['audio'],
+    // A REGRESSION TEST FOR A SPECIFIC HALF-HOUR.
+    //
+    // On 2026-08-30 the bot talked over Stan for ~30 seconds while he said
+    // "JIMMY STOP" eleven times. Stan proposed this rule: get the bot into the
+    // same state, then replay his actual audio at it.
+    //
+    // The reason it needs his actual audio: THE SYNTHESISED VERSION PASSES.
+    // `no-talk-over` above uses a gapless loop of test-speech.mp3 and was green
+    // on the very build that did this. The bug is not "ignores audio", it is an
+    // interaction with the SHAPE of angry speech — 350-700ms bursts separated by
+    // 200-660ms gaps, because a person saying "Jimmy. STOP." leaves silence
+    // between words. Every falling edge read as having stopped.
+    //
+    // What the log showed, and what this rule is really watching for: across the
+    // entire 30 seconds, `[barge-in] armed` appeared ZERO times. It was not that
+    // the bot decided to keep going — nothing was ever considering yielding. So
+    // "did it stop?" is the wrong question to lead with; "did it arm?" is the
+    // one that separates a bot exercising judgement from a bot that cannot see
+    // the interruption at all. The verdict below reports which.
+    //
+    // See #487, and Stan's summary of it: a falling edge is evidence that the
+    // meter fell, nothing more.
+    async run({ subject, voice }) {
+      // Something long enough to still be talking 28 seconds later — the
+      // scenario needs the bot mid-utterance for the whole clip, or it will
+      // "stop" simply by finishing.
+      const held = await speakAndHoldFloor(subject,
+        'Walk me through the entire deployment pipeline from commit to production, '
+        + 'every stage in order, and explain what each one guards against and what '
+        + 'happens when it fails. Take your time and be thorough.');
+      if (!held.ok) return { held };
+
+      const w = await record(subject, async () => {
+        await sleep(800);
+        // NOT uninterruptible: this is a person interrupting, and the point is
+        // whether the subject yields to it.
+        await voice.playAudio({ path: REAL_INTERRUPTION_PATH, emoji: '✋' });
+        await sleep(3000);
+      });
+      return { w, held };
+    },
+    verdict({ w, held }) {
+      if (!held.ok) return { ok: false, note: `scenario did not start — ${held.why}` };
+
+      // Lead with arming. A bot that never armed did not make a bad call; it
+      // never saw him, which is a different bug with a different fix.
+      if (!saw(w, 'armed')) {
+        return { ok: false, note:
+          'NEVER ARMED — 28 seconds of a person shouting "stop" and the barge-in '
+          + 'monitor did not engage once. This is the 2026-08-30 failure exactly (#487).' };
+      }
+      if (saw(w, 'backedOff') || saw(w, 'humanInt')) {
+        return { ok: true, note: 'armed and stopped for him, which is the whole ask' };
+      }
+      if (saw(w, 'rodeOut')) {
+        return { ok: false, note:
+          'armed, then rode it out — read the gaps between his words as him having '
+          + 'finished. The grace outlasts the pauses in angry speech.' };
+      }
+      if (saw(w, 'endedEarly')) {
+        return { ok: false, note:
+          'armed, then decided the interruption had already ended while he was still shouting' };
+      }
+      return { ok: false, note: 'armed but never yielded, and gave no reason for it' };
     },
   },
 

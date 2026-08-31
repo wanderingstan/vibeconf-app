@@ -20,7 +20,8 @@
 #   scripts/etiquette-nightly.sh --room <meet-code> [--budget-sec 900] [--only a,b]
 #
 # Writes one JSON row per rule to $RESULTS/etiquette-results.jsonl.
-# Exit: 0 all attempted rules held · 1 a rule failed · 2 could not run at all.
+# Exit: 0 every rule ran and held · 1 a rule failed · 2 could not run at all
+#       · 3 the rules that ran all held, but some never ran (budget/fleet).
 
 set -uo pipefail
 HERE="${0:A:h}"
@@ -83,8 +84,22 @@ for rule in "${RULES[@]}"; do
   OUT_TXT="$(node "$REPO/scripts/etiquette-test.mjs" --room "$ROOM" --only "$rule" 2>&1)"
   CODE=$?
   RAN=$(( RAN + 1 ))
-  # The suite prints "  pass  <id>  <claim>" / "  FAIL  <id>  ↳ <note>".
-  NOTE="$(print -r -- "$OUT_TXT" | grep -E "^\s+(pass|FAIL)\s+$rule" -A1 | tail -2 | tr '\n' ' ')"
+  # The suite prints "  pass  <id>  <claim>" / "  FAIL  <id>" then "  ↳ <note>".
+  NOTE="$(print -r -- "$OUT_TXT" | grep -E "^[[:space:]]+(pass|FAIL)[[:space:]]+$rule" -A1 | tail -2 | tr '\n' ' ')"
+  # A red with no reason is a red nobody can act on. The first unattended run
+  # produced exactly that: real-interruption-2026-08-30 failed with an EMPTY
+  # note, because the rule died before the summary block the grep above keys
+  # on — so the one thing the rule exists to tell us (never-armed vs rode-it-out
+  # vs scenario-never-started) was thrown away with $OUT_TXT.
+  #
+  # So keep the whole output on failure, and put its tail in the row.
+  if (( CODE != 0 )); then
+    FAILDIR="$RESULTS/etiquette-failures"
+    mkdir -p "$FAILDIR"
+    print -r -- "$OUT_TXT" > "$FAILDIR/${STAMP}-${rule}.txt"
+    [[ -z "${NOTE// }" ]] && NOTE="(no verdict line — the rule did not reach the summary) $(print -r -- "$OUT_TXT" | tail -4 | tr '\n' ' ')"
+    NOTE="$NOTE [full output: $FAILDIR/${STAMP}-${rule}.txt]"
+  fi
   if (( CODE == 0 )); then
     row "$rule" "pass" "$NOTE"; echo "  ✅ $rule"
   else
@@ -97,4 +112,9 @@ done
 echo "=== etiquette: ${RAN}/${#RULES} rules run, ${FAILED} failed ==="
 (( FAILED )) && exit 1
 (( RAN )) || exit 2
+# A TRUNCATED RUN IS NOT A CLEAN ONE. The first unattended run got through 9 of
+# 11 and exited 0 — the per-rule rows said "not-run" honestly, and the lane's
+# own exit code still said everything was fine. That is the failure this file's
+# header warns about, committed by the file itself.
+(( RAN < ${#RULES} )) && exit 3
 exit 0

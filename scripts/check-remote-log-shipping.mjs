@@ -31,7 +31,22 @@
  *   node scripts/check-remote-log-shipping.mjs [--profile Default] [--max-lag-sec 300] [--json]
  *
  * Auth, in order of preference:
- *   VIBECONF_LOGS_TOKEN      (x-vibe-logs-token header)
+ *   VIBECONF_LOGS_TOKEN      (x-vibe-logs-token header) — from the environment,
+ *                            or ~/.claude/secrets/vibeconf-logs.env, because a
+ *                            LaunchAgent inherits neither an interactive shell
+ *                            nor that variable
+ *
+ * READS AND WRITES ARE AUTHORIZED SEPARATELY, which the fallback below does not
+ * survive. Measured on the mini 2026-08-31, with a session valid until the next
+ * day:
+ *
+ *     app's vc_session (jimmy@spiritprotocol.io)  ->  HTTP 401
+ *     shared x-vibe-logs-token                    ->  HTTP 200
+ *
+ * The app's session is what the SHIPPER posts with; it is not a read credential.
+ * On the first real nightly run this check therefore answered 'unauthorized' —
+ * correctly refusing to guess, but answering nothing. Hence reading the token
+ * from its file.
  *   the app's own vc_session (app-level config.json) — the SAME credential the
  *                            shipper uses, so a check that passes proves the
  *                            app's own path works, not merely that some path does
@@ -135,15 +150,34 @@ if (remoteLogging === false) {
 
 const WEBSITE = process.env.VIBECONF_WEBSITE_URL || 'https://vibeconferencing.com';
 const headers = {};
-if (process.env.VIBECONF_LOGS_TOKEN) headers['x-vibe-logs-token'] = process.env.VIBECONF_LOGS_TOKEN;
+// A LaunchAgent gets neither an interactive shell nor this variable, so read it
+// from where it lives. NOT copied into the plist: that file is in the repo and
+// this is a real credential.
+function tokenFromSecretsFile() {
+  try {
+    const f = path.join(os.homedir(), '.claude/secrets/vibeconf-logs.env');
+    const m = fs.readFileSync(f, 'utf8')
+      .match(/^\s*(?:export\s+)?VIBECONF_LOGS_TOKEN\s*=\s*["']?([^"'\s]+)/m);
+    return m ? m[1] : null;
+  } catch { return null; }
+}
+
+const logsToken = process.env.VIBECONF_LOGS_TOKEN || tokenFromSecretsFile();
+if (logsToken) headers['x-vibe-logs-token'] = logsToken;
 else if (sessionToken) headers['Cookie'] = `vc_session=${sessionToken}`;
-else done(2, 'no-credential', 'no VIBECONF_LOGS_TOKEN and no app login to read the logs API with');
+else done(2, 'no-credential', 'no VIBECONF_LOGS_TOKEN (env or ~/.claude/secrets/vibeconf-logs.env) and no app login');
 
 let content = '';
 try {
   const resp = await fetch(`${WEBSITE}/api/logs/${encodeURIComponent(INSTANCE)}?lines=20000`, { headers });
   if (resp.status === 401 || resp.status === 403) {
-    done(2, 'unauthorized', `the logs API refused this credential (HTTP ${resp.status}) — cannot tell healthy from broken`);
+    done(2, 'unauthorized',
+      `the logs API refused this credential (HTTP ${resp.status}) — cannot tell healthy from broken. `
+      + (logsToken
+        ? 'The shared logs token was rejected; it may have been rotated.'
+        : "No shared logs token was found, so this fell back to the app's own session — a WRITE "
+          + 'credential, which reads are refused with. Set VIBECONF_LOGS_TOKEN or populate '
+          + '~/.claude/secrets/vibeconf-logs.env.'));
   }
   if (!resp.ok) done(2, 'api-error', `logs API returned HTTP ${resp.status}`);
   const body = await resp.json();
@@ -152,7 +186,19 @@ try {
   done(2, 'api-unreachable', `${WEBSITE}: ${e.message}`);
 }
 
-const serverStamps = content ? stampsIn(content, dayMatch) : [];
+// The server buffer holds MANY sessions — up to 20,000 lines, days of them —
+// while the local log is one. stampsIn() rolls the date forward on every
+// backwards clock jump, which is right within a session and accumulates a
+// spurious day per midnight across a multi-day buffer.
+//
+// Observed: a server "newest" of 2026-09-01 against a local newest of
+// 2026-08-31, i.e. a lag of MINUS 24 hours, reported as healthy — because a
+// negative number passes a `> threshold` test without comment.
+//
+// Only the newest lines matter here, so parse only the tail: too short a window
+// to contain a midnight, and the rollover cannot fire.
+const serverTail = content ? content.split('\n').slice(-200).join('\n') : '';
+const serverStamps = serverTail ? stampsIn(serverTail, dayMatch) : [];
 const serverLines = content ? content.split('\n').filter(Boolean).length : 0;
 const serverNewest = serverStamps.length ? Math.max(...serverStamps) : null;
 
@@ -171,6 +217,18 @@ if (!serverLines) {
 }
 
 const lagSec = Math.round((localNewest - serverNewest) / 1000);
+
+// A NEGATIVE lag means the server is ahead of the machine that wrote the lines,
+// which cannot happen. Something is wrong with the comparison, not the shipping
+// — and reporting "healthy" on data that cannot be true is worse than reporting
+// nothing, because it is the answer nobody re-checks. A small negative is clock
+// jitter between the app writing and the server stamping; a large one is not.
+if (lagSec < -120) {
+  done(2, 'not-comparable',
+    `the server's newest line is ${-lagSec}s AHEAD of the local log's, which cannot happen. `
+    + 'The two are being read on different clocks or different days — this check cannot say '
+    + 'anything about shipping until that is understood.', { ...common, lagSec });
+}
 
 // THE #619 SIGNATURE: the server has the start of the session and then stops.
 if (lagSec > MAX_LAG_SEC) {

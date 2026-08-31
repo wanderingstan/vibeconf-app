@@ -38,16 +38,23 @@ test('the three outcomes stay distinguishable', () => {
 });
 
 test('"could not check" is exit 2, never a pass', () => {
+  // Search the CODE, not the prose. The header comment now discusses the
+  // 'unauthorized' verdict by name, so an indexOf on the bare string finds the
+  // explanation rather than the call — the same trap that made the
+  // no-hardcoded-locales scanner flag a file for documenting its own old bug.
+  const code = src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
   // A skipped check that reads as green is the failure shape this whole area
   // keeps repeating — see the lane-ledger comments in the nightly.
   for (const skip of ['disabled', 'no-credential', 'unauthorized', 'api-unreachable', 'no-local-log']) {
-    const i = src.indexOf(`'${skip}'`);
+    const i = code.indexOf(`'${skip}'`);
     assert.ok(i > 0, `missing skip verdict: ${skip}`);
-    assert.match(src.slice(Math.max(0, i - 40), i), /done\(2,\s*$/,
+    assert.match(code.slice(Math.max(0, i - 40), i), /done\(2,\s*$/,
       `${skip} must exit 2 (cannot check), not 0 (healthy)`);
   }
-  assert.match(src, /done\(1, 'shipping-stalled'/, 'a stall is a failure, not a skip');
-  assert.match(src, /done\(1, 'nothing-shipped'/);
+  assert.match(code, /done\(1, 'shipping-stalled'/, 'a stall is a failure, not a skip');
+  assert.match(code, /done\(1, 'nothing-shipped'/);
 });
 
 test('it prefers the app\'s OWN credential', () => {

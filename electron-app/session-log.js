@@ -63,9 +63,36 @@ function _enqueueChunk(chunk) {
 }
 
 async function _flushRemote() {
-  if (_flushing || !_remote || !_remote.enabled || !_queue.length) return;
+  // The timer that brought us here has now fired, so the handle is spent. Clear
+  // it BEFORE any early return: _ensureFlushTimer() bails when _flushTimer is
+  // truthy, so a stale handle left lying here disables the safety net that is
+  // supposed to restart shipping.
+  _flushTimer = null;
+
+  if (_flushing || !_remote || !_remote.enabled) return;
+
+  // #619 — EVERY early return from here down must still reschedule.
+  //
+  // These two used to `return` bare, and that silently ended remote logging for
+  // the rest of the process. The queue is empty on any quiet tick — a 3s cadence
+  // against a room where nobody has said anything easily finds one — and the
+  // first time it happened, no further flush was ever scheduled. No error, no
+  // retry, no log line, because no attempt was ever made again.
+  //
+  // Observed on vibeconf-cloud-ta 2026-08-31: 60 lines on the server, all from
+  // around startup, against a 1.3 MB local log; an hour-long call shipped
+  // nothing. `remoteLogging=true`, a valid login, and zero [remote-log] lines —
+  // every signal an operator can see said it was working.
+  //
+  // Note the comment further down blaming the identical symptom on a 401 falling
+  // through to the success path. That WAS a real bug and it was fixed. This is a
+  // second, independent cause of the same silence, which is why fixing the first
+  // one did not make remote logs usable.
+  if (!_queue.length) { _rescheduleFlush(); return; }
+
   const base = (_remote.endpointBase() || '').replace(/\/$/, '');
-  if (!base) return; // backend URL not resolvable yet — keep buffering
+  if (!base) { _rescheduleFlush(); return; } // backend URL not resolvable yet — keep buffering
+
   _flushing = true;
   const batch = _queue.splice(0, REMOTE_MAX_BATCH);
   try {
@@ -186,6 +213,9 @@ function _rescheduleFlush() {
   if (_flushTimer.unref) _flushTimer.unref();
 }
 
+// Safety net: schedule a flush if nothing is pending. Only works because
+// _flushRemote() clears _flushTimer as its first act — otherwise this sees a
+// spent handle, assumes a flush is coming, and never fires again.
 function _ensureFlushTimer(intervalMs = 3000) {
   _flushIntervalMs = intervalMs;
   if (_flushTimer) return;

@@ -687,6 +687,50 @@ server.tool(
   }
 );
 
+// --- hold_voice (EXPERIMENT: realtime voice) ---
+server.tool(
+  "hold_voice",
+  "Ask the voice model to stay quiet for a few seconds. Use it when two OTHER people " +
+  "are mid-exchange and nothing the bot says will help: the name gate cannot see that, " +
+  "because a back-and-forth between two people often names nobody at all. You can, " +
+  "because you are reading the transcript. " +
+  "Always short. It expires on its own, so a hold you forget about cannot mute the bot " +
+  "for the rest of the call, and there is no need to release it by hand. " +
+  "Pass seconds: 0 to release one early if the conversation turns back to the bot.",
+  {
+    seconds: z.number().min(0).max(120).describe("How long to stay quiet. Keep it to the length of the exchange you are staying out of; 0 releases an active hold."),
+    reason: z.string().optional().describe("Why, for the log — e.g. 'Stan and Seth are working through the pricing question'."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ seconds, reason, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) {
+      return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    }
+    let resp;
+    try {
+      resp = await vfetch(`${BASE_URL}/api/realtime/hold`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ seconds, reason, room_id: roomId }),
+      });
+    } catch (err) {
+      return { content: [{ type: "text", text: `Could not reach the app: ${err.message}` }] };
+    }
+    let data = {};
+    try { data = await resp.json(); } catch { /* non-JSON */ }
+    if (resp.status === 409) {
+      return { content: [{ type: "text", text: `Not held — ${data.error || "no realtime session"}.` }] };
+    }
+    if (!resp.ok || !data.success) {
+      return { content: [{ type: "text", text: `Not held: ${data.error || resp.status}` }] };
+    }
+    return { content: [{ type: "text", text: seconds
+      ? `Holding for ${data.seconds}s. It expires on its own; call again with seconds: 0 to release sooner.`
+      : "Hold released." }] };
+  }
+);
+
 // --- brief (EXPERIMENT: realtime voice) ---
 // Registered unconditionally FOR NOW so it can be tried on a live call. The
 // intended end state is a disjoint contract: a realtime-mode agent sees brief

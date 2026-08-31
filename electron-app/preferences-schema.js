@@ -453,6 +453,19 @@ const PREFERENCES = {
       'switches to realtime will not sound like it did before. Voice continuity is a ' +
       'per-bot property, so that only matters within one bot.',
   },
+  realtimeRespondWhenUnnamed: {
+    type: 'boolean',
+    default: true,
+    description:
+      'With THREE OR MORE people in the call, whether a realtime bot answers an ' +
+      'utterance that named nobody at all. It always answers when its own name is ' +
+      'said, and always stays quiet when somebody else is named. This is the ' +
+      'middle case. True (the default) errs toward speaking, which is right while ' +
+      'the gate is new: a bot that answers once too often is annoying, whereas one ' +
+      'that has gone quiet for a reason nobody in the room can see is unusable. ' +
+      'Set false for a bot that should only speak when spoken to. Ignored with two ' +
+      'people in the call, where everything said is said to the bot.',
+  },
   realtimeModel: {
     type: 'string',
     default: 'gpt-realtime',

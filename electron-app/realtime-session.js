@@ -144,7 +144,48 @@ async function mintEphemeralSession(cfg, { fetchImpl } = {}) {
   throw new Error(`realtime: could not mint a session (${firstError || 'unknown'})`);
 }
 
+// Who is allowed to make this bot speak.
+//
+// The realtime model no longer decides for itself (create_response:false).
+// Left to it, it answered 117 of 179 human turns in a three-way call, plenty of
+// them aimed at the other person: it behaves like the two-party conversation it
+// was trained on. VAD cannot fix that, because VAD knows when speech ENDED and
+// never who it was for.
+//
+// Matching is the same plain lowercase substring the passive-mode name gate
+// uses, so a realtime bot and a normal one agree on what "addressed" means.
+function buildResponsePolicy({ botName, participants = [], respondWhenUnnamed = true } = {}) {
+  const bot = String(botName || '').trim();
+  const botLower = bot.toLowerCase();
+
+  // People say "Stan", not "Stan James", so carry the first token too. Two
+  // characters minimum: a stray initial would match most sentences.
+  const expand = (name) => {
+    const full = String(name || '').toLowerCase().trim();
+    const first = full.split(/\s+/)[0];
+    return [full, first].filter((x) => x && x.length >= 2);
+  };
+
+  const people = participants.filter((p) => p && p.name && !p.isPseudo);
+
+  // The bot's own tile. Its Meet display name ("jimmy bot") is often not its
+  // configured name ("Jimmy"), so substring rather than equality.
+  const isBot = (p) => !!p.isSelf
+    || (!!botLower && String(p.name).toLowerCase().includes(botLower))
+    || String(p.name).toLowerCase() === 'you';
+
+  return {
+    // Two in the room means everything said is said to the bot. Gating there
+    // would only add ways to be wrongly silent.
+    gate: people.length > 2,
+    botNames: [...new Set(botLower ? expand(bot) : [])],
+    otherNames: [...new Set(people.filter((p) => !isBot(p)).flatMap((p) => expand(p.name)))],
+    respondWhenUnnamed: respondWhenUnnamed !== false,
+  };
+}
+
 module.exports = {
+  buildResponsePolicy,
   REALTIME_DEFAULTS,
   buildInstructions,
   resolveRealtimeConfig,

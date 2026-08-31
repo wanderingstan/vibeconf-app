@@ -171,3 +171,87 @@ test('no key is refused before any network call', async () => {
   );
   assert.equal(called, false);
 });
+
+// --- the response gate (the Seth call, 2026-08-31) ---------------------------
+//
+// Left to itself the voice model answered 117 of 179 human turns in a
+// three-way call, including plenty aimed at the other person: it behaves like
+// the two-party conversations it was trained on. No VAD setting fixes that,
+// because VAD knows when speech ENDED and never who it was for. So the model
+// stops deciding (create_response:false) and this decides instead.
+
+const { buildResponsePolicy } = require('../electron-app/realtime-session.js');
+
+const CALL = [
+  { name: 'jimmy bot', isSelf: true },
+  { name: 'Stan James' },
+  { name: 'Seth Goldstein' },
+];
+
+test('two in the room is never gated', () => {
+  const p = buildResponsePolicy({
+    botName: 'Jimmy',
+    participants: [{ name: 'jimmy bot', isSelf: true }, { name: 'Stan James' }],
+  });
+  assert.equal(p.gate, false, 'with one other person, everything said is said to the bot');
+});
+
+test('a third person turns the gate on', () => {
+  assert.equal(buildResponsePolicy({ botName: 'Jimmy', participants: CALL }).gate, true);
+});
+
+test('first names are matched, because that is how people address each other', () => {
+  const p = buildResponsePolicy({ botName: 'Jimmy', participants: CALL });
+  // "Seth, what do you think?" has to be recognisable as not-for-the-bot.
+  assert.ok(p.otherNames.includes('seth'), 'first name');
+  assert.ok(p.otherNames.includes('seth goldstein'), 'full name');
+});
+
+test("the bot's own tile never counts as somebody else", () => {
+  const p = buildResponsePolicy({ botName: 'Jimmy', participants: CALL });
+  // Its Meet display name ("jimmy bot") is not its configured name ("Jimmy"),
+  // so an equality test would have filed the bot as another participant and
+  // then stayed silent every single time it was addressed.
+  assert.ok(!p.otherNames.some((n) => n.includes('jimmy')), 'bot must not be in otherNames');
+  assert.deepEqual(p.botNames, ['jimmy']);
+});
+
+test('a self tile with no isSelf flag is still recognised by name', () => {
+  const p = buildResponsePolicy({
+    botName: 'Jimmy',
+    participants: [{ name: 'jimmy bot' }, { name: 'Stan James' }, { name: 'Seth Goldstein' }],
+  });
+  assert.ok(!p.otherNames.some((n) => n.includes('jimmy')));
+});
+
+test('single initials are not names', () => {
+  // A one-character token would match nearly every sentence and mute the bot.
+  const p = buildResponsePolicy({
+    botName: 'Jimmy',
+    participants: [...CALL, { name: 'X' }],
+  });
+  assert.ok(!p.otherNames.includes('x'));
+});
+
+test('pseudo participants are ignored', () => {
+  const p = buildResponsePolicy({
+    botName: 'Jimmy',
+    participants: [{ name: 'jimmy bot', isSelf: true }, { name: 'Stan James' }, { name: 'ghost', isPseudo: true }],
+  });
+  assert.equal(p.gate, false, 'a pseudo participant must not trip the third-person gate');
+});
+
+test('respondWhenUnnamed defaults to speaking, and can be turned off', () => {
+  assert.equal(buildResponsePolicy({ botName: 'J', participants: CALL }).respondWhenUnnamed, true);
+  assert.equal(
+    buildResponsePolicy({ botName: 'J', participants: CALL, respondWhenUnnamed: false }).respondWhenUnnamed,
+    false,
+  );
+});
+
+test('no participants and no name does not throw', () => {
+  const p = buildResponsePolicy({});
+  assert.equal(p.gate, false);
+  assert.deepEqual(p.botNames, []);
+  assert.deepEqual(p.otherNames, []);
+});

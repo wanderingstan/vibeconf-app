@@ -38,6 +38,13 @@ ipcRenderer.on('extension-message', (_event, message) => {
     meetProvider.setCameraOn(true);
   } else if (message.action === 'camera-off') {
     meetProvider.setCameraOn(false);
+  } else if (message.action === 'realtime-policy' || message.action === 'realtime-hold') {
+    // Who may make the bot speak, and a time-limited request for quiet.
+    window.postMessage({
+      __botsInCalls: true, __fromExtension: true,
+      action: message.action,
+      policy: message.policy, seconds: message.seconds, reason: message.reason,
+    }, '*');
   } else if (message.action === 'realtime-brief') {
     // Silent inject: the model learns something without being given the floor.
     window.postMessage({

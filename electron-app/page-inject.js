@@ -3200,10 +3200,43 @@
       this.lipTimer = null;
       this.sayQueue = [];
       this.responseActive = false; // the model is composing, audible or not
+      // Who may make this bot speak. The model no longer decides for itself
+      // (create_response:false below), so this is the whole answer to "should
+      // the bot answer that?".
+      this.policy = { gate: false, botNames: [], otherNames: [], respondWhenUnnamed: true };
+      this.holdUntil = 0; // the slow half asking for quiet, always time-limited
       this.speakingNow = false;
       this.botSpeakingClear = null;
       this.active = false;
       this.startedAt = 0;
+    }
+
+    // Should the bot answer what it just heard?
+    //
+    // Mirrors the app's existing passive-mode name gate (plain lowercase
+    // substring, same as local-server's nameMentioned) so a realtime bot and a
+    // normal one agree about what counts as being addressed.
+    //
+    // Errs toward speaking: silence is the failure nobody can debug from the
+    // room, whereas a bot that answers once too often is merely annoying.
+    _shouldRespond(text) {
+      if (Date.now() < this.holdUntil) {
+        return { ok: false, why: 'held by the slow half' };
+      }
+      const p = this.policy;
+      // Two in the room: everything said is said to the bot.
+      if (!p.gate) return { ok: true, why: 'two in the room' };
+
+      const t = String(text || '').toLowerCase();
+      const named = (p.botNames || []).find((n) => n && t.includes(n));
+      if (named) return { ok: true, why: 'named (' + named + ')' };
+
+      const other = (p.otherNames || []).find((n) => n && t.includes(n));
+      if (other) return { ok: false, why: 'addressed to ' + other };
+
+      return p.respondWhenUnnamed
+        ? { ok: true, why: 'nobody named' }
+        : { ok: false, why: 'nobody named, and configured to hold back' };
     }
 
     // Something the model could not know, handed over WITHOUT asking it to
@@ -3442,6 +3475,15 @@
                 turn_detection: {
                   type: 'server_vad', threshold: 0.6,
                   prefix_padding_ms: 300, silence_duration_ms: 600,
+                  // The model detects turn ends but does NOT answer them. We do.
+                  //
+                  // Left to itself it answered 117 of 179 human turns in a
+                  // three-way call: roughly two thirds, including plenty aimed
+                  // at the other person. No VAD setting fixes that, because VAD
+                  // knows when speech ENDED and never who it was for. Only
+                  // gating the response does, and the app already knows how to
+                  // make that call.
+                  create_response: false,
                 },
               },
             },
@@ -3461,7 +3503,14 @@
             m.type === 'response.output_audio_transcript.done') {
           this._report('bot-said', m.transcript || '');
         } else if (m.type === 'conversation.item.input_audio_transcription.completed') {
-          this._report('heard', m.transcript || '');
+          const heard = m.transcript || '';
+          this._report('heard', heard);
+          const d = this._shouldRespond(heard);
+          this._report(d.ok ? 'respond' : 'stay-quiet', d.why);
+          if (d.ok && !this.responseActive && !this.speakingNow) {
+            this._send({ type: 'response.create' });
+            this.responseActive = true;
+          }
         } else if (m.type === 'error') {
           this._report('model-error', JSON.stringify(m.error || m).slice(0, 200));
         }
@@ -3542,6 +3591,16 @@
       realtimeVoice.say(event.data.text);
     } else if (event.data.action === 'realtime-brief') {
       realtimeVoice.brief(event.data.note);
+    } else if (event.data.action === 'realtime-policy') {
+      realtimeVoice.policy = event.data.policy || realtimeVoice.policy;
+      realtimeVoice._report('policy',
+        (realtimeVoice.policy.gate ? 'gated' : 'open') +
+        ', bot=' + (realtimeVoice.policy.botNames || []).join('/') +
+        ', others=' + (realtimeVoice.policy.otherNames || []).join('/'));
+    } else if (event.data.action === 'realtime-hold') {
+      const secs = Math.max(0, Math.min(120, Number(event.data.seconds) || 0));
+      realtimeVoice.holdUntil = secs ? Date.now() + secs * 1000 : 0;
+      realtimeVoice._report('hold', secs ? secs + 's: ' + (event.data.reason || '') : 'released');
     }
   });
 

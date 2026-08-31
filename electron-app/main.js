@@ -13,7 +13,7 @@ const { MEET } = require('./meet-selectors.js'); // pure data — safe in the ma
 const { resolveSvg } = require('./svg-resolver.js');
 // One source of truth for the unconfigured bot name — see preferences-schema.
 const { DEFAULT_BOT_NAME, PREFERENCES } = require('./preferences-schema');
-const { resolveRealtimeConfig, mintEphemeralSession, buildInstructions } = require('./realtime-session');
+const { resolveRealtimeConfig, mintEphemeralSession, buildInstructions, buildResponsePolicy } = require('./realtime-session');
 const { resolveBotName, botNameForAppUI } = require('./bot-name.js');
 const { resolveVoice } = require('./voice-status.js');
 const { isInCall, isFinished, isCallComplete } = require('./call-phase.js');
@@ -945,6 +945,36 @@ let realtimeVoiceActive = false;
 // speakText routes on THIS, so a session that failed to come up falls back to
 // the normal voice instead of posting words into a dead data channel.
 let realtimeVoiceLive = false;
+let realtimePolicyTimer = null;
+let realtimePolicyLast = '';
+
+// Who is allowed to make this bot speak.
+//
+// The realtime model no longer decides (create_response:false). Left to itself
+// it answered 117 of 179 human turns in a three-way call, including plenty
+// aimed at the other person, because it behaves like the two-party
+// conversations it was trained on. This is the app making the call it already
+// knows how to make: the same lowercase substring test the passive-mode name
+// gate uses, over the names actually in the room.
+function computeRealtimePolicy() {
+  return buildResponsePolicy({
+    botName: (localServer.getEffectiveBotName && localServer.getEffectiveBotName()) || '',
+    participants: localServer.participants || [],
+    respondWhenUnnamed: prefValue('realtimeRespondWhenUnnamed') !== false,
+  });
+}
+
+function pushRealtimePolicy(force) {
+  if (!realtimeVoiceLive) return;
+  let policy;
+  try { policy = computeRealtimePolicy(); } catch { return; }
+  const key = JSON.stringify(policy);
+  if (!force && key === realtimePolicyLast) return;
+  realtimePolicyLast = key;
+  sendExtMsg({ action: 'realtime-policy', policy });
+  console.log('[realtime] policy:', policy.gate ? 'gated' : 'open',
+    '| bot=' + policy.botNames.join('/'), '| others=' + policy.otherNames.join('/'));
+}
 
 async function startRealtimeVoice(botName) {
   const cfg = resolveRealtimeConfig({ store, env: process.env });
@@ -993,6 +1023,8 @@ function stopRealtimeVoice(why) {
   if (!realtimeVoiceActive) return;
   realtimeVoiceActive = false;
   realtimeVoiceLive = false;
+  if (realtimePolicyTimer) { clearInterval(realtimePolicyTimer); realtimePolicyTimer = null; }
+  realtimePolicyLast = '';
   try { localServer.realtimeVoiceActive = false; } catch { /* not up */ }
   console.log('[realtime] stopping (' + (why || 'unspecified') + ')');
   try { sendExtMsg({ action: 'stop-realtime' }); } catch { /* view already gone */ }
@@ -1401,6 +1433,38 @@ const localServer = new globalThis.LocalServer({
     // that anything is uttered, so the etiquette apparatus (ordering, stashing,
     // barge-in, "was it spoken") has nothing to do here, and routing it through
     // that would only re-inherit contracts it does not have.
+    // The slow half asking the voice to sit a moment out: two other people are
+    // mid-exchange and nothing the bot says will help. Always time-limited, so
+    // a forgotten hold cannot mute the bot for the rest of the call.
+    if (pathname === '/api/realtime/hold' && req.method === 'POST') {
+      const send = (code, obj) => {
+        res.writeHead(code, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(obj));
+      };
+      let raw = '';
+      try {
+        raw = await new Promise((resolve) => {
+          let buf = '';
+          req.on('data', (c) => { buf += c; });
+          req.on('end', () => resolve(buf));
+        });
+      } catch { send(400, { success: false, error: 'could not read body' }); return true; }
+
+      let body = {};
+      try { body = JSON.parse(raw || '{}'); } catch { /* below */ }
+      const seconds = Math.max(0, Math.min(120, Number(body.seconds) || 0));
+      const reason = String(body.reason || '').slice(0, 200);
+
+      if (!realtimeVoiceLive) {
+        send(409, { success: false, error: 'no realtime session is live on this bot' });
+        return true;
+      }
+      console.log('[realtime] hold:', seconds ? seconds + 's — ' + reason : 'released');
+      sendExtMsg({ action: 'realtime-hold', seconds, reason });
+      send(200, { success: true, seconds });
+      return true;
+    }
+
     if (pathname === '/api/realtime/brief' && req.method === 'POST') {
       const send = (code, obj) => {
         res.writeHead(code, { 'Content-Type': 'application/json' });
@@ -8259,7 +8323,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '63';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '64';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
@@ -13088,6 +13152,10 @@ function setupIPC() {
     console.log('[realtime]', type, detail == null ? '' : String(detail).slice(0, 160));
     if (type === 'live') {
       realtimeVoiceLive = true;
+      // People join and leave, and the gate turns on at the third of them.
+      pushRealtimePolicy(true);
+      if (realtimePolicyTimer) clearInterval(realtimePolicyTimer);
+      realtimePolicyTimer = setInterval(() => pushRealtimePolicy(false), 5000);
       // So the bot's own captions are tagged as its own speech rather than
       // dropped as a duplicate of a record that does not exist in this mode.
       try { localServer.realtimeVoiceActive = true; } catch { /* not up */ }

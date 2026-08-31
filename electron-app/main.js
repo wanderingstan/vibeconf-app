@@ -8302,6 +8302,32 @@ function ensureClaudeIntegration() {
     console.warn('[electron] /call skill install failed:', err.message);
   }
 
+  // --- Ensure global skill in ~/.claude/skills/realtime-call/ ---
+  // EXPERIMENT. The slow half of a realtime-voice bot: it never speaks, it
+  // briefs the model that does. Its own skill rather than a mode of /join-call
+  // because the two contracts share almost nothing — no speak, no turn-taking,
+  // no etiquette — and an agent holding both would misuse them.
+  try {
+    const rtSkillDir = path.join(claudeDir, 'skills', 'realtime-call');
+    const rtVersionFile = path.join(rtSkillDir, '.version');
+    let rtInstalled = '';
+    try { rtInstalled = fs.readFileSync(rtVersionFile, 'utf-8').trim(); } catch { /* not yet */ }
+    if (rtInstalled !== SKILL_VERSION) {
+      fs.mkdirSync(rtSkillDir, { recursive: true });
+      fs.writeFileSync(path.join(rtSkillDir, 'SKILL.md'), fs.readFileSync(
+        isPackaged
+          ? path.join(process.resourcesPath, 'mcp-server', 'realtime-call-skill.md')
+          : path.join(__dirname, '..', 'mcp-server', 'realtime-call-skill.md'),
+        'utf-8',
+      ));
+      fs.writeFileSync(rtVersionFile, SKILL_VERSION);
+      console.log(`[electron] Installed/updated /realtime-call skill v${SKILL_VERSION}`);
+      changed = true;
+    }
+  } catch (err) {
+    console.warn('[electron] /realtime-call skill install failed:', err.message);
+  }
+
   // --- Ensure global skill in ~/.claude/skills/call-new-bot/ ---
   // /call-new-bot turns the CALLER's own Claude session into a bot: it creates a
   // profile seeded with that session's workdir + name, so the new bot resumes it

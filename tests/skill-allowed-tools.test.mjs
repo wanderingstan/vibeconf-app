@@ -36,6 +36,20 @@ const PREFIX = 'mcp__vibeconferencing__';
 const OWN_COMMAND_ONLY = {
   'join-call-skill.md': ['start_call'],  // start_call creates a new Meet — that's /call
   'call-skill.md': ['join_call'],        // join_call enters an existing Meet — that's /join-call
+
+  // /realtime-call is the slow half of a realtime-voice bot. Its exclusions are
+  // NOT "the other command owns this" — they are tools that would actively
+  // break the arrangement, so each one is listed with the reason it is absent.
+  // The guard still applies to everything else: a new tool must be whitelisted
+  // here too, or a realtime bot silently cannot reach it.
+  'realtime-call-skill.md': [
+    'start_call',   // same split as /join-call: this skill joins, it does not create
+    'speak',        // THE point of the mode. The realtime model owns the voice; brief() instead
+    'play_audio',   // plays into the same virtual mic the model speaks through, so it collides
+    'play_sound',   // same collision
+    'set_voice',    // the session opens with a fixed voice; changing it means renegotiating
+    'list_voices',  // nothing here can act on the answer, so offering it only invites set_voice
+  ],
 };
 
 function registeredTools() {

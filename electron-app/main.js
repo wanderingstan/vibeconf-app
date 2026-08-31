@@ -940,6 +940,11 @@ function beginAfterCallWorkOrTeardown(reason) {
 //
 // NOT connected to Claude. This establishes the audio path only.
 let realtimeVoiceActive = false;
+// Set only when the PAGE reports the session negotiated. realtimeVoiceActive
+// means "we asked for one"; this means "there is a mouth on the other end".
+// speakText routes on THIS, so a session that failed to come up falls back to
+// the normal voice instead of posting words into a dead data channel.
+let realtimeVoiceLive = false;
 
 async function startRealtimeVoice(botName) {
   const cfg = resolveRealtimeConfig({ store, env: process.env });
@@ -980,6 +985,7 @@ async function startRealtimeVoice(botName) {
 function stopRealtimeVoice(why) {
   if (!realtimeVoiceActive) return;
   realtimeVoiceActive = false;
+  realtimeVoiceLive = false;
   console.log('[realtime] stopping (' + (why || 'unspecified') + ')');
   try { sendExtMsg({ action: 'stop-realtime' }); } catch { /* view already gone */ }
 }
@@ -2404,11 +2410,14 @@ const localServer = new globalThis.LocalServer({
       // ack/index.js for why timing decides this and pool membership does not
       // (#534). anyoneSpeaking is read HERE, at the moment the ack plays,
       // because that is the moment the question is about.
-      speakText(ack, undefined, undefined, ackModule.speakOptionsFor({
-        pool: ackResult.pool,
-        anyoneSpeaking: localServer.anyoneSpeaking,
-        ackVolume: prefValue('ackVolume'),
-      }));
+      speakText(ack, undefined, undefined, {
+        ...ackModule.speakOptionsFor({
+          pool: ackResult.pool,
+          anyoneSpeaking: localServer.anyoneSpeaking,
+          ackVolume: prefValue('ackVolume'),
+        }),
+        ack: true, // realtime suppresses these; it backchannels on its own
+      });
       // Surface the phrase to the slow model on its next wait_for_speech,
       // so it can self-correct if its real response contradicts the ack
       // tone. Cleared after one read on the local-server side.
@@ -2693,11 +2702,14 @@ const localServer = new globalThis.LocalServer({
         // one fires into a detected OPENING, so anyoneSpeaking is normally
         // false and it plays at full volume — which is right: firing into a
         // gap is taking the floor, not murmuring under someone.
-        speakText(phrase, undefined, undefined, require('./ack').speakOptionsFor({
-          pool: isLong ? 'long' : 'short',
-          anyoneSpeaking: localServer.anyoneSpeaking,
-          ackVolume: prefValue('ackVolume'),
-        }));
+        speakText(phrase, undefined, undefined, {
+          ...require('./ack').speakOptionsFor({
+            pool: isLong ? 'long' : 'short',
+            anyoneSpeaking: localServer.anyoneSpeaking,
+            ackVolume: prefValue('ackVolume'),
+          }),
+          ack: true, // realtime suppresses these; it backchannels on its own
+        });
         localServer.setLastAckPhrase(phrase);
       }
     }
@@ -5978,9 +5990,41 @@ function prewarmAckCache() {
   }
 }
 
-function speakText(text, voice, emoji, { volume } = {}) {
+function speakText(text, voice, emoji, { volume, ack } = {}) {
   // Sanitize markdown out of the spoken string only (#160).
   const spokenText = stripMarkdownForTts(text);
+
+  // Realtime owns the mouth. Synthesizing here as well would put a SECOND
+  // voice, in a different timbre, into the very same VirtualMic destination
+  // the model is already feeding, and both would be audible in the room.
+  //
+  // So hand the words to the model instead of speaking them ourselves: it says
+  // them in its own voice, and there is only ever one mouth. `voice` is ignored
+  // on this path (the session was opened with a fixed voice, and swapping it
+  // mid-call would mean renegotiating).
+  //
+  // Deliberately NOT a silent drop. #253 is the cautionary tale: the agent was
+  // told "Spoken", nothing downstream contradicted it, and a farewell played
+  // into an empty room. A delivery that fails reports back through
+  // notePlaybackFailure, via the say-failed status above.
+  if (realtimeVoiceLive) {
+    if (ack) {
+      // Acks exist to mask the slow model's thinking latency. The realtime
+      // model backchannels on its own, in the same voice and better timed, so
+      // a second "mm-hmm" routed through it would just be it talking to
+      // itself. Nothing is owed to a caller here: acks are fire-and-forget.
+      console.log('[realtime] ack suppressed (the model does its own):', spokenText.slice(0, 40));
+      return;
+    }
+    if (!meetView || meetView.webContents.isDestroyed()) {
+      try { localServer.notePlaybackFailure('the Meet view was gone (call ended or torn down)'); }
+      catch { /* local server not up */ }
+      return;
+    }
+    console.log('[realtime] delivering to the model:', spokenText.slice(0, 60));
+    sendExtMsg({ action: 'realtime-say', text: spokenText });
+    return;
+  }
   enqueueAudio(async () => {
     // Temporarily override voice if specified (works for macOS, ElevenLabs, and
     // Voicebox). Safe under serialization — no concurrent speak can clobber it.
@@ -12963,11 +13007,20 @@ function setupIPC() {
   // mid-call; both leave a bot that looks present and stays silent.
   ipcMain.on('realtime-status', (_event, { type, detail } = {}) => {
     console.log('[realtime]', type, detail == null ? '' : String(detail).slice(0, 160));
-    if (type === 'failed') {
+    if (type === 'live') {
+      realtimeVoiceLive = true;
+    } else if (type === 'failed') {
       broadcastError('Realtime voice: ' + String(detail || '').slice(0, 140));
       realtimeVoiceActive = false;
-    } else if (type === 'pc-failed' || type === 'pc-disconnected') {
-      broadcastError('Realtime voice: lost the connection to the model');
+      realtimeVoiceLive = false;
+    } else if (type === 'pc-failed' || type === 'pc-disconnected' || type === 'stopped') {
+      if (type !== 'stopped') broadcastError('Realtime voice: lost the connection to the model');
+      realtimeVoiceLive = false;
+    } else if (type === 'say-failed') {
+      // The agent was about to be told "Spoken" for words that never played.
+      // #253 is the same shape: silence the session believes was speech.
+      try { localServer.notePlaybackFailure('the realtime session could not deliver it (' + detail + ')'); }
+      catch { /* local server not up */ }
     }
   });
 

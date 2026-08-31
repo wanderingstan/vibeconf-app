@@ -32,6 +32,13 @@ ipcRenderer.on('extension-message', (_event, message) => {
     meetProvider.setCameraOn(true);
   } else if (message.action === 'camera-off') {
     meetProvider.setCameraOn(false);
+  } else if (message.action === 'realtime-say') {
+    // Words from the slow model (or any speakText caller), to be spoken by the
+    // realtime model rather than synthesized into a second voice.
+    window.postMessage({
+      __botsInCalls: true, __fromExtension: true,
+      action: 'realtime-say', text: message.text,
+    }, '*');
   } else if (message.action === 'start-realtime' || message.action === 'stop-realtime') {
     // EXPERIMENT: realtime speech-to-speech. Only the short-lived ephemeral
     // secret crosses into the page; the API key stays in main.

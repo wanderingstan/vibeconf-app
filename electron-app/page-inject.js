@@ -3198,10 +3198,45 @@
       this.outGain = null;
       this.pollTimer = null;
       this.lipTimer = null;
+      this.sayQueue = [];
       this.speakingNow = false;
       this.botSpeakingClear = null;
       this.active = false;
       this.startedAt = 0;
+    }
+
+    // Words handed over by main (agent speech, the recording notice) for the
+    // model to voice. This is the whole reason ElevenLabs is out of the loop
+    // for a realtime bot: one mouth, one voice, no collision.
+    say(text) {
+      const clean = String(text || '').trim();
+      if (!clean) return;
+      if (!this.active || !this.dc || this.dc.readyState !== 'open') {
+        // Never swallow it. main turns this into notePlaybackFailure so the
+        // agent is not told "Spoken" about silence.
+        this._report('say-failed', 'session not live');
+        return;
+      }
+      this.sayQueue.push(clean);
+      this._flushSay();
+    }
+
+    _flushSay() {
+      if (!this.sayQueue.length) return;
+      // Never talk over ourselves. The lip-sync amplitude watcher is the floor
+      // signal, so this reuses the one thing that actually knows whether sound
+      // is coming out, rather than a second guess at it.
+      if (this.speakingNow) return;
+      const text = this.sayQueue.shift();
+      this._send({
+        type: 'conversation.item.create',
+        item: {
+          type: 'message', role: 'user',
+          content: [{ type: 'input_text', text: '[deliver, say this close to as written] ' + text }],
+        },
+      });
+      this._send({ type: 'response.create' });
+      this._report('said', text.slice(0, 80));
     }
 
     // The avatar's jaw is gated on cam.speaking; the analyser only modulates
@@ -3249,6 +3284,10 @@
           this.botSpeakingClear = setTimeout(() => { transcription.botSpeaking = false; }, 1500);
         }
       } catch { /* transcription not up */ }
+
+      // The floor just opened: anything main handed us while the model was
+      // mid-sentence goes now.
+      if (!on) this._flushSay();
     }
 
     _report(type, detail) {
@@ -3428,6 +3467,12 @@
       if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
       if (this.lipTimer) { clearInterval(this.lipTimer); this.lipTimer = null; }
       this._setSpeaking(false); // never leave the face mid-word
+      // Anything still queued will never be said, and the agent may be waiting
+      // on it. Report rather than discard silently.
+      while (this.sayQueue.length) {
+        this.sayQueue.shift();
+        this._report('say-failed', 'the session stopped before it was said');
+      }
       for (const src of this.mixed.values()) { try { src.disconnect(); } catch { /* gone */ } }
       this.mixed.clear();
       try { if (this.outGain) this.outGain.disconnect(); } catch { /* gone */ }
@@ -3453,6 +3498,8 @@
       realtimeVoice.start({ secret: event.data.secret, model: event.data.model });
     } else if (event.data.action === 'stop-realtime') {
       realtimeVoice.stop('asked to stop');
+    } else if (event.data.action === 'realtime-say') {
+      realtimeVoice.say(event.data.text);
     }
   });
 

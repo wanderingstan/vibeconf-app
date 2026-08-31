@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<!-- supervisor.html — the over-bot view (#301).
+
+     Everything on this page is about the FLEET, never about one bot: which bots
+     exist, which are up, what is coming for any of them. A bot's own controls
+     stay in its own window — this one launches them. -->
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Vibeconferencing</title>
+  <style>
+    :root {
+      --bg: #1d1f21; --panel: #26292c; --line: #34383c;
+      --text: #e8eaed; --dim: #9aa0a6; --accent: #81c995; --warn: #f28b82;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    }
+    header {
+      padding: 14px 16px 10px; border-bottom: 1px solid var(--line);
+      display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+    }
+    h1 { font-size: 15px; margin: 0; font-weight: 600; }
+    h2 {
+      font-size: 11px; text-transform: uppercase; letter-spacing: .07em;
+      color: var(--dim); margin: 0 0 8px; font-weight: 600;
+    }
+    .section { padding: 14px 16px; border-bottom: 1px solid var(--line); }
+    .muted { color: var(--dim); }
+    .empty { color: var(--dim); font-style: italic; padding: 2px 0; }
+
+    .bot {
+      display: flex; align-items: center; gap: 10px;
+      padding: 9px 10px; background: var(--panel);
+      border: 1px solid var(--line); border-radius: 7px; margin-bottom: 6px;
+    }
+    .bot .who { flex: 1; min-width: 0; }
+    .bot .name { font-weight: 600; }
+    .bot .sub {
+      color: var(--dim); font-size: 11px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    /* A dot, plus words. Colour alone would leave the one genuinely important
+       state — in a call — invisible to anyone who cannot distinguish it. */
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #5f6368; flex: none; }
+    .dot.up { background: var(--accent); }
+    .dot.call { background: #fbbc04; }
+    button {
+      background: #35393d; color: var(--text); border: 1px solid var(--line);
+      border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer;
+    }
+    button:hover { background: #3f4448; }
+    button.primary { background: #2d6a4f; border-color: #2d6a4f; }
+    button.primary:hover { background: #35805e; }
+
+    .event { padding: 7px 0; border-bottom: 1px dashed var(--line); }
+    .event:last-child { border-bottom: 0; }
+    .event .when { color: var(--accent); font-variant-numeric: tabular-nums; }
+    .event .for { color: var(--dim); font-size: 11px; }
+    .banner { padding: 8px 10px; border-radius: 6px; margin-bottom: 10px; font-size: 12px; }
+    .banner.warn { background: #3a2a28; color: var(--warn); border: 1px solid #5c3b38; }
+    footer { padding: 10px 16px; color: var(--dim); font-size: 11px; display: flex; justify-content: space-between; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Bots on this machine</h1>
+    <button id="refresh">Refresh</button>
+  </header>
+
+  <div class="section">
+    <h2>Bots</h2>
+    <div id="bots"><div class="empty">Looking…</div></div>
+    <div id="orphans"></div>
+  </div>
+
+  <div class="section">
+    <h2>Upcoming</h2>
+    <div id="calendarBanner"></div>
+    <div id="events"><div class="empty">Nothing scheduled.</div></div>
+  </div>
+
+  <footer>
+    <span id="tickStatus" class="muted">—</span>
+    <span class="muted">Watching for all bots, including closed ones</span>
+  </footer>
+
+  <script src="supervisor.js"></script>
+</body>
+</html>

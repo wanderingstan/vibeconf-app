@@ -952,6 +952,16 @@ async function startRealtimeVoice(botName) {
     return;
   }
 
+  if (cfg.suspicious) {
+    // Say it before the round trip, because OpenAI's 401 for a mangled key is
+    // word for word its 401 for a revoked one.
+    const hint = 'Realtime voice: that key does not start with "sk-" (' +
+      cfg.apiKey.length + ' chars), so a character was probably lost on paste. ' +
+      'Re-paste it in App Settings.';
+    console.warn('[realtime]', hint);
+    broadcastError(hint);
+  }
+
   try {
     const session = await mintEphemeralSession({
       ...cfg,

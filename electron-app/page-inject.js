@@ -3309,6 +3309,12 @@
         this._send({
           type: 'session.update',
           session: {
+            // Required by the GA shape. Without it the whole update is refused
+            // with missing_required_parameter and the session silently keeps
+            // its defaults, so the language pin and VAD tuning below never
+            // apply and nothing looks broken until the model answers in the
+            // wrong language.
+            type: 'realtime',
             audio: {
               input: {
                 transcription: { model: 'whisper-1', language: 'en' },

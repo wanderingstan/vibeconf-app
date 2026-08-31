@@ -59,7 +59,19 @@ function resolveRealtimeConfig({ store, env = {}, defaults = {} } = {}) {
   const missing = [];
   if (enabled && !apiKey) missing.push('realtimeApiKey');
 
-  return { enabled, apiKey, model, voice, missing, ready: enabled && missing.length === 0 };
+  // A key that does not start with sk- is almost always a mangled paste rather
+  // than a revoked key, and the two are indistinguishable from OpenAI's 401.
+  // Found the hard way: a paste that lost its leading character stored
+  // "k-proj-..." and only announced itself as "Incorrect API key" once a call
+  // was already underway. A warning, never a block: prefixes are OpenAI's to
+  // change, and refusing a key we merely fail to recognise would be worse than
+  // letting it try.
+  const suspicious = !!apiKey && !apiKey.startsWith('sk-');
+
+  return {
+    enabled, apiKey, model, voice, missing, suspicious,
+    ready: enabled && missing.length === 0,
+  };
 }
 
 // OpenAI has shipped two shapes of the token endpoint. Try the newer, fall back

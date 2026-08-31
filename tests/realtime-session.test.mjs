@@ -82,6 +82,28 @@ test('instructions name the bot and stay short', () => {
   assert.match(buildInstructions({}), /^You are a voice teammate/);
 });
 
+test('a key that lost a character on paste is flagged, not blocked', () => {
+  // The real one: a paste stored "k-proj-..." (163 chars, leading s missing).
+  // OpenAI answers that with the same 401 it gives a revoked key, so the app
+  // has to notice the shape itself or the user goes hunting for a billing
+  // problem that does not exist.
+  const bad = resolveRealtimeConfig({
+    store: storeOf({ realtimeVoice: true, realtimeApiKey: 'k-proj-abc' }),
+  });
+  assert.equal(bad.suspicious, true);
+  assert.equal(bad.ready, true, 'still tried: an unrecognised prefix is a warning, not a veto');
+
+  for (const good of ['sk-abc', 'sk-proj-abc']) {
+    assert.equal(
+      resolveRealtimeConfig({ store: storeOf({ realtimeVoice: true, realtimeApiKey: good }) }).suspicious,
+      false,
+    );
+  }
+  // No key at all is "missing", not "suspicious" — different message.
+  const none = resolveRealtimeConfig({ store: storeOf({ realtimeVoice: true }) });
+  assert.equal(none.suspicious, false);
+});
+
 test('mints against the current endpoint shape', async () => {
   const calls = [];
   const fetchImpl = async (url, opts) => {

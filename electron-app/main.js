@@ -6634,6 +6634,13 @@ function markClaudeReady(source) {
 }
 ipcMain.handle('get-claude-ready', () => claudeReady);
 
+// The user's hour-cycle preference, for renderers — they cannot read it
+// themselves. macOS keeps the 24-hour choice OUTSIDE the locale
+// (AppleICUForce24HourTime) and Chromium's ICU only consults the locale, so a
+// panel asking for the system locale correctly still printed "4:30 PM" to
+// someone with 24-hour time on. See electron-app/time-format.js.
+ipcMain.handle('get-hour12', () => require('./time-format.js').resolveHour12());
+
 // Merge a SessionStart hook into the agent dir's settings.local.json so ANY Claude session
 // launched there pings /claude-ready on startup (proof it's installed + signed in).
 // Idempotent — keeps existing settings/hooks; only adds ours if absent.

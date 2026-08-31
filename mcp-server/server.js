@@ -170,8 +170,37 @@ function probePorts() {
   return [...set];
 }
 
+// The supervisor's directory (#301) — one call to a fixed port instead of 46
+// probes, and an authoritative answer rather than an inferred one.
+//
+// A scan can only report who is LISTENING. The supervisor knows what each bot
+// is supposed to be, because it is the thing that launched them — which is the
+// difference that matters in #517, where a bot is answering on a port that is
+// not its own.
+//
+// Null (never a throw) when there is no supervisor, so the caller falls back to
+// the scan. That fallback is not ceremony: the supervisor is an ordinary app
+// window the user is free to quit, and an agent must keep working when they do.
+const SUPERVISOR_URL = process.env.VIBECONF_SUPERVISOR_URL
+  || `http://127.0.0.1:${process.env.VIBECONF_SUPERVISOR_PORT || 7864}`;
+
+async function askSupervisor() {
+  try {
+    const resp = await vfetch(`${SUPERVISOR_URL}/api/instances`, { signal: AbortSignal.timeout(900) });
+    if (!resp.ok) return null;
+    const body = await resp.json();
+    if (!body?.ok || !Array.isArray(body.instances)) return null;
+    // A supervisor that is up but has found nothing is a real answer — an empty
+    // fleet — and must not be mistaken for "no supervisor", which would send us
+    // scanning for bots it already knows are absent.
+    return body.instances.map((i) => ({ ...i, baseUrl: i.baseUrl || `http://127.0.0.1:${i.port}` }));
+  } catch {
+    return null;
+  }
+}
+
 // Returns [{ port, baseUrl, profile, botName, callStatus, roomId }] for live instances.
-async function discoverInstances() {
+async function scanForInstances() {
   const results = await Promise.all(probePorts().map(async (port) => {
     try {
       const resp = await vfetch(`http://127.0.0.1:${port}/api/sync/no-room`, { signal: AbortSignal.timeout(900) });
@@ -197,6 +226,13 @@ async function discoverInstances() {
     } catch { return null; }
   }));
   return results.filter(Boolean);
+}
+
+// Ask the supervisor; scan only if there isn't one.
+async function discoverInstances() {
+  const fromSupervisor = await askSupervisor();
+  if (fromSupervisor) return fromSupervisor;
+  return scanForInstances();
 }
 
 // resolveInstance lives in ./instance-routing.js (pure, unit-tested). Behaviour:

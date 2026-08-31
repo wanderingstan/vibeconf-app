@@ -21,7 +21,7 @@
 // works would make the cross-platform story an afterthought. The window is the
 // product; the menulet is a way to hide it.
 
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
 const path = require('path');
 const { execFile } = require('child_process');
 
@@ -30,6 +30,7 @@ const profileManager = require('./profile-manager.js');
 const { decideWakeups, readFleet } = require('./supervisor.js');
 const { matchesCalendarEvent, ownerHasConfirmed } = require('./calendar-auto-join.js');
 const { spawnArgsForProfile, profileLaunchCommand } = require('./profile-launch.js');
+const { supervisorPort } = require('./supervisor-port.js');
 
 const POLL_MS = 60 * 1000;
 const PROBE_TIMEOUT_MS = 350;
@@ -39,6 +40,9 @@ let win = null;
 let store = null;
 let pollTimer = null;
 let paths = null;
+let directory = null;
+// Set once a quit is genuinely intended, so the close handler stops intercepting.
+let quitting = false;
 
 // ── The fleet, as seen from outside ─────────────────────────────────────────
 
@@ -56,10 +60,17 @@ async function probe(port) {
     clearTimeout(timer);
     if (!res.ok) return null;
     const body = await res.json();
+    const status = body?.status || {};
     return {
       port,
-      profile: body?.status?.localProfile || null,
-      callStatus: body?.status?.callStatus || 'idle',
+      baseUrl: `http://127.0.0.1:${port}`,
+      profile: status.localProfile || null,
+      // Exactly the fields mcp-server/instance-routing.js resolves against, under
+      // exactly those names. The directory is a drop-in for that module's input,
+      // so the resolver itself does not change — only where its input came from.
+      botName: status.currentCallBotName || status.configuredBotName || null,
+      configuredBotName: (status.configuredBotName || '').trim() || null,
+      callStatus: status.callStatus || null,
       roomId: body?.roomId || null,
     };
   } catch {
@@ -241,11 +252,114 @@ async function focusProfile(name) {
   }
 }
 
+// ── The directory ───────────────────────────────────────────────────────────
+//
+// The one fixed address in the system: an agent asks "where is Bramble?" and
+// gets a port, then talks to that bot DIRECTLY.
+//
+// A directory, not a proxy — and that is the load-bearing choice. Routing the
+// agents' traffic THROUGH here would put this process in the hot path of every
+// utterance, so a wedged supervisor would mute every bot on the machine
+// mid-call. That spends crash isolation, which docs/multi-bot-architecture.md
+// identifies as the property process-per-bot was chosen to buy. As a directory,
+// a supervisor that dies costs new lookups and nothing else: every live call
+// carries on, because nothing of theirs was passing through it.
+//
+// What it replaces is a 46-port scan on every join. A scan can only answer "who
+// is listening"; it cannot tell a correctly-bound bot from one that landed on a
+// port it should not have — which is exactly #517. The supervisor can, because
+// it is the thing that launched them.
+function startDirectory() {
+  const http = require('http');
+  const port = supervisorPort();
+
+  directory = http.createServer(async (req, res) => {
+    const send = (code, body) => {
+      res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(body));
+    };
+    const url = new URL(req.url, `http://127.0.0.1:${port}`);
+    try {
+      if (url.pathname === '/api/instances') {
+        // Probed live rather than served from a memory of what we launched: a
+        // bot started by hand, or one that died since, has to show up
+        // truthfully. The supervisor is the authority on what SHOULD be there,
+        // which is not a substitute for looking at what is.
+        const running = await scanRunning();
+        return send(200, { ok: true, instances: [...running.values()], supervisor: { port } });
+      }
+      if (url.pathname === '/api/health') {
+        return send(200, { ok: true, supervisor: { port, pid: process.pid, version: app.getVersion() } });
+      }
+      if (url.pathname === '/api/launch' && req.method === 'POST') {
+        const name = url.searchParams.get('profile');
+        if (!name) return send(400, { ok: false, error: 'profile is required' });
+        return send(200, launchProfile(name));
+      }
+      return send(404, { ok: false, error: 'not found' });
+    } catch (err) {
+      return send(500, { ok: false, error: err.message });
+    }
+  });
+
+  directory.on('error', (err) => {
+    // EADDRINUSE means something already has the port. The single-instance lock
+    // normally prevents a second supervisor, but not a stale process still
+    // holding it — so name which failure this is rather than dying namelessly.
+    console.error(`[supervisor] could not listen on ${port}:`, err.message,
+      err.code === 'EADDRINUSE' ? '— another supervisor (or something else) already has it.' : '');
+  });
+  // Loopback only. This lists every bot on the machine and can start processes;
+  // it is not something to expose beyond this host.
+  directory.listen(port, '127.0.0.1', () => console.log(`[supervisor] directory listening on 127.0.0.1:${port}`));
+}
+
 // ── Window ──────────────────────────────────────────────────────────────────
 
 function pushState(extra = {}) {
   if (!win || win.isDestroyed()) return;
   win.webContents.send('supervisor-state', extra);
+}
+
+// What actually stops when the supervisor does, said in the dialog rather than
+// left to be discovered at the start of a meeting.
+//
+// The count of running bots is deliberately part of it: quitting with three bots
+// up is a different act from quitting with none, and only the first one takes
+// anything away right now.
+async function confirmQuit() {
+  const running = await scanRunning().catch(() => new Map());
+  const detail = [
+    'Bots that are already open keep working, and their calls are not interrupted.',
+    '',
+    'What stops:',
+    '  • Meetings will not auto-join for any bot that is closed.',
+    '  • Agents fall back to scanning ports to find a bot.',
+    '',
+    running.size
+      ? `${running.size} bot${running.size > 1 ? 's are' : ' is'} running right now.`
+      : 'No bots are running right now.',
+    '',
+    'Opening any bot starts the supervisor again.',
+  ].join('\n');
+
+  const { response, checkboxChecked } = await dialog.showMessageBox(win, {
+    type: 'question',
+    buttons: ['Keep running', 'Quit anyway'],
+    defaultId: 0,
+    cancelId: 0,
+    title: 'Quit Vibeconferencing?',
+    message: 'This is the process that watches the calendar for every bot.',
+    detail,
+    checkboxLabel: "Don't ask again",
+    checkboxChecked: false,
+    noLink: true,
+  }).catch(() => ({ response: 0, checkboxChecked: false }));
+
+  if (checkboxChecked) store.set('confirmSupervisorQuit', false);
+  if (response !== 1) return;
+  quitting = true;
+  app.quit();
 }
 
 function createWindow() {
@@ -261,11 +375,23 @@ function createWindow() {
   });
   win.loadFile(path.join(__dirname, 'renderer', 'supervisor.html'));
 
-  // Closing the supervisor window quits the supervisor — for now. Once it
-  // collapses to a menulet this becomes "hide", and that is the ONE line that
-  // changes: an always-on process you cannot see or quit is the thing to avoid
-  // shipping by accident, so it stays quittable until there is a menu-bar item
-  // to quit it FROM.
+  // The Granola model (Stan, 2026-08-31): this wants to be always-on, says so
+  // loudly when you go to quit it, and then lets you.
+  //
+  // Refusing to close would be worse than being absent — nobody can be required
+  // to leave an app running. But quitting silently is its own trap, because what
+  // stops is invisible: no calendar auto-join for any bot that is not open, and
+  // no directory for the agents to resolve a bot through. Both fail later, as
+  // "why didn't it join", far from the click that caused them.
+  //
+  // So the dialog states what stops rather than asking "are you sure", and
+  // remembers a "don't ask again" the same way the bot window's quit
+  // confirmation does.
+  win.on('close', (event) => {
+    if (quitting || store.get('confirmSupervisorQuit') === false) return;
+    event.preventDefault();
+    confirmQuit();
+  });
   win.on('closed', () => { win = null; });
 }
 
@@ -306,6 +432,7 @@ function start() {
       return { ok: true };
     });
 
+    startDirectory();
     createWindow();
     tick().catch((err) => console.warn('[supervisor] first tick failed:', err.message));
     pollTimer = setInterval(() => {
@@ -315,6 +442,7 @@ function start() {
 
   app.on('window-all-closed', () => {
     if (pollTimer) clearInterval(pollTimer);
+    if (directory) directory.close();
     app.quit();
   });
 }

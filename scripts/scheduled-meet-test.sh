@@ -91,7 +91,7 @@ _CALL_DIGEST_SENT="/tmp/vibeconf-calldigest-${STAMP}.sent"
 # untrue about itself, and triage believed it.
 #
 # Order here is documentation only; the lanes run where they appear below.
-LANES_ALL=(join-route dmg-meet main-meet wb-roundtrip slack whiteboard-e2e codex linux fuzz)
+LANES_ALL=(join-route dmg-meet main-meet wb-roundtrip slack whiteboard-e2e codex linux remote-log fuzz)
 _LANE_LEDGER="/tmp/vibeconf-lanes-${STAMP}.done"
 : > "$_LANE_LEDGER"
 lane_done() { print -r -- "$1" >> "$_LANE_LEDGER"; }
@@ -875,6 +875,33 @@ lane_done linux
 # the experimental one can spend the remaining budget. Reordering is the honest
 # fix here; raising VIBECONF_GLOBAL_TIMEOUT alone would just let a growing suite
 # keep hiding whichever lane happens to be last.
+
+# --- remote log shipping (#619). Runs LATE, on purpose: it asks whether the log
+# of THIS run reached the server, so it needs the run to have happened first.
+#
+# Why a lane and not a unit test: #619 shipped the first few seconds of every
+# session and then stopped, silently, for weeks. The pref read `true`, the app
+# logged "Remote logging ENABLED", and no error was ever produced because no
+# request was ever attempted again. Three investigations died on it (#417, the
+# "first ~96 seconds of a 54-minute call" note in session-log.js, and the
+# 2026-08-31 report that turned out to have no log behind it). A unit test can
+# prove the scheduler reschedules; only a real long session over a real network
+# can prove a complete log actually arrived.
+#
+# It compares the NEWEST line on the server against the newest on disk, because
+# the failure is never "no log at all" — it is "only the beginning of the log",
+# which a mere is-anything-there check would pass. Recorded, not gating.
+echo "" | tee -a "$LOG"
+echo "=== remote log shipping check (#619) $STAMP ===" | tee -a "$LOG"
+RLOG_OUT="$(node "$VIBECONF_REPO/scripts/check-remote-log-shipping.mjs" --json 2>&1)"
+RLOG_CODE=$?
+echo "$RLOG_OUT" | tee -a "$LOG"
+# Exit 2 is "could not check" (logging off, no credential, API unreachable) and
+# is deliberately NOT a pass — a skipped check that reads as green is the exact
+# shape of failure this whole file keeps warning about.
+print -r -- "$RLOG_OUT" >> "$RESULTS/remote-log-results.jsonl"
+echo "=== remote log check exit: $RLOG_CODE (recorded, not gating) ===" | tee -a "$LOG"
+lane_done remote-log
 
 # --- EXPERIMENTAL: real-agent fuzzing test (#267 item 5) — NEW, take with a grain
 # of salt. Real Claude agents run the 'smoke' mission and an LLM judge grades it.

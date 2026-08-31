@@ -91,7 +91,7 @@ _CALL_DIGEST_SENT="/tmp/vibeconf-calldigest-${STAMP}.sent"
 # untrue about itself, and triage believed it.
 #
 # Order here is documentation only; the lanes run where they appear below.
-LANES_ALL=(join-route dmg-meet main-meet wb-roundtrip slack whiteboard-e2e codex linux remote-log fuzz)
+LANES_ALL=(join-route dmg-meet main-meet wb-roundtrip slack whiteboard-e2e codex linux etiquette remote-log fuzz)
 _LANE_LEDGER="/tmp/vibeconf-lanes-${STAMP}.done"
 : > "$_LANE_LEDGER"
 lane_done() { print -r -- "$1" >> "$_LANE_LEDGER"; }
@@ -875,6 +875,33 @@ lane_done linux
 # the experimental one can spend the remaining budget. Reordering is the honest
 # fix here; raising VIBECONF_GLOBAL_TIMEOUT alone would just let a growing suite
 # keep hiding whichever lane happens to be last.
+
+# --- conversational etiquette (#468). Until now this suite has only ever been
+# run by hand, which is how "it passed last night" got said out loud about a
+# suite nobody had run.
+#
+# ONE RULE PER FRESH FLEET, deliberately — see scripts/etiquette-nightly.sh.
+# #494 measured a full ten-rule run producing four reds that a reader then had
+# to re-test individually to dismiss, on a build where the same rules passed in
+# small groups. A nightly whose reds need manual confirmation is the
+# impression-based loop the suite was built to replace, with a cron job attached.
+# So this pays ~25s of fleet boot per rule to buy a red that means something.
+#
+# Budgeted rather than open-ended: the watchdog kills the whole run at 30 min,
+# and a lane that eats the budget would take the lanes after it down with it.
+# Rules the budget cuts off are recorded as "not-run", never as passing.
+#
+# Recorded, not gating. Needs the minted room, so it runs after join-route.
+if [[ -n "${VIBECONF_MEET_ROOM:-}" ]]; then
+  echo "" | tee -a "$LOG"
+  echo "=== conversational etiquette (#468) $STAMP ===" | tee -a "$LOG"
+  "$VIBECONF_REPO/scripts/etiquette-nightly.sh" --room "$VIBECONF_MEET_ROOM" --budget-sec 600 2>&1 | tee -a "$LOG"
+  ETIQ_CODE=${pipestatus[1]}
+  echo "=== etiquette exit: $ETIQ_CODE (recorded, not gating) ===" | tee -a "$LOG"
+else
+  echo "=== ⚠️  etiquette SKIPPED — no VIBECONF_MEET_ROOM (join-route never minted one) ===" | tee -a "$LOG"
+fi
+lane_done etiquette
 
 # --- remote log shipping (#619). Runs LATE, on purpose: it asks whether the log
 # of THIS run reached the server, so it needs the run to have happened first.

@@ -2765,6 +2765,56 @@ const localServer = new globalThis.LocalServer({
     }
   },
 
+  // #615 — capture one of the app's own UI surfaces, for a visual changelog of
+  // how the app has looked over time.
+  //
+  // WHY IN-PROCESS, rather than `screencapture` from a shell script: capturePage()
+  // grabs exactly the window's own pixels. A shell capture needs a CoreGraphics
+  // window id to hunt for, needs Screen Recording permission (which a launchd job
+  // cannot be prompted for — see the nightly's preflight), and picks up whatever
+  // else is on the desktop behind a translucent edge. None of that applies here.
+  //
+  // Returns a SIGNATURE alongside the file so a caller can decide whether this
+  // frame is worth keeping. See uiSignature() for why it isn't a checksum.
+  onCaptureUi: async ({ surface } = {}) => {
+    const name = surface || 'panel';
+    const target = UI_SURFACES[name];
+    if (!target) {
+      return { error: `Unknown UI surface '${name}'. Known: ${Object.keys(UI_SURFACES).join(', ')}` };
+    }
+    const contents = target();
+    if (!contents || contents.isDestroyed()) {
+      return { error: `The '${name}' surface is not open right now, so there is nothing to capture` };
+    }
+    try {
+      const image = await contents.capturePage();
+      const size = image.getSize();
+      if (!size.width || !size.height) {
+        // A window with no display surface captures as 0x0 rather than throwing.
+        return { error: `The '${name}' surface captured as ${size.width}x${size.height} — it has no display surface (hidden, or not yet painted)` };
+      }
+      const buf = image.toPNG();
+      const dir = path.join(app.getPath('temp'), 'vibeconf-ui-history');
+      await fs.promises.mkdir(dir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const filePath = path.join(dir, `ui-${name}-${stamp}.png`);
+      await fs.promises.writeFile(filePath, buf);
+      console.log('[electron] UI capture saved:', filePath, `(${buf.length} bytes, ${size.width}x${size.height})`);
+      return {
+        path: filePath,
+        surface: name,
+        width: size.width,
+        height: size.height,
+        bytes: buf.length,
+        signature: uiSignature(image),
+        appVersion: app.getVersion(),
+      };
+    } catch (err) {
+      console.error('[electron] UI capture failed:', err);
+      return { error: err.message };
+    }
+  },
+
   // Capture the bot's OWN shared screen — i.e. the whiteboard window it's
   // presenting into the call — as opposed to onCaptureScreenshot which grabs the
   // Meet view. Ironically the Meet view can't show the bot its own share, so
@@ -3280,6 +3330,25 @@ let openTroubleshootingWindowRef = null;
 let refreshAppMenuRef = null;
 let mainWindow = null;   // single window that holds both views
 let panelView = null;     // left sidebar BrowserView
+
+// #615 — the app's own UI surfaces, by name, each resolving to a webContents at
+// call time (they come and go, so this cannot be a table of objects).
+//
+// Deliberately only two for now. The other eight windows in the app are not open
+// during an unattended run, so capturing them needs something to OPEN each one
+// first — a bigger job, and the baseline is the part with a deadline: it can only
+// be taken while the current UI still exists.
+const UI_SURFACES = {
+  panel: () => panelView?.webContents,
+  whiteboard: () => whiteboardWindow?.webContents,
+};
+
+// #615 — see ui-signature.js for why this is a downscaled perceptual signature
+// rather than a checksum of the PNG.
+const { SIGNATURE_SIDE, signatureFromBitmap } = require('./ui-signature.js');
+function uiSignature(image) {
+  return signatureFromBitmap(image.resize({ width: SIGNATURE_SIDE, height: SIGNATURE_SIDE, quality: 'good' }).toBitmap());
+}
 let meetView = null;      // right Meet BrowserView
 let panelPopoutWindow = null; // when popped out, the panelView lives here instead
 let troubleshootingWindow = null; // the ⓘ window — a second copy of panel.html

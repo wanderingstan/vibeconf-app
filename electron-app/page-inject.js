@@ -3199,6 +3199,7 @@
       this.pollTimer = null;
       this.lipTimer = null;
       this.sayQueue = [];
+      this.responseActive = false; // the model is composing, audible or not
       this.speakingNow = false;
       this.botSpeakingClear = null;
       this.active = false;
@@ -3226,7 +3227,13 @@
       // Never talk over ourselves. The lip-sync amplitude watcher is the floor
       // signal, so this reuses the one thing that actually knows whether sound
       // is coming out, rather than a second guess at it.
-      if (this.speakingNow) return;
+      // Two different "busy" signals, and BOTH matter. speakingNow comes from
+      // audio amplitude, which lags: the model spends a few hundred ms
+      // composing before any sound exists. Firing response.create in that
+      // window lands on top of a reply already in flight, and the delivered
+      // words are simply lost. Seen live: Claude's line went in 374ms before
+      // the model answered the human instead, and the line was never said.
+      if (this.speakingNow || this.responseActive) return;
       const text = this.sayQueue.shift();
       this._send({
         type: 'conversation.item.create',
@@ -3236,6 +3243,7 @@
         },
       });
       this._send({ type: 'response.create' });
+      this.responseActive = true; // ours, until response.done says otherwise
       this._report('said', text.slice(0, 80));
     }
 
@@ -3418,6 +3426,13 @@
       };
       this.dc.onmessage = (e) => {
         let m; try { m = JSON.parse(e.data); } catch { return; }
+        if (m.type === 'response.created') {
+          this.responseActive = true;
+        } else if (m.type === 'response.done') {
+          this.responseActive = false;
+          this._flushSay(); // the model has finished; anything held goes now
+        }
+
         if (m.type === 'response.audio_transcript.done' ||
             m.type === 'response.output_audio_transcript.done') {
           this._report('bot-said', m.transcript || '');
@@ -3466,6 +3481,7 @@
     stop(why) {
       if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
       if (this.lipTimer) { clearInterval(this.lipTimer); this.lipTimer = null; }
+      this.responseActive = false;
       this._setSpeaking(false); // never leave the face mid-word
       // Anything still queued will never be said, and the agent may be waiting
       // on it. Report rather than discard silently.

@@ -42,11 +42,14 @@ const OWN_COMMAND_ONLY = {
   // break the arrangement, so each one is listed with the reason it is absent.
   // The guard still applies to everything else: a new tool must be whitelisted
   // here too, or a realtime bot silently cannot reach it.
+  //
+  // play_audio/play_sound were withheld here for one commit on the theory that
+  // sharing the virtual mic made them collide. They do not: onPlayAudio never
+  // goes through speakText, so the realtime gate never sees them, and a sound
+  // effect is not competing to BE the voice. They are back.
   'realtime-call-skill.md': [
     'start_call',   // same split as /join-call: this skill joins, it does not create
     'speak',        // THE point of the mode. The realtime model owns the voice; brief() instead
-    'play_audio',   // plays into the same virtual mic the model speaks through, so it collides
-    'play_sound',   // same collision
     'set_voice',    // the session opens with a fixed voice; changing it means renegotiating
     'list_voices',  // nothing here can act on the answer, so offering it only invites set_voice
   ],

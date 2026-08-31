@@ -4588,6 +4588,12 @@ class LocalServer {
         anyoneSpeaking: this.anyoneSpeaking,
         audioFloorSpeaking: this.audioFloorSpeaking,
         floorBusy: this.floorBusy,
+        // Same reason as floorBusy: a harness needs to ask whether the bot is
+        // mid-turn or still holding a reply ('yielding'), and the only other
+        // way was to grep the log for state-change lines. A caller that cannot
+        // see this reads "quiet floor" as "ready to talk", which is wrong for
+        // the whole time a stash is held.
+        botState: this.botState,
         sharing: this.sharing,
         someoneElsePresenting: this.someoneElsePresenting,
         presenterName: this.presenterName,
@@ -4595,6 +4601,11 @@ class LocalServer {
         localServerUrl: this.getLocalServerUrl(),
         localServerPort: this.port,
         localProfile: this.localProfile,
+        // Which folder this instance's bot works in (#517). A session started in
+        // that folder IS this bot, whatever port its MCP config happened to
+        // bake — see resolveInstance's cwd matching. Per-profile, because
+        // userData is.
+        agentWorkdir: (() => { try { return this.getAgentWorkdir ? this.getAgentWorkdir() : null; } catch { return null; } })(),
         errors: this.errors,
         permissions: this.permissions,
         captionsOn: this.captionsOn,
@@ -5208,6 +5219,29 @@ class LocalServer {
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, path: result.path }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+      return;
+    }
+
+    // #615 — capture one of the app's own UI surfaces for the visual changelog.
+    // GET, not POST: it reads pixels and writes a temp file, nothing about the
+    // call or the app's state changes, so it is safe to poll from a cron.
+    if (url.pathname === '/api/ui-capture' && req.method === 'GET') {
+      try {
+        const result = await this.onCaptureUi({ surface: url.searchParams.get('surface') || undefined });
+        if (result?.error) {
+          // 409, not 500: "that window is not open" is the caller asking for
+          // something that is not available right now, not a fault. A capture
+          // script needs to tell those apart to decide whether to retry.
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: result.error }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, ...result }));
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false, error: err.message }));

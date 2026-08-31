@@ -28,6 +28,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { resolveInstance, joinNameFromRouting } from "./instance-routing.js";
+import { formatCallClock } from './call-time.js';
 import { parseMeetRoomId } from "./meet-room.js";
 
 let ROOM_ID = process.env.VIBECONF_ROOM_ID || "";
@@ -189,6 +190,9 @@ async function discoverInstances() {
         configuredBotName: (s.configuredBotName || "").trim() || null,
         callStatus: s.callStatus || null,
         roomId: d.roomId || null,
+        // Where this instance's bot works (#517). A session running in that
+        // folder IS this bot, regardless of the port its config baked.
+        agentWorkdir: s.agentWorkdir || null,
       };
     } catch { return null; }
   }));
@@ -201,6 +205,29 @@ async function discoverInstances() {
 // discovery turning up nothing keeps the current BASE_URL (env default) so
 // existing single-instance setups are unaffected.
 
+// Say it out loud when the baked port pointed somewhere else (#517).
+//
+// This is the whole reason that bug was expensive: every call SUCCEEDED. Buddy
+// spoke, and the words came out of Pepper's tile, and neither app saw anything
+// wrong — Pepper's instance was asked to speak, so it spoke. Working it out took
+// asking get_room_info which profile had answered. Once is enough; a warning
+// per tool call would be its own kind of noise.
+let warnedAboutPin = false;
+function warnIfPinMisleads(routed, instances) {
+  if (warnedAboutPin || routed.matchedBy !== "workdir" || !PINNED_PORT) return;
+  if (routed.instance.port === PINNED_PORT) return;
+  warnedAboutPin = true;
+  const pinned = instances.find((i) => i.port === PINNED_PORT);
+  console.error(
+    `[vibeconferencing] This session's MCP config points at port ${PINNED_PORT}`
+    + (pinned ? ` (profile "${pinned.profile}")` : " (not running)")
+    + `, but it is running in profile "${routed.instance.profile}"'s folder`
+    + ` — using :${routed.instance.port}. A terminal started by hand inherits the`
+    + ` user-scoped MCP config, which bakes the primary app's port; that is how a`
+    + ` second bot ends up speaking through the first bot's tile.`,
+  );
+}
+
 // Bind this session's BASE_URL to the instance the name targets. Returns
 // { ok, instance?, matchedBy? } or { error }. matchedBy tells the caller whether
 // the name was an ADDRESS (a profile) or a label — see instance-routing.js.
@@ -208,10 +235,16 @@ async function routeToInstance(name) {
   let instances;
   try { instances = await discoverInstances(); }
   catch { return { ok: true }; } // discovery failed → keep current BASE_URL, let the join surface a real error
-  const r = resolveInstance(name, instances, { pinnedPort: PINNED_PORT });
+  let cwd = null;
+  try { cwd = process.cwd(); } catch { /* no cwd — fall back to the pin */ }
+  const r = resolveInstance(name, instances, { pinnedPort: PINNED_PORT, cwd });
   if (r.error) return { error: r.error };
   if (r.keep) return { ok: true };
-  if (r.instance) { BASE_URL = r.instance.baseUrl; return { ok: true, instance: r.instance, matchedBy: r.matchedBy }; }
+  if (r.instance) {
+    warnIfPinMisleads(r, instances);
+    BASE_URL = r.instance.baseUrl;
+    return { ok: true, instance: r.instance, matchedBy: r.matchedBy };
+  }
   return { ok: true };
 }
 
@@ -555,6 +588,12 @@ server.tool(
     const status = data.status || {};
     const statusLine = status.callStatus && status.callStatus !== 'in-call'
       ? `\n[Call status: ${status.callStatus}]` : '';
+    // #617 — the bot's sense of time. Bethany: the bots don't know where they
+    // are in an hour-long meeting. Both facts were already in this payload and
+    // simply never rendered, so the agent could not see what the app knew.
+    // Printed on EVERY outcome below, including the silent ones: a bot that has
+    // been quiet for ten minutes is the one that most needs to know that.
+    const clockLine = '\n' + formatCallClock(status);
     const errorLines = (status.errors || []).length > 0
       ? '\n[Errors: ' + status.errors.map(e => e.message).join('; ') + ']' : '';
     // Surface unread chat on every lull — this is the natural moment to check
@@ -603,7 +642,7 @@ server.tool(
       // (the loop now pipelines chat like speech). Lead with that instead of a
       // misleading "no one spoke / timed out".
       if (data.chatWake) {
-        return { content: [{ type: "text", text: `(New chat message — the room was quiet, so you were woken to handle it.)${chatLine || '\n[Call read_chat to see it, then respond aloud and/or in chat.]'}${statusLine}${errorLines}` }] };
+        return { content: [{ type: "text", text: `(New chat message — the room was quiet, so you were woken to handle it.)${clockLine}${chatLine || '\n[Call read_chat to see it, then respond aloud and/or in chat.]'}${statusLine}${errorLines}` }] };
       }
       // Deaf-bot hint: if Meet captions are off, the bot can't hear anything.
       // Distinguish that from "the room is silent" so the agent can ask humans
@@ -611,7 +650,7 @@ server.tool(
       const deafLine = status.captionsOn === false
         ? '\n[Captions are OFF in Meet — the bot hears via captions, so it is DEAF until they are re-enabled. The app is retrying automatically; if this persists, say or chat: "Could someone turn captions back on? (CC button in Meet\'s toolbar)"]'
         : '';
-      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${statusLine}${errorLines}${chatLine}${ackLine}${replayLine}${discardLine}${truncLine}${deafLine}` }] };
+      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${clockLine}${statusLine}${errorLines}${chatLine}${ackLine}${replayLine}${discardLine}${truncLine}${deafLine}` }] };
     }
 
     // Each entry is now one logical speaker turn (#178 snapshot model); no
@@ -634,7 +673,7 @@ server.tool(
       return {
         content: [{
           type: "text",
-          text: `[BACKGROUND TICK] The conversation is ongoing and you are not being directly addressed. This is mainly your chance to THINK, not to talk.\n\nLatest (${deduped.length} turn(s), ${elapsed}s):\n${transcriptText}\n\nUsually you should just silently update your sense of the discussion (optionally call post_understanding), keep any short interjection you can imagine in mind, then call wait_for_speech again WITHOUT speaking — most ticks should end in silence.\n\nBUT: if something just said genuinely compels you — a point you are uniquely able to add, a question squarely in your wheelhouse, a moment you'd regret staying silent on — you MAY speak ONE short interjection now. Use this sparingly and only when you truly feel you must; if in doubt, stay silent and keep listening.${chatLine}`,
+          text: `[BACKGROUND TICK] The conversation is ongoing and you are not being directly addressed. This is mainly your chance to THINK, not to talk.${clockLine}\n\nLatest (${deduped.length} turn(s), ${elapsed}s):\n${transcriptText}\n\nUsually you should just silently update your sense of the discussion (optionally call post_understanding), keep any short interjection you can imagine in mind, then call wait_for_speech again WITHOUT speaking — most ticks should end in silence.\n\nBUT: if something just said genuinely compels you — a point you are uniquely able to add, a question squarely in your wheelhouse, a moment you'd regret staying silent on — you MAY speak ONE short interjection now. Use this sparingly and only when you truly feel you must; if in doubt, stay silent and keep listening.${chatLine}`,
         }],
       };
     }
@@ -642,7 +681,7 @@ server.tool(
     return {
       content: [{
         type: "text",
-        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):\n\n${transcriptText}${chatLine}${continuationLine}${ackLine}${replayLine}${discardLine}${truncLine}`,
+        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):${clockLine}\n\n${transcriptText}${chatLine}${continuationLine}${ackLine}${replayLine}${discardLine}${truncLine}`,
       }],
     };
   }

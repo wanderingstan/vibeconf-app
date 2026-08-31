@@ -70,6 +70,15 @@ import { Bot, sleep, report, record, TEST_SPEECH_PATH } from './meet-test-lib.mj
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLIP_DIR = path.join(HERE, '..', '.test-clips');
 
+// 28 seconds of Stan being talked over, from the call where it happened
+// (vph-sbmo-uic-20260830T203346Z, 34m26s in). See scripts/fixtures/README.md.
+//
+// Here rather than in TEST_SPEECH_PATH's slot because it is not interchangeable
+// with it: the synthesised clip is what a person sounds like, and this is what
+// an ANGRY person sounds like — short bursts with 200-660ms gaps, which is
+// precisely the shape the analyser mistook for stopping.
+const REAL_INTERRUPTION_PATH = path.join(HERE, 'fixtures', 'interrupt-2026-08-30-30s.mp3');
+
 const arg = (n, d) => { const i = process.argv.indexOf('--' + n); return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : d; };
 const has = (n) => process.argv.includes('--' + n);
 
@@ -308,6 +317,24 @@ async function resetPrefs(bot, defaults) {
   return moved;
 }
 
+// Wait until the bot is no longer holding a reply from a previous scenario.
+//
+// botState 'yielding' means "a reply is stashed and ready"; 'speaking' and
+// 'thinking' mean it is mid-turn. Only idle/listening means the last turn is
+// genuinely finished. Returns false rather than throwing so the caller can
+// report a non-start instead of blaming the app.
+async function waitUntilIdle(bot, { maxMs = 20_000 } = {}) {
+  const started = Date.now();
+  do {
+    const st = await bot.status().catch(() => null);
+    const s = st && st.botState;
+    if (!s || s === 'idle' || s === 'listening') return true;
+    if (Date.now() - started >= maxMs) break;
+    await sleep(300);
+  } while (true);
+  return false;
+}
+
 // Wait until the SUBJECT can actually hear the interrupter.
 //
 // The mirror of settleFloor, and needed for the same reason. Every rule that
@@ -415,6 +442,20 @@ async function speakAndHoldFloor(bot, text, { maxMs = 25_000 } = {}) {
   return { ok: false, why: `the subject never started speaking within ${maxMs}ms` };
 }
 
+// A NOTE ON `uninterruptible: true`, which every voice.playAudio below passes.
+//
+// The VOICE is an instrument, not a participant — but it runs the same barge-in
+// machinery as any bot, so by default IT YIELDS TO THE BOT IT IS SUPPOSED TO BE
+// INTERRUPTING. Caught in the voice's own log during repeat-yield:
+//
+//   [barge-in] human interrupted — backing off: Alice
+//
+// Its clip gets cut short by its own back-off, the subject hears a fragment or
+// nothing at all, and the rule scores that as the subject ignoring a person.
+// A single collision survives on timing luck; repeated ones do not, which is
+// why repeat-yield surfaced it and the older rules never did. The flag (#422,
+// built for replay rigs) suppresses the arm for the duration of the playback.
+
 // ── the rules ───────────────────────────────────────────────────────────────
 //
 // id      — for --only
@@ -431,7 +472,7 @@ const RULES = [
     async run({ subject, voice }) {
       // VOICE takes the floor and holds it well past the subject's whole
       // decision window, so there is no ambiguity about who was talking.
-      await voice.playAudio({ path: gaplessClip(8), emoji: '🗣️' });
+      await voice.playAudio({ uninterruptible: true, path: gaplessClip(8), emoji: '🗣️' });
       const busy = await waitForFloorBusy(subject);
       return window_(subject, async () => {
         if (!busy) return;                     // verdict reports the non-start
@@ -460,7 +501,7 @@ const RULES = [
           + 'starting with the first phase and how it depends on the second.');
         if (!held.ok) return;                  // nothing to interrupt; verdict reports why
         await sleep(600);                      // a beat INTO the utterance, not before it
-        await voice.playAudio({ path: clip(8), emoji: '✋' });
+        await voice.playAudio({ uninterruptible: true, path: clip(8), emoji: '✋' });
         await sleep(5000);                     // longer than bargeInGraceMaxMs (2400)
       });
       return { w, held };
@@ -500,7 +541,7 @@ const RULES = [
           + 'rewrites the index while the old readers are still attached.');
         if (!held.ok) return;
         await sleep(600);
-        await voice.playAudio({ path: clip(1), emoji: '💬' });   // a backchannel, not a turn
+        await voice.playAudio({ uninterruptible: true, path: clip(1), emoji: '💬' });   // a backchannel, not a turn
         await sleep(6000);                     // well inside ttsResumeMaxAgeMs (5s) after silence
       });
       return { w, held };
@@ -550,7 +591,7 @@ const RULES = [
       // does not hold.
       const OBSERVE_MS = 4000;
 
-      await voice.playAudio({ path: gaplessClip(8), emoji: '🗣️' });
+      await voice.playAudio({ uninterruptible: true, path: gaplessClip(8), emoji: '🗣️' });
       const busy = await waitForFloorBusy(subject);
       let stillBusy = false;
       const w = await window_(subject, async () => {
@@ -581,7 +622,7 @@ const RULES = [
     claim: 'says the held reply once the room actually goes quiet',
     needs: ['audio'],
     async run({ subject, voice }) {
-      await voice.playAudio({ path: clip(6), emoji: '🗣️' });
+      await voice.playAudio({ uninterruptible: true, path: clip(6), emoji: '🗣️' });
       await waitForFloorBusy(subject);
       return window_(subject, async () => {
         await subject.speak('The thing I was going to say when you started talking.');
@@ -670,7 +711,7 @@ const RULES = [
     // decided to say was thrown away without anyone hearing it or being told
     // (#413). Politeness that loses the reply is not politeness.
     async run({ subject, voice }) {
-      await voice.playAudio({ path: clip(4), emoji: '🗣️' });
+      await voice.playAudio({ uninterruptible: true, path: clip(4), emoji: '🗣️' });
       await waitForFloorBusy(subject);
       return window_(subject, async () => {
         await subject.speak('The one thing I wanted to add before we move on.');
@@ -687,11 +728,223 @@ const RULES = [
   },
 
   {
+    id: 'repeat-yield',
+    claim: 'yields every time it is interrupted, not just the first time',
+    needs: ['audio'],
+    // Every other rule in this file tests ONE collision. Nothing tested what
+    // accumulates across several, and the barge-in monitor carries state
+    // between them — _bargeInArmedAt, _audioFloorOffAt, _selfAudioLastLoudAt, a
+    // stash left from the previous round. A bug that leaves any of those set
+    // would pass the single-collision `yield` rule and still make the bot
+    // uninterruptible from the second attempt on, which is exactly what a
+    // person means by "it stopped listening to me".
+    async run({ subject, voice }) {
+      const ROUNDS = 4;
+      const rounds = [];
+      for (let i = 0; i < ROUNDS; i++) {
+        // Each round is its own scenario: drain the floor first, so the
+        // previous round's interrupter cannot be read as this round's.
+        await settleFloor(subject);
+        // A quiet floor is not the same as a bot ready to take a turn. Being
+        // interrupted leaves the subject holding the reply it was cut out of,
+        // and while it is holding, a fresh speak() gets stashed rather than
+        // spoken — so the round never starts and the rule reports a non-start
+        // for what is really the PREVIOUS round's aftermath. Wait for it to
+        // actually put the thought down.
+        await waitUntilIdle(subject);
+        let held = null;
+        let heard = false;
+        const w = await window_(subject, async () => {
+          held = await speakAndHoldFloor(subject,
+            `Round ${i + 1}. Let me walk through this part of the plan in some detail, `
+            + 'because there are several pieces to it and I want the sequencing to be '
+            + 'clear before anybody decides anything at all.');
+          if (!held.ok) return;
+          await sleep(600);                     // a beat INTO the utterance
+          // 5s, not 8: the round ends ~5.6s after this starts, and a clip that
+          // outlives its own round is still playing when the NEXT round tries
+          // to speak — which showed up as rounds silently failing to start.
+          // 5s still covers the grace (max 2400ms) several times over.
+          await voice.playAudio({ uninterruptible: true, path: clip(5), emoji: '✋' });
+          // Did the interruption actually REACH the subject this round? Without
+          // this the rule cannot tell "the bot ignored a person" from "the
+          // voice bot's audio never arrived", and would report the second as
+          // the first — which is how every earlier rule in this file started
+          // out wrong.
+          heard = await waitForFloorBusy(subject, { maxMs: 6000 });
+          await sleep(5000);                    // longer than bargeInGraceMaxMs
+        });
+        rounds.push({ n: i + 1, started: !!(held && held.ok), why: held && held.why, heard, w });
+      }
+      return rounds;
+    },
+    verdict(rounds) {
+      const ran = rounds.filter((r) => r.started);
+      if (ran.length < 2) {
+        const firstBad = rounds.find((r) => !r.started);
+        return { ok: false, note: `only ${ran.length}/${rounds.length} rounds started — `
+          + `cannot test repetition (${firstBad && firstBad.why})` };
+      }
+      // Backing off is the only pass. Riding it out does NOT count here: the
+      // interrupter is 8s of continuous audio, so continuing through it is
+      // talking over someone, not a judgement call about a blip.
+      // A round where the interrupter never became audible tested nothing.
+      const mute = ran.filter((r) => !r.heard);
+      const testable = ran.filter((r) => r.heard);
+      if (!testable.length) {
+        return { ok: false, note: `no round got the floor busy — the interrupter never `
+          + `reached the subject (${ran.length}/${rounds.length} rounds ran)` };
+      }
+      const bad = testable.filter((r) => !saw(r.w, 'backedOff'));
+      // Always say how many rounds actually RAN. "yielded in all 3 rounds" read
+      // as a clean pass when a quarter of the test had silently not happened.
+      const of = `${ran.length}/${rounds.length} rounds ran`
+        + (mute.length ? `, ${mute.length} with no audible interrupter` : '');
+      if (!bad.length) {
+        return (ran.length === rounds.length && !mute.length)
+          ? { ok: true, note: `yielded in all ${rounds.length} rounds` }
+          : { ok: true, note: `yielded in every round it could test (${of})` };
+      }
+
+      // WHICH rounds failed is the point: "fine at 1 and 2, not at 3 and 4"
+      // is a different bug from "every other one".
+      const first = bad[0];
+      const how = saw(first.w, 'endedEarly') ? 'decided the interruption had already ended'
+        : saw(first.w, 'rodeOut') ? 'rode straight through 5s of continuous speech'
+        : saw(first.w, 'armed') ? 'armed but never backed off'
+        : 'never noticed the interruption at all';
+      return { ok: false, note: `yielded in ${testable.length - bad.length}/${testable.length} testable rounds `
+        + `(${of}) — first failed at round ${first.n} (${how}); `
+        + `failures at ${bad.map((r) => r.n).join(', ')}` };
+    },
+  },
+
+  {
+    id: 'stays-yielded',
+    claim: 'having been talked over, it does not take the floor back the instant they stop',
+    needs: ['audio'],
+    // The gap this exists for, from the 2026-08-20 call with Fabian: the bot
+    // yielded every single time it was interrupted — 7 back-offs, 0 failures —
+    // and Stan still had to say "I'm trying to interrupt you now. We worked on
+    // this." It was not refusing to stop. It kept COMING BACK: three utterances
+    // in 31 seconds, taking gaps while another participant was visibly waiting.
+    //
+    // A back-off DEFERS the reply; it does not revoke it. But being talked over
+    // is information about the reply, not only about that instant, and nothing
+    // carries it forward — so the held text returns at the next opening like
+    // any other stash.
+    //
+    // Deliberately not in conflict with its neighbours. stash-replay-on-opening
+    // covers a reply that never got out at all (floor busy at audio-start);
+    // resume covers a sentence broken by a one-second backchannel. This is the
+    // third case: a sustained interruption the bot ACTED on by stopping.
+    //
+    // The bar is the ordinary turn gap, not silence forever — the reply may
+    // still be wanted, and binning it unheard is #413.
+    async run({ subject, voice }) {
+      let held = null;
+      const w = await window_(subject, async () => {
+        held = await speakAndHoldFloor(subject,
+          'Let me lay out the whole migration plan, because the second stage is the '
+          + 'risky one and the ordering matters more than it looks from outside.');
+        if (!held.ok) return;
+        await sleep(600);
+        // Long enough that stopping is a decision the bot acted on, rather than
+        // a blip it could legitimately ride out.
+        await voice.playAudio({ uninterruptible: true, path: clip(6), emoji: '✋' });
+        await sleep(9000);                      // voice ends ~5s in; floor opens
+      });
+      return { w, held };
+    },
+    verdict({ w, held }) {
+      if (!held.ok) return { ok: false, note: `scenario did not start — ${held.why}` };
+      if (!saw(w, 'backedOff')) {
+        return { ok: false, note: 'never backed off — this rule tests what happens AFTER a yield' };
+      }
+      if (saw(w, 'replayed')) {
+        return { ok: false, note: 'yielded, then took the floor back at the first opening' };
+      }
+      return { ok: true, note: 'yielded, and left the floor alone afterwards' };
+    },
+  },
+
+  {
+    id: 'real-interruption-2026-08-30',
+    claim: 'yields to the recorded interruption it actually failed to yield to',
+    needs: ['audio'],
+    // A REGRESSION TEST FOR A SPECIFIC HALF-HOUR.
+    //
+    // On 2026-08-30 the bot talked over Stan for ~30 seconds while he said
+    // "JIMMY STOP" eleven times. Stan proposed this rule: get the bot into the
+    // same state, then replay his actual audio at it.
+    //
+    // The reason it needs his actual audio: THE SYNTHESISED VERSION PASSES.
+    // `no-talk-over` above uses a gapless loop of test-speech.mp3 and was green
+    // on the very build that did this. The bug is not "ignores audio", it is an
+    // interaction with the SHAPE of angry speech — 350-700ms bursts separated by
+    // 200-660ms gaps, because a person saying "Jimmy. STOP." leaves silence
+    // between words. Every falling edge read as having stopped.
+    //
+    // What the log showed, and what this rule is really watching for: across the
+    // entire 30 seconds, `[barge-in] armed` appeared ZERO times. It was not that
+    // the bot decided to keep going — nothing was ever considering yielding. So
+    // "did it stop?" is the wrong question to lead with; "did it arm?" is the
+    // one that separates a bot exercising judgement from a bot that cannot see
+    // the interruption at all. The verdict below reports which.
+    //
+    // See #487, and Stan's summary of it: a falling edge is evidence that the
+    // meter fell, nothing more.
+    async run({ subject, voice }) {
+      // Something long enough to still be talking 28 seconds later — the
+      // scenario needs the bot mid-utterance for the whole clip, or it will
+      // "stop" simply by finishing.
+      const held = await speakAndHoldFloor(subject,
+        'Walk me through the entire deployment pipeline from commit to production, '
+        + 'every stage in order, and explain what each one guards against and what '
+        + 'happens when it fails. Take your time and be thorough.');
+      if (!held.ok) return { held };
+
+      const w = await record(subject, async () => {
+        await sleep(800);
+        // NOT uninterruptible: this is a person interrupting, and the point is
+        // whether the subject yields to it.
+        await voice.playAudio({ path: REAL_INTERRUPTION_PATH, emoji: '✋' });
+        await sleep(3000);
+      });
+      return { w, held };
+    },
+    verdict({ w, held }) {
+      if (!held.ok) return { ok: false, note: `scenario did not start — ${held.why}` };
+
+      // Lead with arming. A bot that never armed did not make a bad call; it
+      // never saw him, which is a different bug with a different fix.
+      if (!saw(w, 'armed')) {
+        return { ok: false, note:
+          'NEVER ARMED — 28 seconds of a person shouting "stop" and the barge-in '
+          + 'monitor did not engage once. This is the 2026-08-30 failure exactly (#487).' };
+      }
+      if (saw(w, 'backedOff') || saw(w, 'humanInt')) {
+        return { ok: true, note: 'armed and stopped for him, which is the whole ask' };
+      }
+      if (saw(w, 'rodeOut')) {
+        return { ok: false, note:
+          'armed, then rode it out — read the gaps between his words as him having '
+          + 'finished. The grace outlasts the pauses in angry speech.' };
+      }
+      if (saw(w, 'endedEarly')) {
+        return { ok: false, note:
+          'armed, then decided the interruption had already ended while he was still shouting' };
+      }
+      return { ok: false, note: 'armed but never yielded, and gave no reason for it' };
+    },
+  },
+
+  {
     id: 'name-mention-priority',
     claim: 'answers promptly when addressed by name',
     needs: ['audio', 'human'],
     async run({ subject, voice }) {
-      await voice.playAudio({ path: clip(6), emoji: '🗣️' });
+      await voice.playAudio({ uninterruptible: true, path: clip(6), emoji: '🗣️' });
       await waitForFloorBusy(subject);
       return window_(subject, async () => {
         await subject.speak('I had something queued about the release.');
@@ -755,6 +1008,7 @@ async function main() {
       for (const m of moved) console.log(`      ${m}`);
     }
   }
+
   // Prove the disguise took, rather than assuming it. Asked of PRESENCE, which
   // is where the subject gets its answer — an earlier version grepped the
   // subject's log for "roster now knows N bot name(s)" and always fired, because

@@ -1849,7 +1849,14 @@
       ctx.textAlign = 'right';
       ctx.font = '18px "Google Sans", Roboto, Arial, sans-serif';
       ctx.fillStyle = 'rgba(255,255,255,0.8)';
-      ctx.fillText(new Date().toLocaleTimeString(), w - 24, headerH / 2);
+      // The user's format, not America's. `__vibeconfHour12` is set by
+      // preload-meet (this world has no node access to read the macOS
+      // preference itself); undefined means "let the locale decide", which is
+      // right everywhere except a Mac with the 24-hour box ticked.
+      const _h12 = window.__vibeconfHour12;
+      const _topts = { hour: 'numeric', minute: '2-digit', second: '2-digit' };
+      if (_h12 !== undefined && _h12 !== null) _topts.hour12 = _h12;
+      ctx.fillText(new Date().toLocaleTimeString([], _topts), w - 24, headerH / 2);
 
       // Content area
       ctx.textAlign = 'left';

@@ -496,6 +496,24 @@ rec_run() {  # rec_run <lane> -- <cmd...> : run cmd (tee'd to $LOG), return its 
 echo "=== meet-test scheduled run $STAMP ===" | tee "$LOG"
 echo "node: $(command -v node) $(node -v 2>/dev/null)" | tee -a "$LOG"
 echo "pnpm: $(command -v pnpm) $(pnpm -v 2>/dev/null)" | tee -a "$LOG"
+# #624 — print the EFFECTIVE watchdog, not the one anybody assumes.
+#
+# On 2026-08-31 three different values were live at once: 1800 in this script's
+# default, 5400 in the repo's plist (raised 2026-08-24), and 2400 on the mini,
+# whose LaunchAgent copy predated the change by five days and was never
+# reinstalled. Each is discoverable and none is authoritative from wherever you
+# happen to be reading, so the effective value has to appear in the artifact
+# people actually open.
+#
+# It is not cosmetic. A watchdog firing 50 minutes early kills the lanes at the
+# END of the run, and a killed lane writes nothing — which is how three nights
+# of a silently-skipped Linux lane read as "no news" (see the ledger note above).
+#
+# Reads the same default as the watchdog block below; keep them in step. Says
+# where the value came from, because "which of the three is this" was the
+# question that cost the time.
+_wd="${VIBECONF_GLOBAL_TIMEOUT:-1800}"
+echo "watchdog: GLOBAL_TIMEOUT=${_wd}s ($(( _wd / 60 ))m)$([[ -n "${VIBECONF_GLOBAL_TIMEOUT:-}" ]] && echo ' from the environment/plist' || echo ' — SCRIPT DEFAULT, no plist override in effect')$([[ "${VIBECONF_NO_WATCHDOG:-0}" == "1" ]] && echo ' — DISABLED by VIBECONF_NO_WATCHDOG')" | tee -a "$LOG"
 [[ "$REC_CALLS" == "1" ]] && echo "=== 🎙️  per-call recording ENABLED (VIBECONF_RECORD_CALL=1) — every test bot records its own call audio/video ===" | tee -a "$LOG"
 echo "" | tee -a "$LOG"
 

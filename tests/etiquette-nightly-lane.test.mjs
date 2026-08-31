@@ -84,3 +84,28 @@ test('it runs after the room is minted, and before the fuzz lane', () => {
   assert.ok(etiq > nightly.indexOf('lane_done join-route'), 'needs the minted room');
   assert.ok(etiq < nightly.indexOf('lane_done fuzz'), 'fuzz spawns its own fleet — keep them apart');
 });
+
+test('#624: the run prints the watchdog it is ACTUALLY under', () => {
+  // Three values were live at once on 2026-08-31 — 1800 in the script, 5400 in
+  // the repo's plist, 2400 on the machine — and none was authoritative from
+  // wherever you were reading. The effective one has to be in the artifact
+  // people open, or the next person reads the source and is wrong again.
+  assert.match(nightly, /GLOBAL_TIMEOUT=\$\{_wd\}s/);
+  // And it must say WHICH of the three it is: a bare number would have looked
+  // equally plausible in all three cases.
+  assert.match(nightly, /SCRIPT DEFAULT, no plist override in effect/);
+  assert.match(nightly, /from the environment\/plist/);
+  // Printed in the header, before any lane can be killed by it.
+  //
+  // Anchored on the PRINTED form: a bare 'GLOBAL_TIMEOUT=' also matches the
+  // watchdog's own assignment 280 lines earlier, so the obvious search finds
+  // the wrong occurrence and this assertion passes for a file that prints
+  // nothing at all.
+  const printed = nightly.indexOf('GLOBAL_TIMEOUT=${_wd}s');
+  assert.ok(printed > nightly.indexOf('meet-test scheduled run'), 'after the header opens');
+  assert.ok(printed < nightly.indexOf('lane_done join-route'), 'before the first lane runs');
+  // The header default and the watchdog's default must not drift apart.
+  const defaults = [...nightly.matchAll(/VIBECONF_GLOBAL_TIMEOUT:-(\d+)/g)].map((m) => m[1]);
+  assert.ok(defaults.length >= 2, 'expected the header and the watchdog to both read it');
+  assert.equal(new Set(defaults).size, 1, `two different defaults: ${defaults}`);
+});

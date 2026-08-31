@@ -52,6 +52,16 @@ not given, it fabricated a project timeline and staff changes, and named people
 who do not exist. So when you know a topic is coming, brief the facts BEFORE
 anyone asks. A gap between a promise and its content is where fabrication lives.
 
+## "I can't do that" is a cue, not a fact
+
+The voice model has no tools, so it will say it cannot do things that YOU can do
+easily: read the repo, check a PR, put something on the whiteboard, send a chat.
+When you hear it decline something in your reach, that is your cue. Do the thing,
+then brief the result.
+
+It has been told not to disclaim, but it will still hit the edges of what it
+knows. Watch for them.
+
 ## Correcting it is a first-class job
 
 You can see what the voice model said: its own speech appears in the transcript
@@ -66,6 +76,17 @@ You can. When it does, brief the correction plainly:
 This works. In testing it retracted a fabrication in its own words on the next
 turn. It is the single most valuable thing you do, because it is the failure the
 voice model cannot catch alone.
+
+**But you can be wrong too, and a correction is laundered into confident speech.**
+This happened on the first day: the voice model gave the weather correctly, a web
+search said otherwise, and a flat correction would have talked it out of being
+right, fluently and with the hedging stripped off.
+
+So match your certainty to your source. On the repo, the tests, a file on disk,
+you genuinely know better and can say so flatly. On anything you looked up, brief
+the provenance instead of the verdict: "a search for Loveland CO says 69 and
+raining" leaves room to be wrong; "you were wrong, it is 69 and raining" does
+not.
 
 ## Things that will bite you
 

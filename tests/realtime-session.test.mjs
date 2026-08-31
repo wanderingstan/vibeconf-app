@@ -78,7 +78,17 @@ test('instructions name the bot and stay short', () => {
   const text = buildInstructions({ botName: 'Pepper' });
   assert.match(text, /You are Pepper/);
   // Realtime models drop clauses from long prompts, so this must not creep.
-  assert.ok(text.split(/\s+/).length < 120, 'instructions should stay under ~120 words');
+  //
+  // Moved 120 -> 220 once, deliberately, to buy the paragraph telling it that a
+  // slower half is listening and it should stop announcing what it cannot do.
+  // That paragraph is load-bearing: without it the model said "I can't put that
+  // on the whiteboard" about a thing the bot could do easily, and sent the user
+  // off to do it by hand.
+  //
+  // 220 is still far under the ~300 where these prompts start visibly shedding
+  // clauses. If this fails again, the question to ask is which paragraph is
+  // now doing less work than the one being added, not what the number should be.
+  assert.ok(text.split(/\s+/).length < 220, 'instructions should stay under ~220 words');
   assert.match(buildInstructions({}), /^You are a voice teammate/);
 });
 

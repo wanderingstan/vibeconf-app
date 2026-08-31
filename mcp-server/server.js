@@ -28,6 +28,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { resolveInstance, joinNameFromRouting } from "./instance-routing.js";
+import { formatCallClock } from './call-time.js';
 import { parseMeetRoomId } from "./meet-room.js";
 
 let ROOM_ID = process.env.VIBECONF_ROOM_ID || "";
@@ -555,6 +556,12 @@ server.tool(
     const status = data.status || {};
     const statusLine = status.callStatus && status.callStatus !== 'in-call'
       ? `\n[Call status: ${status.callStatus}]` : '';
+    // #617 — the bot's sense of time. Bethany: the bots don't know where they
+    // are in an hour-long meeting. Both facts were already in this payload and
+    // simply never rendered, so the agent could not see what the app knew.
+    // Printed on EVERY outcome below, including the silent ones: a bot that has
+    // been quiet for ten minutes is the one that most needs to know that.
+    const clockLine = '\n' + formatCallClock(status);
     const errorLines = (status.errors || []).length > 0
       ? '\n[Errors: ' + status.errors.map(e => e.message).join('; ') + ']' : '';
     // Surface unread chat on every lull — this is the natural moment to check
@@ -603,7 +610,7 @@ server.tool(
       // (the loop now pipelines chat like speech). Lead with that instead of a
       // misleading "no one spoke / timed out".
       if (data.chatWake) {
-        return { content: [{ type: "text", text: `(New chat message — the room was quiet, so you were woken to handle it.)${chatLine || '\n[Call read_chat to see it, then respond aloud and/or in chat.]'}${statusLine}${errorLines}` }] };
+        return { content: [{ type: "text", text: `(New chat message — the room was quiet, so you were woken to handle it.)${clockLine}${chatLine || '\n[Call read_chat to see it, then respond aloud and/or in chat.]'}${statusLine}${errorLines}` }] };
       }
       // Deaf-bot hint: if Meet captions are off, the bot can't hear anything.
       // Distinguish that from "the room is silent" so the agent can ask humans
@@ -611,7 +618,7 @@ server.tool(
       const deafLine = status.captionsOn === false
         ? '\n[Captions are OFF in Meet — the bot hears via captions, so it is DEAF until they are re-enabled. The app is retrying automatically; if this persists, say or chat: "Could someone turn captions back on? (CC button in Meet\'s toolbar)"]'
         : '';
-      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${statusLine}${errorLines}${chatLine}${ackLine}${replayLine}${discardLine}${truncLine}${deafLine}` }] };
+      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${clockLine}${statusLine}${errorLines}${chatLine}${ackLine}${replayLine}${discardLine}${truncLine}${deafLine}` }] };
     }
 
     // Each entry is now one logical speaker turn (#178 snapshot model); no
@@ -634,7 +641,7 @@ server.tool(
       return {
         content: [{
           type: "text",
-          text: `[BACKGROUND TICK] The conversation is ongoing and you are not being directly addressed. This is mainly your chance to THINK, not to talk.\n\nLatest (${deduped.length} turn(s), ${elapsed}s):\n${transcriptText}\n\nUsually you should just silently update your sense of the discussion (optionally call post_understanding), keep any short interjection you can imagine in mind, then call wait_for_speech again WITHOUT speaking — most ticks should end in silence.\n\nBUT: if something just said genuinely compels you — a point you are uniquely able to add, a question squarely in your wheelhouse, a moment you'd regret staying silent on — you MAY speak ONE short interjection now. Use this sparingly and only when you truly feel you must; if in doubt, stay silent and keep listening.${chatLine}`,
+          text: `[BACKGROUND TICK] The conversation is ongoing and you are not being directly addressed. This is mainly your chance to THINK, not to talk.${clockLine}\n\nLatest (${deduped.length} turn(s), ${elapsed}s):\n${transcriptText}\n\nUsually you should just silently update your sense of the discussion (optionally call post_understanding), keep any short interjection you can imagine in mind, then call wait_for_speech again WITHOUT speaking — most ticks should end in silence.\n\nBUT: if something just said genuinely compels you — a point you are uniquely able to add, a question squarely in your wheelhouse, a moment you'd regret staying silent on — you MAY speak ONE short interjection now. Use this sparingly and only when you truly feel you must; if in doubt, stay silent and keep listening.${chatLine}`,
         }],
       };
     }
@@ -642,7 +649,7 @@ server.tool(
     return {
       content: [{
         type: "text",
-        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):\n\n${transcriptText}${chatLine}${continuationLine}${ackLine}${replayLine}${discardLine}${truncLine}`,
+        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):${clockLine}\n\n${transcriptText}${chatLine}${continuationLine}${ackLine}${replayLine}${discardLine}${truncLine}`,
       }],
     };
   }

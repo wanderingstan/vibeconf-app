@@ -219,6 +219,10 @@ class LocalServer {
     // in THIS call. Set on join when bot_name is explicit, cleared on leave.
     // The persistent store preference (getConfiguredBotName) is never touched.
     this.currentCallBotName = null;
+    // EXPERIMENT: set by main while a realtime voice session owns this bot.
+    // Changes one thing here: whether the bot's own captions are labelled as
+    // its own speech. See _turnsAsEntries for why that matters.
+    this.realtimeVoiceActive = false;
     this.chatUnread = false; // passive "… - New message" signal from the chat button
 
     // Response-state tracking — what the bot last responded to. Used to detect
@@ -2955,11 +2959,30 @@ class LocalServer {
   _turnsAsEntries() {
     const arr = [];
     for (const turn of this.turns.values()) {
+      // The bot's own speech, when a realtime session is what produced it.
+      //
+      // Normally every caption turn is a 'member': the bot's own words reach
+      // the transcript from the authoritative record of what it told TTS to
+      // say, tagged role 'bot', and the caption echo of that is a lossy
+      // duplicate the MCP layer drops (participantName !== BOT_NAME ||
+      // role === 'bot').
+      //
+      // In realtime mode there is no authoritative record. The model chooses
+      // its own words and nothing here ever sees them, so the caption is the
+      // ONLY account, and leaving it as 'member' means that filter throws away
+      // the bot's entire side of the conversation. Which is exactly what it
+      // did: the agent could read every human turn and none of its own.
+      //
+      // Labelling it 'bot' is not a workaround. It is what the entry is.
+      const isOwnSpeech = this.realtimeVoiceActive
+        && !!turn.speaker
+        && turn.speaker === this.getEffectiveBotName();
+
       arr.push({
         id: turn.id,
         roomId: this.roomId,
         participantName: turn.speaker,
-        role: 'member',
+        role: isOwnSpeech ? 'bot' : 'member',
         text: turn.text,
         isFinal: turn.settled,
         timestamp: new Date(turn.firstSeen).toISOString(),

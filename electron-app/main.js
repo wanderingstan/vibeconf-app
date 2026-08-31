@@ -993,6 +993,7 @@ function stopRealtimeVoice(why) {
   if (!realtimeVoiceActive) return;
   realtimeVoiceActive = false;
   realtimeVoiceLive = false;
+  try { localServer.realtimeVoiceActive = false; } catch { /* not up */ }
   console.log('[realtime] stopping (' + (why || 'unspecified') + ')');
   try { sendExtMsg({ action: 'stop-realtime' }); } catch { /* view already gone */ }
 }
@@ -13087,6 +13088,9 @@ function setupIPC() {
     console.log('[realtime]', type, detail == null ? '' : String(detail).slice(0, 160));
     if (type === 'live') {
       realtimeVoiceLive = true;
+      // So the bot's own captions are tagged as its own speech rather than
+      // dropped as a duplicate of a record that does not exist in this mode.
+      try { localServer.realtimeVoiceActive = true; } catch { /* not up */ }
     } else if (type === 'failed') {
       broadcastError('Realtime voice: ' + String(detail || '').slice(0, 140));
       realtimeVoiceActive = false;

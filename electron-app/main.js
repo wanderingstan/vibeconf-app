@@ -3682,6 +3682,35 @@ function openAppSettings() {
     },
   });
   appSettingsWindow.loadFile(path.join(__dirname, 'renderer', 'app-settings.html'));
+  // #628 — hold the close just long enough to save what is still in a field.
+  //
+  // Text inputs commit on 'change', which fires on blur or Enter. ⌘W straight
+  // after typing destroys the window with the edit still only in the DOM, and
+  // it looks exactly like a successful save. So ask the renderer to flush and
+  // wait for its answer.
+  //
+  // BOUNDED, and closing anyway on timeout: a settings window that refuses to
+  // shut because a write is wedged is a worse bug than the one being fixed.
+  // 600ms is generous for a same-machine IPC round trip and short enough that
+  // nobody perceives it.
+  let settingsFlushed = false;
+  appSettingsWindow.on('close', (e) => {
+    if (settingsFlushed || !appSettingsWindow || appSettingsWindow.isDestroyed()) return;
+    e.preventDefault();
+    const finish = () => {
+      if (settingsFlushed) return;
+      settingsFlushed = true;
+      ipcMain.removeListener('settings-flushed', finish);
+      if (appSettingsWindow && !appSettingsWindow.isDestroyed()) appSettingsWindow.close();
+    };
+    const timer = setTimeout(() => {
+      console.warn(ts(), '[settings] flush did not answer in 600ms — closing anyway');
+      finish();
+    }, 600);
+    ipcMain.once('settings-flushed', () => { clearTimeout(timer); finish(); });
+    try { appSettingsWindow.webContents.send('flush-settings'); }
+    catch { clearTimeout(timer); finish(); }
+  });
   appSettingsWindow.on('closed', () => { appSettingsWindow = null; focusMainWindow(); });
 }
 

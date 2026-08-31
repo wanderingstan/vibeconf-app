@@ -972,7 +972,14 @@ async function startRealtimeVoice(botName) {
       ...cfg,
       instructions: buildInstructions({ botName: botName || store.get('botName') }),
     });
-    sendExtMsg({ action: 'start-realtime', secret: session.secret, model: session.model });
+    sendExtMsg({
+      action: 'start-realtime',
+      secret: session.secret,
+      model: session.model,
+      // The provider labels the bot's own captions with this instead of "You",
+      // so the transcript reads as one conversation among named participants.
+      botName: botName || store.get('botName') || '',
+    });
     realtimeVoiceActive = true;
     console.log('[realtime] session minted (' + session.shape + '), voice=' + session.voice +
       ', model=' + session.model);
@@ -1382,6 +1389,51 @@ const localServer = new globalThis.LocalServer({
   extraRoutes: async (req, res) => {
     let pathname;
     try { pathname = new URL(req.url, 'http://127.0.0.1').pathname; } catch { return false; }
+
+    // EXPERIMENT: brief() — the slow model hands the realtime model something
+    // it could not know, WITHOUT asking it to say anything. A silent inject:
+    // conversation.item.create with no response.create, so it can fire at any
+    // moment, mid-sentence included, and needs none of the floor machinery
+    // speak() does.
+    //
+    // Deliberately NOT on the sync/transcript path. A brief carries no promise
+    // that anything is uttered, so the etiquette apparatus (ordering, stashing,
+    // barge-in, "was it spoken") has nothing to do here, and routing it through
+    // that would only re-inherit contracts it does not have.
+    if (pathname === '/api/realtime/brief' && req.method === 'POST') {
+      const send = (code, obj) => {
+        res.writeHead(code, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(obj));
+      };
+      let raw = '';
+      try {
+        raw = await new Promise((resolve) => {
+          let buf = '';
+          req.on('data', (c) => { buf += c; });
+          req.on('end', () => resolve(buf));
+        });
+      } catch { send(400, { success: false, error: 'could not read body' }); return true; }
+
+      let note = '';
+      try { note = String(JSON.parse(raw || '{}').note || '').trim(); } catch { /* below */ }
+      if (!note) { send(400, { success: false, error: 'note is required' }); return true; }
+
+      if (!realtimeVoiceLive) {
+        // Say so rather than swallowing it: without a session there is nobody
+        // to brief, and the agent should stop rather than keep narrating.
+        send(409, { success: false, error: 'no realtime session is live on this bot' });
+        return true;
+      }
+      if (!meetView || meetView.webContents.isDestroyed()) {
+        send(409, { success: false, error: 'the call view is gone' });
+        return true;
+      }
+
+      console.log('[realtime] brief:', note.slice(0, 80));
+      sendExtMsg({ action: 'realtime-brief', note });
+      send(200, { success: true });
+      return true;
+    }
     // Turn the CALLER's Claude session into a bot (/call-new-bot). An HTTP route
     // rather than only IPC because the caller is a terminal, not the panel.
     if (pathname === '/api/adopt-session-as-bot' && req.method === 'POST') {

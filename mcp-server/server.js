@@ -687,6 +687,62 @@ server.tool(
   }
 );
 
+// --- brief (EXPERIMENT: realtime voice) ---
+// Registered unconditionally FOR NOW so it can be tried on a live call. The
+// intended end state is a disjoint contract: a realtime-mode agent sees brief
+// and never sees speak, and a normal agent the reverse. Until that lands, this
+// answers with a plain 409 on a bot that has no realtime session, rather than
+// pretending to work.
+server.tool(
+  "brief",
+  "Tell the voice model something it could not know, WITHOUT asking it to say anything. " +
+  "This is your main verb. The voice model is fast and conversational but has no access to " +
+  "the repo, your tools, or anything you have looked up; you have all of that and are too " +
+  "slow to hold a conversation. So you feed it facts and it decides, in its own words and " +
+  "its own timing, whether and how to use them. " +
+  "Write knowledge, not instructions: 'the auth refactor is still open' survives being used " +
+  "three turns late, whereas 'tell them the auth refactor is open' reads as a script. " +
+  "Correcting the voice model is a first-class use: it will state things confidently and " +
+  "wrongly, it cannot detect that itself, and you can see what it said in the transcript. " +
+  "There is no guarantee any given brief is used, or when. Most turns need nothing from you, " +
+  "and saying nothing is a good outcome.",
+  {
+    note: z.string().describe("What the voice model should know, as a plain statement of fact. One or two sentences."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ note, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) {
+      return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    }
+    let resp;
+    try {
+      resp = await vfetch(`${BASE_URL}/api/realtime/brief`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note, room_id: roomId }),
+      });
+    } catch (err) {
+      return { content: [{ type: "text", text: `Could not reach the app: ${err.message}` }] };
+    }
+
+    let data = {};
+    try { data = await resp.json(); } catch { /* non-JSON */ }
+
+    if (resp.status === 409) {
+      return { content: [{ type: "text", text:
+        `Not briefed — ${data.error || "no realtime session"}. This bot is not running the realtime voice, ` +
+        `so there is nothing to brief. Use speak() instead.` }] };
+    }
+    if (!resp.ok || !data.success) {
+      return { content: [{ type: "text", text: `Not briefed: ${data.error || resp.status}` }] };
+    }
+    return { content: [{ type: "text", text:
+      "Briefed. The voice model has it now. It may use it in its own words, at a moment of its " +
+      "choosing, or not at all — do not repeat it, and do not expect a confirmation that it landed." }] };
+  }
+);
+
 // --- speak ---
 server.tool(
   "speak",

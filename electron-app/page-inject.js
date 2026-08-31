@@ -3206,6 +3206,30 @@
       this.startedAt = 0;
     }
 
+    // Something the model could not know, handed over WITHOUT asking it to
+    // speak. conversation.item.create with no response.create: the model
+    // absorbs it and uses it in its own words, whenever it is relevant, or
+    // never. That is the whole primitive.
+    //
+    // No floor logic, and none needed. A silent inject takes nothing from
+    // anybody, so unlike say() it cannot land on top of a reply in flight.
+    brief(note) {
+      const clean = String(note || '').trim();
+      if (!clean) return;
+      if (!this.active || !this.dc || this.dc.readyState !== 'open') {
+        this._report('brief-failed', 'session not live');
+        return;
+      }
+      this._send({
+        type: 'conversation.item.create',
+        item: {
+          type: 'message', role: 'user',
+          content: [{ type: 'input_text', text: '[context, do not read this out] ' + clean }],
+        },
+      });
+      this._report('briefed', clean.slice(0, 80));
+    }
+
     // Words handed over by main (agent speech, the recording notice) for the
     // model to voice. This is the whole reason ElevenLabs is out of the loop
     // for a realtime bot: one mouth, one voice, no collision.
@@ -3516,6 +3540,8 @@
       realtimeVoice.stop('asked to stop');
     } else if (event.data.action === 'realtime-say') {
       realtimeVoice.say(event.data.text);
+    } else if (event.data.action === 'realtime-brief') {
+      realtimeVoice.brief(event.data.note);
     }
   });
 

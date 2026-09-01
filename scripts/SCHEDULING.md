@@ -96,6 +96,53 @@ The wrapper can preserve two kinds of recording per run, both under
   digest links straight to it; greens stay local (except in `all` mode, which uploads
   everything).
 
+## Ecosystem preflight (first thing in the 03:00 run)
+
+`scripts/ecosystem-preflight.mjs` asks whether the world the suite depends on is
+standing up, before the suite runs. It writes `preflight-results.jsonl` and
+`notify-nightly.mjs` renders the result **above** the lane list.
+
+**Why above the lanes:** the same reason the on-screen-dialog warning is there —
+*"if a dialog owned the screen, that reframes every red line below it, and reading
+it after the fact is how a night gets misdiagnosed as a product regression."* A
+dead dependency reframes the night identically. On 2026-09-01 two whiteboard lanes
+went red and it took a screenshot, a version-counter comparison across three runs,
+and a live API probe to establish that the product was fine and Upstash was not.
+One HTTP request knew.
+
+**It never gates.** Always exits 0; the run continues regardless. If Redis is down
+the app-local lanes still carry real signal, and letting one flaky 3am DNS lookup
+abort the night is the failure the global watchdog exists to prevent. The digest
+carries the warning; the lanes carry on.
+
+What it checks, and why each one earned its slot — every one has actually caused a
+bad night in this repo's logs:
+
+| Check | The night it would have saved |
+|---|---|
+| website | baseline; separates "site down" from "one subsystem down" |
+| **redis (whiteboard state)** | 2026-09-01. Two requests, not one: a real room exercises Redis, an unknown room exercises only the Postgres lookup before it. The **contrast** is the diagnosis |
+| **vibeconferencing.com session** | the three-night fallback-room run. When it dies, live lanes report GREEN against the shared public room — worse than red, because nothing looks wrong |
+| github releases | unreachable = the DMG silently stays on yesterday's build while the digest reports a version it never installed |
+| aws box | only reds on `terminated`/`shutting-down` — `stopped` is the box's **normal resting state**, since the Linux lane starts and stops it itself |
+| **claude code auth** | #556 — bot joins fine, then sits mute because its Claude session was logged out. This is the pre-flight that issue asks for |
+| disk space | a failing lane keeps a 144-256MB `.mov`; running out costs the recordings *and* the stills, i.e. the evidence for why it went red |
+| telegram notifier | self-referential and worth it: if the token is dead, a catastrophic night and a night that never ran look identical |
+
+```sh
+node scripts/ecosystem-preflight.mjs          # human-readable
+node scripts/ecosystem-preflight.mjs --json   # machine-readable
+```
+
+Knobs: `VIBECONF_PREFLIGHT_ROOM` (the canary room — must be a **permanent** one, or
+a 404 on a cold Redis is indistinguishable from a real fault), `VIBECONF_DISK_MIN_GB`
+(default 15), plus the AWS/Telegram/Claude vars documented in the script header.
+
+**Adding a check:** the bar is that it has caused a real bad night. A preflight that
+cries wolf gets ignored, and an ignored preflight is worse than none — the first
+draft of this one flagged the EC2 box as DOWN for being `stopped`, which would have
+fired every single night.
+
 ## Morning backlog survey (04:30, separate agent)
 
 The last rung of the nightly ladder — 03:00 meet-test suite → 04:00 TTS guardrail →

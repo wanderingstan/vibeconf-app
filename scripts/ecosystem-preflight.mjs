@@ -34,6 +34,7 @@
 //   VIBECONF_TEST_INSTANCE   EC2 instance for the Linux lane (skipped if unset)
 //   VIBECONF_AWS_PROFILE / VIBECONF_AWS_REGION   (default vibeconf-ta / us-east-2)
 //   VIBECONF_DISK_MIN_GB   free-space floor before warning (default 15)
+//   VIBECONF_SESSION_WARN_DAYS  warn this many days before the session JWT expires (default 7)
 //   VIBECONF_TELEGRAM_ENV  bot token .env location
 //   CLAUDE_BIN             claude binary override
 //
@@ -52,6 +53,9 @@ const JSON_OUT = process.argv.includes('--json');
 // exists to draw.
 const ROOM = process.env.VIBECONF_PREFLIGHT_ROOM || 'paz-sqoa-npe';
 const DISK_MIN_GB = Number(process.env.VIBECONF_DISK_MIN_GB || 15);
+// Lead time on the session warning. 7 days = seven nightly digests carrying it
+// before anything breaks, which is enough to notice without becoming wallpaper.
+const SESSION_WARN_DAYS = Number(process.env.VIBECONF_SESSION_WARN_DAYS || 7);
 const ENV_FILE = process.env.VIBECONF_TELEGRAM_ENV || join(homedir(), '.claude/channels/telegram/.env');
 const AWS_PROFILE = process.env.VIBECONF_AWS_PROFILE || 'vibeconf-ta';
 const AWS_REGION = process.env.VIBECONF_AWS_REGION || 'us-east-2';
@@ -133,15 +137,44 @@ async function checkRedis() {
 // 2026 and is worse than a red lane, because nothing looks wrong. The wrapper
 // already checks this, but only AFTER the fallback, in the error path. Checking
 // it up front is the difference between a warning and a post-mortem.
+// The session is a stateless HS256 JWT and its `exp` is in the CLEAR — no secret
+// needed to read it. That means we can warn BEFORE it dies instead of discovering
+// it the morning after, which is the difference between "sign in sometime this
+// week" and a night of lanes silently green against the wrong room.
+function sessionExpiry(token) {
+  try {
+    const seg = token.split('.')[1];
+    const pay = JSON.parse(Buffer.from(seg + '='.repeat((4 - seg.length % 4) % 4), 'base64url').toString());
+    if (!pay.exp) return null;
+    return { exp: new Date(pay.exp * 1000), days: (pay.exp * 1000 - Date.now()) / 86400000 };
+  } catch { return null; }
+}
+
 async function checkSession() {
   const token = CFG.vcSessionToken || '';
   if (!token) return add('vibeconferencing.com session', 'warn', 'no vcSessionToken in the app config — rooms cannot be minted');
   const r = await http(`${SITE}/api/auth/me`, { headers: { Cookie: `vc_session=${token}` } });
   if (!r.ok) return add('vibeconferencing.com session', 'warn', `could not reach /api/auth/me — ${r.error}`);
-  if (r.body.includes('"authenticated":true')) return add('vibeconferencing.com session', 'ok', 'machine-wide session authenticates');
+  const life = sessionExpiry(token);
+  if (r.body.includes('"authenticated":true')) {
+    // Warn with DAYS of lead time, not hours. The session is issued for 30 days
+    // with no refresh, so this fires predictably about once a month and there is
+    // no reason for it ever to be a surprise again.
+    if (life && life.days < SESSION_WARN_DAYS) {
+      return add('vibeconferencing.com session', 'warn',
+        `expires in ${life.days.toFixed(1)} days (${life.exp.toISOString().slice(0, 16).replace('T', ' ')} UTC) — sign in again in the app before it lapses, or the live lanes will fall back to the SHARED public room`);
+    }
+    return add('vibeconferencing.com session', 'ok',
+      life ? `authenticates, ${life.days.toFixed(0)} days left` : 'machine-wide session authenticates');
+  }
   if (r.body.includes('"authenticated":false')) {
+    const why = life
+      ? (life.days < 0
+        ? `the token EXPIRED ${Math.abs(life.days).toFixed(1)} days ago (${life.exp.toISOString().slice(0, 16).replace('T', ' ')} UTC)`
+        : 'the token is unexpired but rejected — AUTH_SECRET may have rotated')
+      : 'the token could not be decoded';
     return add('vibeconferencing.com session', 'down',
-      'SIGNED OUT — live lanes will fall back to the SHARED public room and report green against the wrong target. Sign in once in the app (the session is shared by every profile)');
+      `SIGNED OUT — ${why}. Live lanes will fall back to the SHARED public room and report green against the wrong target. Sign in once in the app (the session is shared by every profile)`);
   }
   add('vibeconferencing.com session', 'warn', `unexpected /api/auth/me response (HTTP ${r.status})`);
 }

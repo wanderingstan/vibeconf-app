@@ -34,6 +34,7 @@
 //   VIBECONF_TEST_INSTANCE   EC2 instance for the Linux lane (skipped if unset)
 //   VIBECONF_AWS_PROFILE / VIBECONF_AWS_REGION   (default vibeconf-ta / us-east-2)
 //   VIBECONF_DISK_MIN_GB   free-space floor before warning (default 15)
+//   VIBECONF_ARCHIVE_MIN_GB  free-space floor on the external archive volume (default 50)
 //   VIBECONF_SESSION_WARN_DAYS  warn this many days before the session JWT expires (default 7)
 //   VIBECONF_EXPECT_ACCOUNT  email the rig session MUST belong to (unset = report only)
 //   VIBECONF_TELEGRAM_ENV  bot token .env location
@@ -41,7 +42,7 @@
 //
 // Usage: node scripts/ecosystem-preflight.mjs [--json]
 
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync, statSync } from 'fs';
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, statSync, lstatSync, realpathSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { execFileSync, execSync } from 'child_process';
@@ -57,6 +58,8 @@ const DISK_MIN_GB = Number(process.env.VIBECONF_DISK_MIN_GB || 15);
 // Lead time on the session warning. 7 days = seven nightly digests carrying it
 // before anything breaks, which is enough to notice without becoming wallpaper.
 const SESSION_WARN_DAYS = Number(process.env.VIBECONF_SESSION_WARN_DAYS || 7);
+// The archive drive holds a night of .movs; a low floor here loses evidence.
+const ARCHIVE_MIN_GB = Number(process.env.VIBECONF_ARCHIVE_MIN_GB || 50);
 // Deliberately NO default. Hardcoding an account into a public repo is worse than
 // the check is good, and the always-on report below makes a swap visible even
 // when this is unset. Set it in the LaunchAgent to turn the report into an assert.
@@ -290,6 +293,54 @@ async function checkTelegram() {
     r.status === 200 ? 'bot token valid' : `getMe → HTTP ${r.status}; the digest will not send`);
 }
 
+// --- 9. the archive volume ---------------------------------------------------
+// Recordings and the log archive live on an external drive now (2026-09-01), with
+// symlinks left behind so every script keeps its old paths. That is transparent
+// right up until the drive is not there, at which point the writes fail and the
+// only symptom is missing evidence on the night you most wanted it.
+//
+// SELF-CONFIGURING on purpose: it checks whichever of the results paths is a
+// SYMLINK and verifies the target resolves. On a machine with no external drive
+// those are ordinary directories, the check skips, and nobody has to set an env
+// var to avoid a spurious warning. It also means that if someone later un-symlinks
+// a path, the check stops watching it — correctly, because there is nothing left
+// to watch.
+//
+// Free space here matters more than the internal disk now: this is where a night's
+// .movs actually land.
+function checkArchive() {
+  const linked = [];
+  for (const rel of ['recordings', 'call-recordings']) {
+    const p = join(RESULTS, rel);
+    try {
+      if (!lstatSync(p).isSymbolicLink()) continue;
+    } catch { continue; }
+    let target = null;
+    try { target = realpathSync(p); } catch {
+      // A symlink that will not resolve is the whole failure this exists for.
+      return add('archive volume', 'down',
+        `${p} is a symlink to a path that does not resolve — the drive is unmounted; recordings and stills this run will be LOST`);
+    }
+    linked.push({ p, target });
+  }
+  if (!linked.length) return add('archive volume', 'skip', 'results dirs are local, no external archive to check');
+
+  const { target } = linked[0];
+  // Resolving is not enough — a stale mountpoint can resolve and still refuse
+  // writes. The recorder finds that out at 3am; this finds it out now.
+  const probe = join(target, `.preflight-${process.pid}`);
+  try { writeFileSync(probe, 'x'); unlinkSync(probe); }
+  catch (e) { return add('archive volume', 'down', `${target} resolves but is not writable — ${e.message?.split('\n')[0]}`); }
+
+  const line = sh(`df -g ${JSON.stringify(target)} | tail -1`);
+  const free = Number((line.match(/\s(\d+)\s+\d+%/) || [])[1] ?? (line.split(/\s+/)[3]));
+  const where = target.split('/').slice(0, 3).join('/');
+  if (Number.isFinite(free) && free < ARCHIVE_MIN_GB) {
+    return add('archive volume', 'warn', `${where}: ${free}GB free, below the ${ARCHIVE_MIN_GB}GB floor`);
+  }
+  add('archive volume', 'ok', `${where} mounted and writable${Number.isFinite(free) ? `, ${free}GB free` : ''}`);
+}
+
 // --- run ---------------------------------------------------------------------
 // Network checks concurrently (they are independent and the whole point is to be
 // quick); local checks are cheap and synchronous.
@@ -297,6 +348,7 @@ await Promise.all([checkWebsite(), checkRedis(), checkSession(), checkReleases()
 checkAws();
 checkClaudeAuth();
 checkDisk();
+checkArchive();
 
 const down = checks.filter((c) => c.status === 'down');
 const warn = checks.filter((c) => c.status === 'warn');

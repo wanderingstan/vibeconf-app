@@ -128,6 +128,7 @@ bad night in this repo's logs:
 | **claude code auth** | #556 — bot joins fine, then sits mute because its Claude session was logged out. This is the pre-flight that issue asks for |
 | disk space | a failing lane keeps a 144-256MB `.mov`; running out costs the recordings *and* the stills, i.e. the evidence for why it went red |
 | telegram notifier | self-referential and worth it: if the token is dead, a catastrophic night and a night that never ran look identical |
+| **archive volume** | recordings and `logs-archive` live on an external drive via symlinks; if it unmounts the writes fail and the only symptom is missing evidence on the night you most wanted it. Self-configuring — it watches whichever results paths are symlinks, so a machine without the drive skips it rather than warning |
 
 ```sh
 node scripts/ecosystem-preflight.mjs          # human-readable

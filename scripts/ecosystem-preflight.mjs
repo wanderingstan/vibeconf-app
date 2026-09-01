@@ -35,6 +35,7 @@
 //   VIBECONF_AWS_PROFILE / VIBECONF_AWS_REGION   (default vibeconf-ta / us-east-2)
 //   VIBECONF_DISK_MIN_GB   free-space floor before warning (default 15)
 //   VIBECONF_SESSION_WARN_DAYS  warn this many days before the session JWT expires (default 7)
+//   VIBECONF_EXPECT_ACCOUNT  email the rig session MUST belong to (unset = report only)
 //   VIBECONF_TELEGRAM_ENV  bot token .env location
 //   CLAUDE_BIN             claude binary override
 //
@@ -56,6 +57,10 @@ const DISK_MIN_GB = Number(process.env.VIBECONF_DISK_MIN_GB || 15);
 // Lead time on the session warning. 7 days = seven nightly digests carrying it
 // before anything breaks, which is enough to notice without becoming wallpaper.
 const SESSION_WARN_DAYS = Number(process.env.VIBECONF_SESSION_WARN_DAYS || 7);
+// Deliberately NO default. Hardcoding an account into a public repo is worse than
+// the check is good, and the always-on report below makes a swap visible even
+// when this is unset. Set it in the LaunchAgent to turn the report into an assert.
+const EXPECT_ACCOUNT = process.env.VIBECONF_EXPECT_ACCOUNT || '';
 const ENV_FILE = process.env.VIBECONF_TELEGRAM_ENV || join(homedir(), '.claude/channels/telegram/.env');
 const AWS_PROFILE = process.env.VIBECONF_AWS_PROFILE || 'vibeconf-ta';
 const AWS_REGION = process.env.VIBECONF_AWS_REGION || 'us-east-2';
@@ -164,8 +169,19 @@ async function checkSession() {
       return add('vibeconferencing.com session', 'warn',
         `expires in ${life.days.toFixed(1)} days (${life.exp.toISOString().slice(0, 16).replace('T', ' ')} UTC) — sign in again in the app before it lapses, or the live lanes will fall back to the SHARED public room`);
     }
+    // Always REPORT which account, never just "authenticates". A valid session for
+    // the WRONG account passes every check here and looks perfectly healthy — which
+    // is exactly what happened on 2026-09-01, when a re-mint produced a year-long
+    // token for the operator's personal Google account instead of the bot's. The
+    // rig then acts as that user: rooms it mints are owned by them and land in
+    // their history. Putting the account in the digest makes the swap visible.
+    const who = (r.body.match(/"email":"([^"]+)"/) || [])[1] || 'unknown account';
+    if (EXPECT_ACCOUNT && who.toLowerCase() !== EXPECT_ACCOUNT.toLowerCase()) {
+      return add('vibeconferencing.com session', 'down',
+        `signed in as ${who}, but VIBECONF_EXPECT_ACCOUNT is ${EXPECT_ACCOUNT} — the rig is acting as the wrong principal; rooms it mints will belong to that account`);
+    }
     return add('vibeconferencing.com session', 'ok',
-      life ? `authenticates, ${life.days.toFixed(0)} days left` : 'machine-wide session authenticates');
+      `${who}${life ? `, ${life.days.toFixed(0)} days left` : ''}`);
   }
   if (r.body.includes('"authenticated":false')) {
     const why = life

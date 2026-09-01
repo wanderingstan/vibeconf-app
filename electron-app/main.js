@@ -5019,6 +5019,8 @@ function setVcSessionCookie(baseUrl, token) {
 //     available → replace our cookie with the shared one;
 //   • no cookie but a shared token exists → seed it into our cookie jar.
 // Best-effort: auth still works exactly as before if any step fails.
+const { pickSharedSession } = require('./session-precedence.js');
+
 async function syncSharedLoginCookie() {
   try {
     const baseUrl = getWebsiteUrl();
@@ -5036,12 +5038,20 @@ async function syncSharedLoginCookie() {
     if (local) {
       if (local === shared) return;
       const me = await checkAuth(); // uses our local cookie
-      if (me?.authenticated) {
+      // Precedence is decided in session-precedence.js, not here. The rule that
+      // used to live inline — donate the local cookie up whenever it
+      // authenticates — silently discarded a LONGER-LIVED shared token, because
+      // "valid" was doing the work that "lasts longer" should have. See that
+      // module's header for the night it cost.
+      const { action, reason } = pickSharedSession({
+        local, shared, localAuthenticated: !!me?.authenticated,
+      });
+      if (action === 'donate-up') {
         store.set('vcSessionToken', local); // donate the (verified) login up
-      } else if (shared) {
+      } else if (action === 'seed-cookie' && shared) {
         await session.defaultSession.cookies.remove(baseUrl, 'vc_session');
         await setVcSessionCookie(baseUrl, shared);
-        console.log('[auth] Replaced stale local login with the shared one (#366)');
+        console.log(`[auth] Using the shared vibeconferencing.com login — ${reason} (#366)`);
       }
       // Neither valid locally nor shared → leave it; the normal auth UI applies.
     } else if (shared && shared !== tombstone) {

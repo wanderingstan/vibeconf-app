@@ -9,6 +9,8 @@
 #   2. vibeconf-box-desktop.sh         panel, menu, file manager, one desktop,
 #                                      Chrome as default browser
 #   3. vibeconf-box-remote-access.sh   noVNC + raw VNC over Tailscale, clipboard
+#   4. vibeconf-box-agent-perms.sh     dontAsk, so an unattended agent denies
+#                                      instead of hanging on a prompt
 #
 # Each step is idempotent, so re-running this is the repair path as well as the
 # build path. Everything it does was previously typed by hand on some boxes and
@@ -55,9 +57,10 @@ run_step() {
   fi
 }
 
-run_step "1/3 app + boot service" bash "$HERE/vibeconf-box-update.sh" "$BOX" $VERSION
-run_step "2/3 desktop"            bash "$HERE/vibeconf-box-desktop.sh" "$BOX"
-run_step "3/3 remote access"      bash "$HERE/vibeconf-box-remote-access.sh" "$BOX"
+run_step "1/4 app + boot service" bash "$HERE/vibeconf-box-update.sh" "$BOX" $VERSION
+run_step "2/4 desktop"            bash "$HERE/vibeconf-box-desktop.sh" "$BOX"
+run_step "3/4 remote access"      bash "$HERE/vibeconf-box-remote-access.sh" "$BOX"
+run_step "4/4 agent permissions"  bash "$HERE/vibeconf-box-agent-perms.sh" "$BOX"
 
 echo
 echo "############################################################"

@@ -1,7 +1,7 @@
 {
   "name": "vibeconferencing-agent",
   "productName": "Vibeconferencing",
-  "version": "0.8.47",
+  "version": "0.8.48",
   "description": "AI agents as real participants in your video calls",
   "homepage": "https://github.com/wanderingstan/vibeconf-app",
   "author": "Stan James <stan@wanderingstan.com>",

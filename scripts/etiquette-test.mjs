@@ -525,7 +525,33 @@ const RULES = [
       if (saw(w, 'endedEarly')) {
         return { ok: false, note: `armed, then decided the interruption had already ended and kept going${tag}` };
       }
-      return { ok: false, note: `armed but never backed off — the grace never fired${tag}` };
+      // rodeOut was a defined MARKER that this verdict never consulted, so a
+      // deliberate ride-out fell through to "the grace never fired" — naming the
+      // one branch that demonstrably DID work. On 2026-09-02 that sent triage
+      // after a missing timer for an hour; the app's own log said
+      // "rode it out — interrupter stopped during the analyser OFF 1235ms ago
+      // grace", i.e. the grace ran its full 1650ms and made a decision.
+      //
+      // local-server.js added that line for exactly this reason ("riding out a
+      // brief interruption is a DECISION, and it was the only outcome in this
+      // function that left no trace ... the etiquette suite read this exact case
+      // as [a yield failure] and reported a failure against correct behaviour").
+      // The line landed; this verdict was never taught to read it.
+      //
+      // Still ok:false — the rule claims the bot stops for a sustained
+      // interrupter and it did not. But the note now points at the AUDIO PATH,
+      // which is where the fault actually is: an 8s clip that registers as a
+      // sub-second blip at the peer is a capture/analyser problem, not a
+      // barge-in one, and the two want completely different investigations.
+      if (saw(w, 'rodeOut')) {
+        return {
+          ok: false,
+          note: 'armed, then rode it out — the interrupter read as already stopped when the grace '
+            + `expired. The grace WORKED; suspect the audio path (an 8s clip reaching the peer as a `
+            + `blip). Check [floor-audio] speech ON/OFF spans in the subject's session log${tag}`,
+        };
+      }
+      return { ok: false, note: `armed but never backed off — no ride-out, no back-off, no early-end${tag}` };
     },
   },
 

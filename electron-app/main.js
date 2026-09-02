@@ -8402,7 +8402,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '65';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '66';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
@@ -8446,30 +8446,25 @@ function ensureClaudeIntegration() {
     console.warn('[electron] /call skill install failed:', err.message);
   }
 
-  // --- Ensure global skill in ~/.claude/skills/realtime-call/ ---
-  // EXPERIMENT. The slow half of a realtime-voice bot: it never speaks, it
-  // briefs the model that does. Its own skill rather than a mode of /join-call
-  // because the two contracts share almost nothing — no speak, no turn-taking,
-  // no etiquette — and an agent holding both would misuse them.
+  // --- Remove the old ~/.claude/skills/realtime-call/ ---
+  // /realtime-call was a stopgap: a separate command for a bot whose voice
+  // belongs to the realtime model. The mode is a property of the BOT, not of
+  // how you start it, so /join-call now branches on its realtimeVoice
+  // preference and answers with a completely different operating prompt.
+  //
+  // Deleted rather than left behind. A slash command that still appears in the
+  // list, still installs, and quietly does the wrong thing is worse than one
+  // that is gone: it would join with the realtime prompt whatever the bot is
+  // actually set to.
   try {
-    const rtSkillDir = path.join(claudeDir, 'skills', 'realtime-call');
-    const rtVersionFile = path.join(rtSkillDir, '.version');
-    let rtInstalled = '';
-    try { rtInstalled = fs.readFileSync(rtVersionFile, 'utf-8').trim(); } catch { /* not yet */ }
-    if (rtInstalled !== SKILL_VERSION) {
-      fs.mkdirSync(rtSkillDir, { recursive: true });
-      fs.writeFileSync(path.join(rtSkillDir, 'SKILL.md'), fs.readFileSync(
-        isPackaged
-          ? path.join(process.resourcesPath, 'mcp-server', 'realtime-call-skill.md')
-          : path.join(__dirname, '..', 'mcp-server', 'realtime-call-skill.md'),
-        'utf-8',
-      ));
-      fs.writeFileSync(rtVersionFile, SKILL_VERSION);
-      console.log(`[electron] Installed/updated /realtime-call skill v${SKILL_VERSION}`);
+    const staleRtSkill = path.join(claudeDir, 'skills', 'realtime-call');
+    if (fs.existsSync(staleRtSkill)) {
+      fs.rmSync(staleRtSkill, { recursive: true, force: true });
+      console.log('[electron] Removed the old /realtime-call skill (superseded by /join-call)');
       changed = true;
     }
   } catch (err) {
-    console.warn('[electron] /realtime-call skill install failed:', err.message);
+    console.warn('[electron] could not remove the old /realtime-call skill:', err.message);
   }
 
   // --- Ensure global skill in ~/.claude/skills/call-new-bot/ ---

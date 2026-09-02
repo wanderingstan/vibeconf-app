@@ -11,6 +11,13 @@ mechanics wired to real call audio.
 
 ## Turning it on
 
+There is **one** command. `/join-call` reads the bot's `realtimeVoice`
+preference and answers with a completely different operating prompt: a realtime
+bot's agent is told it never speaks and briefs instead, and never sees the
+speak-loop contract at all. `/realtime-call` was a stopgap and is gone,
+including copies already installed.
+
+
 Per bot, because preferences are stored per profile:
 
 ```

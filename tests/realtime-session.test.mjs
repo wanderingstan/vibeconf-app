@@ -16,8 +16,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { readFileSync, existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
 const require = createRequire(import.meta.url);
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const { resolveRealtimeConfig, mintEphemeralSession, buildInstructions } =
   require('../electron-app/realtime-session.js');
 
@@ -325,4 +329,50 @@ test('the prompt no longer duplicates the response gate', () => {
   // create_response:false moved that decision to the app, and every clause
   // that does nothing crowds out one that does.
   assert.doesNotMatch(buildInstructions({}), /say nothing unless you are addressed/i);
+});
+
+// --- one command, two contracts ---------------------------------------------
+//
+// /realtime-call was a stopgap. Which kind of bot this is belongs to the BOT,
+// not to how you started it, so /join-call branches on its realtimeVoice
+// preference. The agent is handed one contract or the other and never both.
+
+test('join_call answers a realtime bot with a different contract', () => {
+  const src = readFileSync(join(root, 'mcp-server/server.js'), 'utf8');
+
+  // The branch exists on both paths: a fresh join AND an already-in-call
+  // rejoin. Missing the second is the subtle one — a reconnecting agent would
+  // silently get the speak-loop contract for a bot that has no voice of its own.
+  const branches = [...src.matchAll(/data\.results\.join\.realtimeVoice/g)];
+  assert.ok(branches.length >= 2, `expected fresh + already-in-call branches, found ${branches.length}`);
+
+  const fn = src.slice(src.indexOf('function realtimeJoinInstructions'));
+  // It must not hand a realtime agent the verb it does not own.
+  assert.match(fn, /You never speak/i);
+  assert.match(fn, /Do not call/i);
+  // And it must carry the things that only exist in this mode.
+  for (const t of ['brief', 'hold_voice', 'THE VOICE ASKED YOU FOR THIS']) {
+    assert.ok(fn.includes(t), `realtime join instructions must mention ${t}`);
+  }
+});
+
+test('the stopgap command is gone, not just unused', () => {
+  // A slash command that still installs and quietly does the wrong thing is
+  // worse than one that is absent: it would join with the realtime prompt
+  // whatever the bot is actually set to.
+  assert.equal(existsSync(join(root, 'mcp-server/realtime-call-skill.md')), false);
+  const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
+  assert.doesNotMatch(main, /realtime-call-skill\.md/);
+  // And copies already on disk are removed rather than left behind.
+  assert.match(main, /skills', 'realtime-call'/);
+  assert.match(main, /rmSync/);
+});
+
+test('brief and hold_voice stay reachable from /join-call', () => {
+  // /join-call now drives realtime bots too, so its whitelist has to carry the
+  // tools that mode depends on or they are silently unreachable.
+  const skill = readFileSync(join(root, 'mcp-server/join-call-skill.md'), 'utf8');
+  for (const t of ['brief', 'hold_voice']) {
+    assert.match(skill, new RegExp(`mcp__vibeconferencing__${t}\\b`), `${t} must be whitelisted`);
+  }
 });

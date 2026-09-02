@@ -5739,6 +5739,7 @@ class LocalServer {
           alreadyInCall: true,
           status: this.callStatus,
           botName: this.getEffectiveBotName() || null,
+          realtimeVoice: this._pref('realtimeVoice') === true,
         };
       }
       // #222: refuse to join under a name that's already in the call — two
@@ -5762,7 +5763,10 @@ class LocalServer {
         if (botName) this.currentCallBotName = botName;
         this.onJoinCall(meetCode, botName);
         if (botName) this._everJoinedAs = botName;
-        results.join = { ok: true };
+        // Which KIND of bot this is. join_call answers with a completely
+        // different operating prompt for a realtime bot, so the agent never
+        // sees the contract that does not apply to it. One command, two jobs.
+        results.join = { ok: true, realtimeVoice: this._pref('realtimeVoice') === true };
       }
     }
 

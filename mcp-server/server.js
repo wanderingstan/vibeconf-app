@@ -695,6 +695,42 @@ server.tool(
   }
 );
 
+// The operating prompt for a bot whose voice belongs to the realtime model.
+//
+// Returned by join_call INSTEAD of the normal one, never alongside it, so a
+// realtime agent never reads a contract that does not apply to it. The two
+// share almost nothing: no speaking, no turn-taking, no urgency judgement.
+// This is why there is no separate slash command — the bot's own
+// realtimeVoice preference decides, and /join-call does the right thing either
+// way.
+function realtimeJoinInstructions(botName, room, routedNote, alreadyIn) {
+  return [
+    alreadyIn
+      ? `The bot is already in call ${room} as "${botName}"${routedNote} — nothing was disturbed.`
+      : `Joining Meet call ${room} as "${botName}"${routedNote}. **This bot's voice belongs to the realtime model, not to you.**`,
+    ``,
+    `You are the SLOW half. A speech-to-speech model is in the call: it hears the room as audio, answers in under a second, handles interruption and turn-taking, and speaks in its own voice. **You never speak.** Do not call \`speak\`; it is not your job here.`,
+    ``,
+    `What it lacks is your access: the repo, your tools, anything you can look up. What you lack is speed. So you feed it facts and it decides, in its own words and its own timing, what to do with them.`,
+    ``,
+    `**The loop:** \`wait_for_speech\` → decide whether it needs anything → \`brief\` if so → repeat. It returns when a turn ends, whether a human spoke **or the voice model did**; both matter.`,
+    ``,
+    `**Most turns need nothing from you.** Returning to \`wait_for_speech\` without briefing is a good outcome, not a missed one.`,
+    ``,
+    `**brief(note)** puts a fact in its context without making it say anything. Write knowledge, not instructions: "the auth refactor is still open" survives being used three turns late; "tell them the auth refactor is open" reads as a script. Brief BEFORE a topic is needed, not after it has been promised — asked for news it had been promised but not given, it once invented a project timeline and named staff who do not exist.`,
+    ``,
+    `**Correcting it is a first-class job.** Its own words appear in the transcript under the bot's name; read them. It states things confidently and wrongly and cannot detect that itself. But you can be wrong too, and a correction is laundered into confident speech: match your certainty to your source. Flat on the repo, the tests, a file on disk; provenance rather than verdict on anything you looked up ("a search says 69 and raining", not "you were wrong").`,
+    ``,
+    `**It can ask you directly.** Requests arrive in your \`wait_for_speech\` result under "THE VOICE ASKED YOU FOR THIS". They are not in the transcript, because a tool call is not speech. Treat one as a commitment already made: it has usually told the room out loud that it is checking, so answer with \`brief\` even if the answer is that there is nothing.`,
+    ``,
+    `**hold_voice(seconds)** when two OTHER people are mid-exchange and nothing the bot says would help. The name gate cannot see that, because such an exchange often names nobody. It expires on its own.`,
+    ``,
+    `Briefs die with the session: if the bot rejoins, its context is empty and everything you briefed is gone.`,
+    ``,
+    `**Do not send a final response to the user while the call is active** — if you stop, nothing drives the loop. When the call ends, \`leave_call\` then \`end_session\`.`,
+  ].join('\n');
+}
+
 // --- hold_voice (EXPERIMENT: realtime voice) ---
 server.tool(
   "hold_voice",
@@ -3244,6 +3280,10 @@ server.tool(
         // live session down (#26). Say so plainly — an agent that reads this as
         // a fresh join would greet the room a second time.
         if (data.results.join.alreadyInCall) {
+          if (data.results.join.realtimeVoice) {
+            return { content: [{ type: "text",
+              text: realtimeJoinInstructions(BOT_NAME, room_id, routedNote, true) }] };
+          }
           const st = (data.results.join.status === 'joining' || data.results.join.status === 'navigating')
             ? 'still joining' : 'already in';
           return { content: [{ type: "text", text: [
@@ -3253,6 +3293,11 @@ server.tool(
             ``,
             `If you genuinely believe the session is wedged, pass force:true to rebuild it — that WILL drop and rejoin the call.`,
           ].join('\n') }] };
+        }
+
+        if (data.results.join.realtimeVoice) {
+          return { content: [{ type: "text",
+            text: realtimeJoinInstructions(joinedBotName, room_id, routedNote, false) }] };
         }
 
         return {

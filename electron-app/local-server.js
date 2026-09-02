@@ -9,6 +9,18 @@ const path = require('path');
 const crypto = require('crypto');
 const { URL } = require('url');
 
+// The states from which it is safe to show a new "the agent is busy" face.
+//
+// 'speaking' and 'yielding' are deliberately absent: both mean an utterance is
+// live or held, and overwriting either loses information the speech gates rely
+// on. Both barge-in gates require botState === 'speaking', so a stray write
+// here silently disarms the interrupt monitor for a whole utterance (#412).
+//
+// Shared so the rule has one definition. It previously existed as an inline
+// array in _onAgentActivity and as nothing at all at the transcript-delivery
+// site, which is how the two drifted apart.
+const RESTING_STATES = ['idle', 'listening', 'ticking', 'thinking', 'working'];
+
 // #356: per-process control-token support. The control API binds 127.0.0.1, but
 // that is NOT a security boundary against the user's own browser: any webpage can
 // fetch() 127.0.0.1:<port> and, under the old wildcard CORS, READ the response
@@ -1346,11 +1358,6 @@ class LocalServer {
         // paths, every one of which logs a reason. Working perfectly and never
         // running looked identical from outside — which is the shape of #444's
         // "ranked ordering never engages". Say it either way.
-        //
-        // Lifted from #492 (cc0644b1) rather than rebased onto it: that branch
-        // is still moving, and this line is what makes its ranked-ordering
-        // etiquette rule readable on THIS branch. Both PRs touch this function,
-        // so whichever merges second should drop the duplicate hunk.
         if (why) console.log(ts(), `🎲 [bot-jitter] ${others} others in call — speaking now, no delay (${why})`);
         speakNow();
       }
@@ -3423,7 +3430,7 @@ class LocalServer {
   // or yielding. A quiet timer eases back to listening/idle once activity stops.
   _onAgentActivity(line) {
     if (this.callStatus !== 'in-call') return;
-    if (!['idle', 'listening', 'ticking', 'thinking', 'working'].includes(this.botState)) return;
+    if (!RESTING_STATES.includes(this.botState)) return;
     if (this.botState === 'idle' || this.botState === 'listening' || this.botState === 'ticking') {
       // Start of an engagement — show 🤔 thinking and start the dwell clock.
       this._workingSince = Date.now();
@@ -4423,7 +4430,20 @@ class LocalServer {
         // skip the ack on the second resolution because the equal-state guard
         // in _setBotState short-circuits.
         console.log(ts(), '🧠 [thinking] Processing transcript — ' + wordCount + ' words, ' + deduped.length + ' entry/ies: "' + joinedText.slice(0, 240) + (joinedText.length > 240 ? '…' : '') + '"');
-        this.botState = 'thinking';
+        // The CALLBACK is what this path needs; the state write was collateral,
+        // and writing the field directly to dodge the equal-state guard dodged
+        // every other guard in _setBotState with it — including the one that
+        // says thinking must never override speaking (#412).
+        //
+        // A stash replay dispatches at :4036 and _buildResponse runs at :4041,
+        // one tick apart, so the replay's 'speaking' was overwritten ~1ms after
+        // the audio started. Both barge-in gates require botState==='speaking',
+        // so the bot then played a full utterance with no interrupt monitor at
+        // all. Measured over one 56-minute call: normal speech held 'speaking'
+        // for a median 3137ms, replayed speech for 48ms, and 18 of 23 replays
+        // lost it within 200ms. That is why two bots overlapped for 15 seconds
+        // with barge-in never arming.
+        if (RESTING_STATES.includes(this.botState)) this.botState = 'thinking';
         // Capture exactly what just SHIPPED to the slow model for this thinking
         // cycle — so the debug overlay can distinguish "heard" (latest caption,
         // possibly still in flux) from what's actually being processed right now.

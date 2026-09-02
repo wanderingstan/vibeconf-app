@@ -998,9 +998,27 @@ function renderCallState(s) {
     ...queuedLines,
     `Participants (${(s.participants || []).length}):`,
     ...(parts.length ? parts : ['    (none detected)']),
-    `Agent activity (${(s.agentLog || []).length}):`,
-    ...((s.agentLog || []).length ? s.agentLog.map((l) => `    ${l}`) : ['    (no agent session)']),
+    ...agentActivityLines(s),
   ].join('\n');
+}
+
+// The agent tail, for the troubleshooting screen's state dump.
+//
+// Sliced to the same depth as the on-camera overlay (#532). The buffer is 1000
+// lines deep now — that depth exists for the 🧠 window, which is scrollable and
+// exists to be read back through. This is one section of a flat <pre> stats
+// dump, and pasting a thousand agent lines into the middle of it would bury the
+// twenty other things the screen is for. The count is still the FULL buffer's,
+// so it stays the "confirm it without counting by eye" number.
+const TROUBLESHOOTING_AGENT_LINES = 16;
+function agentActivityLines(s) {
+  const log = (s && s.agentLog) || [];
+  if (!log.length) return ['Agent activity (0):', '    (no agent session)'];
+  const tail = log.slice(-TROUBLESHOOTING_AGENT_LINES);
+  const header = tail.length < log.length
+    ? `Agent activity (${log.length}, last ${tail.length} — full history in 🧠):`
+    : `Agent activity (${log.length}):`;
+  return [header, ...tail.map((l) => `    ${l}`)];
 }
 
 // #242: the brain feed. Reuses the SAME agentLog the app already tails from the
@@ -1012,7 +1030,44 @@ function renderCallState(s) {
 // we own the pipe. Worth stating in the UI rather than leaving people hunting
 // for a prompt that cannot exist yet.
 const BRAIN_LINE_CLASS = { '🗣': 'l-say', '🔧': 'l-tool', '💬': 'l-ask', '💭': 'l-think' };
-let _brainLastRendered = '';
+
+// One feed line as a node. textContent, never innerHTML: these strings carry
+// model output and tool inputs verbatim, and straight into innerHTML they would
+// render as markup.
+function brainLineNode(text) {
+  const el = document.createElement('div');
+  el.className = BRAIN_LINE_CLASS[text.slice(0, 2)] || BRAIN_LINE_CLASS[[...text][0]] || 'l-say';
+  el.textContent = text;
+  return el;
+}
+
+// Where the already-rendered lines start inside the new buffer, or -1 if the two
+// share no run (a rebind onto a different session — rebuild from scratch).
+//
+// The buffer only ever grows at the tail and is trimmed at the head, so what we
+// last drew is a contiguous WINDOW of what we have now. Locating that window
+// tells us both numbers we need: how many nodes to drop off the top, and how
+// many to append at the bottom.
+//
+// The scan looks quadratic and is not, in practice: the first-element check
+// rejects almost every offset before the run comparison, and the common answer
+// is 0 (nothing trimmed yet).
+function brainReuseOffset(prev, next) {
+  if (!prev.length) return 0;
+  for (let k = 0; k < prev.length; k++) {
+    if (prev[k] !== next[0]) continue;
+    const kept = prev.length - k;
+    if (kept > next.length) continue;
+    let same = true;
+    for (let i = 0; i < kept; i++) { if (prev[k + i] !== next[i]) { same = false; break; } }
+    if (same) return k;
+  }
+  return -1;
+}
+
+// The lines currently in the DOM, in order. Compared against the incoming buffer
+// to work out the delta — see brainReuseOffset.
+let _brainRendered = [];
 function renderBrain(s) {
   const feed = document.getElementById('brainFeed');
   const status = document.getElementById('brainStatus');
@@ -1028,23 +1083,47 @@ function renderBrain(s) {
     if (lines.length) parts.push(`${lines.length} lines`);
     status.textContent = parts.join(' · ');
   }
-  const joined = lines.join('\n');
-  if (joined === _brainLastRendered) return;   // don't fight the user's scroll
-  _brainLastRendered = joined;
 
   if (!lines.length) {
+    if (!_brainRendered.length && feed.firstChild) return;
+    _brainRendered = [];
     feed.innerHTML = '<span class="l-none">No agent session yet. This fills in once a bot is driven by '
       + 'Claude Code — the app reads the session\u2019s own transcript.</span>';
     return;
   }
+
+  // Rendered as a DELTA — append the new tail, drop the trimmed head — rather
+  // than rebuilt from scratch (#532).
+  //
+  // A full innerHTML rebuild was fine while the buffer was 16 lines deep and the
+  // only real surface was a strip on the camera. At 1000 lines it is the wrong
+  // shape twice over: it throws away and re-parses a thousand nodes every time
+  // the agent emits one line, and — worse for the thing this window is FOR —
+  // replacing the children destroys any text selection inside it. Selecting a
+  // tool call to paste into an issue is most of this pane's debugging value, and
+  // a rebuild a second later takes the selection with it.
+  const reuse = brainReuseOffset(_brainRendered, lines);
+  const kept = reuse < 0 ? 0 : _brainRendered.length - reuse;
+  if (kept === lines.length && kept === _brainRendered.length) return; // nothing changed
   // Pinned to the bottom unless the user has scrolled up to read something —
-  // a live feed that yanks you back to the end is unreadable.
+  // a live feed that yanks you back to the end is unreadable. Measured BEFORE
+  // the mutation, because appending changes scrollHeight.
   const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40;
-  feed.innerHTML = lines.map((l) => {
-    const cls = BRAIN_LINE_CLASS[l.slice(0, 2)] || BRAIN_LINE_CLASS[[...l][0]] || 'l-say';
-    const esc = l.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return `<div class="${cls}">${esc}</div>`;
-  }).join('');
+  if (kept === 0) {
+    feed.textContent = ''; // rebind, or replacing the empty-state placeholder
+  } else if (reuse > 0) {
+    // Dropping lines ABOVE the viewport slides everything up by their height, so
+    // a reader parked mid-history would silently drift forward through it unless
+    // scrollTop follows. Measured before the removal, off the first surviving
+    // node, so wrapped lines and margins are all accounted for.
+    const shift = feed.children[reuse] ? feed.children[reuse].offsetTop - feed.children[0].offsetTop : 0;
+    for (let i = 0; i < reuse && feed.firstChild; i++) feed.removeChild(feed.firstChild);
+    if (!atBottom) feed.scrollTop = Math.max(0, feed.scrollTop - shift);
+  }
+  const frag = document.createDocumentFragment();
+  for (let i = kept; i < lines.length; i++) frag.appendChild(brainLineNode(lines[i]));
+  feed.appendChild(frag);
+  _brainRendered = lines.slice();
   if (atBottom) feed.scrollTop = feed.scrollHeight;
 }
 

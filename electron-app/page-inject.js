@@ -1018,8 +1018,21 @@
       // pre-formatted compact strings (🗣 text / 🔧 tool / 💬 prompt). Rendered
       // in full — long lines just run off the right edge of the canvas (no
       // ellipsis), using as much of the surface as fits.
+      //
+      // The tail is sliced HERE, at draw time, rather than upstream (#532). The
+      // buffer behind d.agentLog is now 1000 lines deep, because the brain
+      // window is a scrollable history and needs to be; this column is a strip
+      // beside the stats on a 720p tile and fits about 16. Trimming at the
+      // source is what caused #532 in the first place — one constant sized for
+      // this surface, silently governing the other one — so the deep buffer is
+      // shared and each consumer takes what it can draw.
+      //
+      // Keep OVERLAY_LINES in step with OVERLAY_MAX_LINES in agent-transcript.js.
+      // It cannot be imported: this file is injected into Meet's page context and
+      // has no module system. A test pins the two together.
+      const OVERLAY_LINES = 16;
       const agentLines = (() => {
-        const log = d.agentLog || [];
+        const log = (d.agentLog || []).slice(-OVERLAY_LINES);
         if (!log.length) return ['AGENT', '  (no agent session)'];
         return ['AGENT', ...log.map((l) => '  ' + l)];
       })();

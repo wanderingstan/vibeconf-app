@@ -9,8 +9,41 @@
 
 const fs = require('fs');
 
-const MAX_LINES = 16;          // ring-buffer depth — fills the side column next to the stats
-const SEED_TAIL_BYTES = 64 * 1024; // how much of an existing transcript to seed from
+// Ring-buffer depth — and why there are two of these now (#532).
+//
+// There used to be exactly one, `MAX_LINES = 16`, and its own comment said what
+// it had been sized for: "fills the side column next to the stats". That is the
+// on-camera debug overlay — a narrow column drawn onto the bot's virtual camera
+// next to the health stats. 16 lines is right for that surface.
+//
+// The brain window (#242) then reused this same buffer, deliberately: it is "a
+// surface over an existing signal rather than a new pipeline". Reusing the
+// signal was the correct call, but it silently inherited a depth chosen for a
+// 16-line strip on a video tile and applied it to a full-height scrollable
+// window. The window could never show more than 16 lines of scrollback, because
+// nothing above it had kept any — the history was discarded here, at the source.
+//
+// So the BUFFER is deep and the overlay slices its own tail at draw time
+// (page-inject.js). One pipeline, two depths, and neither consumer can shrink
+// the other's.
+const BUFFER_MAX_LINES = 1000;  // what we KEEP — the brain window's scrollback
+const OVERLAY_MAX_LINES = 16;   // what the camera overlay DRAWS, sliced at render time
+
+// How much of an already-populated transcript to seed from when we attach
+// mid-session.
+//
+// MEASURED 2026-09-02 over the 12 largest local Claude Code transcripts (58.7 MB,
+// 7,576 display lines): a JSONL transcript costs ~7.7 KB per line this module
+// actually displays. Nearly all of that is tool_result payloads, which
+// formatEntry deliberately drops — so the ratio is brutal and stable.
+//
+// The old 64 KB window therefore seeded about EIGHT lines. That was invisible
+// while the buffer was 16 deep; with a 1000-line buffer it would have been the
+// whole bug again one layer down — a deep buffer that still starts nearly empty,
+// on a transcript already sitting complete on disk. 8 MB is the tail that
+// actually fills 1000 lines (measured: 8 MB -> 1,003 lines, read + parsed in
+// 25 ms, once per bind). Sessions smaller than that are simply read whole.
+const SEED_TAIL_BYTES = 8 * 1024 * 1024;
 
 // Collapse whitespace to a single line. No ellipsis truncation — the overlay
 // lets text run to (and off) the canvas edge, using as much surface as fits.
@@ -172,7 +205,10 @@ class TranscriptTailer {
   }
 
   // Seed the ring buffer from the tail of an already-populated transcript so the
-  // overlay isn't blank when we attach mid-session.
+  // overlay and the brain window aren't blank when we attach mid-session. The
+  // brain window is the demanding one: it exists to be scrolled back through, so
+  // "attached late, therefore has no history" is the failure it was filed for
+  // (#532) even though the history is right there in the file.
   _seed() {
     try {
       const size = fs.statSync(this.path).size;
@@ -192,7 +228,7 @@ class TranscriptTailer {
         const model = entryModel(entry);
         if (model && model !== this.model) { this.model = model; this.onModel(model); }
       }
-      this.lines = seeded.slice(-MAX_LINES);
+      this.lines = seeded.slice(-BUFFER_MAX_LINES);
       if (this.lines.length) this.onLines(this.getLines());
     } catch { /* file may not exist yet — that's fine */ }
   }
@@ -223,7 +259,7 @@ class TranscriptTailer {
         const usage = entryUsage(entry);
         if (usage && usage.msgId !== this._usageMsgId) { this._usageMsgId = usage.msgId; this.onUsage(usage); }
       }
-      if (this.lines.length > MAX_LINES) this.lines = this.lines.slice(-MAX_LINES);
+      if (this.lines.length > BUFFER_MAX_LINES) this.lines = this.lines.slice(-BUFFER_MAX_LINES);
       if (changed) this.onLines(this.getLines());
     } catch { /* transient read error — next pump retries */ }
   }
@@ -236,4 +272,4 @@ class TranscriptTailer {
   }
 }
 
-module.exports = { TranscriptTailer, formatEntry, entryModel, entryUsage, MAX_LINES };
+module.exports = { TranscriptTailer, formatEntry, entryModel, entryUsage, BUFFER_MAX_LINES, OVERLAY_MAX_LINES };

@@ -89,12 +89,20 @@ test('the model is reported once, not per frame', () => {
 test('the buffer is bounded', () => {
   // A long call would otherwise grow this without limit, and it is serialised
   // into every get-call-state response.
-  const { MAX_LINES } = require('../electron-app/agent-transcript.js');
+  //
+  // The depth is BUFFER_MAX_LINES, not the overlay's 16 (#532): the brain window
+  // is a scrollable history and the buffer is sized for it, while each consumer
+  // slices what it can actually draw. Deliberately the SAME constant the
+  // transcript tailer uses — a per-transport depth would be visible upstream as
+  // "less scrollback when the app launched the agent", which is exactly the kind
+  // of difference this module exists to hide. Depth itself is covered in
+  // tests/brain-scrollback.test.mjs; what matters here is that a bound exists.
+  const { BUFFER_MAX_LINES } = require('../electron-app/agent-transcript.js');
   const { src, state } = collect();
-  for (let i = 0; i < MAX_LINES + 50; i++) {
+  for (let i = 0; i < BUFFER_MAX_LINES + 50; i++) {
     src.push(frame({ type: 'assistant', message: { content: [{ type: 'text', text: `line ${i}` }] } }));
   }
-  assert.equal(state.lines.length, MAX_LINES);
+  assert.equal(state.lines.length, BUFFER_MAX_LINES);
   assert.match(state.lines[state.lines.length - 1], /line \d+$/, 'the NEWEST lines are kept');
 });
 

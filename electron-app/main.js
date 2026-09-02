@@ -8509,6 +8509,31 @@ app.whenReady().then(async () => {
     if (isBrandNewProfile && profileStore.get('onboardingCallComplete') === undefined) {
       profileStore.set('onboardingCallComplete', false);
     }
+
+    // A brand-new bot otherwise ships with the plain animated gradient — the
+    // SAME one every other unconfigured bot has, which makes the switcher
+    // useless for telling several fresh bots apart at a glance. Seed one of
+    // the bundled presets at random instead, right here at the one moment a
+    // profile is genuinely new — covers every path that creates a bot ("New
+    // bot…", /call-new-bot, and the very first default-profile launch), since
+    // they all funnel through this same per-process startup.
+    if (isBrandNewProfile && !profileStore.get('avatarBackgroundSvg')) {
+      try {
+        const bgDir = __dirname.includes('.asar')
+          ? path.join(process.resourcesPath, 'backgrounds', 'presets')
+          : path.join(__dirname, 'backgrounds', 'presets');
+        const BG_EXTS = /\.(svg|png|jpe?g|webp|gif)$/i;
+        const files = fs.readdirSync(bgDir).filter((f) => BG_EXTS.test(f));
+        if (files.length) {
+          const chosen = files[Math.floor(Math.random() * files.length)];
+          const svg = await buildBackgroundSvgFromImage(path.join(bgDir, chosen));
+          profileStore.set('avatarBackgroundSvg', svg);
+          profileStore.set('avatarBackgroundCaption', chosen.replace(BG_EXTS, ''));
+        }
+      } catch (err) {
+        console.warn('[config] could not seed a random background for new bot:', err.message);
+      }
+    }
   }
 
   // #366: inherit (or donate) the shared vibeconferencing.com login before

@@ -207,11 +207,29 @@ const settingsScreen = document.getElementById('settingsScreen');
 const troubleshootingScreen = document.getElementById('troubleshootingScreen');
 const brainScreen = document.getElementById('brainScreen');
 
+// Settings' natural height (every preference stacked in one column) was
+// stretching the window to fill the entire screen on many laptops. Flat
+// cap — about 2/3 of that natural height — same idea as MIN_WINDOW_HEIGHT
+// in main.js being a fixed floor rather than computed; this is a fixed
+// ceiling. The rest scrolls internally (see showScreen below).
+const SETTINGS_MAX_HEIGHT = 900;
+
 function showScreen(screen) {
   mainScreen.style.display = 'none';
   settingsScreen.style.display = 'none';
   troubleshootingScreen.style.display = 'none';
   screen.style.display = 'block';
+  if (screen === settingsScreen) {
+    // Still bounded by window.screen.availHeight: main.js clamps the WINDOW
+    // itself to the screen's work area (applyWindowHeight) but has no way to
+    // also shrink THIS box to match, so on a display shorter than
+    // SETTINGS_MAX_HEIGHT a flat cap alone would leave the remainder stuck
+    // beyond the window's own edge — unreachable, no scrollbar could get to
+    // it (the exact bug this whole cap exists to fix).
+    const screenCap = Math.max(200, Math.round((window.screen.availHeight || SETTINGS_MAX_HEIGHT) - 80));
+    settingsScreen.style.maxHeight = Math.min(SETTINGS_MAX_HEIGHT, screenCap) + 'px';
+    settingsScreen.style.overflowY = 'auto';
+  }
   // Screens differ a lot in height (Settings is long) and the window is sized to
   // fit — remeasure. Defined below; ignore on the very first paint.
   try { reportContentHeight(); } catch { /* not wired yet */ }

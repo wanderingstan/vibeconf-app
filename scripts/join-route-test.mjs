@@ -296,7 +296,26 @@ async function main() {
       await sleep(1500);
       let startText = '';
       try {
-        startText = textOf(await mcp.request('tools/call', { name: 'start_call', arguments: {} }));
+        // open_browser:false — #611. The flag reads "is the caller remote?", but
+        // what it actually decides is "will a HUMAN join in that window?", and
+        // here the answer is no: the bot joins in its own Electron webview, and
+        // this lane runs unattended. Left at the default, every run opened a
+        // Safari window on the mini that nobody ever joined, and that nothing
+        // ever closed — one per meeting minted, accumulating across nights.
+        // (Worse than a stray tab: the room is torn down when the lane ends, so
+        // Meet redirected the orphan to its home page and the pile looked like
+        // an app bug rather than our own litter.) Same reasoning as the
+        // --no-agent-terminal=true that spawn-test-fleet.sh passes for the
+        // Terminal windows, and as the openBrowser:false that
+        // linux-agent-terminal-check.sh already posts to /api/call/start.
+        //
+        // Safe for what this lane needs: start_call reports the join link on
+        // BOTH paths (mcp-server/server.js), so the room-code scrape below —
+        // and the VIBECONF_MINTED_ROOM handoff to every downstream lane — is
+        // unaffected. Only the browser launch is suppressed.
+        startText = textOf(await mcp.request('tools/call', {
+          name: 'start_call', arguments: { open_browser: false },
+        }));
       } catch (err) {
         startText = `ERROR: ${err.message}`;
       }

@@ -1747,6 +1747,14 @@ const localServer = new globalThis.LocalServer({
   // every board write logged nothing and still reported success to the bot.
   onWhiteboardUpdate: async (content, sender) => {
     console.log('[local-server] Whiteboard update from', sender, ':', content.slice(0, 80));
+    // The room is deliberately OUR room, never the tool's room_id argument —
+    // and that is now safe because local-server refuses a board write addressed
+    // to any other room before it gets here (#586). It used to be silent, which
+    // meant update_whiteboard({ room_id: 'other-room' }) clobbered the board the
+    // call was looking at and reported success. Don't "fix" this line by
+    // threading the requested room through: writing to a room this app never
+    // joined is a different, unverified change (see the refusal in
+    // local-server._handlePost for what would have to be true first).
     const roomId = localServer.roomId;
     if (roomId) {
       const baseUrl = getWebsiteUrl();
@@ -1816,6 +1824,8 @@ const localServer = new globalThis.LocalServer({
   // persisted we reload the whiteboard window so the current content inherits
   // the new styling immediately.
   onWhiteboardStyle: async (css, sender) => {
+    // Same as onWhiteboardUpdate above: our room, not the caller's room_id, and
+    // a mismatch never reaches here because local-server refuses it (#586).
     const roomId = localServer.roomId;
     if (!roomId) return;
     console.log('[local-server] Whiteboard style from', sender, '·', String(css).length, 'chars');

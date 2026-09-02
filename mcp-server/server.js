@@ -1391,7 +1391,7 @@ server.tool(
   "Restyle the shared whiteboard with custom CSS — colors, fonts, spacing, backgrounds. Use it when someone asks the board to look a certain way (e.g. \"make the whiteboard black-on-white with a curvy font and pastel colors\"): translate the request into CSS and set it here. The CSS is applied SCOPED to the whiteboard automatically, so write bare declarations for the board itself (e.g. `background:#fafaf5; color:#222; font-family:Georgia,serif`) and nested selectors for content (`h1 { font-family:'Comic Sans MS',cursive; color:#c9a }`, `code { background:#ffe0f0 }`, `a { color:#7a5 }`). It persists for the room and only affects the board (not the call UI). Pass an empty string to reset to the default style. Separate from update_whiteboard, which sets the CONTENT.",
   {
     css: z.string().describe("CSS for the whiteboard. Bare declarations style the board container; nested selectors (h1{}, p{}, code{}, ul{}, a{}) style the markdown content. No @import or external url() (blocked). Empty string resets to default."),
-    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+    room_id: z.string().optional().describe("Room/Meet code, defaulting to the VIBECONF_ROOM_ID env var. This does NOT choose which room to write to: there is one whiteboard, the one belonging to the call this app is in, and a code for any OTHER room is refused with an error naming both rooms rather than quietly retargeted onto this room's board (#586 — it used to silently overwrite the board the call was looking at and report success). Leave it unset unless you are deliberately naming the room you are already in.")
   },
   async ({ css, room_id }) => {
     const roomId = room_id || ROOM_ID;
@@ -1487,7 +1487,7 @@ server.tool(
   {
     content: z.string().optional().describe("Markdown content for the whiteboard. Supports headings, lists, code blocks, Mermaid diagrams, and images. For SEVERAL images (a grid of options, a comparison), write ordinary markdown image links to absolute local paths — ![city](/abs/path/city.svg) — and they are registered and rewritten for you, so you control the layout. Base64 data URIs are still not supported. For a single image appended after the text, image_path is simpler."),
     image_path: z.string().optional().describe("Absolute local file path to an image (png/jpg/gif/webp/svg/bmp/pdf). The local server registers it and embeds it in the markdown. This is the correct way to show a local/generated image — do not build your own file:// link or base64 data URI. If 'content' is also provided, the image is appended after it."),
-    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+    room_id: z.string().optional().describe("Room/Meet code, defaulting to the VIBECONF_ROOM_ID env var. This does NOT choose which room to write to: there is one whiteboard, the one belonging to the call this app is in, and a code for any OTHER room is refused with an error naming both rooms rather than quietly retargeted onto this room's board (#586 — it used to silently overwrite the board the call was looking at and report success). Leave it unset unless you are deliberately naming the room you are already in.")
   },
   async ({ content, image_path, room_id }) => {
     const roomId = room_id || ROOM_ID;
@@ -1714,7 +1714,7 @@ server.tool(
   {
     history: z.boolean().optional().describe("List the board's stored PRIOR versions (newest first): version number, editor, timestamp, and a short content preview for each. Fetch a full one with version: N."),
     version: z.number().optional().describe("Return one stored prior version in full by its version number, as listed by history: true."),
-    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+    room_id: z.string().optional().describe("Room/Meet code, defaulting to the VIBECONF_ROOM_ID env var. This does NOT choose which room to read: the only board readable from here is the one belonging to the call this app is in, and a code for any OTHER room returns an error naming both rooms rather than this room's board under that room's name (#586). Leave it unset unless you are deliberately naming the room you are already in.")
   },
   async ({ history, version, room_id }) => {
     let roomId = room_id || ROOM_ID;
@@ -1725,6 +1725,23 @@ server.tool(
       const probeData = await probe.json();
       const activeStatuses = ["in-call", "joining", "navigating", "waiting-to-be-admitted"];
       if (probeData.roomId && activeStatuses.includes(probeData.status?.callStatus)) {
+        // #586: correcting a stale ENV VAR is one thing; overruling an argument
+        // the caller actually typed is another. read_whiteboard had the same
+        // defect the write tools did — ask for another room's board and you got
+        // THIS room's, presented as if it were the one you asked for. A read
+        // doesn't destroy anything the way the write did, but a wrong answer
+        // here is worse than it looks: reading the board back is exactly how a
+        // bot would check whether its cross-room write landed, so the two
+        // defects covered for each other. (The 2026-08-28 diagnosis only got
+        // anywhere by going around these tools to the sync server directly,
+        // where the target room showed total=0.) Name both rooms instead.
+        if (room_id && room_id !== probeData.roomId) {
+          return { content: [{ type: "text", text:
+            `This app is in room ${probeData.roomId}, not ${room_id}, and the only whiteboard it can read `
+            + `is that room's. Nothing was read — this did NOT fall back to ${probeData.roomId}'s board, `
+            + `because handing you one room's content under another room's name is how #586 happened. `
+            + `Omit room_id to read ${probeData.roomId}'s board.` }] };
+        }
         roomId = probeData.roomId;
         ROOM_ID = probeData.roomId;
       }

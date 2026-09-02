@@ -5653,6 +5653,50 @@ class LocalServer {
       return;
     }
 
+    // #586: a whiteboard write addressed to a room we are NOT in is refused,
+    // not quietly applied to the room we ARE in.
+    //
+    // Every whiteboard tool takes a room_id and posts to /api/sync/<room_id>,
+    // but nothing downstream ever read the room back out of that URL: the write
+    // below mutates this.whiteboard (the room we're in), and main.js's
+    // onWhiteboardUpdate re-reads localServer.roomId for the sync POST. So
+    // update_whiteboard({ room_id: 'other-room' }) overwrote OUR OWN live board
+    // and reported "Whiteboard updated (version 1)". Found on the 2026-08-28
+    // call: content meant for another room landed on the board the room was
+    // looking at, mid-meeting, in front of the person who asked for it, while
+    // the target room sat at total=0 versions on the sync server.
+    //
+    // That is the reason this refuses rather than retargets: the tool didn't
+    // just fail to do the thing, it silently did a DIFFERENT, destructive thing
+    // and called it success. Actually honouring room_id would mean writing to a
+    // room this app never joined — whether the sync server authorises that is
+    // unverified, and the share window can't even preview such a board (it hits
+    // the website's sign-in wall, which is what made this bug so hard to see:
+    // an empty board and an auth wall look identical from the room). Naming
+    // both rooms is the honest answer that costs nobody their board.
+    //
+    // The check lives HERE, ahead of the write, and not in main.js: main.js is
+    // only reached after this.whiteboard has already been overwritten, so a
+    // guard there would still leave the local copy — what read_whiteboard and
+    // get_room_info serve — holding the other room's content.
+    const isBoardWrite = (data.whiteboard && typeof data.whiteboard.content === 'string')
+      || typeof data.whiteboardStyle === 'string';
+    if (isBoardWrite && this.roomId && roomId !== this.roomId) {
+      console.warn(ts(), '[local-server] Whiteboard write REFUSED — addressed to', roomId,
+        'but this app is in', this.roomId);
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: false,
+        error: `This app is in room ${this.roomId}, not ${roomId}. The whiteboard it can write is that `
+          + `room's, so NOTHING was changed — the board for ${roomId} is untouched, and so is `
+          + `${this.roomId}'s. Omit room_id to write to ${this.roomId}, or have a bot that is actually in `
+          + `${roomId} write that board.`,
+        roomId: this.roomId,
+        requestedRoomId: roomId,
+      }));
+      return;
+    }
+
     // "Working" signal: any bot POST while the room thinks the bot is idle
     // means the agent is doing something between turns — calling a tool,
     // updating the whiteboard, changing its avatar background, etc. From the

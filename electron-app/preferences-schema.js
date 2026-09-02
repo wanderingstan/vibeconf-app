@@ -453,6 +453,22 @@ const PREFERENCES = {
       'switches to realtime will not sound like it did before. Voice continuity is a ' +
       'per-bot property, so that only matters within one bot.',
   },
+  realtimeMaxMinutes: {
+    type: 'number',
+    default: 60,
+    min: 0,
+    description:
+      'How long a realtime voice session may run before it stops itself, in minutes. ' +
+      'Realtime audio bills per minute in BOTH directions for as long as the session is ' +
+      'open, including while nobody is talking, so a bot forgotten in an empty room is a ' +
+      'meter left running. Five minutes before the limit the bot says so out loud and ' +
+      'anyone in the call can ask it to keep going, which extends it. At the limit the bot ' +
+      'says goodbye and leaves, which stops every meter rather than only the audio one, and ' +
+      'is an honest ending: if people were there they were warned and chose not to extend, ' +
+      'and if nobody was there that is the case this exists for. Somebody can always invite ' +
+      'it back. 0 removes the cap, which is reasonable while you are sitting in the call and ' +
+      'a bad idea otherwise.',
+  },
   realtimeRespondWhenUnnamed: {
     type: 'boolean',
     default: true,

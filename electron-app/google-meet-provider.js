@@ -41,7 +41,7 @@ ipcRenderer.on('extension-message', (_event, message) => {
   } else if (message.action === 'realtime-note') {
     window.postMessage({
       __botsInCalls: true, __fromExtension: true,
-      action: 'realtime-note', text: message.text,
+      action: 'realtime-note', text: message.text, announce: message.announce,
     }, '*');
   } else if (message.action === 'realtime-tool-result') {
     window.postMessage({

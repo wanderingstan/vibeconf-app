@@ -89,6 +89,27 @@ const VOICE_TOOLS = [
   },
   {
     type: 'function',
+    name: 'extend_session',
+    description:
+      'Keep this call going past its time limit. You will be told when the limit is near ' +
+      'and you will mention it to the room. Call this ONLY when somebody then actually ' +
+      'asks you to continue: "keep going", "stay on", "yes please". Do not call it because ' +
+      'the conversation seems useful, because nobody objected, or to avoid interrupting. ' +
+      'The limit exists because this call costs money by the minute, and the person paying ' +
+      'is not necessarily the person talking.',
+    parameters: {
+      type: 'object',
+      properties: {
+        minutes: {
+          type: 'number',
+          description: 'How much longer, in minutes. Ask for what was agreed, or 15 if nobody said.',
+        },
+      },
+      required: ['minutes'],
+    },
+  },
+  {
+    type: 'function',
     name: 'send_chat',
     description:
       'Put a short message in the call chat. For things better read than heard: a link, ' +
@@ -115,6 +136,41 @@ const VOICE_TOOLS = [
     },
   },
 ];
+
+// How much longer this session may run, and what to do about it.
+//
+// Metered in wall-clock rather than tokens because realtime audio bills
+// continuously in BOTH directions whether anybody is talking or not, so minutes
+// are both a good proxy for cost and the only unit a person can actually decide
+// with. "Twenty minutes left" is a decision; "600k audio tokens" is not.
+//
+// Pure so the awkward parts are testable: the boundary, the extension, and the
+// fact that a warning must fire exactly once rather than every tick.
+function realtimeBudget({ startedAt, now, maxMinutes, extraMs = 0, warnedAt = null, warnLeadMs = 5 * 60 * 1000 }) {
+  const max = Number(maxMinutes);
+  if (!Number.isFinite(max) || max <= 0) {
+    return { capped: false, expired: false, shouldWarn: false, msLeft: Infinity };
+  }
+  const limitMs = max * 60 * 1000 + extraMs;
+  const usedMs = Math.max(0, now - startedAt);
+  const msLeft = limitMs - usedMs;
+
+  // A cap shorter than the warning lead would otherwise warn instantly and then
+  // stop, which is noise rather than notice. Below that, just stop.
+  const warnable = limitMs > warnLeadMs;
+
+  return {
+    capped: true,
+    expired: msLeft <= 0,
+    // Once per deadline, not once per tick. An extension moves the deadline, so
+    // comparing against the deadline the warning was issued for is what lets a
+    // second warning fire after an extension without letting it repeat.
+    shouldWarn: warnable && msLeft > 0 && msLeft <= warnLeadMs && warnedAt !== limitMs,
+    warnKey: limitMs,
+    msLeft,
+    minutesLeft: Math.max(0, Math.ceil(msLeft / 60000)),
+  };
+}
 
 // Reads the per-bot switch and the app-level key. Preferences are stored per
 // profile, so `realtimeVoice` is already per-bot with no extra machinery: one
@@ -257,6 +313,7 @@ function buildResponsePolicy({ botName, participants = [], respondWhenUnnamed = 
 
 module.exports = {
   VOICE_TOOLS,
+  realtimeBudget,
   buildResponsePolicy,
   REALTIME_DEFAULTS,
   buildInstructions,

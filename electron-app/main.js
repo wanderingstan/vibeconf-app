@@ -13,7 +13,7 @@ const { MEET } = require('./meet-selectors.js'); // pure data — safe in the ma
 const { resolveSvg } = require('./svg-resolver.js');
 // One source of truth for the unconfigured bot name — see preferences-schema.
 const { DEFAULT_BOT_NAME, PREFERENCES } = require('./preferences-schema');
-const { resolveRealtimeConfig, mintEphemeralSession, buildInstructions, buildResponsePolicy } = require('./realtime-session');
+const { resolveRealtimeConfig, mintEphemeralSession, buildInstructions, buildResponsePolicy, realtimeBudget } = require('./realtime-session');
 const { resolveBotName, botNameForAppUI } = require('./bot-name.js');
 const { resolveVoice } = require('./voice-status.js');
 const { isInCall, isFinished, isCallComplete } = require('./call-phase.js');
@@ -964,6 +964,77 @@ function computeRealtimePolicy() {
   });
 }
 
+// The time limit on a realtime session.
+//
+// Realtime audio bills per minute in BOTH directions for as long as the session
+// is open, including while nobody is talking, so a bot forgotten in an empty
+// room is a meter left running with nobody watching it. That is the only
+// failure here that is invisible until the bill arrives.
+//
+// Five minutes out the bot says so itself and anybody in the room can ask it to
+// keep going. At the limit it says goodbye and LEAVES.
+//
+// Leaving rather than falling back to the normal voice. Falling back sounded
+// kinder and is worse: it leaves a bot in the room in a state nobody chose, and
+// it only stops the audio meter, while the agent, the recording and the rest
+// keep running. If people are in the call they were warned and did not extend,
+// which is an answer. If nobody is there, leaving is the whole point.
+let realtimeStartedAt = 0;
+let realtimeExtraMs = 0;
+let realtimeWarnedAt = null;
+let realtimeBudgetTimer = null;
+
+function realtimeBudgetNow() {
+  return realtimeBudget({
+    startedAt: realtimeStartedAt,
+    now: Date.now(),
+    maxMinutes: prefValue('realtimeMaxMinutes'),
+    extraMs: realtimeExtraMs,
+    warnedAt: realtimeWarnedAt,
+  });
+}
+
+function checkRealtimeBudget() {
+  if (!realtimeVoiceLive || !realtimeStartedAt) return;
+  const b = realtimeBudgetNow();
+  if (!b.capped) return;
+
+  if (b.expired) {
+    console.log('[realtime] time limit reached — saying goodbye and leaving');
+    // Stop the clock first, so a slow goodbye cannot re-trigger this.
+    if (realtimeBudgetTimer) { clearInterval(realtimeBudgetTimer); realtimeBudgetTimer = null; }
+    broadcastError('Realtime voice: time limit reached — the bot is leaving the call.');
+
+    // Say why before going. A bot that vanishes mid-call reads as a crash, and
+    // the one thing everyone will want to know is whether it can come back.
+    sendExtMsg({
+      action: 'realtime-note',
+      announce: true,
+      text: 'You have reached your time limit and are leaving the call now. Say a short '
+        + 'goodbye, and that somebody can bring you back whenever they want.',
+    });
+
+    // Long enough for that sentence to actually play. Leaving mid-word is the
+    // same bad ending as leaving with no word at all.
+    setTimeout(() => {
+      try { requestCleanLeave('realtime time limit'); }
+      catch (err) { console.warn('[realtime] leave after time limit failed:', err.message); }
+    }, 6000);
+    return;
+  }
+
+  if (b.shouldWarn) {
+    realtimeWarnedAt = b.warnKey;
+    console.log('[realtime] ' + b.minutesLeft + ' minute(s) left — asking the bot to say so');
+    sendExtMsg({
+      action: 'realtime-note',
+      announce: true,
+      text: 'You have about ' + b.minutesLeft + ' minutes left before this call reaches its '
+        + 'time limit and your voice switches off. Anybody here can ask you to keep going.',
+    });
+  }
+}
+
 // Tell the voice model who just started talking.
 //
 // It hears ONE mixed track for the whole room (every remote participant is
@@ -1056,6 +1127,10 @@ function stopRealtimeVoice(why) {
   realtimeVoiceActive = false;
   realtimeVoiceLive = false;
   if (realtimePolicyTimer) { clearInterval(realtimePolicyTimer); realtimePolicyTimer = null; }
+  if (realtimeBudgetTimer) { clearInterval(realtimeBudgetTimer); realtimeBudgetTimer = null; }
+  realtimeStartedAt = 0;
+  realtimeExtraMs = 0;
+  realtimeWarnedAt = null;
   realtimePolicyLast = '';
   realtimeLastSpeaker = '';
   try { localServer.realtimeVoiceActive = false; } catch { /* not up */ }
@@ -13267,6 +13342,20 @@ function setupIPC() {
           + 'so carry on with the conversation and do not wait for them.');
       }
 
+      if (name === 'extend_session') {
+        const mins = Math.max(1, Math.min(120, Number((args && args.minutes) || 0) || 15));
+        if (!realtimeVoiceLive) return reply('There is no session to extend.');
+        realtimeExtraMs += mins * 60000;
+        // Clear the warning so the NEXT deadline announces itself too. Without
+        // this an extension would buy silence rather than time: the bot would
+        // stop again with no warning at all.
+        realtimeWarnedAt = null;
+        const b = realtimeBudgetNow();
+        console.log('[realtime] extended by', mins, 'min —', b.minutesLeft, 'left');
+        broadcastError('Realtime voice: extended by ' + mins + ' minutes (asked for in the call).');
+        return reply('Extended. About ' + b.minutesLeft + ' minutes left now. Say so briefly.');
+      }
+
       if (name === 'send_chat') {
         const text = String((args && args.text) || '').trim();
         if (!text) return reply('Nothing to send.');
@@ -13319,6 +13408,14 @@ function setupIPC() {
       pushRealtimePolicy(true);
       if (realtimePolicyTimer) clearInterval(realtimePolicyTimer);
       realtimePolicyTimer = setInterval(() => pushRealtimePolicy(false), 5000);
+
+      realtimeStartedAt = Date.now();
+      realtimeExtraMs = 0;
+      realtimeWarnedAt = null;
+      if (realtimeBudgetTimer) clearInterval(realtimeBudgetTimer);
+      // 15s is well inside the 5 minute warning lead, and a minute-scale budget
+      // does not need a tighter clock than that.
+      realtimeBudgetTimer = setInterval(checkRealtimeBudget, 15000);
       // So the bot's own captions are tagged as its own speech rather than
       // dropped as a duplicate of a record that does not exist in this mode.
       try { localServer.realtimeVoiceActive = true; } catch { /* not up */ }

@@ -3286,18 +3286,25 @@
     // Silent, like brief. It hears one mixed audio track for the whole room, so
     // without this it cannot tell two people apart at all, let alone tell that
     // "Gabe, what do you think?" was not addressed to it.
-    note(text) {
+    note(text, { announce = false } = {}) {
       const clean = String(text || '').trim();
       if (!clean) return;
       if (!this.active || !this.dc || this.dc.readyState !== 'open') return;
+      // Most notes are context and must never be read out. A few are things the
+      // ROOM needs to hear, and the model should put them in its own words
+      // rather than recite them, so it is asked to mention rather than read.
+      const prefix = announce
+        ? '[room] Mention this to the room now, briefly and in your own words: '
+        : '[room, do not read this out] ';
       this._send({
         type: 'conversation.item.create',
-        item: {
-          type: 'message', role: 'user',
-          content: [{ type: 'input_text', text: '[room, do not read this out] ' + clean }],
-        },
+        item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: prefix + clean }] },
       });
-      this._report('note', clean.slice(0, 60));
+      if (announce && !this.responseActive && !this.speakingNow) {
+        this._send({ type: 'response.create' });
+        this.responseActive = true;
+      }
+      this._report(announce ? 'announce' : 'note', clean.slice(0, 60));
     }
 
     // Something the model could not know, handed over WITHOUT asking it to
@@ -3661,7 +3668,7 @@
         ', bot=' + (realtimeVoice.policy.botNames || []).join('/') +
         ', others=' + (realtimeVoice.policy.otherNames || []).join('/'));
     } else if (event.data.action === 'realtime-note') {
-      realtimeVoice.note(event.data.text);
+      realtimeVoice.note(event.data.text, { announce: !!event.data.announce });
     } else if (event.data.action === 'realtime-tool-result') {
       realtimeVoice._toolResult(event.data.callId, event.data.output);
     } else if (event.data.action === 'realtime-hold') {

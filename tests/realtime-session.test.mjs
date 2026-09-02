@@ -266,7 +266,7 @@ const { VOICE_TOOLS } = require('../electron-app/realtime-session.js');
 
 test('the voice gets an escape hatch, not a repo', () => {
   const names = VOICE_TOOLS.map((t) => t.name).sort();
-  assert.deepEqual(names, ['ask_teammate', 'send_chat', 'write_whiteboard']);
+  assert.deepEqual(names, ['ask_teammate', 'extend_session', 'send_chat', 'write_whiteboard']);
 
   // The line is where the ARGUMENTS come from, not how hard the job is. Every
   // tool here can be called from what was just said in the room; none needs the
@@ -375,4 +375,80 @@ test('brief and hold_voice stay reachable from /join-call', () => {
   for (const t of ['brief', 'hold_voice']) {
     assert.match(skill, new RegExp(`mcp__vibeconferencing__${t}\\b`), `${t} must be whitelisted`);
   }
+});
+
+// --- the time limit ---------------------------------------------------------
+//
+// Realtime audio bills per minute in BOTH directions for as long as the session
+// is open, including while nobody is talking. A bot forgotten in an empty room
+// is a meter left running, and it is the only failure here that stays invisible
+// until the bill arrives.
+
+const { realtimeBudget } = require('../electron-app/realtime-session.js');
+const T0 = 1_700_000_000_000;
+const at = (mins, over = {}) =>
+  realtimeBudget({ startedAt: T0, now: T0 + mins * 60000, maxMinutes: 60, ...over });
+
+test('no cap means no cap', () => {
+  for (const max of [0, undefined, null, NaN, -5]) {
+    const b = realtimeBudget({ startedAt: T0, now: T0 + 99999 * 60000, maxMinutes: max });
+    assert.equal(b.capped, false, `maxMinutes=${max}`);
+    assert.equal(b.expired, false);
+    assert.equal(b.shouldWarn, false);
+  }
+});
+
+test('warns once, five minutes out, and not before', () => {
+  assert.equal(at(54).shouldWarn, false, 'six minutes left is not yet');
+  assert.equal(at(56).shouldWarn, true, 'four minutes left is');
+});
+
+test('a warning does not repeat every tick', () => {
+  const first = at(56);
+  assert.equal(first.shouldWarn, true);
+  // Having warned for THIS deadline, the next tick must stay quiet.
+  assert.equal(at(57, { warnedAt: first.warnKey }).shouldWarn, false);
+  assert.equal(at(59, { warnedAt: first.warnKey }).shouldWarn, false);
+});
+
+test('expiry is the boundary, not a range', () => {
+  assert.equal(at(59.9).expired, false);
+  assert.equal(at(60).expired, true, 'exactly at the limit is over it');
+  assert.equal(at(75).expired, true);
+});
+
+test('an extension buys time AND a fresh warning', () => {
+  const warned = at(56).warnKey;
+  // Extended by 15 minutes at the 56 minute mark.
+  const ext = 15 * 60000;
+  assert.equal(at(58, { extraMs: ext, warnedAt: warned }).expired, false, 'still running');
+
+  // The old warnedAt belongs to the OLD deadline, so the new one can warn again.
+  // Without this an extension would buy silence rather than time: the bot would
+  // stop a second time with no warning at all.
+  const near = at(71, { extraMs: ext, warnedAt: warned });
+  assert.equal(near.shouldWarn, true, 'the new deadline announces itself too');
+  assert.notEqual(near.warnKey, warned, 'and it is a different deadline');
+});
+
+test('a cap shorter than the warning lead just stops', () => {
+  // Warning instantly and then stopping is noise, not notice.
+  const b = realtimeBudget({ startedAt: T0, now: T0 + 60000, maxMinutes: 3 });
+  assert.equal(b.shouldWarn, false);
+  assert.equal(b.expired, false);
+  assert.equal(realtimeBudget({ startedAt: T0, now: T0 + 4 * 60000, maxMinutes: 3 }).expired, true);
+});
+
+test('minutesLeft rounds up, so it never reads zero while running', () => {
+  assert.equal(at(59.5).minutesLeft, 1, 'thirty seconds left is "1 minute", not "0"');
+  assert.equal(at(60).minutesLeft, 0);
+});
+
+test('extend_session is fenced to an explicit request', () => {
+  const t = VOICE_TOOLS.find((x) => x.name === 'extend_session');
+  assert.ok(t, 'the voice can extend its own session when asked');
+  // The hazard is a model that extends because the conversation feels useful.
+  // The person paying is not necessarily the person talking.
+  assert.match(t.description, /ONLY when somebody then actually asks/i);
+  assert.match(t.description, /costs money by the minute/i);
 });

@@ -175,6 +175,7 @@ const emojiSetInput = document.getElementById('emojiSet');
 const captionLanguageInput = document.getElementById('captionLanguage');
 const dangerousModeInput = document.getElementById('dangerousMode');
 const sessionPerCalendarInviteesInput = document.getElementById('sessionPerCalendarInvitees');
+const realtimeVoiceInput = document.getElementById('realtimeVoice');
 const ackShortMinInput = document.getElementById('ackShortMin');
 const ackLongMinInput = document.getElementById('ackLongMin');
 const ackShortPhrasesInput = document.getElementById('ackShortPhrases');
@@ -2051,7 +2052,7 @@ api.invoke('get-upcoming-calendar-events').then((r) => {
 // bot in the wizard saw "Unnamed bot" in Settings and reasonably concluded the
 // save had failed, when it had worked (#190, #143).
 function loadConfigIntoControls() {
-  return api.invoke('get-config', ['botName', 'calendarIdentityEmail', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'ttsProvider', 'claudeWorkDir', 'agentSession', 'sessionPerCalendarInvitees', 'claudeModel', 'emojiSet', 'captionLanguage', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName']).then((result) => {
+  return api.invoke('get-config', ['botName', 'calendarIdentityEmail', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'ttsProvider', 'claudeWorkDir', 'agentSession', 'sessionPerCalendarInvitees', 'claudeModel', 'emojiSet', 'captionLanguage', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName', 'realtimeVoice']).then((result) => {
   if (result?.botName) {
     botNameInput.value = result.botName;
     currentBotName = result.botName;
@@ -2133,6 +2134,7 @@ function loadConfigIntoControls() {
   }
   if (result?.dangerousMode) dangerousModeInput.checked = true;
   if (sessionPerCalendarInviteesInput) sessionPerCalendarInviteesInput.checked = !!result?.sessionPerCalendarInvitees;
+  if (realtimeVoiceInput) realtimeVoiceInput.checked = !!result?.realtimeVoice;
   if (result?.ackShortMin != null) ackShortMinInput.value = result.ackShortMin;
   if (result?.ackLongMin != null) ackLongMinInput.value = result.ackLongMin;
   if (Array.isArray(result?.ackShortPhrases)) ackShortPhrasesInput.value = result.ackShortPhrases.join('\n');
@@ -3552,6 +3554,13 @@ if (emojiSetInput) emojiSetInput.addEventListener('change', async () => {
   // the face on this screen sat on the old artwork for up to a minute, which
   // reads as "the setting didn't take".
   renderAgentAvatar();
+});
+
+// EXPERIMENT: hand this bot's voice to the realtime model. Takes effect on the
+// next join — the session is opened at join time, so flipping it mid-call does
+// nothing until the bot rejoins.
+realtimeVoiceInput?.addEventListener('change', () => {
+  setConfig('realtimeVoice', realtimeVoiceInput.checked);
 });
 
 sessionPerCalendarInviteesInput?.addEventListener('change', () => {

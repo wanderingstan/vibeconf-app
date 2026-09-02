@@ -263,6 +263,25 @@
         <input type="text" id="botName" value="" placeholder="Unnamed bot" />
       </div>
 
+      <!-- EXPERIMENT. Above the voice picker rather than below it, because it
+           REPLACES everything under it: a realtime bot never calls ElevenLabs,
+           so a voice chosen there would silently not be the voice you hear.
+           Hiding a setting that is in effect is how a bot ends up sounding like
+           something nobody can find in the UI. -->
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="realtimeVoice" />
+          <span>Realtime voice <span class="helper-text">(experiment)</span></span>
+        </label>
+        <div style="font-size:11px;color:#666;margin-top:2px;line-height:1.4">
+          This bot hears the call as audio and answers in under a second, in one of
+          OpenAI's voices, with Claude feeding it facts behind the scenes. It replaces
+          the voice settings below. Needs an OpenAI key in <strong>App Settings</strong> (⌘,),
+          and audio bills per minute for as long as the bot is in a call, including
+          while nobody is talking.
+        </div>
+      </div>
+
       <div class="field">
         <label for="unifiedVoice">Voice</label>
         <select id="unifiedVoice" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit">

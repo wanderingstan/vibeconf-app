@@ -85,3 +85,37 @@ test('re-reading everything, rather than applying the payload', () => {
   const body = fn.slice(0, fn.indexOf('\n});'));
   assert.ok(!/payload\.(key|value)/.test(body), 'should not branch on which key changed');
 });
+
+// --- the realtime voice toggle (EXPERIMENT) ---------------------------------
+//
+// This is the ONLY way a tester turns a bot into a realtime bot. It is a
+// per-profile preference, and App Settings renders app-level prefs only
+// (get-app-settings-schema filters on isAppLevel), so without this control it
+// would be reachable only through set_preference or by hand-editing config.json
+// — which is not something you hand to a tester.
+
+test('the realtime toggle is readable, writable, and re-read like every other control', () => {
+  assert.match(panel, /getElementById\('realtimeVoice'\)/, 'the control is bound');
+
+  // In the get-config list, or it renders unchecked no matter what is stored —
+  // which is the exact stale-control bug this file exists for, on a setting
+  // whose whole job is to be visible.
+  const load = panel.slice(panel.indexOf('function loadConfigIntoControls()'));
+  const body = load.slice(0, load.indexOf('\n}'));
+  assert.match(body, /'realtimeVoice'/, "must be requested in loadConfigIntoControls' get-config");
+  assert.match(body, /realtimeVoiceInput\.checked = !!result\?\.realtimeVoice/, 'and applied to the control');
+
+  assert.match(panel, /realtimeVoiceInput\?\.addEventListener\('change'[\s\S]{0,200}setConfig\('realtimeVoice'/,
+    'and written back on change');
+});
+
+test('the toggle sits above the voice picker it overrides', () => {
+  // A realtime bot never calls ElevenLabs, so a voice chosen below this would
+  // silently not be the voice you hear. Ordering is the only thing that says so
+  // before the fact.
+  const html = readFileSync(new URL('../electron-app/renderer/panel.html', import.meta.url), 'utf8');
+  const toggle = html.indexOf('id="realtimeVoice"');
+  const picker = html.indexOf('id="unifiedVoice"');
+  assert.ok(toggle > 0 && picker > 0, 'both controls exist');
+  assert.ok(toggle < picker, 'the realtime toggle must come first');
+});

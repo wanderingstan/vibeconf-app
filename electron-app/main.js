@@ -1029,8 +1029,12 @@ function checkRealtimeBudget() {
     sendExtMsg({
       action: 'realtime-note',
       announce: true,
+      // Says LEAVE, not "your voice switches off". Heard live once the behaviour
+      // changed: the bot passed on the old wording faithfully, so the room was
+      // told the wrong thing about what was going to happen to it.
       text: 'You have about ' + b.minutesLeft + ' minutes left before this call reaches its '
-        + 'time limit and your voice switches off. Anybody here can ask you to keep going.',
+        + 'time limit, at which point you will say goodbye and leave the call. Anybody here '
+        + 'can ask you to keep going, and you will stay.',
     });
   }
 }
@@ -1042,12 +1046,20 @@ function checkRealtimeBudget() {
 // in principle. That is a plausible share of the over-eagerness: it has no way
 // to know that "Gabe, what do you think?" was not addressed to it.
 //
-// Announce only CHANGES of speaker, never the bot itself, and never twice in
-// quick succession. The DOM speaker tracker fires hundreds of times a call, and
-// a context item per event would bury the conversation it is meant to clarify.
+// Announce CHANGES of speaker, never the bot itself, and never the same person
+// twice while they simply keep talking.
+//
+// The first cut used a 1.5s debounce and flooded the session: speakingChanged
+// fires every second or so for as long as somebody is talking, so a single
+// continuous speaker produced "Stan James is speaking now" over and over, which
+// is the exact burying this was supposed to prevent.
+//
+// A change of speaker is announced immediately. The same speaker is only
+// re-announced after a long quiet gap, where it is genuinely useful again
+// ("still Stan, after a pause") rather than noise.
 let realtimeLastSpeaker = '';
 let realtimeLastSpeakerAt = 0;
-const REALTIME_SPEAKER_MIN_GAP_MS = 1500;
+const REALTIME_SPEAKER_REPEAT_MS = 45000;
 
 function noteRealtimeSpeaker(name) {
   if (!realtimeVoiceLive) return;
@@ -1060,7 +1072,7 @@ function noteRealtimeSpeaker(name) {
   if (lower === 'you' || (botLower && lower.includes(botLower))) return;
 
   const now = Date.now();
-  if (who === realtimeLastSpeaker && now - realtimeLastSpeakerAt < REALTIME_SPEAKER_MIN_GAP_MS) return;
+  if (who === realtimeLastSpeaker && now - realtimeLastSpeakerAt < REALTIME_SPEAKER_REPEAT_MS) return;
   realtimeLastSpeaker = who;
   realtimeLastSpeakerAt = now;
 

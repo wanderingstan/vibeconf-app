@@ -135,9 +135,9 @@ node scripts/ecosystem-preflight.mjs          # human-readable
 node scripts/ecosystem-preflight.mjs --json   # machine-readable
 ```
 
-Set **`VIBECONF_EXPECT_ACCOUNT`** in the LaunchAgent to the rig's bot email. Without
-it the preflight only *reports* which account the session belongs to; with it, a
-session for the wrong account is a red line. This is not hypothetical: on 2026-09-01
+**`VIBECONF_EXPECT_ACCOUNT`** is set in the LaunchAgent to the rig's bot email
+(`jimmy@spiritprotocol.io`). Without it the preflight only *reports* which account
+the session belongs to; with it, a session for the wrong account is a red line. This is not hypothetical: on 2026-09-01
 a re-mint produced a valid year-long token for the operator's personal Google
 account, and every check passed — the rig would have minted rooms owned by a human,
 landing in their room history, looking entirely healthy.

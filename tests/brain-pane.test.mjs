@@ -71,23 +71,73 @@ test('it polls rather than relying on broadcasts', () => {
 });
 
 test('a live feed must not fight the reader', () => {
-  // Two ways this goes wrong: re-rendering identical content (which resets
-  // selection), and yanking the view to the bottom while someone is reading
-  // something further up.
+  // Three ways this goes wrong: re-rendering identical content, yanking the view
+  // to the bottom while someone is reading something further up, and — once the
+  // buffer became a real 1000-line history (#532) — dropping lines off the TOP
+  // out from under a reader parked in the middle of it.
   const fn = panelJs.slice(panelJs.indexOf('function renderBrain'));
   const body = fn.slice(0, fn.indexOf('\n}'));
-  assert.match(body, /joined === _brainLastRendered/, 'unchanged content must not re-render');
+  assert.match(body, /if \(kept === lines\.length && kept === _brainRendered\.length\) return;/,
+    'unchanged content must not touch the DOM at all');
   assert.match(body, /const atBottom =/);
   assert.match(body, /if \(atBottom\) feed\.scrollTop = feed\.scrollHeight/, 'follow only when already at the end');
+  // atBottom has to be sampled before the mutation — appending changes
+  // scrollHeight, so measuring afterwards answers a question about the wrong DOM.
+  assert.ok(body.indexOf('const atBottom =') < body.indexOf('feed.appendChild(frag)'));
+  // And trimming the head must move scrollTop with the content it removed, or a
+  // reader mid-history silently drifts forward through it.
+  assert.match(body, /feed\.scrollTop = Math\.max\(0, feed\.scrollTop - shift\)/);
 });
 
-test('agent output is escaped before it reaches innerHTML', () => {
-  // These lines carry model output and tool inputs verbatim. Straight into
-  // innerHTML they would render as markup.
+test('the feed is appended to, not rebuilt (#532)', () => {
+  // A full innerHTML rebuild per tick was fine at 16 lines. At 1000 it re-parses
+  // a thousand nodes every time the agent emits one line — and, worse for what
+  // this window is for, replacing the children destroys any text selection
+  // inside it. Selecting a tool call to paste into an issue is most of this
+  // pane's debugging value; a rebuild a second later takes it away.
   const fn = panelJs.slice(panelJs.indexOf('function renderBrain'));
   const body = fn.slice(0, fn.indexOf('\n}'));
-  assert.match(body, /replace\(\/&\/g, '&amp;'\)/);
-  assert.match(body, /replace\(\/</);
+  assert.doesNotMatch(body, /feed\.innerHTML = lines/, 'the feed must not be rebuilt from the buffer');
+  assert.match(body, /for \(let i = kept; i < lines\.length; i\+\+\)/, 'only the new tail is built');
+  assert.match(body, /createDocumentFragment/, 'appended in one reflow, not one per line');
+
+  // The delta is derived by locating the previous render inside the new buffer.
+  // Exercised for real rather than grepped: this is arithmetic, and arithmetic
+  // that is silently wrong here duplicates or drops lines on screen.
+  const src = panelJs.slice(panelJs.indexOf('function brainReuseOffset'));
+  // eslint-disable-next-line no-eval
+  const brainReuseOffset = eval(`(${src.slice(0, src.indexOf('\n}') + 2)})`);
+  assert.equal(brainReuseOffset([], ['a']), 0, 'nothing drawn yet — append everything');
+  assert.equal(brainReuseOffset(['a', 'b'], ['a', 'b']), 0, 'unchanged');
+  assert.equal(brainReuseOffset(['a', 'b'], ['a', 'b', 'c']), 0, 'pure append drops nothing');
+  assert.equal(brainReuseOffset(['a', 'b', 'c'], ['c', 'd']), 2, 'the ring buffer trimmed two off the head');
+  // Repeated lines are ordinary here — an agent re-running the same command
+  // produces byte-identical entries — so the match has to be on the whole run,
+  // not on the first line that happens to look right.
+  assert.equal(brainReuseOffset(['a', 'a', 'b'], ['a', 'b', 'c']), 1);
+  assert.equal(brainReuseOffset(['a', 'b'], ['x', 'y']), -1, 'a rebind shares nothing — rebuild');
+});
+
+test('agent output never reaches innerHTML at all', () => {
+  // These lines carry model output and tool inputs verbatim. Straight into
+  // innerHTML they would render as markup.
+  //
+  // This used to be hand-rolled &/</> escaping. Building nodes for the
+  // incremental render (#532) made that unnecessary rather than merely
+  // correct — textContent cannot be escaped wrongly, and there is no longer a
+  // place to forget an entity.
+  const fn = panelJs.slice(panelJs.indexOf('function brainLineNode'));
+  const body = fn.slice(0, fn.indexOf('\n}'));
+  assert.match(body, /el\.textContent = text;/);
+  assert.doesNotMatch(body, /innerHTML/);
+  // The only innerHTML left in the feed is the static empty-state string, which
+  // contains no agent data.
+  const render = panelJs.slice(panelJs.indexOf('function renderBrain'));
+  const renderBody = render.slice(0, render.indexOf('\n}'));
+  const assignments = renderBody.match(/innerHTML =/g) || [];
+  assert.equal(assignments.length, 1, 'exactly one innerHTML assignment');
+  assert.match(renderBody, /feed\.innerHTML = '<span class="l-none">No agent session yet\./,
+    'and it is the empty state, which contains no agent data');
 });
 
 test('the empty state explains itself', () => {
@@ -347,8 +397,8 @@ test('the header says which model drives the bot (#385)', () => {
   // guard — the model can become known without the feed changing.
   const fn = panelJs.slice(panelJs.indexOf('function renderBrain'));
   const body = fn.slice(0, fn.indexOf('\n}'));
-  assert.ok(body.indexOf('agentModel') < body.indexOf('_brainLastRendered'),
-    'status (incl. model) must update before the early return');
+  assert.ok(body.indexOf('agentModel') < body.indexOf('brainReuseOffset'),
+    'status (incl. model) must update before the unchanged-content early return');
   // And nothing shows until the model is actually known — no guess.
   assert.match(body, /s\.agentModel/);
 });

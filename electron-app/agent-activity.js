@@ -28,7 +28,7 @@
 // (formatEntry, already written) and two ways of getting entries to it — not
 // two parsers that must be kept in step.
 
-const { TranscriptTailer, formatEntry, entryModel, entryUsage, MAX_LINES } = require('./agent-transcript.js');
+const { TranscriptTailer, formatEntry, entryModel, entryUsage, BUFFER_MAX_LINES } = require('./agent-transcript.js');
 
 // Shared contract for both transports.
 //
@@ -115,7 +115,11 @@ class StreamActivitySource extends AgentActivitySource {
       if (usage && usage.msgId !== this._usageMsgId) { this._usageMsgId = usage.msgId; this.onUsage(usage); }
     }
     if (!changed) return;
-    if (this._lines.length > MAX_LINES) this._lines = this._lines.slice(-MAX_LINES);
+    // Same depth as the transcript tailer, from the same constant: the two
+    // transports must be indistinguishable upstream, and "the brain window has
+    // less scrollback when the app launched the agent itself" is exactly the
+    // kind of difference this module exists to prevent.
+    if (this._lines.length > BUFFER_MAX_LINES) this._lines = this._lines.slice(-BUFFER_MAX_LINES);
     this.onLines(this._lines.slice());
   }
 

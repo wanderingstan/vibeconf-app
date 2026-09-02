@@ -874,14 +874,18 @@ let _afterCallWorkTimer = null;
 //
 // Used both when naming a NEW bot and when offering candidates during setup: two
 // bots answering to one name is not merely confusing, since MCP routes by name.
+//
+// Delegated rather than read here (#447). This function used to open
+// `<profile>/config.json` itself, and that path stopped being where identity
+// lives at #305 — it moved into the agent dir. So every profile made after the
+// move threw on the read, was caught by a `return null`, and was filtered out:
+// on an eight-profile machine the list came back with the TWO profiles still
+// carrying the legacy file, and names as visible as "Pepper" and "Hemma" read as
+// free. Nothing errored; the list was just short. profile-manager already owns
+// the agent-dir-then-legacy fallback for exactly this reason, so ask it.
 function takenBotNames() {
   try {
-    const profileManager = require('./profile-manager.js');
-    return profileManager.listProfiles(PROFILES_ROOT).map((p) => {
-      try {
-        return JSON.parse(fs.readFileSync(path.join(PROFILES_ROOT, p.name, 'config.json'), 'utf-8')).botName;
-      } catch { return null; }
-    }).filter(Boolean);
+    return require('./profile-manager.js').takenBotNames(PROFILES_ROOT);
   } catch { return []; }
 }
 

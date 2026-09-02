@@ -66,6 +66,27 @@ function listProfiles(profilesRoot) {
   return listProfileNames(profilesRoot).map((n) => readProfileConfig(profilesRoot, n));
 }
 
+// Bot names already spoken for on this machine, in profile order.
+//
+// Lives HERE, next to readConfigFields, because this is the module that knows
+// where identity is stored — and that knowledge moved once already (#305, config
+// into the agent dir). main.js used to re-read `<profile>/config.json` by hand
+// instead, which meant collision detection silently went blind to every profile
+// created after the move: the read threw, the throw was swallowed, and the name
+// simply dropped out of the list. Not an error anyone could see — just a shorter
+// list, and a second bot allowed to take a name already in use (#447).
+//
+// Two bots answering to one name is not merely confusing: MCP routes by name,
+// and join_call REFUSES a display name shared by several running instances
+// rather than guess, since guessing wrong yanks a bot out of a live call. So the
+// user ends up with a bot they cannot drive, for an invisible reason.
+//
+// Returned verbatim (no case folding, no dedupe) — callers compare how they
+// need to; randomBotName already lowercases what it is handed.
+function takenBotNames(profilesRoot) {
+  return listProfiles(profilesRoot).map((p) => p.botName).filter(Boolean);
+}
+
 // --- Port registry: name → local-server port, persisted in baseUserData so all
 // instances agree. ---
 
@@ -123,6 +144,7 @@ function resolveDefaultProfileName(profilesRoot, pointer) {
 
 module.exports = {
   listProfiles,
+  takenBotNames,
   listProfileNames,
   readProfileConfig,
   readConfigFields,

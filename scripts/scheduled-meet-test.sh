@@ -91,7 +91,7 @@ _CALL_DIGEST_SENT="/tmp/vibeconf-calldigest-${STAMP}.sent"
 # untrue about itself, and triage believed it.
 #
 # Order here is documentation only; the lanes run where they appear below.
-LANES_ALL=(join-route dmg-meet main-meet wb-roundtrip slack whiteboard-e2e codex linux etiquette remote-log fuzz)
+LANES_ALL=(preflight join-route dmg-meet main-meet wb-roundtrip slack whiteboard-e2e codex linux etiquette remote-log fuzz)
 _LANE_LEDGER="/tmp/vibeconf-lanes-${STAMP}.done"
 : > "$_LANE_LEDGER"
 lane_done() { print -r -- "$1" >> "$_LANE_LEDGER"; }
@@ -580,6 +580,24 @@ reap_prior_recordings
 # Both also run at exit (Chrome via the EXIT trap) so a run leaves the box tidy.
 prune_profile_recordings
 close_chrome_meet_tabs
+
+# --- Ecosystem preflight. RUNS FIRST, before even the self-update, because its
+# whole job is to reframe everything after it: when a dependency is down, the red
+# lanes below are CONSEQUENCES, not regressions, and learning that at 3am beats
+# reconstructing it the next morning from a screenshot and three runs of version
+# numbers (2026-09-01, Upstash).
+#
+# Before the self-update specifically, so that "GitHub unreachable" is on the
+# record as the reason the DMG silently stayed on yesterday's build.
+#
+# NEVER GATES. It always exits 0 and the run continues regardless — if Redis is
+# down the app-local lanes still carry real signal, and letting one flaky 3am DNS
+# lookup abort the night is the failure the watchdog note above already warns
+# about. The digest carries the warning; the lanes carry on. ---
+echo "=== ecosystem preflight ===" | tee -a "$LOG"
+node "$REPO/scripts/ecosystem-preflight.mjs" 2>&1 | tee -a "$LOG" || true
+lane_done preflight
+echo "" | tee -a "$LOG"
 
 # --- Self-update the artifacts before testing (Stan): pull latest `main` so the
 # SOURCE lanes test HEAD, and install the latest published DMG so the DMG-meet lane

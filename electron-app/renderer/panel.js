@@ -3604,7 +3604,17 @@ realtimeVoiceInput?.addEventListener('change', () => {
 });
 
 realtimeVoiceNameInput?.addEventListener('change', () => {
-  setConfig('realtimeVoiceName', realtimeVoiceNameInput.value);
+  const id = realtimeVoiceNameInput.value;
+  setConfig('realtimeVoiceName', id);
+  // Audition it, the same way picking an ElevenLabs voice does. On CHANGE
+  // rather than behind a button: the question a voice picker asks is "which of
+  // these", and answering it should not cost a second click per candidate.
+  const name = id.charAt(0).toUpperCase() + id.slice(1);
+  previewVoiceSample({
+    provider: 'openai-realtime',
+    voiceId: id,
+    text: `Hi, I'm ${name}. This is how I sound.`,
+  });
 });
 
 sessionPerCalendarInviteesInput?.addEventListener('change', () => {

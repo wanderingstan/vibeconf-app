@@ -14109,6 +14109,34 @@ function setupIPC() {
   // not running, etc.) and the panel just stays quiet.
   ipcMain.handle('synth-voice-sample', async (_event, opts = {}) => {
     try {
+      // The realtime voices are a different set entirely, and none of the
+      // TTSProvider backends can render one. They ARE available through
+      // OpenAI's ordinary speech endpoint though (verified: all ten render,
+      // while nova/onyx/fable are rejected), so a preview needs no realtime
+      // session, no call, and no recorded samples to keep in step with a voice
+      // roster that is not ours.
+      //
+      // Close to what the room hears rather than identical: this is the TTS
+      // model speaking, not the realtime one. Good enough for "is this the
+      // voice I want", which is the only question a picker asks.
+      if (opts.provider === 'openai-realtime') {
+        const key = String(store.get('realtimeApiKey') || process.env.OPENAI_API_KEY || '').trim();
+        if (!key) return { ok: false, error: 'no OpenAI key' };
+        const r = await fetch('https://api.openai.com/v1/audio/speech', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'gpt-4o-mini-tts',
+            voice: opts.voiceId || 'cedar',
+            input: opts.text || 'Hi, this is how I sound.',
+          }),
+          signal: AbortSignal.timeout(20000),
+        });
+        if (!r.ok) return { ok: false, error: `openai ${r.status}` };
+        const buf = Buffer.from(await r.arrayBuffer());
+        return { ok: true, dataUrl: `data:audio/mpeg;base64,${buf.toString('base64')}` };
+      }
+
       const preview = new globalThis.TTSProvider({
         provider: opts.provider,
         apiKey: store.get('ttsApiKey') || '', // app-level ElevenLabs key

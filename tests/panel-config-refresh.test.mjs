@@ -146,3 +146,27 @@ test('an unknown voice name falls back rather than killing the session', () => {
   assert.equal(bad.voice, 'cedar', 'falls back to the default');
   assert.equal(bad.voiceFallback, 'nova', 'and says what it ignored, so the warning can name it');
 });
+
+test('picking a realtime voice auditions it', () => {
+  // The question a voice picker asks is "which of these", and answering it
+  // should not cost a click per candidate — so it previews on change, the same
+  // way the ElevenLabs picker does.
+  const handler = panel.slice(panel.indexOf("realtimeVoiceNameInput?.addEventListener('change'"));
+  const body = handler.slice(0, handler.indexOf('\n});'));
+  assert.match(body, /setConfig\('realtimeVoiceName'/, 'still saves');
+  assert.match(body, /previewVoiceSample\(/, 'and plays a sample');
+  assert.match(body, /provider: 'openai-realtime'/);
+});
+
+test('the preview renders realtime voices through OpenAI, not a TTSProvider', () => {
+  // None of the TTSProvider backends can render these; they are a different set
+  // entirely. They DO render through OpenAI's ordinary speech endpoint, which
+  // is why a preview needs no realtime session, no call, and no recorded
+  // samples to keep in step with a voice roster that is not ours.
+  const branch = main.slice(main.indexOf("if (opts.provider === 'openai-realtime')"));
+  const body = branch.slice(0, branch.indexOf('\n      }'));
+  assert.match(body, /v1\/audio\/speech/);
+  assert.match(body, /realtimeApiKey/, 'uses the realtime key, not the ElevenLabs one');
+  assert.match(body, /return \{ ok: false, error: 'no OpenAI key' \}/,
+    'and stays quiet rather than throwing when there is no key');
+});

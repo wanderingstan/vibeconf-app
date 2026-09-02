@@ -119,13 +119,22 @@
             <input type="text" id="meetUrl" placeholder="meet.google.com/xxx-xxxx-xxx or app.slack.com/client/…" />
           </div>
           <div class="join-row">
-            <!-- 👀 sits left of the main button in BOTH states. Before a call it
-                 is the only way to see what the bot's browser is doing — ⌘⇧L
-                 navigates first, so it can't be used to inspect the CURRENT
+            <!-- 🧠 and 👀 sit left of the main button in BOTH states. Before a
+                 call 👀 is the only way to see what the bot's browser is doing —
+                 ⌘⇧L navigates first, so it can't be used to inspect the CURRENT
                  state. Two elements rather than one moved around: the pre-call
                  and in-call rows are separate blocks the stylesheet swaps, so a
-                 single button cannot live in both. panel.js drives them as a set
-                 via .botview-toggle-btn. -->
+                 single button cannot live in both. panel.js drives each pair as
+                 a set, via .botview-toggle-btn and .brain-open-btn.
+
+                 #547: 🧠 used to exist ONLY in the in-call row, so it vanished
+                 the moment a call ended — which is precisely when after-call
+                 work (issue filing, call notes) is running and you most want to
+                 see what the agent is doing. It is now scoped exactly like 👀:
+                 always up, no call-state condition. The two are the same kind of
+                 control ("look inside the bot"), so if they ever end up with
+                 different visibility rules again, that is the bug. -->
+            <button class="join-more brain-open-btn" title="See what the agent is thinking and doing — its live activity feed"><i class="ui-icon ui-icon-brain"></i></button>
             <button class="join-more botview-toggle-btn" title="See what the bot sees"><i class="ui-icon ui-icon-eyes"></i></button>
             <!-- The helper text that used to sit under this button is now its
                  tooltip — true but not worth permanent screen space. -->
@@ -169,7 +178,7 @@
                    panel — mirroring the ⓘ on the other side. Its title flips
                    with state (applyBotViewLabel); the glyph stays put so the
                    control doesn't jump. -->
-              <button id="openBrainBtn" class="join-more" title="See what the agent is thinking and doing — its live activity feed"><i class="ui-icon ui-icon-brain"></i></button>
+              <button id="openBrainBtn" class="join-more brain-open-btn" title="See what the agent is thinking and doing — its live activity feed"><i class="ui-icon ui-icon-brain"></i></button>
               <button id="botViewToggleBtn" class="join-more botview-toggle-btn" title="See what the bot sees"><i class="ui-icon ui-icon-eyes"></i></button>
               <button id="leaveCallBtn" class="primary danger">Leave Call</button>
               <button id="openTroubleshootingBtn" class="join-more" title="Troubleshooting: live call state, captions, and the agent's view"><i class="ui-icon ui-icon-construction"></i></button>

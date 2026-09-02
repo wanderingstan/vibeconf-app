@@ -70,8 +70,20 @@ test('the "Preparing recording…" window still opens and closes around the deta
 // --- a second stop, or a quick stop→start→stop, cannot double-merge --------
 
 test('a double stop is a no-op before it can reach the merge', () => {
-  assert.match(stopBody, /if \(!activeRecording\) return \{ ok: true, already: true \}/,
-    'the second stop must bail on the cleared activeRecording, not merge again');
+  // #606 rewrote how this bails, and the rewrite matters here: the guard only
+  // stops a second merge if the global is cleared BEFORE the awaits. It wasn't,
+  // so two concurrent stops both got through — see
+  // stop-recording-double-stop.test.mjs, which runs the interleaving. What this
+  // pins is the ordering that keeps one finalized manifest = one merge run.
+  assert.match(stopBody, /const session = activeRecording;\s*\n\s*if \(!session\) return \{ ok: true, already: true \};\s*\n\s*activeRecording = null;/,
+    'claim the session and clear the global together, with nothing between them');
+  const code = stopBody.replace(/\/\/.*$/gm, '');
+  assert.ok(code.indexOf('activeRecording = null') < code.indexOf('await'),
+    'the clear must precede the first await, or the guard is decorative');
+  // \b so activeRecordingWindow (legitimately used after the await, and
+  // claimed the same way) doesn't count as a hit.
+  assert.ok(!/\bactiveRecording\b/.test(code.slice(code.indexOf('await'))),
+    'nothing past the first await may touch activeRecording again — that was the bug');
 });
 
 test('runPostRecordingMerges has exactly one caller: stopCallRecording', () => {

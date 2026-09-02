@@ -159,11 +159,23 @@ test('the note never breaks the track files around it', () => {
 test('quit finalizes the recording synchronously, and does not merge', () => {
   const fn = main.slice(main.indexOf('function finalizeRecordingSync'));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
+  // Comments stripped for the "no await" check: this file explains itself at
+  // length, and #606 added a comment in here that talks ABOUT the awaits in
+  // stopCallRecording. A bare /await/ over the raw text failed on the prose
+  // while the code was fine — the assertion is about code, so read code.
+  const code = body.replace(/\/\/.*$/gm, '');
   assert.match(body, /session\.stop\(\)/, 'closes the tracks and writes the manifest');
-  assert.ok(!/await/.test(body), 'before-quit cannot await — that is the entire design');
-  assert.ok(!/mergeCallMedia/.test(body), 'holding up a quit for ffmpeg is the thing we refuse to do');
+  assert.ok(!/\bawait\b/.test(code), 'before-quit cannot await — that is the entire design');
+  assert.ok(!/mergeCallMedia/.test(code), 'holding up a quit for ffmpeg is the thing we refuse to do');
   // Cleared before stop() so nothing re-enters on the way out.
-  assert.ok(body.indexOf('activeRecording = null') < body.indexOf('session.stop()'));
+  assert.ok(code.indexOf('activeRecording = null') < code.indexOf('session.stop()'));
+  // #606: a quit can also land while stopCallRecording holds a claimed session
+  // and the global is already null. That session must still get finalized —
+  // the manifest is the one thing no later pass can reconstruct.
+  assert.match(code, /activeRecording \|\| finalizingRecording/,
+    'quit must finalize a claimed-but-not-yet-finalized session too');
+  assert.ok(code.indexOf('finalizingRecording = null') < code.indexOf('session.stop()'),
+    'and clear it before stop(), for the same no-re-entry reason as activeRecording');
 
   const quit = main.slice(main.indexOf("app.on('before-quit'"));
   assert.match(quit.slice(0, quit.indexOf('\n})')), /finalizeRecordingSync\('quit'\)/);

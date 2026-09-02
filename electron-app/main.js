@@ -280,6 +280,24 @@ function prefValue(key) {
 // at a time — the bot is only ever in one.
 let activeRecording = null;
 
+// #606: the session stopCallRecording() has CLAIMED but not yet finalized —
+// null the rest of the time. stopCallRecording used to guard with
+// `if (!activeRecording) return` and then reach `activeRecording.stop()` two
+// awaits later, which is a check-then-use across a yield: both leave routes
+// (requestCleanLeave's fire-and-forget stop, and the teardown's
+// step('stopCallRecording')) passed the guard, the first one won and nulled the
+// global, and the second resumed into `null.stop()` — "error finalizing
+// recording: Cannot read properties of null (reading 'stop')", 8 times across 5
+// session logs in late August 2026. Nothing was ever lost (the first pass saved
+// every track and its merge produced the mp4s); the cost was that a call which
+// recorded perfectly looked broken in the log and in the nightly meet-test
+// output. The fix is to claim the session into a local and null the global
+// before the first await — and this holds that claimed session meanwhile, so
+// finalizeRecordingSync can still write its manifest if a quit lands during
+// those awaits. See there for why the manifest is the one thing that genuinely
+// cannot be reconstructed afterwards.
+let finalizingRecording = null;
+
 // The video half (#209-video): a small visible control window (see
 // call-recording-window.js) that answers its OWN session's getDisplayMedia()
 // with meetView's live frame and streams the resulting MediaRecorder chunks
@@ -520,10 +538,19 @@ async function stopShareCaptureIfActive() {
 // best-effort, never blocks the call from ending (each step below is
 // independently try/caught for the same reason).
 async function stopCallRecording() {
-  if (!activeRecording) return { ok: true, already: true };
-  const dir = activeRecording.dir;
+  // Claim the session BEFORE the first await (#606). The `already` guard below
+  // is only meaningful if the global is cleared here: leave the clear until
+  // after the awaits and two concurrent callers both get past it, which is
+  // exactly what happened in production — see finalizingRecording's declaration
+  // for the log line it produced. Everything downstream already works off a
+  // local, so claiming is all it takes.
+  const session = activeRecording;
+  if (!session) return { ok: true, already: true };
+  activeRecording = null;
+  finalizingRecording = session; // until stop() below has written the manifest
+  const dir = session.dir;
   const callDir = path.dirname(dir); // call-recording-tracks/'s parent — where call-recording.mp4 lands
-  const outputSuffix = activeRecording.outputSuffix || ''; // read before activeRecording is cleared below — see nextRecordingSuffix
+  const outputSuffix = session.outputSuffix || ''; // see nextRecordingSuffix
   try {
     if (meetView && !meetView.webContents.isDestroyed()) {
       meetView.webContents.send('trigger-record', { recording: false });
@@ -536,7 +563,7 @@ async function stopCallRecording() {
   await stopShareCaptureIfActive();
 
   // Stop the control window's MediaRecorder and wait (bounded) for its last
-  // chunk BEFORE finalizing activeRecording — otherwise the video track's
+  // chunk BEFORE finalizing the claimed session — otherwise the video track's
   // file could still be receiving a chunk after we've already closed it.
   stopRecordingStatsPush(); // #328 — nothing to report once we're finalizing
   if (activeRecordingWindow) {
@@ -551,15 +578,14 @@ async function stopCallRecording() {
 
   let tracks = 0;
   let manifest = null;
-  const finishedSession = activeRecording; // kept for removeRecoveryNote() after the merges (#343)
   try {
-    manifest = activeRecording.stop();
+    manifest = session.stop();
     tracks = manifest.tracks.length;
     console.log(`[call-record] saved ${tracks} track(s) to ${dir}`);
   } catch (err) {
     console.warn('[call-record] error finalizing recording:', err.message);
   }
-  activeRecording = null;
+  finalizingRecording = null; // manifest is on disk; a quit no longer needs to finalize this one
 
   // Merge is additive — the raw per-track files stay on disk either way, so a
   // failed/skipped merge just means no call-recording.mp4, not lost material.
@@ -568,7 +594,9 @@ async function stopCallRecording() {
   // Fire-and-forget with the same framing as the share merge inside — the
   // .catch is belt-and-braces (every step in there is independently caught).
   if (manifest) {
-    runPostRecordingMerges({ callDir, tracksDir: dir, manifest, outputSuffix, finishedSession })
+    // finishedSession is the same claimed local — runPostRecordingMerges needs
+    // it for removeRecoveryNote() once the merges land (#343).
+    runPostRecordingMerges({ callDir, tracksDir: dir, manifest, outputSuffix, finishedSession: session })
       .catch((err) => console.warn('[call-record] detached merge failed:', err.message));
   }
 
@@ -777,9 +805,15 @@ async function runPostRecordingMerges({ callDir, tracksDir, manifest, outputSuff
 // finish it (see call-recorder.js's _writeRecoveryNote). The last ~1s of video
 // is lost with the capture window, which is the right trade for a quit.
 function finalizeRecordingSync(reason) {
-  if (!activeRecording) return;
-  const session = activeRecording;
+  // Either a live recording, or one stopCallRecording has claimed but not yet
+  // finalized (#606) — for the couple of awaits it spends closing the capture
+  // windows the global is already null, and a quit landing in that window must
+  // still get the manifest written. session.stop() is idempotent, so finalizing
+  // here and again when stopCallRecording resumes costs nothing.
+  const session = activeRecording || finalizingRecording;
+  if (!session) return;
   activeRecording = null; // before stop(), so nothing re-enters on the way out
+  finalizingRecording = null;
   stopRecordingStatsPush();
   try {
     const m = session.stop();

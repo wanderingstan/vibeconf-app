@@ -7226,15 +7226,16 @@ function cachedResumeSessionId(claudeDir, name) {
 // and reading a preference should not create a directory as a side effect.
 function agentSessionPair() {
   try {
-    const { resolveSessionRef } = require('./agent-session.js');
+    const { sessionPairFor } = require('./agent-session.js');
     const cwd = store.get('claudeWorkDir') || require('./agent-workdir.js').agentDirFor(app.getPath('userData'));
-    const ref = resolveSessionRef(store.get('agentSession'), resolvedBotName());
-    if (ref.kind !== 'name') return null;
-    // Mirrors planAgentSession: with the field on auto, the name FOLLOWS the
-    // bot, so that is the pair a launch would actually use.
-    const auto = store.get('agentSessionAuto') !== false;
-    const name = auto ? (require('./agent-session.js').resolveSessionName(resolvedBotName()) || ref.name) : ref.name;
-    return { cwd, name };
+    // The name rule (auto → follow the bot) lives in agent-session.js so it can
+    // be replayed in a test across a multi-write edit. See sessionPairFor.
+    return sessionPairFor({
+      cwd,
+      field: store.get('agentSession'),
+      botName: resolvedBotName(),
+      auto: store.get('agentSessionAuto') !== false,
+    });
   } catch { return null; }
 }
 
@@ -12020,9 +12021,28 @@ function setupIPC() {
   });
 
   ipcMain.handle('set-config', (_event, key, value) => {
-    // #546: these two feed the session cache key, so read the pair BEFORE the
+    // #546: these three feed the session cache key, so read the pair BEFORE the
     // write and drop whatever the edit moved off (forgetStaleAgentSession).
-    const sessionKeyed = key === 'claudeWorkDir' || key === 'agentSession';
+    //
+    // `agentSessionAuto` belongs here even though it is not itself part of the
+    // key, and leaving it out was a real hole. The panel saves the session field
+    // as TWO writes, auto first (see the agentSessionIdInput 'change' handler in
+    // renderer/panel.js), so with only the other two guarded the sequence went:
+    // flip auto unguarded, then read `beforePair` — by which point auto already
+    // held its new value and the pair described a state that never existed.
+    //
+    // Concretely, clearing a hand-typed name: the field says "realtime-voice"
+    // with auto off, and clearing it hands the bot back to following its own
+    // name. Auto flips first, so the guarded write's `beforePair` resolved to
+    // the BOT's name, matched `afterPair` exactly, and evicted nothing — leaving
+    // the "realtime-voice" entry orphaned. Type that name again months later and
+    // it silently resumes a session nobody meant to return to, which is the
+    // first bullet of #546 rather than the cosmetic half.
+    //
+    // Guarding auto fixes it without needing the renderer to write in a
+    // particular order: the auto write now evicts on its own, and the field
+    // write that follows lands on an unchanged pair and correctly does nothing.
+    const sessionKeyed = key === 'claudeWorkDir' || key === 'agentSession' || key === 'agentSessionAuto';
     const beforePair = sessionKeyed ? agentSessionPair() : null;
     store.set(key, value);
     if (sessionKeyed) forgetStaleAgentSession(beforePair, agentSessionPair());

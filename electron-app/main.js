@@ -1102,6 +1102,13 @@ async function startRealtimeVoice(botName) {
     return;
   }
 
+  if (cfg.voiceFallback) {
+    const why = 'Realtime voice: "' + cfg.voiceFallback + '" is not a voice this model has, '
+      + 'so the bot is speaking as "' + cfg.voice + '".';
+    console.warn('[realtime]', why);
+    broadcastError(why);
+  }
+
   if (cfg.suspicious) {
     // Say it before the round trip, because OpenAI's 401 for a mangled key is
     // word for word its 401 for a revoked one.

@@ -176,6 +176,43 @@ const captionLanguageInput = document.getElementById('captionLanguage');
 const dangerousModeInput = document.getElementById('dangerousMode');
 const sessionPerCalendarInviteesInput = document.getElementById('sessionPerCalendarInvitees');
 const realtimeVoiceInput = document.getElementById('realtimeVoice');
+const realtimeVoiceNameInput = document.getElementById('realtimeVoiceName');
+const realtimeVoiceNameField = document.getElementById('realtimeVoiceNameField');
+
+// The voices gpt-realtime accepts, confirmed against the API. "sounds like" is
+// how they are commonly heard and nothing more: OpenAI publishes no gender
+// labels and the perception is subjective, so the label is a starting point and
+// the picker is the answer.
+const REALTIME_VOICE_OPTIONS = [
+  ['marin', 'Marin — female, most natural'],
+  ['cedar', 'Cedar — male, most natural'],
+  ['shimmer', 'Shimmer — female'],
+  ['coral', 'Coral — female'],
+  ['sage', 'Sage — female'],
+  ['ballad', 'Ballad — female'],
+  ['alloy', 'Alloy — neutral'],
+  ['ash', 'Ash — male'],
+  ['echo', 'Echo — male'],
+  ['verse', 'Verse — male'],
+];
+if (realtimeVoiceNameInput) {
+  for (const [id, label] of REALTIME_VOICE_OPTIONS) {
+    const o = document.createElement('option');
+    o.value = id; o.textContent = label;
+    realtimeVoiceNameInput.appendChild(o);
+  }
+}
+
+// One "Voice" control, two sets of contents. A realtime bot never calls
+// ElevenLabs, so offering the ElevenLabs picker to one is offering a choice that
+// will not be used — which is how somebody picks a voice, hears a different one,
+// and reasonably reports it as broken.
+const unifiedVoiceField = document.getElementById('unifiedVoiceField');
+function paintRealtimeVoiceField() {
+  const realtime = !!realtimeVoiceInput?.checked;
+  if (realtimeVoiceNameField) realtimeVoiceNameField.style.display = realtime ? '' : 'none';
+  if (unifiedVoiceField) unifiedVoiceField.style.display = realtime ? 'none' : '';
+}
 const ackShortMinInput = document.getElementById('ackShortMin');
 const ackLongMinInput = document.getElementById('ackLongMin');
 const ackShortPhrasesInput = document.getElementById('ackShortPhrases');
@@ -2052,7 +2089,7 @@ api.invoke('get-upcoming-calendar-events').then((r) => {
 // bot in the wizard saw "Unnamed bot" in Settings and reasonably concluded the
 // save had failed, when it had worked (#190, #143).
 function loadConfigIntoControls() {
-  return api.invoke('get-config', ['botName', 'calendarIdentityEmail', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'ttsProvider', 'claudeWorkDir', 'agentSession', 'sessionPerCalendarInvitees', 'claudeModel', 'emojiSet', 'captionLanguage', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName', 'realtimeVoice']).then((result) => {
+  return api.invoke('get-config', ['botName', 'calendarIdentityEmail', 'websiteUrl', 'syncBaseUrl', 'ttsApiKey', 'ttsVoiceId', 'macosVoice', 'voiceboxProfileId', 'ttsProvider', 'claudeWorkDir', 'agentSession', 'sessionPerCalendarInvitees', 'claudeModel', 'emojiSet', 'captionLanguage', 'dangerousMode', 'ackShortMin', 'ackLongMin', 'ackShortPhrases', 'ackLongPhrases', 'lastMeetName', 'lastSlackName', 'realtimeVoice', 'realtimeVoiceName']).then((result) => {
   if (result?.botName) {
     botNameInput.value = result.botName;
     currentBotName = result.botName;
@@ -2135,6 +2172,8 @@ function loadConfigIntoControls() {
   if (result?.dangerousMode) dangerousModeInput.checked = true;
   if (sessionPerCalendarInviteesInput) sessionPerCalendarInviteesInput.checked = !!result?.sessionPerCalendarInvitees;
   if (realtimeVoiceInput) realtimeVoiceInput.checked = !!result?.realtimeVoice;
+  if (realtimeVoiceNameInput) realtimeVoiceNameInput.value = result?.realtimeVoiceName || 'cedar';
+  paintRealtimeVoiceField();
   if (result?.ackShortMin != null) ackShortMinInput.value = result.ackShortMin;
   if (result?.ackLongMin != null) ackLongMinInput.value = result.ackLongMin;
   if (Array.isArray(result?.ackShortPhrases)) ackShortPhrasesInput.value = result.ackShortPhrases.join('\n');
@@ -3561,6 +3600,11 @@ if (emojiSetInput) emojiSetInput.addEventListener('change', async () => {
 // nothing until the bot rejoins.
 realtimeVoiceInput?.addEventListener('change', () => {
   setConfig('realtimeVoice', realtimeVoiceInput.checked);
+  paintRealtimeVoiceField();
+});
+
+realtimeVoiceNameInput?.addEventListener('change', () => {
+  setConfig('realtimeVoiceName', realtimeVoiceNameInput.value);
 });
 
 sessionPerCalendarInviteesInput?.addEventListener('change', () => {

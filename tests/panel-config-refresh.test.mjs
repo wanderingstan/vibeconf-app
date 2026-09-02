@@ -18,6 +18,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
@@ -118,4 +120,29 @@ test('the toggle sits above the voice picker it overrides', () => {
   const picker = html.indexOf('id="unifiedVoice"');
   assert.ok(toggle > 0 && picker > 0, 'both controls exist');
   assert.ok(toggle < picker, 'the realtime toggle must come first');
+});
+
+test('there is one Voice control, and it follows the mode', () => {
+  // A realtime bot never calls ElevenLabs. Showing both pickers at once offers
+  // a choice that will not be used, which is how somebody picks a voice, hears
+  // a different one, and reasonably reports it as broken.
+  assert.match(panel, /unifiedVoiceField/, 'the ElevenLabs field is addressable');
+  const paint = panel.slice(panel.indexOf('function paintRealtimeVoiceField'));
+  const body = paint.slice(0, paint.indexOf('\n}'));
+  assert.match(body, /realtimeVoiceNameField\.style\.display = realtime \? '' : 'none'/);
+  assert.match(body, /unifiedVoiceField\.style\.display = realtime \? 'none' : ''/,
+    'the ElevenLabs picker must hide when realtime is on');
+
+  // And it has to repaint when the toggle moves, not only on load.
+  assert.match(panel, /realtimeVoiceInput\?\.addEventListener\('change'[\s\S]{0,200}paintRealtimeVoiceField\(\)/);
+});
+
+test('an unknown voice name falls back rather than killing the session', () => {
+  // A name the API does not know 400s the whole mint, which presents as "the
+  // bot has no voice at all" for what is really a typo.
+  const { resolveRealtimeConfig } = require('../electron-app/realtime-session.js');
+  const store = (o) => ({ get: (k) => o[k] });
+  const bad = resolveRealtimeConfig({ store: store({ realtimeVoice: true, realtimeApiKey: 'k', realtimeVoiceName: 'nova' }) });
+  assert.equal(bad.voice, 'cedar', 'falls back to the default');
+  assert.equal(bad.voiceFallback, 'nova', 'and says what it ignored, so the warning can name it');
 });

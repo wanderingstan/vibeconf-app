@@ -282,7 +282,21 @@
         </div>
       </div>
 
-      <div class="field">
+      <!-- The SAME control as the one below, for a bot in realtime mode. One
+           "Voice" field either way: showing both at once offers a choice that
+           will not be used, which is how somebody picks a voice, hears a
+           different one, and reasonably calls it broken. -->
+      <div class="field" id="realtimeVoiceNameField" style="display:none">
+        <label for="realtimeVoiceName">Voice</label>
+        <select id="realtimeVoiceName" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit"></select>
+        <div style="font-size:11px;color:#666;margin-top:2px">
+          OpenAI's voices, not ElevenLabs'. A realtime bot never calls ElevenLabs, so these
+          are the only voices it can use. No cloning, and the choice is fixed for the length
+          of a call. Takes effect the next time the bot joins.
+        </div>
+      </div>
+
+      <div class="field" id="unifiedVoiceField">
         <label for="unifiedVoice">Voice</label>
         <select id="unifiedVoice" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit">
           <option value="">Loading voices…</option>

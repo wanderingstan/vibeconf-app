@@ -16,6 +16,28 @@
 // The slow (Claude) half of the seam is deliberately NOT wired here. This
 // establishes the audio path first; see docs/realtime-voice-in-app.md.
 
+// Every voice gpt-realtime accepts, confirmed against the API rather than from
+// memory: minting a session with each name, and watching nova/onyx/fable get
+// rejected. The API's own error lists them, which is where a rename will show
+// up first.
+//
+// The "sounds like" grouping is how these are commonly heard and nothing more.
+// OpenAI publishes no gender labels, the perception is subjective, and the only
+// real answer is to listen to a couple. cedar and marin are the newest pair and
+// the two that sound least synthetic.
+const REALTIME_VOICES = [
+  { id: 'marin',   sounds: 'female', note: 'newest pair, most natural' },
+  { id: 'cedar',   sounds: 'male',   note: 'newest pair, most natural' },
+  { id: 'shimmer', sounds: 'female' },
+  { id: 'coral',   sounds: 'female' },
+  { id: 'sage',    sounds: 'female' },
+  { id: 'ballad',  sounds: 'female' },
+  { id: 'alloy',   sounds: 'neutral' },
+  { id: 'ash',     sounds: 'male' },
+  { id: 'echo',    sounds: 'male' },
+  { id: 'verse',   sounds: 'male' },
+];
+
 const REALTIME_DEFAULTS = {
   model: 'gpt-realtime',
   voice: 'cedar',
@@ -188,7 +210,14 @@ function resolveRealtimeConfig({ store, env = {}, defaults = {} } = {}) {
   const enabled = get('realtimeVoice') === true;
   const apiKey = String(get('realtimeApiKey') || env.OPENAI_API_KEY || '').trim();
   const model = String(get('realtimeModel') || defaults.model || REALTIME_DEFAULTS.model);
-  const voice = String(get('realtimeVoiceName') || defaults.voice || REALTIME_DEFAULTS.voice);
+  // A name the API does not know 400s the whole mint, which presents as "the
+  // bot has no voice at all" for what is really a typo. Fall back instead, and
+  // say so, because a bot speaking in the wrong voice is a far better failure
+  // than a bot that never connects.
+  const wanted = String(get('realtimeVoiceName') || defaults.voice || REALTIME_DEFAULTS.voice);
+  const known = REALTIME_VOICES.some((v) => v.id === wanted);
+  const voice = known ? wanted : REALTIME_DEFAULTS.voice;
+  const voiceFallback = known ? null : wanted;
 
   const missing = [];
   if (enabled && !apiKey) missing.push('realtimeApiKey');
@@ -203,7 +232,7 @@ function resolveRealtimeConfig({ store, env = {}, defaults = {} } = {}) {
   const suspicious = !!apiKey && !apiKey.startsWith('sk-');
 
   return {
-    enabled, apiKey, model, voice, missing, suspicious,
+    enabled, apiKey, model, voice, voiceFallback, missing, suspicious,
     ready: enabled && missing.length === 0,
   };
 }
@@ -312,6 +341,7 @@ function buildResponsePolicy({ botName, participants = [], respondWhenUnnamed = 
 }
 
 module.exports = {
+  REALTIME_VOICES,
   VOICE_TOOLS,
   realtimeBudget,
   buildResponsePolicy,

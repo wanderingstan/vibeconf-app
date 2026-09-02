@@ -66,6 +66,24 @@
     <key>VIBECONF_NOTIFY_CHAT</key>
     <string>6785998012</string>
 
+    <!-- The account the rig's vibeconferencing.com session MUST belong to
+         (ecosystem-preflight.mjs). Without it the preflight only REPORTS which
+         account the session carries; with it, the wrong account is a red line.
+
+         Not hypothetical. On 2026-09-01 a re-mint of the rig session produced a
+         valid, year-long token for the OPERATOR'S PERSONAL Google account rather
+         than the bot's. Every check passed — the site accepted it, /api/auth/me
+         said authenticated:true — and the rig would have gone on minting rooms
+         owned by a human, landing in their room history, looking entirely
+         healthy. A session can be perfectly valid and still be the wrong one.
+
+         Lives here rather than defaulted in the script because vibeconf-app is a
+         public repo and hardcoding an account into it is worse than the check is
+         good. Same reasoning as VIBECONF_TEST_INSTANCE above: it is a property of
+         THIS schedule, not of the machine. -->
+    <key>VIBECONF_EXPECT_ACCOUNT</key>
+    <string>jimmy@spiritprotocol.io</string>
+
     <!-- Global watchdog, in seconds (scheduled-meet-test.sh defaults to 1800).
          Raised to 40 min on 2026-08-19.
 

@@ -16,6 +16,55 @@
 
 const MIN = 60_000;
 
+/**
+ * The wall clock, in the USER'S format — not a hardcoded American one.
+ *
+ * This said `toLocaleTimeString('en-US', …)` when it was written, which pinned
+ * the hour cycle to 12-hour for everybody. Stan noticed the same class of bug in
+ * the panel on 2026-08-31 and it turned out to have two halves:
+ *
+ *   1. a hardcoded locale ignores the user's region outright — that was this;
+ *   2. even the SYSTEM locale is not enough on macOS, because the 24-hour
+ *      choice lives outside it in `AppleICUForce24HourTime` and ICU never
+ *      consults it. Measured: AppleICUForce24HourTime=1, locale en_US,
+ *      resolved hourCycle h12.
+ *
+ * So read the preference where we can. This is a separate process from the app,
+ * so it reads it directly rather than over IPC; cached, because it renders on
+ * every single turn.
+ */
+let _hour12;
+function userHour12() {
+  if (_hour12 !== undefined) return _hour12 === null ? undefined : _hour12;
+  _hour12 = null;
+  if (process.platform === 'darwin') {
+    try {
+      const { execFileSync } = require('node:child_process');
+      const read = (k) => {
+        try {
+          return execFileSync('defaults', ['read', 'NSGlobalDomain', k],
+            { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+        } catch { return null; }
+      };
+      if (read('AppleICUForce24HourTime') === '1') _hour12 = false;
+      else if (read('AppleICUForce12HourTime') === '1') _hour12 = true;
+    } catch { /* not fatal — fall back to the locale */ }
+  }
+  return _hour12 === null ? undefined : _hour12;
+}
+
+function formatWallClock(now) {
+  const h12 = userHour12();
+  const opts = { hour: 'numeric', minute: '2-digit' };
+  if (h12 !== undefined) opts.hour12 = h12;
+  // [] is the system locale.
+  const s = new Date(now).toLocaleTimeString([], opts);
+  // "3:47 PM" -> "3:47pm". Lower case and tight, because this is read aloud by
+  // a bot as often as it is read on screen. A 24-hour render has no suffix and
+  // passes through untouched.
+  return s.replace(/\s?([AP])M$/i, (_, p) => p.toLowerCase() + 'm');
+}
+
 /** "9m" · "52m" · "1h04m" — compact, because this prints on every single turn. */
 function fmtDuration(ms) {
   const totalMin = Math.round(ms / MIN);
@@ -38,9 +87,7 @@ function fmtDuration(ms) {
  * @param {number} [now]   injectable for tests
  */
 function formatCallClock(status, now = Date.now()) {
-  const wall = new Date(now).toLocaleTimeString('en-US', {
-    hour: 'numeric', minute: '2-digit',
-  }).replace(/\s?([AP])M$/i, (_, p) => p.toLowerCase() + 'm');
+  const wall = formatWallClock(now);
 
   const parts = [wall];
 
@@ -87,4 +134,4 @@ function scheduledLength(status, startedAt, endAt) {
   return fmtDuration(ms);
 }
 
-export { formatCallClock, fmtDuration, scheduledLength };
+export { formatCallClock, fmtDuration, scheduledLength, formatWallClock, userHour12 };

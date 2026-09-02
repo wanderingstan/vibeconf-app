@@ -3899,6 +3899,35 @@ function openAppSettings() {
     },
   });
   appSettingsWindow.loadFile(path.join(__dirname, 'renderer', 'app-settings.html'));
+  // #628 — hold the close just long enough to save what is still in a field.
+  //
+  // Text inputs commit on 'change', which fires on blur or Enter. ⌘W straight
+  // after typing destroys the window with the edit still only in the DOM, and
+  // it looks exactly like a successful save. So ask the renderer to flush and
+  // wait for its answer.
+  //
+  // BOUNDED, and closing anyway on timeout: a settings window that refuses to
+  // shut because a write is wedged is a worse bug than the one being fixed.
+  // 600ms is generous for a same-machine IPC round trip and short enough that
+  // nobody perceives it.
+  let settingsFlushed = false;
+  appSettingsWindow.on('close', (e) => {
+    if (settingsFlushed || !appSettingsWindow || appSettingsWindow.isDestroyed()) return;
+    e.preventDefault();
+    const finish = () => {
+      if (settingsFlushed) return;
+      settingsFlushed = true;
+      ipcMain.removeListener('settings-flushed', finish);
+      if (appSettingsWindow && !appSettingsWindow.isDestroyed()) appSettingsWindow.close();
+    };
+    const timer = setTimeout(() => {
+      console.warn(ts(), '[settings] flush did not answer in 600ms — closing anyway');
+      finish();
+    }, 600);
+    ipcMain.once('settings-flushed', () => { clearTimeout(timer); finish(); });
+    try { appSettingsWindow.webContents.send('flush-settings'); }
+    catch { clearTimeout(timer); finish(); }
+  });
   appSettingsWindow.on('closed', () => { appSettingsWindow = null; focusMainWindow(); });
 }
 
@@ -5207,6 +5236,8 @@ function setVcSessionCookie(baseUrl, token) {
 //     available → replace our cookie with the shared one;
 //   • no cookie but a shared token exists → seed it into our cookie jar.
 // Best-effort: auth still works exactly as before if any step fails.
+const { pickSharedSession } = require('./session-precedence.js');
+
 async function syncSharedLoginCookie() {
   try {
     const baseUrl = getWebsiteUrl();
@@ -5224,12 +5255,20 @@ async function syncSharedLoginCookie() {
     if (local) {
       if (local === shared) return;
       const me = await checkAuth(); // uses our local cookie
-      if (me?.authenticated) {
+      // Precedence is decided in session-precedence.js, not here. The rule that
+      // used to live inline — donate the local cookie up whenever it
+      // authenticates — silently discarded a LONGER-LIVED shared token, because
+      // "valid" was doing the work that "lasts longer" should have. See that
+      // module's header for the night it cost.
+      const { action, reason } = pickSharedSession({
+        local, shared, localAuthenticated: !!me?.authenticated,
+      });
+      if (action === 'donate-up') {
         store.set('vcSessionToken', local); // donate the (verified) login up
-      } else if (shared) {
+      } else if (action === 'seed-cookie' && shared) {
         await session.defaultSession.cookies.remove(baseUrl, 'vc_session');
         await setVcSessionCookie(baseUrl, shared);
-        console.log('[auth] Replaced stale local login with the shared one (#366)');
+        console.log(`[auth] Using the shared vibeconferencing.com login — ${reason} (#366)`);
       }
       // Neither valid locally nor shared → leave it; the normal auth UI applies.
     } else if (shared && shared !== tombstone) {
@@ -6882,6 +6921,13 @@ function markClaudeReady(source) {
   }
 }
 ipcMain.handle('get-claude-ready', () => claudeReady);
+
+// The user's hour-cycle preference, for renderers — they cannot read it
+// themselves. macOS keeps the 24-hour choice OUTSIDE the locale
+// (AppleICUForce24HourTime) and Chromium's ICU only consults the locale, so a
+// panel asking for the system locale correctly still printed "4:30 PM" to
+// someone with 24-hour time on. See electron-app/time-format.js.
+ipcMain.handle('get-hour12', () => require('./time-format.js').resolveHour12());
 
 // Merge a SessionStart hook into the agent dir's settings.local.json so ANY Claude session
 // launched there pings /claude-ready on startup (proof it's installed + signed in).
@@ -8737,6 +8783,31 @@ app.whenReady().then(async () => {
     // run for this profile before.
     if (isBrandNewProfile && profileStore.get('onboardingCallComplete') === undefined) {
       profileStore.set('onboardingCallComplete', false);
+    }
+
+    // A brand-new bot otherwise ships with the plain animated gradient — the
+    // SAME one every other unconfigured bot has, which makes the switcher
+    // useless for telling several fresh bots apart at a glance. Seed one of
+    // the bundled presets at random instead, right here at the one moment a
+    // profile is genuinely new — covers every path that creates a bot ("New
+    // bot…", /call-new-bot, and the very first default-profile launch), since
+    // they all funnel through this same per-process startup.
+    if (isBrandNewProfile && !profileStore.get('avatarBackgroundSvg')) {
+      try {
+        const bgDir = __dirname.includes('.asar')
+          ? path.join(process.resourcesPath, 'backgrounds', 'presets')
+          : path.join(__dirname, 'backgrounds', 'presets');
+        const BG_EXTS = /\.(svg|png|jpe?g|webp|gif)$/i;
+        const files = fs.readdirSync(bgDir).filter((f) => BG_EXTS.test(f));
+        if (files.length) {
+          const chosen = files[Math.floor(Math.random() * files.length)];
+          const svg = await buildBackgroundSvgFromImage(path.join(bgDir, chosen));
+          profileStore.set('avatarBackgroundSvg', svg);
+          profileStore.set('avatarBackgroundCaption', chosen.replace(BG_EXTS, ''));
+        }
+      } catch (err) {
+        console.warn('[config] could not seed a random background for new bot:', err.message);
+      }
     }
   }
 

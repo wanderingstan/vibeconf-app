@@ -7,6 +7,15 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
+// The user's hour-cycle preference, for page-inject's canvas clock. It runs in
+// the page's world with no node access, and macOS keeps the 24-hour choice
+// outside the locale (AppleICUForce24HourTime) where ICU never looks — so the
+// value has to be carried in. contextIsolation is false here, so a global on
+// `window` is the whole mechanism. See electron-app/time-format.js.
+try {
+  window.__vibeconfHour12 = require('./time-format.js').resolveHour12();
+} catch { /* leave it undefined — page-inject falls back to the locale */ }
+
 // meetView runs with contextIsolation:false, so the preload and page share one
 // window. Expose a tiny helper the idle screen uses to open a URL in the user's
 // external browser (the "Start default testing meet" link).

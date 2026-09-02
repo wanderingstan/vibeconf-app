@@ -3,6 +3,22 @@
 
 const api = window.electronAPI;
 
+// The user's hour-cycle preference, resolved by main (a renderer cannot read
+// macOS's AppleICUForce24HourTime itself). Null until it arrives; formatTime
+// falls back to the locale's own cycle in the meantime, which is what we did
+// before and is right everywhere except a Mac with the 24-hour box ticked.
+let _hour12 = null;
+api.invoke('get-hour12').then((v) => { _hour12 = v; }).catch(() => {});
+
+function fmtTime(when, { seconds = false } = {}) {
+  const opts = { hour: 'numeric', minute: '2-digit' };
+  if (seconds) opts.second = '2-digit';
+  if (_hour12 !== null && _hour12 !== undefined) opts.hour12 = _hour12;
+  // [] is the SYSTEM locale — never a hardcoded one, which would pin the
+  // separator and ordering as well as the hour cycle.
+  return new Date(when).toLocaleTimeString([], opts);
+}
+
 // Every `set-config` from this pane goes through here (#557).
 //
 // They used to be bare fire-and-forget calls:
@@ -191,11 +207,29 @@ const settingsScreen = document.getElementById('settingsScreen');
 const troubleshootingScreen = document.getElementById('troubleshootingScreen');
 const brainScreen = document.getElementById('brainScreen');
 
+// Settings' natural height (every preference stacked in one column) was
+// stretching the window to fill the entire screen on many laptops. Flat
+// cap — about 2/3 of that natural height — same idea as MIN_WINDOW_HEIGHT
+// in main.js being a fixed floor rather than computed; this is a fixed
+// ceiling. The rest scrolls internally (see showScreen below).
+const SETTINGS_MAX_HEIGHT = 900;
+
 function showScreen(screen) {
   mainScreen.style.display = 'none';
   settingsScreen.style.display = 'none';
   troubleshootingScreen.style.display = 'none';
   screen.style.display = 'block';
+  if (screen === settingsScreen) {
+    // Still bounded by window.screen.availHeight: main.js clamps the WINDOW
+    // itself to the screen's work area (applyWindowHeight) but has no way to
+    // also shrink THIS box to match, so on a display shorter than
+    // SETTINGS_MAX_HEIGHT a flat cap alone would leave the remainder stuck
+    // beyond the window's own edge — unreachable, no scrollbar could get to
+    // it (the exact bug this whole cap exists to fix).
+    const screenCap = Math.max(200, Math.round((window.screen.availHeight || SETTINGS_MAX_HEIGHT) - 80));
+    settingsScreen.style.maxHeight = Math.min(SETTINGS_MAX_HEIGHT, screenCap) + 'px';
+    settingsScreen.style.overflowY = 'auto';
+  }
   // Screens differ a lot in height (Settings is long) and the window is sized to
   // fit — remeasure. Defined below; ignore on the very first paint.
   try { reportContentHeight(); } catch { /* not wired yet */ }
@@ -1975,7 +2009,7 @@ function paintCalendarUpcoming(events, error) {
     return;
   }
   const title = next.summary || 'Untitled event';
-  const localTime = new Date(next.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const localTime = fmtTime(next.start);
   // ownerConfirmed === false means the calendar owner hasn't accepted this
   // event yet, so the bot won't auto-join it (main.js's owner-RSVP gate):
   // the meeting line renders struck through (it's not happening as far as
@@ -3612,7 +3646,7 @@ api.on('extension-message', (message) => {
     const entry = document.createElement('div');
     entry.className = 'transcript-entry';
     entry.dataset.speaker = speaker;
-    const time = new Date(timestamp).toLocaleTimeString();
+    const time = fmtTime(timestamp, { seconds: true });
     entry.innerHTML = `<span class="transcript-speaker">${speaker}</span> <span class="transcript-time">${time}</span><br><span class="transcript-text">${text}</span>`;
     transcriptArea.appendChild(entry);
     transcriptArea.scrollTop = transcriptArea.scrollHeight;

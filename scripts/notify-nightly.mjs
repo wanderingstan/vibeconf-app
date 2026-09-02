@@ -174,6 +174,10 @@ const linux = lastLine('linux-results.jsonl');
 // = recording disabled → nothing to say.) A broken recorder isn't a product RED —
 // it's an observability gap — so it warns + pushes like the fallback-room notice
 // rather than counting as a lane failure.
+// Ecosystem preflight (scripts/ecosystem-preflight.mjs) — the dependency check
+// that runs before everything. Read here so the digest can lead with it: a dead
+// dependency reframes every red line below it, exactly like blockedBy does.
+const preflight = lastLine('preflight-results.jsonl');
 const recHealth = lastLine('recording-health-results.jsonl');
 const recBroken = recHealth ? recHealth.ok === false : false;
 
@@ -300,6 +304,18 @@ if (recBroken) ctx.push(`⚠️ screen-recording is BROKEN on the runner — the
 // Above the lane results on purpose: if a dialog owned the screen, that reframes
 // every red line below it, and reading it after the fact is how a night gets
 // misdiagnosed as a product regression.
+// Above the lanes for the same reason blockedBy is: when Redis or the site is
+// down, every whiteboard/sync failure below is a consequence. Reading this after
+// the lane list is how 2026-09-01 got investigated as a product regression for an
+// hour before anyone probed the backend.
+if (preflight && preflight.ok === false) {
+  ctx.push(`🚨 ECOSYSTEM PREFLIGHT: ${esc(preflight.note || 'a dependency is down')}`);
+  for (const c of (preflight.checks || []).filter((c) => c.status === 'down')) {
+    ctx.push(`   🔴 ${esc(c.name)}${c.detail ? ` — ${esc(c.detail)}` : ''}`);
+  }
+} else if (preflight && (preflight.warn || []).length) {
+  ctx.push(`⚠️ preflight: ${esc((preflight.warn || []).join(', '))} degraded`);
+}
 if (blockedBy) ctx.push(`🚨 SOMETHING WAS ON SCREEN during ${esc(blockedBy.lane)} — ${esc(blockedBy.detail)}. Treat the failures below as suspect until this is cleared (someone may need to dismiss it on the runner).`);
 const analysisBlock = analysis ? ['', '🔎 <b>Claude analysis</b>', esc(analysis)] : [];
 // Keep under Telegram's 4096-char hard limit — the status lines are the priority,
@@ -327,7 +343,7 @@ try {
   const resp = await fetch(`https://api.telegram.org/bot${tok}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: CHAT, text, parse_mode: 'HTML', disable_notification: !(anyRed || meetRoomFallback || recBroken) }),
+    body: JSON.stringify({ chat_id: CHAT, text, parse_mode: 'HTML', disable_notification: !(anyRed || meetRoomFallback || recBroken || preflight?.ok === false) }),
     signal: AbortSignal.timeout(20000),
   });
   console.log(resp.ok ? '[notify] telegram sent' : `[notify] telegram failed: ${resp.status} ${await resp.text().catch(() => '')}`);

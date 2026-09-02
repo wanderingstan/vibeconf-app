@@ -5,6 +5,38 @@
 
 const api = window.electronAPI;
 
+// #628 — a typed value is LOST if the window is closed while the field still
+// has focus.
+//
+// Text inputs commit on 'change', and 'change' fires only on blur or Enter. Hit
+// ⌘W (or the red button) straight after typing and the edit never reaches the
+// store — silently, with the window animating shut as if it had been saved.
+// Checkboxes are unaffected: their 'change' fires on the click itself.
+//
+// Committing on every keystroke is NOT the fix. Several of these prefs are
+// pattern-validated (websiteUrl must match ^(|https?://.+)$), so a half-typed
+// "http://exa" is a value the store is right to reject — and would either log
+// noise on every character or, worse, land.
+//
+// So: remember what is unsaved, and flush it when the window is closing. Main
+// holds the close until we answer (see appSettingsWindow.on('close')).
+const _pending = new Map();
+
+function markPending(key, read) { _pending.set(key, read); }
+function commitNow(key, value) { _pending.delete(key); return api.invoke('set-config', key, value); }
+
+api.on('flush-settings', async () => {
+  try {
+    for (const [key, read] of _pending) {
+      // The TTS key does not go through set-config; it has its own handler.
+      if (key === '__ttsApiKey') api.send('update-tts-config', { apiKey: read() });
+      else await api.invoke('set-config', key, read());
+    }
+    _pending.clear();
+  } catch { /* never trap the window open on a failed write */ }
+  api.send('settings-flushed');
+});
+
 // --- User (vibeconferencing.com) login: same check-auth / login / logout IPCs
 // the panel uses (#366/#381 — moved here as an app-level credential). ---
 const userStatus = document.getElementById('userStatus');
@@ -40,7 +72,12 @@ refreshUser();
 // the panel's Text-to-Speech field exactly). ---
 const ttsInput = document.getElementById('ttsApiKey');
 api.invoke('get-config', ['ttsApiKey']).then((c) => { if (c && c.ttsApiKey) ttsInput.value = c.ttsApiKey; });
+// The API key is the worst field to lose — it is pasted, long, and secret, so
+// there is nothing to retype from. Same pending/flush treatment, via its own
+// channel rather than set-config.
+ttsInput.addEventListener('input', () => _pending.set('__ttsApiKey', () => ttsInput.value.trim()));
 ttsInput.addEventListener('change', () => {
+  _pending.delete('__ttsApiKey');
   // main re-broadcasts 'tts-grant-changed' after processing this (paste or
   // clear), which repaints the gift offer below — no need to do it here too.
   api.send('update-tts-config', { apiKey: ttsInput.value.trim() });
@@ -225,12 +262,14 @@ api.invoke('get-app-settings-schema').then(async (fields) => {
           input.appendChild(o);
         }
         input.value = vals[f.key] != null ? vals[f.key] : (f.default != null ? f.default : '');
-        input.addEventListener('change', () => api.invoke('set-config', f.key, input.value));
+        input.addEventListener('input',  () => markPending(f.key, () => input.value));
+        input.addEventListener('change', () => commitNow(f.key, input.value));
       } else {
         input = document.createElement('input');
         input.type = 'text';
         input.value = vals[f.key] != null ? vals[f.key] : '';
-        input.addEventListener('change', () => api.invoke('set-config', f.key, input.value.trim()));
+        input.addEventListener('input',  () => markPending(f.key, () => input.value.trim()));
+        input.addEventListener('change', () => commitNow(f.key, input.value.trim()));
       }
       input.id = `f_${f.key}`;
       wrap.appendChild(input);

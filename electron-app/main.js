@@ -964,6 +964,38 @@ function computeRealtimePolicy() {
   });
 }
 
+// Tell the voice model who just started talking.
+//
+// It hears ONE mixed track for the whole room (every remote participant is
+// summed into a single upload stream), so it cannot tell two people apart even
+// in principle. That is a plausible share of the over-eagerness: it has no way
+// to know that "Gabe, what do you think?" was not addressed to it.
+//
+// Announce only CHANGES of speaker, never the bot itself, and never twice in
+// quick succession. The DOM speaker tracker fires hundreds of times a call, and
+// a context item per event would bury the conversation it is meant to clarify.
+let realtimeLastSpeaker = '';
+let realtimeLastSpeakerAt = 0;
+const REALTIME_SPEAKER_MIN_GAP_MS = 1500;
+
+function noteRealtimeSpeaker(name) {
+  if (!realtimeVoiceLive) return;
+  const who = String(name || '').trim();
+  if (!who) return;
+
+  // The bot's own voice is not news to the bot.
+  const botLower = String((localServer.getEffectiveBotName && localServer.getEffectiveBotName()) || '').toLowerCase();
+  const lower = who.toLowerCase();
+  if (lower === 'you' || (botLower && lower.includes(botLower))) return;
+
+  const now = Date.now();
+  if (who === realtimeLastSpeaker && now - realtimeLastSpeakerAt < REALTIME_SPEAKER_MIN_GAP_MS) return;
+  realtimeLastSpeaker = who;
+  realtimeLastSpeakerAt = now;
+
+  sendExtMsg({ action: 'realtime-note', text: who + ' is speaking now.' });
+}
+
 function pushRealtimePolicy(force) {
   if (!realtimeVoiceLive) return;
   let policy;
@@ -1025,6 +1057,7 @@ function stopRealtimeVoice(why) {
   realtimeVoiceLive = false;
   if (realtimePolicyTimer) { clearInterval(realtimePolicyTimer); realtimePolicyTimer = null; }
   realtimePolicyLast = '';
+  realtimeLastSpeaker = '';
   try { localServer.realtimeVoiceActive = false; } catch { /* not up */ }
   console.log('[realtime] stopping (' + (why || 'unspecified') + ')');
   try { sendExtMsg({ action: 'stop-realtime' }); } catch { /* view already gone */ }
@@ -13704,6 +13737,8 @@ function setupIPC() {
     if (name && sync.roomId) {
       updateSpeakingState(name, speaking);
     }
+    // A realtime bot hears one mixed track and cannot tell who is talking.
+    if (speaking) noteRealtimeSpeaker(name);
   });
 
   // --- Participant list + presenting state from preload-meet.js ---

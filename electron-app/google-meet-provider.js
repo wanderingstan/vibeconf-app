@@ -38,6 +38,11 @@ ipcRenderer.on('extension-message', (_event, message) => {
     meetProvider.setCameraOn(true);
   } else if (message.action === 'camera-off') {
     meetProvider.setCameraOn(false);
+  } else if (message.action === 'realtime-note') {
+    window.postMessage({
+      __botsInCalls: true, __fromExtension: true,
+      action: 'realtime-note', text: message.text,
+    }, '*');
   } else if (message.action === 'realtime-tool-result') {
     window.postMessage({
       __botsInCalls: true, __fromExtension: true,

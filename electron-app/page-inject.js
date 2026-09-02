@@ -3273,6 +3273,26 @@
         : { ok: false, why: 'nobody named, and configured to hold back' };
     }
 
+    // A fact about the room, not from the slow half: who just started talking,
+    // a chat message, whatever else the model has no way to perceive.
+    //
+    // Silent, like brief. It hears one mixed audio track for the whole room, so
+    // without this it cannot tell two people apart at all, let alone tell that
+    // "Gabe, what do you think?" was not addressed to it.
+    note(text) {
+      const clean = String(text || '').trim();
+      if (!clean) return;
+      if (!this.active || !this.dc || this.dc.readyState !== 'open') return;
+      this._send({
+        type: 'conversation.item.create',
+        item: {
+          type: 'message', role: 'user',
+          content: [{ type: 'input_text', text: '[room, do not read this out] ' + clean }],
+        },
+      });
+      this._report('note', clean.slice(0, 60));
+    }
+
     // Something the model could not know, handed over WITHOUT asking it to
     // speak. conversation.item.create with no response.create: the model
     // absorbs it and uses it in its own words, whenever it is relevant, or
@@ -3633,6 +3653,8 @@
         (realtimeVoice.policy.gate ? 'gated' : 'open') +
         ', bot=' + (realtimeVoice.policy.botNames || []).join('/') +
         ', others=' + (realtimeVoice.policy.otherNames || []).join('/'));
+    } else if (event.data.action === 'realtime-note') {
+      realtimeVoice.note(event.data.text);
     } else if (event.data.action === 'realtime-tool-result') {
       realtimeVoice._toolResult(event.data.callId, event.data.output);
     } else if (event.data.action === 'realtime-hold') {

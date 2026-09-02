@@ -298,3 +298,31 @@ test('the prompt tells it the toolbox exists', () => {
   // A tool it is never told to reach for is a tool it will not reach for.
   assert.match(buildInstructions({ botName: 'Jimmy' }), /ask_teammate/);
 });
+
+// --- what the voice is told about the room ----------------------------------
+
+test('the prompt explains the [room] notes it will receive', () => {
+  // It hears ONE mixed track for the whole room, so without these notes it
+  // cannot tell two people apart even in principle, and cannot know that
+  // "Gabe, what do you think?" was not addressed to it.
+  const t = buildInstructions({ botName: 'Jimmy' });
+  assert.match(t, /\[room\]/);
+  assert.match(t, /Never read one out/i, 'a note read aloud is worse than no note');
+  assert.match(t, /not yours to answer/i);
+});
+
+test('the prompt authorises stalling out loud', () => {
+  // Regression from the standalone prototype, which said "say a short filler
+  // out loud first so the line is never silent" and did not survive the port.
+  // The gap between calling ask_teammate and the answer arriving is seconds.
+  const t = buildInstructions({ botName: 'Jimmy' });
+  assert.match(t, /one second|let me look/i);
+  assert.match(t, /narrated pause/i);
+});
+
+test('the prompt no longer duplicates the response gate', () => {
+  // "say nothing unless you are addressed" was doing nothing once
+  // create_response:false moved that decision to the app, and every clause
+  // that does nothing crowds out one that does.
+  assert.doesNotMatch(buildInstructions({}), /say nothing unless you are addressed/i);
+});

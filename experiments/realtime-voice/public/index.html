@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Realtime Pepper</title>
+<style>
+  :root{
+    --bg:#0d0f12; --card:#14181d; --line:#232a32; --ink:#e6edf3;
+    --dim:#8b98a5; --accent:#ff8a5b; --deep:#7aa2ff; --ok:#3fb950; --warn:#d29922;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);
+    font:15px/1.55 ui-sans-serif,-apple-system,"Segoe UI",sans-serif;
+    padding:30px 20px 60px;max-width:1040px;margin:0 auto}
+  h1{font-size:29px;letter-spacing:-.02em}
+  h1 span{color:var(--accent)}
+  .sub{color:var(--dim);margin:4px 0 20px;font-size:14px}
+  .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+  button{font:inherit;font-weight:600;border:1px solid var(--line);border-radius:8px;
+    padding:9px 15px;background:var(--card);color:var(--ink);cursor:pointer}
+  button:hover:not(:disabled){border-color:var(--accent)}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  button.go{background:var(--accent);border-color:var(--accent);color:#1a0f08}
+  .modes{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .modes button{border:0;border-radius:0;font-size:13px;padding:9px 13px;background:transparent}
+  .modes button.on{background:var(--deep);color:#06122e}
+  .pill{margin-left:auto;font-size:12px;font-weight:600;padding:5px 12px;border-radius:999px;
+    border:1px solid var(--line);color:var(--dim)}
+  .pill.live{color:var(--ok);border-color:var(--ok)}
+  .pill.err{color:#f85149;border-color:#f85149}
+  .floor{font:11px ui-monospace,Menlo,monospace;color:var(--dim);margin-bottom:16px}
+  .floor b{color:var(--ink)}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:760px){.grid{grid-template-columns:1fr}}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:14px;height:390px;overflow-y:auto}
+  .panel h2{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--dim);
+    margin-bottom:10px;position:sticky;top:-14px;background:var(--card);padding:4px 0}
+  .turn{margin-bottom:11px;padding-left:11px;border-left:2px solid var(--line)}
+  .turn .who{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim)}
+  .turn.you{border-left-color:var(--dim)}
+  .turn.pepper{border-left-color:var(--accent)}
+  .turn.pepper .who{color:var(--accent)}
+  .turn.deep{border-left-color:var(--deep);background:#7aa2ff10;padding:7px 11px;border-radius:0 6px 6px 0}
+  .turn.deep .who{color:var(--deep)}
+  .turn.quiet{opacity:.55;font-style:italic}
+  .ev{font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--dim);
+    padding:2px 0;border-bottom:1px solid #1b2027;word-break:break-word}
+  .ev b{color:var(--ink);font-weight:600}
+  .ev.deep b{color:var(--deep)}
+  .ev.silent b{color:var(--warn)}
+  .board{margin-top:14px;background:var(--card);border:1px solid var(--line);
+    border-radius:12px;padding:14px;display:none}
+  .board.on{display:block}
+  .board h2{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--deep);margin-bottom:8px}
+  .board pre{font:12px/1.5 ui-monospace,Menlo,monospace;white-space:pre-wrap;overflow-x:auto}
+  .note{margin-top:18px;font-size:13px;color:var(--dim);border-top:1px solid var(--line);padding-top:14px}
+  code{font:12px ui-monospace,Menlo,monospace;background:#1b2027;padding:2px 6px;border-radius:4px;color:var(--ink)}
+</style>
+</head>
+<body>
+
+<h1>Realtime <span>Pepper</span></h1>
+<p class="sub">Speech-to-speech over WebRTC, with two seams you can switch between:
+the fast model routing by tool call, or a back channel where it never decides at all.</p>
+
+<div class="bar">
+  <div class="modes">
+    <button id="mRouter">Router (tool)</button>
+    <button id="mBack" class="on">Back channel</button>
+  </div>
+  <button id="go" class="go">Connect</button>
+  <button id="mute" disabled>Mute mic</button>
+  <button id="stop" disabled>Hang up</button>
+  <span id="pill" class="pill">idle</span>
+</div>
+<div class="floor">floor: <b id="fFloor">open</b> &nbsp;·&nbsp; queued: <b id="fQ">0</b>
+  &nbsp;·&nbsp; turn: <b id="fT">0</b> &nbsp;·&nbsp; in flight: <b id="fI">none</b></div>
+
+<div class="grid">
+  <div class="panel"><h2>Conversation</h2><div id="convo"></div></div>
+  <div class="panel"><h2>Events</h2><div id="events"></div></div>
+</div>
+
+<div class="board" id="board"><h2>Board (artifact)</h2><pre id="boardBody"></pre></div>
+
+<p class="note">In back channel mode every finished turn goes to Claude in parallel.
+Amber events are <em>silent injections</em>: the fast model learns something without speaking.
+Try small talk (Claude should return <code>nothing_to_add</code>), then ask for code
+(artifact lands on the board, voice only points at it).</p>
+
+<audio id="sink" autoplay></audio>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let pc, dc, mic, muted = false;
+let mode = 'backchannel';
+
+// ---- floor control -------------------------------------------------------
+let speaking = false;      // Pepper is mid-utterance
+let userTalking = false;   // a human has the floor
+let queue = [];            // things waiting to be said
+let turn = 0;              // completed user turns, for staleness
+let inflight = null;       // AbortController for the current deep call
+
+function stat() {
+  $('fFloor').textContent = userTalking ? 'human' : speaking ? 'pepper' : 'open';
+  $('fQ').textContent = queue.length;
+  $('fT').textContent = turn;
+  $('fI').textContent = inflight ? 'deep call' : 'none';
+}
+
+function pill(t, cls = '') { $('pill').textContent = t; $('pill').className = 'pill ' + cls; }
+
+function ev(name, detail = '', cls = '') {
+  const d = document.createElement('div');
+  d.className = 'ev ' + cls;
+  d.innerHTML = '<b>' + name + '</b>' + (detail ? ' ' + detail : '');
+  $('events').appendChild(d);
+  $('events').parentElement.scrollTop = 1e9;
+}
+
+const turns = {};
+function say(key, who, cls, text, append) {
+  let t = turns[key];
+  if (!t) {
+    t = document.createElement('div');
+    t.className = 'turn ' + cls;
+    t.innerHTML = '<div class="who">' + who + '</div><div class="body"></div>';
+    $('convo').appendChild(t);
+    turns[key] = t;
+  }
+  const b = t.querySelector('.body');
+  b.textContent = append ? b.textContent + text : text;
+  $('convo').parentElement.scrollTop = 1e9;
+  return t;
+}
+
+function send(o) { if (dc && dc.readyState === 'open') dc.send(JSON.stringify(o)); }
+
+// Brief the fast model WITHOUT giving it the floor: create the item, but never
+// call response.create. This is the whole trick.
+function silentInject(text) {
+  send({ type: 'conversation.item.create',
+         item: { type: 'message', role: 'user',
+                 content: [{ type: 'input_text', text: '[backchannel] ' + text }] } });
+  ev('inject.silent', text, 'silent');
+}
+
+function enqueueSpeak(text, why) {
+  queue.push({ text, why });
+  ev('queued', why + ' (' + queue.length + ' waiting)', 'deep');
+  stat();
+  flush();
+}
+
+function flush() {
+  if (!queue.length) return;
+  if (userTalking) return;   // human wins, always
+  if (speaking) return;      // never interrupt ourselves
+  const job = queue.shift();
+  stat();
+  send({ type: 'conversation.item.create',
+         item: { type: 'message', role: 'user',
+                 content: [{ type: 'input_text',
+                             text: '[backchannel deliver, say this close to as written] ' + job.text }] } });
+  send({ type: 'response.create' });
+  ev('floor.taken', job.why, 'deep');
+}
+
+// ---- connection ----------------------------------------------------------
+async function connect() {
+  teardown();          // a failed attempt must not leave a session holding a slot
+  $('go').disabled = true;
+  $('mRouter').disabled = $('mBack').disabled = true;
+  pill('minting token...');
+
+  const s = await fetch('/api/session?mode=' + mode).then((r) => r.json());
+  if (s.error) { pill('error', 'err'); ev('session.error', s.error); reset(); return; }
+  ev('session.minted', s.model + ' / ' + s.shape + ' / ' + s.mode);
+
+  pill('mic...');
+  mic = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true },
+  });
+
+  pc = new RTCPeerConnection();
+  pc.ontrack = (e) => { $('sink').srcObject = e.streams[0]; ev('track.remote', 'audio in'); };
+  pc.addTrack(mic.getAudioTracks()[0], mic);
+  pc.onconnectionstatechange = () => ev('pc.' + pc.connectionState);
+
+  dc = pc.createDataChannel('oai-events');
+  dc.onopen = () => {
+    pill('live', 'live');
+    $('mute').disabled = $('stop').disabled = false;
+    ev('datachannel.open');
+    // Pin the transcription language and stiffen VAD a little. Room noise
+    // tripping VAD is what produces a spontaneous opener in a random language.
+    send({ type: 'session.update',
+           session: { audio: { input: {
+             transcription: { model: 'whisper-1', language: 'en' },
+             turn_detection: { type: 'server_vad', threshold: 0.6,
+                               prefix_padding_ms: 300, silence_duration_ms: 600 },
+           } } } });
+  };
+  dc.onmessage = (e) => handle(JSON.parse(e.data));
+
+  pill('negotiating...');
+  await pc.setLocalDescription(await pc.createOffer());
+  await pc.setRemoteDescription({ type: 'answer', sdp: await postSdp(pc.localDescription.sdp, s.secret, s.model) });
+}
+
+async function postSdp(sdp, secret, model) {
+  const hdr = { Authorization: 'Bearer ' + secret, 'Content-Type': 'application/sdp' };
+  // GA endpoint first. The beta path is kept only so an old-account failure is
+  // legible; OpenAI now rejects it outright.
+  const urls = ['https://api.openai.com/v1/realtime/calls?model=' + model,
+                'https://api.openai.com/v1/realtime?model=' + model];
+  let first = null;
+
+  for (const url of urls) {
+    const r = await fetch(url, { method: 'POST', body: sdp, headers: hdr });
+    if (r.ok) { ev('sdp.ok', new URL(url).pathname); return await r.text(); }
+
+    // Surface WHY, not just the status. A 429 here is usually billing, not load.
+    const body = await r.text().catch(() => '');
+    let why = body.slice(0, 300);
+    try { why = JSON.parse(body).error?.message || why; } catch {}
+    if (!first) first = { status: r.status, why };
+    ev('sdp.fail', new URL(url).pathname + ' -> ' + r.status + ': ' + why);
+  }
+
+  const hint = first && first.status === 429
+    ? ' (429 on the GA endpoint is almost always no credit on the account, or the '
+      + 'realtime concurrent-session cap. Check billing at platform.openai.com.)'
+    : '';
+  throw new Error('SDP exchange failed: ' + (first ? first.status + ' ' + first.why : 'unknown') + hint);
+}
+
+// ---- realtime events -----------------------------------------------------
+function handle(m) {
+  switch (m.type) {
+    case 'response.created':
+      speaking = true; stat(); break;
+
+    case 'response.audio_transcript.delta':
+    case 'response.output_audio_transcript.delta':
+      say('a' + m.response_id, 'Pepper', 'pepper', m.delta, true); break;
+
+    case 'response.done':
+      speaking = false; stat(); ev('response.done'); flush(); break;
+
+    case 'input_audio_buffer.speech_started':
+      userTalking = true; stat(); ev('speech.started');
+      if (speaking) { send({ type: 'response.cancel' }); ev('response.cancel', 'human took the floor'); }
+      break;
+
+    case 'input_audio_buffer.speech_stopped':
+      userTalking = false; stat(); flush(); break;
+
+    case 'conversation.item.input_audio_transcription.completed': {
+      const text = (m.transcript || '').trim();
+      if (!text) break;
+      say('u' + m.item_id, 'You', 'you', text, false);
+      turn++; stat();
+      if (mode === 'backchannel') dispatch(text, turn);
+      break;
+    }
+
+    case 'response.function_call_arguments.done':
+      if (m.name === 'ask_deep_model') routerHandoff(m);
+      break;
+
+    case 'error':
+      ev('error', JSON.stringify(m.error || m).slice(0, 160)); break;
+  }
+}
+
+// ---- back channel --------------------------------------------------------
+async function dispatch(question, myTurn) {
+  if (inflight) { inflight.abort(); ev('superseded', 'earlier question dropped', 'deep'); }
+  const ac = new AbortController();
+  inflight = ac; stat();
+  ev('DISPATCH ->', 'turn ' + myTurn, 'deep');
+
+  try {
+    const r = await fetch('/api/deep', {
+      method: 'POST', signal: ac.signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question }),
+    });
+
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) { if (line.trim()) onDeep(JSON.parse(line), myTurn); }
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') ev('deep.failed', e.message, 'deep');
+  } finally {
+    if (inflight === ac) { inflight = null; stat(); }
+  }
+}
+
+function onDeep(m, myTurn) {
+  const stale = turn - myTurn;
+
+  switch (m.type) {
+    // Briefed, not voiced.
+    case 'working':
+    case 'progress':
+      silentInject(m.gist + ' (' + m.ms + 'ms)');
+      break;
+
+    // Claude self-gates. This is the case a router would have got wrong.
+    case 'nothing_to_add':
+      say('n' + myTurn, 'Claude (deep model)', 'deep quiet', 'nothing to add', false);
+      ev('DEEP <-', 'nothing_to_add @' + m.ms + 'ms', 'deep');
+      break;
+
+    case 'final':
+    case 'interject': {
+      say('d' + myTurn, 'Claude (deep model)', 'deep', m.voice_line, false);
+      ev('DEEP <-', m.type + ' via ' + m.model + ' @' + m.ms + 'ms', 'deep');
+
+      if (m.artifact) {
+        $('board').classList.add('on');
+        $('boardBody').textContent = m.artifact;
+        ev('board.updated', m.artifact.length + ' chars', 'deep');
+      }
+
+      // The conversation moved on while we were thinking.
+      let line = m.voice_line;
+      if (stale >= 2) {
+        line = 'Going back to what you asked a moment ago: ' + line;
+        ev('stale', stale + ' turns behind, reframed', 'deep');
+      }
+
+      if (m.type === 'interject' && speaking) {
+        send({ type: 'response.cancel' });
+        ev('response.cancel', 'urgent interjection', 'deep');
+        speaking = false;
+      }
+      enqueueSpeak(line, m.type);
+      break;
+    }
+
+    case 'failed':
+      ev('deep.failed', m.error, 'deep'); break;
+  }
+}
+
+// ---- router mode (the other seam) ----------------------------------------
+async function routerHandoff(m) {
+  let q = '';
+  try { q = JSON.parse(m.arguments).question; } catch { q = m.arguments; }
+  ev('HANDOFF ->', 'ask_deep_model', 'deep');
+
+  let answer = 'The deep model could not be reached.';
+  try {
+    const r = await fetch('/api/deep', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: q }),
+    });
+    const text = await r.text();
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue;
+      const e = JSON.parse(line);
+      if (e.type === 'final' || e.type === 'interject') {
+        answer = e.voice_line;
+        if (e.artifact) { $('board').classList.add('on'); $('boardBody').textContent = e.artifact; }
+        ev('HANDOFF <-', e.model + ' @' + e.ms + 'ms', 'deep');
+      } else if (e.type === 'nothing_to_add') {
+        answer = 'Nothing to add on that one.';
+        ev('HANDOFF <-', 'nothing_to_add @' + e.ms + 'ms', 'deep');
+      }
+    }
+  } catch (e) { ev('HANDOFF <-', 'failed', 'deep'); }
+
+  say('d' + m.call_id, 'Claude (deep model)', 'deep', answer, false);
+  send({ type: 'conversation.item.create',
+         item: { type: 'function_call_output', call_id: m.call_id, output: answer } });
+  send({ type: 'response.create' });
+}
+
+// ---- controls ------------------------------------------------------------
+function setMode(m) {
+  mode = m;
+  $('mRouter').className = m === 'router' ? 'on' : '';
+  $('mBack').className = m === 'backchannel' ? 'on' : '';
+}
+$('mRouter').onclick = () => setMode('router');
+$('mBack').onclick = () => setMode('backchannel');
+
+function teardown() {
+  if (inflight) { inflight.abort(); inflight = null; }
+  try { if (dc) dc.close(); } catch {}
+  try { if (pc) pc.close(); } catch {}
+  try { if (mic) mic.getTracks().forEach((t) => t.stop()); } catch {}
+  dc = pc = mic = null;
+}
+
+function reset() {
+  teardown();
+  $('go').disabled = false;
+  $('mRouter').disabled = $('mBack').disabled = false;
+  $('mute').disabled = $('stop').disabled = true;
+  speaking = userTalking = false; queue = []; stat();
+}
+
+$('go').onclick = () => connect().catch((e) => {
+  pill('error', 'err'); ev('fatal', e.message); reset();
+});
+
+$('mute').onclick = () => {
+  muted = !muted;
+  mic.getAudioTracks().forEach((t) => (t.enabled = !muted));
+  $('mute').textContent = muted ? 'Unmute mic' : 'Mute mic';
+  ev(muted ? 'mic.muted' : 'mic.live');
+};
+
+$('stop').onclick = () => { pill('idle'); reset(); ev('hung.up'); };
+
+// Leaving the page mid-call should release the session, not hold the slot.
+window.addEventListener('beforeunload', teardown);
+
+stat();
+</script>
+</body>
+</html>

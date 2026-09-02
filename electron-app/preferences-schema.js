@@ -455,7 +455,7 @@ const PREFERENCES = {
   },
   realtimeMaxMinutes: {
     type: 'number',
-    default: 60,
+    default: 75,
     min: 0,
     description:
       'How long a realtime voice session may run before it stops itself, in minutes. ' +
@@ -467,7 +467,14 @@ const PREFERENCES = {
       'is an honest ending: if people were there they were warned and chose not to extend, ' +
       'and if nobody was there that is the case this exists for. Somebody can always invite ' +
       'it back. 0 removes the cap, which is reasonable while you are sitting in the call and ' +
-      'a bad idea otherwise.',
+      'a bad idea otherwise. '
+      + 'The default is 75 rather than a round hour on purpose. Warning five minutes out, a '
+      + '60 minute cap fires at 55, which is the wrap-up of every scheduled one-hour call, '
+      + 'and every realtime bot in every such call would say it at the same moment. 70 is '
+      + 'not far enough either: it warns at 65, in the awkward few minutes of a call running '
+      + 'over, when the clock is already the thing everyone is worried about. 75 warns at 70, '
+      + 'clear of both the hour and a normal overrun, and the extra cost is small against a '
+      + 'cap whose real job is catching a bot abandoned for hours.',
   },
   realtimeRespondWhenUnnamed: {
     type: 'boolean',

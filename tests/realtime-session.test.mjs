@@ -452,3 +452,25 @@ test('extend_session is fenced to an explicit request', () => {
   assert.match(t.description, /ONLY when somebody then actually asks/i);
   assert.match(t.description, /costs money by the minute/i);
 });
+
+test('the default cap clears a scheduled hour, and its overrun', () => {
+  // Not a round number on purpose. Warning five minutes out, a 60 minute cap
+  // fires at 55 — the wrap-up of every scheduled one-hour call, with every
+  // realtime bot in every such call saying it at the same moment. 70 warns at
+  // 65, in the awkward minutes of a call running over, when the clock is
+  // already what everyone is worried about.
+  const { PREFERENCES } = require('../electron-app/preferences-schema.js');
+  const cap = PREFERENCES.realtimeMaxMinutes.default;
+
+  const warnsAt = (mins) => {
+    for (let m = 0; m <= mins; m += 0.5) {
+      if (realtimeBudget({ startedAt: T0, now: T0 + m * 60000, maxMinutes: cap }).shouldWarn) return m;
+    }
+    return null;
+  };
+
+  assert.ok(warnsAt(cap) > 60, `must not warn during a scheduled hour (warns at ${warnsAt(cap)})`);
+  assert.ok(warnsAt(cap) >= 68, 'and should clear a few minutes of overrun too');
+  assert.equal(realtimeBudget({ startedAt: T0, now: T0 + 60 * 60000, maxMinutes: cap }).expired, false,
+    'an hour-long call must never be cut off');
+});

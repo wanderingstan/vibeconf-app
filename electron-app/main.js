@@ -13,6 +13,7 @@ const { MEET } = require('./meet-selectors.js'); // pure data — safe in the ma
 const { resolveSvg } = require('./svg-resolver.js');
 // One source of truth for the unconfigured bot name — see preferences-schema.
 const { DEFAULT_BOT_NAME, PREFERENCES } = require('./preferences-schema');
+const { resolveRealtimeConfig, mintEphemeralSession, buildInstructions, buildResponsePolicy, realtimeBudget } = require('./realtime-session');
 const { resolveBotName, botNameForAppUI } = require('./bot-name.js');
 const { resolveVoice } = require('./voice-status.js');
 const { isInCall, isFinished, isCallComplete } = require('./call-phase.js');
@@ -931,11 +932,237 @@ function beginAfterCallWorkOrTeardown(reason) {
 // (the old panel-button behavior) just killed the media connection on
 // nav-away and left a ghost participant for others until Google's timeout
 // reaped it — then hands off to beginAfterCallWorkOrTeardown for the rest.
+// --- EXPERIMENT: realtime speech-to-speech voice -----------------------------
+// Off unless realtimeVoice is set for THIS bot, so a realtime bot and normal
+// Claude-backed bots can sit in the same call. The API key never leaves main:
+// we mint a ~60s ephemeral secret and hand only that to the page, which does
+// the WebRTC negotiation and wires the audio itself (see page-inject.js).
+//
+// NOT connected to Claude. This establishes the audio path only.
+let realtimeVoiceActive = false;
+// Set only when the PAGE reports the session negotiated. realtimeVoiceActive
+// means "we asked for one"; this means "there is a mouth on the other end".
+// speakText routes on THIS, so a session that failed to come up falls back to
+// the normal voice instead of posting words into a dead data channel.
+let realtimeVoiceLive = false;
+let realtimePolicyTimer = null;
+let realtimePolicyLast = '';
+
+// Who is allowed to make this bot speak.
+//
+// The realtime model no longer decides (create_response:false). Left to itself
+// it answered 117 of 179 human turns in a three-way call, including plenty
+// aimed at the other person, because it behaves like the two-party
+// conversations it was trained on. This is the app making the call it already
+// knows how to make: the same lowercase substring test the passive-mode name
+// gate uses, over the names actually in the room.
+function computeRealtimePolicy() {
+  return buildResponsePolicy({
+    botName: (localServer.getEffectiveBotName && localServer.getEffectiveBotName()) || '',
+    participants: localServer.participants || [],
+    respondWhenUnnamed: prefValue('realtimeRespondWhenUnnamed') !== false,
+  });
+}
+
+// The time limit on a realtime session.
+//
+// Realtime audio bills per minute in BOTH directions for as long as the session
+// is open, including while nobody is talking, so a bot forgotten in an empty
+// room is a meter left running with nobody watching it. That is the only
+// failure here that is invisible until the bill arrives.
+//
+// Five minutes out the bot says so itself and anybody in the room can ask it to
+// keep going. At the limit it says goodbye and LEAVES.
+//
+// Leaving rather than falling back to the normal voice. Falling back sounded
+// kinder and is worse: it leaves a bot in the room in a state nobody chose, and
+// it only stops the audio meter, while the agent, the recording and the rest
+// keep running. If people are in the call they were warned and did not extend,
+// which is an answer. If nobody is there, leaving is the whole point.
+let realtimeStartedAt = 0;
+let realtimeExtraMs = 0;
+let realtimeWarnedAt = null;
+let realtimeBudgetTimer = null;
+
+function realtimeBudgetNow() {
+  return realtimeBudget({
+    startedAt: realtimeStartedAt,
+    now: Date.now(),
+    maxMinutes: prefValue('realtimeMaxMinutes'),
+    extraMs: realtimeExtraMs,
+    warnedAt: realtimeWarnedAt,
+  });
+}
+
+function checkRealtimeBudget() {
+  if (!realtimeVoiceLive || !realtimeStartedAt) return;
+  const b = realtimeBudgetNow();
+  if (!b.capped) return;
+
+  if (b.expired) {
+    console.log('[realtime] time limit reached — saying goodbye and leaving');
+    // Stop the clock first, so a slow goodbye cannot re-trigger this.
+    if (realtimeBudgetTimer) { clearInterval(realtimeBudgetTimer); realtimeBudgetTimer = null; }
+    broadcastError('Realtime voice: time limit reached — the bot is leaving the call.');
+
+    // Say why before going. A bot that vanishes mid-call reads as a crash, and
+    // the one thing everyone will want to know is whether it can come back.
+    sendExtMsg({
+      action: 'realtime-note',
+      announce: true,
+      text: 'You have reached your time limit and are leaving the call now. Say a short '
+        + 'goodbye, and that somebody can bring you back whenever they want.',
+    });
+
+    // Long enough for that sentence to actually play. Leaving mid-word is the
+    // same bad ending as leaving with no word at all.
+    setTimeout(() => {
+      try { requestCleanLeave('realtime time limit'); }
+      catch (err) { console.warn('[realtime] leave after time limit failed:', err.message); }
+    }, 6000);
+    return;
+  }
+
+  if (b.shouldWarn) {
+    realtimeWarnedAt = b.warnKey;
+    console.log('[realtime] ' + b.minutesLeft + ' minute(s) left — asking the bot to say so');
+    sendExtMsg({
+      action: 'realtime-note',
+      announce: true,
+      // Says LEAVE, not "your voice switches off". Heard live once the behaviour
+      // changed: the bot passed on the old wording faithfully, so the room was
+      // told the wrong thing about what was going to happen to it.
+      text: 'You have about ' + b.minutesLeft + ' minutes left before this call reaches its '
+        + 'time limit, at which point you will say goodbye and leave the call. Anybody here '
+        + 'can ask you to keep going, and you will stay.',
+    });
+  }
+}
+
+// Tell the voice model who just started talking.
+//
+// It hears ONE mixed track for the whole room (every remote participant is
+// summed into a single upload stream), so it cannot tell two people apart even
+// in principle. That is a plausible share of the over-eagerness: it has no way
+// to know that "Gabe, what do you think?" was not addressed to it.
+//
+// Announce CHANGES of speaker, never the bot itself, and never the same person
+// twice while they simply keep talking.
+//
+// The first cut used a 1.5s debounce and flooded the session: speakingChanged
+// fires every second or so for as long as somebody is talking, so a single
+// continuous speaker produced "Stan James is speaking now" over and over, which
+// is the exact burying this was supposed to prevent.
+//
+// A change of speaker is announced immediately. The same speaker is only
+// re-announced after a long quiet gap, where it is genuinely useful again
+// ("still Stan, after a pause") rather than noise.
+let realtimeLastSpeaker = '';
+let realtimeLastSpeakerAt = 0;
+const REALTIME_SPEAKER_REPEAT_MS = 45000;
+
+function noteRealtimeSpeaker(name) {
+  if (!realtimeVoiceLive) return;
+  const who = String(name || '').trim();
+  if (!who) return;
+
+  // The bot's own voice is not news to the bot.
+  const botLower = String((localServer.getEffectiveBotName && localServer.getEffectiveBotName()) || '').toLowerCase();
+  const lower = who.toLowerCase();
+  if (lower === 'you' || (botLower && lower.includes(botLower))) return;
+
+  const now = Date.now();
+  if (who === realtimeLastSpeaker && now - realtimeLastSpeakerAt < REALTIME_SPEAKER_REPEAT_MS) return;
+  realtimeLastSpeaker = who;
+  realtimeLastSpeakerAt = now;
+
+  sendExtMsg({ action: 'realtime-note', text: who + ' is speaking now.' });
+}
+
+function pushRealtimePolicy(force) {
+  if (!realtimeVoiceLive) return;
+  let policy;
+  try { policy = computeRealtimePolicy(); } catch { return; }
+  const key = JSON.stringify(policy);
+  if (!force && key === realtimePolicyLast) return;
+  realtimePolicyLast = key;
+  sendExtMsg({ action: 'realtime-policy', policy });
+  console.log('[realtime] policy:', policy.gate ? 'gated' : 'open',
+    '| bot=' + policy.botNames.join('/'), '| others=' + policy.otherNames.join('/'));
+}
+
+async function startRealtimeVoice(botName) {
+  const cfg = resolveRealtimeConfig({ store, env: process.env });
+  if (!cfg.enabled) return;
+
+  if (!cfg.ready) {
+    const why = 'realtimeVoice is on but ' + cfg.missing.join(', ') + ' is not set';
+    console.warn('[realtime]', why);
+    broadcastError('Realtime voice: ' + why);
+    return;
+  }
+
+  if (cfg.voiceFallback) {
+    const why = 'Realtime voice: "' + cfg.voiceFallback + '" is not a voice this model has, '
+      + 'so the bot is speaking as "' + cfg.voice + '".';
+    console.warn('[realtime]', why);
+    broadcastError(why);
+  }
+
+  if (cfg.suspicious) {
+    // Say it before the round trip, because OpenAI's 401 for a mangled key is
+    // word for word its 401 for a revoked one.
+    const hint = 'Realtime voice: that key does not start with "sk-" (' +
+      cfg.apiKey.length + ' chars), so a character was probably lost on paste. ' +
+      'Re-paste it in App Settings.';
+    console.warn('[realtime]', hint);
+    broadcastError(hint);
+  }
+
+  try {
+    const session = await mintEphemeralSession({
+      ...cfg,
+      instructions: buildInstructions({ botName: botName || store.get('botName') }),
+    });
+    sendExtMsg({
+      action: 'start-realtime',
+      secret: session.secret,
+      model: session.model,
+      // The provider labels the bot's own captions with this instead of "You",
+      // so the transcript reads as one conversation among named participants.
+      botName: botName || store.get('botName') || '',
+    });
+    realtimeVoiceActive = true;
+    console.log('[realtime] session minted (' + session.shape + '), voice=' + session.voice +
+      ', model=' + session.model);
+  } catch (err) {
+    console.error('[realtime] could not start:', err.message);
+    broadcastError('Realtime voice: ' + err.message.slice(0, 140));
+  }
+}
+
+function stopRealtimeVoice(why) {
+  if (!realtimeVoiceActive) return;
+  realtimeVoiceActive = false;
+  realtimeVoiceLive = false;
+  if (realtimePolicyTimer) { clearInterval(realtimePolicyTimer); realtimePolicyTimer = null; }
+  if (realtimeBudgetTimer) { clearInterval(realtimeBudgetTimer); realtimeBudgetTimer = null; }
+  realtimeStartedAt = 0;
+  realtimeExtraMs = 0;
+  realtimeWarnedAt = null;
+  realtimePolicyLast = '';
+  realtimeLastSpeaker = '';
+  try { localServer.realtimeVoiceActive = false; } catch { /* not up */ }
+  console.log('[realtime] stopping (' + (why || 'unspecified') + ')');
+  try { sendExtMsg({ action: 'stop-realtime' }); } catch { /* view already gone */ }
+}
+
 function requestCleanLeave(reason) {
   // #209: finalize any call audio(+video) recording before teardown. Async
   // now (video stop + merge are real work) — fire-and-forget, teardown must
   // not block on it; errors are already logged inside.
   stopCallRecording().catch((err) => console.warn('[call-record] stop on leave failed:', err.message));
+  stopRealtimeVoice('leave-call');
   stopAllRunwayFaces('leave-call'); // P2: end Runway sessions + timers when leaving the call
   shareIntended = false; // no present is pending once we're leaving
   shareGeneration++; // cancel any in-flight Present-now retry loop before the view tears down
@@ -1076,6 +1303,7 @@ function performLeaveTeardown(via) {
   step('stopCallRecording', () => {
     stopCallRecording().catch((err) => console.warn('[call-record] stop on teardown failed:', err.message));
   });
+  step('stopRealtimeVoice', () => stopRealtimeVoice('teardown'));
   step('closeClaudeTerminal', () => closeClaudeTerminal());
   step('showIdle', () => showIdle());
   console.log(ts(), '[electron] Call teardown complete (via ' + via + ') — status',
@@ -1321,6 +1549,83 @@ const localServer = new globalThis.LocalServer({
   extraRoutes: async (req, res) => {
     let pathname;
     try { pathname = new URL(req.url, 'http://127.0.0.1').pathname; } catch { return false; }
+
+    // EXPERIMENT: brief() — the slow model hands the realtime model something
+    // it could not know, WITHOUT asking it to say anything. A silent inject:
+    // conversation.item.create with no response.create, so it can fire at any
+    // moment, mid-sentence included, and needs none of the floor machinery
+    // speak() does.
+    //
+    // Deliberately NOT on the sync/transcript path. A brief carries no promise
+    // that anything is uttered, so the etiquette apparatus (ordering, stashing,
+    // barge-in, "was it spoken") has nothing to do here, and routing it through
+    // that would only re-inherit contracts it does not have.
+    // The slow half asking the voice to sit a moment out: two other people are
+    // mid-exchange and nothing the bot says will help. Always time-limited, so
+    // a forgotten hold cannot mute the bot for the rest of the call.
+    if (pathname === '/api/realtime/hold' && req.method === 'POST') {
+      const send = (code, obj) => {
+        res.writeHead(code, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(obj));
+      };
+      let raw = '';
+      try {
+        raw = await new Promise((resolve) => {
+          let buf = '';
+          req.on('data', (c) => { buf += c; });
+          req.on('end', () => resolve(buf));
+        });
+      } catch { send(400, { success: false, error: 'could not read body' }); return true; }
+
+      let body = {};
+      try { body = JSON.parse(raw || '{}'); } catch { /* below */ }
+      const seconds = Math.max(0, Math.min(120, Number(body.seconds) || 0));
+      const reason = String(body.reason || '').slice(0, 200);
+
+      if (!realtimeVoiceLive) {
+        send(409, { success: false, error: 'no realtime session is live on this bot' });
+        return true;
+      }
+      console.log('[realtime] hold:', seconds ? seconds + 's — ' + reason : 'released');
+      sendExtMsg({ action: 'realtime-hold', seconds, reason });
+      send(200, { success: true, seconds });
+      return true;
+    }
+
+    if (pathname === '/api/realtime/brief' && req.method === 'POST') {
+      const send = (code, obj) => {
+        res.writeHead(code, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(obj));
+      };
+      let raw = '';
+      try {
+        raw = await new Promise((resolve) => {
+          let buf = '';
+          req.on('data', (c) => { buf += c; });
+          req.on('end', () => resolve(buf));
+        });
+      } catch { send(400, { success: false, error: 'could not read body' }); return true; }
+
+      let note = '';
+      try { note = String(JSON.parse(raw || '{}').note || '').trim(); } catch { /* below */ }
+      if (!note) { send(400, { success: false, error: 'note is required' }); return true; }
+
+      if (!realtimeVoiceLive) {
+        // Say so rather than swallowing it: without a session there is nobody
+        // to brief, and the agent should stop rather than keep narrating.
+        send(409, { success: false, error: 'no realtime session is live on this bot' });
+        return true;
+      }
+      if (!meetView || meetView.webContents.isDestroyed()) {
+        send(409, { success: false, error: 'the call view is gone' });
+        return true;
+      }
+
+      console.log('[realtime] brief:', note.slice(0, 80));
+      sendExtMsg({ action: 'realtime-brief', note });
+      send(200, { success: true });
+      return true;
+    }
     // Turn the CALLER's Claude session into a bot (/call-new-bot). An HTTP route
     // rather than only IPC because the caller is a terminal, not the panel.
     if (pathname === '/api/adopt-session-as-bot' && req.method === 'POST') {
@@ -2349,11 +2654,14 @@ const localServer = new globalThis.LocalServer({
       // ack/index.js for why timing decides this and pool membership does not
       // (#534). anyoneSpeaking is read HERE, at the moment the ack plays,
       // because that is the moment the question is about.
-      speakText(ack, undefined, undefined, ackModule.speakOptionsFor({
-        pool: ackResult.pool,
-        anyoneSpeaking: localServer.anyoneSpeaking,
-        ackVolume: prefValue('ackVolume'),
-      }));
+      speakText(ack, undefined, undefined, {
+        ...ackModule.speakOptionsFor({
+          pool: ackResult.pool,
+          anyoneSpeaking: localServer.anyoneSpeaking,
+          ackVolume: prefValue('ackVolume'),
+        }),
+        ack: true, // realtime suppresses these; it backchannels on its own
+      });
       // Surface the phrase to the slow model on its next wait_for_speech,
       // so it can self-correct if its real response contradicts the ack
       // tone. Cleared after one read on the local-server side.
@@ -2638,11 +2946,14 @@ const localServer = new globalThis.LocalServer({
         // one fires into a detected OPENING, so anyoneSpeaking is normally
         // false and it plays at full volume — which is right: firing into a
         // gap is taking the floor, not murmuring under someone.
-        speakText(phrase, undefined, undefined, require('./ack').speakOptionsFor({
-          pool: isLong ? 'long' : 'short',
-          anyoneSpeaking: localServer.anyoneSpeaking,
-          ackVolume: prefValue('ackVolume'),
-        }));
+        speakText(phrase, undefined, undefined, {
+          ...require('./ack').speakOptionsFor({
+            pool: isLong ? 'long' : 'short',
+            anyoneSpeaking: localServer.anyoneSpeaking,
+            ackVolume: prefValue('ackVolume'),
+          }),
+          ack: true, // realtime suppresses these; it backchannels on its own
+        });
         localServer.setLastAckPhrase(phrase);
       }
     }
@@ -5962,9 +6273,41 @@ function prewarmAckCache() {
   }
 }
 
-function speakText(text, voice, emoji, { volume } = {}) {
+function speakText(text, voice, emoji, { volume, ack } = {}) {
   // Sanitize markdown out of the spoken string only (#160).
   const spokenText = stripMarkdownForTts(text);
+
+  // Realtime owns the mouth. Synthesizing here as well would put a SECOND
+  // voice, in a different timbre, into the very same VirtualMic destination
+  // the model is already feeding, and both would be audible in the room.
+  //
+  // So hand the words to the model instead of speaking them ourselves: it says
+  // them in its own voice, and there is only ever one mouth. `voice` is ignored
+  // on this path (the session was opened with a fixed voice, and swapping it
+  // mid-call would mean renegotiating).
+  //
+  // Deliberately NOT a silent drop. #253 is the cautionary tale: the agent was
+  // told "Spoken", nothing downstream contradicted it, and a farewell played
+  // into an empty room. A delivery that fails reports back through
+  // notePlaybackFailure, via the say-failed status above.
+  if (realtimeVoiceLive) {
+    if (ack) {
+      // Acks exist to mask the slow model's thinking latency. The realtime
+      // model backchannels on its own, in the same voice and better timed, so
+      // a second "mm-hmm" routed through it would just be it talking to
+      // itself. Nothing is owed to a caller here: acks are fire-and-forget.
+      console.log('[realtime] ack suppressed (the model does its own):', spokenText.slice(0, 40));
+      return;
+    }
+    if (!meetView || meetView.webContents.isDestroyed()) {
+      try { localServer.notePlaybackFailure('the Meet view was gone (call ended or torn down)'); }
+      catch { /* local server not up */ }
+      return;
+    }
+    console.log('[realtime] delivering to the model:', spokenText.slice(0, 60));
+    sendExtMsg({ action: 'realtime-say', text: spokenText });
+    return;
+  }
   enqueueAudio(async () => {
     // Temporarily override voice if specified (works for macOS, ElevenLabs, and
     // Voicebox). Safe under serialization — no concurrent speak can clobber it.
@@ -8153,7 +8496,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '60';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '66';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
@@ -8195,6 +8538,27 @@ function ensureClaudeIntegration() {
     }
   } catch (err) {
     console.warn('[electron] /call skill install failed:', err.message);
+  }
+
+  // --- Remove the old ~/.claude/skills/realtime-call/ ---
+  // /realtime-call was a stopgap: a separate command for a bot whose voice
+  // belongs to the realtime model. The mode is a property of the BOT, not of
+  // how you start it, so /join-call now branches on its realtimeVoice
+  // preference and answers with a completely different operating prompt.
+  //
+  // Deleted rather than left behind. A slash command that still appears in the
+  // list, still installs, and quietly does the wrong thing is worse than one
+  // that is gone: it would join with the realtime prompt whatever the bot is
+  // actually set to.
+  try {
+    const staleRtSkill = path.join(claudeDir, 'skills', 'realtime-call');
+    if (fs.existsSync(staleRtSkill)) {
+      fs.rmSync(staleRtSkill, { recursive: true, force: true });
+      console.log('[electron] Removed the old /realtime-call skill (superseded by /join-call)');
+      changed = true;
+    }
+  } catch (err) {
+    console.warn('[electron] could not remove the old /realtime-call skill:', err.message);
   }
 
   // --- Ensure global skill in ~/.claude/skills/call-new-bot/ ---
@@ -12967,6 +13331,126 @@ function setupIPC() {
     // #209: begin call audio recording once the page is live (page-inject is
     // active by the time this fires) — a no-op unless recordCallAudio is on.
     startCallRecording(meetCode, botName);
+    // EXPERIMENT: hand this bot voice duty to the realtime model instead of the
+    // caption/Claude/TTS loop. A no-op unless realtimeVoice is on for this bot.
+    startRealtimeVoice(botName).catch((err) => console.warn('[realtime] start failed:', err.message));
+  });
+
+  // EXPERIMENT: the voice model asking to do something itself.
+  //
+  // Only tools whose ARGUMENTS come from the room, plus ask_teammate as the
+  // escape hatch for everything else. Nothing here needs the model to know
+  // something it has no way of knowing, which is what keeps a fabricated tool
+  // call from having consequences a fabricated sentence would not.
+  ipcMain.on('realtime-tool', async (_event, { callId, name, args } = {}) => {
+    const reply = (output) => {
+      console.log('[realtime] tool', name, '->', String(output).slice(0, 90));
+      sendExtMsg({ action: 'realtime-tool-result', callId, output });
+    };
+    if (!callId || !name) return;
+
+    try {
+      if (name === 'ask_teammate') {
+        const question = String((args && args.question) || '').trim();
+        if (!question) return reply('Nothing was asked, so nothing was passed on.');
+        // Rides the same one-shot channel the ack phrase uses, so it lands on
+        // the slow half's next wait_for_speech rather than needing a new poll.
+        try { localServer.addVoiceRequest(question); }
+        catch { return reply('Could not reach your teammate.'); }
+        return reply('Passed to your teammate. They answer in their own time, not to you, '
+          + 'so carry on with the conversation and do not wait for them.');
+      }
+
+      if (name === 'extend_session') {
+        const mins = Math.max(1, Math.min(120, Number((args && args.minutes) || 0) || 15));
+        if (!realtimeVoiceLive) return reply('There is no session to extend.');
+        realtimeExtraMs += mins * 60000;
+        // Clear the warning so the NEXT deadline announces itself too. Without
+        // this an extension would buy silence rather than time: the bot would
+        // stop again with no warning at all.
+        realtimeWarnedAt = null;
+        const b = realtimeBudgetNow();
+        console.log('[realtime] extended by', mins, 'min —', b.minutesLeft, 'left');
+        broadcastError('Realtime voice: extended by ' + mins + ' minutes (asked for in the call).');
+        return reply('Extended. About ' + b.minutesLeft + ' minutes left now. Say so briefly.');
+      }
+
+      if (name === 'send_chat') {
+        const text = String((args && args.text) || '').trim();
+        if (!text) return reply('Nothing to send.');
+        const r = await chatRequest(CALL_COMMANDS.sendChat, { text }, 15000);
+        return reply(r && r.success === false
+          ? 'The chat message did not send: ' + String(r.error || 'unknown')
+          : 'Sent to the call chat.');
+      }
+
+      if (name === 'write_whiteboard') {
+        const content = String((args && args.content) || '').trim();
+        if (!content) return reply('Nothing to write.');
+        const roomId = localServer.roomId;
+        if (!roomId) return reply('There is no call to write a board for.');
+        const botName = (localServer.getEffectiveBotName && localServer.getEffectiveBotName()) || 'bot';
+        // Straight through the app's own sync route, the same one the MCP
+        // whiteboard tool uses, so the remote-write check (#221) still applies
+        // and a board that never reached the room is still reported as such.
+        const res = await fetch(`http://127.0.0.1:${localServer.port}/api/sync/${roomId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sender: botName, role: 'bot', ownerName: botName,
+            whiteboard: { content },
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        const wb = (data && data.results && data.results.whiteboard) || {};
+        return reply(wb.remote === false
+          ? 'Written locally, but it did not reach the room, so nobody can see it. Say so.'
+          : 'On the board.');
+      }
+
+      return reply('There is no tool called ' + name + '.');
+    } catch (err) {
+      return reply('That did not work: ' + String(err.message || err).slice(0, 120));
+    }
+  });
+
+  // EXPERIMENT: realtime voice status from the page. A session that fails to
+  // negotiate is otherwise invisible unless someone has the page console open,
+  // which for a bot sitting on a call is nobody. The two failure shapes worth
+  // shouting about are a refused session and losing the peer connection
+  // mid-call; both leave a bot that looks present and stays silent.
+  ipcMain.on('realtime-status', (_event, { type, detail } = {}) => {
+    console.log('[realtime]', type, detail == null ? '' : String(detail).slice(0, 160));
+    if (type === 'live') {
+      realtimeVoiceLive = true;
+      // People join and leave, and the gate turns on at the third of them.
+      pushRealtimePolicy(true);
+      if (realtimePolicyTimer) clearInterval(realtimePolicyTimer);
+      realtimePolicyTimer = setInterval(() => pushRealtimePolicy(false), 5000);
+
+      realtimeStartedAt = Date.now();
+      realtimeExtraMs = 0;
+      realtimeWarnedAt = null;
+      if (realtimeBudgetTimer) clearInterval(realtimeBudgetTimer);
+      // 15s is well inside the 5 minute warning lead, and a minute-scale budget
+      // does not need a tighter clock than that.
+      realtimeBudgetTimer = setInterval(checkRealtimeBudget, 15000);
+      // So the bot's own captions are tagged as its own speech rather than
+      // dropped as a duplicate of a record that does not exist in this mode.
+      try { localServer.realtimeVoiceActive = true; } catch { /* not up */ }
+    } else if (type === 'failed') {
+      broadcastError('Realtime voice: ' + String(detail || '').slice(0, 140));
+      realtimeVoiceActive = false;
+      realtimeVoiceLive = false;
+    } else if (type === 'pc-failed' || type === 'pc-disconnected' || type === 'stopped') {
+      if (type !== 'stopped') broadcastError('Realtime voice: lost the connection to the model');
+      realtimeVoiceLive = false;
+    } else if (type === 'say-failed') {
+      // The agent was about to be told "Spoken" for words that never played.
+      // #253 is the same shape: silence the session believes was speech.
+      try { localServer.notePlaybackFailure('the realtime session could not deliver it (' + detail + ')'); }
+      catch { /* local server not up */ }
+    }
   });
 
   // #209: audio chunks streamed from the page-world CallRecorder. Decode and
@@ -13435,6 +13919,8 @@ function setupIPC() {
     if (name && sync.roomId) {
       updateSpeakingState(name, speaking);
     }
+    // A realtime bot hears one mixed track and cannot tell who is talking.
+    if (speaking) noteRealtimeSpeaker(name);
   });
 
   // --- Participant list + presenting state from preload-meet.js ---
@@ -13623,6 +14109,34 @@ function setupIPC() {
   // not running, etc.) and the panel just stays quiet.
   ipcMain.handle('synth-voice-sample', async (_event, opts = {}) => {
     try {
+      // The realtime voices are a different set entirely, and none of the
+      // TTSProvider backends can render one. They ARE available through
+      // OpenAI's ordinary speech endpoint though (verified: all ten render,
+      // while nova/onyx/fable are rejected), so a preview needs no realtime
+      // session, no call, and no recorded samples to keep in step with a voice
+      // roster that is not ours.
+      //
+      // Close to what the room hears rather than identical: this is the TTS
+      // model speaking, not the realtime one. Good enough for "is this the
+      // voice I want", which is the only question a picker asks.
+      if (opts.provider === 'openai-realtime') {
+        const key = String(store.get('realtimeApiKey') || process.env.OPENAI_API_KEY || '').trim();
+        if (!key) return { ok: false, error: 'no OpenAI key' };
+        const r = await fetch('https://api.openai.com/v1/audio/speech', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'gpt-4o-mini-tts',
+            voice: opts.voiceId || 'cedar',
+            input: opts.text || 'Hi, this is how I sound.',
+          }),
+          signal: AbortSignal.timeout(20000),
+        });
+        if (!r.ok) return { ok: false, error: `openai ${r.status}` };
+        const buf = Buffer.from(await r.arrayBuffer());
+        return { ok: true, dataUrl: `data:audio/mpeg;base64,${buf.toString('base64')}` };
+      }
+
       const preview = new globalThis.TTSProvider({
         provider: opts.provider,
         apiKey: store.get('ttsApiKey') || '', // app-level ElevenLabs key

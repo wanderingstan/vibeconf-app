@@ -36,6 +36,20 @@ test('scope map: the decided app-level keys, everything else per-profile', () =>
   }
 });
 
+test('realtime voice splits auth from identity', () => {
+  // The whole point of this module: a key is machine auth, so it is pasted
+  // once for the fleet. Which bot uses realtime, and the voice it speaks in,
+  // are identity/behaviour and stay per-profile. Getting this backwards is why
+  // the split exists: a per-profile key means pasting it once per bot, and an
+  // app-level switch would drag every bot onto realtime at once.
+  assert.equal(isAppLevel('realtimeApiKey'), true, 'the OpenAI key is machine auth');
+  for (const k of ['realtimeVoice', 'realtimeVoiceName', 'realtimeModel']) {
+    assert.equal(isAppLevel(k), false, `${k} should stay per-bot`);
+  }
+  // Nothing predates the pref, so there is no per-profile copy to promote.
+  assert.equal(MIGRATE_KEYS.includes('realtimeApiKey'), false);
+});
+
 test('ScopedStore routes writes: app keys land in the base config, profile keys in the profile config', () => {
   const base = tmpDir();
   const prof = tmpDir();
@@ -193,7 +207,13 @@ test('APP_LEVEL_KEYS is exactly the decided set (guard against accidental promot
     // it qualifies agentHosting the way agentHosting qualifies agentBackend, so
     // it shares their scope. Same invisibility trap otherwise. Not in
     // MIGRATE_KEYS: a fresh pref defaulting to false, nothing to promote.
-    ['agentBackend', 'agentHosting', 'automationProbed', 'claudeIntegrationRemoved', 'codexIntegrationRemoved', 'confirmQuit', 'dangerousMode', 'keepCallRecordingTracks', 'linuxAgentTmux', 'remoteLogging', 'syncBaseUrl', 'ttsApiKey', 'ttsApiKeySource', 'updateChannel', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
+    // realtimeApiKey (experiment): the OpenAI secret for realtime voice. Machine
+    // auth, exactly like ttsApiKey, so it is pasted once for the whole fleet.
+    // Its companions stay per-profile on purpose: realtimeVoice decides whether
+    // a GIVEN bot uses realtime and realtimeVoiceName how it sounds, and both
+    // are identity rather than auth. Promoting either would drag every bot onto
+    // realtime at once. Not in MIGRATE_KEYS: nothing predates it.
+    ['agentBackend', 'agentHosting', 'automationProbed', 'claudeIntegrationRemoved', 'codexIntegrationRemoved', 'confirmQuit', 'dangerousMode', 'keepCallRecordingTracks', 'linuxAgentTmux', 'realtimeApiKey', 'remoteLogging', 'syncBaseUrl', 'ttsApiKey', 'ttsApiKeySource', 'updateChannel', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
   );
 });
 

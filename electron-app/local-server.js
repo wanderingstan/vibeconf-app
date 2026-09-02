@@ -219,6 +219,10 @@ class LocalServer {
     // in THIS call. Set on join when bot_name is explicit, cleared on leave.
     // The persistent store preference (getConfiguredBotName) is never touched.
     this.currentCallBotName = null;
+    // EXPERIMENT: set by main while a realtime voice session owns this bot.
+    // Changes one thing here: whether the bot's own captions are labelled as
+    // its own speech. See _turnsAsEntries for why that matters.
+    this.realtimeVoiceActive = false;
     this.chatUnread = false; // passive "… - New message" signal from the chat button
 
     // Response-state tracking — what the bot last responded to. Used to detect
@@ -453,6 +457,10 @@ class LocalServer {
     // its full response contradicts the ack tone (e.g. ack was "Uh-huh"
     // but the real answer is "no, actually..."). Cleared after one read.
     this.lastAckPhrase = null;
+    // EXPERIMENT: things the VOICE model asked its slow half for, via its
+    // ask_teammate tool. Surfaced once on the next wait_for_speech, same
+    // one-shot discipline as lastAckPhrase.
+    this.pendingVoiceRequests = [];
 
     // Active-listening probe bank (#245). The slow model deposits a short,
     // context-aware interjection here on background ticks via bank_probe; the
@@ -1733,6 +1741,18 @@ class LocalServer {
   }
 
 
+  // The voice model asking its slow half for something (ask_teammate). Capped:
+  // a model that gets stuck asking must not grow this without bound, and an
+  // old request is worth less than a recent one anyway.
+  addVoiceRequest(question) {
+    const q = String(question || '').trim();
+    if (!q) return;
+    this.pendingVoiceRequests.push(q.slice(0, 500));
+    while (this.pendingVoiceRequests.length > 5) this.pendingVoiceRequests.shift();
+    console.log('[local-server] voice model asked its teammate:', q.slice(0, 90));
+  }
+
+
   // The one set of callbacks every agent-activity transport feeds (#242).
   // Factored out so the constructor, useStreamAgentSource and
   // releaseStreamAgentSource can't drift apart.
@@ -2955,11 +2975,30 @@ class LocalServer {
   _turnsAsEntries() {
     const arr = [];
     for (const turn of this.turns.values()) {
+      // The bot's own speech, when a realtime session is what produced it.
+      //
+      // Normally every caption turn is a 'member': the bot's own words reach
+      // the transcript from the authoritative record of what it told TTS to
+      // say, tagged role 'bot', and the caption echo of that is a lossy
+      // duplicate the MCP layer drops (participantName !== BOT_NAME ||
+      // role === 'bot').
+      //
+      // In realtime mode there is no authoritative record. The model chooses
+      // its own words and nothing here ever sees them, so the caption is the
+      // ONLY account, and leaving it as 'member' means that filter throws away
+      // the bot's entire side of the conversation. Which is exactly what it
+      // did: the agent could read every human turn and none of its own.
+      //
+      // Labelling it 'bot' is not a workaround. It is what the entry is.
+      const isOwnSpeech = this.realtimeVoiceActive
+        && !!turn.speaker
+        && turn.speaker === this.getEffectiveBotName();
+
       arr.push({
         id: turn.id,
         roomId: this.roomId,
         participantName: turn.speaker,
-        role: 'member',
+        role: isOwnSpeech ? 'bot' : 'member',
         text: turn.text,
         isFinal: turn.settled,
         timestamp: new Date(turn.firstSeen).toISOString(),
@@ -4511,6 +4550,15 @@ class LocalServer {
     const previousAckPhrase = startTime ? this.lastAckPhrase : null;
     if (startTime && this.lastAckPhrase) this.lastAckPhrase = null;
 
+    // The voice model asked for something it could not do itself. This is the
+    // ONLY way that request reaches the slow half: a tool call is not speech,
+    // so it never appears in the transcript, and without this it would be a
+    // promise made in the room that nothing downstream ever hears about.
+    const voiceRequests = startTime && this.pendingVoiceRequests.length
+      ? this.pendingVoiceRequests.slice()
+      : null;
+    if (startTime && this.pendingVoiceRequests.length) this.pendingVoiceRequests = [];
+
     // Same one-shot surface for any barge-in stash that just auto-replayed.
     // The slow model needs to know its queued thought already went out so
     // it doesn't try to repeat it — instead it can build on it or stay
@@ -4543,6 +4591,7 @@ class LocalServer {
       elapsed,
       continuationOfPriorResponse,
       previousAckPhrase,
+      voiceRequests,
       replayedBargeInStash,
       discardedBargeInStash,
       speechTruncated,
@@ -5690,6 +5739,7 @@ class LocalServer {
           alreadyInCall: true,
           status: this.callStatus,
           botName: this.getEffectiveBotName() || null,
+          realtimeVoice: this._pref('realtimeVoice') === true,
         };
       }
       // #222: refuse to join under a name that's already in the call — two
@@ -5713,7 +5763,10 @@ class LocalServer {
         if (botName) this.currentCallBotName = botName;
         this.onJoinCall(meetCode, botName);
         if (botName) this._everJoinedAs = botName;
-        results.join = { ok: true };
+        // Which KIND of bot this is. join_call answers with a completely
+        // different operating prompt for a realtime bot, so the agent never
+        // sees the contract that does not apply to it. One command, two jobs.
+        results.join = { ok: true, realtimeVoice: this._pref('realtimeVoice') === true };
       }
     }
 

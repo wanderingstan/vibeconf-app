@@ -429,6 +429,74 @@ const PREFERENCES = {
       'Which engine renders the Voicebox profile (e.g. "kokoro"). Set alongside ' +
       'voiceboxProfileId by set_voice; a profile id without its engine will not speak.',
   },
+  realtimeVoice: {
+    type: 'boolean',
+    default: false,
+    description:
+      'EXPERIMENT: hand this bot voice duty to the OpenAI realtime speech-to-speech ' +
+      'model instead of the caption/Claude/ElevenLabs loop. The bot then hears the call ' +
+      'as audio and answers as audio, in one model, with sub-second turn-taking and real ' +
+      'barge-in. It is NOT connected to Claude, so it cannot read your repo, use tools, ' +
+      'or do anything the fast model cannot do alone. Per bot: leave it off and this bot ' +
+      'behaves exactly as before, so a realtime bot and normal Claude-backed bots can sit ' +
+      'in the same call. Needs realtimeApiKey (an OpenAI key) in config.json. Audio bills ' +
+      'per minute in both directions for as long as the bot is in the call, including ' +
+      'while nobody is talking.',
+  },
+  realtimeVoiceName: {
+    type: 'string',
+    default: 'cedar',
+    description:
+      'Which OpenAI voice the realtime model speaks in (for example "cedar", "marin", ' +
+      '"alloy"). Only used when realtimeVoice is on. These are a different and much ' +
+      'smaller set than the ElevenLabs voices, and there is no cloning, so a bot that ' +
+      'switches to realtime will not sound like it did before. Voice continuity is a ' +
+      'per-bot property, so that only matters within one bot.',
+  },
+  realtimeMaxMinutes: {
+    type: 'number',
+    default: 75,
+    min: 0,
+    description:
+      'How long a realtime voice session may run before it stops itself, in minutes. ' +
+      'Realtime audio bills per minute in BOTH directions for as long as the session is ' +
+      'open, including while nobody is talking, so a bot forgotten in an empty room is a ' +
+      'meter left running. Five minutes before the limit the bot says so out loud and ' +
+      'anyone in the call can ask it to keep going, which extends it. At the limit the bot ' +
+      'says goodbye and leaves, which stops every meter rather than only the audio one, and ' +
+      'is an honest ending: if people were there they were warned and chose not to extend, ' +
+      'and if nobody was there that is the case this exists for. Somebody can always invite ' +
+      'it back. 0 removes the cap, which is reasonable while you are sitting in the call and ' +
+      'a bad idea otherwise. '
+      + 'The default is 75 rather than a round hour on purpose. Warning five minutes out, a '
+      + '60 minute cap fires at 55, which is the wrap-up of every scheduled one-hour call, '
+      + 'and every realtime bot in every such call would say it at the same moment. 70 is '
+      + 'not far enough either: it warns at 65, in the awkward few minutes of a call running '
+      + 'over, when the clock is already the thing everyone is worried about. 75 warns at 70, '
+      + 'clear of both the hour and a normal overrun, and the extra cost is small against a '
+      + 'cap whose real job is catching a bot abandoned for hours.',
+  },
+  realtimeRespondWhenUnnamed: {
+    type: 'boolean',
+    default: true,
+    description:
+      'With THREE OR MORE people in the call, whether a realtime bot answers an ' +
+      'utterance that named nobody at all. It always answers when its own name is ' +
+      'said, and always stays quiet when somebody else is named. This is the ' +
+      'middle case. True (the default) errs toward speaking, which is right while ' +
+      'the gate is new: a bot that answers once too often is annoying, whereas one ' +
+      'that has gone quiet for a reason nobody in the room can see is unusable. ' +
+      'Set false for a bot that should only speak when spoken to. Ignored with two ' +
+      'people in the call, where everything said is said to the bot.',
+  },
+  realtimeModel: {
+    type: 'string',
+    default: 'gpt-realtime',
+    hiddenInSettingsUI: true,
+    description:
+      'Which realtime model to open the session against. Only used when realtimeVoice ' +
+      'is on. Here so a model rename does not need a release.',
+  },
   avatarBackgroundSvg: {
     type: 'string',
     default: '',

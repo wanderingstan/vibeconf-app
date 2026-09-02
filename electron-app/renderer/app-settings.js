@@ -83,6 +83,52 @@ ttsInput.addEventListener('change', () => {
   api.send('update-tts-config', { apiKey: ttsInput.value.trim() });
 });
 
+// --- EXPERIMENT: OpenAI realtime key. Plain set-config, with none of the
+// validation round trip the ElevenLabs field has: there is no cheap "is this
+// key good" probe that does not open a billable session, so a bad key surfaces
+// as a failed session on the next join, reported via realtime-status.
+const realtimeInput = document.getElementById('realtimeApiKey');
+const realtimeKeyProblem = document.getElementById('realtimeKeyProblem');
+if (realtimeInput) {
+  api.invoke('get-config', ['realtimeApiKey']).then((c) => {
+    if (c && c.realtimeApiKey) realtimeInput.value = c.realtimeApiKey;
+    paintRealtimeKey();
+  }).catch(() => { /* non-fatal */ });
+
+  // A key that does not start with sk- is nearly always a paste that lost its
+  // first character. Said here, at the moment of typing, because the only other
+  // place it shows up is an "Incorrect API key" 401 mid-call, which reads as a
+  // dead key rather than a mistyped one.
+  function paintRealtimeKey() {
+    if (!realtimeKeyProblem) return;
+    const v = realtimeInput.value.trim();
+    const bad = v && !v.startsWith('sk-');
+    realtimeKeyProblem.textContent = bad
+      ? 'That does not start with "sk-" (' + v.length + ' characters). A character was ' +
+        'probably lost on paste; try pasting it again.'
+      : '';
+    realtimeKeyProblem.style.display = bad ? '' : 'none';
+  }
+
+  // Saving only on 'change' loses the key entirely if the window is closed
+  // straight after typing, because 'change' needs a blur or Enter first. That
+  // happened on the very first real use. Debounced 'input' saves as you type;
+  // 'change' and pagehide flush immediately so nothing is left pending.
+  let saveTimer = null;
+  const save = () => {
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+    api.invoke('set-config', 'realtimeApiKey', realtimeInput.value.trim())
+      .catch(() => { /* non-fatal */ });
+  };
+  realtimeInput.addEventListener('input', () => {
+    paintRealtimeKey();
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(save, 400);
+  });
+  realtimeInput.addEventListener('change', save);
+  window.addEventListener('pagehide', () => { if (saveTimer) save(); });
+}
+
 // --- #273: gifted ElevenLabs key. Stateless by design — no accepted/declined
 // flag to get stuck: whether to offer or auto-fill is derived fresh, every
 // time, from comparing the CURRENT key to the grant's key. Two rules:

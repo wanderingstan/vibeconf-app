@@ -611,6 +611,14 @@ server.tool(
     // ended up saying "no" / "actually I disagree"), you may briefly clarify
     // the mismatch in your next turn. If the ack and your response were
     // consistent, ignore this note.
+    // The voice model asked you for something. It is not in the transcript,
+    // because a tool call is not speech — this is the only place it appears,
+    // and it has usually already told the room it was checking.
+    const voiceLine = (data.voiceRequests && data.voiceRequests.length)
+      ? `\n\n[THE VOICE ASKED YOU FOR THIS — it has likely already said out loud that it is checking, so answer with brief() rather than leaving it hanging]\n`
+        + data.voiceRequests.map((q) => `  • ${q}`).join('\n')
+      : '';
+
     const ackLine = data.previousAckPhrase
       ? `\n[Previous fast-ack played: ${JSON.stringify(data.previousAckPhrase)}. If it didn't fit your real response, you may briefly clarify.]`
       : '';
@@ -650,7 +658,7 @@ server.tool(
       const deafLine = status.captionsOn === false
         ? '\n[Captions are OFF in Meet — the bot hears via captions, so it is DEAF until they are re-enabled. The app is retrying automatically; if this persists, say or chat: "Could someone turn captions back on? (CC button in Meet\'s toolbar)"]'
         : '';
-      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${clockLine}${statusLine}${errorLines}${chatLine}${ackLine}${replayLine}${discardLine}${truncLine}${deafLine}` }] };
+      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${clockLine}${statusLine}${errorLines}${chatLine}${voiceLine}${ackLine}${replayLine}${discardLine}${truncLine}${deafLine}` }] };
     }
 
     // Each entry is now one logical speaker turn (#178 snapshot model); no
@@ -681,9 +689,145 @@ server.tool(
     return {
       content: [{
         type: "text",
-        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):${clockLine}\n\n${transcriptText}${chatLine}${continuationLine}${ackLine}${replayLine}${discardLine}${truncLine}`,
+        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):${clockLine}\n\n${transcriptText}${chatLine}${voiceLine}${continuationLine}${ackLine}${replayLine}${discardLine}${truncLine}`,
       }],
     };
+  }
+);
+
+// The operating prompt for a bot whose voice belongs to the realtime model.
+//
+// Returned by join_call INSTEAD of the normal one, never alongside it, so a
+// realtime agent never reads a contract that does not apply to it. The two
+// share almost nothing: no speaking, no turn-taking, no urgency judgement.
+// This is why there is no separate slash command — the bot's own
+// realtimeVoice preference decides, and /join-call does the right thing either
+// way.
+function realtimeJoinInstructions(botName, room, routedNote, alreadyIn) {
+  return [
+    alreadyIn
+      ? `The bot is already in call ${room} as "${botName}"${routedNote} — nothing was disturbed.`
+      : `Joining Meet call ${room} as "${botName}"${routedNote}. **This bot's voice belongs to the realtime model, not to you.**`,
+    ``,
+    `You are the SLOW half. A speech-to-speech model is in the call: it hears the room as audio, answers in under a second, handles interruption and turn-taking, and speaks in its own voice. **You never speak.** Do not call \`speak\`; it is not your job here.`,
+    ``,
+    `What it lacks is your access: the repo, your tools, anything you can look up. What you lack is speed. So you feed it facts and it decides, in its own words and its own timing, what to do with them.`,
+    ``,
+    `**The loop:** \`wait_for_speech\` → decide whether it needs anything → \`brief\` if so → repeat. It returns when a turn ends, whether a human spoke **or the voice model did**; both matter.`,
+    ``,
+    `**Most turns need nothing from you.** Returning to \`wait_for_speech\` without briefing is a good outcome, not a missed one.`,
+    ``,
+    `**brief(note)** puts a fact in its context without making it say anything. Write knowledge, not instructions: "the auth refactor is still open" survives being used three turns late; "tell them the auth refactor is open" reads as a script. Brief BEFORE a topic is needed, not after it has been promised — asked for news it had been promised but not given, it once invented a project timeline and named staff who do not exist.`,
+    ``,
+    `**Correcting it is a first-class job.** Its own words appear in the transcript under the bot's name; read them. It states things confidently and wrongly and cannot detect that itself. But you can be wrong too, and a correction is laundered into confident speech: match your certainty to your source. Flat on the repo, the tests, a file on disk; provenance rather than verdict on anything you looked up ("a search says 69 and raining", not "you were wrong").`,
+    ``,
+    `**It can ask you directly.** Requests arrive in your \`wait_for_speech\` result under "THE VOICE ASKED YOU FOR THIS". They are not in the transcript, because a tool call is not speech. Treat one as a commitment already made: it has usually told the room out loud that it is checking, so answer with \`brief\` even if the answer is that there is nothing.`,
+    ``,
+    `**hold_voice(seconds)** when two OTHER people are mid-exchange and nothing the bot says would help. The name gate cannot see that, because such an exchange often names nobody. It expires on its own.`,
+    ``,
+    `Briefs die with the session: if the bot rejoins, its context is empty and everything you briefed is gone.`,
+    ``,
+    `**Do not send a final response to the user while the call is active** — if you stop, nothing drives the loop. When the call ends, \`leave_call\` then \`end_session\`.`,
+  ].join('\n');
+}
+
+// --- hold_voice (EXPERIMENT: realtime voice) ---
+server.tool(
+  "hold_voice",
+  "Ask the voice model to stay quiet for a few seconds. Use it when two OTHER people " +
+  "are mid-exchange and nothing the bot says will help: the name gate cannot see that, " +
+  "because a back-and-forth between two people often names nobody at all. You can, " +
+  "because you are reading the transcript. " +
+  "Always short. It expires on its own, so a hold you forget about cannot mute the bot " +
+  "for the rest of the call, and there is no need to release it by hand. " +
+  "Pass seconds: 0 to release one early if the conversation turns back to the bot.",
+  {
+    seconds: z.number().min(0).max(120).describe("How long to stay quiet. Keep it to the length of the exchange you are staying out of; 0 releases an active hold."),
+    reason: z.string().optional().describe("Why, for the log — e.g. 'Stan and Seth are working through the pricing question'."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ seconds, reason, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) {
+      return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    }
+    let resp;
+    try {
+      resp = await vfetch(`${BASE_URL}/api/realtime/hold`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ seconds, reason, room_id: roomId }),
+      });
+    } catch (err) {
+      return { content: [{ type: "text", text: `Could not reach the app: ${err.message}` }] };
+    }
+    let data = {};
+    try { data = await resp.json(); } catch { /* non-JSON */ }
+    if (resp.status === 409) {
+      return { content: [{ type: "text", text: `Not held — ${data.error || "no realtime session"}.` }] };
+    }
+    if (!resp.ok || !data.success) {
+      return { content: [{ type: "text", text: `Not held: ${data.error || resp.status}` }] };
+    }
+    return { content: [{ type: "text", text: seconds
+      ? `Holding for ${data.seconds}s. It expires on its own; call again with seconds: 0 to release sooner.`
+      : "Hold released." }] };
+  }
+);
+
+// --- brief (EXPERIMENT: realtime voice) ---
+// Registered unconditionally FOR NOW so it can be tried on a live call. The
+// intended end state is a disjoint contract: a realtime-mode agent sees brief
+// and never sees speak, and a normal agent the reverse. Until that lands, this
+// answers with a plain 409 on a bot that has no realtime session, rather than
+// pretending to work.
+server.tool(
+  "brief",
+  "Tell the voice model something it could not know, WITHOUT asking it to say anything. " +
+  "This is your main verb. The voice model is fast and conversational but has no access to " +
+  "the repo, your tools, or anything you have looked up; you have all of that and are too " +
+  "slow to hold a conversation. So you feed it facts and it decides, in its own words and " +
+  "its own timing, whether and how to use them. " +
+  "Write knowledge, not instructions: 'the auth refactor is still open' survives being used " +
+  "three turns late, whereas 'tell them the auth refactor is open' reads as a script. " +
+  "Correcting the voice model is a first-class use: it will state things confidently and " +
+  "wrongly, it cannot detect that itself, and you can see what it said in the transcript. " +
+  "There is no guarantee any given brief is used, or when. Most turns need nothing from you, " +
+  "and saying nothing is a good outcome.",
+  {
+    note: z.string().describe("What the voice model should know, as a plain statement of fact. One or two sentences."),
+    room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
+  },
+  async ({ note, room_id }) => {
+    const roomId = room_id || ROOM_ID;
+    if (!roomId) {
+      return { content: [{ type: "text", text: "Error: No room_id provided and VIBECONF_ROOM_ID not set." }] };
+    }
+    let resp;
+    try {
+      resp = await vfetch(`${BASE_URL}/api/realtime/brief`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note, room_id: roomId }),
+      });
+    } catch (err) {
+      return { content: [{ type: "text", text: `Could not reach the app: ${err.message}` }] };
+    }
+
+    let data = {};
+    try { data = await resp.json(); } catch { /* non-JSON */ }
+
+    if (resp.status === 409) {
+      return { content: [{ type: "text", text:
+        `Not briefed — ${data.error || "no realtime session"}. This bot is not running the realtime voice, ` +
+        `so there is nothing to brief. Use speak() instead.` }] };
+    }
+    if (!resp.ok || !data.success) {
+      return { content: [{ type: "text", text: `Not briefed: ${data.error || resp.status}` }] };
+    }
+    return { content: [{ type: "text", text:
+      "Briefed. The voice model has it now. It may use it in its own words, at a moment of its " +
+      "choosing, or not at all — do not repeat it, and do not expect a confirmation that it landed." }] };
   }
 );
 
@@ -3136,6 +3280,10 @@ server.tool(
         // live session down (#26). Say so plainly — an agent that reads this as
         // a fresh join would greet the room a second time.
         if (data.results.join.alreadyInCall) {
+          if (data.results.join.realtimeVoice) {
+            return { content: [{ type: "text",
+              text: realtimeJoinInstructions(BOT_NAME, room_id, routedNote, true) }] };
+          }
           const st = (data.results.join.status === 'joining' || data.results.join.status === 'navigating')
             ? 'still joining' : 'already in';
           return { content: [{ type: "text", text: [
@@ -3145,6 +3293,11 @@ server.tool(
             ``,
             `If you genuinely believe the session is wedged, pass force:true to rebuild it — that WILL drop and rejoin the call.`,
           ].join('\n') }] };
+        }
+
+        if (data.results.join.realtimeVoice) {
+          return { content: [{ type: "text",
+            text: realtimeJoinInstructions(joinedBotName, room_id, routedNote, false) }] };
         }
 
         return {

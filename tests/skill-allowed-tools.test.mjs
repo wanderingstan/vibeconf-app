@@ -36,6 +36,7 @@ const PREFIX = 'mcp__vibeconferencing__';
 const OWN_COMMAND_ONLY = {
   'join-call-skill.md': ['start_call'],  // start_call creates a new Meet — that's /call
   'call-skill.md': ['join_call'],        // join_call enters an existing Meet — that's /join-call
+
 };
 
 function registeredTools() {

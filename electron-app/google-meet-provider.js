@@ -19,6 +19,12 @@ const { CallProvider, CALL_COMMANDS, CALL_EVENTS } = require('./call-provider');
 // Listen for messages from main process and forward to page context
 // ---------------------------------------------------------------------------
 
+// EXPERIMENT: set while a realtime session owns this bot's voice. It changes
+// one thing here: whether the bot's own captions are dropped. See the caption
+// loop below for why that flips with the mode.
+let realtimeMode = false;
+let realtimeBotName = '';
+
 ipcRenderer.on('extension-message', (_event, message) => {
   // Forward to page context via window.postMessage
   // page-inject.js listens for __botsInCalls messages
@@ -32,6 +38,49 @@ ipcRenderer.on('extension-message', (_event, message) => {
     meetProvider.setCameraOn(true);
   } else if (message.action === 'camera-off') {
     meetProvider.setCameraOn(false);
+  } else if (message.action === 'realtime-note') {
+    window.postMessage({
+      __botsInCalls: true, __fromExtension: true,
+      action: 'realtime-note', text: message.text, announce: message.announce,
+    }, '*');
+  } else if (message.action === 'realtime-tool-result') {
+    window.postMessage({
+      __botsInCalls: true, __fromExtension: true,
+      action: 'realtime-tool-result',
+      callId: message.callId, output: message.output,
+    }, '*');
+  } else if (message.action === 'realtime-policy' || message.action === 'realtime-hold') {
+    // Who may make the bot speak, and a time-limited request for quiet.
+    window.postMessage({
+      __botsInCalls: true, __fromExtension: true,
+      action: message.action,
+      policy: message.policy, seconds: message.seconds, reason: message.reason,
+    }, '*');
+  } else if (message.action === 'realtime-brief') {
+    // Silent inject: the model learns something without being given the floor.
+    window.postMessage({
+      __botsInCalls: true, __fromExtension: true,
+      action: 'realtime-brief', note: message.note,
+    }, '*');
+  } else if (message.action === 'realtime-say') {
+    // Words from the slow model (or any speakText caller), to be spoken by the
+    // realtime model rather than synthesized into a second voice.
+    window.postMessage({
+      __botsInCalls: true, __fromExtension: true,
+      action: 'realtime-say', text: message.text,
+    }, '*');
+  } else if (message.action === 'start-realtime' || message.action === 'stop-realtime') {
+    realtimeMode = message.action === 'start-realtime';
+    realtimeBotName = realtimeMode ? (message.botName || '') : '';
+    // EXPERIMENT: realtime speech-to-speech. Only the short-lived ephemeral
+    // secret crosses into the page; the API key stays in main.
+    window.postMessage({
+      __botsInCalls: true,
+      __fromExtension: true,
+      action: message.action,
+      secret: message.secret,
+      model: message.model,
+    }, '*');
   } else if (message.action === 'set-banner-prefix-visible') {
     // The banner stays (it shows status + errors), but its "🤖 Bot's view —"
     // PREFIX is redundant in the thumbnail column — the panel bar right above it
@@ -3365,7 +3414,24 @@ class CaptionScraper {
         const speaker = span?.textContent?.trim() || 'unknown';
         let text = child.textContent.replace(/\s+/g, ' ').trim();
         if (text.startsWith(speaker)) text = text.slice(speaker.length).trim();
-        if (!text || speaker === MEET.captions.selfSpeaker) continue;
+        if (!text) continue;
+
+        // The bot's own speech. Meet labels it "You", and normally we drop it:
+        // the app already holds an exact, immediate record of what it told TTS
+        // to say, so the caption would be a lossy, laggy duplicate of a perfect
+        // one.
+        //
+        // In realtime mode that perfect record does not exist. The model picks
+        // its own words and the app never sees them, so these captions are the
+        // ONLY account of what the bot actually said. They go through like
+        // anyone else's, under the bot's own name rather than "You", so the
+        // transcript reads as one conversation among named participants.
+        //
+        // Nothing double-counts: in realtime mode the old authoritative path is
+        // never written, because TTS is never called.
+        const isSelf = speaker === MEET.captions.selfSpeaker;
+        if (isSelf && !realtimeMode) continue;
+        const speakerName = isSelf ? (realtimeBotName || speaker) : speaker;
 
         // Assign a stable turn id the first time we see this DOM node.
         let turnId = this._turnIdByChild.get(child);
@@ -3373,7 +3439,7 @@ class CaptionScraper {
           turnId = this._nextTurnId++;
           this._turnIdByChild.set(child, turnId);
         }
-        turns.push({ turnId, speaker, text, isBottommost: child === lastChild });
+        turns.push({ turnId, speaker: speakerName, text, isBottommost: child === lastChild });
       }
 
       if (turns.length === 0) return;
@@ -3956,6 +4022,25 @@ ipcRenderer.on('trigger-record', (_event, { recording, room, startedAt, botName 
     action: recording ? 'start-recording' : 'stop-recording',
     payload: { room, startedAt, botName },
   }, '*');
+});
+
+// EXPERIMENT: realtime voice status (RealtimeVoice in page-inject.js posts these).
+// Without this a failed session is invisible unless someone has the page console
+// open, which for a bot on a call is nobody.
+// The voice model asking to do something. Main runs it and answers on the
+// realtime-tool-result channel above.
+window.addEventListener('message', (ev) => {
+  const m = ev && ev.data;
+  if (m && m.source === 'vibeconf-realtime-tool') {
+    ipcRenderer.send('realtime-tool', { callId: m.callId, name: m.name, args: m.args });
+  }
+});
+
+window.addEventListener('message', (ev) => {
+  const m = ev && ev.data;
+  if (m && m.source === 'vibeconf-realtime-status') {
+    ipcRenderer.send('realtime-status', { type: m.type, detail: m.detail });
+  }
 });
 
 // ---------------------------------------------------------------------------

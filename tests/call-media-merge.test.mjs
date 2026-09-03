@@ -30,6 +30,8 @@ const {
   ffmpegAvailable,
   resolveFfmpegPath,
   _resetFfmpegAvailabilityCache,
+  DEFAULT_CROP_MARGINS,
+  cropExprFromMargins,
 } = require('../electron-app/call-media-merge.js');
 
 function tmpDir() {
@@ -495,6 +497,99 @@ test('padStartMs=0 (the default) never invokes the tpad filter path (main call-r
   });
   assert.equal(r.ok, true);
   assert.ok(fs.existsSync(path.join(dir, 'call-recording.mp4')));
+});
+
+// --- Extension: crop (cropCallRecording preference) ---
+
+test('cropExprFromMargins builds an iw/ih-relative crop expression', () => {
+  assert.equal(
+    cropExprFromMargins({ top: 0.1, bottom: 0.2, left: 0, right: 0.3 }),
+    'crop=iw*0.7:ih*0.7:iw*0:ih*0.1',
+  );
+});
+
+test('crop: false (the default) never adds a crop filter — output size matches the untouched source', { skip: !HAVE_FFMPEG }, async () => {
+  const dir = tmpDir();
+  writeFakeVideo(path.join(dir, 'video.webm'), { seconds: 0.2 });
+  const r = await mergeCallMedia(dir, {
+    tracksDir: dir,
+    tracks: [{ track: 'video', file: 'video.webm', kind: 'video' }],
+  });
+  assert.equal(r.ok, true);
+  const out = execSync(`"${FFMPEG_BIN}" -i "${r.file}" -hide_banner -f null - 2>&1`, { encoding: 'utf8' });
+  assert.match(out, /16x16/); // writeFakeVideo's source size, untouched
+});
+
+test('crop: true applies DEFAULT_CROP_MARGINS, shrinking the output frame', { skip: !HAVE_FFMPEG }, async () => {
+  const dir = tmpDir();
+  // Large enough that the fractional crop lands on whole pixels ffmpeg's
+  // crop filter can actually produce without complaint.
+  execSync(
+    `"${FFMPEG_BIN}" -y -f lavfi -i color=c=black:s=1200x800:r=5:d=0.2 -c:v libvpx-vp9 "${path.join(dir, 'video.webm')}"`,
+    { stdio: 'ignore' },
+  );
+  const r = await mergeCallMedia(dir, {
+    tracksDir: dir,
+    tracks: [{ track: 'video', file: 'video.webm', kind: 'video' }],
+    crop: true,
+  });
+  assert.equal(r.ok, true);
+  const out = execSync(`"${FFMPEG_BIN}" -i "${r.file}" -hide_banner -f null - 2>&1`, { encoding: 'utf8' });
+  const m = out.match(/Video:.*?(\d{2,5})x(\d{2,5})/);
+  assert.ok(m, `could not parse output resolution from: ${out}`);
+  const [, w, h] = m.map(Number);
+  const expectedW = Math.round(1200 * (1 - DEFAULT_CROP_MARGINS.left - DEFAULT_CROP_MARGINS.right));
+  const expectedH = Math.round(800 * (1 - DEFAULT_CROP_MARGINS.top - DEFAULT_CROP_MARGINS.bottom));
+  // libx264 rounds crop output to an even width/height — allow +/-1px either way.
+  assert.ok(Math.abs(w - expectedW) <= 2, `expected width ~${expectedW}, got ${w}`);
+  assert.ok(Math.abs(h - expectedH) <= 2, `expected height ~${expectedH}, got ${h}`);
+  assert.ok(w < 1200 && h < 800, 'cropped output must be smaller than the source frame');
+});
+
+test('crop with custom margins overrides only the given sides, keeping DEFAULT_CROP_MARGINS for the rest', { skip: !HAVE_FFMPEG }, async () => {
+  const dir = tmpDir();
+  execSync(
+    `"${FFMPEG_BIN}" -y -f lavfi -i color=c=black:s=1000x1000:r=5:d=0.2 -c:v libvpx-vp9 "${path.join(dir, 'video.webm')}"`,
+    { stdio: 'ignore' },
+  );
+  const r = await mergeCallMedia(dir, {
+    tracksDir: dir,
+    tracks: [{ track: 'video', file: 'video.webm', kind: 'video' }],
+    crop: { right: 0 }, // no right-margin crop; top/bottom/left stay at defaults
+  });
+  assert.equal(r.ok, true);
+  const out = execSync(`"${FFMPEG_BIN}" -i "${r.file}" -hide_banner -f null - 2>&1`, { encoding: 'utf8' });
+  const m = out.match(/Video:.*?(\d{2,5})x(\d{2,5})/);
+  assert.ok(m, `could not parse output resolution from: ${out}`);
+  const [, w] = m.map(Number);
+  const expectedW = Math.round(1000 * (1 - DEFAULT_CROP_MARGINS.left - 0));
+  assert.ok(Math.abs(w - expectedW) <= 2, `expected width ~${expectedW} (right margin overridden to 0), got ${w}`);
+});
+
+test('crop composes with padStartMs — both filters apply in one pass', { skip: !HAVE_FFMPEG }, async () => {
+  const dir = tmpDir();
+  execSync(
+    `"${FFMPEG_BIN}" -y -f lavfi -i color=c=black:s=1200x800:r=5:d=0.2 -c:v libvpx-vp9 "${path.join(dir, 'share.webm')}"`,
+    { stdio: 'ignore' },
+  );
+  const r = await mergeCallMedia(dir, {
+    tracksDir: dir,
+    tracks: [{ track: 'share', file: 'share.webm', kind: 'share' }],
+    videoTrackName: 'share',
+    outputName: 'call-recording-share.mp4',
+    crop: true,
+    padStartMs: 500,
+  });
+  assert.equal(r.ok, true);
+  const outFile = path.join(dir, 'call-recording-share.mp4');
+  const out = execSync(`"${FFMPEG_BIN}" -i "${outFile}" -hide_banner -f null - 2>&1`, { encoding: 'utf8' });
+  const dims = out.match(/Video:.*?(\d{2,5})x(\d{2,5})/);
+  assert.ok(dims, `could not parse output resolution from: ${out}`);
+  assert.ok(Number(dims[1]) < 1200, 'crop should have applied alongside the pad');
+  const dur = out.match(/Duration: (\d+):(\d+):(\d+\.\d+)/);
+  assert.ok(dur, `could not parse duration from: ${out}`);
+  const durationSec = Number(dur[1]) * 3600 + Number(dur[2]) * 60 + Number(dur[3]);
+  assert.ok(durationSec > 0.4, `expected padded duration > 0.4s, got ${durationSec}`);
 });
 
 // --- Extension: cancellation via AbortSignal (the "Preparing recording…" window's Cancel button) ---

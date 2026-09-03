@@ -128,6 +128,39 @@ const VIDEO_ENCODE_ARGS = [
   '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
 ];
 
+// Default crop margins for the `crop` option below, as a fraction of the raw
+// frame (not pixels) — this is what makes them hold regardless of which
+// botViewState (hidden/thumbnail/popped) the recording was actually captured
+// at, since main.js's bot-view-layout.js keeps Meet's CSS viewport pinned to
+// a constant width and only ever changes the render scale (see its
+// MEET_TARGET_CSS_WIDTH comment), so Meet's own chrome occupies a constant
+// FRACTION of the frame no matter the physical capture resolution.
+//
+// Strips Google Meet's own UI chrome from the bot's Meet-view capture: the
+// top header, the bottom strip (captions overlay + in-call toolbar), and a
+// right-side margin sized for the people/chat panel. There is deliberately
+// no left margin — Meet has no left-side chrome.
+//
+// The right margin is safe to crop unconditionally (no need to track
+// panel-open/closed state): this is the BOT's own Meet view, and the bot
+// always has the people/chat panel open (see google-meet-provider.js), so
+// that margin is never real meeting video. Estimated from Meet's standard
+// layout proportions, not measured pixel-for-pixel against live DOM geometry
+// (this codebase has no selector for Meet's video-grid container to measure
+// against) — nudge these if a real recording shows them cutting into real
+// video or leaving chrome visible.
+const DEFAULT_CROP_MARGINS = { top: 0.07, bottom: 0.14, left: 0, right: 0.27 };
+
+// Build a ffmpeg crop filter expression from fractional margins. Uses `iw`/
+// `ih` (ffmpeg's input-width/height variables) rather than baked-in pixel
+// numbers so the same expression is correct at whatever resolution the input
+// video actually is.
+function cropExprFromMargins({ top, bottom, left, right }) {
+  const w = 1 - left - right;
+  const h = 1 - top - bottom;
+  return `crop=iw*${w}:ih*${h}:iw*${left}:ih*${top}`;
+}
+
 // Keep only the tail of ffmpeg's stderr — with `-stats` on and no wall-clock
 // cap, a long merge emits a progress line several times a second for the
 // entire encode, and holding all of it would grow unboundedly for exactly the
@@ -220,6 +253,17 @@ function _resetFfmpegAvailabilityCache() {
 // e.g. 'call-recording-share.mp4' for the share extension so it never collides with
 // the main merge.
 //
+// crop: crop Meet's own UI chrome out of the video before muxing — see
+// DEFAULT_CROP_MARGINS above for what and why (including why the right-side
+// margin is safe to crop unconditionally for this app's own bot-view
+// capture). Pass `true` to use those defaults, an object with any of
+// {top,bottom,left,right} to override individual margins (fractions of the
+// frame, unset ones fall back to the default), or leave it false/omitted
+// (default) for the raw, uncropped frame. Only makes sense for the main
+// Meet-view video track — callers muxing a different track (e.g.
+// videoTrackName: 'share') should leave this off, since there is no Meet
+// chrome in that frame to crop.
+//
 // padStartMs: prepend this many ms of black video before the real video
 // content, via ffmpeg's `tpad` filter, BEFORE muxing. For the share
 // extension: share.webm's own t=0 is when the share began (often minutes
@@ -268,6 +312,7 @@ async function mergeCallMedia(callDir, {
   execSyncFn = execSync,
   videoTrackName = null,
   outputName = 'call-recording.mp4',
+  crop = false,
   padStartMs = 0,
   signal = null,
   stallTimeoutMs = MERGE_STALL_TIMEOUT_MS,
@@ -305,23 +350,30 @@ async function mergeCallMedia(callDir, {
   for (const t of audioTracks) args.push('-i', t.absPath);
 
   const padSec = padStartMs > 0 ? (padStartMs / 1000).toFixed(3) : null;
+  const cropMargins = crop ? { ...DEFAULT_CROP_MARGINS, ...(typeof crop === 'object' ? crop : null) } : null;
 
-  if (padSec) {
-    // Padding needs the video stream FILTERED (tpad reads its own frame
-    // size/rate from the input, so no ffprobe step is needed) — that rules
-    // out '-c:v copy' for this branch, unlike the unpadded cases below.
-    // `fps=` runs BEFORE `tpad` so the pad is generated at a real, fixed rate
-    // rather than whatever (possibly bogus) rate the input declares — see
-    // PAD_NORMALIZE_FPS above.
-    const videoFilter = `[0:v]fps=${PAD_NORMALIZE_FPS},tpad=start_duration=${padSec}:color=black[vout]`;
+  // Video-only filter chain (crop, then pad), built once and shared by every
+  // audio-track-count branch below. `fps=` runs BEFORE `tpad` so the pad is
+  // generated at a real, fixed rate rather than whatever (possibly bogus)
+  // rate the input declares — see PAD_NORMALIZE_FPS above. crop runs first so
+  // tpad's black frames are generated at the already-cropped size.
+  const videoFilterParts = [];
+  if (cropMargins) videoFilterParts.push(cropExprFromMargins(cropMargins));
+  if (padSec) videoFilterParts.push(`fps=${PAD_NORMALIZE_FPS}`, `tpad=start_duration=${padSec}:color=black`);
+  const videoFilter = videoFilterParts.length ? videoFilterParts.join(',') : null;
+
+  if (videoFilter) {
+    // Cropping or padding needs the video stream FILTERED — that rules out
+    // '-c:v copy' for this branch, unlike the plain case below.
+    const chain = `[0:v]${videoFilter}[vout]`;
     if (audioTracks.length === 0) {
-      args.push('-filter_complex', videoFilter, '-map', '[vout]', ...VIDEO_ENCODE_ARGS, outPath);
+      args.push('-filter_complex', chain, '-map', '[vout]', ...VIDEO_ENCODE_ARGS, outPath);
     } else if (audioTracks.length === 1) {
-      args.push('-filter_complex', videoFilter, '-map', '[vout]', '-map', '1:a',
+      args.push('-filter_complex', chain, '-map', '[vout]', '-map', '1:a',
         ...VIDEO_ENCODE_ARGS, '-c:a', 'aac', outPath);
     } else {
       const inputs = audioTracks.map((_, i) => `[${i + 1}:a]`).join('');
-      const filter = `${videoFilter};${inputs}amix=inputs=${audioTracks.length}:normalize=0[aout]`;
+      const filter = `${chain};${inputs}amix=inputs=${audioTracks.length}:normalize=0[aout]`;
       args.push('-filter_complex', filter, '-map', '[vout]', '-map', '[aout]',
         ...VIDEO_ENCODE_ARGS, '-c:a', 'aac', outPath);
     }
@@ -412,4 +464,6 @@ module.exports = {
   ffmpegAvailable,
   resolveFfmpegPath,
   _resetFfmpegAvailabilityCache,
+  DEFAULT_CROP_MARGINS,
+  cropExprFromMargins,
 };

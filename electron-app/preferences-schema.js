@@ -279,6 +279,21 @@ const PREFERENCES = {
       'person per hour); keeping the tracks is what makes them reproducible on ' +
       'demand via scripts/extract-speaker-tracks.mjs.',
   },
+  cropCallRecording: {
+    type: 'boolean',
+    default: true,
+    label: 'Crop call recordings',
+    description:
+      'Crop call-recording.mp4\'s picture down to just the meeting video, cutting ' +
+      'off Google Meet\'s own chrome around it: the top header, the bottom strip ' +
+      '(captions + in-call toolbar), and a margin on the right sized for the ' +
+      'people/chat panel, which the bot always has open in its own Meet view. ' +
+      'ON by default. Turn this OFF to get the raw, uncropped Meet-view frame ' +
+      'instead — useful for developers who want to see exactly what the bot ' +
+      'saw, chrome included. Only affects call-recording.mp4 ' +
+      '(the bot\'s own Meet view); call-recording-share.mp4 (a whiteboard share, ' +
+      'no Meet chrome in frame) is never cropped.',
+  },
   studioSound: {
     type: 'boolean',
     default: true,

@@ -100,6 +100,11 @@ const APP_LEVEL_KEYS = new Set([
   // unreachable from the UI. New pref, no per-profile legacy value to
   // migrate — not in MIGRATE_KEYS or MIGRATE_OPT_OUTS.
   'keepCallRecordingTracks',
+  // Same trap as keepCallRecordingTracks just above: whether call recordings
+  // get cropped is a machine-level output preference, not bot personality,
+  // and App Settings only renders app-level schema prefs. New pref, no
+  // per-profile legacy value to migrate.
+  'cropCallRecording',
 ]);
 
 // The subset of app-level keys the launch migration may auto-promote from a

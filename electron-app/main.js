@@ -3361,6 +3361,8 @@ const localServer = new globalThis.LocalServer({
       // these prefs directly, so nothing to invalidate here.)
     } else if (key === 'emojiSet') {
       pushEmojiSet(value);
+    } else if (key === 'meetViewSize') {
+      applyMeetViewSize();
     } else if (key === 'captionLanguage') {
       // Take effect now if we're in a call; otherwise it lands on the next join.
       //
@@ -10484,9 +10486,33 @@ async function settleHiddenMeetHost() {
   }
 }
 
+// The hidden host's size comes from the meetViewSize pref (see
+// botViewLayout.MEET_VIEW_SIZES for the table and the trade-off).
+function hiddenMeetSize() {
+  let pref = null;
+  try { pref = prefValue('meetViewSize'); } catch { /* store unavailable — default */ }
+  return botViewLayout.hiddenSizeFor(pref);
+}
+
+// meetViewSize changed: resize the hidden host and the view in it, now. Only
+// the 'hidden' state owns a window sized by this pref — popped is whatever the
+// user dragged it to, thumbnail is the column — so the other states have
+// nothing to apply; the next time 'hidden' is entered it reads the pref. Safe
+// mid-call: the recording's capture stream follows the source size and the
+// crop region is re-measured every second (record-region.js).
+function applyMeetViewSize() {
+  const { width, height } = hiddenMeetSize();
+  if (!meetHiddenWindow || meetHiddenWindow.isDestroyed()) return;
+  try { meetHiddenWindow.setContentSize(width, height); } catch { /* gone */ }
+  if (botViewState === 'hidden' && meetView && !meetView.webContents.isDestroyed()) {
+    try { meetView.setBounds({ x: 0, y: 0, width, height }); } catch { /* gone */ }
+  }
+  console.log(`[bot-view] Meet view size → ${width}x${height}`);
+}
+
 function ensureHiddenMeetHost() {
   if (meetHiddenWindow && !meetHiddenWindow.isDestroyed()) return meetHiddenWindow;
-  const { width, height } = botViewLayout.HIDDEN_SIZE;
+  const { width, height } = hiddenMeetSize();
   const win = new BrowserWindow({
     // opacity 0, not just off-screen coordinates: macOS clamps a window
     // positioned entirely outside every display back on-screen, so an x/y
@@ -10536,7 +10562,7 @@ function attachMeetViewForState() {
   if (botViewState === 'hidden') {
     const win = ensureHiddenMeetHost();
     try { win.addBrowserView(meetView); } catch { /* already attached */ }
-    const { width, height } = botViewLayout.HIDDEN_SIZE;
+    const { width, height } = hiddenMeetSize();
     meetView.setBounds({ x: 0, y: 0, width, height });
     try { meetView.webContents.setZoomFactor(botViewLayout.HIDDEN_ZOOM); } catch { /* gone */ }
     settleHiddenMeetHost(); // a fresh view in an already-hidden window has no surface
@@ -10569,7 +10595,7 @@ function setBotViewState(state) {
         try { mainWindow.removeBrowserView(meetView); } catch { /* not attached */ }
       }
       try { win.addBrowserView(meetView); } catch { /* already there */ }
-      const { width, height } = botViewLayout.HIDDEN_SIZE;
+      const { width, height } = hiddenMeetSize();
       meetView.setBounds({ x: 0, y: 0, width, height });
       try { meetView.webContents.setZoomFactor(botViewLayout.HIDDEN_ZOOM); } catch { /* gone */ }
     }
@@ -12117,6 +12143,7 @@ function setupIPC() {
     // Live-apply the visual prefs the panel can set here (the agent path goes
     // through applyPref, which already pushes these). #316.
     if (key === 'emojiSet') pushEmojiSet(value);
+    if (key === 'meetViewSize') applyMeetViewSize();
     if (key === 'botName') applyAllWindowTitles();
     // The background is settable from Bot Settings now, not just by the agent.
     // Without this the in-call avatar kept the OLD background until the next

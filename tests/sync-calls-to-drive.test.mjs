@@ -13,7 +13,7 @@ import { execSync } from 'node:child_process';
 const mod = await import('../scripts/sync-calls-to-drive.mjs');
 const {
   parseCallId, destinationFor, botFolderName, isQuiescent, needsSync,
-  botNameFor, pickBackend, listProfiles, main, DEFAULTS, loadConfigFile,
+  botNameFor, pickBackend, listProfiles, main, DEFAULTS, loadConfigFile, collisionSuffixes,
 } = mod;
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'sync-calls-'));
@@ -99,6 +99,11 @@ test('needsSync: never synced, or something newer than the last sync saw; the ma
   assert.equal(needsSync(dir), false, 'marker newer than every file → up to date');
   fs.writeFileSync(path.join(dir, 'summary.md'), 'the agent wrote this after the first sync');
   assert.equal(needsSync(dir), true, 'a file newer than the marker → sync again');
+  // A marker from a sync to a different destination (the call has since
+  // moved between "<bot>" and "<bot>-HHMM") is a reason to sync again.
+  fs.writeFileSync(path.join(dir, DEFAULTS.markerFile), JSON.stringify({ newestMtime: Date.now() + 1, rel: 'aaa-bbbb-ccc-2026-09-01/jimmy' }));
+  assert.equal(needsSync(dir, DEFAULTS.markerFile, 'aaa-bbbb-ccc-2026-09-01/jimmy'), false);
+  assert.equal(needsSync(dir, DEFAULTS.markerFile, 'aaa-bbbb-ccc-2026-09-01/jimmy-1911'), true, 'destination changed → sync again');
 });
 
 test('backend selection: a synced Drive dir wins, else a configured rclone remote, else a clear reason', () => {
@@ -189,7 +194,7 @@ test('--status reports each call without copying anything', () => {
   finally { console.log = origLog; }
   const out = logs.join('\n');
   assert.match(out, /150000Z → wcj-odpo-wrb-2026-09-01\/jimmy: never synced/);
-  assert.match(out, /160000Z → wcj-odpo-wrb-2026-09-01\/jimmy: busy/);
+  assert.match(out, /160000Z → wcj-odpo-wrb-2026-09-01\/jimmy-\d{4}: busy/);
 });
 
 test('the config file sets VIBECONF_* without overriding the environment, and expands $HOME', () => {
@@ -226,4 +231,33 @@ test('a root folder id re-roots the rclone backend at the archive itself', () =>
   const plain = pickBackend({ dest: null, remote: 'Vibeconf Shared Files', archivePath: 'vibeconf-call-archives', haveRclone: true, rcloneRemotes: ['Vibeconf Shared Files'] });
   assert.equal(plain.rootFolderId, undefined);
   assert.equal(plain.archivePath, 'vibeconf-call-archives');
+});
+
+test('two calls in the same room on the same day get distinct folders: the first keeps the bare bot name, later ones add HHMM', () => {
+  const ids = ['dcw-goqf-ypa-20260828T180000Z', 'dcw-goqf-ypa-20260828T191104Z', 'dcw-goqf-ypa-20260821T180000Z', 'other-room-xyz-20260828T180000Z', 'not-a-call'];
+  const s = collisionSuffixes(ids, { tzOffsetMin: 0 });
+  assert.equal(s.has('dcw-goqf-ypa-20260828T180000Z'), false, 'the earliest keeps the plain folder');
+  assert.equal(s.get('dcw-goqf-ypa-20260828T191104Z'), '1911');
+  assert.equal(s.has('dcw-goqf-ypa-20260821T180000Z'), false, 'a different day is a different folder already');
+  assert.equal(s.has('other-room-xyz-20260828T180000Z'), false);
+  assert.equal(destinationFor('dcw-goqf-ypa-20260828T191104Z', 'Jimmy', { tzOffsetMin: 0, suffix: s.get('dcw-goqf-ypa-20260828T191104Z') }), 'dcw-goqf-ypa-2026-08-28/jimmy-1911');
+  // Local time: 19:11Z is 13:11 at UTC-6.
+  assert.equal(collisionSuffixes(ids, { tzOffsetMin: 360 }).get('dcw-goqf-ypa-20260828T191104Z'), '1311');
+});
+
+test('end to end: a second same-day call in one room lands beside the first, not on top of it', { skip: !HAVE_RSYNC }, () => {
+  const root = tmp();
+  const archive = tmp();
+  fakeCall(root, 'Default', 'dcw-goqf-ypa-20260828T180000Z', { ageMin: 30, files: { 'summary.md': 'first' } });
+  fakeCall(root, 'Default', 'dcw-goqf-ypa-20260828T191104Z', { ageMin: 30, files: { 'summary.md': 'second' } });
+  const origLog = console.log; const origErr = console.error; console.log = () => {}; console.error = () => {};
+  try { assert.equal(main(['--profiles-root', root, '--dest', archive, '--profiles', 'Default']), 0); }
+  finally { console.log = origLog; console.error = origErr; }
+  const day = fs.readdirSync(archive).find((d) => d.startsWith('dcw-goqf-ypa-2026-08-2'));
+  const bots = fs.readdirSync(path.join(archive, day)).sort();
+  assert.equal(bots.length, 2, `expected two bot folders, got ${bots.join(', ')}`);
+  assert.equal(bots[0], 'jimmy');
+  assert.match(bots[1], /^jimmy-\d{4}$/);
+  assert.equal(fs.readFileSync(path.join(archive, day, 'jimmy', 'summary.md'), 'utf8'), 'first');
+  assert.equal(fs.readFileSync(path.join(archive, day, bots[1], 'summary.md'), 'utf8'), 'second');
 });

@@ -32,6 +32,9 @@ const {
   _resetFfmpegAvailabilityCache,
   DEFAULT_CROP_MARGINS,
   cropExprFromMargins,
+  spsCropFromMargins,
+  h264CropBsf,
+  probeVideoStream,
 } = require('../electron-app/call-media-merge.js');
 
 function tmpDir() {
@@ -51,6 +54,28 @@ function writeFakeVideo(file, { seconds = 0.5 } = {}) {
     `"${FFMPEG_BIN}" -y -f lavfi -i color=c=black:s=16x16:r=5:d=${seconds} -c:v libvpx-vp9 "${file}"`,
     { stdio: 'ignore' },
   );
+}
+
+// What the capture side now produces (renderer/call-recording-window.js
+// pickMime prefers 'video/webm;codecs=h264'): an H.264 stream in a matroska
+// container that happens to be named .webm. ffmpeg's webm muxer refuses
+// H.264, so force matroska for the same on-disk shape Chromium writes.
+// Baseline profile on purpose — libx264's re-encode would produce High, so
+// the profile surviving in the output is the tell that the stream was
+// copied rather than re-encoded.
+function writeFakeH264Video(file, { seconds = 0.5, size = '16x16' } = {}) {
+  execSync(
+    `"${FFMPEG_BIN}" -y -f lavfi -i color=c=black:s=${size}:r=5:d=${seconds} -c:v libx264 -profile:v baseline -pix_fmt yuv420p -f matroska "${file}"`,
+    { stdio: 'ignore' },
+  );
+}
+
+// Codec / profile / dimensions of a file's first video stream, off ffmpeg's
+// own banner (ffmpeg-static ships no ffprobe — see the note in the VP9 test).
+function probeVideo(file) {
+  const out = execSync(`"${FFMPEG_BIN}" -i "${file}" -hide_banner -f null - 2>&1`, { encoding: 'utf8' });
+  const m = out.match(/Video:\s*([a-zA-Z0-9_]+)(?:\s*\(([A-Za-z0-9 ]+)\))?.*?\b(\d{2,5})x(\d{2,5})\b/);
+  return m ? { codec: m[1], profile: m[2] || null, width: Number(m[3]), height: Number(m[4]) } : null;
 }
 
 function writeFakeAudio(file, { seconds = 0.5 } = {}) {
@@ -185,7 +210,7 @@ test('mergeCallMedia with video but zero audio re-encodes the video to call-reco
 // with no audible audio (or didn't open) despite the audio track itself
 // being fully intact. Every merge output must be a re-encoded, widely
 // playable h264 stream, never a raw copy of the VP9 capture.
-test('merged output is always re-encoded to h264, never a raw VP9 copy — video-only, one audio track, and multi-audio-track cases', { skip: !HAVE_FFMPEG }, async () => {
+test('a VP9 input is always re-encoded to h264, never a raw VP9 copy — video-only, one audio track, and multi-audio-track cases', { skip: !HAVE_FFMPEG }, async () => {
   // ffmpeg-static (the binary these tests actually resolve to via
   // FFMPEG_BIN) doesn't bundle ffprobe — only ffmpeg — so read the codec off
   // ffmpeg's own stream-info banner (always printed to stderr, even on a
@@ -684,4 +709,147 @@ test('a failed ffmpeg run deletes its partial output rather than leaving an unpl
   });
   if (r.ok) return; // tolerant ffmpeg build recovered the truncated input — nothing to assert
   assert.ok(!fs.existsSync(path.join(dir, 'call-recording.mp4')), 'no partial output left behind after a failed merge');
+});
+
+// ---------------------------------------------------------------------------
+// H.264 stream-copy path (issue #362). The capture side records H.264 now, and
+// for that input the merge must not decode or encode a single frame.
+// ---------------------------------------------------------------------------
+
+test('probeVideoStream reads codec and dimensions off ffmpeg\'s banner, and returns null for junk', { skip: !HAVE_FFMPEG }, () => {
+  const dir = tmpDir();
+  writeFakeH264Video(path.join(dir, 'video.webm'), { size: '320x180' });
+  assert.deepEqual(probeVideoStream(FFMPEG_BIN, path.join(dir, 'video.webm')), { codec: 'h264', width: 320, height: 180 });
+  writeFakeVideo(path.join(dir, 'vp9.webm'));
+  assert.equal(probeVideoStream(FFMPEG_BIN, path.join(dir, 'vp9.webm')).codec, 'vp9');
+  fs.writeFileSync(path.join(dir, 'junk.webm'), 'not a video');
+  assert.equal(probeVideoStream(FFMPEG_BIN, path.join(dir, 'junk.webm')), null);
+  assert.equal(probeVideoStream(FFMPEG_BIN, path.join(dir, 'missing.webm')), null);
+});
+
+test('spsCropFromMargins rounds every offset to an even pixel count (4:2:0 crop units) and h264CropBsf drops zero sides', () => {
+  const px = spsCropFromMargins(DEFAULT_CROP_MARGINS, 1872, 1080);
+  for (const v of Object.values(px)) assert.equal(v % 2, 0, `${JSON.stringify(px)} has an odd offset`);
+  assert.equal(px.left, 0);
+  assert.ok(Math.abs(px.top - 1080 * DEFAULT_CROP_MARGINS.top) <= 1);
+  assert.ok(Math.abs(px.bottom - 1080 * DEFAULT_CROP_MARGINS.bottom) <= 1);
+  assert.ok(Math.abs(px.right - 1872 * DEFAULT_CROP_MARGINS.right) <= 1);
+  const bsf = h264CropBsf(px);
+  assert.match(bsf, /^h264_metadata=/);
+  assert.ok(!bsf.includes('crop_left'), 'a zero margin must not appear in the filter');
+  assert.ok(bsf.includes(`crop_top=${px.top}`) && bsf.includes(`crop_right=${px.right}`));
+  assert.equal(h264CropBsf({ top: 0, bottom: 0, left: 0, right: 0 }), null);
+});
+
+test('an H.264 input is stream-copied, not re-encoded — video-only, one audio track, and amix cases', { skip: !HAVE_FFMPEG }, async () => {
+  for (const nAudio of [0, 1, 2]) {
+    const dir = tmpDir();
+    writeFakeH264Video(path.join(dir, 'video.webm'));
+    const tracks = [{ track: 'video', file: 'video.webm', kind: 'video' }];
+    for (let i = 0; i < nAudio; i++) {
+      writeFakeAudio(path.join(dir, `a${i}.webm`));
+      tracks.push({ track: `a${i}`, file: `a${i}.webm`, kind: 'audio' });
+    }
+    const r = await mergeCallMedia(dir, { tracksDir: dir, tracks });
+    assert.equal(r.ok, true, r.reason);
+    assert.equal(r.videoCopied, true, `nAudio=${nAudio}: expected the copy path`);
+    const v = probeVideo(r.file);
+    assert.equal(v.codec, 'h264');
+    // libx264's re-encode would have produced High profile; Baseline surviving
+    // means the bytes went straight through.
+    assert.match(v.profile || '', /Baseline/, `nAudio=${nAudio}: profile changed to ${v.profile}, so the video was re-encoded`);
+  }
+});
+
+test('the copy path never takes the encode path\'s libx264 args', { skip: !HAVE_FFMPEG }, async () => {
+  // A VP9 input through the same call, for contrast: the probe reads vp9, so
+  // the merge falls back to the re-encode and reports it.
+  const dir = tmpDir();
+  writeFakeVideo(path.join(dir, 'video.webm'));
+  const r = await mergeCallMedia(dir, { tracksDir: dir, tracks: [{ track: 'video', file: 'video.webm', kind: 'video' }] });
+  assert.equal(r.ok, true);
+  assert.equal(r.videoCopied, false);
+  assert.equal(probeVideo(r.file).codec, 'h264');
+});
+
+test('crop on an H.264 input rewrites the SPS crop (still a copy) and the container reports the cropped size', { skip: !HAVE_FFMPEG }, async () => {
+  const dir = tmpDir();
+  writeFakeH264Video(path.join(dir, 'video.webm'), { size: '1200x800' });
+  writeFakeAudio(path.join(dir, 'bot.webm'));
+  const r = await mergeCallMedia(dir, {
+    tracksDir: dir,
+    tracks: [
+      { track: 'video', file: 'video.webm', kind: 'video' },
+      { track: 'bot', file: 'bot.webm', kind: 'audio' },
+    ],
+    crop: true,
+  });
+  assert.equal(r.ok, true, r.reason);
+  assert.equal(r.videoCopied, true);
+  assert.equal(r.cropped, true);
+  const v = probeVideo(r.file);
+  assert.match(v.profile || '', /Baseline/, 'cropping must not have triggered a re-encode');
+  const px = spsCropFromMargins(DEFAULT_CROP_MARGINS, 1200, 800);
+  assert.equal(v.width, 1200 - px.left - px.right);
+  assert.equal(v.height, 800 - px.top - px.bottom);
+  // The crop's temp file must not survive, success or not.
+  assert.deepEqual(fs.readdirSync(dir).filter((f) => f.includes('crop-tmp')), []);
+});
+
+test('padStartMs forces the re-encode path even for an H.264 input (tpad needs decoded frames)', { skip: !HAVE_FFMPEG }, async () => {
+  const dir = tmpDir();
+  writeFakeH264Video(path.join(dir, 'share.webm'), { size: '64x64' });
+  const r = await mergeCallMedia(dir, {
+    tracksDir: dir,
+    tracks: [{ track: 'share', file: 'share.webm', kind: 'video' }],
+    videoTrackName: 'share',
+    outputName: 'call-recording-share.mp4',
+    padStartMs: 400,
+  });
+  assert.equal(r.ok, true, r.reason);
+  assert.equal(r.videoCopied, false);
+});
+
+test('a probe that fails falls back to the re-encode path rather than failing the merge', { skip: !HAVE_FFMPEG }, async () => {
+  const dir = tmpDir();
+  writeFakeH264Video(path.join(dir, 'video.webm'));
+  const r = await mergeCallMedia(dir, {
+    tracksDir: dir,
+    tracks: [{ track: 'video', file: 'video.webm', kind: 'video' }],
+    probeFn: () => { throw new Error('probe exploded'); },
+  });
+  // mergeCallMedia never throws — a probe that blows up is treated the same
+  // as the supported "can't tell" answer (null): degrade to the encode.
+  assert.equal(r.ok, true, r.reason);
+  assert.equal(r.videoCopied, false);
+  const r2 = await mergeCallMedia(dir, {
+    tracksDir: dir,
+    tracks: [{ track: 'video', file: 'video.webm', kind: 'video' }],
+    probeFn: () => null,
+  });
+  assert.equal(r2.ok, true, r2.reason);
+  assert.equal(r2.videoCopied, false);
+  assert.equal(probeVideo(r2.file).codec, 'h264');
+});
+
+test('aborting mid-flight on the copy path leaves neither the output nor the crop temp file', { skip: !HAVE_FFMPEG }, async () => {
+  const dir = tmpDir();
+  writeFakeH264Video(path.join(dir, 'video.webm'), { seconds: 20, size: '1200x800' });
+  writeFakeAudio(path.join(dir, 'bot.webm'), { seconds: 20 });
+  const ac = new AbortController();
+  const p = mergeCallMedia(dir, {
+    tracksDir: dir,
+    tracks: [
+      { track: 'video', file: 'video.webm', kind: 'video' },
+      { track: 'bot', file: 'bot.webm', kind: 'audio' },
+    ],
+    crop: true,
+    signal: ac.signal,
+  });
+  setTimeout(() => ac.abort(), 30);
+  const r = await p;
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'cancelled');
+  assert.ok(!fs.existsSync(path.join(dir, 'call-recording.mp4')));
+  assert.deepEqual(fs.readdirSync(dir).filter((f) => f.includes('crop-tmp')), []);
 });

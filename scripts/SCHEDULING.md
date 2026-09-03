@@ -183,7 +183,7 @@ having succeeded.
 
 - `scripts/nightly-issue-triage.mjs` — the survey.
 - `scripts/com.vibeconferencing.issue-triage.plist` — the LaunchAgent (04:30).
-- `scripts/bot-pr-pipeline.mjs` — phase-two readiness pulse (writes nothing; see below).
+- `scripts/bot-pr-pipeline.mjs` — phase-two pulse *and* dispatcher (see below; the pulse writes nothing).
 
 ```sh
 # Install
@@ -218,42 +218,76 @@ of 2026-08 that vault is six notes with nothing newer than July — the survey w
 without it, but it prioritises much better with it. Filling it in is the highest-
 leverage thing you can do to improve these digests.
 
-### Phase two — the write side (skeleton only)
+### Phase two — the write side
 
-Phase two picks up issues **a human tagged `good-for-bot`** and opens draft PRs for
-them. It is not built. What exists is `scripts/bot-pr-pipeline.mjs`, a readiness
-pulse that writes nothing:
+Phase two picks up issues **a human tagged `good-for-bot`** and puts **one
+independent Claude agent on each of them**. `scripts/bot-pr-pipeline.mjs` is both
+the daily readiness pulse and the dispatcher; the flags keep those apart:
 
 ```sh
-node scripts/bot-pr-pipeline.mjs          # preflight + the pool + what it WOULD do
-node scripts/bot-pr-pipeline.mjs --json   # same, machine-readable
-node scripts/bot-pr-pipeline.mjs --execute  # refuses, exit 2
+node scripts/bot-pr-pipeline.mjs          # PULSE — preflight + the pool. Writes nothing.
+node scripts/bot-pr-pipeline.mjs --json   # same, machine-readable (what the digest reads)
+node scripts/bot-pr-pipeline.mjs --execute --dry-run   # the exact commands, spawns nothing
+node scripts/bot-pr-pipeline.mjs --execute             # dispatch
 ```
+
+**One agent per issue, not one session working a list.** A single session walking
+N issues reliably rabbit-holes on the first hard one and the rest never happen.
+Independent sessions fix that structurally: separate context windows, so one agent
+burning down cannot starve the others, and separate git worktrees, so they can
+touch the same files without colliding. That is `claude --bg --worktree`, which is
+first-party — it detaches, prints an id, and `claude agents` / `logs` / `attach` /
+`stop` / `rm` manage the fleet. No orchestration framework is involved.
+
+Three things keep a run from going wrong, and all three are in the dispatch argv:
+
+- **A budget.** `--max-budget-usd` is the only per-session hard stop the CLI has
+  (`--max-turns` and `--timeout` are Agent SDK options, not CLI flags). It is the
+  rabbit-hole backstop, so it is always passed. Default `$5`, per agent.
+- **Denial instead of hanging.** A `--bg` session has nobody to answer a permission
+  prompt, so an un-allowlisted tool would park that agent forever. The dispatch
+  passes an explicit `--allowedTools` allowlist *and* `--permission-prompts none`,
+  which turns "would prompt" into an immediate deny. An agent that hits the wall
+  fails fast instead of squatting on a worktree until morning.
+- **A claim.** An issue gets `bot-attempted` **before** its agent starts. `hasOpenPR`
+  only catches the attempts that succeeded, and "skipped, and why" is a legitimate
+  outcome that must not be retried nightly. `--retry` overrides it.
+
+Knobs: `--max N` (default 3), `--budget N`, `--model M`, and the env equivalents
+`VIBECONF_BOT_PR_MAX` / `_BUDGET` / `_MODEL`. `VIBECONF_BOT_PR_CHECKOUTS` maps each
+repo to its local checkout, because `--worktree` branches the repo it runs *in* —
+an issue in the website repo has to be dispatched from the website checkout.
 
 The morning survey runs it and folds the answer into the digest, so the readiness
 check is something you see daily rather than something you remember to run. A
 readiness check nobody reads is already broken.
 
-It preflights the things that can genuinely be wrong *today*: `gh` authed with a
-token that can actually write, a resolvable `claude` binary, and the `good-for-bot`
-label present in **every** repo in the list. That last one matters more than it
-looks — an empty pool and a missing label are indistinguishable from the outside,
+It preflights the things that can genuinely be wrong: `gh` authed with a token that
+can actually write, a resolvable `claude` binary, a local checkout per repo, and
+the `good-for-bot` label present in **every** repo in the list. `--execute` refuses
+outright unless preflight is green. That label check matters more than it looks — an empty pool and a missing label are indistinguishable from the outside,
 so a rename (or a new repo added without the label) would read as "nothing to do"
 forever.
 
 `wanderingstan/vibeconf-app#565` is a deliberate **canary**: a `good-for-bot` issue
 that explicitly asks an agent to do nothing and report back. It gives the pool a
-non-zero member before any real issue is tagged, and when phase two goes live its
-first run is a test of the property that matters most — whether an agent respects
-the scope written in the issue instead of opening a PR anyway.
+non-zero member before any real issue is tagged, and it is what the **first real
+dispatch should be pointed at** — it tests the property that matters most, whether
+an agent respects the scope written in the issue instead of opening a PR anyway.
+Run it alone (`--max 1`) and read the comment it leaves before letting a batch go.
 
 **It stays a separate file from the survey on purpose.** The survey is read-only by
-construction, and that is its whole value in the first weeks. The moment read and
-write live in one script, "read-only" is a flag someone can flip by accident.
+construction, and that is its whole value. The moment read and write live in one
+script, "read-only" is a flag someone can flip by accident. Note that the survey
+shells out to `--json`, which is on the pulse path: nothing reachable from there
+may ever write.
 
-**When it is built it runs as a Claude cloud routine** (`/schedule`), not a
-LaunchAgent — sandboxed, parallel, doesn't need the mini awake, and a job that
-writes branches has no business sharing a host with the test runner it reports on.
+**Dispatch is deliberately NOT scheduled yet.** It runs when you run it. Putting a
+branch-writing job on a timer is a decision to make after you have watched a few
+batches by hand, not before. When it does go on a timer it belongs in a Claude
+cloud routine (`/schedule`), not a LaunchAgent — sandboxed, parallel, doesn't need
+the mini awake, and a job that writes branches has no business sharing a host with
+the test runner it reports on.
 
 ## Call archive sync to Drive (every 30 min, any machine with bots)
 

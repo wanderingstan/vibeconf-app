@@ -408,10 +408,11 @@ if (!survey && raw) log('survey returned unparseable output — falling back to 
 // 6. Report (full) + digest (short).
 // ---------------------------------------------------------------------------
 // --- phase-two pulse ---------------------------------------------------------
-// bot-pr-pipeline.mjs is a skeleton that writes nothing; all it does is answer
-// "would phase two work if an issue were tagged right now". Folding its answer
-// into the digest is the whole point of having it: a readiness check nobody reads
-// is a readiness check that is already broken. Best-effort — a pulse failure must
+// bot-pr-pipeline.mjs both pulses and dispatches, but ONLY `--execute` writes —
+// `--json`, used here, is read-only and must stay that way. All it answers is
+// "would phase two work if an issue were tagged right now". Folding that into the
+// digest is the whole point of having it: a readiness check nobody reads is a
+// readiness check that is already broken. Best-effort — a pulse failure must
 // never cost the survey, which is the message that actually matters.
 function phaseTwoPulse() {
   try {

@@ -1036,27 +1036,7 @@ function renderCallState(s) {
     ...queuedLines,
     `Participants (${(s.participants || []).length}):`,
     ...(parts.length ? parts : ['    (none detected)']),
-    ...agentActivityLines(s),
   ].join('\n');
-}
-
-// The agent tail, for the troubleshooting screen's state dump.
-//
-// Sliced to the same depth as the on-camera overlay (#532). The buffer is 1000
-// lines deep now — that depth exists for the 🧠 window, which is scrollable and
-// exists to be read back through. This is one section of a flat <pre> stats
-// dump, and pasting a thousand agent lines into the middle of it would bury the
-// twenty other things the screen is for. The count is still the FULL buffer's,
-// so it stays the "confirm it without counting by eye" number.
-const TROUBLESHOOTING_AGENT_LINES = 16;
-function agentActivityLines(s) {
-  const log = (s && s.agentLog) || [];
-  if (!log.length) return ['Agent activity (0):', '    (no agent session)'];
-  const tail = log.slice(-TROUBLESHOOTING_AGENT_LINES);
-  const header = tail.length < log.length
-    ? `Agent activity (${log.length}, last ${tail.length} — full history in 🧠):`
-    : `Agent activity (${log.length}):`;
-  return [header, ...tail.map((l) => `    ${l}`)];
 }
 
 // #242: the brain feed. Reuses the SAME agentLog the app already tails from the

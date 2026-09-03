@@ -40,11 +40,15 @@
 //      fleet burns is the 5-hour and 7-day rate-limit windows, and those are
 //      shared with the interactive session you are trying to work in. Wall
 //      clock is the cap that actually defends that.
-//   2. Denial, not hanging. A --bg session has nobody to answer a permission
-//      prompt, so an un-allowlisted tool would block that agent forever. We pass
-//      an explicit --allowedTools allowlist AND --permission-prompts none, which
-//      turns "would prompt" into an immediate deny. An agent that hits the wall
-//      fails fast and loudly instead of squatting on a worktree until morning.
+//   2. Not hanging on a prompt. A --bg session has nobody to answer one, and an
+//      agent that raises one just sits in state "blocked", burning its deadline
+//      without doing any work. `--permission-prompts none` does NOT prevent
+//      this: it is a --print option and had no effect here, so do not trust it.
+//      What works is `--permission-mode auto`, whose classifier answers
+//      unattended. The --allowedTools allowlist stays as a fast path for the
+//      obvious calls, but it cannot cover the compound shell commands workers
+//      actually write. The watchdog also reaps a "blocked" agent early rather
+//      than letting it idle all the way to its deadline.
 //   3. A claim. An issue gets `bot-attempted` BEFORE its agent starts, so the
 //      next run does not re-dispatch work that has already been tried and
 //      skipped. `hasOpenPR` only catches the attempts that succeeded.
@@ -245,8 +249,9 @@ function workerPrompt(issue) {
   ].join('\n');
 }
 
-// The allowlist. Everything a worker legitimately needs and nothing else; anything
-// outside it is denied instantly rather than parked on a prompt nobody will answer.
+// A fast path, not a fence. These are auto-approved without consulting auto
+// mode's classifier. It cannot cover compound shell commands (`gh … > f; wc -c f`),
+// which is most of what a worker actually writes, so auto mode does the real work.
 const ALLOWED_TOOLS = [
   'Read', 'Edit', 'Write', 'Grep', 'Glob',
   'Bash(gh:*)', 'Bash(git:*)', 'Bash(node:*)', 'Bash(npm:*)', 'Bash(pnpm:*)',
@@ -271,10 +276,38 @@ function liveSessions() {
 // after dispatching — a nightly that had to sit and babysit its own children is a
 // nightly that dies with the terminal. `claude stop` on a session that already
 // finished is a no-op, so the timer never needs to check first.
+// It polls rather than just sleeping, because the deadline is the SECOND thing it
+// enforces. The first is state "blocked": an agent that raised a permission prompt
+// nobody can answer is not slow, it is finished, and leaving it to idle out the
+// full deadline wastes the whole window. Verified failure mode, not a hypothetical
+// — it is what the first #668 run did.
+// Written as a node child rather than a shell one-liner on purpose: parsing
+// `agents --json` in sh means either jq (not guaranteed on PATH in a LaunchAgent)
+// or grep -A<n> against a field order nobody promised. node is already here.
 function armWatchdog(id) {
-  const child = spawn('/bin/sh', ['-c', `sleep ${DEADLINE_MIN * 60}; "${claudeBin}" stop ${id} >/dev/null 2>&1`], {
-    detached: true, stdio: 'ignore',
-  });
+  const body = `
+const { execFileSync } = require('child_process');
+const CLAUDE = ${JSON.stringify(claudeBin)}, ID = ${JSON.stringify(id)};
+const DEADLINE = ${DEADLINE_MIN};
+const stop = () => { try { execFileSync(CLAUDE, ['stop', ID], { timeout: 60000, stdio: 'ignore' }); } catch {} };
+const state = () => {
+  try {
+    const j = JSON.parse(execFileSync(CLAUDE, ['agents', '--json', '--all'], { encoding: 'utf8', timeout: 60000 }));
+    return (j.find((s) => s && s.id === ID) || {}).state || '';
+  } catch { return 'unknown'; }
+};
+let n = 0;
+const tick = () => {
+  const st = state();
+  // "blocked" is a permission prompt nobody can answer: finished, not slow.
+  if (st === 'blocked') return stop();
+  if (st === 'done' || st === 'stopped' || st === '') return;
+  if (++n >= DEADLINE) return stop();
+  setTimeout(tick, 60000);
+};
+setTimeout(tick, 60000);
+`;
+  const child = spawn(process.execPath, ['-e', body], { detached: true, stdio: 'ignore' });
   child.unref();
 }
 
@@ -347,8 +380,16 @@ function dispatch() {
       '-n', name,
       '--model', MODEL,
       '--max-budget-usd', BUDGET_USD,
-      '--permission-mode', 'acceptEdits',
-      '--permission-prompts', 'none',
+      // auto, NOT acceptEdits. MEASURED, and it cost a wasted run: the very
+      // first thing a worker does is `gh issue view ... > file; echo; wc -c
+      // file`, a COMPOUND command that no `Bash(gh:*)` pattern matches. It
+      // raised an approval prompt, and in a --bg session there is nobody to
+      // answer one, so the agent sat in state "blocked" doing nothing.
+      // `--permission-prompts none` did NOT save it — that is a --print option
+      // and had no effect here. Do not trust it as a guard. auto mode is what
+      // the blocked prompt itself suggests, and a probe confirmed it runs
+      // exactly that shape of command unattended.
+      '--permission-mode', 'auto',
       '--allowedTools', ...ALLOWED_TOOLS,
       // `--` IS LOAD-BEARING. --allowedTools is variadic, so a positional prompt
       // placed after it is parsed as one more tool name: the agent launches

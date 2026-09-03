@@ -99,8 +99,8 @@ test('the renderer shows time alone until the first size arrives', () => {
 });
 
 test('the number on screen is labelled raw, and paired with an estimate', () => {
-  // The raw capture is ~6x the file you keep, so "1.21 GB" on its own reads as
-  // a disk emergency. Neither half works alone: "raw" without a scale is just
+  // On the VP9 fallback the raw capture is ~6x the file you keep, so "1.21 GB"
+  // on its own reads as a disk emergency. Neither half works alone: "raw" without a scale is just
   // a word, and an estimate next to an unlabelled number is two figures with
   // no stated relationship.
   const fn = rendererJs.slice(rendererJs.indexOf('function renderElapsed'));
@@ -108,18 +108,23 @@ test('the number on screen is labelled raw, and paired with an estimate', () => 
 
   const i = rendererJs.indexOf("on('recording-stats'");
   const handler = rendererJs.slice(i, i + 1200);
-  assert.match(handler, /MERGED_SIZE_RATIO/);
+  assert.match(handler, /mergedSizeRatio\(\)/);
   assert.match(handler, /~\$\{est\} final/);
 });
 
 test('the estimate is a tilde, never a promise', () => {
-  // Measured once (1.28 GB of tracks -> a 193 MB mp4) on a mostly-static Meet
-  // view. A share full of motion will compress worse, so the ratio is a scale
-  // and the tilde is load-bearing — if it ever renders bare, this fails.
-  const m = rendererJs.match(/const MERGED_SIZE_RATIO = ([^;]+);/);
-  assert.ok(m, 'the ratio is a named constant, not an inline magic number');
-  const ratio = new Function(`return ${m[1]}`)();
-  assert.ok(ratio > 0 && ratio < 1, 'the merge shrinks the recording');
+  // The ratio depends on the codec the capture landed on: H.264 is
+  // stream-copied by the merge (the final file IS the raw bytes, ratio 1),
+  // while the VP9 fallback is re-encoded — measured once (1.28 GB of tracks
+  // -> a 193 MB mp4) on a mostly-static Meet view. A share full of motion
+  // will compress worse, so either way the figure is a scale and the tilde is
+  // load-bearing — if it ever renders bare, this fails.
+  const m = rendererJs.match(/function mergedSizeRatio\(\) \{\n\s*return ([^;]+);/);
+  assert.ok(m, 'the ratio is a named function, not an inline magic number');
+  const ratioFor = (recordingMime) => new Function('recordingMime', `return ${m[1]}`)(recordingMime);
+  assert.equal(ratioFor('video/webm;codecs=h264'), 1, 'H.264 is copied, not shrunk');
+  const vp9 = ratioFor('video/webm;codecs=vp9');
+  assert.ok(vp9 > 0 && vp9 < 1, 'the VP9 re-encode shrinks the recording');
 
   const i = rendererJs.indexOf("on('recording-stats'");
   const handler = rendererJs.slice(i, i + 1200);

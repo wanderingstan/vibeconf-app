@@ -45,11 +45,11 @@
   //       source, which is the only place it can be fixed.
   //
   //   (2) COST. 5.1 megapixels per frame at 60fps is ~5x the pixel throughput
-  //       of 1080p30, and every one of those pixels is re-encoded by the merge
-  //       step afterwards (call-media-merge.js always transcodes; it cannot
-  //       '-c:v copy' VP9 into MP4). Measured on a real 3024x1700 recording,
-  //       30s of footage took 13.1s to merge — 2.3x realtime, so a 40-minute
-  //       call spent ~17 minutes pinning a core.
+  //       of 1080p30 — paid by the live encoder for the whole call, and (on
+  //       the VP9 fallback, see pickMime) again by the merge's re-encode
+  //       afterwards. Measured on a real 3024x1700 VP9 recording, 30s of
+  //       footage took 13.1s to merge — 2.3x realtime, so a 40-minute call
+  //       spent ~17 minutes pinning a core.
   //
   // `ideal` rather than `exact` on purpose: a source frame smaller than 1080p
   // should be captured as-is, not upscaled, and an exact constraint would fail
@@ -69,6 +69,7 @@
   let startedAt = 0;
   let elapsedTimer = null;
   let mediaRecorder = null;
+  let recordingMime = ''; // what pickMime() chose, once recording — see mergedSizeRatio()
   let stopRequested = false;
   // #328: pushed from main every couple of seconds. null until the first push
   // lands, which is why renderElapsed() shows time alone rather than "0 MB" —
@@ -100,17 +101,23 @@
 
   // What #328 put on screen is the RAW capture growing on disk, and out of
   // context it alarms: a 50-minute call reads "1.21 GB" while the file you
-  // actually keep is a fraction of that. The merge always transcodes
-  // (call-media-merge.js cannot '-c:v copy' VP9 into MP4), so the muxed mp4
-  // lands at roughly a sixth of the raw bytes — measured on the 2026-08-27
-  // call, 1.28 GB of tracks became a 193 MB mp4 (0.15).
+  // actually keep may be a fraction of that. Which fraction depends on the
+  // codec pickMime() landed on:
+  //   - H.264 (the normal case): the merge stream-copies the video, so the
+  //     final mp4 is essentially the raw bytes (plus a little AAC). Ratio 1.
+  //   - VP9 (fallback): the merge re-encodes to x264 crf 23, and the muxed mp4
+  //     lands at roughly a sixth of the raw bytes — measured on the 2026-08-27
+  //     call, 1.28 GB of tracks became a 193 MB mp4 (0.15).
   //
   // One measurement is not a model. A screen share full of motion compresses
   // far worse than the mostly-static Meet view that number came from, so this
   // is only ever shown with a tilde, and it sits in the note line rather than
-  // beside the real number — the honest claim is "much smaller than this",
-  // and the figure is there to give that claim a scale, not to be held to.
-  const MERGED_SIZE_RATIO = 1 / 6;
+  // beside the real number — the honest claim is "about this much" / "much
+  // smaller than this", and the figure is there to give that claim a scale,
+  // not to be held to.
+  function mergedSizeRatio() {
+    return /h264|avc1/i.test(recordingMime || '') ? 1 : 1 / 6;
+  }
 
   function renderElapsed() {
     if (!SHOW_CONTROLS) return;
@@ -130,8 +137,19 @@
     if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
   }
 
+  // H.264 first, on purpose. Chromium's MediaRecorder encodes it with the
+  // platform's hardware encoder where there is one (VideoToolbox on macOS) —
+  // measured at ~24% Electron CPU for a 1080p30 frame capture where VP9 sat
+  // at ~94% — and, more importantly, an H.264 track is what lets
+  // call-media-merge.js stream-copy the video into the final mp4 instead of
+  // re-encoding it: the post-call merge goes from minutes to seconds and
+  // stops scaling with the length of the call at all (issue #362). The
+  // container stays webm/matroska (which is what Chromium writes for H.264 in
+  // "webm" — ffmpeg reads it fine) so nothing about the chunk pipeline or the
+  // on-disk file names changes. VP9/VP8 remain as fallbacks for an engine
+  // without H.264 support; the merge re-encodes those as before.
   function pickMime() {
-    for (const m of ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']) {
+    for (const m of ['video/webm;codecs=h264', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']) {
       try { if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m; } catch { /* old engine */ }
     }
     return 'video/webm';
@@ -153,6 +171,7 @@
     }
 
     const mime = pickMime();
+    recordingMime = mime;
     try {
       mediaRecorder = new MediaRecorder(stream, { mimeType: mime });
     } catch (err) {
@@ -273,7 +292,7 @@
     // and is the more important message, so never overwrite one.
     if (!dot.classList.contains('error')) {
       const free = Number.isFinite(stats.freeBytes) ? fmtBytes(stats.freeBytes) : '';
-      const est = sizeBytes === null ? '' : fmtBytes(sizeBytes * MERGED_SIZE_RATIO);
+      const est = sizeBytes === null ? '' : fmtBytes(sizeBytes * mergedSizeRatio());
       note.textContent = [est && `~${est} final`, free && `${free} free on disk`]
         .filter(Boolean).join(' · ');
     }

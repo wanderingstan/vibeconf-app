@@ -20,7 +20,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { spawn, execSync } = require('child_process');
+const { spawn, execSync, execFileSync } = require('child_process');
 
 let _ffmpegPath = undefined; // memoized (undefined = not yet resolved, null = none found)
 
@@ -73,8 +73,15 @@ const PAD_NORMALIZE_FPS = 5;
 // patience.
 const MERGE_STALL_TIMEOUT_MS = 120000;
 
-// The video encode args, in one place because six branches below build the
-// same encode with different maps and filters.
+// The video encode args for the RE-ENCODE fallback (see "Video codec: copy
+// when we can, transcode when we must" on mergeCallMedia). Since the capture
+// side records H.264 (renderer/call-recording-window.js pickMime), the main
+// call-recording.mp4 merge never runs this branch on a fresh recording; it
+// still handles VP9 inputs (recordings made before the H.264 switch, or an
+// engine whose MediaRecorder can't do H.264) and every padStartMs merge.
+//
+// In one place because six branches below build the same encode with
+// different maps and filters.
 //
 // `-preset` used to be absent, which is not the same as neutral: libx264
 // silently defaults to `medium`, and medium is tuned for a file you encode
@@ -159,6 +166,49 @@ function cropExprFromMargins({ top, bottom, left, right }) {
   const w = 1 - left - right;
   const h = 1 - top - bottom;
   return `crop=iw*${w}:ih*${h}:iw*${left}:ih*${top}`;
+}
+
+// The same fractional margins as PIXEL offsets for the H.264 stream-copy
+// path: an H.264 SPS carries frame-cropping offsets (it's how every 1080p
+// stream signals 1080 rows inside 1088 coded rows, so every decoder honours
+// them), and ffmpeg's `h264_metadata` bitstream filter rewrites those without
+// decoding a single frame. The offsets are in pixels and, for 4:2:0 chroma,
+// must be even — so each is rounded to the nearest even number. Only sides
+// with a non-zero margin make it into the filter string.
+function spsCropFromMargins({ top, bottom, left, right }, width, height) {
+  const even = (v) => Math.round(v / 2) * 2;
+  return {
+    top: even(height * top),
+    bottom: even(height * bottom),
+    left: even(width * left),
+    right: even(width * right),
+  };
+}
+
+function h264CropBsf(px) {
+  const parts = Object.entries(px)
+    .filter(([, v]) => v > 0)
+    .map(([side, v]) => `crop_${side}=${v}`);
+  return parts.length ? `h264_metadata=${parts.join(':')}` : null;
+}
+
+// Read the codec and dimensions of a file's first video stream off ffmpeg's
+// own stream-info banner. ffmpeg-static ships ffmpeg but not ffprobe, so
+// `ffmpeg -i <file>` with no output is the probe: it exits non-zero ("At
+// least one output file must be specified") after printing the banner to
+// stderr, which is all that's needed. Returns { codec, width, height } or
+// null if the file couldn't be read/parsed — a null just means the merge
+// takes the always-works re-encode path.
+function probeVideoStream(ffmpegPath, file, execFileSyncFn = execFileSync) {
+  let banner = '';
+  try {
+    execFileSyncFn(ffmpegPath, ['-hide_banner', '-nostdin', '-i', file], { stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf8' });
+  } catch (err) {
+    banner = String((err && err.stderr) || '');
+  }
+  const m = banner.match(/Stream #\d+:\d+.*?Video:\s*([a-zA-Z0-9_]+).*?\b(\d{2,5})x(\d{2,5})\b/);
+  if (!m) return null;
+  return { codec: m[1], width: Number(m[2]), height: Number(m[3]) };
 }
 
 // Keep only the tail of ffmpeg's stderr — with `-stats` on and no wall-clock
@@ -279,16 +329,42 @@ function _resetFfmpegAvailabilityCache() {
 //   0 video + N audio -> no merge possible (nothing to attach audio to) — skip
 //   0 video + 0 audio -> nothing to do
 //
-// Video is ALWAYS re-encoded to libx264 here, never '-c:v copy'd from the raw
-// VP9 webm capture — two independent reasons, either one alone would be
-// enough: (1) MediaRecorder's webm has irregular, live-streamed timestamps;
-// copying them verbatim into an MP4 container produces bogus frame-rate
-// metadata (observed: ffprobe reporting r_frame_rate=16000/1) that breaks
-// several players' handling of the separately-encoded audio track sitting
-// next to it, even though the audio itself decodes fine in more tolerant
-// tools. (2) VP9-in-MP4 isn't supported by QuickTime/AVFoundation at all —
-// the file simply won't open there regardless of the timestamp issue. Both
-// are fixed by transcoding to a normalized, widely-supported h264 stream.
+// Video codec: copy when we can, transcode when we must.
+//
+// The capture side records H.264 (renderer/call-recording-window.js
+// pickMime — Chromium's MediaRecorder encodes it in hardware where the
+// platform has an encoder, which is also ~4x less CPU during the call than
+// VP9 was). An H.264 input is STREAM-COPIED into the mp4: no decode, no
+// encode, so the merge's cost stops scaling with the length of the call —
+// measured on a real 14-minute recording, copy + a 4-way amix took 18s where
+// the re-encode path is ~20x realtime at best (~45s) and was 20+ minutes
+// before #398. See issue #362 for the full investigation.
+//
+// This file used to insist video was ALWAYS re-encoded, for two reasons that
+// don't survive measurement: (1) "MediaRecorder's timestamps are irregular"
+// — they are ordinary variable-frame-rate at 25–40ms spacing; the scary
+// "1000 fps" is just webm's 1ms timebase, and the 34x frame duplication was
+// ffmpeg 6.0's cfr default during a RE-ENCODE (see VIDEO_ENCODE_ARGS). A
+// stream copy duplicates nothing. (2) "VP9-in-MP4 won't open in QuickTime"
+// — true, but it's a codec problem, not a container one, and it's moot once
+// the capture is H.264.
+//
+// The re-encode path (VIDEO_ENCODE_ARGS) remains for every input that ISN'T
+// stream-copyable: a VP9 video.webm (recordings made before the H.264 switch,
+// or a MediaRecorder with no H.264 support), and any padStartMs merge (tpad
+// needs decoded frames to pad).
+//
+// Cropping on the copy path never touches pixels either: the crop margins are
+// written into the H.264 stream's own SPS frame-cropping fields via the
+// `h264_metadata` bitstream filter (see spsCropFromMargins), which every
+// decoder honours. ffmpeg copies the container's track header BEFORE that
+// filter runs, though, so the mp4 would still declare the uncropped size and
+// AVFoundation would present it stretched — hence the crop is a separate
+// first pass into a temp file, and the mux pass reads THAT (re-parsing the
+// now-cropped SPS into a correct track header). Both passes are copies, so
+// the pair still completes in well under a second per hour of video. A nice
+// property: the raw pixels are all still in the file, so this crop is
+// reversible metadata rather than a lossy choice.
 //
 // Returns { ok, file, reason? }. Never throws — a failed merge just means the
 // output file doesn't exist; the raw per-track files it would have combined
@@ -310,6 +386,7 @@ async function mergeCallMedia(callDir, {
   tracksDir = path.join(callDir, 'call-recording-tracks'),
   tracks = [],
   execSyncFn = execSync,
+  probeFn = probeVideoStream,
   videoTrackName = null,
   outputName = 'call-recording.mp4',
   crop = false,
@@ -343,14 +420,62 @@ async function mergeCallMedia(callDir, {
 
   fs.mkdirSync(callDir, { recursive: true });
   const outPath = path.join(callDir, outputName);
-  // `-nostdin` so a spawned ffmpeg can never sit waiting on input it will
-  // never get (which would read as a stall); `-stats` so the progress output
-  // the stall watchdog below listens for is guaranteed, not incidental.
-  const args = ['-y', '-nostdin', '-stats', '-i', videoTrack.absPath];
-  for (const t of audioTracks) args.push('-i', t.absPath);
 
   const padSec = padStartMs > 0 ? (padStartMs / 1000).toFixed(3) : null;
   const cropMargins = crop ? { ...DEFAULT_CROP_MARGINS, ...(typeof crop === 'object' ? crop : null) } : null;
+
+  // Stream-copy is possible when the input is already H.264 and nothing
+  // needs decoded frames (tpad does). The probe is skipped entirely when
+  // padding is requested, and a probe that fails or reads anything but h264
+  // simply means the re-encode path below — which handles every input.
+  let probe = null;
+  if (!padSec) {
+    try { probe = probeFn(ffmpegPath, videoTrack.absPath); } catch { probe = null; }
+  }
+  const copyVideo = !!(probe && probe.codec === 'h264' && probe.width > 0 && probe.height > 0);
+
+  const run = (args, target) => runFfmpeg(ffmpegPath, args, { outPath: target, signal, stallTimeoutMs });
+
+  // `-nostdin` so a spawned ffmpeg can never sit waiting on input it will
+  // never get (which would read as a stall); `-stats` so the progress output
+  // the stall watchdog listens for is guaranteed, not incidental.
+  const baseArgs = () => ['-y', '-nostdin', '-stats'];
+
+  if (copyVideo) {
+    // Pass 1 (only when cropping): rewrite the SPS crop into a temp file.
+    // Video only — the audio is dealt with once, in the mux pass.
+    let videoInput = videoTrack.absPath;
+    let cropTmp = null;
+    const bsf = cropMargins ? h264CropBsf(spsCropFromMargins(cropMargins, probe.width, probe.height)) : null;
+    if (bsf) {
+      cropTmp = path.join(callDir, `.${outputName}.crop-tmp.mp4`);
+      const r = await run([...baseArgs(), '-i', videoTrack.absPath, '-map', '0:v', '-c:v', 'copy', '-bsf:v', bsf, cropTmp], cropTmp);
+      if (!r.ok) return r;
+      videoInput = cropTmp;
+    }
+    try {
+      // Pass 2: mux the (possibly cropped) H.264 stream with the mixed audio.
+      const args = [...baseArgs(), '-i', videoInput];
+      for (const t of audioTracks) args.push('-i', t.absPath);
+      if (audioTracks.length === 0) {
+        args.push('-map', '0:v', '-c:v', 'copy', outPath);
+      } else if (audioTracks.length === 1) {
+        args.push('-map', '0:v', '-map', '1:a', '-c:v', 'copy', '-c:a', 'aac', outPath);
+      } else {
+        const inputs = audioTracks.map((_, i) => `[${i + 1}:a]`).join('');
+        const filter = `${inputs}amix=inputs=${audioTracks.length}:normalize=0[aout]`;
+        args.push('-filter_complex', filter, '-map', '0:v', '-map', '[aout]', '-c:v', 'copy', '-c:a', 'aac', outPath);
+      }
+      const r = await run(args, outPath);
+      return r.ok ? { ok: true, file: outPath, videoCopied: true, cropped: !!bsf } : r;
+    } finally {
+      if (cropTmp) { try { fs.unlinkSync(cropTmp); } catch { /* never written, or already gone */ } }
+    }
+  }
+
+  // Re-encode path.
+  const args = [...baseArgs(), '-i', videoTrack.absPath];
+  for (const t of audioTracks) args.push('-i', t.absPath);
 
   // Video-only filter chain (crop, then pad), built once and shared by every
   // audio-track-count branch below. `fps=` runs BEFORE `tpad` so the pad is
@@ -391,6 +516,16 @@ async function mergeCallMedia(callDir, {
     args.push('-filter_complex', filter, '-map', '0:v', '-map', '[aout]', ...VIDEO_ENCODE_ARGS, '-c:a', 'aac', outPath);
   }
 
+  const r = await run(args, outPath);
+  return r.ok ? { ok: true, file: outPath, videoCopied: false, cropped: !!cropMargins } : r;
+}
+
+// Run one ffmpeg invocation that writes `outPath`, with the cancel signal and
+// the stall watchdog applied. Resolves { ok: true } or { ok: false, reason };
+// never throws. On every failure — stall, cancel, or a non-zero exit — the
+// partial output file is deleted rather than left behind masquerading as a
+// finished file.
+function runFfmpeg(ffmpegPath, args, { outPath, signal, stallTimeoutMs }) {
   return new Promise((resolve) => {
     // `signal` here (Node's own spawn option, not our param name reused by
     // coincidence) auto-kills the process on abort — no manual proc.kill()
@@ -421,7 +556,7 @@ async function mergeCallMedia(callDir, {
       settled = true;
       clearTimeout(stallTimer);
       clearTimeout(exitBackstop);
-      resolve({ ok: true, file: outPath });
+      resolve({ ok: true });
     };
 
     // Reset on every byte ffmpeg emits: this fires only when it has gone
@@ -463,7 +598,10 @@ module.exports = {
   mergeCallMedia,
   ffmpegAvailable,
   resolveFfmpegPath,
+  probeVideoStream,
   _resetFfmpegAvailabilityCache,
   DEFAULT_CROP_MARGINS,
   cropExprFromMargins,
+  spsCropFromMargins,
+  h264CropBsf,
 };

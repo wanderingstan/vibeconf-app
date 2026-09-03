@@ -44,6 +44,18 @@
 //   With neither configured it exits 2 and says so; it never silently does
 //   nothing.
 //
+// CONFIGURATION lives in ~/.config/vibeconf/sync-calls.env (KEY=VALUE lines,
+// read by this script itself), not in a shell profile: launchd runs a
+// non-interactive login shell, which never sources ~/.zshrc, and the project's
+// CLAUDE.md has a whole section on the hours that particular trap has cost.
+// Environment variables already set still win over the file.
+//
+// FAIL-SAFE AGAINST THE AGENT'S OWN UPLOAD: copies use --ignore-existing on
+// both backends. A file that is already on Drive under the same path — the
+// bot's after-call work got there first — is left exactly as it is, never
+// overwritten, however it compares. This script fills gaps; it is not the
+// authority on what a file should contain.
+//
 // WHAT COUNTS AS FINISHED: a call folder is skipped while anything in it was
 // modified in the last VIBECONF_SYNC_MIN_AGE_MIN minutes (default 10). A
 // recording still being written, a merge still running, or the agent still
@@ -57,6 +69,7 @@
 //   node scripts/sync-calls-to-drive.mjs [--dry-run] [--status] [--verbose]
 //        [--profiles Default,dev | --all-profiles] [--min-age-min N]
 //        [--dest /path/to/synced/archive] [--remote "Name:path"] [--owner stan]
+//   Config file: ~/.config/vibeconf/sync-calls.env (VIBECONF_* KEY=VALUE lines)
 //
 // Install the timer: see scripts/com.vibeconf.sync-calls.plist and
 // scripts/SCHEDULING.md ("Call archive sync to Drive").
@@ -65,6 +78,27 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
+
+export const CONFIG_FILE = path.join(os.homedir(), '.config', 'vibeconf', 'sync-calls.env');
+
+// KEY=VALUE lines → process.env, without overriding anything already set.
+// Blank lines and # comments ignored; a value may be double-quoted.
+export function loadConfigFile(file = CONFIG_FILE, env = process.env) {
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); } catch { return []; }
+  const loaded = [];
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const m = /^(?:export\s+)?([A-Z_][A-Z0-9_]*)=(.*)$/.exec(line);
+    if (!m) continue;
+    let v = m[2].trim();
+    if (/^".*"$/.test(v) || /^'.*'$/.test(v)) v = v.slice(1, -1);
+    v = v.replace(/\$HOME\b|~(?=\/|$)/g, os.homedir());
+    if (env[m[1]] === undefined) { env[m[1]] = v; loaded.push(m[1]); }
+  }
+  return loaded;
+}
 
 export const DEFAULTS = {
   profiles: ['Default'],
@@ -214,6 +248,7 @@ export function defaultProfilesRoot() {
 }
 
 function parseArgs(argv) {
+  loadConfigFile();
   const o = {
     dryRun: false, status: false, verbose: false, allProfiles: false,
     profiles: (process.env.VIBECONF_SYNC_PROFILES || DEFAULTS.profiles.join(',')).split(',').map((s) => s.trim()).filter(Boolean),
@@ -263,14 +298,13 @@ function copyCall(backend, callDir, relDest, { dryRun, verbose }) {
     // -rt: recurse, keep mtimes (so the newer-file comparison works next
     // time). No -a: ownership/perms mean nothing on Drive and make openrsync
     // (macOS's rsync) complain. Trailing slash on the source = contents.
-    const args = ['-rt', '--exclude', '.DS_Store', '--exclude', DEFAULTS.markerFile, ...(dryRun ? ['-n'] : []), ...(verbose ? ['-v'] : []), callDir + path.sep, target + path.sep];
+    const args = ['-rt', '--ignore-existing', '--exclude', '.DS_Store', '--exclude', DEFAULTS.markerFile, ...(dryRun ? ['-n'] : []), ...(verbose ? ['-v'] : []), callDir + path.sep, target + path.sep];
     return run('rsync', args, verbose);
   }
   const target = `${backend.remote}:${backend.archivePath}/${relDest}`;
-  // copy (not sync): never deletes anything on Drive. --update: skip files
-  // that are newer on the destination, e.g. a summary the agent uploaded and
-  // then edited in place on Drive.
-  const args = ['copy', '--update', '--exclude', '.DS_Store', '--exclude', DEFAULTS.markerFile, ...(dryRun ? ['--dry-run'] : []), ...(verbose ? ['-v'] : []), callDir, target];
+  // copy (not sync): never deletes anything on Drive. --ignore-existing: a
+  // file already there (the agent's own upload) is never touched.
+  const args = ['copy', '--ignore-existing', '--exclude', '.DS_Store', '--exclude', DEFAULTS.markerFile, ...(dryRun ? ['--dry-run'] : []), ...(verbose ? ['-v'] : []), callDir, target];
   return run('rclone', args, verbose);
 }
 

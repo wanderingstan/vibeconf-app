@@ -13,7 +13,7 @@ import { execSync } from 'node:child_process';
 const mod = await import('../scripts/sync-calls-to-drive.mjs');
 const {
   parseCallId, destinationFor, botFolderName, isQuiescent, needsSync,
-  botNameFor, pickBackend, listProfiles, main, DEFAULTS,
+  botNameFor, pickBackend, listProfiles, main, DEFAULTS, loadConfigFile,
 } = mod;
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'sync-calls-'));
@@ -190,4 +190,30 @@ test('--status reports each call without copying anything', () => {
   const out = logs.join('\n');
   assert.match(out, /150000Z → wcj-odpo-wrb-2026-09-01\/jimmy: never synced/);
   assert.match(out, /160000Z → wcj-odpo-wrb-2026-09-01\/jimmy: busy/);
+});
+
+test('the config file sets VIBECONF_* without overriding the environment, and expands $HOME', () => {
+  const f = path.join(tmp(), 'sync-calls.env');
+  fs.writeFileSync(f, '# comment\nVIBECONF_SYNC_OWNER=stan\nexport VIBECONF_DRIVE_ARCHIVE_DIR="$HOME/My Drive/archive"\nVIBECONF_SYNC_PROFILES=Default,dev\nnot a setting\n');
+  const env = { VIBECONF_SYNC_PROFILES: 'already' };
+  const loaded = loadConfigFile(f, env);
+  assert.deepEqual(loaded.sort(), ['VIBECONF_DRIVE_ARCHIVE_DIR', 'VIBECONF_SYNC_OWNER']);
+  assert.equal(env.VIBECONF_SYNC_OWNER, 'stan');
+  assert.equal(env.VIBECONF_DRIVE_ARCHIVE_DIR, path.join(os.homedir(), 'My Drive', 'archive'));
+  assert.equal(env.VIBECONF_SYNC_PROFILES, 'already', 'the environment wins');
+  assert.deepEqual(loadConfigFile(path.join(tmp(), 'missing.env'), {}), []);
+});
+
+test('a file already on Drive under the same path is never overwritten (the agent got there first)', { skip: !HAVE_RSYNC }, () => {
+  const root = tmp();
+  const archive = tmp();
+  fakeCall(root, 'Default', 'wcj-odpo-wrb-20260901T150000Z', { botName: 'Jimmy', ageMin: 30 });
+  const rel = destinationFor('wcj-odpo-wrb-20260901T150000Z', 'Jimmy');
+  fs.mkdirSync(path.join(archive, rel), { recursive: true });
+  fs.writeFileSync(path.join(archive, rel, 'call-recording.mp4'), 'the agent uploaded this one');
+  const origLog = console.log; const origErr = console.error; console.log = () => {}; console.error = () => {};
+  try { assert.equal(main(['--profiles-root', root, '--dest', archive, '--profiles', 'Default']), 0); }
+  finally { console.log = origLog; console.error = origErr; }
+  assert.equal(fs.readFileSync(path.join(archive, rel, 'call-recording.mp4'), 'utf8'), 'the agent uploaded this one');
+  assert.ok(fs.existsSync(path.join(archive, rel, 'call-recording-tracks', 'manifest.json')), 'the missing files are still filled in');
 });

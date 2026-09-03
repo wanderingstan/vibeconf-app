@@ -72,11 +72,16 @@ const STOP_ACK_TIMEOUT_MS = 5000;
 //     e.g. the 'video' track); false for a background capture with no UI
 //     (e.g. 'share') — the window is created but never shown.
 //   title — window title, only meaningful when visible.
+//   crop — { x, y, w, h } as fractions of the captured frame, or null. When
+//     set, the renderer records only that region (drawn through a canvas
+//     before the encoder — see record-region.js for why the crop can't
+//     happen later) and main is expected to keep it updated over the
+//     'frame-capture-crop' channel as the Meet layout changes.
 //
 // Throws if targetWebContents isn't available. Callers are expected to catch
 // this and degrade gracefully (fall back to not capturing that track) rather
 // than let a capture-window failure break the recording or the share itself.
-function createFrameCaptureWindow(targetWebContents, { trackName, partition, visible = true, title = 'Recording…' } = {}) {
+function createFrameCaptureWindow(targetWebContents, { trackName, partition, visible = true, title = 'Recording…', crop = null } = {}) {
   if (!targetWebContents || targetWebContents.isDestroyed()) {
     throw new Error(`no target webContents to capture for track "${trackName}"`);
   }
@@ -142,7 +147,8 @@ function createFrameCaptureWindow(targetWebContents, { trackName, partition, vis
   });
   win.setMenuBarVisibility(false);
   win.loadFile(path.join(__dirname, 'renderer', 'call-recording-window.html'), {
-    search: `track=${encodeURIComponent(trackName)}&controls=${visible ? '1' : '0'}`,
+    search: `track=${encodeURIComponent(trackName)}&controls=${visible ? '1' : '0'}`
+      + (crop ? `&crop=${[crop.x, crop.y, crop.w, crop.h].map((n) => Number(n).toFixed(4)).join(',')}` : ''),
   });
   if (visible) {
     win.once('ready-to-show', () => {
@@ -190,6 +196,13 @@ function stopFrameCaptureWindow(win) {
   });
 }
 
+// Push a re-measured crop region (fractions, see createFrameCaptureWindow's
+// `crop`) to a running capture window. No-op if the window is gone.
+function sendFrameCaptureCrop(win, rect) {
+  if (!win || win.isDestroyed() || !rect) return;
+  try { win.webContents.send('frame-capture-crop', { x: rect.x, y: rect.y, w: rect.w, h: rect.h }); } catch { /* torn down */ }
+}
+
 // --- Thin, named wrappers for the two capture tracks main.js actually uses ---
 
 // In-memory only (no persist: prefix) — neither window's session needs to
@@ -202,12 +215,13 @@ const SHARE_PARTITION = 'call-recording-share';
 // The bot's own Meet view — visible status window (elapsed time + Stop
 // button), active for the whole recording. See main.js's
 // startCallRecording()/stopCallRecording().
-function createCallRecordingWindow(meetView) {
+function createCallRecordingWindow(meetView, { crop = null } = {}) {
   return createFrameCaptureWindow(meetView && meetView.webContents, {
     trackName: 'video',
     partition: VIDEO_PARTITION,
     visible: true,
     title: 'Recording call…',
+    crop,
   });
 }
 
@@ -228,4 +242,5 @@ module.exports = {
   createCallRecordingWindow,
   createShareCaptureWindow,
   STOP_ACK_TIMEOUT_MS,
+  sendFrameCaptureCrop,
 };

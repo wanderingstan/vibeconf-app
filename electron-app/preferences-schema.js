@@ -285,9 +285,12 @@ const PREFERENCES = {
     label: 'Crop call recordings',
     description:
       'Crop call-recording.mp4\'s picture down to just the meeting video, cutting ' +
-      'off Google Meet\'s own chrome around it: the top header, the bottom strip ' +
-      '(captions + in-call toolbar), and a margin on the right sized for the ' +
-      'people/chat panel, which the bot always has open in its own Meet view. ' +
+      'off everything around it: the app\'s own status banner, Google Meet\'s ' +
+      'captions and toolbar, any open people/chat panel, and the empty margins. ' +
+      'The region is measured from the live Meet layout (the participant tiles) ' +
+      'at recording start and re-measured every second, and it is applied as the ' +
+      'video is captured, so the raw frame is not kept. While recording, the ' +
+      'region is outlined in red in the bot\'s own view (the 👀 window). ' +
       'ON by default. Turn this OFF to get the raw, uncropped Meet-view frame ' +
       'instead — useful for developers who want to see exactly what the bot ' +
       'saw, chrome included. Only affects call-recording.mp4 ' +

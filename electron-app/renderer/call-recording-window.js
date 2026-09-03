@@ -18,6 +18,32 @@
   const TRACK = params.get('track') || 'video';
   const SHOW_CONTROLS = params.get('controls') === '1';
   const TIMESLICE_MS = 1000;
+  // Crop-at-capture (record-region.js has the why): main passes the initial
+  // region as fractions of the frame in the query string, then keeps sending
+  // re-measured ones over 'frame-capture-crop' while the recording runs.
+  // Absent means record the raw frame (the pref is off, or this is the
+  // whiteboard-share track, which has no Meet chrome to crop).
+  const INITIAL_CROP = parseCrop(params.get('crop'));
+  // How long to give main's first MEASURED region (its first tick is
+  // asynchronous — it runs a script in the Meet page) before starting the
+  // encoder on the query-string one. The canvas size is fixed for the whole
+  // recording (see startCroppedStream), so it's worth a short wait to size it
+  // from a measurement rather than a fallback; it is not worth delaying the
+  // recording's start noticeably.
+  const FIRST_CROP_WAIT_MS = 1500;
+  // Frame rate the cropped canvas is captured at. Matches CAPTURE_CONSTRAINTS'
+  // ideal; canvas.captureStream() only emits when the canvas actually
+  // changes, so a still Meet view costs nothing extra.
+  const CANVAS_FPS = 30;
+
+  function parseCrop(str) {
+    if (!str) return null;
+    const p = str.split(',').map(Number);
+    if (p.length !== 4 || p.some((n) => !Number.isFinite(n))) return null;
+    const [x, y, w, h] = p;
+    if (!(w > 0) || !(h > 0)) return null;
+    return { x, y, w, h };
+  }
 
   const dot = document.getElementById('dot');
   const label = document.getElementById('label');
@@ -70,6 +96,8 @@
   let elapsedTimer = null;
   let mediaRecorder = null;
   let recordingMime = ''; // what pickMime() chose, once recording — see mergedSizeRatio()
+  let currentCrop = INITIAL_CROP; // fractions of the SOURCE frame; updated live by main
+  let cropWaiters = []; // resolvers waiting for the first 'frame-capture-crop'
   let stopRequested = false;
   // #328: pushed from main every couple of seconds. null until the first push
   // lands, which is why renderElapsed() shows time alone rather than "0 MB" —
@@ -155,6 +183,94 @@
     return 'video/webm';
   }
 
+  // Draw the source stream into a canvas the size of the crop region and hand
+  // back the canvas's own MediaStream for the recorder.
+  //
+  // The canvas size is chosen ONCE, from the first region, and never changes:
+  // a MediaRecorder can't switch resolution mid-stream without the encoder
+  // restarting, and a resolution change inside one H.264 track would break
+  // the stream copy into mp4. Later regions (a People panel opening, captions
+  // reflowing the grid) are drawn scale-to-fit into that fixed canvas,
+  // letterboxed with black rather than stretched, so the picture stays
+  // undistorted and only its magnification changes.
+  //
+  // Even dimensions: yuv420p chroma is subsampled 2x2, and an odd-sized
+  // canvas would either be rejected by the encoder or padded by it.
+  async function startCroppedStream(source) {
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.srcObject = source;
+    await video.play();
+    if (!(video.videoWidth > 0 && video.videoHeight > 0)) {
+      await new Promise((resolve) => video.addEventListener('loadedmetadata', resolve, { once: true }));
+    }
+    const sw = video.videoWidth, sh = video.videoHeight;
+    if (!(sw > 0 && sh > 0)) throw new Error('source frame has no size');
+
+    // Give main's first measured region a moment to arrive (see FIRST_CROP_WAIT_MS).
+    await new Promise((resolve) => {
+      if (currentCrop !== INITIAL_CROP) { resolve(); return; }
+      const t = setTimeout(resolve, FIRST_CROP_WAIT_MS);
+      cropWaiters.push(() => { clearTimeout(t); resolve(); });
+    });
+    cropWaiters = [];
+
+    const even = (n) => Math.max(2, Math.round(n / 2) * 2);
+    const first = currentCrop || INITIAL_CROP;
+    const cw = even(sw * first.w), ch = even(sh * first.h);
+    const canvas = document.createElement('canvas');
+    canvas.width = cw; canvas.height = ch;
+    const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+    if (!ctx) throw new Error('no 2d context');
+
+    let drawn = 0;
+    const draw = () => {
+      const c = currentCrop || first;
+      // The SOURCE size is read on every frame, not once: the captured
+      // stream changes resolution whenever the Meet view is resized
+      // (opening the 👀 popped view mid-recording did exactly that), and the
+      // region is fractions of whatever the frame is NOW. Using the start-up
+      // size after a resize put the crop in the wrong place — the banner
+      // back along the top, the outline down the left, the right edge lost.
+      const w = video.videoWidth, h = video.videoHeight;
+      if (!(w > 0 && h > 0)) return;
+      const sx = Math.max(0, Math.round(c.x * w)), sy = Math.max(0, Math.round(c.y * h));
+      const rw = Math.max(1, Math.min(w - sx, Math.round(c.w * w)));
+      const rh = Math.max(1, Math.min(h - sy, Math.round(c.h * h)));
+      // scale-to-fit into the fixed canvas, centred, black letterbox
+      const scale = Math.min(cw / rw, ch / rh);
+      const dw = Math.round(rw * scale), dh = Math.round(rh * scale);
+      const dx = Math.floor((cw - dw) / 2), dy = Math.floor((ch - dh) / 2);
+      if (dw !== cw || dh !== ch) { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cw, ch); }
+      ctx.drawImage(video, sx, sy, rw, rh, dx, dy, dw, dh);
+      drawn++;
+    };
+    // requestVideoFrameCallback fires once per NEW source frame — the right
+    // cadence (no redraws of an unchanged frame, no dropped ones); rAF is
+    // the fallback for an engine without it.
+    const schedule = video.requestVideoFrameCallback
+      ? (fn) => video.requestVideoFrameCallback(fn)
+      : (fn) => requestAnimationFrame(fn);
+    const loop = () => { if (stopRequested) return; try { draw(); } catch { /* a transient decode gap — skip this frame */ } schedule(loop); };
+    schedule(loop);
+
+    window.electronAPI.send('frame-capture-info', {
+      track: TRACK, source: { width: sw, height: sh }, output: { width: cw, height: ch }, crop: first,
+    });
+    return canvas.captureStream(CANVAS_FPS);
+  }
+
+  // Main re-measures the region while recording and pushes updates here.
+  // Fractions of the source frame; takes effect on the next drawn frame.
+  window.electronAPI.on('frame-capture-crop', (rect) => {
+    const c = rect && parseCrop([rect.x, rect.y, rect.w, rect.h].join(','));
+    if (!c) return;
+    currentCrop = c;
+    const waiters = cropWaiters; cropWaiters = [];
+    for (const w of waiters) w();
+  });
+
   async function start() {
     let stream;
     try {
@@ -172,8 +288,22 @@
 
     const mime = pickMime();
     recordingMime = mime;
+    // What the encoder sees: the raw frame, or the cropped canvas. The crop
+    // is applied HERE, before encoding, because the merge copies the H.264
+    // stream untouched and there is no post-hoc crop QuickTime honours (see
+    // record-region.js). Any failure in the canvas path degrades to recording
+    // the raw frame rather than losing the recording.
+    let recordStream = stream;
+    if (INITIAL_CROP) {
+      try {
+        recordStream = await startCroppedStream(stream);
+      } catch (err) {
+        window.electronAPI.send('frame-capture-error', { track: TRACK, message: 'crop failed, recording raw frame: ' + String(err && err.message || err) });
+        recordStream = stream;
+      }
+    }
     try {
-      mediaRecorder = new MediaRecorder(stream, { mimeType: mime });
+      mediaRecorder = new MediaRecorder(recordStream, { mimeType: mime });
     } catch (err) {
       setError(String(err && err.message || err));
       window.electronAPI.send('frame-capture-error', { track: TRACK, message: String(err && err.message || err) });

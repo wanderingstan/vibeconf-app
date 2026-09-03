@@ -1577,6 +1577,15 @@ function refreshSpeakingDetectionMode() {
 refreshSpeakingDetectionMode();
 refreshSpeakingEventCapture();
 
+// Set by 'trigger-record' (below): the banner is clamped to one line while a
+// recording runs — see the .recording rule in ensureStatusBar's stylesheet.
+let recordingBannerClamp = false;
+function setRecordingBannerClamp(on) {
+  recordingBannerClamp = !!on;
+  const bar = document.getElementById('vibeconf-status-bar');
+  if (bar) bar.classList.toggle('recording', recordingBannerClamp);
+}
+
 function ensureStatusBar() {
   if (document.getElementById('vibeconf-status-bar')) return;
   const bar = document.createElement('div');
@@ -1629,10 +1638,18 @@ function ensureStatusBar() {
       display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden;
     }
     #vibeconf-status-bar .status.error { color: #fce8e6; font-weight: 700; }
+    /* While a call recording runs, the banner must not grow: the recording
+       keeps Meet's video tiles (record-region.js), the banner overlays the top
+       of the page, and a wrapped multi-line notice reached down over the top
+       of the tiles (seen live 2026-09-03). One line, ellipsised — the full
+       text is in the session log either way. */
+    #vibeconf-status-bar.recording { max-height: 56px; overflow: hidden; }
+    #vibeconf-status-bar.recording .status { -webkit-line-clamp: 1; white-space: nowrap; text-overflow: ellipsis; }
     #vibeconf-status-bar .status.active { color: #ffffff; }
     body { padding-top: 56px !important; }
   `;
   document.head.appendChild(style);
+  if (recordingBannerClamp) bar.classList.add('recording');
   document.body.prepend(bar);
 
   // Fade the banner out while the cursor is over it, so it never gets in the
@@ -4016,6 +4033,7 @@ ipcRenderer.on('trigger-leave-call', () => {
 // decision (recordCallAudio pref / VIBECONF_RECORD_CALL) and the on-disk
 // session; the page just captures tracks and streams chunks back.
 ipcRenderer.on('trigger-record', (_event, { recording, room, startedAt, botName } = {}) => {
+  setRecordingBannerClamp(!!recording);
   window.postMessage({
     __botsInCalls: true,
     __fromExtension: true,

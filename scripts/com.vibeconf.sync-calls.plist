@@ -16,9 +16,9 @@
   Remove it:     launchctl unload ~/Library/LaunchAgents/com.vibeconf.sync-calls.plist
   See what it did:  tail /tmp/vibeconf-sync-calls.out
 
-  Backend configuration (rclone remote, or a synced Drive folder) comes from
-  the environment — set it in ~/.zshrc, which the login shell below sources.
-  See scripts/SCHEDULING.md, "Call archive sync to Drive".
+  Backend configuration (a synced Drive folder, or an rclone remote) goes in
+  ~/.config/vibeconf/sync-calls.env — see scripts/SCHEDULING.md, "Call archive
+  sync to Drive".
 -->
 <plist version="1.0">
 <dict>
@@ -27,11 +27,12 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/bash</string>
+    <string>/bin/zsh</string>
     <string>-lc</string>
-    <!-- Login shell: node arrives via nvm/homebrew in the profile, rclone via
-         homebrew, and the VIBECONF_* settings live in ~/.zshrc/.zprofile;
-         launchd's own environment has none of them. -->
+    <!-- zsh LOGIN shell: ~/.zprofile's `brew shellenv` puts node and rclone on
+         PATH; launchd's own environment has neither. It does NOT read ~/.zshrc
+         (non-interactive), which is why the VIBECONF_* settings live in
+         ~/.config/vibeconf/sync-calls.env and the script reads that itself. -->
     <string>node "$HOME/Developer/vibeconf-app/scripts/sync-calls-to-drive.mjs"</string>
   </array>
 

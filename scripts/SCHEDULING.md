@@ -286,7 +286,9 @@ folder per person instead, set `VIBECONF_SYNC_OWNER=stan` (layout becomes
 
        export VIBECONF_DRIVE_ARCHIVE_DIR="$HOME/Library/CloudStorage/GoogleDrive-<you>@gmail.com/My Drive/vibeconf-call-archives"
 
-   No extra tooling — the right choice for a laptop.
+   Put that line in `~/.config/vibeconf/sync-calls.env` (the script reads it;
+   launchd's login shell never sources `~/.zshrc`). No extra tooling — the
+   right choice for a laptop.
 2. `rclone` with the `Vibeconf Shared Files` remote (what the nightly suite
    already uses on the mini). `brew install rclone`, `rclone config` once,
    then nothing else to set. Override the remote/path with
@@ -308,8 +310,10 @@ Install the timer (any machine whose bots' calls should be archived):
     cp scripts/com.vibeconf.sync-calls.plist ~/Library/LaunchAgents/
     launchctl load ~/Library/LaunchAgents/com.vibeconf.sync-calls.plist
 
-Put the `VIBECONF_*` exports in `~/.zshrc` — the plist runs a login shell.
-Hand-run / inspect:
+Settings go in `~/.config/vibeconf/sync-calls.env` as `KEY=VALUE` lines
+(environment variables already set take precedence). Files already on Drive
+under the same path — the bot's own after-call upload got there first — are
+never overwritten. Hand-run / inspect:
 
     node scripts/sync-calls-to-drive.mjs --status      # what would happen, per call
     node scripts/sync-calls-to-drive.mjs --dry-run -v  # the copy commands, not run

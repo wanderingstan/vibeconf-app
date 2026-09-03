@@ -255,6 +255,67 @@ write live in one script, "read-only" is a flag someone can flip by accident.
 LaunchAgent — sandboxed, parallel, doesn't need the mini awake, and a job that
 writes branches has no business sharing a host with the test runner it reports on.
 
+## Call archive sync to Drive (every 30 min, any machine with bots)
+
+`scripts/sync-calls-to-drive.mjs` copies every finished call folder
+(`profiles/<profile>/agent/calls/<call-id>/`, the whole thing) to the team's
+Drive archive, `VIBECONF Shared Files/vibeconf-call-archives/`. It is the
+fallback for the bot's own after-call upload, which runs inside an LLM session
+through the Drive connector and quietly fails whenever that session loses its
+authorisation or gets cut off. This one is a plain script on a launchd timer:
+incremental, idempotent, and independent of any agent.
+
+**Layout on Drive** matches the convention in the agent's CLAUDE.md, so both
+paths land in the same place:
+
+    vibeconf-call-archives/<room-code>-<YYYY-MM-DD>/<bot name>/…
+
+Room code + local date as the top folder (call ids differ per bot, room + date
+does not), the bot's name as the subfolder. Two people running this against the
+archive line up their recordings of one call automatically. To keep one parent
+folder per person instead, set `VIBECONF_SYNC_OWNER=stan` (layout becomes
+`<owner>/<room-date>/<bot>/`).
+
+**Backends** (picked automatically, in this order):
+
+1. `VIBECONF_DRIVE_ARCHIVE_DIR` — a folder the Google Drive desktop app syncs.
+   Plain `rsync` into it; Drive does the upload. The archive lives in a folder
+   *shared with* you, and shared-with-me folders don't sync to disk until you
+   add a shortcut in My Drive (Drive web → `vibeconf-call-archives` → ⋮ →
+   Organise → Add shortcut → My Drive). Then:
+
+       export VIBECONF_DRIVE_ARCHIVE_DIR="$HOME/Library/CloudStorage/GoogleDrive-<you>@gmail.com/My Drive/vibeconf-call-archives"
+
+   No extra tooling — the right choice for a laptop.
+2. `rclone` with the `Vibeconf Shared Files` remote (what the nightly suite
+   already uses on the mini). `brew install rclone`, `rclone config` once,
+   then nothing else to set. Override the remote/path with
+   `VIBECONF_RCLONE_REMOTE` / `VIBECONF_RCLONE_ARCHIVE_PATH`.
+
+With neither configured the run exits 2 and says so.
+
+**What gets copied:** profiles listed in `VIBECONF_SYNC_PROFILES` (default
+`Default`; `--all-profiles` for everything, test fleets included). A call is
+only picked up once nothing in its folder has changed for
+`VIBECONF_SYNC_MIN_AGE_MIN` minutes (default 10) — a merge still running or a
+summary still being written holds it back. A folder that gains files later (the
+agent's summary, session-log.txt) is re-synced incrementally; a
+`.drive-sync.json` marker next to each call records what the last sync saw.
+Nothing is ever deleted on Drive.
+
+Install the timer (any machine whose bots' calls should be archived):
+
+    cp scripts/com.vibeconf.sync-calls.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.vibeconf.sync-calls.plist
+
+Put the `VIBECONF_*` exports in `~/.zshrc` — the plist runs a login shell.
+Hand-run / inspect:
+
+    node scripts/sync-calls-to-drive.mjs --status      # what would happen, per call
+    node scripts/sync-calls-to-drive.mjs --dry-run -v  # the copy commands, not run
+    node scripts/sync-calls-to-drive.mjs               # one real pass
+    tail /tmp/vibeconf-sync-calls.out                  # the timer's log
+
 ## Notes / caveats
 - **Same machine as a real bot?** The fleet uses ports 7901+ and dedicated
   `test-meet-*` / `test-slack-*` profiles, distinct from the real Jimmy (7865) / Samantha (7866), so a

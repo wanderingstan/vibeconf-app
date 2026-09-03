@@ -168,29 +168,6 @@ function cropExprFromMargins({ top, bottom, left, right }) {
   return `crop=iw*${w}:ih*${h}:iw*${left}:ih*${top}`;
 }
 
-// The same fractional margins as PIXEL offsets for the H.264 stream-copy
-// path: an H.264 SPS carries frame-cropping offsets (it's how every 1080p
-// stream signals 1080 rows inside 1088 coded rows, so every decoder honours
-// them), and ffmpeg's `h264_metadata` bitstream filter rewrites those without
-// decoding a single frame. The offsets are in pixels and, for 4:2:0 chroma,
-// must be even — so each is rounded to the nearest even number. Only sides
-// with a non-zero margin make it into the filter string.
-function spsCropFromMargins({ top, bottom, left, right }, width, height) {
-  const even = (v) => Math.round(v / 2) * 2;
-  return {
-    top: even(height * top),
-    bottom: even(height * bottom),
-    left: even(width * left),
-    right: even(width * right),
-  };
-}
-
-function h264CropBsf(px) {
-  const parts = Object.entries(px)
-    .filter(([, v]) => v > 0)
-    .map(([side, v]) => `crop_${side}=${v}`);
-  return parts.length ? `h264_metadata=${parts.join(':')}` : null;
-}
 
 // Read the codec and dimensions of a file's first video stream off ffmpeg's
 // own stream-info banner. ffmpeg-static ships ffmpeg but not ffprobe, so
@@ -303,10 +280,10 @@ function _resetFfmpegAvailabilityCache() {
 // e.g. 'call-recording-share.mp4' for the share extension so it never collides with
 // the main merge.
 //
-// crop: crop Meet's own UI chrome out of the video before muxing — see
-// DEFAULT_CROP_MARGINS above for what and why (including why the right-side
-// margin is safe to crop unconditionally for this app's own bot-view
-// capture). Pass `true` to use those defaults, an object with any of
+// crop: crop Meet's own UI chrome out of the video before muxing, on the
+// RE-ENCODE path only (a VP9 input; see "Video codec" below for why the
+// stream-copy path can't and doesn't) — see DEFAULT_CROP_MARGINS above for
+// what and why. Pass `true` to use those defaults, an object with any of
 // {top,bottom,left,right} to override individual margins (fractions of the
 // frame, unset ones fall back to the default), or leave it false/omitted
 // (default) for the raw, uncropped frame. Only makes sense for the main
@@ -354,17 +331,17 @@ function _resetFfmpegAvailabilityCache() {
 // or a MediaRecorder with no H.264 support), and any padStartMs merge (tpad
 // needs decoded frames to pad).
 //
-// Cropping on the copy path never touches pixels either: the crop margins are
-// written into the H.264 stream's own SPS frame-cropping fields via the
-// `h264_metadata` bitstream filter (see spsCropFromMargins), which every
-// decoder honours. ffmpeg copies the container's track header BEFORE that
-// filter runs, though, so the mp4 would still declare the uncropped size and
-// AVFoundation would present it stretched — hence the crop is a separate
-// first pass into a temp file, and the mux pass reads THAT (re-parsing the
-// now-cropped SPS into a correct track header). Both passes are copies, so
-// the pair still completes in well under a second per hour of video. A nice
-// property: the raw pixels are all still in the file, so this crop is
-// reversible metadata rather than a lossy choice.
+// The copy path does NOT crop, and `crop` is ignored on it. It was tried:
+// writing the margins into the H.264 stream's own SPS frame-cropping fields
+// (the `h264_metadata` bitstream filter, no decode) works in ffmpeg and
+// Chromium, but VideoToolbox applies SPS cropping as a size reduction
+// anchored at the top-left — right/bottom are trimmed, top/left are NOT — so
+// QuickTime showed the banner-topped full frame in a cropped-size window
+// (measured 2026-09-03). For an H.264 capture the crop happens BEFORE the
+// encoder instead: renderer/call-recording-window.js draws the region
+// record-region.js measures into a canvas and records that. The `crop`
+// option here only still matters for the re-encode path (a VP9 input), where
+// ffmpeg's crop filter runs on decoded frames and every player agrees.
 //
 // Returns { ok, file, reason? }. Never throws — a failed merge just means the
 // output file doesn't exist; the raw per-track files it would have combined
@@ -442,35 +419,19 @@ async function mergeCallMedia(callDir, {
   const baseArgs = () => ['-y', '-nostdin', '-stats'];
 
   if (copyVideo) {
-    // Pass 1 (only when cropping): rewrite the SPS crop into a temp file.
-    // Video only — the audio is dealt with once, in the mux pass.
-    let videoInput = videoTrack.absPath;
-    let cropTmp = null;
-    const bsf = cropMargins ? h264CropBsf(spsCropFromMargins(cropMargins, probe.width, probe.height)) : null;
-    if (bsf) {
-      cropTmp = path.join(callDir, `.${outputName}.crop-tmp.mp4`);
-      const r = await run([...baseArgs(), '-i', videoTrack.absPath, '-map', '0:v', '-c:v', 'copy', '-bsf:v', bsf, cropTmp], cropTmp);
-      if (!r.ok) return r;
-      videoInput = cropTmp;
+    const args = [...baseArgs(), '-i', videoTrack.absPath];
+    for (const t of audioTracks) args.push('-i', t.absPath);
+    if (audioTracks.length === 0) {
+      args.push('-map', '0:v', '-c:v', 'copy', outPath);
+    } else if (audioTracks.length === 1) {
+      args.push('-map', '0:v', '-map', '1:a', '-c:v', 'copy', '-c:a', 'aac', outPath);
+    } else {
+      const inputs = audioTracks.map((_, i) => `[${i + 1}:a]`).join('');
+      const filter = `${inputs}amix=inputs=${audioTracks.length}:normalize=0[aout]`;
+      args.push('-filter_complex', filter, '-map', '0:v', '-map', '[aout]', '-c:v', 'copy', '-c:a', 'aac', outPath);
     }
-    try {
-      // Pass 2: mux the (possibly cropped) H.264 stream with the mixed audio.
-      const args = [...baseArgs(), '-i', videoInput];
-      for (const t of audioTracks) args.push('-i', t.absPath);
-      if (audioTracks.length === 0) {
-        args.push('-map', '0:v', '-c:v', 'copy', outPath);
-      } else if (audioTracks.length === 1) {
-        args.push('-map', '0:v', '-map', '1:a', '-c:v', 'copy', '-c:a', 'aac', outPath);
-      } else {
-        const inputs = audioTracks.map((_, i) => `[${i + 1}:a]`).join('');
-        const filter = `${inputs}amix=inputs=${audioTracks.length}:normalize=0[aout]`;
-        args.push('-filter_complex', filter, '-map', '0:v', '-map', '[aout]', '-c:v', 'copy', '-c:a', 'aac', outPath);
-      }
-      const r = await run(args, outPath);
-      return r.ok ? { ok: true, file: outPath, videoCopied: true, cropped: !!bsf } : r;
-    } finally {
-      if (cropTmp) { try { fs.unlinkSync(cropTmp); } catch { /* never written, or already gone */ } }
-    }
+    const r = await run(args, outPath);
+    return r.ok ? { ok: true, file: outPath, videoCopied: true, cropped: false } : r;
   }
 
   // Re-encode path.
@@ -602,6 +563,4 @@ module.exports = {
   _resetFfmpegAvailabilityCache,
   DEFAULT_CROP_MARGINS,
   cropExprFromMargins,
-  spsCropFromMargins,
-  h264CropBsf,
 };

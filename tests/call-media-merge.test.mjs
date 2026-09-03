@@ -32,8 +32,6 @@ const {
   _resetFfmpegAvailabilityCache,
   DEFAULT_CROP_MARGINS,
   cropExprFromMargins,
-  spsCropFromMargins,
-  h264CropBsf,
   probeVideoStream,
 } = require('../electron-app/call-media-merge.js');
 
@@ -727,20 +725,6 @@ test('probeVideoStream reads codec and dimensions off ffmpeg\'s banner, and retu
   assert.equal(probeVideoStream(FFMPEG_BIN, path.join(dir, 'missing.webm')), null);
 });
 
-test('spsCropFromMargins rounds every offset to an even pixel count (4:2:0 crop units) and h264CropBsf drops zero sides', () => {
-  const px = spsCropFromMargins(DEFAULT_CROP_MARGINS, 1872, 1080);
-  for (const v of Object.values(px)) assert.equal(v % 2, 0, `${JSON.stringify(px)} has an odd offset`);
-  assert.equal(px.left, 0);
-  assert.ok(Math.abs(px.top - 1080 * DEFAULT_CROP_MARGINS.top) <= 1);
-  assert.ok(Math.abs(px.bottom - 1080 * DEFAULT_CROP_MARGINS.bottom) <= 1);
-  assert.ok(Math.abs(px.right - 1872 * DEFAULT_CROP_MARGINS.right) <= 1);
-  const bsf = h264CropBsf(px);
-  assert.match(bsf, /^h264_metadata=/);
-  assert.ok(!bsf.includes('crop_left'), 'a zero margin must not appear in the filter');
-  assert.ok(bsf.includes(`crop_top=${px.top}`) && bsf.includes(`crop_right=${px.right}`));
-  assert.equal(h264CropBsf({ top: 0, bottom: 0, left: 0, right: 0 }), null);
-});
-
 test('an H.264 input is stream-copied, not re-encoded — video-only, one audio track, and amix cases', { skip: !HAVE_FFMPEG }, async () => {
   for (const nAudio of [0, 1, 2]) {
     const dir = tmpDir();
@@ -772,7 +756,7 @@ test('the copy path never takes the encode path\'s libx264 args', { skip: !HAVE_
   assert.equal(probeVideo(r.file).codec, 'h264');
 });
 
-test('crop on an H.264 input rewrites the SPS crop (still a copy) and the container reports the cropped size', { skip: !HAVE_FFMPEG }, async () => {
+test('crop is IGNORED on the copy path — an H.264 input with crop:true is still copied whole (QuickTime does not honour SPS cropping)', { skip: !HAVE_FFMPEG }, async () => {
   const dir = tmpDir();
   writeFakeH264Video(path.join(dir, 'video.webm'), { size: '1200x800' });
   writeFakeAudio(path.join(dir, 'bot.webm'));
@@ -786,14 +770,11 @@ test('crop on an H.264 input rewrites the SPS crop (still a copy) and the contai
   });
   assert.equal(r.ok, true, r.reason);
   assert.equal(r.videoCopied, true);
-  assert.equal(r.cropped, true);
+  assert.equal(r.cropped, false, 'the copy path must report that it did not crop');
   const v = probeVideo(r.file);
-  assert.match(v.profile || '', /Baseline/, 'cropping must not have triggered a re-encode');
-  const px = spsCropFromMargins(DEFAULT_CROP_MARGINS, 1200, 800);
-  assert.equal(v.width, 1200 - px.left - px.right);
-  assert.equal(v.height, 800 - px.top - px.bottom);
-  // The crop's temp file must not survive, success or not.
-  assert.deepEqual(fs.readdirSync(dir).filter((f) => f.includes('crop-tmp')), []);
+  assert.match(v.profile || '', /Baseline/, 'crop:true must not have triggered a re-encode');
+  assert.equal(v.width, 1200);
+  assert.equal(v.height, 800);
 });
 
 test('padStartMs forces the re-encode path even for an H.264 input (tpad needs decoded frames)', { skip: !HAVE_FFMPEG }, async () => {
@@ -832,7 +813,7 @@ test('a probe that fails falls back to the re-encode path rather than failing th
   assert.equal(probeVideo(r2.file).codec, 'h264');
 });
 
-test('aborting mid-flight on the copy path leaves neither the output nor the crop temp file', { skip: !HAVE_FFMPEG }, async () => {
+test('aborting mid-flight on the copy path leaves no output file', { skip: !HAVE_FFMPEG }, async () => {
   const dir = tmpDir();
   writeFakeH264Video(path.join(dir, 'video.webm'), { seconds: 20, size: '1200x800' });
   writeFakeAudio(path.join(dir, 'bot.webm'), { seconds: 20 });
@@ -851,5 +832,4 @@ test('aborting mid-flight on the copy path leaves neither the output nor the cro
   assert.equal(r.ok, false);
   assert.equal(r.reason, 'cancelled');
   assert.ok(!fs.existsSync(path.join(dir, 'call-recording.mp4')));
-  assert.deepEqual(fs.readdirSync(dir).filter((f) => f.includes('crop-tmp')), []);
 });

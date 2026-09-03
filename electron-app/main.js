@@ -26,7 +26,8 @@ const { isInCall, isFinished, isCallComplete } = require('./call-phase.js');
 let adoptSessionAsBot = null;
 const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEventsFor } = require('./share-surface.js');
 const { CallRecordingSession } = require('./call-recorder.js');
-const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWindow } = require('./call-recording-window.js');
+const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWindow, sendFrameCaptureCrop } = require('./call-recording-window.js');
+const recordRegion = require('./record-region.js');
 const { mergeCallMedia } = require('./call-media-merge.js');
 const { evictStaleEventIds, selectEventToJoin, selectUpcomingMatches, matchesCalendarEvent, ownerHasConfirmed, isEventUpcoming, msUntilStart, eventDedupeKey, resolveMeetUrl: resolveCalendarMeetUrl } = require('./calendar-auto-join.js');
 const { createMergeProgressWindow, closeMergeProgressWindow } = require('./call-recording-merge-window.js');
@@ -351,6 +352,74 @@ function stopRecordingStatsPush() {
   _recordingStatsTimer = null;
 }
 
+// Crop-at-capture region (record-region.js has the full why). While the
+// video capture runs, main re-measures WHERE Meet's video grid is in the bot's
+// view every RECORD_REGION_MS, pushes any real change to the capture window
+// (which draws only that region into the encoder), draws the same region as
+// an outline in the Meet page for anyone watching the 👀 view, and appends
+// each change to crop-region.jsonl next to the tracks so a recording can be
+// audited after the fact. The measurement runs in the Meet page; a tick that
+// fails (page navigating, view gone) is simply skipped — the capture window
+// keeps the last region it was given.
+const RECORD_REGION_MS = 1000;
+let _recordRegionTimer = null;
+let _lastRecordRegion = null;
+
+async function measureRecordRegion() {
+  if (!meetView || meetView.webContents.isDestroyed()) return null;
+  try {
+    const m = await meetView.webContents.executeJavaScript(recordRegion.MEASURE_SCRIPT, true);
+    return recordRegion.computeCropRect(m);
+  } catch (err) {
+    console.warn('[call-record] region measurement failed:', err.message);
+    return null;
+  }
+}
+
+function startRecordRegionLoop() {
+  stopRecordRegionLoop();
+  let inFlight = false;
+  const tick = async () => {
+    if (inFlight) return;
+    if (!activeRecording || !activeRecordingWindow || activeRecordingWindow.isDestroyed()) return;
+    inFlight = true;
+    try {
+      const rect = await measureRecordRegion();
+      if (!rect || !activeRecording) return;
+      if (!recordRegion.cropRectChanged(_lastRecordRegion, rect)) return;
+      const first = !_lastRecordRegion;
+      _lastRecordRegion = rect;
+      sendFrameCaptureCrop(activeRecordingWindow, rect);
+      try {
+        if (meetView && !meetView.webContents.isDestroyed()) {
+          await meetView.webContents.executeJavaScript(recordRegion.outlineScript(rect), true);
+        }
+      } catch { /* outline is a courtesy for the human watching; never fatal */ }
+      const pct = (n) => (n * 100).toFixed(1) + '%';
+      console.log(`[call-record] recorded region ${first ? 'set' : 'moved'} (${rect.strategy}): x=${pct(rect.x)} y=${pct(rect.y)} w=${pct(rect.w)} h=${pct(rect.h)}${rect.bannerOverlapPx ? ` — status banner overlaps the top by ${rect.bannerOverlapPx}px` : ''}`);
+      try {
+        fs.appendFileSync(path.join(activeRecording.dir, 'crop-region.jsonl'), JSON.stringify({ at: new Date().toISOString(), ...rect }) + '\n');
+      } catch { /* the tracks dir is best-effort bookkeeping here */ }
+    } finally {
+      inFlight = false;
+    }
+  };
+  tick();
+  _recordRegionTimer = setInterval(tick, RECORD_REGION_MS);
+  if (_recordRegionTimer.unref) _recordRegionTimer.unref();
+}
+
+function stopRecordRegionLoop() {
+  if (_recordRegionTimer) clearInterval(_recordRegionTimer);
+  _recordRegionTimer = null;
+  _lastRecordRegion = null;
+  try {
+    if (meetView && !meetView.webContents.isDestroyed()) {
+      meetView.webContents.executeJavaScript(recordRegion.outlineScript(null), true).catch(() => {});
+    }
+  } catch { /* view gone */ }
+}
+
 // The whiteboard-share side-capture (extension, see call-recording-window.js's
 // createShareCaptureWindow): a full-resolution recording of the bot's own
 // whiteboard-window share content, independent of and in addition to the
@@ -463,9 +532,15 @@ function startCallRecording(room, botName, { force = false } = {}) {
     // just means this call gets audio-only, same as the pre-existing
     // ffmpeg-missing fallback.
     try {
-      activeRecordingWindow = createCallRecordingWindow(meetView);
+      // The crop pref decides whether the capture window records the raw
+      // frame or the measured region. The window gets the fallback region up
+      // front (createCallRecordingWindow is synchronous; the first real
+      // measurement lands over IPC within the renderer's short grace period).
+      const crop = cropCallRecordingEnabled() ? recordRegion.fallbackRect() : null;
+      activeRecordingWindow = createCallRecordingWindow(meetView, { crop });
       startRecordingStatsPush(); // #328 — feed the window its running size
-      console.log('[call-record] recording control window created — capturing video');
+      if (crop) startRecordRegionLoop();
+      console.log(`[call-record] recording control window created — capturing video${crop ? ' (cropped to the measured Meet video region)' : ' (raw frame)'}`);
     } catch (err) {
       activeRecordingWindow = null;
       console.warn('[call-record] could not start video capture (falling back to audio-only):', err.message);
@@ -571,6 +646,7 @@ async function stopCallRecording() {
   // chunk BEFORE finalizing the claimed session — otherwise the video track's
   // file could still be receiving a chunk after we've already closed it.
   stopRecordingStatsPush(); // #328 — nothing to report once we're finalizing
+  stopRecordRegionLoop();
   if (activeRecordingWindow) {
     const win = activeRecordingWindow;
     activeRecordingWindow = null;
@@ -647,7 +723,11 @@ async function runPostRecordingMerges({ callDir, tracksDir, manifest, outputSuff
     }
     const mainOutputName = `call-recording${outputSuffix}.mp4`;
     try {
-      mainMerge = await mergeCallMedia(callDir, { tracksDir: dir, tracks: manifest.tracks, outputName: mainOutputName, crop: cropCallRecordingEnabled(), signal: abort?.signal });
+      // crop: false — the crop is applied at CAPTURE time now (see
+      // startRecordRegionLoop / record-region.js), so the video track on disk
+      // is already the cropped picture whatever codec it landed in. Asking
+      // the merge to crop as well would crop the crop on a VP9 re-encode.
+      mainMerge = await mergeCallMedia(callDir, { tracksDir: dir, tracks: manifest.tracks, outputName: mainOutputName, crop: false, signal: abort?.signal });
       if (mainMerge.ok) console.log(`[call-record] merged ${mainOutputName} -> ${mainMerge.file}`);
       else console.log(`[call-record] merge skipped: ${mainMerge.reason}`);
     } catch (err) {
@@ -13552,6 +13632,15 @@ function setupIPC() {
       const buf = Buffer.from(payload.dataBase64 || '', 'base64');
       activeRecording.chunk(payload.track, payload.seq, buf, payload.mime, payload.startWallClock, payload.track);
     } catch { /* skip a malformed chunk rather than kill the stream */ }
+  });
+
+  // One-shot from the capture renderer once its pipeline is up: source frame
+  // size, what it is actually encoding, and the region it sized the canvas
+  // from. Logged so a recording's dimensions can be explained from the log.
+  ipcMain.on('frame-capture-info', (_event, p) => {
+    if (!p) return;
+    const sz = (o) => (o ? `${o.width}x${o.height}` : '?');
+    console.log(`[call-record] ${p.track} capture: source ${sz(p.source)} -> encoding ${sz(p.output)}${p.crop ? ` (crop x=${p.crop.x} y=${p.crop.y} w=${p.crop.w} h=${p.crop.h})` : ''}`);
   });
 
   ipcMain.on('frame-capture-error', (_event, payload) => {

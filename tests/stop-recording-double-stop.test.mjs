@@ -65,6 +65,7 @@ function harness({ shareDelay = 0, videoDelay = 0 } = {}) {
     let finalizingRecording = null;
     let activeRecordingWindow = null;
     const stopRecordingStatsPush = () => {};
+    const stopRecordRegionLoop = () => {}; // crop-at-capture loop (record-region.js) — nothing to stop here
     const stopShareCaptureIfActive = () => later(${shareDelay});
     const stopFrameCaptureWindow = () => later(${videoDelay});
     const runPostRecordingMerges = async () => { log.merges++; };

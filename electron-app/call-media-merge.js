@@ -150,9 +150,10 @@ const VIDEO_ENCODE_ARGS = [
 //
 // TOP is derived, not estimated. The app's own status banner
 // (google-meet-provider.js ensureStatusBar: "🤖 Bot's view — <status>") is
-// `position: fixed; top: 0` at min-height 56 CSS px, and it pushes Meet's
-// whole page down by the same 56px (`body { padding-top: 56px }`), so it
-// sits ABOVE everything Meet draws. With the CSS viewport pinned to 1173px
+// `position: fixed; top: 0` at min-height 56 CSS px, overlaying Meet's own
+// top strip (the clock and meeting code) — it doesn't push Meet's layout
+// down (that stylesheet's `body { padding-top }` has no visible effect on
+// Meet's fixed-position UI). With the CSS viewport pinned to 1173px
 // wide, a 16:9 frame is 660 CSS px tall and the banner alone is 56/660 =
 // 8.5% of it — which is why the previous 0.07 left a sliver of blue along the
 // top of every recording. Measured on a real frame (rkv-pdma-pkv, 2026-09-03,

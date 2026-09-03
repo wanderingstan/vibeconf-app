@@ -213,7 +213,10 @@ test('APP_LEVEL_KEYS is exactly the decided set (guard against accidental promot
     // a GIVEN bot uses realtime and realtimeVoiceName how it sounds, and both
     // are identity rather than auth. Promoting either would drag every bot onto
     // realtime at once. Not in MIGRATE_KEYS: nothing predates it.
-    ['agentBackend', 'agentHosting', 'automationProbed', 'claudeIntegrationRemoved', 'codexIntegrationRemoved', 'confirmQuit', 'dangerousMode', 'keepCallRecordingTracks', 'linuxAgentTmux', 'realtimeApiKey', 'remoteLogging', 'syncBaseUrl', 'ttsApiKey', 'ttsApiKeySource', 'updateChannel', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
+    // cropCallRecording: same invisibility trap as keepCallRecordingTracks right
+    // above — whether recordings get cropped is a machine-level output
+    // preference, not bot personality. New pref, nothing to promote.
+    ['agentBackend', 'agentHosting', 'automationProbed', 'claudeIntegrationRemoved', 'codexIntegrationRemoved', 'confirmQuit', 'cropCallRecording', 'dangerousMode', 'keepCallRecordingTracks', 'linuxAgentTmux', 'realtimeApiKey', 'remoteLogging', 'syncBaseUrl', 'ttsApiKey', 'ttsApiKeySource', 'updateChannel', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
   );
 });
 

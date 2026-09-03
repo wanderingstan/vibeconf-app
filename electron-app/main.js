@@ -392,6 +392,10 @@ function recordCallEnabled() {
   try { return !!prefValue('recordCallAudio'); } catch { return false; }
 }
 
+function cropCallRecordingEnabled() {
+  try { return !!prefValue('cropCallRecording'); } catch { return true; }
+}
+
 // force=true is the explicit request (start_recording MCP tool): record
 // even when the recordCallAudio pref is off. The auto path (bot-joined) leaves
 // force=false so it stays gated. Returns a small status for the MCP tool.
@@ -643,7 +647,7 @@ async function runPostRecordingMerges({ callDir, tracksDir, manifest, outputSuff
     }
     const mainOutputName = `call-recording${outputSuffix}.mp4`;
     try {
-      mainMerge = await mergeCallMedia(callDir, { tracksDir: dir, tracks: manifest.tracks, outputName: mainOutputName, signal: abort?.signal });
+      mainMerge = await mergeCallMedia(callDir, { tracksDir: dir, tracks: manifest.tracks, outputName: mainOutputName, crop: cropCallRecordingEnabled(), signal: abort?.signal });
       if (mainMerge.ok) console.log(`[call-record] merged ${mainOutputName} -> ${mainMerge.file}`);
       else console.log(`[call-record] merge skipped: ${mainMerge.reason}`);
     } catch (err) {

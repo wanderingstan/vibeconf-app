@@ -835,8 +835,13 @@ echo "=== whiteboard end-to-end (#267 step 3) $STAMP ===" | tee -a "$LOG"
 rec_run whiteboard-e2e -- pnpm test:whiteboard-e2e:ci
 SV_CODE=$?
 svfails=$(grep -oE 'failed steps: +[0-9]+' "$LOG" | tail -1 | grep -oE '[0-9]+$' || echo "?")
-printf '{"ts":"%s","exit":%s,"fails":"%s","log":"%s"}\n' \
-  "$STAMP" "$SV_CODE" "$svfails" "$(basename "$LOG")" >> "$RESULTS/whiteboard-e2e-results.jsonl"
+# Skipped steps ride along in the record (#627). The vision nonce check is the
+# only assertion in this lane that a VIEWER saw the share; when its credential is
+# missing it now records as skipped rather than as a pass, and the digest has to
+# be able to say so — a lane whose result nobody has must not read as green.
+svskips=$(grep -oE 'skipped steps: +[0-9]+' "$LOG" | tail -1 | grep -oE '[0-9]+$' || echo "?")
+printf '{"ts":"%s","exit":%s,"fails":"%s","skips":"%s","log":"%s"}\n' \
+  "$STAMP" "$SV_CODE" "$svfails" "$svskips" "$(basename "$LOG")" >> "$RESULTS/whiteboard-e2e-results.jsonl"
 echo "=== whiteboard-e2e exit: $SV_CODE (recorded, not gating) ===" | tee -a "$LOG"
 lane_done whiteboard-e2e
 

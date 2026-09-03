@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Call archive sync to Google Drive — the fallback for the bot's own after-call
+  upload (scripts/sync-calls-to-drive.mjs has the why). Runs every 30 minutes
+  and at login; each run is incremental, so a run with nothing new costs a
+  directory listing per call.
+
+  Install on any machine whose bots' calls should be archived (Stan's laptop,
+  Seth's, the mini):
+
+    cp scripts/com.vibeconf.sync-calls.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.vibeconf.sync-calls.plist
+
+  Check it:      launchctl list | grep vibeconf.sync-calls
+  Run it now:    launchctl start com.vibeconf.sync-calls
+  Remove it:     launchctl unload ~/Library/LaunchAgents/com.vibeconf.sync-calls.plist
+  See what it did:  tail /tmp/vibeconf-sync-calls.out
+
+  Backend configuration (rclone remote, or a synced Drive folder) comes from
+  the environment — set it in ~/.zshrc, which the login shell below sources.
+  See scripts/SCHEDULING.md, "Call archive sync to Drive".
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.vibeconf.sync-calls</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-lc</string>
+    <!-- Login shell: node arrives via nvm/homebrew in the profile, rclone via
+         homebrew, and the VIBECONF_* settings live in ~/.zshrc/.zprofile;
+         launchd's own environment has none of them. -->
+    <string>node "$HOME/Developer/vibeconf-app/scripts/sync-calls-to-drive.mjs"</string>
+  </array>
+
+  <!-- Every 30 minutes. A call is only picked up after it has been quiet for
+       ten minutes, so a call that ends at :05 is on Drive by :30 at the latest;
+       one that ends at :29 waits for the :00 run. -->
+  <key>StartInterval</key>
+  <integer>1800</integer>
+
+  <!-- Also at load/login: cheap when there is nothing to do, and it means a
+       laptop that was asleep through the timer catches up as soon as it wakes. -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/vibeconf-sync-calls.out</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/vibeconf-sync-calls.err</string>
+
+  <!-- Background job: a call in progress must win every contest for CPU and disk. -->
+  <key>Nice</key>
+  <integer>10</integer>
+  <key>LowPriorityIO</key>
+  <true/>
+</dict>
+</plist>

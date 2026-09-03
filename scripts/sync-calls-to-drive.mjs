@@ -40,7 +40,13 @@
 //   2. rclone (VIBECONF_RCLONE_REMOTE, default "Vibeconf Shared Files" — the
 //      remote the nightly test suite already uploads through on the mini):
 //      `rclone copy` straight to the archive path on that remote. Needs
-//      `brew install rclone` + `rclone config` once per machine.
+//      `brew install rclone` + `rclone config` once per machine. If the
+//      remote is rooted somewhere the archive isn't under (the mini's is
+//      rooted at the nightly-uploads folder), set
+//      VIBECONF_RCLONE_ROOT_FOLDER_ID to the archive folder's Drive id: it is
+//      passed as --drive-root-folder-id, which re-roots the remote at that
+//      folder for this command only, and the archive path is then "" (the
+//      root itself). No rclone reconfiguration needed.
 //   With neither configured it exits 2 and says so; it never silently does
 //   nothing.
 //
@@ -69,6 +75,7 @@
 //   node scripts/sync-calls-to-drive.mjs [--dry-run] [--status] [--verbose]
 //        [--profiles Default,dev | --all-profiles] [--min-age-min N]
 //        [--dest /path/to/synced/archive] [--remote "Name:path"] [--owner stan]
+//        [--root-folder-id <Drive folder id>]
 //   Config file: ~/.config/vibeconf/sync-calls.env (VIBECONF_* KEY=VALUE lines)
 //
 // Install the timer: see scripts/com.vibeconf.sync-calls.plist and
@@ -225,7 +232,7 @@ function safeReaddir(d) { try { return fs.readdirSync(d); } catch { return []; }
 
 // Which backend, given the environment. Returns { kind: 'rsync'|'rclone', ... }
 // or { kind: 'none', reason }.
-export function pickBackend({ dest, remote, archivePath, haveRclone, rcloneRemotes }) {
+export function pickBackend({ dest, remote, archivePath, haveRclone, rcloneRemotes, rootFolderId = null }) {
   if (dest) {
     if (!fs.existsSync(dest)) return { kind: 'none', reason: `archive dir does not exist: ${dest}` };
     return { kind: 'rsync', dest };
@@ -235,6 +242,9 @@ export function pickBackend({ dest, remote, archivePath, haveRclone, rcloneRemot
   if (!rcloneRemotes.includes(name)) {
     return { kind: 'none', reason: `rclone remote "${name}" is not configured (rclone listremotes shows: ${rcloneRemotes.join(', ') || 'none'})` };
   }
+  // With a root folder id the remote IS the archive for this command, so the
+  // archive path collapses to the root unless one was set explicitly.
+  if (rootFolderId) return { kind: 'rclone', remote: name, archivePath: process.env.VIBECONF_RCLONE_ARCHIVE_PATH ? archivePath : '', rootFolderId };
   return { kind: 'rclone', remote: name, archivePath };
 }
 
@@ -257,6 +267,7 @@ function parseArgs(argv) {
     remote: process.env.VIBECONF_RCLONE_REMOTE || DEFAULTS.rcloneRemote,
     archivePath: process.env.VIBECONF_RCLONE_ARCHIVE_PATH || DEFAULTS.rcloneArchivePath,
     owner: process.env.VIBECONF_SYNC_OWNER || null,
+    rootFolderId: process.env.VIBECONF_RCLONE_ROOT_FOLDER_ID || null,
     profilesRoot: defaultProfilesRoot(),
   };
   for (let i = 0; i < argv.length; i++) {
@@ -271,6 +282,7 @@ function parseArgs(argv) {
     else if (a === '--dest') o.dest = next();
     else if (a === '--remote') o.remote = next();
     else if (a === '--owner') o.owner = next();
+    else if (a === '--root-folder-id') o.rootFolderId = next();
     else if (a === '--profiles-root') o.profilesRoot = next();
     else if (a === '--help' || a === '-h') { printHelp(); process.exit(0); }
     else { console.error(`unknown argument: ${a}`); printHelp(); process.exit(1); }
@@ -301,10 +313,10 @@ function copyCall(backend, callDir, relDest, { dryRun, verbose }) {
     const args = ['-rt', '--ignore-existing', '--exclude', '.DS_Store', '--exclude', DEFAULTS.markerFile, ...(dryRun ? ['-n'] : []), ...(verbose ? ['-v'] : []), callDir + path.sep, target + path.sep];
     return run('rsync', args, verbose);
   }
-  const target = `${backend.remote}:${backend.archivePath}/${relDest}`;
+  const target = `${backend.remote}:${[backend.archivePath, relDest].filter(Boolean).join('/')}`;
   // copy (not sync): never deletes anything on Drive. --ignore-existing: a
   // file already there (the agent's own upload) is never touched.
-  const args = ['copy', '--ignore-existing', '--exclude', '.DS_Store', '--exclude', DEFAULTS.markerFile, ...(dryRun ? ['--dry-run'] : []), ...(verbose ? ['-v'] : []), callDir, target];
+  const args = ['copy', '--ignore-existing', ...(backend.rootFolderId ? ['--drive-root-folder-id', backend.rootFolderId] : []), '--exclude', '.DS_Store', '--exclude', DEFAULTS.markerFile, ...(dryRun ? ['--dry-run'] : []), ...(verbose ? ['-v'] : []), callDir, target];
   return run('rclone', args, verbose);
 }
 
@@ -335,13 +347,15 @@ export function main(argv = process.argv.slice(2)) {
   let backend = { kind: 'status' };
   if (!o.status) {
     const rc = o.dest ? { have: false, remotes: [] } : rcloneRemotesOnPath();
-    backend = pickBackend({ dest: o.dest, remote: o.remote, archivePath: o.archivePath, haveRclone: rc.have, rcloneRemotes: rc.remotes });
+    backend = pickBackend({ dest: o.dest, remote: o.remote, archivePath: o.archivePath, haveRclone: rc.have, rcloneRemotes: rc.remotes, rootFolderId: o.rootFolderId });
     if (backend.kind === 'none') {
       console.error(`[${stamp()}] cannot sync: ${backend.reason}`);
       return 2;
     }
   }
-  const where = backend.kind === 'rsync' ? backend.dest : backend.kind === 'rclone' ? `${backend.remote}:${backend.archivePath}` : '(status only)';
+  const where = backend.kind === 'rsync' ? backend.dest
+    : backend.kind === 'rclone' ? `${backend.remote}:${backend.archivePath}${backend.rootFolderId ? ` (root folder ${backend.rootFolderId})` : ''}`
+    : '(status only)';
   console.log(`[${stamp()}] ${o.dryRun ? 'DRY RUN — ' : ''}profiles: ${profiles.join(', ')} → ${where}`);
 
   let synced = 0, skippedBusy = 0, upToDate = 0, failed = 0, ignored = 0;

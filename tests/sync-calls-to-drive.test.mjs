@@ -217,3 +217,13 @@ test('a file already on Drive under the same path is never overwritten (the agen
   assert.equal(fs.readFileSync(path.join(archive, rel, 'call-recording.mp4'), 'utf8'), 'the agent uploaded this one');
   assert.ok(fs.existsSync(path.join(archive, rel, 'call-recording-tracks', 'manifest.json')), 'the missing files are still filled in');
 });
+
+test('a root folder id re-roots the rclone backend at the archive itself', () => {
+  const b = pickBackend({ dest: null, remote: 'Vibeconf Shared Files', archivePath: 'vibeconf-call-archives', haveRclone: true, rcloneRemotes: ['Vibeconf Shared Files'], rootFolderId: '1G2X' });
+  assert.equal(b.kind, 'rclone');
+  assert.equal(b.rootFolderId, '1G2X');
+  assert.equal(b.archivePath, '', 'the root IS the archive, so no path prefix');
+  const plain = pickBackend({ dest: null, remote: 'Vibeconf Shared Files', archivePath: 'vibeconf-call-archives', haveRclone: true, rcloneRemotes: ['Vibeconf Shared Files'] });
+  assert.equal(plain.rootFolderId, undefined);
+  assert.equal(plain.archivePath, 'vibeconf-call-archives');
+});

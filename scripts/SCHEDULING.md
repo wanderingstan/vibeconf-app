@@ -338,7 +338,11 @@ folder per person instead, set `VIBECONF_SYNC_OWNER=stan` (layout becomes
 2. `rclone` with the `Vibeconf Shared Files` remote (what the nightly suite
    already uses on the mini). `brew install rclone`, `rclone config` once,
    then nothing else to set. Override the remote/path with
-   `VIBECONF_RCLONE_REMOTE` / `VIBECONF_RCLONE_ARCHIVE_PATH`.
+   `VIBECONF_RCLONE_REMOTE` / `VIBECONF_RCLONE_ARCHIVE_PATH`. If the remote is
+   rooted somewhere the archive isn't under (the mini's is rooted at the
+   nightly-uploads folder), set `VIBECONF_RCLONE_ROOT_FOLDER_ID` to the
+   archive folder's Drive id (`1G2Xgeo0ds0xb4ZWPxPa84YSycOUoKbHs` today):
+   rclone is re-rooted there for the copy, nothing in its config changes.
 
 With neither configured the run exits 2 and says so.
 

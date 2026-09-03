@@ -10517,8 +10517,10 @@ function ensureHiddenMeetHost() {
     // opacity 0, not just off-screen coordinates: macOS clamps a window
     // positioned entirely outside every display back on-screen, so an x/y
     // hack alone still lets settleHiddenMeetHost's showInactive() below paint
-    // a real, nearly full-screen (HIDDEN_SIZE is 1600x900) window right where
-    // the user's eye already is — e.g. immediately after closing the Bot's
+    // a real, full-screen-or-larger window right where the user's eye already
+    // is (#673 moved the default to 2560x1440, which exceeds most laptop
+    // displays, so this matters MORE than when it was 1600x900) — e.g.
+    // immediately after closing the Bot's
     // View popout, it reads as the app flashing full-screen before vanishing.
     // Opacity is a compositor property, not a renderer one, so the page still
     // renders (and still captures via capturePage) while genuinely invisible.
@@ -10627,8 +10629,10 @@ function setBotViewState(state) {
       // happened to leave it: 3024x1700 (DAR 756:425) in the wild, close
       // enough to 16:9 to look like a bug and far enough to letterbox in
       // anything that assumes 16:9. Meanwhile the 'hidden' state has always
-      // recorded cleanly, purely because botViewLayout.HIDDEN_SIZE is a fixed
-      // 1600x900. This gives 'popped' the same guarantee.
+      // recorded cleanly, purely because its size comes from
+      // botViewLayout.MEET_VIEW_SIZES, every entry of which is a fixed 16:9
+      // (asserted in bot-view-layout.test.mjs). This gives 'popped' the same
+      // guarantee.
       //
       // setAspectRatio rather than a fixed size, and rather than resizing the
       // window when recording starts: the user keeps full control of how big

@@ -241,20 +241,32 @@ first-party — it detaches, prints an id, and `claude agents` / `logs` / `attac
 
 Three things keep a run from going wrong, and all three are in the dispatch argv:
 
-- **A budget.** `--max-budget-usd` is the only per-session hard stop the CLI has
-  (`--max-turns` and `--timeout` are Agent SDK options, not CLI flags). It is the
-  rabbit-hole backstop, so it is always passed. Default `$5`, per agent.
+- **A wall-clock deadline**, because there is no working spend cap here. Measured
+  on 2.1.259: `--max-budget-usd` is **print-mode only**. Under `-p` it really does
+  stop a run (the result JSON says `terminal_reason: "budget_exhausted"`); under
+  `--bg` it is silently ignored — a session given `$0.0001` kept working for
+  minutes. So dispatch arms a detached `claude stop <id>` at launch instead.
+  Default 45 minutes, `--deadline N` / `VIBECONF_BOT_PR_DEADLINE` to change.
+  **On a Max subscription this is the cap that matters anyway.** There is no
+  dollar bill: the cost figures Claude Code prints are imputed client-side at API
+  list prices and are not what you are charged. What a runaway fleet actually
+  burns is the 5-hour and 7-day rate-limit windows, which are shared with the
+  interactive session you are trying to work in. Wall clock defends those; a
+  dollar ceiling would not have.
 - **Denial instead of hanging.** A `--bg` session has nobody to answer a permission
   prompt, so an un-allowlisted tool would park that agent forever. The dispatch
   passes an explicit `--allowedTools` allowlist *and* `--permission-prompts none`,
   which turns "would prompt" into an immediate deny. An agent that hits the wall
   fails fast instead of squatting on a worktree until morning.
+  Note the `--` before the prompt in the dispatch argv: `--allowedTools` is
+  variadic, so a positional prompt after it is swallowed as one more tool name and
+  the agent comes up `(idle — send a prompt to start)`, having been told nothing.
 - **A claim.** An issue gets `bot-attempted` **before** its agent starts. `hasOpenPR`
   only catches the attempts that succeeded, and "skipped, and why" is a legitimate
   outcome that must not be retried nightly. `--retry` overrides it.
 
-Knobs: `--max N` (default 3), `--budget N`, `--model M`, and the env equivalents
-`VIBECONF_BOT_PR_MAX` / `_BUDGET` / `_MODEL`. `VIBECONF_BOT_PR_CHECKOUTS` maps each
+Knobs: `--max N` (default 3), `--deadline N`, `--model M`, and the env equivalents
+`VIBECONF_BOT_PR_MAX` / `_BUDGET` / `_MODEL` / `_DEADLINE`. `VIBECONF_BOT_PR_CHECKOUTS` maps each
 repo to its local checkout, because `--worktree` branches the repo it runs *in* —
 an issue in the website repo has to be dispatched from the website checkout.
 

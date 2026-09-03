@@ -28,9 +28,17 @@
 // accident. Different file, different job, different blast radius.
 //
 // THE THREE THINGS THAT KEEP A RUN FROM GOING WRONG:
-//   1. Budget. `--max-budget-usd` is the only per-session hard stop the CLI has
-//      (there is no --max-turns / --timeout on the CLI; those are Agent SDK
-//      options). It is the rabbit-hole backstop, so it is always passed.
+//   1. A watchdog, because the CLI has no working spend cap here. VERIFIED on
+//      2.1.259: `--max-budget-usd` is print-mode only. Under `-p` it genuinely
+//      stops a run (the JSON comes back with terminal_reason
+//      "budget_exhausted"); under `--bg` it is silently ignored — a session
+//      given $0.0001 kept working for minutes. It is still passed below, inert
+//      and harmless, in case that changes. It is NOT the stop.
+//      The stop is DEADLINE_MIN: a detached `claude stop <id>` armed at launch.
+//      On a Max plan there is no dollar bill to protect anyway. What a runaway
+//      fleet burns is the 5-hour and 7-day rate-limit windows, and those are
+//      shared with the interactive session you are trying to work in. Wall
+//      clock is the cap that actually defends that.
 //   2. Denial, not hanging. A --bg session has nobody to answer a permission
 //      prompt, so an un-allowlisted tool would block that agent forever. We pass
 //      an explicit --allowedTools allowlist AND --permission-prompts none, which
@@ -44,11 +52,12 @@
 //   VIBECONF_TRIAGE_REPOS      owner/repo list, PRIMARY FIRST (shared with the survey)
 //   VIBECONF_BOT_PR_CHECKOUTS  repo=path,repo=path — where each repo lives on disk
 //   VIBECONF_BOT_PR_MAX        max agents dispatched per run (default 3)
-//   VIBECONF_BOT_PR_BUDGET     per-agent USD ceiling (default 5)
+//   VIBECONF_BOT_PR_BUDGET     per-agent USD ceiling (default 5; inert under --bg)
+//   VIBECONF_BOT_PR_DEADLINE   per-agent wall-clock minutes, then stopped (default 45)
 //   VIBECONF_BOT_PR_MODEL      model for the workers (default opus)
 //   CLAUDE_BIN                 override the claude binary
 
-import { execFileSync, execSync, spawnSync } from 'child_process';
+import { execFileSync, execSync, spawn, spawnSync } from 'child_process';
 import { statSync } from 'fs';
 import { join, resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -76,6 +85,10 @@ const argOf = (name, def) => {
 const MAX_AGENTS = Number(argOf('max', process.env.VIBECONF_BOT_PR_MAX || 3));
 const BUDGET_USD = String(argOf('budget', process.env.VIBECONF_BOT_PR_BUDGET || 5));
 const MODEL = argOf('model', process.env.VIBECONF_BOT_PR_MODEL || 'opus');
+// The real hard stop; see the header. Generous enough that honest work finishes,
+// short enough that a stuck agent is gone before it eats the rate-limit window
+// you need for your own work tomorrow.
+const DEADLINE_MIN = Number(argOf('deadline', process.env.VIBECONF_BOT_PR_DEADLINE || 45));
 
 // Where each repo lives on disk. `claude --worktree` branches the repo it is run
 // IN, so an issue in the website repo has to be dispatched from the website
@@ -248,6 +261,17 @@ function liveSessions() {
   } catch { return new Set(); }
 }
 
+// The wall-clock stop. Detached and fully unref'd so this script can exit right
+// after dispatching — a nightly that had to sit and babysit its own children is a
+// nightly that dies with the terminal. `claude stop` on a session that already
+// finished is a no-op, so the timer never needs to check first.
+function armWatchdog(id) {
+  const child = spawn('/bin/sh', ['-c', `sleep ${DEADLINE_MIN * 60}; "${claudeBin}" stop ${id} >/dev/null 2>&1`], {
+    detached: true, stdio: 'ignore',
+  });
+  child.unref();
+}
+
 function dispatch() {
   if (!ready) {
     console.error('REFUSED: preflight is not green. Fix these first:');
@@ -260,7 +284,7 @@ function dispatch() {
   const skippedLive = claimable.filter((i) => live.has(sessionName(i)));
 
   console.log(`${DRYRUN ? '🧪 DRY RUN — ' : ''}dispatching ${queue.length} of ${claimable.length} claimable (cap ${MAX_AGENTS})`);
-  console.log(`  model ${MODEL} · budget $${BUDGET_USD}/agent · attempts labelled ${ATTEMPTED}${RETRY ? ' · --retry: re-running attempted issues' : ''}`);
+  console.log(`  model ${MODEL} · hard stop ${DEADLINE_MIN} min/agent · attempts labelled ${ATTEMPTED}${RETRY ? ' · --retry: re-running attempted issues' : ''}`);
   for (const i of skippedLive) console.log(`  ⏭  ${i.repo.split('/')[1]}#${i.number} — an agent is already running for it`);
   if (!queue.length) { console.log('\nNothing to dispatch.'); return []; }
 
@@ -277,6 +301,11 @@ function dispatch() {
       '--permission-mode', 'acceptEdits',
       '--permission-prompts', 'none',
       '--allowedTools', ...ALLOWED_TOOLS,
+      // `--` IS LOAD-BEARING. --allowedTools is variadic, so a positional prompt
+      // placed after it is parsed as one more tool name: the agent launches
+      // "(idle — send a prompt to start)" and sits there having been told
+      // nothing. Cost a real debugging round; verified on 2.1.259.
+      '--',
       workerPrompt(issue),
     ];
 
@@ -285,6 +314,7 @@ function dispatch() {
       console.log(`    cwd: ${cwd}`);
       console.log(`    would label: gh issue edit ${issue.number} -R ${issue.repo} --add-label ${ATTEMPTED}`);
       console.log(`    would run:   ${claudeBin} ${args.slice(0, -1).join(' ')} <prompt ${workerPrompt(issue).length} chars>`);
+      console.log(`    watchdog:    claude stop <id> after ${DEADLINE_MIN} min`);
       dispatched.push({ ...issue, session: name, cwd, dryRun: true });
       continue;
     }
@@ -312,8 +342,9 @@ function dispatch() {
       console.log(`  ❌ ${issue.repo.split('/')[1]}#${issue.number} — launch failed: ${(r.stderr || r.error?.message || 'no id printed').split('\n')[0]}`);
       continue;
     }
-    console.log(`  ✅ ${issue.repo.split('/')[1]}#${issue.number} → ${id} (${name})`);
-    dispatched.push({ ...issue, session: name, cwd, id });
+    armWatchdog(id);
+    console.log(`  ✅ ${issue.repo.split('/')[1]}#${issue.number} → ${id} (${name}) · stops by ${new Date(Date.now() + DEADLINE_MIN * 60000).toLocaleTimeString()}`);
+    dispatched.push({ ...issue, session: name, cwd, id, deadlineMin: DEADLINE_MIN });
   }
   return dispatched;
 }
@@ -355,7 +386,7 @@ for (const p of pool) {
   console.log(`    ${why} · ${p.url}`);
 }
 console.log('');
-console.log(`Dispatch config: up to ${MAX_AGENTS} agents · ${MODEL} · $${BUDGET_USD} each`);
+console.log(`Dispatch config: up to ${MAX_AGENTS} agents · ${MODEL} · hard stop ${DEADLINE_MIN} min each`);
 console.log('  node scripts/bot-pr-pipeline.mjs --execute --dry-run   # see the exact commands');
 console.log('  node scripts/bot-pr-pipeline.mjs --execute             # put an agent on each');
 process.exit(ready ? 0 : 1);

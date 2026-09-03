@@ -148,15 +148,27 @@ const VIDEO_ENCODE_ARGS = [
 // right-side margin sized for the people/chat panel. There is deliberately
 // no left margin — Meet has no left-side chrome.
 //
+// TOP is derived, not estimated. The app's own status banner
+// (google-meet-provider.js ensureStatusBar: "🤖 Bot's view — <status>") is
+// `position: fixed; top: 0` at min-height 56 CSS px, and it pushes Meet's
+// whole page down by the same 56px (`body { padding-top: 56px }`), so it
+// sits ABOVE everything Meet draws. With the CSS viewport pinned to 1173px
+// wide, a 16:9 frame is 660 CSS px tall and the banner alone is 56/660 =
+// 8.5% of it — which is why the previous 0.07 left a sliver of blue along the
+// top of every recording. Measured on a real frame (rkv-pdma-pkv, 2026-09-03,
+// 1920x1080): banner bottom at 8.3%, first video-tile edge at 9.8%. 0.10
+// clears the banner with Meet's own gap above the grid as the slack, and
+// takes nothing off the tiles.
+//
 // The right margin is safe to crop unconditionally (no need to track
 // panel-open/closed state): this is the BOT's own Meet view, and the bot
 // always has the people/chat panel open (see google-meet-provider.js), so
-// that margin is never real meeting video. Estimated from Meet's standard
-// layout proportions, not measured pixel-for-pixel against live DOM geometry
-// (this codebase has no selector for Meet's video-grid container to measure
-// against) — nudge these if a real recording shows them cutting into real
-// video or leaving chrome visible.
-const DEFAULT_CROP_MARGINS = { top: 0.07, bottom: 0.14, left: 0, right: 0.27 };
+// that margin is never real meeting video. bottom/right are estimated from
+// Meet's standard layout proportions, not measured pixel-for-pixel against
+// live DOM geometry (this codebase has no selector for Meet's video-grid
+// container to measure against) — nudge these if a real recording shows them
+// cutting into real video or leaving chrome visible.
+const DEFAULT_CROP_MARGINS = { top: 0.10, bottom: 0.14, left: 0, right: 0.27 };
 
 // Build a ffmpeg crop filter expression from fractional margins. Uses `iw`/
 // `ih` (ffmpeg's input-width/height variables) rather than baked-in pixel

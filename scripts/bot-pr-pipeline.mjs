@@ -8,6 +8,7 @@
 //   node scripts/bot-pr-pipeline.mjs --json     # same, machine-readable (the digest reads this)
 //   node scripts/bot-pr-pipeline.mjs --execute  # DISPATCH — labels issues, spawns agents
 //   node scripts/bot-pr-pipeline.mjs --execute --dry-run   # prints the exact argv, spawns nothing
+//   node scripts/bot-pr-pipeline.mjs --execute --only 565   # dispatch exactly this issue
 //
 // The pulse is unchanged from the skeleton days and stays the default, because
 // nightly-issue-triage.mjs shells out to `--json` every morning and folds the
@@ -89,6 +90,11 @@ const MODEL = argOf('model', process.env.VIBECONF_BOT_PR_MODEL || 'opus');
 // short enough that a stuck agent is gone before it eats the rate-limit window
 // you need for your own work tomorrow.
 const DEADLINE_MIN = Number(argOf('deadline', process.env.VIBECONF_BOT_PR_DEADLINE || 45));
+// --only 565[,566] — dispatch exactly these issues instead of the first N
+// claimable. This is how you point the first run at the canary, and how you
+// re-run one issue without disturbing the queue.
+const ALLOW_ANY_BASE = process.argv.includes('--allow-any-base');
+const ONLY = (argOf('only', '') || '').split(',').map((x) => Number(x.trim())).filter(Boolean);
 
 // Where each repo lives on disk. `claude --worktree` branches the repo it is run
 // IN, so an issue in the website repo has to be dispatched from the website
@@ -272,6 +278,22 @@ function armWatchdog(id) {
   child.unref();
 }
 
+// What branch will the agent's worktree be cut from? `claude --worktree` branches
+// the CURRENT HEAD of the checkout it runs in, so dispatching from a feature
+// branch quietly bases every PR on that branch's work. Nothing errors; the diffs
+// are just wrong. Check it, name it, and make overriding it deliberate.
+function baseBranchOf(cwd) {
+  try {
+    return execFileSync('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' }).trim();
+  } catch { return ''; }
+}
+function defaultBranchOf(cwd) {
+  try {
+    const r = execFileSync('git', ['-C', cwd, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], { encoding: 'utf8' }).trim();
+    return r.replace(/^origin\//, '') || 'main';
+  } catch { return 'main'; }
+}
+
 function dispatch() {
   if (!ready) {
     console.error('REFUSED: preflight is not green. Fix these first:');
@@ -280,10 +302,37 @@ function dispatch() {
   }
 
   const live = liveSessions();
-  const queue = claimable.filter((i) => !live.has(sessionName(i))).slice(0, MAX_AGENTS);
+  let selectable = claimable;
+  if (ONLY.length) {
+    selectable = pool.filter((i) => ONLY.includes(i.number));
+    const missing = ONLY.filter((n) => !selectable.some((i) => i.number === n));
+    for (const n of missing) console.log(`  ⚠️  #${n} is not in the ${LABEL} pool — skipping`);
+    // --only is an explicit instruction, so it overrides assigned/hasOpenPR/
+    // attempted. It does NOT override the label: an issue nobody tagged
+    // good-for-bot is not something to dispatch by number.
+  }
+  const queue = selectable.filter((i) => !live.has(sessionName(i))).slice(0, MAX_AGENTS);
   const skippedLive = claimable.filter((i) => live.has(sessionName(i)));
 
+  // Refuse a wrong base before writing anything. Every repo we would dispatch
+  // into has to be sitting on its default branch, because that is what the
+  // agents' worktrees get cut from. --allow-any-base is the deliberate override.
+  const bases = [...new Set(queue.map((i) => i.repo))].map((repo) => {
+    const cwd = CHECKOUTS[repo];
+    return { repo, cwd, head: baseBranchOf(cwd), want: defaultBranchOf(cwd) };
+  });
+  const wrongBase = bases.filter((b) => b.head !== b.want);
+  if (wrongBase.length && !ALLOW_ANY_BASE) {
+    console.error('REFUSED: a checkout is not on its default branch, so agents would branch off it.');
+    for (const b of wrongBase) console.error(`  ❌ ${b.repo} at ${b.cwd} is on "${b.head}", expected "${b.want}"`);
+    console.error('');
+    console.error('Fix by dispatching from a checkout (or worktree) on the default branch,');
+    console.error('or pass --allow-any-base if basing the work here is what you actually want.');
+    process.exit(1);
+  }
+
   console.log(`${DRYRUN ? '🧪 DRY RUN — ' : ''}dispatching ${queue.length} of ${claimable.length} claimable (cap ${MAX_AGENTS})`);
+  for (const b of bases) console.log(`  base: ${b.repo} → ${b.head}${b.head === b.want ? '' : ' ⚠️ NOT the default branch'}`);
   console.log(`  model ${MODEL} · hard stop ${DEADLINE_MIN} min/agent · attempts labelled ${ATTEMPTED}${RETRY ? ' · --retry: re-running attempted issues' : ''}`);
   for (const i of skippedLive) console.log(`  ⏭  ${i.repo.split('/')[1]}#${i.number} — an agent is already running for it`);
   if (!queue.length) { console.log('\nNothing to dispatch.'); return []; }

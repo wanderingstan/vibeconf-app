@@ -216,7 +216,7 @@ test('APP_LEVEL_KEYS is exactly the decided set (guard against accidental promot
     // cropCallRecording: same invisibility trap as keepCallRecordingTracks right
     // above — whether recordings get cropped is a machine-level output
     // preference, not bot personality. New pref, nothing to promote.
-    ['agentBackend', 'agentHosting', 'automationProbed', 'claudeIntegrationRemoved', 'codexIntegrationRemoved', 'confirmQuit', 'cropCallRecording', 'dangerousMode', 'keepCallRecordingTracks', 'linuxAgentTmux', 'realtimeApiKey', 'remoteLogging', 'syncBaseUrl', 'ttsApiKey', 'ttsApiKeySource', 'updateChannel', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
+    ['agentBackend', 'agentHosting', 'automationProbed', 'claudeIntegrationRemoved', 'codexIntegrationRemoved', 'confirmQuit', 'cropCallRecording', 'dangerousMode', 'keepCallRecordingTracks', 'linuxAgentTmux', 'meetViewSize', 'realtimeApiKey', 'remoteLogging', 'syncBaseUrl', 'ttsApiKey', 'ttsApiKeySource', 'updateChannel', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
   );
 });
 

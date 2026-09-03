@@ -105,6 +105,10 @@ const APP_LEVEL_KEYS = new Set([
   // and App Settings only renders app-level schema prefs. New pref, no
   // per-profile legacy value to migrate.
   'cropCallRecording',
+  // The bot's Meet view size: a machine-level display/recording-size
+  // preference (same reasoning as the two above), and App Settings is where
+  // it needs to be reachable. New pref, nothing to migrate.
+  'meetViewSize',
 ]);
 
 // The subset of app-level keys the launch migration may auto-promote from a

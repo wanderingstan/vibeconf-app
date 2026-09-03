@@ -229,3 +229,26 @@ test('thumbnail is unchanged — the legacy path still works exactly as before',
   assert.ok(Math.abs(virtual - L.MEET_TARGET_CSS_WIDTH) < 1,
     'and still pins Meet\'s virtual width so the DOM never reflows');
 });
+
+test('meetViewSize resolves to a 16:9 host size, and anything unknown is the default', () => {
+  assert.deepEqual(L.hiddenSizeFor('1600x900'), L.HIDDEN_SIZE);
+  assert.deepEqual(L.hiddenSizeFor(L.DEFAULT_MEET_VIEW_SIZE), L.HIDDEN_SIZE);
+  assert.deepEqual(L.hiddenSizeFor('1920x1080'), { width: 1920, height: 1080 });
+  for (const bad of [undefined, null, '', '1234x567', 'huge', 42]) {
+    assert.deepEqual(L.hiddenSizeFor(bad), L.HIDDEN_SIZE, `${String(bad)} must fall back`);
+  }
+  for (const [key, size] of Object.entries(L.MEET_VIEW_SIZES)) {
+    assert.equal(key, `${size.width}x${size.height}`, 'the key names the size');
+    assert.equal(size.width * 9, size.height * 16, `${key} must be 16:9 so Meet lays out as on a normal display`);
+    assert.ok(size.width >= L.MEET_TARGET_CSS_WIDTH, `${key} must fit Meet's pinned virtual width at zoom 1`);
+  }
+});
+
+test('the meetViewSize preference offers exactly the sizes the layout knows', () => {
+  const { PREFERENCES } = require('../electron-app/preferences-schema.js');
+  const p = PREFERENCES.meetViewSize;
+  assert.ok(p, 'pref exists');
+  assert.deepEqual(p.enum, Object.keys(L.MEET_VIEW_SIZES));
+  assert.equal(p.default, L.DEFAULT_MEET_VIEW_SIZE);
+  for (const v of p.enum) assert.ok(p.enumLabels[v], `${v} needs a label`);
+});

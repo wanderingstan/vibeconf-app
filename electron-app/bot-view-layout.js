@@ -54,6 +54,31 @@ const STATES = ['hidden', 'thumbnail', 'popped'];
 // The capture comes back at this x devicePixelRatio — 3200x1800 on a 2x screen,
 // against 760x428 docked. Roughly 3x linear, 10x area.
 const HIDDEN_SIZE = { width: 1600, height: 900 };
+
+// The sizes the meetViewSize preference can pick from (preferences-schema.js),
+// keyed by the pref's string value. All 16:9 for the same reason HIDDEN_SIZE
+// is. Bigger is more room for Meet's grid — at 1600x900 a call of three or
+// more shows small tiles, and the bot's screenshots and the call recording
+// (which keeps just the tile region, record-region.js) inherit that — at the
+// cost of a bigger capture and recording. Above 1920x1080 the recording
+// capture is bounded back to 1080p by call-recording-window.js's
+// CAPTURE_CONSTRAINTS, so the largest size buys layout room, not recording
+// pixels. Not user-editable free text: Meet has layout breakpoints, and an
+// arbitrary size can land on one that hides tiles or the controls.
+const MEET_VIEW_SIZES = {
+  '1280x720': { width: 1280, height: 720 },
+  '1600x900': HIDDEN_SIZE,
+  '1920x1080': { width: 1920, height: 1080 },
+  '2560x1440': { width: 2560, height: 1440 },
+};
+const DEFAULT_MEET_VIEW_SIZE = '1600x900';
+
+// The hidden host window's size for a meetViewSize pref value. Anything
+// unrecognised (unset, a typo, a size removed from the table) is the default,
+// never a throw — this feeds window creation.
+function hiddenSizeFor(pref) {
+  return MEET_VIEW_SIZES[pref] || HIDDEN_SIZE;
+}
 // No compensation needed when we aren't squeezing it into a narrow column.
 const HIDDEN_ZOOM = 1;
 
@@ -213,6 +238,9 @@ function windowWidthFor(state, opts = {}) {
 module.exports = {
   STATES,
   HIDDEN_SIZE,
+  MEET_VIEW_SIZES,
+  DEFAULT_MEET_VIEW_SIZE,
+  hiddenSizeFor,
   HIDDEN_ZOOM,
   MEET_TARGET_CSS_WIDTH,
   POPPED_ZOOM,

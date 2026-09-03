@@ -279,6 +279,27 @@ const PREFERENCES = {
       'person per hour); keeping the tracks is what makes them reproducible on ' +
       'demand via scripts/extract-speaker-tracks.mjs.',
   },
+  meetViewSize: {
+    type: 'string',
+    default: '1600x900',
+    enum: ['1280x720', '1600x900', '1920x1080', '2560x1440'],
+    enumLabels: {
+      '1280x720': '1280 × 720 — compact (1–2 people)',
+      '1600x900': '1600 × 900 — default',
+      '1920x1080': '1920 × 1080 — roomier (3–6 people)',
+      '2560x1440': '2560 × 1440 — largest (big calls; recording still capped at 1080p)',
+    },
+    label: 'Bot\'s Meet view size',
+    description:
+      'How big the bot\'s own Google Meet view is, in pixels. Meet lays its grid out ' +
+      'for this size, so a bigger view means bigger tiles when three or more people ' +
+      'are on the call — which is what the bot sees in its screenshots and what the ' +
+      'call recording keeps. The trade-off is a larger capture: the recording\'s ' +
+      'pixel size grows with it (up to 1920 × 1080, where the capture is capped, so ' +
+      'the largest setting buys layout room rather than recording pixels). Applies ' +
+      'immediately, including mid-call.',
+    requiresRestart: false,
+  },
   cropCallRecording: {
     type: 'boolean',
     default: true,

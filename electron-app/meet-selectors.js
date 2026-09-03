@@ -126,6 +126,21 @@ const MEET = {
     // a minified token that changes between Meet builds while the word does not.
     // Localised in a non-English Meet UI, so treated as a HINT: the structural
     // signal (a duplicate identity that never pulses) still stands alone.
+    //
+    // ⚠️ PEOPLE PANE ONLY. This is a listitem selector, and it does NOT identify
+    // a share in the VIDEO GRID — grid tiles have no such status row, so probing
+    // one with it silently reports every share as a camera. Measured live on
+    // 2026-09-03 (#673): with a real remote share up, the grid's share tile
+    // carried ONLY `data-participant-id`, with no role/aria wrapper and no
+    // `.d93U2d` anywhere in its ancestry, and a probe using this selector
+    // classified a 1606x830 screen share as a webcam.
+    //
+    // No positive grid-side selector is recorded here because none has been
+    // established yet — deliberately, rather than guessing one that would fail
+    // the same silent way. Anything needing to tell a share from a camera IN THE
+    // GRID must either find one first, or use a signal that does not depend on
+    // the pane: the People pane's own presentation listitem gives the sharer's
+    // `data-participant-id`, and the grid tile with that id is the share.
     presentationRow: '.d93U2d',
     // Substring, lowercased, because Meet words it differently for the bot's own
     // share than for everyone else's — measured live with three shares up at

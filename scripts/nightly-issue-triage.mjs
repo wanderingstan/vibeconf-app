@@ -304,7 +304,9 @@ function runSurvey(payload) {
     '   or a small mechanical enhancement. NOMINATE CONSERVATIVELY — 3 to 6 at most, and',
     '   none at all is a valid answer. Anything needing a taste, naming, UX, pricing or',
     '   architecture call is NOT bot-ready. These are proposals a human will approve;',
-    '   over-nominating destroys their value.',
+    '   over-nominating destroys their value. Never nominate an issue whose labels',
+    '   (shown with it) already include `good-for-bot` — it is in the pool already,',
+    '   and re-proposing it wastes one of your few slots.',
     '5. "labels" proposes labels for UNLABELED issues only, drawn strictly from the',
     '   existing set: bug, documentation, duplicate, enhancement, good first issue,',
     '   help wanted, invalid, question, wontfix. Propose at most 25 — the highest-',
@@ -447,6 +449,34 @@ const ref = (repo, n) => `${normRepo(repo).split('/')[1]}#${n}`;
 const issueUrl = (repo, n) => `https://github.com/${normRepo(repo)}/issues/${n}`;
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
+// --- nominations already in the pool ----------------------------------------
+// Drop bot nominations for issues that ALREADY carry the label. The model is shown
+// every issue's labels, but nothing told it the existing pool was off-limits, and
+// on 2026-09-03 it re-proposed #586 and #611 while both were already tagged — two
+// of five slots spent on no-ops, in a section whose whole value is that it stays
+// short enough to act on.
+//
+// Enforced here rather than only in the prompt because the labels are a fact we
+// already fetched: this is a lookup, not something the model has to remember. And
+// filtered ONCE, before both renderers, so the list, the 🤖 count in the digest
+// and results.jsonl cannot disagree about what was nominated.
+//
+// Only a KNOWN-tagged issue is dropped. A number that isn't in the fetched backlog
+// (closed since, or invented) stays in: "absent from the backlog" is not evidence
+// of a label, and quietly swallowing a bad nomination hides it from the review
+// that this whole section exists to get.
+const BOT_LABEL = 'good-for-bot';
+let nominationsDropped = 0;
+if (survey && A(survey.botReady).length) {
+  const tagged = new Set(byRepo.flatMap(({ repo, issues }) => issues
+    .filter((i) => i.labels.includes(BOT_LABEL))
+    .map((i) => `${repo}#${i.n}`)));
+  const before = A(survey.botReady).length;
+  survey.botReady = A(survey.botReady).filter((b) => !tagged.has(`${normRepo(b.repo)}#${b.issue}`));
+  nominationsDropped = before - survey.botReady.length;
+  if (nominationsDropped) log(`dropped ${nominationsDropped}/${before} bot nominations already tagged ${BOT_LABEL}`);
+}
+
 // Rendered on BOTH report paths — including the one where the survey itself failed.
 // The readiness of the write-side pipeline is exactly the thing you still want to
 // know on a morning when the survey broke, and an early return that swallowed it
@@ -514,7 +544,14 @@ function buildReport() {
       if (b.why) L.push(`  - ${b.why}`);
     }
     L.push('', '```sh', ...A(survey.botReady).map((b) =>
-      `gh issue edit ${b.issue} -R ${normRepo(b.repo)} --add-label good-for-bot`), '```', '');
+      `gh issue edit ${b.issue} -R ${normRepo(b.repo)} --add-label ${BOT_LABEL}`), '```', '');
+  } else if (nominationsDropped) {
+    // Say WHY the section is missing. An absent heading reads as "the model found
+    // nothing a bot could take", which is a very different morning from "everything
+    // it picked is already tagged and waiting".
+    L.push('## Nominated for a bot (phase two)',
+      `_Nothing new — all ${nominationsDropped} nomination${nominationsDropped === 1 ? ' was' : 's were'} `
+      + `already tagged \`${BOT_LABEL}\` and in the pool below._`, '');
   }
   if (A(survey.labels).length) {
     L.push('## Proposed labels', '```sh', ...A(survey.labels).map((l) =>

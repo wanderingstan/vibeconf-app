@@ -282,9 +282,8 @@ const PREFERENCES = {
   meetViewSize: {
     type: 'string',
     default: '1600x900',
-    enum: ['1280x720', '1600x900', '1920x1080', '2560x1440'],
+    enum: ['1600x900', '1920x1080', '2560x1440'],
     enumLabels: {
-      '1280x720': '1280 × 720 — compact (1–2 people)',
       '1600x900': '1600 × 900 — default',
       '1920x1080': '1920 × 1080 — roomier (3–6 people)',
       '2560x1440': '2560 × 1440 — largest (big calls; recording still capped at 1080p)',

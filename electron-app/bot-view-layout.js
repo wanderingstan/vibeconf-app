@@ -64,9 +64,12 @@ const HIDDEN_SIZE = { width: 1600, height: 900 };
 // capture is bounded back to 1080p by call-recording-window.js's
 // CAPTURE_CONSTRAINTS, so the largest size buys layout room, not recording
 // pixels. Not user-editable free text: Meet has layout breakpoints, and an
-// arbitrary size can land on one that hides tiles or the controls.
+// arbitrary size can land on one that hides tiles or the controls. Nothing
+// SMALLER than the long-standing default either: below it Meet starts moving
+// toolbar buttons into its overflow menu and hiding parts of the UI the
+// provider's selectors rely on (seen in practice), and the cramped-grid
+// problem this pref exists for only ever points the other way.
 const MEET_VIEW_SIZES = {
-  '1280x720': { width: 1280, height: 720 },
   '1600x900': HIDDEN_SIZE,
   '1920x1080': { width: 1920, height: 1080 },
   '2560x1440': { width: 2560, height: 1440 },

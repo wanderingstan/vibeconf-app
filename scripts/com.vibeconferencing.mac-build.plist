@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.vibeconferencing.mac-build — nightly signed + notarized macOS build of origin/main.
+
+  WHY A LaunchAgent AND NOT A LaunchDaemon: signing needs the user's keychain. A
+  LaunchDaemon runs outside the login session and cannot reach it at all. An Agent
+  runs in the Aqua session, which is the only context where the login keychain is
+  even reachable — and if you configure a dedicated signing keychain (see
+  SCHEDULING.md) the script unlocks that itself and the distinction stops mattering.
+
+  WHY 01:00: com.vibeconferencing.meet-test owns 03:00 with a 5400s budget, so the
+  box is busy until ~04:30. This is the heaviest job the mini runs; overlapping the
+  two produces timeout-shaped failures in the TEST lane that look like product
+  regressions and are not.
+
+  NOTE the script path points at the PRIMARY checkout, not at the nightly worktree
+  the build actually uses. The worktree is reset to origin/main on every run, so a
+  script running from inside it would be pulling the rug out from under itself.
+  Consequence worth knowing: the SCRIPT is whatever branch ~/Developer/vibeconf-app
+  happens to be on, even though the BUILD is always origin/main. Keep that checkout
+  on main.
+
+  Secrets live in ~/.config/vibeconf/build.env (0600), NOT here — a plist in
+  ~/Library/LaunchAgents is world-readable.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.vibeconferencing.mac-build</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-lc</string>
+        <string>/Users/wanderingstan/Developer/vibeconf-app/scripts/nightly-mac-build.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>1</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- Where the pinned, always-detached build source lives. Created on first run. -->
+        <key>VIBECONF_BUILD_WORKTREE</key>
+        <string>/Users/wanderingstan/Developer/vibeconf-nightly</string>
+        <!-- Nightly .dmg/.zip/latest-mac.yml land here, one dir per <date>-<sha>,
+             with a `latest` symlink for whatever you want to install in the morning. -->
+        <key>VIBECONF_BUILD_OUT</key>
+        <string>/Users/wanderingstan/vibeconf-builds</string>
+        <key>VIBECONF_BUILD_KEEP_DAYS</key>
+        <string>14</string>
+        <!-- Uncomment once a dedicated signing keychain exists; without it the lane
+             depends on the login keychain being unlocked in the GUI session, which
+             on this machine it is not always.
+        <key>VIBECONF_SIGNING_KEYCHAIN</key>
+        <string>/Users/wanderingstan/Library/Keychains/vibeconf-signing.keychain-db</string>
+        -->
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/wanderingstan/vibeconf-test-results/mac-build.launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/wanderingstan/vibeconf-test-results/mac-build.launchd.err.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

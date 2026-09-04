@@ -117,6 +117,23 @@ function linuxLine(r) {
   return `${ok ? '🟢' : '🔴'} linux agent-terminal: exit ${r.exit}`
     + `${bits.length ? ` (${bits.join(', ')})` : ''}${note}`;
 }
+// The mac build lane carries {version, commit, artifact} and, like the linux lane,
+// splits its failures: 70+ means it never got as far as building (no notarization
+// creds, locked keychain, git fetch failed) while 10-12 means the build or the
+// NOTARIZATION VERIFICATION actually failed. That distinction is the whole reason
+// the lane exists — a signed-but-un-notarized build exits 0 from electron-builder
+// and is indistinguishable from success unless something says so out loud.
+function macBuildLine(r) {
+  if (!r) return '⚪️ mac build: no result';
+  const ok = String(r.exit) === '0';
+  if (ok) {
+    const what = [r.version, r.commit].filter(Boolean).join(' @ ');
+    return `🟢 mac build: notarized${what ? ` ${what}` : ''}`;
+  }
+  const infra = Number(r.exit) >= 70;
+  const bits = infra ? ' (infra, not the app)' : '';
+  return `🔴 mac build: exit ${r.exit}${bits}${r.note ? ` — ${r.note}` : ''}`;
+}
 // agent-fuzz has a different shape: {ok:true/false, mission}.
 function fuzzLine(r) {
   if (!r) return '⚪️ agent-fuzz: no result';
@@ -180,6 +197,11 @@ const linux = lastLine('linux-results.jsonl');
 const preflight = lastLine('preflight-results.jsonl');
 const recHealth = lastLine('recording-health-results.jsonl');
 const recBroken = recHealth ? recHealth.ok === false : false;
+// The macOS build lane (scripts/nightly-mac-build.sh, 01:00 — two hours before
+// these tests). It runs before us rather than with us, so its line is reporting on
+// a job that already finished; "no result" here means the 01:00 agent never fired,
+// which is itself the thing you want to know.
+const macBuild = lastLine('mac-build-results.jsonl');
 
 const lines = [
   statusLine('DMG meet (gating)', dmg),
@@ -197,6 +219,7 @@ const lines = [
   statusLine('multi-bot displacement', displacement),
   fuzzLine(fuzz),
   linuxLine(linux),
+  macBuildLine(macBuild),
 ];
 // #334: per-agent exit codes under the fuzz line (launch flake vs hang vs clean run).
 const fuzzAgents = fuzzAgentSummary();

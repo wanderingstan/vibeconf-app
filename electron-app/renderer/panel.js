@@ -3376,8 +3376,8 @@ ttsVoiceIdInput.addEventListener('change', () => {
 
 // #340: standard macOS voices are mostly robotic — keep only a couple tolerable
 // ones ("Daniel", "Samantha", "Karen") in the main group; the rest drop to "Other".
-// Windows' SAPI voices arrive pre-tiered (tier 1) and never hit this list — see
-// system-voices.js for why they aren't demoted.
+// Windows' SAPI and Linux's espeak voices arrive pre-tiered (tier 1) and never
+// hit this list — see system-voices.js for why they aren't demoted.
 // DUPLICATED in mcp-server/server.js (the agent's list_voices) and
 // electron-app/renderer/onboarding.js — keep all three in sync.
 // TODO(#342): single-source this + the merge logic behind one /api/voices endpoint.
@@ -3472,8 +3472,11 @@ async function populateUnifiedVoices(config) {
   // main tiers the voices (0 Premium / 1 Enhanced-or-SAPI / 2 plain); tierOf is
   // the fallback for the shape older builds returned.
   const sysList = Array.isArray(systemResult?.voices) ? systemResult.voices : [];
+  // Mirrors system-voices.js systemVoiceLabel() — Linux's espeak voices (#575)
+  // arrive pre-tiered like SAPI's, so they land in the main built-in group.
   const osName = systemResult?.platform === 'win32' ? 'Windows'
-    : systemResult?.platform === 'darwin' ? 'macOS' : 'system';
+    : systemResult?.platform === 'darwin' ? 'macOS'
+    : systemResult?.platform === 'linux' ? 'Linux' : 'system';
   const tierOf = (v) => (v.tier != null ? v.tier : /\(Premium\)/i.test(v.name) ? 0 : /\(Enhanced\)/i.test(v.name) ? 1 : 2);
   const whitelisted = (name) => WHITELISTED_MACOS_STANDARD.some((w) => name === w || name.startsWith(w + ' '));
   addGroup(`Built-in (${osName})`, sysList

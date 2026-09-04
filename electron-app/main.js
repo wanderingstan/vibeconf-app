@@ -6571,10 +6571,10 @@ function speakText(text, voice, emoji, { volume, ack } = {}) {
 }
 
 // Installed built-in voice names (populated at startup) — `say` voices on
-// macOS, SAPI voices on Windows (#18). Lets the speak() voice-override route a
-// name to the right provider — a built-in voice name forces the built-in
-// provider even when an ElevenLabs key is set, instead of being mis-sent to
-// ElevenLabs as a (nonexistent) voice ID.
+// macOS, SAPI voices on Windows (#18), espeak voices on Linux (#575). Lets the
+// speak() voice-override route a name to the right provider — a built-in voice
+// name forces the built-in provider even when an ElevenLabs key is set, instead
+// of being mis-sent to ElevenLabs as a (nonexistent) voice ID.
 let systemVoiceNameSet = new Set();
 
 // In-flight HTTP Basic/Digest auth challenges for the bot webview: id → Electron
@@ -6584,21 +6584,34 @@ let basicAuthSeq = 0;
 
 // Enumerate the OS's built-in voices → [{ name, locale, sample, tier }], quality
 // first (Premium > Enhanced > plain), then English, then name. macOS reads them
-// from `say -v '?'`; Windows from SAPI via PowerShell (#18). Shared by the
-// preferences dropdown IPC and the startup name-set build. Soft-fails to [] —
-// a missing voice list must never take the app down with it.
+// from `say -v '?'`; Windows from SAPI via PowerShell (#18); Linux from
+// `espeak-ng --voices` (#575). Shared by the preferences dropdown IPC and the
+// startup name-set build. Soft-fails to [] — a missing voice list must never
+// take the app down with it.
 //
 // Parsing lives in system-voices.js so it can be unit-tested without a machine
 // of each kind; this function is only the exec half.
 async function enumerateSystemVoices() {
-  const { parseSayVoices, parseSapiVoices, powerShellArgs, SAPI_LIST_SCRIPT } = require('./system-voices.js');
+  const {
+    parseSayVoices, parseSapiVoices, parseEspeakVoices,
+    powerShellArgs, SAPI_LIST_SCRIPT, ESPEAK_LIST_ARGS, SYSTEM_VOICE_PLATFORMS,
+  } = require('./system-voices.js');
   const { execFile } = require('child_process');
-  const isWin = process.platform === 'win32';
-  if (!isWin && process.platform !== 'darwin') return [];
-  // PowerShell's cold start makes 5s tight on a slow/first run; give it 15s.
-  const [cmd, args, opts, parse] = isWin
-    ? ['powershell.exe', powerShellArgs(SAPI_LIST_SCRIPT), { timeout: 15000, maxBuffer: 1 << 20 }, parseSapiVoices]
-    : ['say', ['-v', '?'], { timeout: 5000, maxBuffer: 1 << 20 }, parseSayVoices];
+  if (!SYSTEM_VOICE_PLATFORMS.includes(process.platform)) return [];
+  let cmd, args, opts, parse;
+  if (process.platform === 'win32') {
+    // PowerShell's cold start makes 5s tight on a slow/first run; give it 15s.
+    [cmd, args, opts, parse] = ['powershell.exe', powerShellArgs(SAPI_LIST_SCRIPT), { timeout: 15000, maxBuffer: 1 << 20 }, parseSapiVoices];
+  } else if (process.platform === 'linux') {
+    // espeak-ng is a Recommends of the .deb, not a Depends, so it can be
+    // missing — that is "no built-in voices here", not an error. tts.js owns
+    // the probe so the picker offers voices from the binary that will speak.
+    const bin = globalThis.resolveLinuxTtsBin?.();
+    if (!bin) return [];
+    [cmd, args, opts, parse] = [bin, ESPEAK_LIST_ARGS, { timeout: 5000, maxBuffer: 1 << 20 }, parseEspeakVoices];
+  } else {
+    [cmd, args, opts, parse] = ['say', ['-v', '?'], { timeout: 5000, maxBuffer: 1 << 20 }, parseSayVoices];
+  }
   return new Promise((resolve) => {
     execFile(cmd, args, opts, (err, stdout) => {
       if (err) { console.error('[electron] enumerateSystemVoices failed:', err.message); return resolve([]); }
